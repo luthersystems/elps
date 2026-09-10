@@ -194,8 +194,10 @@ func admitSymbolValue(v *LVal) *LVal {
 //
 // Unlike program.go's firstUnsealed, this walks values rather than parse
 // output, so it cannot assume a tree: a program can store a container inside
-// itself (issue #390), and Copy() on such a value would not terminate.  A
-// cycle therefore reports "neither", which lands the value in the
+// itself (issue #390), and a cycle cannot be sealed throughout (Copy()
+// terminates on it now that the copier memoises headers, but the seal
+// walk is what this classification is for).  A cycle therefore reports
+// "neither", which lands the value in the
 // by-reference row where no copy is attempted.
 func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
 	if v == nil || !sealableNodeType(v.Type) {

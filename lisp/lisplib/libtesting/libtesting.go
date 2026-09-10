@@ -31,6 +31,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetPackageDoc(`Test framework: define named tests and benchmarks with assertion
 		helpers (assert-equal, assert-nil, assert-not-nil, etc.).`)
 	suite := NewTestSuite()
+	//elpsvet:allow-native the per-VM test registry: publication rejects this mutable suite outright (TestSuite's doc; TestLoadLibraryTestingRegistryRejectsTemplate in lisp/lisplib/lisplib_test.go asserts the error), which is why LoadRuntimeLibrary omits this package and each VM loads its own
 	env.PutGlobal(lisp.Symbol(DefaultSuiteSymbol), lisp.Native(suite))
 	for _, fn := range suite.Ops() {
 		env.AddSpecialOps(true, fn)

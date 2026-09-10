@@ -4,7 +4,7 @@ package lsp
 
 import (
 	"encoding/json"
-	"os"
+	"fmt"
 	"strings"
 	"unicode/utf8"
 
@@ -320,14 +320,37 @@ func (s *Server) wireRange(text string, rng protocol.Range) protocol.Range {
 // once.
 type documentTexts struct {
 	srv   *Server
-	texts map[string]string
+	texts map[string]documentText
+}
+
+// documentTextStatus is why a lookup did not produce text, and the two
+// failures are NOT interchangeable -- see rangeFor.
+type documentTextStatus int
+
+const (
+	// documentTextFound: the text is available and a conversion can be done.
+	documentTextFound documentTextStatus = iota
+	// documentTextUnavailable: the file is missing, a directory, or
+	// unreadable. Nothing on main could convert against it either.
+	documentTextUnavailable
+	// documentTextOverLimit: the file EXISTS and is readable, and this server
+	// declines to read it because it is over the workspace scan's per-file
+	// size limit (elps#611). main read it and converted correctly.
+	documentTextOverLimit
+)
+
+// documentText is one cache entry: the text, or why there is none.
+type documentText struct {
+	text   string
+	status documentTextStatus
 }
 
 func (s *Server) newDocumentTexts() *documentTexts {
-	return &documentTexts{srv: s, texts: make(map[string]string)}
+	return &documentTexts{srv: s, texts: make(map[string]documentText)}
 }
 
-// get returns the text of the document a URI names and whether it was found.
+// get returns the text of the document a URI names, and a status saying
+// whether it is usable and, when it is not, which kind of failure it was.
 //
 // An open document is authoritative: its content is what the client has in its
 // buffer, which is what the client will apply an edit to. A file that is not
@@ -336,39 +359,80 @@ func (s *Server) newDocumentTexts() *documentTexts {
 // index derived the range from, so the conversion is self-consistent with the
 // column it is converting.
 //
-// A file that cannot be read yields false. The caller leaves the range in byte
-// columns in that case: unconverted is what every range on main is, so it
-// cannot be a regression, and dropping the edit instead would silently do half
-// a rename.
-func (d *documentTexts) get(uri string) (string, bool) {
-	if text, ok := d.texts[uri]; ok {
-		return text, text != ""
+// The disk read is bounded by the workspace scan's per-file limit like every
+// other workspace read (elps#611), so an over-limit file yields no text -- and
+// costs a Stat rather than a read, which is the point of the bound. It gets a
+// status of its own because the caller must treat it differently from an
+// unreadable file; rangeFor says why.
+func (d *documentTexts) get(uri string) (string, documentTextStatus) {
+	if e, ok := d.texts[uri]; ok {
+		return e.text, e.status
 	}
 	if doc := d.srv.docs.Get(uri); doc != nil {
 		doc.mu.Lock()
 		text := doc.Content
 		doc.mu.Unlock()
-		d.texts[uri] = text
-		return text, true
+		d.texts[uri] = documentText{text: text, status: documentTextFound}
+		return text, documentTextFound
 	}
-	source, err := os.ReadFile(uriToPath(uri))
-	if err != nil {
-		d.texts[uri] = ""
-		return "", false
+	source, status := d.srv.readWorkspaceFile(uriToPath(uri))
+	switch status {
+	case workspaceReadOK:
+		d.texts[uri] = documentText{text: string(source), status: documentTextFound}
+		return string(source), documentTextFound
+	case workspaceReadOverLimit:
+		d.texts[uri] = documentText{status: documentTextOverLimit}
+		return "", documentTextOverLimit
+	default:
+		d.texts[uri] = documentText{status: documentTextUnavailable}
+		return "", documentTextUnavailable
 	}
-	d.texts[uri] = string(source)
-	return string(source), true
 }
 
-// rangeFor converts a byte-column range for the document a URI names, leaving
-// it untouched when that document's text cannot be obtained.
-func (d *documentTexts) rangeFor(uri string, rng protocol.Range) protocol.Range {
+// rangeFor converts a byte-column range for the document a URI names.
+//
+// A conversion that cannot be performed is an ERROR, never a range in the
+// wrong coordinates. Byte columns handed to a UTF-16 client are not "close":
+// on any line carrying a non-ASCII character to the left of the identifier
+// the client applies a SHIFTED edit to a file nobody has open. In
+// (list "é" (target)) the identifier spans UTF-16 [11,17) and bytes [12,18),
+// so the edit replaces "arget)" -- it eats the closing paren and leaves a
+// "t" behind, in a file the user never looked at. The two ways the text can
+// be missing are named separately because the error should say which:
+//
+//   - OVER THE WORKSPACE SIZE LIMIT: the file exists and is readable, and
+//     this server declines to read it (elps#611). main read it with an
+//     unbounded os.ReadFile and converted correctly, so silently emitting
+//     byte columns here would be a regression, not the status quo.
+//
+//   - MISSING or UNREADABLE: the index saw the file and the disk no longer
+//     offers it. main left the range in byte columns for this case; that
+//     was the same corruption with a rarer trigger, and an edit against a
+//     file that cannot be read is not one the client can apply correctly
+//     either way.
+//
+// Either failure fails the whole rename: the server cannot produce the
+// coordinates it promised, and a partial rename is not an acceptable
+// substitute for a whole one.
+//
+// Under utf-8 no conversion is required, so neither failure can arise and
+// the size limit cannot block a rename.
+func (d *documentTexts) rangeFor(uri string, rng protocol.Range) (protocol.Range, error) {
 	if d.srv.positionEncoding() == encodingUTF8 {
-		return rng
+		return rng, nil
 	}
-	text, ok := d.get(uri)
-	if !ok {
-		return rng
+	text, status := d.get(uri)
+	switch status {
+	case documentTextOverLimit:
+		return rng, fmt.Errorf(
+			"cannot rename: %s is over the workspace file size limit (%d bytes), so its edit columns cannot be converted to %s",
+			uriToPath(uri), d.srv.scanConfig().EffectiveMaxFileBytes(),
+			positionEncodingName(d.srv.positionEncoding()))
+	case documentTextUnavailable:
+		return rng, fmt.Errorf(
+			"cannot rename: %s cannot be read, so its edit columns cannot be converted to %s",
+			uriToPath(uri), positionEncodingName(d.srv.positionEncoding()))
+	default:
+		return d.srv.wireRange(text, rng), nil
 	}
-	return d.srv.wireRange(text, rng)
 }

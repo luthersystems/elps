@@ -248,11 +248,14 @@ func (g *Gen) value(depth int) *lisp.LVal {
 // Locations come from a fixed process-wide pool rather than being allocated
 // per node, for two reasons.
 //
-//   - Reproducibility.  LVal.String() renders an LQSymbol with %#v, which
-//     prints the Source POINTER.  A freshly allocated Location per node would
-//     therefore make the rendering of a generated value depend on the
-//     allocator, and TestGeneratorIsDeterministic -- the property every saved
-//     crasher rests on -- would fail.
+//   - Reproducibility.  LVal.String() used to render an LQSymbol with %#v,
+//     which prints the Source POINTER, so a freshly allocated Location per
+//     node made the rendering of a generated value depend on the allocator and
+//     TestGeneratorIsDeterministic -- the property every saved crasher rests
+//     on -- failed.  Issue #606 gave LQSymbol a rendering arm and took the
+//     %#v out of the fallback, and lisp.TestStringNoAddressForEveryLType now
+//     holds every LType to that, so no rendering prints an address today.  The
+//     pool is kept for the reason below, which is the durable one.
 //   - Fidelity.  LVal.Source documents itself as shared: "the reference may be
 //     shared by multiple LVals".  A pool models that, and it is the sharing
 //     that gives an in-place edit of a Location its real blast radius.
@@ -599,6 +602,9 @@ const nativeLispTime = 16
 const nativeLispRegexp = 18
 const nativeZonedTime = 26
 
+// native builds one of the nativeNumKinds payload shapes described above.
+//
+//elpsvet:allow-native fuzz corpus generator, not a payload contract: every native here is minted fresh per iteration to exercise the builtins' type switches, and the deliberately mutable shapes (a map, a byte slice, a json.RawMessage) are the point -- a builtin writing through one is caught by the harness rather than hidden; nothing here reaches a production template
 func (g *Gen) native() *lisp.LVal {
 	selector := g.Byte()
 	switch int(selector) % nativeNumKinds {

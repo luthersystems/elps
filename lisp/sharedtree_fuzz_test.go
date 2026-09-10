@@ -5,7 +5,9 @@ package lisp_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -64,34 +66,175 @@ import (
 // tail-iteration, physical-height, nesting and allocation limits plus a
 // context deadline.  The per-input cost is a small multiple of FuzzEval's
 // because the same source is evaluated sharedRuns+1 times.
+//
+// # Why there is no exception for a result that looks like a budget
+//
+// A comparison oracle that agrees to ignore some results is the one way this
+// target can fail silently: every exception it carries is a class of
+// divergence it has promised not to report.  So there is none.  A rendered
+// result is compared EXACTLY, always.
+//
+// This target used to carry one, for the case where the two arms disagreed
+// about which runaway-loop backstop stopped the same infinite loop (crasher
+// 423b7dd9e421bd27).  Both spellings of it were forgeable by the program
+// under test.  The first matched the budget's MESSAGE, which is just text a
+// program is free to return or to raise.  The second read PROVENANCE -- the
+// unforgeable *lisp.TailIterationLimitError the evaluator stores in the
+// error's data cell -- and was forgeable anyway, by CAPTURED-BUDGET REPLAY:
+// handler-bind catches every condition but internal-panic (opHandlerBind), so
+// a program can catch the tail-iteration error, keep the Go error it carries,
+// run arbitrary code that DIVERGES between the two arms, and finally raise a
+// new error carrying the captured cell.  Both arms then classify as the same
+// budget, and everything the program did in between is hidden.  See
+// TestOracleReportsCapturedBudgetReplay.
+//
+// The exception was never needed for that budget in the first place.  The
+// tail-iteration counter -- and max steps, max alloc and physical height with
+// it -- is DETERMINISTIC: the same program under the same fresh environment
+// and the same limit trips at the same point in both arms and renders the same
+// message, so exact comparison already agrees.
+// TestOracleTailBudgetArmsCompareEqual pins that.
+//
+// # The deadline is inconclusiveness, not a classification
+//
+// The context deadline is the one budget that is not deterministic, because it
+// is denominated in WALL CLOCK: the two arms run at different speeds (the
+// shared arm has skipped a parse) and on a loaded machine one can be stopped
+// by the clock where the other was not.  That is not a fact about the value,
+// so no amount of looking at the value can decide it -- which is exactly why
+// every value-based attempt was forgeable.
+//
+// It is decided by HARNESS STATE instead.  Each arm records, per expression,
+// whether its OWN context had expired when that expression's evaluation
+// returned (`ctx.Err() != nil`), which no program can influence.  If either
+// arm's context had expired at expression j, this input is INCONCLUSIVE from j
+// onwards: expressions before j are still compared exactly, and j and
+// everything after it are not compared at all.  A run the clock interrupted
+// carries no information about whether the tree changed meaning, so the
+// correct answer is to decline to answer -- not to declare two differing
+// results equal.
 
 // sharedRuns is how many goroutines evaluate the shared tree at once.  Two is
 // enough for the race detector to see a conflicting pair, and keeping it small
 // keeps the per-input cost near FuzzEval's.
 const sharedRuns = 2
 
+// treeEval is one evaluation of a whole tree: what each expression rendered
+// to, and -- alongside the rendering, never derived from it -- whether this
+// arm's own context had already expired when that expression's evaluation
+// returned.  The two are kept in step by index: rendered[j] and expired[j]
+// describe expression j.
+//
+// expired is HARNESS state, not a property of the value.  It is the only
+// thing the oracle consults besides the rendered text, and it is the only
+// thing it can consult that the program under test has no say in: a program
+// can return, raise, or replay any value it likes, but it cannot make this
+// process's context deadline pass.
+type treeEval struct {
+	rendered []string
+	expired  []bool
+}
+
 // evalTreeOnce evaluates every expression of exprs under a fresh environment
-// and returns the rendered results.  exprs may be shared with other
-// goroutines; nothing here may write to it.
-func evalTreeOnce(exprs []*lisp.LVal) ([]string, error) {
+// and returns the rendered results together with the per-expression record of
+// whether this run's context had expired.
+// exprs may be shared with other goroutines; nothing here may write to it.
+func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
 	env, _, rc := newFuzzEnv()
 	if rc != nil {
-		return nil, errFromLVal(rc)
+		return treeEval{}, errFromLVal(rc)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
 	defer cancel()
-	out := make([]string, 0, len(exprs))
+	out := treeEval{
+		rendered: make([]string, 0, len(exprs)),
+		expired:  make([]bool, 0, len(exprs)),
+	}
 	for _, e := range exprs {
 		v := env.EvalContext(ctx, e)
 		if v == nil {
-			return nil, errNilResult
+			return treeEval{}, errNilResult
 		}
 		if lisp.IsInternalPanic(v) {
-			return nil, errInternalPanic
+			return treeEval{}, errInternalPanic
 		}
-		out = append(out, v.String())
+		// Sampled HERE, where this run's context can still be asked whether
+		// it expired.  Once the value has been rendered to a string that fact
+		// is gone, and the string itself cannot supply it.
+		out.expired = append(out.expired, ctx.Err() != nil)
+		out.rendered = append(out.rendered, v.String())
 	}
 	return out, nil
+}
+
+// treeComparison is the verdict of comparing one shared arm against the
+// private baseline.  Exactly one of the three states holds:
+//
+//   - divergedAt >= 0: expression divergedAt rendered differently in the two
+//     arms, with both arms' contexts still live.  That is the finding this
+//     target exists to report.
+//   - inconclusive != "": an arm's context had expired at expression
+//     firstExpired, so that expression and every one after it were not
+//     compared.  Everything before it did compare equal.
+//   - neither: every expression compared equal.
+//
+// compared is how many expressions the oracle actually compared before it
+// stopped, in every one of the three states.  It is recorded rather than
+// derived because it is the only field that can distinguish a comparison that
+// examined the whole tree from one that examined nothing: a verdict of "no
+// divergence" over zero compared expressions is not a pass, and without this
+// count nothing downstream can tell the two apart.  See
+// TestSharedTreeLiveResultIsConclusive.
+type treeComparison struct {
+	inconclusive string
+	divergedAt   int
+	firstExpired int
+	compared     int
+}
+
+// compareTreeEvals is the whole comparison oracle, factored out so that the
+// tests in sharedtree_oracle_test.go assert exactly what the fuzz target
+// asserts.
+//
+// There is no exception and no classification: renderings are compared with
+// ==.  The only thing that stops a comparison is an EXPIRED CONTEXT, which is
+// read from the harness's own record and never from the values.  See this
+// file's header for why every value-based exception this target has carried
+// was forgeable by the program under test.
+//
+// want and got must describe the same number of expressions; the caller
+// checks that and reports a mismatch as a finding of its own.
+func compareTreeEvals(want, got treeEval) treeComparison {
+	out := treeComparison{divergedAt: -1, firstExpired: -1}
+	for j := range want.rendered {
+		// Checked BEFORE the comparison for expression j: an evaluation the
+		// clock interrupted says nothing about whether the tree changed
+		// meaning, and neither does anything evaluated after it in the same
+		// environment.
+		if want.expired[j] || got.expired[j] {
+			which := "the private arm"
+			switch {
+			case want.expired[j] && got.expired[j]:
+				which = "both arms"
+			case got.expired[j]:
+				which = "the shared arm"
+			}
+			out.firstExpired = j
+			out.compared = j
+			out.inconclusive = fmt.Sprintf(
+				"%s ran out of context deadline at expression %d;"+
+					" expressions 0..%d compared equal and %d.. were not compared",
+				which, j, j-1, j)
+			return out
+		}
+		if got.rendered[j] != want.rendered[j] {
+			out.divergedAt = j
+			out.compared = j
+			return out
+		}
+		out.compared = j + 1
+	}
+	return out
 }
 
 type constErr string
@@ -184,21 +327,79 @@ func copyOwnsItsPositions(t *testing.T, exprs []*lisp.LVal, src []byte) {
 	}
 }
 
+// sharedTreeVerdict is what comparing ONE shared arm against the private
+// baseline concluded.  It is returned rather than only logged because a
+// target that compares nothing passes exactly as quietly as one that compares
+// everything: see sharedTreeResult.
+type sharedTreeVerdict struct {
+	// inconclusive is the oracle's reason for declining to compare from
+	// expression compared onwards, or "" when every expression was compared.
+	inconclusive string
+	// compared is how many expressions this arm compared exactly.
+	compared int
+}
+
+// conclusive reports whether this arm reached the end of the tree with every
+// expression compared.
+func (v sharedTreeVerdict) conclusive() bool { return v.inconclusive == "" }
+
+// sharedTreeResult is what one run of sharedTreeProperty concluded, and it
+// exists because of a vacuity hazard with the same shape as the recover() one
+// this file's header describes.
+//
+// The property's only failure signal is t.Fatalf, so a change that made every
+// arm INCONCLUSIVE -- a mis-set fuzzDeadline, a context created already
+// cancelled, `expired` sampled from the wrong context or wired to a constant,
+// a `continue` that skips the comparison -- would leave the fuzz target and
+// every seed test green while comparing nothing at all.  "It did not fail" is
+// worth nothing on its own; what has teeth is that a live run reached a
+// CONCLUSIVE verdict over every expression, which is what
+// TestSharedTreeLiveResultIsConclusive and TestSharedTreeSeedsAgree assert.
+type sharedTreeResult struct {
+	// skipped says why runs is empty: the source did not parse, or the
+	// private baseline could not be evaluated (a nil result or a recovered Go
+	// panic, both of which FuzzEval owns).  It is "" when the arms ran.
+	skipped string
+	// runs holds one verdict per shared arm, in arm order.
+	runs []sharedTreeVerdict
+	// exprs is how many top-level forms the source parsed to.
+	exprs int
+}
+
+// conclusive reports whether every shared arm compared every expression of a
+// non-empty tree.  A skipped input, an empty tree and an arm the clock
+// interrupted are all NOT conclusive.
+func (r sharedTreeResult) conclusive() bool {
+	if r.skipped != "" || r.exprs == 0 || len(r.runs) == 0 {
+		return false
+	}
+	for _, v := range r.runs {
+		if !v.conclusive() || v.compared != r.exprs {
+			return false
+		}
+	}
+	return true
+}
+
 // sharedTreeProperty is the body of the target, factored out so the corpus
 // tests below assert exactly what the fuzzer asserts.
-func sharedTreeProperty(t *testing.T, src []byte) {
+//
+// A divergence is reported here, with t.Fatalf, exactly as before.  The
+// returned verdict answers the separate question of whether this input was
+// compared at all; see sharedTreeResult.
+func sharedTreeProperty(t *testing.T, src []byte) sharedTreeResult {
 	t.Helper()
 
 	shared, ok := readTree(src)
 	if !ok {
-		return
+		return sharedTreeResult{skipped: "the source did not parse"}
 	}
 	// Baseline over a PRIVATE tree read from the same bytes.  Read
 	// separately rather than deep-copied so the baseline is exactly what a
 	// first-and-only consumer of the reader would get.
 	private, ok := readTree(src)
 	if !ok {
-		return
+		return sharedTreeResult{skipped: "the source did not parse"}
 	}
 	// The other way a consumer gets a private tree: LVal.Copy, which is what
 	// lisp.TextLoader hands every evaluation.  Same ownership question as the
@@ -211,9 +412,9 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 	copyOwnsItsPositions(t, shared, src)
 
 	done := make(chan struct{})
-	var want []string
+	var want treeEval
 	var wantErr error
-	var got [sharedRuns][]string
+	var got [sharedRuns]treeEval
 	var gotErr [sharedRuns]error
 
 	go func() {
@@ -241,38 +442,55 @@ func sharedTreeProperty(t *testing.T, src []byte) {
 	case <-done:
 	case <-time.After(watchdogTimeout * (sharedRuns + 1)):
 		t.Fatalf("shared-tree evaluation did not terminate\n--- source (%d bytes) ---\n%q", len(src), src)
-		return
+		return sharedTreeResult{skipped: "evaluation did not terminate"}
 	}
 
 	if wantErr != nil {
 		// The baseline itself could not be evaluated (nil result or a
 		// recovered Go panic).  FuzzEval owns that assertion; reporting it
 		// here too would duplicate its findings.
-		return
+		return sharedTreeResult{skipped: "the private baseline could not be evaluated"}
 	}
+	result := sharedTreeResult{exprs: len(want.rendered)}
 	for i := range got {
 		if gotErr[i] != nil {
 			t.Fatalf("evaluating the SHARED tree failed where the private tree did not: %v"+
 				"\n--- source (%d bytes) ---\n%q", gotErr[i], len(src), src)
-			return
+			return result
 		}
-		if len(got[i]) != len(want) {
+		if len(got[i].rendered) != len(want.rendered) {
 			t.Fatalf("shared tree produced %d results, private tree produced %d"+
-				"\n--- source (%d bytes) ---\n%q", len(got[i]), len(want), len(src), src)
-			return
+				"\n--- source (%d bytes) ---\n%q",
+				len(got[i].rendered), len(want.rendered), len(src), src)
+			return result
 		}
-		for j := range want {
-			if got[i][j] != want[j] {
-				t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
-					"\n  expression %d, shared run %d"+
-					"\n  private tree: %s"+
-					"\n  shared tree:  %s"+
-					"\n--- source (%d bytes) ---\n%q",
-					j, i, want[j], got[i][j], len(src), src)
-				return
-			}
+		cmp := compareTreeEvals(want, got[i])
+		result.runs = append(result.runs, sharedTreeVerdict{
+			inconclusive: cmp.inconclusive,
+			compared:     cmp.compared,
+		})
+		if cmp.inconclusive != "" {
+			// Not a pass and not a failure: a wall-clock deadline fired, so
+			// this ARM carries no verdict from that expression on.  Logged
+			// rather than silently dropped, in the style of copyWalkCap's
+			// truncated walk, so an input that goes quiet says why.  The
+			// remaining arms are still compared: an arm whose own context
+			// stayed live can still produce a conclusive finding.
+			t.Logf("shared run %d inconclusive: %s", i, cmp.inconclusive)
+			continue
+		}
+		if cmp.divergedAt >= 0 {
+			j := cmp.divergedAt
+			t.Fatalf("evaluating a SHARED parse tree changed the program's meaning"+
+				"\n  expression %d, shared run %d"+
+				"\n  private tree: %s"+
+				"\n  shared tree:  %s"+
+				"\n--- source (%d bytes) ---\n%q",
+				j, i, want.rendered[j], got[i].rendered[j], len(src), src)
+			return result
 		}
 	}
+	return result
 }
 
 // FuzzSharedTreeEval asserts that evaluating a parse tree does not change what
@@ -294,7 +512,14 @@ func FuzzSharedTreeEval(f *testing.F) {
 		f.Add([]byte(src))
 	}
 	f.Fuzz(func(t *testing.T, src []byte) {
-		sharedTreeProperty(t, src)
+		// The verdict is deliberately not asserted on FUZZED input: a
+		// generated program may not parse, may run away, and may have an arm
+		// stopped by the wall-clock deadline, all of which are inconclusive
+		// and none of which is a finding.  That the real harness path can
+		// still reach a conclusive comparison is asserted on FIXED input
+		// instead, by TestSharedTreeLiveResultIsConclusive and
+		// TestSharedTreeSeedsAgree.
+		_ = sharedTreeProperty(t, src)
 	})
 }
 
@@ -322,15 +547,72 @@ func sharedTreeSeeds() []string {
 	}
 }
 
+// sharedTreeRunawaySeeds names the seeds above that are NOT expected to
+// finish inside the evaluation budget, in the spirit of fuzzseed's
+// EvalRunaway/EvalTerminating split: a program the budget stops is CORRECT,
+// and its arm may legitimately be stopped by the wall-clock deadline too, so
+// no conclusiveness can be demanded of it.
+//
+// It is empty today -- every seed above is a handful of forms that completes
+// in microseconds -- and it exists so that adding a runaway seed is a
+// deliberate, visible exemption rather than a silent weakening of the
+// assertion in TestSharedTreeSeedsAgree.  A seed listed here is still run;
+// only the conclusiveness assertion is skipped for it.
+func sharedTreeRunawaySeeds() map[string]bool { return map[string]bool{} }
+
 // TestSharedTreeSeedsAgree runs the hand-written seeds through the same
 // property outside fuzzing, so a regression is caught by `make test` and, with
 // the race detector, by `make race`.
+//
+// It asserts two separate things, and the second is the one that keeps the
+// first from being vacuous.  A divergence fails inside sharedTreeProperty, as
+// it always has.  On top of that, every seed that is expected to terminate
+// must reach a CONCLUSIVE verdict over every one of its expressions: without
+// that, a harness change that made every arm inconclusive would leave this
+// test green while it compared nothing at all.  The corpus-wide counter is
+// the same guard one level up -- if the runaway list ever grew to cover
+// everything, the per-seed assertion would be skipped everywhere and this
+// test would go quiet again.
 func TestSharedTreeSeedsAgree(t *testing.T) {
 	t.Parallel()
+	runaway := sharedTreeRunawaySeeds()
+	var conclusive atomic.Int64
+	t.Cleanup(func() {
+		// Runs after every parallel subtest has finished.
+		if conclusive.Load() == 0 {
+			t.Errorf("no shared-tree seed reached a conclusive comparison;" +
+				" the corpus asserted nothing about tree ownership")
+		}
+	})
 	for _, src := range sharedTreeSeeds() {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			sharedTreeProperty(t, []byte(src))
+			res := sharedTreeProperty(t, []byte(src))
+			if res.conclusive() {
+				conclusive.Add(1)
+			}
+			if runaway[src] {
+				return
+			}
+			if res.skipped != "" {
+				t.Fatalf("a terminating seed was skipped: %s", res.skipped)
+			}
+			if len(res.runs) != sharedRuns {
+				t.Fatalf("%d arms were compared, want %d", len(res.runs), sharedRuns)
+			}
+			for i, v := range res.runs {
+				if !v.conclusive() {
+					t.Fatalf("a terminating seed was inconclusive on shared run %d: %s",
+						i, v.inconclusive)
+				}
+				if v.compared != res.exprs {
+					t.Fatalf("shared run %d compared %d of %d expressions",
+						i, v.compared, res.exprs)
+				}
+			}
+			if res.exprs == 0 {
+				t.Fatal("the seed parsed to no expressions, so nothing was compared")
+			}
 		})
 	}
 }

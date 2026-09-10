@@ -594,6 +594,10 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if lerr != nil {
 		return lerr
 	}
+	// A pointer payload, deliberately not marked: templatepolicy.Marker
+	// admits struct VALUES only, and MessageBytesBuiltin hands msg's backing
+	// array out as an LBytes, so a shared message would not be immutable.
+	//elpsvet:allow-native a per-call result of json:dump-message: publication rejects the pointer payload ("native *libjson.ownMessage has no template immutability declaration", TestRuntimeLibraryJSONMessageIsRejectedByPublication), so no embedder can retain one in a published template
 	return lisp.Native(&ownMessage{msg: b, loadable: loadable})
 }
 

@@ -6,7 +6,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/luthersystems/elps/analysis"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -78,24 +77,13 @@ func (s *Server) workspaceDidChangeWatchedFiles(_ *glsp.Context, params *protoco
 }
 
 // removeFileRefs removes all workspace reference entries for the given
-// file path.
+// file path. It is the refs-side counterpart of removeFileDefinitions, and is
+// what an over-limit didSave uses to purge a file the scan would now skip
+// (see readWorkspaceFile).
 func (s *Server) removeFileRefs(filePath string) {
 	s.workspaceRefsMu.Lock()
 	defer s.workspaceRefsMu.Unlock()
-
-	for key, refs := range s.workspaceRefs {
-		var kept []analysis.FileReference
-		for _, ref := range refs {
-			if ref.File != filePath {
-				kept = append(kept, ref)
-			}
-		}
-		if len(kept) == 0 {
-			delete(s.workspaceRefs, key)
-		} else {
-			s.workspaceRefs[key] = kept
-		}
-	}
+	s.dropFileRefsLocked(filePath)
 }
 
 // debouncedReanalyze debounces a call to reanalyzeOpenDocuments using the

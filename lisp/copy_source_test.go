@@ -3,7 +3,7 @@
 // Regression tests for elps#446 -- LVal.Copy sharing its *token.Location.
 //
 // LVal.Copy is documented as "creates a deep copy of the receiver", and for
-// Cells it is one: copyCells allocates a fresh *LVal per node.  Source was
+// Cells it is one: the copier allocates a fresh *LVal per node.  Source was
 // not.  `*cp = *v` carried the *token.Location across, so the copy and the
 // original pointed at ONE mutable Location object, at every depth, and a
 // write through either moved the other.
@@ -71,7 +71,7 @@ func TestCopyDoesNotAliasSourceLocation(t *testing.T) {
 }
 
 // TestCopyDoesNotAliasSourceAtDepth pins that the separation reaches every
-// node copyCells reaches, not just the root.  The issue's probe counted the
+// node the copier reaches, not just the root.  The issue's probe counted the
 // root and all three cells of (+ 1 2) on one object.
 // CATCH: failed on 5ef6106 at every depth.
 func TestCopyDoesNotAliasSourceAtDepth(t *testing.T) {

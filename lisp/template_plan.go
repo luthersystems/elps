@@ -504,6 +504,7 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		case templateBytePayload:
 			out.Native = instance.bytes[value.payload]
 		case templateNativePayload:
+			//elpsvet:allow-native instantiation replays a payload the PLAN already holds: templateInventory.native admitted it at publication (a marked immutable struct value, a scalar, or one the embedder approved), and checkNativeAffinity re-checks it above, so this store opens no channel the audit did not already take
 			out.Native = p.natives[value.payload]
 		}
 		*instance.values[index] = *out //elps:mutates templateObjects allocated these private destinations for this instance; no source or published VM points to them

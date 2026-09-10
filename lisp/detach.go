@@ -21,13 +21,14 @@ import (
 // Re-exporting later is additive and easy.  The same walker also backs the
 // lisp-level `copy` builtin, in its within-env mode (lisp/copy.go, issue
 // #378): same container copying, opaque leaves shared instead of
-// rejected.  Copy is a within-runtime
-// tool — it deliberately shares an LArray's backing storage
-// and a sorted-map's value pointers — so a Copy handed to another Runtime
-// still aliases the original.  detach copies everything:
+// rejected.  Copy is a within-runtime tool — it shares a closure's
+// environment, an LError's call stack and any native payload that is not a
+// NativeCloner (lisp/copier.go) — so a Copy handed to another Runtime still
+// aliases the original.  detach copies everything:
 //
 //   - Cells, recursively.
-//   - LArray backing storage (the storage Copy deliberately shares).
+//   - LArray backing storage (as Copy does since #604; the difference
+//     between the two walkers is what detach REJECTS, not this).
 //   - LBytes backing bytes.
 //   - Sorted-map data: a fresh MapData with both keys and values detached.
 //     The detached map always uses the stock sortedmap implementation,
@@ -186,7 +187,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// the *MapData behind LSortMap, the *CallStack behind LError — whose
 	// guards key off the elps type carrying them.
 	if cloner != nil {
-		cp.Native = d.cloneNative(v.Native, cloner)
+		cp.Native = d.cloneNative(v.Native, cloner) //elpsvet:allow-native a NativeCloner clone stored by the walker that invoked it: detach is a within-runtime value copy, not template admission, and publication classifies the clone on its own dynamic type if the copy is ever published
 	} else {
 		switch native := v.Native.(type) {
 		case nil:
@@ -210,7 +211,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 			if v.Type != LError {
 				return nil, unexpectedNativeError(v)
 			}
-			cp.Native = detachCallStack(native)
+			cp.Native = detachCallStack(native) //elpsvet:allow-native a deep copy of a detached error's stack: publication refuses any value carrying a CallStack (checkDiagnosticPayload, lisp/template.go), so a detached error cannot carry this into a template
 		default:
 			return nil, unexpectedNativeError(v)
 		}

@@ -25,6 +25,13 @@ func (s *Server) textDocumentFormatting(_ *glsp.Context, params *protocol.Docume
 	if content == "" {
 		return nil, nil
 	}
+	// formatter.FormatFile parses the whole document itself, so it is the
+	// one request that would still cost a full parse of an over-limit
+	// document after Document.parse started honouring the limit. Same
+	// answer as for incomplete code: no edits, no error dialog.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 
 	cfg := formatter.DefaultConfig()
 	if tabSize, ok := params.Options["tabSize"]; ok {

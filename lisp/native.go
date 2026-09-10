@@ -154,5 +154,5 @@ func RequireNative[T any](v *LVal) (T, *LVal) {
 // instantiation. NativeOf stores the value as-is; it does not declare that
 // the payload is immutable or suitable for a Template.
 func NativeOf[T any](x T) *LVal {
-	return Native(x)
+	return Native(x) //elpsvet:allow-native the typed constructor: T is the caller's, and every NativeOf call is checked at its own call site
 }

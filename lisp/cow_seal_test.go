@@ -208,7 +208,7 @@ func TestSealPropagation(t *testing.T) {
 	if cp := q.Copy(); cp.IsSealed() {
 		t.Errorf("Copy() of a sealed list is still sealed; copy-on-write depends on the fresh storage being mutable")
 	} else if len(cp.Cells) != 4 || cp.Cells[0].IsSealed() {
-		// Copy is deep on Cells (copyCells calls Copy per element), so the
+		// Copy is deep on Cells (copier.cells copies per element), so the
 		// entire copied tree is fresh and unsealed — Copy-then-mutate works
 		// at any depth.
 		t.Errorf("Copy() left a sealed node in the copied tree: %v", cp)

@@ -573,7 +573,7 @@ tool and silently missed by another.
 
 ### 3.1 elpsvet (static; `cmd/elpsvet`)
 
-Three `go/analysis` rules, run in CI by `make elpsvet` for both normal and
+Four `go/analysis` rules, run in CI by `make elpsvet` for both normal and
 `elpscheck` builds:
 
 - **elpsownership** (`main.go`): no package-level var may keep a
@@ -616,6 +616,28 @@ Three `go/analysis` rules, run in CI by `make elpsvet` for both normal and
   keeps the conservative treatment, so the fact can only ever retire a
   proven false positive. Suppression: `//elps:aliases` with a
   justification.
+- **elpsnativepayload** (`nativepayload.go`): no native payload type may be
+  minted without being classified as safe for a template to publish. An
+  admitted payload is NOT rebuilt per VM — `instantiate` stores
+  `p.natives[...]` straight into each fresh header — so one Go value is
+  shared by every VM a template mints, and publication
+  (`(*templateInventory).native`) admits only a struct value implementing
+  `internal/templatepolicy.Immutable`, an actual scalar, or a payload the
+  embedder approved through `TemplateWithNativePolicy`. The rule is that
+  policy moved to the construction sites, where the payload still has a Go
+  type: every spelling (`Native`, `NativeOf`, `Value`'s fallthrough, an
+  `LVal{Native:}` literal, a `.Native` write) is reported unless the type
+  has a basic underlying type, is a struct value carrying the marker, or is
+  one of the kernel's own representation slots (`*funData`, `*[]byte`,
+  `*MapData` — each handled by an explicit arm of `templateInventory.val`
+  and rebuilt per VM). `*CallStack` gets its own diagnostic: it is banned
+  outright by `checkDiagnosticPayload`, so no row or policy can admit it.
+  `NativeCloner` is deliberately NOT a tier — `NewTemplate` rejects mutable
+  payloads including NativeCloner implementations (`lisp/native.go`), so the
+  method is evidence a payload needs cloning, not a reason to share it.
+  Interface-typed payloads are reported too, so the constructors themselves
+  carry the contract. Suppression: `//elpsvet:allow-native` with a
+  justification — a bare marker does not suppress.
 
 *Blind spots (documented in the analyzers' own headers):* intraprocedural
 within a function body — the escape rule's location-freshness fact is the

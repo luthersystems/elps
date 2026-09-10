@@ -396,7 +396,9 @@ func FuzzParsedLocationInvariants(f *testing.F) {
 			// original's Location, and no two copied nodes may hold one
 			// either.  Cells are descended unconditionally, exactly as the
 			// walk above does -- the reader emits no LArray or LSortMap, the
-			// two types whose children LVal.Copy deliberately shares.
+			// two types whose children live behind a data list or a Native
+			// payload rather than in Cells alone (LVal.Copy walks both since
+			// #604; nothing a parse emits reaches that path).
 			//
 			// There is no exception to carve out any more.  This used to
 			// note that a node carrying lisp's shared native Location would

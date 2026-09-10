@@ -7,6 +7,7 @@ import (
 	"fmt"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
@@ -95,15 +96,29 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	// together, which is the invariant elps#470 restored and the reason a
 	// rename edit is the one outbound range this PR converts: it is applied
 	// to the user's file unread.
+	//
+	// A conversion that CANNOT be performed fails the whole request. A rename
+	// is one edit spanning many files, and there is no such thing as applying
+	// most of it: a caller that shipped the ranges it could convert and byte
+	// columns for the rest would corrupt the file it could not read while
+	// renaming every other one correctly, leaving the user a broken workspace
+	// and no diagnostic. See documentTexts.rangeFor for which failures are
+	// fatal and which are the status quo.
 	texts := s.newDocumentTexts()
+	addEdit := func(uri protocol.DocumentUri, loc *token.Location) error {
+		rng, err := texts.rangeFor(uri, elpsToLSPRange(loc, len(sym.Name)))
+		if err != nil {
+			return err
+		}
+		edits[uri] = append(edits[uri], protocol.TextEdit{Range: rng, NewText: params.NewName})
+		return nil
+	}
 
 	// Rename at the definition site.
 	if sym.Source != nil && sym.Source.Pos >= 0 && sym.Source.Line > 0 {
-		defURI := s.resolveURI(docURI, sym.Source.File)
-		edits[defURI] = append(edits[defURI], protocol.TextEdit{
-			Range:   texts.rangeFor(defURI, elpsToLSPRange(sym.Source, len(sym.Name))),
-			NewText: params.NewName,
-		})
+		if err := addEdit(s.resolveURI(docURI, sym.Source.File), sym.Source); err != nil {
+			return nil, err
+		}
 	}
 
 	// Rename at all reference sites in the current file.
@@ -112,11 +127,9 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 			if ref.Symbol != sym || ref.Source == nil {
 				continue
 			}
-			refURI := s.resolveURI(docURI, ref.Source.File)
-			edits[refURI] = append(edits[refURI], protocol.TextEdit{
-				Range:   texts.rangeFor(refURI, elpsToLSPRange(ref.Source, len(sym.Name))),
-				NewText: params.NewName,
-			})
+			if err := addEdit(s.resolveURI(docURI, ref.Source.File), ref.Source); err != nil {
+				return nil, err
+			}
 		}
 	}
 
@@ -124,11 +137,9 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	key := symbolToKey(sym)
 	currentFile := uriToPath(docURI)
 	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
-		refURI := s.resolveURI(docURI, wref.File)
-		edits[refURI] = append(edits[refURI], protocol.TextEdit{
-			Range:   texts.rangeFor(refURI, elpsToLSPRange(wref.Source, len(sym.Name))),
-			NewText: params.NewName,
-		})
+		if err := addEdit(s.resolveURI(docURI, wref.File), wref.Source); err != nil {
+			return nil, err
+		}
 	}
 
 	return &protocol.WorkspaceEdit{Changes: edits}, nil

@@ -38,7 +38,7 @@
 // honour that under any implementation -- it takes no *Runtime and so has no
 // counter to draw a fresh ID from -- so the comment now says what is true and
 // names the consumer that cares (lisp/x/debugger's stepper, which steps on
-// MacroID changing).  TestCopyDuplicatesTheMacroExpansionID pins it.
+// MacroID changing).  TestCopyCarriesNoMacroExpansionID pins what a copy carries now (nothing).
 //
 // LIVE OR LATENT: latent, on the same population argument #467 records.  The
 // parser's Meta writes all happen on nodes it has just built, before anything

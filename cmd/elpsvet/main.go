@@ -1,11 +1,12 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs three go/analysis rules: no
+// Command elpsvet runs four go/analysis rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
 // below), no function may write a lisp.LVal field on a value it did not
-// construct (elpsfreshness, freshness.go), and no function may store a
+// construct (elpsfreshness, freshness.go), no function may store a
 // runtime-owned *token.Location uncopied into a field of an escaping value
-// (elpsescape, escape.go).
+// (elpsescape, escape.go), and no native payload may be minted with a type a
+// template could not publish safely (elpsnativepayload, nativepayload.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -60,7 +61,18 @@ var analyzer = &analysis.Analyzer{
 	Run:  run,
 }
 
-func main() { multichecker.Main(analyzer, freshnessAnalyzer, escapeAnalyzer) }
+// analyzers is the gate's rule set, in one place so a test can pin it.  A
+// rule dropped from this slice leaves `make elpsvet` green while checking
+// less than it says it does, which is the failure mode the elpsvet gate's
+// own self-test (scripts/ci-gates-test.sh) exists to make loud.
+var analyzers = []*analysis.Analyzer{
+	analyzer,
+	freshnessAnalyzer,
+	escapeAnalyzer,
+	nativePayloadAnalyzer,
+}
+
+func main() { multichecker.Main(analyzers...) }
 
 func run(pass *analysis.Pass) (interface{}, error) {
 	for _, file := range pass.Files {
@@ -100,12 +112,20 @@ func run(pass *analysis.Pass) (interface{}, error) {
 }
 
 // allowed reports whether a comment group carries an //elpsvet:allow marker.
+//
+// A bare marker suppresses: this rule asks for a justification by convention
+// and does not enforce one.  The match stops at the marker's word boundary
+// so that the native-payload rule's own //elpsvet:allow-native (which does
+// enforce a justification, nativepayload.go) is not mistaken for it -- a
+// shared marker would let one sentence written for either rule silence
+// both.
 func allowed(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		if strings.HasPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow") {
+		rest, ok := strings.CutPrefix(strings.TrimPrefix(c.Text, "//"), "elpsvet:allow")
+		if ok && (rest == "" || rest[0] == ' ' || rest[0] == '\t') {
 			return true
 		}
 	}

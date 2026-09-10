@@ -16,7 +16,18 @@ import "github.com/luthersystems/elps/parser/token"
 
 type LType int
 
-const LError LType = 1
+// The header discriminants the elpsnativepayload rule reads off a keyed
+// literal's `Type:` key.  Only the names and the declaring package matter to
+// the rule (an allowlist row names the LType constant whose storage it is),
+// so the values are arbitrary here; what has to mirror the real package is
+// that they are constants OF LType declared IN package lisp.
+const (
+	LError   LType = 1
+	LBytes   LType = 2
+	LSortMap LType = 3
+	LFun     LType = 4
+	LNative  LType = 5
+)
 
 type LFunType int
 
@@ -58,6 +69,11 @@ type ErrorVal LVal
 func (e *ErrorVal) Source() (token.Location, bool) { return (*LVal)(e).Source() }
 
 type CallStack struct{}
+
+// MapData mirrors the LSortMap backing-store payload: one of the kernel
+// representation slots on the elpsnativepayload rule's allowlist, so a
+// fixture can exercise the row by name.
+type MapData struct{}
 
 func (s *CallStack) Copy() *CallStack { return &CallStack{} }
 
@@ -138,6 +154,40 @@ func QSymbol(s string) *LVal { return &LVal{Str: s} }
 func Bytes(b []byte) *LVal   { return &LVal{Native: &b} }
 
 func Native(v interface{}) *LVal { return &LVal{Native: v} }
+
+// NativeOf mirrors the real typed constructor: implemented as a call to
+// Native, so the elpsnativepayload fixtures can pin that the rule sees the
+// generic spelling (inferred and explicitly instantiated) as a construction.
+func NativeOf[T any](x T) *LVal { return Native(x) }
+
+// Value mirrors the real conversion's fallthrough shape: the directly
+// representable types are handled without a Native, everything else becomes
+// one.
+func Value(v interface{}) *LVal {
+	switch v := v.(type) {
+	case bool:
+		return Bool(v)
+	case string:
+		return String(v)
+	case []byte:
+		return Bytes(v)
+	case int:
+		return Int(v)
+	case float64:
+		return Float(v)
+	case []*LVal:
+		return QExpr(v)
+	default:
+		return Native(v)
+	}
+}
+
+// NativeCloner mirrors the real clone protocol.  The elpsnativepayload rule
+// checks for the method structurally, as an interface assertion would; the
+// interface is here so a fixture can say what it is satisfying.
+type NativeCloner interface {
+	CloneNative() interface{}
+}
 
 func SExpr(cells []*LVal) *LVal { return &LVal{Cells: cells} }
 func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} }

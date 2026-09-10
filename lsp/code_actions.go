@@ -19,6 +19,20 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 	if doc == nil {
 		return nil, nil
 	}
+	// An over-limit document has no AST or analysis (see Document.parse), so
+	// unresolvedRefActions has nothing to offer -- but the lint quick fixes
+	// below do not need one. They act on the diagnostics the CLIENT sent, and
+	// a client that received a diagnostic while the document was small keeps
+	// sending it: the debounce republishes 300ms after the edit that crossed
+	// the limit, and nothing invalidates what the client already holds. So a
+	// stale-but-genuine diagnostic reaches this handler routinely, and both
+	// suppressLintAction and fixUndefinedSymbol split the WHOLE content to
+	// place their edit -- linear allocation over a document the size limit
+	// exists to keep off the hot path, exactly as in hover and the rest.
+	// Nothing to fix.
+	if doc.OverLimit() {
+		return nil, nil
+	}
 
 	// If the client only wants specific kinds, check we support them.
 	if len(params.Context.Only) > 0 {
