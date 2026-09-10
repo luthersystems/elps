@@ -13,8 +13,8 @@ runs cannot build or publish, and do not receive `VSCE_PAT`.
 gh workflow run vscode-publish.yml --repo luthersystems/elps --ref <reviewed-branch>
 ```
 
-Two jobs compare Ubuntu 24.04 ARM and x64 using Node 20, the publishing runtime.
-They report only public addresses, timings, HTTP status codes, and a validated
+The diagnostic job uses Ubuntu 24.04 ARM and Node 20, matching publication.
+It reports only public addresses, timings, HTTP status codes, and a validated
 version/platform inventory for `LutherSystems.elps-lang`:
 
 - unauthenticated `OPTIONS /_apis/gallery`, including DNS, connect, TLS and
@@ -33,8 +33,8 @@ disabled. Its authenticated behavior is deliberately not tested.
 Read its JSON report. `401` from unauthenticated discovery proves an HTTP
 response arrived, not that a PAT is invalid. A successful public query establishes
 what is currently indexed, not whether an unindexed upload has been accepted.
-Compare raw transport with the SDK result and compare both runner hosts before
-attributing a failure to the client or host. An SDK-only failure warrants examining
+Compare raw transport with the SDK result before attributing a failure to the
+client. An SDK-only failure warrants examining
 the locked client's request behavior; neither result justifies rotating secrets.
 
 Local checks (Node and Python with PyYAML, also used by the existing CI guards):
@@ -73,3 +73,13 @@ targets and no v1.61.0/v1.61.1 targets. This is **not runner-side or authenticat
 recovery evidence**. #638 remains open until Marketplace publication is actually
 recovered. The diagnostic workflow supplies the missing runner-side evidence
 without turning an investigation into an accidental release.
+
+The [September 10 UTC runner comparison](https://github.com/luthersystems/elps/actions/runs/34444476770)
+then reproduced the checks on both hosted fleets: raw discovery returned 401,
+the public query returned 200, and the locked SDK returned 401 in 67 ms on ARM
+and 163 ms on x64. The inventory still ended at 1.60.0. All three production
+build/publish jobs were skipped. There is no evidence from this run of a general
+runner-connectivity or unauthenticated SDK failure; authenticated requests remain
+untested, so neither changing hosts nor declaring the outage resolved is justified.
+The one-off x64 comparison has been removed from the shipped workflow: future
+diagnostics stay on the production-equivalent ARM host, with no fleet exception.

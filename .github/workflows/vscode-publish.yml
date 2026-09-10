@@ -9,16 +9,12 @@ on:
 
 jobs:
   diagnose-marketplace:
-    name: Diagnose Marketplace (${{ matrix.runner }})
+    name: Diagnose Marketplace (ARM)
     if: github.event_name == 'workflow_dispatch'
     permissions:
       contents: read
-    runs-on: ${{ matrix.runner }}
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 3
-    strategy:
-      fail-fast: false
-      matrix:
-        runner: [ubuntu-24.04-arm, ubuntu-24.04]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
@@ -34,6 +30,9 @@ jobs:
       - name: Report unauthenticated discovery and published version inventory
         run: node scripts/marketplace-diagnostics.cjs
 
+  # TODO(marketplace-638): authenticated discovery and missing-target publication
+  # recovery remain unverified; diagnostics above intentionally cannot use a PAT
+  # or publish. Track recovery at https://github.com/luthersystems/elps/issues/638.
   build-binaries:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Build elps (${{ matrix.target }})

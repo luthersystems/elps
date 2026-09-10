@@ -20,14 +20,18 @@ def validate(doc):
     assert set(jobs) == {"build-binaries", "publish-platform", "publish-universal", "diagnose-marketplace"}
     for name in ("build-binaries", "publish-platform", "publish-universal"):
         assert jobs[name]["if"] == TAG_ONLY
-    job = jobs["diagnose-marketplace"]
+        assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
+    assert "env" not in doc
+    validate_diagnostic(jobs["diagnose-marketplace"])
+
+
+def validate_diagnostic(job):
     assert job["if"] == MANUAL_ONLY
     assert job["permissions"] == {"contents": "read"}
     assert job["timeout-minutes"] == 3
-    assert job["strategy"]["fail-fast"] is False
-    assert job["strategy"]["matrix"]["runner"] == ["ubuntu-24.04-arm", "ubuntu-24.04"]
-    assert job["runs-on"] == "${{ matrix.runner }}"
-    assert "env" not in doc and "env" not in job and "needs" not in job
+    assert "strategy" not in job
+    assert job["runs-on"] == "ubuntu-24.04-arm"
+    assert "env" not in job and "needs" not in job
     steps = job["steps"]
     assert len(steps) == 5
     assert steps[0]["uses"].startswith("actions/checkout@")
@@ -67,6 +71,13 @@ class PublicationIsolation(unittest.TestCase):
         changed["jobs"]["diagnose-marketplace"]["steps"][4]["run"] = "npx vsce publish"
         with self.assertRaises(AssertionError):
             validate(changed)
+        # Both diagnostics and production must stay on the declared ARM fleet.
+        for name in doc["jobs"]:
+            with self.subTest(runner_drift=name):
+                changed = copy.deepcopy(doc)
+                changed["jobs"][name]["runs-on"] = "ubuntu-latest"
+                with self.assertRaises(AssertionError):
+                    validate(changed)
 
 
 if __name__ == "__main__":
