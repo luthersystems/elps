@@ -2092,7 +2092,7 @@ func (s *service) helpTool(_ context.Context, _ *mcp.CallToolRequest, _ HelpInpu
 	return nil, HelpResponse{Content: helpContent}, nil
 }
 
-const helpContent = `# ELPS MCP Server — Usage Guide
+const helpContentPrefix = `# ELPS MCP Server — Usage Guide
 
 ## Coordinate System
 Lines and characters are **0-indexed** (LSP convention). Line 1 in your editor is line 0 in MCP tool calls.
@@ -2188,26 +2188,13 @@ Use ` + "`doc`" + ` with ` + "`package=true`" + ` to list symbols in any package
 Embedders may register additional packages via ` + "`WithRegistry`" + `.
 
 ## Lint Analyzers
-| Analyzer | Severity | Description |
-|----------|----------|-------------|
-| set-usage | warning | Flags repeated ` + "`set`" + ` on same symbol (use ` + "`set!`" + ` for mutation) |
-| in-package-toplevel | error | ` + "`in-package`" + ` must be at top level |
-| if-arity | error | ` + "`if`" + ` requires 2-3 arguments |
-| let-bindings | error | ` + "`let`" + ` binding list must be well-formed |
-| defun-structure | error | ` + "`defun`" + ` requires name, params, body |
-| cond-structure | error | ` + "`cond`" + ` clauses must be lists |
-| builtin-arity | error | Checks argument count for builtins |
-| rethrow-context | error | ` + "`rethrow`" + ` only valid inside ` + "`handler-bind`" + ` |
-| handler-bind-structure | error | ` + "`handler-bind`" + ` form must be well-formed |
-| cond-else | warning | ` + "`cond`" + ` ` + "`else`" + ` must be last clause |
-| test-structure | error | ` + "`test`" + ` form must have name and body |
-| lambda-structure | error | ` + "`lambda`" + ` requires params and body |
-| missing-package-qualifier | warning | Unexported symbol used without package qualifier |
-| deftype-structure | error | ` + "`deftype`" + ` requires name and field list |
-| export-form | warning | ` + "`export`" + ` argument must be a quoted symbol |
-| sort-stable-comparator | warning | ` + "`sort-stable`" + ` requires a comparator function |
-| assert-arity | warning | ` + "`assert-*`" + ` test macros have specific arity |
+Semantic checks always run: they resolve symbols against the file's own
+definitions and the standard library. Pass ` + "`include_workspace`" + ` (and
+optionally ` + "`workspace_root`" + `) so they also see definitions in the other
+files of the workspace; without it a symbol defined elsewhere reads as undefined.
+`
 
+const helpContentSuffix = `
 ## Performance Rules
 | Rule | Description |
 |------|-------------|
@@ -2234,6 +2221,48 @@ Errors include structured JSON with:
 - ` + "`message`" + `: human-readable description
 - ` + "`path`" + `: relevant file path (when applicable)
 `
+
+// helpContent is the help tool's prompt. The lint analyzer table in it is
+// generated from lint.DefaultAnalyzers() at init rather than hand-written, so
+// the prompt cannot advertise checks the linter does not run (#646).
+var helpContent = helpContentPrefix + lintAnalyzerTable() + helpContentSuffix
+
+// lintAnalyzerTable renders the registered lint analyzers as the markdown table
+// the help prompt embeds: one row per analyzer, sorted by name, with the
+// severity the linter prints, the first sentence of the analyzer's doc, and
+// whether the check needs semantic analysis.
+func lintAnalyzerTable() string {
+	// DefaultAnalyzers returns a fresh slice, so sorting it is local.
+	analyzers := lint.DefaultAnalyzers()
+	sort.Slice(analyzers, func(i, j int) bool { return analyzers[i].Name < analyzers[j].Name })
+
+	var b strings.Builder
+	b.WriteString("| Analyzer | Severity | Description | Semantic |\n")
+	b.WriteString("|----------|----------|-------------|----------|\n")
+	for _, a := range analyzers {
+		semantic := "no"
+		if a.Semantic {
+			semantic = "yes"
+		}
+		fmt.Fprintf(&b, "| %s | %s | %s | %s |\n",
+			a.Name, a.Severity, firstDocSentence(a.Doc), semantic)
+	}
+	return b.String()
+}
+
+// firstDocSentence extracts the leading sentence of an analyzer doc: everything
+// up to the first period or newline, trimmed. Pipes are escaped so a doc cannot
+// break the markdown table it lands in.
+func firstDocSentence(doc string) string {
+	if i := strings.IndexAny(doc, ".\n"); i >= 0 {
+		if doc[i] == '.' {
+			doc = doc[:i+1]
+		} else {
+			doc = doc[:i]
+		}
+	}
+	return strings.ReplaceAll(strings.TrimSpace(doc), "|", "\\|")
+}
 
 func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in FormatInput) (*mcp.CallToolResult, FormatResponse, error) {
 	start := time.Now()
