@@ -1246,6 +1246,151 @@ func TestIterationMutation_Nolint(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- mutation checks: qualified lisp: spellings ---
+
+// TestMutationChecks_QualifiedSpellings pins the HAZARD side of both checks
+// against the package-qualified spelling of every operator they match on.
+//
+// `lisp:` is the only package that exports these -- stable-sort,
+// insert-sorted, map, foldl, assoc!, append! and set! come from
+// lisp.DefaultBuiltins, lambda and defun from the special operators -- and the
+// interpreter resolves the qualified symbol to exactly the same function.
+// Each source below runs and mutates; a check matching only the bare name
+// saw none of them.
+func TestMutationChecks_QualifiedSpellings(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		source   string
+		analyzer *Analyzer
+		want     []string
+	}{
+		{
+			name:     "qualified sort form",
+			source:   `(lisp:stable-sort (lambda (a b) (assoc! a "k" 1) (< a b)) xs)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: assoc! is called inside a comparator"},
+		},
+		{
+			name:     "qualified lambda",
+			source:   `(stable-sort (lisp:lambda (a b) (assoc! a "k" 1) (< a b)) xs)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: assoc! is called inside a comparator"},
+		},
+		{
+			name:     "qualified mutator",
+			source:   `(stable-sort (lambda (a b) (lisp:assoc! a "k" 1) (< a b)) xs)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: assoc! is called inside a comparator"},
+		},
+		{
+			// Every layer qualified at once: the sort form, the predicate
+			// spelling and the mutator.
+			name:     "qualified throughout",
+			source:   `(lisp:stable-sort (lisp:lambda (a b) (lisp:assoc! a "k" 1) (< a b)) xs)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: assoc! is called inside a comparator"},
+		},
+		{
+			name:     "qualified insert-sorted",
+			source:   `(lisp:insert-sorted 'list xs (lambda (a b) (append! log a) (< a b)) item)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"insert-sorted predicate mutates state: append! is called inside a comparator"},
+		},
+		{
+			name: "qualified defun resolves as a predicate",
+			source: "(lisp:defun bad-less (a b)\n" +
+				"  (lisp:append! acc a)\n" +
+				"  (< a b))\n" +
+				"(lisp:stable-sort bad-less xs)",
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: append! is called inside a comparator"},
+		},
+		{
+			// set! is on the comparator check's list, qualified or not.
+			name:     "qualified set! in a comparator",
+			source:   `(stable-sort (lambda (a b) (lisp:set! seen true) (< a b)) xs)`,
+			analyzer: AnalyzerComparatorMutation,
+			want:     []string{"stable-sort predicate mutates state: set! is called inside a comparator"},
+		},
+		{
+			name:     "qualified iteration form",
+			source:   `(lisp:map 'list (lambda (x) (assoc! x "k" 1) x) xs)`,
+			analyzer: AnalyzerIterationMutation,
+			want:     []string{`assoc! mutates the element x of map`},
+		},
+		{
+			name:     "qualified iteration collection write",
+			source:   `(lisp:map 'list (lisp:lambda (x) (lisp:append! xs x)) xs)`,
+			analyzer: AnalyzerIterationMutation,
+			want:     []string{"append! mutates xs while map iterates over it"},
+		},
+		{
+			name:     "qualified foldl element write",
+			source:   `(lisp:foldl (lambda (acc x) (assoc! x "k" 1)) (sorted-map) xs)`,
+			analyzer: AnalyzerIterationMutation,
+			want:     []string{"assoc! mutates the element x of foldl"},
+		},
+		{
+			// The accumulator exemption survives the qualified spelling:
+			// the fold threads this value, so writing it is correct code.
+			name:     "qualified foldl accumulator idiom stays clean",
+			source:   `(lisp:foldl (lambda (acc x) (lisp:assoc! acc x 1)) (sorted-map) xs)`,
+			analyzer: AnalyzerIterationMutation,
+		},
+		{
+			// set! stays OFF the iteration list whichever way it is spelled:
+			// it rebinds the parameter, it does not write through the element.
+			name:     "qualified set! on an element is exempt",
+			source:   `(map 'list (lambda (x) (lisp:set! x 1)) xs)`,
+			analyzer: AnalyzerIterationMutation,
+		},
+		{
+			name:     "qualified set! on the collection is exempt",
+			source:   `(lisp:map 'list (lambda (x) (lisp:set! xs ())) xs)`,
+			analyzer: AnalyzerIterationMutation,
+		},
+		{
+			name: "qualified defun resolves as an iteration callback",
+			source: "(lisp:defun visit (x)\n" +
+				"  (lisp:assoc! x \"k\" 1))\n" +
+				"(lisp:map 'list visit xs)",
+			analyzer: AnalyzerIterationMutation,
+			want:     []string{"assoc! mutates the element x of map"},
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := lintCheck(t, tt.analyzer, tt.source)
+			require.Len(t, diags, len(tt.want))
+			for _, want := range tt.want {
+				assertHasDiag(t, diags, want)
+			}
+		})
+	}
+}
+
+// TestMutationChecks_QualifiedNamesReportCanonically pins the wording: the
+// message names the canonical operator whichever spelling the source used, so
+// the two spellings of one hazard read as one finding rather than two.
+func TestMutationChecks_QualifiedNamesReportCanonically(t *testing.T) {
+	diags := lintCheck(t, AnalyzerComparatorMutation,
+		`(lisp:stable-sort (lisp:lambda (a b) (lisp:assoc! a "k" 1)) xs)`)
+	require.Len(t, diags, 1)
+	assert.Equal(t,
+		"stable-sort predicate mutates state: assoc! is called inside a comparator",
+		diags[0].Message)
+	assert.NotContains(t, diags[0].Message, "lisp:")
+}
+
+// TestMutationChecks_OtherPackageQualifierIsNotStripped keeps the helper to
+// the one package that exports these operators. A `foo:map` is somebody
+// else's function and its callback is not this check's business.
+func TestMutationChecks_OtherPackageQualifierIsNotStripped(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerIterationMutation,
+		`(foo:map 'list (lambda (x) (assoc! x "k" 1)) xs)`))
+	assertNoDiags(t, lintCheck(t, AnalyzerComparatorMutation,
+		`(stable-sort (lambda (a b) (foo:assoc! a "k" 1) (< a b)) xs)`))
+}
+
 // --- mutation checks: fan-out and rescanning ---
 
 // diagCount is len, named so a count assertion reads as a count rather than

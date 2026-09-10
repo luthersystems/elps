@@ -33,6 +33,25 @@ func TestMutationChecks_QuoteRuntimeParity(t *testing.T) {
 			message:  "assoc! mutates the element m of map",
 			analyzer: AnalyzerIterationMutation,
 		},
+		// The same table again with every enclosing operator spelled
+		// `lisp:`. The interpreter resolves those to the same functions, so
+		// the lint verdict has to be the same one -- including for the two
+		// qualified-unquote rows, which stay data because getUnquoteType
+		// matches the bare marker only.
+		{
+			name:     "qualified comparator",
+			prefix:   `(set 'm (sorted-map)) (lisp:stable-sort (lisp:lambda (a b) `,
+			suffix:   ` (< a b)) (list 2 1)) (get m "k")`,
+			message:  "assoc! is called inside a comparator",
+			analyzer: AnalyzerComparatorMutation,
+		},
+		{
+			name:     "qualified iteration",
+			prefix:   `(set 'xs (list (sorted-map))) (lisp:map 'list (lisp:lambda (m) `,
+			suffix:   ` m) xs) (get (first xs) "k")`,
+			message:  "assoc! mutates the element m of map",
+			analyzer: AnalyzerIterationMutation,
+		},
 	} {
 		t.Run(context.name, func(t *testing.T) {
 			for _, test := range []struct {
@@ -41,6 +60,9 @@ func TestMutationChecks_QuoteRuntimeParity(t *testing.T) {
 			}{
 				{"explicit quote", `(quote (assoc! m "k" 1))`, false},
 				{"reader quote", `'(assoc! m "k" 1)`, false},
+				{"qualified mutator", `(lisp:assoc! m "k" 1)`, true},
+				{"qualified mutator under unquote", `(quasiquote ((unquote (lisp:assoc! m "k" 1))))`, true},
+				{"qualified mutator under quote", `(quote (lisp:assoc! m "k" 1))`, false},
 				{"qualified quote", `(lisp:quote (assoc! m "k" 1))`, false},
 				{"qualified quasiquote", `(lisp:quasiquote ((assoc! m "k" 1)))`, false},
 				{"plain template", `(quasiquote ((assoc! m "k" 1)))`, false},
