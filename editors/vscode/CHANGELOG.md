@@ -8,6 +8,8 @@ jumps from 0.2.0 to 1.50.0.
 
 - LSP: bound parsing and disk reads for oversized documents, avoid expensive
   handlers on those documents, and remove stale workspace definitions on save.
+- LSP: hover, completion and definition no longer allocate a document-sized
+  line slice per request when they fall back to the word under the cursor.
 - Lint: add `comparator-mutation` and `iteration-mutation` checks, with bounded
   callback analysis and quote handling that matches ELPS evaluation. These are
   conservative checks, not a proof that callbacks are free of side effects.
