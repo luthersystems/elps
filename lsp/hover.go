@@ -19,11 +19,9 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	if doc == nil {
 		return nil, nil
 	}
-	// An over-limit document has no AST or analysis (see Document.parse),
-	// and the registry fallback below would split the whole text per
-	// request to find the word under the cursor -- linear allocation over a
-	// document the size limit exists to keep off the hot path. Nothing to
-	// hover.
+	// An over-limit document has no AST or analysis (see Document.parse).
+	// Skip textual fallbacks too: locating a late line still scans the content
+	// even though word lookup no longer allocates a document-sized line slice.
 	if doc.OverLimit() {
 		return nil, nil
 	}
