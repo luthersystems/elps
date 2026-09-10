@@ -2,7 +2,10 @@
 """Manual diagnostics must never build, publish, or receive secrets (#638)."""
 
 import copy
+import os
 import pathlib
+import shutil
+import subprocess
 import unittest
 
 import yaml
@@ -99,6 +102,32 @@ class PublicationIsolation(unittest.TestCase):
                 destination["concurrency"] = doc["jobs"]["diagnose-marketplace"]["concurrency"]
                 with self.assertRaises(AssertionError):
                     validate(changed)
+
+
+class OptionalNodeGate(unittest.TestCase):
+    def run_node_gate(self, path, script_dir):
+        # Exercise the shipped conditional and real assert_exit helper. The
+        # small verdict sinks replace only the outer suite's reporting counters.
+        source = (ROOT / "scripts/ci-gates-test.sh").read_text()
+        helper = "assert_exit() {" + source.split("assert_exit() {", 1)[1].split("\n}\n", 1)[0] + "\n}"
+        block = source.split('python3 "${SCRIPT_DIR}/marketplace-workflow-test.py"', 1)[1]
+        block = block.split('echo "== govulncheck fail-summary:', 1)[0]
+        self.assertIn("marketplace-diagnostics.test.cjs", block)
+        script = 'fail=0\nok() { :; }\nbad() { fail=1; }\n' + helper + block + '\nexit "$fail"\n'
+        return subprocess.run(["/bin/bash", "-c", script], check=False, text=True,
+                              capture_output=True, timeout=15,
+                              env={**os.environ, "PATH": path, "SCRIPT_DIR": str(script_dir)})
+
+    def test_missing_node_skips_with_an_explicit_reason(self):
+        result = self.run_node_gate("", ROOT / "scripts")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("SKIP  node not installed", result.stdout)
+
+    @unittest.skipUnless(shutil.which("node"), "node not installed")
+    def test_present_node_does_not_hide_failed_test_execution(self):
+        result = self.run_node_gate(os.environ["PATH"], ROOT / "scripts/nonexistent-test-directory")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertNotIn("SKIP  node not installed", result.stdout)
 
 
 if __name__ == "__main__":
