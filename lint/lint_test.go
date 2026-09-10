@@ -1246,6 +1246,182 @@ func TestIterationMutation_Nolint(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// --- mutation checks: fan-out and rescanning ---
+
+// diagCount is len, named so a count assertion reads as a count rather than
+// as assert.Len -- which prints every diagnostic in the slice when it fails,
+// and these fixtures fail with thousands of them.
+func diagCount(diags []Diagnostic) int { return len(diags) }
+
+// mutationFanoutSource builds the shape that made the two mutation checks
+// quadratic: ONE defun carrying mutations mutation sites, named as the
+// callback of refs separate higher-order forms.
+//
+// The defun's body is scanned once per reference on a naive implementation,
+// and every mutation in it is reported again at the same source location, so
+// the diagnostic count is refs*mutations rather than mutations. A 24.7 KB
+// file of this shape measured ~360,000 diagnostics and ~713 MB of allocation
+// before the memo and the dedup landed.
+func mutationFanoutSource(refs, mutations int, head string) string {
+	var b strings.Builder
+	if head == "stable-sort" {
+		b.WriteString("(defun cb (a b)\n")
+	} else {
+		b.WriteString("(defun cb (x)\n")
+	}
+	for i := range mutations {
+		if head == "stable-sort" {
+			fmt.Fprintf(&b, "  (assoc! m 'k%d %d)\n", i, i)
+		} else {
+			fmt.Fprintf(&b, "  (append! x %d)\n", i)
+		}
+	}
+	if head == "stable-sort" {
+		b.WriteString("  (< a b))\n")
+	} else {
+		b.WriteString("  x)\n")
+	}
+	for range refs {
+		if head == "stable-sort" {
+			b.WriteString("(stable-sort cb xs)\n")
+		} else {
+			b.WriteString("(map 'list cb xs)\n")
+		}
+	}
+	return b.String()
+}
+
+// mutationNestSource builds depth callback bodies nested one inside the next,
+// each level a traversal over the value the level above handed it and each
+// body mutating one thing. A naive walk rescans an inner body once per
+// enclosing form, so the work -- and, for comparator-mutation, the diagnostic
+// count -- grows with the square of the depth.
+func mutationNestSource(depth int, head string) string {
+	var b strings.Builder
+	indent := func(n int) { b.WriteString(strings.Repeat("  ", n)) }
+	for i := 1; i <= depth; i++ {
+		indent(i - 1)
+		if head == "stable-sort" {
+			fmt.Fprintf(&b, "(stable-sort (lambda (a%d b%d)\n", i, i)
+			indent(i)
+			fmt.Fprintf(&b, "(assoc! m 'k%d %d)\n", i, i)
+		} else {
+			fmt.Fprintf(&b, "(map 'list (lambda (x%d)\n", i)
+			indent(i)
+			fmt.Fprintf(&b, "(append! x%d %d)\n", i, i)
+		}
+	}
+	for i := depth; i >= 1; i-- {
+		indent(i - 1)
+		if head == "stable-sort" {
+			fmt.Fprintf(&b, "(< a%d b%d))", i, i)
+		} else {
+			fmt.Fprintf(&b, "x%d)", i)
+		}
+		if i == 1 {
+			b.WriteString(" xs)\n")
+		} else if head == "stable-sort" {
+			fmt.Fprintf(&b, " ys%d)\n", i)
+		} else {
+			fmt.Fprintf(&b, " x%d)\n", i-1)
+		}
+	}
+	return b.String()
+}
+
+// TestComparatorMutation_FanoutReportsEachSiteOnce is the regression test for
+// the diagnostic explosion: 300 references to one 20-mutation predicate must
+// yield 20 diagnostics, not 6000.
+func TestComparatorMutation_FanoutReportsEachSiteOnce(t *testing.T) {
+	source := mutationFanoutSource(300, 20, "stable-sort")
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	// Counted into a variable rather than asserted with assert.Len: a failing
+	// Len prints all 6000 diagnostics, which is 70 KB of test output.
+	assert.Equal(t, 20, diagCount(diags))
+}
+
+// TestIterationMutation_FanoutReportsEachSiteOnce is the same shape for the
+// iteration check.
+func TestIterationMutation_FanoutReportsEachSiteOnce(t *testing.T) {
+	source := mutationFanoutSource(300, 20, "map")
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	assert.Equal(t, 20, diagCount(diags))
+}
+
+// TestComparatorMutation_NestedCallbacksScannedOnce pins the nesting half:
+// five comparators nested one inside the next, each mutating once. An inner
+// body runs when the outer comparator runs, so every level really is a
+// finding for every sort enclosing it -- but always at the SAME source
+// location with the same message, so the whole truth is nine diagnostics:
+// the five assoc! calls, plus the four nested stable-sort calls, which are
+// themselves mutating builtins sitting inside a comparator. A naive walk
+// rescans each inner body once per enclosing sort and reports 25.
+func TestComparatorMutation_NestedCallbacksScannedOnce(t *testing.T) {
+	source := mutationNestSource(5, "stable-sort")
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Equal(t, 9, diagCount(diags))
+	for i := 1; i <= 5; i++ {
+		assertDiagOnLine(t, diags, 2*i, "assoc! is called inside a comparator")
+	}
+	for i := 2; i <= 5; i++ {
+		assertDiagOnLine(t, diags, 2*i-1, "stable-sort is called inside a comparator")
+	}
+}
+
+// TestIterationMutation_NestedCallbacksScannedOnce is the iteration form of
+// the same fixture: each level maps over the element the level above handed
+// it and mutates its own element, so each level is exactly one finding.
+func TestIterationMutation_NestedCallbacksScannedOnce(t *testing.T) {
+	source := mutationNestSource(5, "map")
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Equal(t, 5, diagCount(diags))
+	for i := 1; i <= 5; i++ {
+		assertDiagOnLine(t, diags, 2*i,
+			fmt.Sprintf("append! mutates the element x%d of map", i))
+	}
+}
+
+// TestComparatorMutation_SameDefunTwoForms keeps the dedup from swallowing a
+// real second finding: one predicate used by both sorting forms names each
+// form in its own message, so the two are distinct diagnostics at the same
+// position rather than one.
+func TestComparatorMutation_SameDefunTwoForms(t *testing.T) {
+	source := "(defun cb (a b) (assoc! m 'k 1) (< a b))\n" +
+		"(stable-sort cb xs)\n" +
+		"(insert-sorted 'list ys cb z)"
+	diags := lintCheck(t, AnalyzerComparatorMutation, source)
+	require.Len(t, diags, 2)
+	assertHasDiag(t, diags, "stable-sort predicate mutates state")
+	assertHasDiag(t, diags, "insert-sorted predicate mutates state")
+}
+
+// TestMutationChecks_FanoutAllocationBound is the guard against a silent
+// return to quadratic behaviour. The bound is deliberately generous -- it is
+// there to catch an order-of-magnitude regression, not to pin an allocation
+// count. Before the memo and dedup this fixture allocated well over a
+// million times.
+func TestMutationChecks_FanoutAllocationBound(t *testing.T) {
+	for _, tt := range []struct {
+		analyzer *Analyzer
+		head     string
+	}{
+		{AnalyzerComparatorMutation, "stable-sort"},
+		{AnalyzerIterationMutation, "map"},
+	} {
+		t.Run(tt.analyzer.Name, func(t *testing.T) {
+			source := []byte(mutationFanoutSource(300, 400, tt.head))
+			l := &Linter{Analyzers: []*Analyzer{tt.analyzer}}
+			allocs := testing.AllocsPerRun(1, func() {
+				if _, err := l.LintFile(source, "test.lisp"); err != nil {
+					t.Fatal(err)
+				}
+			})
+			t.Logf("%s: %.0f allocations", tt.analyzer.Name, allocs)
+			assert.Less(t, allocs, 200000.0)
+		})
+	}
+}
+
 // --- unnecessary-progn ---
 
 func TestUnnecessaryProgn_Positive_Lambda(t *testing.T) {
