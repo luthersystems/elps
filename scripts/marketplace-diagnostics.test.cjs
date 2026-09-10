@@ -98,6 +98,28 @@ test('inventory rejects unexpected version/target text instead of logging it', (
   }
 });
 
+test('inventory orders numeric version components before target names, without number rounding', () => {
+  const expected = [
+    { version: '1.9.0', target: 'universal' },
+    { version: '1.10.0', target: 'universal' },
+    { version: '1.99.0', target: 'universal' },
+    { version: '1.100.0', target: 'universal' },
+    { version: '2.0.9', target: 'universal' },
+    { version: '2.0.10', target: 'darwin-x64' },
+    { version: '2.0.10', target: 'universal' },
+    { version: '9.0.0', target: 'universal' },
+    { version: '10.0.0', target: 'universal' },
+    // Number() rounds both major components to the same value. The opposite
+    // target order ensures that losing this distinction fails the assertion.
+    { version: '9007199254740992.0.0', target: 'universal' },
+    { version: '9007199254740993.0.0', target: 'darwin-x64' },
+  ];
+  const versions = [...expected].reverse().map(({ version, target }) => ({ version, targetPlatform: target }));
+  const body = { results: [{ extensions: [{ publisher: { publisherName: 'LutherSystems' },
+    extensionName: 'elps-lang', versions }] }] };
+  assert.deepEqual(versionInventory(body), expected);
+});
+
 test('SDK subprocess does not inherit environment or expose extra output fields', async t => {
   process.env.ELPS_DIAGNOSTIC_TEST_SENTINEL = 'private-marker';
   t.after(() => { delete process.env.ELPS_DIAGNOSTIC_TEST_SENTINEL; });

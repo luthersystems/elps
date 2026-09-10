@@ -14,6 +14,20 @@ const TARGETS = new Set(['universal', 'linux-x64', 'linux-arm64', 'darwin-x64', 
   'win32-x64', 'win32-arm64', 'win32-ia32', 'linux-armhf', 'alpine-x64', 'alpine-arm64', 'web']);
 const QUERY = JSON.stringify({ filters: [{ criteria: [{ filterType: 7, value: 'LutherSystems.elps-lang' }] }], flags: 1 });
 
+function compareVersions(left, right) {
+  const a = left.split('.');
+  const b = right.split('.');
+  for (let i = 0; i < 3; i++) {
+    // Inputs are validated digit triplets. Length then lexical comparison is
+    // numeric without rounding components larger than Number.MAX_SAFE_INTEGER.
+    const x = a[i].replace(/^0+(?=\d)/, '');
+    const y = b[i].replace(/^0+(?=\d)/, '');
+    if (x.length !== y.length) return x.length - y.length;
+    if (x !== y) return x < y ? -1 : 1;
+  }
+  return left.localeCompare(right);
+}
+
 function versionInventory(body) {
   const extensions = body.results?.flatMap(result => result.extensions ?? []);
   const extension = extensions?.find(value => value.publisher?.publisherName?.toLowerCase() === 'luthersystems'
@@ -24,7 +38,7 @@ function versionInventory(body) {
     if (typeof value.version !== 'string' || !/^\d+\.\d+\.\d+$/.test(value.version)
       || typeof target !== 'string' || !TARGETS.has(target)) throw new Error('INVALID_INVENTORY');
     return { version: value.version, target };
-  }).sort((a, b) => a.version.localeCompare(b.version) || a.target.localeCompare(b.target));
+  }).sort((a, b) => compareVersions(a.version, b.version) || a.target.localeCompare(b.target));
 }
 
 function observe(url, method, { timeoutMs = 15000, maxBytes = 1048576, inventory = false } = {}) {
