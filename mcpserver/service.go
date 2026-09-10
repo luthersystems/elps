@@ -20,6 +20,7 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/analysis/perf"
 	"github.com/luthersystems/elps/formatter"
+	"github.com/luthersystems/elps/internal/symtext"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -1196,47 +1197,17 @@ func locContainsCol(loc *token.Location, name string, col int) bool {
 }
 
 // wordAtPosition extracts the symbol word at a 0-based line and column.
-// It operates on byte offsets, which is correct for ELPS symbol names (ASCII
-// only). Multi-byte UTF-8 in comments or strings could misalign the column,
-// but symbol lookup would simply miss — no incorrect results.
+// It operates on byte offsets, which is what the MCP cursor protocol counts
+// in and what token.Location carries: a multi-byte character to the left of
+// the cursor shifts the column by its byte width.
+//
+// The scan and the symbol alphabet are internal/symtext, shared with the
+// language server (#654). This package used to keep its own pair, which
+// omitted "&" from the alphabet -- so a cursor in "&rest" answered for
+// "rest", and one in a package- or symbol-name carrying "&" answered for a
+// fragment -- and split the whole document on "\n" to read one line.
 func wordAtPosition(content string, line, col int) string {
-	lines := strings.Split(content, "\n")
-	if line < 0 || line >= len(lines) {
-		return ""
-	}
-	ln := lines[line]
-	if col < 0 || col > len(ln) {
-		return ""
-	}
-	if col >= len(ln) {
-		col = len(ln)
-	}
-	start := col
-	for start > 0 && isSymbolChar(ln[start-1]) {
-		start--
-	}
-	end := col
-	for end < len(ln) && isSymbolChar(ln[end]) {
-		end++
-	}
-	return ln[start:end]
-}
-
-func isSymbolChar(c byte) bool {
-	if c >= 'a' && c <= 'z' {
-		return true
-	}
-	if c >= 'A' && c <= 'Z' {
-		return true
-	}
-	if c >= '0' && c <= '9' {
-		return true
-	}
-	switch c {
-	case '-', '_', '!', '?', '+', '*', '/', '<', '>', '=', ':', '.', '#', '^':
-		return true
-	}
-	return false
+	return symtext.WordAt(content, line, col)
 }
 
 func qualifiedSymbolHover(state *workspaceState, word string) (string, *analysis.ExternalSymbol) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/internal/symtext"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 	protocol "github.com/tliron/glsp/protocol_3_16"
@@ -133,12 +134,7 @@ func locContainsCol(loc *token.Location, name string, col int) bool {
 // end of a word; in both cases the full word is returned. Columns are bytes,
 // after the handler converts the wire position with Server.cursorAt.
 func wordAtPosition(content string, line, col int) string {
-	ln := lineOf(content, line)
-	start, end, ok := wordBoundsInLine(ln, col)
-	if !ok {
-		return ""
-	}
-	return ln[start:end]
+	return symtext.WordAt(content, line, col)
 }
 
 // wordRangeAtPosition returns the LSP range for the symbol-like word at the
@@ -161,46 +157,16 @@ func wordBoundsAtPosition(content string, line, col int) (int, int, bool) {
 
 // A missing line and an empty line both contain no word. Work only on the
 // selected line: splitting the document here allocated a line slice on every
-// completion/definition/hover request (#641).
+// completion/definition/hover request (#641). The scan lives in
+// internal/symtext, which the MCP server shares (#654).
 func wordBoundsInLine(ln string, col int) (int, int, bool) {
-	if col < 0 || col > len(ln) {
-		return 0, 0, false
-	}
-	// Clamp col to the line length (cursor can be at end of line).
-	if col >= len(ln) {
-		col = len(ln)
-	}
-	// Scan backwards from cursor.
-	start := col
-	for start > 0 && isSymbolChar(ln[start-1]) {
-		start--
-	}
-	// Scan forwards from cursor.
-	end := col
-	for end < len(ln) && isSymbolChar(ln[end]) {
-		end++
-	}
-	if start == end {
-		return 0, 0, false
-	}
-	return start, end, true
+	return symtext.WordBoundsInLine(ln, col)
 }
 
+// isSymbolChar reports whether c can appear in an ELPS symbol name. The
+// alphabet is defined once, in internal/symtext.
 func isSymbolChar(c byte) bool {
-	if c >= 'a' && c <= 'z' {
-		return true
-	}
-	if c >= 'A' && c <= 'Z' {
-		return true
-	}
-	if c >= '0' && c <= '9' {
-		return true
-	}
-	switch c {
-	case '-', '_', '!', '?', '+', '*', '/', '<', '>', '=', ':', '.', '#', '^', '&':
-		return true
-	}
-	return false
+	return symtext.IsSymbolChar(c)
 }
 
 // scopeAtPosition returns the innermost scope that contains the given
