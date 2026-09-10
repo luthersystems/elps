@@ -5,9 +5,9 @@ package lsp
 import (
 	"encoding/json"
 	"fmt"
-	"strings"
 	"unicode/utf8"
 
+	"github.com/luthersystems/elps/internal/symtext"
 	protocol "github.com/tliron/glsp/protocol_3_16"
 )
 
@@ -128,21 +128,11 @@ func positionEncodingName(enc positionEncoding) string {
 // Lines are split on "\n" exactly as the rest of this package does, so a CRLF
 // document leaves the "\r" on the end of the line. That is harmless here: "\r"
 // is ASCII, so it changes neither a byte column nor a UTF-16 column.
+//
+// The walk itself lives in internal/symtext, which the MCP server shares
+// (elps#654); this stays as the name the rest of the package spells.
 func lineOf(content string, line int) string {
-	if line < 0 {
-		return ""
-	}
-	for range line {
-		nl := strings.IndexByte(content, '\n')
-		if nl < 0 {
-			return ""
-		}
-		content = content[nl+1:]
-	}
-	if nl := strings.IndexByte(content, '\n'); nl >= 0 {
-		return content[:nl]
-	}
-	return content
+	return symtext.LineAt(content, line)
 }
 
 // isASCIIOnly reports whether s is entirely single-byte characters, in which
