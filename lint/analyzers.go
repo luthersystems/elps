@@ -1845,8 +1845,20 @@ func lambdaCallback(node *lisp.LVal) *callback {
 }
 
 // sameFileDefuns indexes the file's defuns, nested ones included, by name. A
-// duplicate name keeps the first definition, which is the one the
-// duplicate-definition check reports against.
+// duplicate name keeps the LAST definition, because that is the one the
+// interpreter runs: ELPS defun overwrites, so a second definition of a name
+// replaces the first and every later call reaches the second body.
+//
+// Keeping the first instead -- which is what the duplicate-definition check
+// reports against, a different question -- made a clean-first/dirty-second
+// duplicate a silent false negative, and a dirty-first/clean-second duplicate
+// a finding against a body no call reaches.
+//
+// Last in TRAVERSAL order, which for the top-level definitions this resolves
+// in practice is source order. A nested defun does not take effect until its
+// enclosing form runs, so the shape it wins against is one this ordering does
+// not model; that is the same syntactic approximation the rest of the check
+// makes.
 //
 // A defun spelled inside quoted data or a macro template is not indexed: it
 // defines nothing, so a symbol naming it resolves to no callback at all
@@ -1863,9 +1875,7 @@ func sameFileDefuns(exprs []*lisp.LVal) map[string]*lisp.LVal {
 		if name.Type != lisp.LSymbol {
 			return
 		}
-		if _, ok := defs[name.Str]; !ok {
-			defs[name.Str] = sexpr
-		}
+		defs[name.Str] = sexpr
 	})
 	return defs
 }

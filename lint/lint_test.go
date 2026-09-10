@@ -1391,6 +1391,98 @@ func TestMutationChecks_OtherPackageQualifierIsNotStripped(t *testing.T) {
 		`(stable-sort (lambda (a b) (foo:assoc! a "k" 1) (< a b)) xs)`))
 }
 
+// --- mutation checks: duplicated defuns ---
+
+// TestMutationChecks_DuplicateDefunLastWins pins callback resolution to the
+// definition the interpreter actually runs.
+//
+// ELPS `defun` overwrites: a second definition of a name replaces the first,
+// and every later call reaches the second body. Verified with the built
+// binary on a two-defun file whose bodies print which one ran -- only
+// "SECOND body ran" appears. Indexing the FIRST definition therefore made a
+// clean-first/dirty-second duplicate a silent false negative, and a
+// dirty-first/clean-second duplicate a false positive against a body no call
+// reaches.
+func TestMutationChecks_DuplicateDefunLastWins(t *testing.T) {
+	for _, tt := range []struct {
+		name     string
+		source   string
+		analyzer *Analyzer
+		line     int
+		want     string
+	}{
+		{
+			name: "comparator dirty definition second is reported",
+			source: "(defun dup (a b) (< a b))\n" +
+				"(defun dup (a b) (assoc! a \"second\" 1) (< a b))\n" +
+				"(stable-sort dup xs)",
+			analyzer: AnalyzerComparatorMutation,
+			line:     2,
+			want:     "assoc! is called inside a comparator",
+		},
+		{
+			name: "comparator dirty definition first is not",
+			source: "(defun dup (a b) (assoc! a \"first\" 1) (< a b))\n" +
+				"(defun dup (a b) (< a b))\n" +
+				"(stable-sort dup xs)",
+			analyzer: AnalyzerComparatorMutation,
+		},
+		{
+			name: "iteration dirty definition second is reported",
+			source: "(defun visit (x) x)\n" +
+				"(defun visit (x) (assoc! x \"second\" 1))\n" +
+				"(map 'list visit xs)",
+			analyzer: AnalyzerIterationMutation,
+			line:     2,
+			want:     "assoc! mutates the element x of map",
+		},
+		{
+			name: "iteration dirty definition first is not",
+			source: "(defun visit (x) (assoc! x \"first\" 1))\n" +
+				"(defun visit (x) x)\n" +
+				"(map 'list visit xs)",
+			analyzer: AnalyzerIterationMutation,
+		},
+		{
+			// Three definitions: only the last one is live, whichever of the
+			// earlier two mutates.
+			name: "the last of three definitions wins",
+			source: "(defun dup (a b) (assoc! a \"first\" 1) (< a b))\n" +
+				"(defun dup (a b) (append! log a) (< a b))\n" +
+				"(defun dup (a b) (dissoc! a \"third\") (< a b))\n" +
+				"(stable-sort dup xs)",
+			analyzer: AnalyzerComparatorMutation,
+			line:     3,
+			want:     "dissoc! is called inside a comparator",
+		},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			diags := lintCheck(t, tt.analyzer, tt.source)
+			if tt.want == "" {
+				assertNoDiags(t, diags)
+				return
+			}
+			require.Len(t, diags, 1)
+			assertDiagOnLine(t, diags, tt.line, tt.want)
+		})
+	}
+}
+
+// TestMutationChecks_DuplicateDefunStillDedupes keeps the memo intact: one
+// live definition referenced by many forms is still scanned once and reported
+// once per distinct finding, not once per reference.
+func TestMutationChecks_DuplicateDefunStillDedupes(t *testing.T) {
+	source := "(defun cb (x) x)\n" +
+		"(defun cb (x) (assoc! x \"k\" 1))\n" +
+		"(map 'list cb xs)\n" +
+		"(select 'list cb xs)\n" +
+		"(map 'list cb xs)"
+	diags := lintCheck(t, AnalyzerIterationMutation, source)
+	require.Len(t, diags, 2)
+	assertHasDiag(t, diags, "assoc! mutates the element x of map")
+	assertHasDiag(t, diags, "assoc! mutates the element x of select")
+}
+
 // --- mutation checks: fan-out and rescanning ---
 
 // diagCount is len, named so a count assertion reads as a count rather than
