@@ -940,6 +940,86 @@ key's identity.  `get`, `key?`, `assoc` and `dissoc` all treat `'alice` and
 (keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
 ```
 
+### Paths through nested data (`elpspath`)
+
+The `elpspath` package reads and updates nested sorted maps, lists and vectors.
+Each path step is an argument: a string selects a map key, an integer selects
+an element, `'*` visits every element, and `'(range from to)` selects a slice
+with an exclusive end. Omit `to` to select through the end. Negative indexes
+count backward from the end (`-1` is the last element).
+
+```lisp
+(set 'order (sorted-map "lines" (vector "a" "b") "id" 7))
+(elpspath:? order "lines" -1)          ; evaluates to "b"
+(elpspath:?set order "lines" 0 "c")    ; new order with lines = (vector "c" "b")
+(elpspath:?del order "lines" 0)        ; new order with lines = (vector "b")
+(elpspath:?nil order "lines" 0)        ; new order with lines = (vector () "b")
+(elpspath:? order "lines")             ; still (vector "a" "b")
+```
+
+`?del` removes a map key or a sequence element; `?nil` keeps the key or position
+and replaces its value with `()`. `?set` takes its replacement as the last
+argument. Without path steps, `?` returns the document, `?set` returns the
+replacement, and `?del` and `?nil` return `()`.
+
+The three copying writes rebuild the document's maps, lists and vectors,
+including those inside tagged values and quote wrappers.
+Their `!` counterparts update in place and return the original document.
+In-place edits of list elements are refused to protect shared program
+literals; use the copying form or a vector. `?` reads without copying, so its
+results can share storage with the document. A range replacement for `?set`
+or `?set!` must be a list or vector; its elements are spliced into the range.
+
+An out-of-range **integer index** is a no-op for writes: copying forms return
+an unchanged copy and mutating forms leave the original unchanged (the list
+mutation restriction still applies). No enclosing container is removed.
+Reads return `()` for a missing key or out-of-range index. Slice endpoints
+must be in bounds; an invalid range raises an error.
+
+For quoted lists, `?set`, `?del` and `?nil` preserve quoting on an
+out-of-range integer no-op but return an unquoted list after an in-range
+integer edit; this existing asymmetry also applies to lists nested in a
+document.
+
+```lisp
+(elpspath:?set '(1 2 3) 0 9)           ; evaluates to (9 2 3)
+(elpspath:?set '(1 2 3) 99 9)          ; evaluates to '(1 2 3)
+(elpspath:?set order "lines" 5 "c")    ; unchanged copy of order
+(elpspath:?del order "lines" -99)      ; unchanged copy of order
+(elpspath:?nil order "lines" 99)       ; unchanged copy of order
+(elpspath:? order "lines" 5)           ; evaluates to ()
+```
+
+Keywords, other symbols, bytes, functions and native values are opaque
+leaves. Reading a leaf or an unrelated field succeeds regardless of the
+leaf's type. A further step into a leaf raises an error naming its type and
+location. Tagged values and quote wrappers also refuse indexing, but copying
+writes rebuild their wrapped values recursively, including any containers.
+
+```lisp
+(set 'job (sorted-map "status" ':pending "id" 7))
+(elpspath:? job "status")              ; evaluates to :pending
+(elpspath:? job "id")                  ; evaluates to 7
+(elpspath:?set job "status" ':done)    ; new job with status = :done
+(elpspath:? job "status" "name")       ; error: cannot index into symbol at path status
+```
+
+Opaque leaves are shared by reference even in copying writes. For example,
+changing a shared bytes buffer outside `elpspath` affects both documents.
+Functions remain opaque: their bodies and captured environments are shared
+and are not walked for copying or cycle checks. The replacement supplied to
+`?set` or `?set!` is also stored by reference.
+
+All operations check for cyclic containers and arrays with other than one
+dimension throughout the document, including containers outside the path and
+inside tagged values or quote wrappers. Replacement values pass the same
+check. Opaque leaf internals are not walked.
+An iterator keeps its per-element error handling: a failed read contributes
+`()` and a failed write leaves that element unchanged.
+
+See `elps doc elpspath` for the package reference
+and `parse-path`, which converts a jq-style selector string to path arguments.
+
 ### User-Defined Types
 
 Programs can define new types with the `deftype` macro and instantiate types
