@@ -69,9 +69,22 @@ overflow before a later float is considered:
 (* 4611686018427387904 4 0.5)  ; 9.223372036854776e+18 (64-bit platform)
 ```
 
-All-integer arithmetic uses Go's native-width `int` and wraps on overflow;
-it does not signal an overflow condition. Introducing a float prevents integer
+These all-integer operations use Go's native-width `int` and wrap on overflow;
+they do not signal an overflow condition. Introducing a float prevents integer
 wraparound, but floating-point rounding and IEEE infinities/NaN still apply.
+
+`to-int` truncates a finite float toward zero, then checks whether that integer
+fits the platform's `int`. NaN, either infinity, and out-of-range results are
+ordinary errors. They never saturate to a boundary value or silently become
+zero. On a 64-bit platform, the valid truncated range is -2^63 inclusive to
+2^63 exclusive. Checking after truncation matters on a 32-bit platform, where
+`2147483647.9` truncates to the valid maximum integer `2147483647`.
+
+```lisp
+(to-int -42.9)  ; -42
+(handler-bind ((condition (lambda (&rest _) 'rejected)))
+  (to-int (/ 1 0)))  ; 'rejected
+```
 
 ### Strings
 
@@ -119,6 +132,12 @@ and then the expr1's function in that scope.
 
 A function is a symbolic expression that utilizes some number of unbound
 argument symbols.
+
+Parameter lists contain symbols, including any `&optional`, `&rest`, or
+`&key` markers. Non-symbol parameters are rejected when a function or macro
+is defined. A call that cannot bind a parameter fails before entering the
+body: `true`, `false`, and keywords cannot be bound, including omitted
+optional/keyword parameters and empty rest parameters.
 
 ```lisp
 (lambda (x) (- x))
@@ -437,8 +456,8 @@ discarded.
 
 ### thread-first, thread-last
 
-`thread-first` and `thread-last` help make nested function calls more readable,
-and function similar to the clojure `->` and `->>` macros.
+`thread-first` and `thread-last` help make nested function calls more readable.
+They are value pipelines with first-argument and last-argument insertion.
 
 The word "thread" in this context (meaning passing a value through a pipeline
 of functions) is unrelated to the concept of concurrent threads of execution.
@@ -447,6 +466,24 @@ of functions) is unrelated to the concept of concurrent threads of execution.
 function defined in the second argument. The result of evaluating this
 expression is then passed to the function defined in the third argument, and
 so on.
+
+The initial expression is evaluated exactly once, before any step's function
+expression or other arguments. Steps then run in order. Within a step, the
+function expression is evaluated first, followed by its explicit arguments
+from left to right. An error stops the pipeline immediately, so later
+arguments or steps do not run after that error.
+
+The intermediate result is passed as data without another evaluation. A
+returned symbol stays a symbol; a returned list is not executed as code, and
+its quote depth is preserved. Steps must call ordinary functions: macros,
+special operators such as `if` and `quote`, and non-functions are rejected
+before their arguments are evaluated. With no steps, the initial result is
+returned. A final ordinary function call remains eligible for tail-call
+optimization.
+
+```lisp
+(thread-first '(unbound-name) (car) (symbol?))  ; true, no name lookup
+```
 
 ```lisp
 (defun add1 (x) (+ x 1))
@@ -474,12 +511,24 @@ functions, for example:
 
 ## Scope
 
-All symbol expressions are lexically scoped and resolve to the deepest binding
+Unqualified symbol expressions are lexically scoped and resolve to the deepest binding
 of that symbol.  Functions naturally create a lexical scope that binds their
 argument symbols.  The other way to create a lexical scope is through the use
 of `let` and `let*` which take as their first argument a list of bindings
 following by expressions which are executed in a nested scope containing those
 bindings.
+
+Keywords cannot be local binding names. Package-qualified references such as
+`user:x` always look in that package, bypassing lexical scopes. A local
+declaration spelled `user:x` is still accepted for compatibility, but does
+not shadow the package binding and cannot be read through `user:x`. Use
+unqualified names for local variables and parameters:
+
+```lisp
+(set 'x 10)
+(let ((user:x 99)) user:x)  ; 10: qualified lookup reads the package
+(let ((x 99)) x)           ; 99: unqualified lookup reads the local binding
+```
 
 ```lisp
 (defun foo (x)
@@ -667,6 +716,23 @@ of times, in an unspecified order, and hand it the list's **own** elements —
 not copies.  A side effect inside a comparator therefore has no defined
 schedule, and writing through an element it was handed writes through to the
 list being sorted, while it is being sorted.
+
+`all?`, `any?`, `stable-sort`, and `insert-sorted` pass elements directly to
+their callbacks as **data**. They do not evaluate a list element as a call or
+look up a symbol element as a variable. Key functions receive the original
+elements too, and their results are passed directly to the comparator. These
+callbacks must be ordinary functions; macros and special operators such as
+`quote` are rejected, even when the input sequence is empty.
+
+```lisp
+(all? list? '((1) (2)))       ; true
+(any? symbol? '(alice bob))  ; true, without looking up alice or bob
+(stable-sort < (copy '((2) (1))) first)  ; '((1) (2))
+```
+
+This is shallow reference passing: a callback can still mutate a mutable
+element it receives. Executing element data requires an explicit `eval` in
+the program.
 
 If a predicate or key function signals an error, `stable-sort`, `insert-sorted`
 and `search-sorted` propagate that first error without invoking another
@@ -1580,8 +1646,13 @@ full duration it was given, however long that is.
 ### Step Limits
 
 A step limit caps the number of evaluation steps in a **single top-level
-evaluation**.  Each entry to `Eval`, each tail-recursion iteration, and each
-macro re-expansion counts as one step.
+evaluation**. Each entry to `Eval`, tail-recursion iteration, macro
+re-expansion, and `dotimes` turn counts as one step. Each predicate/key
+invocation in `all?`, `any?`, `stable-sort`, and `insert-sorted`, and each
+function invocation in a threading pipeline, also counts one step and checks
+cancellation before running. This includes native callbacks that do not
+evaluate any Lisp; expressions in a Lisp callback's body consume their own
+steps as usual.
 
 ```go
 env := lisp.NewEnv(nil)

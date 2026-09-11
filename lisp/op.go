@@ -38,6 +38,8 @@ var langSpecialOps = []*langBuiltin{
 	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
 		`Returns an anonymous function. Formals is a list of parameter
 		names that may include &optional, &rest, and &key markers.
+		Parameter names must be symbols; binding true, false, or a keyword
+		is an error.
 		The body expressions are evaluated in order and the last value
 		is returned. A string literal as the first body expression
 		serves as a documentation string.`},
@@ -49,13 +51,17 @@ var langSpecialOps = []*langBuiltin{
 	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst,
 		`Threads a value through a series of function calls by inserting
 		it as the first argument after the function name in each form.
-		Evaluates the initial value, then passes it through each
-		subsequent form. Returns the result of the final form.`},
+		Evaluates the initial value once, before any step's function or
+		arguments, then passes each result as data to the next step.
+		Steps must call regular functions; macros and special operators
+		are rejected. Returns the result of the final form.`},
 	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast,
 		`Threads a value through a series of function calls by inserting
-		it as the last argument in each form. Evaluates the initial
-		value, then passes it through each subsequent form. Returns
-		the result of the final form.`},
+		it as the last argument in each form. Evaluates the initial value
+		once, before any step's function or arguments, then passes each
+		result as data to the next step. Steps must call regular functions;
+		macros and special operators are rejected. Returns the result of
+		the final form.`},
 	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes,
 		`Iterates a body a fixed number of times. The control-sequence is
 		(symbol count [result]) where count evaluates to an integer. The
@@ -237,11 +243,6 @@ func opQuasiquote(env *LEnv, args *LVal) *LVal {
 
 func opLambda(env *LEnv, args *LVal) *LVal {
 	formals, body := args.Cells[0], args.Cells[1:]
-	for _, sym := range formals.Cells {
-		if sym.Type != LSymbol {
-			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
-		}
-	}
 	// Construct the LVal and add env to the LEnv chain to get lexical scoping
 	// (I think... -bmatsuo)
 	lval := env.Lambda(formals, body)
@@ -442,34 +443,14 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 }
 
 func opThreadLast(env *LEnv, args *LVal) *LVal {
-	val, exprs := args.Cells[0], args.Cells[1:]
-	for _, expr := range exprs {
-		if expr.Type != LSExpr || expr.quoted {
-			return env.Errorf("expression argument is not a function call")
-		}
-		if expr.Len() < 1 {
-			return env.Errorf("expression argument is nil")
-		}
-	}
-	if len(exprs) == 0 {
-		return env.Terminal(val)
-	}
-	for i, expr := range exprs {
-		cells := make([]*LVal, 0, len(expr.Cells)+1)
-		cells = append(cells, expr.Cells...)
-		cells = append(cells, val)
-		if i == len(exprs)-1 {
-			return env.Terminal(SExpr(cells))
-		}
-		val = env.Eval(SExpr(cells))
-		if val.Type == LError {
-			return val
-		}
-	}
-	return val
+	return threadValue(env, args, true)
 }
 
 func opThreadFirst(env *LEnv, args *LVal) *LVal {
+	return threadValue(env, args, false)
+}
+
+func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 	val, exprs := args.Cells[0], args.Cells[1:]
 	for _, expr := range exprs {
 		if expr.Type != LSExpr || expr.quoted {
@@ -482,15 +463,41 @@ func opThreadFirst(env *LEnv, args *LVal) *LVal {
 	if len(exprs) == 0 {
 		return env.Terminal(val)
 	}
+	val = env.Eval(val)
+	if val.Type == LError {
+		return val
+	}
 	for i, expr := range exprs {
-		cells := make([]*LVal, 0, len(expr.Cells)+1)
-		cells = append(cells, expr.Cells[0])
-		cells = append(cells, val)
-		cells = append(cells, expr.Cells[1:]...)
-		if i == len(exprs)-1 {
-			return env.Terminal(SExpr(cells))
+		fun := env.Eval(expr.Cells[0])
+		if fun.Type == LError {
+			return fun
 		}
-		val = env.Eval(SExpr(cells))
+		if fun.Type != LFun || fun.IsSpecialFun() {
+			return env.Errorf("thread step is not a regular function: %v", fun)
+		}
+		// FunCall accepts values directly. Substituting val into an
+		// evaluated expression would execute unquoted list or symbol data;
+		// quoting it would change the observable quote depth.
+		cells := make([]*LVal, 0, len(expr.Cells))
+		if !last {
+			cells = append(cells, val)
+		}
+		for _, arg := range expr.Cells[1:] {
+			argval := env.Eval(arg)
+			if argval.Type == LError {
+				return argval
+			}
+			cells = append(cells, argval)
+		}
+		if last {
+			cells = append(cells, val)
+		}
+		if i == len(exprs)-1 {
+			// Like builtinFunCall, the final invocation is terminal even
+			// though its arguments have already been evaluated.
+			env.Runtime.Stack.Top().Terminal = true
+		}
+		val = env.callValueFunction(fun, SExpr(cells))
 		if val.Type == LError {
 			return val
 		}

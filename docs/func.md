@@ -229,6 +229,9 @@ elps> (to-bytes "ABC123")
 Converts string digits ([0-9]+) and floats to integers. For floats the
 fractional part is discarded. Allows integer to pass through.
 
+Float truncation is toward zero. NaN, infinities, and truncated values outside
+the platform's `int` range return an error; see [Numbers](lang.md#numbers).
+
 ```Lisp
 elps> (to-int "42")
 42

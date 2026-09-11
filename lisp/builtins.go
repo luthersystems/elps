@@ -116,7 +116,9 @@ var (
 			UTF-8) and bytes (returned as-is).`},
 		{"to-int", Formals("value"), builtinToInt,
 			`Converts value to an integer. Accepts strings (parsed as
-			decimal), integers (returned as-is), and floats (truncated).`},
+			decimal), integers (returned as-is), and floats (truncated toward
+			zero). Non-finite floats and truncated values outside the int
+			range return an error.`},
 		{"to-float", Formals("value"), builtinToFloat,
 			`Converts value to a float. Accepts strings (parsed), floats
 			(returned as-is), and integers (widened).`},
@@ -226,7 +228,9 @@ var (
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
 			`Sorts list using the binary less-predicate and returns the
 			sorted list. The sort is stable. An optional key-fun extracts
-			comparison keys from elements. A mutable list is sorted in
+			comparison keys from elements. Both callbacks must be regular
+			functions; elements and keys are passed as data without evaluation.
+			A mutable list is sorted in
 			place, so sorting a slice view also sorts that region of its
 			source; sort (concat 'list x) when x is a view you do not own.
 			A quoted program literal is never modified: sorting a non-empty
@@ -235,7 +239,8 @@ var (
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
-			keys from elements.`},
+			keys from elements. Predicate and key-fun must be regular functions;
+			elements and keys are passed as data without evaluation.`},
 		{"search-sorted", Formals("n", "predicate"), builtinSearchSorted,
 			`Returns the smallest index i in [0, n) for which predicate
 			returns true, using binary search. Equivalent to Go's
@@ -366,11 +371,13 @@ var (
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
-			first falsey result.`},
+			first falsey result. Predicate must be a regular function and
+			receives each element as data without evaluation.`},
 		{"any?", Formals("predicate", "seq"), builtinAnyP,
 			`Returns the first truthy result of applying predicate to
 			elements of seq, or false if none match. Short-circuits on the
-			first truthy result.`},
+			first truthy result. Predicate must be a regular function and
+			receives each element as data without evaluation.`},
 		{"max", Formals("real", VarArgSymbol, "rest"), builtinMax,
 			`Returns the largest of the given numeric arguments.`},
 		{"min", Formals("real", VarArgSymbol, "rest"), builtinMin,
@@ -859,7 +866,15 @@ func builtinToInt(env *LEnv, args *LVal) *LVal {
 	case LInt:
 		return val
 	case LFloat:
-		return Int(int(val.Float))
+		truncated := math.Trunc(val.Float)
+		limit := math.Ldexp(1, strconv.IntSize-1)
+		// Go leaves out-of-range float-to-int conversion implementation
+		// dependent. Reject it before conversion so ELPS never invents an
+		// integer from NaN, infinity, or an unrepresentable finite value.
+		if math.IsNaN(truncated) || truncated < -limit || truncated >= limit {
+			return env.Errorf("float cannot be represented as an int: %v", val.Float)
+		}
+		return Int(int(truncated))
 	default:
 		return env.Errorf("cannot convert type to int: %v", val.Type)
 	}
@@ -1551,6 +1566,9 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	if less.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", less.Type)
 	}
+	if less.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", less.FunType)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second arument is not a proper list: %v", list.Type)
 	}
@@ -1565,6 +1583,9 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		}
 		if keyFun.Type != LFun {
 			return env.Errorf("third argument is not a function: %v", keyFun.Type)
+		}
+		if keyFun.IsSpecialFun() {
+			return env.Errorf("third argument is not a regular function: %v", keyFun.FunType)
 		}
 	}
 	if list.sealed {
@@ -1643,20 +1664,22 @@ func (s *lvalByFun) Less(i, j int) bool {
 	// argument now sees the element itself -- and a write to an element
 	// that is a sealed program literal raises modify-literal-error where
 	// the copy used to absorb it silently (the #378 policy);
-	// TestSortComparatorArgumentsAreTheElements pins both.  The call is
-	// still an evaluated S-expression rather than a FunCall so an element
-	// that is an unquoted symbol is evaluated exactly as before.
-	var expr *LVal
-	if s.keyfun == nil {
-		expr = SExpr([]*LVal{s.fun, a, b})
-	} else {
-		expr = SExpr([]*LVal{
-			s.fun,
-			SExpr([]*LVal{s.keyfun, a}),
-			SExpr([]*LVal{s.keyfun, b}),
-		})
+	// TestSortComparatorArgumentsAreTheElements pins both. Pass those
+	// elements as values: evaluating an S-expression here would execute
+	// list data or resolve symbol data before the callback received it.
+	if s.keyfun != nil {
+		a = s.env.callValueFunction(s.keyfun, QExpr([]*LVal{a}))
+		if a.Type == LError {
+			s.err = a
+			return false
+		}
+		b = s.env.callValueFunction(s.keyfun, QExpr([]*LVal{b}))
+		if b.Type == LError {
+			s.err = b
+			return false
+		}
 	}
-	ok := s.env.Eval(expr)
+	ok := s.env.callValueFunction(s.fun, QExpr([]*LVal{a, b}))
 	if ok.Type == LError {
 		s.err = ok
 		return false
@@ -1709,6 +1732,9 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	if p.Type != LFun {
 		return env.Errorf("third arument is not a function: %v", p.Type)
 	}
+	if p.IsSpecialFun() {
+		return env.Errorf("third argument is not a regular function: %v", p.FunType)
+	}
 	if len(optArgs) > 1 {
 		return env.Errorf("too many optional arguments provided")
 	}
@@ -1720,6 +1746,9 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 		}
 		if keyFun.Type != LFun {
 			return env.Errorf("last argument is not a function: %v", keyFun.Type)
+		}
+		if keyFun.IsSpecialFun() {
+			return env.Errorf("last argument is not a regular function: %v", keyFun.FunType)
 		}
 	}
 	sortErr := Nil()
@@ -1733,17 +1762,20 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 		// item and the probed element are passed by reference, exactly as
 		// lvalByFun.Less passes the elements it compares (see the comment
 		// there); this probe used to Copy both on every step of the search.
-		var expr *LVal
-		if keyFun == nil {
-			expr = SExpr([]*LVal{p, item, inCells[i]})
-		} else {
-			expr = SExpr([]*LVal{
-				p,
-				SExpr([]*LVal{keyFun, item}),
-				SExpr([]*LVal{keyFun, inCells[i]}),
-			})
+		a, b := item, inCells[i]
+		if keyFun != nil {
+			a = env.callValueFunction(keyFun, QExpr([]*LVal{a}))
+			if a.Type == LError {
+				sortErr = a
+				return false
+			}
+			b = env.callValueFunction(keyFun, QExpr([]*LVal{b}))
+			if b.Type == LError {
+				sortErr = b
+				return false
+			}
 		}
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(p, QExpr([]*LVal{a, b}))
 		if ok.Type == LError {
 			sortErr = ok
 			return false
@@ -2679,12 +2711,14 @@ func builtinAllP(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", pred.FunType)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(pred, QExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
@@ -2704,12 +2738,14 @@ func builtinAnyP(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", pred.FunType)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a list: %v", list.Type)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(pred, QExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}

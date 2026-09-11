@@ -631,6 +631,8 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
 // value the binding is updated so that k is bound to v.
 func (env *LEnv) Put(k, v *LVal) *LVal {
+	// Qualified names are retained verbatim for compatibility, but Get
+	// resolves them in a package, not this lexical scope; see docs/lang.md#scope.
 	// Ownership check (elpscheck builds only; no-op otherwise): a binding
 	// is the durable way a value enters a runtime, so both the key and the
 	// value are adopted/asserted here.
@@ -638,6 +640,9 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	checkOwnership(env.Runtime, v)
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
+	}
+	if isKeyword(k.Str) {
+		return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
@@ -807,8 +812,8 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
-	if formals.Type != LSExpr {
-		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
+	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
+		return lerr
 	}
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
@@ -834,6 +839,20 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 		Cells: cells,
 	}
 	return fun
+}
+
+// validateFormalSymbols is shared by every Lisp function constructor and the
+// binder, which also receives formals from host-registered functions.
+func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
+	if formals.Type != LSExpr {
+		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
+	}
+	for _, sym := range formals.Cells {
+		if sym.Type != LSymbol {
+			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
+		}
+	}
+	return Nil()
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -1606,6 +1625,16 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	return env.funCall(env.evalCtx, fun, args)
 }
 
+// callValueFunction invokes an already-evaluated callback or threading step.
+// These calls bypass Eval's entry check, so count a step and check cancellation
+// here even if the function is native and never evaluates any Lisp itself.
+func (env *LEnv) callValueFunction(fun, args *LVal) *LVal {
+	if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+		return lerr
+	}
+	return env.FunCall(fun, args)
+}
+
 // EvalContext evaluates v with the given context.  If ctx is cancelled or
 // its deadline expires during evaluation, a CondContextCancelled error is
 // returned.
@@ -1918,6 +1947,9 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 //
 // The bind function does not modify fun or args.
 func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
+	if lerr := env.validateFormalSymbols(fun.Cells[0]); lerr.Type == LError {
+		return nil, lerr
+	}
 	argsp := argParser{args: args.Cells}
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
@@ -1940,11 +1972,11 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		cp.scope = make(map[string]*LVal, formals.Len())
 		funenv = &cp
 	}
-	putArg := func(k, v *LVal) {
-		funenv.Put(k, v)
+	putArg := func(k, v *LVal) *LVal {
+		return funenv.Put(k, v)
 	}
-	putVarArg := func(k *LVal, v *LVal) {
-		funenv.Put(k, v)
+	putVarArg := func(k *LVal, v *LVal) *LVal {
+		return funenv.Put(k, v)
 	}
 	var builtinArgs []*LVal
 	if funenv == nil {
@@ -1957,11 +1989,13 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		} else {
 			builtinArgs = make([]*LVal, 0, formals.Len())
 		}
-		putArg = func(k, v *LVal) {
+		putArg = func(k, v *LVal) *LVal {
 			builtinArgs = append(builtinArgs, v)
+			return Nil()
 		}
-		putVarArg = func(k *LVal, v *LVal) {
+		putVarArg = func(k *LVal, v *LVal) *LVal {
 			builtinArgs = append(builtinArgs, v.Cells...)
+			return Nil()
 		}
 	}
 	nformal := formals.Pos()
@@ -1992,7 +2026,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	return funenv, QExpr(fun.Cells[1:]) //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
 }
 
-type bindfunc func(k, v *LVal)
+type bindfunc func(k, v *LVal) *LVal
 
 func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVarArgs bindfunc) *LVal {
 	argSym := formals.Advance()
@@ -2025,11 +2059,15 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 			}
 			val, ok := keymap[key.Str]
 			if !ok {
-				put(key, Nil())
+				if lerr := put(key, Nil()); lerr.Type == LError {
+					return lerr
+				}
 				continue
 			}
 			delete(keymap, key.Str)
-			put(key, val)
+			if lerr := put(key, val); lerr.Type == LError {
+				return lerr
+			}
 		}
 		if len(keymap) > 0 {
 			// Scan through keys in the order they were given to provide a
@@ -2052,11 +2090,15 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 				return Nil()
 			}
 			formals.Advance()
+			var val *LVal
 			if args.IsEOF() {
 				// No arguments left so we bind the optional arg to nil.
-				put(argSym, Nil())
+				val = Nil()
 			} else {
-				put(argSym, args.Advance())
+				val = args.Advance()
+			}
+			if lerr := put(argSym, val); lerr.Type == LError {
+				return lerr
 			}
 		}
 		return Nil()
@@ -2069,8 +2111,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 		if strings.HasPrefix(argSym.Str, MetaArgPrefix) {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		putVarArgs(argSym, QExpr(args.Rest()))
-		return Nil()
+		return putVarArgs(argSym, QExpr(args.Rest()))
 	case strings.HasPrefix(argSym.Str, MetaArgPrefix):
 		return env.Errorf("function formal argument list contains invalid control symbol ``%s''", argSym.Str)
 	default:
@@ -2079,8 +2120,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 		}
 		// This is a normal (required) argument symbol.  Pull a value out of
 		// args and bind it.
-		put(argSym, args.Advance())
-		return Nil()
+		return put(argSym, args.Advance())
 	}
 }
 

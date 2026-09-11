@@ -185,8 +185,8 @@ func WithContext(ctx context.Context) Config {
 // WithMaxSteps returns a Config that sets the maximum number of evaluation
 // steps before evaluation returns a CondStepLimitExceeded error.  A step is
 // counted for each Eval entry, each TRO iteration, each macro re-expansion,
-// and each turn of a dotimes loop.  A value of 0 means unlimited (the
-// default).
+// each turn of a dotimes loop, and each value-passing predicate/key callback
+// or threading step (callValueFunction). A value of 0 means unlimited (the default).
 //
 // The dotimes turn is counted because an empty-bodied loop evaluates nothing:
 // (dotimes (i 2147483647)) consumed no budget and could not be interrupted at
