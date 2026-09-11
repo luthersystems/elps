@@ -60,6 +60,19 @@ every JSON number as a float by default and silently round integers above
 2^53.  See [JSON numbers and integer
 precision](#json-numbers-and-integer-precision).
 
+`+`, `-`, and `*` use integer arithmetic when all operands are ints. If any
+operand is a float, they convert all operands to floats before doing the
+arithmetic. In particular, an integer prefix of a multiplication must not
+overflow before a later float is considered:
+
+```lisp
+(* 4611686018427387904 4 0.5)  ; 9.223372036854776e+18 (64-bit platform)
+```
+
+All-integer arithmetic uses Go's native-width `int` and wraps on overflow;
+it does not signal an overflow condition. Introducing a float prevents integer
+wraparound, but floating-point rounding and IEEE infinities/NaN still apply.
+
 ### Strings
 
 Strings are a sequence of utf-8 text delimited by double quotes `"`.  Strings
@@ -568,6 +581,18 @@ not, and the mutating ones are spelled with a trailing `!`:
 `stable-sort` is the exception to the naming rule: it has no `!` but it sorts
 in place and returns the sequence it sorted.
 
+`append` allocates independent top-level storage even when no values are
+added. `append-bytes` likewise copies when its added byte sequence is empty.
+For lists and vectors this is a shallow copy: nested lists, maps, and other
+mutable values remain shared. Use `copy` when those must be independent too.
+
+```lisp
+(let* ((source (vector 20 10))
+       (snapshot (append 'vector source)))
+  (stable-sort < snapshot)
+  source)  ; (vector 20 10)
+```
+
 Two rules follow, and together they cover essentially every surprise in this
 area:
 
@@ -642,6 +667,11 @@ of times, in an unspecified order, and hand it the list's **own** elements —
 not copies.  A side effect inside a comparator therefore has no defined
 schedule, and writing through an element it was handed writes through to the
 list being sorted, while it is being sorted.
+
+If a predicate or key function signals an error, `stable-sort`, `insert-sorted`
+and `search-sorted` propagate that first error without invoking another
+callback. This stops further evaluation; it does not undo changes already
+made by a callback or by an in-place sort.
 
 ```lisp
 ;; BAD -- runs an unknown number of times, in an unknown order
@@ -1270,6 +1300,13 @@ handler function receives the arguments passed to the `error` built-in and
 returns them in this scenario, producing the result `'('double-not-number
 "value to double is not a number")` which is returned by handler-bind.
 
+With no body forms, `handler-bind` returns `()`. It still validates the
+binding list, but does not evaluate any handler expression:
+
+```lisp
+(handler-bind ())  ; ()
+```
+
 If a particular piece of lisp code should handle every kind of error with the
 same handler function, the handler-bind function allows callers to specify a
 handler for a special symbol `condition` which will match any error symbol.
@@ -1283,7 +1320,7 @@ inheriting from the `condition` type.
 ```
 
 In the above code double-not-number is handled by replacing the `(double x)`
-function call with the value 0, while any other error (like integer overflow)
+function call with the value 0, while any other error (like an unbound symbol)
 will be replaced with the string "ERROR DETECTED".
 
 #### A note on the name

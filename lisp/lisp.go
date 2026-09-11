@@ -1607,7 +1607,9 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 		return Bool(v.Int == other.Int)
 	}
 
-	// This may not be correct
+	// Mixed comparisons intentionally convert ints to float, including the
+	// loss of precision above 2^53 documented in
+	// docs/lang.md#json-numbers-and-integer-precision.
 	return Bool(toFloat(v) == toFloat(other))
 }
 

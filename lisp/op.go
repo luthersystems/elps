@@ -94,7 +94,8 @@ var langSpecialOps = []*langBuiltin{
 		is called with the condition name and error data. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
-		and must be named explicitly to be intercepted.`},
+		and must be named explicitly to be intercepted. Returns () when
+		there are no body forms, after validating the bindings.`},
 	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors,
 		`Evaluates body forms sequentially. If any form signals an error,
 		evaluation stops and () is returned instead of propagating the
@@ -798,7 +799,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("binding type is not a symbol: %v", sym.Type)
 		}
 	}
-	if len(args.Cells) == 0 {
+	if len(forms) == 0 {
 		return Nil()
 	}
 	var val *LVal

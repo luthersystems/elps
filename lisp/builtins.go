@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -284,8 +285,9 @@ var (
 		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend,
 			`Returns a new sequence with values appended to vec. The
 			type-specifier ('list, 'vector, or 'bytes) determines the return
-			type. Does not mutate vec and never shares storage with it, so
+			type. Does not mutate vec and never shares top-level storage with it, so
 			appending to the same source twice yields independent results.
+			This also applies when no values are added. Nested values remain shared.
 			This costs a copy, making append O(n); use append! to accumulate
 			in a loop. (append 'vector ...) over a non-empty quoted program
 			literal raises the catchable modify-literal-error condition --
@@ -414,7 +416,8 @@ var (
 			exact; otherwise float.`},
 		{"*", Formals(VarArgSymbol, "x"), builtinMul,
 			`Returns the product of all arguments, or 1 with no arguments.
-			Returns int if all args are ints; otherwise float.`},
+			Returns int if all args are ints; otherwise converts all args to
+			float before multiplying. Integer arithmetic wraps on overflow.`},
 		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint,
 			`Prints all arguments to stderr followed by a newline. Returns
 			nil.`},
@@ -1558,7 +1561,7 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		keyFun = optArgs[0]
 		keyFun = env.GetFunGlobal(keyFun)
 		if keyFun.Type == LError {
-			return less
+			return keyFun
 		}
 		if keyFun.Type != LFun {
 			return env.Errorf("third argument is not a function: %v", keyFun.Type)
@@ -1722,6 +1725,11 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	sortErr := Nil()
 	inCells := seqCells(list)
 	i := sort.Search(len(inCells), func(i int) bool {
+		// Errors terminate the call (docs/lang.md#errors), including a
+		// recovered host panic. Never replace it or evaluate another probe.
+		if !sortErr.IsNil() {
+			return false
+		}
 		// item and the probed element are passed by reference, exactly as
 		// lvalByFun.Less passes the elements it compares (see the comment
 		// there); this probe used to Copy both on every step of the search.
@@ -1777,6 +1785,11 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 	}
 	sortErr := Nil()
 	i := sort.Search(n.Int, func(i int) bool {
+		// sort.Search cannot return an error itself; finish its Go probes
+		// without further ELPS evaluation once the first probe has failed.
+		if !sortErr.IsNil() {
+			return false
+		}
 		expr := SExpr([]*LVal{p, Int(i)})
 		ok := env.Eval(expr)
 		if ok.Type == LError {
@@ -2402,7 +2415,12 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		if seq.sealed && len(cells) > 0 {
 			return errModifyLiteral(env)
 		}
-		// clampCap makes this append PROVABLY non-aliasing: it returns a
+		// Appending zero values never reallocates, even at cap == len.
+		// append promises independent storage for mutable inputs too.
+		if len(vals) == 0 {
+			return Array(nil, slices.Clone(cells))
+		}
+		// For nonempty vals, clampCap makes this append non-aliasing: it returns a
 		// three-index reslice whose cap equals its len, so append cannot
 		// write into seq's backing and must reallocate.  That is the whole
 		// content of the issue #373 fix.  elpsvet's alias rule does not
@@ -2441,10 +2459,14 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, x) //elps:mutates append to a cap==len input reallocates on the first byte
 	})
 	if err != nil {
 		return env.Error(err)
+	}
+	if len(b) == lbytes.Len() {
+		// No bytes were added, so the clamped append still aliases its input.
+		b = bytes.Clone(b)
 	}
 	return Bytes(b)
 }
@@ -2454,21 +2476,32 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	if lbytes.Type != LBytes {
 		return env.Errorf("first argument is not bytes: %v", lbytes.Type)
 	}
+	if byteseq.Type != LString && byteseq.Type != LBytes && !isSeq(byteseq) {
+		return env.Errorf("argument is not a sequence of bytes: %v", byteseq.Type)
+	}
+	// The result owns storage even for an empty addition, so the entire
+	// result must fit the per-allocation limit before appending or cloning.
+	if msg := env.Runtime.CheckAlloc(lbytes.Len() + byteseq.Len()); msg != "" {
+		return env.Errorf("%s", msg)
+	}
 	// Clamped so this append cannot write into lbytes' spare capacity
 	// (issue #373).  append-bytes! is the mutating variant.
 	b := clampCapBytes(lbytes.Bytes())
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, byteseq.Str...) //elps:mutates clamped append reallocates for nonempty data; empty results are cloned below
 	case LBytes:
-		b = append(b, byteseq.Bytes()...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, byteseq.Bytes()...) //elps:mutates clamped append reallocates for nonempty data; empty results are cloned below
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+			b = append(b, x) //elps:mutates append to a cap==len input reallocates on the first byte
 		})
 		if err != nil {
 			return env.Error(err)
 		}
+	}
+	if len(b) == lbytes.Len() {
+		b = bytes.Clone(b)
 	}
 	return Bytes(b)
 }
@@ -3067,6 +3100,11 @@ func builtinMul(env *LEnv, v *LVal) *LVal {
 		if !c.IsNumeric() {
 			return env.Errorf("argument is not a number: %v", c.Type)
 		}
+	}
+	// Choose the arithmetic type before multiplying, as + does. Otherwise
+	// an integer prefix can wrap before a later float promotes the result.
+	if numericListType(v.Cells) == LFloat {
+		return mulFloat(Float(1), v)
 	}
 	return mulInt(Int(1), v)
 }
