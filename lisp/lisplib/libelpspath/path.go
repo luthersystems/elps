@@ -35,7 +35,8 @@ type Path interface {
 	String() string
 }
 
-// copyLVal rebuilds maps, lists and vectors. Other values are opaque leaves
+// copyLVal rebuilds maps, lists, vectors and tagged/quote wrappers recursively.
+// Other values (including functions) are opaque leaves
 // shared by reference, including mutable bytes and native payloads.
 //
 // The copy is deep: every container reachable from v is rebuilt, so no write
@@ -66,9 +67,9 @@ func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
 // level resets the bound on every lap and it never fires.
 func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
-	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
-		// The three types that reach other values, and so the only ones
-		// entered on the guard's path. Handled below. Entering a leaf would
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
+		// Containers and wrappers reach other values and must participate
+		// in the copy and cycle walk. Entering an opaque leaf would
 		// tax every string and int in the value to bound a walk that cannot
 		// recurse.
 	default:
@@ -91,6 +92,22 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 // path.
 func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
+	case lisp.LTaggedVal, lisp.LQuote:
+		wrapped, err := wrapperValue(v)
+		if err != nil {
+			return nil, err
+		}
+		child, err := copyGuarded(wrapped, g)
+		if err != nil {
+			return nil, err
+		}
+		// Build a fresh wrapper and cell slice; its original may be sealed or
+		// shared. Preserve the tag and quoting without retaining source storage.
+		cp := &lisp.LVal{Type: v.Type, Str: v.Str, Cells: []*lisp.LVal{child}}
+		if loc, ok := v.Source(); ok {
+			cp.SetSource(&loc)
+		}
+		return sameQuoting(v, cp), nil
 	case lisp.LSortMap:
 		return copyMapGuarded(v, g)
 	case lisp.LArray:
@@ -129,6 +146,15 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	default:
 		return nil, fmt.Errorf("invalid container type: %v", v.Type)
 	}
+}
+
+// wrapperValue validates the payload before either recursive walker reads it.
+// Host-created malformed wrappers must produce an error rather than a Go panic.
+func wrapperValue(v *lisp.LVal) (*lisp.LVal, error) {
+	if len(v.Cells) != 1 || v.Cells[0] == nil {
+		return nil, fmt.Errorf("invalid %s wrapper: expected one value", v.Type)
+	}
+	return v.Cells[0], nil
 }
 
 // copyMap creates a new map LVal that contains the same elements in the original
@@ -1333,10 +1359,13 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
+	if newIn.Type != lisp.LSExpr && newIn.Type != lisp.LArray {
+		return nil, fmt.Errorf("range replacement must be a list or vector; got %s", newIn.Type)
+	}
 	setCells, err := toCells(newIn)
 	if err != nil {
-		// This is replacement validation, not a traversal into the source.
-		return nil, fmt.Errorf("invalid range replacement: %v", err)
+		// Keep container-shape failures distinct from source traversal.
+		return nil, fmt.Errorf("invalid range replacement: %w", err)
 	}
 	// IMPORTANT: the splice is built in a slice this function allocates, not
 	// by appending onto cells' own prefix.

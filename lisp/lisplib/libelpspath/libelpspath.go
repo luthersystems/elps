@@ -29,14 +29,18 @@ list elements are refused; use a copying form or a vector instead.
 An out-of-range integer index leaves the document unchanged on a write
 (and returns nil on a read). Negative indexes count from the end.
 
-All other value types are opaque leaves, including symbols, bytes,
-functions, natives and tagged values. Reads may return them and writes
+Tagged values and quote wrappers are rebuilt recursively by copying
+writes and traversed by cycle checks, but cannot be indexed into.
+Other value types are opaque leaves, including symbols, bytes,
+functions and natives. Reads may return them and writes
 may store them. A further path step into a leaf raises an error naming
 its type and location. Copies share opaque leaves by reference; mutation
 of their storage outside elpspath is visible through both documents.
 Containers must be acyclic, and arrays must have exactly one dimension;
 every operation checks this throughout the document, including off-path
-containers. New values pass the same container check.
+containers and the contents of tagged values and quote wrappers.
+New values pass the same container check. Function bodies and captured
+environments remain opaque and shared; they are not walked.
 
 An iterator retains its per-element error handling: reads substitute nil
 for a failed element path, and writes leave that element unchanged.
@@ -188,9 +192,12 @@ var builtins = []*libutil.Builtin{
 		The last argument is the new value; all preceding arguments are path
 		steps. The original is not modified. Any leaf type may be stored.
 		Out-of-range integer indexes return an unchanged copy.
+		Quoted lists stay quoted on an out-of-range integer no-op but become
+		unquoted after an in-range integer edit.
 
-		Maps, lists and vectors in the SOURCE document are copied; opaque
-		leaves (including bytes and native values) are shared. The new value is
+		Maps, lists, vectors and tagged/quote wrappers in the SOURCE document
+		are copied recursively; opaque leaves (including bytes, functions
+		and native values) are shared. The new value is
 		stored BY REFERENCE, not copied: the value you supply becomes
 		reachable and mutable through the result, so a later in-place write
 		through the result (?set!, ?del!, append!) reaches the caller's
@@ -210,7 +217,10 @@ var builtins = []*libutil.Builtin{
 		`Delete value at a path specified by positional args, returning a copy.
 
 		Out-of-range integer indexes return an unchanged copy. Containers are
-		copied; opaque leaves are shared by reference.
+		copied recursively through tagged/quote wrappers; opaque leaves,
+		including functions, are shared by reference.
+		Quoted lists stay quoted on an out-of-range integer no-op but become
+		unquoted after an in-range integer edit.
 
 		(?del obj "foo")               => new obj with foo removed
 		(?del obj "items" 1)           => new obj with items[1] removed`),
@@ -225,7 +235,10 @@ var builtins = []*libutil.Builtin{
 		`Set value at a path to nil, returning a copy. The key is kept.
 
 		Out-of-range integer indexes return an unchanged copy. Containers are
-		copied; opaque leaves are shared by reference.
+		copied recursively through tagged/quote wrappers; opaque leaves,
+		including functions, are shared by reference.
+		Quoted lists stay quoted on an out-of-range integer no-op but become
+		unquoted after an in-range integer edit.
 
 		(?nil obj "foo")               => new obj with foo=nil
 		(?nil patient "ssn")           => new obj with ssn=nil`),
@@ -261,9 +274,9 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 		return errors.New("nil container type invalid")
 	}
 	switch in.Type {
-	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
-		// The three types that reach other values, and so the only ones
-		// entered on the guard's path.  Handled below.
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
+		// Containers and wrappers reach other values; opaque leaves do not.
+		// Handled below.
 	default:
 		return fmt.Errorf("invalid container type: %v", in.Type)
 	}
@@ -283,6 +296,12 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 // established that in is a container and put it on g's path.
 func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	switch in.Type {
+	case lisp.LTaggedVal, lisp.LQuote:
+		wrapped, err := wrapperValue(in)
+		if err != nil {
+			return err
+		}
+		return okSimpleTypeGuarded(wrapped, g)
 	case lisp.LSortMap:
 		m0 := in.Map()
 		entries := sortedMapEntries(m0)
@@ -330,9 +349,9 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 }
 
 // okSimpleType validates the container graph, accepting arbitrary opaque leaves.
-// Every document builtin retains this guard: copying supports only lists,
-// maps and one-dimensional arrays, and recursive container walks reject cycles.
-// Leaf storage (bytes, native payloads, function environments, tagged values)
+// Every document builtin retains this guard: copying supports lists, maps,
+// one-dimensional arrays, and tagged/quote wrappers. These walks reject cycles.
+// Opaque leaf storage (bytes, native payloads, function bodies/environments)
 // is neither traversed nor copied by elpspath.
 func okSimpleType(in *lisp.LVal) error {
 	var st cycleState
@@ -349,7 +368,7 @@ func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 		return nil
 	}
 	switch in.Type {
-	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
 		return okSimpleContainerTypeGuarded(in, g)
 	default:
 		// Everything else is an opaque leaf, regardless of its ELPS type.

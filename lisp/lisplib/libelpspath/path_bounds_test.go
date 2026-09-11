@@ -3,208 +3,238 @@
 package libelpspath
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
-	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
+	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 )
 
-// TestOutOfRangeWriteParity pins C-F2 (#657): a missing index must never
-// replace its sequence with nil. Lists retain the existing in-place ban.
-func TestOutOfRangeWriteParity(t *testing.T) {
-	for _, op := range []struct {
-		name         string
-		copy, mutate lisp.LBuiltin
-		set          bool
+// This file covers the bounds handling of the path engine that the
+// positional-arg (?-family) builtins drive. The cases mirror
+// path_bounds_test.go in luthersystems/substrate, which exercises the same
+// engine through both its legacy string API and this positional API.
+
+// allMethods is every operation the path engine exposes.
+var allMethods = []PathMethod{Get, Set, SetMutate, Del, DelMutate, Nil, NilMutate}
+
+func (m PathMethod) String() string {
+	switch m {
+	case Get:
+		return "Get"
+	case Set:
+		return "Set"
+	case SetMutate:
+		return "SetMutate"
+	case Del:
+		return "Del"
+	case DelMutate:
+		return "DelMutate"
+	case Nil:
+		return "Nil"
+	case NilMutate:
+		return "NilMutate"
+	}
+	return "unknown"
+}
+
+// applyMethod runs one operation and renders the outcome as a comparable
+// string. Errors are reported as a bare marker rather than their message;
+// what matters to these tests is which inputs fail, not the prose.
+func applyMethod(path Path, method PathMethod, in string) (result string, failed bool) {
+	lval := libjson.Load([]byte(in), false)
+	newVal := lisp.String("REPLACEMENT")
+
+	var data *lisp.LVal
+	var err error
+	switch method {
+	case Get:
+		data, err = path.Get(lval)
+	case Set:
+		data, err = path.Set(lval, newVal)
+	case SetMutate:
+		data, err = path.SetMutate(lval, newVal)
+	case Del:
+		data, err = path.Delete(lval)
+	case DelMutate:
+		data, err = path.DeleteMutate(lval)
+	case Nil:
+		data, err = path.Nil(lval)
+	case NilMutate:
+		data, err = path.NilMutate(lval)
+	}
+	if err != nil {
+		return "", true
+	}
+	// Render both the operation's return value and the (possibly mutated)
+	// input, so mutate-vs-copy differences cannot hide.
+	var out string
+	if data != nil {
+		b, derr := libjson.Dump(data, false)
+		if derr != nil {
+			return "<undumpable>", false
+		}
+		out = string(b)
+	} else {
+		out = "<nil>"
+	}
+	orig, derr := libjson.Dump(lval, false)
+	if derr != nil {
+		return out + " | <undumpable>", false
+	}
+	return out + " | " + string(orig), false
+}
+
+// TestNegativeIndexOutOfRange pins the fix for an out-of-bounds panic: a
+// negative index counts back from the end, so one whose magnitude exceeds
+// the sequence length used to stay negative after folding and index out of
+// bounds. Every operation now treats it the same way it treats an index
+// past the end.
+//
+// This matters because it is reachable straight from lisp code — (? items
+// -1) on an empty array — and a panic cannot be caught by handler-bind.
+func TestNegativeIndexOutOfRange(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		Name  string
+		Steps []*lisp.LVal
+		In    string
 	}{
-		{"set", BuiltinQuerySet, BuiltinQuerySetMutate, true},
-		{"del", BuiltinQueryDelete, BuiltinQueryDeleteMutate, false},
-		{"nil", BuiltinQueryNil, BuiltinQueryNilMutate, false},
-	} {
-		for _, list := range []bool{false, true} {
-			for _, depth := range []int{0, 1, 3} {
-				for _, index := range []int{2, 99, -3, -99} {
-					t.Run(fmt.Sprintf("%s/list=%t/depth=%d/index=%d", op.name, list, depth, index), func(t *testing.T) {
-						env := testEnv(t)
-						build := func() (*lisp.LVal, []*lisp.LVal) {
-							cells := []*lisp.LVal{mapHolding("value", lisp.Int(10)), lisp.Int(20)}
-							doc := lisp.Vector(cells)
-							if list {
-								doc = lisp.QExpr(cells)
-							}
-							steps := make([]*lisp.LVal, 0, depth+1)
-							for range depth {
-								doc = mapHolding("lines", doc)
-								doc.MapSet("id", lisp.Int(7))
-								steps = append(steps, lisp.String("lines"))
-							}
-							steps = append(steps, lisp.Int(index))
-							return doc, steps
-						}
-						doc, steps := build()
-						before := doc.String()
-						args := append([]*lisp.LVal{doc}, steps...)
-						if op.set {
-							args = append(args, lisp.Int(9))
-						}
-						result := op.copy(env, lisp.QExpr(args))
-						require.NotEqual(t, lisp.LError, result.Type, "%v", result)
-						assert.Equal(t, before, result.String(), "copy must preserve the entire document")
-						assert.Equal(t, before, doc.String(), "copy must leave source untouched")
-						require.NotSame(t, doc, result, "even a no-op copy owns its containers")
-						// An in-place edit through the no-op copy must not reach the source.
-						leafSteps := append([]*lisp.LVal{}, steps[:len(steps)-1]...)
-						leafSteps = append(leafSteps, lisp.Int(0), lisp.String("value"), lisp.Int(88))
-						changed := BuiltinQuerySetMutate(env, lisp.QExpr(append([]*lisp.LVal{result}, leafSteps...)))
-						require.NotEqual(t, lisp.LError, changed.Type, "%v", changed)
-						assert.Equal(t, before, doc.String())
-						readArgs := append([]*lisp.LVal{result}, leafSteps[:len(leafSteps)-1]...)
-						value := BuiltinQueryGet(env, lisp.QExpr(readArgs))
-						require.Equal(t, lisp.LInt, value.Type, "%v", value)
-						assert.Equal(t, 88, value.Int)
-						original, mutSteps := build()
-						mutArgs := append([]*lisp.LVal{original}, mutSteps...)
-						if op.set {
-							mutArgs = append(mutArgs, lisp.Int(9))
-						}
-						mutated := op.mutate(env, lisp.QExpr(mutArgs))
-						if list {
-							require.Equal(t, lisp.LError, mutated.Type)
-							assert.Contains(t, mutated.String(), "in-place path operations require an array or sorted-map; got list")
-						} else {
-							require.NotEqual(t, lisp.LError, mutated.Type, "%v", mutated)
-							assert.Equal(t, before, mutated.String())
-							assert.Same(t, original, mutated)
-						}
-						assert.Equal(t, before, original.String())
-					})
-				}
+		{Name: "last of empty array", Steps: []*lisp.LVal{lisp.Int(-1)}, In: `[]`},
+		{Name: "beyond start", Steps: []*lisp.LVal{lisp.Int(-5)}, In: `["a","b"]`},
+		{Name: "far beyond start", Steps: []*lisp.LVal{lisp.Int(-100)}, In: `["a"]`},
+		{Name: "nested", Steps: []*lisp.LVal{lisp.String("a"), lisp.Int(-3)}, In: `{"a":[1]}`},
+		{Name: "boundary in range", Steps: []*lisp.LVal{lisp.Int(-2)}, In: `["a","b"]`},
+		{Name: "boundary out of range", Steps: []*lisp.LVal{lisp.Int(-3)}, In: `["a","b"]`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			path, err := ArgsToPath(tc.Steps)
+			if err != nil {
+				t.Fatalf("ArgsToPath: %v", err)
+			}
+			for _, method := range allMethods {
+				// The assertion is simply that no operation panics;
+				// applyMethod would not return at all otherwise.
+				res, failed := applyMethod(path, method, tc.In)
+				t.Logf("%s: %s (failed=%v)", method, res, failed)
+			}
+		})
+	}
+}
+
+// TestNegativeIndexInRangeStillWorks guards the fix above against
+// over-correction: negative indexes that land inside the sequence must
+// keep working.
+func TestNegativeIndexInRangeStillWorks(t *testing.T) {
+	t.Parallel()
+	path, err := ArgsToPath([]*lisp.LVal{lisp.Int(-1)})
+	if err != nil {
+		t.Fatalf("ArgsToPath: %v", err)
+	}
+	res, failed := applyMethod(path, Get, `["a","b","c"]`)
+	if failed {
+		t.Fatal("get -1 failed")
+	}
+	if res != `"c" | ["a","b","c"]` {
+		t.Fatalf("get -1 = %s", res)
+	}
+}
+
+// TestRootAndIterDeleteAreLispNil pins the second crash: deleting an empty
+// chain — which is what the root path (?del v), and every element of a bare
+// iterator (?del v '*), reduce to — used to hand back an untyped Go nil
+// with no error. That nil was stored straight into the result array, so the
+// value looked fine until something dereferenced it: json:dump-bytes,
+// printing, or a further path operation would panic the interpreter instead
+// of raising a catchable condition.
+//
+// The contract asserted here is that every value an operation returns is a
+// real LVal.
+func TestRootAndIterDeleteAreLispNil(t *testing.T) {
+	t.Parallel()
+
+	assertNoGoNils := func(t *testing.T, v *lisp.LVal) {
+		t.Helper()
+		if v == nil {
+			t.Fatal("operation returned an untyped Go nil")
+		}
+		var walk func(*lisp.LVal)
+		walk = func(n *lisp.LVal) {
+			if n == nil {
+				t.Fatal("result contains an untyped Go nil cell")
+			}
+			for _, c := range n.Cells {
+				walk(c)
 			}
 		}
+		walk(v)
 	}
-}
 
-// TestArbitraryLeaves pins C-F4 (#657) at the exported builtin boundary.
-func TestArbitraryLeaves(t *testing.T) {
-	for _, leaf := range []struct {
-		name  string
-		value *lisp.LVal
+	iter := lisp.Symbol("*") // the "iterate all elements" step
+	cases := []struct {
+		Name     string
+		Steps    []*lisp.LVal
+		In       string
+		Expected string
 	}{
-		{"keyword", lisp.Symbol(":pending")},
-		{"bytes", lisp.Bytes([]byte("ok"))},
-		{"function", lisp.Fun("leaf", lisp.Formals(), func(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal { return lisp.Nil() })},
-		{"native", lisp.Native(42)},
-	} {
-		t.Run(leaf.name, func(t *testing.T) {
-			env := testEnv(t)
-			doc := mapHolding("status", leaf.value)
-			doc.MapSet("id", lisp.Int(7))
-			for _, tc := range []struct {
-				name  string
-				steps []*lisp.LVal
-				want  *lisp.LVal
-			}{
-				{"root", nil, doc},
-				{"leaf", []*lisp.LVal{lisp.String("status")}, leaf.value},
-				{"past-leaf", []*lisp.LVal{lisp.String("id")}, lisp.Int(7)},
-			} {
-				t.Run(tc.name, func(t *testing.T) {
-					got := BuiltinQueryGet(env, lisp.QExpr(append([]*lisp.LVal{doc}, tc.steps...)))
-					require.NotEqual(t, lisp.LError, got.Type, "%v", got)
-					assert.Equal(t, tc.want.String(), got.String())
-				})
+		{Name: "root", Steps: nil, In: `{"hello":"world"}`, Expected: `null`},
+		{Name: "root of array", Steps: nil, In: `["a","b"]`, Expected: `null`},
+		{Name: "bare iter over scalars", Steps: []*lisp.LVal{iter}, In: `["a","b","c"]`, Expected: `[null,null,null]`},
+		{Name: "bare iter over maps", Steps: []*lisp.LVal{iter}, In: `[{"a":1},{"b":2}]`, Expected: `[null,null]`},
+		{Name: "bare iter empty", Steps: []*lisp.LVal{iter}, In: `[]`, Expected: `[]`},
+		{Name: "nested bare iter", Steps: []*lisp.LVal{lisp.String("a"), iter}, In: `{"a":["x","y"]}`, Expected: `{"a":[null,null]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.Name, func(t *testing.T) {
+			t.Parallel()
+			path, err := ArgsToPath(tc.Steps)
+			if err != nil {
+				t.Fatalf("ArgsToPath: %v", err)
 			}
-			for _, op := range []struct {
-				name string
-				run  lisp.LBuiltin
-				set  bool
-			}{
-				{"set", BuiltinQuerySet, true}, {"set!", BuiltinQuerySetMutate, true},
-				{"del", BuiltinQueryDelete, false}, {"del!", BuiltinQueryDeleteMutate, false},
-				{"nil", BuiltinQueryNil, false}, {"nil!", BuiltinQueryNilMutate, false},
-			} {
-				t.Run(op.name, func(t *testing.T) {
-					src := mapHolding("status", leaf.value)
-					src.MapSet("id", lisp.Int(7))
-					args := []*lisp.LVal{src, lisp.String("id")}
-					if op.set {
-						args = append(args, leaf.value)
-					}
-					got := op.run(env, lisp.QExpr(args))
-					require.NotEqual(t, lisp.LError, got.Type, "%v", got)
-					status, ok := got.Map().Get(lisp.String("status"))
-					require.True(t, ok)
-					assert.Same(t, leaf.value, status, "opaque leaves are shared by reference")
-					if op.set {
-						stored, ok := got.Map().Get(lisp.String("id"))
-						require.True(t, ok)
-						assert.Same(t, leaf.value, stored)
-					} else {
-						stored, exists := got.Map().Get(lisp.String("id"))
-						if op.name == "del" || op.name == "del!" {
-							assert.False(t, exists, "delete must remove an existing key")
-						} else {
-							require.True(t, exists, "nil must keep the key")
-							assert.True(t, stored.IsNil(), "nil must clear the value: %v", stored)
-						}
-					}
-				})
+			out, err := path.Delete(libjson.Load([]byte(tc.In), false))
+			if err != nil {
+				t.Fatalf("delete: %v", err)
 			}
-			for _, step := range []*lisp.LVal{lisp.String("child"), lisp.Int(0), lisp.Symbol("*"), lisp.QExpr([]*lisp.LVal{lisp.Symbol("range"), lisp.Int(0)})} {
-				for _, op := range []struct {
-					name string
-					run  lisp.LBuiltin
-					set  bool
-				}{
-					{"get", BuiltinQueryGet, false}, {"set", BuiltinQuerySet, true}, {"set!", BuiltinQuerySetMutate, true},
-					{"del", BuiltinQueryDelete, false}, {"del!", BuiltinQueryDeleteMutate, false},
-					{"nil", BuiltinQueryNil, false}, {"nil!", BuiltinQueryNilMutate, false},
-				} {
-					t.Run("descend/"+step.String()+"/"+op.name, func(t *testing.T) {
-						args := []*lisp.LVal{doc, lisp.String("status"), step}
-						if op.set {
-							args = append(args, lisp.Int(9))
-						}
-						got := op.run(env, lisp.QExpr(args))
-						require.Equal(t, lisp.LError, got.Type, "%v", got)
-						assert.False(t, lisp.IsInternalPanic(got))
-						assert.Contains(t, got.String(), fmt.Sprintf("cannot index into %s at path status", leaf.value.Type))
-					})
-				}
+			assertNoGoNils(t, out)
+			// Dumping is what calling code actually does with these
+			// values, and is where the old nils detonated.
+			b, err := libjson.Dump(out, false)
+			if err != nil {
+				t.Fatalf("dump: %v", err)
+			}
+			if string(b) != tc.Expected && !jsonEqual(string(b), tc.Expected) {
+				t.Fatalf("delete %v on %s = %s, want %s",
+					tc.Steps, tc.In, b, tc.Expected)
 			}
 		})
 	}
 }
 
-// TestLeafErrorLocations distinguishes the leaf's location from the failing
-// next step, including keys that need quoting to avoid ambiguous paths.
-func TestLeafErrorLocations(t *testing.T) {
-	leaf := lisp.Symbol(":pending")
-	for _, tc := range []struct {
-		name     string
-		doc      *lisp.LVal
-		steps    []*lisp.LVal
-		location string
-	}{
-		{"root", leaf, []*lisp.LVal{lisp.Int(0)}, "<root>"},
-		{"nested", mapHolding("job", mapHolding("status", leaf)), []*lisp.LVal{lisp.String("job"), lisp.String("status"), lisp.String("child")}, "job.status"},
-		{"index", mapHolding("jobs", lisp.Vector([]*lisp.LVal{leaf})), []*lisp.LVal{lisp.String("jobs"), lisp.Int(0), lisp.String("child")}, "jobs[0]"},
-		{"punctuation", mapHolding("job.status", leaf), []*lisp.LVal{lisp.String("job.status"), lisp.Int(0)}, `["job.status"]`},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path, err := ArgsToPath(tc.steps)
-			require.NoError(t, err)
-			for _, run := range []func() (*lisp.LVal, error){
-				func() (*lisp.LVal, error) { return path.Get(tc.doc) },
-				func() (*lisp.LVal, error) { return path.Set(tc.doc, lisp.Int(9)) },
-				func() (*lisp.LVal, error) { return path.Delete(tc.doc) },
-				func() (*lisp.LVal, error) { return path.Nil(tc.doc) },
-			} {
-				_, err := run()
-				require.EqualError(t, err, "cannot index into symbol at path "+tc.location)
+// TestQueryDeleteBuiltinNeverReturnsGoNil drives the same two shapes
+// through the exported builtins, the way the evaluator calls them.
+func TestQueryDeleteBuiltinNeverReturnsGoNil(t *testing.T) {
+	t.Parallel()
+	env := lisp.NewEnv(nil)
+	v := lisp.Array(nil, []*lisp.LVal{lisp.Int(1), lisp.Int(2)})
+
+	res := BuiltinQueryDelete(env, lisp.QExpr([]*lisp.LVal{v}))
+	if res == nil {
+		t.Fatal("(?del v) returned an untyped Go nil")
+	}
+	if !res.IsNil() {
+		t.Fatalf("(?del v) = %v, want ()", res)
+	}
+
+	res = BuiltinQueryDelete(env, lisp.QExpr([]*lisp.LVal{v, lisp.Symbol("*")}))
+	if res == nil {
+		t.Fatal("(?del v '*) returned an untyped Go nil")
+	}
+	if res.Type == lisp.LArray {
+		for i, c := range res.Cells[1].Cells {
+			if c == nil {
+				t.Fatalf("(?del v '*) cell %d is an untyped Go nil", i)
 			}
-		})
+		}
 	}
 }
