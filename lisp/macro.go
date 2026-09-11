@@ -748,6 +748,9 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 }
 
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
+	// Traverse nested quasiquote/quote wrappers too; they do not delay an
+	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
+	// list-element position for splicing, not quasiquote nesting.
 	inner := v
 	quoteLevel := 0
 	if inner.quoted {
@@ -806,32 +809,39 @@ func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
 }
 
 func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
-	// findAndUnquote all child expressions
-	numSpliced := 0
-	numExtended := 0
+	// The staging slots are scratch, not the output length: empty splices
+	// can shrink a large template to a small result. Limit retained elements
+	// after each child instead (docs/lang.md#allocation-limits).
+	hasSplices := false
+	newlen := 0
 	cells := make([]*LVal, v.Len())
 	for i := range v.Cells {
 		cells[i] = findAndUnquote(env, v.Cells[i], depth+1)
 		if cells[i].Type == LError {
 			return cells[i]
 		}
+		added := 1
 		if cells[i].spliced {
-			numSpliced += 1
-			numExtended += len(cells[i].Cells)
+			if cells[i].Type != LSExpr {
+				return env.Errorf("%s: cannot splice non-list: %s", "unquote-splicing", cells[i].Type)
+			}
+			hasSplices = true
+			added = len(cells[i].Cells)
 		}
+		limit := env.Runtime.MaxAllocBytes()
+		if added > limit-newlen {
+			// The unsigned diagnostic sum fits even when two int lengths
+			// would overflow. The accepted signed sum below is at most limit.
+			return env.Errorf("allocation size %d exceeds maximum (%d)", uint64(newlen)+uint64(added), limit)
+		}
+		newlen += added
 	}
 	// splice in children of children that were unquoted with
 	// ``unquote-splicing''
-	if numSpliced > 0 {
-		newlen := len(cells) - numSpliced + numExtended
+	if hasSplices {
 		newcells := make([]*LVal, 0, newlen)
 		for _, v := range cells {
 			if v.spliced {
-				if v.Type != LSExpr {
-					// TODO:  I believe it is incorrect to error out here.  But
-					// splicing non-lists is not a major concern at the moment.
-					return env.Errorf("%s: cannot splice non-list: %s", "unquote-splicing", v.Type)
-				}
 				newcells = append(newcells, v.Cells...)
 			} else {
 				newcells = append(newcells, v)

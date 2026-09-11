@@ -183,15 +183,6 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 
 func opAssert(env *LEnv, args *LVal) *LVal {
 	test := args.Cells[0]
-	var formatStr *LVal
-	var formatArgs []*LVal
-	if len(args.Cells) > 1 {
-		formatStr = args.Cells[1]
-		formatArgs = args.Cells[2:]
-		if formatStr.Type != LString {
-			return env.Errorf("second argument is not a string: %v", formatStr.Type)
-		}
-	}
 	// Evaluate the original expression (docs/lang.md#assert). Copying would
 	// redirect mutations to private runtime data and clear literal protection.
 	ok := env.Eval(test)
@@ -201,9 +192,20 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 	if True(ok) {
 		return Nil()
 	}
-	if formatStr == nil {
+	if len(args.Cells) == 1 {
 		return env.Errorf("assertion failure: %s", test)
 	}
+	// The message is an expression too. Its evaluation and type check are
+	// deferred until failure, before any formatting argument is evaluated.
+	formatStr := env.Eval(args.Cells[1])
+	if formatStr.Type == LError {
+		return formatStr
+	}
+	if formatStr.Type != LString {
+		return env.Errorf("second argument is not a string: %v", formatStr.Type)
+	}
+	args.Cells[1] = formatStr //elps:mutates stores the evaluated message in this call's fresh arglist backing, not the original expression
+	formatArgs := args.Cells[2:]
 	for i := range formatArgs {
 		formatArgs[i] = env.Eval(formatArgs[i]) //elps:mutates writes evaluated results into this call's arglist backing, which evalSExprCells allocates fresh per call
 		if formatArgs[i].Type == LError {
@@ -568,7 +570,10 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	if count.Type != LInt {
 		return env.Errorf("count did not evaluate to an int: %v", count.Type)
 	}
-	loopenv := newEnvN(env, 1) // single loop variable
+	// Reuse one live binding deliberately; body closures share its final
+	// value. See docs/lang.md#dotimes-and-captured-loop-variables for how to
+	// capture a separate value on each turn with an inner let.
+	loopenv := newEnvN(env, 1)
 	n := 0
 	for i := range count.Int {
 		// Count a step for the TURN ITSELF, not just for the forms in the

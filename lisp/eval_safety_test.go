@@ -153,8 +153,10 @@ func TestPanicWithNonStringValues(t *testing.T) {
 	}{
 		{"integer", 42, "42"},
 		{"nil", nil, "nil"},
-		{"error", errors.New("wrapped error"), "wrapped error"},
-		{"struct", struct{ X int }{99}, "{99}"},
+		// Arbitrary values retain their type without invoking application
+		// formatting methods while already recovering from a host panic.
+		{"error", errors.New("wrapped error"), "<panic value of type *errors.errorString>"},
+		{"struct", struct{ X int }{99}, "<panic value of type struct { X int }>"},
 	}
 
 	for _, tc := range tests {
@@ -174,6 +176,16 @@ func TestPanicWithNonStringValues(t *testing.T) {
 
 			result := env.Eval(SExpr([]*LVal{Symbol("test-panic-type")}))
 			msg := requireLError(t, result)
+			if !IsInternalPanic(result) {
+				t.Errorf("recovered panic should retain its internal-panic marker: %s", msg)
+			}
+			stack := result.CallStack()
+			if stack == nil || len(stack.GoStack) == 0 {
+				t.Fatal("recovered panic should retain a non-empty Go stack")
+			}
+			if !bytes.Contains(stack.GoStack, []byte("TestPanicWithNonStringValues")) {
+				t.Errorf("Go stack should include the native panic origin: %s", stack.GoStack)
+			}
 			if !strings.Contains(msg, "recovered panic") {
 				t.Errorf("error should mention recovered panic, got: %s", msg)
 			}

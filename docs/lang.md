@@ -333,6 +333,23 @@ a macro form.
 The `gensym` builtin is used to generate a new symbol, which is most often used
 with macros to avoid avoid naming collisions.
 
+### Quasiquote traversal
+
+`quasiquote` searches the entire list template for bare `unquote` and
+`unquote-splicing` forms. Nested `quasiquote`, `quote` and reader-quote
+wrappers do not delay those evaluations. For example, both unquotes below
+run during the outer quasiquote:
+
+```lisp
+(let ((x 7)) (quasiquote (quasiquote (unquote x)))) ; '(quasiquote 7)
+(let ((x 7)) (quasiquote (quote (unquote x))))      ; '(quote 7)
+```
+
+The markers are recognized by their bare spelling: `lisp:unquote` inside a
+template is ordinary data. `unquote` inserts its value while preserving
+existing quote depth. `unquote-splicing` requires a list and a list-element
+position; it cannot be the whole template or a quoted splicing form.
+
 ## Parens () and braces []
 
 Matching braces produce a quoted list.  As with parens, an open brace `[`
@@ -431,6 +448,27 @@ in CI. Dynamic code and opaque macros limit static detection; see
 Captured bindings remain live: `set!` in a closure updates its captured
 binding, not a later binding that happens to have the same name.
 
+### dotimes and captured loop variables
+
+`dotimes` evaluates its count once in the enclosing scope. It reuses one
+loop-variable binding for successive values from zero to count minus one.
+After normal completion that binding holds the number of iterations (zero
+for a nonpositive count), including when the optional result expression runs.
+
+Closures created by the body share this live binding. To retain an individual
+iteration's value, introduce a fresh `let` binding inside the body:
+
+```lisp
+(let ((fs (vector)))
+  (dotimes (i 3) (append! fs (lambda () i)))
+  (map 'list (lambda (f) (funcall f)) fs))       ; '(3 3 3)
+
+(let ((fs (vector)))
+  (dotimes (i 3)
+    (let ((saved i)) (append! fs (lambda () saved))))
+  (map 'list (lambda (f) (funcall f)) fs))       ; '(0 1 2)
+```
+
 ### flet vs labels
 
 `flet` and `labels` are used to create bindings for local functions within a
@@ -475,6 +513,17 @@ remain protected. A truthy result returns `()`. A falsey result raises an
 assertion error; the optional message and formatting arguments are evaluated
 only on that failure path. An error from the test propagates unchanged,
 including an internal-panic marker, without evaluating the message.
+
+The message is an expression that must produce a string. On failure, it is
+evaluated before the formatting arguments, which run left to right. A
+message error or non-string result stops evaluation before those arguments;
+an error from any formatting argument also propagates immediately.
+
+```lisp
+(assert true (error 'must-not-run))            ; ()
+(let ((message "invalid amount"))
+  (assert false message))                     ; error: invalid amount
+```
 
 ### progn
 
@@ -1724,12 +1773,12 @@ failed invariant. These developer checks are distinct from language errors.
 
 ## Execution Limits
 
-ELPS bounds evaluation with five independent mechanisms: **context
-cancellation**, **step limits**, **stack height limits**, an **evaluation
+ELPS bounds evaluation with **context cancellation**, **step limits**,
+**macro expansion limits**, **stack height limits**, an **evaluation
 nesting limit** and a **tail-iteration limit**.  Context cancellation and step
 limits are optional and impose negligible overhead when not configured; the
 physical stack limit, the evaluation nesting limit and the tail-iteration
-limit are on by default.
+limit are on by default, as is the macro expansion limit.
 
 None of them bound *total* memory: `Runtime.MaxAlloc` caps the sizes of data
 containers constructed by builtin operations, not the sum across calls, so a loop that allocates many
@@ -1769,6 +1818,15 @@ length. `copy` checks each backing container in the copied graph separately;
 many small nested containers can still exceed the cap in aggregate. Immutable
 string storage is shared. Allocation inside native copy hooks is the host's
 responsibility.
+
+`quasiquote` checks the final size of every list it constructs, including
+nested lists and lists produced by splicing. Empty splices can make a large
+template produce a small allowed result; staging slots are scratch, not
+retained output. A whole-template `unquote` that returns an existing list
+does not create new backing and may return a list above the cap. Unquotes
+run left to right and stop at the first error or oversized output; earlier
+side effects are not rolled back. A host-specific cap or dynamically
+generated template cannot in general be checked by a source-only linter.
 
 `format-string` checks the bytes emitted after substitution and brace
 escaping, including the printed representation of nested values. With a cap
@@ -1869,6 +1927,29 @@ It is not a time bound: a single step may run an arbitrary amount of work
 inside a builtin.  **Context cancellation with a deadline is the only limit
 here that measures elapsed time**, and it is what you want if the real
 requirement is "give up after N seconds".
+
+### Macro Expansion Limits
+
+When a macro expands into another macro call, ELPS limits the successive
+expansions. This applies during ordinary evaluation and to `macroexpand`.
+`WithMaxMacroExpansionDepth(n)` selects the limit; a nonpositive value uses
+the default of 1,000. A self-expanding or mutually expanding macro eventually
+returns an ordinary `macro expansion depth exceeded` error.
+
+`macroexpand-1` performs at most one outer expansion. `macroexpand` continues
+while the outer result is another macro call; it does not recursively expand
+every nested subexpression. Each actual expansion in its loop consumes one
+step, including a Go-defined macro whose body does not call the evaluator.
+A non-macro input adds no expansion step; `macroexpand-1` and direct Go
+`MacroCall` retain their ordinary one-call accounting.
+A macro that returns an ordinary function call
+containing a new macro call starts nested evaluation when that result is run.
+The evaluation nesting, stack and step limits bound that different shape.
+
+The expansion limit counts a successive chain, not all macro calls in a
+transaction, and does not measure the total size of generated code. Use a
+step budget and context deadline to bound work across those chains; the
+allocation limit remains a per-container cap.
 
 ### Stack Height, Nesting and Tail-Call Limits
 

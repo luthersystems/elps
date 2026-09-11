@@ -670,6 +670,20 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 			return form
 		}
 		mac := env.Get(macsym)
+		// Ordinary lookup failures mean no expansion; a recovered host fault
+		// must propagate before arguments are cloned or another call runs.
+		if IsInternalPanic(mac) {
+			return mac
+		}
+		if mac.Type != LFun || !mac.IsMacro() {
+			return form
+		}
+		// A native macro can re-expand without evaluating any Lisp. Charge
+		// each actual expansion before cloning its arguments or invoking it;
+		// no-op forms and the one-shot APIs retain their existing accounting.
+		if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+			return lerr
+		}
 		r, ok := macroExpand1(env, mac, macroArgList(form))
 		if !ok {
 			return form
@@ -694,6 +708,9 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 		return form
 	}
 	mac := env.Get(macsym)
+	if IsInternalPanic(mac) {
+		return mac
+	}
 	r, ok := macroExpand1(env, mac, macroArgList(form))
 	if !ok {
 		return form
