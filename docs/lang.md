@@ -2,8 +2,31 @@
 
 ## Basics
 
-Lisp code interpreted by elps is given as a sequences of expressions encoded as
+Lisp code interpreted by elps is given as a sequence of expressions encoded as
 utf-8 text.
+
+### Comments
+
+A semicolon `;` outside a string starts a comment that continues to the end of
+the line (or the end of the file). A `#!` shebang at the beginning of a file
+also consumes the rest of its line. Parentheses and other source text within
+either kind of comment are never evaluated:
+
+```lisp
+#!/usr/bin/env elps
+; (debug-print "not evaluated" 1)
+(debug-print "normal" 2) ; prints "normal" 2
+```
+
+Comments have no fixed line-length limit; even a comment longer than 128 KiB
+continues to the end of its line. The formatter preserves the entire comment.
+Source must still be valid utf-8, including comments.
+
+Other tokens must fit in the reader's 128 KiB scanner window. A token that
+fills the window before its end can be determined produces a `scan-error`
+containing `token exceeds maximum allowable size`, rather than being split
+into separate tokens. `elps lint` reports this parse error as the migration
+diagnostic for oversized tokens; split large values into smaller literals.
 
 ## Expressions
 

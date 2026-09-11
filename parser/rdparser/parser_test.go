@@ -340,7 +340,7 @@ func TestErrors(t *testing.T) {
 		#xDEADBEEG
 		#o123
 		#o9
-`, `test2:4:5: invalid-hex-literal: invalid hexidecimal literal character: 'G'`},
+`, `test2:4:5: invalid-hex-literal: invalid hexadecimal literal character: 'G'`},
 		{`(1 2 3)
 		134.
 		"abc"`, `test3:2:3: scan-error: invalid floating point literal starting: 134.`},
