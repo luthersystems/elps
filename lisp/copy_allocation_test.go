@@ -79,8 +79,9 @@ func TestCopyAllocationLimitIsPerBackingContainer(t *testing.T) {
 	// Distinct headers over one byte payload must still share exactly one
 	// copied payload. Total graph storage exceeds eight, but no container does.
 	data := lisp.Bytes([]byte("12345678"))
-	other := *data
-	source := lisp.QExpr([]*lisp.LVal{data, &other, copyAllocationValue(t, "list", 8)})
+	other := lisp.Quote(data) // language-level second header over the same byte payload
+	require.NotSame(t, data, other)
+	source := lisp.QExpr([]*lisp.LVal{data, other, copyAllocationValue(t, "list", 8)})
 	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("source"), source)))
 	got := env.LoadString("copy-limit.lisp", `(copy source)`)
 	require.NoError(t, lisp.GoError(got))

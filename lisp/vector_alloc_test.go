@@ -3,7 +3,7 @@
 // The allocation assertions for the vector-constructing builtins live behind
 // !elpscheck because the checked build adds ownership bookkeeping to every
 // eval (lisp/ownership_check_elpscheck.go), which moves the insert-sorted
-// count (31 -> 43; the other nine rows are unchanged).  The !race guard is
+// count; the other nine rows are unchanged. The !race guard is
 // precautionary, following the libjson/encode_alloc_test.go precedent: on
 // the authoring toolchain every row measures identically under -race, but
 // these pins should not be coupled to race-instrumentation behavior across
@@ -50,6 +50,8 @@ import "testing"
 // eight-element vector makes three probes and used to Copy the item and the
 // probed element on each (two leaf headers per probe); the probe now passes
 // both by reference (#604, TestSortComparatorArgumentsAreTheElements).
+// Passing these values without evaluating a call expression removes another
+// two temporary allocations per probe, reducing this fixture from 25 to 19.
 //
 // zip moves by 18 rather than 2 because it builds nine vectors for this input
 // -- one per element plus the outer one -- which is what makes it the row that
@@ -116,7 +118,7 @@ func TestVectorBuiltinAllocations(t *testing.T) {
 		{"zip", func() *LVal { return builtinZip(env, zipArgs) }, 63},
 		{"slice", func() *LVal { return builtinSlice(env, sliceArgs) }, 7},
 		{"insert-index", func() *LVal { return builtinInsertIndex(env, insertArgs) }, 7},
-		{"insert-sorted", func() *LVal { return builtinInsertSorted(env, insertSortedArgs) }, 25},
+		{"insert-sorted", func() *LVal { return builtinInsertSorted(env, insertSortedArgs) }, 19},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
