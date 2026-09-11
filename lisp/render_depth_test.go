@@ -15,8 +15,13 @@ import (
 // TestRenderMillionDeepValues isolates fatal stack overflows from the test
 // runner. Each 1M-deep runtime value and renderer has an external 30s deadline.
 func TestRenderMillionDeepValues(t *testing.T) {
-	for _, kind := range []string{"list", "vector", "map"} {
+	for _, kind := range []string{"list", "vector", "map", "dag"} {
 		for _, renderer := range []string{"string", "bounded"} {
+			if kind == "dag" && renderer == "string" {
+				// The expanded DAG is exponential even with the depth cap;
+				// only the byte-bounded renderer promises to reject it cheaply.
+				continue
+			}
 			t.Run(kind+"/"+renderer, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 				defer cancel()
@@ -47,6 +52,8 @@ func TestRenderDepthHelper(t *testing.T) {
 		switch parts[0] {
 		case "list":
 			v = SExpr([]*LVal{v})
+		case "dag":
+			v = SExpr([]*LVal{v, v})
 		case "vector":
 			v = Vector([]*LVal{v})
 			left = "(vector "
@@ -60,6 +67,15 @@ func TestRenderDepthHelper(t *testing.T) {
 		default:
 			t.Fatal("unknown fixture")
 		}
+	}
+	if parts[0] == "dag" {
+		// Strict rendering's abbreviated DAG fits this budget, but no
+		// cycle can justify returning it. The probe must reject without
+		// unrolling the 2^1024 depth-limited branches.
+		if got, ok := v.boundedString(16 << 10); ok || got != "" {
+			t.Fatal("bounded renderer accepted an abbreviated acyclic DAG")
+		}
+		return
 	}
 	// The literal 1024 pins the documented public rendering rule independently
 	// of the implementation constant. Neither full output nor an empty result
@@ -123,6 +139,8 @@ func TestBoundedStringAgreesWithStringOnLongCycle(t *testing.T) {
 		{"spans-cap", 500, 600, false},
 		{"lazy-tracking-boundary", 0, 1000, false},
 		{"shared-cycle-spans-cap", 500, 900, true},
+		{"shared-cycle-at-lazy-boundary", 500, 960, true},
+		{"shared-cycle-past-lazy-boundary", 500, 961, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			v := SExpr(nil)
@@ -150,6 +168,77 @@ func TestBoundedStringAgreesWithStringOnLongCycle(t *testing.T) {
 				t.Errorf("short budget: ok=%v, got %d bytes, want false and empty", ok, len(got))
 			}
 		})
+	}
+}
+
+func TestBoundedRenderCycleProbePreservesErrorRecovery(t *testing.T) {
+	bad := SExpr([]*LVal{nil})
+	first := ErrorConditionf("first", "placeholder")
+	first.Cells = []*LVal{bad}
+	second := ErrorConditionf("second", "placeholder")
+	ring := SExpr(nil)
+	tail := ring
+	for range 899 {
+		next := SExpr(nil)
+		tail.Cells = []*LVal{next}
+		tail = next
+	}
+	tail.Cells = []*LVal{ring}
+	deep := ring
+	for range 500 {
+		deep = SExpr([]*LVal{deep})
+	}
+	// Neither occurrence may render past bad. The hidden shared cycle
+	// would require the graph probe, rather than the strict active path.
+	second.Cells = []*LVal{bad, SExpr([]*LVal{deep, ring})}
+	dag := Int(7)
+	for range 12 {
+		dag = SExpr([]*LVal{dag, dag})
+	}
+	v := SExpr([]*LVal{dag, first, second})
+	want := v.String()
+	if strings.Contains(want, cycleMark) || !strings.Contains(want, corruptedNativeMessage) {
+		t.Fatal("fixture must recover before reaching its hidden cycle")
+	}
+	if got, ok := v.boundedString(len(want)); !ok || got != want {
+		t.Fatal("exact budget must retain both recovered error messages")
+	}
+	if got, ok := v.boundedString(len(want) - 1); ok || got != "" {
+		t.Fatal("short budget accepted a cycle hidden behind error recovery")
+	}
+}
+
+func TestBoundedRenderCycleProbePreservesDepthDependentRecovery(t *testing.T) {
+	var bad *LVal
+	for range 900 {
+		bad = SExpr([]*LVal{bad})
+	}
+	e := ErrorConditionf("bad", "placeholder")
+	ring := make([]*LVal, 900)
+	for i := range ring {
+		ring[i] = SExpr(nil)
+	}
+	for i := 0; i < len(ring)-1; i++ {
+		ring[i].Cells = []*LVal{ring[i+1]}
+	}
+	ring[len(ring)-1].Cells = []*LVal{e}
+	e.Cells = []*LVal{bad, ring[0]}
+	deep := e
+	for range 200 {
+		deep = SExpr([]*LVal{deep})
+	}
+	// The deep visit caps bad and enters the ring. The shallow visit
+	// recovers from bad before entering it. Those paths cannot be combined.
+	v := SExpr([]*LVal{deep, ring[800]})
+	want := v.String()
+	if strings.Contains(want, cycleMark) || !strings.Contains(want, corruptedNativeMessage) {
+		t.Fatal("fixture must cap or recover before detecting a cycle")
+	}
+	if got, ok := v.boundedString(len(want)); !ok || got != want {
+		t.Fatal("exact budget changed depth-dependent error recovery")
+	}
+	if got, ok := v.boundedString(len(want) - 1); ok || got != "" {
+		t.Fatal("short budget accepted a cycle assembled from incompatible recovery paths")
 	}
 }
 

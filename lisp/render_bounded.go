@@ -71,85 +71,83 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 	if r.full {
 		return "", false
 	}
-	if !st.cyclic && !r.lazyCycle && !hasRenderCycle(v) {
-		return "", false
+	if !st.cyclic && !r.lazyCycle {
+		probe, cyclic := probeRenderCycles(v)
+		if !cyclic {
+			if len(probe.recovered) == 0 {
+				return "", false
+			}
+			// A malformed error message can exceed the budget before its
+			// recovery replaces it with a short sentinel. The probe has
+			// established exactly which messages recover at each depth.
+			// Replay the acyclic rendering with those replacements known.
+			r = valueRenderer{limit: limit, recovered: probe.recovered}
+			var retry cycleState
+			r.root(v, cycleGuard{state: &retry})
+			if r.full || retry.cyclic {
+				return "", false
+			}
+		}
 	}
 	return r.out.String(), true
 }
 
-// hasRenderCycle handles shared nodes which the strict retry first reached
-// near the depth cap and then skipped on a shallower path. Its active path
-// cannot prove those cycles. Capture the rendered graph at each node's
-// shallowest depth, then look for a cycle the lazy walk can finish before
-// the cap. Unlike unrolling the lazy walk without an output budget, this
-// does not expand a shared DAG exponentially.
-func hasRenderCycle(v *LVal) bool {
-	p := renderCycleProbe{
-		depth: make(map[*LVal]int),
-		edges: make(map[*LVal]map[*LVal]struct{}),
-	}
+// probeRenderCycles handles shared nodes which the strict retry first reached
+// near the depth cap and then skipped on a shallower path. Capture the
+// rendered graph with a separate vertex for each value and depth: recovery
+// from a malformed error child can expose different edges at different
+// depths. Memoization bounds shared DAG traversal without merging those paths.
+func probeRenderCycles(v *LVal) (*renderCycleProbe, bool) {
+	p := renderCycleProbe{nodes: make(map[renderProbeNode]*renderProbeVisit)}
 	r := valueRenderer{limit: -1, probe: &p}
 	var st cycleState
 	r.root(v, cycleGuard{state: &st})
 
-	// Remove acyclic prefixes first; in particular, a DAG needs no searches.
-	indegree := make(map[*LVal]int, len(p.depth))
-	for _, children := range p.edges {
-		for child := range children {
-			indegree[child]++
-		}
+	lastDepth := make(map[*LVal]int)
+	for node := range p.nodes {
+		lastDepth[node.value] = max(lastDepth[node.value], node.depth)
 	}
-	queue := make([]*LVal, 0, len(p.depth))
-	for node := range p.depth {
-		if indegree[node] == 0 {
-			queue = append(queue, node)
-		}
-	}
-	for i := 0; i < len(queue); i++ {
-		for child := range p.edges[queue[i]] {
-			indegree[child]--
-			if indegree[child] == 0 {
-				queue = append(queue, child)
-			}
-		}
-	}
-
-	// A node first reached at depth d starts lazy tracking at max(d, 64).
-	// A shortest return path of length n proves a cycle exactly when that
-	// tracking depth plus n fits. Breadth-first search tests this without
-	// depending on which ancestors a previous visit happened to have.
-	seen := make(map[*LVal]int, len(p.depth))
+	seen := make(map[renderProbeNode]int)
+	var queue []renderProbeNode
 	search := 0
-	for start, depth := range p.depth {
-		remaining := maxRenderDepth - max(depth, cycleGuardDepth)
-		if indegree[start] == 0 || remaining <= 0 {
+	for start := range p.nodes {
+		// Lazy tracking starts at depth 64. Only a path from a tracked
+		// occurrence to another occurrence of that value proves a cycle.
+		if start.depth < cycleGuardDepth || lastDepth[start.value] <= start.depth {
 			continue
 		}
 		search++
 		queue = append(queue[:0], start)
 		seen[start] = search
-		for distance, head := 1, 0; distance <= remaining && head < len(queue); distance++ {
-			end := len(queue)
-			for ; head < end; head++ {
-				for child := range p.edges[queue[head]] {
-					if child == start {
-						return true
-					}
-					if indegree[child] != 0 && seen[child] != search {
-						seen[child] = search
-						queue = append(queue, child)
-					}
+		for head := 0; head < len(queue); head++ {
+			for child := range p.nodes[queue[head]].children {
+				if child.value == start.value {
+					return &p, true
+				}
+				if seen[child] != search {
+					seen[child] = search
+					queue = append(queue, child)
 				}
 			}
 		}
 	}
-	return false
+	return &p, false
+}
+
+type renderProbeNode struct {
+	value *LVal
+	depth int
+}
+
+type renderProbeVisit struct {
+	children map[renderProbeNode]struct{}
+	panicVal any
 }
 
 type renderCycleProbe struct {
-	depth  map[*LVal]int
-	edges  map[*LVal]map[*LVal]struct{}
-	parent *LVal
+	nodes     map[renderProbeNode]*renderProbeVisit
+	parent    *renderProbeVisit
+	recovered map[renderProbeNode]bool
 }
 
 // valueRenderer is the shared streaming implementation for nested String
@@ -159,6 +157,7 @@ type renderCycleProbe struct {
 type valueRenderer struct {
 	active    map[*LVal]int
 	probe     *renderCycleProbe
+	recovered map[renderProbeNode]bool
 	out       strings.Builder
 	limit     int
 	full      bool
@@ -239,20 +238,33 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		return
 	}
 	if p := r.probe; p != nil {
+		g.depth++
+		node := renderProbeNode{value: v, depth: g.depth}
 		parent := p.parent
 		if parent != nil {
-			if p.edges[parent] == nil {
-				p.edges[parent] = make(map[*LVal]struct{})
+			if parent.children == nil {
+				parent.children = make(map[renderProbeNode]struct{})
 			}
-			p.edges[parent][v] = struct{}{}
+			parent.children[node] = struct{}{}
 		}
-		g.depth++
-		if depth, seen := p.depth[v]; seen && depth <= g.depth {
+		if previous := p.nodes[node]; previous != nil {
+			if previous.panicVal != nil {
+				panic(previous.panicVal)
+			}
 			return
 		}
-		p.depth[v] = g.depth
-		p.parent = v
-		defer func() { p.parent = parent }()
+		visit := new(renderProbeVisit)
+		p.nodes[node] = visit
+		p.parent = visit
+		defer func() {
+			p.parent = parent
+			if recovered := recover(); recovered != nil {
+				// Replay malformed descendants on cache hits so their
+				// enclosing error still skips its remaining siblings.
+				visit.panicVal = recovered
+				panic(recovered)
+			}
+		}()
 		r.nested(v, onTheRecord, g)
 		return
 	}
@@ -513,9 +525,20 @@ func (r *valueRenderer) errorValue(e *ErrorVal, g cycleGuard) {
 }
 
 func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
+	node := renderProbeNode{value: (*LVal)(e), depth: g.depth}
+	if r.recovered[node] {
+		r.text(corruptedNativeMessage)
+		return
+	}
 	start := r.out.Len()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if r.probe != nil {
+				if r.probe.recovered == nil {
+					r.probe.recovered = make(map[renderProbeNode]bool)
+				}
+				r.probe.recovered[node] = true
+			}
 			// Match ErrorVal.errorMessage's containment boundary: a
 			// malformed descendant replaces the entire message, including
 			// any prefix data already written, but keeps the error location.

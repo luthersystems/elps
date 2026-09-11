@@ -13,12 +13,14 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// TestRuntimeWalkersAt500K pins the observed behavior at 500,000 acyclic
+// TestRuntimeWalkerDepthAt500K pins the observed behavior at 500,000 acyclic
 // containers. Survival at this depth does not establish arbitrary-depth
 // safety for walkers that still use recursion. Each operation runs in its
 // own process so a fatal stack overflow or hang becomes a test failure,
 // enforced by an external deadline rather than an in-process timer.
-func TestRuntimeWalkersAt500K(t *testing.T) {
+// Successes assert their full result; the expected to-string LError must be
+// an ordinary conversion error, never a recovered internal panic.
+func TestRuntimeWalkerDepthAt500K(t *testing.T) {
 	const childEnv = "ELPS_RUNTIME_WALKER_500K"
 	if operation := os.Getenv(childEnv); operation != "" {
 		runRuntimeWalkerAt500K(t, operation)
@@ -28,12 +30,22 @@ func TestRuntimeWalkersAt500K(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, operation := range []string{"equal", "go-copy", "lisp-copy", "json-dump", "format-string", "quote", "to-string"} {
-		t.Run(operation, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	for _, tc := range []struct {
+		operation, outcome string
+	}{
+		{"equal", "success: equal chains true; different deepest leaves false"},
+		{"go-copy", "success: independent copy of all 500,000 lists and the leaf"},
+		{"lisp-copy", "success: independent copy of all 500,000 lists and the leaf"},
+		{"json-dump", "success: all 500,000 lists serialized exactly"},
+		{"format-string", "success: 1024 balanced wrappers around #<depth-limit>"},
+		{"quote", "success: shallow quoted header; source unchanged"},
+		{"to-string", "ordinary LError: cannot convert type to string"},
+	} {
+		t.Run(tc.operation, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeWalkersAt500K$", "-test.count=1")
-			cmd.Env = append(os.Environ(), childEnv+"="+operation)
+			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeWalkerDepthAt500K$", "-test.count=1")
+			cmd.Env = append(os.Environ(), childEnv+"="+tc.operation)
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {
 				t.Fatalf("walker exceeded external 30s deadline: %v\n%s", ctx.Err(), output)
@@ -41,6 +53,7 @@ func TestRuntimeWalkersAt500K(t *testing.T) {
 			if err != nil {
 				t.Fatalf("walker subprocess failed: %v\n%s", err, output)
 			}
+			t.Log(tc.outcome)
 		})
 	}
 }
