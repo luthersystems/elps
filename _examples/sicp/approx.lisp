@@ -15,7 +15,7 @@
   ; let initializers cannot capture their own binding. Use an explicitly
   ; recursive function for the delayed tail (docs/lang.md: let vs let*).
   (labels ([guesses (guess)
-             (stream-cons guess (guesses (sqrt-improve guess x)))])
+            (stream-cons guess (guesses (sqrt-improve guess x)))])
     (guesses 1.0)))
 
 (assert-equal '(1.0 1.5 1.4166666666666665)
