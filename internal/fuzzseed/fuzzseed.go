@@ -287,6 +287,11 @@ func Pathological() map[string][]byte {
 		"symbol-exceeds-scanner-buf": []byte(strings.Repeat("a", scannerBufSize+1)),
 		"comment-exceeds-scanner-buf": []byte(";" +
 			strings.Repeat("a", scannerBufSize+1)),
+		// Code after the window boundary must remain part of the comment.
+		"comment-hidden-code": []byte(";" + strings.Repeat(" ", scannerBufSize+128) +
+			"(debug-print \"EXECUTED-FROM-COMMENT\" 1)\n(debug-print \"normal\" 2)\n"),
+		"shebang-hidden-code": []byte("#!" + strings.Repeat(" ", scannerBufSize+128) +
+			"(debug-print \"EXECUTED-FROM-COMMENT\" 1)\n(debug-print \"normal\" 2)\n"),
 		"string-exceeds-scanner-buf": []byte(`"` +
 			strings.Repeat("a", scannerBufSize+1) + `"`),
 		"int-literal-4k-digits": []byte(strings.Repeat("9", 4096)),

@@ -15,6 +15,7 @@ import (
 type Scanner struct {
 	r       io.Reader
 	readErr error
+	scanErr error
 	path    string
 	file    string
 	peek    []Rune
@@ -22,7 +23,7 @@ type Scanner struct {
 	c       Rune
 
 	linePos      int // totalPos at the first byte of the line
-	startLine    int // line nuber at startLinePos
+	startLine    int // line number at startLinePos
 	startLinePos int // totalPos at the starting byte of the token
 	start        int // start of the current token
 	pos          int // index of ch, a utf-8 rune in input
@@ -46,9 +47,8 @@ func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {
 }
 
 // DefaultBufSize is the size of the sliding window NewScanner allocates.  It
-// is also the largest single token NewScanner can scan: the window never
-// grows, so a token that fills it fails with "token exceeds maximum allowable
-// size".
+// limits text retained between EmitToken or Ignore calls: the window never
+// grows. ScanLine releases chunks as it reads, so comments can exceed this size.
 const DefaultBufSize = 128 << 10
 
 // NewScanner initializes and returns a new Scanner reading through a
@@ -60,8 +60,8 @@ func NewScanner(file string, r io.Reader) *Scanner {
 
 // NewScannerString initializes and returns a new Scanner reading src, sizing
 // the sliding window to src rather than allocating the DefaultBufSize window
-// NewScanner uses.  src is already in memory, so the window costs nothing
-// extra and no token can overrun it.
+// NewScanner uses. The window can hold the complete source, so no token can
+// overrun it.
 //
 // This exists because the fixed window is charged per SCANNER, not per byte
 // scanned, and the parser re-reads short strings: readsBackAsSymbol scans each
@@ -72,7 +72,10 @@ func NewScanner(file string, r io.Reader) *Scanner {
 // attacker controls, in a parser whose job is to survive untrusted phylum
 // source.
 func NewScannerString(file, src string) *Scanner {
-	return newScannerBuf(file, strings.NewReader(src), make([]byte, len(src)))
+	s := newScannerBuf(file, strings.NewReader(src), make([]byte, len(src)))
+	// The complete source is buffered even when the final read filled it exactly.
+	s.readErr = io.EOF
+	return s
 }
 
 // SetPath associates a physical location (e.g. filesystem path) with s to aid
@@ -118,20 +121,27 @@ func (s *Scanner) Rune() rune {
 }
 
 // Peek returns the next rune to be scanned, if there are any.  If an invalid
-// utf-8 sequence or EOF prevents futher runes from being scanned Peek returns
+// utf-8 sequence or EOF prevents further runes from being scanned Peek returns
 // a false second value.  If Peek returns a false value the next call to
-// s.ScanRune will return an error that reflects of the cause.
+// s.ScanRune will return an error that reflects the cause.
 func (s *Scanner) Peek() (rune, bool) {
+	if s.scanErr != nil {
+		return 0, false
+	}
 	if len(s.peek) > 0 {
 		return s.peek[0].C, true
 	}
 	err := s.checkExtend()
 	if err != nil {
+		if !errors.Is(err, io.EOF) {
+			s.scanErr = err
+		}
 		return 0, false
 	}
 	c, n := utf8.DecodeRune(s.buf[s.next:])
 	peek := Rune{c, n}
 	if peek.IsRuneError() {
+		s.scanErr = fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.next])
 		return utf8.RuneError, false
 	}
 	s.peek = append(s.peek, peek)
@@ -141,7 +151,15 @@ func (s *Scanner) Peek() (rune, bool) {
 // ScanRune attempts to scan a utf-8 rune from the input for inclusion in the
 // current token.  If an error prevents a valid unicode rune from being scanned
 // then an error will be returned.
-func (s *Scanner) ScanRune() error {
+func (s *Scanner) ScanRune() (scanErr error) {
+	if s.scanErr != nil {
+		return s.scanErr
+	}
+	defer func() {
+		if scanErr != nil && !errors.Is(scanErr, io.EOF) {
+			s.scanErr = scanErr
+		}
+	}()
 	err := s.checkRuneError()
 	if err != nil {
 		return err
@@ -170,7 +188,7 @@ func (s *Scanner) ScanRune() error {
 	if err != nil {
 		// The UTF-8 sequence may be invalid due to a read error so we have to
 		// check first.
-		if s.readErr != nil {
+		if s.readErr != nil && !errors.Is(s.readErr, io.EOF) {
 			return s.readErr
 		}
 		return err
@@ -190,10 +208,13 @@ func (s *Scanner) scan(r Rune) {
 	}
 }
 
-// Err returns an error encountered during the last read on the input stream.
-// Err will always return false while there are still buffered runes that need
-// to be accepted.
+// Err returns a scanning error, including errors encountered by Peek or the
+// Accept helpers. Scanning errors are terminal. Input read errors are reported
+// once the valid buffered runes preceding them have been consumed; EOF is nil.
 func (s *Scanner) Err() error {
+	if s.scanErr != nil {
+		return s.scanErr
+	}
 	if s.readErr == nil {
 		return nil
 	}
@@ -300,6 +321,43 @@ func (s *Scanner) AcceptSeq(fn func(rune) bool) int {
 	return n
 }
 
+// ScanLine consumes the rest of the current line, excluding the newline, and
+// returns all text since the last EmitToken or Ignore. It releases scanned
+// chunks so the line need not fit in the sliding window. The returned text
+// uses memory proportional to the line length, for format-preserving callers.
+// Callers must save LocStart before calling: consumed text is ignored.
+func (s *Scanner) ScanLine() (string, error) {
+	var text strings.Builder
+	flush := func() {
+		text.Write(s.buf[s.start:s.next])
+		s.Ignore()
+	}
+	for {
+		// Leave room to decode a complete UTF-8 rune across a window edge.
+		if s.next-s.start >= len(s.buf)-utf8.UTFMax {
+			flush()
+		}
+		c, ok := s.Peek()
+		if !ok {
+			if err := s.Err(); err != nil {
+				return "", err
+			}
+			if !s.EOF() {
+				return "", s.ScanRune()
+			}
+			break
+		}
+		if c == '\n' {
+			break
+		}
+		if err := s.ScanRune(); err != nil {
+			return "", err
+		}
+	}
+	flush()
+	return text.String(), nil
+}
+
 func (s *Scanner) AcceptSeqRune(c rune) int {
 	var n int
 	for s.AcceptRune(c) {
@@ -396,10 +454,13 @@ func (s *Scanner) checkExtend() error {
 	if rem < utf8.UTFMax {
 		s.extend()
 	}
-	if len(s.buf) == 0 {
-		return io.EOF
-	}
 	if s.next == len(s.buf) {
+		if s.readErr != nil {
+			return s.readErr
+		}
+		if len(s.buf) == 0 {
+			return io.EOF
+		}
 		// If this is happening then we haven't seen EOF and the extension
 		// routine was unable to do anything to extend the buffer.
 		return errors.New("token exceeds maximum allowable size")
@@ -423,15 +484,22 @@ func (s *Scanner) extend() bool {
 }
 
 func (s *Scanner) fill(end int) {
-	if errors.Is(s.readErr, io.EOF) {
+	if s.readErr != nil {
 		s.buf = s.buf[:end]
-	}
-	n, err := io.ReadFull(s.r, s.buf[end:])
-	s.buf = s.buf[:end+n]
-	if err == io.ErrUnexpectedEOF {
 		return
 	}
-	s.readErr = err
+	// Read directly so a reader's ErrUnexpectedEOF remains distinguishable
+	// from a short final window ending in EOF. ReadFull synthesizes the former
+	// from the latter and discards errors returned with a full buffer.
+	for end < len(s.buf) {
+		n, err := s.r.Read(s.buf[end:])
+		end += n
+		if err != nil {
+			s.readErr = err
+			break
+		}
+	}
+	s.buf = s.buf[:end]
 }
 
 // Rune contains a rune that read by Scanner during peeking operations.
