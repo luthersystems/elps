@@ -370,10 +370,10 @@ Examples of special operators are `if`, `lambda`, and `quasiquote`.  There is
 no facility within the language for defining special operators.
 
 ### cond
-`cond` takes an arbitrary number of arguments called clauses. A clause consists
-of a list of exactly two expressions. The first expression in a clause is a
-condition, and there can be any number of expressions following the condition
-in a cond branch which get wrapped by an implicit progn.
+`cond` takes an arbitrary number of arguments called clauses. A clause is a
+nonempty list whose first expression is a condition. Any expressions following
+the condition form a body wrapped by an implicit `progn`. A matching clause
+with no body returns `()`, not the value of its condition.
 
 For example,
 
@@ -1404,7 +1404,7 @@ spaces. An empty string `""` inserts a paragraph break.
   "Evaluates body forms when test is truthy."
   ""
   "Like if but with no else branch and an implicit progn."
-  (list 'if test (cons 'progn body) ()))
+  (quasiquote (if (unquote test) (progn (unquote-splicing body)) ())))
 ```
 
 A body consisting entirely of strings (no executable expression after them)
@@ -2143,13 +2143,34 @@ Note this bounds one call, not their sum — N sleeps just under the cap still
 block for N times the cap.  A context deadline is what bounds total elapsed
 time.
 
-Because tail calls are optimized, a correctly written tail-recursive loop
-runs in constant stack space for an unbounded number of iterations:
+Tail calls run in constant stack space, subject to the tail-iteration and
+execution limits above. When a form is itself in tail position, these parts
+preserve tail position:
+
+| Form | Tail position |
+| --- | --- |
+| `if` | The selected `then` or `else` expression. |
+| `progn` | The last body expression, including a body of one expression. |
+| `cond` | The last body expression of the selected clause. Tests are not tail positions; a matching bodyless clause returns `()`. |
+| `let`, `let*` | The last body expression. Binding initializers are not tail positions. |
+| `or`, `and` | The final argument, if evaluation reaches it. Earlier arguments are not tail positions. |
+
+`and` still stops at the first falsey value and returns that value unchanged:
+`(and)` returns `true`, `(and 42)` returns `42`, and `(and 1 ())` returns `()`.
+Its final argument can call the enclosing function without growing the stack:
 
 ```lisp
 (defun spin (n) (if (= n 0) 'done (spin (- n 1))))
 (spin 500000)   ; constant stack space; evaluates to 'done
+
+(defun process (n acc)
+  (and (> n 0) (process (- n 1) (+ acc 1))))
+(process 1000000 0)   ; constant stack space; evaluates to false
 ```
+
+`when` and `unless` are not built-in control forms. The example `when` macro
+in this guide expands into `if` and `progn`, so its last body expression
+preserves tail position too.
 
 **A tail call that CROSSES a `with-cleanup` is not optimized.** A frame that
 still owes cleanup forms cannot be elided, so a recursion routed through the

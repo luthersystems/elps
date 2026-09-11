@@ -136,7 +136,8 @@ var langSpecialOps = []*langBuiltin{
 	{"and", Formals(VarArgSymbol, "expr"), opAnd,
 		`Short-circuit logical conjunction. Evaluates arguments left to
 		right and returns the first falsey value. If all arguments are
-		truthy, returns the last value. Returns true with no arguments.`},
+		truthy, returns the last value. Returns true with no arguments.
+		The final argument preserves tail position if it is reached.`},
 	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol,
 		`Returns a quoted package-qualified symbol. If the symbol is
 		already qualified (contains a colon), returns it as-is. Otherwise
@@ -1082,11 +1083,9 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 		// The identity for ``and'' is a true value.
 		return Bool(true)
 	}
-	// NOTE:  Because it is unknown which argument will be the last one
-	// evaluated ``and'' cannot use a Terminal expression (unlike ``or'').
-	var r *LVal
-	for _, c := range s.Cells {
-		r = env.Eval(c)
+	term := s.Cells[len(s.Cells)-1]
+	for _, c := range s.Cells[:len(s.Cells)-1] {
+		r := env.Eval(c)
 		if r.Type == LError {
 			return r
 		}
@@ -1094,16 +1093,9 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 			return r
 		}
 	}
-	// In the common lisp standard the ``and'' function returns the evaluated
-	// result of its final argument if all arguments evaluated true.
-	//		(and) == nil
-	//		(and x) == x
-	//		(and x1 x2 ... xn) == (cond
-	//		                       ((not x1) nil)
-	//		                       ((not x2) nil)
-	//		                       ...
-	//		                       (t xn))
-	return r
+	// Earlier falsey arguments return immediately. If the final argument is
+	// reached, its value is returned unchanged, so it preserves tail position.
+	return env.Terminal(term)
 }
 
 func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
