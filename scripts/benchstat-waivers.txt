@@ -99,3 +99,13 @@
 # seal-enabled env-construction work landed (elps#519) and the gate reported
 # the row `waiver-unused` on every run; see elps#514 for the remaining
 # eval-path reclaim.)
+
+# QueryPackages copies every package's docstrings into PackageDoc structs, so
+# its B/op grows with the size of the help corpus itself. PR #658 added the
+# documentation for the second hardening pass (elpspath copy/mutate and leaf
+# semantics, the `and` tail-position rule, render depth limits, condition-data
+# rules, the long-comment rule) and moved the row to +5.24% against the 5%
+# gate with no change under lisp/lisplib/libhelp. The only caller is
+# `elps doc --json` (cmd/doc.go); nothing on an embedded or request path
+# calls it, so the cost is paid once per CLI invocation by a developer.
+github.com/luthersystems/elps/lisp/lisplib/libhelp | QueryPackages | B/op | 8 | 2026-12-31 | elps#659 | docstring corpus grew with the pass-2 hardening docs; only elps doc --json calls this; revisit with a fixed-corpus fixture if it keeps drifting
