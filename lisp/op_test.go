@@ -53,14 +53,9 @@ func TestSpecialOp(t *testing.T) {
 			{`(let* ([x 1]) x)`, "1", ""},
 			{`(let* ([x 1] [y 2]) (+ x y))`, "3", ""},
 			{`(let* ([x 0]) (let* ([x 1] [y (+ x 1)]) (+ x y)))`, "3", ""},
-			// BUG:  let* should function like the following commented tests
-			// according to scheme and CL.  Instead let* is able to define
-			// recursive functions.  And lambdas in a let* can see bindings
-			// defined later than it.
-			//{`(let ((bar 0)) (let* ((foo (lambda () bar)) (bar 1)) (foo)))`, `0`, ``},
-			//{`(let* ((f (lambda (x)
-			//			(if (= 0 x) 0 (f (- x 1))))))
-			//	(f 10))`, `test:2: lisp:if: unbound symbol: f`, ``},
+			{`(let ((bar 0)) (let* ((foo (lambda () bar)) (bar 1)) (foo)))`, `0`, ``},
+			// The former disabled recursion case now runs with behavioral
+			// error assertions in TestLetInitializersCannotCaptureTheirOwnBinding.
 		}},
 		{"flet", elpstest.TestSequence{
 			{`(flet [])`, `()`, ``},

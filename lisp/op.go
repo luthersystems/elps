@@ -192,7 +192,9 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("second argument is not a string: %v", formatStr.Type)
 		}
 	}
-	ok := env.Eval(test.Copy())
+	// Evaluate the original expression (docs/lang.md#assert). Copying would
+	// redirect mutations to private runtime data and clear literal protection.
+	ok := env.Eval(test)
 	if ok.Type == LError {
 		return ok
 	}
@@ -719,7 +721,9 @@ func opLet(env *LEnv, args *LVal) *LVal {
 		if len(bind.Cells) != 2 {
 			return env.Errorf("first argument is not a list of pairs")
 		}
-		vals[i] = letenv.Eval(bind.Cells[1])
+		// Initializers run outside the new bindings, including closures
+		// they return. Capturing letenv here would expose later bindings.
+		vals[i] = env.Eval(bind.Cells[1])
 		if vals[i].Type == LError {
 			return vals[i]
 		}
@@ -735,10 +739,13 @@ func opLet(env *LEnv, args *LVal) *LVal {
 
 func opLetSeq(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
-	letenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
+	}
+	letenv := env
+	if len(bindlist.Cells) == 0 {
+		letenv = NewEnv(env)
 	}
 	for _, bind := range bindlist.Cells {
 		if bind.Type != LSExpr {
@@ -751,22 +758,11 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		if val.Type == LError {
 			return val
 		}
-		// BUG:  A function defined in a let* is not supposed to be able to
-		// reference itself (recursively) or any bindings defined following its
-		// entry in bindlist during a funcall.  So we should create a new
-		// environment to hold the actual function binding for this cell along
-		// with any following bindings (provided they don't also bind functions
-		// and cause further fracturing of the lexical scope).  Something like
-		// the following:
-		//
-		//if val.Type == LFun {
-		//	// NOTE:  The function val may not have been created during the
-		//	// evaluation of bind.Cells[1], but it isn't clear how to detect a
-		//	// newly created lambda vs one that was merely the result of, say,
-		//	// symbol resolution inside the bind.Cells[1] expression.  So, we
-		//	// assume for now that this is a newly created function.
-		//	letenv = NewEnv(letenv)
-		//}
+		// Each binding is a nested scope. An initializer's closures retain
+		// earlier bindings; the new binding can shadow them without changing
+		// what those closures see. This also covers closures inside values
+		// such as vectors, rather than only a directly returned LFun.
+		letenv = newEnvN(letenv, 1)
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.Type == LError {
 			return lerr

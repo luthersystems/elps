@@ -96,9 +96,8 @@ import (
 //
 // # Cost, and why the memo is not simply a map
 //
-// Copy is a per-call primitive on small values: `assert` copies its test
-// expression on every evaluation, lambda creation copies its formals,
-// make-sequence copies each number it emits, and
+// Copy is a per-call primitive on small values: lambda creation copies its
+// formals, make-sequence copies each number it emits, and
 // TestCopyLeafAllocatesLikeAStructCopy pins the leaf cost as an equality.
 // (The sort comparators, once the heaviest per-call callers, no longer copy
 // at all -- stable-sort and insert-sorted pass their elements by reference,

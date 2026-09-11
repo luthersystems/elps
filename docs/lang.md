@@ -366,10 +366,18 @@ returned.
 
 ### let vs let\*
 
-`let` and `let*` are used to create bindings for local variables within a
-new scope.  `let` bindings happens left-to-right/top-to-bottom and they can
-refer to previously bound symbols.  The result of the evaluation of the last
-expression within the `let` is returned.
+`let` and `let*` create local bindings. Both evaluate their initializer
+expressions from left to right and return the value of the last body expression.
+
+`let` evaluates every initializer in the enclosing scope, then establishes
+all bindings for the body. An initializer cannot see the new bindings, even
+through a closure that runs later.
+
+`let*` behaves like nested single-binding `let` forms. Each initializer can
+see earlier bindings. A closure retains the scopes available when it was
+created: a later binding with the same name shadows an earlier binding
+without changing what that closure sees. Neither form makes a function
+initializer recursive; use `labels` for local recursive functions.
 
 ```lisp
 (let ((variable1 result1)
@@ -395,6 +403,18 @@ expression within the `let` is returned.
        [x (+ x 1)])
   x)                ; evaluates to 2
 ```
+
+```lisp
+(let ((x 1))
+  (let ((x 2) (f (lambda () x)))
+    (f)))                         ; evaluates to 1
+
+(let* ((x 1) (f (lambda () x)) (x 2))
+  (list (f) x))                   ; evaluates to '(1 2)
+```
+
+Captured bindings remain live: `set!` in a closure updates its captured
+binding, not a later binding that happens to have the same name.
 
 ### flet vs labels
 
@@ -434,10 +454,12 @@ an analogous way as `flet` and `labels`.
 
 ### assert
 
-`assert` takes an expression and optional string, and evalutes the expression.
-If the result of the evaluation is truthy then assert returns `()`, otherwise
-`assert` will output the assertion failure message to stderr and raise an
-error.
+`assert` evaluates its test expression exactly once. It uses the original
+runtime values, so mutations have their usual effects and quoted literals
+remain protected. A truthy result returns `()`. A falsey result raises an
+assertion error; the optional message and formatting arguments are evaluated
+only on that failure path. An error from the test propagates unchanged,
+including an internal-panic marker, without evaluating the message.
 
 ### progn
 
