@@ -63,6 +63,27 @@ func oracleWalkers() []oracleWalker {
 	}
 }
 
+// Drivers share graph inputs and registry coverage while checking each
+// operation's contract. Keep the copying adapters separate: their ownership
+// and mutation controls do not apply to a read-only renderer.
+type oracleDriver struct {
+	name, owners string
+	template     bool
+	check        func(*LVal) error
+}
+
+func oracleDrivers() []oracleDriver {
+	var drivers []oracleDriver
+	for _, w := range oracleWalkers() {
+		drivers = append(drivers, oracleDriver{
+			name: w.name, owners: w.owners, template: w.template,
+			check: func(v *LVal) error { return oracleCheck(w, v) },
+		})
+	}
+	// Append new operations so the existing fuzz corpus keeps its indices.
+	return append(drivers, oracleRenderDriver((*LVal).boundedString))
+}
+
 func oracleWalkerByName(walkers []oracleWalker, name string) (oracleWalker, error) {
 	var result oracleWalker
 	for _, w := range walkers {
@@ -444,10 +465,10 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 }
 
 func TestWalkerBehaviorOracle(t *testing.T) {
-	for _, w := range oracleWalkers() {
+	for _, w := range oracleDrivers() {
 		t.Run(w.name, func(t *testing.T) {
 			for _, seed := range []byte{0, 3, 4, 8, 16, 31} {
-				if err := oracleCheck(w, oracleGraph(seed, !w.template)); err != nil {
+				if err := w.check(oracleGraph(seed, !w.template)); err != nil {
 					t.Fatalf("seed %d: %v", seed, err)
 				}
 			}
@@ -480,7 +501,7 @@ func TestWalkerBehaviorOracleCoversRegistry(t *testing.T) {
 			}
 		}
 	}
-	for _, w := range oracleWalkers() {
+	for _, w := range oracleDrivers() {
 		driven = append(driven, strings.Fields(w.owners)...)
 	}
 	slices.Sort(registered)
@@ -492,13 +513,13 @@ func TestWalkerBehaviorOracleCoversRegistry(t *testing.T) {
 }
 
 func FuzzWalkerBehaviorOracle(f *testing.F) {
-	for i := range oracleWalkers() {
+	for i := range oracleDrivers() {
 		for _, seed := range []byte{0, 4, 31} {
 			f.Add(byte(i), []byte{seed, 0, 17, 34, 51})
 		}
 	}
 	f.Fuzz(func(t *testing.T, which byte, data []byte) {
-		walkers := oracleWalkers()
+		walkers := oracleDrivers()
 		w := walkers[int(which)%len(walkers)]
 		var seed byte
 		if len(data) > 0 {
@@ -521,7 +542,7 @@ func FuzzWalkerBehaviorOracle(f *testing.F) {
 			}
 			root.Cells = append(root.Cells, v)
 		}
-		if err := oracleCheck(w, root); err != nil {
+		if err := w.check(root); err != nil {
 			t.Fatalf("%s program %x: %v", w.name, data[:min(len(data), 8)], err)
 		}
 	})
