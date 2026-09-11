@@ -43,19 +43,22 @@ func TestMakeSequenceProgress(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newLimitTestEnv(t, lisp.WithMaxAlloc(4))
-			before := []string{tc.start.String(), tc.stop.String(), tc.step.String()}
+			wantArguments := []string{tc.start.String(), tc.stop.String(), tc.step.String()}
 			for name, value := range map[string]*lisp.LVal{"start": tc.start, "stop": tc.stop, "step": tc.step} {
 				require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol(name), value)))
 			}
 			got := env.LoadString("progress.lisp", `(make-sequence start stop step)`)
-			assert.Equal(t, before, []string{tc.start.String(), tc.stop.String(), tc.step.String()}, "range arguments changed")
+			gotArguments := []string{tc.start.String(), tc.stop.String(), tc.step.String()}
+			assert.Equal(t, wantArguments, gotArguments, "range arguments changed")
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			require.Equal(t, lisp.LSExpr, got.Type, "%v", got)
 			require.Len(t, got.Cells, len(tc.want))
 			for i, want := range tc.want {
 				assert.Equal(t, want.Type, got.Cells[i].Type, "element %d type", i)
 				assert.Equal(t, want.Int, got.Cells[i].Int, "element %d integer", i)
-				assert.Equal(t, want.Float, got.Cells[i].Float, "element %d float", i)
+				// Exact representable successors are the contract here; a
+				// tolerance could hide the stalled-step rounding defect.
+				assert.Equal(t, math.Float64bits(want.Float), math.Float64bits(got.Cells[i].Float), "element %d float", i)
 			}
 		})
 	}
