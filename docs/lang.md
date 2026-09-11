@@ -1786,6 +1786,9 @@ operator, including native callbacks. If evaluating the function position
 or an argument cancels the context, the pending body does not run. This check
 does not charge an additional evaluation step. A direct Go `FunCallContext`
 likewise rejects an already cancelled context before invoking a native body.
+Cancellation first observed at the call boundary reports the caller's source
+location. If first observed on entry to an interpreted body, it reports the
+function's definition location.
 
 Native callbacks temporarily expose the active context through their
 environment so nested evaluations inherit it. The previous context is
