@@ -10,6 +10,13 @@ import (
 	"unicode/utf8"
 )
 
+// maxRenderDepth bounds nested value rendering independently of cycle
+// detection, output budgets, and evaluator limits. Go's stack overflow is
+// fatal, so even an acyclic graph must stop before exhausting the stack.
+const maxRenderDepth = 1024
+
+const renderDepthMark = "#<depth-limit>"
+
 // boundedString renders at most limit bytes of String's representation.
 // A false result means the complete representation does not fit. No partial
 // rendering is returned. Zero is a literal zero-byte limit, not unlimited.
@@ -57,12 +64,92 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 	// String's eventual strict rendering is small enough. Retry with the
 	// same strict visited set String uses, but also track the active path:
 	// repeated DAG nodes alone must NEVER justify a truncated rendering.
-	r = valueRenderer{limit: limit, active: make(map[*LVal]struct{})}
+	// Nor may a long cycle hidden beyond the lazy walk's depth cap: String
+	// uses depth truncation, not strict-cycle rendering, in that case.
+	r = valueRenderer{limit: limit, active: make(map[*LVal]int)}
 	r.root(v, strictCycleGuard())
-	if r.full || !r.actualCycle {
+	if r.full {
+		return "", false
+	}
+	if !st.cyclic && !r.lazyCycle && !hasRenderCycle(v) {
 		return "", false
 	}
 	return r.out.String(), true
+}
+
+// hasRenderCycle handles shared nodes which the strict retry first reached
+// near the depth cap and then skipped on a shallower path. Its active path
+// cannot prove those cycles. Capture the rendered graph at each node's
+// shallowest depth, then look for a cycle the lazy walk can finish before
+// the cap. Unlike unrolling the lazy walk without an output budget, this
+// does not expand a shared DAG exponentially.
+func hasRenderCycle(v *LVal) bool {
+	p := renderCycleProbe{
+		depth: make(map[*LVal]int),
+		edges: make(map[*LVal]map[*LVal]struct{}),
+	}
+	r := valueRenderer{limit: -1, probe: &p}
+	var st cycleState
+	r.root(v, cycleGuard{state: &st})
+
+	// Remove acyclic prefixes first; in particular, a DAG needs no searches.
+	indegree := make(map[*LVal]int, len(p.depth))
+	for _, children := range p.edges {
+		for child := range children {
+			indegree[child]++
+		}
+	}
+	queue := make([]*LVal, 0, len(p.depth))
+	for node := range p.depth {
+		if indegree[node] == 0 {
+			queue = append(queue, node)
+		}
+	}
+	for i := 0; i < len(queue); i++ {
+		for child := range p.edges[queue[i]] {
+			indegree[child]--
+			if indegree[child] == 0 {
+				queue = append(queue, child)
+			}
+		}
+	}
+
+	// A node first reached at depth d starts lazy tracking at max(d, 64).
+	// A shortest return path of length n proves a cycle exactly when that
+	// tracking depth plus n fits. Breadth-first search tests this without
+	// depending on which ancestors a previous visit happened to have.
+	seen := make(map[*LVal]int, len(p.depth))
+	search := 0
+	for start, depth := range p.depth {
+		remaining := maxRenderDepth - max(depth, cycleGuardDepth)
+		if indegree[start] == 0 || remaining <= 0 {
+			continue
+		}
+		search++
+		queue = append(queue[:0], start)
+		seen[start] = search
+		for distance, head := 1, 0; distance <= remaining && head < len(queue); distance++ {
+			end := len(queue)
+			for ; head < end; head++ {
+				for child := range p.edges[queue[head]] {
+					if child == start {
+						return true
+					}
+					if indegree[child] != 0 && seen[child] != search {
+						seen[child] = search
+						queue = append(queue, child)
+					}
+				}
+			}
+		}
+	}
+	return false
+}
+
+type renderCycleProbe struct {
+	depth  map[*LVal]int
+	edges  map[*LVal]map[*LVal]struct{}
+	parent *LVal
 }
 
 // valueRenderer is the shared streaming implementation for nested String
@@ -70,15 +157,16 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 // LVal.str; containers no longer assemble a temporary string per child.
 // A negative limit is the ordinary, unlimited String path.
 type valueRenderer struct {
-	active      map[*LVal]struct{}
-	out         strings.Builder
-	limit       int
-	full        bool
-	actualCycle bool
+	active    map[*LVal]int
+	probe     *renderCycleProbe
+	out       strings.Builder
+	limit     int
+	full      bool
+	lazyCycle bool
 }
 
 func (r *valueRenderer) text(s string) {
-	if r.full {
+	if r.full || r.probe != nil {
 		return
 	}
 	if r.limit >= 0 && len(s) > r.limit-r.out.Len() {
@@ -146,9 +234,37 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	default:
 		// The remaining types contain nested values and use the guard below.
 	}
+	if g.depth >= maxRenderDepth {
+		r.text(renderDepthMark)
+		return
+	}
+	if p := r.probe; p != nil {
+		parent := p.parent
+		if parent != nil {
+			if p.edges[parent] == nil {
+				p.edges[parent] = make(map[*LVal]struct{})
+			}
+			p.edges[parent][v] = struct{}{}
+		}
+		g.depth++
+		if depth, seen := p.depth[v]; seen && depth <= g.depth {
+			return
+		}
+		p.depth[v] = g.depth
+		p.parent = v
+		defer func() { p.parent = parent }()
+		r.nested(v, onTheRecord, g)
+		return
+	}
 	if r.active != nil {
-		if _, ok := r.active[v]; ok {
-			r.actualCycle = true
+		if firstDepth, ok := r.active[v]; ok {
+			// Lazy tracking starts at cycleGuardDepth. Following this
+			// cycle again must rediscover a tracked node before the cap
+			// for String to use the same strict rendering as this retry.
+			period := g.depth + 1 - firstDepth
+			if max(firstDepth, cycleGuardDepth)+period <= maxRenderDepth {
+				r.lazyCycle = true
+			}
 		}
 	}
 	next, cyclic := g.descend(v)
@@ -157,7 +273,7 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		return
 	}
 	if r.active != nil {
-		r.active[v] = struct{}{}
+		r.active[v] = next.depth
 	}
 	if r.active != nil || next.tracking() {
 		// Error-message rendering contains malformed child panics. Keep

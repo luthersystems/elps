@@ -1785,6 +1785,29 @@ containers constructed by builtin operations, not the sum across calls, so a loo
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
 
+### Rendering Depth
+
+Printing a value with `debug-print`, `format-string`, or Go's `LVal.String`
+renders at most **1024 nested values** along a path. A deeper subtree is
+replaced by `#<depth-limit>`; a scalar at the boundary still renders normally.
+Lists, vectors, sorted-maps, quoted values, error data and tagged values all
+share this limit. Surrounding delimiters and later siblings are retained.
+The outermost quote prefix does not consume a level.
+
+```lisp
+(set 'x 7)
+(dotimes (i 1025) (set 'x (list x)))
+(format-string "{}" x) ; 1024 list wrappers around #<depth-limit>
+```
+
+Cycles use the separate marker `#<cycle>`. A cycle beyond the rendering depth
+limit is omitted with its subtree. These markers are diagnostic output, not
+source that can be read back. The depth limit is always active, including
+when evaluator limits are disabled. `format-string` also checks its output
+against the allocation limit, including the marker and closing delimiters.
+No source form is rejected by this rule; nesting assembled at runtime cannot
+be determined reliably by a static migration diagnostic.
+
 ### Allocation Limits
 
 `WithMaxAlloc(n)` sets a size cap in **bytes** for newly built strings and

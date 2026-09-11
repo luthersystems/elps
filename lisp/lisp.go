@@ -1710,10 +1710,10 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // String renders v as lisp source.
 //
 // A value that contains itself renders the marker "#<cycle>" at the point the
-// walk reaches it a second time, so the result is finite and the walk cannot
-// overflow the goroutine stack and kill the process.  Rendering is otherwise
-// unchanged: an acyclic value renders in full, at any nesting depth, exactly
-// as it always did.  See lisp/cycle.go and issue #390.
+// walk reaches it a second time. Independently, rendering stops after 1024
+// nested values and replaces deeper subtrees with "#<depth-limit>", keeping
+// even acyclic graphs from overflowing the goroutine stack. Scalars at the
+// boundary still render in full. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
 	var st cycleState
 	s := v.stringGuard(cycleGuard{state: &st})
@@ -1854,6 +1854,9 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 	// guard's path.
 	if g.abandoned() {
 		return ""
+	}
+	if g.depth >= maxRenderDepth {
+		return renderDepthMark
 	}
 	g, cyclic := g.descend(v)
 	if cyclic {
