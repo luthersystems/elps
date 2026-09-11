@@ -35,31 +35,24 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	return lisp.Nil()
 }
 
+// Allocation and storage-sharing edge cases are specified in
+// docs/lang.md#allocation-limits; keep builtin help concise.
+//
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("lowercase", lisp.Formals("str"), builtinLower,
-		`Returns a copy of str with all Unicode characters converted to
-		lowercase. The converted byte length must fit the allocation limit.
-		An unchanged string reuses its existing storage.`),
+		`Returns str in Unicode lowercase, reusing storage if unchanged.`),
 	libutil.FunctionDoc("uppercase", lisp.Formals("str"), builtinUpper,
-		`Returns a copy of str with all Unicode characters converted to
-		uppercase. The converted byte length must fit the allocation limit.
-		An unchanged string reuses its existing storage.`),
+		`Returns str in Unicode uppercase, reusing storage if unchanged.`),
 	libutil.FunctionDoc("split", lisp.Formals("str", "sep"), builtinSplit,
-		`Splits str on each occurrence of the separator string sep and
-		returns a list of the substrings between separators. If sep is
-		empty, splits after each UTF-8 character (an empty input gives no
-		pieces). The allocation limit counts output pieces, not input bytes.`),
+		`Splits str around sep into a list of substrings. An empty sep splits
+		by UTF-8 rune; empty str then yields no pieces. The limit counts pieces.`),
 	libutil.FunctionDoc("join", lisp.Formals("list", "sep"), builtinJoin,
-		`Concatenates a list of strings with sep inserted between each
-		element. Returns a single string. All elements of list must be
-		strings. The output byte length, including separators, must fit
-		the allocation limit.`),
+		`Joins a list of strings with sep between elements. The result,
+		including separators, must fit the allocation byte limit.`),
 	libutil.FunctionDoc("repeat", lisp.Formals("str", "n"), builtinRepeat,
-		`Returns a new string consisting of n copies of str concatenated
-		together. n must be a non-negative integer. Zero copies or an empty
-		input return an empty string; one copy reuses the input storage.
-		Other results must fit the allocation limit in bytes.`),
+		`Repeats str n times (n must be non-negative). Zero yields an empty
+		string; one reuses str. Other results must fit the byte limit.`),
 	libutil.FunctionDoc("trim-space", lisp.Formals("str"), builtinTrimSpace,
 		`Returns str with all leading and trailing whitespace removed
 		(spaces, tabs, newlines, etc.).`),

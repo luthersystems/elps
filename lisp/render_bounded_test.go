@@ -4,12 +4,44 @@ package lisp
 
 import (
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBoundedStringScalarBoundaries(t *testing.T) {
+	for _, v := range []*LVal{
+		Int(0), Int(-1), Int(math.MaxInt), Int(math.MinInt),
+		Float(math.SmallestNonzeroFloat64), Float(math.Inf(1)), Float(math.Inf(-1)), Float(math.NaN()),
+		Symbol(""), Symbol(strings.Repeat("s", 128)), QSymbol("receipt"), Quote(QSymbol("receipt")),
+	} {
+		t.Run(v.String(), func(t *testing.T) {
+			want := v.String()
+			got, ok := v.boundedString(len(want))
+			require.True(t, ok)
+			assert.Equal(t, want, got)
+			for _, limit := range []int{-1, len(want) - 1} {
+				got, ok = v.boundedString(limit)
+				assert.False(t, ok)
+				assert.Empty(t, got)
+			}
+		})
+	}
+}
+
+func TestBoundedStringSequenceHintIsNotRequiredSize(t *testing.T) {
+	v := SExpr([]*LVal{Symbol(""), Symbol("")})
+	const want = "( )"
+	got, ok := v.boundedString(len(want))
+	require.True(t, ok, "an allocation hint must not reject a smaller actual rendering")
+	assert.Equal(t, want, got)
+	got, ok = v.boundedString(len(want) - 1)
+	assert.False(t, ok)
+	assert.Empty(t, got)
+}
 
 type renderProbeError struct{ calls *int }
 

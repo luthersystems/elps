@@ -3370,7 +3370,11 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 	var buf strings.Builder
 	limit := env.Runtime.MaxAllocBytes()
-	buf.Grow(min(len(f), limit))
+	// Reserve the usual small substitution allowance, capped before the
+	// multiplication so neither large formats nor argument counts overflow.
+	hint := min(len(f), limit)
+	hint += 16 * min(len(fvals), (limit-hint)/16)
+	buf.Grow(hint)
 	write := func(s string) bool {
 		if len(s) > limit-buf.Len() {
 			return false

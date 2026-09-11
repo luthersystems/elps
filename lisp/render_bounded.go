@@ -17,6 +17,36 @@ func (v *LVal) boundedString(limit int) (string, bool) {
 	if limit < 0 {
 		return "", false
 	}
+	// Scalars need no traversal buffer. Numeric text has a fixed maximum
+	// size; symbols may be arbitrarily long, so check before adding quotes.
+	var scalar string
+	switch v.Type {
+	case LInt:
+		scalar = strconv.Itoa(v.Int)
+	case LFloat:
+		scalar = strconv.FormatFloat(v.Float, 'g', -1, 64)
+	case LSymbol, LQSymbol:
+		quotes := 0
+		if v.quoted {
+			quotes++
+		}
+		if v.Type == LQSymbol {
+			quotes++
+		}
+		if quotes > limit || len(v.Str) > limit-quotes {
+			return "", false
+		}
+		return "''"[:quotes] + v.Str, true
+	default:
+		return v.boundedNestedString(limit)
+	}
+	if len(scalar) > limit {
+		return "", false
+	}
+	return scalar, true
+}
+
+func (v *LVal) boundedNestedString(limit int) (string, bool) {
 	var st cycleState
 	r := valueRenderer{limit: limit}
 	r.root(v, cycleGuard{state: &st})
@@ -173,6 +203,22 @@ func (r *valueRenderer) quotedString(s string) {
 }
 
 func (r *valueRenderer) sequence(cells []*LVal, left, right string, g cycleGuard) {
+	if r.full || g.abandoned() {
+		return
+	}
+	// Reserve a small amount from the immediate shape, without visiting
+	// any children or multiplying an unbounded source length. This avoids
+	// growing wide sequences from an eight-byte initial buffer. It is only
+	// a hint: small limits and empty symbol contents must still work.
+	hint := len(left) + len(right)
+	if n := min(len(cells), 32); n > 0 {
+		hint += 2*n - 1
+	}
+	hint = min(hint, 64)
+	if r.limit >= 0 {
+		hint = min(hint, r.limit-r.out.Len())
+	}
+	r.out.Grow(hint)
 	r.text(left)
 	for i, cell := range cells {
 		if r.full || g.abandoned() {
