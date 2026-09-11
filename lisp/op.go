@@ -98,7 +98,10 @@ var langSpecialOps = []*langBuiltin{
 		argument is a list of (condition-type handler-fn) pairs. If a
 		body form signals an error matching a condition type, the handler
 		is called with the condition name and error data as values, without
-		evaluating the data. Handlers must be regular functions. Use the symbol
+		evaluating the data. Go errors supply message strings. Source parse
+		errors retain their parser condition names. An error raised by a handler
+		propagates past this handler-bind and can be caught by an outer one.
+		Handlers must be regular functions. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when
@@ -292,7 +295,7 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 	body := args.Cells[0]
 	n, short, nopt, vargs, err := countExprArgs(body)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	formals := SExpr(nil)
 	if short {
@@ -836,7 +839,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// call it, passing the error.
 				hval := env.Eval(handler)
 				if hval.Type == LError {
-					// Well, we're boned
+					// Handler evaluation errors propagate to an outer handler-bind.
 					return hval
 				}
 				if hval.Type != LFun {

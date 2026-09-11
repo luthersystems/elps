@@ -88,6 +88,9 @@ func TestBoundedStringMatchesRendering(t *testing.T) {
 func TestBoundedStringStopsBeforeLaterValues(t *testing.T) {
 	calls := 0
 	v := QExpr([]*LVal{String(strings.Repeat("x", 128)), Error(renderProbeError{&calls})})
+	// Error converts a Go error to its message when the condition is built, so
+	// the probe fires once here; only renders after this point are counted.
+	calls = 0
 	got, ok := v.boundedString(8)
 	assert.False(t, ok)
 	assert.Empty(t, got)

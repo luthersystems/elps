@@ -1501,6 +1501,35 @@ error data does not become a function call, and a symbol is not looked up:
 ; returns the symbol unbound-data, without looking up its value
 ```
 
+Errors from Go libraries supply their message as a string, so a handler can
+use `to-string` or string functions on it just like an interpreter error:
+
+```lisp
+(handler-bind ((condition (lambda (c &rest data)
+                            (string:join (map 'list to-string data) " "))))
+  (json:load-string "{"))
+; returns "unexpected end of JSON input"
+```
+
+For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
+`errors.Is` and `errors.As` can recover the original Go error. `rethrow`
+preserves that error and its original stack. Host errors implementing
+`NativeCloner` retain their usual copy behavior.
+
+Source errors from `load-string` and `load-file` retain the parser's condition
+name, message and source location, including when loading through Go APIs or
+`eval`. They can be handled by name:
+
+```lisp
+(handler-bind ((unmatched-syntax (lambda (c &rest data)
+                                 (list c (type (car data))))))
+  (load-string "("))
+; returns '('unmatched-syntax 'string)
+```
+
+Other parser conditions, such as `mismatched-syntax` and `invalid-symbol`, work
+the same way. No previously valid source syntax is rejected by this change.
+
 Copies follow the ordinary `copy` rules: the handler can mutate copied lists,
 maps and bytes without changing the original error data; closure environments
 and native payloads without a host copier remain shared. `rethrow` returns
@@ -1533,6 +1562,20 @@ inheriting from the `condition` type.
 In the above code double-not-number is handled by replacing the `(double x)`
 function call with the value 0, while any other error (like an unbound symbol)
 will be replaced with the string "ERROR DETECTED".
+
+An error raised while evaluating or calling a handler propagates past that
+`handler-bind`. Its other bindings do not catch the new error. An outer
+`handler-bind` can catch it:
+
+```lisp
+(handler-bind ((secondary (lambda (c message) message)))
+  (handler-bind ((initial (lambda (&rest _) (error 'secondary "handler failed")))
+                 (secondary (lambda (&rest _) "not reached")))
+    (error 'initial "body failed")))
+; returns "handler failed"
+```
+
+Without the outer handler, the `secondary` error propagates to the caller.
 
 #### A note on the name
 
