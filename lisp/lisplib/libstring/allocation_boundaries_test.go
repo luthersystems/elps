@@ -4,6 +4,7 @@ package libstring_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -38,7 +39,7 @@ func assertStringAllocation(t *testing.T, got *lisp.LVal, want string, limit int
 func TestStringAllocationJoin(t *testing.T) {
 	const limit = 8
 	for _, size := range []int{limit - 1, limit, limit + 1} {
-		t.Run(fmt.Sprint(size), func(t *testing.T) {
+		t.Run(strconv.Itoa(size), func(t *testing.T) {
 			env := newStringAllocationEnv(t, limit)
 			tail := strings.Repeat("a", size-3)
 			source := lisp.QExpr([]*lisp.LVal{lisp.String("é"), lisp.String(tail)})

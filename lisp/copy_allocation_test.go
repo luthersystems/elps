@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -63,7 +64,7 @@ func copyAllocationValue(t *testing.T, kind string, size int) *lisp.LVal {
 	case "map":
 		m := lisp.SortedMap()
 		for i := range size {
-			require.NoError(t, lisp.GoError(m.Map().Set(lisp.String(fmt.Sprint(i)), lisp.Int(i))))
+			require.NoError(t, lisp.GoError(m.Map().Set(lisp.String(strconv.Itoa(i)), lisp.Int(i))))
 		}
 		return m
 	default:

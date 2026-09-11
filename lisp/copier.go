@@ -245,8 +245,8 @@ func (v *LVal) copyWithHint(n int) *LVal {
 // copied condition is itself an LError.
 func (v *LVal) copyWithRuntime(runtime *Runtime) (*LVal, *LVal) {
 	c := copier{runtime: runtime}
-	copy := c.copy(v)
-	return copy, c.failed
+	cp := c.copy(v)
+	return cp, c.failed
 }
 
 func (c *copier) checkAlloc(n int) error {

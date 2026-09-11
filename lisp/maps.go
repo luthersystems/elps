@@ -2,10 +2,7 @@
 
 package lisp
 
-import (
-	"bytes"
-	"sort"
-)
+import "sort"
 
 type Map interface {
 	Len() int
@@ -314,19 +311,6 @@ func sortedMapEntries(m Map) *LVal {
 		return lerr
 	}
 	return QExpr(cells)
-}
-
-func sortedMapString(m *LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	buf.WriteString("(sorted-map")
-	for _, pair := range sortedMapEntries(m.Map()).Cells {
-		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[0].str(false, g))
-		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[1].str(false, g))
-	}
-	buf.WriteString(")")
-	return buf.String()
 }
 
 // mapEntriesByKey are internally known to be a list of pairs containing keys

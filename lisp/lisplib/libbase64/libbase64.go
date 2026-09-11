@@ -62,10 +62,9 @@ func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("base64 encoding would exceed maximum allocation size (%d bytes)", env.Runtime.MaxAllocBytes())
 	}
 	b := make([]byte, groups*4)
-	switch v.Type {
-	case lisp.LString:
+	if v.Type == lisp.LString {
 		base64.StdEncoding.Encode(b, []byte(v.Str))
-	case lisp.LBytes:
+	} else {
 		base64.StdEncoding.Encode(b, v.Bytes())
 	}
 	return lisp.Bytes(b)
@@ -106,7 +105,7 @@ func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // write before returning its error; partial groups are never emitted.
 func decodedOutputLen[T string | []byte](data T) int {
 	count, padding := 0, 0
-	for i := 0; i < len(data); i++ {
+	for i := range len(data) {
 		switch data[i] {
 		case '\r', '\n':
 			continue

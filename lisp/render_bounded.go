@@ -40,8 +40,8 @@ func (v *LVal) boundedString(limit int) (string, bool) {
 // LVal.str; containers no longer assemble a temporary string per child.
 // A negative limit is the ordinary, unlimited String path.
 type valueRenderer struct {
-	out         strings.Builder
 	active      map[*LVal]struct{}
+	out         strings.Builder
 	limit       int
 	full        bool
 	actualCycle bool
@@ -113,6 +113,8 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	case LNative:
 		r.text(fmt.Sprintf("#<native value: %T>", v.Native))
 		return
+	default:
+		// The remaining types contain nested values and use the guard below.
 	}
 	if r.active != nil {
 		if _, ok := r.active[v]; ok {
