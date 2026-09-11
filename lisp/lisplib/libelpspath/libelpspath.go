@@ -23,10 +23,26 @@ step, no string DSL. Path step types:
   symbol    iterate all     '*
   list      array slice     '(range 1 3), '(range 1)
 
-Functions ending in "!" mutate in place; those without "!" return
-a copy and leave the original unchanged. For ?set! and ?set, the
-last argument is the new value; all preceding arguments are path
-steps.
+? reads without copying. ?set, ?del and ?nil copy the document's maps,
+lists and vectors; their "!" forms mutate in place. In-place edits of
+list elements are refused; use a copying form or a vector instead.
+An out-of-range integer index leaves the document unchanged on a write
+(and returns nil on a read). Negative indexes count from the end.
+
+All other value types are opaque leaves, including symbols, bytes,
+functions, natives and tagged values. Reads may return them and writes
+may store them. A further path step into a leaf raises an error naming
+its type and location. Copies share opaque leaves by reference; mutation
+of their storage outside elpspath is visible through both documents.
+Containers must be acyclic, and arrays must have exactly one dimension;
+every operation checks this throughout the document, including off-path
+containers. New values pass the same container check.
+
+An iterator retains its per-element error handling: reads substitute nil
+for a failed element path, and writes leave that element unchanged.
+
+For ?set! and ?set, the last argument is the new value; all preceding
+arguments are path steps.
 
 parse-path is the one function that takes a string: it converts a
 jq-style path into a list of the steps above, for a path that
@@ -81,6 +97,10 @@ var builtins = []*libutil.Builtin{
 		Each arg is a path step: string for map key, int for array index,
 		'* to iterate all elements, '(range from to) for array slice.
 		The slice end is optional: '(range from) runs to the end.
+
+		Values of any leaf type may be read. Descending into a leaf raises
+		an error naming its type and path. A missing key or out-of-range
+		integer index returns nil. Results may share storage with obj.
 
 		(? obj "foo" 0 "bar")     => value at foo[0].bar
 		(? users '* "name")       => list of all user names
@@ -151,7 +171,9 @@ var builtins = []*libutil.Builtin{
 		`Set value at a path specified by positional args, mutating the original.
 
 		The last argument is the new value; all preceding arguments are path
-		steps. Returns the mutated original.
+		steps. Returns the mutated original. Any leaf type may be stored.
+		Out-of-range integer indexes are no-ops. List element mutation is
+		refused; use ?set or a vector instead.
 
 		The new value is stored BY REFERENCE, not copied: after the call it is
 		reachable and mutable through the result, and a later write through
@@ -164,9 +186,11 @@ var builtins = []*libutil.Builtin{
 		`Set value at a path specified by positional args, returning a copy.
 
 		The last argument is the new value; all preceding arguments are path
-		steps. The original is not modified.
+		steps. The original is not modified. Any leaf type may be stored.
+		Out-of-range integer indexes return an unchanged copy.
 
-		The copy is independent of the SOURCE document only. The new value is
+		Maps, lists and vectors in the SOURCE document are copied; opaque
+		leaves (including bytes and native values) are shared. The new value is
 		stored BY REFERENCE, not copied: the value you supply becomes
 		reachable and mutable through the result, so a later in-place write
 		through the result (?set!, ?del!, append!) reaches the caller's
@@ -177,21 +201,31 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("?del!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDeleteMutate,
 		`Delete value at a path specified by positional args, mutating the original.
 
+		Out-of-range integer indexes are no-ops. List element mutation is refused.
+
 		(?del! obj "foo")              => obj with foo removed (mutated)
 		(?del! obj "items" 1)          => obj with items[1] removed (mutated)
 		(?del! records '* "cache")     => remove cache key from all elements`),
 	libutil.FunctionDoc("?del", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDelete,
 		`Delete value at a path specified by positional args, returning a copy.
 
+		Out-of-range integer indexes return an unchanged copy. Containers are
+		copied; opaque leaves are shared by reference.
+
 		(?del obj "foo")               => new obj with foo removed
 		(?del obj "items" 1)           => new obj with items[1] removed`),
 	libutil.FunctionDoc("?nil!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNilMutate,
 		`Set value at a path to nil, mutating the original. The key is kept.
 
+		Out-of-range integer indexes are no-ops. List element mutation is refused.
+
 		(?nil! obj "foo")              => obj with foo=nil (mutated)
 		(?nil! rows '* "cached")       => nil out cached on all elements`),
 	libutil.FunctionDoc("?nil", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNil,
 		`Set value at a path to nil, returning a copy. The key is kept.
+
+		Out-of-range integer indexes return an unchanged copy. Containers are
+		copied; opaque leaves are shared by reference.
 
 		(?nil obj "foo")               => new obj with foo=nil
 		(?nil patient "ssn")           => new obj with ssn=nil`),
@@ -207,10 +241,8 @@ var builtins = []*libutil.Builtin{
 // recover() cannot intercept.  See cycle.go and issue #393.
 var errCyclicValue = errors.New("cannot operate on a value that contains itself")
 
-// okSimpleContainerTypeGuarded ensures that lval is a valid container that
-// only contains "simple" types compatible with `elpspath`.
-// It sucks that we have to traverse the entire object checking the type,
-// but better to be safe.
+// okSimpleContainerTypeGuarded validates container shapes and detects cycles.
+// Non-container values are opaque leaves and impose no type restriction.
 //
 // It continues the walk g is already on rather than starting a fresh one.
 // Every nested check must pass g down; starting a new walk per level resets
@@ -297,18 +329,11 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	}
 }
 
-// okSimpleType ensures that the lval is a valid simple type compatible with
-// elpspath.
-// It sucks that we have to traverse the entire object checking the type,
-// but better to be safe.
-//
-// Every builtin in this package runs it before touching a value. It is not a
-// nicety: it refuses a value that CONTAINS ITSELF, and every unguarded
-// recursive walk over such an LVal -- Get, a copy, a String() -- grows the
-// goroutine stack until the Go runtime kills the process, an abort recover()
-// cannot intercept and handler-bind never sees (issue #393). It also refuses
-// the multi-dimensional array copyLVal has no answer for, which is what
-// keeps that branch's "cannot construct a copy" unreachable.
+// okSimpleType validates the container graph, accepting arbitrary opaque leaves.
+// Every document builtin retains this guard: copying supports only lists,
+// maps and one-dimensional arrays, and recursive container walks reject cycles.
+// Leaf storage (bytes, native payloads, function environments, tagged values)
+// is neither traversed nor copied by elpspath.
 func okSimpleType(in *lisp.LVal) error {
 	var st cycleState
 	return okSimpleTypeGuarded(in, newCycleGuard(&st))
@@ -324,18 +349,10 @@ func okSimpleTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 		return nil
 	}
 	switch in.Type {
-	case lisp.LString:
-		return nil
-	case lisp.LInt:
-		return nil
-	case lisp.LFloat:
-		return nil
-	case lisp.LSymbol:
-		if in.Str == lisp.TrueSymbol || in.Str == lisp.FalseSymbol {
-			return nil
-		}
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
 		return okSimpleContainerTypeGuarded(in, g)
 	default:
-		return okSimpleContainerTypeGuarded(in, g)
+		// Everything else is an opaque leaf, regardless of its ELPS type.
+		return nil
 	}
 }

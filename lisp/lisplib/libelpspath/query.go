@@ -12,7 +12,11 @@
 //
 // All functions take a data structure as the first argument, followed by
 // zero or more path steps. Functions ending in "!" mutate in place;
-// those without "!" return a copy and leave the original unchanged.
+// ? reads without copying. The copying writes rebuild maps, lists and vectors;
+// other values are opaque leaves shared by reference. Further steps into a
+// leaf fail with its type and location. Out-of-range integer writes leave the
+// document unchanged. In-place list element edits remain unsupported.
+// Containers must be acyclic, and arrays must be one-dimensional.
 //
 //	(elpspath:?      val &rest steps)             ; get
 //	(elpspath:?set!  val &rest steps-and-value)   ; set (mutating)

@@ -734,6 +734,74 @@ key's identity.  `get`, `key?`, `assoc` and `dissoc` all treat `'alice` and
 (keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
 ```
 
+### Paths through nested data (`elpspath`)
+
+The `elpspath` package reads and updates nested sorted maps, lists and vectors.
+Each path step is an argument: a string selects a map key, an integer selects
+an element, `'*` visits every element, and `'(range from to)` selects a slice
+with an exclusive end. Omit `to` to select through the end. Negative indexes
+count backward from the end (`-1` is the last element).
+
+```lisp
+(set 'order (sorted-map "lines" (vector "a" "b") "id" 7))
+(elpspath:? order "lines" -1)          ; evaluates to "b"
+(elpspath:?set order "lines" 0 "c")    ; new order with lines = (vector "c" "b")
+(elpspath:?del order "lines" 0)        ; new order with lines = (vector "b")
+(elpspath:?nil order "lines" 0)        ; new order with lines = (vector () "b")
+(elpspath:? order "lines")             ; still (vector "a" "b")
+```
+
+`?del` removes a map key or a sequence element; `?nil` keeps the key or position
+and replaces its value with `()`. `?set` takes its replacement as the last
+argument. Without path steps, `?` returns the document, `?set` returns the
+replacement, and `?del` and `?nil` return `()`.
+
+The three copying writes rebuild the document's maps, lists and vectors.
+Their `!` counterparts update in place and return the original document.
+In-place edits of list elements are refused to protect shared program
+literals; use the copying form or a vector. `?` reads without copying, so its
+results can share storage with the document. A range replacement for `?set`
+or `?set!` must be a list or vector; its elements are spliced into the range.
+
+An out-of-range **integer index** is a no-op for writes: copying forms return
+an unchanged copy and mutating forms leave the original unchanged (the list
+mutation restriction still applies). No enclosing container is removed.
+Reads return `()` for a missing key or out-of-range index. Slice endpoints
+must be in bounds; an invalid range raises an error.
+
+```lisp
+(elpspath:?set order "lines" 5 "c")    ; unchanged copy of order
+(elpspath:?del order "lines" -99)      ; unchanged copy of order
+(elpspath:?nil order "lines" 99)       ; unchanged copy of order
+(elpspath:? order "lines" 5)           ; evaluates to ()
+```
+
+Every other value type is an opaque leaf, including keywords, other symbols,
+bytes, functions, native values and tagged values. Reading a leaf or an
+unrelated field succeeds regardless of the leaf's type. A further step into
+a leaf raises an error naming its type and location.
+
+```lisp
+(set 'job (sorted-map "status" ':pending "id" 7))
+(elpspath:? job "status")              ; evaluates to :pending
+(elpspath:? job "id")                  ; evaluates to 7
+(elpspath:?set job "status" ':done)    ; new job with status = :done
+(elpspath:? job "status" "name")       ; error: cannot index into symbol at path status
+```
+
+Opaque leaves are shared by reference even in copying writes. For example,
+changing a shared bytes buffer outside `elpspath` affects both documents.
+The replacement supplied to `?set` or `?set!` is also stored by reference.
+
+All operations retain a whole-document check for cyclic containers and for
+arrays with other than one dimension, including containers outside the path.
+Replacement values pass the same check. Opaque leaf internals are not walked.
+An iterator keeps its per-element error handling: a failed read contributes
+`()` and a failed write leaves that element unchanged.
+
+See `elps doc elpspath` for the package reference
+and `parse-path`, which converts a jq-style selector string to path arguments.
+
 ### User-Defined Types
 
 Programs can define new types with the `deftype` macro and instantiate types
