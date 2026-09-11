@@ -4,6 +4,8 @@ package libstring
 
 import (
 	"strings"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
@@ -37,21 +39,27 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("lowercase", lisp.Formals("str"), builtinLower,
 		`Returns a copy of str with all Unicode characters converted to
-		lowercase.`),
+		lowercase. The converted byte length must fit the allocation limit.
+		An unchanged string reuses its existing storage.`),
 	libutil.FunctionDoc("uppercase", lisp.Formals("str"), builtinUpper,
 		`Returns a copy of str with all Unicode characters converted to
-		uppercase.`),
+		uppercase. The converted byte length must fit the allocation limit.
+		An unchanged string reuses its existing storage.`),
 	libutil.FunctionDoc("split", lisp.Formals("str", "sep"), builtinSplit,
 		`Splits str on each occurrence of the separator string sep and
 		returns a list of the substrings between separators. If sep is
-		empty, splits after each UTF-8 character.`),
+		empty, splits after each UTF-8 character (an empty input gives no
+		pieces). The allocation limit counts output pieces, not input bytes.`),
 	libutil.FunctionDoc("join", lisp.Formals("list", "sep"), builtinJoin,
 		`Concatenates a list of strings with sep inserted between each
 		element. Returns a single string. All elements of list must be
-		strings.`),
+		strings. The output byte length, including separators, must fit
+		the allocation limit.`),
 	libutil.FunctionDoc("repeat", lisp.Formals("str", "n"), builtinRepeat,
 		`Returns a new string consisting of n copies of str concatenated
-		together. n must be a non-negative integer.`),
+		together. n must be a non-negative integer. Zero copies or an empty
+		input return an empty string; one copy reuses the input storage.
+		Other results must fit the allocation limit in bytes.`),
 	libutil.FunctionDoc("trim-space", lisp.Formals("str"), builtinTrimSpace,
 		`Returns str with all leading and trailing whitespace removed
 		(spaces, tabs, newlines, etc.).`),
@@ -72,7 +80,7 @@ func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if str.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", str.Type)
 	}
-	return lisp.String(strings.ToLower(str.Str))
+	return convertCase(env, str.Str, unicode.ToLower)
 }
 
 func builtinUpper(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -80,7 +88,42 @@ func builtinUpper(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if str.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", str.Type)
 	}
-	return lisp.String(strings.ToUpper(str.Str))
+	return convertCase(env, str.Str, unicode.ToUpper)
+}
+
+// convertCase measures Unicode's mapped byte length before allocating. Input
+// length is insufficient: mappings can grow or shrink, and invalid UTF-8 is
+// replaced with RuneError when strings.Map would rebuild the string.
+func convertCase(env *lisp.LEnv, s string, mapping func(rune) rune) *lisp.LVal {
+	limit := env.Runtime.MaxAllocBytes()
+	size := 0
+	changed, oversized := false, false
+	for i, r := range s {
+		mapped := mapping(r)
+		changed = changed || mapped != r
+		if r == utf8.RuneError {
+			_, width := utf8.DecodeRuneInString(s[i:])
+			changed = changed || width == 1
+		}
+		width := utf8.RuneLen(mapped)
+		if width > limit-size {
+			oversized = true
+		} else if !oversized {
+			size += width
+		}
+	}
+	if !changed {
+		return lisp.String(s)
+	}
+	if oversized {
+		return env.Errorf("case conversion would exceed maximum allocation size (%d bytes)", limit)
+	}
+	var out strings.Builder
+	out.Grow(size)
+	for _, r := range s {
+		out.WriteRune(mapping(r))
+	}
+	return lisp.String(out.String())
 }
 
 func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -90,6 +133,21 @@ func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	if sep.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", sep.Type)
+	}
+	var count int
+	if sep.Str == "" {
+		count = utf8.RuneCountInString(str.Str)
+	} else {
+		count = strings.Count(str.Str, sep.Str)
+		// The extra final piece must fit before incrementing, including
+		// when the configured cap is the largest representable int.
+		if count >= env.Runtime.MaxAllocBytes() {
+			return env.Errorf("split would exceed maximum allocation size (%d elements)", env.Runtime.MaxAllocBytes())
+		}
+		count++
+	}
+	if msg := env.Runtime.CheckAlloc(count); msg != "" {
+		return env.Errorf("%s", msg)
 	}
 	slice := strings.Split(str.Str, sep.Str)
 	cells := make([]*lisp.LVal, len(slice))
@@ -107,17 +165,25 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if sep.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", sep.Type)
 	}
-	// Type-check and measure in one pass, so the buffer is sized once.
-	// The first non-string is reported exactly where the write loop would
-	// have found it: nothing was written before it either way.
-	size := 0
+	// Validate every element before sizing so invalid-input errors retain
+	// their precedence over allocation errors.
 	for _, cell := range list.Cells {
 		if cell.Type != lisp.LString {
 			return env.Errorf("first argument is not a list of strings: %v", cell.Type)
 		}
+	}
+	size := 0
+	limit := env.Runtime.MaxAllocBytes()
+	for _, cell := range list.Cells {
+		if len(cell.Str) > limit-size {
+			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+		}
 		size += len(cell.Str)
 	}
 	if len(list.Cells) > 1 {
+		if len(sep.Str) > (limit-size)/(len(list.Cells)-1) {
+			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+		}
 		size += len(sep.Str) * (len(list.Cells) - 1)
 	}
 	var buf strings.Builder
@@ -143,13 +209,17 @@ func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if n.Int < 0 {
 		return env.Errorf("count is negative: %v", n.Int)
 	}
+	if n.Int == 0 || str.Str == "" {
+		return lisp.String("")
+	}
+	if n.Int == 1 {
+		// Reuse the immutable Go string without retaining the input LVal's
+		// quoting state: repeat always produces an ordinary string value.
+		return lisp.String(str.Str)
+	}
 	maxAlloc := env.Runtime.MaxAllocBytes()
-	// Check each operand independently before multiplying to prevent
-	// int64 overflow. If the string itself already exceeds the limit,
-	// any repetition count > 1 would overflow. This eliminates the
-	// theoretical case where len(str) * n overflows int64 (would
-	// require a 4GB+ string, but defense-in-depth).
-	if len(str.Str) > maxAlloc || (len(str.Str) > 0 && int64(n.Int) > int64(maxAlloc)/int64(len(str.Str))) {
+	// The source is nonempty; division checks the product without overflow.
+	if n.Int > maxAlloc/len(str.Str) {
 		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
 	return lisp.String(strings.Repeat(str.Str, n.Int))

@@ -53,6 +53,12 @@ func TestPredicateLimitsObserveCancellationBetweenCallbacks(t *testing.T) {
 	}{
 		{"all predicate", `(all? predicate source)`, 0, 0, 1, true},
 		{"any predicate", `(any? predicate source)`, 0, 0, 1, false},
+		{"map vector", `(map 'vector predicate source)`, 0, 0, 1, true},
+		{"map discard", `(map () predicate source)`, 0, 0, 1, true},
+		{"foldl", `(foldl predicate false source)`, 0, 0, 1, false},
+		{"foldr", `(foldr predicate false source)`, 0, 0, 1, false},
+		{"select", `(select 'vector predicate source)`, 0, 0, 1, true},
+		{"reject", `(reject 'vector predicate source)`, 0, 0, 1, false},
 		{"sort predicate", `(stable-sort predicate source)`, 0, 0, 1, false},
 		{"insert predicate", `(insert-sorted 'vector source predicate 0)`, 0, 0, 1, false},
 		{"sort first key", `(stable-sort predicate source key)`, 1, 1, 0, false},
@@ -113,6 +119,12 @@ func TestPredicateLimitsBoundNativeCallbackSteps(t *testing.T) {
 	}{
 		{"all", `(all? predicate source)`, true},
 		{"any", `(any? predicate source)`, false},
+		{"map vector", `(map 'vector predicate source)`, true},
+		{"map discard", `(map () predicate source)`, true},
+		{"foldl", `(foldl predicate false source)`, false},
+		{"foldr", `(foldr predicate false source)`, false},
+		{"select", `(select 'vector predicate source)`, true},
+		{"reject", `(reject 'vector predicate source)`, false},
 		{"sort", `(stable-sort predicate source)`, false},
 		{"sort key", `(stable-sort predicate source key)`, false},
 		{"insert", `(insert-sorted 'vector source predicate 0)`, false},
@@ -152,13 +164,27 @@ func TestPredicateLimitsBoundNativeCallbackSteps(t *testing.T) {
 					continue
 				}
 				require.NotEqual(t, lisp.LError, got.Type, "the same bounded input must succeed with enough budget: %v", got)
-				if tc.name == "all" || tc.name == "any" {
+				switch tc.name {
+				case "all", "any", "foldl", "foldr":
 					assert.Equal(t, size, calls, "the control must traverse every element")
 					assert.Equal(t, lisp.Bool(tc.predicateResult).String(), got.String())
-				} else if tc.name == "insert" || tc.name == "insert key" {
+				case "map vector":
+					assert.Equal(t, size, calls, "map must invoke the callback once per element")
+					require.Equal(t, lisp.LArray, got.Type)
+					require.Equal(t, size, got.Len())
+					for i := range size {
+						assert.Equal(t, "true", got.ArrayIndex(lisp.Int(i)).String())
+					}
+				case "map discard":
+					assert.Equal(t, size, calls, "discarding output must still invoke every callback")
+					assert.True(t, got.IsNil(), "%v", got)
+				case "select", "reject":
+					assert.Equal(t, size, calls, "the control must inspect every element")
+					assert.True(t, lisp.True(got.Equal(lisp.Vector(cells))), "the predicate keeps every input element: %v", got)
+				case "insert", "insert key":
 					assert.Equal(t, size+1, got.Len())
 					assert.Equal(t, "0", got.ArrayIndex(lisp.Int(size)).String())
-				} else {
+				default:
 					assert.Equal(t, size, got.Len())
 					assert.Equal(t, "1", got.ArrayIndex(lisp.Int(0)).String())
 					assert.Equal(t, "128", got.ArrayIndex(lisp.Int(size-1)).String())

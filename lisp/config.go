@@ -161,8 +161,10 @@ func WithMaxMacroExpansionDepth(n int) Config {
 }
 
 // WithMaxAlloc returns a Config that sets the per-operation allocation size
-// cap (in bytes for strings, in elements for sequences).  This limits the
-// output size of any single builtin call, not cumulative memory usage.
+// cap (in bytes for strings and byte buffers, in elements for sequences).
+// It bounds the logical sizes of newly built data containers, not existing
+// values returned by reference, implementation temporaries or cumulative
+// memory usage. See docs/lang.md#allocation-limits.
 func WithMaxAlloc(n int) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.MaxAlloc = n
@@ -185,7 +187,7 @@ func WithContext(ctx context.Context) Config {
 // WithMaxSteps returns a Config that sets the maximum number of evaluation
 // steps before evaluation returns a CondStepLimitExceeded error.  A step is
 // counted for each Eval entry, each TRO iteration, each macro re-expansion,
-// each turn of a dotimes loop, and each value-passing predicate/key callback
+// each turn of a dotimes loop, and each value-passing callback, error handler
 // or threading step (callValueFunction). A value of 0 means unlimited (the default).
 //
 // The dotimes turn is counted because an empty-bodied loop evaluates nothing:

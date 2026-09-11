@@ -1340,6 +1340,12 @@ error it will eventually be returned to the application embedding the lisp
 interpreter.  However lisp code has a few built-in ways to detect and deal with
 errors before the entire pending evaluation is terminated.
 
+An error-valued element supplied by a host remains the same error when
+extracted with `aref`: its condition, data, existing stack and internal-panic
+marker are preserved. Invalid array indices produce ordinary errors.
+Host map-enumeration failures also produce ordinary errors when copying a map;
+printing such a map uses a `#<map-error ...>` diagnostic instead of panicking.
+
 When a function call is understood to trigger non-fatal error conditions of a
 certain kind it may use the `handler-bind` built-in to intercept and correct
 that type of error.  For an example, consider the above error in a broader
@@ -1365,6 +1371,27 @@ specifies a function to call when a 'double-not-number error is found.  That
 handler function receives the arguments passed to the `error` built-in and
 returns them in this scenario, producing the result `'('double-not-number
 "value to double is not a number")` which is returned by handler-bind.
+
+Handlers must be ordinary functions, not macros or special operators. The
+first argument is the quoted condition symbol; the remaining arguments are
+copies of the condition data, passed as values without evaluation. A list in
+error data does not become a function call, and a symbol is not looked up:
+
+```lisp
+(handler-bind ((condition (lambda (c data) data)))
+  (error 'example (car '(unbound-data))))
+; returns the symbol unbound-data, without looking up its value
+```
+
+Copies follow the ordinary `copy` rules: the handler can mutate copied lists,
+maps and bytes without changing the original error data; closure environments
+and native payloads without a host copier remain shared. `rethrow` returns
+the original error, including its original data and stack, even if a handler
+has changed its copy.
+
+Each copied data container must fit `MaxAlloc`. If copying fails, the handler
+is not called and the copy error propagates. The limit does not meter native
+clone hooks or count the combined size of many smaller containers.
 
 With no body forms, `handler-bind` returns `()`. It still validates the
 binding list, but does not evaluate any handler expression:
@@ -1464,9 +1491,16 @@ promise that a form runs on the way out.  `with-cleanup` is that promise:
 (with-cleanup (cleanup-form ...) body-form ...)
 ```
 
-It evaluates the body forms, then **always** evaluates the cleanup forms —
+It evaluates the body forms, then **always attempts** the cleanup forms —
 whether the body returned normally or signalled.  It returns the last body
 value; cleanup values are discarded.
+
+Cleanup remains subject to the active execution limits. An already cancelled
+context or exhausted step budget prevents cleanup code from running; cleanup
+does not get a fresh budget. Error handlers have the same restriction. A host
+must release resources outside Lisp when release must survive those limits.
+Per-frame stack and tail-iteration limits can regain headroom while unwinding;
+use a step limit or context deadline for a ceiling across body and cleanup.
 
 If you know `try`/`finally` from another language, this is `finally` with no
 `catch` clause.  If you know Go, it is `defer`.
@@ -1609,10 +1643,62 @@ limits are optional and impose negligible overhead when not configured; the
 physical stack limit, the evaluation nesting limit and the tail-iteration
 limit are on by default.
 
-None of them bound *total* memory: `Runtime.MaxAlloc` caps the output size of
-a single builtin call, not the sum across calls, so a loop that allocates many
+None of them bound *total* memory: `Runtime.MaxAlloc` caps the sizes of data
+containers constructed by builtin operations, not the sum across calls, so a loop that allocates many
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
+
+### Allocation Limits
+
+`WithMaxAlloc(n)` sets a size cap in **bytes** for newly built strings and
+byte buffers, and in **elements** for newly built sequences and map entries.
+A non-positive setting selects the default of 10,485,760. The cap measures
+logical lengths, not Go heap usage. Object headers, spare capacity,
+implementation scratch/conversion buffers, interpreter bookkeeping and
+storage retained by existing values are not counted. For example, Base64
+decoding limits the decoded result, not a possible temporary copy of its
+encoded input. Hosts must bound input sizes and total memory separately.
+
+The cap applies when an operation creates new backing storage. Returning an
+existing string or bytes value, or a `slice` view of existing storage, can
+return a value larger than the cap. A `slice` conversion that builds a new
+string, bytes buffer or byte-element sequence must fit the cap. String lengths
+and slice indices count UTF-8 bytes, not characters.
+
+`cons`, `insert-index` and `insert-sorted` check the new sequence length;
+`insert-sorted` rejects an oversized result before calling its comparator or
+key function. `select` and `reject` count retained elements, so a large input
+may produce a small allowed result. They stop when retaining another element
+would exceed the cap; earlier predicate side effects are not rolled back.
+`map` with a nil result type discards its results and has no output sequence
+to cap, but its callbacks still consume evaluation steps.
+
+Map construction counts distinct keys; repeated keys replace values without
+adding entries. `assoc!` can replace an existing entry at the cap, but cannot
+add one. `assoc` and `dissoc` copy the source map first, so that full copy must
+fit even if `dissoc` would then remove an entry. `keys` checks its result
+length. `copy` checks each backing container in the copied graph separately;
+many small nested containers can still exceed the cap in aggregate. Immutable
+string storage is shared. Allocation inside native copy hooks is the host's
+responsibility.
+
+`format-string` checks the bytes emitted after substitution and brace
+escaping, including the printed representation of nested values. With a cap
+of 8, `(format-string "{0}{0}" "abcde")` signals an allocation error;
+`(format-string "{{{{{{{{{{{{{{{{")` returns eight opening braces.
+Allocation errors are ordinary catchable errors; checks occur before growing
+the result beyond its cap.
+
+For standard string helpers, `string:join` counts result bytes including
+separators, and `string:split` counts output pieces. An empty separator splits
+by UTF-8 rune; an empty input then produces no pieces. Unicode case conversion
+can grow or shrink the byte length, so `string:uppercase` and
+`string:lowercase` check the converted length. Unchanged strings reuse their
+storage. Base64 encoding counts encoded bytes including padding; decoding
+counts decoded bytes, excluding padding and ignored CR/LF in the input.
+`string:repeat` with count zero returns an empty string; count one reuses the
+input string storage. These cases do not allocate a repeated buffer and can
+succeed even when the input is larger than the cap.
 
 ### Context Cancellation
 
@@ -1626,14 +1712,10 @@ result := env.EvalContext(ctx, expr)
 ```
 
 If the context is cancelled or its deadline expires during evaluation, a
-`context-cancelled` condition is raised.  This can be caught in Lisp with
-`handler-bind`:
-
-```lisp
-(handler-bind
-    ((context-cancelled (lambda (err) (debug-print "timed out"))))
-    (long-running-computation))
-```
+`context-cancelled` condition is raised. The cancelled context also prevents
+evaluation of a matching `handler-bind` handler or cleanup form. Handle this
+failure at the Go entry point; naming the condition in Lisp does not restore
+the context or reserve time for recovery code.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.
@@ -1647,9 +1729,10 @@ full duration it was given, however long that is.
 
 A step limit caps the number of evaluation steps in a **single top-level
 evaluation**. Each entry to `Eval`, tail-recursion iteration, macro
-re-expansion, and `dotimes` turn counts as one step. Each predicate/key
-invocation in `all?`, `any?`, `stable-sort`, and `insert-sorted`, and each
-function invocation in a threading pipeline, also counts one step and checks
+re-expansion, and `dotimes` turn counts as one step. Each callback invocation
+in `map`, `foldl`, `foldr`, `select`, `reject`, `all?`, `any?`, `stable-sort`,
+and `insert-sorted`, each selected error-handler invocation, and each function
+invocation in a threading pipeline also counts one step and checks
 cancellation before running. This includes native callbacks that do not
 evaluate any Lisp; expressions in a Lisp callback's body consume their own
 steps as usual.
@@ -1669,12 +1752,15 @@ runtime had executed `n` steps in total, every later evaluation would fail
 however small it was.
 
 When the limit is reached, a `step-limit-exceeded` condition is raised.
+An error handler or cleanup form shares that exhausted budget and cannot
+continue evaluating Lisp until the host starts a new top-level evaluation.
 Use `Runtime.Steps()` to read the current evaluation's usage,
 `Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
 to reset the current counter explicitly.
 
-A step limit is the only mechanism here that bounds a loop which neither
-recurses nor tail-calls — no stack limit can see such a loop.
+A step limit also bounds loops which neither recurse nor tail-call; stack
+limits cannot see such loops. Cancellation is checked at their evaluation
+and callback checkpoints.
 
 It is not a time bound: a single step may run an arbitrary amount of work
 inside a builtin.  **Context cancellation with a deadline is the only limit

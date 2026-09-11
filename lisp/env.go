@@ -1625,7 +1625,8 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	return env.funCall(env.evalCtx, fun, args)
 }
 
-// callValueFunction invokes an already-evaluated callback or threading step.
+// callValueFunction invokes an already-evaluated callback, error handler or
+// threading step.
 // These calls bypass Eval's entry check, so count a step and check cancellation
 // here even if the function is native and never evaluates any Lisp itself.
 func (env *LEnv) callValueFunction(fun, args *LVal) *LVal {

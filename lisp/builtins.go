@@ -816,9 +816,21 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 
 func builtinToString(env *LEnv, args *LVal) *LVal {
 	val := args.Cells[0]
+	if val.Type == LBytes {
+		if msg := env.Runtime.CheckAlloc(val.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
+	}
 	s, err := toString(val)
 	if err != nil {
 		return env.Error(err)
+	}
+	// Numbers render into a fixed-size temporary. Strings and symbols
+	// reuse immutable storage; the bytes conversion was checked above.
+	if val.IsNumeric() {
+		if msg := env.Runtime.CheckAlloc(len(s)); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 	}
 	return String(s)
 }
@@ -829,6 +841,9 @@ func builtinToBytes(env *LEnv, args *LVal) *LVal {
 		return val
 	}
 	if val.Type == LString {
+		if msg := env.Runtime.CheckAlloc(len(val.Str)); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		return Bytes([]byte(val.Str))
 	}
 	// TODO:  Allow sequences of integers to be turned into bytes?
@@ -1090,7 +1105,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	}
 	for i, c := range seqCells(lis) {
 		fargs := QExpr([]*LVal{c})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1124,7 +1139,7 @@ func builtinFoldLeft(env *LEnv, args *LVal) *LVal {
 			acc,
 			c,
 		})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1158,7 +1173,7 @@ func builtinFoldRight(env *LEnv, args *LVal) *LVal {
 			c,
 			acc,
 		})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1182,7 +1197,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	}
 	g = env.GetFunGlobal(g)
 	if g.Type == LError {
-		return f
+		return g
 	}
 	if g.Type != LFun {
 		return env.Errorf("second argument is not a function: %s", g.Type)
@@ -1280,11 +1295,19 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
+		if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		mdata, err := m.copyMapData()
 		if err != nil {
 			return env.Error(err)
 		}
 		m = SortedMapFromData(mdata)
+	}
+	// Copying an embedder map can change its key-identity rules. Check
+	// growth against the resulting map, where Set below will insert.
+	if lerr := checkMapInsertAlloc(env, m.Map(), k); lerr != nil {
+		return lerr
 	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
@@ -1302,11 +1325,33 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
+	if lerr := checkMapInsertAlloc(env, m.Map(), k); lerr != nil {
+		return lerr
+	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
 		return env.Error(err.String())
 	}
 	return m
+}
+
+// checkMapInsertAlloc permits replacements, which need no new entry.
+// Get also preserves the map's own
+// key validation and identity rules, including equivalent string/symbol keys.
+func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
+	if m.Len() < env.Runtime.MaxAllocBytes() {
+		return nil
+	}
+	v, exists := m.Get(key)
+	if !exists {
+		if v.Type == LError {
+			return v
+		}
+		if msg := env.Runtime.CheckAlloc(m.Len() + 1); msg != "" {
+			return env.Errorf("%s", msg)
+		}
+	}
+	return nil
 }
 
 func builtinDissoc(env *LEnv, args *LVal) *LVal {
@@ -1317,6 +1362,11 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
+		// dissoc copies before deleting, so even its temporary full map
+		// must fit the allocation cap (docs/lang.md#allocation-limits).
+		if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		mdata, err := m.copyMapData()
 		if err != nil {
 			return env.Error(err)
@@ -1362,6 +1412,9 @@ func builtinKeys(env *LEnv, args *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
+	if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+		return env.Errorf("%s", msg)
+	}
 	return m.Map().Keys()
 }
 
@@ -1387,6 +1440,9 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 	for len(args.Cells) >= 2 {
 		k := args.Cells[0]
 		v := args.Cells[1]
+		if lerr := checkMapInsertAlloc(env, data, k); lerr != nil {
+			return lerr
+		}
 		err := data.Set(k, v)
 		if !err.IsNil() {
 			return err
@@ -1701,6 +1757,9 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
 	}
+	if msg := env.Runtime.CheckAlloc(list.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
+	}
 	var v *LVal
 	var cells []*LVal
 	switch typespec.Str {
@@ -1726,6 +1785,9 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
+	if typespec.Str != "list" && typespec.Str != "vector" {
+		return env.Errorf("type specifier is invalid: %v", typespec)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
@@ -1750,6 +1812,9 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 		if keyFun.IsSpecialFun() {
 			return env.Errorf("last argument is not a regular function: %v", keyFun.FunType)
 		}
+	}
+	if msg := env.Runtime.CheckAlloc(list.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
 	}
 	sortErr := Nil()
 	inCells := seqCells(list)
@@ -1858,32 +1923,28 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		// MakeVector sizes the vector for the whole input and lets Array
-		// derive the dims.  The resize below writes the cardinality in
-		// place, so the dims list it lands on must belong to this array
-		// alone; on the derived path Array builds that list itself, so it
-		// is reachable from nothing else and needs no defensive copy (the
-		// caller-dims path keeps its copy for exactly this write -- see
-		// TestArrayDoesNotAliasCallerDims).  MakeVector is load-bearing
-		// here: it is the only constructor that yields an n-CAPACITY
-		// backing through the derived-dims path.  Vector(make([]*LVal, 0,
-		// n)) would lose the capacity -- Array replaces an empty cells
-		// slice with a fresh full-length one -- and the cells[0:0:n]
-		// reslice below depends on it.
-		v = MakeVector(list.Len())
+		// MakeVector gives this result its own dimensions and backing.
+		// Cap the initial capacity: a large input may retain few elements.
+		// Vector over a zero-length slice would lose its spare capacity
+		// when Array constructs the backing (TestArrayDoesNotAliasCallerDims).
+		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		v = MakeVector(capacity)
 		cells = seqCells(v)
-		cells = cells[0:0:list.Len()]
+		cells = cells[:0]
 	case "list":
 		v = QExpr(nil)
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		ok := env.FunCall(pred, SExpr([]*LVal{v}))
+		ok := env.callValueFunction(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
 		if True(ok) {
+			if msg := env.Runtime.CheckAlloc(len(cells) + 1); msg != "" {
+				return env.Errorf("%s", msg)
+			}
 			cells = append(cells, v)
 		}
 	}
@@ -1921,20 +1982,24 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	case "vector":
 		// Array-derived dims, for the reason spelled out in builtinSelect:
 		// the resize below writes this array's cardinality in place.
-		v = MakeVector(list.Len())
+		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		v = MakeVector(capacity)
 		cells = seqCells(v)
-		cells = cells[0:0:list.Len()]
+		cells = cells[:0]
 	case "list":
 		v = QExpr(nil)
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		ok := env.FunCall(pred, SExpr([]*LVal{v}))
+		ok := env.callValueFunction(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
 		if !True(ok) {
+			if msg := env.Runtime.CheckAlloc(len(cells) + 1); msg != "" {
+				return env.Errorf("%s", msg)
+			}
 			cells = append(cells, v)
 		}
 	}
@@ -2155,6 +2220,22 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	}
 	if i > j {
 		return env.Errorf("end before start")
+	}
+	// Same-storage views need no new element backing. Conversions between
+	// bytes/strings and sequences do; bound their window before allocation.
+	allocates := false
+	switch typespec.Str {
+	case "string":
+		allocates = list.Type != LString
+	case "bytes":
+		allocates = list.Type != LBytes
+	case "list", "vector":
+		allocates = list.Type == LString || list.Type == LBytes
+	}
+	if allocates {
+		if msg := env.Runtime.CheckAlloc(j - i); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 	}
 
 	// Create an intermediate sliced list with a similar type.
@@ -2545,7 +2626,12 @@ func builtinARef(env *LEnv, args *LVal) *LVal {
 	}
 	v := array.ArrayIndex(indices...)
 	if v.Type == LError {
-		return env.Error(v)
+		// ArrayIndex can return an error-valued element. Associate fresh
+		// index errors without replacing stored condition data or panic
+		// markers (docs/lang.md#errors).
+		if lerr := env.ErrorAssociate(v); lerr != nil {
+			return lerr
+		}
 	}
 	return v
 }
@@ -2573,7 +2659,10 @@ func builtinCons(env *LEnv, args *LVal) *LVal {
 	if tail.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %s", tail.Type)
 	}
-	cells := make([]*LVal, 0, 1+args.Len())
+	if msg := env.Runtime.CheckAlloc(tail.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
+	}
+	cells := make([]*LVal, 0, 1+tail.Len())
 	cells = append(cells, head)
 	cells = append(cells, tail.Cells...)
 	return QExpr(cells)
@@ -3280,7 +3369,18 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 	}
 
 	var buf strings.Builder
-	buf.Grow(len(f) + len(fvals)*16)
+	limit := env.Runtime.MaxAllocBytes()
+	buf.Grow(min(len(f), limit))
+	write := func(s string) bool {
+		if len(s) > limit-buf.Len() {
+			return false
+		}
+		buf.WriteString(s)
+		return true
+	}
+	allocationError := func() *LVal {
+		return env.Errorf("allocation size exceeds maximum (%d)", limit)
+	}
 
 	seqIndex := 0
 	// mode: 0 = undecided, 1 = sequential, 2 = positional
@@ -3296,7 +3396,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		}
 		// Write any literal text before the brace.
 		if j > i {
-			buf.WriteString(f[i:j])
+			if !write(f[i:j]) {
+				return allocationError()
+			}
 		}
 		if j >= n {
 			break
@@ -3306,7 +3408,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		if ch == '}' {
 			// Must be a '}}' escape.
 			if j+1 < n && f[j+1] == '}' {
-				buf.WriteByte('}')
+				if !write("}") {
+					return allocationError()
+				}
 				i = j + 2
 				continue
 			}
@@ -3319,7 +3423,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("unclosed '{' in format string")
 		}
 		if f[j+1] == '{' {
-			buf.WriteByte('{')
+			if !write("{") {
+				return allocationError()
+			}
 			i = j + 2
 			continue
 		}
@@ -3369,9 +3475,16 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 		val := fvals[argIdx]
 		if val.Type == LString && !val.quoted {
-			buf.WriteString(val.Str)
+			if !write(val.Str) {
+				return allocationError()
+			}
 		} else {
-			buf.WriteString(val.String())
+			// Bound rendering itself, not just the already-rendered string:
+			// nested/shared data can have a very large printed expansion.
+			s, ok := val.boundedString(limit - buf.Len())
+			if !ok || !write(s) {
+				return allocationError()
+			}
 		}
 
 		i = closeIdx + 1

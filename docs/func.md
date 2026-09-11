@@ -377,6 +377,8 @@ elps> (foldr - 0 '(1 2 3))
 
 Returns a function that is the combination of two functions, with the first
 function using the product of the second function as its input.
+Both arguments must resolve to ordinary functions. An unresolved function or
+package name raises an error when `compose` is called.
 
 ```Lisp
 elps> (set 'fn (compose (lambda (a) (+ a 1)) (lambda (b) (+ b 2))))
@@ -734,6 +736,10 @@ Creates a string using format placeholders and values. Use `{}` for
 sequential substitution or `{0}`, `{1}`, etc. for positional. Use `{{`
 and `}}` for literal braces. Sequential and positional styles cannot be
 mixed.
+
+Newly formatted output is subject to the runtime allocation limit, measured
+in bytes after substitutions and brace escaping. Nested values are rendered
+under the same limit. See [Allocation Limits](lang.md#allocation-limits).
 
 ```Lisp
 elps> (format-string "Hello {}, {} you?" "World" "how are")

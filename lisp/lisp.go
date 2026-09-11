@@ -3,7 +3,6 @@
 package lisp
 
 import (
-	"bytes"
 	"fmt"
 	"strconv"
 	"strings"
@@ -1680,7 +1679,11 @@ func (v *LVal) copyMapData() (*MapData, error) {
 		return &MapData{nm}, nil
 	}
 	m := &MapData{newmap()}
-	for _, pair := range sortedMapEntries(m0).Cells {
+	entries := sortedMapEntries(m0)
+	if entries.Type == LError {
+		return nil, fmt.Errorf("failed to copy map: %v", entries)
+	}
+	for _, pair := range entries.Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
 		if lerr.Type == LError {
 			return nil, fmt.Errorf("failed to copy map: %v", lerr)
@@ -1851,94 +1854,9 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 // strNested renders the types that reach other values.  It is only ever
 // reached through str, which has already put v on g's path.
 func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
-	const QUOTE = `'`
-	quote := ""
-	if onTheRecord {
-		quote = QUOTE
-	}
-	switch v.Type {
-	case LError:
-		if v.quoted {
-			quote = QUOTE
-			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
-		}
-		return (*ErrorVal)(v).errorString(g)
-	case LSExpr:
-		if v.quoted {
-			quote = QUOTE
-		}
-		return exprString(v, 0, quote+"(", ")", g)
-	case LFun:
-		if v.quoted {
-			quote = QUOTE
-		}
-		if v.Builtin() != nil {
-			return quote + "#<builtin>"
-		}
-		// The formals render directly.  There is no second list to
-		// concatenate them with: what used to follow them was the
-		// function's own environment scope, which was always empty (see
-		// the note on funData.env), so this prints exactly what the
-		// concatenation printed.
-		return fmt.Sprintf("%s(lambda %s%s)", quote, exprString(v.Cells[0], 0, "(", ")", g), bodyStr(v.Cells[1:], g))
-	case LQuote:
-		// TODO: make more efficient
-		return QUOTE + v.Cells[0].str(true, g)
-	case LSortMap:
-		return quote + sortedMapString(v, g)
-	case LArray:
-		if v.Cells[0].Len() == 1 {
-			if v.Len() > 0 {
-				return exprString(v.Cells[1], 0, quote+"(vector ", ")", g)
-			} else {
-				return quote + "(vector)"
-			}
-		}
-		return fmt.Sprintf("#<array dims=%s>", v.Cells[0].str(false, g))
-	case LTaggedVal:
-		return fmt.Sprintf("#{%s %s}", v.Str, v.Cells[0].str(false, g))
-	case LMarkTerminal:
-		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0].str(false, g))
-	case LMarkTailRec:
-		return quote + fmt.Sprintf("#<tail-recursion frames=%d (%s %s)>", v.Cells[0].Int, v.Cells[1].str(false, g), v.Cells[2].str(false, g))
-	case LMarkMacExpand:
-		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0].str(false, g))
-	default:
-		// Nothing reaches this arm today: every LType is rendered either
-		// here or by str above, and TestStringNoAddressForEveryLType
-		// fails if a newly added type stops being covered.  It renders
-		// the type name ALONE -- never %#v of the LVal, which printed
-		// the LVal's pointer fields and made the rendering depend on the
-		// allocator (issue #606).  ELPS output has to be byte-identical
-		// across processes; a fallback that can embed a heap address is
-		// not an acceptable one, however unreachable it looks.
-		return quote + fmt.Sprintf("#<%s>", v.Type)
-	}
-}
-
-func bodyStr(exprs []*LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	for i := range exprs {
-		buf.WriteString(" ")
-		buf.WriteString(exprs[i].str(false, g))
-	}
-	return buf.String()
-}
-
-func exprString(v *LVal, offset int, left string, right string, g cycleGuard) string {
-	if len(v.Cells[offset:]) == 0 {
-		return left + right
-	}
-	var buf bytes.Buffer
-	buf.WriteString(left)
-	for i, c := range v.Cells[offset:] {
-		if i > 0 {
-			buf.WriteString(" ")
-		}
-		buf.WriteString(c.str(false, g))
-	}
-	buf.WriteString(right)
-	return buf.String()
+	r := valueRenderer{limit: -1}
+	r.nested(v, onTheRecord, g)
+	return r.out.String()
 }
 
 func isVec(v *LVal) bool {

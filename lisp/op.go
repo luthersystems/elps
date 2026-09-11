@@ -97,7 +97,8 @@ var langSpecialOps = []*langBuiltin{
 		`Evaluates body forms with condition handlers in scope. The first
 		argument is a list of (condition-type handler-fn) pairs. If a
 		body form signals an error matching a condition type, the handler
-		is called with the condition name and error data. Use the symbol
+		is called with the condition name and error data as values, without
+		evaluating the data. Handlers must be regular functions. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when
@@ -840,14 +841,25 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				if hval.Type != LFun {
 					return env.Errorf("handler not a function for condition type %s: %v", sym.Str, hval.Type)
 				}
+				if hval.IsSpecialFun() {
+					return env.Errorf("handler not a regular function for condition type %s: %v", sym.Str, hval.FunType)
+				}
 				// Make the original error available to rethrow.
 				// Use defer to ensure the condition stack is cleaned up
 				// even if a Go panic propagates through the handler.
 				env.Runtime.PushCondition(val)
 				defer env.Runtime.PopCondition()
-				expr := []*LVal{hval, Quote(Symbol(val.Str))}
-				expr = append(expr, val.Copy().Cells...)
-				return env.Eval(SExpr(expr))
+				// Condition data is already evaluated. Rebuilding a call
+				// expression would execute any unquoted list or symbol it
+				// contains. Keep the existing private copy for the handler,
+				// while rethrow retains the original error on the stack.
+				copied, failure := val.copyWithRuntime(env.Runtime)
+				if failure != nil {
+					return env.Errorf("handler data cannot be copied: %v", failure)
+				}
+				fargs := []*LVal{Quote(Symbol(val.Str))}
+				fargs = append(fargs, copied.Cells...)
+				return env.callValueFunction(hval, SExpr(fargs))
 			}
 			return val
 		}
