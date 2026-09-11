@@ -177,6 +177,162 @@ var AnalyzerLetBindings = &Analyzer{
 	},
 }
 
+// AnalyzerLetRecursion identifies unresolved self-references in closures
+// created by let/let* initializers. It also works without workspace analysis.
+var AnalyzerLetRecursion = &Analyzer{
+	Name:     "let-recursion",
+	Severity: SeverityWarning,
+	Doc: "Warn when an initializer-created closure refers to its unavailable let/let* binding.\n\n" +
+		"Use labels for local recursion. Known outer bindings and parameter shadows are respected. " +
+		"Runs without --workspace; supply workspace context for functions defined in other files. " +
+		"Quoted templates and opaque macro-dependent references are excluded; dynamic code is not fully covered.",
+	Run: func(pass *Pass) error {
+		semantics := pass.Semantics
+		if semantics == nil {
+			semantics = analysis.Analyze(pass.Exprs, nil)
+		}
+		state := letRecursionState{
+			pass:       pass,
+			unresolved: make(map[Position]string),
+			shadowed:   make(map[string]bool),
+			pending:    make(map[string][]letRecursionBinding),
+		}
+		for _, ref := range semantics.Unresolved {
+			if !ref.InsideMacroCall && ref.Source != nil {
+				state.unresolved[posFromSource(ref.Source)] = ref.Name
+			}
+		}
+		if len(state.unresolved) == 0 {
+			return nil
+		}
+		// Scope analysis recognizes special forms by spelling. Conservatively
+		// skip bare spellings shadowed anywhere in this file or workspace;
+		// explicitly qualified lisp: forms still identify the kernel forms.
+		for _, sym := range semantics.Symbols {
+			if sym.Source != nil || sym.External {
+				state.shadowed[sym.Name] = true
+			}
+		}
+		for _, expr := range pass.Exprs {
+			state.walk(expr, 0)
+		}
+		return nil
+	},
+}
+
+type letRecursionBinding struct {
+	name  *lisp.LVal
+	form  string
+	depth int
+}
+
+type letRecursionState struct {
+	pass       *Pass
+	unresolved map[Position]string
+	shadowed   map[string]bool
+	pending    map[string][]letRecursionBinding
+}
+
+// walk visits the source once, tracking which initializer encloses a closure.
+// Resolution is joined by source position: pass.Exprs and pass.Semantics can
+// be separate parses, so comparing their LVal pointers would miss every ref.
+func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
+	if node == nil || node.IsQuoted() {
+		return
+	}
+	if node.Type == lisp.LSymbol {
+		pos := posFromSource(astutil.SourceLoc(node))
+		if s.unresolved[pos] != node.Str {
+			return
+		}
+		bindings := s.pending[node.Str]
+		for i := len(bindings) - 1; i >= 0; i-- {
+			binding := bindings[i]
+			if depth <= binding.depth {
+				continue // an immediate initializer reference is not recursion
+			}
+			s.pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s initializer cannot refer to its own binding '%s'; use labels for local recursion", binding.form, node.Str),
+				Pos:     pos,
+				EndPos:  endPosFromNode(node),
+				Notes: []string{
+					"the closure captures the initializer's environment, which excludes the binding being introduced",
+					"if this names a function from another file, provide --workspace so its outer binding can be resolved",
+				},
+				Related: relatedFromSource(astutil.SymbolLoc(binding.name), "binding introduced after its initializer"),
+			})
+			return
+		}
+		return
+	}
+	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
+		return
+	}
+	spelling := HeadSymbol(node)
+	head := strings.TrimPrefix(spelling, "lisp:")
+	switch head {
+	case "quote", "quasiquote":
+		return
+	case "let", "let*", "lambda", "expr", "flet", "labels", "defun", "defmacro":
+		if spelling == head && s.shadowed[head] {
+			return
+		}
+	}
+	switch head {
+	case "let", "let*":
+		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
+			return
+		}
+		for _, binding := range node.Cells[1].Cells {
+			if binding == nil || binding.Type != lisp.LSExpr || len(binding.Cells) != 2 || binding.Cells[0] == nil || binding.Cells[0].Type != lisp.LSymbol {
+				continue
+			}
+			name := binding.Cells[0]
+			previous := s.pending[name.Str]
+			s.pending[name.Str] = append(previous, letRecursionBinding{name: name, form: spelling, depth: depth})
+			s.walk(binding.Cells[1], depth)
+			s.pending[name.Str] = previous
+		}
+		for _, body := range node.Cells[2:] {
+			s.walk(body, depth)
+		}
+	case "lambda":
+		if len(node.Cells) >= 2 {
+			for _, body := range node.Cells[2:] {
+				s.walk(body, depth+1)
+			}
+		}
+	case "expr":
+		for _, body := range node.Cells[1:] {
+			s.walk(body, depth+1)
+		}
+	case "flet", "labels":
+		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
+			return
+		}
+		for _, binding := range node.Cells[1].Cells {
+			if binding != nil && binding.Type == lisp.LSExpr && len(binding.Cells) >= 2 {
+				for _, body := range binding.Cells[2:] {
+					s.walk(body, depth+1)
+				}
+			}
+		}
+		for _, body := range node.Cells[2:] {
+			s.walk(body, depth)
+		}
+	case "defun", "defmacro":
+		if len(node.Cells) >= 3 {
+			for _, body := range node.Cells[3:] {
+				s.walk(body, depth+1)
+			}
+		}
+	default:
+		for _, child := range node.Cells {
+			s.walk(child, depth)
+		}
+	}
+}
+
 // AnalyzerQuoteCall warns when set is called with an unquoted symbol
 // as the first argument, which is almost always a mistake.
 //

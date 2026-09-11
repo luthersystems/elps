@@ -9,7 +9,6 @@ import (
 	"io"
 	"iter"
 	"log"
-	"runtime"
 	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -348,9 +347,9 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	ctx := env.Runtime.sourceContext()
-	name, loc, src, err := env.Runtime.Library.LoadSource(ctx, loc)
-	if err != nil {
-		return env.Errorf("library error: %v", err)
+	name, loc, src, lerr := env.readLibrarySource(ctx, loc)
+	if lerr != nil {
+		return lerr
 	}
 	return env.LoadLocation(name, loc, bytes.NewReader(src))
 }
@@ -369,10 +368,10 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 
 	reader := env.Runtime.Reader
 	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.Read(name, rd)
+		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 
 	return env.load(env.evalCtx, exprs)
@@ -400,10 +399,10 @@ func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 		return env.Load(loc, r)
 	}
 	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.ReadLocation(name, loc, rd)
+		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 
 	return env.load(env.evalCtx, exprs)
@@ -791,7 +790,8 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // InitializeTypedef, which InitializeUserEnv calls, is a step inside it and
 // not a substitute for it: it panics on an environment InitializeUserEnv has
 // not already established.  See its doc comment, and issue #433.
-func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
+func (env *LEnv) New(typ *LVal, args *LVal) (result *LVal) {
+	defer env.recoverPanic(&result)
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
@@ -1140,12 +1140,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 				Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 				Cells:  []*LVal{Native(v)},       //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
 			}
-			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-				if d.OnError(env, lerr) {
-					d.WaitIfPaused(env, lerr)
-				}
-			}
-			return lerr
+			return env.notifyError(lerr)
 		case string:
 			cells = append(cells, String(v))
 		default:
@@ -1164,12 +1159,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  cells,
 	}
-	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-		if d.OnError(env, lerr) {
-			d.WaitIfPaused(env, lerr)
-		}
-	}
-	return lerr
+	return env.notifyError(lerr)
 }
 
 // Errorf returns an LError value with a formatted error message.
@@ -1186,6 +1176,10 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // Unlike the exported function, the ErrorConditionf method returns an LVal
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
+	return env.notifyError(env.newErrorConditionf(condition, format, v...))
+}
+
+func (env *LEnv) newErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
 		// Copied, not aliased -- see ErrorCondition and ErrorAssociate
 		// (issue #366).
@@ -1195,6 +1189,13 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
 	}
+	return lerr
+}
+
+// notifyError is a host-callback boundary. A broken observer produces a
+// marked host fault instead of re-entering itself from panic recovery.
+func (env *LEnv) notifyError(lerr *LVal) (result *LVal) {
+	defer env.recoverPanic(&result)
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 		if d.OnError(env, lerr) {
 			d.WaitIfPaused(env, lerr)
@@ -1301,26 +1302,7 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		env.Runtime.evalNesting--
 		if r := recover(); r != nil {
-			// Ownership violations (elpscheck builds only) must stay hard
-			// panics: re-panic before the conversion below can launder the
-			// finding into a catchable LError.  No-op in release builds.
-			rethrowOwnershipViolation(r)
-			// Tag the error with CondInternalPanic so it is distinguishable
-			// from a lisp-level error: a panic is a host-code bug, and
-			// ignore-errors / catch-all handler-bind must not silently
-			// swallow it.  See the CondInternalPanic doc comment.
-			result = env.ErrorConditionf(CondInternalPanic,
-				"internal error (recovered panic): %v", r)
-			// Capture the Go stack at the panic origin so any caller of
-			// (*ErrorVal).WriteTrace (or direct readers of CallStack.GoStack)
-			// can render it. This defer runs before the panic unwind
-			// completes, so runtime.Stack reflects the panic site, not the
-			// recover frame.
-			if stack := result.CallStack(); stack != nil {
-				buf := make([]byte, 16*1024)
-				n := runtime.Stack(buf, false)
-				stack.GoStack = buf[:n]
-			}
+			result = env.panicError(r)
 		}
 	}()
 	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
@@ -1421,8 +1403,9 @@ eval:
 }
 
 // EvalSExpr evaluates s and returns the resulting LVal.
-func (env *LEnv) EvalSExpr(s *LVal) *LVal {
+func (env *LEnv) EvalSExpr(s *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.evalSExpr(env.evalCtx, s)
 }
 
@@ -1457,8 +1440,9 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 }
 
 // MacroCall invokes macro fun with argument list args.
-func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
+func (env *LEnv) MacroCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.macroCall(env.evalCtx, fun, args)
 }
 
@@ -1578,8 +1562,9 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 }
 
 // SpecialOpCall invokes special operator fun with the argument list args.
-func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
+func (env *LEnv) SpecialOpCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.specialOpCall(env.evalCtx, fun, args)
 }
 
@@ -1640,8 +1625,9 @@ callf:
 // FunCall invokes regular function fun with the argument list args.
 //
 // Deprecated: Use FunCallContext for cancellation and timeout support.
-func (env *LEnv) FunCall(fun, args *LVal) *LVal {
+func (env *LEnv) FunCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.funCall(env.evalCtx, fun, args)
 }
 
@@ -1671,10 +1657,10 @@ func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVa
 	}
 	reader := env.Runtime.Reader
 	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.Read(name, rd)
+		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 	return env.load(ctx, exprs)
 }
@@ -1685,9 +1671,9 @@ func (env *LEnv) LoadFileContext(ctx context.Context, loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	sctx := env.Runtime.sourceContext()
-	name, loc, src, err := env.Runtime.Library.LoadSource(sctx, loc)
-	if err != nil {
-		return env.Errorf("library error: %v", err)
+	name, loc, src, lerr := env.readLibrarySource(sctx, loc)
+	if lerr != nil {
+		return lerr
 	}
 	return env.LoadLocationContext(ctx, name, loc, bytes.NewReader(src))
 }
@@ -1708,10 +1694,10 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 		return env.LoadContext(ctx, loc, r)
 	}
 	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.ReadLocation(name, loc, rd)
+		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 	return env.load(ctx, exprs)
 }
@@ -1719,8 +1705,9 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 // FunCallContext invokes regular function fun with args under the given
 // context.  If ctx is cancelled or its deadline expires during the call,
 // a CondContextCancelled error is returned.
-func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
+func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.funCall(ctx, fun, args)
 }
 

@@ -53,6 +53,8 @@ type Debugger interface {
 	// ErrorCondition and ErrorConditionf). Returns true if the debugger
 	// wants execution to pause (exception breakpoint). When true, the
 	// interpreter calls WaitIfPaused with the error value.
+	// Recovered Go panics bypass this hook to avoid re-entering a failing
+	// debugger; their errors retain the Go stack for diagnosis.
 	OnError(env *LEnv, lerr *LVal) bool
 }
 

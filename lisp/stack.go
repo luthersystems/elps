@@ -14,7 +14,7 @@ import (
 
 // CallStack is a function call stack.
 //
-// For errors produced by env.eval's recover() of a Go panic, GoStack carries
+// For errors produced by recovery of a Go panic, GoStack carries
 // the runtime.Stack output captured at the panic site so callers (via
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.

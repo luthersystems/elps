@@ -388,6 +388,11 @@ see earlier bindings. A closure retains the scopes available when it was
 created: a later binding with the same name shadows an earlier binding
 without changing what that closure sees. Neither form makes a function
 initializer recursive; use `labels` for local recursive functions.
+The default `elps lint` check `let-recursion` warns about recognizable
+self-references in initializer-created closures. Use `--workspace` to resolve
+outer functions from other files and `--fail-on=warning` to enforce migration
+in CI. Dynamic code and opaque macros limit static detection; see
+[the check's coverage](lint-checks.md#let-recursion).
 
 ```lisp
 (let ((variable1 result1)
@@ -571,7 +576,7 @@ unqualified names for local variables and parameters:
 
 (let ((x 1))
     (let ((x 2))
-        (+ x 1)))   ; x evaluates to the value bound in the first let
+        (+ x 1)))   ; x evaluates to the value bound in the inner let
 ```
 
 If a function or `let` expression binds a symbol which was already bound in a
@@ -1663,8 +1668,11 @@ code try to use handler-bind.
 
 If Go code called during evaluation — a builtin or special operator supplied
 by the application embedding the interpreter — panics, the interpreter
-recovers the panic instead of letting it kill the host process, and turns it
-into an error with the condition `internal-panic`.
+recovers the panic and returns an error with the condition `internal-panic`.
+This also applies to direct Go calls through `FunCall`, `FunCallContext`,
+`EvalSExpr`, `MacroCall`, `SpecialOpCall` and `New`, and to source reader,
+input stream and library callbacks used by the `Load*` methods. Debugger and
+profiler callback panics are recovered at these evaluation/call boundaries.
 
 That condition is deliberately **not** treated as an ordinary error.  A panic
 means the host's Go code hit a bug (a nil dereference, an out-of-range index,
@@ -1697,6 +1705,22 @@ condition explicitly:
 
 The resulting error also carries the Go stack captured at the panic site, so
 an embedder can identify the offending Go function.
+
+Recovery does not invoke debugger error hooks: the debugger may itself have
+failed while holding a lock. Ordinary errors still notify the debugger.
+Panic diagnostics preserve primitive values and Go runtime fault messages;
+other payloads are described by type without calling application
+`String`, `Error` or `Format` methods, which could re-enter the failed object.
+
+Optional cache hooks have a different fallback: a panic in `ReaderIdentity`,
+`LoadCache.Load` or `LoadCache.Store` disables that operation and the source
+is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
+a panicking diagnostic writer is not retried. Nested loads from these hooks
+bypass identity and cache hooks on the same runtime.
+
+In `elpscheck` builds, detected ownership, sealed-program and singleton
+corruption deliberately remain hard Go panics so recovery cannot hide a
+failed invariant. These developer checks are distinct from language errors.
 
 ## Execution Limits
 

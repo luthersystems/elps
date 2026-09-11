@@ -30,10 +30,11 @@ func TestPermanentSingletonRoots_LoadVerifyCatchesMutation(t *testing.T) {
 		if r == nil {
 			t.Fatal("expected verifySealedLoadRoots to panic on a mutated permanent singleton root")
 		}
-		msg, ok := r.(string)
+		failure, ok := r.(sealViolation)
 		if !ok {
-			t.Fatalf("expected panic to be a string, got %T: %v", r, r)
+			t.Fatalf("expected a sealViolation panic, got %T: %v", r, r)
 		}
+		msg := failure.Error()
 		if !strings.Contains(msg, "permanent singleton root Bool(true)") {
 			t.Fatalf("panic should name the permanent singleton root; got: %s", msg)
 		}

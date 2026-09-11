@@ -340,6 +340,9 @@ type ReaderIdentity interface {
 	// readers returning it would be declared interchangeable.  A reader that
 	// returns it disables the cache for its own loads (they parse every time)
 	// rather than risking a wrong-program serve.
+	// A panic also disables caching for that load and is reported best-effort
+	// to Stderr. Reentrant loads on the same Runtime bypass identity and cache
+	// hooks. Checked-build ownership violations remain hard failures.
 	ReaderIdentity() string
 }
 
@@ -508,17 +511,18 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	if cache == nil || env.Runtime.loadCacheActive {
 		return parse(r)
 	}
-	readerID, ok := readerIdentity(env.Runtime.Reader)
+	// ReaderIdentity is host code too. Own the guard before invoking it so
+	// a nested load cannot re-enter either identity or cache callbacks.
+	env.Runtime.loadCacheActive = true
+	defer func() { env.Runtime.loadCacheActive = false }()
+	readerID, ok := env.cacheReaderIdentity(env.Runtime.Reader)
 	if !ok {
-		// The reader declined to state an identity (an empty ReaderIdentity
-		// token), so no key can bind this entry to its producer.  Parse
+		// The reader declined to state an identity or its hook panicked,
+		// so no key can bind this entry to its producer. Parse
 		// uncached rather than key on something that could collide.
 		return parse(r)
 	}
-	env.Runtime.loadCacheActive = true
-	defer func() { env.Runtime.loadCacheActive = false }()
-
-	src, err := io.ReadAll(r)
+	src, err := env.readSourceBytes(r)
 	if err != nil {
 		return nil, err
 	}
@@ -553,28 +557,40 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	return entry.prog.exprs, nil
 }
 
-// cacheLoad and cacheStore are the only two calls into embedder code on this
-// path, and they are the only two that can panic in a place (*LEnv).Load*
-// cannot report.  The Load* family is total — it returns an *LVal, an LError
-// at worst — but readCached runs BEFORE the evaluator's recover, so a
-// panicking hook escaped as a raw Go panic through an API that never panics
-// (issue #536 round-three review, minor 2).
+// cacheReaderIdentity, cacheLoad and cacheStore protect the optional cache
+// callbacks, which run before the evaluator's recover. A host-hook panic
+// must not escape a load that can still parse and evaluate the correct source
+// (issues #536 and #657). Actual parsing errors remain load errors.
 //
 // A panic here is treated as every other cache-implementation mistake on this
 // path is treated: the cache did not help, so the load proceeds without it.
+// ReaderIdentity degrades to no identity (and therefore no cache lookup).
 // Load degrades to a miss (the parse below is the correct program either
 // way); Store degrades to "not stored" (the parse already succeeded, and
 // failing a good load because the cache could not record it would be strictly
 // worse).  The re-entrancy guard is cleared by readCached's own defer, so a
 // panicking hook does not disable the cache for later loads.
 //
-// One line to Stderr, because silently swallowing a panic in embedder code
-// would hide a bug the embedder needs to see.
+// One best-effort line to Stderr, because silently swallowing a panic in
+// embedder code would hide a bug the embedder needs to see. Checked-build
+// ownership violations remain hard failures, as at the evaluator boundary.
+func (env *LEnv) cacheReaderIdentity(reader Reader) (identity string, ok bool) {
+	defer func() {
+		if r := recover(); r != nil {
+			rethrowOwnershipViolation(r)
+			identity, ok = "", false
+			env.reportCachePanic("ReaderIdentity", r)
+		}
+	}()
+	return readerIdentity(reader)
+}
+
 func (env *LEnv) cacheLoad(cache LoadCache, key string) (entry *CachedSource, ok bool) {
 	defer func() {
 		if r := recover(); r != nil {
+			rethrowOwnershipViolation(r)
 			entry, ok = nil, false
-			env.reportCachePanic("Load", r)
+			env.reportCachePanic("LoadCache.Load", r)
 		}
 	}()
 	return cache.Load(key)
@@ -583,17 +599,21 @@ func (env *LEnv) cacheLoad(cache LoadCache, key string) (entry *CachedSource, ok
 func (env *LEnv) cacheStore(cache LoadCache, key string, src *CachedSource) {
 	defer func() {
 		if r := recover(); r != nil {
-			env.reportCachePanic("Store", r)
+			rethrowOwnershipViolation(r)
+			env.reportCachePanic("LoadCache.Store", r)
 		}
 	}()
 	cache.Store(key, src)
 }
 
 func (env *LEnv) reportCachePanic(method string, r any) {
+	// A broken diagnostic writer must not replace the recovered cache
+	// failure with a new panic. Do not retry this host callback on failure.
+	defer func() { rethrowOwnershipViolation(recover()) }()
 	if env.Runtime == nil || env.Runtime.Stderr == nil {
 		return
 	}
 	_, _ = fmt.Fprintf(env.Runtime.Stderr,
-		"lisp: LoadCache.%s panicked; continuing without the cache for this load: %v\n",
-		method, r)
+		"lisp: %s panicked; continuing without the cache for this load: %s\n",
+		method, panicDescription(r))
 }
