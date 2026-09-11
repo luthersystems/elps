@@ -5,16 +5,23 @@
 (load-file "stream.lisp")
 
 (use-package 'sicp/stream)
+(use-package 'testing)
 
 (defun sqrt-improve (guess x)
   ; average guess and x/guess
   (/ (+ guess (/ x guess)) 2))
 
 (defun sqrt-stream (x)
-  (let ([guesses (stream-cons 1.0
-                              (stream-map #^(sqrt-improve % x)
-                                          guesses))]) ; nolint:undefined-symbol
-    guesses))
+  ; let initializers cannot capture their own binding. Use an explicitly
+  ; recursive function for the delayed tail (docs/lang.md: let vs let*).
+  (labels ([guesses (guess)
+             (stream-cons guess (guesses (sqrt-improve guess x)))])
+    (guesses 1.0)))
+
+(assert-equal '(1.0 1.5 1.4166666666666665)
+              (stream-collect (stream-take (sqrt-stream 2) 3)))
+(assert-equal '(1.0 2.5)
+              (stream-collect (stream-take (sqrt-stream 4) 2)))
 
 (debug-print '(sqrt-stream 2))
 (stream-debug (stream-take (sqrt-stream 2) 7))
