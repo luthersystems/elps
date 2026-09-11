@@ -35,6 +35,12 @@ func New(s *token.Scanner) *Lexer {
 	return lex
 }
 
+// Err returns the terminal scanner error, if any. Lexical errors such as
+// malformed literals do not set Err and may allow parsing to continue.
+func (lex *Lexer) Err() error {
+	return lex.scanner.Err()
+}
+
 func (lex *Lexer) ReadToken() []*token.Token {
 	toks := lex.lex(lex)
 	// Accept helpers report a count or boolean, so every token path must also

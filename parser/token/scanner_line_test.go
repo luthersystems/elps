@@ -62,6 +62,43 @@ func TestScannerStringAndShortReadEOF(t *testing.T) {
 	}
 }
 
+type unexpectedEOFReader struct {
+	data          string
+	errorWithData bool
+}
+
+func (r *unexpectedEOFReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	if n == 0 || (r.errorWithData && r.data == "") {
+		return n, io.ErrUnexpectedEOF
+	}
+	return n, nil
+}
+
+func TestScannerPreservesUnexpectedEOF(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		bufferSize    int
+		errorWithData bool
+	}{
+		{name: "after data", bufferSize: 8},
+		{name: "with data", bufferSize: 8, errorWithData: true},
+		{name: "with full window", bufferSize: 3, errorWithData: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &unexpectedEOFReader{data: "abc", errorWithData: tt.errorWithData}
+			s := newScannerBuf("truncated.lisp", r, make([]byte, tt.bufferSize))
+			require.NoError(t, s.Err(), "valid buffered data precedes the read error")
+			require.Equal(t, 3, s.AcceptSeq(func(rune) bool { return true }))
+			require.Equal(t, "abc", s.Text())
+			require.ErrorIs(t, s.Err(), io.ErrUnexpectedEOF)
+			require.ErrorIs(t, s.ScanRune(), io.ErrUnexpectedEOF)
+			require.False(t, s.EOF())
+		})
+	}
+}
+
 func TestScannerInvalidUTF8IsNotEOF(t *testing.T) {
 	for name, s := range map[string]*Scanner{
 		"string": NewScannerString("invalid.lisp", "\xff"),

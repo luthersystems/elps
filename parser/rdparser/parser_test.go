@@ -555,6 +555,27 @@ func TestFaultTolerant_ScanError(t *testing.T) {
 	assert.Equal(t, "(b 2)", result.Exprs[1].String())
 }
 
+func TestFaultTolerantTerminalScanErrorReportedOnce(t *testing.T) {
+	t.Parallel()
+	for _, middle := range []string{"\xff", "(broken \xff)", "; comment \xff", "#'\xff"} {
+		t.Run(fmt.Sprintf("%q", middle), func(t *testing.T) {
+			p := New(token.NewScanner("invalid.lisp", strings.NewReader("(a 1)\n"+middle+"\n(b 2)")))
+			result := p.ParseProgramFaultTolerant()
+			var scanErrors int
+			for _, err := range result.Errors {
+				if strings.Contains(err.Error(), "scan-error:") {
+					scanErrors++
+				}
+			}
+			require.Equal(t, 1, scanErrors, "terminal scan-error diagnostic count")
+			require.Len(t, result.Errors, 1)
+			require.Contains(t, result.Errors[0].Error(), "invalid utf-8 sequence")
+			require.Len(t, result.Exprs, 1, "retain only the expression before the terminal failure")
+			require.Equal(t, "(a 1)", result.Exprs[0].String())
+		})
+	}
+}
+
 func TestFaultTolerant_BareTokenRecovery(t *testing.T) {
 	t.Parallel()
 	// After a bracket error, recovery finds a bare symbol at top level.

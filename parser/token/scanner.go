@@ -73,7 +73,7 @@ func NewScanner(file string, r io.Reader) *Scanner {
 // source.
 func NewScannerString(file, src string) *Scanner {
 	s := newScannerBuf(file, strings.NewReader(src), make([]byte, len(src)))
-	// The complete source is buffered even when ReadFull filled it exactly.
+	// The complete source is buffered even when the final read filled it exactly.
 	s.readErr = io.EOF
 	return s
 }
@@ -488,14 +488,18 @@ func (s *Scanner) fill(end int) {
 		s.buf = s.buf[:end]
 		return
 	}
-	n, err := io.ReadFull(s.r, s.buf[end:])
-	s.buf = s.buf[:end+n]
-	if err == io.ErrUnexpectedEOF {
-		// ReadFull consumed the final bytes. Preserve EOF so a subsequent
-		// Peek does not mistake this short final window for an oversized token.
-		err = io.EOF
+	// Read directly so a reader's ErrUnexpectedEOF remains distinguishable
+	// from a short final window ending in EOF. ReadFull synthesizes the former
+	// from the latter and discards errors returned with a full buffer.
+	for end < len(s.buf) {
+		n, err := s.r.Read(s.buf[end:])
+		end += n
+		if err != nil {
+			s.readErr = err
+			break
+		}
 	}
-	s.readErr = err
+	s.buf = s.buf[:end]
 }
 
 // Rune contains a rune that read by Scanner during peeking operations.
