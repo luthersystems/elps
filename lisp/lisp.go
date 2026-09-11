@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -29,9 +30,9 @@ const (
 	LInt
 	// LFloat values store a float64 in the LVal.Float field.
 	LFloat
-	// LError values use the LVal.Cells slice to store the following items:
-	//		[0] a symbol representing the error "condition" (class name)
-	//		[1:] error data (of any type)
+	// LError values store the condition name in Str and error data in Cells.
+	// Go errors become LString data, retaining the Go error in that string
+	// cell's Native field for host diagnostics.
 	//
 	// In addition, LError values store a copy of the function call stack at
 	// the time of their creation in the LVal.Native field.
@@ -932,27 +933,38 @@ func SpecialOp(fid string, formals *LVal, fn LBuiltin) *LVal {
 // Cells and their condition type in Str.  The error condition type must be a
 // valid lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func Error(err error) *LVal {
 	return ErrorCondition("error", err)
 }
 
 // ErrorCondition returns an LError representing err and having the given
-// condition type.  Errors store their message/data in Cells and their
-// condition type in Str.  The condition type must be a valid lisp symbol.
+// condition type. Go errors become string data while their original value
+// remains recoverable through GoError and errors.Unwrap. If err is or wraps
+// an *ErrorVal, its original condition, data, stack and identity are preserved
+// instead of applying condition. The condition type must be a valid Lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func ErrorCondition(condition string, err error) *LVal {
+	var existing *ErrorVal
+	if errors.As(err, &existing) && existing != nil {
+		return (*LVal)(existing)
+	}
+	message := "<nil>"
+	if err != nil {
+		message = err.Error()
+	}
 	return &LVal{
-		Type:  LError,
-		Str:   condition,
-		Cells: []*LVal{Native(err)}, //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
+		Type: LError,
+		Str:  condition,
+		Cells: []*LVal{{
+			Type: LString,
+			Str:  message,
+			// Keep host identity without exposing a native value to Lisp.
+			Native: err, //elpsvet:allow-native original Go error retained for diagnostics; template admission still checks this payload's dynamic type even on a string header
+		}},
 	}
 }
 

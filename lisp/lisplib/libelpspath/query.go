@@ -238,15 +238,15 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.Get(val)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -264,18 +264,18 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	steps, newVal := rest[:len(rest)-1], rest[len(rest)-1]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	if err := okSimpleType(newVal); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.SetMutate(val, newVal)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -293,18 +293,18 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	steps, newVal := rest[:len(rest)-1], rest[len(rest)-1]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	if err := okSimpleType(newVal); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.Set(val, newVal)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -317,15 +317,15 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.DeleteMutate(val)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -338,15 +338,15 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.Delete(val)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -359,15 +359,15 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.NilMutate(val)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -380,15 +380,15 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	val := args.Cells[0]
 	steps := args.Cells[1:]
 	if err := okSimpleType(val); err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	path, err := ArgsToPath(steps)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	data, err := path.Nil(val)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return data
 }
@@ -436,7 +436,7 @@ func BuiltinParsePath(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	steps, err := SelectorSteps(sel.Str)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	return lisp.QExpr(steps)
 }

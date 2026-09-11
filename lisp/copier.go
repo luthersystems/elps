@@ -432,6 +432,14 @@ func (c *copier) copyNode(v *LVal) *LVal {
 		if b, ok := v.Native.(*[]byte); ok && b != nil {
 			cp.Native = c.byteSlice(b)
 		}
+	case LString:
+		// Error messages retain their original Go error for host diagnostics.
+		// Honor its copy protocol just as when the data cell was LNative.
+		if _, ok := v.Native.(error); ok {
+			if cl, ok := v.Native.(NativeCloner); ok {
+				cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native copy protocol for the original Go error; template admission checks the cloned payload independently
+			}
+		}
 	case LNative:
 		if cl, ok := v.Native.(NativeCloner); ok {
 			cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native a NativeCloner clone stored by the walker that invoked it: Copy is a within-runtime value copy, not template admission, and publication classifies the clone on its own dynamic type if the copy is ever published

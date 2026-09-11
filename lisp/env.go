@@ -1104,7 +1104,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 //
 // Error may be called either with an error or with any number of *LVal values.
 // It is invalid to pass an error argument with any other values and doing so
-// will result in a runtime panic.
+// returns a runtime error.
 //
 // Unlike the exported function, the Error method returns LVal with a copy
 // env.Runtime.Stack.
@@ -1112,17 +1112,20 @@ func (env *LEnv) Error(msg ...interface{}) *LVal {
 	return env.ErrorCondition("error", msg...)
 }
 
-// ErrorCondition returns an LError the given condition type and an error
-// message computed by rendering msg.
+// ErrorCondition returns an LError with the given condition type and an error
+// message computed by rendering its arguments. Go errors become string data;
+// an error wrapping an *ErrorVal propagates that original condition.
 //
 // ErrorCondition may be called either with an error or with any number of
 // *LVal values.  It is invalid to pass ErrorCondition an error argument with
-// any other values and doing so will result in a runtime panic.
+// any other values; doing so returns a runtime error.
 //
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
-func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
-	// log.Printf("stack %v", env.Runtime.Stack.Copy())
+func (env *LEnv) ErrorCondition(condition string, v ...interface{}) (result *LVal) {
+	// Error/As/Unwrap are host hooks, including when a source reader returns
+	// an error outside env.eval. Contain faults at this boundary as well.
+	defer env.recoverPanic(&result)
 
 	narg := len(v)
 	cells := make([]*LVal, 0, len(v))
@@ -1134,11 +1137,9 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			if narg > 1 {
 				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
 			}
-			lerr := &LVal{
-				Type:   LError,
-				Str:    condition,
-				Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-				Cells:  []*LVal{Native(v)},       //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
+			lerr := ErrorCondition(condition, v)
+			if failure := env.ErrorAssociate(lerr); failure != nil {
+				return failure
 			}
 			return env.notifyError(lerr)
 		case string:
