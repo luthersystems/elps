@@ -26,7 +26,7 @@ func TestLongCommentRoundTrip(t *testing.T) {
 				require.Equal(t, `(debug-print "normal" 2)`, exprs[0].String())
 				again, err := Format(formatted, nil)
 				require.NoError(t, err)
-				require.True(t, string(again) == string(formatted), "formatting must be idempotent")
+				require.Equal(t, string(formatted), string(again), "formatting must be idempotent")
 			})
 		}
 	}

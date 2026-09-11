@@ -758,8 +758,8 @@ func Chain(paths ...Path) Path {
 // leafPathError identifies the leaf a path tried to traverse. Only error
 // paths retain location information; successful walks allocate no diagnostics.
 type leafPathError struct {
-	paths []Path
 	next  *leafPathError
+	paths []Path
 	typ   lisp.LType
 }
 
@@ -807,8 +807,8 @@ func indexTypeError(in *lisp.LVal, fallback string) error {
 }
 
 func prependLeafPath(err error, prefix []Path) error {
-	leaf, ok := err.(*leafPathError)
-	if !ok || len(prefix) == 0 {
+	var leaf *leafPathError
+	if !errors.As(err, &leaf) || len(prefix) == 0 {
 		return err
 	}
 	// Retain each immutable prefix once. Copying the accumulated path at

@@ -41,7 +41,7 @@ func TestLongCommentsStayComments(t *testing.T) {
 						}
 						tok := lex.ReadToken()[0]
 						require.Equal(t, token.COMMENT, tok.Type)
-						require.True(t, tok.Text == want, "comment text: got %d bytes, want %d", len(tok.Text), len(want))
+						require.Equal(t, want, tok.Text, "comment text: got %d bytes, want %d", len(tok.Text), len(want))
 						require.Equal(t, 1, tok.Source.Line)
 						require.Equal(t, column, tok.Source.Col)
 						next := lex.ReadToken()[0]

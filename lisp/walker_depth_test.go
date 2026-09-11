@@ -44,7 +44,7 @@ func TestRuntimeWalkerDepthAt500K(t *testing.T) {
 		t.Run(tc.operation, func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeWalkerDepthAt500K$", "-test.count=1")
+			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeWalkerDepthAt500K$", "-test.count=1") //nolint:gosec // executable is this test binary from os.Executable, not user input
 			cmd.Env = append(os.Environ(), childEnv+"="+tc.operation)
 			output, err := cmd.CombinedOutput()
 			if ctx.Err() != nil {

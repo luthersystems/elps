@@ -218,7 +218,7 @@ func TestBoundedRenderCycleProbePreservesDepthDependentRecovery(t *testing.T) {
 	for i := range ring {
 		ring[i] = SExpr(nil)
 	}
-	for i := 0; i < len(ring)-1; i++ {
+	for i := range len(ring) - 1 {
 		ring[i].Cells = []*LVal{ring[i+1]}
 	}
 	ring[len(ring)-1].Cells = []*LVal{e}

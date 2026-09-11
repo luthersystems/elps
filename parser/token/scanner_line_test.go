@@ -23,7 +23,7 @@ func TestScanLineAcrossWindows(t *testing.T) {
 				require.True(t, s.AcceptRune(';'))
 				got, err := s.ScanLine()
 				require.NoError(t, err)
-				require.True(t, line == got, "got %d bytes, want %d", len(got), len(line))
+				require.Equal(t, line, got, "got %d bytes, want %d", len(got), len(line))
 				require.Equal(t, size, cap(s.buf), "scanner window must stay bounded")
 				if ending != "" {
 					require.True(t, s.AcceptRune('\n'), "ScanLine must leave the newline unconsumed")
@@ -107,7 +107,7 @@ func TestScannerInvalidUTF8IsNotEOF(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			err := s.ScanRune()
 			require.ErrorContains(t, err, "invalid utf-8")
-			require.False(t, errors.Is(err, io.EOF))
+			require.NotErrorIs(t, err, io.EOF)
 			require.ErrorContains(t, s.Err(), "invalid utf-8")
 		})
 	}
