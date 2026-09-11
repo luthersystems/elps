@@ -3,7 +3,7 @@
 package lisp
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -30,9 +30,9 @@ const (
 	LInt
 	// LFloat values store a float64 in the LVal.Float field.
 	LFloat
-	// LError values use the LVal.Cells slice to store the following items:
-	//		[0] a symbol representing the error "condition" (class name)
-	//		[1:] error data (of any type)
+	// LError values store the condition name in Str and error data in Cells.
+	// Go errors become LString data, retaining the Go error in that string
+	// cell's Native field for host diagnostics.
 	//
 	// In addition, LError values store a copy of the function call stack at
 	// the time of their creation in the LVal.Native field.
@@ -694,15 +694,30 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
+		hasZero := false
 		for _, n := range dims.Cells {
 			if n.Type != LInt {
 				return Errorf("array dimension is not an integer: %v", n.Type)
 			}
+			if n.Int < 0 {
+				return Errorf("array dimension is negative: %d", n.Int)
+			}
+			hasZero = hasZero || n.Int == 0
 		}
-		for _, n := range dims.Cells {
-			totalSize *= n.Int
-			if totalSize < 0 {
-				return Errorf("integer overflow")
+		if hasZero {
+			// A zero dimension needs no backing, even if an earlier
+			// prefix of the dimension product would overflow.
+			totalSize = 0
+		} else {
+			// Bound the pointer backing's byte count, not just its element
+			// count. A wrapped positive product is no safer than a negative
+			// one: it can construct an array whose valid indices panic.
+			maxCells := int(^uint(0)>>1) / (strconv.IntSize / 8)
+			for _, n := range dims.Cells {
+				if n.Int > maxCells/totalSize {
+					return Errorf("array size exceeds maximum representable backing size")
+				}
+				totalSize *= n.Int
 			}
 		}
 	}
@@ -918,27 +933,38 @@ func SpecialOp(fid string, formals *LVal, fn LBuiltin) *LVal {
 // Cells and their condition type in Str.  The error condition type must be a
 // valid lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func Error(err error) *LVal {
 	return ErrorCondition("error", err)
 }
 
 // ErrorCondition returns an LError representing err and having the given
-// condition type.  Errors store their message/data in Cells and their
-// condition type in Str.  The condition type must be a valid lisp symbol.
+// condition type. Go errors become string data while their original value
+// remains recoverable through GoError and errors.Unwrap. If err is or wraps
+// an *ErrorVal, its original condition, data, stack and identity are preserved
+// instead of applying condition. The condition type must be a valid Lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func ErrorCondition(condition string, err error) *LVal {
+	var existing *ErrorVal
+	if errors.As(err, &existing) && existing != nil {
+		return (*LVal)(existing)
+	}
+	message := "<nil>"
+	if err != nil {
+		message = err.Error()
+	}
 	return &LVal{
-		Type:  LError,
-		Str:   condition,
-		Cells: []*LVal{Native(err)}, //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
+		Type: LError,
+		Str:  condition,
+		Cells: []*LVal{{
+			Type: LString,
+			Str:  message,
+			// Keep host identity without exposing a native value to Lisp.
+			Native: err, //elpsvet:allow-native original Go error retained for diagnostics; template admission still checks this payload's dynamic type even on a string header
+		}},
 	}
 }
 
@@ -1341,7 +1367,7 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 			dims, len(index), dims.Len())
 	}
 	if len(index) == 0 {
-		return v.Cells[1]
+		return v.Cells[1].Cells[0]
 	}
 	for i, j := range index {
 		n := dims.Cells[i]
@@ -1607,7 +1633,9 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 		return Bool(v.Int == other.Int)
 	}
 
-	// This may not be correct
+	// Mixed comparisons intentionally convert ints to float, including the
+	// loss of precision above 2^53 documented in
+	// docs/lang.md#json-numbers-and-integer-precision.
 	return Bool(toFloat(v) == toFloat(other))
 }
 
@@ -1678,7 +1706,11 @@ func (v *LVal) copyMapData() (*MapData, error) {
 		return &MapData{nm}, nil
 	}
 	m := &MapData{newmap()}
-	for _, pair := range sortedMapEntries(m0).Cells {
+	entries := sortedMapEntries(m0)
+	if entries.Type == LError {
+		return nil, fmt.Errorf("failed to copy map: %v", entries)
+	}
+	for _, pair := range entries.Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
 		if lerr.Type == LError {
 			return nil, fmt.Errorf("failed to copy map: %v", lerr)
@@ -1690,10 +1722,10 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // String renders v as lisp source.
 //
 // A value that contains itself renders the marker "#<cycle>" at the point the
-// walk reaches it a second time, so the result is finite and the walk cannot
-// overflow the goroutine stack and kill the process.  Rendering is otherwise
-// unchanged: an acyclic value renders in full, at any nesting depth, exactly
-// as it always did.  See lisp/cycle.go and issue #390.
+// walk reaches it a second time. Independently, rendering stops after 1024
+// nested values and replaces deeper subtrees with "#<depth-limit>", keeping
+// even acyclic graphs from overflowing the goroutine stack. Scalars at the
+// boundary still render in full. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
 	var st cycleState
 	s := v.stringGuard(cycleGuard{state: &st})
@@ -1835,6 +1867,9 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 	if g.abandoned() {
 		return ""
 	}
+	if g.depth >= maxRenderDepth {
+		return renderDepthMark
+	}
 	g, cyclic := g.descend(v)
 	if cyclic {
 		return cycleMark
@@ -1849,94 +1884,9 @@ func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
 // strNested renders the types that reach other values.  It is only ever
 // reached through str, which has already put v on g's path.
 func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
-	const QUOTE = `'`
-	quote := ""
-	if onTheRecord {
-		quote = QUOTE
-	}
-	switch v.Type {
-	case LError:
-		if v.quoted {
-			quote = QUOTE
-			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
-		}
-		return (*ErrorVal)(v).errorString(g)
-	case LSExpr:
-		if v.quoted {
-			quote = QUOTE
-		}
-		return exprString(v, 0, quote+"(", ")", g)
-	case LFun:
-		if v.quoted {
-			quote = QUOTE
-		}
-		if v.Builtin() != nil {
-			return quote + "#<builtin>"
-		}
-		// The formals render directly.  There is no second list to
-		// concatenate them with: what used to follow them was the
-		// function's own environment scope, which was always empty (see
-		// the note on funData.env), so this prints exactly what the
-		// concatenation printed.
-		return fmt.Sprintf("%s(lambda %s%s)", quote, exprString(v.Cells[0], 0, "(", ")", g), bodyStr(v.Cells[1:], g))
-	case LQuote:
-		// TODO: make more efficient
-		return QUOTE + v.Cells[0].str(true, g)
-	case LSortMap:
-		return quote + sortedMapString(v, g)
-	case LArray:
-		if v.Cells[0].Len() == 1 {
-			if v.Len() > 0 {
-				return exprString(v.Cells[1], 0, quote+"(vector ", ")", g)
-			} else {
-				return quote + "(vector)"
-			}
-		}
-		return fmt.Sprintf("#<array dims=%s>", v.Cells[0].str(false, g))
-	case LTaggedVal:
-		return fmt.Sprintf("#{%s %s}", v.Str, v.Cells[0].str(false, g))
-	case LMarkTerminal:
-		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0].str(false, g))
-	case LMarkTailRec:
-		return quote + fmt.Sprintf("#<tail-recursion frames=%d (%s %s)>", v.Cells[0].Int, v.Cells[1].str(false, g), v.Cells[2].str(false, g))
-	case LMarkMacExpand:
-		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0].str(false, g))
-	default:
-		// Nothing reaches this arm today: every LType is rendered either
-		// here or by str above, and TestStringNoAddressForEveryLType
-		// fails if a newly added type stops being covered.  It renders
-		// the type name ALONE -- never %#v of the LVal, which printed
-		// the LVal's pointer fields and made the rendering depend on the
-		// allocator (issue #606).  ELPS output has to be byte-identical
-		// across processes; a fallback that can embed a heap address is
-		// not an acceptable one, however unreachable it looks.
-		return quote + fmt.Sprintf("#<%s>", v.Type)
-	}
-}
-
-func bodyStr(exprs []*LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	for i := range exprs {
-		buf.WriteString(" ")
-		buf.WriteString(exprs[i].str(false, g))
-	}
-	return buf.String()
-}
-
-func exprString(v *LVal, offset int, left string, right string, g cycleGuard) string {
-	if len(v.Cells[offset:]) == 0 {
-		return left + right
-	}
-	var buf bytes.Buffer
-	buf.WriteString(left)
-	for i, c := range v.Cells[offset:] {
-		if i > 0 {
-			buf.WriteString(" ")
-		}
-		buf.WriteString(c.str(false, g))
-	}
-	buf.WriteString(right)
-	return buf.String()
+	r := valueRenderer{limit: -1}
+	r.nested(v, onTheRecord, g)
+	return r.out.String()
 }
 
 func isVec(v *LVal) bool {

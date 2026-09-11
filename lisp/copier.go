@@ -96,9 +96,8 @@ import (
 //
 // # Cost, and why the memo is not simply a map
 //
-// Copy is a per-call primitive on small values: `assert` copies its test
-// expression on every evaluation, lambda creation copies its formals,
-// make-sequence copies each number it emits, and
+// Copy is a per-call primitive on small values: lambda creation copies its
+// formals, make-sequence copies each number it emits, and
 // TestCopyLeafAllocatesLikeAStructCopy pins the leaf cost as an equality.
 // (The sort comparators, once the heaviest per-call callers, no longer copy
 // at all -- stable-sort and insert-sorted pass their elements by reference,
@@ -148,6 +147,9 @@ type copier struct {
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
 	natives map[interface{}]interface{}
+	// runtime optionally limits each copied data backing allocation.
+	// Ordinary Go Copy calls retain their existing unlimited behavior.
+	runtime *Runtime
 	// failed is the error the walk stopped on, and is NOT a memo: it holds
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
@@ -237,6 +239,27 @@ func (v *LVal) copyWithHint(n int) *LVal {
 	return c.copy(v)
 }
 
+// copyWithRuntime keeps Copy's within-runtime sharing rules, with allocation
+// checks for interpreter calls. Failure is separate because a successfully
+// copied condition is itself an LError.
+func (v *LVal) copyWithRuntime(runtime *Runtime) (*LVal, *LVal) {
+	c := copier{runtime: runtime}
+	cp := c.copy(v)
+	return cp, c.failed
+}
+
+func (c *copier) checkAlloc(n int) error {
+	if c.runtime != nil {
+		if msg := c.runtime.CheckAlloc(n); msg != "" {
+			if c.failed == nil {
+				c.failed = Errorf("%s", msg)
+			}
+			return errors.New(msg)
+		}
+	}
+	return nil
+}
+
 // copy is the walk's only entry point, and the fail-stop's.  Once an arm
 // has recorded a failure in c.failed every level returns it without
 // descending -- the OUTERMOST level included, which is what makes
@@ -280,6 +303,14 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	if memoise {
 		if cp, ok := c.lookup(v); ok {
 			return cp
+		}
+	}
+	// Array/quote/tag Cells are fixed representation headers; their child
+	// lists carry the variable data spans. Check these spans before any
+	// child clone hook or backing allocation can run.
+	if v.Type == LSExpr || v.Type == LError || v.Type == LFun {
+		if c.checkAlloc(len(v.Cells)) != nil {
+			return c.failed
 		}
 	}
 	// Constructed here and written here, in one function: cmd/elpsvet's
@@ -390,7 +421,9 @@ func (c *copier) copyNode(v *LVal) *LVal {
 			// (see the type comment).
 			e := Errorf("copy sorted-map: %v", err)
 			*cp = *e
-			c.failed = cp
+			if c.failed == nil {
+				c.failed = cp
+			}
 			return cp
 		}
 		cp.Native = md
@@ -398,6 +431,14 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	case LBytes:
 		if b, ok := v.Native.(*[]byte); ok && b != nil {
 			cp.Native = c.byteSlice(b)
+		}
+	case LString:
+		// Error messages retain their original Go error for host diagnostics.
+		// Honor its copy protocol just as when the data cell was LNative.
+		if _, ok := v.Native.(error); ok {
+			if cl, ok := v.Native.(NativeCloner); ok {
+				cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native copy protocol for the original Go error; template admission checks the cloned payload independently
+			}
 		}
 	case LNative:
 		if cl, ok := v.Native.(NativeCloner); ok {
@@ -449,6 +490,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			return nil, errCopyMapFailed
 		}
 		return cp, nil
+	}
+	if md.mapBacking != nil {
+		if err := c.checkAlloc(md.Len()); err != nil {
+			return nil, err
+		}
 	}
 	if c.maps == nil {
 		c.maps = make(map[*MapData]*MapData)
@@ -697,6 +743,9 @@ func (c *copier) failMap(md *MapData, err error) (*MapData, error) {
 func (c *copier) byteSlice(b *[]byte) *[]byte {
 	if cp, ok := c.bytes[b]; ok {
 		return cp
+	}
+	if c.checkAlloc(len(*b)) != nil {
+		return nil
 	}
 	nb := make([]byte, len(*b))
 	copy(nb, *b)

@@ -13,8 +13,8 @@ import (
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
-// objects.  The error message is stored in the Str field while contextual
-// information (e.g. call stack) can be stored in the Cells slice.
+// objects. The condition name is stored in Str, message/data in Cells, and
+// the captured call stack in Native.
 type ErrorVal LVal
 
 // nilErrorMessage is the sentinel returned by the rendering chain when a nil
@@ -30,7 +30,7 @@ const nilErrorMessage = "<nil error>"
 const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
 
 // Error implements the error interface.  When the error condition is not
-// “error” it wil be printed preceding the error message.  Otherwise, the
+// “error” it will be printed preceding the error message.  Otherwise, the
 // name of the function that generated the error will be printed preceding the
 // error, if the function can be determined.
 //
@@ -58,6 +58,16 @@ func (e *ErrorVal) errorString(g cycleGuard) string {
 	}
 	loc, _ := (*LVal)(e).Source()
 	return fmt.Sprintf("%s: %s", &loc, e.baseMessage(g))
+}
+
+// Unwrap returns the original Go error carried by this condition, if any.
+// GoError still returns the ErrorVal so its condition and source remain available.
+func (e *ErrorVal) Unwrap() error {
+	if e == nil || len(e.Cells) == 0 || e.Cells[0] == nil {
+		return nil
+	}
+	err, _ := e.Cells[0].Native.(error)
+	return err
 }
 
 // Source returns a copy of the error's originating source location.  It has

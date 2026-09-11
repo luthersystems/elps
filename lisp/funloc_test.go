@@ -72,7 +72,9 @@ func TestBudgetErrorReportsDefinitionSite(t *testing.T) {
 // countdownContext reports itself cancelled once Err has been probed more
 // than n times, which walks the cancellation point across the evaluation one
 // checkLimits call at a time.  A real cancelled context would trip at the
-// first check; this one trips at a chosen one.
+// first check; this one trips at a chosen one. Native/interpreted call
+// boundaries also probe Err without charging an evaluation step, so these
+// cancellation counts deliberately differ from the step-limit counts.
 type countdownContext struct {
 	n int
 	i int
@@ -95,10 +97,23 @@ func (c *countdownContext) Err() error {
 // run with cancellation as their only budget.
 func TestCancellationAtBodyEntryReportsDefinitionSite(t *testing.T) {
 	t.Parallel()
-	env := newLimitTestEnv(t)
-	res := env.LoadStringContext(&countdownContext{n: 38}, "s.lisp", funLocProgram)
-	require.Equal(t, lisp.LError, res.Type, "expected the cancellation to trip")
-	assert.Equal(t,
-		"s.lisp:1:1: context-cancelled: context cancelled: context canceled",
-		res.String())
+	for _, tc := range []struct {
+		name string
+		n    int
+		want string
+	}{
+		// The call boundary has not bound/entered the function yet. The
+		// following probe enters cc's body in its definition environment.
+		{"call-boundary", 38, "s.lisp:8:1"},
+		{"defun-body", 39, "s.lisp:6:1"},
+		{"closure-body", 45, "s.lisp:4:12"},
+		{"nested-defun-body", 51, "s.lisp:1:1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newLimitTestEnv(t)
+			res := env.LoadStringContext(&countdownContext{n: tc.n}, "s.lisp", funLocProgram)
+			require.Equal(t, lisp.LError, res.Type, "expected the cancellation to trip")
+			assert.Equal(t, tc.want+": context-cancelled: context cancelled: context canceled", res.String())
+		})
+	}
 }

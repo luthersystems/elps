@@ -83,10 +83,18 @@ package lisp
 // kernel bug surfaces as an ordinary catchable condition rather than a
 // silently half-shared copy.
 func (v *LVal) deepCopy() (*LVal, error) {
+	return v.deepCopyWithRuntime(nil)
+}
+
+// deepCopyWithRuntime applies a runtime's per-container allocation limit only
+// when copying from Lisp. The Go ownership helpers remain unbounded. Immutable
+// string storage is shared, and allocation inside NativeCloner hooks remains
+// the host's responsibility; neither it nor walker bookkeeping is metered.
+func (v *LVal) deepCopyWithRuntime(runtime *Runtime) (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
-	d := &detacher{seen: make(map[*LVal]*LVal), shareOpaque: true}
+	d := &detacher{seen: make(map[*LVal]*LVal), runtime: runtime, shareOpaque: true}
 	return d.detach(v)
 }
 
@@ -105,7 +113,7 @@ func (v *LVal) deepCopy() (*LVal, error) {
 // another binding, a container or a closure (issue #378).  Code that
 // intends to mutate data it did not construct copies first, full stop.
 func builtinCopy(env *LEnv, args *LVal) *LVal {
-	cp, err := args.Cells[0].deepCopy()
+	cp, err := args.Cells[0].deepCopyWithRuntime(env.Runtime)
 	if err != nil {
 		return env.Errorf("value cannot be copied: %v", err)
 	}

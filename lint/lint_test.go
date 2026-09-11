@@ -2102,7 +2102,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 21)
+	assert.Len(t, analyzers, 22)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2116,6 +2116,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"in-package-toplevel",
 		"iteration-mutation",
 		"let-bindings",
+		"let-recursion",
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
@@ -2127,6 +2128,111 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"user-arity",
 		"with-cleanup-forms",
 	}, names)
+}
+
+// Issue #657: a local closure created in a let initializer cannot capture
+// the binding being introduced. Diagnose the migration without evaluating it.
+func TestLetRecursion_Positive(t *testing.T) {
+	for _, tc := range []struct{ name, source, binding string }{
+		{"let", `(let ((f (lambda (n) (if (= n 0) 0 (f (- n 1)))))) (f 1))`, "f"},
+		{"let star", `(let* ((f (lambda (n) (if (= n 0) 0 (f (- n 1)))))) (f 1))`, "f"},
+		{"qualified forms", `(lisp:let* ((f (lisp:lambda (n) (f n)))) f)`, "f"},
+		{"prefix lambda", `(let* ((f #^(f %))) f)`, "f"},
+		{"closure inside vector", `(let* ((f (vector (lambda () (f))))) f)`, "f"},
+		{"recursive traversal under when", `(defun sum-inputs (values)
+  (let* ([total 0]
+         [visit (lambda (remaining)
+           (when (not (empty? remaining))
+             (let ([next (rest remaining)])
+               (set! total (+ total (first remaining)))
+               (visit next))))])
+    (visit values)
+    total))`, "visit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, semantic := range []bool{false, true} {
+				diags := lintLetRecursion(t, tc.source, semantic, nil)
+				require.Len(t, diags, 1)
+				assert.Equal(t, "let-recursion", diags[0].Analyzer)
+				assert.Equal(t, SeverityWarning, diags[0].Severity)
+				assert.Contains(t, diags[0].Message, "'"+tc.binding+"'")
+				assert.Contains(t, diags[0].Message, "labels")
+				assert.NotEmpty(t, diags[0].Notes)
+				assert.NotEmpty(t, diags[0].Related)
+			}
+		})
+	}
+}
+
+func TestLetRecursion_Negative(t *testing.T) {
+	for _, tc := range []struct{ name, source string }{
+		{"labels", `(labels ((f (n) (if (= n 0) 0 (f (- n 1))))) (f 1))`},
+		{"qualified labels", `(let* ((f (lambda () (lisp:labels ((f () 7)) (f))))) f)`},
+		{"qualified outer let", `(lisp:let ((f (lambda (n) 7))) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"qualified outer flet", `(lisp:flet ((f (n) 7)) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"parallel outer function", `(let ((f (lambda (n) 7))) (let ((f (lambda (n) (f n)))) (f 1)))`},
+		{"sequential outer function", `(let ((f (lambda (n) 7))) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"earlier sequential function", `(let* ((f (lambda () 7)) (f (lambda () (f)))) (f))`},
+		{"global function", `(defun f (n) n) (let* ((f (lambda (n) (f n)))) (f 1))`},
+		{"lambda parameter", `(let* ((f (lambda (f) (f 1)))) f)`},
+		{"nested parameter", `(let* ((f (lambda () (lambda (f) (f))))) f)`},
+		{"nested local function", `(let* ((f (lambda () (labels ((f () 7)) (f))))) f)`},
+		{"immediate self call", `(let* ((f (f 1))) f)`},
+		{"immediate value reference", `(let* ((f f)) f)`},
+		{"quoted function", `(let* ((f '(lambda () (f)))) f)`},
+		{"quoted body", `(let* ((f (lambda () '(f)))) f)`},
+		{"quasiquote", `(quasiquote (let* ((f (lambda () (f)))) f))`},
+		{"template in closure", `(let* ((f (lambda () (quasiquote (f))))) f)`},
+		{"opaque macro", `(defmacro with-f (&rest body) (quasiquote ())) (let* ((f (lambda () (with-f (f))))) f)`},
+		{"local special form shadow", `(let ((let* (lambda (bindings body) body))) (let* ((f (lambda () (f)))) f))`},
+		{"global special form shadow", `(defun let* (bindings body) body) (let* ((f (lambda () (f)))) f)`},
+		{"lambda form shadow", `(let ((lambda (lambda (args body) body))) (let* ((f (lambda () (f)))) f))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, semantic := range []bool{false, true} {
+				assertNoDiags(t, lintLetRecursion(t, tc.source, semantic, nil))
+			}
+		})
+	}
+}
+
+func TestLetRecursion_WorkspaceOuterFunction(t *testing.T) {
+	source := `(let* ((f (lambda (n) (f n)))) (f 1))`
+	config := &analysis.Config{ExtraGlobals: []analysis.ExternalSymbol{{Name: "f", Kind: analysis.SymFunction}}}
+	assertNoDiags(t, lintLetRecursion(t, source, true, config))
+}
+
+func TestLetRecursion_LocationAndSuppression(t *testing.T) {
+	source := "(let* ((f (lambda ()\n             (f))))\n  f)"
+	diags := lintLetRecursion(t, source, false, nil)
+	require.Len(t, diags, 1)
+	assert.Equal(t, 2, diags[0].Pos.Line)
+	assert.Equal(t, 15, diags[0].Pos.Col)
+	require.Len(t, diags[0].Related, 1)
+	assert.Equal(t, 1, diags[0].Related[0].Location.Line)
+	assertNoDiags(t, lintLetRecursion(t, strings.Replace(source, "(f))))", "(f)))) ; nolint:let-recursion", 1), false, nil))
+}
+
+// Look up by registered name so the red fixture proves an absent diagnostic,
+// rather than failing to compile before the new analyzer exists.
+func lintLetRecursion(t *testing.T, source string, semantic bool, cfg *analysis.Config) []Diagnostic {
+	t.Helper()
+	var analyzers []*Analyzer
+	for _, analyzer := range DefaultAnalyzers() {
+		if analyzer.Name == "let-recursion" {
+			analyzers = append(analyzers, analyzer)
+		}
+	}
+	linter := &Linter{Analyzers: analyzers}
+	var diags []Diagnostic
+	var err error
+	if semantic {
+		diags, err = linter.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	} else {
+		diags, err = linter.LintFile([]byte(source), "test.lisp")
+	}
+	require.NoError(t, err)
+	return diags
 }
 
 func TestAnalyzerDoc(t *testing.T) {
@@ -2451,6 +2557,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"in-package-toplevel": SeverityWarning,
 		"if-arity":            SeverityError,
 		"let-bindings":        SeverityError,
+		"let-recursion":       SeverityWarning,
 		"defun-structure":     SeverityError,
 		"cond-structure":      SeverityError,
 		"builtin-arity":       SeverityError,

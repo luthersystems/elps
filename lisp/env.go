@@ -9,7 +9,6 @@ import (
 	"io"
 	"iter"
 	"log"
-	"runtime"
 	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -348,9 +347,9 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	ctx := env.Runtime.sourceContext()
-	name, loc, src, err := env.Runtime.Library.LoadSource(ctx, loc)
-	if err != nil {
-		return env.Errorf("library error: %v", err)
+	name, loc, src, lerr := env.readLibrarySource(ctx, loc)
+	if lerr != nil {
+		return lerr
 	}
 	return env.LoadLocation(name, loc, bytes.NewReader(src))
 }
@@ -369,10 +368,10 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 
 	reader := env.Runtime.Reader
 	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.Read(name, rd)
+		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 
 	return env.load(env.evalCtx, exprs)
@@ -400,10 +399,10 @@ func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 		return env.Load(loc, r)
 	}
 	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.ReadLocation(name, loc, rd)
+		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 
 	return env.load(env.evalCtx, exprs)
@@ -631,6 +630,8 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
 // value the binding is updated so that k is bound to v.
 func (env *LEnv) Put(k, v *LVal) *LVal {
+	// Qualified names are retained verbatim for compatibility, but Get
+	// resolves them in a package, not this lexical scope; see docs/lang.md#scope.
 	// Ownership check (elpscheck builds only; no-op otherwise): a binding
 	// is the durable way a value enters a runtime, so both the key and the
 	// value are adopted/asserted here.
@@ -638,6 +639,9 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	checkOwnership(env.Runtime, v)
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
+	}
+	if isKeyword(k.Str) {
+		return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
@@ -786,7 +790,8 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // InitializeTypedef, which InitializeUserEnv calls, is a step inside it and
 // not a substitute for it: it panics on an environment InitializeUserEnv has
 // not already established.  See its doc comment, and issue #433.
-func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
+func (env *LEnv) New(typ *LVal, args *LVal) (result *LVal) {
+	defer env.recoverPanic(&result)
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
@@ -796,8 +801,10 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	if args.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %v", GetType(args))
 	}
-	tname := typ.Cells[0].Cells[0]
-	ctor := typ.Cells[0].Cells[1]
+	tname, ctor, lerr := env.typedefFields(typ)
+	if lerr != nil {
+		return lerr
+	}
 	v := env.FunCall(ctor, args)
 	if v.Type == LError {
 		return v
@@ -805,10 +812,28 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	return env.TaggedValue(tname, v)
 }
 
+// typedefFields checks the descriptor before indexing or invoking it.
+// Lisp can construct a value tagged lisp:typedef with arbitrary user data,
+// or mutate an existing descriptor through user-data. The tag alone is not
+// proof that the value is a usable type definition (docs/lang.md#user-defined-types).
+func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
+	if len(typ.Cells) != 1 || typ.Cells[0] == nil || typ.Cells[0].Type != LSExpr || len(typ.Cells[0].Cells) != 2 {
+		return nil, nil, env.Errorf("invalid typedef: expected a name and constructor")
+	}
+	name, ctor = typ.Cells[0].Cells[0], typ.Cells[0].Cells[1]
+	if name == nil || name.Type != LSymbol {
+		return nil, nil, env.Errorf("invalid typedef: name is not a symbol")
+	}
+	if ctor == nil || ctor.Type != LFun || ctor.IsSpecialFun() {
+		return nil, nil, env.Errorf("invalid typedef: constructor is not a regular function")
+	}
+	return name, ctor, nil
+}
+
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
-	if formals.Type != LSExpr {
-		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
+	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
+		return lerr
 	}
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
@@ -834,6 +859,20 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 		Cells: cells,
 	}
 	return fun
+}
+
+// validateFormalSymbols is shared by every Lisp function constructor and the
+// binder, which also receives formals from host-registered functions.
+func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
+	if formals.Type != LSExpr {
+		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
+	}
+	for _, sym := range formals.Cells {
+		if sym.Type != LSymbol {
+			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
+		}
+	}
+	return Nil()
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -1065,7 +1104,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 //
 // Error may be called either with an error or with any number of *LVal values.
 // It is invalid to pass an error argument with any other values and doing so
-// will result in a runtime panic.
+// returns a runtime error.
 //
 // Unlike the exported function, the Error method returns LVal with a copy
 // env.Runtime.Stack.
@@ -1073,17 +1112,20 @@ func (env *LEnv) Error(msg ...interface{}) *LVal {
 	return env.ErrorCondition("error", msg...)
 }
 
-// ErrorCondition returns an LError the given condition type and an error
-// message computed by rendering msg.
+// ErrorCondition returns an LError with the given condition type and an error
+// message computed by rendering its arguments. Go errors become string data;
+// an error wrapping an *ErrorVal propagates that original condition.
 //
 // ErrorCondition may be called either with an error or with any number of
 // *LVal values.  It is invalid to pass ErrorCondition an error argument with
-// any other values and doing so will result in a runtime panic.
+// any other values; doing so returns a runtime error.
 //
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
-func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
-	// log.Printf("stack %v", env.Runtime.Stack.Copy())
+func (env *LEnv) ErrorCondition(condition string, v ...interface{}) (result *LVal) {
+	// Error/As/Unwrap are host hooks, including when a source reader returns
+	// an error outside env.eval. Contain faults at this boundary as well.
+	defer env.recoverPanic(&result)
 
 	narg := len(v)
 	cells := make([]*LVal, 0, len(v))
@@ -1095,18 +1137,11 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 			if narg > 1 {
 				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
 			}
-			lerr := &LVal{
-				Type:   LError,
-				Str:    condition,
-				Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-				Cells:  []*LVal{Native(v)},       //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
+			lerr := ErrorCondition(condition, v)
+			if failure := env.ErrorAssociate(lerr); failure != nil {
+				return failure
 			}
-			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-				if d.OnError(env, lerr) {
-					d.WaitIfPaused(env, lerr)
-				}
-			}
-			return lerr
+			return env.notifyError(lerr)
 		case string:
 			cells = append(cells, String(v))
 		default:
@@ -1125,12 +1160,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) *LVal {
 		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  cells,
 	}
-	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-		if d.OnError(env, lerr) {
-			d.WaitIfPaused(env, lerr)
-		}
-	}
-	return lerr
+	return env.notifyError(lerr)
 }
 
 // Errorf returns an LError value with a formatted error message.
@@ -1147,6 +1177,10 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 // Unlike the exported function, the ErrorConditionf method returns an LVal
 // with a copy env.Runtime.Stack.
 func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
+	return env.notifyError(env.newErrorConditionf(condition, format, v...))
+}
+
+func (env *LEnv) newErrorConditionf(condition string, format string, v ...interface{}) *LVal {
 	lerr := &LVal{
 		// Copied, not aliased -- see ErrorCondition and ErrorAssociate
 		// (issue #366).
@@ -1156,6 +1190,13 @@ func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface
 		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
 	}
+	return lerr
+}
+
+// notifyError is a host-callback boundary. A broken observer produces a
+// marked host fault instead of re-entering itself from panic recovery.
+func (env *LEnv) notifyError(lerr *LVal) (result *LVal) {
+	defer env.recoverPanic(&result)
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 		if d.OnError(env, lerr) {
 			d.WaitIfPaused(env, lerr)
@@ -1262,26 +1303,7 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
 	defer func() {
 		env.Runtime.evalNesting--
 		if r := recover(); r != nil {
-			// Ownership violations (elpscheck builds only) must stay hard
-			// panics: re-panic before the conversion below can launder the
-			// finding into a catchable LError.  No-op in release builds.
-			rethrowOwnershipViolation(r)
-			// Tag the error with CondInternalPanic so it is distinguishable
-			// from a lisp-level error: a panic is a host-code bug, and
-			// ignore-errors / catch-all handler-bind must not silently
-			// swallow it.  See the CondInternalPanic doc comment.
-			result = env.ErrorConditionf(CondInternalPanic,
-				"internal error (recovered panic): %v", r)
-			// Capture the Go stack at the panic origin so any caller of
-			// (*ErrorVal).WriteTrace (or direct readers of CallStack.GoStack)
-			// can render it. This defer runs before the panic unwind
-			// completes, so runtime.Stack reflects the panic site, not the
-			// recover frame.
-			if stack := result.CallStack(); stack != nil {
-				buf := make([]byte, 16*1024)
-				n := runtime.Stack(buf, false)
-				stack.GoStack = buf[:n]
-			}
+			result = env.panicError(r)
 		}
 	}()
 	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
@@ -1382,8 +1404,9 @@ eval:
 }
 
 // EvalSExpr evaluates s and returns the resulting LVal.
-func (env *LEnv) EvalSExpr(s *LVal) *LVal {
+func (env *LEnv) EvalSExpr(s *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.evalSExpr(env.evalCtx, s)
 }
 
@@ -1418,8 +1441,9 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 }
 
 // MacroCall invokes macro fun with argument list args.
-func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
+func (env *LEnv) MacroCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.macroCall(env.evalCtx, fun, args)
 }
 
@@ -1539,8 +1563,9 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 }
 
 // SpecialOpCall invokes special operator fun with the argument list args.
-func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
+func (env *LEnv) SpecialOpCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.specialOpCall(env.evalCtx, fun, args)
 }
 
@@ -1601,9 +1626,21 @@ callf:
 // FunCall invokes regular function fun with the argument list args.
 //
 // Deprecated: Use FunCallContext for cancellation and timeout support.
-func (env *LEnv) FunCall(fun, args *LVal) *LVal {
+func (env *LEnv) FunCall(fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.funCall(env.evalCtx, fun, args)
+}
+
+// callValueFunction invokes an already-evaluated callback, error handler or
+// threading step.
+// These calls bypass Eval's entry check, so count a step and check cancellation
+// here even if the function is native and never evaluates any Lisp itself.
+func (env *LEnv) callValueFunction(fun, args *LVal) *LVal {
+	if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+		return lerr
+	}
+	return env.FunCall(fun, args)
 }
 
 // EvalContext evaluates v with the given context.  If ctx is cancelled or
@@ -1621,10 +1658,10 @@ func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVa
 	}
 	reader := env.Runtime.Reader
 	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.Read(name, rd)
+		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 	return env.load(ctx, exprs)
 }
@@ -1635,9 +1672,9 @@ func (env *LEnv) LoadFileContext(ctx context.Context, loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	sctx := env.Runtime.sourceContext()
-	name, loc, src, err := env.Runtime.Library.LoadSource(sctx, loc)
-	if err != nil {
-		return env.Errorf("library error: %v", err)
+	name, loc, src, lerr := env.readLibrarySource(sctx, loc)
+	if lerr != nil {
+		return lerr
 	}
 	return env.LoadLocationContext(ctx, name, loc, bytes.NewReader(src))
 }
@@ -1658,10 +1695,10 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 		return env.LoadContext(ctx, loc, r)
 	}
 	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
-		return reader.ReadLocation(name, loc, rd)
+		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
-		return env.Error(err)
+		return env.sourceReadError(err)
 	}
 	return env.load(ctx, exprs)
 }
@@ -1669,8 +1706,9 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 // FunCallContext invokes regular function fun with args under the given
 // context.  If ctx is cancelled or its deadline expires during the call,
 // a CondContextCancelled error is returned.
-func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
+func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) (result *LVal) {
 	defer env.Runtime.beginEval()()
+	defer env.recoverPanic(&result)
 	return env.funCall(ctx, fun, args)
 }
 
@@ -1839,6 +1877,14 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 // At the builtin boundary, ctx is bridged onto env.evalCtx so that builtins
 // calling env.Eval() see the correct context.
 func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
+	// Argument or function-position evaluation may have cancelled the
+	// request after Eval's entry check. Cover native functions, macros and
+	// special operators here without counting an extra evaluation step.
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+		}
+	}
 	fenv, list := env.bind(fun, args)
 	if list.Type == LError {
 		return list
@@ -1861,14 +1907,18 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		// builtin returns.
 		prev := env.evalCtx
 		env.evalCtx = ctx
+		defer func() { env.evalCtx = prev }()
 		val := fn(env, list)
-		env.evalCtx = prev
 		if val == nil {
 			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
 		}
 		if val.Type == LMarkTerminal {
 			env.Runtime.Stack.Top().Terminal = true
 			termEnv := val.Native.(*LEnv)
+			if termEnv != env {
+				prevTerm := termEnv.evalCtx
+				defer func() { termEnv.evalCtx = prevTerm }()
+			}
 			termEnv.evalCtx = ctx
 			return termEnv.eval(ctx, val.Cells[0])
 		}
@@ -1918,6 +1968,9 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 //
 // The bind function does not modify fun or args.
 func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
+	if lerr := env.validateFormalSymbols(fun.Cells[0]); lerr.Type == LError {
+		return nil, lerr
+	}
 	argsp := argParser{args: args.Cells}
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
@@ -1940,11 +1993,11 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		cp.scope = make(map[string]*LVal, formals.Len())
 		funenv = &cp
 	}
-	putArg := func(k, v *LVal) {
-		funenv.Put(k, v)
+	putArg := func(k, v *LVal) *LVal {
+		return funenv.Put(k, v)
 	}
-	putVarArg := func(k *LVal, v *LVal) {
-		funenv.Put(k, v)
+	putVarArg := func(k *LVal, v *LVal) *LVal {
+		return funenv.Put(k, v)
 	}
 	var builtinArgs []*LVal
 	if funenv == nil {
@@ -1957,11 +2010,13 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		} else {
 			builtinArgs = make([]*LVal, 0, formals.Len())
 		}
-		putArg = func(k, v *LVal) {
+		putArg = func(k, v *LVal) *LVal {
 			builtinArgs = append(builtinArgs, v)
+			return Nil()
 		}
-		putVarArg = func(k *LVal, v *LVal) {
+		putVarArg = func(k *LVal, v *LVal) *LVal {
 			builtinArgs = append(builtinArgs, v.Cells...)
+			return Nil()
 		}
 	}
 	nformal := formals.Pos()
@@ -1992,7 +2047,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	return funenv, QExpr(fun.Cells[1:]) //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
 }
 
-type bindfunc func(k, v *LVal)
+type bindfunc func(k, v *LVal) *LVal
 
 func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVarArgs bindfunc) *LVal {
 	argSym := formals.Advance()
@@ -2025,11 +2080,15 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 			}
 			val, ok := keymap[key.Str]
 			if !ok {
-				put(key, Nil())
+				if lerr := put(key, Nil()); lerr.Type == LError {
+					return lerr
+				}
 				continue
 			}
 			delete(keymap, key.Str)
-			put(key, val)
+			if lerr := put(key, val); lerr.Type == LError {
+				return lerr
+			}
 		}
 		if len(keymap) > 0 {
 			// Scan through keys in the order they were given to provide a
@@ -2052,11 +2111,15 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 				return Nil()
 			}
 			formals.Advance()
+			var val *LVal
 			if args.IsEOF() {
 				// No arguments left so we bind the optional arg to nil.
-				put(argSym, Nil())
+				val = Nil()
 			} else {
-				put(argSym, args.Advance())
+				val = args.Advance()
+			}
+			if lerr := put(argSym, val); lerr.Type == LError {
+				return lerr
 			}
 		}
 		return Nil()
@@ -2069,8 +2132,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 		if strings.HasPrefix(argSym.Str, MetaArgPrefix) {
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
-		putVarArgs(argSym, QExpr(args.Rest()))
-		return Nil()
+		return putVarArgs(argSym, QExpr(args.Rest()))
 	case strings.HasPrefix(argSym.Str, MetaArgPrefix):
 		return env.Errorf("function formal argument list contains invalid control symbol ``%s''", argSym.Str)
 	default:
@@ -2079,8 +2141,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 		}
 		// This is a normal (required) argument symbol.  Pull a value out of
 		// args and bind it.
-		put(argSym, args.Advance())
-		return Nil()
+		return put(argSym, args.Advance())
 	}
 }
 

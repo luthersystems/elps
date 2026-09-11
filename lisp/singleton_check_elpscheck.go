@@ -10,10 +10,11 @@ import (
 
 // initSnapshot is the bit-pattern of all three singleton LVals captured
 // at package init time, before any user code can mutate them.
-//elpsvet:allow checked-build verification machinery, not program data: the snapshot
-// is the singletons' bit pattern captured at package init, and process-wide lifetime
+// The snapshot is the singletons' bit pattern at init, and process-wide lifetime
 // is exactly what makes it a drift baseline. It is read-only after init and exists
 // only under -tags elpscheck.
+//
+//elpsvet:allow checked-build verification machinery, not program data: immutable singleton inspector snapshot
 var initSnapshot SingletonSnapshot
 
 func init() {
@@ -78,7 +79,7 @@ func init() {
 // condition would let the corrupted process keep running.
 func checkSingleton(_ *LVal) {
 	if drift := initSnapshot.Verify(); drift != "" {
-		panic(fmt.Sprintf("singleton corruption detected: %s mutated\n  current Nil=%+v\n  current True=%+v\n  current False=%+v",
-			drift, singletonNil, singletonTrue, singletonFalse))
+		panic(sealViolation{msg: fmt.Sprintf("singleton corruption detected: %s mutated\n  current Nil=%+v\n  current True=%+v\n  current False=%+v",
+			drift, singletonNil, singletonTrue, singletonFalse)})
 	}
 }

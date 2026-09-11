@@ -60,9 +60,9 @@ type Runtime struct {
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
-// Each builtin that allocates a buffer or sequence checks its output size
+// Allocation-aware builtins check newly built buffer/sequence/map size
 // against this limit independently — it is NOT a cumulative memory tracker.
-// If MaxAlloc is zero, DefaultMaxAlloc is returned.
+// If MaxAlloc is non-positive, DefaultMaxAlloc is returned.
 func (r *Runtime) MaxAllocBytes() int {
 	if r.MaxAlloc > 0 {
 		return r.MaxAlloc
@@ -128,9 +128,9 @@ func (r *Runtime) CheckAlloc(n int) string {
 
 // Steps returns the number of steps consumed by the current top-level
 // evaluation — or, if no evaluation is in progress, by the most recent one.
-// Four things increment the counter by one: each call to Eval, each
-// tail-recursion iteration, each macro re-expansion, and each turn of a
-// dotimes loop.  The last of those exists because an empty-bodied dotimes
+// Each call to Eval, tail-recursion iteration, macro re-expansion, dotimes
+// turn, and value-passing callback, error handler or threading step (callValueFunction)
+// increments the counter by one. Counting dotimes turns matters because an empty body
 // evaluates nothing and would otherwise consume no budget at all -- see
 // opDoTimes, which also records the measured per-turn cost.
 //

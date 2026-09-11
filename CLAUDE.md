@@ -323,6 +323,16 @@ When adding a new builtin function, special operator, or macro:
 - Support `; nolint:analyzer-name` suppression via trailing comments — this is handled automatically by `filterSuppressed()`.
 - Every diagnostic now includes a `; nolint:` suppression hint in its notes.
 
+### Static Migration Diagnostics
+
+When a correctness fix changes previously accepted behavior, include a reliable
+static migration diagnostic for recognizable affected source patterns. Use
+`elps lint` for Lisp source and `elpsvet` for Go embedding or implementation
+invariants. Point to the affected expression, explain the replacement, and
+test both the broken pattern and valid lookalikes. Document the limits when
+dynamic bindings, runtime data, or opaque macros prevent a complete static
+check; do not present a partial check as proof that a program is compatible.
+
 ### `set` vs `set!` Semantics
 
 - **`set` creates or overwrites** bindings — it is the only way to create new top-level bindings.

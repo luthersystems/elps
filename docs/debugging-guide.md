@@ -439,6 +439,10 @@ program exited
 
 **Exception breakpoints** pause when an error condition is raised. Configure via the editor's exception breakpoint UI (filter ID: `all`).
 
+Recovered Go panics bypass exception hooks, since the debugger itself may
+have caused the fault. The returned `internal-panic` error carries the Go
+stack for diagnosis.
+
 ### Stepping
 
 | Action    | DAP Request | Description                              |

@@ -99,6 +99,9 @@ type detacher struct {
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
 	natives map[interface{}]interface{}
+	// runtime is supplied only by Lisp copy. It limits each data backing
+	// allocation, not total graph size or the walker's bookkeeping.
+	runtime *Runtime
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
@@ -110,6 +113,15 @@ type detacher struct {
 	// still rebuilt with fresh backing either way; this flag only decides
 	// what happens at a leaf the kernel cannot clone.
 	shareOpaque bool
+}
+
+func (d *detacher) checkAlloc(n int) error {
+	if d.runtime != nil {
+		if msg := d.runtime.CheckAlloc(n); msg != "" {
+			return &detachError{msg: msg}
+		}
+	}
+	return nil
 }
 
 func (d *detacher) detach(v *LVal) (*LVal, error) {
@@ -124,7 +136,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// only in its address (lisp/singleton.go).
 		return v, nil
 	}
-	// cloner is non-nil exactly when v is an LNative whose payload declares
+	// cloner is non-nil when v is a native value or error message whose payload declares
 	// its own duplication protocol (lisp/fork.go) — the only authority on
 	// what copying an opaque handle means.  Captured here rather than
 	// re-asserted at the clone site below, so that a future change to the
@@ -133,6 +145,17 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// panic.
 	var cloner NativeCloner
 	switch v.Type {
+	case LString:
+		if _, ok := v.Native.(error); !ok {
+			break
+		}
+		if c, ok := v.Native.(NativeCloner); ok {
+			cloner = c
+			break
+		}
+		if !d.shareOpaque {
+			return nil, &detachError{msg: fmt.Sprintf("native error (%T) cannot be detached", v.Native)}
+		}
 	case LNative:
 		if c, ok := v.Native.(NativeCloner); ok {
 			// Fall through to the general path; the payload is replaced
@@ -153,7 +176,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// Not values an application can hold; refuse loudly instead of
 		// guessing at a copy.
 		return nil, &detachError{msg: fmt.Sprintf("internal %v value cannot be detached", v.Type)}
-	case LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LQuote, LString,
+	case LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LQuote,
 		LBytes, LSortMap, LArray, LTaggedVal:
 		// Detachable; handled below.
 	}
@@ -196,7 +219,11 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 				return nil, unexpectedNativeError(v)
 			}
 			if native != nil {
-				cp.Native = d.byteSlice(native)
+				b, err := d.byteSlice(native)
+				if err != nil {
+					return nil, err
+				}
+				cp.Native = b
 			}
 		case *MapData:
 			if v.Type != LSortMap {
@@ -213,10 +240,20 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 			}
 			cp.Native = detachCallStack(native) //elpsvet:allow-native a deep copy of a detached error's stack: publication refuses any value carrying a CallStack (checkDiagnosticPayload, lisp/template.go), so a detached error cannot carry this into a template
 		default:
+			if _, ok := native.(error); ok && v.Type == LString && d.shareOpaque {
+				break
+			}
 			return nil, unexpectedNativeError(v)
 		}
 	}
 
+	// Array/quote/tag Cells are fixed-size representation headers. Their
+	// child lists carry the actual data spans and are checked recursively.
+	if v.Type == LSExpr || v.Type == LError {
+		if err := d.checkAlloc(len(v.Cells)); err != nil {
+			return nil, err
+		}
+	}
 	cells, err := d.detachCells(v.Cells)
 	if err != nil {
 		return nil, err
@@ -277,9 +314,12 @@ func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interfa
 // byteSlice copies one LBytes backing array, once per original array
 // however many headers reach it (issue #585).  No cycle is possible through
 // bytes, so the memo is filled after the copy.
-func (d *detacher) byteSlice(b *[]byte) *[]byte {
+func (d *detacher) byteSlice(b *[]byte) (*[]byte, error) {
 	if cp, ok := d.bytes[b]; ok {
-		return cp
+		return cp, nil
+	}
+	if err := d.checkAlloc(len(*b)); err != nil {
+		return nil, err
 	}
 	nb := make([]byte, len(*b))
 	copy(nb, *b)
@@ -287,7 +327,7 @@ func (d *detacher) byteSlice(b *[]byte) *[]byte {
 		d.bytes = make(map[*[]byte]*[]byte)
 	}
 	d.bytes[b] = &nb
-	return &nb
+	return &nb, nil
 }
 
 // detachMapData rebuilds md as a fresh stock sortedmap whose keys and values
@@ -317,6 +357,9 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 		cp := &MapData{}
 		d.maps[md] = cp
 		return cp, nil
+	}
+	if err := d.checkAlloc(md.Len()); err != nil {
+		return nil, err
 	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {

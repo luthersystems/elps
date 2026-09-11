@@ -1158,6 +1158,12 @@ func (p *Parser) ParseProgramFaultTolerant() ParseResult {
 		}
 		if err != nil {
 			result.Errors = append(result.Errors, err)
+			// Once consumed, a terminal scanner error cannot be recovered from.
+			// Keep recovering from ordinary lexical errors and from custom
+			// token streams that do not expose terminal error state.
+			if src, ok := p.src.lex.(interface{ Err() error }); ok && p.TokenType() == token.ERROR && src.Err() != nil {
+				break
+			}
 			if len(result.Errors) >= maxRecoveryErrors {
 				break
 			}

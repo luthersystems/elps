@@ -169,7 +169,9 @@ func TestTemplateCancellationParityRejectsChangedDefinitionLocation(t *testing.T
 	fault := func(vm *lisp.LEnv) error {
 		return lisp.GoError(vm.LoadString("wrong-definition.lisp", "(defun step0 (x) (+ x 1))"))
 	}
-	_, err := runTemplateCancellationParity(3, 0, fault)
+	// Point 3 is the pre-bind call-boundary check and correctly reports
+	// the request site. Point 4 enters the body, exposing its definition.
+	_, err := runTemplateCancellationParity(4, 0, fault)
 	if err == nil || !strings.Contains(err.Error(), "cancel point=") || !strings.Contains(err.Error(), "wrong-definition.lisp:") {
 		t.Fatalf("changed definition location escaped exact cancellation parity: %v", err)
 	}

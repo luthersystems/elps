@@ -370,15 +370,15 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzeDefun(node, scope, SymMacro, currentPkg)
 	case "deftype":
 		a.analyzeDeftype(node, scope, currentPkg)
-	case "lambda":
+	case "lambda", "lisp:lambda":
 		a.analyzeLambda(node, scope, currentPkg)
-	case "let":
+	case "let", "lisp:let":
 		a.analyzeLet(node, scope, false, currentPkg)
-	case "let*":
+	case "let*", "lisp:let*":
 		a.analyzeLet(node, scope, true, currentPkg)
-	case "flet":
+	case "flet", "lisp:flet":
 		a.analyzeFlet(node, scope, false, currentPkg)
-	case "labels":
+	case "labels", "lisp:labels":
 		a.analyzeFlet(node, scope, true, currentPkg)
 	case "dotimes":
 		a.analyzeDotimes(node, scope, currentPkg)

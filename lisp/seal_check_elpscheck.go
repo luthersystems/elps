@@ -62,12 +62,13 @@ import (
 // each full verification.  All of it compiles out under the default
 // build tag (see seal_check_default.go): release binaries carry empty
 // inlined hooks and zero bookkeeping.
-//elpsvet:allow checked-build verification machinery, not program data: this table is
-// the seal checker's own record of parse-time fingerprints, it exists only under
+// The table is the seal checker's own record of parse-time fingerprints, only under
 // -tags elpscheck, and the *LVal keys are never handed to a Runtime as values --
 // they are compared by identity and read for fingerprinting. Reaching every Runtime
 // is the POINT: a corruption is only detectable against a record that outlives the
 // environment that made it. Release binaries carry none of this (seal_check_default.go).
+//
+//elpsvet:allow checked-build verification machinery, not program data: private inspector bookkeeping
 var sealCheck = sealCheckState{roots: make(map[*LVal]uint64)}
 
 // sealCheckMaxRoots bounds the table: past this many recorded roots the
@@ -82,6 +83,13 @@ type sealCheckState struct {
 	mu    sync.Mutex
 }
 
+// sealViolation identifies a failed checked-build invariant. Evaluation and
+// host-entry recovery must rethrow it instead of converting it to an LError;
+// ordinary host panic text cannot impersonate this private type (issue #657).
+type sealViolation struct{ msg string }
+
+func (v sealViolation) Error() string { return v.msg }
+
 // permanentSealRoots are the process-wide singletons (lisp/singleton.go),
 // which are born sealed (issue #376) and registered here at package init —
 // before any user code can run — as PERMANENT inspector roots.  Unlike the
@@ -92,8 +100,7 @@ type sealCheckState struct {
 // the load that caused it, not just at the value-drift checkpoints
 // checkSingleton covers.  The slice is written once at init and read-only
 // afterwards, so verification needs no lock.
-//elpsvet:allow checked-build verification machinery, not program data: every *LVal in
-// this slice is one of the three singletons from lisp/singleton.go, which are ALREADY
+// Every *LVal in this slice is one of the singletons from lisp/singleton.go, ALREADY
 // package-level and already reachable by every Runtime by design -- each carries its
 // own //elpsvet:allow marker there. This table adds no new cross-Runtime reachability;
 // it is a derived index over values that are shared by decree, holding their init-time
@@ -101,6 +108,8 @@ type sealCheckState struct {
 // point: a baseline captured before any user code runs is worthless if it does not
 // outlive the environments it indicts. Written once at init, read-only afterwards, and
 // absent from release binaries (seal_check_default.go).
+//
+//elpsvet:allow checked-build verification machinery, not program data: immutable singleton inspector references
 var permanentSealRoots = func() []permanentSealRoot {
 	roots := make([]permanentSealRoot, 0, 3)
 	for _, s := range []struct {
@@ -133,8 +142,8 @@ type permanentSealRoot struct {
 func verifyPermanentSealRoots(context string) {
 	for _, r := range permanentSealRoots {
 		if got := SealedASTFingerprint([]*LVal{r.v}); got != r.fp {
-			panic(sealViolationMessage(r.v, r.fp, got,
-				"permanent singleton root "+r.name+", "+context))
+			panic(sealViolation{msg: sealViolationMessage(r.v, r.fp, got,
+				"permanent singleton root "+r.name+", "+context)})
 		}
 	}
 }
@@ -183,8 +192,8 @@ func verifySealedLoadRoots(exprs []*LVal) {
 			continue
 		}
 		if got := SealedASTFingerprint([]*LVal{e}); got != want {
-			panic(sealViolationMessage(e, want, got,
-				fmt.Sprintf("expression %d of the load that just finished", i)))
+			panic(sealViolation{msg: sealViolationMessage(e, want, got,
+				fmt.Sprintf("expression %d of the load that just finished", i))})
 		}
 	}
 }
@@ -215,7 +224,7 @@ func verifyCachedSourceOnHit(s *CachedSource) {
 		if len(s.prog.exprs) > 0 && s.prog.exprs[0] != nil {
 			root = s.prog.exprs[0].Type.String()
 		}
-		panic(fmt.Sprintf("sealcheck: load-cache entry changed after admission\n"+
+		panic(sealViolation{msg: fmt.Sprintf("sealcheck: load-cache entry changed after admission\n"+
 			"  key:  %s\n  name: %s\n  loc:  %s\n"+
 			"  exprs: %d (first root type %s)\n"+
 			"  fingerprint at admission: %016x\n"+
@@ -223,7 +232,7 @@ func verifyCachedSourceOnHit(s *CachedSource) {
 			"a cache entry is immutable once admitted; the Reader that produced it must not "+
 			"retain and later mutate the nodes OR THE SLICE it returned (see lisp/loadcache.go, "+
 			"\"Reader custody on the fast path\")",
-			s.key, s.name, s.loc, len(s.prog.exprs), root, s.fp, got))
+			s.key, s.name, s.loc, len(s.prog.exprs), root, s.fp, got)})
 	}
 }
 
@@ -287,7 +296,7 @@ func VerifySealedASTs() error {
 func verifySealCheckTableLocked() {
 	for r, want := range sealCheck.roots {
 		if got := SealedASTFingerprint([]*LVal{r}); got != want {
-			panic(sealViolationMessage(r, want, got, "detected during table verify-and-drop"))
+			panic(sealViolation{msg: sealViolationMessage(r, want, got, "detected during table verify-and-drop")})
 		}
 	}
 }

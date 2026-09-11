@@ -14,7 +14,9 @@ import (
 	"github.com/luthersystems/elps/parser/token"
 )
 
-const fixtureDir = "../../_examples/sicp"
+// Frozen source keeps both benchmark arms on the same workload while runnable
+// examples evolve. Provenance and pinned hashes live alongside the corpus.
+const fixtureDir = "testdata/bench/sicp"
 
 func BenchmarkParser(b *testing.B) {
 	files, err := filepath.Glob(filepath.Join(fixtureDir, "*.lisp"))

@@ -370,7 +370,8 @@ type LintConfig struct {
 // semantic analysis configuration. The files slice contains resolved file
 // paths (no glob expansion — callers handle that).
 //
-// When cfg is nil, all files are linted with syntactic checks only.
+// When cfg is nil, checks run without workspace context. The let-recursion
+// check still resolves local bindings within each file.
 func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error) {
 	var analysisCfg *analysis.Config
 	if cfg != nil && cfg.Workspace != "" {
@@ -819,6 +820,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerInPackageToplevel,
 		AnalyzerIfArity,
 		AnalyzerLetBindings,
+		AnalyzerLetRecursion,
 		AnalyzerDefunStructure,
 		AnalyzerCondStructure,
 		AnalyzerBuiltinArity,

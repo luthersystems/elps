@@ -116,6 +116,18 @@ func (m walkerMemo) Kinds() []payloadKind {
 // memo-shaped field and no row fails the source scan.
 var walkerMemos = []walkerMemo{
 	{
+		// Rendering only reads the graph. The active path distinguishes
+		// actual cycles from repeated DAG nodes during bounded rendering;
+		// it never owns or reconstructs an LVal payload.
+		Walker:   "valueRenderer",
+		Rebuilds: false,
+		Graph:    []payloadKind{payloadValue},
+		Fields: map[payloadKind]string{
+			payloadValue: "active",
+		},
+		Doc: "lisp/render_bounded.go (boundedString)",
+	},
+	{
 		Walker:   "detacher",
 		Rebuilds: true,
 		Payloads: []payloadKind{payloadSortedMap, payloadBytes, payloadNative},

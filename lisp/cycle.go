@@ -31,9 +31,10 @@ package lisp
 // itself, (list x x), is a DAG and not a cycle, and must still render as what
 // it is.
 //
-// Stage 3 exists because stages 1 and 2 bound the *depth* of a walk and not
-// its *width*.  A map holding itself under two keys is only one node deep in
-// the cycle, but unrolling it to cycleGuardDepth levels visits 2^depth nodes:
+// Stage 3 exists because stages 1 and 2 detect cycles along a path but do not
+// bound the work spent unrolling them. A map holding itself under two keys is
+// only one node deep in the cycle, but unrolling it to cycleGuardDepth levels
+// visits 2^depth nodes:
 // swapping a fatal crash for a walk that will not finish this century is no
 // fix at all.  So the first frame to find a cycle records that on a state
 // object shared by the whole walk, every frame above it returns immediately
@@ -41,12 +42,13 @@ package lisp
 // is allocated up front and nothing is ever removed from it, so every node is
 // visited at most once and the walk is linear in the size of the graph.
 //
-// The result is that acyclic values are untouched -- walked in full, at any
-// depth, byte for byte the same output, equality and JSON as before the guard
-// existed -- while a cyclic value terminates in time linear in the number of
-// values it can reach.  Strict mode's coarser rule, that any node reached
-// twice reads as a cycle, only ever applies to a value already known to
-// contain one, and such a value has no finite faithful rendering anyway.
+// The guard itself leaves acyclic values untouched; it does not cap their
+// depth or protect a recursive walker from stack overflow. Rendering adds a
+// separate depth cap in render_bounded.go. A cyclic value terminates in time
+// linear in the number of values it can reach. Strict mode's coarser rule,
+// that any node reached twice reads as a cycle, only ever applies to a value
+// already known to contain one, and such a value has no finite faithful
+// rendering anyway.
 //
 // cycleGuardDepth is chosen well above the nesting real values reach and well
 // below anything that troubles a goroutine stack, so neither property costs
@@ -89,7 +91,7 @@ type cycleState struct {
 	cyclic bool
 }
 
-// cycleGuard bounds a recursive walk over an LVal graph.
+// cycleGuard detects cycles in a walk over an LVal graph, not excessive depth.
 //
 // It is copied by value down the walk: each frame holds its own depth, while
 // the state it points at -- including the path -- is shared, which is what

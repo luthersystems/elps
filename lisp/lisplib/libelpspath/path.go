@@ -20,7 +20,7 @@ type Path interface {
 	Set(*lisp.LVal, *lisp.LVal) (*lisp.LVal, error)
 	// DeleteMutate evaluates a mutating delete path operation on an elps LVal.
 	DeleteMutate(*lisp.LVal) (*lisp.LVal, error)
-	// DeleteMutate evaluates a delete path operation on an elps LVal, and returns
+	// Delete evaluates a delete path operation on an elps LVal, and returns
 	// a newly constructed LVal.
 	Delete(*lisp.LVal) (*lisp.LVal, error)
 	// Nil sets elements at the end of a path to be null. If the path references
@@ -35,11 +35,13 @@ type Path interface {
 	String() string
 }
 
-// copyLVal creates a copy of an LVal. For non-containers this is a NOP, since
-// non-containers are immutable.
+// copyLVal rebuilds maps, lists, vectors and tagged/quote wrappers recursively.
+// Other values (including functions) are opaque leaves
+// shared by reference, including mutable bytes and native payloads.
 //
 // The copy is deep: every container reachable from v is rebuilt, so no write
-// through the copy can reach the source. All three container helpers agree on
+// through an elpspath operation on the copy can reach a source container.
+// Opaque leaves are not traversed. All three container helpers agree on
 // that, which TestCopyHelpersAgreeOnNestingDepth pins — a helper that stopped
 // one level short would hand back a value that looks independent and is not,
 // which is what issue #395 was.
@@ -65,14 +67,13 @@ func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
 // level resets the bound on every lap and it never fires.
 func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
-	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
-		// The three types that reach other values, and so the only ones
-		// entered on the guard's path. Handled below. Entering a leaf would
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
+		// Containers and wrappers reach other values and must participate
+		// in the copy and cycle walk. Entering an opaque leaf would
 		// tax every string and int in the value to bound a walk that cannot
 		// recurse.
 	default:
-		// non-containers do not need to be copied since LVals are otherwise
-		// immutable
+		// Opaque leaves are shared; elpspath never indexes into their storage.
 		return v, nil
 	}
 	g, cyclic := g.descend(v)
@@ -91,6 +92,22 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 // path.
 func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	switch v.Type {
+	case lisp.LTaggedVal, lisp.LQuote:
+		wrapped, err := wrapperValue(v)
+		if err != nil {
+			return nil, err
+		}
+		child, err := copyGuarded(wrapped, g)
+		if err != nil {
+			return nil, err
+		}
+		// Build a fresh wrapper and cell slice; its original may be sealed or
+		// shared. Preserve the tag and quoting without retaining source storage.
+		cp := &lisp.LVal{Type: v.Type, Str: v.Str, Cells: []*lisp.LVal{child}}
+		if loc, ok := v.Source(); ok {
+			cp.SetSource(&loc)
+		}
+		return sameQuoting(v, cp), nil
 	case lisp.LSortMap:
 		return copyMapGuarded(v, g)
 	case lisp.LArray:
@@ -129,6 +146,15 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	default:
 		return nil, fmt.Errorf("invalid container type: %v", v.Type)
 	}
+}
+
+// wrapperValue validates the payload before either recursive walker reads it.
+// Host-created malformed wrappers must produce an error rather than a Go panic.
+func wrapperValue(v *lisp.LVal) (*lisp.LVal, error) {
+	if len(v.Cells) != 1 || v.Cells[0] == nil {
+		return nil, fmt.Errorf("invalid %s wrapper: expected one value", v.Type)
+	}
+	return v.Cells[0], nil
 }
 
 // copyMap creates a new map LVal that contains the same elements in the original
@@ -377,7 +403,7 @@ func toCells(in *lisp.LVal) ([]*lisp.LVal, error) {
 		cells := in.Cells
 		return cells, nil
 	default:
-		return nil, errors.New("argument is not an array")
+		return nil, indexTypeError(in, "argument is not an array")
 	}
 }
 
@@ -729,13 +755,74 @@ func Chain(paths ...Path) Path {
 	return &chainPath{paths: normalizePaths(paths...)}
 }
 
+// leafPathError identifies the leaf a path tried to traverse. Only error
+// paths retain location information; successful walks allocate no diagnostics.
+type leafPathError struct {
+	next  *leafPathError
+	paths []Path
+	typ   lisp.LType
+}
+
+func (e *leafPathError) Error() string {
+	var location strings.Builder
+	for part := e; part != nil; part = part.next {
+		for _, path := range part.paths {
+			if dot, ok := path.(*dotPath); ok && isBarePathKey(dot.key) {
+				if location.Len() > 0 {
+					location.WriteByte('.')
+				}
+				location.WriteString(dot.key)
+			} else {
+				appendPathString(&location, path)
+			}
+		}
+	}
+	if location.Len() == 0 {
+		location.WriteString("<root>")
+	}
+	return fmt.Sprintf("cannot index into %s at path %s", e.typ, location.String())
+}
+
+// isBarePathKey uses the selector grammar to keep punctuation-bearing keys quoted.
+func isBarePathKey(key string) bool {
+	if len(key) == 0 || !isKeyStartByte(key[0]) {
+		return false
+	}
+	for i := 1; i < len(key); i++ {
+		if !isKeyByte(key[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+// indexTypeError preserves container mismatch errors while naming opaque leaves.
+func indexTypeError(in *lisp.LVal, fallback string) error {
+	switch in.Type {
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr:
+		return errors.New(fallback)
+	default:
+		return &leafPathError{typ: in.Type}
+	}
+}
+
+func prependLeafPath(err error, prefix []Path) error {
+	var leaf *leafPathError
+	if !errors.As(err, &leaf) || len(prefix) == 0 {
+		return err
+	}
+	// Retain each immutable prefix once. Copying the accumulated path at
+	// every recursive frame would make a deep failure quadratic in bytes.
+	return &leafPathError{typ: leaf.typ, paths: prefix, next: leaf}
+}
+
 // Get an LVal at the end of a path chain.
 func (s *chainPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	var err error
-	for _, path := range s.paths {
+	for i, path := range s.paths {
 		in, err = path.Get(in)
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, s.paths[:i])
 		}
 	}
 	return in, nil
@@ -761,7 +848,7 @@ func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 			curIn, err = path.Get(curIn)
 		}
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, s.paths[:i])
 		}
 	}
 	return in, nil
@@ -780,7 +867,7 @@ func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path) (*lisp.LVal, error)
 		}
 		newIn, err = setChain(childIn, newIn, paths[1:])
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, paths[:1])
 		}
 	}
 	return head.Set(in, newIn)
@@ -800,7 +887,7 @@ func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 			curIn, err = path.Get(curIn)
 		}
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, s.paths[:i])
 		}
 	}
 	return in, nil
@@ -828,7 +915,7 @@ func deleteChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
 		}
 		newIn, err := deleteChain(childIn, paths[1:])
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, paths[:1])
 		}
 		return head.Set(in, newIn)
 	}
@@ -859,7 +946,7 @@ func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 			curIn, err = path.Get(curIn)
 		}
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, s.paths[:i])
 		}
 	}
 	return in, nil
@@ -877,7 +964,7 @@ func nullChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
 		}
 		newIn, err := nullChain(childIn, paths[1:])
 		if err != nil {
-			return nil, err
+			return nil, prependLeafPath(err, paths[:1])
 		}
 		return head.Set(in, newIn)
 	}
@@ -922,7 +1009,7 @@ func (s *dotPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		}
 		return lisp.Nil(), nil
 	default:
-		return nil, errors.New("first argument is not a map")
+		return nil, indexTypeError(in, "first argument is not a map")
 	}
 }
 
@@ -933,10 +1020,12 @@ func (s *dotPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error)
 	switch in.Type {
 	case lisp.LSortMap:
 		mmap := in.Map()
-		mmap.Set(lisp.String(s.key), newIn)
+		if err := lisp.GoError(mmap.Set(lisp.String(s.key), newIn)); err != nil {
+			return nil, err
+		}
 		return in, nil
 	default:
-		return nil, errors.New("first argument is not a map")
+		return nil, indexTypeError(in, "first argument is not a map")
 	}
 }
 
@@ -956,7 +1045,7 @@ func (s *dotPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		}
 		return s.SetMutate(cp, newIn)
 	default:
-		return nil, errors.New("first argument is not a map")
+		return nil, indexTypeError(in, "first argument is not a map")
 	}
 }
 
@@ -967,10 +1056,12 @@ func (s *dotPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	switch in.Type {
 	case lisp.LSortMap:
 		mmap := in.Map()
-		mmap.Del(lisp.String(s.key))
+		if err := lisp.GoError(mmap.Del(lisp.String(s.key))); err != nil {
+			return nil, err
+		}
 		return in, nil
 	default:
-		return nil, errors.New("first argument is not a map")
+		return nil, indexTypeError(in, "first argument is not a map")
 	}
 }
 
@@ -989,7 +1080,7 @@ func (s *dotPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		}
 		return s.DeleteMutate(cp)
 	default:
-		return nil, errors.New("first argument is not a map")
+		return nil, indexTypeError(in, "first argument is not a map")
 	}
 }
 
@@ -1067,7 +1158,7 @@ func (s *indexPath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	}
 	index, ok := resolveIndex(len(cells), s.index)
 	if !ok {
-		return lisp.Nil(), nil
+		return in, nil
 	}
 	cells[index] = newIn
 	return in, nil
@@ -1079,6 +1170,10 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	from, to := skipIndex(len(cells), s.index)
+	if from == to {
+		// A missed index changes nothing, including a list's quoting.
+		return copyLVal(in)
+	}
 	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
@@ -1089,8 +1184,7 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 // skipIndex is the half-open range of positions an index operation is about
 // to overwrite or remove, and so the positions copySeqOffPath can leave
 // alone. An index that does not land inside the sequence skips nothing: the
-// copy is still made and still handed to the mutating half, which answers
-// the out-of-range index exactly as it did before.
+// copy preserves the whole sequence, including its quoting.
 func skipIndex(n, index int) (int, int) {
 	i, ok := resolveIndex(n, index)
 	if !ok {
@@ -1105,6 +1199,10 @@ func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	from, to := skipIndex(len(cells), s.index)
+	if from == to {
+		// A missed index changes nothing, including a list's quoting.
+		return copyLVal(in)
+	}
 	cp, err := copySeqOffPath(in, cells, from, to)
 	if err != nil {
 		return nil, err
@@ -1129,7 +1227,7 @@ func (s *indexPath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	n := len(cells)
 	index, ok := resolveIndex(n, s.index)
 	if !ok {
-		return lisp.Nil(), nil
+		return in, nil
 	}
 	// IMPORTANT: the compaction is built in a slice this function allocates,
 	// not by shifting cells down inside their own backing array.
@@ -1261,9 +1359,13 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	if err != nil {
 		return nil, err
 	}
+	if newIn.Type != lisp.LSExpr && newIn.Type != lisp.LArray {
+		return nil, fmt.Errorf("range replacement must be a list or vector; got %s", newIn.Type)
+	}
 	setCells, err := toCells(newIn)
 	if err != nil {
-		return nil, err
+		// Keep container-shape failures distinct from source traversal.
+		return nil, fmt.Errorf("invalid range replacement: %w", err)
 	}
 	// IMPORTANT: the splice is built in a slice this function allocates, not
 	// by appending onto cells' own prefix.
