@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsutil"
@@ -47,7 +48,7 @@ func TestQuasiquoteAllocationBoundaries(t *testing.T) {
 
 func TestQuasiquoteAllocationFromGeneratedMacro(t *testing.T) {
 	for _, limit := range []int{2, 3} {
-		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
 			env := newCallSemanticsEnv(t)
 			// list builds this macro expansion at runtime; its inner quoted
 			// list is the template, rather than a parsed quasiquote form.
@@ -69,7 +70,7 @@ func TestQuasiquoteAllocationFromGeneratedMacro(t *testing.T) {
 
 func TestQuasiquoteAllocationStopsLaterUnquotes(t *testing.T) {
 	for _, limit := range []int{2, 4} {
-		t.Run(fmt.Sprint(limit), func(t *testing.T) {
+		t.Run(strconv.Itoa(limit), func(t *testing.T) {
 			env := newCallSemanticsEnv(t)
 			env.Runtime.MaxAlloc = limit
 			var events []string

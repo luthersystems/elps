@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"fmt"
+	"math"
 
 	macroexphook "github.com/luthersystems/elps/internal/macroexp/hook"
 	"github.com/luthersystems/elps/parser/token"
@@ -830,9 +831,12 @@ func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
 		}
 		limit := env.Runtime.MaxAllocBytes()
 		if added > limit-newlen {
-			// The unsigned diagnostic sum fits even when two int lengths
-			// would overflow. The accepted signed sum below is at most limit.
-			return env.Errorf("allocation size %d exceeds maximum (%d)", uint64(newlen)+uint64(added), limit)
+			// Reject before adding, including when even the diagnostic sum
+			// would overflow int. The accepted sum below is at most limit.
+			if added > math.MaxInt-newlen {
+				return env.Errorf("allocation size exceeds maximum (%d): element count overflows int", limit)
+			}
+			return env.Errorf("allocation size %d exceeds maximum (%d)", newlen+added, limit)
 		}
 		newlen += added
 	}
