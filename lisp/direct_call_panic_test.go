@@ -27,9 +27,10 @@ func TestDirectCallContainsHostPanic(t *testing.T) {
 				panic("direct native fault")
 			}
 			fun := lisp.FunInPackage(lisp.DefaultUserPackage, "direct-fault", lisp.Formals(), body)
-			if method == "MacroCall" {
+			switch method {
+			case "MacroCall":
 				fun = lisp.MacroInPackage(lisp.DefaultUserPackage, "direct-fault", lisp.Formals(), body)
-			} else if method == "SpecialOpCall" {
+			case "SpecialOpCall":
 				fun = lisp.SpecialOpInPackage(lisp.DefaultUserPackage, "direct-fault", lisp.Formals(), body)
 			}
 			var result *lisp.LVal

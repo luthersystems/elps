@@ -2139,16 +2139,15 @@ func TestLetRecursion_Positive(t *testing.T) {
 		{"qualified forms", `(lisp:let* ((f (lisp:lambda (n) (f n)))) f)`, "f"},
 		{"prefix lambda", `(let* ((f #^(f %))) f)`, "f"},
 		{"closure inside vector", `(let* ((f (vector (lambda () (f))))) f)`, "f"},
-		{"substrate helper", `(defun make-state-chain (chain)
-  (let* ([result (sorted-map)]
-         [states (append 'vector chain "DONE")]
-         [build-chain (lambda (current remaining)
+		{"recursive traversal under when", `(defun sum-inputs (values)
+  (let* ([total 0]
+         [visit (lambda (remaining)
            (when (not (empty? remaining))
-             (let ([next (first remaining)])
-               (assoc! result current next)
-               (build-chain next (rest remaining)))))])
-    (build-chain "" states)
-    result))`, "build-chain"},
+             (let ([next (rest remaining)])
+               (set! total (+ total (first remaining)))
+               (visit next))))])
+    (visit values)
+    total))`, "visit"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, semantic := range []bool{false, true} {
@@ -2558,6 +2557,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"in-package-toplevel": SeverityWarning,
 		"if-arity":            SeverityError,
 		"let-bindings":        SeverityError,
+		"let-recursion":       SeverityWarning,
 		"defun-structure":     SeverityError,
 		"cond-structure":      SeverityError,
 		"builtin-arity":       SeverityError,

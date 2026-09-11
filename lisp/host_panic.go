@@ -93,7 +93,9 @@ func (env *LEnv) readSourceBytes(r io.Reader) (src []byte, err error) {
 }
 
 func (env *LEnv) sourceReadError(err error) *LVal {
-	if p, ok := err.(*hostReadPanic); ok {
+	// This private wrapper is passed directly from our recovery boundary.
+	// errors.As would invoke arbitrary host Unwrap/As methods outside it.
+	if p, ok := err.(*hostReadPanic); ok { //nolint:errorlint // exact internal wrapper; do not invoke host error traversal hooks
 		return p.value
 	}
 	return env.Error(err)
