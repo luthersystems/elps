@@ -693,15 +693,30 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
+		hasZero := false
 		for _, n := range dims.Cells {
 			if n.Type != LInt {
 				return Errorf("array dimension is not an integer: %v", n.Type)
 			}
+			if n.Int < 0 {
+				return Errorf("array dimension is negative: %d", n.Int)
+			}
+			hasZero = hasZero || n.Int == 0
 		}
-		for _, n := range dims.Cells {
-			totalSize *= n.Int
-			if totalSize < 0 {
-				return Errorf("integer overflow")
+		if hasZero {
+			// A zero dimension needs no backing, even if an earlier
+			// prefix of the dimension product would overflow.
+			totalSize = 0
+		} else {
+			// Bound the pointer backing's byte count, not just its element
+			// count. A wrapped positive product is no safer than a negative
+			// one: it can construct an array whose valid indices panic.
+			maxCells := int(^uint(0)>>1) / (strconv.IntSize / 8)
+			for _, n := range dims.Cells {
+				if n.Int > maxCells/totalSize {
+					return Errorf("array size exceeds maximum representable backing size")
+				}
+				totalSize *= n.Int
 			}
 		}
 	}
@@ -1340,7 +1355,7 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 			dims, len(index), dims.Len())
 	}
 	if len(index) == 0 {
-		return v.Cells[1]
+		return v.Cells[1].Cells[0]
 	}
 	for i, j := range index {
 		n := dims.Cells[i]

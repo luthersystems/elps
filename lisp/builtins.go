@@ -1210,6 +1210,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	body := SExpr([]*LVal{Symbol("lisp:funcall"), f, gcall})
 	gcall.Cells = append(gcall.Cells, Symbol("lisp:apply"), g)
 	var restSym *LVal
+	keywords := false
 	for i, argSym := range formals.Cells {
 		if argSym.Type != LSymbol {
 			// This should not happen.  The list of formals should be checked
@@ -1220,6 +1221,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 			continue
 		}
 		if argSym.Str == KeyArgSymbol {
+			keywords = true
 			continue
 		}
 		if argSym.Str == VarArgSymbol {
@@ -1230,6 +1232,11 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 			}
 			restSym = formals.Cells[i+1]
 			break
+		}
+		if keywords {
+			// The wrapper binds keyword values locally, but g still needs
+			// their labels. See docs/lang.md#keyword-arguments.
+			gcall.Cells = append(gcall.Cells, Symbol(":"+argSym.Str))
 		}
 		gcall.Cells = append(gcall.Cells, argSym)
 	}
@@ -1251,6 +1258,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	loc := env.loc.Copy()
 	setSynthesizedSource(loc, formals, gcall, gcall.Cells[0], body, body.Cells[0])
 	setSynthesizedSource(loc, formals.Cells...)
+	setSynthesizedSource(loc, gcall.Cells[2:len(gcall.Cells)-1]...)
 	newfun := env.Lambda(formals, []*LVal{body})
 	return newfun
 }
@@ -2151,11 +2159,37 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 			list.Cells = make([]*LVal, 0, n)
 		}
 	}
-	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
+	for x := start; lessNumeric(x, stop); {
 		if msg := env.Runtime.CheckAlloc(len(list.Cells) + 1); msg != "" {
 			return env.Errorf("%s", msg)
 		}
 		list.Cells = append(list.Cells, x.Copy())
+		var next *LVal
+		if bothInt(x, step) && x.Int > int(^uint(0)>>1)-step.Int {
+			// The positive increment passes every possible integer stop.
+			// Wrapping here would restart the range below its original start.
+			if stop.Type == LInt {
+				break
+			}
+			// A floating stop can lie beyond the integer domain. Promote
+			// before adding, retaining the earlier integer-valued elements.
+			next = Float(toFloat(x) + toFloat(step))
+		} else {
+			next = addNumeric(x, step)
+		}
+		if next.Type == LFloat && math.IsNaN(next.Float) {
+			return env.Errorf("step does not advance sequence")
+		}
+		// Reaching the exclusive stop completes the range, including an
+		// infinite successor. Otherwise the increment must make progress:
+		// a small float step can round straight back to the current value.
+		if !lessNumeric(next, stop) {
+			break
+		}
+		if !lessNumeric(x, next) {
+			return env.Errorf("step does not advance sequence")
+		}
+		x = next
 	}
 	return list
 }
@@ -2692,7 +2726,11 @@ func builtinIsType(env *LEnv, args *LVal) *LVal {
 		if typesym != env.Runtime.Registry.Lang+":typedef" {
 			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
 		}
-		typesym = typespec.Cells[0].Cells[0].Str
+		name, _, lerr := env.typedefFields(typespec)
+		if lerr != nil {
+			return lerr
+		}
+		typesym = name.Str
 	}
 	t := GetType(v)
 	return Bool(t.Str == typesym)

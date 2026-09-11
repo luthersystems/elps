@@ -277,6 +277,16 @@ function utilizing both optional and keyword arguments may only have values
 bound to their keyword arguments once values have been bound to *all* optional
 arguments.
 
+`(compose f g)` creates an ordinary function with `g`'s required, optional,
+rest or keyword parameters. It calls `g` once with the bound values, then
+passes that result to `f` once. Keyword labels are forwarded, and omitted
+optional or keyword parameters retain their nil defaults. Argument values
+remain data, including symbols and lists.
+
+```lisp
+(funcall (compose identity (lambda (&key x) x)) :x 42) ; evaluates to 42
+```
+
 ### Unbound expressions
 
 The built-in `expr` function allows for compact construction of simple
@@ -633,6 +643,30 @@ whether the output should be a vector or a list.
 (map 'list double (vector 1 2 3))  ; evaluates to '(2 4 6)
 ```
 
+The Go `lisp.Array` constructor also supports other shapes. Every dimension
+must be a nonnegative integer. A shape containing a zero dimension has no
+elements, even when multiplying its other dimensions would overflow. All
+dimensions are validated, so a zero does not make a negative dimension valid.
+For a nonempty shape, both the element count and the pointer backing's byte
+count must fit the host integer range; otherwise construction returns an
+ordinary error. This representability check does not guarantee that an
+arbitrarily large array fits in available memory.
+
+A shape with no dimensions is different: it holds exactly one scalar.
+`(aref scalar-array)` returns that scalar itself, preserving its identity.
+For other shapes, `aref` requires one in-range index per dimension and uses
+row-major order.
+
+`make-sequence` constructs an increasing list with an exclusive stop:
+`(make-sequence 1 6 2)` returns `'(1 3 5)`. The step must be positive.
+Integer addition that would overflow completes the sequence when the stop
+is an integer. With a floating stop beyond the integer range, the successor
+is promoted to floating point before addition; earlier integer elements
+remain integers. Comparisons involving floats use the usual floating-point
+promotion and rounding. If a step cannot advance to a greater value below
+the stop (for example, adding `1.0` to `1e20`), construction returns an
+ordinary error instead of repeating the same value until a limit is reached.
+
 ### Sharing, copying and mutation
 
 Lists and arrays are *references*.  Binding one to a second name does not copy
@@ -874,6 +908,14 @@ associates the type symbol with user data which can be any value.
 The core language only provides low-level functionality for defining and
 working with custom types.  For the time being it is left it up to the
 application to create more powerful abstractions over typed data.
+
+A type descriptor is tagged `lisp:typedef` and contains a two-element list:
+a symbol naming the type and an ordinary constructor function. Macros and
+special operators cannot serve as constructors. The tag alone does not make
+arbitrary user data a valid descriptor. Both `new` and `type?` validate the
+descriptor before using it; malformed descriptors raise an ordinary error,
+and `new` does not invoke their constructors. Validation happens on each use
+because descriptor data can be changed through `user-data`.
 
 ### JSON numbers and integer precision
 
@@ -1738,6 +1780,18 @@ If the context is cancelled or its deadline expires during evaluation, a
 evaluation of a matching `handler-bind` handler or cleanup form. Handle this
 failure at the Go entry point; naming the condition in Lisp does not restore
 the context or reserve time for recovery code.
+
+Cancellation is checked again before entering a function, macro or special
+operator, including native callbacks. If evaluating the function position
+or an argument cancels the context, the pending body does not run. This check
+does not charge an additional evaluation step. A direct Go `FunCallContext`
+likewise rejects an already cancelled context before invoking a native body.
+
+Native callbacks temporarily expose the active context through their
+environment so nested evaluations inherit it. The previous context is
+restored after the callback and any terminal expression, including ordinary
+errors and recovered host panics. Finishing a request must not install its
+cancelled context on an environment that previously had none.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.

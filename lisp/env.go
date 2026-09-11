@@ -801,13 +801,33 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	if args.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %v", GetType(args))
 	}
-	tname := typ.Cells[0].Cells[0]
-	ctor := typ.Cells[0].Cells[1]
+	tname, ctor, lerr := env.typedefFields(typ)
+	if lerr != nil {
+		return lerr
+	}
 	v := env.FunCall(ctor, args)
 	if v.Type == LError {
 		return v
 	}
 	return env.TaggedValue(tname, v)
+}
+
+// typedefFields checks the descriptor before indexing or invoking it.
+// Lisp can construct a value tagged lisp:typedef with arbitrary user data,
+// or mutate an existing descriptor through user-data. The tag alone is not
+// proof that the value is a usable type definition (docs/lang.md#user-defined-types).
+func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
+	if len(typ.Cells) != 1 || typ.Cells[0] == nil || typ.Cells[0].Type != LSExpr || len(typ.Cells[0].Cells) != 2 {
+		return nil, nil, env.Errorf("invalid typedef: expected a name and constructor")
+	}
+	name, ctor = typ.Cells[0].Cells[0], typ.Cells[0].Cells[1]
+	if name == nil || name.Type != LSymbol {
+		return nil, nil, env.Errorf("invalid typedef: name is not a symbol")
+	}
+	if ctor == nil || ctor.Type != LFun || ctor.IsSpecialFun() {
+		return nil, nil, env.Errorf("invalid typedef: constructor is not a regular function")
+	}
+	return name, ctor, nil
 }
 
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
@@ -1869,6 +1889,14 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 // At the builtin boundary, ctx is bridged onto env.evalCtx so that builtins
 // calling env.Eval() see the correct context.
 func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
+	// Argument or function-position evaluation may have cancelled the
+	// request after Eval's entry check. Cover native functions, macros and
+	// special operators here without counting an extra evaluation step.
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+		}
+	}
 	fenv, list := env.bind(fun, args)
 	if list.Type == LError {
 		return list
@@ -1891,14 +1919,18 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		// builtin returns.
 		prev := env.evalCtx
 		env.evalCtx = ctx
+		defer func() { env.evalCtx = prev }()
 		val := fn(env, list)
-		env.evalCtx = prev
 		if val == nil {
 			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
 		}
 		if val.Type == LMarkTerminal {
 			env.Runtime.Stack.Top().Terminal = true
 			termEnv := val.Native.(*LEnv)
+			if termEnv != env {
+				prevTerm := termEnv.evalCtx
+				defer func() { termEnv.evalCtx = prevTerm }()
+			}
 			termEnv.evalCtx = ctx
 			return termEnv.eval(ctx, val.Cells[0])
 		}
