@@ -10,6 +10,13 @@ import (
 	"unicode/utf8"
 )
 
+// maxRenderDepth bounds nested value rendering independently of cycle
+// detection, output budgets, and evaluator limits. Go's stack overflow is
+// fatal, so even an acyclic graph must stop before exhausting the stack.
+const maxRenderDepth = 1024
+
+const renderDepthMark = "#<depth-limit>"
+
 // boundedString renders at most limit bytes of String's representation.
 // A false result means the complete representation does not fit. No partial
 // rendering is returned. Zero is a literal zero-byte limit, not unlimited.
@@ -57,12 +64,90 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 	// String's eventual strict rendering is small enough. Retry with the
 	// same strict visited set String uses, but also track the active path:
 	// repeated DAG nodes alone must NEVER justify a truncated rendering.
-	r = valueRenderer{limit: limit, active: make(map[*LVal]struct{})}
+	// Nor may a long cycle hidden beyond the lazy walk's depth cap: String
+	// uses depth truncation, not strict-cycle rendering, in that case.
+	r = valueRenderer{limit: limit, active: make(map[*LVal]int)}
 	r.root(v, strictCycleGuard())
-	if r.full || !r.actualCycle {
+	if r.full {
 		return "", false
 	}
+	if !st.cyclic && !r.lazyCycle {
+		probe, cyclic := probeRenderCycles(v)
+		if !cyclic {
+			if len(probe.recovered) == 0 {
+				return "", false
+			}
+			// A malformed error message can exceed the budget before its
+			// recovery replaces it with a short sentinel. The probe has
+			// established exactly which messages recover at each depth.
+			// Replay the acyclic rendering with those replacements known.
+			r = valueRenderer{limit: limit, recovered: probe.recovered}
+			var retry cycleState
+			r.root(v, cycleGuard{state: &retry})
+			if r.full || retry.cyclic {
+				return "", false
+			}
+		}
+	}
 	return r.out.String(), true
+}
+
+// probeRenderCycles handles shared nodes which the strict retry first reached
+// near the depth cap and then skipped on a shallower path. Capture the
+// rendered graph with a separate vertex for each value and depth: recovery
+// from a malformed error child can expose different edges at different
+// depths. Memoization bounds shared DAG traversal without merging those paths.
+func probeRenderCycles(v *LVal) (*renderCycleProbe, bool) {
+	p := renderCycleProbe{nodes: make(map[renderProbeNode]*renderProbeVisit)}
+	r := valueRenderer{limit: -1, probe: &p}
+	var st cycleState
+	r.root(v, cycleGuard{state: &st})
+
+	lastDepth := make(map[*LVal]int)
+	for node := range p.nodes {
+		lastDepth[node.value] = max(lastDepth[node.value], node.depth)
+	}
+	seen := make(map[renderProbeNode]int)
+	var queue []renderProbeNode
+	search := 0
+	for start := range p.nodes {
+		// Lazy tracking starts at depth 64. Only a path from a tracked
+		// occurrence to another occurrence of that value proves a cycle.
+		if start.depth < cycleGuardDepth || lastDepth[start.value] <= start.depth {
+			continue
+		}
+		search++
+		queue = append(queue[:0], start)
+		seen[start] = search
+		for head := 0; head < len(queue); head++ {
+			for child := range p.nodes[queue[head]].children {
+				if child.value == start.value {
+					return &p, true
+				}
+				if seen[child] != search {
+					seen[child] = search
+					queue = append(queue, child)
+				}
+			}
+		}
+	}
+	return &p, false
+}
+
+type renderProbeNode struct {
+	value *LVal
+	depth int
+}
+
+type renderProbeVisit struct {
+	children map[renderProbeNode]struct{}
+	panicVal any
+}
+
+type renderCycleProbe struct {
+	nodes     map[renderProbeNode]*renderProbeVisit
+	parent    *renderProbeVisit
+	recovered map[renderProbeNode]bool
 }
 
 // valueRenderer is the shared streaming implementation for nested String
@@ -70,15 +155,17 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 // LVal.str; containers no longer assemble a temporary string per child.
 // A negative limit is the ordinary, unlimited String path.
 type valueRenderer struct {
-	active      map[*LVal]struct{}
-	out         strings.Builder
-	limit       int
-	full        bool
-	actualCycle bool
+	active    map[*LVal]int
+	probe     *renderCycleProbe
+	recovered map[renderProbeNode]bool
+	out       strings.Builder
+	limit     int
+	full      bool
+	lazyCycle bool
 }
 
 func (r *valueRenderer) text(s string) {
-	if r.full {
+	if r.full || r.probe != nil {
 		return
 	}
 	if r.limit >= 0 && len(s) > r.limit-r.out.Len() {
@@ -146,9 +233,50 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	default:
 		// The remaining types contain nested values and use the guard below.
 	}
+	if g.depth >= maxRenderDepth {
+		r.text(renderDepthMark)
+		return
+	}
+	if p := r.probe; p != nil {
+		g.depth++
+		node := renderProbeNode{value: v, depth: g.depth}
+		parent := p.parent
+		if parent != nil {
+			if parent.children == nil {
+				parent.children = make(map[renderProbeNode]struct{})
+			}
+			parent.children[node] = struct{}{}
+		}
+		if previous := p.nodes[node]; previous != nil {
+			if previous.panicVal != nil {
+				panic(previous.panicVal)
+			}
+			return
+		}
+		visit := new(renderProbeVisit)
+		p.nodes[node] = visit
+		p.parent = visit
+		defer func() {
+			p.parent = parent
+			if recovered := recover(); recovered != nil {
+				// Replay malformed descendants on cache hits so their
+				// enclosing error still skips its remaining siblings.
+				visit.panicVal = recovered
+				panic(recovered)
+			}
+		}()
+		r.nested(v, onTheRecord, g)
+		return
+	}
 	if r.active != nil {
-		if _, ok := r.active[v]; ok {
-			r.actualCycle = true
+		if firstDepth, ok := r.active[v]; ok {
+			// Lazy tracking starts at cycleGuardDepth. Following this
+			// cycle again must rediscover a tracked node before the cap
+			// for String to use the same strict rendering as this retry.
+			period := g.depth + 1 - firstDepth
+			if max(firstDepth, cycleGuardDepth)+period <= maxRenderDepth {
+				r.lazyCycle = true
+			}
 		}
 	}
 	next, cyclic := g.descend(v)
@@ -157,7 +285,7 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		return
 	}
 	if r.active != nil {
-		r.active[v] = struct{}{}
+		r.active[v] = next.depth
 	}
 	if r.active != nil || next.tracking() {
 		// Error-message rendering contains malformed child panics. Keep
@@ -397,9 +525,20 @@ func (r *valueRenderer) errorValue(e *ErrorVal, g cycleGuard) {
 }
 
 func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
+	node := renderProbeNode{value: (*LVal)(e), depth: g.depth}
+	if r.recovered[node] {
+		r.text(corruptedNativeMessage)
+		return
+	}
 	start := r.out.Len()
 	defer func() {
 		if recovered := recover(); recovered != nil {
+			if r.probe != nil {
+				if r.probe.recovered == nil {
+					r.probe.recovered = make(map[renderProbeNode]bool)
+				}
+				r.probe.recovered[node] = true
+			}
 			// Match ErrorVal.errorMessage's containment boundary: a
 			// malformed descendant replaces the entire message, including
 			// any prefix data already written, but keeps the error location.

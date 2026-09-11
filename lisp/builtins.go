@@ -265,7 +265,8 @@ var (
 			with corresponding values. Use {} for sequential substitution or
 			{0}, {1}, etc. for positional. Strings are interpolated without
 			quotes. Use {{ and }} for literal braces. Cannot mix sequential
-			and positional styles.`},
+			and positional styles. Nested values deeper than 1024 levels render
+			as #<depth-limit>; cycles render as #<cycle>.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
 			`Returns a new sequence with elements in reverse order. The
 			type-specifier ('list or 'vector) determines the return type.`},
@@ -427,7 +428,8 @@ var (
 			float before multiplying. Integer arithmetic wraps on overflow.`},
 		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint,
 			`Prints all arguments to stderr followed by a newline. Returns
-			nil.`},
+			nil. Nested values deeper than 1024 levels render as #<depth-limit>;
+			cycles render as #<cycle>.`},
 		{"debug-stack", Formals(), builtinDebugStack,
 			`Prints the current call stack to stderr for debugging. Returns
 			nil.`},
