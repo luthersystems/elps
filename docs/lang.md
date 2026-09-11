@@ -370,10 +370,10 @@ Examples of special operators are `if`, `lambda`, and `quasiquote`.  There is
 no facility within the language for defining special operators.
 
 ### cond
-`cond` takes an arbitrary number of arguments called clauses. A clause consists
-of a list of exactly two expressions. The first expression in a clause is a
-condition, and there can be any number of expressions following the condition
-in a cond branch which get wrapped by an implicit progn.
+`cond` takes an arbitrary number of arguments called clauses. A clause is a
+nonempty list whose first expression is a condition. Any expressions following
+the condition form a body wrapped by an implicit `progn`. A matching clause
+with no body returns `()`, not the value of its condition.
 
 For example,
 
@@ -1324,7 +1324,7 @@ spaces. An empty string `""` inserts a paragraph break.
   "Evaluates body forms when test is truthy."
   ""
   "Like if but with no else branch and an implicit progn."
-  (list 'if test (cons 'progn body) ()))
+  (quasiquote (if (unquote test) (progn (unquote-splicing body)) ())))
 ```
 
 A body consisting entirely of strings (no executable expression after them)
