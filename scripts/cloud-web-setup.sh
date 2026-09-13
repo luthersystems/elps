@@ -28,10 +28,10 @@
 # ensure_go), Python.
 #
 # Optional codex support: the `codex` CLI + the openai/codex-plugin-cc Claude plugin
-# (=> /codex:review) and sam-at-luther/claude-config are baked into the snapshot so codex
-# can be used for selected coding tasks. Codex auth is a 1Password document read with a
-# scoped service-account token (OP_SERVICE_ACCOUNT_TOKEN, set on the environment); no other
-# secret is handled here.
+# (=> /codex:review, and the scripts/codex-delegate.sh wrapper) and sam-at-luther/claude-config
+# are baked into the snapshot so codex can be used for selected coding tasks. NO secret is
+# handled here: codex auth is done per session with `codex login --device-auth` (prints a URL
+# and a one-time code). The environment carries no long-lived credential.
 #
 set -Eeuo pipefail
 
@@ -92,18 +92,28 @@ install_golangci() {
   # issues, 2.11.4 -> 27), and `make static-checks` warns when the PATH version differs
   # from CI's. Install CI's pin on /usr/local/bin; the session hook then finds its
   # version-scoped copy missing and installs the same version to ~/.cache -- harmless.
+  # Direct release-tarball download (same as the hook), NOT the upstream install.sh: that
+  # script resolves the tag through api.github.com, which the sandbox's egress proxy
+  # answers with 403.
   log "installing golangci-lint ${GOLANGCI_VERSION} (.golangci.yml is v2)"
-  curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh \
-    | sh -s -- -b /usr/local/bin "${GOLANGCI_VERSION}"
+  local ver="${GOLANGCI_VERSION#v}" tmp
+  tmp="$(mktemp -d)"
+  curl -fsSL --retry 3 --max-time 300 \
+    "https://github.com/golangci/golangci-lint/releases/download/v${ver}/golangci-lint-${ver}-linux-${ARCH}.tar.gz" \
+    | tar -xz -C "$tmp" --strip-components=1
+  install -m 0755 "${tmp}/golangci-lint" /usr/local/bin/golangci-lint
+  rm -rf "$tmp"
   golangci-lint --version
 }
 
 install_gopls() {
   # Go language server for Claude Code's LSP (diagnostics, hover, go-to-def). Not part of
   # the Go toolchain, so it must be installed separately. GOBIN puts it on /usr/local/bin
-  # (on PATH). Best-effort: a gopls hiccup shouldn't poison the whole cache.
+  # (on PATH). gopls@latest requires a Go newer than the CI pin (v0.23 needs >= 1.26), so it
+  # is built under GOTOOLCHAIN=auto, same as benchstat. Best-effort: a gopls hiccup shouldn't
+  # poison the whole cache.
   log "installing gopls (Go LSP)"
-  GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest && gopls version \
+  GOTOOLCHAIN=auto GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest && gopls version \
     || log "gopls install failed (non-fatal; Go LSP unavailable)"
 }
 
@@ -145,37 +155,21 @@ install_codex_cli() {
   codex --version
 }
 
-install_codex_auth_and_plugins() {
-  # Codex auth + Claude plugins, baked into the cached snapshot.
+install_claude_plugins() {
+  # Claude Code plugins baked into the cached snapshot: codex (=> /codex:review; its
+  # codex-companion.mjs runtime is what scripts/codex-delegate.sh drives) and claude-config
+  # (=> qa-professor / pr). Doing it here rather than in the SessionStart hook means the
+  # plugin install runs once, not on every session start.
   #
-  # WHY HERE and not the SessionStart hook: the project's SessionStart hook
-  # (.claude/settings.json) runs in the web sandbox, but it runs as the session user on
-  # every session start -- a per-session `op read` and `claude plugin install` would cost
-  # time and a 1Password call each time. This setup script's filesystem output IS
-  # snapshotted, so doing it here makes the result present at the start of every new
-  # session. All best-effort: this runs under `set -e`, so each step is guarded to never
-  # poison the cache.
-
-  # Codex ChatGPT-subscription auth (flat-rate). auth.json is a 1Password document (a
-  # `codex login` on a workstation, re-uploaded when its refresh token rotates).
-  if [ -n "${OP_SERVICE_ACCOUNT_TOKEN:-}" ] && command -v op >/dev/null 2>&1; then
-    mkdir -p "${HOME}/.codex"
-    printf 'preferred_auth_method = "chatgpt"\n' > "${HOME}/.codex/config.toml"
-    if op read "op://Reliable-Dev/codex-auth-json/auth.json" > "${HOME}/.codex/auth.json" 2>/dev/null; then
-      chmod 600 "${HOME}/.codex/auth.json"
-      log "codex: installed ChatGPT-subscription auth.json (snapshot)"
-    else
-      log "WARNING: codex auth.json fetch failed (non-fatal)"
-    fi
-  else
-    log "OP_SERVICE_ACCOUNT_TOKEN / op missing -- skipping codex auth"
-  fi
-
-  # Claude Code plugins: codex (=> /codex:review), claude-config (=> qa-professor / pr).
   # Best-effort: `claude` is a harness binary that may not be on PATH during the cached
   # setup phase. When it is, this bakes installed_plugins.json into the snapshot so the
-  # plugins load at session start; when it isn't, this is a no-op and `codex review` from
-  # the CLI (authed above) still works.
+  # plugins load at session start; when it isn't, this is a no-op and `codex` from the CLI
+  # still works once logged in. All guarded: this runs under `set -e` and must never poison
+  # the cache.
+  #
+  # Codex AUTH is deliberately NOT done here. Run once per session:
+  #     codex login --device-auth
+  # It prints a URL + code; approve it in a browser. No token is stored in the snapshot.
   if command -v claude >/dev/null 2>&1; then
     claude plugin marketplace add openai/codex-plugin-cc      >/dev/null 2>&1 || true
     claude plugin marketplace add sam-at-luther/claude-config >/dev/null 2>&1 || true
@@ -187,11 +181,12 @@ install_codex_auth_and_plugins() {
       fi
     done
   else
-    log "claude CLI not on PATH at setup -- skipping plugin install (codex CLI auth above still applies)"
+    log "claude CLI not on PATH at setup -- skipping plugin install (install codex plugin from a session: claude plugin install codex@openai-codex)"
   fi
 }
 
-# gh + 1Password CLI both use apt -> ONE transaction (no parallel dpkg lock contention).
+# gh via apt. Kept as its own function so it can run in the parallel phase as the ONLY apt
+# user there (phase 1's apt is synchronous and already finished).
 install_apt_extras() {
   export DEBIAN_FRONTEND=noninteractive
   log "configuring gh apt repo"
@@ -202,23 +197,10 @@ install_apt_extras() {
   echo "deb [arch=${ARCH} signed-by=/etc/apt/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
     > /etc/apt/sources.list.d/github-cli.list
 
-  log "configuring 1Password CLI apt repo"
-  curl -fsSL https://downloads.1password.com/linux/keys/1password.asc \
-    | gpg --batch --yes --dearmor --output /usr/share/keyrings/1password-archive-keyring.gpg
-  echo "deb [arch=${ARCH} signed-by=/usr/share/keyrings/1password-archive-keyring.gpg] https://downloads.1password.com/linux/debian/${ARCH} stable main" \
-    > /etc/apt/sources.list.d/1password.list
-  mkdir -p /etc/debsig/policies/AC2D62742012EA22/
-  curl -fsSL https://downloads.1password.com/linux/debian/debsig/1password.pol \
-    -o /etc/debsig/policies/AC2D62742012EA22/1password.pol
-  mkdir -p /usr/share/debsig/keyrings/AC2D62742012EA22
-  curl -fsSL https://downloads.1password.com/linux/keys/1password.asc \
-    | gpg --batch --yes --dearmor --output /usr/share/debsig/keyrings/AC2D62742012EA22/debsig.gpg
-
-  log "installing gh + 1password-cli"
+  log "installing gh"
   apt-get update -y --allow-releaseinfo-change   # tolerate PPA Release-metadata changes (see phase 1)
-  apt-get install -y gh 1password-cli
+  apt-get install -y gh
   gh --version
-  op --version
 }
 
 # Phase 0 (apt hardening): on a fresh Ubuntu 24.04 VM the boot-time apt-daily /
@@ -242,6 +224,7 @@ systemctl stop apt-daily.service apt-daily-upgrade.service   >/dev/null 2>&1 || 
 #                  warning`; CI sets CI_GATES_REQUIRE_SHELLCHECK=1 so a missing binary is fatal.
 #   bubblewrap  -- codex's sandbox runtime; without it on PATH codex warns on every
 #                  invocation and falls back to its bundled copy.
+#   util-linux  -- `flock`, required by scripts/codex-delegate.sh (normally present).
 #   python3     -- scripts/*.py and the python3 snippets in ci-gates-test.sh (usually
 #                  preinstalled; listed so the assumption is explicit).
 # Installed in this single synchronous transaction (not the parallel phase) to avoid
@@ -253,7 +236,7 @@ export DEBIAN_FRONTEND=noninteractive
 # `apt-get update` aborts with exit 100 ("changed its 'Label' value ..."). The flag accepts the
 # metadata change and proceeds; safe here because we pull nothing from those PPAs.
 apt-get update -y --allow-releaseinfo-change
-apt-get install -y --no-install-recommends ca-certificates curl gnupg shellcheck bubblewrap python3
+apt-get install -y --no-install-recommends ca-certificates curl gnupg shellcheck bubblewrap python3 util-linux
 
 # Phase 2 (parallel): non-apt installers PLUS the single apt user (install_apt_extras).
 pids=()
@@ -269,15 +252,15 @@ if [ "$fail" -ne 0 ]; then
   exit 1
 fi
 
-# Phase 3 (sequential): runs after phase 2 so the Go toolchain is guaranteed present and
-# so `op` exists for codex auth. All best-effort.
+# Phase 3 (sequential): runs after phase 2 so the Go toolchain is guaranteed present.
+# All best-effort.
 install_gopls
 install_govulncheck
 install_benchstat
 warm_betteralign
-install_codex_auth_and_plugins || log "codex auth / plugin setup failed (non-fatal)"
+install_claude_plugins || log "claude plugin setup failed (non-fatal)"
 
-log "setup complete: go ${GO_VERSION}, golangci-lint ${GOLANGCI_VERSION}, gopls, govulncheck, benchstat, betteralign (cache), shellcheck, gh, op, codex CLI, bubblewrap installed; codex auth + plugins baked"
+log "setup complete: go ${GO_VERSION}, golangci-lint ${GOLANGCI_VERSION}, gopls, govulncheck, benchstat, betteralign (cache), shellcheck, gh, codex CLI, bubblewrap installed; claude plugins baked (codex auth: run 'codex login --device-auth' per session)"
 # Explicit completion marker. If this line is ABSENT from the log, the script aborted partway
 # (look for the "ERROR: setup aborted at line N" breadcrumb above). To check what was skipped
 # vs failed, grep the log for: 'skipping plugin install' | 'plugin install failed' | 'WARNING' | 'ERROR'
