@@ -16,7 +16,7 @@ func Validate(n int, name func(int) string) (int, string) {
 		return i, "function formal argument list contains a control symbol at an invalid location: " + control
 	}
 	optional := false
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := name(i)
 		switch s {
 		case "&optional":
@@ -53,7 +53,7 @@ func Validate(n int, name func(int) string) (int, string) {
 	if n > 16 {
 		seen = make(map[string]bool, n)
 	}
-	for i := 0; i < n; i++ {
+	for i := range n {
 		s := name(i)
 		if strings.HasPrefix(s, "&") {
 			continue
@@ -63,7 +63,7 @@ func Validate(n int, name func(int) string) (int, string) {
 			duplicate = seen[s]
 			seen[s] = true
 		} else {
-			for j := 0; j < i; j++ {
+			for j := range i {
 				if name(j) == s {
 					duplicate = true
 					break
