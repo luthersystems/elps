@@ -380,9 +380,13 @@ var (
 			first truthy result. Predicate must be a regular function and
 			receives each element as data without evaluation.`},
 		{"max", Formals("real", VarArgSymbol, "rest"), builtinMax,
-			`Returns the largest of the given numeric arguments.`},
+			`Returns the largest of the given numeric arguments. Returns NaN
+			if any argument is NaN, regardless of position. All-int arguments
+			produce an int result.`},
 		{"min", Formals("real", VarArgSymbol, "rest"), builtinMin,
-			`Returns the smallest of the given numeric arguments.`},
+			`Returns the smallest of the given numeric arguments. Returns NaN
+			if any argument is NaN, regardless of position. All-int arguments
+			produce an int result.`},
 		{"string>=", Formals("a", "b"), builtinStringGEq,
 			`Returns true if string a is lexicographically >= string b.`},
 		{"string>", Formals("a", "b"), builtinStringGT,
@@ -407,10 +411,14 @@ var (
 			`Returns true if numeric values a and b are equal.`},
 		{"pow", Formals("a", "b"), builtinPow,
 			`Returns a raised to the power b. Returns int when both args are
-			ints and b >= 0; otherwise returns float.`},
+			ints and b >= 0; otherwise returns float. Raises an error containing
+			"integer overflow" if the integer result does not fit int.
+			A zero exponent returns 1, including (pow 0 0).`},
 		{"mod", Formals("a", "b"), builtinMod,
 			`Returns the remainder of integer division a mod b. Both
-			arguments must be ints and b must be non-zero.`},
+			arguments must be ints. A zero b raises an error with the message
+			"second argument is zero"; unlike /, mod does not return infinity
+			or NaN for a zero divisor.`},
 		{"+", Formals(VarArgSymbol, "x"), builtinAdd,
 			`Returns the sum of all arguments, or 0 with no arguments.
 			Returns int if all args are ints; otherwise float.`},
@@ -421,7 +429,9 @@ var (
 		{"/", Formals(VarArgSymbol, "x"), builtinDiv,
 			`With one argument, returns 1/x. With two or more, divides
 			the first by all subsequent. Returns int when all divisions are
-			exact; otherwise float.`},
+			exact; otherwise float. Division by zero returns IEEE infinity or
+			NaN, not an error: (/ 1 0) is +Inf and (/ 0.0 0.0) is NaN.
+			Guard count against zero before computing (/ total count).`},
 		{"*", Formals(VarArgSymbol, "x"), builtinMul,
 			`Returns the product of all arguments, or 1 with no arguments.
 			Returns int if all args are ints; otherwise converts all args to
@@ -2911,7 +2921,7 @@ func builtinMax(env *LEnv, args *LVal) *LVal {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(maxVal, x) {
+		if (x.Type == LFloat && math.IsNaN(x.Float)) || lessNumeric(maxVal, x) {
 			maxVal = x
 		}
 	}
@@ -2927,7 +2937,7 @@ func builtinMin(env *LEnv, args *LVal) *LVal {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(x, minVal) {
+		if (x.Type == LFloat && math.IsNaN(x.Float)) || lessNumeric(x, minVal) {
 			minVal = x
 		}
 	}
@@ -3083,30 +3093,10 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 	return Float(math.Pow(toFloat(a), toFloat(b)))
 }
 
-// powInt raises a to the b-th power in int arithmetic, wrapping on overflow
-// exactly as Go's `*` does.
-//
-// Binary exponentiation: at most 63 iterations for any b, because b is
-// halved every turn.  The previous implementation doubled an exponent
-// accumulator instead --
-//
-//	n := 1; atob := a
-//	for 2*n < b { atob *= atob; n *= 2 }
-//	for n < b   { atob *= a;    n++ }
-//
-// -- and for b > 2^62 that loop never terminates.  n doubles 1, 2, ..., 2^62,
-// then 2^63 wraps to MinInt, then MinInt*2 wraps to exactly 0, and 2*0 < b is
-// true forever.  Zero is a true fixed point: the loop allocates nothing and
-// evaluates nothing, so it is invisible to MaxAlloc, to MaxSteps AND to a
-// context deadline -- none of those are consulted inside a builtin.
-// (pow -128 9223372036854775807) hung the process until something killed it.
-// Found by FuzzApplyStdlib as (pow -9223372036854775808 9223372036854775806).
-//
-// The result is unchanged wherever the old loop terminated.  Go's int
-// multiplication is arithmetic mod 2^64, which is a commutative ring, so the
-// order in which the b factors are associated cannot change the product --
-// squaring-and-multiplying and multiplying b times agree bit for bit,
-// including on the wrapped answers.  (pow 2 64) still returns 0.
+// powInt raises a to the b-th power, reporting overflow for integer results.
+// Binary exponentiation halves b every iteration, so even MaxInt exponents
+// terminate in at most 63 iterations. Do not use an exponent-doubling loop:
+// its counter can overflow to zero and hang inside this uninterruptible builtin.
 func powInt(a, b int) *LVal {
 	if b == 0 {
 		return Int(1)
@@ -3118,14 +3108,32 @@ func powInt(a, b int) *LVal {
 	base := a
 	for b > 0 {
 		if b&1 == 1 {
-			atob *= base
+			product, ok := checkedMulInt(atob, base)
+			if !ok {
+				return Errorf("integer overflow: power overflows int")
+			}
+			atob = product
 		}
 		b >>= 1
 		if b > 0 {
-			base *= base
+			product, ok := checkedMulInt(base, base)
+			if !ok {
+				return Errorf("integer overflow: power overflows int")
+			}
+			base = product
 		}
 	}
 	return Int(atob)
+}
+
+// checkedMulInt detects overflow by reversing the multiplication. MinInt * -1
+// needs an explicit check because Go's MinInt / -1 also wraps to MinInt.
+func checkedMulInt(a, b int) (int, bool) {
+	product := a * b
+	if a != 0 && (product/a != b || (a == -1 && b == math.MinInt)) {
+		return 0, false
+	}
+	return product, true
 }
 
 func builtinMod(env *LEnv, args *LVal) *LVal {
