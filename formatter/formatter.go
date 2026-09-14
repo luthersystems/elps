@@ -15,6 +15,7 @@ import (
 )
 
 // Format formats ELPS source code. If cfg is nil, DefaultConfig() is used.
+// A single leading UTF-8 BOM is accepted and omitted from the output.
 func Format(source []byte, cfg *Config) ([]byte, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
@@ -50,6 +51,7 @@ func Format(source []byte, cfg *Config) ([]byte, error) {
 }
 
 // FormatFile formats ELPS source code, using filename for error messages.
+// Like Format, it omits a leading UTF-8 BOM from the output.
 func FormatFile(source []byte, filename string, cfg *Config) ([]byte, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()

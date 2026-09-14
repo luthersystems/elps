@@ -5,6 +5,12 @@
 Lisp code interpreted by elps is given as a sequence of expressions encoded as
 utf-8 text.
 
+A single UTF-8 byte-order mark (BOM, bytes `EF BB BF`) is accepted only at
+offset zero, including before a shebang. `run`, `lint`, `fmt`, `minify`, and
+`analyze` accept it; formatting and minification remove it. A BOM anywhere
+else in the source produces `unexpected byte-order mark`. To include U+FEFF
+as string data, write the escape `\uFEFF` instead of the literal codepoint.
+
 ### Comments
 
 A semicolon `;` outside a string starts a comment that continues to the end of
@@ -24,7 +30,7 @@ Source must still be valid utf-8, including comments.
 
 Other tokens must fit in the reader's 128 KiB scanner window. A token that
 fills the window before its end can be determined produces a `scan-error`
-containing `token exceeds maximum allowable size`, rather than being split
+containing `token exceeds maximum allowable size (131072 bytes)`, rather than being split
 into separate tokens. `elps lint` reports this parse error as the migration
 diagnostic for oversized tokens; split large values into smaller literals.
 
@@ -48,6 +54,11 @@ Symbols (identifiers) may consist of utf-8 letters, numbers, and many symbols
 number.
 
 Symbols are currently case sensitive although this may change.
+
+A symbol must leave room in the 131072-byte scanner window to determine its
+end: 131071 ASCII characters followed by whitespace are accepted, while
+131072 or more produce the size error at the symbol's start. Formatting never
+splits an oversized identifier into separate symbols.
 
 A symbol may also be written in its package-qualified form, `pkg:name` (see
 [Packages](#packages)).  Both halves are identifiers and the rule above applies
@@ -76,6 +87,26 @@ so `:1` is only useful as data.
 
 Numbers can be either int or floating point and will be converted between the
 two forms as necessary.
+
+Decimal examples include `42`, `-1`, `1.5`, and `1e5` (also `1E+5` or
+`1.5e-2`). A leading dot is a symbol character: `.5` and `.3` are symbols,
+not floating-point literals; write `0.5` for the number.
+
+Integer literals may use `#x` (hexadecimal) or `#o` (octal), with uppercase
+`#X` and `#O` also accepted: `#x10` is 16 and `#o17` is 15. Digits must
+immediately follow the prefix. Decimal, hexadecimal, and octal integer
+literals that overflow the platform's `int` produce
+`integer-overflow-error`; they do not wrap silently like integer arithmetic.
+There is no `#b` binary prefix. An unsupported dispatch prefix reports the
+supported set: `#!`, `#'`, `#^`, `#o`, `#O`, `#x`, and `#X`.
+
+A number immediately followed by a symbol or number constituent without a
+delimiter is a `scan-error` naming the whole malformed literal. For example,
+`0x10`, `1_000`, `1.2.3`, and `1e5x` are rejected even inside quoted lists.
+Use `#x10` for hexadecimal, `1000` without digit separators, or whitespace
+between separate values. Valid look-alikes such as `x10` and `(1 .3)` retain
+their meaning. `elps lint` reports these scan errors as migration diagnostics;
+it checks source text, including quoted data, before evaluation.
 
 A float carries only 53 bits of integer precision, which matters when numbers
 arrive from outside the program: `json:load-string` and its siblings decode
@@ -114,6 +145,16 @@ zero. On a 64-bit platform, the valid truncated range is -2^63 inclusive to
 Strings are a sequence of utf-8 text delimited by double quotes `"`.  Strings
 cannot contain line breaks.  A codepoint in a string may be escaped with a
 preceding backslash `\`.
+
+Raw strings use triple double quotes (`"""text"""`), may span lines, and do
+not interpret backslash escapes. Both ordinary and raw string tokens must
+fit the reader's fixed 131072-byte (128 KiB) scanner window, including their
+opening and closing quotes and all bytes used to spell escapes. A string
+that cannot fit produces `scan-error: token exceeds maximum allowable size
+(131072 bytes)` at its opening quote. The scanner does not accumulate string
+tokens across windows. Split larger data into smaller literals or load it
+from an external file. This is a source-token limit, not a limit on the size
+of string values constructed at runtime.
 
 ## Expression Evaluation
 

@@ -27,7 +27,13 @@ type Lexer struct {
 	precedingSpaces   int
 }
 
+// New creates a lexer, ignoring a single UTF-8 BOM only at source offset zero.
+// The BOM is not emitted, so format-preserving readers also drop it on output.
 func New(s *token.Scanner) *Lexer {
+	if c, ok := s.Peek(); ok && c == '\ufeff' && s.LocStart().Pos == 0 {
+		s.AcceptRune('\ufeff')
+		s.Ignore()
+	}
 	lex := &Lexer{
 		scanner: s,
 		lex:     (*Lexer).readToken,
@@ -129,8 +135,7 @@ func (lex *Lexer) readToken() []*token.Token {
 			lex.lex = (*Lexer).readHexLiteral
 			return lex.emitMacroChar(tok)
 		default:
-			lex.scanner.Ignore()
-			return lex.errorf("invalid dispatch macro character %q", lex.scanner.Rune())
+			return lex.errorf("invalid dispatch macro character %q (supported prefixes: #!, #', #^, #o, #O, #x, #X)", lex.scanner.Rune())
 		}
 	case '-':
 		// '-' is the subtraction/negation symbol on its own, and the sign of
@@ -364,7 +369,7 @@ func (lex *Lexer) readHexLiteral() []*token.Token {
 }
 
 func (lex *Lexer) readNumber() []*token.Token {
-	// TODO: support octal and hex integer literals
+	// Octal and hexadecimal integers are handled by the #o and #x dispatches.
 	lex.scanner.AcceptSeqDigit() // the first digit already scanned
 	switch {
 	case lex.scanner.AcceptRune('.'):
@@ -372,7 +377,7 @@ func (lex *Lexer) readNumber() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitText(token.INT)
+		return lex.emitNumber(token.INT)
 	}
 	// the returned string may not actually be a usable number (overflow), but
 	// we can find that out at parse time -- not scan time.
@@ -386,7 +391,7 @@ func (lex *Lexer) readFloatFraction() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitText(token.FLOAT)
+		return lex.emitNumber(token.FLOAT)
 	}
 }
 
@@ -405,7 +410,20 @@ func (lex *Lexer) readFloatExponent() []*token.Token {
 	if lex.scanner.AcceptSeqDigit() == 0 {
 		return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
 	}
-	return lex.emitText(token.FLOAT)
+	return lex.emitNumber(token.FLOAT)
+}
+
+// emitNumber rejects an undelimited suffix instead of silently splitting one
+// malformed literal into several values. Lint surfaces the same scan error.
+func (lex *Lexer) emitNumber(typ token.Type) []*token.Token {
+	if lex.scanner.AcceptSeq(func(c rune) bool { return isWord(c) || c == ':' || unicode.IsDigit(c) }) > 0 {
+		literal := lex.scanner.Text()
+		if strings.HasPrefix(literal, "0x") || strings.HasPrefix(literal, "0X") {
+			return lex.errorf("invalid numeric literal %q (hex is spelled #x%s)", literal, literal[2:])
+		}
+		return lex.errorf("invalid numeric literal %q (separate values with whitespace)", literal)
+	}
+	return lex.emitText(typ)
 }
 
 // trailingBackslashes counts the backslashes at the end of s.
