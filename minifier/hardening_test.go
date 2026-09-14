@@ -3,6 +3,7 @@
 package minifier
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -301,6 +302,62 @@ func TestMinifyLiteralPackageFlowRenamesGlobals(t *testing.T) {
 			actual, err := evalDebugOutput(t, out)
 			require.NoError(t, err, "minified: %s", out)
 			require.Equal(t, original, actual)
+		})
+	}
+}
+
+func TestMinifyShadowedQuotePreventsExportProof(t *testing.T) {
+	for _, name := range []string{"quote", "lisp:quote", "quasiquote", "lisp:quasiquote"} {
+		for _, binding := range []string{
+			`(let ((%s 1)) ())`, `(let* ((%s 1)) ())`,
+			`(flet ((%s () 1)) ())`, `(labels ((%s () 1)) ())`,
+			`(lambda (%s) ())`, `(defun %s () 1)`, `(defmacro %s () 1)`,
+			`(defun other (%s) ())`, `(defmacro other (%s) ())`,
+			`(flet ((other (%s) 1)) ())`, `(labels ((other (%s) 1)) ())`,
+			`(set '%s 1)`, `(export '%s)`, `(export "%s")`,
+			`(lisp:let ((%s 1)) ())`, `(lisp:lambda (%s) ())`,
+			`(quasiquote (let ((%s 1)) ()))`,
+		} {
+			for _, call := range []string{"quote", "lisp:quote"} {
+				src := fmt.Sprintf(binding, name)
+				t.Run(call+"/"+src, func(t *testing.T) {
+					var warnings []string
+					result, err := Minify([]InputFile{
+						{Path: "exports.lisp", Source: []byte(`(defun helper (local) local) (export (` + call + ` public)) (export (` + call + ` another))`)},
+						{Path: "later.lisp", Source: []byte(`(in-package "remote") (defun remote-helper () 2) ` + src)},
+					}, &Config{RenameExports: true, Warn: func(warning string) { warnings = append(warnings, warning) }})
+					require.NoError(t, err)
+					for _, global := range []string{"helper", "remote-helper"} {
+						require.NotContains(t, result.SymbolMap.OriginalToMinified, global)
+						require.Contains(t, result.SymbolMap.Excluded, SymbolExclusion{Original: global, Reason: "unproven-package-flow"})
+					}
+					require.Contains(t, result.SymbolMap.OriginalToMinified, "local")
+					require.Len(t, warnings, 1)
+					require.Contains(t, warnings[0], "export prevents static proof")
+					require.Contains(t, warnings[0], "unproven-package-flow")
+				})
+			}
+		}
+	}
+}
+
+func TestMinifyShadowedQuotePreservesQuotedData(t *testing.T) {
+	for _, quote := range []string{"quote", "lisp:quote", "quasiquote", "lisp:quasiquote"} {
+		t.Run(quote, func(t *testing.T) {
+			prefix := `(defun keep () 1) (defun helper () 2) (export 'public) `
+			data := `(` + quote + ` (keep))`
+			_, originalMap, err := MinifySource([]byte(prefix+data), "data.lisp", nil)
+			require.NoError(t, err)
+			var warnings []string
+			out, shadowedMap, err := MinifySource([]byte(prefix+`(lambda (`+quote+`) `+data+`)`), "data.lisp", &Config{
+				Warn: func(warning string) { warnings = append(warnings, warning) },
+			})
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			require.Equal(t, originalMap.Excluded, shadowedMap.Excluded)
+			require.Contains(t, shadowedMap.Excluded, SymbolExclusion{Original: "keep", Reason: "quoted-reference"})
+			require.Contains(t, string(out), "(defun keep () 1)")
+			require.Contains(t, shadowedMap.OriginalToMinified, "helper")
 		})
 	}
 }

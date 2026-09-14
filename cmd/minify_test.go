@@ -170,3 +170,34 @@ func TestMinifyCommandPackageFlowWarning(t *testing.T) {
 		})
 	}
 }
+
+func TestMinifyCommandShadowedQuoteExecutionEquivalence(t *testing.T) {
+	bin := buildTestBinary(t)
+	dir := t.TempDir()
+	src := `(in-package "pkg")
+(defun longFunction () 1)
+(flet ((quote (x) "longFunction")) (export (quote 'ignored)))
+(in-package "other")
+(use-package "pkg")
+(longFunction)
+`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "original.lisp"), []byte(src), 0o600))
+	originalCode, originalOut, originalErr := runCorpusCLI(t, bin, dir, "run", "-p", "original.lisp")
+	require.Equal(t, 0, originalCode, "%s", originalErr)
+	require.Equal(t, "1\n", originalOut)
+	require.Empty(t, originalErr)
+	code, minified, warning := runCorpusCLI(t, bin, dir, "minify", "--map", "symbols.json", "original.lisp")
+	require.Equal(t, 0, code, "%s", warning)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "minified.lisp"), []byte(minified), 0o600))
+	minCode, minOut, minErr := runCorpusCLI(t, bin, dir, "run", "-p", "minified.lisp")
+	require.Equal(t, originalCode, minCode, "minified source:\n%s\nstderr:\n%s", minified, minErr)
+	require.Equal(t, originalOut, minOut)
+	require.Equal(t, originalErr, minErr)
+	require.Contains(t, warning, "unproven-package-flow")
+	require.Equal(t, 1, bytes.Count([]byte(warning), []byte("warning:")))
+	data, err := os.ReadFile(filepath.Join(dir, "symbols.json")) //nolint:gosec // reads CLI output from the test-owned temporary directory
+	require.NoError(t, err)
+	var symMap minifier.SymbolMap
+	require.NoError(t, json.Unmarshal(data, &symMap))
+	require.Contains(t, symMap.Excluded, minifier.SymbolExclusion{Original: "longFunction", Reason: "unproven-package-flow"})
+}
