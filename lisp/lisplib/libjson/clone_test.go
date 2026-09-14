@@ -45,11 +45,11 @@ func decodedMapEnv(t testing.TB, n int) (*lisp.LEnv, *lisp.LVal) {
 	if m.Type != lisp.LSortMap {
 		t.Fatalf("json:load-string returned %v, want a sorted map", m)
 	}
-	// The decoded map's backing is not reachable from outside package lisp;
-	// its contract is: it rejects any key that is not a string.  That is
-	// what tells a decoded map apart from the stock map its copies become.
-	if lerr := m.Map().Set(lisp.Symbol("probe"), lisp.Int(0)); lerr.Type != lisp.LError {
-		t.Fatalf("decoded map accepted a symbol key; json:load-string lost its string-only key policy")
+	// Decoded maps accept symbols by name while retaining string keys.
+	strValue, strFound := m.Map().Get(lisp.String("k0000"))
+	symValue, symFound := m.Map().Get(lisp.Symbol("k0000"))
+	if symValue.Type == lisp.LError || symFound != strFound || symValue.String() != strValue.String() {
+		t.Fatalf("decoded map symbol lookup differs from string lookup: %v", symValue)
 	}
 	return env, m
 }
@@ -89,8 +89,8 @@ func decodedMapTemplate(t testing.TB, env *lisp.LEnv) *lisp.Template {
 }
 
 // TestForkOfDecodedMapMatchesEntriesPath preserves entries, mutable-value
-// isolation, and the original JSON map's string-only key semantics. The old
-// entries path silently widened the key policy; accepting symbols was a bug.
+// isolation, and the original JSON map's string-key presentation even when
+// entries are written using symbols.
 func TestForkOfDecodedMapMatchesEntriesPath(t *testing.T) {
 	env, m := decodedMapEnv(t, 5)
 	fork, err := decodedMapTemplate(t, env).NewVM()
@@ -110,12 +110,16 @@ func TestForkOfDecodedMapMatchesEntriesPath(t *testing.T) {
 	}{
 		{"get", func(m lisp.Map) *lisp.LVal { value, _ := m.Get(lisp.Symbol("sym")); return value }},
 		{"set", func(m lisp.Map) *lisp.LVal { return m.Set(lisp.Symbol("sym"), lisp.Int(0)) }},
+		{"get after set", func(m lisp.Map) *lisp.LVal { value, _ := m.Get(lisp.Symbol("sym")); return value }},
 		{"del", func(m lisp.Map) *lisp.LVal { return m.Del(lisp.Symbol("sym")) }},
 	} {
 		cold, got := operation.call(m.Map()), operation.call(fm.Map())
-		if cold.Type != lisp.LError || got.Type != lisp.LError || got.String() != cold.String() {
-			t.Errorf("%s symbol-key rejection: cold=%v fork=%v", operation.name, cold, got)
+		if cold.Type == lisp.LError || got.Type == lisp.LError || got.String() != cold.String() {
+			t.Errorf("%s symbol-key access: cold=%v fork=%v", operation.name, cold, got)
 		}
+		// A fork must retain JSON string-key presentation after symbol writes.
+		keysAndValues(t, m)
+		keysAndValues(t, fm)
 	}
 
 	ok, ov := keysAndValues(t, m)
@@ -183,10 +187,14 @@ func TestAssocOnDecodedMapMatchesEntriesPath(t *testing.T) {
 	if v, _ := got.Map().Get(lisp.String("new")); v.Type != lisp.LInt || v.Int != 42 {
 		t.Errorf("new key: got %v", v)
 	}
-	// As before, the copy is the stock map and accepts a symbol key even
-	// though the decoded original does not.
+	// The copy is a stock map and remembers a symbol write as a symbol.
 	if lerr := got.Map().Set(lisp.Symbol("sym"), lisp.Int(0)); lerr.Type == lisp.LError {
 		t.Errorf("assoc result rejected a symbol key: it is not the stock sorted map the entries path produced: %v", lerr)
+	}
+
+	keys := got.Map().Keys().Cells
+	if last := keys[len(keys)-1]; last.Type != lisp.LSymbol || last.Str != "sym" {
+		t.Fatalf("assoc result lost stock map symbol spelling: %v", last)
 	}
 
 	got = env.LoadString("dissoc_test.lisp", `(dissoc m "k0002")`)

@@ -180,27 +180,40 @@ var (
 			arguments swapped.`},
 		{"assoc", Formals("map", "key", "value"), builtinAssoc,
 			`Returns a new sorted-map with key set to value, without
-			modifying the original. If map is nil, creates a new map.`},
+			modifying the original. If map is nil, creates a new map.
+			Keys must be strings or symbols. Keys with the same name are
+			interchangeable; last write wins for key spelling and value.`},
 		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate,
 			`Sets key to value in map, mutating it in place, and returns the
-			modified map.`},
+			modified map. Keys must be strings or symbols. Last write wins
+			for key spelling and value; JSON-decoded maps always retain
+			string keys, using a symbol's name when supplied.`},
 		{"dissoc", Formals("map", "key"), builtinDissoc,
 			`Returns a new sorted-map with key removed, without modifying the
 			original.`},
 		{"dissoc!", Formals("map", "key"), builtinDissocMutate,
 			`Removes key from map, mutating it in place, and returns the
-			modified map.`},
+			modified map. String and symbol keys with the same name are
+			interchangeable, including in JSON-decoded maps.`},
 		{"get", Formals("map", "key"), builtinGet,
 			`Returns the value associated with key in a sorted-map, or nil if
-			the key is not present or map is nil.`},
+			the key is not present or map is nil. String and symbol keys
+			with the same name are interchangeable, including in
+			JSON-decoded maps.`},
 		{"keys", Formals("map"), builtinKeys,
-			`Returns a list of all keys in a sorted-map in sorted order.`},
+			`Returns a list of all keys in a sorted-map in sorted order.
+			Key spelling follows the last write; JSON-decoded maps always
+			return string keys.`},
 		{"key?", Formals("map", "key"), builtinIsKey,
-			`Returns true if key exists in the sorted-map, false otherwise.`},
+			`Returns true if key exists in the sorted-map, false otherwise.
+			String and symbol keys with the same name are interchangeable,
+			including in JSON-decoded maps.`},
 		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap,
 			`Creates a new sorted-map from alternating key-value pairs. For
 			example, (sorted-map :a 1 :b 2). Keys are maintained in sorted
-			order.`},
+			order and must be strings or symbols; other types are unhashable.
+			Keys with the same name are interchangeable; last write wins
+			for key spelling and value.`},
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},

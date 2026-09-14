@@ -4,7 +4,8 @@ package lisp
 
 import "sort"
 
-// jsonMap is the interpreter-owned string-only map used for decoded JSON.
+// jsonMap is the interpreter-owned string-keyed map used for decoded JSON.
+// Symbol keys use their names for access; keys are always emitted as strings.
 // Values must be *LVal. It reuses encoding/json's map storage without conversion.
 // Like other VM values it is mutable, and must not be shared between runtimes.
 type jsonMap map[string]interface{}
@@ -29,7 +30,7 @@ func (m jsonMap) Len() int {
 }
 
 func (m jsonMap) Get(k *LVal) (*LVal, bool) {
-	if k.Type != LString {
+	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k)), false
 	}
 	x, ok := m[k.Str]
@@ -40,7 +41,7 @@ func (m jsonMap) Get(k *LVal) (*LVal, bool) {
 }
 
 func (m jsonMap) Del(k *LVal) *LVal {
-	if k.Type != LString {
+	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k))
 	}
 	delete(m, k.Str)
@@ -48,7 +49,7 @@ func (m jsonMap) Del(k *LVal) *LVal {
 }
 
 func (m jsonMap) Set(k *LVal, v *LVal) *LVal {
-	if k.Type != LString {
+	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k))
 	}
 	m[k.Str] = v
