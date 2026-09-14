@@ -5,7 +5,6 @@ package lisp
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/fmtmeta"
@@ -71,7 +70,7 @@ func (v *LVal) detach() (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
-	d := &detacher{seen: make(map[*LVal]*LVal)}
+	d := &detacher{}
 	return d.detach(v)
 }
 
@@ -103,8 +102,7 @@ type detacher struct {
 	// runtime is supplied only by Lisp copy. It limits each data backing
 	// allocation, not total graph size or the walker's bookkeeping.
 	runtime *Runtime
-	path    *detachPath
-	jobs    []detachJob
+	next    detachFrame
 	depth   int
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
@@ -128,42 +126,93 @@ func (d *detacher) checkAlloc(n int) error {
 	return nil
 }
 
-type detachPath struct {
-	parent *detachPath
-	label  string
-	cell   int
-}
-type detachJob struct {
-	run   func() error
-	path  *detachPath
-	depth int
+// detachFrame holds a container's traversal cursor by value. Map keys and
+// values precede Cells, matching the payload-before-cells copy order. Paths
+// are rendered from active ancestor cursors only when a detach fails.
+type detachFrame struct {
+	mapping                *MapData
+	key                    *LVal
+	cells, copied, entries []*LVal
+	index                  int
 }
 
-func (d *detacher) schedule(path *detachPath, run func() error) {
-	d.jobs = append(d.jobs, detachJob{run: run, path: path, depth: d.depth + 1})
+func (f *detachFrame) len() int { return 2*len(f.entries) + len(f.cells) }
+
+func (f *detachFrame) child() *LVal {
+	if f.index < 2*len(f.entries) {
+		return f.entries[f.index/2].Cells[f.index%2]
+	}
+	return f.cells[f.index-2*len(f.entries)]
+}
+
+func (f *detachFrame) store(cp *LVal) error {
+	i := f.index - 1
+	if i < 2*len(f.entries) {
+		if i%2 == 0 {
+			f.key = cp
+		} else if lerr := f.mapping.Set(f.key, cp); lerr.Type == LError {
+			return &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", f.entries[i/2].Cells[0], lerr)}
+		}
+	} else {
+		f.copied[i-2*len(f.entries)] = cp
+	}
+	return nil
+}
+
+func (f *detachFrame) path() string {
+	i := f.index - 1
+	if i < 2*len(f.entries) {
+		if i%2 == 0 {
+			return fmt.Sprintf("MapKey[%s]", f.entries[i/2].Cells[0])
+		}
+		return fmt.Sprintf("Map[%s]", f.entries[i/2].Cells[0])
+	}
+	return fmt.Sprintf("Cells[%d]", i-2*len(f.entries))
 }
 
 func (d *detacher) detach(v *LVal) (*LVal, error) {
+	d.next = detachFrame{}
 	cp, err := d.detachNode(v)
-	slices.Reverse(d.jobs)
-	for err == nil && len(d.jobs) > 0 {
-		job := d.jobs[len(d.jobs)-1]
-		d.jobs = d.jobs[:len(d.jobs)-1]
-		d.depth, d.path = job.depth, job.path
-		if d.depth >= d.runtime.ValueDepthLimit() {
-			return nil, ValueDepthError(d.runtime.ValueDepthLimit())
-		}
-		mark := len(d.jobs)
-		err = job.run()
-		slices.Reverse(d.jobs[mark:])
+	if err != nil || d.next.len() == 0 {
+		return cp, err
 	}
+	pending := make([]detachFrame, 0, 16)
+	pending = append(pending, d.next)
+	depth := d.depth
+	for len(pending) > 0 {
+		f := &pending[len(pending)-1]
+		if f.index == f.len() {
+			*f = detachFrame{}
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		d.depth = depth + len(pending)
+		v = f.child()
+		f.index++
+		if d.depth >= d.runtime.ValueDepthLimit() {
+			err = ValueDepthError(d.runtime.ValueDepthLimit())
+			break
+		}
+		d.next = detachFrame{}
+		var child *LVal
+		child, err = d.detachNode(v)
+		if err != nil {
+			break
+		}
+		if err = f.store(child); err != nil {
+			break
+		}
+		if d.next.len() > 0 {
+			pending = append(pending, d.next)
+		}
+	}
+	d.depth = depth
+	d.next = detachFrame{}
 	if err != nil {
-		for p := d.path; p != nil; p = p.parent {
-			label := p.label
-			if label == "" {
-				label = fmt.Sprintf("Cells[%d]", p.cell)
+		if _, ok := err.(*detachError); ok { //nolint:errorlint // detach errors are created in this file, never wrapped
+			for i := len(pending) - 1; i >= 0; i-- {
+				err = prependPath(err, pending[i].path())
 			}
-			err = prependPath(err, label)
 		}
 		return nil, err
 	}
@@ -237,7 +286,14 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	// Register the copy before descending so a value reachable twice maps to
 	// one copy and a cycle in v becomes the same cycle in the copy instead of
 	// infinite recursion.
-	d.seen[v] = cp
+	// A standalone scalar cannot alias another node. Start the header memo
+	// only for a graph; once started it still records every leaf alias.
+	if d.seen == nil && (cap(v.Cells) > 0 || v.Native != nil) {
+		d.seen = make(map[*LVal]*LVal)
+	}
+	if d.seen != nil {
+		d.seen[v] = cp
+	}
 
 	// Under the unexported-source API (issue #362) a value constructed by Go
 	// code carries a nil location; copyLocation preserves nil, so a detached
@@ -316,10 +372,7 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 		return nil, nil
 	}
 	out := make([]*LVal, len(cells))
-	for i := range cells {
-		path := &detachPath{parent: d.path, cell: i}
-		d.schedule(path, func() error { cp, err := d.detachNode(cells[i]); out[i] = cp; return err })
-	}
+	d.next.cells, d.next.copied = cells, out
 
 	return out, nil
 }
@@ -414,24 +467,7 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	}
 	m := &MapData{newmap()}
 	d.maps[md] = m
-	for _, pair := range entries.Cells {
-		var key *LVal
-		d.schedule(&detachPath{parent: d.path, label: fmt.Sprintf("MapKey[%s]", pair.Cells[0])}, func() error {
-			var err error
-			key, err = d.detachNode(pair.Cells[0])
-			return err
-		})
-		d.schedule(&detachPath{parent: d.path, label: fmt.Sprintf("Map[%s]", pair.Cells[0])}, func() error {
-			val, err := d.detachNode(pair.Cells[1])
-			if err != nil {
-				return err
-			}
-			if lerr := m.Set(key, val); lerr.Type == LError {
-				return &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr)}
-			}
-			return nil
-		})
-	}
+	d.next.entries, d.next.mapping = entries.Cells, m
 
 	return m, nil
 }

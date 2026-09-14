@@ -28,7 +28,7 @@ func Not(v *LVal) bool {
 //
 // A bytes value is returned as a []byte that COPIES the lisp value's storage,
 // so writing to it cannot be observed through the original (issue #548).  The
-// cost is proportional to the length; see the LBytes arm of goValueNode for
+// cost is proportional to the length; see the LBytes arm of conversionLeaf for
 // why the copy is not optional.  A native value is the opposite case and is
 // returned BY REFERENCE: the payload is the embedder's own, so GoValue hands
 // back what the caller already owns.
@@ -40,6 +40,11 @@ func Not(v *LVal) bool {
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
+	// Opaque native payloads are already Go values; even leaf conversion
+	// dispatch is unnecessary here.
+	if v != nil && v.Type == LNative {
+		return v.Native
+	}
 	out, ok := convertValue(v)
 	if !ok {
 		return v
@@ -47,97 +52,136 @@ func GoValue(v *LVal) interface{} {
 	return out
 }
 
-func convertValue(root *LVal) (interface{}, bool) {
-	type frame struct {
-		v      *LVal
-		dst    *interface{}
-		finish func()
-		depth  int
-		leave  bool
+func convertValue(v *LVal) (interface{}, bool) {
+	if v.IsNil() {
+		return nil, true
 	}
-	var out interface{}
-	pending := []frame{{v: root, dst: &out}}
+	switch v.Type {
+	case LQuote, LSExpr, LArray, LSortMap:
+		return convertContainer(v)
+	default:
+		// Leaves must not create an addressable result slot or walk state.
+		return conversionLeaf(v), true
+	}
+}
+
+// conversionFrame holds output under construction, not a memo of source
+// identities. Repeated subtrees are independently converted as before.
+type conversionFrame struct {
+	v        *LVal
+	mapping  map[interface{}]interface{}
+	kv       [2]interface{}
+	children []*LVal
+	values   []interface{}
+	index    int
+	invalid  bool
+}
+
+func convertContainer(v *LVal) (interface{}, bool) {
+	// One reusable continuation per ancestor, never one per sibling.
+	pending := make([]conversionFrame, 0, 16)
 	var path map[*LVal]bool
-	for len(pending) > 0 {
-		f := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if f.finish != nil {
-			f.finish()
-			continue
-		}
-		if f.leave {
-			delete(path, f.v)
-			continue
-		}
-		v := f.v
-		if f.depth >= MaxValueDepth {
+walk:
+	for {
+		if len(pending) >= MaxValueDepth {
 			return (*ErrorVal)(Error(ValueDepthError(MaxValueDepth))), true
 		}
-		if v.IsNil() {
-			*f.dst = nil
-			continue
-		}
-		var children []*LVal
-		switch v.Type {
-		case LQuote:
-			children = v.Cells[:1]
-		case LSExpr:
-			children = v.Cells
-		case LArray:
-			if v.Cells[0].Len() > 1 {
-				*f.dst = v
-				continue
-			}
-			children = v.Cells[1].Cells
-		case LSortMap:
-		default:
-			*f.dst = conversionLeaf(v)
-			continue
-		}
-		if f.depth >= 64 {
-			if path == nil {
-				path = make(map[*LVal]bool)
-			}
-			if path[v] {
-				return nil, false
-			}
-			path[v] = true
-			pending = append(pending, frame{v: v, leave: true})
-		}
-		if v.Type == LSortMap {
-			entries := sortedMapEntries(v.Map())
-			if entries.Type == LError {
-				return (*ErrorVal)(entries), true
-			}
-			m := make(map[interface{}]interface{}, len(entries.Cells))
-			*f.dst = m
-			for i := len(entries.Cells) - 1; i >= 0; i-- {
-				pair := entries.Cells[i]
-				if len(pair.Cells) != 2 {
-					return nil, false
+		var out interface{}
+		f := conversionFrame{v: v}
+		container := true
+		if !v.IsNil() {
+			switch v.Type {
+			case LQuote:
+				f.children = v.Cells[:1]
+			case LSExpr:
+				f.children = v.Cells
+			case LArray:
+				if v.Cells[0].Len() > 1 {
+					container = false
+					out = v
+					break
 				}
-				kv := make([]interface{}, 2)
-				pending = append(pending, frame{finish: func() {
+				f.children = v.Cells[1].Cells
+			case LSortMap:
+				entries := sortedMapEntries(v.Map())
+				if entries.Type == LError {
+					return (*ErrorVal)(entries), true
+				}
+				for _, pair := range entries.Cells {
+					if len(pair.Cells) != 2 {
+						return nil, false
+					}
+				}
+				f.children = entries.Cells
+				f.mapping = make(map[interface{}]interface{}, len(entries.Cells))
+				out = f.mapping
+			default:
+				container = false
+				out = conversionLeaf(v)
+			}
+			if container {
+				if len(pending) >= 64 {
+					if path == nil {
+						path = make(map[*LVal]bool)
+					}
+					if path[v] {
+						return nil, false
+					}
+					path[v] = true
+				}
+				if v.Type != LSortMap && v.Type != LQuote && (v.Type != LArray || v.Cells[0].Len() != 0) {
+					f.values = make([]interface{}, len(f.children))
+					out = f.values
+				}
+				if len(f.children) > 0 {
+					pending = append(pending, f)
+					v = f.children[0]
+					if f.mapping != nil {
+						v = v.Cells[0]
+					}
+					continue
+				}
+				delete(path, v)
+			}
+		}
+		for len(pending) > 0 {
+			f := &pending[len(pending)-1]
+			switch {
+			case f.mapping != nil:
+				f.kv[f.index%2] = out
+				f.index++
+				if f.index%2 == 0 {
+					kv, m := f.kv, f.mapping
 					if kv[0] != nil && reflect.ValueOf(kv[0]).Comparable() {
 						m[kv[0]] = kv[1]
 					} else {
-						*f.dst = map[interface{}]interface{}(nil)
+						f.invalid = true
 					}
-				}}, frame{v: pair.Cells[1], dst: &kv[1], depth: f.depth + 1}, frame{v: pair.Cells[0], dst: &kv[0], depth: f.depth + 1})
+				}
+				if f.index < 2*len(f.children) {
+					v = f.children[f.index/2].Cells[f.index%2]
+					continue walk
+				}
+				if f.invalid {
+					out = map[interface{}]interface{}(nil)
+				} else {
+					out = f.mapping
+				}
+			case f.values != nil:
+				f.values[f.index] = out
+				f.index++
+				if f.index < len(f.children) {
+					v = f.children[f.index]
+					continue walk
+				}
+				out = f.values
 			}
-			continue
+			delete(path, f.v)
+			*f = conversionFrame{}
+			pending = pending[:len(pending)-1]
 		}
-		if v.Type == LQuote || (v.Type == LArray && v.Cells[0].Len() == 0) {
-			pending = append(pending, frame{v: children[0], dst: f.dst, depth: f.depth + 1})
-			continue
-		}
-		values := make([]interface{}, len(children))
-		*f.dst = values
-		for i := len(children) - 1; i >= 0; i-- {
-			pending = append(pending, frame{v: children[i], dst: &values[i], depth: f.depth + 1})
-		}
+		return out, true
 	}
-	return out, true
 }
 
 func conversionLeaf(v *LVal) interface{} {

@@ -95,7 +95,7 @@ func (v *LVal) deepCopyWithRuntime(runtime *Runtime) (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
-	d := &detacher{seen: make(map[*LVal]*LVal), runtime: runtime, shareOpaque: true}
+	d := &detacher{runtime: runtime, shareOpaque: true}
 	return d.detach(v)
 }
 

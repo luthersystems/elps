@@ -153,12 +153,10 @@ type copier struct {
 	// failed is the error the walk stopped on, and is NOT a memo: it holds
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
-	failed    *LVal
-	jobs      []copyJob
-	smallJobs [16]copyJob
-	depth     int
-	njobs     int
-	n         int
+	failed *LVal
+	next   copyFrame
+	depth  int
+	n      int
 }
 
 // copierSmallMemo is how many headers a walk memoises before it allocates.
@@ -264,6 +262,62 @@ func (c *copier) checkAlloc(n int) error {
 	return nil
 }
 
+// copyFrame retains one container's cursor. It owns no child result slots
+// or closures, and width never increases the continuation stack.
+type copyFrame struct {
+	mapping, source map[string]*LVal
+	md              *MapData
+	cells, copied   []*LVal
+	keys            []string
+	pairs           []copyStringKV
+	index           int
+}
+
+type copyStringKV struct {
+	v *LVal
+	k string
+}
+
+func (f *copyFrame) len() int {
+	if f.keys != nil {
+		return len(f.keys)
+	}
+	if f.pairs != nil {
+		return len(f.pairs)
+	}
+	return len(f.cells)
+}
+
+func (f *copyFrame) child() *LVal {
+	switch {
+	case f.keys != nil:
+		return f.source[f.keys[f.index]]
+	case f.pairs != nil:
+		return f.pairs[f.index].v
+	case f.md != nil:
+		return f.cells[f.index].Cells[1]
+	default:
+		return f.cells[f.index]
+	}
+}
+
+func (f *copyFrame) store(child *LVal) *LVal {
+	switch {
+	case f.keys != nil:
+		f.mapping[f.keys[f.index]] = child
+	case f.pairs != nil:
+		f.mapping[f.pairs[f.index].k] = child
+	case f.md != nil:
+		if err := f.md.Set(f.cells[f.index].Cells[0], child); err.Type == LError {
+			return err
+		}
+	default:
+		f.copied[f.index] = child
+	}
+	f.index++
+	return nil
+}
+
 // copy is the walk's only entry point, and the fail-stop's.  Once an arm
 // has recorded a failure in c.failed every level returns it without
 // descending -- the OUTERMOST level included, which is what makes
@@ -271,85 +325,60 @@ func (c *copier) checkAlloc(n int) error {
 // container the abandoned walk was building, with whatever it had already
 // published over unfinished storage still hanging off it.  See the type
 // comment for why repairing the failing node alone is not enough.
-// copyJob records a destination slot, rather than a closure per child. The
-// inline work stack keeps small copies at their original allocation cost.
-type copyJob struct {
-	src     *LVal
-	dst     **LVal
-	mapping map[string]*LVal
-	md      *MapData
-	mapKey  *LVal
-	key     string
-	depth   int
-}
-
-func (c *copier) schedule(job copyJob) {
-	job.depth = c.depth + 1
-	if c.jobs == nil && c.njobs < len(c.smallJobs) {
-		c.smallJobs[c.njobs] = job
-	} else {
-		if c.jobs == nil {
-			c.jobs = append(make([]copyJob, 0, 32), c.smallJobs[:]...)
-		}
-		c.jobs = append(c.jobs, job)
-	}
-	c.njobs++
-}
-
-func (c *copier) reverseJobs(start int) {
-	if c.jobs == nil {
-		slices.Reverse(c.smallJobs[start:c.njobs])
-	} else {
-		slices.Reverse(c.jobs[start:])
-	}
-}
-
 func (c *copier) copy(v *LVal) *LVal {
+	if c.failed != nil {
+		return c.failed
+	}
 	if v == nil {
 		return nil
 	}
+	c.next = copyFrame{}
 	cp := c.copyNode(v)
-	c.reverseJobs(0)
-	for c.njobs > 0 && c.failed == nil {
-		c.njobs--
-		var job copyJob
-		if c.jobs == nil {
-			job = c.smallJobs[c.njobs]
-			c.smallJobs[c.njobs] = copyJob{}
-		} else {
-			job = c.jobs[c.njobs]
-			c.jobs[c.njobs] = copyJob{}
-			c.jobs = c.jobs[:c.njobs]
+	if c.next.len() == 0 { // Leaves need no continuation stack.
+		if c.failed != nil {
+			return c.failed
 		}
-		c.depth = job.depth
+		return cp
+	}
+	pending := make([]copyFrame, 0, 16)
+	pending = append(pending, c.next)
+	depth := c.depth
+	for len(pending) > 0 && c.failed == nil {
+		f := &pending[len(pending)-1]
+		if f.index == f.len() {
+			*f = copyFrame{}
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		c.depth = depth + len(pending)
 		if c.depth >= c.runtime.ValueDepthLimit() {
 			c.failed = Error(ValueDepthError(c.runtime.ValueDepthLimit()))
 			break
 		}
-		mark := c.njobs
-		child := c.copyNode(job.src)
-		switch {
-		case job.dst != nil:
-			*job.dst = child
-		case job.mapping != nil:
-			job.mapping[job.key] = child
-		case job.md != nil:
-			if err := job.md.Set(job.mapKey, child); err.Type == LError {
-				c.failed = err
-			}
+		c.next = copyFrame{}
+		child := c.copyNode(f.child())
+		if c.failed != nil {
+			break
 		}
-		c.reverseJobs(mark)
+		if err := f.store(child); err != nil {
+			c.failed = err
+			break
+		}
+		if c.next.len() > 0 {
+			pending = append(pending, c.next)
+		}
 	}
+	c.depth = depth
+	c.next = copyFrame{}
 	if c.failed != nil {
 		return c.failed
 	}
 	return cp
 }
 
-// copyNode copies one node and its children.  Callers go through copy,
-// which is where the fail-stop lives; nothing here has to check c.failed
-// except the cell loop, which stops early rather than copying the error
-// into every remaining cell of a container that is about to be discarded.
+// copyNode copies one header and prepares its child cursor in c.next.
+// Callers go through copy, which stops the whole walk on c.failed before
+// visiting another sibling.
 func (c *copier) copyNode(v *LVal) *LVal {
 	if v == nil {
 		return nil
@@ -528,9 +557,7 @@ func (c *copier) cells(v *LVal) []*LVal {
 		return nil
 	}
 	cells := make([]*LVal, len(v.Cells))
-	for i := range cells {
-		c.schedule(copyJob{src: v.Cells[i], dst: &cells[i]})
-	}
+	c.next = copyFrame{cells: v.Cells, copied: cells}
 
 	return cells
 }
@@ -597,17 +624,21 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// back by lookup: a []string sorted by slices.Sort measured
 		// cheaper than a []{key,value} sorted by slices.SortFunc, whose
 		// comparison closure costs more than the hash lookups it saves
-		// (+74 % against +52 % on the 64-entry copy).  A map of fewer
-		// than two entries is already ordered and collects nothing.
+		// (+74 % against +52 % on the 64-entry copy).
 		sm := m0.emptyLike()
-		if len(m0.m) < 2 || !copierValueOrderMatters(m0.m) {
+		if !copierValueOrderMatters(m0.m) {
+			// These leaves cannot schedule children or invoke host code. Copy
+			// them directly without collecting keys or queuing siblings.
+			if len(m0.m) > 0 && c.depth+1 >= c.runtime.ValueDepthLimit() {
+				err := ValueDepthError(c.runtime.ValueDepthLimit())
+				c.failed = Error(err)
+				return c.failMap(md, err)
+			}
 			for k, v := range m0.m {
-				c.schedule(copyJob{src: v, mapping: sm.m, key: k})
+				sm.m[k] = c.copyNode(v)
 			}
 		} else {
-			for _, k := range copierSortedKeys(m0.m) {
-				c.schedule(copyJob{src: m0.m[k], mapping: sm.m, key: k})
-			}
+			c.next = copyFrame{keys: copierSortedKeys(m0.m), source: m0.m, mapping: sm.m}
 		}
 		for k, t := range m0.tm {
 			sm.tm[k] = t
@@ -618,13 +649,9 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	if r, ok := md.mapBacking.(StringKeyRanger); ok {
 		// Collect first, copy after: the callback must not capture c (see
 		// the sortedmap case).
-		type stringKV struct {
-			v *LVal
-			k string
-		}
-		pairs := make([]stringKV, 0, md.Len())
+		pairs := make([]copyStringKV, 0, md.Len())
 		if err := r.RangeStringKeys(func(k string, v *LVal) {
-			pairs = append(pairs, stringKV{v: v, k: k})
+			pairs = append(pairs, copyStringKV{v: v, k: k})
 		}); err != nil {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %w", err))
 		}
@@ -642,12 +669,10 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			}
 		}
 		if order {
-			slices.SortFunc(pairs, func(a, b stringKV) int { return cmp.Compare(a.k, b.k) })
+			slices.SortFunc(pairs, func(a, b copyStringKV) int { return cmp.Compare(a.k, b.k) })
 		}
 		sm := emptyForStringKeys(len(pairs))
-		for _, p := range pairs {
-			c.schedule(copyJob{src: p.v, mapping: sm.m, key: p.k})
-		}
+		c.next = copyFrame{pairs: pairs, mapping: sm.m}
 		nm.mapBacking = sm
 		return nm, nil
 	}
@@ -732,9 +757,9 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
 		}
 		prev = key
-		c.schedule(copyJob{src: pair.Cells[1], md: m, mapKey: key})
 	}
 	nm.mapBacking = m.mapBacking
+	c.next = copyFrame{cells: entries.Cells, md: nm}
 	return nm, nil
 }
 

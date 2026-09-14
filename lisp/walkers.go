@@ -251,6 +251,12 @@ type memoExemption struct {
 // subject cannot carry the aliasing bug the registry exists to prevent.
 var memoExemptions = []memoExemption{
 	{
+		Subject: "lisp.conversionFrame.mapping",
+		Reason: "the Go map being built by GoValue (lisp/embed.go), keyed by converted application keys, " +
+			"not source identities. It is output, not a payload memo; repeated source subtrees are " +
+			"independently converted, and the separate active path detects cycles.",
+	},
+	{
 		Subject: "*CallStack",
 		Reason: "an LError's recorded stack, deep-copied per header by detachCallStack rather than memoised per payload. " +
 			"Its IDENTITY carries no observable state: CallStack.Copy allocates an exact-length Frames slice " +
