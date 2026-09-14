@@ -99,20 +99,21 @@ type fileSymbols struct {
 }
 
 type preservationSet struct {
-	globalFallback *lisp.LVal
-	fallbackReason string
-	quoted         map[string]bool
-	names          map[string]bool
-	symbols        map[*analysis.Symbol]bool
-	symbolKeys     map[string]bool
+	globalFallback    *lisp.LVal
+	dynamicEvaluation *lisp.LVal
+	quoted            map[string]bool
+	names             map[string]bool
+	symbols           map[*analysis.Symbol]bool
+	symbolKeys        map[string]bool
 }
 
 // Minify rewrites one or more source units using a single deterministic
 // symbol-assignment session. Quoted names (including list and quasiquote data)
 // are preserved across all inputs and recorded as quoted-reference exclusions.
 // Package definitions retain package scope even inside lexical forms. Runtime
-// evaluation, symbol creation, or unproven package flow preserves all package-level
-// names across inputs and records the reason; lexical locals can still shorten.
+// evaluation or symbol creation disables all renaming across inputs. Unproven
+// package flow preserves package-level names; lexical locals can shorten only
+// when dynamic evaluation is absent. Both fallbacks record their reason.
 func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 	if cfg == nil {
 		cfg = &Config{}
@@ -142,13 +143,12 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
 	}
 
-	if protected.globalFallback != nil && cfg.Warn != nil {
-		node := protected.globalFallback
-		detail := "may evaluate runtime data or create symbols"
-		if protected.fallbackReason == "unproven-package-flow" {
-			detail = "prevents static proof of package flow and exported names"
+	if cfg.Warn != nil {
+		if node := protected.dynamicEvaluation; node != nil {
+			cfg.Warn(fmt.Sprintf("%s: %s may evaluate runtime data or create symbols; preserving all binding names, including lexical locals (dynamic-evaluation)", astutil.SourceLoc(node), node.Str))
+		} else if node := protected.globalFallback; node != nil {
+			cfg.Warn(fmt.Sprintf("%s: %s prevents static proof of package flow and exported names; preserving all package-level binding names (unproven-package-flow)", astutil.SourceLoc(node), node.Str))
 		}
-		cfg.Warn(fmt.Sprintf("%s: %s %s; preserving all package-level binding names (%s)", astutil.SourceLoc(node), node.Str, detail, protected.fallbackReason))
 	}
 	preservePackageSurfaceSymbols(files, cfg, protected)
 	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
@@ -533,11 +533,15 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 	for name := range preserved.quoted {
 		exclusionReasons[name] = "quoted-reference"
 	}
-	if preserved.globalFallback != nil {
+	if preserved.globalFallback != nil || preserved.dynamicEvaluation != nil {
 		for _, file := range files {
 			for _, sym := range file.analysis.Symbols {
-				if !sym.External && packageBindingKey(sym) != "" {
-					exclusionReasons[sym.Name] = preserved.fallbackReason
+				if !sym.External && (preserved.dynamicEvaluation != nil || packageBindingKey(sym) != "") {
+					reason := "unproven-package-flow"
+					if preserved.dynamicEvaluation != nil {
+						reason = "dynamic-evaluation"
+					}
+					exclusionReasons[sym.Name] = reason
 				}
 			}
 		}
@@ -633,6 +637,9 @@ func symbolLookupKey(sym *analysis.Symbol) string {
 }
 
 func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) bool {
+	if preserved != nil && preserved.dynamicEvaluation != nil {
+		return false
+	}
 	if sym == nil || sym.Node == nil || sym.Node.Type != lisp.LSymbol {
 		return false
 	}
@@ -694,8 +701,11 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 	for i := range files {
 		for _, expr := range files[i].exprs {
 			collectQuotedSymbols(expr, false, protected)
+			if protected.dynamicEvaluation == nil {
+				protected.dynamicEvaluation = firstDynamicEvaluation(expr)
+			}
 			if protected.globalFallback == nil {
-				protected.globalFallback, protected.fallbackReason = firstGlobalFallback(expr, true)
+				protected.globalFallback = firstGlobalFallback(expr, true)
 			}
 		}
 	}
@@ -983,37 +993,50 @@ func compareLocations(a, b *token.Location) int {
 // before any package binding may be renamed. Walk the original file tree, not
 // PackageForms: flattening it would lose the top-level requirement. Templates
 // are inspected conservatively too, since they may become executable code.
-// The same preorder walk selects the first dynamic-evaluation or package site.
-func firstGlobalFallback(node *lisp.LVal, topLevel bool) (*lisp.LVal, string) {
+func firstGlobalFallback(node *lisp.LVal, topLevel bool) *lisp.LVal {
 	if node == nil {
-		return nil, ""
+		return nil
 	}
 	head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
 	switch head {
 	case "export":
 		for _, arg := range node.Cells[1:] {
 			if !literalExportArgument(arg, false) {
-				return node.Cells[0], "unproven-package-flow"
+				return node.Cells[0]
 			}
 		}
 	case "in-package", "use-package":
 		// The package scanner models the unqualified spellings only. A
 		// qualified call therefore cannot supply the proof needed to rename.
 		if !topLevel || astutil.HeadSymbol(node) != head {
-			return node.Cells[0], "unproven-package-flow"
+			return node.Cells[0]
 		}
 		args := node.Cells[1:]
 		if head == "in-package" {
 			if len(args) == 0 {
-				return node.Cells[0], "unproven-package-flow"
+				return node.Cells[0]
 			}
 			args = args[:1] // Remaining arguments are package docstrings.
 		}
 		for _, arg := range args {
 			if arg.Type != lisp.LString && (arg.Type != lisp.LSymbol || !arg.IsQuoted()) {
-				return node.Cells[0], "unproven-package-flow"
+				return node.Cells[0]
 			}
 		}
+	}
+	for _, child := range node.Cells {
+		if found := firstGlobalFallback(child, false); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// firstDynamicEvaluation scans independently of package flow so an earlier
+// package fallback cannot hide runtime access to lexical bindings.
+func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
+	if node == nil {
+		return nil
 	}
 	if node.Type == lisp.LSymbol {
 		name := strings.TrimPrefix(node.Str, "lisp:")
@@ -1022,15 +1045,15 @@ func firstGlobalFallback(node *lisp.LVal, topLevel bool) (*lisp.LVal, string) {
 			"macroexpand", "macroexpand-1", "gensym", "type", "qualified-symbol":
 			// symbol/intern are included for host-provided implementations;
 			// the core currently has no string-to-symbol builtin by those names.
-			return node, "dynamic-evaluation"
+			return node
 		}
 	}
 	for _, child := range node.Cells {
-		if found, reason := firstGlobalFallback(child, false); found != nil {
-			return found, reason
+		if found := firstDynamicEvaluation(child); found != nil {
+			return found
 		}
 	}
-	return nil, ""
+	return nil
 }
 
 // literalExportArgument proves the entire value, including every nested list

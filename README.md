@@ -94,15 +94,15 @@ map lists these names under `excluded` with `reason: "quoted-reference"`.
 
 Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
 `macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
-package-level binding name across all input files**, even with `--rename-exports`.
+binding name, including lexical locals, across all input files**, even with `--rename-exports`.
 The rule also covers `symbol` and `intern` when supplied by a host, and
 `lisp:`-qualified spellings. References passed as function values or appearing in
-quoted templates also trigger it conservatively. Purely lexical locals can still
-be renamed. The CLI prints one warning naming the first detected site, and the
-symbol map records these globals under `excluded` with
+quoted templates also trigger it conservatively. No bindings are renamed in such
+a program. The CLI prints one warning naming the first dynamic-evaluation site,
+and the symbol map records preserved bindings under `excluded` with
 `reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
 This keeps runtime-generated names and code working, but produces larger output
-and may eliminate most identifier compression in programs using dynamic evaluation.
+and disables all identifier compression in programs using dynamic evaluation.
 
 Package-level bindings are renamed only when package flow and exported names can
 be proven statically: every `export` argument must be a literal quoted symbol,
@@ -110,12 +110,14 @@ a literal string, or a literal list (possibly nested) of those, and every
 `in-package` / `use-package` form must be at the top level of a file with literal
 package names. A variable or expression passed to `export`, a computed package
 name, or a package switch/import nested inside any form (including `progn`,
-`let`, `when`, functions, and macros) triggers the same fallback as dynamic
-evaluation: preserve every package-level binding name across all input files,
-even with `--rename-exports`, while lexical locals can still shorten. The symbol
-map records `unproven-package-flow` for this fallback (`dynamic-evaluation` for
-dynamic evaluation), taking precedence over `quoted-reference`; one warning
-names the first offending form, whose reason is used for all preserved globals.
+`let`, `when`, functions, and macros) preserves every package-level binding name
+across all input files,
+even with `--rename-exports`. Lexical locals can still shorten only when dynamic
+evaluation is absent. Package flow and dynamic evaluation are tracked independently.
+The symbol map records `unproven-package-flow` for the package fallback, taking
+precedence over `quoted-reference`; one warning names the first offending form.
+If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
+and warning take precedence regardless of source order.
 Literal export names remain preserved even with `--rename-exports`.
 
 `defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package

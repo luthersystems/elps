@@ -146,6 +146,47 @@ func TestMinifyDynamicEvaluationExecution(t *testing.T) {
 	}
 }
 
+func TestMinifyDynamicEvaluationLexicalExecution(t *testing.T) {
+	src := []byte(`(let ((reachable 42)) (debug-print (eval (load-string "'reachable"))))`)
+	original, err := evalDebugOutput(t, src)
+	require.NoError(t, err)
+	require.Equal(t, "42\n", original)
+	out, symMap, err := MinifySource(src, "lexical-eval.lisp", nil)
+	require.NoError(t, err)
+	actual, err := evalDebugOutput(t, out)
+	require.NoError(t, err, "minified: %s", out)
+	require.Equal(t, original, actual)
+	require.Empty(t, symMap.OriginalToMinified)
+	require.Contains(t, symMap.Excluded, SymbolExclusion{Original: "reachable", Reason: "dynamic-evaluation"})
+}
+
+func TestMinifyDynamicEvaluationIndependentOfPackageFlow(t *testing.T) {
+	for _, triggers := range [][]string{
+		{`(export (load-string "'helper")) (eval 1)`},
+		{`(export names)`, `(load-string "42") (eval 1)`},
+		{`(load-string "42") (eval 1)`, `(export names)`},
+	} {
+		t.Run(triggers[0], func(t *testing.T) {
+			inputs := []InputFile{{Path: "bindings.lisp", Source: []byte(`(defun helper (local) local) (let ((reachable 42)) reachable) 'reachable`)}}
+			for _, trigger := range triggers {
+				inputs = append(inputs, InputFile{Path: "trigger.lisp", Source: []byte(trigger)})
+			}
+			var warnings []string
+			result, err := Minify(inputs, &Config{RenameExports: true, Warn: func(warning string) { warnings = append(warnings, warning) }})
+			require.NoError(t, err)
+			require.Empty(t, result.SymbolMap.Entries)
+			require.Empty(t, result.SymbolMap.OriginalToMinified)
+			require.Empty(t, result.SymbolMap.MinifiedToOriginal)
+			for _, name := range []string{"helper", "local", "reachable"} {
+				require.Contains(t, result.SymbolMap.Excluded, SymbolExclusion{Original: name, Reason: "dynamic-evaluation"})
+			}
+			require.Len(t, warnings, 1)
+			require.Contains(t, warnings[0], "load-string")
+			require.Contains(t, warnings[0], "dynamic-evaluation")
+		})
+	}
+}
+
 func TestMinifyWithoutDynamicEvaluationRenamesGlobals(t *testing.T) {
 	src := []byte("(defun helper (local) local) (debug-print (helper 42))")
 	out, symMap, err := MinifySource(src, "static.lisp", nil)
@@ -156,7 +197,7 @@ func TestMinifyWithoutDynamicEvaluationRenamesGlobals(t *testing.T) {
 	require.Equal(t, "42\n", actual)
 }
 
-func TestMinifyDynamicEvaluationPreservesProgramGlobals(t *testing.T) {
+func TestMinifyDynamicEvaluationPreservesEveryBinding(t *testing.T) {
 	for _, trigger := range []string{
 		`(load-string "42")`, `(load-bytes (to-bytes "42"))`, `(load-file "code.lisp")`,
 		`(eval 42)`, `(symbol "helper")`, `(intern "helper")`, `(gensym)`, `(type 42)`,
@@ -172,14 +213,11 @@ func TestMinifyDynamicEvaluationPreservesProgramGlobals(t *testing.T) {
 				{Path: "trigger.lisp", Source: []byte("(in-package 'remote) (defun remote-helper () 2) " + trigger)},
 			}, &Config{RenameExports: true})
 			require.NoError(t, err)
-			for _, name := range []string{"helper", "x1", "counter", "macro-helper", "record", "nested", "remote-helper"} {
+			for _, name := range []string{"helper", "x1", "counter", "macro-helper", "record", "nested", "remote-helper", "local", "lexical"} {
 				require.NotContains(t, result.SymbolMap.OriginalToMinified, name)
 				require.Contains(t, result.SymbolMap.Excluded, SymbolExclusion{Original: name, Reason: "dynamic-evaluation"})
 			}
-			for _, name := range []string{"local", "lexical"} {
-				require.Contains(t, result.SymbolMap.OriginalToMinified, name)
-				require.NotContains(t, result.SymbolMap.OriginalToMinified[name], "x1", "must reserve preserved globals")
-			}
+			require.Empty(t, result.SymbolMap.OriginalToMinified)
 		})
 	}
 }
