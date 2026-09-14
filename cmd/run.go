@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/internal/rootlibrary"
@@ -22,6 +23,8 @@ var (
 	runExpression bool
 	runPrint      bool
 	runRootDir    string
+	runTimeout    time.Duration
+	runMaxSteps   int64
 )
 
 // runCmd represents the run command
@@ -40,6 +43,11 @@ starts in the "user" package and can import other packages with use-package.
 Source loads are confined to the root directory (--root-dir, default: working
 directory) at open time. Relative symlinks whose targets stay inside the root
 are allowed; escaping paths and absolute symlinks produce ordinary errors.
+
+--timeout bounds elapsed evaluation time across all arguments. --max-steps
+bounds evaluation steps per file or expression argument. Both default to
+unlimited (0). SIGINT or SIGTERM cancels evaluation, reports a one-line error,
+and exits with status 1 after cleanup; a second signal force-exits.
 
 Examples:
   elps run hello.lisp              Run a source file
@@ -66,7 +74,8 @@ Exit codes:
 var errRendered = errors.New("elps: error already rendered")
 
 // runElps loads each argument — a source file, or with -e a Lisp expression —
-// into a fresh environment, writing values to stdout when -p is set.
+// into one fresh environment, writing values to stdout when -p is set.
+// Each argument gets its own step budget; the timeout spans the entire run.
 func runElps(args []string, stdout io.Writer) error {
 	return runElpsContext(context.Background(), args, stdout)
 }
@@ -77,7 +86,15 @@ func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error 
 
 // runElpsReport runs the command with explicit diagnostic output and runtime
 // configuration so tests exercise the same evaluation and reporting path.
-func runElpsReport(ctx context.Context, args []string, stdout, stderr io.Writer, configs ...lisp.Config) error {
+func runElpsReport(parent context.Context, args []string, stdout, stderr io.Writer, configs ...lisp.Config) error {
+	if runTimeout < 0 {
+		return errors.New("timeout must be non-negative")
+	}
+	if runMaxSteps < 0 {
+		return errors.New("max-steps must be non-negative")
+	}
+	ctx, stop := evaluationContext(parent, runTimeout)
+	defer stop()
 	rootDir := runRootDir
 	if rootDir == "" {
 		wd, err := os.Getwd()
@@ -114,6 +131,10 @@ func runElpsReport(ctx context.Context, args []string, stdout, stderr io.Writer,
 		}
 	}
 
+	// Apply user limits after library initialization, so even a small step
+	// budget is available in full to each source argument.
+	lisp.WithMaxSteps(runMaxSteps)(env)
+	lisp.WithContext(ctx)(env)
 	for i := range args {
 		var res *lisp.LVal
 		// name selects the source shown in the "try: elps lint" hint. An
@@ -129,6 +150,12 @@ func runElpsReport(ctx context.Context, args []string, stdout, stderr io.Writer,
 			res = env.LoadFileContext(ctx, arg)
 			name = args[i]
 		}
+		// Do not traverse Lisp values or stack traces after cancellation.
+		// The context supplies a bounded, one-line diagnostic.
+		if err := ctx.Err(); err != nil {
+			fmt.Fprintf(stderr, "context-cancelled: %v\n", err) //nolint:errcheck // best-effort error display
+			return errRendered
+		}
 		if res.Type == lisp.LError {
 			renderLispErrorTo(ctx, stderr, env.Runtime, res, name)
 			return errRendered
@@ -137,6 +164,11 @@ func runElpsReport(ctx context.Context, args []string, stdout, stderr io.Writer,
 			//nolint:errcheck // best-effort output to stdout
 			fmt.Fprintln(stdout, env.RenderContext(ctx, res))
 		}
+	}
+	// Output can block while the signal handler cancels the context.
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(stderr, "context-cancelled: %v\n", err) //nolint:errcheck // best-effort error display
+		return errRendered
 	}
 	return nil
 }
@@ -158,4 +190,8 @@ func init() {
 		"Print expression values to stdout")
 	runCmd.Flags().StringVar(&runRootDir, "root-dir", "",
 		"Root directory for source load confinement (default: working directory)")
+	runCmd.Flags().DurationVar(&runTimeout, "timeout", 0,
+		"Evaluation timeout across all arguments (0 = unlimited)")
+	runCmd.Flags().Int64Var(&runMaxSteps, "max-steps", 0,
+		"Maximum evaluation steps per file or expression argument (0 = unlimited)")
 }

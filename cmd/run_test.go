@@ -18,9 +18,12 @@ import (
 func resetRunFlags(t *testing.T) {
 	t.Helper()
 	prevExpr, prevPrint, prevRoot := runExpression, runPrint, runRootDir
+	prevTimeout, prevMaxSteps := runTimeout, runMaxSteps
 	runExpression, runPrint, runRootDir = false, false, ""
+	runTimeout, runMaxSteps = 0, 0
 	t.Cleanup(func() {
 		runExpression, runPrint, runRootDir = prevExpr, prevPrint, prevRoot
+		runTimeout, runMaxSteps = prevTimeout, prevMaxSteps
 	})
 }
 

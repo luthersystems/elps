@@ -41,7 +41,7 @@ type config struct {
 }
 
 func newConfig(opts ...Option) *config {
-	config := &config{ctx: context.Background()}
+	config := &config{}
 	for _, opt := range opts {
 		opt(config)
 	}
@@ -50,14 +50,40 @@ func newConfig(opts ...Option) *config {
 
 type Option func(*config)
 
-// WithContext sets the context used for evaluation and subsequent result and
-// error rendering. A nil context uses context.Background().
+// WithContext binds evaluation, result and error rendering, and input waits to
+// ctx. Cancellation stops the REPL and emits a bounded, one-line error
+// (a JSON error in JSON mode).
+// A cancelled input wait closes the configured input. Nil preserves the
+// environment's context. It does not install process signal handlers.
 func WithContext(ctx context.Context) Option {
 	return func(c *config) {
-		if ctx != nil {
-			c.ctx = ctx
-		}
+		c.ctx = ctx
 	}
+}
+
+func (c *config) bindContext(env *lisp.LEnv) context.Context {
+	if c.ctx != nil {
+		lisp.WithContext(c.ctx)(env)
+	}
+	c.ctx = env.Context()
+	return c.ctx
+}
+
+// reportCancellation avoids rendering arbitrary Lisp values or traces after
+// cancellation, and lets the caller stop before reading another expression.
+func reportCancellation(ctx context.Context, cfg *config, stdout, errw io.Writer) bool {
+	if err := ctx.Err(); err != nil {
+		message := "context-cancelled: " + err.Error()
+		if cfg.json {
+			// The context error is a fixed-size message; do not traverse Lisp
+			// values through the cancelled renderer to report cancellation.
+			fmt.Fprintf(stdout, "{\"type\":\"error\",\"message\":%q}\n", message) //nolint:errcheck // best-effort error display
+		} else {
+			fmt.Fprintln(errw, message) //nolint:errcheck // best-effort error display
+		}
+		return true
+	}
+	return false
 }
 
 // WithStdin allows overriding the input to the REPL.
@@ -257,6 +283,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	p.SetPrompts(prompt, cont)
 
 	cfg := newConfig(opts...)
+	ctx := cfg.bindContext(env)
 	if cfg.stderr != nil {
 		env.Runtime.Stderr = cfg.stderr
 	}
@@ -278,15 +305,30 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		AutoComplete:      completer,
 	}
 
-	if cfg.stdin != nil {
-		rlCfg.Stdin = cfg.stdin
+	stdin := cfg.stdin
+	if stdin == nil {
+		stdin = os.Stdin
 	}
+	rlCfg.Stdin = stdin
 	rl, err := readline.NewEx(rlCfg)
 	if err != nil {
 		errlnf("Failed to initialize readline: %v", err)
 		os.Exit(1)
 	}
 	defer rl.Close() //nolint:errcheck // best-effort cleanup
+	inputClosed := make(chan struct{})
+	stopInput := context.AfterFunc(ctx, func() {
+		defer close(inputClosed)
+		// Restore terminal settings while stdin is still open, then release
+		// the ioloop's pending read; readline.Close does not close Stdin.
+		_ = rl.Close()
+		_ = stdin.Close()
+	})
+	defer func() {
+		if !stopInput() {
+			<-inputClosed
+		}
+	}()
 
 	p.Read = func() []*token.Token {
 		if cfg.doneCh != nil {
@@ -353,6 +395,9 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 
 	for {
 		expr, err := p.Parse()
+		if reportCancellation(ctx, cfg, os.Stdout, env.Runtime.Stderr) {
+			return
+		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -371,6 +416,9 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			}
 		}
 		val := evalFn(expr)
+		if reportCancellation(ctx, cfg, os.Stdout, env.Runtime.Stderr) {
+			return
+		}
 		if cfg.json {
 			emitResultContext(cfg.ctx, os.Stdout, val, env)
 		} else if val.Type == lisp.LError {
@@ -384,6 +432,10 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 // runEval evaluates a single expression and returns an exit code.
 // stdout receives the result; errw receives error messages.
 func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
+	ctx := cfg.bindContext(env)
+	if reportCancellation(ctx, cfg, stdout, errw) {
+		return 1
+	}
 	reader := rdparser.NewReader()
 	exprs, err := reader.Read("eval", strings.NewReader(cfg.eval))
 	if err != nil {
@@ -406,6 +458,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	var last *lisp.LVal
 	for _, expr := range exprs {
 		last = env.EvalContext(cfg.ctx, expr)
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return 1
+		}
 		if last.Type == lisp.LError {
 			if cfg.json {
 				emitResultContext(cfg.ctx, stdout, last, env)
@@ -421,6 +476,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, last)) //nolint:errcheck // best-effort output
 	}
+	if reportCancellation(ctx, cfg, stdout, errw) {
+		return 1
+	}
 	return 0
 }
 
@@ -428,12 +486,15 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 // expressions using the interactive parser, and evaluates each one.
 // stdout receives results; errw receives error messages.
 func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
+	ctx := cfg.bindContext(env)
 	p := rdparser.NewInteractive(nil)
 
 	stdin := cfg.stdin
 	if stdin == nil {
 		stdin = os.Stdin
 	}
+	stopInput := context.AfterFunc(ctx, func() { _ = stdin.Close() })
+	defer stopInput()
 	scanner := bufio.NewScanner(stdin)
 
 	p.Read = func() []*token.Token {
@@ -470,6 +531,9 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 
 	for {
 		expr, err := p.Parse()
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return
+		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -482,6 +546,9 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 			continue
 		}
 		val := env.EvalContext(cfg.ctx, expr)
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return
+		}
 		if cfg.json {
 			emitResultContext(cfg.ctx, stdout, val, env)
 		} else if val.Type == lisp.LError {
