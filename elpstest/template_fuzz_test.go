@@ -236,7 +236,7 @@ func generateTemplateParity(data []byte) templateParityCase {
 				tx.condition, tx.message = "fuzz-condition", fmt.Sprintf("_fun%d/_validation_fun_%d", event, arg)
 				mutation = fmt.Sprintf(`(error 'fuzz-condition %s)`, strconv.Quote(tx.message))
 			case 13:
-				tx.condition = "error"
+				// JSON maps accept symbols by name, just like string reads.
 				mutation = `(get doc 'n)`
 			case 14:
 				tx.condition = "failed-constraint"

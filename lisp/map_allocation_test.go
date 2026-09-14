@@ -61,9 +61,9 @@ func TestMapAllocationMutationAndDuplicateKeys(t *testing.T) {
 	for _, tc := range []struct{ expr, want string }{
 		{`(sorted-map 'a 1 "a" 2 'a 3)`, `(sorted-map 'a 3)`},
 		{`(set 'source (sorted-map 'a 1))`, `(sorted-map 'a 1)`},
-		{`(assoc! source "a" 2)`, `(sorted-map 'a 2)`},
+		{`(assoc! source "a" 2)`, `(sorted-map "a" 2)`},
 		{`(handler-bind ((condition (lambda (&rest _) 'caught))) (assoc! source 'b 3))`, `'caught`},
-		{`source`, `(sorted-map 'a 2)`},
+		{`source`, `(sorted-map "a" 2)`},
 		{`(dissoc! source 'a)`, `(sorted-map)`},
 		{`(assoc! source 'b 3)`, `(sorted-map 'b 3)`},
 	} {

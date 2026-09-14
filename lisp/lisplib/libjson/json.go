@@ -38,7 +38,10 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc(`JSON serialization and deserialization. Marshal ELPS values to
-		JSON bytes or strings and unmarshal JSON into ELPS data structures.`)
+		JSON bytes or strings and unmarshal JSON into ELPS data structures.
+		Decoded maps accept string and symbol keys by name but always print
+		and dump string keys. Keyword names retain their leading colon;
+		use string keys for JSON interchange.`)
 	env.PutGlobal(lisp.Symbol("null"), lisp.Symbol("json:null"))
 	env.SetSymbolDoc("null", "The JSON null sentinel symbol. Used to represent null in JSON serialization.")
 	env.Runtime.Package.Exports("null")
@@ -67,10 +70,11 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
 			`Parses a native JSON message object (one produced by
 			dump-message, or a json.RawMessage supplied by an embedder)
-			into ELPS values. The :string-numbers keyword controls whether
-			JSON numbers are returned as strings (default: serializer
-			setting). The :exact-integers keyword controls whether JSON
-			integer literals are returned as ints rather than floats
+			into ELPS values. Decoded maps accept symbol keys by name but
+			always retain and emit string keys. The :string-numbers keyword
+			controls whether JSON numbers are returned as strings (default:
+			serializer setting). The :exact-integers keyword controls whether
+			JSON integer literals are returned as ints rather than floats
 			(default: serializer setting).`),
 		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON and returns the result as
@@ -80,20 +84,24 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
-			naturally. The :string-numbers keyword controls whether JSON
-			numbers are returned as strings. The :exact-integers keyword
-			controls whether JSON integer literals are returned as ints
-			rather than floats.`),
+			naturally. Decoded maps accept symbol keys by name but always
+			retain and emit string keys. The :string-numbers keyword controls
+			whether JSON numbers are returned as strings. The :exact-integers
+			keyword controls whether JSON integer literals are returned as
+			ints rather than floats.`),
 		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
 			`Serializes an ELPS value to a JSON string. Like dump-bytes
-			but returns a string instead of bytes. The :string-numbers
-			keyword controls whether numbers are serialized as strings.`),
+			but returns a string instead of bytes. Map keys use their full
+			names: :height becomes ":height". Use string keys for interchange.
+			The :string-numbers keyword controls whether numbers are
+			serialized as strings.`),
 		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
-			accepts a string argument. The :string-numbers keyword controls
-			whether JSON numbers are returned as strings. The
-			:exact-integers keyword controls whether JSON integer literals
-			are returned as ints rather than floats.`),
+			accepts a string argument. Decoded maps accept symbol keys by
+			name but always retain and emit string keys.
+			The :string-numbers keyword controls whether JSON numbers are
+			returned as strings. The :exact-integers keyword controls whether
+			JSON integer literals are returned as ints rather than floats.`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON

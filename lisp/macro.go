@@ -57,9 +57,10 @@ var langMacros = []*langBuiltin{
 	// bound to default if the key doesn't exist in the map.
 	{"get-default", Formals("map", "key", "default"), macroGetDefault,
 		`Looks up key in a sorted-map, returning the associated value if
-		found. If the key is not present, evaluates and returns default.
-		The default expression is only evaluated when the key is missing
-		(lazy evaluation).`},
+		found. If the key is not present or map is nil, evaluates and
+		returns default. String and symbol keys with the same name are
+		interchangeable, including in JSON-decoded maps. The default
+		expression is evaluated only when needed (lazy evaluation).`},
 	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace,
 		`Evaluates expr, prints the result to stderr prefixed by message
 		(default "TRACE") using debug-print, then returns the result.
@@ -195,9 +196,14 @@ func macroGetDefault(env *LEnv, args *LVal) *LVal {
 		SExpr([]*LVal{
 			Symbol("lisp:if"),
 			SExpr([]*LVal{
-				Symbol("lisp:key?"),
-				mapSym,
-				keySym,
+				Symbol("lisp:if"),
+				SExpr([]*LVal{Symbol("lisp:nil?"), mapSym}),
+				Symbol("lisp:false"),
+				SExpr([]*LVal{
+					Symbol("lisp:key?"),
+					mapSym,
+					keySym,
+				}),
 			}),
 			SExpr([]*LVal{
 				Symbol("lisp:get"),

@@ -120,9 +120,8 @@ func (m sortedmap) emptyLike() sortedmap {
 // of m, passing each value through val (nil shares the value pointer).  The
 // entries are what Set stores -- the value under its key string -- and the
 // key-type map is copied verbatim, which is what Entries reads when it
-// decides whether a key comes back as a string or a symbol (including a
-// stale symbol flag on a key later re-set as a string: Set does not clear
-// it, and neither path invents or drops one).  The result is therefore
+// decides whether a key comes back as a string or a symbol according to
+// its most recent write.  The result is therefore
 // indistinguishable from enumerating the entries in sorted order and
 // re-inserting them, minus the sort, the per-entry pair cells and the
 // incremental map growth.
@@ -218,6 +217,7 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 	switch key.Type {
 	case LString:
 		m.m[key.Str] = val
+		m.deltype(key.Str)
 		return Nil()
 	case LSymbol:
 		m.m[key.Str] = val

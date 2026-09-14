@@ -909,7 +909,8 @@ held, so the traversal goes on walking exactly the sequence it was handed.
 
 A sorted map is a mapping between keys and values which ensures that key
 traversal is always done in sorted, increasing order.  Sorted maps can contain
-keys that are either symbols or strings.  Looking up values by key can be done
+only string or symbol keys (including keywords); other types, such as integers,
+produce an "unhashable type" error. Looking up values by key can be done
 with either a string or a symbol, regardless which type was used to insert/set
 the value originally.
 
@@ -949,18 +950,26 @@ which merely return new sorted-map objects without modifying their arguments.
 
 It is a peculiarity of elps that `assoc` on `()` will return a new sorted-map
 with the corresponding key and value set.
-Similarly, `get` on `()` will return `()`.
+Similarly, `get` on `()` will return `()`, and `(get-default () "k" 42)`
+returns `42`. `get-default` evaluates its default expression only when the
+map is nil or the key is absent; a present key whose value is `()` still
+returns `()`.
 
-A map remembers whether a key was written as a symbol or a string and prints
-it back that way, so `keys` and the printed representation preserve the
-original spelling.  That spelling is presentation only: it is not part of the
-key's identity.  `get`, `key?`, `assoc` and `dissoc` all treat `'alice` and
-`"alice"` as the same key, and `equal?` follows the same rule.
+A map remembers whether a key was written as a symbol or a string:
+**last write wins** for both the value and the spelling returned by `keys`
+and printing. This applies to repeated constructor keys and to `assoc` and
+`assoc!`. That spelling is presentation only: it is not part of the key's
+identity. `get`, `key?`, `get-default`, `assoc`/`assoc!` and `dissoc`/`dissoc!`
+all treat `'alice` and `"alice"` as the same key, and `equal?` follows the
+same rule. JSON-decoded maps accept the same keys but always retain, print,
+and dump string keys, including after symbol writes with `assoc!`.
 
 ```lisp
 (equal? (sorted-map 'alice 0) (sorted-map "alice" 0))  ; evaluates to true
 (keys (sorted-map 'alice 0))                           ; evaluates to '('alice)
 (keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
+(keys (assoc (sorted-map 'alice 0) "alice" 1))          ; evaluates to '("alice")
+(keys (assoc (sorted-map "alice" 0) 'alice 1))          ; evaluates to '('alice)
 ```
 
 ### Paths through nested data (`elpspath`)
@@ -1073,6 +1082,22 @@ arbitrary user data a valid descriptor. Both `new` and `type?` validate the
 descriptor before using it; malformed descriptors raise an ordinary error,
 and `new` does not invoke their constructors. Validation happens on each use
 because descriptor data can be changed through `user-data`.
+
+### JSON object keys
+
+JSON objects decode to sorted maps, including nested objects. Their keys
+are stored as strings. Reads (`get`, `key?`, `get-default`) and mutations
+(`assoc!`, `dissoc!`) also accept symbols by their full name. These decoded
+maps always return string keys from `keys` and print/dump keys as strings,
+even after a symbol write. `copy` and non-mutating `assoc`/`dissoc` produce
+ordinary sorted maps with the usual last-write-wins spelling rule.
+
+Keywords keep their leading colon: `:height` names the key `":height"`,
+not `"height"`. For example, `(json:dump-string (sorted-map :height 1))`
+produces the JSON text `{":height":1}`. Loading it back yields the string
+key `":height"`, also accessible with `:height`; it does not recover a
+keyword key spelling. Use string keys for JSON interchange to make the
+intended property names explicit.
 
 ### JSON numbers and integer precision
 
