@@ -37,7 +37,7 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	// back as an INT followed by a separate symbol rather than as one symbol.
 	for _, src := range []string{
 		"a:1", "a:1b", "a:-1", "a:1.5", "a:1e5", "a:0x10", "a:1abc", "a:1_",
-		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)",
+		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)", "--:1", "--:-1",
 	} {
 		t.Run("rejected/"+src, func(t *testing.T) {
 			t.Parallel()
@@ -60,6 +60,7 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	for _, src := range []string{
 		"a:b", "lisp:set", "xyz:abc?", "a:+1", "a:.1", "a:*1", "a:_1",
 		"a:true", "a:-", "a:--", "a:-a", "-a:b", "a:<=", "a:set!", "a:->",
+		"-:f", "--:f", "--:--",
 	} {
 		t.Run("accepted/"+src, func(t *testing.T) {
 			t.Parallel()

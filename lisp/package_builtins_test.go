@@ -158,12 +158,17 @@ func TestPackageBuiltinValidLookalikes(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			env := packageBuiltinEnv(t)
 			// Reader parity: each accepted name also works as a package qualifier.
-			_, err := env.Runtime.Reader.Read("qualified", strings.NewReader(name+":f"))
+			exprs, err := env.Runtime.Reader.Read("qualified", strings.NewReader(name+":f"))
 			require.NoError(t, err)
+			require.Len(t, exprs, 1)
+			require.Equal(t, lisp.LSymbol, exprs[0].Type)
+			require.Equal(t, name+":f", exprs[0].Str)
 			got := evalPackageBuiltin(t, env, fmt.Sprintf("(in-package %q)", name))
 			require.True(t, got.IsNil(), "%s", got)
 			assert.Equal(t, name, env.Runtime.Package.Name)
+			require.Equal(t, "42", evalPackageBuiltin(t, env, `(set 'f 42)`).String())
 			require.True(t, evalPackageBuiltin(t, env, `(in-package 'user)`).IsNil())
+			assert.Equal(t, "42", env.Eval(exprs[0]).String(), "qualified lookup must resolve in %q", name)
 			got = evalPackageBuiltin(t, env, fmt.Sprintf("(use-package %q)", name))
 			assert.True(t, got.IsNil(), "%s", got)
 		})

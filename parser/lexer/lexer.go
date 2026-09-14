@@ -148,6 +148,11 @@ func (lex *Lexer) readToken() []*token.Token {
 		// FuzzFormatCompact on "(------ )".
 		if c, ok := lex.scanner.Peek(); !ok || unicode.IsSpace(c) || c == ')' || c == ']' {
 			return lex.emitText(token.SYMBOL)
+		} else if c == ':' {
+			// A minus immediately before the qualifier separator is a symbol,
+			// not a numeric sign. Keep the qualified spelling together so that
+			// ParseNegative can merge the first minus in "--:f", just as in "--".
+			return lex.readSymbol()
 		}
 		return lex.emitText(token.NEGATIVE)
 	case '"':
