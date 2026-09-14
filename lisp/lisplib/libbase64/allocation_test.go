@@ -24,12 +24,13 @@ func newBase64AllocationEnv(t *testing.T, limit int) *lisp.LEnv {
 	return env
 }
 
+// Inspect failure text with a fresh budget; the tiny originating cap now truncates diagnostics.
 func assertBase64Allocation(t *testing.T, got *lisp.LVal, want []byte, limit int) {
 	t.Helper()
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	if len(want) > limit {
 		require.Equal(t, lisp.LError, got.Type, "%v", got)
-		assert.Contains(t, got.String(), "allocation")
+		assert.Contains(t, lisp.NewEnv(nil).Render(got), "allocation")
 		return
 	}
 	require.Equal(t, lisp.LBytes, got.Type, "%v", got)
@@ -96,7 +97,7 @@ func TestBase64AllocationEmptyAndMalformed(t *testing.T) {
 				require.False(t, lisp.IsInternalPanic(got), "%v", got)
 				if input != "" && input != "\r\n" {
 					require.Equal(t, lisp.LError, got.Type, "%v", got)
-					assert.Contains(t, got.String(), "base64")
+					assert.Contains(t, lisp.NewEnv(nil).Render(got), "base64")
 					return
 				}
 				require.Equal(t, lisp.LBytes, got.Type, "%v", got)

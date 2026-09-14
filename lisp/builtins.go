@@ -128,7 +128,9 @@ var (
 		{"error", Formals("condition", VarArgSymbol, "args"), builtinError,
 			`Signals an error with the given condition name (a symbol or
 			string) and optional data arguments. The condition can be caught
-			by handler-bind.`},
+			by handler-bind. Rendering error data and stack-trace messages honours
+			the runtime output/work limit and cancellation, using #<truncated>
+			on exhaustion without changing the condition data.`},
 		{"rethrow", Formals(), builtinRethrow,
 			`Re-throws the current error being handled by handler-bind,
 			preserving the original stack trace. Can only be called from
@@ -266,7 +268,9 @@ var (
 			{0}, {1}, etc. for positional. Strings are interpolated without
 			quotes. Use {{ and }} for literal braces. Cannot mix sequential
 			and positional styles. Nested values deeper than 1024 levels render
-			as #<depth-limit>; cycles render as #<cycle>.`},
+			as #<depth-limit>; cycles render as #<cycle>. Shared DAGs render in full up to the runtime
+			output/work limit; exceeding it raises an allocation error. Rendering
+			honours context cancellation.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
 			`Returns a new sequence with elements in reverse order. The
 			type-specifier ('list or 'vector) determines the return type.`},
@@ -429,7 +433,9 @@ var (
 		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint,
 			`Prints all arguments to stderr followed by a newline. Returns
 			nil. Nested values deeper than 1024 levels render as #<depth-limit>;
-			cycles render as #<cycle>.`},
+			cycles render as #<cycle>. Shared DAGs render in full up to the runtime
+			output/work limit; exceeding it raises an allocation error. Rendering
+			honours context cancellation.`},
 		{"debug-stack", Formals(), builtinDebugStack,
 			`Prints the current call stack to stderr for debugging. Returns
 			nil.`},
@@ -1357,7 +1363,7 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
-		return env.Error(err.String())
+		return env.Error(env.Render(err))
 	}
 	return m
 }
@@ -1417,7 +1423,7 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 	}
 	err := m.Map().Del(k)
 	if !err.IsNil() {
-		return env.Error(err.String())
+		return env.Error(env.Render(err))
 	}
 	return m
 }
@@ -3330,23 +3336,37 @@ func mulFloat(x, args *LVal) *LVal {
 }
 
 func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
-	// There is deliberately no zero-argument special case here.  There used to
-	// be one, and it called fmt.Println -- writing the newline to os.Stdout,
-	// ignoring Runtime.Stderr entirely.  That contradicted both the builtin's
-	// documentation ("Prints all arguments to stderr") and its own non-empty
-	// branch, and it meant an embedder who had redirected debug output still
-	// got a stray newline on the host process's stdout, which for a
-	// stdout-is-the-protocol host (an LSP server, a JSON-RPC chaincode
-	// process) is a corrupted stream rather than cosmetic noise.
-	//
-	// fmt.Fprintln with no variadic arguments already writes exactly the
-	// newline, so removing the branch is the whole fix.
-	fmtargs := make([]interface{}, len(args.Cells))
-	for i := range args.Cells {
-		fmtargs[i] = args.Cells[i]
+	var out strings.Builder
+	limit := env.Runtime.MaxAllocBytes()
+	budget := newRenderBudget(limit, env.evalCtx)
+	for i, v := range args.Cells {
+		if i > 0 {
+			if out.Len() >= limit {
+				return env.renderError()
+			}
+			out.WriteByte(' ')
+		}
+		s, ok := v.boundedWithBudget(limit-out.Len(), &budget)
+		if !ok {
+			return env.renderError()
+		}
+		out.WriteString(s)
 	}
-	fmt.Fprintln(env.Runtime.getStderr(), fmtargs...) //nolint:errcheck // best-effort debug output
+	if out.Len() >= limit {
+		return env.renderError()
+	}
+	out.WriteByte('\n')
+	fmt.Fprint(env.Runtime.getStderr(), out.String()) //nolint:errcheck // best-effort debug output
 	return Nil()
+}
+
+// renderError reports cancellation before output exhaustion without re-rendering
+// the value that exceeded the limit.
+func (env *LEnv) renderError() *LVal {
+	if env.evalCtx != nil && env.evalCtx.Err() != nil {
+		return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", env.evalCtx.Err())
+	}
+	return env.Errorf("allocation size exceeds maximum (%d)", env.Runtime.MaxAllocBytes())
 }
 
 func builtinDebugStack(env *LEnv, args *LVal) *LVal {
@@ -3427,12 +3447,16 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 	var buf strings.Builder
 	limit := env.Runtime.MaxAllocBytes()
+	budget := newRenderBudget(limit, env.evalCtx)
 	// Reserve the usual small substitution allowance, capped before the
 	// multiplication so neither large formats nor argument counts overflow.
 	hint := min(len(f), limit)
 	hint += 16 * min(len(fvals), (limit-hint)/16)
 	buf.Grow(hint)
 	write := func(s string) bool {
+		if !budget.step() {
+			return false
+		}
 		if len(s) > limit-buf.Len() {
 			return false
 		}
@@ -3440,7 +3464,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		return true
 	}
 	allocationError := func() *LVal {
-		return env.Errorf("allocation size exceeds maximum (%d)", limit)
+		return env.renderError()
 	}
 
 	seqIndex := 0
@@ -3454,6 +3478,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		j := i
 		for j < n && f[j] != '{' && f[j] != '}' {
 			j++
+			if j%4096 == 0 && !budget.step() {
+				return allocationError()
+			}
 		}
 		// Write any literal text before the brace.
 		if j > i {
@@ -3542,7 +3569,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		} else {
 			// Bound rendering itself, not just the already-rendered string:
 			// nested/shared data can have a very large printed expansion.
-			s, ok := val.boundedString(limit - buf.Len())
+			s, ok := val.boundedWithBudget(limit-buf.Len(), &budget)
 			if !ok || !write(s) {
 				return allocationError()
 			}

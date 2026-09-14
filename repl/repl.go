@@ -353,11 +353,11 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		val := evalFn(expr)
 		if cfg.json {
-			emitResult(os.Stdout, val)
+			emitResult(os.Stdout, val, env)
 		} else if val.Type == lisp.LError {
 			renderError(env.Runtime.Stderr, val)
 		} else {
-			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
+			fmt.Fprintln(env.Runtime.Stderr, env.Render(val)) //nolint:errcheck // best-effort REPL output
 		}
 	}
 }
@@ -389,7 +389,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 		last = env.Eval(expr)
 		if last.Type == lisp.LError {
 			if cfg.json {
-				emitResult(stdout, last)
+				emitResult(stdout, last, env)
 			} else {
 				renderError(errw, last)
 			}
@@ -398,9 +398,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	}
 
 	if cfg.json {
-		emitResult(stdout, last)
+		emitResult(stdout, last, env)
 	} else {
-		fmt.Fprintln(stdout, last) //nolint:errcheck // best-effort output
+		fmt.Fprintln(stdout, env.Render(last)) //nolint:errcheck // best-effort output
 	}
 	return 0
 }
@@ -464,11 +464,11 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		}
 		val := env.Eval(expr)
 		if cfg.json {
-			emitResult(stdout, val)
+			emitResult(stdout, val, env)
 		} else if val.Type == lisp.LError {
 			renderError(errw, val)
 		} else {
-			fmt.Fprintln(stdout, val) //nolint:errcheck // best-effort output
+			fmt.Fprintln(stdout, env.Render(val)) //nolint:errcheck // best-effort output
 		}
 	}
 }
@@ -487,7 +487,7 @@ func emitJSONLine(w io.Writer, obj any) {
 }
 
 // emitResult writes a JSON object for a result (success or error) to w.
-func emitResult(w io.Writer, val *lisp.LVal) {
+func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
 	if val.Type == lisp.LError {
 		obj := jsonError{
 			Type:    "error",
@@ -499,10 +499,16 @@ func emitResult(w io.Writer, val *lisp.LVal) {
 		emitJSONLine(w, obj)
 		return
 	}
+	s := ""
+	if len(envs) > 0 {
+		s = envs[0].Render(val)
+	} else {
+		s = val.String()
+	}
 	emitJSONLine(w, jsonResult{
 		Type:      "result",
 		ValueType: val.Type.String(),
-		Value:     val.String(),
+		Value:     s,
 	})
 }
 

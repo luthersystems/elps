@@ -19,8 +19,8 @@ func assertAllocationBoundary(t *testing.T, got, want *lisp.LVal, limit int) {
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	if want.Len() > limit {
 		require.Equal(t, lisp.LError, got.Type, "output length %d exceeds limit %d: %v", want.Len(), limit, got)
-		assert.Contains(t, got.String(), "allocation size")
-		assert.Contains(t, got.String(), fmt.Sprintf("exceeds maximum (%d)", limit))
+		assert.Contains(t, diagnosticText(got), "allocation size")
+		assert.Contains(t, diagnosticText(got), fmt.Sprintf("exceeds maximum (%d)", limit))
 		return
 	}
 	require.Equal(t, want.Type, got.Type, "%v", got)
@@ -296,6 +296,6 @@ func TestAllocationBoundariesFormatStopsRenderingAtLimit(t *testing.T) {
 	assert.Zero(t, reads, "formatting must stop traversing once the output exceeds its cap")
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
-	assert.Contains(t, got.String(), "allocation size")
+	assert.Contains(t, diagnosticText(got), "allocation size")
 	assert.Equal(t, "123456789", source.Cells[0].Str)
 }

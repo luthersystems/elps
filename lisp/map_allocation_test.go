@@ -44,7 +44,7 @@ func TestMapAllocationBoundaries(t *testing.T) {
 				require.Equal(t, before, m.String(), "allocating map operations must preserve their input")
 				if tc.want > 8 {
 					require.Equal(t, lisp.LError, got.Type, "%v", got)
-					require.Contains(t, got.String(), "exceeds maximum (8)")
+					require.Contains(t, diagnosticText(got), "exceeds maximum (8)")
 					return
 				}
 				require.NoError(t, lisp.GoError(got))
@@ -100,7 +100,7 @@ func TestMapAllocationAssocUsesCopiedKeyIdentity(t *testing.T) {
 	got := env.LoadString("map-allocation.lisp", `(assoc source "a" 42)`)
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
-	require.Contains(t, got.String(), "exceeds maximum (1)")
+	require.Contains(t, diagnosticText(got), "exceeds maximum (1)")
 	require.Equal(t, `(sorted-map "A" 1)`, source.String())
 	got = env.LoadString("map-allocation.lisp", `(assoc source "A" 42)`)
 	require.NoError(t, lisp.GoError(got))

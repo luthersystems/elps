@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -19,11 +20,14 @@ import (
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.
 //
-// Field order is layout-sensitive: the two slice headers lead so the GC scan
-// extent stops at 32 bytes instead of 48. Keep scalars trailing.
+// Keep pointer-bearing diagnostic context and slice headers before scalars.
 type CallStack struct {
-	Frames  []CallFrame
-	GoStack []byte
+	// Captured only for error reporting; ordinary live stacks leave these zero.
+	renderContext context.Context
+	Frames        []CallFrame
+	GoStack       []byte
+
+	renderLimit int
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
 	// every frame elided by tail-call optimization.  Its unit is *elided
@@ -144,6 +148,8 @@ func (s *CallStack) Copy() *CallStack {
 	frames := make([]CallFrame, len(s.Frames))
 	copy(frames, s.Frames)
 	return &CallStack{
+		renderContext:     s.renderContext,
+		renderLimit:       s.renderLimit,
 		MaxHeightLogical:  s.MaxHeightLogical,
 		MaxHeightPhysical: s.MaxHeightPhysical,
 		MaxTailIterations: s.MaxTailIterations,

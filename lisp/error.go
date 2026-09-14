@@ -4,8 +4,6 @@ package lisp
 
 import (
 	"bufio"
-	"bytes"
-	"fmt"
 	"io"
 	"log"
 
@@ -13,8 +11,9 @@ import (
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
-// objects. The condition name is stored in Str, message/data in Cells, and
-// the captured call stack in Native.
+// objects. Rendering honours the originating runtime output limit and context,
+// using #<truncated> on exhaustion. The condition name is stored in Str,
+// message/data in Cells, and the captured call stack in Native.
 type ErrorVal LVal
 
 // nilErrorMessage is the sentinel returned by the rendering chain when a nil
@@ -39,25 +38,29 @@ const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
 // be invoked from a deferred recover handler where the LVal pointer can be
 // stale or zeroed.
 func (e *ErrorVal) Error() string {
-	var st cycleState
-	s := e.errorString(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
-	}
-	return e.errorString(strictCycleGuard())
+	return e.render(false)
 }
 
-// errorString is Error, continuing a walk already in progress instead of
-// starting a fresh one.  An error's cells are rendered as ordinary values, so
-// an error reachable from a value it itself contains would otherwise reset the
-// bound on every lap and never terminate.  See lisp/cycle.go.
-func (e *ErrorVal) errorString(g cycleGuard) string {
+func (e *ErrorVal) render(message bool) string {
 	if e == nil {
-		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
+		log.Printf("elps: ErrorVal rendering called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	loc, _ := (*LVal)(e).Source()
-	return fmt.Sprintf("%s: %s", &loc, e.baseMessage(g))
+	limit := DefaultMaxAlloc
+	var budget renderBudget
+	if stack := (*LVal)(e).CallStack(); stack != nil {
+		if stack.renderLimit > 0 {
+			limit = stack.renderLimit
+		}
+		budget = newRenderBudget(limit, stack.renderContext)
+	} else {
+		budget = newRenderBudget(limit, nil)
+	}
+	s, ok := (*LVal)(e).boundedRender(limit, &budget, message)
+	if !ok {
+		return truncatedRender(s, limit)
+	}
+	return s
 }
 
 // Unwrap returns the original Go error carried by this condition, if any.
@@ -76,22 +79,6 @@ func (e *ErrorVal) Unwrap() error {
 // receiver reports no location.
 func (e *ErrorVal) Source() (token.Location, bool) {
 	return (*LVal)(e).Source()
-}
-
-func (e *ErrorVal) baseMessage(g cycleGuard) string {
-	if e == nil {
-		log.Printf("elps: ErrorVal.baseMessage called on nil receiver; returning sentinel")
-		return nilErrorMessage
-	}
-	msg := e.errorMessage(g)
-	if e.Str != "error" {
-		return fmt.Sprintf("%s: %s", e.Str, msg)
-	}
-	fname := e.FunName()
-	if fname == "" {
-		return msg
-	}
-	return fmt.Sprintf("%s: %s", fname, msg)
 }
 
 // Condition returns the error condition name (e.g., "parse-error",
@@ -132,37 +119,7 @@ func (e *ErrorVal) FunName() string {
 // corrupting the error's Cells[0].Native — silently swallowing would hide a
 // real bug.
 func (e *ErrorVal) ErrorMessage() string {
-	var st cycleState
-	s := e.errorMessage(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
-	}
-	return e.errorMessage(strictCycleGuard())
-}
-
-// errorMessage is ErrorMessage, continuing a walk already in progress.  See
-// errorString.
-func (e *ErrorVal) errorMessage(g cycleGuard) (msg string) {
-	if e == nil {
-		log.Printf("elps: ErrorVal.ErrorMessage called on nil receiver; returning sentinel")
-		return nilErrorMessage
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", r, corruptedNativeMessage)
-			msg = corruptedNativeMessage
-		}
-	}()
-	if len(e.Cells) > 0 && e.Cells[0] != nil {
-		switch v := e.Cells[0].Native.(type) {
-		case error:
-			if v != nil {
-				return v.Error()
-			}
-		}
-	}
-
-	return errorCellMessage(e.Cells, g)
+	return e.render(true)
 }
 
 // WriteTrace writes the error and a stack trace to w.
@@ -208,26 +165,4 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 		}
 	}
 	return n, bw.Flush()
-}
-
-// errorCellMessage renders the cells of an LError as a human-readable
-// message. Nil cells are rendered as "<nil>" rather than dereferenced.
-func errorCellMessage(ecells []*LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	for i, cell := range ecells {
-		if i > 0 {
-			buf.WriteString(" ")
-		}
-		if cell == nil {
-			log.Printf("elps: errorCellMessage skipping nil cell at index %d (LError has malformed Cells slice)", i)
-			buf.WriteString("<nil>")
-			continue
-		}
-		if cell.Type == LString {
-			buf.WriteString(cell.Str)
-		} else {
-			buf.WriteString(cell.str(false, g))
-		}
-	}
-	return buf.String()
 }

@@ -24,12 +24,13 @@ func newStringAllocationEnv(t *testing.T, limit int) *lisp.LEnv {
 	return env
 }
 
+// Inspect failure text with a fresh budget; the tiny originating cap now truncates diagnostics.
 func assertStringAllocation(t *testing.T, got *lisp.LVal, want string, limit int) {
 	t.Helper()
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	if len(want) > limit {
 		require.Equal(t, lisp.LError, got.Type, "%v", got)
-		assert.Contains(t, got.String(), "allocation")
+		assert.Contains(t, lisp.NewEnv(nil).Render(got), "allocation")
 		return
 	}
 	require.Equal(t, lisp.LString, got.Type, "%v", got)
@@ -129,7 +130,7 @@ func TestStringAllocationSplit(t *testing.T) {
 				assert.Equal(t, input, source.Str)
 				if size > limit {
 					require.Equal(t, lisp.LError, got.Type, "%v", got)
-					assert.Contains(t, got.String(), "allocation")
+					assert.Contains(t, lisp.NewEnv(nil).Render(got), "allocation")
 					return
 				}
 				require.Equal(t, lisp.LSExpr, got.Type, "%v", got)
@@ -216,7 +217,7 @@ func TestStringAllocationRepeatWithoutCopy(t *testing.T) {
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			if tc.wantErr != "" {
 				require.Equal(t, lisp.LError, got.Type, "%v", got)
-				assert.Contains(t, got.String(), tc.wantErr)
+				assert.Contains(t, lisp.NewEnv(nil).Render(got), tc.wantErr)
 				return
 			}
 			require.Equal(t, lisp.LString, got.Type, "%v", got)

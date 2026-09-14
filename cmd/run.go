@@ -111,7 +111,7 @@ func runElps(args []string, stdout io.Writer) error {
 		}
 		if runPrint {
 			//nolint:errcheck // best-effort output to stdout
-			fmt.Fprintln(stdout, res.String())
+			fmt.Fprintln(stdout, env.Render(res))
 		}
 	}
 	return nil

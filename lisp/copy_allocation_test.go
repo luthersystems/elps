@@ -32,7 +32,7 @@ func TestCopyAllocationLimit(t *testing.T) {
 					require.Equal(t, before, source.String(), "copy refusal and success must preserve the source")
 					if size > limit {
 						require.Equal(t, lisp.LError, got.Type, "%v", got)
-						require.Contains(t, got.String(), "allocation size 9 exceeds maximum (8)")
+						require.Contains(t, diagnosticText(got), "allocation size 9 exceeds maximum (8)")
 						return
 					}
 					require.NoError(t, lisp.GoError(got))
@@ -143,7 +143,7 @@ func TestCopyAllocationLimitChecksBeforeCloning(t *testing.T) {
 	got := env.LoadString("copy-limit.lisp", `(copy source)`)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
-	require.Contains(t, got.String(), "allocation size 9 exceeds maximum (8)")
+	require.Contains(t, diagnosticText(got), "allocation size 9 exceeds maximum (8)")
 	require.Zero(t, calls, "an oversized cell span must fail before cloning its children")
 
 	// Entries allocates pair storage in the stock map. The cap must be
@@ -154,6 +154,6 @@ func TestCopyAllocationLimitChecksBeforeCloning(t *testing.T) {
 	got = env.LoadString("copy-limit.lisp", `(copy source)`)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
-	require.Contains(t, got.String(), "allocation size 9 exceeds maximum (8)")
+	require.Contains(t, diagnosticText(got), "allocation size 9 exceeds maximum (8)")
 	require.Zero(t, probe.entries, "an oversized map must fail before allocating entries")
 }

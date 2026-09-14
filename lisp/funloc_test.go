@@ -113,7 +113,7 @@ func TestCancellationAtBodyEntryReportsDefinitionSite(t *testing.T) {
 			env := newLimitTestEnv(t)
 			res := env.LoadStringContext(&countdownContext{n: tc.n}, "s.lisp", funLocProgram)
 			require.Equal(t, lisp.LError, res.Type, "expected the cancellation to trip")
-			assert.Equal(t, tc.want+": context-cancelled: context cancelled: context canceled", res.String())
+			assert.Equal(t, tc.want+": context-cancelled: context cancelled: context canceled", diagnosticText(res))
 		})
 	}
 }

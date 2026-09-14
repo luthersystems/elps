@@ -17,11 +17,7 @@ import (
 func TestRenderMillionDeepValues(t *testing.T) {
 	for _, kind := range []string{"list", "vector", "map", "dag"} {
 		for _, renderer := range []string{"string", "bounded"} {
-			if kind == "dag" && renderer == "string" {
-				// The expanded DAG is exponential even with the depth cap;
-				// only the byte-bounded renderer promises to reject it cheaply.
-				continue
-			}
+
 			t.Run(kind+"/"+renderer, func(t *testing.T) {
 				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 				defer cancel()
@@ -69,6 +65,12 @@ func TestRenderDepthHelper(t *testing.T) {
 		}
 	}
 	if parts[0] == "dag" {
+		if parts[1] == "string" {
+			if got := v.String(); !strings.Contains(got, renderTruncatedMark) || len(got) > DefaultMaxAlloc {
+				t.Fatal("String must bound the expanded acyclic DAG")
+			}
+			return
+		}
 		// Strict rendering's abbreviated DAG fits this budget, but no
 		// cycle can justify returning it. The probe must reject without
 		// unrolling the 2^1024 depth-limited branches.
@@ -284,7 +286,8 @@ func TestRenderDepthNestedKindsAndStrictRetry(t *testing.T) {
 }
 
 // The lazy cycle guard starts tracking at depth 64, so String rediscovers a
-// ring's entry only at depth max(entry, 64)+length. A ring that closes after
+// ring's entry only at depth max(entry, 64)+length. Detection also runs at
+// the depth boundary before substituting the marker. A ring that closes after
 // the rendering cap is never a cycle as far as String is concerned: it renders
 // as depth-limited output. The byte-budget retry walks strictly, tracking from
 // depth 1, so it closes the same ring earlier and produces a shorter string.
@@ -318,7 +321,7 @@ func TestBoundedRenderLongCycleMatchesString(t *testing.T) {
 		want := root.String()
 		// Whichever rule String applied, the marker it chose is the one
 		// the bounded renderer has to reproduce.
-		cyclic := max(ring.prefix+1, cycleGuardDepth)+ring.length <= maxRenderDepth
+		cyclic := max(ring.prefix+1, cycleGuardDepth)+ring.length <= maxRenderDepth+1
 		if strings.Contains(want, cycleMark) != cyclic {
 			t.Errorf("ring %+v: String used the wrong truncation marker", ring)
 		}

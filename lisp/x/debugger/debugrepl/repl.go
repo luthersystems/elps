@@ -182,7 +182,7 @@ func (h *debugHandler) evalInContext(env *lisp.LEnv, expr *lisp.LVal) *lisp.LVal
 	if pausedEnv != nil {
 		env = pausedEnv
 	}
-	return h.engine.EvalInContext(env, expr.String())
+	return h.engine.EvalInContext(env, env.Render(expr))
 }
 
 // handleLine dispatches debug commands. Returns true if the line was consumed.

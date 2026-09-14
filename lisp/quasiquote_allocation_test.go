@@ -36,8 +36,8 @@ func TestQuasiquoteAllocationBoundaries(t *testing.T) {
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			if tc.want == "" {
 				require.Equal(t, lisp.LError, got.Type, "%v", got)
-				require.Contains(t, got.String(), "allocation size")
-				require.Contains(t, got.String(), "exceeds maximum (2)")
+				require.Contains(t, diagnosticText(got), "allocation size")
+				require.Contains(t, diagnosticText(got), "exceeds maximum (2)")
 			} else {
 				require.NoError(t, lisp.GoError(got))
 				require.Equal(t, tc.want, got.String())
@@ -59,7 +59,7 @@ func TestQuasiquoteAllocationFromGeneratedMacro(t *testing.T) {
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			if limit == 2 {
 				require.Equal(t, lisp.LError, got.Type, "%v", got)
-				require.Contains(t, got.String(), "allocation size 3 exceeds maximum (2)")
+				require.Contains(t, diagnosticText(got), "allocation size 3 exceeds maximum (2)")
 			} else {
 				require.NoError(t, lisp.GoError(got))
 				require.Equal(t, `''(1 2 3)`, got.String())
@@ -91,7 +91,7 @@ func TestQuasiquoteAllocationStopsLaterUnquotes(t *testing.T) {
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			if limit == 2 {
 				require.Equal(t, lisp.LError, got.Type, "%v", got)
-				require.Contains(t, got.String(), "allocation size 3 exceeds maximum (2)")
+				require.Contains(t, diagnosticText(got), "allocation size 3 exceeds maximum (2)")
 				require.Equal(t, []string{"first-value", "second-value"}, events)
 			} else {
 				require.NoError(t, lisp.GoError(got))
@@ -150,6 +150,6 @@ func TestQuasiquoteAllocationRejectsNonListSpliceBeforeLaterUnquote(t *testing.T
 	got := env.LoadString("quasiquote-bad-splice.lisp", `(quasiquote ((unquote-splicing 1) (unquote (later-value))))`)
 	require.False(t, lisp.IsInternalPanic(got), "%v", got)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
-	require.Contains(t, got.String(), "unquote-splicing: cannot splice non-list: int")
+	require.Contains(t, diagnosticText(got), "unquote-splicing: cannot splice non-list: int")
 	require.Zero(t, later)
 }
