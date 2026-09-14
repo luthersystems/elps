@@ -10,6 +10,7 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -2374,4 +2375,104 @@ func AnalyzerDoc() string {
 		fmt.Fprintf(&b, "    %s\n\n", lines[0])
 	}
 	return b.String()
+}
+
+// AnalyzerPackageBuiltins diagnoses literal arguments rejected by package builtins.
+var AnalyzerPackageBuiltins = &Analyzer{
+	Name:     "package-builtins",
+	Severity: SeverityError,
+	Doc: "Check literal export, in-package, and use-package arguments.\n\n" +
+		"Export accepts unqualified symbols, strings, and lists of these; invalid " +
+		"arguments now leave all exports unchanged. Package names must be non-empty " +
+		"symbol identifiers without colons, and package documentation must be strings. " +
+		"Dynamic arguments and macro templates are not checked. Shadowed calls are " +
+		"excluded conservatively; this check does not prove that deferred exports " +
+		"will be bound at import time.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		var walk func(*lisp.LVal)
+		walk = func(v *lisp.LVal) {
+			if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr {
+				return
+			}
+			head := unqualifiedLispName(HeadSymbol(v))
+			if head == "quote" || head == "quasiquote" {
+				return
+			}
+			if len(v.Cells) > 0 && !skip[v] && !userDefs[HeadSymbol(v)] {
+				for i, arg := range v.Cells[1:] {
+					value, known := packageLiteralArg(arg, userDefs, skip)
+					if !known {
+						continue
+					}
+					switch head {
+					case "export":
+						if message := invalidExportLiteral(value); message != "" {
+							pass.ReportNode(arg, "%s", message)
+						}
+					case "in-package", "use-package":
+						if head == "in-package" && i > 0 {
+							if value.Type != lisp.LString {
+								pass.ReportNode(arg, "in-package documentation arguments must be strings; fix the argument before switching packages")
+							}
+						} else if !validPackageLiteral(value) {
+							pass.ReportNode(arg, "%s package name must be a non-empty symbol identifier without colons; use a name such as 'my-package", head)
+						}
+					}
+				}
+			}
+			for _, child := range v.Cells {
+				walk(child)
+			}
+		}
+		for _, expr := range pass.Exprs {
+			walk(expr)
+		}
+		return nil
+	},
+}
+
+func packageLiteralArg(arg *lisp.LVal, userDefs map[string]bool, skip map[*lisp.LVal]bool) (*lisp.LVal, bool) {
+	if arg.IsQuoted() {
+		return arg, true
+	}
+	switch arg.Type {
+	case lisp.LSymbol:
+		return arg, strings.HasPrefix(arg.Str, ":")
+	case lisp.LSExpr:
+		head := HeadSymbol(arg)
+		if unqualifiedLispName(head) == "quote" && !userDefs[head] && !skip[arg] && len(arg.Cells) == 2 {
+			return arg.Cells[1], true
+		}
+		return arg, len(arg.Cells) == 0
+	default:
+		return arg, true
+	}
+}
+
+func invalidExportLiteral(v *lisp.LVal) string {
+	switch v.Type {
+	case lisp.LSymbol, lisp.LString:
+		if strings.Contains(v.Str, ":") {
+			return "export requires an unqualified name; export the local name from its providing package"
+		}
+	case lisp.LSExpr:
+		for _, child := range v.Cells {
+			if message := invalidExportLiteral(child); message != "" {
+				return message
+			}
+		}
+	default:
+		return "export expects symbols, strings, or lists of these; remove the invalid value (a failed call exports nothing)"
+	}
+	return ""
+}
+
+func validPackageLiteral(v *lisp.LVal) bool {
+	if (v.Type != lisp.LSymbol && v.Type != lisp.LString) || v.Str == "" || strings.Contains(v.Str, ":") {
+		return false
+	}
+	exprs, err := rdparser.New(token.NewScannerString("", v.Str)).ParseProgram()
+	return err == nil && len(exprs) == 1 && exprs[0].Type == lisp.LSymbol && exprs[0].Str == v.Str
 }

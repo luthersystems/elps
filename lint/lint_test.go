@@ -2102,7 +2102,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 22)
+	assert.Len(t, analyzers, 23)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2117,6 +2117,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"iteration-mutation",
 		"let-bindings",
 		"let-recursion",
+		"package-builtins",
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
@@ -2555,6 +2556,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	expected := map[string]Severity{
 		"set-usage":           SeverityWarning,
 		"in-package-toplevel": SeverityWarning,
+		"package-builtins":    SeverityError,
 		"if-arity":            SeverityError,
 		"let-bindings":        SeverityError,
 		"let-recursion":       SeverityWarning,
@@ -4973,4 +4975,56 @@ func TestShadowing_Severity_HidingAUserFunctionIsAWarning(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity,
 		"hiding a user-defined function is the same hazard as hiding a builtin")
+}
+
+func TestPackageBuiltinsMigration(t *testing.T) {
+	var analyzer *Analyzer
+	for _, candidate := range DefaultAnalyzers() {
+		if candidate.Name == "package-builtins" {
+			analyzer = candidate
+		}
+	}
+	require.NotNil(t, analyzer, "package-builtins migration diagnostic must be registered")
+	for _, tc := range []struct{ source, message string }{
+		{`(export '(a 1 b))`, "export expects"},
+		{`(export 'a '(b (1)))`, "export expects"},
+		{`(export 'qe:f)`, "unqualified"},
+		{`(lisp:export "qe:f")`, "unqualified"},
+		{`(export (quote (a qe:f)))`, "unqualified"},
+		{`(in-package (quote 1))`, "package name"},
+		{`(in-package (lisp:quote 1))`, "package name"},
+		{`(let ((quote (lambda (x) "valid-name"))) (in-package (lisp:quote 1)))`, "package name"},
+		{`(in-package 'p 1)`, "documentation arguments must be strings"},
+		{`(in-package "")`, "package name"},
+		{`(in-package "a:b")`, "package name"},
+		{`(in-package ':kw)`, "package name"},
+		{`(use-package ':kw)`, "package name"},
+		{`(use-package "1abc")`, "package name"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			diags := lintCheck(t, analyzer, tc.source)
+			require.Len(t, diags, 1)
+			assertDiagOnLine(t, diags, 1, tc.message)
+		})
+	}
+	for _, source := range []string{
+		`(export '(a b))`, `(export "a")`, `(export '(a (b)))`,
+		`(export 'never-defined)`, `(in-package 'p "doc")`, `(in-package "valid-name")`,
+		`(in-package "+1")`, `(in-package "--")`, `(in-package "éλ")`,
+		`(export names)`, `(in-package name doc)`, `(use-package (get config "package"))`,
+		`(defun export (x) x) (export 1)`, `(let ((export identity)) (export 1))`,
+		`(lambda (export) (export 1))`, `(other:export 1)`,
+		`(let ((quote (lambda (x) "valid-name"))) (in-package (quote 1)))`,
+		`(defun quote (x) "valid-name") (in-package (quote 1))`,
+		`'(export '(a 1))`, `(quote (export '(a 1)))`, `(lisp:quote (export 1))`,
+		`(quasiquote (export 1))`, `(lisp:quasiquote (export 1))`,
+		`(thread-first 'p (in-package "doc"))`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			assertNoDiags(t, lintCheck(t, analyzer, source))
+		})
+	}
+	t.Run("nolint", func(t *testing.T) {
+		assertNoDiags(t, lintCheck(t, analyzer, `(export '(a 1 b)) ; nolint:package-builtins`))
+	})
 }

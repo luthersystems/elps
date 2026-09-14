@@ -315,8 +315,7 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		}
 		v, ok := pkg.Symbol(sym)
 		if !ok {
-			// Cold path: reproduce pkg.Get's unbound-symbol error verbatim.
-			return env.Errorf("package %s: %v", name.Str, pkg.Get(Symbol(sym)))
+			return env.Errorf("package %s: exported symbol is unbound: %s", pkg.Name, sym)
 		}
 		// putName, not Put: the hot import loop binds hundreds of names per
 		// environment, and the two Symbol header allocations per name (one

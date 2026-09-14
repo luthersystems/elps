@@ -37,7 +37,7 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	// as malformed numeric literals rather than reading them as one symbol.
 	for _, src := range []string{
 		"a:1", "a:1b", "a:-1", "a:1.5", "a:1e5", "a:0x10", "a:1abc", "a:1_",
-		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)",
+		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)", "--:1", "--:-1",
 	} {
 		t.Run("rejected/"+src, func(t *testing.T) {
 			t.Parallel()
@@ -60,6 +60,7 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	for _, src := range []string{
 		"a:b", "lisp:set", "xyz:abc?", "a:+1", "a:.1", "a:*1", "a:_1",
 		"a:true", "a:-", "a:--", "a:-a", "-a:b", "a:<=", "a:set!", "a:->",
+		"-:f", "--:f", "--:--",
 	} {
 		t.Run("accepted/"+src, func(t *testing.T) {
 			t.Parallel()
@@ -74,6 +75,32 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 			require.NoError(t, err, "printed form %q must re-parse", expr.String())
 			assert.Equal(t, lisp.LSymbol, rt.Type)
 			assert.Equal(t, expr.Str, rt.Str)
+		})
+	}
+}
+
+func TestQualifiedMinusRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		src  string
+		want []string
+	}{
+		{"'(--:f)", []string{"--:f"}},
+		{"'(---:f)", []string{"-", "-", "-:f"}},
+		{"'(----:f)", []string{"-", "-", "-", "-:f"}},
+	} {
+		t.Run(tc.src, func(t *testing.T) {
+			expr, err := parseOne(t, tc.src)
+			require.NoError(t, err)
+			require.Equal(t, lisp.LSExpr, expr.Type)
+			require.True(t, expr.IsQuoted())
+			names := make([]string, len(expr.Cells))
+			for i, cell := range expr.Cells {
+				require.Equal(t, lisp.LSymbol, cell.Type)
+				names[i] = cell.Str
+			}
+			assert.Len(t, expr.Cells, len(tc.want))
+			assert.Equal(t, tc.want, names)
 		})
 	}
 }

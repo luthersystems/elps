@@ -1461,6 +1461,20 @@ Packages are created/modified using the `in-package`
 function, which changes the environment's working package.  Symbols bound using
 `set`, `defun`, `defmacro`, etc will be bound in the working package.
 
+`in-package` takes a symbol or string naming the package, followed by zero or
+more documentation strings. The name must spell a non-empty [symbol
+identifier](#symbols), without a colon; keywords are not package names.
+For example, `(in-package 'p "doc")` and `(in-package "valid-name")` are valid.
+Empty names, qualified names such as `"a:b"`, keywords such as `:kw`, and names
+that do not read as identifiers (such as `"1abc"` or `"a b"`) cause ordinary
+errors. All arguments are validated before creating a package, switching the
+current package, or changing its documentation. In particular,
+`(in-package 'p 1)` leaves the current package and registry unchanged.
+
+These name checks apply to the Lisp builtins. Go embedding APIs
+(`PackageRegistry.DefinePackage`, `AddPackage`, and `LEnv.InPackage` /
+`UsePackage`) continue to accept arbitrary registered names.
+
 ```lisp
 (in-package 'my-new-package)
 (export 'my-special-function)
@@ -1468,6 +1482,24 @@ function, which changes the environment's working package.  Symbols bound using
 (set 'thing "something else")
 (defun my-other-function () (debug-print thing))
 ```
+
+`export` accepts symbols, strings naming symbols, and lists (including nested
+lists) of those values: `(export '(a b))` and `(export "a")` are valid.
+It validates the entire call before exporting anything. An invalid element,
+such as the integer in `(export '(a 1 b))`, causes an ordinary error and leaves
+the export list unchanged. Qualified names are rejected at export time,
+whether supplied as symbols or strings: `(export 'qe:f)` is an error. Export
+an unqualified name from the package that provides it instead.
+
+The `package-builtins` lint check diagnoses invalid literal arguments to
+`export`, `in-package`, and `use-package`, and suggests valid replacements.
+It skips dynamic arguments, macro templates, and conservatively identified
+shadowed calls. A clean lint result cannot prove that dynamically computed
+arguments are valid or that deferred exports will be bound at import time.
+
+Exporting a name does not require it to be bound yet. The example above
+exports `my-special-function` before defining it; the binding must exist by
+the time another package imports it with `use-package`.
 
 Outside of the `my-new-package` package, the symbol `my-special-function` may
 be bound to other values.  Any symbol defined inside a package may be
@@ -1506,7 +1538,15 @@ argument declaration syntax is the same for all function definitions.
 ### Importing symbols
 
 Symbols exported within a package may be imported to another package with the
-`use-package` function.
+`use-package` function. Each argument must be a symbol or string naming an
+existing package, with the same identifier rules as `in-package`.
+
+If an exported symbol is still unbound at import time, `use-package` raises an
+ordinary error naming the exporting package and symbol. For example, after
+`(in-package 'deferred)` and `(export 'never-defined)`, importing `deferred`
+reports `package deferred: exported symbol is unbound: never-defined`, together
+with the source location and `use-package` call context. Define the exported
+symbol before importing the package; exporting before defining remains valid.
 
 ```lisp
 (in-package 'my-other-package)

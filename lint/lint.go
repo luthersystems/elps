@@ -818,6 +818,7 @@ func DefaultAnalyzers() []*Analyzer {
 	return []*Analyzer{
 		AnalyzerSetUsage,
 		AnalyzerInPackageToplevel,
+		AnalyzerPackageBuiltins,
 		AnalyzerIfArity,
 		AnalyzerLetBindings,
 		AnalyzerLetRecursion,
