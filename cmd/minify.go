@@ -56,6 +56,20 @@ names the first detected site. This prevents runtime-generated names or code
 from referring to renamed globals, at the cost of larger output and potentially
 little identifier compression for programs using dynamic evaluation.
 
+Package-level bindings are renamed only when package flow and exported names can
+be proven statically: every export argument must be a literal quoted symbol,
+a literal string, or a literal list (possibly nested) of those, and every
+in-package / use-package form must be at the top level of a file with literal
+package names. A variable or expression passed to export, a computed package
+name, or a package switch/import nested inside any form (including progn,
+let, when, functions, and macros) triggers the same fallback as dynamic
+evaluation: preserve every package-level binding name across all input files,
+even with --rename-exports, while lexical locals can still shorten. The symbol
+map records unproven-package-flow for this fallback (dynamic-evaluation for
+dynamic evaluation), taking precedence over quoted-reference; one warning
+names the first offending form, whose reason is used for all preserved globals.
+Literal export names remain preserved even with --rename-exports.
+
 defun, defmacro, set with a quoted symbol, and export affect package bindings at
 any nesting depth. A nested function still captures its enclosing lexical values.`,
 	Run: func(_ *cobra.Command, args []string) {

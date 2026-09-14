@@ -142,3 +142,27 @@ func TestMinifyCommandDynamicEvaluationWarning(t *testing.T) {
 	require.Contains(t, stderr, "preserving all package-level binding names")
 	require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
 }
+
+func TestMinifyCommandPackageFlowWarning(t *testing.T) {
+	bin := buildTestBinary(t)
+	for _, tt := range []struct{ source, site, form, reason string }{
+		{"(defun helper () 42)\n(let ((names \"helper\")) (export names))\n(progn (in-package 'other))\n(eval 1)", "2:26", "export", "unproven-package-flow"},
+		{"(defun helper () 42)\n(progn (in-package 'other))\n(export names)", "2:9", "in-package", "unproven-package-flow"},
+		{"(defun helper () 42)\n(eval 1)\n(export names)", "2:2", "eval", "dynamic-evaluation"},
+	} {
+		t.Run(tt.form, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "flow.lisp"), []byte(tt.source), 0o600))
+			code, _, stderr := runCorpusCLI(t, bin, dir, "minify", "--map", "symbols.json", "flow.lisp")
+			require.Equal(t, 0, code, "%s", stderr)
+			require.Contains(t, stderr, "flow.lisp:"+tt.site+": "+tt.form)
+			require.Contains(t, stderr, "preserving all package-level binding names")
+			require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
+			data, err := os.ReadFile(filepath.Join(dir, "symbols.json"))
+			require.NoError(t, err)
+			var symMap minifier.SymbolMap
+			require.NoError(t, json.Unmarshal(data, &symMap))
+			require.Contains(t, symMap.Excluded, minifier.SymbolExclusion{Original: "helper", Reason: tt.reason})
+		})
+	}
+}

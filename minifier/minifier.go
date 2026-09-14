@@ -35,7 +35,7 @@ type Config struct {
 	PreserveParams      bool
 	PackageSurfaceForms []PackageSurfaceFormSpec
 	Formatter           *formatter.Config
-	// Warn receives at most one dynamic-evaluation warning per Minify call.
+	// Warn receives at most one global-name preservation warning per Minify call.
 	Warn func(string)
 }
 
@@ -99,19 +99,20 @@ type fileSymbols struct {
 }
 
 type preservationSet struct {
-	dynamicEvaluation *lisp.LVal
-	quoted            map[string]bool
-	names             map[string]bool
-	symbols           map[*analysis.Symbol]bool
-	symbolKeys        map[string]bool
+	globalFallback *lisp.LVal
+	fallbackReason string
+	quoted         map[string]bool
+	names          map[string]bool
+	symbols        map[*analysis.Symbol]bool
+	symbolKeys     map[string]bool
 }
 
 // Minify rewrites one or more source units using a single deterministic
 // symbol-assignment session. Quoted names (including list and quasiquote data)
 // are preserved across all inputs and recorded as quoted-reference exclusions.
 // Package definitions retain package scope even inside lexical forms. Runtime
-// evaluation or symbol creation preserves all package-level names across inputs
-// and records dynamic-evaluation exclusions; lexical locals can still shorten.
+// evaluation, symbol creation, or unproven package flow preserves all package-level
+// names across inputs and records the reason; lexical locals can still shorten.
 func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 	if cfg == nil {
 		cfg = &Config{}
@@ -141,9 +142,13 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
 	}
 
-	if protected.dynamicEvaluation != nil && cfg.Warn != nil {
-		node := protected.dynamicEvaluation
-		cfg.Warn(fmt.Sprintf("%s: %s may evaluate runtime data or create symbols; preserving all package-level binding names (dynamic-evaluation)", astutil.SourceLoc(node), node.Str))
+	if protected.globalFallback != nil && cfg.Warn != nil {
+		node := protected.globalFallback
+		detail := "may evaluate runtime data or create symbols"
+		if protected.fallbackReason == "unproven-package-flow" {
+			detail = "prevents static proof of package flow and exported names"
+		}
+		cfg.Warn(fmt.Sprintf("%s: %s %s; preserving all package-level binding names (%s)", astutil.SourceLoc(node), node.Str, detail, protected.fallbackReason))
 	}
 	preservePackageSurfaceSymbols(files, cfg, protected)
 	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
@@ -528,11 +533,11 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 	for name := range preserved.quoted {
 		exclusionReasons[name] = "quoted-reference"
 	}
-	if preserved.dynamicEvaluation != nil {
+	if preserved.globalFallback != nil {
 		for _, file := range files {
 			for _, sym := range file.analysis.Symbols {
 				if !sym.External && packageBindingKey(sym) != "" {
-					exclusionReasons[sym.Name] = "dynamic-evaluation"
+					exclusionReasons[sym.Name] = preserved.fallbackReason
 				}
 			}
 		}
@@ -653,7 +658,7 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 		return false
 	}
 	if sym.Scope != nil && sym.Scope.Kind == analysis.ScopeGlobal {
-		if preserved != nil && preserved.dynamicEvaluation != nil {
+		if preserved != nil && preserved.globalFallback != nil {
 			return false
 		}
 		switch sym.Kind {
@@ -689,8 +694,8 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 	for i := range files {
 		for _, expr := range files[i].exprs {
 			collectQuotedSymbols(expr, false, protected)
-			if protected.dynamicEvaluation == nil {
-				protected.dynamicEvaluation = firstDynamicEvaluation(expr)
+			if protected.globalFallback == nil {
+				protected.globalFallback, protected.fallbackReason = firstGlobalFallback(expr, true)
 			}
 		}
 	}
@@ -976,12 +981,41 @@ func compareLocations(a, b *token.Location) int {
 	return 0
 }
 
-// firstDynamicEvaluation also recognizes references passed through aliases or
-// higher-order calls, and quoted templates that may become executable code.
-// Over-preservation is intentional: no runtime data-flow proof is attempted.
-func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
+// firstGlobalFallback requires static proof of package flow and exported names
+// before any package binding may be renamed. Walk the original file tree, not
+// PackageForms: flattening it would lose the top-level requirement. Templates
+// are inspected conservatively too, since they may become executable code.
+// The same preorder walk selects the first dynamic-evaluation or package site.
+func firstGlobalFallback(node *lisp.LVal, topLevel bool) (*lisp.LVal, string) {
 	if node == nil {
-		return nil
+		return nil, ""
+	}
+	head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
+	switch head {
+	case "export":
+		for _, arg := range node.Cells[1:] {
+			if !literalExportArgument(arg, false) {
+				return node.Cells[0], "unproven-package-flow"
+			}
+		}
+	case "in-package", "use-package":
+		// The package scanner models the unqualified spellings only. A
+		// qualified call therefore cannot supply the proof needed to rename.
+		if !topLevel || astutil.HeadSymbol(node) != head {
+			return node.Cells[0], "unproven-package-flow"
+		}
+		args := node.Cells[1:]
+		if head == "in-package" {
+			if len(args) == 0 {
+				return node.Cells[0], "unproven-package-flow"
+			}
+			args = args[:1] // Remaining arguments are package docstrings.
+		}
+		for _, arg := range args {
+			if arg.Type != lisp.LString && !(arg.Type == lisp.LSymbol && arg.IsQuoted()) {
+				return node.Cells[0], "unproven-package-flow"
+			}
+		}
 	}
 	if node.Type == lisp.LSymbol {
 		name := strings.TrimPrefix(node.Str, "lisp:")
@@ -990,13 +1024,41 @@ func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
 			"macroexpand", "macroexpand-1", "gensym", "type", "qualified-symbol":
 			// symbol/intern are included for host-provided implementations;
 			// the core currently has no string-to-symbol builtin by those names.
-			return node
+			return node, "dynamic-evaluation"
 		}
 	}
 	for _, child := range node.Cells {
-		if found := firstDynamicEvaluation(child); found != nil {
-			return found
+		if found, reason := firstGlobalFallback(child, false); found != nil {
+			return found, reason
 		}
 	}
-	return nil
+	return nil, ""
+}
+
+// literalExportArgument proves the entire value, including every nested list
+// element. Extracting only the known names would silently miss computed exports.
+func literalExportArgument(node *lisp.LVal, literal bool) bool {
+	if node == nil {
+		return false
+	}
+	literal = literal || node.IsQuoted()
+	switch node.Type {
+	case lisp.LString:
+		return true
+	case lisp.LSymbol:
+		return literal
+	case lisp.LSExpr:
+		if !literal && len(node.Cells) != 0 {
+			head := astutil.HeadSymbol(node)
+			return (head == "quote" || head == "lisp:quote") && len(node.Cells) == 2 && literalExportArgument(node.Cells[1], true)
+		}
+		for _, child := range node.Cells {
+			if !literalExportArgument(child, true) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
 }

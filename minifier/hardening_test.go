@@ -183,3 +183,86 @@ func TestMinifyDynamicEvaluationPreservesProgramGlobals(t *testing.T) {
 		})
 	}
 }
+
+func TestMinifyPackageProofExecutionEquivalence(t *testing.T) {
+	for _, tt := range []struct {
+		name, src string
+		fallback  bool
+	}{
+		{"computed_export", `(defun helper () 42) (let ((names "helper")) (export names)) (in-package 'other) (use-package 'user) (debug-print (helper))`, true},
+		{"nested_in_package", `(progn (in-package 'other) (defun helper () 42)) (debug-print (other:helper))`, true},
+		{"static_control", `(in-package 'other) (export 'public) (defun helper () 42) (defun public () (helper)) (debug-print (public))`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			original, err := evalDebugOutput(t, []byte(tt.src))
+			require.NoError(t, err)
+			require.Equal(t, "42\n", original)
+			out, symMap, err := MinifySource([]byte(tt.src), "package-proof.lisp", &Config{RenameExports: true})
+			require.NoError(t, err)
+			actual, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified: %s", out)
+			require.Equal(t, original, actual)
+			if tt.fallback {
+				require.NotContains(t, symMap.OriginalToMinified, "helper")
+				require.Contains(t, symMap.Excluded, SymbolExclusion{Original: "helper", Reason: "unproven-package-flow"})
+			} else {
+				require.Contains(t, symMap.OriginalToMinified, "helper")
+			}
+		})
+	}
+}
+
+func TestMinifyUnprovenPackageFlowPreservesProgramGlobals(t *testing.T) {
+	for _, trigger := range []string{
+		`(export names)`, `(export (identity "helper"))`, `(export 'helper names)`,
+		`(lisp:export (list "helper"))`, `(export '("helper" (42)))`,
+		`(in-package package-name)`, `(in-package (identity "remote"))`,
+		`(lisp:in-package "remote")`, `(lisp:use-package 'user)`,
+		`(use-package package-name)`, `(use-package 'user (identity "remote"))`,
+		`(progn (in-package 'remote))`, `(let () (in-package 'remote))`,
+		`(when true (in-package 'remote))`, `(defun switch () (in-package 'remote))`,
+		`(defmacro switch () (in-package 'remote))`,
+		`(progn (use-package 'user))`, `(lambda () (lisp:use-package "user"))`,
+		`(quasiquote (progn (lisp:in-package 'remote)))`,
+	} {
+		t.Run(trigger, func(t *testing.T) {
+			var warnings []string
+			result, err := Minify([]InputFile{
+				{Path: "globals.lisp", Source: []byte(`(defun helper (local) local) (defun x1 () 1)
+(set 'counter 0) (defmacro macro-helper () 1) (deftype record () 1)
+(let ((lexical 42)) (defun nested () lexical))`)},
+				{Path: "trigger.lisp", Source: []byte("(in-package 'remote) (defun remote-helper () 2) " + trigger)},
+			}, &Config{RenameExports: true, Warn: func(warning string) { warnings = append(warnings, warning) }})
+			require.NoError(t, err)
+			require.Len(t, warnings, 1)
+			require.Contains(t, warnings[0], "unproven-package-flow")
+			for _, name := range []string{"helper", "x1", "counter", "macro-helper", "record", "nested", "remote-helper"} {
+				require.NotContains(t, result.SymbolMap.OriginalToMinified, name)
+				require.Contains(t, result.SymbolMap.Excluded, SymbolExclusion{Original: name, Reason: "unproven-package-flow"})
+			}
+			for _, name := range []string{"local", "lexical"} {
+				require.Contains(t, result.SymbolMap.OriginalToMinified, name)
+				require.NotContains(t, result.SymbolMap.OriginalToMinified[name], "x1")
+			}
+		})
+	}
+}
+
+func TestMinifyLiteralPackageFlowRenamesGlobals(t *testing.T) {
+	for _, exports := range []string{`'public`, `"public"`, `'(public ("public"))`, `[public ["public"]]`, `(quote (public ("public")))`, `(lisp:quote public)`, `()`} {
+		t.Run(exports, func(t *testing.T) {
+			var warnings []string
+			src := []byte(`(in-package "other") (use-package 'user "lisp") (export ` + exports + `)
+(defun helper () 42) (defun public () (helper)) (debug-print (public))`)
+			original, err := evalDebugOutput(t, src)
+			require.NoError(t, err)
+			out, symMap, err := MinifySource(src, "static.lisp", &Config{Warn: func(warning string) { warnings = append(warnings, warning) }})
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			require.Contains(t, symMap.OriginalToMinified, "helper")
+			actual, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified: %s", out)
+			require.Equal(t, original, actual)
+		})
+	}
+}
