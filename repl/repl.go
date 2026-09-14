@@ -472,6 +472,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	} else {
 		fmt.Fprintln(stdout, last) //nolint:errcheck // best-effort output
 	}
+	if reportCancellation(ctx, cfg, stdout, errw) {
+		return 1
+	}
 	return 0
 }
 

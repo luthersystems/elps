@@ -36,6 +36,38 @@ func TestEvalContextCancellation(t *testing.T) {
 	}
 }
 
+type cancellingWriter struct {
+	output bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *cancellingWriter) Write(p []byte) (int, error) {
+	w.cancel()
+	return w.output.Write(p)
+}
+
+func TestEvalContextCancellationDuringFinalOutput(t *testing.T) {
+	for _, json := range []bool{false, true} {
+		t.Run(map[bool]string{false: "text", true: "json"}[json], func(t *testing.T) {
+			env := newTestEnv(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			cfg := newConfig(WithContext(ctx), WithJSON(json), WithEval(`(+ 1 2)`))
+			stdout := &cancellingWriter{cancel: cancel}
+			var stderr bytes.Buffer
+			assert.Equal(t, 1, runEval(env, cfg, stdout, &stderr))
+			if json {
+				assert.Equal(t, "{\"type\":\"result\",\"value_type\":\"int\",\"value\":\"3\"}\n"+
+					"{\"type\":\"error\",\"message\":\"context-cancelled: context canceled\"}\n", stdout.output.String())
+				assert.Empty(t, stderr.String())
+			} else {
+				assert.Equal(t, "3\n", stdout.output.String())
+				assert.Equal(t, "context-cancelled: context canceled\n", stderr.String())
+			}
+		})
+	}
+}
+
 func TestBatchContextCancelsInputWait(t *testing.T) {
 	env := newTestEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
