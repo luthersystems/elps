@@ -79,6 +79,32 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	}
 }
 
+func TestQualifiedMinusRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		src  string
+		want []string
+	}{
+		{"'(--:f)", []string{"--:f"}},
+		{"'(---:f)", []string{"-", "-", "-:f"}},
+		{"'(----:f)", []string{"-", "-", "-", "-:f"}},
+	} {
+		t.Run(tc.src, func(t *testing.T) {
+			expr, err := parseOne(t, tc.src)
+			require.NoError(t, err)
+			require.Equal(t, lisp.LSExpr, expr.Type)
+			require.True(t, expr.IsQuoted())
+			names := make([]string, len(expr.Cells))
+			for i, cell := range expr.Cells {
+				require.Equal(t, lisp.LSymbol, cell.Type)
+				names[i] = cell.Str
+			}
+			assert.Len(t, expr.Cells, len(tc.want))
+			assert.Equal(t, tc.want, names)
+		})
+	}
+}
+
 // TestKeywordNamesAreNotIdentifiers pins the deliberate exemption for
 // keywords, the other half of issue #319.
 //

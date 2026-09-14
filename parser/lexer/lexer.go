@@ -25,6 +25,7 @@ type Lexer struct {
 	lex               LexFn
 	precedingNewlines int
 	precedingSpaces   int
+	minusRun          int // consecutive NEGATIVE tokens, capped at two
 }
 
 func New(s *token.Scanner) *Lexer {
@@ -43,6 +44,13 @@ func (lex *Lexer) Err() error {
 
 func (lex *Lexer) ReadToken() []*token.Token {
 	toks := lex.lex(lex)
+	if toks[0].Type == token.NEGATIVE {
+		if lex.minusRun < 2 {
+			lex.minusRun++
+		}
+	} else {
+		lex.minusRun = 0
+	}
 	// Accept helpers report a count or boolean, so every token path must also
 	// check the scanner error. Never publish a partially scanned token as code.
 	if err := lex.scanner.Err(); err != nil {
@@ -54,6 +62,9 @@ func (lex *Lexer) ReadToken() []*token.Token {
 
 func (lex *Lexer) readToken() []*token.Token {
 	lex.skipWhitespace()
+	if lex.precedingNewlines > 0 || lex.precedingSpaces > 0 {
+		lex.minusRun = 0
+	}
 	if !lex.scanner.Accept(func(c rune) bool { return true }) {
 		if lex.scanner.EOF() {
 			return lex.emit(token.EOF, "")
@@ -148,10 +159,10 @@ func (lex *Lexer) readToken() []*token.Token {
 		// FuzzFormatCompact on "(------ )".
 		if c, ok := lex.scanner.Peek(); !ok || unicode.IsSpace(c) || c == ')' || c == ']' {
 			return lex.emitText(token.SYMBOL)
-		} else if c == ':' {
-			// A minus immediately before the qualifier separator is a symbol,
-			// not a numeric sign. Keep the qualified spelling together so that
-			// ParseNegative can merge the first minus in "--:f", just as in "--".
+		} else if c == ':' && lex.minusRun == 1 {
+			// Only the complete two-minus spelling gets this exception.
+			// ParseNegative merges it into "--:f"; longer runs must retain
+			// their separate minuses followed by "-:f".
 			return lex.readSymbol()
 		}
 		return lex.emitText(token.NEGATIVE)
