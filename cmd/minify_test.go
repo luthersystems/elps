@@ -94,7 +94,7 @@ func TestRunMinify_RenameExports(t *testing.T) {
 	var out bytes.Buffer
 	err := runMinify([]string{path}, bytes.NewBuffer(nil), &out)
 	require.NoError(t, err)
-	assert.Equal(t, "(export 'x1)\n(defun x1 (x2) x2)\n", out.String())
+	assert.Equal(t, "(export 'public)\n(defun public (x1) x1)\n", out.String())
 }
 
 func resetMinifyFlags() {
@@ -105,4 +105,27 @@ func resetMinifyFlags() {
 	minifyWorkspace = ""
 	minifyRenameExports = false
 	minifyPreserveParams = true // default is true
+}
+
+func TestRunMinify_QuotedSymbolMap(t *testing.T) {
+	resetMinifyFlags()
+	t.Cleanup(resetMinifyFlags)
+	minifyMapPath = filepath.Join(t.TempDir(), "symbols.json")
+	var out bytes.Buffer
+	require.NoError(t, runMinify(nil, bytes.NewBufferString("(defun twice (x) (* 2 x)) (map 'list 'twice '(1 2 3))"), &out))
+	data, err := os.ReadFile(minifyMapPath)
+	require.NoError(t, err)
+	var symMap struct {
+		Excluded []struct{ Original, Reason string }
+	}
+	require.NoError(t, json.Unmarshal(data, &symMap))
+	found := false
+	for _, entry := range symMap.Excluded {
+		if entry.Original == "twice" {
+			require.Equal(t, "quoted-reference", entry.Reason)
+			found = true
+		}
+	}
+	require.True(t, found, "quoted function must have an exclusion record")
+	require.Contains(t, out.String(), "(defun twice ")
 }

@@ -35,7 +35,16 @@ With multiple files, use -w to rewrite files in place.
 
 The command can also emit a machine-readable JSON symbol map for downstream
 tooling via --map. Minified output uses the formatter's compact mode, which
-removes redundant whitespace and strips comments.`,
+removes redundant whitespace and strips comments.
+
+Any symbol quoted anywhere in the inputs, including quoted lists (also [...]) and quasiquote
+templates, is excluded from renaming in every scope and package. Quoted names
+are not shortened, even with --rename-exports; the symbol map records them in
+excluded with reason "quoted-reference". This conservative rule preserves quoted
+function designators such as (map 'list 'twice values).
+
+defun, defmacro, set with a quoted symbol, and export affect package bindings at
+any nesting depth. A nested function still captures its enclosing lexical values.`,
 	Run: func(_ *cobra.Command, args []string) {
 		if err := runMinify(args, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "elps minify: %v\n", err)
@@ -174,7 +183,7 @@ func init() {
 	minifyCmd.Flags().StringVar(&minifyWorkspace, "workspace", "",
 		"Workspace root for cross-file semantic resolution.")
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
-		"Rename exported top-level symbols and rewrite matching export forms.")
+		"Rename exported symbols unless excluded (quoted names are always preserved).")
 	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", true,
 		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them.")
 }

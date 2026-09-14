@@ -79,8 +79,22 @@ env.LoadString(`(debug-print "hello world")`)
 | `elps debug file.lisp` | Start the debug adapter (DAP) |
 | `elps lint file.lisp` | Run static analysis |
 | `elps fmt file.lisp` | Format source code |
+| `elps minify file.lisp --map symbols.json` | Minify source and record symbol assignments |
 | `elps doc <query>` | Show function/package documentation |
 | `elps mcp` | Start the MCP server for AI tooling |
+
+### Minifying source
+
+`elps minify` uses deterministic, scope-aware renaming. Any name appearing quoted
+anywhere in the inputs is preserved across all scopes and packages, including
+names inside quoted lists (including `[...]`) and quasiquote templates. This keeps quoted function
+designators such as `(map 'list 'twice values)` working. Quoted names are not
+shortened, even with `--rename-exports`, so output may be larger. The JSON symbol
+map lists these names under `excluded` with `reason: "quoted-reference"`.
+
+`defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package
+bindings at every nesting depth. Functions defined inside `let` still capture
+its lexical values; their names remain accessible at package level.
 
 ## Documentation
 

@@ -723,22 +723,28 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 			}
 			if nodeOK && scope.Parent != nil {
 				var found *Symbol
-				scope.Parent.forEachSymbol(func(sym *Symbol) bool {
-					if sym.Kind != SymFunction && sym.Kind != SymMacro {
+				// Package definitions live at root even when their closure
+				// body is nested. Local labels/flet still live in the parent.
+				for bindingScope := scope.Parent; bindingScope != nil && found == nil; bindingScope = bindingScope.Parent {
+					bindingScope.forEachSymbol(func(sym *Symbol) bool {
+						if sym.Kind != SymFunction && sym.Kind != SymMacro {
+							return true
+						}
+						// Skip external (imported) symbols — they belong to
+						// other files and may coincidentally share a line number.
+						if sym.External {
+							return true
+						}
+						if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
+							sym.Source.File == nodeLoc.File &&
+							(astutil.HeadSymbol(scope.Node) != "defun" && astutil.HeadSymbol(scope.Node) != "defmacro" ||
+								len(scope.Node.Cells) > 1 && sym.Node == scope.Node.Cells[1]) {
+							found = sym
+							return false
+						}
 						return true
-					}
-					// Skip external (imported) symbols — they belong to
-					// other files and may coincidentally share a line number.
-					if sym.External {
-						return true
-					}
-					if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
-						sym.Source.File == nodeLoc.File {
-						found = sym
-						return false
-					}
-					return true
-				})
+					})
+				}
 				if found != nil {
 					return found
 				}

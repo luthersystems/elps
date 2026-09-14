@@ -2308,3 +2308,22 @@ Each method threads the context through the internal evaluation chain.
 The older non-context methods (`Eval`, `Load`, etc.) continue to work
 but are deprecated.  Builtins can access the current context via
 `env.Context()`.
+
+## Source minification
+
+`elps minify file.lisp --map symbols.json` shortens identifiers using deterministic,
+scope-aware renaming. Symbols quoted anywhere in the input files are excluded
+from renaming across all scopes and packages. This includes quoted lists and
+quasiquote templates, so quoted function designators such as
+`(map 'list 'twice '(1 2 3))` retain the function's name. Qualified quoted names
+also protect the corresponding bare name.
+
+Quoted names are never shortened, even with `--rename-exports`. This conservative
+rule can increase output size. The symbol map records the names in `excluded`,
+with `original` and `reason: "quoted-reference"`; the existing assignment maps
+contain only renamed symbols.
+
+`defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
+bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`
+creates a package-level `helper` that captures the lexical value of `k`. Minifying
+this definition also renames its calls outside the `let` consistently.

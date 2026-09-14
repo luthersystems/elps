@@ -63,8 +63,15 @@ type SymbolMapEntry struct {
 	Col      int    `json:"col,omitempty"`
 }
 
+// SymbolExclusion records a name that cannot be shortened safely.
+type SymbolExclusion struct {
+	Original string `json:"original"`
+	Reason   string `json:"reason"`
+}
+
 // SymbolMap is the machine-readable symbol mapping emitted by a minify run.
 type SymbolMap struct {
+	Excluded           []SymbolExclusion   `json:"excluded,omitempty"`
 	Entries            []SymbolMapEntry    `json:"entries"`
 	MinifiedToOriginal map[string]string   `json:"minified_to_original"`
 	OriginalToMinified map[string][]string `json:"original_to_minified,omitempty"`
@@ -90,13 +97,16 @@ type fileSymbols struct {
 }
 
 type preservationSet struct {
+	quoted     map[string]bool
 	names      map[string]bool
 	symbols    map[*analysis.Symbol]bool
 	symbolKeys map[string]bool
 }
 
 // Minify rewrites one or more source units using a single deterministic
-// symbol-assignment session.
+// symbol-assignment session. Quoted names (including list and quasiquote data)
+// are preserved across all inputs and recorded as quoted-reference exclusions.
+// Package definitions retain package scope even inside lexical forms.
 func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 	if cfg == nil {
 		cfg = &Config{}
@@ -119,13 +129,14 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		files = append(files, file)
 	}
 
+	protected := buildPreservationSet(files, cfg)
 	perFile, pkgExports := scanInputSymbols(files, cfg)
 	for i := range files {
 		fileCfg := mergeAnalysisConfig(cfg.Analysis, files[i].path, perFile, pkgExports)
 		files[i].analysis = analysis.Analyze(files[i].exprs, fileCfg)
 	}
 
-	protected := buildPreservationSet(files, cfg)
+	preservePackageSurfaceSymbols(files, cfg, protected)
 	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
 	for i := range files {
 		applyAssignments(&files[i], assignments, assignmentKeys, cfg)
@@ -267,6 +278,7 @@ func scanInputSymbols(files []parsedFile, cfg *Config) (map[string]fileSymbols, 
 }
 
 func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol, map[string]bool) {
+	exprs = astutil.PackageForms(exprs)
 	defs := make(map[string]analysis.ExternalSymbol)
 	exported := make(map[string]map[string]bool)
 	currentPkg := "user"
@@ -458,8 +470,14 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 	minToOrig := make(map[string]string, len(records))
 	origToMin := make(map[string][]string)
 
-	for i, record := range records {
-		newName := fmt.Sprintf("x%d", i+1)
+	next := 1
+	for _, record := range records {
+		newName := fmt.Sprintf("x%d", next)
+		for preserved.names[newName] {
+			next++
+			newName = fmt.Sprintf("x%d", next)
+		}
+		next++
 		assignments[record.sym] = newName
 		assignmentKeys[symbolLookupKey(record.sym)] = newName
 
@@ -482,7 +500,13 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		sort.Strings(origToMin[name])
 	}
 
+	var excluded []SymbolExclusion
+	for name := range preserved.quoted {
+		excluded = append(excluded, SymbolExclusion{Original: name, Reason: "quoted-reference"})
+	}
+	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Original < excluded[j].Original })
 	return assignments, assignmentKeys, SymbolMap{
+		Excluded:           excluded,
 		Entries:            entries,
 		MinifiedToOriginal: minToOrig,
 		OriginalToMinified: origToMin,
@@ -642,6 +666,7 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 	protected := &preservationSet{
 		names:      make(map[string]bool),
+		quoted:     make(map[string]bool),
 		symbols:    make(map[*analysis.Symbol]bool),
 		symbolKeys: make(map[string]bool),
 	}
@@ -650,10 +675,9 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 			protected.names[name] = true
 		}
 	}
-	preservePackageSurfaceSymbols(files, cfg, protected)
 	for i := range files {
 		for _, expr := range files[i].exprs {
-			collectProtectedMacroTemplateSymbols(expr, files[i].analysis.RootScope, protected)
+			collectQuotedSymbols(expr, false, protected)
 		}
 	}
 	return protected
@@ -666,7 +690,7 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 	}
 	for i := range files {
 		currentPkg := "user"
-		for _, expr := range files[i].exprs {
+		for _, expr := range astutil.PackageForms(files[i].exprs) {
 			if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 				continue
 			}
@@ -800,74 +824,30 @@ func nodeSymbol(result *analysis.Result, node *lisp.LVal) *analysis.Symbol {
 	return nil
 }
 
-func collectProtectedMacroTemplateSymbols(expr *lisp.LVal, root *analysis.Scope, protected *preservationSet) {
-	if expr == nil || root == nil || expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) < 4 {
-		return
-	}
-	if expr.Cells[0].Type != lisp.LSymbol || expr.Cells[0].Str != "defmacro" {
-		return
-	}
-	macroScope := findScopeForNode(root, expr)
-	if macroScope == nil {
-		return
-	}
-	for _, body := range expr.Cells[3:] {
-		walkMacroBodyForQuasiquote(body, macroScope, protected)
-	}
-}
-
-func walkMacroBodyForQuasiquote(node *lisp.LVal, scope *analysis.Scope, protected *preservationSet) {
-	if node == nil || node.Type != lisp.LSExpr {
-		return
-	}
-	if !node.IsQuoted() && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
-		if len(node.Cells) > 1 {
-			collectTemplateSymbols(node.Cells[1], scope, protected)
-		}
-		return
-	}
-	for _, child := range node.Cells {
-		walkMacroBodyForQuasiquote(child, scope, protected)
-	}
-}
-
-func collectTemplateSymbols(node *lisp.LVal, scope *analysis.Scope, protected *preservationSet) {
+// collectQuotedSymbols deliberately protects names across scopes and files.
+// ELPS accepts quoted function designators, and templates can emit references
+// that static lexical resolution cannot see. Even unquote names are retained:
+// reserving the whole template is the conservative policy.
+func collectQuotedSymbols(node *lisp.LVal, quoted bool, protected *preservationSet) {
 	if node == nil {
 		return
 	}
-	if node.Type == lisp.LSymbol {
-		if sym := preserveMacroTemplateSymbol(scope, node.Str); sym != nil {
-			protected.symbols[sym] = true
-			protected.symbolKeys[symbolLookupKey(sym)] = true
+	quoted = quoted || node.IsQuoted() || node.Type == lisp.LQuote
+	if node.Type == lisp.LSymbol && quoted {
+		protected.names[node.Str] = true
+		protected.quoted[node.Str] = true
+		if _, name, ok := splitQualifiedSymbol(node.Str); ok {
+			protected.names[name] = true
+			protected.quoted[name] = true
 		}
-		return
 	}
-	if node.Type != lisp.LSExpr {
-		return
-	}
-	if !node.IsQuoted() && len(node.Cells) > 0 && node.Cells[0].Type == lisp.LSymbol {
-		switch node.Cells[0].Str {
-		case "unquote", "unquote-splicing":
-			return
-		}
+	head := astutil.HeadSymbol(node)
+	if head == "quote" || head == "quasiquote" {
+		quoted = true
 	}
 	for _, child := range node.Cells {
-		collectTemplateSymbols(child, scope, protected)
+		collectQuotedSymbols(child, quoted, protected)
 	}
-}
-
-func preserveMacroTemplateSymbol(scope *analysis.Scope, name string) *analysis.Symbol {
-	if name == "" ||
-		strings.Contains(name, ":") ||
-		strings.HasPrefix(name, ":") ||
-		strings.HasPrefix(name, "%") {
-		return nil
-	}
-	sym := scope.Lookup(name)
-	if sym != nil && sym.Scope != nil && sym.Scope.Kind == analysis.ScopeGlobal {
-		return sym
-	}
-	return nil
 }
 
 func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
@@ -890,9 +870,8 @@ func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
 		lisp.LFun, lisp.LQuote, lisp.LString, lisp.LBytes, lisp.LSortMap,
 		lisp.LArray, lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal,
 		lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:
-		// Nothing to record.  Literals carry no package qualification, and
-		// LQuote is skipped for the same reason the quoted-LSExpr branch
-		// above bails out: a quoted form is data, not a reference.  The rest
+		// Literals carry no package qualification. Quoted names are handled
+		// separately by collectQuotedSymbols. The remaining types
 		// are runtime-only values that never appear in a parsed file.
 	}
 }
@@ -924,21 +903,6 @@ func splitQualifiedSymbol(name string) (string, string, bool) {
 }
 
 var packageNameArg = astutil.PackageNameArg
-
-func findScopeForNode(scope *analysis.Scope, node *lisp.LVal) *analysis.Scope {
-	if scope == nil {
-		return nil
-	}
-	if scope.Node == node {
-		return scope
-	}
-	for _, child := range scope.Children {
-		if found := findScopeForNode(child, node); found != nil {
-			return found
-		}
-	}
-	return nil
-}
 
 func compareSymbols(a, b *analysis.Symbol) int {
 	if a == nil || b == nil {

@@ -32,11 +32,12 @@ func (a *analyzer) defaultPackage() string {
 	return lisp.DefaultUserPackage
 }
 
-// prescan walks top-level expressions to register forward-referenceable
+// prescan walks package-binding forms at every depth to register forward-referenceable
 // definitions (defun, defmacro, set, export). It runs in two phases so
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
+	exprs = astutil.PackageForms(exprs)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
@@ -435,12 +436,11 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
-	// Register the name in the enclosing scope if not already defined.
-	// Prescan handles top-level definitions; this covers nested defun/defmacro
-	// (e.g. inside test bodies, progn, when, etc.).
+	// defun and defmacro bind in the package, while their bodies retain
+	// the enclosing lexical scope so closures still capture local values.
 	nameVal := node.Cells[1]
-	defPkg := packageForScope(scope, currentPkg)
-	if nameVal.Type == lisp.LSymbol && scope.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
+	defPkg := currentPkg
+	if nameVal.Type == lisp.LSymbol && a.root.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
 		formalsForSig := node.Cells[2]
 		sym := &Symbol{
 			Name:    nameVal.Str,
@@ -452,7 +452,7 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 		if formalsForSig.Type == lisp.LSExpr {
 			sym.Signature = signatureFromFormals(formalsForSig)
 		}
-		scope.Define(sym)
+		a.root.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
 	}
 
@@ -907,9 +907,8 @@ func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope, currentPkg string)
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
-	// Prescan body for forward-referenceable definitions (defun, defmacro, set).
+	// The package prescan already registered definitions in this body.
 	body := node.Cells[2:]
-	a.prescan(body, scope)
 	for _, expr := range body {
 		a.analyzeExpr(expr, scope, currentPkg)
 	}
