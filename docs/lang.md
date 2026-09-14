@@ -2803,8 +2803,8 @@ This keeps runtime-generated names and code working, but produces larger output
 and disables all identifier compression in programs using dynamic evaluation.
 
 Package-level bindings are renamed only when package flow and exported names can
-be proven statically: every `export` argument must be a literal quoted symbol,
-a literal string, or a literal list (possibly nested) of those, and every
+be proven statically: every `export` argument must be a reader-quoted symbol,
+a literal string, or a reader-quoted list (possibly nested) of those, and every
 `in-package` / `use-package` form must be at the top level of a file with literal
 package names. A variable or expression passed to `export`, a computed package
 name, or a package switch/import nested inside any form (including `progn`,
@@ -2817,6 +2817,13 @@ precedence over `quoted-reference`; one warning names the first offending form.
 If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
 and warning take precedence regardless of source order.
 Literal export names remain preserved even with `--rename-exports`.
+
+Reader quoting in `(export 'foo)` or `(export '(a b))` supplies proof because it
+cannot be shadowed. Calls to `quote` or `lisp:quote` do not: spelling an export as
+`(export (quote foo))` keeps all package-level names across the input files,
+even when `quote` is not shadowed. Use `(export 'foo)` to retain compression of
+private names. The repository's 83 source exports already use the reader-quote
+idiom, so the common case is unaffected.
 
 `defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
 bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`

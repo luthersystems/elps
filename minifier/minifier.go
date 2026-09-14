@@ -687,14 +687,6 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 }
 
 func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
-	bindings := make(map[string]bool)
-	for i := range files {
-		for _, expr := range files[i].exprs {
-			collectProofBindings(expr, bindings)
-		}
-	}
-	coreQuote := !bindings["quote"] && !bindings["lisp:quote"] &&
-		!bindings["quasiquote"] && !bindings["lisp:quasiquote"]
 	protected := &preservationSet{
 		names:      make(map[string]bool),
 		quoted:     make(map[string]bool),
@@ -713,55 +705,11 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 				protected.dynamicEvaluation = firstDynamicEvaluation(expr)
 			}
 			if protected.globalFallback == nil {
-				protected.globalFallback = firstGlobalFallback(expr, true, coreQuote)
+				protected.globalFallback = firstGlobalFallback(expr, true)
 			}
 		}
 	}
 	return protected
-}
-
-// collectProofBindings scans the whole program, including templates and later
-// files: any binding of a quoting operator defeats static proof from calls to
-// quote. This does not affect conservative preservation of quoted data.
-func collectProofBindings(node *lisp.LVal, bindings map[string]bool) {
-	if node == nil {
-		return
-	}
-	bind := func(name *lisp.LVal) {
-		if name != nil && name.Type == lisp.LSymbol {
-			bindings[name.Str] = true
-		}
-	}
-	if len(node.Cells) > 1 {
-		switch strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:") {
-		case "defun", "defmacro":
-			bind(node.Cells[1])
-			if len(node.Cells) > 2 {
-				astutil.CollectFormals(node.Cells[2], bindings)
-			}
-		case "lambda":
-			astutil.CollectFormals(node.Cells[1], bindings)
-		case "let", "let*", "flet", "labels":
-			head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
-			for _, binding := range node.Cells[1].Cells {
-				if len(binding.Cells) > 0 {
-					bind(binding.Cells[0])
-				}
-				if (head == "flet" || head == "labels") && len(binding.Cells) > 1 {
-					astutil.CollectFormals(binding.Cells[1], bindings)
-				}
-			}
-		case "set":
-			bind(setSymbolNode(node.Cells[1]))
-		case "export":
-			for _, name := range astutil.ExportNames(node.Cells[1:]) {
-				bindings[name] = true
-			}
-		}
-	}
-	for _, child := range node.Cells {
-		collectProofBindings(child, bindings)
-	}
 }
 
 func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *preservationSet) {
@@ -1045,7 +993,7 @@ func compareLocations(a, b *token.Location) int {
 // before any package binding may be renamed. Walk the original file tree, not
 // PackageForms: flattening it would lose the top-level requirement. Templates
 // are inspected conservatively too, since they may become executable code.
-func firstGlobalFallback(node *lisp.LVal, topLevel, coreQuote bool) *lisp.LVal {
+func firstGlobalFallback(node *lisp.LVal, topLevel bool) *lisp.LVal {
 	if node == nil {
 		return nil
 	}
@@ -1053,7 +1001,7 @@ func firstGlobalFallback(node *lisp.LVal, topLevel, coreQuote bool) *lisp.LVal {
 	switch head {
 	case "export":
 		for _, arg := range node.Cells[1:] {
-			if !literalExportArgument(arg, false, coreQuote) {
+			if !literalExportArgument(arg, false) {
 				return node.Cells[0]
 			}
 		}
@@ -1077,7 +1025,7 @@ func firstGlobalFallback(node *lisp.LVal, topLevel, coreQuote bool) *lisp.LVal {
 		}
 	}
 	for _, child := range node.Cells {
-		if found := firstGlobalFallback(child, false, coreQuote); found != nil {
+		if found := firstGlobalFallback(child, false); found != nil {
 			return found
 		}
 	}
@@ -1110,8 +1058,9 @@ func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
 
 // literalExportArgument proves the entire value, including every nested list
 // element. Extracting only the known names would silently miss computed exports.
-// Calls to quote supply proof only when the operator is unshadowed program-wide.
-func literalExportArgument(node *lisp.LVal, literal, coreQuote bool) bool {
+// Only reader quoting (IsQuoted) supplies proof: quote and lisp:quote calls
+// have shadowable heads, so they cannot prove an export name without scope analysis.
+func literalExportArgument(node *lisp.LVal, literal bool) bool {
 	if node == nil {
 		return false
 	}
@@ -1123,11 +1072,10 @@ func literalExportArgument(node *lisp.LVal, literal, coreQuote bool) bool {
 		return literal
 	case lisp.LSExpr:
 		if !literal && len(node.Cells) != 0 {
-			head := astutil.HeadSymbol(node)
-			return coreQuote && (head == "quote" || head == "lisp:quote") && len(node.Cells) == 2 && literalExportArgument(node.Cells[1], true, coreQuote)
+			return false
 		}
 		for _, child := range node.Cells {
-			if !literalExportArgument(child, true, coreQuote) {
+			if !literalExportArgument(child, true) {
 				return false
 			}
 		}

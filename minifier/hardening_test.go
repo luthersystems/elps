@@ -3,7 +3,6 @@
 package minifier
 
 import (
-	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -288,7 +287,7 @@ func TestMinifyUnprovenPackageFlowPreservesProgramGlobals(t *testing.T) {
 }
 
 func TestMinifyLiteralPackageFlowRenamesGlobals(t *testing.T) {
-	for _, exports := range []string{`'public`, `"public"`, `'(public ("public"))`, `[public ["public"]]`, `(quote (public ("public")))`, `(lisp:quote public)`, `()`} {
+	for _, exports := range []string{`'public`, `"public"`, `'(public ("public"))`, `[public ["public"]]`, `()`} {
 		t.Run(exports, func(t *testing.T) {
 			var warnings []string
 			src := []byte(`(in-package "other") (use-package 'user "lisp") (export ` + exports + `)
@@ -303,41 +302,6 @@ func TestMinifyLiteralPackageFlowRenamesGlobals(t *testing.T) {
 			require.NoError(t, err, "minified: %s", out)
 			require.Equal(t, original, actual)
 		})
-	}
-}
-
-func TestMinifyShadowedQuotePreventsExportProof(t *testing.T) {
-	for _, name := range []string{"quote", "lisp:quote", "quasiquote", "lisp:quasiquote"} {
-		for _, binding := range []string{
-			`(let ((%s 1)) ())`, `(let* ((%s 1)) ())`,
-			`(flet ((%s () 1)) ())`, `(labels ((%s () 1)) ())`,
-			`(lambda (%s) ())`, `(defun %s () 1)`, `(defmacro %s () 1)`,
-			`(defun other (%s) ())`, `(defmacro other (%s) ())`,
-			`(flet ((other (%s) 1)) ())`, `(labels ((other (%s) 1)) ())`,
-			`(set '%s 1)`, `(export '%s)`, `(export "%s")`,
-			`(lisp:let ((%s 1)) ())`, `(lisp:lambda (%s) ())`,
-			`(quasiquote (let ((%s 1)) ()))`,
-		} {
-			for _, call := range []string{"quote", "lisp:quote"} {
-				src := fmt.Sprintf(binding, name)
-				t.Run(call+"/"+src, func(t *testing.T) {
-					var warnings []string
-					result, err := Minify([]InputFile{
-						{Path: "exports.lisp", Source: []byte(`(defun helper (local) local) (export (` + call + ` public)) (export (` + call + ` another))`)},
-						{Path: "later.lisp", Source: []byte(`(in-package "remote") (defun remote-helper () 2) ` + src)},
-					}, &Config{RenameExports: true, Warn: func(warning string) { warnings = append(warnings, warning) }})
-					require.NoError(t, err)
-					for _, global := range []string{"helper", "remote-helper"} {
-						require.NotContains(t, result.SymbolMap.OriginalToMinified, global)
-						require.Contains(t, result.SymbolMap.Excluded, SymbolExclusion{Original: global, Reason: "unproven-package-flow"})
-					}
-					require.Contains(t, result.SymbolMap.OriginalToMinified, "local")
-					require.Len(t, warnings, 1)
-					require.Contains(t, warnings[0], "export prevents static proof")
-					require.Contains(t, warnings[0], "unproven-package-flow")
-				})
-			}
-		}
 	}
 }
 
@@ -358,6 +322,64 @@ func TestMinifyShadowedQuotePreservesQuotedData(t *testing.T) {
 			require.Contains(t, shadowedMap.Excluded, SymbolExclusion{Original: "keep", Reason: "quoted-reference"})
 			require.Contains(t, string(out), "(defun keep () 1)")
 			require.Contains(t, shadowedMap.OriginalToMinified, "helper")
+		})
+	}
+}
+
+func TestMinifyReaderQuoteExportProof(t *testing.T) {
+	for _, exports := range []string{`'foo`, `'(a b)`} {
+		t.Run(exports, func(t *testing.T) {
+			src := []byte(`(export ` + exports + `)
+(defun helper () 42)
+(defun foo () (helper))
+(defun a () (helper))
+(defun b () (helper))
+(debug-print (helper))`)
+			original, err := evalDebugOutput(t, src)
+			require.NoError(t, err)
+			require.Equal(t, "42\n", original)
+			var warnings []string
+			out, symMap, err := MinifySource(src, "reader-quote.lisp", &Config{
+				RenameExports: true,
+				Warn:          func(warning string) { warnings = append(warnings, warning) },
+			})
+			require.NoError(t, err)
+			require.Empty(t, warnings)
+			require.Contains(t, symMap.OriginalToMinified, "helper")
+			require.NotContains(t, string(out), "helper")
+			actual, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified: %s", out)
+			require.Equal(t, original, actual)
+		})
+	}
+}
+
+func TestMinifyQuoteCallDoesNotProveExports(t *testing.T) {
+	for _, exports := range []string{`(quote foo)`, `(lisp:quote foo)`, `(quote (foo ("foo")))`} {
+		t.Run(exports, func(t *testing.T) {
+			src := []byte(`(defun helper (local) local) (defun foo () (helper 42))
+(export ` + exports + `)
+(in-package 'other) (use-package 'user) (debug-print (foo))`)
+			original, err := evalDebugOutput(t, src)
+			require.NoError(t, err)
+			require.Equal(t, "42\n", original)
+			var warnings []string
+			out, symMap, err := MinifySource(src, "quote-call.lisp", &Config{
+				RenameExports: true,
+				Warn:          func(warning string) { warnings = append(warnings, warning) },
+			})
+			require.NoError(t, err)
+			for _, name := range []string{"helper", "foo"} {
+				require.NotContains(t, symMap.OriginalToMinified, name)
+				require.Contains(t, symMap.Excluded, SymbolExclusion{Original: name, Reason: "unproven-package-flow"})
+			}
+			require.Contains(t, symMap.OriginalToMinified, "local")
+			require.Len(t, warnings, 1)
+			require.Contains(t, warnings[0], "export prevents static proof")
+			require.Contains(t, warnings[0], "unproven-package-flow")
+			actual, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified: %s", out)
+			require.Equal(t, original, actual)
 		})
 	}
 }
