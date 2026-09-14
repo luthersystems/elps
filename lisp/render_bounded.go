@@ -22,6 +22,7 @@ const renderTruncatedMark = "#<truncated>"
 // renderBudget bounds all attempts, including cycle probes which emit no text.
 // It is shared across retries so neither recovery nor cycle detection resets it.
 type renderBudget struct {
+	stepFn    func() bool
 	ctx       context.Context
 	remaining int
 }
@@ -33,6 +34,9 @@ func newRenderBudget(limit int, ctx context.Context) renderBudget {
 }
 
 func (b *renderBudget) step() bool {
+	if b.stepFn != nil && !b.stepFn() {
+		return false
+	}
 	if b.remaining <= 0 {
 		return false
 	}

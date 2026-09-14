@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/luthersystems/elps/diagnostic"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -25,9 +24,8 @@ var genFunName = regexp.MustCompile(`_fun\d+`)
 
 // renderRunError writes src to a file in its own directory, loads it exactly
 // as `elps run` does, and returns what `elps run` would have printed for the
-// resulting error.  It renders through the command's own converter and
-// renderer rather than reimplementing them, so the goldens below are the
-// text a user sees.
+// resulting error. It uses the command's reporting path, so the goldens below
+// are the text a user sees.
 func renderRunError(t *testing.T, name, src string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -50,10 +48,8 @@ func renderRunError(t *testing.T, name, src string) string {
 
 	res := env.LoadFile(file)
 	require.Equal(t, lisp.LError, res.Type, "the program was expected to fail: %v", res)
-	d := lispErrorToDiagnostic(res)
-	d.Notes = append(d.Notes, "try: elps lint "+file)
 	var buf bytes.Buffer
-	require.NoError(t, (&diagnostic.Renderer{Color: diagnostic.ColorNever}).Render(&buf, d))
+	renderLispErrorTo(nil, &buf, res, file)
 	return genFunName.ReplaceAllString(buf.String(), "_funN")
 }
 

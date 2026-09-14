@@ -69,6 +69,12 @@ func runElps(args []string, stdout io.Writer) error {
 }
 
 func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error {
+	return runElpsReport(ctx, args, stdout, os.Stderr)
+}
+
+// runElpsReport runs the command with explicit diagnostic output and runtime
+// configuration so tests exercise the same evaluation and reporting path.
+func runElpsReport(ctx context.Context, args []string, stdout, stderr io.Writer, configs ...lisp.Config) error {
 	rootDir := runRootDir
 	if rootDir == "" {
 		wd, err := os.Getwd()
@@ -86,7 +92,7 @@ func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error 
 	env.Runtime.Reader = parser.NewReader()
 	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS(rootDir)}
 	for _, rc := range []*lisp.LVal{
-		lisp.InitializeUserEnv(env),
+		lisp.InitializeUserEnv(env, configs...),
 		lisplib.LoadLibrary(env),
 		env.InPackage(lisp.String(lisp.DefaultUserPackage)),
 	} {
@@ -111,7 +117,7 @@ func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error 
 			name = args[i]
 		}
 		if res.Type == lisp.LError {
-			renderLispErrorContext(ctx, res, name)
+			renderLispErrorTo(ctx, stderr, res, name)
 			return errRendered
 		}
 		if runPrint {
