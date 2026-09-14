@@ -262,6 +262,18 @@ func TestMinifyUnprovenPackageFlowPreservesProgramGlobals(t *testing.T) {
 		`(defmacro switch () (in-package 'remote))`,
 		`(progn (use-package 'user))`, `(lambda () (lisp:use-package "user"))`,
 		`(quasiquote (progn (lisp:in-package 'remote)))`,
+		`(defmacro publish (name) (quasiquote (export '(unquote name))))`,
+		`(defmacro publish () '(export "helper"))`,
+		`(defmacro publish () (export 'helper))`,
+		`(lisp:defmacro publish () '(lisp:export "helper"))`,
+		`(macrolet ((publish () '(export "helper"))) (publish))`,
+		`(lisp:macrolet ((publish () '(lisp:export "helper"))) (publish))`,
+		`(quasiquote (export 'helper))`,
+		`(lisp:quasiquote (lisp:export "helper"))`,
+		`(quasiquote (unquote (export 'helper)))`,
+		`(macrolet ((switch () '(in-package 'remote))) (switch))`,
+		`(defmacro import () '(use-package 'user))`,
+		`(quasiquote (use-package 'user))`,
 	} {
 		t.Run(trigger, func(t *testing.T) {
 			var warnings []string

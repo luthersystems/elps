@@ -72,8 +72,19 @@ If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
 and warning take precedence regardless of source order.
 Literal export names remain preserved even with --rename-exports.
 
-Reader quoting in (export 'foo) or (export '(a b)) supplies proof because it
-cannot be shadowed. Calls to quote or lisp:quote do not: spelling an export as
+Proof also requires directly evaluated package forms. Any export, in-package,
+or use-package inside defmacro, macrolet, or a quasiquote template triggers the
+package fallback, even if its arguments look literal. This includes quoted
+macro bodies and unquote forms: generated code may export different names.
+Macros without these package forms still allow renaming.
+
+Reader quoting in directly evaluated (export 'foo) or (export '(a b)) supplies
+proof because it cannot be shadowed. Calls to quote or lisp:quote do not:
+unqualified quote can be shadowed. Qualified lisp:quote resolves in the named
+package and cannot be lexically shadowed; the standard runtime seals that package
+against Lisp writes. An embedder can nevertheless register a different lisp
+package before sealing, so the minifier cannot assume the standard runtime.
+Spelling an export as
 (export (quote foo)) keeps all package-level names across the input files,
 even when quote is not shadowed. Use (export 'foo) to retain compression of
 private names. The repository's 83 source exports already use the reader-quote

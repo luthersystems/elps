@@ -4,10 +4,21 @@ package astutil
 
 import "github.com/luthersystems/elps/lisp"
 
-// ExportNames returns statically known names from evaluated export arguments.
-// Like builtinExport, literal values may be strings, symbols, or recursively
-// nested lists of either. Bare symbols and calls are expressions, so their
-// runtime values cannot be registered as static package exports.
+// ExportNames extracts candidate export names from argument syntax: strings,
+// reader-quoted symbols and nested lists, and (quote x) / (lisp:quote x) calls
+// interpreted as standard quoting. Other expressions contribute no names, so
+// the result may be incomplete. It does not resolve operators or expand macros.
+//
+// Preservation callers may always use these candidates as names worth keeping.
+// Analysis callers marking symbols Exported or populating cross-file export
+// metadata may use them only as a syntactic approximation under the assumption
+// of standard, unshadowed operators and directly evaluated export forms, not as
+// proof of runtime exports. A caller requiring proof must independently establish
+// that context, the export/quote operator semantics, and that every argument is
+// known. Unqualified quote may be shadowed; lisp:quote resolves in its package
+// but an embedder may register a nonstandard lisp package before sealing it.
+// Macro bodies and quasiquote templates do not establish directly evaluated
+// exports, even when their argument syntax looks literal.
 func ExportNames(args []*lisp.LVal) []string {
 	var names []string
 	var collect func(*lisp.LVal, bool)
@@ -35,7 +46,7 @@ func ExportNames(args []*lisp.LVal) []string {
 			lisp.LFun, lisp.LQuote, lisp.LBytes, lisp.LSortMap, lisp.LArray,
 			lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
 			lisp.LMarkMacExpand, lisp.LTypeMax:
-			// Other values do not supply statically known export names.
+			// Other values do not supply candidate export names.
 		}
 	}
 	for _, arg := range args {

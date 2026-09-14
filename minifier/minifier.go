@@ -705,7 +705,7 @@ func buildPreservationSet(files []parsedFile, cfg *Config) *preservationSet {
 				protected.dynamicEvaluation = firstDynamicEvaluation(expr)
 			}
 			if protected.globalFallback == nil {
-				protected.globalFallback = firstGlobalFallback(expr, true)
+				protected.globalFallback = firstGlobalFallback(expr, true, false)
 			}
 		}
 	}
@@ -991,15 +991,23 @@ func compareLocations(a, b *token.Location) int {
 
 // firstGlobalFallback requires static proof of package flow and exported names
 // before any package binding may be renamed. Walk the original file tree, not
-// PackageForms: flattening it would lose the top-level requirement. Templates
-// are inspected conservatively too, since they may become executable code.
-func firstGlobalFallback(node *lisp.LVal, topLevel bool) *lisp.LVal {
+// PackageForms: flattening it would lose the top-level and template context.
+// Package forms in macro definitions or quasiquotes cannot supply proof: their
+// generated code may export names that differ from the template's literal data.
+func firstGlobalFallback(node *lisp.LVal, topLevel, template bool) *lisp.LVal {
 	if node == nil {
 		return nil
 	}
 	head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
 	switch head {
+	case "defmacro", "macrolet", "quasiquote":
+		// Conservatively treat all contents as templates, including quoted
+		// data and unquotes; neither can restore directly evaluated context.
+		template = true
 	case "export":
+		if template {
+			return node.Cells[0]
+		}
 		for _, arg := range node.Cells[1:] {
 			if !literalExportArgument(arg, false) {
 				return node.Cells[0]
@@ -1008,7 +1016,7 @@ func firstGlobalFallback(node *lisp.LVal, topLevel bool) *lisp.LVal {
 	case "in-package", "use-package":
 		// The package scanner models the unqualified spellings only. A
 		// qualified call therefore cannot supply the proof needed to rename.
-		if !topLevel || astutil.HeadSymbol(node) != head {
+		if template || !topLevel || astutil.HeadSymbol(node) != head {
 			return node.Cells[0]
 		}
 		args := node.Cells[1:]
@@ -1025,7 +1033,7 @@ func firstGlobalFallback(node *lisp.LVal, topLevel bool) *lisp.LVal {
 		}
 	}
 	for _, child := range node.Cells {
-		if found := firstGlobalFallback(child, false); found != nil {
+		if found := firstGlobalFallback(child, false, template); found != nil {
 			return found
 		}
 	}
@@ -1058,8 +1066,11 @@ func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
 
 // literalExportArgument proves the entire value, including every nested list
 // element. Extracting only the known names would silently miss computed exports.
-// Only reader quoting (IsQuoted) supplies proof: quote and lisp:quote calls
-// have shadowable heads, so they cannot prove an export name without scope analysis.
+// For directly evaluated exports, only reader quoting (IsQuoted) supplies quote
+// proof. Unqualified quote can be shadowed. Qualified lisp:quote cannot be
+// lexically shadowed and the standard runtime seals its package against Lisp
+// writes, but an embedder can register a different lisp package before sealing;
+// the minifier cannot assume the standard runtime's implementation.
 func literalExportArgument(node *lisp.LVal, literal bool) bool {
 	if node == nil {
 		return false

@@ -210,3 +210,59 @@ func TestMinifyCommandShadowedQuoteExecutionEquivalence(t *testing.T) {
 		})
 	}
 }
+
+func TestMinifyCommandMacroTemplateExecutionEquivalence(t *testing.T) {
+	bin := buildTestBinary(t)
+	for _, tt := range []struct {
+		name, source string
+		fallback     bool
+	}{
+		{"quasiquote_export", `(defun longFunction () 42)
+(defmacro publish (name) (quasiquote (export '(unquote name))))
+(publish "longFunction")
+(in-package 'other) (use-package 'user) (debug-print (longFunction))`, true},
+		{"quoted_export", `(defun longFunction () 42)
+(defmacro publish () '(export "longFunction"))
+(publish)
+(in-package 'other) (use-package 'user) (debug-print (longFunction))`, true},
+		{"direct_export", `(defun privateFunction () 42)
+(defun foo () (privateFunction))
+(export 'foo)
+(in-package 'other) (use-package 'user) (debug-print (foo))`, false},
+		{"macro_without_export", `(defun privateFunction () 42)
+(defmacro passthrough (value) (quasiquote (identity (unquote value))))
+(debug-print (passthrough (privateFunction)))`, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "original.lisp"), []byte(tt.source), 0o600))
+			originalCode, originalOut, originalErr := runCorpusCLI(t, bin, dir, "run", "original.lisp")
+			require.Equal(t, 0, originalCode, "%s", originalErr)
+			require.Empty(t, originalOut)
+			require.Equal(t, "42\n", originalErr)
+			code, minified, warning := runCorpusCLI(t, bin, dir, "minify", "--map", "symbols.json", "original.lisp")
+			require.Equal(t, 0, code, "%s", warning)
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "minified.lisp"), []byte(minified), 0o600))
+			minCode, minOut, minErr := runCorpusCLI(t, bin, dir, "run", "minified.lisp")
+			assert.Equal(t, originalCode, minCode, "minified source:\n%s\nstderr:\n%s", minified, minErr)
+			assert.Equal(t, originalOut, minOut)
+			assert.Equal(t, originalErr, minErr)
+			data, err := os.ReadFile(filepath.Join(dir, "symbols.json")) //nolint:gosec // reads CLI output from the test-owned temporary directory
+			require.NoError(t, err)
+			var symMap minifier.SymbolMap
+			require.NoError(t, json.Unmarshal(data, &symMap))
+			if tt.fallback {
+				require.Contains(t, warning, "export prevents static proof")
+				require.Contains(t, warning, "unproven-package-flow")
+				require.Equal(t, 1, bytes.Count([]byte(warning), []byte("warning:")))
+				for _, name := range []string{"longFunction", "publish"} {
+					require.NotContains(t, symMap.OriginalToMinified, name)
+					require.Contains(t, symMap.Excluded, minifier.SymbolExclusion{Original: name, Reason: "unproven-package-flow"})
+				}
+			} else {
+				require.Empty(t, warning)
+				require.Contains(t, symMap.OriginalToMinified, "privateFunction")
+			}
+		})
+	}
+}
