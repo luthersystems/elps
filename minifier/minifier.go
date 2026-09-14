@@ -433,13 +433,11 @@ func setName(arg *lisp.LVal) string {
 }
 
 // setSymbolNode returns the node naming the binding in the first arg of set.
-// Both (set 'name value) and (set name value) give one LSymbol -- the reader
-// quote is folded into the symbol's own node -- and anything else names
-// nothing: (set '(a b) 1) defines neither a nor b.  analysis draws the same
-// line, and the two have to agree or scanProgramSymbols publishes a
-// cross-file definition that no analysis of the defining file will match.
+// Only a quoted symbol names a static binding; bare symbols and compound
+// targets are evaluated. Keep this aligned with analysis so the scanner
+// never publishes a computed target as a cross-file definition.
 func setSymbolNode(arg *lisp.LVal) *lisp.LVal {
-	if arg.Type == lisp.LSymbol {
+	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg
 	}
 	return nil
@@ -460,10 +458,18 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 			}
 		}
 	}
+	// Reserve every surviving name before allocating any replacement. This
+	// includes kind- and option-based preservation and package redefinitions,
+	// and prevents new lexical bindings from capturing preserved references.
+	reserved := make(map[string]bool, len(preserved.names))
+	for name := range preserved.names {
+		reserved[name] = true
+	}
 	var records []symbolRecord
 	for _, file := range files {
 		for _, sym := range file.analysis.Symbols {
 			if !renameable(sym, cfg, preserved) || preservedBindings[packageBindingKey(sym)] {
+				reserved[sym.Name] = true
 				continue
 			}
 			records = append(records, symbolRecord{sym: sym})
@@ -492,7 +498,7 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 			continue
 		}
 		newName := fmt.Sprintf("x%d", next)
-		for preserved.names[newName] {
+		for reserved[newName] {
 			next++
 			newName = fmt.Sprintf("x%d", next)
 		}

@@ -43,9 +43,11 @@ func TestRenameQuotedSymbolExcludesReaderQuote(t *testing.T) {
 	//
 	//	line 0: ( s e t _ ' é. .é _ 1 )      é at bytes 6..8
 	//	line 1: ( s e t _ ' e _ 2 )          e at byte  6
-	//	line 2: ( s e t _ ú. .ú _ 3 )        ú at bytes 5..7
-	//	line 3: ( + _ é. .é _ e _ ú. .ú )    é 3..5, e 6, ú 8..10
-	const content = "(set 'é 1)\n(set 'e 2)\n(set ú 3)\n(+ é e ú)\n"
+	//	line 2: ( l e t _ ( ( ú. .ú _ 3 ) )  ú at bytes 7..9
+	//	line 3: ( + _ é. .é _ e _ ú. .ú ) )  é 3..5, e 6, ú 8..10
+	// A lexical binding keeps the unquoted guard valid: bare set targets
+	// are evaluated expressions, not definitions.
+	const content = "(set 'é 1)\n(set 'e 2)\n(let ((ú 3))\n(+ é e ú))\n"
 
 	for _, tc := range []struct {
 		name     string
@@ -63,7 +65,7 @@ func TestRenameQuotedSymbolExcludesReaderQuote(t *testing.T) {
 			{Start: protocol.Position{Line: 0, Character: 6}, End: protocol.Position{Line: 0, Character: 8}},
 			{Start: protocol.Position{Line: 3, Character: 3}, End: protocol.Position{Line: 3, Character: 5}},
 		},
-		wantText: "(set 'zz 1)\n(set 'e 2)\n(set ú 3)\n(+ zz e ú)\n",
+		wantText: "(set 'zz 1)\n(set 'e 2)\n(let ((ú 3))\n(+ zz e ú))\n",
 	}, {
 		name: "quoted-ascii", // broken identically before the fix
 		line: 1, char: 6,
@@ -72,16 +74,16 @@ func TestRenameQuotedSymbolExcludesReaderQuote(t *testing.T) {
 			{Start: protocol.Position{Line: 1, Character: 6}, End: protocol.Position{Line: 1, Character: 7}},
 			{Start: protocol.Position{Line: 3, Character: 6}, End: protocol.Position{Line: 3, Character: 7}},
 		},
-		wantText: "(set 'é 1)\n(set 'ee 2)\n(set ú 3)\n(+ é ee ú)\n",
+		wantText: "(set 'é 1)\n(set 'ee 2)\n(let ((ú 3))\n(+ é ee ú))\n",
 	}, {
 		name: "unquoted-non-ascii-GUARD",
-		line: 2, char: 5,
+		line: 2, char: 7,
 		newName: "uu",
 		want: []protocol.Range{
-			{Start: protocol.Position{Line: 2, Character: 5}, End: protocol.Position{Line: 2, Character: 7}},
+			{Start: protocol.Position{Line: 2, Character: 7}, End: protocol.Position{Line: 2, Character: 9}},
 			{Start: protocol.Position{Line: 3, Character: 8}, End: protocol.Position{Line: 3, Character: 10}},
 		},
-		wantText: "(set 'é 1)\n(set 'e 2)\n(set uu 3)\n(+ é e uu)\n",
+		wantText: "(set 'é 1)\n(set 'e 2)\n(let ((uu 3))\n(+ é e uu))\n",
 		unquoted: true,
 	}} {
 		t.Run(tc.name, func(t *testing.T) {

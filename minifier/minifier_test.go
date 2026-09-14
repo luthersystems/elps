@@ -104,7 +104,7 @@ func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
 	out, symMap, err := MinifySource(src, "test.lisp", cfg)
 	require.NoError(t, err)
 
-	// handler is a top-level set binding — preserved by default (not renamed).
+	// handler is an unresolved computed target, so its spelling is unchanged.
 	// Lambda params are preserved by PreserveParams.
 	assert.Equal(t, "(set handler (lambda (request response) response))\n", string(out))
 	assert.Empty(t, symMap.Entries, "nothing should be renamed")
@@ -254,7 +254,7 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 		"fn-plain", "fn-quoted",
 		"mac-plain", "mac-quoted",
 		"ty-plain", "ty-quoted",
-		"var-plain", "var-quoted",
+		"var-quoted",
 		"cus-plain",
 	}
 
@@ -270,7 +270,8 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 	// Names neither side may record: set takes a symbol, so (set '(a b) 1)
 	// binds nothing.  Both producers used to reach into the quoted list and
 	// invent a definition of its first element carrying the LIST's span.
-	wantNeither := []string{"lst-a", "lst-b"}
+	// An unquoted target is evaluated, not a static definition of its name.
+	wantNeither := []string{"lst-a", "lst-b", "var-plain"}
 
 	defForms := []analysis.DefFormSpec{{
 		Head:         "custom-def",
@@ -955,4 +956,47 @@ func evalDebugOutput(t *testing.T, src []byte) (string, error) {
 	env.Runtime.Stderr = &stderr
 	result := env.LoadString("execution.lisp", string(src))
 	return stderr.String(), lisp.GoError(result)
+}
+
+func TestMinify_PreservedBindingCollisionExecutionEquivalence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		src  string
+		want string
+		cfg  *Config
+	}{
+		{"type", `(deftype x1 () 9) (defun other () 2) (debug-print (new x1))`, "#{user:x1 9}\n", nil},
+		{"macro", `(defmacro x1 () 9) (defun other () 2) (debug-print (x1))`, "9\n", nil},
+		{"type_lexical_capture", `(deftype x1 () 9) (let ((other 2)) (debug-print (new x1)))`, "#{user:x1 9}\n", nil},
+		{"preserved_parameter_lexical_capture", `((lambda (x1) (let ((other 2)) (debug-print x1))) 9)`, "9\n", &Config{PreserveParams: true}},
+		{"exported", `(export 'x1) (defun x1 () 9) (defun other () 2) (debug-print (x1))`, "9\n", nil},
+		{"quoted_reference_lexical_capture", `(let ((x1 9)) 'x1 (let ((other 2)) (debug-print x1)))`, "9\n", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			original, err := evalDebugOutput(t, []byte(tt.src))
+			require.NoError(t, err)
+			require.Equal(t, tt.want, original)
+			out, _, err := MinifySource([]byte(tt.src), "collision.lisp", tt.cfg)
+			require.NoError(t, err)
+			minified, err := evalDebugOutput(t, out)
+			assert.NoError(t, err, "minified source: %s", out)
+			assert.Equal(t, original, minified, "minified source: %s", out)
+		})
+	}
+}
+
+func TestMinify_ComputedSetTargetExecutionEquivalence(t *testing.T) {
+	for _, target := range []string{"target", "(identity target)"} {
+		t.Run(target, func(t *testing.T) {
+			src := []byte("(let ((target 'answer)) (set " + target + " 42)) (debug-print answer)")
+			original, err := evalDebugOutput(t, src)
+			require.NoError(t, err)
+			require.Equal(t, "42\n", original)
+			out, _, err := MinifySource(src, "computed-set.lisp", nil)
+			require.NoError(t, err)
+			minified, err := evalDebugOutput(t, out)
+			assert.NoError(t, err, "minified source: %s", out)
+			assert.Equal(t, original, minified, "minified source: %s", out)
+		})
+	}
 }

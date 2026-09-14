@@ -313,8 +313,9 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 var extractPackageName = astutil.PackageNameArg
 
 // extractSetSymbolNode returns the node naming the binding in the first arg of
-// set, for both (set 'name value) and (set name value) -- the quote is folded
-// into the symbol's own node, so both spellings are one LSymbol.
+// set when the target is a quoted symbol. The reader folds the quote into
+// the symbol's own node. Bare symbols and compound targets are evaluated
+// expressions, so their runtime binding names are not statically known.
 //
 // A first arg that is not a symbol names nothing: set takes a symbol, and
 // (set '(a b) 1) defines neither a nor b.  This used to reach into a quoted
@@ -324,7 +325,7 @@ var extractPackageName = astutil.PackageNameArg
 // the definition it invented carried the LIST's span as the location of the
 // name -- textDocumentRename then replaced '(a b) wholesale, dropping b.
 func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
-	if arg.Type == lisp.LSymbol {
+	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg
 	}
 	return nil
@@ -962,7 +963,9 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
-	// Analyze the value expression
+	// set evaluates both arguments in the current lexical scope. Only a
+	// quoted symbol target also identifies a static package binding below.
+	a.analyzeExpr(node.Cells[1], scope, currentPkg)
 	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 
 	name := extractSetSymbolName(node.Cells[1])
