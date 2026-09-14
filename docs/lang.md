@@ -1316,14 +1316,15 @@ caller's current package context at the point of the load call.
 value of its last expression. File access follows the host runtime's source
 library policy.
 
-With `elps run`, file arguments and `load-file` calls are confined to
-`--root-dir` (the working directory by default). Symlinks in both the root
-and the requested path are resolved before checking access. A symlinked file,
-directory, or chain that leads outside the resolved root is refused with an
-ordinary, catchable error. Symlinks whose targets remain inside the root
-are allowed. Move an escaping dependency inside the root or choose a root
-that contains it. This depends on filesystem state at runtime, so static
-linting cannot establish whether a load will be allowed.
+With `elps run`, `elps debug`, and `elps repl`, file arguments and `load-file`
+calls are confined to `--root-dir` (the working directory by default) through
+an open root directory handle. Confinement is enforced at open time, including
+when a directory component is replaced by a symlink. Relative symlinks within
+the root are allowed. Escaping paths and absolute symlinks (even those pointing
+inside the root) produce ordinary, catchable errors. Use a relative symlink
+for an internal dependency; move an escaping dependency inside the root or
+choose a root that contains it. This depends on filesystem state at runtime,
+so static linting cannot establish whether a load will be allowed.
 
 Initial relative file arguments and relative `load-file` calls in `-e`
 expressions start at the root directory. Nested loads are relative to the

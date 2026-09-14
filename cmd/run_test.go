@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/rootlibrary"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -20,6 +22,24 @@ func resetRunFlags(t *testing.T) {
 	t.Cleanup(func() {
 		runExpression, runPrint, runRootDir = prevExpr, prevPrint, prevRoot
 	})
+}
+
+func TestRunRootDirReplacedAfterConstruction(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	require.NoError(t, os.Mkdir(root, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "value.lisp"), []byte("42"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "value.lisp"), []byte("99"), 0o600))
+	lib, err := rootlibrary.Open(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lib.Close()) })
+	// A root handle must stay attached to the original directory, even if
+	// its pathname is replaced by a symlink after loader construction.
+	require.NoError(t, os.Rename(root, filepath.Join(parent, "moved")))
+	require.NoError(t, os.Symlink(".", root))
+	_, _, data, err := lib.LoadSource(lisp.NewSourceContext("", ""), "value.lisp")
+	require.NoError(t, err)
+	assert.Equal(t, "42", string(data), "must not read the replacement root")
 }
 
 // TestRunExpressionFlag pins that -e evaluates its arguments as expressions.

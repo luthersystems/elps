@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -34,11 +35,9 @@ arguments are interpreted as Lisp expressions and evaluated directly. With
 The runtime loads all standard library packages automatically. User code
 starts in the "user" package and can import other packages with use-package.
 
-File access is confined to the root directory (--root-dir, default: working
-directory). The load-file function can only read files within this tree.
-Symlinks in the root and requested paths are resolved before checking access;
-a link that escapes the resolved root is refused with an ordinary error.
-Symlinks whose targets remain inside the root are allowed.
+Source loads are confined to the root directory (--root-dir, default: working
+directory) at open time. Relative symlinks whose targets stay inside the root
+are allowed; escaping paths and absolute symlinks produce ordinary errors.
 
 Examples:
   elps run hello.lisp              Run a source file
@@ -80,11 +79,19 @@ func runElps(args []string, stdout io.Writer) error {
 		return fmt.Errorf("cannot resolve root directory: %w", err)
 	}
 
+	// File-root audit for commands that do not execute through this loader:
+	// lint: reads named files/stdin and scans --workspace; workspace is not a security boundary.
+	// fmt: reads named files/stdin and expanded directory trees; no root security boundary.
+	// lsp: reads client documents/URIs and scans the workspace; workspace is not a security boundary.
+	// mcp: reads tool-selected paths/content and scans workspaces; absolute paths and symlinks bypass its relative-path check, so no root security boundary.
+	lib, err := rootlibrary.Open(rootDir)
+	if err != nil {
+		return err
+	}
+	defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
-	env.Runtime.Library = &runFileSystemLibrary{
-		RelativeFileSystemLibrary: lisp.RelativeFileSystemLibrary{RootDir: rootDir},
-	}
+	env.Runtime.Library = lib
 	for _, rc := range []*lisp.LVal{
 		lisp.InitializeUserEnv(env),
 		lisplib.LoadLibrary(env),
@@ -122,19 +129,6 @@ func runElps(args []string, stdout io.Writer) error {
 	return nil
 }
 
-// runFileSystemLibrary anchors initial loads and loads from -e expressions
-// at --root-dir. Nested loads use the calling file's resolved directory.
-type runFileSystemLibrary struct {
-	lisp.RelativeFileSystemLibrary
-}
-
-func (lib *runFileSystemLibrary) LoadSource(ctx lisp.SourceContext, loc string) (string, string, []byte, error) {
-	if ctx.Location() == "" && !filepath.IsAbs(loc) {
-		loc = filepath.Join(lib.RootDir, loc)
-	}
-	return lib.RelativeFileSystemLibrary.LoadSource(ctx, loc)
-}
-
 // toRelativePath converts a file path to be relative to rootDir.
 // Relative paths are returned as-is. Absolute paths within rootDir
 // are converted; absolute paths outside rootDir produce an error.
@@ -162,5 +156,5 @@ func init() {
 	runCmd.Flags().BoolVarP(&runPrint, "print", "p", false,
 		"Print expression values to stdout")
 	runCmd.Flags().StringVar(&runRootDir, "root-dir", "",
-		"Root directory for file access confinement (default: working directory)")
+		"Root directory for source load confinement (default: working directory)")
 }

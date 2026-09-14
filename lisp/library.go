@@ -135,8 +135,8 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 // FSLibrary implements SourceLibrary using an fs.FS. The fs.FS contract
 // requires unrooted slash-separated paths without ".." elements, but does
 // not guarantee confinement: os.DirFS follows symlinks outside its directory
-// and is not a security boundary. Use RelativeFileSystemLibrary with RootDir
-// set when filesystem loads must reject symlinks escaping a root directory.
+// and is not a security boundary. Use an os.Root's FS method when filesystem
+// loads must reject symlinks escaping a root directory at open time.
 type FSLibrary struct {
 	FS fs.FS
 }
