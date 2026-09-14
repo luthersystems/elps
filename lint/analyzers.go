@@ -2537,9 +2537,14 @@ func checkLispBindings(pass *Pass, sealed bool) error {
 			}
 			var name string
 			switch head {
-			case "set", "set!":
+			case "set":
 				if value, known := packageLiteralArg(arg); known && value.Type == lisp.LSymbol {
 					name = value.Str
+				}
+			case "set!":
+				// Unlike set, set! takes its symbol argument unevaluated.
+				if arg.Type == lisp.LSymbol {
+					name = arg.Str
 				}
 			case "defun", "defmacro":
 				if arg.Type == lisp.LSymbol && !arg.IsQuoted() {

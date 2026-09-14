@@ -5035,15 +5035,18 @@ func TestLispBindingDiagnostics(t *testing.T) {
 		positive, negative []string
 	}{
 		{"lisp-package-seal", SeverityError, []string{
-			`(set 'lisp:if 1)`, `(set! 'lisp:lambda 1)`,
+			`(set 'lisp:if 1)`, `(set! lisp:if 1)`, `(lisp:set! lisp:if 1)`,
+			`(set! 'lisp:lambda 1)`,
 			`(defun lisp:car (x) x)`, `(defmacro lisp:car (x) x)`,
-			`(lisp:set (quote lisp:if) 1)`, `(lisp:set! (lisp:quote lisp:if) 1)`,
+			`(lisp:set (quote lisp:if) 1)`, `(set (lisp:quote lisp:if) 1)`,
 			`(defun f () (set 'lisp:if 1))`,
 			`(in-package 'lisp) (set 'if 1)`,
+			`(in-package 'lisp) (set! if 1)`, `(in-package 'lisp) (lisp:set! if 1)`,
 			`(in-package "lisp") (defun car (x) x)`,
 		}, []string{
 			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'car 1)`,
 			`(set name 1)`, `(set (get m "name") 1)`,
+			`(set! (quote lisp:if) 1)`, `(lisp:set! (lisp:quote lisp:if) 1)`,
 			`'(set 'lisp:if 1)`, `(quote (set 'lisp:if 1))`,
 			`(lisp:quasiquote (set 'lisp:if 1))`,
 			`(defun set (x y) y) (set 'lisp:if 1)`,
@@ -5053,7 +5056,9 @@ func TestLispBindingDiagnostics(t *testing.T) {
 			`(lambda (set lisp:if x) x)`,
 		}},
 		{"builtin-shadowing", SeverityWarning, []string{
-			`(set 'if 1)`, `(set! 'lambda 1)`, `(set 'quote 1)`,
+			`(set 'if 1)`, `(set! if 1)`, `(lisp:set! if 1)`,
+			`(set! user:if 1)`, `(lisp:set! user:if 1)`, `(set 'quote 1)`,
+			`(set! 'lambda 1)`,
 			`(defun car (x) x)`, `(defmacro list (x) x)`,
 			`(lisp:set (quote if) 1)`, `(lisp:defun car (x) x)`,
 			`(in-package 'other) (defun car (x) x)`,
@@ -5061,6 +5066,7 @@ func TestLispBindingDiagnostics(t *testing.T) {
 			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'lisp:if 1)`,
 			`(defun my-car (x) (car x))`, `(let ((list 1)) list)`,
 			`(defun f () (set 'if 1))`, `(set name 1)`,
+			`(set! (quote if) 1)`, `(lisp:set! (lisp:quote if) 1)`,
 			`(quote (set 'if 1))`, `(quasiquote (defun car (x) x))`,
 			`(in-package 'lisp) (set 'if 1)`,
 		}},
