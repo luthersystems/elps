@@ -43,9 +43,6 @@ type PackageDoc struct {
 // QueryPackages returns structured documentation for all packages in
 // the environment, suitable for JSON serialization.
 func QueryPackages(env *lisp.LEnv) []PackageDoc {
-	// Collect core builtins into the "lisp" package.
-	lispSyms := queryCoreSymbols()
-
 	names := env.Runtime.Registry.PackageNames()
 
 	var pkgs []PackageDoc
@@ -56,7 +53,8 @@ func QueryPackages(env *lisp.LEnv) []PackageDoc {
 			Doc:  cleanDocRaw(pkg.Doc),
 		}
 		if name == "lisp" {
-			pd.Symbols = lispSyms
+			// Only read core documentation when the environment includes lisp.
+			pd.Symbols = queryCoreSymbols()
 		} else {
 			pd.Symbols = queryPackageSymbols(pkg)
 		}
