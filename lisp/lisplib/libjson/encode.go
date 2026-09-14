@@ -304,13 +304,33 @@ func (enc *encoder) encodeLimit(v *lisp.LVal, limit int) error {
 	// is a fragment.  Drop it and start the value over.
 	enc.nestedDeep = true
 	enc.buf.Truncate(mark)
-	return enc.encodeValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit})
+	return enc.encodeDeepValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit})
 }
 
-// encodeValue serializes one value of a document already in progress.  Every
-// nested encode must call this and pass g down rather than calling encode, or
-// the bound is lost.
+// encodeValue handles the shallow counting pass. Recursion stops before
+// encodeGuardDepth, so ordinary documents need neither an explicit frame stack
+// nor cycle-map operations. encodeLimit restarts deeper values in encodeDeepValue.
 func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
+	if v.IsNil() {
+		enc.buf.WriteString("null")
+		return nil
+	}
+	fn := encoderFuncs[v.Type]
+	if fn == nil {
+		return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
+	}
+	g.depth++
+	// The effective value-depth limit is at least 1024, so this lower bound
+	// always ends the recursive pass before that limit can be reached.
+	if g.depth >= encodeGuardDepth {
+		return errDeepValue
+	}
+	return fn(enc, v, g)
+}
+
+// encodeDeepValue uses heap-backed continuations for deep or cyclic documents,
+// keeping the Go stack bounded while enforcing the configured value-depth limit.
+func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 	// Keep one continuation per ancestor, consuming its children in order.
 	// Queuing all children and punctuation makes scratch space grow with
 	// width, even for shallow documents that never need cycle tracking.
@@ -425,8 +445,11 @@ func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) (err error) {
 
 func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
 	// TODO:  Cache map entries slices to help with "widely nested" objects
-	enc.buf.WriteByte('{')
 	ents := v.MapEntries()
+	if ents.Type == lisp.LError {
+		return lisp.GoError(ents)
+	}
+	enc.buf.WriteByte('{')
 	for i := range ents.Cells {
 		if i > 0 {
 			enc.buf.WriteByte(',')

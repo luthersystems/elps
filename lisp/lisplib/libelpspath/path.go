@@ -73,11 +73,13 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 		v      *lisp.LVal
 		dst    **lisp.LVal
 		finish func() error
-		g      cycleGuard
+		depth  int
 		leave  bool
 	}
+	// All frames share g.state. Store only depth in the growable frame slice
+	// so the caller's cycleState is not forced onto the heap by an append.
 	var out *lisp.LVal
-	pending := []frame{{v: v, dst: &out, g: g}}
+	pending := []frame{{v: v, dst: &out, depth: g.depth}}
 	for len(pending) > 0 {
 		f := pending[len(pending)-1]
 		pending = pending[:len(pending)-1]
@@ -88,7 +90,7 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 			continue
 		}
 		if f.leave {
-			f.g.ascend(f.v)
+			g.ascend(f.v)
 			continue
 		}
 		v := f.v
@@ -98,15 +100,15 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 			*f.dst = v
 			continue
 		}
-		if f.g.depth >= lisp.MaxValueDepth {
+		if f.depth >= lisp.MaxValueDepth {
 			return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
 		}
-		next, cyclic := f.g.descend(v)
+		next, cyclic := (cycleGuard{state: g.state, depth: f.depth}).descend(v)
 		if cyclic {
 			return nil, errCyclicValue
 		}
 		if next.tracking() {
-			pending = append(pending, frame{v: v, g: next, leave: true})
+			pending = append(pending, frame{v: v, leave: true})
 		}
 		var cells []*lisp.LVal
 		switch v.Type {
@@ -120,7 +122,7 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 			for i := len(entries.Cells) - 1; i >= 0; i-- {
 				pair := entries.Cells[i]
 				var child *lisp.LVal
-				pending = append(pending, frame{finish: func() error { return lisp.GoError(cp.Map().Set(pair.Cells[0], child)) }}, frame{v: pair.Cells[1], dst: &child, g: next})
+				pending = append(pending, frame{finish: func() error { return lisp.GoError(cp.Map().Set(pair.Cells[0], child)) }}, frame{v: pair.Cells[1], dst: &child, depth: next.depth})
 			}
 			continue
 		case lisp.LArray:
@@ -159,7 +161,7 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 		}
 		*f.dst = sameQuoting(v, cp)
 		for i := len(cells) - 1; i >= 0; i-- {
-			pending = append(pending, frame{v: cells[i], dst: &copied[i], g: next})
+			pending = append(pending, frame{v: cells[i], dst: &copied[i], depth: next.depth})
 		}
 	}
 	return out, nil

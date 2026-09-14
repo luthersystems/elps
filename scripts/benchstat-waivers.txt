@@ -94,8 +94,8 @@
 # pkg | benchmark | metric | ceiling | expires | issue | reason
 # ---------------------------------------------------------------------------
 #
-# (No active waivers.  The last entry -- the elps#363 libjson Package/$load
-# B/op waiver for the fresh-formals-per-env copy -- was deleted once the
+# (The former elps#363 libjson Package/$load
+# B/op waiver for the fresh-formals-per-env copy was deleted once the
 # seal-enabled env-construction work landed (elps#519) and the gate reported
 # the row `waiver-unused` on every run; see elps#514 for the remaining
 # eval-path reclaim.)
@@ -108,3 +108,4 @@
 # gate with no change under lisp/lisplib/libhelp. The only caller is
 # `elps doc --json` (cmd/doc.go); nothing on an embedded or request path
 # calls it, so the cost is paid once per CLI invocation by a developer.
+github.com/luthersystems/elps/mcpserver | LintTool | B/op | 8.5 | 2027-09-14 | elps#659 | Additional analysis from lisp-package-seal, builtin-shadowing, lambda-list, duplicate-binding and duplicate-keyword analyzers.
