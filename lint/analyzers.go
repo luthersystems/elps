@@ -2533,7 +2533,7 @@ func checkLispBindings(pass *Pass, sealed bool) error {
 			arg := v.Cells[1]
 			if topLevel && head == "in-package" {
 				pkg = "" // A dynamic package switch makes the current package unknown.
-				if value, known := packageLiteralArg(arg); known && validPackageLiteral(value) {
+				if value, known := packageLiteralArg(arg, userDefs, skip); known && validPackageLiteral(value) {
 					pkg = value.Str
 				}
 			}
@@ -2544,7 +2544,7 @@ func checkLispBindings(pass *Pass, sealed bool) error {
 					name = arg.Str
 				}
 			case "set":
-				if value, known := packageLiteralArg(arg); known && value.Type == lisp.LSymbol {
+				if value, known := packageLiteralArg(arg, userDefs, skip); known && value.Type == lisp.LSymbol {
 					name = value.Str
 				}
 			case "set!":
