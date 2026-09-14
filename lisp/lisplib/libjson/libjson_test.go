@@ -39,6 +39,13 @@ func TestPackageExactIntegers(t *testing.T) {
 	r.RunTestFile(t, "libjson_integer_test.lisp")
 }
 
+// Keep sentinel regressions separate from BenchmarkPackage's loader input.
+func TestPackageNullSentinel(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libjson_null_test.lisp")
+}
+
 func BenchmarkPackage(b *testing.B) {
 	r := &elpstest.Runner{}
 	defer r.Close()

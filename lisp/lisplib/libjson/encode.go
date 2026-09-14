@@ -700,6 +700,10 @@ func (enc *encoder) encodeLSymbol(v *lisp.LVal, _ encodeGuard) (err error) {
 		enc.buf.WriteString(v.Str)
 		return nil
 	}
+	if v.Str == "json:null" {
+		enc.buf.WriteString("null")
+		return nil
+	}
 	return enc.encodeString(v.Str)
 }
 

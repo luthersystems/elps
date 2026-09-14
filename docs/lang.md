@@ -1074,6 +1074,28 @@ descriptor before using it; malformed descriptors raise an ordinary error,
 and `new` does not invoke their constructors. Validation happens on each use
 because descriptor data can be changed through `user-data`.
 
+### JSON null
+
+`json:null` is an output-only serialization sentinel. `json:dump-string`,
+`json:dump-bytes`, and `json:dump-message` encode both `json:null` and `()` as
+JSON `null`, at the top level or as a value in a map, list, or vector,
+including nested containers.
+
+```lisp
+(json:dump-string json:null)                       ; => "null"
+(json:dump-string (sorted-map "k" json:null))      ; => "{\"k\":null}"
+(json:dump-string (list json:null ()))             ; => "[null,null]"
+(json:load-string "null")                         ; => ()
+(json:load-string (json:dump-string json:null))    ; => ()
+```
+
+All three load functions (`json:load-string`, `json:load-bytes`, and
+`json:load-message`) decode JSON `null` as `()`, including inside containers;
+they never produce the `json:null` symbol. A dump/load round trip therefore
+does not preserve the distinction between the sentinel and `()`. The Lisp
+string `"json:null"` still encodes as a JSON string; use that string explicitly
+if you need the text instead of JSON `null`.
+
 ### JSON numbers and integer precision
 
 **By default `json:load-string`, `json:load-bytes` and `json:load-message`
