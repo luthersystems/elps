@@ -171,9 +171,7 @@ type templateInventory struct {
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
 	sharedCells []templateCellSpan
-	jobs        []templateJob
-	depth       int
-	walking     bool
+	next        templateFrame
 }
 
 func newTemplateInventory(config templateConfig) *templateInventory {
@@ -226,41 +224,183 @@ func sortedTemplateKeys[V any](m map[string]V) []string {
 	return keys
 }
 
-type templateJob struct {
-	run   func() error
-	depth int
+// templateVisit names a node without a closure or an addressable result slot.
+type templateVisit struct {
+	v    *LVal
+	env  *LEnv
+	kind uint8
 }
 
-func (s *templateInventory) walk(run func() error) error {
-	s.jobs = append(s.jobs, templateJob{run, s.depth})
-	if s.walking {
+const (
+	templateVisitValue uint8 = iota
+	templateVisitEnv
+	templateVisitShared
+)
+
+// templateFrame keeps one continuation per ancestor. Children are consumed in
+// admission order: captures, environment, map entries, then capacity cells.
+// Keys are needed for deterministic policy order; diagnostic text is not built
+// until an error occurs. The source pointers here are cursors, not new memos.
+type templateFrame struct {
+	capture, shared                     *LVal
+	env, scope                          *LEnv
+	mapping                             *MapData
+	keys                                []string
+	smallKeys                           [4]string
+	cells                               []*LVal
+	nkeys                               int
+	index                               int
+	stage                               uint8
+	visitCapture, visitEnv, sharedCells bool
+}
+
+// Keep tiny key sets inside the by-value frame. A slice into this array
+// would escape when the continuation grows, so select each key by index.
+func (f *templateFrame) key(i int) string {
+	if f.keys != nil {
+		return f.keys[i]
+	}
+	return f.smallKeys[i]
+}
+
+func setTemplateFrameKeys[V any](f *templateFrame, values map[string]V) {
+	f.nkeys = len(values)
+	if len(values) > len(f.smallKeys) {
+		f.keys = sortedTemplateKeys(values)
+		return
+	}
+	i := 0
+	for key := range values {
+		f.smallKeys[i] = key
+		i++
+	}
+	sort.Strings(f.smallKeys[:f.nkeys])
+}
+
+func (f *templateFrame) empty() bool {
+	return !f.visitCapture && f.shared == nil && !f.visitEnv && f.nkeys == 0 && len(f.cells) == 0
+}
+
+func (f *templateFrame) child() (templateVisit, bool) {
+	for {
+		switch f.stage {
+		case 0:
+			f.stage++
+			if f.shared != nil {
+				return templateVisit{v: f.shared, kind: templateVisitShared}, true
+			}
+		case 1:
+			f.stage++
+			if f.visitCapture {
+				return templateVisit{v: f.capture}, true
+			}
+		case 2:
+			f.stage++
+			if f.visitEnv && f.scope == nil {
+				return templateVisit{env: f.env, kind: templateVisitEnv}, true
+			}
+		case 3:
+			if f.index < f.nkeys {
+				key := f.key(f.index)
+				f.index++
+				if f.scope != nil {
+					return templateVisit{v: f.scope.scope[key]}, true
+				}
+				switch backing := f.mapping.mapBacking.(type) {
+				case sortedmap:
+					return templateVisit{v: backing.m[key]}, true
+				case jsonMap:
+					return templateVisit{v: backing[key].(*LVal)}, true
+				}
+			}
+			f.index = 0
+			f.stage++
+		case 4:
+			f.stage++
+			if f.scope != nil {
+				return templateVisit{env: f.env, kind: templateVisitEnv}, true
+			}
+		case 5:
+			if f.index < len(f.cells) {
+				v := f.cells[f.index]
+				f.index++
+				kind := templateVisitValue
+				if f.sharedCells {
+					kind = templateVisitShared
+				}
+				return templateVisit{v: v, kind: kind}, true
+			}
+			return templateVisit{}, false
+		}
+	}
+}
+
+func (f *templateFrame) wrap(err error) error {
+	if f.stage == 2 && f.visitCapture {
+		return fmt.Errorf("builtin captures: %w", err)
+	}
+	if f.stage == 3 && f.scope != nil && f.index > 0 {
+		return fmt.Errorf("scope %s: %w", f.key(f.index-1), err)
+	}
+	return err
+}
+
+func (s *templateInventory) node(visit templateVisit) error {
+	s.next = templateFrame{}
+	switch visit.kind {
+	case templateVisitEnv:
+		return s.envNode(visit.env)
+	case templateVisitShared:
+		return s.sharedNode(visit.v)
+	default:
+		return s.valNode(visit.v)
+	}
+}
+
+func (s *templateInventory) walk(visit templateVisit) error {
+	// A leaf or memo hit must not initialize any continuation storage.
+	if err := s.node(visit); err != nil {
+		return err
+	}
+	if s.next.empty() {
 		return nil
 	}
-	s.walking = true
-	defer func() { s.walking = false; s.jobs = nil; s.depth = 0 }()
-	for len(s.jobs) > 0 {
-		job := s.jobs[len(s.jobs)-1]
-		s.jobs = s.jobs[:len(s.jobs)-1]
-		s.depth = job.depth
-		if s.depth >= s.runtime.ValueDepthLimit() {
-			return ValueDepthError(s.runtime.ValueDepthLimit())
+	pending := make([]templateFrame, 0, 16)
+	pending = append(pending, s.next)
+	var err error
+	for len(pending) > 0 {
+		f := &pending[len(pending)-1]
+		child, ok := f.child()
+		if !ok {
+			*f = templateFrame{}
+			pending = pending[:len(pending)-1]
+			continue
 		}
-		s.depth++
-		mark := len(s.jobs)
-		if err := job.run(); err != nil {
-			return err
+		if len(pending) >= s.runtime.ValueDepthLimit() {
+			err = ValueDepthError(s.runtime.ValueDepthLimit())
+			break
 		}
-		slices.Reverse(s.jobs[mark:])
+		if err = s.node(child); err != nil {
+			break
+		}
+		if !s.next.empty() {
+			pending = append(pending, s.next)
+		}
 	}
-	return nil
+	s.next = templateFrame{}
+	if err != nil {
+		for i := len(pending) - 1; i >= 0; i-- {
+			err = pending[i].wrap(err)
+		}
+	}
+	return err
 }
 
 func (s *templateInventory) env(env *LEnv) error {
-	return s.walk(func() error { return s.envNode(env) })
+	return s.walk(templateVisit{env: env, kind: templateVisitEnv})
 }
-func (s *templateInventory) val(v *LVal) error { return s.walk(func() error { return s.valNode(v) }) }
-func (s *templateInventory) shared(v *LVal) error {
-	return s.walk(func() error { return s.sharedNode(v) })
+func (s *templateInventory) val(v *LVal) error {
+	return s.walk(templateVisit{v: v})
 }
 
 func (s *templateInventory) envNode(env *LEnv) error {
@@ -275,12 +415,9 @@ func (s *templateInventory) envNode(env *LEnv) error {
 	}
 	s.envs[env] = len(s.envQueue) + 1
 	s.envQueue = append(s.envQueue, env)
-	for _, symbol := range sortedTemplateKeys(env.scope) {
-		if err := s.val(env.scope[symbol]); err != nil {
-			return fmt.Errorf("scope %s: %w", symbol, err)
-		}
-	}
-	return s.env(env.parent)
+	s.next = templateFrame{scope: env, env: env.parent, visitEnv: true}
+	setTemplateFrameKeys(&s.next, env.scope)
+	return nil
 }
 
 // The known diagnostic category is independent of the LVal header and of host
@@ -321,11 +458,8 @@ func (s *templateInventory) sharedNode(v *LVal) error {
 	}
 	// A Go caller can reslice up to capacity. SealAST visits visible children
 	// only, so the seal bit is not evidence about a hidden capacity tail.
-	for _, child := range v.Cells[:cap(v.Cells)] {
-		if err := s.shared(child); err != nil {
-			return err
-		}
-	}
+	s.next.cells = v.Cells[:cap(v.Cells)]
+	s.next.sharedCells = true
 	return nil
 }
 
@@ -344,7 +478,8 @@ func (s *templateInventory) valNode(v *LVal) error {
 	}
 	if v.sealed {
 		s.values[v] = 0
-		return s.shared(v)
+		s.next.shared = v
+		return nil
 	}
 	if isSingleton(v) {
 		s.values[v] = 0
@@ -362,15 +497,11 @@ func (s *templateInventory) valNode(v *LVal) error {
 			return errors.New("function has no function data")
 		}
 		if fd.captures != nil {
-			if err := s.val(fd.captures.values); err != nil {
-				return fmt.Errorf("builtin captures: %w", err)
-			}
+			s.next.capture, s.next.visitCapture = fd.captures.values, true
 		} else if fd.builtin != nil && (s.config.builtinPolicy == nil || !s.config.builtinPolicy(v)) {
 			return fmt.Errorf("builtin %s:%s has no template sharing declaration", fd.pkg, fd.fid)
 		}
-		if err := s.env(fd.env); err != nil {
-			return err
-		}
+		s.next.env, s.next.visitEnv = fd.env, true
 	case LNative:
 		if err := s.native(v.Native); err != nil {
 			return err
@@ -413,20 +544,12 @@ func (s *templateInventory) valNode(v *LVal) error {
 		s.cells = append(s.cells, newTemplateCellSpan(v))
 		// Capacity can expose additional cells through a later append or host
 		// reslice. Validate and remap those references as part of the storage.
-		for _, child := range v.Cells[:cap(v.Cells)] {
-			if err := s.val(child); err != nil {
-				return err
-			}
-		}
+		s.next.cells = v.Cells[:cap(v.Cells)]
 	} else {
 		if cap(v.Cells) > 0 {
 			s.sharedCells = append(s.sharedCells, newTemplateCellSpan(v))
 		}
-		for _, child := range v.Cells {
-			if err := s.val(child); err != nil {
-				return err
-			}
-		}
+		s.next.cells = v.Cells
 	}
 	return nil
 }
@@ -497,25 +620,19 @@ func (s *templateInventory) mapData(data *MapData) error {
 	case sortedmap:
 		// Keys and type flags are Go scalars, not source value identities.
 		// Avoid manufacturing temporary keys/pairs solely to discard them.
-		for _, key := range sortedTemplateKeys(backing.m) {
-			if err := s.val(backing.m[key]); err != nil {
-				return err
-			}
-		}
+		s.next.mapping = data
+		setTemplateFrameKeys(&s.next, backing.m)
 	case jsonMap:
 		if backing == nil {
 			return errors.New("nil JSON map is not writable")
 		}
-		keys := sortedTemplateKeys(backing)
+		s.next.mapping = data
+		setTemplateFrameKeys(&s.next, backing)
 		// Reject malformed decoder storage before invoking admission callbacks.
-		for _, key := range keys {
+		for i := range s.next.nkeys {
+			key := s.next.key(i)
 			if _, ok := backing[key].(*LVal); !ok {
 				return fmt.Errorf("JSON map entry %q is not an LVal: %T", key, backing[key])
-			}
-		}
-		for _, key := range keys {
-			if err := s.val(backing[key].(*LVal)); err != nil {
-				return err
 			}
 		}
 	default:

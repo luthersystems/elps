@@ -168,6 +168,15 @@ func (v *LVal) boundedString(limit int) (string, bool) {
 		scalar = strconv.Itoa(v.Int)
 	case LFloat:
 		scalar = strconv.FormatFloat(v.Float, 'g', -1, 64)
+	case LString:
+		// Quote expands each input byte to at most four bytes, plus the
+		// delimiters. Small strings that provably fit need no renderer,
+		// cycle guard, or work budget. Larger strings still stream under
+		// both budgets rather than allocating an unbounded escaped copy.
+		if limit >= 2 && len(v.Str) <= min(4096, (limit-2)/4) {
+			return fmt.Sprintf("%q", v.Str), true
+		}
+		return v.boundedNestedString(limit)
 	case LSymbol, LQSymbol:
 		quotes := 0
 		if v.quoted {

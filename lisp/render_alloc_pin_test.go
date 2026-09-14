@@ -20,6 +20,13 @@ import (
 
 var renderAllocationString string
 
+func TestStringLeafAllocationBudget(t *testing.T) {
+	v := String("a moderately sized string value")
+	allocations := testing.AllocsPerRun(100, func() { renderAllocationString = v.String() })
+	assert.Equal(t, strconv.Quote(v.Str), renderAllocationString)
+	assert.LessOrEqual(t, allocations, float64(2))
+}
+
 func TestBoundedStringScalarAllocations(t *testing.T) {
 	for _, v := range []*LVal{Int(30), Float(99.5), Symbol("true"), Quote(Symbol("receipt"))} {
 		t.Run(v.String(), func(t *testing.T) {

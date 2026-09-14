@@ -5,12 +5,34 @@ package lisp
 import (
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestBoundedStringLeafEscaping(t *testing.T) {
+	var bytes [256]byte
+	for i := range bytes {
+		bytes[i] = byte(i)
+	}
+	for _, text := range []string{"", "plain", string(bytes[:]), "café 💡\u2028", strings.Repeat("\x00", 4096), strings.Repeat("x", 4097)} {
+		v := String(text)
+		want := strconv.Quote(text)
+		// The conservative expansion bound selects the scalar path; an
+		// exact budget may require streaming. Both must agree on escaping.
+		for _, limit := range []int{4*len(text) + 2, len(want)} {
+			got, ok := v.boundedString(limit)
+			require.True(t, ok)
+			assert.Equal(t, want, got)
+		}
+		got, ok := v.boundedString(len(want) - 1)
+		assert.False(t, ok)
+		assert.Empty(t, got)
+	}
+}
 
 func TestBoundedStringScalarBoundaries(t *testing.T) {
 	for _, v := range []*LVal{
