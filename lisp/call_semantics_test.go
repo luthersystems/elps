@@ -317,9 +317,9 @@ func TestLambdaListValidAndDuplicateCompatibility(t *testing.T) {
 func TestLambdaListLarge(t *testing.T) {
 	// Exercise generated lists beyond the validator's small-list fast path.
 	env := newCallSemanticsEnv(t)
-	names := make([]string, 20)
-	for i := range names {
-		names[i] = fmt.Sprintf("x%d", i)
+	names := make([]string, 0, 21)
+	for i := range 20 {
+		names = append(names, fmt.Sprintf("x%d", i))
 	}
 	require.Equal(t, lisp.LFun, env.Lambda(lisp.Formals(names...), nil).Type)
 	names = append(names, "x0")
