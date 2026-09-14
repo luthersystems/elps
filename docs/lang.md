@@ -1396,6 +1396,23 @@ names.
 (debug-print (time:format-rfc3339 now))
 ```
 
+The `golang` package reads native Go values supplied by the host.
+`golang:string` requires a native value containing a Go string (including
+defined types with underlying kind string); passing an ELPS string or any
+other non-native value returns an error. Use `to-string` for general string
+conversion.
+
+`(golang:struct-field native-value "X")` reads an exported Go struct field
+and returns its value as a native value. The field name may also be a symbol.
+Promoted fields through embedded structs and pointers are supported. If the
+path to `X` crosses a nil embedded pointer, the call returns the ordinary,
+catchable error `field X is reached through a nil embedded pointer`. A nil
+pointer stored in the requested field itself is returned as a native value.
+Nil top-level pointers, non-struct payloads, missing fields and unexported
+field names return ordinary errors as well. These checks depend on the host's
+runtime payload; static Lisp analysis cannot determine whether an embedded
+pointer is nil.
+
 ### User packages
 
 For packages outside of the standard library it in recommended that names use a

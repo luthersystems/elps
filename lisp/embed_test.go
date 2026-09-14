@@ -35,6 +35,63 @@ func TestVectorGoValue(t *testing.T) {
 	}
 }
 
+// Native payloads are opaque even when their reflected value is invalid or
+// contains nil pointers. Conversion must preserve them inside containers too.
+func TestNativeGoValueShapes(t *testing.T) {
+	type fields struct{ X int }
+	type embedded struct{ *fields }
+	for _, payload := range []any{
+		nil, (*fields)(nil), embedded{}, &embedded{}, reflect.Value{},
+		[]int(nil), map[string]int(nil), (chan int)(nil), (func())(nil),
+	} {
+		v := Native(payload)
+		m := SortedMap()
+		m.MapSet("native", v)
+		for _, tc := range []struct {
+			value *LVal
+			want  any
+		}{
+			{v, payload},
+			{QExpr([]*LVal{v}), []any{payload}},
+			{m, map[any]any{"native": payload}},
+		} {
+			if got := GoValue(tc.value); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("GoValue with payload %T = %#v, want %#v", payload, got, tc.want)
+			}
+		}
+	}
+}
+
+func TestGoMapKeyReflectionGuards(t *testing.T) {
+	for _, tc := range []struct {
+		key  *LVal
+		name string
+		ok   bool
+	}{
+		{Nil(), "nil-list", false},
+		{Native(nil), "nil-native", false},
+		{Native([]int{1}), "slice", false},
+		{Native(map[string]int(nil)), "nil-map", false},
+		{Native((*int)(nil)), "nil-pointer", true},
+		{String("key"), "string", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var st cycleState
+			m := make(gomap)
+			if ok := checkGoMapInsert(m, tc.key, Int(42), cycleGuard{state: &st}); ok != tc.ok {
+				t.Fatalf("checkGoMapInsert = %v, want %v", ok, tc.ok)
+			}
+			if tc.ok {
+				if got := m[GoValue(tc.key)]; got != 42 {
+					t.Errorf("map value = %v, want 42", got)
+				}
+			} else if len(m) != 0 {
+				t.Errorf("rejected key inserted into map: %v", m)
+			}
+		})
+	}
+}
+
 // TestBytesGoValue pins what GoValue hands an embedder for an LBytes value.
 //
 // The bug this covers (#548) was `return v.Bytes` in goValueNode's LBytes
