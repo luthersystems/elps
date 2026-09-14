@@ -2402,7 +2402,7 @@ var AnalyzerPackageBuiltins = &Analyzer{
 			}
 			if len(v.Cells) > 0 && !skip[v] && !userDefs[HeadSymbol(v)] {
 				for i, arg := range v.Cells[1:] {
-					value, known := packageLiteralArg(arg)
+					value, known := packageLiteralArg(arg, userDefs, skip)
 					if !known {
 						continue
 					}
@@ -2433,7 +2433,7 @@ var AnalyzerPackageBuiltins = &Analyzer{
 	},
 }
 
-func packageLiteralArg(arg *lisp.LVal) (*lisp.LVal, bool) {
+func packageLiteralArg(arg *lisp.LVal, userDefs map[string]bool, skip map[*lisp.LVal]bool) (*lisp.LVal, bool) {
 	if arg.IsQuoted() {
 		return arg, true
 	}
@@ -2441,7 +2441,8 @@ func packageLiteralArg(arg *lisp.LVal) (*lisp.LVal, bool) {
 	case lisp.LSymbol:
 		return arg, strings.HasPrefix(arg.Str, ":")
 	case lisp.LSExpr:
-		if unqualifiedLispName(HeadSymbol(arg)) == "quote" && len(arg.Cells) == 2 {
+		head := HeadSymbol(arg)
+		if unqualifiedLispName(head) == "quote" && !userDefs[head] && !skip[arg] && len(arg.Cells) == 2 {
 			return arg.Cells[1], true
 		}
 		return arg, len(arg.Cells) == 0
