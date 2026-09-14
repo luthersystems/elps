@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -90,7 +91,7 @@ func runElps(args []string, stdout io.Writer) error {
 	}
 	defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 	env := lisp.NewEnv(nil)
-	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.Reader = diagnosticsource.NewReader(parser.NewReader())
 	env.Runtime.Library = lib
 	for _, rc := range []*lisp.LVal{
 		lisp.InitializeUserEnv(env),
@@ -118,7 +119,7 @@ func runElps(args []string, stdout io.Writer) error {
 			name = args[i]
 		}
 		if res.Type == lisp.LError {
-			renderLispError(res, name)
+			renderLispError(env.Runtime, res, name)
 			return errRendered
 		}
 		if runPrint {

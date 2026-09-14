@@ -58,11 +58,11 @@ func TestLoadSourceRefusalDoesNotRevealTarget(t *testing.T) {
 	_, _, _, err = lib.LoadSource(lisp.NewSourceContext("", ""), "escape.lisp")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), outside)
-	assert.EqualError(t, err, fmt.Sprintf("cannot load %q within root directory %q", "escape.lisp", root))
+	require.EqualError(t, err, fmt.Sprintf("cannot load %q within root directory %q", "escape.lisp", root))
 	// A host-provided source context must not leak its outside directory
 	// through the expanded request in the refusal either.
 	_, _, _, err = lib.LoadSource(lisp.NewSourceContext("host", outside), "escape.lisp")
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "private")
-	assert.EqualError(t, err, fmt.Sprintf("cannot load %q within root directory %q", "escape.lisp", root))
+	require.EqualError(t, err, fmt.Sprintf("cannot load %q within root directory %q", "escape.lisp", root))
 }

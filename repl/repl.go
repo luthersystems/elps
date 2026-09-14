@@ -14,6 +14,7 @@ import (
 	"strings"
 
 	"github.com/ergochat/readline"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -191,7 +192,7 @@ func RunRepl(prompt string, opts ...Option) {
 	}
 	defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 	envOpts := []lisp.Config{
-		lisp.WithReader(parser.NewReader()),
+		lisp.WithReader(diagnosticsource.NewReader(parser.NewReader())),
 		lisp.WithLibrary(lib),
 	}
 
@@ -362,7 +363,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		if cfg.json {
 			emitResult(os.Stdout, val)
 		} else if val.Type == lisp.LError {
-			renderError(env.Runtime.Stderr, val)
+			renderError(env.Runtime.Stderr, env.Runtime, val)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
@@ -398,7 +399,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 			if cfg.json {
 				emitResult(stdout, last)
 			} else {
-				renderError(errw, last)
+				renderError(errw, env.Runtime, last)
 			}
 			return 1
 		}
@@ -473,7 +474,7 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		if cfg.json {
 			emitResult(stdout, val)
 		} else if val.Type == lisp.LError {
-			renderError(errw, val)
+			renderError(errw, env.Runtime, val)
 		} else {
 			fmt.Fprintln(stdout, val) //nolint:errcheck // best-effort output
 		}

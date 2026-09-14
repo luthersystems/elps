@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -93,7 +94,7 @@ Examples:
 		}
 		defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 		env := lisp.NewEnv(nil)
-		env.Runtime.Reader = parser.NewReader()
+		env.Runtime.Reader = diagnosticsource.NewReader(parser.NewReader())
 		env.Runtime.Library = lib
 		env.Runtime.Debugger = dbg
 
@@ -169,7 +170,7 @@ Examples:
 		// Wait for eval to finish and report any errors.
 		res := <-evalDone
 		if res.Type == lisp.LError {
-			renderLispError(res, file)
+			renderLispError(env.Runtime, res, file)
 			os.Exit(1)
 		}
 	},
