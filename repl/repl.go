@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -351,7 +350,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		if err != nil {
 			if cfg.json {
-				emitParseError(os.Stdout, err)
+				emitParseErrorContext(cfg.ctx, os.Stdout, err, env)
 			} else {
 				fmt.Fprintln(env.Runtime.Stderr, err) //nolint:errcheck // best-effort error display
 			}
@@ -381,7 +380,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	exprs, err := reader.Read("eval", strings.NewReader(cfg.eval))
 	if err != nil {
 		if cfg.json {
-			emitParseError(stdout, err)
+			emitParseErrorContext(cfg.ctx, stdout, err, env)
 		} else {
 			fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
 		}
@@ -389,7 +388,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	}
 	if len(exprs) == 0 {
 		if cfg.json {
-			emitParseError(stdout, errors.New("no expression"))
+			emitParseErrorContext(cfg.ctx, stdout, errors.New("no expression"), env)
 		} else {
 			fmt.Fprintln(errw, "no expression") //nolint:errcheck // best-effort error display
 		}
@@ -468,7 +467,7 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		}
 		if err != nil {
 			if cfg.json {
-				emitParseError(stdout, err)
+				emitParseErrorContext(cfg.ctx, stdout, err, env)
 			} else {
 				fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
 			}
@@ -485,19 +484,6 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 	}
 }
 
-// emitJSONLine marshals obj and writes it to w as a single line.  The jsonResult
-// / jsonError / jsonParseError structs hold only strings, so json.Marshal cannot
-// actually fail here; the error is still handled so a future field that is not
-// encodable degrades to a machine-readable error line instead of an empty one.
-func emitJSONLine(w io.Writer, obj any) {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		fmt.Fprintf(w, "{\"type\":\"error\",\"message\":%q}\n", err.Error()) //nolint:errcheck // best-effort output
-		return
-	}
-	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
-}
-
 // emitResult writes a JSON object for a result (success or error) to w.
 func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
 	env := lisp.NewEnv(nil)
@@ -509,29 +495,38 @@ func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
 
 func emitResultContext(ctx context.Context, w io.Writer, val *lisp.LVal, env *lisp.LEnv) {
 	s := env.RenderContext(ctx, val)
+	limit := env.Runtime.MaxAllocBytes()
 	if val.Type == lisp.LError {
-		obj := jsonError{Type: "error", Message: s}
+		fields := []jsonField{{"type", []string{"error"}}, {"message", []string{s}}}
 		if ctx == nil || ctx.Err() == nil {
 			if loc, ok := val.Source(); ok && loc.Pos >= 0 {
-				obj.Source = loc.String()
+				// Format the numeric location separately from the unbounded file
+				// name, then escape both under the complete line's budget.
+				file := loc.File
+				loc.File = ""
+				fields = append(fields, jsonField{"source", []string{file, loc.String()}})
 			}
 		}
-		emitJSONLine(w, obj)
+		emitJSONLine(ctx, w, limit, fields...)
 		return
 	}
-	emitJSONLine(w, jsonResult{
-		Type:      "result",
-		ValueType: val.Type.String(),
-		Value:     s,
-	})
+	emitJSONLine(ctx, w, limit,
+		jsonField{"type", []string{"result"}},
+		jsonField{"value_type", []string{val.Type.String()}},
+		jsonField{"value", []string{s}},
+	)
 }
 
-// emitParseError writes a JSON parse_error object to w.
+// emitParseError writes a JSON parse_error object using the default budget.
 func emitParseError(w io.Writer, err error) {
-	emitJSONLine(w, jsonParseError{
-		Type:    "parse_error",
-		Message: err.Error(),
-	})
+	emitParseErrorContext(nil, w, err, lisp.NewEnv(nil))
+}
+
+func emitParseErrorContext(ctx context.Context, w io.Writer, err error, env *lisp.LEnv) {
+	emitJSONLine(ctx, w, env.Runtime.MaxAllocBytes(),
+		jsonField{"type", []string{"parse_error"}},
+		jsonField{"message", []string{err.Error()}},
+	)
 }
 
 func historyPath() string {

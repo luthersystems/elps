@@ -71,6 +71,64 @@ func (env *LEnv) RenderContext(ctx context.Context, v *LVal) string {
 	return s
 }
 
+// DiagnosticRenderer shares an output and traversal budget across the values
+// in one response. It is not safe for concurrent use.
+type DiagnosticRenderer struct {
+	budget    renderBudget
+	remaining int
+	done      bool
+}
+
+// NewRenderer creates a response renderer using the runtime's output limit.
+// Pass the request context explicitly when rendering after evaluation returns.
+func (env *LEnv) NewRenderer(ctx context.Context) *DiagnosticRenderer {
+	limit := env.Runtime.MaxAllocBytes()
+	return &DiagnosticRenderer{budget: newRenderBudget(limit, ctx), remaining: limit}
+}
+
+// Exhausted reports whether the response has exhausted its rendering budget.
+func (r *DiagnosticRenderer) Exhausted() bool {
+	return r.done || r.remaining == 0
+}
+
+// Render appends a value's diagnostic representation to the response budget.
+// Exhaustion emits a fitting truncation marker and stops subsequent rendering.
+func (r *DiagnosticRenderer) Render(v *LVal) string {
+	if r.Exhausted() {
+		return ""
+	}
+	if v == nil {
+		return r.Text("<nil>")
+	}
+	s, ok := v.boundedWithBudget(r.remaining, &r.budget)
+	if !ok {
+		s = truncatedRender(s, r.remaining)
+		r.done = true
+	}
+	r.remaining -= len(s)
+	return s
+}
+
+// Text charges already formatted text to the same response budget. Parts are
+// checked before copying, so large names need no unbounded intermediate string.
+func (r *DiagnosticRenderer) Text(parts ...string) string {
+	if r.Exhausted() {
+		return ""
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		if !r.budget.step() || len(part) > r.remaining-out.Len() {
+			r.done = true
+			s := truncatedRender(out.String(), r.remaining)
+			r.remaining -= len(s)
+			return s
+		}
+		out.WriteString(part)
+	}
+	r.remaining -= out.Len()
+	return out.String()
+}
+
 func (v *LVal) boundedStringContext(limit int, ctx context.Context) (string, bool) {
 	budget := newRenderBudget(limit, ctx)
 	return v.boundedWithBudget(limit, &budget)

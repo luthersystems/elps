@@ -93,11 +93,15 @@ func resolveSourcePath(path, file, sourceRoot string) string {
 // allocRef assigns a variable reference for expandable values. eng is used
 // for custom native type formatting.
 func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine) []dap.Variable {
+	formatter := debugger.NewValueFormatter(nil, eng)
 	vars := make([]dap.Variable, len(bindings))
 	for i, b := range bindings {
+		if formatter.Exhausted() {
+			return vars[:i]
+		}
 		vars[i] = dap.Variable{
 			Name:               b.Name,
-			Value:              debugger.FormatValueWith(b.Value, eng),
+			Value:              formatter.Format(b.Value),
 			Type:               lvalTypeName(b.Value),
 			VariablesReference: allocRef(b.Value),
 		}
@@ -113,13 +117,17 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 	if v == nil {
 		return []dap.Variable{}
 	}
+	formatter := debugger.NewValueFormatter(nil, eng)
 	switch v.Type {
 	case lisp.LSExpr:
 		vars := make([]dap.Variable, len(v.Cells))
 		for i, cell := range v.Cells {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
 				Name:               fmt.Sprintf("[%d]", i),
-				Value:              debugger.FormatValueWith(cell, eng),
+				Value:              formatter.Format(cell),
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
@@ -133,15 +141,18 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		var vars []dap.Variable
 		for _, pair := range entries.Cells {
+			if formatter.Exhausted() {
+				break
+			}
 			key := pair.Cells[0]
 			val := pair.Cells[1]
-			name := debugger.FormatValue(key)
+			name := formatter.Format(key)
 			if mapKeyFilter != nil && !mapKeyFilter.MatchString(name) {
 				continue
 			}
 			v := dap.Variable{
 				Name:               name,
-				Value:              debugger.FormatValueWith(val, eng),
+				Value:              formatter.Format(val),
 				Type:               lvalTypeName(val),
 				VariablesReference: allocRef(val),
 			}
@@ -154,9 +165,12 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		data := v.Cells[1]
 		vars := make([]dap.Variable, len(data.Cells))
 		for i, cell := range data.Cells {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
 				Name:               fmt.Sprintf("[%d]", i),
-				Value:              debugger.FormatValueWith(cell, eng),
+				Value:              formatter.Format(cell),
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
@@ -170,7 +184,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		inner := v.Cells[0]
 		child := dap.Variable{
 			Name:               "data",
-			Value:              debugger.FormatValueWith(inner, eng),
+			Value:              formatter.Format(inner),
 			Type:               lvalTypeName(inner),
 			VariablesReference: allocRef(inner),
 		}
@@ -186,9 +200,12 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		vars := make([]dap.Variable, len(children))
 		for i, ch := range children {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
 				Name:               ch.Name,
-				Value:              debugger.FormatValueWith(ch.Value, eng),
+				Value:              formatter.Format(ch.Value),
 				Type:               lvalTypeName(ch.Value),
 				VariablesReference: allocRef(ch.Value),
 			}

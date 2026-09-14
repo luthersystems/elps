@@ -90,8 +90,12 @@ func showLocals(w io.Writer, env *lisp.LEnv, engine *debugger.Engine) {
 		fmt.Fprintln(w, "  (no locals)") //nolint:errcheck
 		return
 	}
+	formatter := debugger.NewValueFormatter(env, engine)
 	for _, b := range locals {
-		fmt.Fprintf(w, "  %-20s = %s\n", b.Name, debugger.FormatValueWith(b.Value, engine)) //nolint:errcheck
+		if formatter.Exhausted() {
+			break
+		}
+		fmt.Fprintf(w, "  %-20s = %s\n", b.Name, formatter.Format(b.Value)) //nolint:errcheck
 	}
 }
 
