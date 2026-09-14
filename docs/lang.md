@@ -2667,3 +2667,50 @@ Each method threads the context through the internal evaluation chain.
 The older non-context methods (`Eval`, `Load`, etc.) continue to work
 but are deprecated.  Builtins can access the current context via
 `env.Context()`.
+
+## Source minification
+
+`elps minify file.lisp --map symbols.json` shortens identifiers using deterministic,
+scope-aware renaming. Symbols quoted anywhere in the input files are excluded
+from renaming across all scopes and packages. This includes quoted lists and
+quasiquote templates, so quoted function designators such as
+`(map 'list 'twice '(1 2 3))` retain the function's name. Qualified quoted names
+also protect the corresponding bare name.
+
+Quoted names are never shortened, even with `--rename-exports`. This conservative
+rule can increase output size. The symbol map records the names in `excluded`,
+with `original` and `reason: "quoted-reference"`; the existing assignment maps
+contain only renamed symbols.
+
+Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
+`macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
+binding name, including lexical locals, across all input files**, even with `--rename-exports`.
+The rule also covers `symbol` and `intern` when supplied by a host, and
+`lisp:`-qualified spellings. References passed as function values or appearing in
+quoted templates also trigger it conservatively. No bindings are renamed in such
+a program. The CLI prints one warning naming the first dynamic-evaluation site,
+and the symbol map records preserved bindings under `excluded` with
+`reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
+This keeps runtime-generated names and code working, but produces larger output
+and disables all identifier compression in programs using dynamic evaluation.
+
+Package-level bindings are renamed only when package flow and exported names can
+be proven statically: every `export` argument must be a literal quoted symbol,
+a literal string, or a literal list (possibly nested) of those, and every
+`in-package` / `use-package` form must be at the top level of a file with literal
+package names. A variable or expression passed to `export`, a computed package
+name, or a package switch/import nested inside any form (including `progn`,
+`let`, `when`, functions, and macros) preserves every package-level binding name
+across all input files,
+even with `--rename-exports`. Lexical locals can still shorten only when dynamic
+evaluation is absent. Package flow and dynamic evaluation are tracked independently.
+The symbol map records `unproven-package-flow` for the package fallback, taking
+precedence over `quoted-reference`; one warning names the first offending form.
+If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
+and warning take precedence regardless of source order.
+Literal export names remain preserved even with `--rename-exports`.
+
+`defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
+bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`
+creates a package-level `helper` that captures the lexical value of `k`. Minifying
+this definition also renames its calls outside the `let` consistently.

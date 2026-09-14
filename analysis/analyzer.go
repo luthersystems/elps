@@ -32,11 +32,12 @@ func (a *analyzer) defaultPackage() string {
 	return lisp.DefaultUserPackage
 }
 
-// prescan walks top-level expressions to register forward-referenceable
+// prescan walks package-binding forms at every depth to register forward-referenceable
 // definitions (defun, defmacro, set, export). It runs in two phases so
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
+	exprs = astutil.PackageForms(exprs)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
@@ -78,7 +79,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			}
 			continue
 		}
-		if astutil.HeadSymbol(expr) == "export" {
+		if head := astutil.HeadSymbol(expr); head == "export" || head == "lisp:export" {
 			a.prescanExport(expr, scope, currentPkg)
 		}
 	}
@@ -211,16 +212,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 }
 
 func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
-	for _, arg := range expr.Cells[1:] {
-		name := ""
-		if arg.Type == lisp.LSymbol {
-			name = arg.Str
-		} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-			name = arg.Cells[0].Str
-		}
-		if name == "" {
-			continue
-		}
+	for _, name := range astutil.ExportNames(expr.Cells[1:]) {
 		if sym := scope.LookupLocalInPackage(name, pkg); sym != nil {
 			sym.Exported = true
 		}
@@ -312,8 +304,9 @@ func (a *analyzer) prescanInPackage(expr *lisp.LVal, scope *Scope) {
 var extractPackageName = astutil.PackageNameArg
 
 // extractSetSymbolNode returns the node naming the binding in the first arg of
-// set, for both (set 'name value) and (set name value) -- the quote is folded
-// into the symbol's own node, so both spellings are one LSymbol.
+// set when the target is a quoted symbol. The reader folds the quote into
+// the symbol's own node. Bare symbols and compound targets are evaluated
+// expressions, so their runtime binding names are not statically known.
 //
 // A first arg that is not a symbol names nothing: set takes a symbol, and
 // (set '(a b) 1) defines neither a nor b.  This used to reach into a quoted
@@ -323,7 +316,7 @@ var extractPackageName = astutil.PackageNameArg
 // the definition it invented carried the LIST's span as the location of the
 // name -- textDocumentRename then replaced '(a b) wholesale, dropping b.
 func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
-	if arg.Type == lisp.LSymbol {
+	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg
 	}
 	return nil
@@ -390,12 +383,16 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzeSet(node, scope, currentPkg)
 	case "set!":
 		a.analyzeSetBang(node, scope, currentPkg)
-	case "quote":
+	case "quote", "lisp:quote":
 		return // skip quoted data
-	case "quasiquote":
+	case "quasiquote", "lisp:quasiquote":
 		a.analyzeQuasiquote(node, scope, currentPkg)
 		return
-	case "in-package", "use-package", "export":
+	case "export", "lisp:export":
+		// export is a builtin: its arguments are evaluated in lexical scope.
+		// Static package export registration is handled separately by prescan.
+		a.analyzeCall(node, scope, currentPkg)
+	case "in-package", "use-package":
 		return // package management, skip
 	case "function":
 		a.analyzeFunction(node, scope, currentPkg)
@@ -435,12 +432,11 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
-	// Register the name in the enclosing scope if not already defined.
-	// Prescan handles top-level definitions; this covers nested defun/defmacro
-	// (e.g. inside test bodies, progn, when, etc.).
+	// defun and defmacro bind in the package, while their bodies retain
+	// the enclosing lexical scope so closures still capture local values.
 	nameVal := node.Cells[1]
-	defPkg := packageForScope(scope, currentPkg)
-	if nameVal.Type == lisp.LSymbol && scope.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
+	defPkg := currentPkg
+	if nameVal.Type == lisp.LSymbol && a.root.LookupLocalInPackage(nameVal.Str, defPkg) == nil {
 		formalsForSig := node.Cells[2]
 		sym := &Symbol{
 			Name:    nameVal.Str,
@@ -452,7 +448,7 @@ func (a *analyzer) analyzeDefun(node *lisp.LVal, scope *Scope, kind SymbolKind, 
 		if formalsForSig.Type == lisp.LSExpr {
 			sym.Signature = signatureFromFormals(formalsForSig)
 		}
-		scope.Define(sym)
+		a.root.Define(sym)
 		a.result.Symbols = append(a.result.Symbols, sym)
 	}
 
@@ -907,9 +903,8 @@ func (a *analyzer) analyzeTest(node *lisp.LVal, scope *Scope, currentPkg string)
 	if astutil.ArgCount(node) < 1 {
 		return
 	}
-	// Prescan body for forward-referenceable definitions (defun, defmacro, set).
+	// The package prescan already registered definitions in this body.
 	body := node.Cells[2:]
-	a.prescan(body, scope)
 	for _, expr := range body {
 		a.analyzeExpr(expr, scope, currentPkg)
 	}
@@ -963,7 +958,9 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 	if astutil.ArgCount(node) < 2 {
 		return
 	}
-	// Analyze the value expression
+	// set evaluates both arguments in the current lexical scope. Only a
+	// quoted symbol target also identifies a static package binding below.
+	a.analyzeExpr(node.Cells[1], scope, currentPkg)
 	a.analyzeExpr(node.Cells[2], scope, currentPkg)
 
 	name := extractSetSymbolName(node.Cells[1])

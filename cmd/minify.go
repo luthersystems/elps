@@ -35,7 +35,45 @@ With multiple files, use -w to rewrite files in place.
 
 The command can also emit a machine-readable JSON symbol map for downstream
 tooling via --map. Minified output uses the formatter's compact mode, which
-removes redundant whitespace and strips comments.`,
+removes redundant whitespace and strips comments.
+
+Any symbol quoted anywhere in the inputs, including quoted lists (also [...]) and quasiquote
+templates, is excluded from renaming in every scope and package. Quoted names
+are not shortened, even with --rename-exports; the symbol map records them in
+excluded with reason "quoted-reference". This conservative rule preserves quoted
+function designators such as (map 'list 'twice values).
+
+Calls to load-string, load-bytes, load-file, eval, macroexpand, macroexpand-1,
+gensym, type, or qualified-symbol preserve EVERY binding name, including lexical locals,
+across all input files, even with --rename-exports. The same rule covers symbol
+and intern when supplied by a host, and lisp:-qualified spellings. References
+passed as function values or appearing in quoted templates also trigger it
+conservatively. No bindings are renamed in such a program.
+
+The symbol map records preserved bindings in excluded with reason
+"dynamic-evaluation" (taking precedence over "quoted-reference"). One warning
+names the first dynamic-evaluation site. This prevents runtime-generated names or code
+from referring to renamed bindings, at the cost of larger output and no
+identifier compression for programs using dynamic evaluation.
+
+Package-level bindings are renamed only when package flow and exported names can
+be proven statically: every export argument must be a literal quoted symbol,
+a literal string, or a literal list (possibly nested) of those, and every
+in-package / use-package form must be at the top level of a file with literal
+package names. A variable or expression passed to export, a computed package
+name, or a package switch/import nested inside any form (including progn,
+let, when, functions, and macros) preserves every package-level binding name
+across all input files,
+even with --rename-exports. Lexical locals can still shorten only when dynamic
+evaluation is absent. Package flow and dynamic evaluation are tracked independently.
+The symbol map records unproven-package-flow for the package fallback, taking
+precedence over quoted-reference; one warning names the first offending form.
+If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
+and warning take precedence regardless of source order.
+Literal export names remain preserved even with --rename-exports.
+
+defun, defmacro, set with a quoted symbol, and export affect package bindings at
+any nesting depth. A nested function still captures its enclosing lexical values.`,
 	Run: func(_ *cobra.Command, args []string) {
 		if err := runMinify(args, os.Stdin, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "elps minify: %v\n", err)
@@ -64,6 +102,9 @@ func buildMinifyConfig() (*minifier.Config, error) {
 		RenameExports:  minifyRenameExports,
 		PreserveParams: minifyPreserveParams,
 		Formatter:      formatter.DefaultConfig(),
+		Warn: func(message string) {
+			fmt.Fprintf(os.Stderr, "elps minify: warning: %s\n", message)
+		},
 	}
 	cfg.Formatter.Compact = true
 	cfg.Formatter.StripComments = true
@@ -174,7 +215,7 @@ func init() {
 	minifyCmd.Flags().StringVar(&minifyWorkspace, "workspace", "",
 		"Workspace root for cross-file semantic resolution.")
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
-		"Rename exported top-level symbols and rewrite matching export forms.")
+		"Rename exported symbols unless excluded (literal export names and dynamic-evaluation bindings are always preserved).")
 	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", true,
 		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them.")
 }

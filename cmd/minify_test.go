@@ -94,7 +94,7 @@ func TestRunMinify_RenameExports(t *testing.T) {
 	var out bytes.Buffer
 	err := runMinify([]string{path}, bytes.NewBuffer(nil), &out)
 	require.NoError(t, err)
-	assert.Equal(t, "(export 'x1)\n(defun x1 (x2) x2)\n", out.String())
+	assert.Equal(t, "(export 'public)\n(defun public (x1) x1)\n", out.String())
 }
 
 func resetMinifyFlags() {
@@ -105,4 +105,68 @@ func resetMinifyFlags() {
 	minifyWorkspace = ""
 	minifyRenameExports = false
 	minifyPreserveParams = true // default is true
+}
+
+func TestRunMinify_QuotedSymbolMap(t *testing.T) {
+	resetMinifyFlags()
+	t.Cleanup(resetMinifyFlags)
+	minifyMapPath = filepath.Join(t.TempDir(), "symbols.json")
+	var out bytes.Buffer
+	require.NoError(t, runMinify(nil, bytes.NewBufferString("(defun twice (x) (* 2 x)) (map 'list 'twice '(1 2 3))"), &out))
+	data, err := os.ReadFile(minifyMapPath)
+	require.NoError(t, err)
+	var symMap struct {
+		Excluded []struct{ Original, Reason string }
+	}
+	require.NoError(t, json.Unmarshal(data, &symMap))
+	found := false
+	for _, entry := range symMap.Excluded {
+		if entry.Original == "twice" {
+			require.Equal(t, "quoted-reference", entry.Reason)
+			found = true
+		}
+	}
+	require.True(t, found, "quoted function must have an exclusion record")
+	require.Contains(t, out.String(), "(defun twice ")
+}
+
+func TestMinifyCommandDynamicEvaluationWarning(t *testing.T) {
+	bin := buildTestBinary(t)
+	dir := t.TempDir()
+	src := "(defun helper () 42)\n(debug-print (funcall (load-string \"'helper\")))\n(eval 1)"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dynamic.lisp"), []byte(src), 0o600))
+	code, _, stderr := runCorpusCLI(t, bin, dir, "minify", "dynamic.lisp")
+	require.Equal(t, 0, code)
+	require.Contains(t, stderr, "dynamic.lisp:2:24")
+	require.Contains(t, stderr, "load-string")
+	require.Contains(t, stderr, "preserving all binding names, including lexical locals")
+	require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
+}
+
+func TestMinifyCommandPackageFlowWarning(t *testing.T) {
+	bin := buildTestBinary(t)
+	for _, tt := range []struct{ source, site, form, reason string }{
+		{"(defun helper () 42)\n(let ((names \"helper\")) (export names))\n(progn (in-package 'other))\n(eval 1)", "4:2", "eval", "dynamic-evaluation"},
+		{"(defun helper () 42)\n(progn (in-package 'other))\n(export names)", "2:9", "in-package", "unproven-package-flow"},
+		{"(defun helper () 42)\n(eval 1)\n(export names)", "2:2", "eval", "dynamic-evaluation"},
+	} {
+		t.Run(tt.form, func(t *testing.T) {
+			dir := t.TempDir()
+			require.NoError(t, os.WriteFile(filepath.Join(dir, "flow.lisp"), []byte(tt.source), 0o600))
+			code, _, stderr := runCorpusCLI(t, bin, dir, "minify", "--map", "symbols.json", "flow.lisp")
+			require.Equal(t, 0, code, "%s", stderr)
+			require.Contains(t, stderr, "flow.lisp:"+tt.site+": "+tt.form)
+			if tt.reason == "dynamic-evaluation" {
+				require.Contains(t, stderr, "preserving all binding names, including lexical locals")
+			} else {
+				require.Contains(t, stderr, "preserving all package-level binding names")
+			}
+			require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
+			data, err := os.ReadFile(filepath.Join(dir, "symbols.json")) //nolint:gosec // reads CLI output from the test-owned temporary directory
+			require.NoError(t, err)
+			var symMap minifier.SymbolMap
+			require.NoError(t, json.Unmarshal(data, &symMap))
+			require.Contains(t, symMap.Excluded, minifier.SymbolExclusion{Original: "helper", Reason: tt.reason})
+		})
+	}
 }
