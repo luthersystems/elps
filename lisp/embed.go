@@ -289,17 +289,15 @@ func goMap(v *LVal, g cycleGuard) (map[interface{}]interface{}, bool) {
 func checkGoMapInsert(m gomap, lk, lv *LVal, g cycleGuard) (ok bool) {
 	// k is definitely assignable to m's key type (interface{}) but map keys
 	// must also be comparable which is not known without reflection on k's
-	// type (or through recovering a failed map assignment).
+	// value, including any dynamic values held in interface fields.
 	k := goValue(lk, g)
 	if k == nil {
 		// Either the walk has been abandoned -- goValue returns nil rather
 		// than descending, and the caller is about to discard this map -- or
-		// the key really converts to nil, which no Go map can hold as a key
-		// either.  reflect.TypeOf(nil) is nil and panics on Comparable, so
-		// this has to be checked before the reflection below.
+		// the key really converts to nil, which this conversion rejects.
 		return false
 	}
-	if reflect.TypeOf(k).Comparable() {
+	if reflect.ValueOf(k).Comparable() {
 		m[k] = goValue(lv, g)
 		return true
 	}

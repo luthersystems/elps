@@ -71,6 +71,8 @@ func TestGoMapKeyReflectionGuards(t *testing.T) {
 		{Nil(), "nil-list", false},
 		{Native(nil), "nil-native", false},
 		{Native([]int{1}), "slice", false},
+		{Native(struct{ X any }{X: []int{1}}), "struct-interface-slice", false},
+		{Native([1]any{[]int{1}}), "array-interface-slice", false},
 		{Native(map[string]int(nil)), "nil-map", false},
 		{Native((*int)(nil)), "nil-pointer", true},
 		{String("key"), "string", true},
