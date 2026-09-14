@@ -1378,7 +1378,7 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 			return Errorf("index is negative: %v", j)
 		}
 		if j.Int >= n.Int {
-			return Errorf("index %d out of bounds for array dimenion %d of %v", j.Int, i, dims)
+			return Errorf("index %d out of bounds for array dimension %d of %v", j.Int, i, dims)
 		}
 	}
 	i := 0

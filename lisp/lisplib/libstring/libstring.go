@@ -46,7 +46,8 @@ var builtins = []*libutil.Builtin{
 		`Returns str in Unicode uppercase, reusing storage if unchanged.`),
 	libutil.FunctionDoc("split", lisp.Formals("str", "sep"), builtinSplit,
 		`Splits str around sep into a list of substrings. An empty sep splits
-		by UTF-8 rune; empty str then yields no pieces. The limit counts pieces.`),
+		by UTF-8 rune; empty str then yields no pieces. Takes exactly two
+		arguments, str and sep. The runtime allocation limit counts pieces.`),
 	libutil.FunctionDoc("join", lisp.Formals("list", "sep"), builtinJoin,
 		`Concatenates a list of strings with sep inserted between each
 		element. All items must be strings; output must fit the byte limit.`),

@@ -120,7 +120,10 @@ var langSpecialOps = []*langBuiltin{
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when
-		there are no body forms, after validating the bindings.`},
+		there are no body forms, after validating the bindings. Like
+		with-cleanup, blocks tail-call optimization across this form, even
+		with empty bindings. Keep recursion outside the handler and handle
+		each iteration's work inside it.`},
 	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors,
 		`Evaluates body forms sequentially. If any form signals an error,
 		evaluation stops and () is returned instead of propagating the
@@ -140,9 +143,10 @@ var langSpecialOps = []*langBuiltin{
 	{"cond", Formals(VarArgSymbol, "branch"), opCond,
 		`Multi-way conditional. Each branch is a clause (test &rest body).
 		Clauses are evaluated in order: for the first truthy test, the
-		body forms are evaluated and the last value returned. Use 'else'
-		as the test in the final clause to match unconditionally. Returns
-		() if no clause matches.`},
+		body forms are evaluated and the last value returned. Use else or
+		:else as the test in the final clause to match unconditionally;
+		either spelling in a non-final clause raises an error when reached.
+		Returns () if no clause matches or the matching clause has no body.`},
 	{"if", Formals("condition", "then", "else"), opIf,
 		`Conditional branch. Evaluates condition; if truthy, evaluates
 		and returns then, otherwise evaluates and returns else. All three
@@ -1035,7 +1039,7 @@ func opCond(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not a pair (length %d)", len(branch.Cells))
 		}
 		var test *LVal
-		if branch.Cells[0].Type == LSymbol && branch.Cells[0].Str == "else" {
+		if branch.Cells[0].Type == LSymbol && (branch.Cells[0].Str == "else" || branch.Cells[0].Str == ":else") {
 			if i != last {
 				return env.Errorf("invalid syntax: else")
 			}

@@ -82,6 +82,9 @@ var (
 			non-empty symbol identifier, without colons or a keyword prefix.
 			Optional trailing strings set the package documentation. All
 			arguments are validated before creating or switching packages.
+			This is an ordinary evaluated form: calling it from a helper can
+			change the caller's package for subsequent forms. Only loads
+			guarantee automatic restoration of the caller's package.
 			Returns nil.`},
 		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage,
 			`Imports all exported symbols from the named packages into the
@@ -122,12 +125,15 @@ var (
 			the result. Useful for debugging macro expansion. Recursive
 			value walks exceeding 1000000 levels raise an ordinary depth error.`},
 		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
-			`Calls fun with the given args and returns the result. Cannot be
-			used with special operators or macros.`},
+			`Calls fun with the given args and returns the result. fun may be
+			a function value or a quoted symbol resolved in the global package
+			environment. Cannot be used with special operators or macros.`},
 		{"apply", Formals("fun", VarArgSymbol, "args"), builtinApply,
 			`Calls fun with arguments formed by appending the last argument
 			(which must be a list) to any preceding arguments. For example,
-			(apply f 1 2 '(3 4)) calls f with arguments 1 2 3 4.`},
+			(apply f 1 2 '(3 4)) calls f with arguments 1 2 3 4. fun may be a
+			function value or a quoted symbol resolved in the global package
+			environment.`},
 		{"to-string", Formals("value"), builtinToString,
 			`Converts value to its string representation. Accepts strings,
 			symbols, bytes, integers, and floats.`},
@@ -180,7 +186,8 @@ var (
 			"map", Formals("type-specifier", "fn", "seq"), builtinMap,
 			`Returns a sequence containing values returned by applying unary
 			function fn to elements of seq in order. The type-specifier
-			('list or 'vector) determines the return type.`,
+			('list or 'vector) determines the return type. fn may be a function
+			value or a quoted symbol resolved in the global package environment.`,
 		},
 		{"foldl", Formals("fn", "z", "seq"), builtinFoldLeft,
 			`Left-folds seq with binary function fn starting from accumulator
@@ -302,16 +309,24 @@ var (
 			with corresponding values. Use {} for sequential substitution or
 			{0}, {1}, etc. for positional. Strings are interpolated without
 			quotes. Use {{ and }} for literal braces. Cannot mix sequential
-			and positional styles. Nested values deeper than 1024 levels render
+			and positional styles. Whitespace around positional indices is
+			accepted: { 0 } means {0}. Surplus values are ignored; a placeholder
+			without a corresponding value raises an error.
+			Nested values deeper than 1024 levels render
 			as #<depth-limit>; cycles render as #<cycle>. Shared DAGs render in full up to the runtime
 			output/work limit; exceeding it raises an allocation error. Rendering
 			honours context cancellation.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
 			`Returns a new sequence with elements in reverse order. The
-			type-specifier ('list or 'vector) determines the return type.`},
+			type-specifier ('list or 'vector) determines the return type.
+			seq must be a list or vector; strings are not supported.`},
 		{"slice", Formals("type-specifier", "seq", "start", "end"), builtinSlice,
 			`Returns a subsequence from index start (inclusive) to end
-			(exclusive). Accepts lists, vectors, strings, and bytes. For
+			(exclusive). Accepts lists, vectors, strings, and bytes. String
+			indices count bytes, so slicing through a rune can produce invalid
+			UTF-8: (slice 'string "José" 0 4) ends with the byte 0xc3.
+			For rune-safe slicing, split with (string:split str ""), slice the
+			resulting list, then join with (string:join pieces ""). For
 			lists, vectors and bytes the result is a view sharing elements
 			with seq: appending to it cannot disturb seq, but sorting it in
 			place also sorts that region of seq. Use concat to take a copy.
@@ -1068,7 +1083,7 @@ func builtinRethrow(env *LEnv, args *LVal) *LVal {
 func builtinCAR(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if v.Type != LSExpr {
-		return env.Errorf("argument is not a list %v", v.Type)
+		return env.Errorf("argument is not a list: %v", v.Type)
 	}
 	if len(v.Cells) == 0 {
 		return Nil()
@@ -1080,7 +1095,7 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 func builtinCDR(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if v.Type != LSExpr {
-		return env.Errorf("argument is not a list %v", v.Type)
+		return env.Errorf("argument is not a list: %v", v.Type)
 	}
 	if len(v.Cells) < 2 {
 		return Nil()
@@ -1129,7 +1144,7 @@ func clampCapBytes(b []byte) []byte {
 func builtinRest(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if !isSeq(v) {
-		return env.Errorf("argument is not a proper sequence %v", v.Type)
+		return env.Errorf("argument is not a proper sequence: %v", v.Type)
 	}
 	cells := seqCells(v)
 	if len(cells) < 2 {
@@ -1757,7 +1772,7 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a regular function: %v", less.FunType)
 	}
 	if !isSeq(list) {
-		return env.Errorf("second arument is not a proper list: %v", list.Type)
+		return env.Errorf("second argument is not a proper list: %v", list.Type)
 	}
 	if len(optArgs) > 1 {
 		return env.Errorf("too many optional arguments provided")
@@ -1883,7 +1898,7 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if index.Type != LInt {
-		return env.Errorf("third arument is not a integer: %v", index.Type)
+		return env.Errorf("third argument is not an integer: %v", index.Type)
 	}
 	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
@@ -1923,7 +1938,7 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if p.Type != LFun {
-		return env.Errorf("third arument is not a function: %v", p.Type)
+		return env.Errorf("third argument is not a function: %v", p.Type)
 	}
 	if p.IsSpecialFun() {
 		return env.Errorf("third argument is not a regular function: %v", p.FunType)
@@ -2323,7 +2338,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
 	if !isSeq(list) {
-		return env.Errorf("first argument is not a proper sequence: %v", args.Cells[0].Type)
+		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if msg := env.Runtime.CheckAlloc(list.Len()); msg != "" {
 		return env.Errorf("%s", msg)
@@ -2358,7 +2373,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("third argument is not an integer: %v", start.Type)
 	}
 	if end.Type != LInt {
-		return env.Errorf("forth argument is not an integer: %v", end.Type)
+		return env.Errorf("fourth argument is not an integer: %v", end.Type)
 	}
 	n := list.Len()
 	i := start.Int

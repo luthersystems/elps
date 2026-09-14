@@ -91,7 +91,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		src: "(defmacro m () (compose car car))\n" +
 			"(set 'f (m))\n" +
 			"(f 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> macro-root.lisp:1:16\n" +
 			"   |\n" +
 			" 1 |  (defmacro m () (compose car car))\n" +
@@ -105,7 +105,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		name: "macro-child",
 		src: "(defmacro m () (quasiquote (funcall (unquote (compose car car)) 1)))\n" +
 			"(m)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> macro-child.lisp:1:46\n" +
 			"   |\n" +
 			" 1 |  (defmacro m () (quasiquote (funcall (unquote (compose car car)) 1)))\n" +
@@ -122,7 +122,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 			"(defmacro m () gf)\n" +
 			"(set 'f (m))\n" +
 			"(f 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> global.lisp:1:10\n" +
 			"   |\n" +
 			" 1 |  (set 'gf (compose car car))\n" +
@@ -136,7 +136,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		name: "plain",
 		src: "(set 'g (compose car car))\n" +
 			"(g 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> plain.lisp:1:9\n" +
 			"   |\n" +
 			" 1 |  (set 'g (compose car car))\n" +

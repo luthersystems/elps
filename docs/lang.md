@@ -68,6 +68,10 @@ package `a`, a name no other part of the language can write.  Note that `+1`
 and `.1` *are* identifiers — `+` and `.` are ordinary symbol characters — so
 `a:+1` and `a:.1` are both fine.
 
+Dotted-pair notation is not supported. A standalone `.` is an ordinary
+symbol, so `'(1 . 2)` is a three-element list, and
+`(length '(a . b . c))` evaluates to `5`.
+
 ### Keywords
 
 A symbol written with a leading colon and no package, `:name`, is a *keyword*.
@@ -191,6 +195,30 @@ tokens across windows. Split larger data into smaller literals or load it
 from an external file. This is a source-token limit, not a limit on the size
 of string values constructed at runtime.
 
+String `length` and `slice` indices count bytes. Slicing through a multi-byte
+rune can produce invalid UTF-8: `(slice 'string "José" 0 4)` contains the
+bytes `4a 6f 73 c3` (printed as `"Jos\xc3"`). Unicode operations such as
+`string:uppercase` and JSON encoding with `json:dump-string` replace the incomplete
+rune with U+FFFD. For rune-safe slicing, use the empty-separator form of
+`string:split`, slice the resulting list, and join it again:
+
+```lisp
+(string:split "José" "")                           ; '("J" "o" "s" "é")
+(string:join (slice 'list (string:split "José" "") 0 4) "") ; "José"
+```
+
+`string:split` takes exactly two arguments, the string and separator; it has
+no limit argument. Its runtime allocation limit is described under
+[Allocation Limits](#allocation-limits).
+
+`format-string` replaces `{}` placeholders in order or uses zero-based
+positional indices such as `{0}`. Whitespace around an index is accepted:
+`(format-string "{ 0 }" "hello")` returns `"hello"`. Use `{{` and `}}` for
+literal braces; sequential and positional placeholders cannot be mixed.
+Surplus values are ignored: `(format-string "{}" "one" "two")` returns
+`"one"`. Too few values for the placeholders raise an error, including a
+positional index outside the supplied values.
+
 ## Expression Evaluation
 
 ### Nil
@@ -210,6 +238,21 @@ strings evaluate to themselves.
 Quoted expressions evaluate to themselves.  Quoted numbers and strings are
 equivalent to their unquoted counterparts.  But a quoted nil value is not
 equivalent to nil.
+
+The reader spelling `'x` and the list spelling `(quote x)` both evaluate to
+the quoted value `x`, but their unevaluated representations are distinct.
+The reader uses a quote value for an additional quote layer, whereas the
+explicit `quote` form is a list:
+
+```lisp
+(type ''a)                  ; 'quote
+(type '(quote a))           ; 'list
+(equal? ''a '(quote a))     ; false
+```
+
+A macro receives unevaluated forms. A macro that inspects `(car form)` to
+recognize `(quote x)` must also handle the reader-quote representation of
+`'x`; it cannot assume both spellings arrive as a list headed by `quote`.
 
 ### Compound Expressions (Function Calls)
 
@@ -293,6 +336,18 @@ argument bound to `'(1 2 -2)`.  When funcall calls sum-list, it passes this
 list verbatim.  When sum-list passes this list to `apply`, the list is unpacked
 as if the list contents had been passed to `+` as its arguments.  Other than
 this distinction the two functions, `apply` and `funcall` operate the same way.
+
+`funcall`, `apply`, and `map` also accept a quoted symbol naming a function.
+They resolve that symbol in the global package environment (including
+package-qualified names), rather than looking up a local function binding:
+
+```lisp
+(funcall '+ 1 2)       ; 3
+(apply '+ '(1 2 3))    ; 6
+(map 'list '- '(1 2))  ; '(-1 -2)
+```
+
+Pass the function value itself when using a local binding.
 
 ### Optional function arguments
 
@@ -518,6 +573,12 @@ if ...; else return resultN.
 
 If none of the conditions are true (and there is no :else), then `()` is
 returned.
+
+Both bare `else` and keyword `:else` are supported unconditional defaults.
+Either must be the final clause; reaching a non-final default raises
+`invalid syntax: else`. This includes the formerly accepted non-final
+`:else`: move it to the end. The `cond-structure` linter reports misplaced
+defaults in source; dynamically constructed forms still need runtime checks.
 
 ### let vs let\*
 
@@ -789,6 +850,11 @@ probably not desired.
 ### Lists
 
 The most primitive data structure is a list, a quoted s-expression.
+
+`reverse` accepts a list or vector as its second argument and returns the
+type selected by its first argument (`'list` or `'vector`). Strings are not
+supported: `(reverse 'list "hello")` reports
+`second argument is not a proper sequence: string`.
 
 ```lisp
 '(1 2 3 4 "hello" ok)
@@ -1459,7 +1525,7 @@ complexity increases.
 
 When the ELPS interpreter starts, all code executes in the `user` package.
 This is the default package for any file that does not contain an
-`(in-package ...)` declaration.  Files loaded via `load-file` inherit the
+`(in-package ...)` form.  Files loaded via `load-file` inherit the
 caller's current package context at the point of the load call.
 
 ### Loading Files (`load-file`)
@@ -1489,6 +1555,22 @@ refused.
 Packages are created/modified using the `in-package`
 function, which changes the environment's working package.  Symbols bound using
 `set`, `defun`, `defmacro`, etc will be bound in the working package.
+
+`in-package` is an ordinary evaluated form, not a file-level declaration.
+Calling it inside a helper can change the caller's current package for all
+following top-level forms. Libraries must not use it in helpers:
+
+```lisp
+(in-package 'user)
+(set 'gv 42)
+(defun switcher () (in-package 'otherpkg) 'ok)
+(switcher)  ; 'ok; the current package is now otherpkg
+gv          ; error: symbol not bound: gv
+```
+
+Only loads guarantee automatic restoration: `load-file` and `load-string`
+(also `load-bytes`) restore the caller's package when the load returns,
+including on error. A function return is not a general restoration boundary.
 
 The core `lisp` package is sealed against binding changes from Lisp code once
 `InitializeUserEnv` finishes registering the language, before application
@@ -2645,6 +2727,32 @@ in constant stack:
 (defun spin (n) (if (= n 0) 'done (spin (- n 1))))
 (with-cleanup ((release)) (spin 500000))   ; 'done — constant stack
 ```
+
+**A tail call that crosses `handler-bind` is also not optimized**, even with
+an empty binding list. Its frame remains available to handle errors from
+the recursive call:
+
+```lisp
+(defun loop1 (n)
+  (if (= n 0) 'done (handler-bind () (loop1 (- n 1)))))
+(loop1 1000000)   ; physical stack height exceeded maximum: 25001
+```
+
+Keep the loop's recursive call outside the handler; handle each iteration's
+work inside it, then let that handler frame return before recurring:
+
+```lisp
+(defun loop1 (n)
+  (if (= n 0)
+      'done
+      (progn
+        (handler-bind ((condition (lambda (&rest _) ())))
+          (work n))
+        (loop1 (- n 1)))))
+```
+
+As with `with-cleanup`, this restriction applies to the frame crossed by the
+tail call: `(handler-bind () (spin 500000))` still uses constant stack.
 
 Note also that the cleanup forms run under their own fresh per-frame budgets:
 `MaxTailIterations` and `MaxHeightPhysical` are counted per frame and recover
