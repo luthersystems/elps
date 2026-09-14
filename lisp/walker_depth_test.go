@@ -13,8 +13,8 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// TestRuntimeWalkerDepthAt500K pins ordinary depth errors for recursive
-// walkers and preserves the existing rendering, quoting and conversion cases.
+// TestRuntimeWalkerDepthAt500K pins complete value results below the default
+// walker limit and preserves the separate rendering, quoting and conversion rules.
 // Each operation runs in its own process with an external deadline.
 func TestRuntimeWalkerDepthAt500K(t *testing.T) {
 	const childEnv = "ELPS_RUNTIME_WALKER_500K"
@@ -29,10 +29,10 @@ func TestRuntimeWalkerDepthAt500K(t *testing.T) {
 	for _, tc := range []struct {
 		operation, outcome string
 	}{
-		{"equal", "ordinary LError: value nesting depth exceeds maximum: 1024"},
-		{"go-copy", "ordinary LError: value nesting depth exceeds maximum: 1024"},
-		{"lisp-copy", "ordinary LError: value nesting depth exceeds maximum: 1024"},
-		{"json-dump", "ordinary LError: value nesting depth exceeds maximum: 1024"},
+		{"equal", "complete correct result"},
+		{"go-copy", "complete correct result"},
+		{"lisp-copy", "complete correct result"},
+		{"json-dump", "complete correct result"},
 		{"format-string", "success: 1024 balanced wrappers around #<depth-limit>"},
 		{"quote", "success: shallow quoted header; source unchanged"},
 		{"to-string", "ordinary LError: cannot convert type to string"},
@@ -77,10 +77,15 @@ func runRuntimeWalkerAt500K(t *testing.T, operation string) {
 		}
 		return v
 	}
-	checkDepthError := func(v *lisp.LVal) {
-		t.Helper()
-		if v.Type != lisp.LError || lisp.IsInternalPanic(v) || !strings.Contains(v.String(), "value nesting depth exceeds maximum: 1024") {
-			t.Fatalf("expected ordinary depth error, got %s", v)
+	checkCopy := func(v *lisp.LVal) {
+		for range depth {
+			if v.Type != lisp.LSExpr || len(v.Cells) != 1 {
+				t.Fatal("copy lost container")
+			}
+			v = v.Cells[0]
+		}
+		if v.Type != lisp.LInt || v.Int != 7 {
+			t.Fatal("copy lost leaf")
 		}
 	}
 	switch operation {
@@ -89,19 +94,29 @@ func runRuntimeWalkerAt500K(t *testing.T, operation string) {
 		if err := lisp.GoError(env.PutGlobal(lisp.Symbol("other"), other)); err != nil {
 			t.Fatal(err)
 		}
-		checkDepthError(env.LoadString("walker-depth.lisp", "(equal? source other)"))
+		if v := eval("(equal? source other)"); !lisp.True(v) {
+			t.Fatal("same leaves differ")
+		}
 		leaf := other
 		for range depth {
 			leaf = leaf.Cells[0]
 		}
 		leaf.Int = 8
-		checkDepthError(env.LoadString("walker-depth.lisp", "(equal? source other)"))
+		if err := lisp.GoError(env.PutGlobal(lisp.Symbol("other"), other)); err != nil {
+			t.Fatal(err)
+		}
+		if v := eval("(equal? source other)"); lisp.True(v) {
+			t.Fatal("different leaves equal")
+		}
 	case "go-copy":
-		checkDepthError(source.Copy())
+		checkCopy(source.Copy())
 	case "lisp-copy":
-		checkDepthError(env.LoadString("walker-depth.lisp", "(copy source)"))
+		checkCopy(eval("(copy source)"))
 	case "json-dump":
-		checkDepthError(env.LoadString("walker-depth.lisp", "(json:dump-string source)"))
+		v := eval("(json:dump-string source)")
+		if v.Str != strings.Repeat("[", depth)+"7"+strings.Repeat("]", depth) {
+			t.Fatal("JSON lost content")
+		}
 	case "format-string":
 		v := eval(`(format-string "{}" source)`)
 		want := strings.Repeat("(", 1024) + "#<depth-limit>" + strings.Repeat(")", 1024)

@@ -169,9 +169,9 @@ func TestEmbedderCannotObtainTheExemption(t *testing.T) {
 // TestDumpMessageOfAnUnvouchedDocumentIsStillRefused is the other half of the
 // seal, and the reason the exemption is not the type alone.
 //
-// Program-built values beyond lisp.MaxValueDepth are now refused before
-// an ownMessage can be minted. Native payloads still need the loadable flag:
-// their own nesting can compose with Lisp wrappers past the decoder limit.
+// Program-built values may exceed the decoder limit while remaining within
+// lisp.MaxValueDepth. Such an ownMessage must not earn the loadable flag;
+// native payload nesting can also compose with Lisp wrappers past that limit.
 // TestExemptionRidesOnTheFlag covers the internal flag directly.
 func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 	env := newLispEnv(t)
@@ -184,9 +184,13 @@ func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 			payload = m
 		}
 		msg := libjson.DefaultSerializer().DumpMessageBuiltin(env, lisp.SExpr([]*lisp.LVal{payload, lisp.Nil()}))
-		require.Equal(t, lisp.LError, msg.Type)
-		require.False(t, lisp.IsInternalPanic(msg))
-		assert.Contains(t, msg.String(), "value nesting depth exceeds maximum: 1024")
+		require.Equal(t, lisp.LNative, msg.Type)
+		require.Equal(t, lisp.LError, libjson.Load(messageBytes(t, env, msg), false).Type)
+		envelope := lisp.SortedMap()
+		envelope.MapSet("result", msg)
+		result := libjson.DefaultSerializer().DumpStringBuiltin(env, lisp.SExpr([]*lisp.LVal{envelope, lisp.Nil()}))
+		require.Equal(t, lisp.LError, result.Type)
+		assert.Contains(t, result.String(), "exceeded max depth")
 
 	})
 

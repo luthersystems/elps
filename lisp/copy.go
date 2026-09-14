@@ -88,7 +88,7 @@ func (v *LVal) deepCopy() (*LVal, error) {
 }
 
 // deepCopyWithRuntime applies a runtime's per-container allocation limit only
-// when copying from Lisp. Go ownership helpers retain the hard depth ceiling. Immutable
+// when copying from Lisp. Go ownership helpers use the default depth limit. Immutable
 // string storage is shared, and allocation inside NativeCloner hooks remains
 // the host's responsibility; neither it nor walker bookkeeping is metered.
 func (v *LVal) deepCopyWithRuntime(runtime *Runtime) (*LVal, error) {

@@ -120,7 +120,7 @@ import (
 //   - LSExpr (range from) → Range(from, 0, true), the end resolved against
 //     the input length at evaluation time (issue #563)
 //
-// More than lisp.MaxValueDepth iterator steps are refused before compiling
+// More than maxPathSteps iterator steps are refused before compiling
 // nested iterators, which would otherwise recurse over program-built values.
 func ArgsToPath(args []*lisp.LVal) (Path, error) {
 	if len(args) == 0 {
@@ -135,8 +135,8 @@ func ArgsToPath(args []*lisp.LVal) (Path, error) {
 		}
 		if _, ok := step.(*iterPath); ok {
 			iterators++
-			if iterators > lisp.MaxValueDepth {
-				return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+			if iterators > maxPathSteps {
+				return nil, lisp.ValueDepthError(maxPathSteps)
 			}
 		}
 		steps = append(steps, step)

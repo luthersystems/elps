@@ -286,7 +286,7 @@ func (enc *encoder) donateBuffer() []byte {
 // nest past 64 -- deeper than most JSON parsers will even accept -- is the
 // cheaper half of that trade by a wide margin.
 func (g encodeGuard) depthLimit() int {
-	if g.limit > 0 && g.limit < lisp.MaxValueDepth {
+	if g.limit >= 1024 {
 		return g.limit
 	}
 	return lisp.MaxValueDepth
@@ -311,21 +311,94 @@ func (enc *encoder) encodeLimit(v *lisp.LVal, limit int) error {
 // nested encode must call this and pass g down rather than calling encode, or
 // the bound is lost.
 func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
-	if v.IsNil() {
-		enc.buf.WriteString("null")
-		return nil
+	type frame struct {
+		v     *lisp.LVal
+		g     encodeGuard
+		token byte
+		leave bool
+		key   bool
 	}
-	fn := encoderFuncs[v.Type]
-	if fn == nil {
-		return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
+	var local [256]frame
+	pending := append(local[:0], frame{v: v, g: g})
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.token != 0 {
+			enc.buf.WriteByte(f.token)
+			continue
+		}
+		if f.leave {
+			f.g.leave(f.v)
+			continue
+		}
+		if f.key {
+			if err := enc.encodeMapKey(f.v); err != nil {
+				return err
+			}
+			continue
+		}
+		v := f.v
+		if v.IsNil() {
+			enc.buf.WriteString("null")
+			continue
+		}
+		fn := encoderFuncs[v.Type]
+		if fn == nil {
+			return fmt.Errorf("invalid type encountered: %v", lisp.GetType(v))
+		}
+		g, err := f.g.enter(v)
+		if err != nil {
+			return err
+		}
+		pending = append(pending, frame{v: v, g: g, leave: true})
+		var cells []*lisp.LVal
+		switch v.Type {
+		case lisp.LQuote, lisp.LTaggedVal:
+			pending = append(pending, frame{v: v.Cells[0], g: g})
+			continue
+		case lisp.LArray:
+			switch v.Cells[0].Len() {
+			case 0:
+				pending = append(pending, frame{v: v.Cells[1].Cells[0], g: g})
+				continue
+			case 1:
+				cells = v.Cells[1].Cells
+			default:
+				return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+			}
+		case lisp.LSExpr:
+			cells = v.Cells
+		case lisp.LSortMap:
+			entries := v.MapEntries()
+			if entries.Type == lisp.LError {
+				return lisp.GoError(entries)
+			}
+			enc.buf.WriteByte('{')
+			pending = append(pending, frame{token: '}'})
+			for i := len(entries.Cells) - 1; i >= 0; i-- {
+				p := entries.Cells[i].Cells
+				pending = append(pending, frame{v: p[1], g: g}, frame{token: ':'}, frame{v: p[0], key: true})
+				if i > 0 {
+					pending = append(pending, frame{token: ','})
+				}
+			}
+			continue
+		default:
+			if err := fn(enc, v, g); err != nil {
+				return err
+			}
+			continue
+		}
+		enc.buf.WriteByte('[')
+		pending = append(pending, frame{token: ']'})
+		for i := len(cells) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: cells[i], g: g})
+			if i > 0 {
+				pending = append(pending, frame{token: ','})
+			}
+		}
 	}
-	g, err := g.enter(v)
-	if err != nil {
-		return err
-	}
-	err = fn(enc, v, g)
-	g.leave(v)
-	return err
+	return nil
 }
 
 func (enc *encoder) encodeLQuote(v *lisp.LVal, g encodeGuard) error {

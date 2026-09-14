@@ -9,6 +9,9 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
+// maxPathSteps bounds recursive path composition, independently of value walkers.
+const maxPathSteps = 1024
+
 // Path represents an operation on a path.
 type Path interface {
 	// Get evaluates a get path operation on an elps LVal.
@@ -66,28 +69,98 @@ func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
 // starting a fresh one. Every nested copy must pass g down; a fresh walk per
 // level resets the bound on every lap and it never fires.
 func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	switch v.Type {
-	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
-		// Containers and wrappers reach other values and must participate
-		// in the copy and cycle walk. Entering an opaque leaf would
-		// tax every string and int in the value to bound a walk that cannot
-		// recurse.
-	default:
-		// Opaque leaves are shared; elpspath never indexes into their storage.
-		return v, nil
+	type frame struct {
+		v      *lisp.LVal
+		dst    **lisp.LVal
+		g      cycleGuard
+		leave  bool
+		finish func() error
 	}
-	if g.depth >= lisp.MaxValueDepth {
-		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	var out *lisp.LVal
+	pending := []frame{{v: v, dst: &out, g: g}}
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.finish != nil {
+			if err := f.finish(); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if f.leave {
+			f.g.ascend(f.v)
+			continue
+		}
+		v := f.v
+		switch v.Type {
+		case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
+		default:
+			*f.dst = v
+			continue
+		}
+		if f.g.depth >= lisp.MaxValueDepth {
+			return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+		}
+		next, cyclic := f.g.descend(v)
+		if cyclic {
+			return nil, errCyclicValue
+		}
+		if next.tracking() {
+			pending = append(pending, frame{v: v, g: next, leave: true})
+		}
+		var cells []*lisp.LVal
+		switch v.Type {
+		case lisp.LSortMap:
+			entries := sortedMapEntries(v.Map())
+			if entries.Type == lisp.LError {
+				return nil, lisp.GoError(entries)
+			}
+			cp := lisp.SortedMap()
+			*f.dst = sameQuoting(v, cp)
+			for i := len(entries.Cells) - 1; i >= 0; i-- {
+				pair := entries.Cells[i]
+				var child *lisp.LVal
+				pending = append(pending, frame{finish: func() error { return lisp.GoError(cp.Map().Set(pair.Cells[0], child)) }}, frame{v: pair.Cells[1], dst: &child, g: next})
+			}
+			continue
+		case lisp.LArray:
+			n := v.Cells[0].Len()
+			if n > 1 {
+				*f.dst = lisp.Nil()
+				continue
+			}
+			if n == 0 {
+				return nil, errors.New("cannot index zero-dimensional array")
+			}
+			cells = v.Cells[1].Cells
+		case lisp.LQuote, lisp.LTaggedVal:
+			child, err := wrapperValue(v)
+			if err != nil {
+				return nil, err
+			}
+			cells = []*lisp.LVal{child}
+		case lisp.LSExpr:
+			cells = v.Cells
+		}
+		copied := make([]*lisp.LVal, len(cells))
+		var cp *lisp.LVal
+		switch v.Type {
+		case lisp.LArray:
+			cp = toVector(copied)
+		case lisp.LSExpr:
+			cp = toList(copied)
+		default:
+			cp = &lisp.LVal{Type: v.Type, Str: v.Str, Cells: copied}
+			if loc, ok := v.Source(); ok {
+				cp.SetSource(&loc)
+			}
+		}
+		*f.dst = sameQuoting(v, cp)
+		for i := len(cells) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: cells[i], dst: &copied[i], g: next})
+		}
 	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return nil, errCyclicValue
-	}
-	out, err := copyContainer(v, g)
-	if g.tracking() {
-		g.ascend(v)
-	}
-	return out, err
+	return out, nil
 }
 
 // copyContainer copies the container types. It is only ever called through
@@ -858,8 +931,8 @@ func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 }
 
 func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path) (*lisp.LVal, error) {
-	if len(paths) > lisp.MaxValueDepth {
-		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	if len(paths) > maxPathSteps {
+		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
 	if len(paths) == 0 {
 		// in this case we're replacing the entire input with a new input
@@ -900,8 +973,8 @@ func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func deleteChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
-	if len(paths) > lisp.MaxValueDepth {
-		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	if len(paths) > maxPathSteps {
+		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
 	if len(paths) == 0 {
 		// Deleting the whole document leaves nothing, which is lisp nil --
@@ -962,8 +1035,8 @@ func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func nullChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
-	if len(paths) > lisp.MaxValueDepth {
-		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	if len(paths) > maxPathSteps {
+		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
 	if len(paths) == 0 {
 		return lisp.Nil(), nil

@@ -210,7 +210,7 @@ var builtins = []*libutil.Builtin{
 		(?set obj "foo" "bar" "new")   => new obj with foo.bar="new"
 		(?set obj "items" 0 "x")       => new obj with items[0]="x"
 
-		Recursive copying beyond 1024 levels raises an ordinary depth error.
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
 		Copying path chains longer than 1024 steps also raise a depth error.`),
@@ -236,7 +236,7 @@ var builtins = []*libutil.Builtin{
 		(?del obj "foo")               => new obj with foo removed
 		(?del obj "items" 1)           => new obj with items[1] removed
 
-		Recursive copying beyond 1024 levels raises an ordinary depth error.
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
 		Copying path chains longer than 1024 steps also raise a depth error.`),
@@ -261,7 +261,7 @@ var builtins = []*libutil.Builtin{
 		(?nil obj "foo")               => new obj with foo=nil
 		(?nil patient "ssn")           => new obj with ssn=nil
 
-		Recursive copying beyond 1024 levels raises an ordinary depth error.
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
 		Copying path chains longer than 1024 steps also raise a depth error.`),

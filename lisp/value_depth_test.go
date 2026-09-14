@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime/debug"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -32,123 +33,187 @@ func depthTestValue(depth int) *LVal {
 func TestValueWalkDepth(t *testing.T) {
 	if mode := os.Getenv("ELPS_DEPTH_WALK"); mode != "" {
 		debug.SetMaxStack(8 << 20)
-		v := depthTestValue(3_000_000)
+		depth, _ := strconv.Atoi(os.Getenv("ELPS_DEPTH_SIZE"))
+		v := depthTestValue(depth)
+		var got *LVal
 		var err error
+		start := time.Now()
 		switch mode {
 		case "equal":
-			err = GoError(v.Equal(v))
+			other := depthTestValue(depth)
+			got = v.Equal(other)
+			if depth < MaxValueDepth {
+				if got.Type == LError || !True(got) {
+					t.Fatal("equal values differ")
+				}
+				leaf := other
+				for range depth {
+					leaf = leaf.Cells[0]
+				}
+				leaf.Int = 8
+				got = v.Equal(other)
+				if got.Type == LError || True(got) {
+					t.Fatal("different leaves compare equal")
+				}
+				got = nil
+			}
 		case "quasiquote":
-			err = GoError(findAndUnquote(initSafetyTestEnv(t), v, 0))
+			got = findAndUnquote(initSafetyTestEnv(t), v, 0)
 		case "stamp":
-			err = GoError(stampMacroExpansion(v, &token.Location{File: "depth"}, nil, NewEnv(nil).Runtime))
+			got = stampMacroExpansion(v, &token.Location{File: "depth"}, nil, NewEnv(nil).Runtime)
 		case "classify":
-			err = GoError(admitSymbolValue(v))
+			got = admitSymbolValue(v)
 		case "seal":
 			v.SealAST()
-			for n := v; len(n.Cells) > 0; n = n.Cells[0] {
-				if !n.IsSealed() {
-					t.Fatal("unsealed child")
-				}
-			}
-			return
+			got = v
 		case "locate":
 			locateExpansionTree(v, &token.Location{File: "depth", Pos: 1}, nil)
-			for n := v; len(n.Cells) > 0; n = n.Cells[0] {
-				if n.source == nil {
-					t.Fatal("unlocated child")
+			got = v
+		case "copy":
+			got = builtinCopy(initSafetyTestEnv(t), SExpr([]*LVal{v}))
+		case "Copy":
+			got = v.Copy()
+		case "detach":
+			got, err = v.detach()
+		case "template", "template-sealed":
+			if mode == "template-sealed" {
+				v.SealAST()
+			}
+			env := NewEnv(nil)
+			env.scope["deep"] = v
+			var tmpl *Template
+			tmpl, err = NewTemplate(env)
+			if err == nil {
+				var vm *LEnv
+				vm, err = tmpl.NewVM()
+				if err == nil {
+					got = vm.scope["deep"]
 				}
 			}
-			return
-		case "copy":
-			got := builtinCopy(initSafetyTestEnv(t), SExpr([]*LVal{v}))
-			err = GoError(got)
+		case "GoValue":
+			x := GoValue(v)
+			err, _ = x.(error)
+			if err == nil {
+				for range depth {
+					xs, ok := x.([]interface{})
+					if !ok || len(xs) != 1 {
+						t.Fatal("conversion lost container")
+					}
+					x = xs[0]
+				}
+				if x != 7 {
+					t.Fatal("conversion lost leaf")
+				}
+			}
+		case "format-string":
+			got = builtinFormatString(initSafetyTestEnv(t), SExpr([]*LVal{String("{}"), v}))
+			if depth < MaxValueDepth {
+				want := strings.Repeat("(", 1024) + "#<depth-limit>" + strings.Repeat(")", 1024)
+				if got.Type != LString || got.Str != want {
+					t.Fatal("incorrect bounded rendered text")
+				}
+				got = nil
+			}
+		}
+		if got != nil && got.Type == LError {
 			if IsInternalPanic(got) {
 				t.Fatal("internal panic")
 			}
-		case "Copy":
-			err = GoError(v.Copy())
-		case "detach":
-			_, err = v.detach()
-		case "template":
-			env := NewEnv(nil)
-			env.scope["deep"] = v
-			_, err = NewTemplate(env)
-		case "GoValue":
-			err, _ = GoValue(v).(error)
-		case "format-string":
-			got := builtinFormatString(initSafetyTestEnv(t), SExpr([]*LVal{String("{}"), v}))
-			if got.Type != LString || !strings.Contains(got.Str, "#<depth-limit>") {
-				t.Fatalf("expected U4 depth marker, got %s", got)
-			}
-			return
+			err = GoError(got)
 		}
-		if err == nil || !strings.Contains(err.Error(), "value nesting depth exceeds maximum: 1024") {
-			t.Fatalf("expected ordinary depth error, got %v", err)
+		if depth >= MaxValueDepth && mode != "seal" && mode != "locate" {
+			if err == nil || !strings.Contains(err.Error(), "value nesting depth exceeds maximum: 1000000") {
+				t.Fatalf("expected ordinary depth error, got %v", err)
+			}
+		} else {
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != nil {
+				for range depth {
+					if got.Type != LSExpr || len(got.Cells) != 1 {
+						t.Fatal("lost container")
+					}
+					if mode == "seal" && !got.IsSealed() {
+						t.Fatal("unsealed child")
+					}
+					if (mode == "locate" || mode == "stamp") && got.source == nil {
+						t.Fatal("unlocated child")
+					}
+					got = got.Cells[0]
+				}
+				if got.Type != LInt || got.Int != 7 {
+					t.Fatal("lost leaf")
+				}
+			}
+		}
+		fmt.Printf("%s depth=%d walker_wall=%s\n", mode, depth, time.Since(start))
+		if got := NewEnv(nil).Eval(Int(42)); got.Int != 42 {
+			t.Fatal("process did not survive")
 		}
 		return
 	}
-	for _, mode := range []string{"copy", "Copy", "detach", "template", "GoValue", "format-string", "equal", "quasiquote", "stamp", "classify", "seal", "locate"} {
-		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValueWalkDepth$", "-test.count=1") //nolint:gosec // executes this test binary, not a command supplied by the program under test
-			cmd.Env = append(os.Environ(), "ELPS_DEPTH_WALK="+mode)
-			out, err := cmd.CombinedOutput()
-			if err != nil {
-				t.Fatalf("child failed (%v): %.800s", err, out)
+	for _, depth := range []int{100_000, 3_000_000} {
+		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+			for _, mode := range []string{"copy", "Copy", "detach", "template", "template-sealed", "GoValue", "format-string", "equal", "quasiquote", "stamp", "classify", "seal", "locate"} {
+				t.Run(mode, func(t *testing.T) {
+					ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+					defer cancel()
+					cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValueWalkDepth$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed test selector
+					cmd.Env = append(os.Environ(), "ELPS_DEPTH_WALK="+mode, "ELPS_DEPTH_SIZE="+fmt.Sprint(depth))
+					start := time.Now()
+					out, err := cmd.CombinedOutput()
+					t.Logf("process_wall=%s %s", time.Since(start), out)
+					if err != nil {
+						t.Fatalf("child failed: %v", err)
+					}
+				})
 			}
 		})
 	}
 }
 
+// The external-deadline controls above inspect every container and the leaf.
 func TestValueWalkDepthControls(t *testing.T) {
-	for _, depth := range []int{1000, 100_000} {
-		t.Run(fmt.Sprint(depth), func(t *testing.T) {
-			v := depthTestValue(depth)
-			copied, err := v.deepCopy()
-			if depth > 1024 {
-				if err == nil {
-					t.Fatal("expected depth error")
-				}
-				return
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			for range depth {
-				copied = copied.Cells[0]
-			}
-			if copied.Int != 7 {
-				t.Fatal("copy lost leaf")
-			}
-			got := builtinFormatString(initSafetyTestEnv(t), SExpr([]*LVal{String("{}"), v}))
-			want := strings.Repeat("(", depth) + "7" + strings.Repeat(")", depth)
-			if got.Type != LString || got.Str != want {
-				t.Fatal("format lost content")
-			}
-		})
+	v := depthTestValue(100_000)
+	copied, err := v.deepCopy()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 100_000 {
+		if copied == v {
+			t.Fatal("copy aliases source")
+		}
+		copied = copied.Cells[0]
+		v = v.Cells[0]
+	}
+	if copied.Int != 7 {
+		t.Fatal("lost leaf")
 	}
 }
 
 func TestValueDepthConfiguration(t *testing.T) {
 	env := initSafetyTestEnv(t)
-	for _, limit := range []int{-1, 0, 8, MaxValueDepth + 1} {
-		WithMaxValueDepth(limit)(env)
-		want := MaxValueDepth
-		if limit == 8 {
-			want = 8
+	for _, limit := range []int{-1, 0, 8, 1024, MaxValueDepth + 1} {
+		rc := WithMaxValueDepth(limit)(env)
+		if limit < 1024 {
+			if rc.Type != LError {
+				t.Fatal("accepted invalid limit")
+			}
+			continue
 		}
-		if got := env.Runtime.ValueDepthLimit(); got != want {
-			t.Fatalf("limit %d: got %d", limit, got)
+		if rc.Type == LError || env.Runtime.ValueDepthLimit() != limit {
+			t.Fatalf("limit %d rejected", limit)
 		}
 	}
-	WithMaxValueDepth(8)(env)
-	got := builtinCopy(env, SExpr([]*LVal{depthTestValue(20)}))
-	if got.Type != LError || !strings.Contains(got.String(), "maximum: 8") {
+
+	WithMaxValueDepth(1024)(env)
+	got := builtinCopy(env, SExpr([]*LVal{depthTestValue(1100)}))
+	if got.Type != LError || !strings.Contains(got.String(), "maximum: 1024") {
 		t.Fatalf("copy ignored option: %s", got)
 	}
 	source := NewEnv(nil)
-	WithMaxValueDepth(8)(source)
+	WithMaxValueDepth(1024)(source)
 	tmpl, err := NewTemplate(source)
 	if err != nil {
 		t.Fatal(err)
@@ -157,17 +222,18 @@ func TestValueDepthConfiguration(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := vm.Runtime.ValueDepthLimit(); got != 8 {
+	if got := vm.Runtime.ValueDepthLimit(); got != 1024 {
 		t.Fatalf("template lost option: %d", got)
 	}
-	source.scope["deep"] = depthTestValue(20)
-	if _, err := NewTemplate(source); err == nil || !strings.Contains(err.Error(), "maximum: 8") {
+	source.scope["deep"] = depthTestValue(1100)
+	if _, err := NewTemplate(source); err == nil || !strings.Contains(err.Error(), "maximum: 1024") {
 		t.Fatalf("publication ignored option: %v", err)
 	}
 }
 
 func TestValueDepthCatchable(t *testing.T) {
 	env := initSafetyTestEnv(t)
+	WithMaxValueDepth(1024)(env)
 	v := depthTestValue(2000)
 	handler := SExpr([]*LVal{Symbol("condition"), SExpr([]*LVal{Symbol("lambda"), Formals("c", VarArgSymbol, "data"), Int(99)})})
 	for _, name := range []string{"copy", "equal?"} {
@@ -205,15 +271,16 @@ func TestValueDepthContainerEdges(t *testing.T) {
 					v = &LVal{Type: LError, Str: "error", Cells: []*LVal{v}}
 				}
 			}
-			if _, err := v.deepCopy(); err == nil {
+			d := detacher{seen: make(map[*LVal]*LVal), runtime: &Runtime{MaxValueDepth: 1024}, shareOpaque: true}
+			if _, err := d.detach(v); err == nil {
 				t.Fatal("deep copy lost guard")
 			}
-			if got := v.Copy(); got.Type != LError || !strings.Contains(got.String(), "value nesting depth exceeds") {
+			if got, _ := v.copyWithRuntime(&Runtime{MaxValueDepth: 1024}); got.Type != LError || !strings.Contains(got.String(), "value nesting depth exceeds") {
 				t.Fatal("Copy lost guard")
 			}
 			if kind == "map" || kind == "vector" || kind == "quote" {
-				if _, ok := GoValue(v).(error); !ok {
-					t.Fatal("GoValue lost guard")
+				if _, ok := GoValue(v).(error); ok {
+					t.Fatal("GoValue rejected valid depth")
 				}
 			}
 		})
@@ -229,5 +296,38 @@ func TestGoConversionRootDepth(t *testing.T) {
 	m.Map().Set(String("deep"), depthTestValue(MaxValueDepth))
 	if _, ok := GoMap(m); ok {
 		t.Error("GoMap must count its root container")
+	}
+}
+
+// Prove that raising the default changes actual iterative traversal, not just
+// the stored option. A subprocess deadline also bounds unexpected regressions.
+func TestValueDepthRaisedLimit(t *testing.T) {
+	if os.Getenv("ELPS_RAISED_DEPTH") == "1" {
+		debug.SetMaxStack(8 << 20)
+		const depth = MaxValueDepth + 1
+		v := depthTestValue(depth)
+		rt := &Runtime{MaxValueDepth: MaxValueDepth + 1024}
+		cp, err := v.copyWithRuntime(rt)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for range depth {
+			if cp == v || len(cp.Cells) != 1 {
+				t.Fatal("invalid copy")
+			}
+			cp = cp.Cells[0]
+			v = v.Cells[0]
+		}
+		if cp.Int != 7 {
+			t.Fatal("lost leaf")
+		}
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValueDepthRaisedLimit$", "-test.count=1") //nolint:gosec // this test binary with a fixed selector
+	cmd.Env = append(os.Environ(), "ELPS_RAISED_DEPTH=1")
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("raised-limit child: %v\n%s", err, out)
 	}
 }

@@ -228,11 +228,18 @@ func WithDebugger(d Debugger) Config {
 	}
 }
 
-// WithMaxValueDepth lowers the depth limit for runtime-associated copying,
-// JSON dumping, quasiquote and template admission. Nonpositive values use
-// MaxValueDepth. Values above that hard ceiling are clamped; the guard cannot
-// be disabled. Diagnostic rendering and APIs without a Runtime retain the
-// fixed ceiling, independently of this option.
+// WithMaxValueDepth sets the limit for iterative runtime value walkers,
+// including copying, equality, JSON dumping, quasiquote and template admission.
+// Values must be at least 1024. Raising the limit above the default MaxValueDepth
+// is supported because these traversals use heap stacks, not Go recursion.
+// APIs without a Runtime use MaxValueDepth; rendered text retains its separate
+// fixed 1024-depth cap.
 func WithMaxValueDepth(n int) Config {
-	return func(env *LEnv) *LVal { env.Runtime.MaxValueDepth = n; return Nil() }
+	return func(env *LEnv) *LVal {
+		if n < 1024 {
+			return env.Errorf("maximum value depth must be at least 1024")
+		}
+		env.Runtime.MaxValueDepth = n
+		return Nil()
+	}
 }

@@ -204,28 +204,37 @@ func admitSymbolValue(v *LVal) *LVal {
 // "neither", which lands the value in the
 // by-reference row where no copy is attempted.
 func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
-	if v == nil || !sealableNodeType(v.Type) {
-		return false, false
+	type frame struct {
+		v     *LVal
+		g     cycleGuard
+		leave bool
 	}
-	if g.depth >= MaxValueDepth {
-		g.state.tooDeep = true
-		return false, false
-	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return false, false
-	}
-	if g.tracking() {
-		defer g.ascend(v)
-	}
-	sealed, sealable = v.IsSealed(), true
-	for _, c := range v.Cells {
-		cellSealed, cellSealable := classifySymbolValue(c, g)
-		sealed = sealed && cellSealed
-		sealable = sealable && cellSealable
-		if !sealed && !sealable {
-			// Neither answer can change from here: both are conjunctions.
+	pending := []frame{{v: v, g: g}}
+	sealed, sealable = true, true
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.leave {
+			f.g.ascend(f.v)
+			continue
+		}
+		if f.v == nil || !sealableNodeType(f.v.Type) {
 			return false, false
+		}
+		if f.g.depth >= MaxValueDepth {
+			g.state.tooDeep = true
+			return false, false
+		}
+		next, cyclic := f.g.descend(f.v)
+		if cyclic {
+			return false, false
+		}
+		sealed = sealed && f.v.IsSealed()
+		if next.tracking() {
+			pending = append(pending, frame{v: f.v, g: next, leave: true})
+		}
+		for i := len(f.v.Cells) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: f.v.Cells[i], g: next})
 		}
 	}
 	return sealed, sealable
