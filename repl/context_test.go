@@ -5,6 +5,7 @@ package repl
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -75,4 +76,55 @@ func TestInteractiveContextCancellation(t *testing.T) {
 		}))
 	require.NoError(t, err)
 	assert.Equal(t, 1, strings.Count(output, "context-cancelled: context canceled\n"))
+}
+
+// observedInput exposes the lifetime of readline's underlying pending read.
+// No bytes are supplied, so Read must return an error and end its ioloop.
+type observedInput struct {
+	*io.PipeReader
+	started chan struct{}
+	done    chan struct{}
+}
+
+func (r *observedInput) Read(p []byte) (int, error) {
+	close(r.started)
+	defer close(r.done)
+	return r.PipeReader.Read(p)
+}
+
+func TestInteractiveCancellationReleasesInput(t *testing.T) {
+	for i := 0; i < 5; i++ {
+		t.Run(fmt.Sprint(i), func(t *testing.T) {
+			env := newTestEnv(t)
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			reader, writer := io.Pipe()
+			defer reader.Close()
+			defer writer.Close()
+			input := &observedInput{reader, make(chan struct{}), make(chan struct{})}
+			finished := make(chan struct{})
+			go func() {
+				defer close(finished)
+				RunEnv(env, "", "", WithContext(ctx), WithStdin(input))
+			}()
+			deadline := time.NewTimer(time.Second)
+			defer deadline.Stop()
+			select {
+			case <-input.started:
+			case <-deadline.C:
+				t.Fatal("interactive input read did not start")
+			}
+			cancel()
+			select {
+			case <-finished:
+			case <-deadline.C:
+				t.Fatal("cancelled interactive REPL did not return")
+			}
+			select {
+			case <-input.done:
+			case <-deadline.C:
+				t.Fatal("cancelled interactive REPL left underlying input read blocked")
+			}
+		})
+	}
 }

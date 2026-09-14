@@ -6,6 +6,7 @@ package cmd
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"io"
 	"os"
@@ -92,4 +93,36 @@ func TestEvaluationSecondInterrupt(t *testing.T) {
 	require.Error(t, cmd.Wait())
 	require.NoError(t, ctx.Err())
 	assert.Equal(t, 130, cmd.ProcessState.ExitCode())
+}
+
+func TestRunSignalDuringFinalOutput(t *testing.T) {
+	bin := buildTestBinary(t)
+	// Far larger than the pipe buffer, so the final write cannot finish
+	// until the parent drains stdout.
+	const valueSize = (4 << 20) + 2 // string contents and quotes
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, bin, "run", "-e", "-p", `(string:repeat "x" 4194304)`) //nolint:gosec // locally built test binary
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.StdoutPipe()
+	require.NoError(t, err)
+	require.NoError(t, cmd.Start())
+	defer func() { _ = cmd.Process.Kill() }()
+	// Read just one byte to establish that printing has started, leaving
+	// the rest blocked in the pipe when SIGINT arrives.
+	first := make([]byte, 1)
+	_, err = io.ReadFull(stdout, first)
+	require.NoError(t, err)
+	require.NoError(t, cmd.Process.Signal(os.Interrupt))
+	// Allow the signal handler to run while stdout remains blocked.
+	time.Sleep(100 * time.Millisecond)
+	n, err := io.Copy(io.Discard, stdout)
+	require.NoError(t, err)
+	err = cmd.Wait()
+	require.NoError(t, ctx.Err(), "subprocess exceeded deadline")
+	assert.Equal(t, int64(valueSize), n, "complete result including newline must drain")
+	assert.Error(t, err, "cancelled final output must fail")
+	assert.Equal(t, 1, cmd.ProcessState.ExitCode())
+	assert.Equal(t, "context-cancelled: context canceled\n", stderr.String())
 }

@@ -301,17 +301,30 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		AutoComplete:      completer,
 	}
 
-	if cfg.stdin != nil {
-		rlCfg.Stdin = cfg.stdin
+	stdin := cfg.stdin
+	if stdin == nil {
+		stdin = os.Stdin
 	}
+	rlCfg.Stdin = stdin
 	rl, err := readline.NewEx(rlCfg)
 	if err != nil {
 		errlnf("Failed to initialize readline: %v", err)
 		os.Exit(1)
 	}
 	defer rl.Close() //nolint:errcheck // best-effort cleanup
-	stopInput := context.AfterFunc(ctx, func() { _ = rl.Close() })
-	defer stopInput()
+	inputClosed := make(chan struct{})
+	stopInput := context.AfterFunc(ctx, func() {
+		defer close(inputClosed)
+		// readline.Close interrupts ReadSlice but does not close Stdin.
+		// Release its ioloop's pending underlying read as well.
+		_ = stdin.Close()
+		_ = rl.Close()
+	})
+	defer func() {
+		if !stopInput() {
+			<-inputClosed
+		}
+	}()
 
 	p.Read = func() []*token.Token {
 		if cfg.doneCh != nil {

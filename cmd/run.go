@@ -158,6 +158,11 @@ func runElpsContext(parent context.Context, args []string, stdout io.Writer) err
 			fmt.Fprintln(stdout, res.String())
 		}
 	}
+	// Output can block while the signal handler cancels the context.
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintf(os.Stderr, "context-cancelled: %v\n", err)
+		return errRendered
+	}
 	return nil
 }
 
