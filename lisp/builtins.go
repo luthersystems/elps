@@ -74,15 +74,24 @@ var (
 			Returns the result of the last evaluated expression.`},
 		{"in-package", Formals("package-name", VarArgSymbol, "docstring"), builtinInPackage,
 			`Switches the current package to package-name, creating it if it
-			does not exist. Optional trailing strings set the package
-			documentation (concatenated with spaces if multiple are given).
+			does not exist. The name must be a symbol or string spelling a
+			non-empty symbol identifier, without colons or a keyword prefix.
+			Optional trailing strings set the package documentation. All
+			arguments are validated before creating or switching packages.
 			Returns nil.`},
 		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage,
 			`Imports all exported symbols from the named packages into the
-			current package. Returns nil.`},
+			current package. Names must be symbols or strings spelling non-empty
+			symbol identifiers, without colons or a keyword prefix. An export
+			that is still unbound causes an error naming its package and symbol.
+			Returns nil.`},
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
-			available to other packages via use-package. Returns nil.`},
+			available to other packages via use-package. Accepts unqualified
+			symbols, strings, or nested lists of these; qualified names are
+			rejected. All arguments are validated before exporting anything.
+			Symbols may be defined later, but must be bound when use-package
+			imports them. Returns nil.`},
 		{"set", Formals("sym", "val", VarArgSymbol, "docstring"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
 			creating or overwriting the binding. Optional trailing strings set
@@ -567,6 +576,17 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol or a string: %v", args.Cells[0].Type)
 	}
 	name := args.Cells[0].Str
+	if !validPackageName(name) {
+		return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", name)
+	}
+	// Validate every argument before changing the registry, package, or docs.
+	var parts []string
+	for _, arg := range args.Cells[1:] {
+		if arg.Type != LString {
+			return env.Errorf("docstring argument is not a string: %v", arg.Type)
+		}
+		parts = append(parts, arg.Str)
+	}
 	pkg := env.Runtime.Registry.packages[name]
 	newpkg := false
 	if pkg == nil {
@@ -584,13 +604,6 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 	}
 	// Optional trailing doc strings
 	if len(args.Cells) > 1 {
-		var parts []string
-		for _, arg := range args.Cells[1:] {
-			if arg.Type != LString {
-				return env.Errorf("docstring argument is not a string: %v", arg.Type)
-			}
-			parts = append(parts, arg.Str)
-		}
 		pkg.Doc = JoinDocStrings(parts)
 	}
 	return Nil()
@@ -601,6 +614,9 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		if pkg.Type != LSymbol && pkg.Type != LString {
 			return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
 		}
+		if !validPackageName(pkg.Str) {
+			return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
+		}
 		lerr := env.UsePackage(pkg)
 		if lerr.Type == LError {
 			return lerr
@@ -610,17 +626,40 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinExport(env *LEnv, args *LVal) *LVal {
+	if err := validateExportArgs(env, args); err.Type == LError {
+		return err
+	}
+	exportArgs(env.Runtime.Package, args)
+	return Nil()
+}
+
+func validateExportArgs(env *LEnv, args *LVal) *LVal {
 	for _, arg := range args.Cells {
 		switch arg.Type {
 		case LSymbol, LString:
-			env.Runtime.Package.Exports(arg.Str)
+			if strings.Contains(arg.Str, ":") {
+				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
+			}
 		case LSExpr:
-			builtinExport(env, arg)
+			if err := validateExportArgs(env, arg); err.Type == LError {
+				return err
+			}
 		default:
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)
 		}
 	}
 	return Nil()
+}
+
+// exportArgs is the mutation pass, reached only after the entire call validates.
+func exportArgs(pkg *Package, args *LVal) {
+	for _, arg := range args.Cells {
+		if arg.Type == LSExpr {
+			exportArgs(pkg, arg)
+		} else {
+			pkg.Exports(arg.Str)
+		}
+	}
 }
 
 func builtinSet(env *LEnv, v *LVal) *LVal {

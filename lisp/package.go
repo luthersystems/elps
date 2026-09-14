@@ -2,7 +2,35 @@
 
 package lisp
 
-import "sort"
+import (
+	"sort"
+	"strings"
+
+	"github.com/luthersystems/elps/parser/lexer"
+	"github.com/luthersystems/elps/parser/token"
+)
+
+// validPackageName checks the Lisp builtin boundary only. Go registration and
+// LEnv.InPackage/UsePackage deliberately continue to accept arbitrary names.
+func validPackageName(name string) bool {
+	if name == "" || strings.Contains(name, ":") {
+		return false
+	}
+	// Use the reader's lexer rather than a second symbol alphabet. The only
+	// parser rule needed without colons is ParseNegative: a leading minus
+	// followed by a SYMBOL becomes one symbol; a numeric token does not.
+	lex := lexer.New(token.NewScannerString("", name))
+	tok := lex.ReadToken()[0]
+	if tok.Type == token.NEGATIVE {
+		tok = lex.ReadToken()[0]
+		if tok.Text != name[1:] {
+			return false
+		}
+	} else if tok.Text != name {
+		return false
+	}
+	return tok.Type == token.SYMBOL && lex.ReadToken()[0].Type == token.EOF
+}
 
 // PackageRegistry contains a set of packages.
 type PackageRegistry struct {
