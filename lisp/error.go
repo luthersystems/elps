@@ -42,7 +42,7 @@ func (e *ErrorVal) Error() string {
 }
 
 func (e *ErrorVal) render(message bool) string {
-	return e.renderContext(nil, message)
+	return e.renderContext(nil, message) //nolint:staticcheck // nil selects the error's captured cancellation context
 }
 
 func (e *ErrorVal) renderContext(ctx context.Context, message bool) string {
@@ -145,7 +145,7 @@ func (e *ErrorVal) renderPolicy(ctx context.Context) (int, context.Context) {
 // and context. The entire trace shares one budget, including any Go stack.
 // A nil receiver writes the nilErrorMessage sentinel rather than panicking.
 func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
-	return e.WriteTraceContext(nil, w)
+	return e.WriteTraceContext(nil, w) //nolint:staticcheck // nil selects the error's captured cancellation context
 }
 
 // WriteTraceContext writes the error, frames, and Go stack under one output

@@ -1454,19 +1454,6 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
-// mayNest reports whether a walk over v can reach another value through it.
-//
-// Cells is where every nested value lives except a sorted-map's, which lives
-// in a MapData behind Native.  Anything else -- an int, a string, a symbol, a
-// byte slice, a native Go value, the empty list -- is a leaf: a walk that
-// reaches it stops there, so it never needs a place on a cycle guard's path.
-//
-// This is what keeps the guard off the common path.  Rendering and comparing
-// leaves is most of what those walks do, and this check is a length test.
-func (v *LVal) mayNest() bool {
-	return len(v.Cells) > 0 || v.Type == LSortMap
-}
-
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
@@ -1485,131 +1472,136 @@ func (v *LVal) IsNumeric() bool {
 // rather than a guess: false is only ever returned for a difference actually
 // found at a finite depth, so no equality is claimed that a longer walk could
 // refute.  See lisp/cycle.go and issue #390.
-func (v *LVal) Equal(other *LVal) *LVal {
-	var st pairState
-	eq := v.equal(other, pairGuard{state: &st})
-	if !st.cyclic {
-		return eq
+// Comparison descending beyond MaxValueDepth returns an ordinary LError.
+func (v *LVal) Equal(other *LVal) *LVal { return v.EqualWithRuntime(other, nil) }
+
+// EqualWithRuntime is Equal with the runtime's configurable value depth limit.
+// Comparison uses an explicit stack, so limits above MaxValueDepth are safe.
+func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
+	result, repeated := v.equalIter(other, rt.ValueDepthLimit(), false)
+	if repeated {
+		result, _ = v.equalIter(other, rt.ValueDepthLimit(), true)
 	}
-	// Both operands reach a pair that is already under comparison.  The walk
-	// above stopped as soon as it knew that, because unrolling a cycle to
-	// cycleGuardDepth levels is exponential in the width of the cycle; the
-	// rerun compares each pair once.
-	return v.equal(other, strictPairGuard())
+	return result
 }
 
-// equal is Equal, with g bounding the walk.  Every nested comparison must pass
-// g down rather than calling Equal, or the bound is lost.
-//
-// The guard sits inside the cases that recurse rather than at the top of the
-// function, so that comparing two ints or two strings runs exactly the code it
-// ran before the guard existed.
-func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
-	if v.Type != other.Type {
-		if v.IsNumeric() && other.IsNumeric() {
-			return v.equalNum(other)
-		}
-		return Bool(false)
+// A repeated pair restarts the entire comparison with memoization from the
+// root. Merely skipping it would still unroll branching cycles exponentially
+// in the shallow frames that precede lazy cycle tracking.
+func (v *LVal) equalIter(other *LVal, limit int, strict bool) (*LVal, bool) {
+	type frame struct {
+		a, b                  *LVal
+		ac, bc                []*LVal
+		depth, index          int
+		key, entered, entries bool
 	}
-	if v.IsNumeric() {
-		return v.equalNum(other)
+	var local [64]frame
+	stack := append(local[:0], frame{a: v, b: other})
+	var seen map[valuePair]bool
+	for len(stack) > 0 {
+		f := &stack[len(stack)-1]
+		if f.entered {
+			n := len(f.ac)
+			if f.entries {
+				n *= 2
+			}
+			if f.index >= n {
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			var a, b *LVal
+			key := false
+			if f.entries {
+				key = f.index%2 == 0
+				a = f.ac[f.index/2].Cells[f.index%2]
+				b = f.bc[f.index/2].Cells[f.index%2]
+			} else {
+				a = f.ac[f.index]
+				b = f.bc[f.index]
+			}
+			f.index++
+			stack = append(stack, frame{a: a, b: b, depth: f.depth + 1, key: key})
+			continue
+		}
+		a, b := f.a, f.b
+		if f.key && isStringLike(a) && isStringLike(b) {
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		if a.Type != b.Type {
+			if a.IsNumeric() && b.IsNumeric() && True(a.equalNum(b)) {
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			return Bool(false), false
+		}
+		if a.IsNumeric() {
+			if !True(a.equalNum(b)) {
+				return Bool(false), false
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		}
+		switch a.Type {
+		case LString, LSymbol:
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+			stack = stack[:len(stack)-1]
+			continue
+		case LSExpr, LArray:
+			if len(a.Cells) != len(b.Cells) {
+				return Bool(false), false
+			}
+			f.ac, f.bc = a.Cells, b.Cells
+		case LTaggedVal:
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+			f.ac, f.bc = a.Cells[:1], b.Cells[:1]
+		case LSortMap:
+			if a.Map().Len() != b.Map().Len() {
+				return Bool(false), false
+			}
+		default:
+			return Bool(false), false
+		}
+		if f.depth >= limit {
+			return Error(ValueDepthError(limit)), false
+		}
+		if strict || f.depth >= cycleGuardDepth {
+			if seen == nil {
+				seen = make(map[valuePair]bool)
+			}
+			pair := valuePair{a, b}
+			if seen[pair] {
+				if !strict {
+					return nil, true
+				}
+				stack = stack[:len(stack)-1]
+				continue
+			}
+			seen[pair] = true
+		}
+		if a.Type == LSortMap {
+			ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
+			if ae.Type == LError {
+				return ae, false
+			}
+			if be.Type == LError {
+				return be, false
+			}
+			if len(ae.Cells) != len(be.Cells) {
+				return Bool(false), false
+			}
+			f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
+		}
+		f.entered = true
 	}
-	switch v.Type {
-	case LString, LSymbol:
-		return Bool(v.Str == other.Str)
-	case LSExpr:
-		if v.Len() != other.Len() {
-			return Bool(false)
-		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
-		}
-		for i := range v.Cells {
-			if !True(v.Cells[i].equal(other.Cells[i], g)) {
-				return Bool(false)
-			}
-		}
-		return Bool(true)
-	case LArray:
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
-		}
-		// NOTE:  This is a pretty cheeky for loop.  The first comparison it
-		// does will compare array dimensions, which will ensure that we don't
-		// hit an index out of bounds while comparing later indices.
-		for i := range v.Cells {
-			if Not(v.Cells[i].equal(other.Cells[i], g)) {
-				return Bool(false)
-			}
-		}
-		return Bool(true)
-	case LTaggedVal:
-		if v.Str != other.Str {
-			return Bool(false)
-		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
-		}
-		return v.Cells[0].equal(other.Cells[0], g)
-	case LSortMap:
-		if v.Map().Len() != other.Map().Len() {
-			return Bool(false)
-		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
-		}
-		vEntries := sortedMapEntries(v.Map())
-		oEntries := sortedMapEntries(other.Map())
-		for i := range vEntries.Cells {
-			vPair := vEntries.Cells[i]
-			oPair := oEntries.Cells[i]
-			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0], g)) {
-				return Bool(false)
-			}
-			if !True(vPair.Cells[1].equal(oPair.Cells[1], g)) {
-				return Bool(false)
-			}
-		}
-		return Bool(true)
-	case LInvalid, LInt, LFloat, LError, LQSymbol, LFun, LQuote, LBytes,
-		LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
-		// No structural equality is defined for these types, so equal? reports
-		// false even when both operands are the same object.  Enumerated
-		// rather than left to fall through so that a new LType has to make
-		// this choice explicitly.
-		//
-		// LInt and LFloat are unreachable: the IsNumeric shortcut above
-		// diverts every numeric comparison to equalNum.  LInvalid, the LMark*
-		// sentinels and LTypeMax are not values an application can hold.
-		return Bool(false)
-	}
-	return Bool(false)
-}
-
-// equalMapKey compares two sorted-map keys under the map's own notion of key
-// identity.
-//
-// For the string-like keys the stock sortedmap accepts, identity is the key
-// *name*: get, key?, assoc and dissoc all take either 'a or "a" for the same
-// entry (docs/lang.md), so equality must too.  The string/symbol distinction
-// is cosmetic — it reaches keys and printing, and nothing else.
-//
-// Every other key type falls back to Equal.  Map is an exported interface and
-// SortedMapFromData an exported extension point, so an embedder may back a
-// sorted-map with a store keyed by integers, tuples or anything else.  Those
-// keys carry no name at all: comparing Str would make every one of them equal
-// to every other, silently reporting structurally different maps as equal.
-// The name rule was reasoned about for string-like keys only, and it is
-// deliberately not extended past them.
-func equalMapKey(a, b *LVal, g pairGuard) *LVal {
-	if isStringLike(a) && isStringLike(b) {
-		return Bool(a.Str == b.Str)
-	}
-	return a.equal(b, g)
+	return Bool(true), false
 }
 
 // isStringLike reports whether v is one of the name-carrying key types the
@@ -1669,6 +1661,7 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // like a list's cells.  What stays shared: a closure's environment, an
 // LError's call stack, and a native payload that is not a NativeCloner.  See
 // copier in lisp/copier.go.
+// Walks exceeding MaxValueDepth return an ordinary LError instead of a partial copy.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil

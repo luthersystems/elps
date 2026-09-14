@@ -111,7 +111,9 @@ var builtins = []*libutil.Builtin{
 		(? scores '(range 1 3))   => elements [1,3)
 		(? scores '(range 1))     => elements [1,end)
 		(? scores '(range -2))    => the last two elements
-		(? obj)                   => obj itself (no path steps)`),
+		(? obj)                   => obj itself (no path steps)
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("parse-path", lisp.Formals("selector"), BuiltinParsePath,
 		`Convert a jq-style path string into a list of positional path steps.
 
@@ -185,7 +187,9 @@ var builtins = []*libutil.Builtin{
 
 		(?set! obj "foo" "bar" "new")   => obj with foo.bar="new" (mutated)
 		(?set! obj "items" 0 "x")       => obj with items[0]="x" (mutated)
-		(?set! data '* "active" true)   => set active=true on all elements`),
+		(?set! data '* "active" true)   => set active=true on all elements
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?set", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySet,
 		`Set value at a path specified by positional args, returning a copy.
 
@@ -204,7 +208,12 @@ var builtins = []*libutil.Builtin{
 		value, and vice versa. Pass a copy if the result must not alias it.
 
 		(?set obj "foo" "bar" "new")   => new obj with foo.bar="new"
-		(?set obj "items" 0 "x")       => new obj with items[0]="x"`),
+		(?set obj "items" 0 "x")       => new obj with items[0]="x"
+
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
+		Copying path chains longer than 1024 steps also raise a depth error.`),
 	libutil.FunctionDoc("?del!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDeleteMutate,
 		`Delete value at a path specified by positional args, mutating the original.
 
@@ -212,7 +221,9 @@ var builtins = []*libutil.Builtin{
 
 		(?del! obj "foo")              => obj with foo removed (mutated)
 		(?del! obj "items" 1)          => obj with items[1] removed (mutated)
-		(?del! records '* "cache")     => remove cache key from all elements`),
+		(?del! records '* "cache")     => remove cache key from all elements
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?del", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDelete,
 		`Delete value at a path specified by positional args, returning a copy.
 
@@ -223,14 +234,21 @@ var builtins = []*libutil.Builtin{
 		unquoted after an in-range integer edit.
 
 		(?del obj "foo")               => new obj with foo removed
-		(?del obj "items" 1)           => new obj with items[1] removed`),
+		(?del obj "items" 1)           => new obj with items[1] removed
+
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
+		Copying path chains longer than 1024 steps also raise a depth error.`),
 	libutil.FunctionDoc("?nil!", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNilMutate,
 		`Set value at a path to nil, mutating the original. The key is kept.
 
 		Out-of-range integer indexes are no-ops. List element mutation is refused.
 
 		(?nil! obj "foo")              => obj with foo=nil (mutated)
-		(?nil! rows '* "cached")       => nil out cached on all elements`),
+		(?nil! rows '* "cached")       => nil out cached on all elements
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?nil", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNil,
 		`Set value at a path to nil, returning a copy. The key is kept.
 
@@ -241,7 +259,12 @@ var builtins = []*libutil.Builtin{
 		unquoted after an in-range integer edit.
 
 		(?nil obj "foo")               => new obj with foo=nil
-		(?nil patient "ssn")           => new obj with ssn=nil`),
+		(?nil patient "ssn")           => new obj with ssn=nil
+
+		Iterative copying beyond 1000000 levels raises an ordinary depth error.
+
+		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.
+		Copying path chains longer than 1024 steps also raise a depth error.`),
 }
 
 // errCyclicValue reports a value that contains itself.  append! and assoc!

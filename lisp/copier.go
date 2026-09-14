@@ -153,8 +153,12 @@ type copier struct {
 	// failed is the error the walk stopped on, and is NOT a memo: it holds
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
-	failed *LVal
-	n      int
+	failed    *LVal
+	jobs      []copyJob
+	smallJobs [16]copyJob
+	depth     int
+	njobs     int
+	n         int
 }
 
 // copierSmallMemo is how many headers a walk memoises before it allocates.
@@ -267,14 +271,75 @@ func (c *copier) checkAlloc(n int) error {
 // container the abandoned walk was building, with whatever it had already
 // published over unfinished storage still hanging off it.  See the type
 // comment for why repairing the failing node alone is not enough.
+// copyJob records a destination slot, rather than a closure per child. The
+// inline work stack keeps small copies at their original allocation cost.
+type copyJob struct {
+	src     *LVal
+	dst     **LVal
+	mapping map[string]*LVal
+	md      *MapData
+	mapKey  *LVal
+	key     string
+	depth   int
+}
+
+func (c *copier) schedule(job copyJob) {
+	job.depth = c.depth + 1
+	if c.jobs == nil && c.njobs < len(c.smallJobs) {
+		c.smallJobs[c.njobs] = job
+	} else {
+		if c.jobs == nil {
+			c.jobs = append(make([]copyJob, 0, 32), c.smallJobs[:]...)
+		}
+		c.jobs = append(c.jobs, job)
+	}
+	c.njobs++
+}
+
+func (c *copier) reverseJobs(start int) {
+	if c.jobs == nil {
+		slices.Reverse(c.smallJobs[start:c.njobs])
+	} else {
+		slices.Reverse(c.jobs[start:])
+	}
+}
+
 func (c *copier) copy(v *LVal) *LVal {
 	if v == nil {
 		return nil
 	}
-	if c.failed != nil {
-		return c.failed
-	}
 	cp := c.copyNode(v)
+	c.reverseJobs(0)
+	for c.njobs > 0 && c.failed == nil {
+		c.njobs--
+		var job copyJob
+		if c.jobs == nil {
+			job = c.smallJobs[c.njobs]
+			c.smallJobs[c.njobs] = copyJob{}
+		} else {
+			job = c.jobs[c.njobs]
+			c.jobs[c.njobs] = copyJob{}
+			c.jobs = c.jobs[:c.njobs]
+		}
+		c.depth = job.depth
+		if c.depth >= c.runtime.ValueDepthLimit() {
+			c.failed = Error(ValueDepthError(c.runtime.ValueDepthLimit()))
+			break
+		}
+		mark := c.njobs
+		child := c.copyNode(job.src)
+		switch {
+		case job.dst != nil:
+			*job.dst = child
+		case job.mapping != nil:
+			job.mapping[job.key] = child
+		case job.md != nil:
+			if err := job.md.Set(job.mapKey, child); err.Type == LError {
+				c.failed = err
+			}
+		}
+		c.reverseJobs(mark)
+	}
 	if c.failed != nil {
 		return c.failed
 	}
@@ -286,6 +351,9 @@ func (c *copier) copy(v *LVal) *LVal {
 // except the cell loop, which stops early rather than copying the error
 // into every remaining cell of a container that is about to be discarded.
 func (c *copier) copyNode(v *LVal) *LVal {
+	if v == nil {
+		return nil
+	}
 	// Only a node that can be reached twice in a way the copy could observe
 	// is memoised: one with cell storage (a container, or a header over
 	// hidden capacity) or a payload.  A leaf -- a number, string, symbol, an
@@ -461,14 +529,9 @@ func (c *copier) cells(v *LVal) []*LVal {
 	}
 	cells := make([]*LVal, len(v.Cells))
 	for i := range cells {
-		cells[i] = c.copy(v.Cells[i])
-		if c.failed != nil {
-			// Fail-stop: the container being built is discarded by Copy,
-			// so there is nothing to finish and every further cell would
-			// only be another copy of the error.
-			return nil
-		}
+		c.schedule(copyJob{src: v.Cells[i], dst: &cells[i]})
 	}
+
 	return cells
 }
 
@@ -539,11 +602,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		sm := m0.emptyLike()
 		if len(m0.m) < 2 || !copierValueOrderMatters(m0.m) {
 			for k, v := range m0.m {
-				sm.m[k] = c.copy(v)
+				c.schedule(copyJob{src: v, mapping: sm.m, key: k})
 			}
 		} else {
 			for _, k := range copierSortedKeys(m0.m) {
-				sm.m[k] = c.copy(m0.m[k])
+				c.schedule(copyJob{src: m0.m[k], mapping: sm.m, key: k})
 			}
 		}
 		for k, t := range m0.tm {
@@ -583,7 +646,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		}
 		sm := emptyForStringKeys(len(pairs))
 		for _, p := range pairs {
-			sm.m[p.k] = c.copy(p.v)
+			c.schedule(copyJob{src: p.v, mapping: sm.m, key: p.k})
 		}
 		nm.mapBacking = sm
 		return nm, nil
@@ -669,9 +732,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
 		}
 		prev = key
-		if lerr := m.Set(key, c.copy(pair.Cells[1])); lerr.Type == LError {
-			return c.failMap(md, fmt.Errorf("failed to copy map: %v", lerr))
-		}
+		c.schedule(copyJob{src: pair.Cells[1], md: m, mapKey: key})
 	}
 	nm.mapBacking = m.mapBacking
 	return nm, nil

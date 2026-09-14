@@ -484,32 +484,23 @@ func locateExpansionTree(v *LVal, callSite *token.Location, args []*LVal) {
 	}
 }
 
-func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}, g cycleGuard) {
-	if v == nil || isSingleton(v) || v.sealed || isValueNode(v) {
-		return
-	}
-	if _, isArg := boundary[v]; isArg {
-		return
-	}
-	nested := len(v.Cells) > 0
-	if nested {
-		if g.abandoned() {
-			return
+func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}, _ cycleGuard) {
+	pending := []*LVal{v}
+	seen := make(map[*LVal]bool)
+	for len(pending) > 0 {
+		n := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if n == nil || seen[n] || isSingleton(n) || n.sealed || isValueNode(n) {
+			continue
 		}
-		var cyclic bool
-		g, cyclic = g.descend(v)
-		if cyclic {
-			return
+		if _, arg := boundary[n]; arg {
+			continue
 		}
-	}
-	if needsStamp(v) {
-		v.source = callSite //elps:mutates locates a Go macro's fresh expansion node (fresh by contract, see LEnv.AddMacros); arguments, sealed and value nodes are skipped above
-	}
-	for _, c := range v.Cells {
-		locateGuarded(c, callSite, boundary, g)
-	}
-	if nested && g.tracking() {
-		g.ascend(v)
+		seen[n] = true
+		if needsStamp(n) {
+			n.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+		}
+		pending = append(pending, n.Cells...)
 	}
 }
 
@@ -618,117 +609,98 @@ func (s *macroStamper) value(v *LVal) *LVal {
 // carrying the stamp and pointing at the stamped counterparts of v's cells.
 // It never writes to v or to anything reachable from v.
 func (s *macroStamper) syntax(v *LVal, g cycleGuard) *LVal {
-	if v == nil {
-		return nil
+	type frame struct {
+		v, cp   *LVal
+		cells   []*LVal
+		depth   int
+		i       int
+		entered bool
 	}
-	// Identity-based guard: a type-based check would catch only the empty-
-	// LSExpr singletonNil and miss singletonTrue/singletonFalse (which are
-	// LSymbol with Source.Pos == -1). See issue #274.
-	if isSingleton(v) {
-		return v
-	}
-	// Sealed subtrees are parsed program nodes spliced into the expansion
-	// (macros receive their arguments unevaluated, so argument expressions
-	// arrive as shared parse-tree nodes).  They are shared, not copied: the
-	// same node may be under evaluation in every environment sharing the
-	// parse, its location is the real one, and a sealed node's descendants
-	// are all sealed, so there is nothing below it to stamp.  Most parser
-	// nodes carry a real location (Pos >= 0), but the parser CAN emit
-	// synthetic Pos < 0 locations (a funref's lisp:function head symbol, a
-	// #^ head symbol mirroring a location-less operand), so without this
-	// guard such a node would be replaced by a stamped copy -- harmless
-	// now, but a pointless allocation on a shared tree.
-	if v.sealed {
-		return v
-	}
-	// Values never reach this walk: the root is diverted by
-	// stampMacroExpansion and children by the loop below.  Keep the guard
-	// anyway -- it is the ownership rule's last line of defence.
-	if isValueNode(v) {
-		return s.value(v)
-	}
-	if len(v.Cells) == 0 {
-		// A leaf stamps itself and reaches nothing.
-		if !needsStamp(v) {
-			return v
+	var local [64]frame
+	stack := append(local[:0], frame{v: v, depth: g.depth})
+	st := *g.state
+	defer func() { *g.state = st }()
+	var result *LVal
+	for len(stack) > 0 {
+		f := &stack[len(stack)-1]
+		v := f.v
+		if !f.entered {
+			switch {
+			case v == nil || isSingleton(v) || v.sealed:
+				result = v
+			case isValueNode(v):
+				result = s.value(v)
+			case len(v.Cells) == 0:
+				result = s.value(v)
+			case st.tooDeep || (!g.strict && st.cyclic):
+				result = v
+			default:
+				if cp, ok := s.copies[v]; ok {
+					result = cp
+					break
+				}
+				if f.depth >= s.rt.ValueDepthLimit() {
+					return Error(ValueDepthError(s.rt.ValueDepthLimit()))
+				}
+				next, cyclic := (cycleGuard{state: &st, depth: f.depth, strict: g.strict}).descend(v)
+				f.depth = next.depth
+				if cyclic {
+					result = v
+					break
+				}
+				if needsStamp(v) {
+					f.cp = s.stampedCopy(v)
+				}
+				if s.copies != nil {
+					if f.cp == nil {
+						cp := new(LVal)
+						*cp = *v
+						f.cp = cp
+					}
+					f.cells = make([]*LVal, len(v.Cells))
+					f.cp.Cells = f.cells //elps:mutates private header allocated above or by stampedCopy before publication
+					s.copies[v] = f.cp
+				}
+				f.entered = true
+				stack = append(stack, frame{v: v.Cells[0], depth: f.depth})
+				continue
+			}
+		} else {
+			if result != nil && result.Type == LError {
+				return result
+			}
+			if f.cells != nil {
+				f.cells[f.i] = result
+			} else if result != v.Cells[f.i] {
+				f.cells = make([]*LVal, len(v.Cells))
+				copy(f.cells, v.Cells[:f.i])
+				f.cells[f.i] = result
+			}
+			f.i++
+			if f.i < len(v.Cells) {
+				stack = append(stack, frame{v: v.Cells[f.i], depth: f.depth})
+				continue
+			}
+			if !g.strict && f.depth >= cycleGuardDepth {
+				delete(st.path, v)
+			}
+			if f.cp == nil && f.cells == nil {
+				result = v
+			} else {
+				cp := f.cp
+				if cp == nil {
+					cp = new(LVal)
+					*cp = *v
+				}
+				if f.cells != nil {
+					cp.Cells = f.cells
+				} //elps:mutates private copy-on-write macro header allocated above or by stampedCopy
+				result = cp
+			}
 		}
-		return s.stampedCopy(v)
+		stack = stack[:len(stack)-1]
 	}
-	// Only a node with children is entered on the guard's path: a leaf
-	// reaches nothing, and stamping runs on every macro expansion.
-	if g.abandoned() {
-		return v
-	}
-	if s.copies != nil {
-		if cp, ok := s.copies[v]; ok {
-			return cp
-		}
-	}
-	var cyclic bool
-	g, cyclic = g.descend(v)
-	if cyclic {
-		return v
-	}
-	var (
-		cp    *LVal
-		cells []*LVal
-	)
-	if needsStamp(v) {
-		// Stamped BEFORE the cells are walked, so expansion IDs are
-		// assigned in pre-order -- a parent before its children -- exactly
-		// as the in-place stamp assigned them.
-		cp = s.stampedCopy(v)
-	}
-	if s.copies != nil {
-		// The strict rerun over a cyclic expansion: copy unconditionally,
-		// and memo the copy before descending so a back-edge lands on it.
-		// The cell slice is filled below; the copy holds it from the start
-		// so the cycle closes onto the finished storage.
-		if cp == nil {
-			cp = new(LVal)
-			*cp = *v
-		}
-		cells = make([]*LVal, len(v.Cells))
-		cp.Cells = cells
-		s.copies[v] = cp
-	}
-	for i, c := range v.Cells {
-		var sc *LVal
-		switch {
-		case c == nil:
-		case isValueNode(c):
-			sc = s.value(c)
-		default:
-			sc = s.syntax(c, g)
-		}
-		if cells != nil {
-			cells[i] = sc
-			continue
-		}
-		if sc != c {
-			// The first cell to change: from here on the copy has its own
-			// cell slice, seeded with the unchanged cells before it.  v's
-			// backing array is never written.
-			cells = make([]*LVal, len(v.Cells))
-			copy(cells, v.Cells[:i])
-			cells[i] = sc
-		}
-	}
-	if g.tracking() {
-		g.ascend(v)
-	}
-	if cp == nil {
-		if cells == nil {
-			// Nothing under v changed and v itself is located: shared.
-			return v
-		}
-		cp = new(LVal)
-		*cp = *v
-	}
-	if cells != nil {
-		cp.Cells = cells
-	}
-	return cp
+	return result
 }
 
 type unquoteType int
@@ -765,44 +737,112 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 }
 
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
+	type frame struct {
+		v                                   *LVal
+		cells                               []*LVal
+		depth, valueDepth, quotes, i, total int
+		splices                             bool
+	}
+	var stack []frame
+	valueDepth := depth
+	for {
+		result, list, quotes, quoteEdges := prepareUnquote(env, v, depth, valueDepth)
+		if list != nil {
+			f := frame{v: list, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes}
+			if len(list.Cells) > 0 {
+				stack = append(stack, f)
+				v = list.Cells[0]
+				depth++
+				valueDepth = f.valueDepth + 1
+				continue
+			}
+			result = finishUnquote(list, f.cells, quotes, false, 0)
+		}
+		for {
+			if result.Type == LError {
+				return result
+			}
+			if len(stack) == 0 {
+				return result
+			}
+			f := &stack[len(stack)-1]
+			f.cells[f.i] = result
+			added := 1
+			if result.spliced {
+				if result.Type != LSExpr {
+					return env.Errorf("unquote-splicing: cannot splice non-list: %s", result.Type)
+				}
+				f.splices = true
+				added = len(result.Cells)
+			}
+			limit := env.Runtime.MaxAllocBytes()
+			if added > limit-f.total {
+				if added > math.MaxInt-f.total {
+					return env.Errorf("allocation size exceeds maximum (%d): element count overflows int", limit)
+				}
+				return env.Errorf("allocation size %d exceeds maximum (%d)", f.total+added, limit)
+			}
+			f.total += added
+			f.i++
+			if f.i < len(f.cells) {
+				v = f.v.Cells[f.i]
+				depth = f.depth + 1
+				valueDepth = f.valueDepth + 1
+				break
+			}
+			result = finishUnquote(f.v, f.cells, f.quotes, f.splices, f.total)
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int) {
+	if valueDepth >= env.Runtime.ValueDepthLimit() {
+		return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
+	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
-	// list-element position for splicing, not quasiquote nesting.
+	// list-element position for splicing. valueDepth counts every value edge,
+	// including ancestor quote wrappers; the quoted flag itself is not an edge.
 	inner := v
 	quoteLevel := 0
 	if inner.quoted {
 		quoteLevel += 1
 	}
 	for inner.Type == LQuote {
+		quoteEdges++
+		if valueDepth+quoteEdges >= env.Runtime.ValueDepthLimit() {
+			return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
+		}
 		quoteLevel += 1
 		inner = inner.Cells[0]
 	}
 	if inner.Type != LSExpr {
 		// back out of the entire quote chain and return v to leave the value
 		// unchanged in the quasiquote.
-		return v
+		return v, nil, 0, 0
 	}
 	v = inner
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
 		env.loc = v.source
-		return env.Error(err)
+		return env.Error(err), nil, 0, 0
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
 			env.loc = v.source
-			return env.Errorf("unquote-splicing used in an invalid context")
+			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0
 		}
-		return doUnquoteSpliced(env, expr)
+		return doUnquoteSpliced(env, expr), nil, 0, 0
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return doUnquoteValue(env, v.Cells[1], quoteLevel)
+		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, 0
 	}
-	return doUnquoteSExpr(env, v, depth, quoteLevel)
+	return nil, v, quoteLevel, quoteEdges
 }
 
 func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
@@ -825,37 +865,7 @@ func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
 	return x
 }
 
-func doUnquoteSExpr(env *LEnv, v *LVal, depth int, quoteLevel int) *LVal {
-	// The staging slots are scratch, not the output length: empty splices
-	// can shrink a large template to a small result. Limit retained elements
-	// after each child instead (docs/lang.md#allocation-limits).
-	hasSplices := false
-	newlen := 0
-	cells := make([]*LVal, v.Len())
-	for i := range v.Cells {
-		cells[i] = findAndUnquote(env, v.Cells[i], depth+1)
-		if cells[i].Type == LError {
-			return cells[i]
-		}
-		added := 1
-		if cells[i].spliced {
-			if cells[i].Type != LSExpr {
-				return env.Errorf("%s: cannot splice non-list: %s", "unquote-splicing", cells[i].Type)
-			}
-			hasSplices = true
-			added = len(cells[i].Cells)
-		}
-		limit := env.Runtime.MaxAllocBytes()
-		if added > limit-newlen {
-			// Reject before adding, including when even the diagnostic sum
-			// would overflow int. The accepted sum below is at most limit.
-			if added > math.MaxInt-newlen {
-				return env.Errorf("allocation size exceeds maximum (%d): element count overflows int", limit)
-			}
-			return env.Errorf("allocation size %d exceeds maximum (%d)", newlen+added, limit)
-		}
-		newlen += added
-	}
+func finishUnquote(v *LVal, cells []*LVal, quoteLevel int, hasSplices bool, newlen int) *LVal {
 	// splice in children of children that were unquoted with
 	// ``unquote-splicing''
 	if hasSplices {

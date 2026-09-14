@@ -62,6 +62,38 @@ func TestNativeGoValueShapes(t *testing.T) {
 	}
 }
 
+// oneEntryMap is the embedder extension point for a sorted-map backing
+// (NewMapData/SortedMapFromData).  It is how a key LVal that MapData's own
+// Set would reject -- a native payload -- reaches the Go conversion walk,
+// which is the only way the walk's key-comparability guard is reachable.
+type oneEntryMap struct {
+	key *LVal
+	val *LVal
+}
+
+func (m *oneEntryMap) Len() int { return 1 }
+
+func (m *oneEntryMap) Get(k *LVal) (*LVal, bool) { return Nil(), false }
+
+func (m *oneEntryMap) Set(k, v *LVal) *LVal { return Errorf("read-only map") }
+
+func (m *oneEntryMap) Del(k *LVal) *LVal { return Errorf("read-only map") }
+
+func (m *oneEntryMap) Keys() *LVal { return QExpr([]*LVal{m.key}) }
+
+func (m *oneEntryMap) Entries(buf []*LVal) *LVal {
+	if len(buf) < 1 {
+		return Errorf("buffer has insufficient length")
+	}
+	buf[0] = QExpr([]*LVal{m.key, m.val})
+	return Int(1)
+}
+
+// TestGoMapKeyReflectionGuards pins that converting a sorted-map to a Go map
+// rejects a key that is not comparable AT RUNTIME instead of panicking with
+// "hash of unhashable type" on insertion (#654 follow-up).  reflect.TypeOf(k)
+// reports a struct or array type as comparable even when an interface field
+// holds a slice, so the guard must ask reflect.ValueOf(k).
 func TestGoMapKeyReflectionGuards(t *testing.T) {
 	for _, tc := range []struct {
 		key  *LVal
@@ -78,17 +110,23 @@ func TestGoMapKeyReflectionGuards(t *testing.T) {
 		{String("key"), "string", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			var st cycleState
-			m := make(gomap)
-			if ok := checkGoMapInsert(m, tc.key, Int(42), cycleGuard{state: &st}); ok != tc.ok {
-				t.Fatalf("checkGoMapInsert = %v, want %v", ok, tc.ok)
+			lv := SortedMapFromData(NewMapData(&oneEntryMap{key: tc.key, val: Int(42)}))
+			got := GoValue(lv)
+			m, isMap := got.(map[interface{}]interface{})
+			if !isMap {
+				t.Fatalf("GoValue = %#v, want a map", got)
 			}
-			if tc.ok {
-				if got := m[GoValue(tc.key)]; got != 42 {
-					t.Errorf("map value = %v, want 42", got)
+			if !tc.ok {
+				if m != nil {
+					t.Errorf("rejected key inserted into map: %v", m)
 				}
-			} else if len(m) != 0 {
-				t.Errorf("rejected key inserted into map: %v", m)
+				return
+			}
+			if m == nil {
+				t.Fatalf("accepted key produced a nil map")
+			}
+			if v := m[GoValue(tc.key)]; v != 42 {
+				t.Errorf("map value = %v, want 42", v)
 			}
 		})
 	}

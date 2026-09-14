@@ -36,7 +36,8 @@ var langSpecialOps = []*langBuiltin{
 		`Returns a quoted template in which (unquote expr) forms are
 		evaluated and spliced in, and (unquote-splicing expr) forms are
 		evaluated and their list elements are spliced in. All other
-		subexpressions remain unevaluated.`},
+		subexpressions remain unevaluated. Raises an ordinary depth error
+		when traversal exceeds 1000000 levels or the configured WithMaxValueDepth setting.`},
 	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
 		`Returns an anonymous function. Formals is a list of parameter
 		names that may include &optional, &rest, and &key markers.
@@ -110,7 +111,9 @@ var langSpecialOps = []*langBuiltin{
 		argument is a list of (condition-type handler-fn) pairs. If a
 		body form signals an error matching a condition type, the handler
 		is called with the condition name and error data as values, without
-		evaluating the data. Go errors supply message strings. Source parse
+		evaluating the data. Copying condition data beyond 1000000 levels
+		(or the configured WithMaxValueDepth setting) raises an ordinary depth error
+		that propagates to an outer handler. Go errors supply message strings. Source parse
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
 		Handlers must be regular functions. Use the symbol

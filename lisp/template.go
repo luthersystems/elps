@@ -97,6 +97,8 @@ func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 //
 // Initialization must itself be suitable for replay: transaction context, time,
 // randomness and external effects must be bound per VM when cold loads do so.
+// Iterative admission is bounded by the source Runtime.ValueDepthLimit,
+// including closure environments, visible cells and hidden capacity tails.
 func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 	if env == nil || env.Runtime == nil || env.Runtime.Registry == nil {
 		return nil, errors.New("template: nil environment, runtime or registry")
@@ -169,6 +171,9 @@ type templateInventory struct {
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
 	sharedCells []templateCellSpan
+	jobs        []templateJob
+	depth       int
+	walking     bool
 }
 
 func newTemplateInventory(config templateConfig) *templateInventory {
@@ -221,7 +226,44 @@ func sortedTemplateKeys[V any](m map[string]V) []string {
 	return keys
 }
 
+type templateJob struct {
+	run   func() error
+	depth int
+}
+
+func (s *templateInventory) walk(run func() error) error {
+	s.jobs = append(s.jobs, templateJob{run, s.depth})
+	if s.walking {
+		return nil
+	}
+	s.walking = true
+	defer func() { s.walking = false; s.jobs = nil; s.depth = 0 }()
+	for len(s.jobs) > 0 {
+		job := s.jobs[len(s.jobs)-1]
+		s.jobs = s.jobs[:len(s.jobs)-1]
+		s.depth = job.depth
+		if s.depth >= s.runtime.ValueDepthLimit() {
+			return ValueDepthError(s.runtime.ValueDepthLimit())
+		}
+		s.depth++
+		mark := len(s.jobs)
+		if err := job.run(); err != nil {
+			return err
+		}
+		slices.Reverse(s.jobs[mark:])
+	}
+	return nil
+}
+
 func (s *templateInventory) env(env *LEnv) error {
+	return s.walk(func() error { return s.envNode(env) })
+}
+func (s *templateInventory) val(v *LVal) error { return s.walk(func() error { return s.valNode(v) }) }
+func (s *templateInventory) shared(v *LVal) error {
+	return s.walk(func() error { return s.sharedNode(v) })
+}
+
+func (s *templateInventory) envNode(env *LEnv) error {
 	if env == nil {
 		return nil
 	}
@@ -257,7 +299,7 @@ func (s *templateInventory) checkDiagnosticPayload(payload any) error {
 	return nil
 }
 
-func (s *templateInventory) shared(v *LVal) error {
+func (s *templateInventory) sharedNode(v *LVal) error {
 	if v == nil || s.sealed[v] {
 		return nil
 	}
@@ -287,7 +329,7 @@ func (s *templateInventory) shared(v *LVal) error {
 	return nil
 }
 
-func (s *templateInventory) val(v *LVal) error {
+func (s *templateInventory) valNode(v *LVal) error {
 	if v == nil {
 		return nil
 	}

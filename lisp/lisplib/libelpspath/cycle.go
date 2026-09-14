@@ -72,7 +72,7 @@ import "github.com/luthersystems/elps/lisp"
 // or the bound resets on every lap and never fires.
 //
 // The result is that acyclic values are untouched -- walked in full, at any
-// depth, with the same answer as before the guard existed -- while a cyclic
+// depth allowed by lisp.MaxValueDepth (checked by copyGuarded) -- while a cyclic
 // value is refused with an ordinary Go error the builtins turn into a
 // catchable condition.
 //

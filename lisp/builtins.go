@@ -115,10 +115,12 @@ var (
 			`Returns its argument unchanged.`},
 		{"macroexpand", Formals("quoted-form"), builtinMacroExpand,
 			`Repeatedly expands the macro call in quoted-form until the head
-			is no longer a macro. Returns the fully expanded form.`},
+			is no longer a macro. Returns the fully expanded form. Recursive
+			value walks exceeding 1000000 levels raise an ordinary depth error.`},
 		{"macroexpand-1", Formals("quoted-form"), builtinMacroExpand1,
 			`Performs a single macro expansion step on quoted-form and returns
-			the result. Useful for debugging macro expansion.`},
+			the result. Useful for debugging macro expansion. Recursive
+			value walks exceeding 1000000 levels raise an ordinary depth error.`},
 		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
 			`Calls fun with the given args and returns the result. Cannot be
 			used with special operators or macros.`},
@@ -254,7 +256,9 @@ var (
 			slice produce -- is not. Use copy to take ownership of data
 			whose provenance you do not control:
 			the result is always mutable, even when the input is (or came
-			from) a quoted program literal.`},
+			from) a quoted program literal.
+			Raises an ordinary error if a value walk exceeds 1000000 levels
+			(or the configured WithMaxValueDepth setting).`},
 		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},
@@ -403,7 +407,8 @@ var (
 			`Returns true if a and b are structurally equal, performing deep
 			comparison across all value types. Sorted-map keys compare by
 			name, matching how get and key? identify them, so a map keyed
-			by 'a is equal? to a map keyed by "a".`},
+			by 'a is equal? to a map keyed by "a". Raises an ordinary depth
+			error if comparison exceeds the configured value depth (default 1000000).`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
@@ -2944,7 +2949,7 @@ func builtinIsBytes(env *LEnv, args *LVal) *LVal {
 
 func builtinEqual(env *LEnv, args *LVal) *LVal {
 	a, b := args.Cells[0], args.Cells[1]
-	return a.Equal(b)
+	return a.EqualWithRuntime(b, env.Runtime)
 }
 
 func builtinAllP(env *LEnv, args *LVal) *LVal {
@@ -3664,6 +3669,15 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			if !ok || !write(s) {
 				return allocationError()
 			}
+		}
+
+		// Preserve the renderer's early stop on exhausted output budgets.
+		// Only a successfully rendered substitution needs full depth validation.
+		if err := checkValueDepth(val, env.Runtime.ValueDepthLimit(), env.evalCtx); err != nil {
+			if env.evalCtx != nil && env.evalCtx.Err() != nil {
+				return env.renderError()
+			}
+			return env.Error(err)
 		}
 
 		i = closeIdx + 1

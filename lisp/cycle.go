@@ -88,7 +88,8 @@ type cycleState struct {
 	// walk's root and the current frame.
 	path map[*LVal]struct{}
 
-	cyclic bool
+	tooDeep bool
+	cyclic  bool
 }
 
 // cycleGuard detects cycles in a walk over an LVal graph, not excessive depth.
@@ -159,76 +160,11 @@ func (g cycleGuard) tracking() bool {
 // that sees this must return without descending any further; whatever it
 // returns is discarded.
 func (g cycleGuard) abandoned() bool {
-	return !g.strict && g.state.cyclic
+	return g.state.tooDeep || (!g.strict && g.state.cyclic)
 }
 
 // valuePair is a pair of values under comparison, the unit (*LVal).Equal
 // tracks to bound a comparison of two cyclic values.
 type valuePair struct {
 	a, b *LVal
-}
-
-// pairGuard is cycleGuard for a walk over two graphs at once.  Equality
-// recurses into a pair of values, so what repeats when both operands are
-// cyclic is a pair, not a value: a comparison can revisit a without revisiting
-// b.
-//
-// Unlike cycleGuard its path set is never unwound, and keeping a pair on it
-// forever is not an approximation.  A pair reached a second time either is
-// still under comparison further up the path, where taking it to be equal is
-// the co-inductive answer Equal documents, or has already been compared and
-// found equal -- a pair that compared unequal returned false out of every
-// frame up to the root instead of ever being reached again.
-type pairGuard struct {
-	state *pairState
-
-	depth  int
-	strict bool
-}
-
-// pairState is cycleState for a comparison.  The path set lives here, shared
-// by every frame, for the reason cycleState.path does: a set built in a guard
-// copy would be built once per pair sitting at exactly cycleGuardDepth, so a
-// comparison that is merely wide there would allocate per node.
-type pairState struct {
-	path map[valuePair]struct{}
-
-	cyclic bool
-}
-
-// strictPairGuard returns the guard for the rerun of a comparison that stage 2
-// abandoned.
-func strictPairGuard() pairGuard {
-	return pairGuard{state: new(pairState), strict: true}
-}
-
-// descend returns the guard for a comparison one level below g, entering the
-// pair (a, b), and reports whether the caller must stop -- because the pair is
-// already on the path, or because another frame has found a cycle and the
-// whole comparison is being unwound for a rerun in strict mode.  Both answers
-// are "return equal and do not recurse": in the first case that is the
-// co-inductive answer, in the second the result is discarded.
-//
-// Only a comparison that is about to recurse calls this.  A pair of leaves
-// reaches nothing, so putting it on the path would tax every int and string
-// comparison to bound a walk that cannot recurse.
-func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
-	if !g.strict {
-		if g.state.cyclic {
-			return g, true
-		}
-		g.depth++
-		if g.depth < cycleGuardDepth {
-			return g, false
-		}
-	}
-	p := valuePair{a, b}
-	if g.state.path == nil {
-		g.state.path = make(map[valuePair]struct{}, cycleGuardDepth)
-	} else if _, ok := g.state.path[p]; ok {
-		g.state.cyclic = true
-		return g, true
-	}
-	g.state.path[p] = struct{}{}
-	return g, false
 }

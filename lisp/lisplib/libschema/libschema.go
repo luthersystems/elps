@@ -691,7 +691,11 @@ func builtinAllowedValues(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(lisp.Formals("input"), args, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		for _, v := range captures.Cells {
-			if eq := input.Equal(v); lisp.True(eq) {
+			eq := input.EqualWithRuntime(v, env.Runtime)
+			if eq.Type == lisp.LError {
+				return eq
+			}
+			if lisp.True(eq) {
 				return lisp.Nil()
 			}
 		}

@@ -5,6 +5,7 @@ package lisp
 import (
 	"fmt"
 	"reflect"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/fmtmeta"
@@ -102,6 +103,9 @@ type detacher struct {
 	// runtime is supplied only by Lisp copy. It limits each data backing
 	// allocation, not total graph size or the walker's bookkeeping.
 	runtime *Runtime
+	path    *detachPath
+	jobs    []detachJob
+	depth   int
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
@@ -124,7 +128,49 @@ func (d *detacher) checkAlloc(n int) error {
 	return nil
 }
 
+type detachPath struct {
+	parent *detachPath
+	label  string
+	cell   int
+}
+type detachJob struct {
+	run   func() error
+	path  *detachPath
+	depth int
+}
+
+func (d *detacher) schedule(path *detachPath, run func() error) {
+	d.jobs = append(d.jobs, detachJob{run: run, path: path, depth: d.depth + 1})
+}
+
 func (d *detacher) detach(v *LVal) (*LVal, error) {
+	cp, err := d.detachNode(v)
+	slices.Reverse(d.jobs)
+	for err == nil && len(d.jobs) > 0 {
+		job := d.jobs[len(d.jobs)-1]
+		d.jobs = d.jobs[:len(d.jobs)-1]
+		d.depth, d.path = job.depth, job.path
+		if d.depth >= d.runtime.ValueDepthLimit() {
+			return nil, ValueDepthError(d.runtime.ValueDepthLimit())
+		}
+		mark := len(d.jobs)
+		err = job.run()
+		slices.Reverse(d.jobs[mark:])
+	}
+	if err != nil {
+		for p := d.path; p != nil; p = p.parent {
+			label := p.label
+			if label == "" {
+				label = fmt.Sprintf("Cells[%d]", p.cell)
+			}
+			err = prependPath(err, label)
+		}
+		return nil, err
+	}
+	return cp, nil
+}
+
+func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -135,6 +181,9 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// Shared, immutable, and unmutable from lisp; a copy would differ
 		// only in its address (lisp/singleton.go).
 		return v, nil
+	}
+	if d.depth >= d.runtime.ValueDepthLimit() {
+		return nil, ValueDepthError(d.runtime.ValueDepthLimit())
 	}
 	// cloner is non-nil when v is a native value or error message whose payload declares
 	// its own duplication protocol (lisp/fork.go) — the only authority on
@@ -268,12 +317,10 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 	}
 	out := make([]*LVal, len(cells))
 	for i := range cells {
-		cp, err := d.detach(cells[i])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("Cells[%d]", i))
-		}
-		out[i] = cp
+		path := &detachPath{parent: d.path, cell: i}
+		d.schedule(path, func() error { cp, err := d.detachNode(cells[i]); out[i] = cp; return err })
 	}
+
 	return out, nil
 }
 
@@ -368,18 +415,24 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	m := &MapData{newmap()}
 	d.maps[md] = m
 	for _, pair := range entries.Cells {
-		key, err := d.detach(pair.Cells[0])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("MapKey[%s]", pair.Cells[0]))
-		}
-		val, err := d.detach(pair.Cells[1])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("Map[%s]", pair.Cells[0]))
-		}
-		if lerr := m.Set(key, val); lerr.Type == LError {
-			return nil, &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr)}
-		}
+		var key *LVal
+		d.schedule(&detachPath{parent: d.path, label: fmt.Sprintf("MapKey[%s]", pair.Cells[0])}, func() error {
+			var err error
+			key, err = d.detachNode(pair.Cells[0])
+			return err
+		})
+		d.schedule(&detachPath{parent: d.path, label: fmt.Sprintf("Map[%s]", pair.Cells[0])}, func() error {
+			val, err := d.detachNode(pair.Cells[1])
+			if err != nil {
+				return err
+			}
+			if lerr := m.Set(key, val); lerr.Type == LError {
+				return &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr)}
+			}
+			return nil
+		})
 	}
+
 	return m, nil
 }
 

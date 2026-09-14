@@ -2431,6 +2431,42 @@ recommended.
 
 It bounds *frames*, not evaluation depth — see below.
 
+**Value nesting** is independent of evaluator nesting. Copying (`copy` and
+Go's `LVal.Copy`), detachment, JSON dumping, Go conversion, structural equality,
+quasiquote, macro stamping, package classification and template admission use
+explicit heap stacks. Their default limit is **1,000,000 levels**
+(`lisp.MaxValueDepth`), checked by a depth counter. A 100k-deep value completes;
+a 3M-deep value raises an ordinary error containing
+`value nesting depth exceeds maximum: 1000000`, catchable with `handler-bind`.
+Copies and conversions return no partial result. Existing cycle handling still
+applies; a long cycle may reach the depth limit before its back edge is discovered.
+
+`lisp.WithMaxValueDepth(n)` sets the runtime limit to any value **at least 1024**.
+Both lowering and raising the default are supported because these traversals
+are iterative. Invalid options return an error. Copying (including condition
+data), equality, JSON dumping, quasiquote, macro stamping, format conversion
+and template admission honor the runtime setting. Templates retain it in their
+VMs. Depth counts traversed value edges, including internal array storage and
+captured environments where visited, rather than printed delimiters alone.
+APIs without a runtime, including `lisp.GoValue`, use the default limit.
+`GoValue` returns an `*lisp.ErrorVal` implementing Go's `error` interface on
+excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
+JSON serializer conversion methods use the same convention.
+
+`format-string` checks the value conversion depth before returning a result. Its
+rendered text, like other diagnostic rendering, retains the separate fixed
+1024-level `#<depth-limit>` truncation behavior described above. Thus formatting
+a 100k-deep value succeeds with bounded text, while a 3M-deep value errors.
+Sealing and source-location assignment use explicit stacks throughout; these
+metadata-only APIs cannot return an error and finish the graph. Reader admission
+and JSON parsing retain their existing input-depth limits. Copying elpspath
+subtrees uses the default value limit; recursive path composition retains its
+separate limit of 1024 iterator steps or copying-chain steps.
+
+These limits concern values constructed at runtime, so source linting cannot
+reliably determine whether a walk will exceed them; check dynamically built
+inputs and handle the condition.
+
 **Evaluation nesting** is how deeply the evaluator recurses into itself, which
 is the true measure of Go stack consumed.  It is not the same as stack height
 and is not implied by it: a call's arguments are evaluated *before* the call's
