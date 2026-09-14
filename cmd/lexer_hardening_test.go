@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,7 +21,7 @@ import (
 
 func TestSymbolSizeRunAndFormat(t *testing.T) {
 	for _, n := range []int{131071, 131072, 140000} {
-		t.Run(fmt.Sprint(n), func(t *testing.T) {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			src := "(set '" + strings.Repeat("a", n) + " 1)\n"
 			t.Run("run", func(t *testing.T) {
 				resetRunFlags(t)
