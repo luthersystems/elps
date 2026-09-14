@@ -924,7 +924,7 @@ func TestMinify_NestedRedefinitionExecutionEquivalence(t *testing.T) {
 	require.NoError(t, originalErr)
 	require.Equal(t, "1\n2\n", original)
 	minified, minifiedErr := evalDebugOutput(t, out)
-	assert.NoError(t, minifiedErr, "minified source: %s", out)
+	require.NoError(t, minifiedErr, "minified source: %s", out)
 	assert.Equal(t, original, minified)
 	assert.Len(t, symMap.OriginalToMinified["helper"], 1)
 }
@@ -939,7 +939,7 @@ func TestMinify_QualifiedQuoteExecutionEquivalence(t *testing.T) {
 			require.NoError(t, originalErr)
 			require.Equal(t, "'twice\n", original)
 			minified, minifiedErr := evalDebugOutput(t, out)
-			assert.NoError(t, minifiedErr)
+			require.NoError(t, minifiedErr)
 			assert.Equal(t, original, minified)
 			assert.NotContains(t, symMap.OriginalToMinified, "twice")
 			assert.Contains(t, symMap.Excluded, SymbolExclusion{Original: "twice", Reason: "quoted-reference"})
@@ -979,7 +979,7 @@ func TestMinify_PreservedBindingCollisionExecutionEquivalence(t *testing.T) {
 			out, _, err := MinifySource([]byte(tt.src), "collision.lisp", tt.cfg)
 			require.NoError(t, err)
 			minified, err := evalDebugOutput(t, out)
-			assert.NoError(t, err, "minified source: %s", out)
+			require.NoError(t, err, "minified source: %s", out)
 			assert.Equal(t, original, minified, "minified source: %s", out)
 		})
 	}
@@ -995,7 +995,7 @@ func TestMinify_ComputedSetTargetExecutionEquivalence(t *testing.T) {
 			out, _, err := MinifySource(src, "computed-set.lisp", nil)
 			require.NoError(t, err)
 			minified, err := evalDebugOutput(t, out)
-			assert.NoError(t, err, "minified source: %s", out)
+			require.NoError(t, err, "minified source: %s", out)
 			assert.Equal(t, original, minified, "minified source: %s", out)
 		})
 	}

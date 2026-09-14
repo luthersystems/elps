@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -61,7 +60,7 @@ func TestMinifyCorpus(t *testing.T) {
 
 func runCorpusCLI(t *testing.T, bin, dir string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // test executes the locally built CLI
+	cmd := exec.CommandContext(t.Context(), bin, args...)
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
@@ -70,7 +69,7 @@ func runCorpusCLI(t *testing.T, bin, dir string, args ...string) (int, string, s
 		return 0, stdout.String(), stderr.String()
 	}
 	var exitErr *exec.ExitError
-	require.True(t, errors.As(err, &exitErr), "CLI did not run: %v", err)
+	require.ErrorAs(t, err, &exitErr, "CLI did not run: %v", err)
 	return exitErr.ExitCode(), stdout.String(), stderr.String()
 }
 

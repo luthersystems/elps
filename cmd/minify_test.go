@@ -158,7 +158,7 @@ func TestMinifyCommandPackageFlowWarning(t *testing.T) {
 			require.Contains(t, stderr, "flow.lisp:"+tt.site+": "+tt.form)
 			require.Contains(t, stderr, "preserving all package-level binding names")
 			require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
-			data, err := os.ReadFile(filepath.Join(dir, "symbols.json"))
+			data, err := os.ReadFile(filepath.Join(dir, "symbols.json")) //nolint:gosec // reads CLI output from the test-owned temporary directory
 			require.NoError(t, err)
 			var symMap minifier.SymbolMap
 			require.NoError(t, json.Unmarshal(data, &symMap))

@@ -927,8 +927,6 @@ func splitQualifiedSymbol(name string) (string, string, bool) {
 	return "", "", false
 }
 
-var packageNameArg = astutil.PackageNameArg
-
 func compareSymbols(a, b *analysis.Symbol) int {
 	if a == nil || b == nil {
 		switch {
@@ -1012,7 +1010,7 @@ func firstGlobalFallback(node *lisp.LVal, topLevel bool) (*lisp.LVal, string) {
 			args = args[:1] // Remaining arguments are package docstrings.
 		}
 		for _, arg := range args {
-			if arg.Type != lisp.LString && !(arg.Type == lisp.LSymbol && arg.IsQuoted()) {
+			if arg.Type != lisp.LString && (arg.Type != lisp.LSymbol || !arg.IsQuoted()) {
 				return node.Cells[0], "unproven-package-flow"
 			}
 		}
