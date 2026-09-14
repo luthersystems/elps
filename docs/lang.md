@@ -96,6 +96,41 @@ These all-integer operations use Go's native-width `int` and wrap on overflow;
 they do not signal an overflow condition. Introducing a float prevents integer
 wraparound, but floating-point rounding and IEEE infinities/NaN still apply.
 
+`pow` uses integer arithmetic when both operands are ints and the exponent is
+non-negative, but raises an `error` condition containing `integer overflow`
+if the result does not fit the platform's `int`, just as `math:abs` does for
+an overflowing absolute value. For example, `(pow 2 64)` errors on a 64-bit
+platform, while `(pow 2 62)` and `(pow -2 63)` fit. A zero exponent returns
+1, including `(pow 0 0)`. Negative exponents or any float operand use
+floating-point arithmetic.
+
+`max` and `min` propagate NaN regardless of its argument position. If all
+arguments are ints, the result remains an int. Comparisons such as `<` over
+NaN do not form a strict weak ordering. Passing such a comparator to
+`stable-sort` produces an unspecified order and no error; stability does
+not make an invalid comparator valid.
+
+Division by zero uses IEEE floating-point results rather than raising an
+error: `(/ 1 0)` returns `+Inf`, `(/ -1 0)` returns `-Inf`, and
+`(/ 0.0 0.0)` returns `NaN`. Thus `(/ total count)` can silently produce
+infinity or NaN when `count` is zero. Guard the denominator explicitly:
+
+```lisp
+(if (= count 0)
+  (error 'error "count must be non-zero")
+  (/ total count))
+```
+
+`mod` requires integer operands and raises an error with the message
+`second argument is zero` for `(mod 1 0)`.
+
+The external representation of a float may omit the decimal point: `100.0`
+prints as `100`, `(to-string 1.0)` returns `"1"`, and
+`(json:dump-string 100.0)` returns `"100"`. Printed text therefore does not
+preserve the distinction between ints and floats. Use `to-float` to recover
+the float type explicitly, for example `(to-float "100")` or `(to-float 100)`;
+both produce a float, which still prints as `100`.
+
 `to-int` truncates a finite float toward zero, then checks whether that integer
 fits the platform's `int`. NaN, either infinity, and out-of-range results are
 ordinary errors. They never saturate to a boundary value or silently become
