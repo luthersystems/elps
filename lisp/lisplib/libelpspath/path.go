@@ -69,102 +69,128 @@ func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
 // starting a fresh one. Every nested copy must pass g down; a fresh walk per
 // level resets the bound on every lap and it never fires.
 func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	type frame struct {
-		v      *lisp.LVal
-		dst    **lisp.LVal
-		finish func() error
-		depth  int
-		leave  bool
+	switch v.Type {
+	case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
+		return copyContainer(v, g)
+	default:
+		// Do not initialize traversal scratch space for each scalar sibling.
+		return v, nil
 	}
-	// All frames share g.state. Store only depth in the growable frame slice
-	// so the caller's cycleState is not forced onto the heap by an append.
-	var out *lisp.LVal
-	pending := []frame{{v: v, dst: &out, depth: g.depth}}
-	for len(pending) > 0 {
-		f := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if f.finish != nil {
-			if err := f.finish(); err != nil {
-				return nil, err
-			}
-			continue
-		}
-		if f.leave {
-			g.ascend(f.v)
-			continue
-		}
-		v := f.v
+}
+
+// copyContainer iteratively copies a container and its descendants, carrying
+// the caller's guard depth and shared path state through the entire walk.
+func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
+	type frame struct {
+		v, cp         *lisp.LVal
+		cells, copied []*lisp.LVal
+		index         int
+	}
+	// Keep one continuation per ancestor, not per sibling. Frames contain
+	// values rather than addresses of local result slots or finish closures.
+	// Shallow walks fit on the Go stack; deeper walks grow this slice without
+	// growing the Go call stack. The shared cycle state stays outside it.
+	pending := make([]frame, 0, 16)
+walk:
+	for {
+		var out *lisp.LVal
 		switch v.Type {
 		case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
-		default:
-			*f.dst = v
-			continue
-		}
-		if f.depth >= lisp.MaxValueDepth {
-			return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
-		}
-		next, cyclic := (cycleGuard{state: g.state, depth: f.depth}).descend(v)
-		if cyclic {
-			return nil, errCyclicValue
-		}
-		if next.tracking() {
-			pending = append(pending, frame{v: v, leave: true})
-		}
-		var cells []*lisp.LVal
-		switch v.Type {
-		case lisp.LSortMap:
-			entries := sortedMapEntries(v.Map())
-			if entries.Type == lisp.LError {
-				return nil, lisp.GoError(entries)
+			depth := g.depth + len(pending)
+			if depth >= lisp.MaxValueDepth {
+				return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
 			}
-			cp := lisp.SortedMap()
-			*f.dst = sameQuoting(v, cp)
-			for i := len(entries.Cells) - 1; i >= 0; i-- {
-				pair := entries.Cells[i]
-				var child *lisp.LVal
-				pending = append(pending, frame{finish: func() error { return lisp.GoError(cp.Map().Set(pair.Cells[0], child)) }}, frame{v: pair.Cells[1], dst: &child, depth: next.depth})
+			next, cyclic := (cycleGuard{state: g.state, depth: depth}).descend(v)
+			if cyclic {
+				return nil, errCyclicValue
 			}
-			continue
-		case lisp.LArray:
-			n := v.Cells[0].Len()
-			if n > 1 {
-				*f.dst = lisp.Nil()
+			f := frame{v: v}
+			switch v.Type {
+			case lisp.LSortMap:
+				entries := sortedMapEntries(v.Map())
+				if entries.Type == lisp.LError {
+					return nil, lisp.GoError(entries)
+				}
+				f.cells = entries.Cells
+				f.cp = lisp.SortedMapSized(len(f.cells))
+			case lisp.LArray:
+				n := v.Cells[0].Len()
+				if n > 1 {
+					out = lisp.Nil()
+					if next.tracking() {
+						next.ascend(v)
+					}
+					break
+				}
+				if n == 0 {
+					return nil, errors.New("cannot index zero-dimensional array")
+				}
+				f.cells = v.Cells[1].Cells
+				f.copied = make([]*lisp.LVal, len(f.cells))
+				f.cp = toVector(f.copied)
+			case lisp.LQuote, lisp.LTaggedVal:
+				if _, err := wrapperValue(v); err != nil {
+					return nil, err
+				}
+				f.cells = v.Cells
+				f.copied = make([]*lisp.LVal, 1)
+				f.cp = &lisp.LVal{Type: v.Type, Str: v.Str, Cells: f.copied}
+				if loc, ok := v.Source(); ok {
+					f.cp.SetSource(&loc)
+				}
+			case lisp.LSExpr:
+				f.cells = v.Cells
+				f.copied = make([]*lisp.LVal, len(f.cells))
+				f.cp = toList(f.copied)
+			default:
+				return nil, fmt.Errorf("invalid container type: %v", v.Type)
+			}
+			if out != nil {
+				break
+			}
+			if len(f.cells) > 0 {
+				pending = append(pending, f)
+				v = f.cells[0]
+				if f.v.Type == lisp.LSortMap {
+					v = v.Cells[1]
+				}
 				continue
 			}
-			if n == 0 {
-				return nil, errors.New("cannot index zero-dimensional array")
+			out = sameQuoting(v, f.cp)
+			if next.tracking() {
+				next.ascend(v)
 			}
-			cells = v.Cells[1].Cells
-		case lisp.LQuote, lisp.LTaggedVal:
-			child, err := wrapperValue(v)
-			if err != nil {
-				return nil, err
-			}
-			cells = []*lisp.LVal{child}
-		case lisp.LSExpr:
-			cells = v.Cells
 		default:
-			return nil, fmt.Errorf("invalid container type: %v", v.Type)
+			// Opaque leaves need neither a frame nor an addressable result slot.
+			out = v
 		}
-		copied := make([]*lisp.LVal, len(cells))
-		var cp *lisp.LVal
-		switch v.Type {
-		case lisp.LArray:
-			cp = toVector(copied)
-		case lisp.LSExpr:
-			cp = toList(copied)
-		default:
-			cp = &lisp.LVal{Type: v.Type, Str: v.Str, Cells: copied}
-			if loc, ok := v.Source(); ok {
-				cp.SetSource(&loc)
+		for len(pending) > 0 {
+			f := &pending[len(pending)-1]
+			if f.v.Type == lisp.LSortMap {
+				if err := lisp.GoError(f.cp.Map().Set(f.cells[f.index].Cells[0], out)); err != nil {
+					return nil, err
+				}
+			} else {
+				f.copied[f.index] = out
 			}
+			f.index++
+			if f.index < len(f.cells) {
+				v = f.cells[f.index]
+				if f.v.Type == lisp.LSortMap {
+					v = v.Cells[1]
+				}
+				continue walk
+			}
+			out = sameQuoting(f.v, f.cp)
+			if g.depth+len(pending) >= cycleGuardDepth {
+				g.ascend(f.v)
+			}
+			// Drop completed subtrees even while the backing stack is reused.
+			*f = frame{}
+			pending = pending[:len(pending)-1]
 		}
-		*f.dst = sameQuoting(v, cp)
-		for i := len(cells) - 1; i >= 0; i-- {
-			pending = append(pending, frame{v: cells[i], dst: &copied[i], depth: next.depth})
-		}
+		return out, nil
 	}
-	return out, nil
 }
 
 // wrapperValue validates the payload before either recursive walker reads it.

@@ -22,6 +22,29 @@ const copyNestDepth = 80
 // every other one.
 var containerKinds = []lisp.LType{lisp.LSortMap, lisp.LArray, lisp.LSExpr}
 
+// An inherited depth must count ancestors, not completed siblings, including
+// after the continuation stack grows and cycle tracking becomes active.
+func TestCopyInheritedDepth(t *testing.T) {
+	for _, kind := range containerKinds {
+		t.Run(kind.String(), func(t *testing.T) {
+			const depth = 80
+			src := nestedValue(kind, depth)
+			var st cycleState
+			g := cycleGuard{state: &st, depth: lisp.MaxValueDepth - depth}
+			cp, err := copyGuarded(src, g)
+			require.NoError(t, err)
+			assert.Equal(t, depth, independentDepth(src, cp))
+			assert.Empty(t, st.path, "completed ancestors must leave the cycle path")
+
+			g.depth++
+			_, err = copyGuarded(src, g)
+			var depthErr lisp.ValueDepthError
+			require.ErrorAs(t, err, &depthErr)
+			assert.Equal(t, lisp.ValueDepthError(lisp.MaxValueDepth), depthErr)
+		})
+	}
+}
+
 // TestCopyHelpersAgreeOnNestingDepth is the drift test issue #395 asks for.
 //
 // copyList and copyVector always recursed, carrying the comment "lists may
