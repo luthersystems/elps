@@ -311,35 +311,51 @@ func (enc *encoder) encodeLimit(v *lisp.LVal, limit int) error {
 // nested encode must call this and pass g down rather than calling encode, or
 // the bound is lost.
 func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
+	// Keep one continuation per ancestor, consuming its children in order.
+	// Queuing all children and punctuation makes scratch space grow with
+	// width, even for shallow documents that never need cycle tracking.
 	type frame struct {
 		v     *lisp.LVal
 		g     encodeGuard
+		cells []*lisp.LVal
 		token byte
-		leave bool
-		key   bool
+		first bool
 	}
 	var local [256]frame
 	pending := append(local[:0], frame{v: v, g: g})
 	for len(pending) > 0 {
-		f := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
+		f := &pending[len(pending)-1]
 		if f.token != 0 {
-			enc.buf.WriteByte(f.token)
-			continue
-		}
-		if f.leave {
-			f.g.leave(f.v)
-			continue
-		}
-		if f.key {
-			if err := enc.encodeMapKey(f.v); err != nil {
-				return err
+			if len(f.cells) == 0 {
+				if f.token != ' ' { // Quotes, tags and scalar arrays have no delimiter.
+					enc.buf.WriteByte(f.token)
+				}
+				f.g.leave(f.v)
+				*f = frame{}
+				pending = pending[:len(pending)-1]
+				continue
 			}
+			if !f.first {
+				enc.buf.WriteByte(',')
+			}
+			f.first = false
+			child := f.cells[0]
+			f.cells = f.cells[1:]
+			if f.token == '}' {
+				if err := enc.encodeMapKey(child.Cells[0]); err != nil {
+					return err
+				}
+				enc.buf.WriteByte(':')
+				child = child.Cells[1]
+			}
+			pending = append(pending, frame{v: child, g: f.g})
 			continue
 		}
 		v := f.v
 		if v.IsNil() {
 			enc.buf.WriteString("null")
+			*f = frame{}
+			pending = pending[:len(pending)-1]
 			continue
 		}
 		fn := encoderFuncs[v.Type]
@@ -350,52 +366,43 @@ func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
 		if err != nil {
 			return err
 		}
-		pending = append(pending, frame{v: v, g: g, leave: true})
-		var cells []*lisp.LVal
+		f.g = g
+		f.first = true
 		switch v.Type {
 		case lisp.LQuote, lisp.LTaggedVal:
-			pending = append(pending, frame{v: v.Cells[0], g: g})
-			continue
+			f.cells = v.Cells[:1]
+			f.token = ' '
 		case lisp.LArray:
 			switch v.Cells[0].Len() {
 			case 0:
-				pending = append(pending, frame{v: v.Cells[1].Cells[0], g: g})
-				continue
+				f.cells = v.Cells[1].Cells[:1]
+				f.token = ' '
 			case 1:
-				cells = v.Cells[1].Cells
+				enc.buf.WriteByte('[')
+				f.cells = v.Cells[1].Cells
+				f.token = ']'
 			default:
 				return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
 			}
 		case lisp.LSExpr:
-			cells = v.Cells
+			enc.buf.WriteByte('[')
+			f.cells = v.Cells
+			f.token = ']'
 		case lisp.LSortMap:
 			entries := v.MapEntries()
 			if entries.Type == lisp.LError {
 				return lisp.GoError(entries)
 			}
 			enc.buf.WriteByte('{')
-			pending = append(pending, frame{token: '}'})
-			for i := len(entries.Cells) - 1; i >= 0; i-- {
-				p := entries.Cells[i].Cells
-				pending = append(pending, frame{v: p[1], g: g}, frame{token: ':'}, frame{v: p[0], key: true})
-				if i > 0 {
-					pending = append(pending, frame{token: ','})
-				}
-			}
-			continue
+			f.cells = entries.Cells
+			f.token = '}'
 		default:
 			if err := fn(enc, v, g); err != nil {
 				return err
 			}
-			continue
-		}
-		enc.buf.WriteByte('[')
-		pending = append(pending, frame{token: ']'})
-		for i := len(cells) - 1; i >= 0; i-- {
-			pending = append(pending, frame{v: cells[i], g: g})
-			if i > 0 {
-				pending = append(pending, frame{token: ','})
-			}
+			g.leave(v)
+			*f = frame{}
+			pending = pending[:len(pending)-1]
 		}
 	}
 	return nil
