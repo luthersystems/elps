@@ -104,3 +104,27 @@ func TestLiteralSizeAtUTF8Boundary(t *testing.T) {
 		require.Equal(t, 1, tok.Source.Col)
 	}
 }
+
+func TestRadixNumericSuffix(t *testing.T) {
+	for _, literal := range []string{"#x10:foo", "#o17:bar", "#x10x", "#o178", "#X10:foo", "#O17:bar"} {
+		t.Run(literal, func(t *testing.T) {
+			lex := New(token.NewScanner("number.lisp", strings.NewReader(literal+")")))
+			lex.ReadToken() // Dispatch prefix is a separate token.
+			tok := lex.ReadToken()[0]
+			require.Equal(t, token.ERROR, tok.Type)
+			require.Contains(t, tok.Text, fmt.Sprintf("invalid numeric literal %q", literal))
+			require.Equal(t, token.PAREN_R, lex.ReadToken()[0].Type)
+		})
+	}
+	for _, src := range []string{"#x10 :foo", "#o17 :bar", "#x10 x", "#o17 8", "#x10", "#o17", "#xFF"} {
+		t.Run(src, func(t *testing.T) {
+			lex := New(token.NewScanner("number.lisp", strings.NewReader(src)))
+			for tok := lex.ReadToken()[0]; tok.Type != token.EOF; tok = lex.ReadToken()[0] {
+				require.NotEqual(t, token.ERROR, tok.Type)
+			}
+		})
+	}
+	lex := New(token.NewScanner("number.lisp", strings.NewReader("#x-1")))
+	lex.ReadToken()
+	require.Equal(t, token.ERROR, lex.ReadToken()[0].Type)
+}

@@ -341,6 +341,8 @@ func (lex *Lexer) readSymbol() []*token.Token {
 }
 
 func (lex *Lexer) readOctalLiteral() []*token.Token {
+	// The dispatch token has been emitted; retain its spelling for diagnostics.
+	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return '0' <= c && c <= '7'
@@ -348,13 +350,12 @@ func (lex *Lexer) readOctalLiteral() []*token.Token {
 	if n == 0 {
 		return lex.errorf("invalid octal literal character: %q", lex.peekRune())
 	}
-	if unicode.IsDigit(lex.peekRune()) || isWord(lex.peekRune()) {
-		return lex.errorf("invalid octal literal character: %q", lex.peekRune())
-	}
-	return lex.emitText(token.INT_OCTAL)
+	return lex.emitNumber(token.INT_OCTAL, prefix)
 }
 
 func (lex *Lexer) readHexLiteral() []*token.Token {
+	// The dispatch token has been emitted; retain its spelling for diagnostics.
+	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return isDigit(c) || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
@@ -362,10 +363,7 @@ func (lex *Lexer) readHexLiteral() []*token.Token {
 	if n == 0 {
 		return lex.errorf("invalid hexadecimal literal character: %q", lex.peekRune())
 	}
-	if unicode.IsDigit(lex.peekRune()) || isWord(lex.peekRune()) {
-		return lex.errorf("invalid hexadecimal literal character: %q", lex.peekRune())
-	}
-	return lex.emitText(token.INT_HEX)
+	return lex.emitNumber(token.INT_HEX, prefix)
 }
 
 func (lex *Lexer) readNumber() []*token.Token {
@@ -377,7 +375,7 @@ func (lex *Lexer) readNumber() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitNumber(token.INT)
+		return lex.emitNumber(token.INT, "")
 	}
 	// the returned string may not actually be a usable number (overflow), but
 	// we can find that out at parse time -- not scan time.
@@ -391,7 +389,7 @@ func (lex *Lexer) readFloatFraction() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitNumber(token.FLOAT)
+		return lex.emitNumber(token.FLOAT, "")
 	}
 }
 
@@ -410,14 +408,14 @@ func (lex *Lexer) readFloatExponent() []*token.Token {
 	if lex.scanner.AcceptSeqDigit() == 0 {
 		return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
 	}
-	return lex.emitNumber(token.FLOAT)
+	return lex.emitNumber(token.FLOAT, "")
 }
 
 // emitNumber rejects an undelimited suffix instead of silently splitting one
 // malformed literal into several values. Lint surfaces the same scan error.
-func (lex *Lexer) emitNumber(typ token.Type) []*token.Token {
+func (lex *Lexer) emitNumber(typ token.Type, prefix string) []*token.Token {
 	if lex.scanner.AcceptSeq(func(c rune) bool { return isWord(c) || c == ':' || unicode.IsDigit(c) }) > 0 {
-		literal := lex.scanner.Text()
+		literal := prefix + lex.scanner.Text()
 		if strings.HasPrefix(literal, "0x") || strings.HasPrefix(literal, "0X") {
 			return lex.errorf("invalid numeric literal %q (hex is spelled #x%s)", literal, literal[2:])
 		}
