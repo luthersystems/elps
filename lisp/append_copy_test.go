@@ -87,7 +87,7 @@ func TestAppendBytesAllocationLimit(t *testing.T) {
 				require.Equal(t, []byte("AB"), src.Bytes())
 				if limit < len(tc.want) {
 					require.Equal(t, lisp.LError, out.Type, "%v", out)
-					require.Contains(t, out.String(), fmt.Sprintf("allocation size %d exceeds maximum (%d)", len(tc.want), limit))
+					require.Contains(t, diagnosticText(out), fmt.Sprintf("allocation size %d exceeds maximum (%d)", len(tc.want), limit))
 					return
 				}
 				require.Equal(t, lisp.LBytes, out.Type, "%v", out)

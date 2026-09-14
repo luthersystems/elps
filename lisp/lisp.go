@@ -1725,25 +1725,17 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // walk reaches it a second time. Independently, rendering stops after 1024
 // nested values and replaces deeper subtrees with "#<depth-limit>", keeping
 // even acyclic graphs from overflowing the goroutine stack. Scalars at the
-// boundary still render in full. See lisp/render_bounded.go and lisp/cycle.go.
+// boundary still render in full. Output and work are bounded by DefaultMaxAlloc;
+// exhausted output is replaced by #<truncated>. Use LEnv.Render for runtime limits. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
-	var st cycleState
-	s := v.stringGuard(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
+	if v.Type == LError && !v.quoted {
+		return (*ErrorVal)(v).Error()
 	}
-	// v contains itself.  The walk above stopped as soon as it knew that,
-	// because unrolling a cycle to cycleGuardDepth levels is exponential in
-	// the width of the cycle; the rerun visits each node once.
-	return v.stringGuard(strictCycleGuard())
-}
-
-func (v *LVal) stringGuard(g cycleGuard) string {
-	const QUOTE = `'`
-	if v.Type == LQuote {
-		return QUOTE + v.Cells[0].str(true, g)
+	s, ok := v.boundedString(DefaultMaxAlloc)
+	if !ok {
+		return truncatedRender(s, DefaultMaxAlloc)
 	}
-	return v.str(false, g)
+	return s
 }
 
 // JoinDocStrings joins multiple doc string parts into a single string.
@@ -1797,96 +1789,6 @@ func (v *LVal) Docstring() string {
 		}
 	}
 	return ""
-}
-
-// str renders v, with g bounding the walk so that a value containing itself
-// renders cycleMark instead of recursing until the process dies.  Every
-// nested render must pass g down rather than starting a fresh walk with
-// String, or the bound is lost.  See lisp/cycle.go.
-//
-// The types that render from their own fields and reach nothing are handled
-// here, ahead of the guard and running exactly the code they ran before it
-// existed.  Rendering leaves is most of what this walk does, and none of them
-// can be part of a cycle.
-func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
-	const QUOTE = `'`
-	// All types which may evaluate to things other than themselves must check
-	// v.quoted.
-	quote := ""
-	if onTheRecord {
-		quote = QUOTE
-	}
-	switch v.Type {
-	case LInt:
-		return quote + strconv.Itoa(v.Int)
-	case LFloat:
-		// NOTE:  The 'g' format can render a floating point number such that
-		// it appears as an integer (2.0 renders as 2) which can be confusing
-		// for those interested in the type of each numeric value.
-		return quote + strconv.FormatFloat(v.Float, 'g', -1, 64)
-	case LString:
-		return quote + fmt.Sprintf("%q", v.Str)
-	case LBytes:
-		b := v.Bytes()
-		if len(b) == 0 {
-			return quote + "#<bytes>"
-		}
-		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
-	case LSymbol:
-		if v.quoted {
-			quote = QUOTE
-		}
-		return quote + v.Str
-	case LQSymbol:
-		// A qsymbol carries a level of quoting in its type rather than in
-		// v.quoted, so it always renders with at least one quote -- the
-		// text a quoted symbol renders, and the text the debugger's
-		// inspector has always shown for one.  A further level (v.quoted,
-		// which Quote sets, or an enclosing LQuote, which passes
-		// onTheRecord) adds a second quote exactly as it does for LSymbol.
-		//
-		// Without this arm the value fell through to strNested's default,
-		// which printed %#v of the LVal and so leaked the address of
-		// v.source into the rendering: the same value rendered
-		// differently in two processes, and a copy rendered differently
-		// from its source in one.  See issue #606.
-		if v.quoted {
-			quote = QUOTE
-		}
-		return quote + QUOTE + v.Str
-	case LNative:
-		return fmt.Sprintf("#<native value: %T>", v.Native)
-	default:
-		// Every remaining type renders values reachable from v, and is
-		// handled by strNested below.  Enumerated as a default rather than
-		// left implicit so that a new LType has to decide which half of this
-		// function it belongs in.
-	}
-	// Everything left renders values reachable from v, so it is entered on the
-	// guard's path.
-	if g.abandoned() {
-		return ""
-	}
-	if g.depth >= maxRenderDepth {
-		return renderDepthMark
-	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return cycleMark
-	}
-	s := v.strNested(onTheRecord, g)
-	if g.tracking() {
-		g.ascend(v)
-	}
-	return s
-}
-
-// strNested renders the types that reach other values.  It is only ever
-// reached through str, which has already put v on g's path.
-func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
-	r := valueRenderer{limit: -1}
-	r.nested(v, onTheRecord, g)
-	return r.out.String()
 }
 
 func isVec(v *LVal) bool {

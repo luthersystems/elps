@@ -247,7 +247,7 @@ func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	exists := env.Get(lname)
 	if !exists.IsNil() {
-		return lisp.ErrorConditionf(BadArgs, "Symbol %s is already defined", lname)
+		return env.ErrorConditionf(BadArgs, "Symbol %s is already defined", lname)
 	}
 	res := getHandler(env, typeValidator, name, constraints)
 	if res != nil && res.Type == lisp.LError {
@@ -343,13 +343,13 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 			// of them -- before any inverting caller (s:not, s:when) can
 			// misread the refusal as "the constraint failed".
 			if !isValidator(in) {
-				return lisp.ErrorConditionf(BadArgs,
+				return env.ErrorConditionf(BadArgs,
 					"Bad input type: an ordinary function is not usable as a constraint (%v). Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator.",
 					in)
 			}
 			return in
 		}
-		res = lisp.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
+		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
 	}
 	return res
 }
@@ -486,7 +486,7 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 		return constraint
 	}
 	if !isValidator(constraint) {
-		return lisp.ErrorConditionf(BadArgs,
+		return env.ErrorConditionf(BadArgs,
 			"Value is not a schema constraint: %v. Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator; an ordinary function cannot be used as one.",
 			constraint)
 	}
@@ -751,10 +751,10 @@ func constraintLen(input *lisp.LVal) (int, bool) {
 // lenConstraint builds a validator that fails when input has a measurable
 // length and cmp reports that length as out of bounds.  Inputs with no
 // measurable length pass.
-func lenConstraint(args *lisp.LVal, cmp func(length, comparison int) bool) *lisp.LVal {
+func lenConstraint(env *lisp.LEnv, args *lisp.LVal, cmp func(length, comparison int) bool) *lisp.LVal {
 	comparison, ok := lisp.GoInt(args.Cells[0])
 	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
@@ -767,35 +767,35 @@ func lenConstraint(args *lisp.LVal, cmp func(length, comparison int) bool) *lisp
 }
 
 // Checks length of a string, bytes or array
-func builtinLen(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return lenConstraint(args, func(length, comparison int) bool { return length != comparison })
+func builtinLen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(env, args, func(length, comparison int) bool { return length != comparison })
 }
 
 // Checks length of a string, bytes or array
-func builtinLenGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return lenConstraint(args, func(length, comparison int) bool { return length <= comparison })
+func builtinLenGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(env, args, func(length, comparison int) bool { return length <= comparison })
 }
 
 // Checks length of a string, bytes or array
-func builtinLenGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return lenConstraint(args, func(length, comparison int) bool { return length < comparison })
+func builtinLenGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(env, args, func(length, comparison int) bool { return length < comparison })
 }
 
 // Checks length of a string, bytes or array
-func builtinLenLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return lenConstraint(args, func(length, comparison int) bool { return length >= comparison })
+func builtinLenLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(env, args, func(length, comparison int) bool { return length >= comparison })
 }
 
 // Checks length of a string, bytes or array
-func builtinLenLessThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return lenConstraint(args, func(length, comparison int) bool { return length > comparison })
+func builtinLenLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lenConstraint(env, args, func(length, comparison int) bool { return length > comparison })
 }
 
 // Checks value is greater than specified value
-func builtinGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
@@ -811,10 +811,10 @@ func builtinGreaterThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 // Checks value is greater or equal than specified value
-func builtinGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
@@ -830,10 +830,10 @@ func builtinGreaterThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 // Checks value is less than specified value
-func builtinLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
@@ -849,10 +849,10 @@ func builtinLessThan(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 // Checks value is less than or equal specified value
-func builtinLessThanOrEqual(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	comparison, ok := lisp.GoFloat64(args.Cells[0])
 	if !ok {
-		return lisp.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
@@ -1070,7 +1070,7 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			// LString; it is here so a future strict Map implementation
 			// cannot silently reproduce the same no-op.
 			if val != nil && val.Type == lisp.LError {
-				return lisp.ErrorConditionf(WrongType,
+				return env.ErrorConditionf(WrongType,
 					"Map cannot be searched for key %s: %v", key, val)
 			}
 			return lisp.String(key)
@@ -1112,10 +1112,10 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 		for _, mapKey := range input.Map().Keys().Cells {
 			if mapKey.Type != lisp.LString && mapKey.Type != lisp.LSymbol {
-				return lisp.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
+				return env.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
 			}
 			if _, ok := allowedKeys[mapKey.Str]; !ok {
-				return lisp.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
+				return env.ErrorConditionf(FailedConstraint, "Map is not allowed to have key '%s'", mapKey)
 			}
 		}
 		return lisp.Nil()
@@ -1205,7 +1205,7 @@ func builtinIsFalse(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
 		if input.Str != lisp.FalseSymbol {
-			return lisp.ErrorConditionf(FailedConstraint, "Value %v is not false", input)
+			return env.ErrorConditionf(FailedConstraint, "Value %v is not false", input)
 		}
 		return lisp.Nil()
 	})
@@ -1216,7 +1216,7 @@ func builtinIsTrue(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
 		if input.Str != lisp.TrueSymbol {
-			return lisp.ErrorConditionf(FailedConstraint, "Value %v is not true", input)
+			return env.ErrorConditionf(FailedConstraint, "Value %v is not true", input)
 		}
 		return lisp.Nil()
 	})
@@ -1230,7 +1230,7 @@ func builtinIsFalsy(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 		if val.Type == lisp.LError {
 			return lisp.Nil()
 		}
-		return lisp.ErrorConditionf(FailedConstraint, "Value %v is not falsy", input)
+		return env.ErrorConditionf(FailedConstraint, "Value %v is not falsy", input)
 	})
 }
 
@@ -1271,7 +1271,7 @@ func builtinIsTruthy(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 			// rule and is rejected.  Enumerated so a new LType has to pick a
 			// side rather than defaulting to "not truthy".
 		}
-		return lisp.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
+		return env.ErrorConditionf(FailedConstraint, "Value %v is not truthy", input)
 	})
 }
 

@@ -14,13 +14,16 @@ package dapserver
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net"
 	"sync"
 
 	"github.com/google/go-dap"
+	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
 )
 
@@ -183,7 +186,45 @@ func (s *Server) ServeStdio(r io.Reader, w io.Writer) error {
 func (s *Server) send(msg dap.Message) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return dap.WriteProtocolMessage(s.writer, msg)
+	limit := lisp.DefaultMaxAlloc
+	if s.engine != nil {
+		if env, _ := s.engine.PausedState(); env != nil {
+			limit = env.Runtime.MaxAllocBytes()
+		}
+	}
+	// Translations reserve escaping and framing space. Check the complete
+	// serialized message as well, including request metadata and transport header.
+	var wire bytes.Buffer
+	if err := dap.WriteProtocolMessage(&wire, msg); err != nil {
+		return err
+	}
+	if wire.Len() > limit {
+		response, ok := msg.(dap.ResponseMessage)
+		if !ok {
+			return fmt.Errorf("DAP response exceeds output budget")
+		}
+		fallback := response.GetResponse()
+		bounded := *fallback
+		bounded.Success = false
+		if len(bounded.Command) > 128 {
+			bounded.Command = ""
+		}
+		bounded.Message = "#<truncated>"
+		wire.Reset()
+		if err := dap.WriteProtocolMessage(&wire, &bounded); err != nil {
+			return err
+		}
+		if wire.Len() > limit {
+			return fmt.Errorf("DAP output budget cannot hold response envelope")
+		}
+	}
+	// The complete frame is buffered so an over-budget response never produces
+	// an incomplete JSON message on the transport.
+	n, err := s.writer.Write(wire.Bytes())
+	if err == nil && n != wire.Len() {
+		return io.ErrShortWrite
+	}
+	return err
 }
 
 // nextSeq returns the next sequence number for outgoing messages.

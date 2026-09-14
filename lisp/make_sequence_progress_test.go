@@ -77,8 +77,8 @@ func TestMakeSequenceIneffectiveFloatStep(t *testing.T) {
 			got := env.LoadString("progress.lisp", tc.source)
 			require.Equal(t, lisp.LError, got.Type, "%v", got)
 			assert.False(t, lisp.IsInternalPanic(got))
-			assert.Contains(t, got.String(), "step does not advance")
-			assert.NotContains(t, got.String(), "allocation size")
+			assert.Contains(t, diagnosticText(got), "step does not advance")
+			assert.NotContains(t, diagnosticText(got), "allocation size")
 		})
 	}
 	// A real five-element result must still be stopped by the allocation cap.
@@ -86,5 +86,5 @@ func TestMakeSequenceIneffectiveFloatStep(t *testing.T) {
 	got := env.LoadString("progress.lisp", `(make-sequence 0 5)`)
 	require.Equal(t, lisp.LError, got.Type, "%v", got)
 	assert.False(t, lisp.IsInternalPanic(got))
-	assert.Contains(t, got.String(), "allocation size 5 exceeds maximum (4)")
+	assert.Contains(t, diagnosticText(got), "allocation size 5 exceeds maximum (4)")
 }

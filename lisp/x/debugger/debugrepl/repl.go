@@ -183,7 +183,7 @@ func (h *debugHandler) evalInContext(env *lisp.LEnv, expr *lisp.LVal) *lisp.LVal
 	if pausedEnv != nil {
 		env = pausedEnv
 	}
-	return h.engine.EvalInContext(env, expr.String())
+	return h.engine.EvalInContext(env, env.Render(expr))
 }
 
 // handleLine dispatches debug commands. Returns true if the line was consumed.
@@ -414,7 +414,7 @@ func (h *debugHandler) doBacktrace() bool {
 		fmt.Fprintln(h.stderr, "not paused") //nolint:errcheck
 		return true
 	}
-	showBacktrace(h.stderr, env.Runtime.Stack, expr, h.sourceRoot)
+	showBacktrace(h.stderr, env.Runtime.Stack, expr, h.sourceRoot, env)
 	return true
 }
 

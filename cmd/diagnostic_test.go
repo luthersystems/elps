@@ -99,7 +99,7 @@ func TestDiagnosticSymlinkReplacement(t *testing.T) {
 			previous := os.Stderr
 			os.Stderr = stderr
 			t.Cleanup(func() { os.Stderr = previous })
-			renderLispError(env.Runtime, result, file)
+			renderLispErrorContext(t.Context(), env.Runtime, result, file)
 			var output bytes.Buffer
 			_, err = stderr.Seek(0, 0)
 			require.NoError(t, err)

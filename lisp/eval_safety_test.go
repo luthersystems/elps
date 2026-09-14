@@ -38,7 +38,9 @@ func requireLError(t *testing.T, result *LVal) string {
 	if result.Type != LError {
 		t.Fatalf("expected LError, got %v: %v", result.Type, result)
 	}
-	return result.String()
+	// Inspect the condition with a fresh diagnostic budget: the originating
+	// runtime may have a tiny cap or an already-cancelled context.
+	return NewEnv(nil).Render(result)
 }
 
 // --- Eval recover() safety net tests ---

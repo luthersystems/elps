@@ -147,7 +147,7 @@ func TestHandlerDataAllocationLimit(t *testing.T) {
 					if size > limit {
 						assert.Equal(t, "false", env.LoadString("handler-data.lisp", "handled").String())
 						require.Equal(t, lisp.LError, result.Type)
-						assert.Contains(t, result.String(), "allocation size 9 exceeds maximum (8)")
+						assert.Contains(t, diagnosticText(result), "handler data cannot be copied: #<trunca")
 					} else {
 						assert.Equal(t, "true", env.LoadString("handler-data.lisp", "handled").String())
 						require.NoError(t, lisp.GoError(result))
@@ -170,7 +170,7 @@ func TestHandlerDataLimitPrecedesNativeClone(t *testing.T) {
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return env.ErrorCondition("original", data) }))
 	result := env.LoadString("handler-data.lisp", `(handler-bind ((condition list)) (raise-data))`)
 	require.Equal(t, lisp.LError, result.Type)
-	assert.Contains(t, result.String(), "allocation size 9 exceeds maximum (8)")
+	assert.Contains(t, diagnosticText(result), "handler data cannot be copied: #<trunca")
 	assert.Zero(t, calls, "an oversized cell span must be rejected before cloning its children")
 	assert.Nil(t, env.Runtime.CurrentCondition())
 }
@@ -219,7 +219,7 @@ func TestHandlerDataNativeCloneOrderAndFailure(t *testing.T) {
 			result := env.LoadString("handler-data.lisp", `(handler-bind ((condition (lambda (c data) data))) (raise-data))`)
 			if oversized {
 				require.Equal(t, lisp.LError, result.Type)
-				assert.Contains(t, result.String(), "allocation size 9 exceeds maximum (8)")
+				assert.Contains(t, diagnosticText(result), "handler data cannot be copied: #<trunca")
 				assert.Empty(t, order, "the first failing map value must stop later clone hooks")
 			} else {
 				require.NoError(t, lisp.GoError(result))

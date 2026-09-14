@@ -2203,9 +2203,10 @@ containers constructed by builtin operations, not the sum across calls, so a loo
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
 
-### Rendering Depth
+### Rendering Limits
 
-Printing a value with `debug-print`, `format-string`, or Go's `LVal.String`
+Printing a value with `debug-print`, `format-string`, the CLI/REPL, error
+reporting, or Go's `LVal.String`
 renders at most **1024 nested values** along a path. A deeper subtree is
 replaced by `#<depth-limit>`; a scalar at the boundary still renders normally.
 Lists, vectors, sorted-maps, quoted values, error data and tagged values all
@@ -2218,12 +2219,34 @@ The outermost quote prefix does not consume a level.
 (format-string "{}" x) ; 1024 list wrappers around #<depth-limit>
 ```
 
-Cycles use the separate marker `#<cycle>`. A cycle beyond the rendering depth
-limit is omitted with its subtree. These markers are diagnostic output, not
-source that can be read back. The depth limit is always active, including
-when evaluator limits are disabled. `format-string` also checks its output
-against the allocation limit, including the marker and closing delimiters.
-No source form is rejected by this rule; nesting assembled at runtime cannot
+Cycles render as `#<cycle>`-style markers. Cycle detection runs before the
+depth marker is substituted; cycles beyond that boundary can still be omitted
+with the deeper subtree. Shared acyclic graphs (DAGs) render in full, including
+each repeated occurrence, up to the output cap. A total work budget also bounds
+traversal, cycle discovery, and retries, including work that emits no bytes.
+
+All these render paths honour `Runtime.MaxAlloc` (10,485,760 bytes by default)
+and evaluation context cancellation. `debug-print` (including separators and
+its newline) and `format-string` raise an ordinary allocation error when the
+output or work budget is exhausted, or a context cancellation condition when
+cancelled. Error reporting (including condition data in error lines and stack
+traces), top-level printing, and REPL output use `#<truncated>` on exhaustion.
+For caps smaller than that marker, only its fitting prefix is printed. Error
+condition data remains available unchanged to handlers. Go's `LVal.String`
+uses the default cap without an evaluation context; `LEnv.Render` uses the
+environment's cap and context. Errors retain the rendering policy captured
+when they were created.
+
+`to-string` accepts only scalar strings, symbols, bytes, and numbers; it never
+walks a container graph. Existing strings and symbols reuse their storage;
+byte conversions and numeric output are allocation-checked. Both it and
+`format-string` are subject to evaluation cancellation. Host callbacks such as
+a native Go error's `Error` method remain host code and must cooperate with
+cancellation themselves.
+
+The markers are diagnostic output, not source that can be read back. The depth
+and work limits remain active when evaluator limits are disabled. No source
+form is rejected by this rule; sharing and cycles assembled at runtime cannot
 be determined reliably by a static migration diagnostic.
 
 ### Allocation Limits

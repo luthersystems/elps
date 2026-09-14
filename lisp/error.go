@@ -3,9 +3,7 @@
 package lisp
 
 import (
-	"bufio"
-	"bytes"
-	"fmt"
+	"context"
 	"io"
 	"log"
 
@@ -13,8 +11,9 @@ import (
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
-// objects. The condition name is stored in Str, message/data in Cells, and
-// the captured call stack in Native.
+// objects. Rendering honours the originating runtime output limit and context,
+// using #<truncated> on exhaustion. The condition name is stored in Str,
+// message/data in Cells, and the captured call stack in Native.
 type ErrorVal LVal
 
 // nilErrorMessage is the sentinel returned by the rendering chain when a nil
@@ -39,25 +38,25 @@ const corruptedNativeMessage = "<corrupted error: cell native deref panicked>"
 // be invoked from a deferred recover handler where the LVal pointer can be
 // stale or zeroed.
 func (e *ErrorVal) Error() string {
-	var st cycleState
-	s := e.errorString(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
-	}
-	return e.errorString(strictCycleGuard())
+	return e.render(false)
 }
 
-// errorString is Error, continuing a walk already in progress instead of
-// starting a fresh one.  An error's cells are rendered as ordinary values, so
-// an error reachable from a value it itself contains would otherwise reset the
-// bound on every lap and never terminate.  See lisp/cycle.go.
-func (e *ErrorVal) errorString(g cycleGuard) string {
+func (e *ErrorVal) render(message bool) string {
+	return e.renderContext(nil, message)
+}
+
+func (e *ErrorVal) renderContext(ctx context.Context, message bool) string {
 	if e == nil {
-		log.Printf("elps: ErrorVal.Error called on nil receiver; returning sentinel")
+		log.Printf("elps: ErrorVal rendering called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	loc, _ := (*LVal)(e).Source()
-	return fmt.Sprintf("%s: %s", &loc, e.baseMessage(g))
+	limit, ctx := e.renderPolicy(ctx)
+	budget := newRenderBudget(limit, ctx)
+	s, ok := (*LVal)(e).boundedRender(limit, &budget, message)
+	if !ok {
+		return truncatedRender(s, limit)
+	}
+	return s
 }
 
 // Unwrap returns the original Go error carried by this condition, if any.
@@ -76,22 +75,6 @@ func (e *ErrorVal) Unwrap() error {
 // receiver reports no location.
 func (e *ErrorVal) Source() (token.Location, bool) {
 	return (*LVal)(e).Source()
-}
-
-func (e *ErrorVal) baseMessage(g cycleGuard) string {
-	if e == nil {
-		log.Printf("elps: ErrorVal.baseMessage called on nil receiver; returning sentinel")
-		return nilErrorMessage
-	}
-	msg := e.errorMessage(g)
-	if e.Str != "error" {
-		return fmt.Sprintf("%s: %s", e.Str, msg)
-	}
-	fname := e.FunName()
-	if fname == "" {
-		return msg
-	}
-	return fmt.Sprintf("%s: %s", fname, msg)
 }
 
 // Condition returns the error condition name (e.g., "parse-error",
@@ -132,102 +115,65 @@ func (e *ErrorVal) FunName() string {
 // corrupting the error's Cells[0].Native — silently swallowing would hide a
 // real bug.
 func (e *ErrorVal) ErrorMessage() string {
-	var st cycleState
-	s := e.errorMessage(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
-	}
-	return e.errorMessage(strictCycleGuard())
+	return e.render(true)
 }
 
-// errorMessage is ErrorMessage, continuing a walk already in progress.  See
-// errorString.
-func (e *ErrorVal) errorMessage(g cycleGuard) (msg string) {
+// ErrorMessageContext returns the underlying error message bounded by the
+// originating output limit and ctx. A nil context uses the captured context.
+// Cancellation or exhaustion substitutes a fitting #<truncated> marker.
+func (e *ErrorVal) ErrorMessageContext(ctx context.Context) string {
+	return e.renderContext(ctx, true)
+}
+
+func (e *ErrorVal) renderPolicy(ctx context.Context) (int, context.Context) {
+	limit := DefaultMaxAlloc
 	if e == nil {
-		log.Printf("elps: ErrorVal.ErrorMessage called on nil receiver; returning sentinel")
-		return nilErrorMessage
+		return limit, ctx
 	}
-	defer func() {
-		if r := recover(); r != nil {
-			log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", r, corruptedNativeMessage)
-			msg = corruptedNativeMessage
+	if stack := (*LVal)(e).CallStack(); stack != nil {
+		if stack.renderLimit > 0 {
+			limit = stack.renderLimit
 		}
-	}()
-	if len(e.Cells) > 0 && e.Cells[0] != nil {
-		switch v := e.Cells[0].Native.(type) {
-		case error:
-			if v != nil {
-				return v.Error()
-			}
+		if ctx == nil {
+			ctx = stack.renderContext
 		}
 	}
-
-	return errorCellMessage(e.Cells, g)
+	return limit, ctx
 }
 
-// WriteTrace writes the error and a stack trace to w.
-//
-// Defensive: a nil receiver writes the nilErrorMessage sentinel rather than
-// panicking. This keeps callers safe even when fed a corrupted LError pointer.
+// WriteTrace writes the error and stack trace under the captured output limit
+// and context. The entire trace shares one budget, including any Go stack.
+// A nil receiver writes the nilErrorMessage sentinel rather than panicking.
 func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
-	if e == nil {
-		log.Printf("elps: ErrorVal.WriteTrace called on nil receiver; emitting sentinel")
-		bw := bufio.NewWriter(w)
-		n, err := bw.WriteString(nilErrorMessage + "\n")
-		if err != nil {
-			return n, err
-		}
-		return n, bw.Flush()
-	}
-	bw := bufio.NewWriter(w)
-	var n int
-	var err error
-	wrote := func(_n int, _err error) bool {
-		n += _n
-		err = _err
-		return err == nil
-	}
-	if !wrote(bw.WriteString(e.Error())) {
-		return n, err
-	}
-	if !wrote(bw.WriteString("\n")) {
-		return n, err
-	}
-	stack := (*LVal)(e).CallStack()
-	if stack != nil {
-		if !wrote(stack.DebugPrint(bw)) {
-			return n, err
-		}
-		if len(stack.GoStack) > 0 {
-			if !wrote(bw.WriteString("\nGo stack trace (panic origin):\n")) {
-				return n, err
-			}
-			if !wrote(bw.Write(stack.GoStack)) {
-				return n, err
-			}
-		}
-	}
-	return n, bw.Flush()
+	return e.WriteTraceContext(nil, w)
 }
 
-// errorCellMessage renders the cells of an LError as a human-readable
-// message. Nil cells are rendered as "<nil>" rather than dereferenced.
-func errorCellMessage(ecells []*LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	for i, cell := range ecells {
-		if i > 0 {
-			buf.WriteString(" ")
-		}
-		if cell == nil {
-			log.Printf("elps: errorCellMessage skipping nil cell at index %d (LError has malformed Cells slice)", i)
-			buf.WriteString("<nil>")
-			continue
-		}
-		if cell.Type == LString {
-			buf.WriteString(cell.Str)
-		} else {
-			buf.WriteString(cell.str(false, g))
+// WriteTraceContext writes the error, frames, and Go stack under one output
+// budget and ctx. Cancellation or exhaustion emits a fitting #<truncated>
+// marker. A nil context uses the error's captured context.
+func (e *ErrorVal) WriteTraceContext(ctx context.Context, w io.Writer) (int, error) {
+	limit, ctx := e.renderPolicy(ctx)
+	r := valueRenderer{limit: limit, budget: newRenderBudget(limit, ctx)}
+	if e == nil {
+		r.text(nilErrorMessage)
+		r.text("\n")
+		return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
+	} else {
+		s, ok := (*LVal)(e).boundedRender(limit, &r.budget, false)
+		r.text(s)
+		r.full = r.full || !ok
+	}
+	r.text("\n")
+	if stack := (*LVal)(e).CallStack(); stack != nil && !r.full {
+		r.stack(stack)
+		if len(stack.GoStack) > 0 && !r.full {
+			r.text("\nGo stack trace (panic origin):\n")
+			for data := stack.GoStack; len(data) > 0 && !r.full; {
+				n := min(len(data), 4096)
+				r.text(string(data[:n]))
+				data = data[n:]
+			}
 		}
 	}
-	return buf.String()
+	return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
 }

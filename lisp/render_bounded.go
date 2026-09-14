@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strconv"
@@ -16,6 +17,141 @@ import (
 const maxRenderDepth = 1024
 
 const renderDepthMark = "#<depth-limit>"
+const renderTruncatedMark = "#<truncated>"
+
+// renderBudget bounds all attempts, including cycle probes which emit no text.
+// It is shared across retries so neither recovery nor cycle detection resets it.
+type renderBudget struct {
+	stepFn    func() bool
+	ctx       context.Context
+	remaining int
+}
+
+// A fixed minimum permits cycle discovery for small final representations.
+// Above that floor work scales with the byte cap; arithmetic saturates safely.
+func newRenderBudget(limit int, ctx context.Context) renderBudget {
+	return renderBudget{ctx: ctx, remaining: 4 * max(1<<20, min(limit, int(^uint(0)>>1)/4))}
+}
+
+func (b *renderBudget) step() bool {
+	if b.stepFn != nil && !b.stepFn() {
+		return false
+	}
+	if b.remaining <= 0 {
+		return false
+	}
+	b.remaining--
+	return b.ctx == nil || b.ctx.Err() == nil
+}
+
+func truncatedRender(s string, limit int) string {
+	if limit < len(renderTruncatedMark) {
+		return renderTruncatedMark[:max(0, limit)]
+	}
+	return s[:min(len(s), limit-len(renderTruncatedMark))] + renderTruncatedMark
+}
+
+// Render returns diagnostic text bounded by the environment's output limit and
+// active evaluation context. After evaluation, use RenderContext to pass the
+// request context explicitly. On exhaustion it substitutes #<truncated>; use builtins such as
+// format-string when the program must receive an ordinary allocation error.
+func (env *LEnv) Render(v *LVal) string {
+	return env.RenderContext(env.evalCtx, v)
+}
+
+// RenderContext returns diagnostic text bounded by the environment's output
+// limit and ctx, including after EvalContext or LoadStringContext returns.
+// Cancellation or exhaustion substitutes a fitting #<truncated> marker.
+// A nil context disables cancellation checks.
+func (env *LEnv) RenderContext(ctx context.Context, v *LVal) string {
+	s, ok := v.boundedStringContext(env.Runtime.MaxAllocBytes(), ctx)
+	if !ok {
+		return truncatedRender(s, env.Runtime.MaxAllocBytes())
+	}
+	return s
+}
+
+// DiagnosticRenderer shares an output and traversal budget across the values
+// in one response. It is not safe for concurrent use.
+type DiagnosticRenderer struct {
+	budget    renderBudget
+	remaining int
+	done      bool
+}
+
+// NewRenderer creates a response renderer using the runtime's output limit.
+// Pass the request context explicitly when rendering after evaluation returns.
+func (env *LEnv) NewRenderer(ctx context.Context) *DiagnosticRenderer {
+	return env.NewRendererWithLimit(ctx, env.Runtime.MaxAllocBytes())
+}
+
+// NewRendererWithLimit reserves a smaller output budget for a response whose
+// protocol adds framing, escaping or duplicate representations. The supplied
+// limit can only tighten the runtime limit; zero permits no output.
+func (env *LEnv) NewRendererWithLimit(ctx context.Context, limit int) *DiagnosticRenderer {
+	limit = max(0, min(limit, env.Runtime.MaxAllocBytes()))
+	return &DiagnosticRenderer{budget: newRenderBudget(limit, ctx), remaining: limit}
+}
+
+// Exhausted reports whether the response has exhausted its rendering budget.
+func (r *DiagnosticRenderer) Exhausted() bool {
+	return r.done || r.remaining == 0
+}
+
+// Render appends a value's diagnostic representation to the response budget.
+// Exhaustion emits a fitting truncation marker and stops subsequent rendering.
+func (r *DiagnosticRenderer) Render(v *LVal) string {
+	if r.Exhausted() {
+		return ""
+	}
+	if v == nil {
+		return r.Text("<nil>")
+	}
+	s, ok := v.boundedWithBudget(r.remaining, &r.budget)
+	if !ok {
+		s = truncatedRender(s, r.remaining)
+		r.done = true
+	}
+	r.remaining -= len(s)
+	return s
+}
+
+// Text charges already formatted text to the same response budget. Parts are
+// checked before copying, so large names need no unbounded intermediate string.
+func (r *DiagnosticRenderer) Text(parts ...string) string {
+	if r.Exhausted() {
+		return ""
+	}
+	var out strings.Builder
+	for _, part := range parts {
+		if !r.budget.step() || len(part) > r.remaining-out.Len() {
+			r.done = true
+			s := truncatedRender(out.String(), r.remaining)
+			r.remaining -= len(s)
+			return s
+		}
+		out.WriteString(part)
+	}
+	r.remaining -= out.Len()
+	return out.String()
+}
+
+func (v *LVal) boundedStringContext(limit int, ctx context.Context) (string, bool) {
+	budget := newRenderBudget(limit, ctx)
+	return v.boundedWithBudget(limit, &budget)
+}
+
+func (v *LVal) boundedWithBudget(limit int, budget *renderBudget) (string, bool) {
+	if limit < 0 || !budget.step() {
+		return "", false
+	}
+	switch v.Type {
+	case LInt, LFloat, LSymbol, LQSymbol:
+		return v.boundedString(limit)
+	default:
+		return v.boundedRender(limit, budget, false)
+	}
+}
 
 // boundedString renders at most limit bytes of String's representation.
 // A false result means the complete representation does not fit. No partial
@@ -54,9 +190,15 @@ func (v *LVal) boundedString(limit int) (string, bool) {
 }
 
 func (v *LVal) boundedNestedString(limit int) (string, bool) {
+	b := newRenderBudget(limit, nil)
+	return v.boundedRender(limit, &b, false)
+}
+
+func (v *LVal) boundedRender(limit int, budget *renderBudget, message bool) (string, bool) {
 	var st cycleState
-	r := valueRenderer{limit: limit}
+	r := valueRenderer{limit: limit, budget: *budget, message: message}
 	r.root(v, cycleGuard{state: &st})
+	budget.remaining = r.budget.remaining
 	if !r.full && !st.cyclic {
 		return r.out.String(), true
 	}
@@ -66,13 +208,14 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 	// repeated DAG nodes alone must NEVER justify a truncated rendering.
 	// Nor may a long cycle hidden beyond the lazy walk's depth cap: String
 	// uses depth truncation, not strict-cycle rendering, in that case.
-	r = valueRenderer{limit: limit, active: make(map[*LVal]int)}
+	r = valueRenderer{limit: limit, budget: *budget, message: message, active: make(map[*LVal]int)}
 	r.root(v, strictCycleGuard())
-	if r.full {
+	budget.remaining = r.budget.remaining
+	if r.full || budget.remaining <= 0 || (budget.ctx != nil && budget.ctx.Err() != nil) {
 		return "", false
 	}
 	if !st.cyclic && !r.lazyCycle {
-		probe, cyclic := probeRenderCycles(v)
+		probe, cyclic := probeRenderCycles(v, budget, message)
 		if !cyclic {
 			if len(probe.recovered) == 0 {
 				return "", false
@@ -81,13 +224,17 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 			// recovery replaces it with a short sentinel. The probe has
 			// established exactly which messages recover at each depth.
 			// Replay the acyclic rendering with those replacements known.
-			r = valueRenderer{limit: limit, recovered: probe.recovered}
+			r = valueRenderer{limit: limit, budget: *budget, message: message, recovered: probe.recovered}
 			var retry cycleState
 			r.root(v, cycleGuard{state: &retry})
+			budget.remaining = r.budget.remaining
 			if r.full || retry.cyclic {
 				return "", false
 			}
 		}
+	}
+	if budget.remaining <= 0 || (budget.ctx != nil && budget.ctx.Err() != nil) {
+		return "", false
 	}
 	return r.out.String(), true
 }
@@ -97,20 +244,27 @@ func (v *LVal) boundedNestedString(limit int) (string, bool) {
 // rendered graph with a separate vertex for each value and depth: recovery
 // from a malformed error child can expose different edges at different
 // depths. Memoization bounds shared DAG traversal without merging those paths.
-func probeRenderCycles(v *LVal) (*renderCycleProbe, bool) {
+func probeRenderCycles(v *LVal, budget *renderBudget, message bool) (*renderCycleProbe, bool) {
 	p := renderCycleProbe{nodes: make(map[renderProbeNode]*renderProbeVisit)}
-	r := valueRenderer{limit: -1, probe: &p}
+	r := valueRenderer{limit: -1, budget: *budget, message: message, probe: &p}
 	var st cycleState
 	r.root(v, cycleGuard{state: &st})
+	budget.remaining = r.budget.remaining
 
 	lastDepth := make(map[*LVal]int)
 	for node := range p.nodes {
+		if !budget.step() {
+			return &p, false
+		}
 		lastDepth[node.value] = max(lastDepth[node.value], node.depth)
 	}
 	seen := make(map[renderProbeNode]int)
 	var queue []renderProbeNode
 	search := 0
 	for start := range p.nodes {
+		if !budget.step() {
+			return &p, false
+		}
 		// Lazy tracking starts at depth 64. Only a path from a tracked
 		// occurrence to another occurrence of that value proves a cycle.
 		if start.depth < cycleGuardDepth || lastDepth[start.value] <= start.depth {
@@ -121,6 +275,9 @@ func probeRenderCycles(v *LVal) (*renderCycleProbe, bool) {
 		seen[start] = search
 		for head := 0; head < len(queue); head++ {
 			for child := range p.nodes[queue[head]].children {
+				if !budget.step() {
+					return &p, false
+				}
 				if child.value == start.value {
 					return &p, true
 				}
@@ -150,11 +307,9 @@ type renderCycleProbe struct {
 	recovered map[renderProbeNode]bool
 }
 
-// valueRenderer is the shared streaming implementation for nested String
-// values and boundedString. String's top-level scalar fast paths stay in
-// LVal.str; containers no longer assemble a temporary string per child.
-// A negative limit is the ordinary, unlimited String path.
+// valueRenderer streams values under a byte cap and a shared work budget.
 type valueRenderer struct {
+	budget    renderBudget
 	active    map[*LVal]int
 	probe     *renderCycleProbe
 	recovered map[renderProbeNode]bool
@@ -162,9 +317,13 @@ type valueRenderer struct {
 	limit     int
 	full      bool
 	lazyCycle bool
+	message   bool
 }
 
 func (r *valueRenderer) text(s string) {
+	if r.budget.ctx != nil && r.budget.ctx.Err() != nil {
+		r.full = true
+	}
 	if r.full || r.probe != nil {
 		return
 	}
@@ -176,6 +335,10 @@ func (r *valueRenderer) text(s string) {
 }
 
 func (r *valueRenderer) root(v *LVal, g cycleGuard) {
+	if r.message {
+		r.errorMessage((*ErrorVal)(v), g)
+		return
+	}
 	if v.Type == LQuote {
 		r.text("'")
 		r.value(v.Cells[0], true, g)
@@ -185,6 +348,10 @@ func (r *valueRenderer) root(v *LVal, g cycleGuard) {
 }
 
 func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
+	if !r.budget.step() {
+		r.full = true
+		return
+	}
 	if r.full || g.abandoned() {
 		return
 	}
@@ -209,6 +376,10 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		r.text(quote)
 		r.text("#<bytes")
 		for _, b := range v.Bytes() {
+			if !r.budget.step() {
+				r.full = true
+				return
+			}
 			if r.full {
 				return
 			}
@@ -233,8 +404,7 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	default:
 		// The remaining types contain nested values and use the guard below.
 	}
-	if g.depth >= maxRenderDepth {
-		r.text(renderDepthMark)
+	if r.probe != nil && g.depth > maxRenderDepth {
 		return
 	}
 	if p := r.probe; p != nil {
@@ -274,7 +444,7 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 			// cycle again must rediscover a tracked node before the cap
 			// for String to use the same strict rendering as this retry.
 			period := g.depth + 1 - firstDepth
-			if max(firstDepth, cycleGuardDepth)+period <= maxRenderDepth {
+			if max(firstDepth, cycleGuardDepth)+period <= maxRenderDepth+1 {
 				r.lazyCycle = true
 			}
 		}
@@ -299,6 +469,10 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 			}
 		}()
 	}
+	if g.depth >= maxRenderDepth {
+		r.text(renderDepthMark)
+		return
+	}
 	r.nested(v, onTheRecord, next)
 }
 
@@ -312,6 +486,10 @@ func (r *valueRenderer) quotedString(s string) {
 		j := i
 		for j < len(s) && s[j] >= ' ' && s[j] < utf8.RuneSelf && s[j] != '\\' && s[j] != '"' && s[j] != '\x7f' {
 			j++
+			if j%4096 == 0 && !r.budget.step() {
+				r.full = true
+				return
+			}
 			if r.limit >= 0 && j-i > r.limit-r.out.Len() {
 				r.full = true
 				return
@@ -410,6 +588,10 @@ func (r *valueRenderer) nested(v *LVal, onTheRecord bool, g cycleGuard) {
 		// Each entry needs at least its two separating spaces. Check
 		// before Entries allocates storage proportional to the map size.
 		if r.full || (r.limit >= 0 && v.Map().Len() > (r.limit-r.out.Len())/2) {
+			r.full = true
+			return
+		}
+		if r.probe != nil && v.Map().Len() > r.budget.remaining {
 			r.full = true
 			return
 		}

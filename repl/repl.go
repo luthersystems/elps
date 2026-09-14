@@ -5,7 +5,7 @@ package repl
 import (
 	"bufio"
 	"bytes"
-	"encoding/json"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +25,7 @@ import (
 )
 
 type config struct {
+	ctx         context.Context
 	stdin       io.ReadCloser
 	stderr      io.WriteCloser
 	json        bool
@@ -40,7 +41,7 @@ type config struct {
 }
 
 func newConfig(opts ...Option) *config {
-	config := &config{}
+	config := &config{ctx: context.Background()}
 	for _, opt := range opts {
 		opt(config)
 	}
@@ -48,6 +49,16 @@ func newConfig(opts ...Option) *config {
 }
 
 type Option func(*config)
+
+// WithContext sets the context used for evaluation and subsequent result and
+// error rendering. A nil context uses context.Background().
+func WithContext(ctx context.Context) Option {
+	return func(c *config) {
+		if ctx != nil {
+			c.ctx = ctx
+		}
+	}
+}
 
 // WithStdin allows overriding the input to the REPL.
 func WithStdin(stdin io.ReadCloser) Option {
@@ -347,13 +358,13 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		if err != nil {
 			if cfg.json {
-				emitParseError(os.Stdout, err)
+				emitParseErrorContext(cfg.ctx, os.Stdout, err, env)
 			} else {
 				fmt.Fprintln(env.Runtime.Stderr, err) //nolint:errcheck // best-effort error display
 			}
 			continue
 		}
-		evalFn := env.Eval
+		evalFn := func(expr *lisp.LVal) *lisp.LVal { return env.EvalContext(cfg.ctx, expr) }
 		if cfg.evalFn != nil {
 			evalFn = func(expr *lisp.LVal) *lisp.LVal {
 				return cfg.evalFn(env, expr)
@@ -361,11 +372,11 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		val := evalFn(expr)
 		if cfg.json {
-			emitResult(os.Stdout, val)
+			emitResultContext(cfg.ctx, os.Stdout, val, env)
 		} else if val.Type == lisp.LError {
-			renderError(env.Runtime.Stderr, env.Runtime, val)
+			renderErrorContext(cfg.ctx, env.Runtime.Stderr, env.Runtime, val)
 		} else {
-			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
+			fmt.Fprintln(env.Runtime.Stderr, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort REPL output
 		}
 	}
 }
@@ -377,7 +388,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	exprs, err := reader.Read("eval", strings.NewReader(cfg.eval))
 	if err != nil {
 		if cfg.json {
-			emitParseError(stdout, err)
+			emitParseErrorContext(cfg.ctx, stdout, err, env)
 		} else {
 			fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
 		}
@@ -385,7 +396,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	}
 	if len(exprs) == 0 {
 		if cfg.json {
-			emitParseError(stdout, errors.New("no expression"))
+			emitParseErrorContext(cfg.ctx, stdout, errors.New("no expression"), env)
 		} else {
 			fmt.Fprintln(errw, "no expression") //nolint:errcheck // best-effort error display
 		}
@@ -394,21 +405,21 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 
 	var last *lisp.LVal
 	for _, expr := range exprs {
-		last = env.Eval(expr)
+		last = env.EvalContext(cfg.ctx, expr)
 		if last.Type == lisp.LError {
 			if cfg.json {
-				emitResult(stdout, last)
+				emitResultContext(cfg.ctx, stdout, last, env)
 			} else {
-				renderError(errw, env.Runtime, last)
+				renderErrorContext(cfg.ctx, errw, env.Runtime, last)
 			}
 			return 1
 		}
 	}
 
 	if cfg.json {
-		emitResult(stdout, last)
+		emitResultContext(cfg.ctx, stdout, last, env)
 	} else {
-		fmt.Fprintln(stdout, last) //nolint:errcheck // best-effort output
+		fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, last)) //nolint:errcheck // best-effort output
 	}
 	return 0
 }
@@ -464,62 +475,66 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		}
 		if err != nil {
 			if cfg.json {
-				emitParseError(stdout, err)
+				emitParseErrorContext(cfg.ctx, stdout, err, env)
 			} else {
 				fmt.Fprintln(errw, err) //nolint:errcheck // best-effort error display
 			}
 			continue
 		}
-		val := env.Eval(expr)
+		val := env.EvalContext(cfg.ctx, expr)
 		if cfg.json {
-			emitResult(stdout, val)
+			emitResultContext(cfg.ctx, stdout, val, env)
 		} else if val.Type == lisp.LError {
-			renderError(errw, env.Runtime, val)
+			renderErrorContext(cfg.ctx, errw, env.Runtime, val)
 		} else {
-			fmt.Fprintln(stdout, val) //nolint:errcheck // best-effort output
+			fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort output
 		}
 	}
-}
-
-// emitJSONLine marshals obj and writes it to w as a single line.  The jsonResult
-// / jsonError / jsonParseError structs hold only strings, so json.Marshal cannot
-// actually fail here; the error is still handled so a future field that is not
-// encodable degrades to a machine-readable error line instead of an empty one.
-func emitJSONLine(w io.Writer, obj any) {
-	data, err := json.Marshal(obj)
-	if err != nil {
-		fmt.Fprintf(w, "{\"type\":\"error\",\"message\":%q}\n", err.Error()) //nolint:errcheck // best-effort output
-		return
-	}
-	fmt.Fprintln(w, string(data)) //nolint:errcheck // best-effort output
 }
 
 // emitResult writes a JSON object for a result (success or error) to w.
-func emitResult(w io.Writer, val *lisp.LVal) {
-	if val.Type == lisp.LError {
-		obj := jsonError{
-			Type:    "error",
-			Message: (*lisp.ErrorVal)(val).Error(),
-		}
-		if loc, ok := val.Source(); ok && loc.Pos >= 0 {
-			obj.Source = loc.String()
-		}
-		emitJSONLine(w, obj)
-		return
+func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
+	env := lisp.NewEnv(nil)
+	if len(envs) > 0 {
+		env = envs[0]
 	}
-	emitJSONLine(w, jsonResult{
-		Type:      "result",
-		ValueType: val.Type.String(),
-		Value:     val.String(),
-	})
+	emitResultContext(env.Context(), w, val, env)
 }
 
-// emitParseError writes a JSON parse_error object to w.
+func emitResultContext(ctx context.Context, w io.Writer, val *lisp.LVal, env *lisp.LEnv) {
+	s := env.RenderContext(ctx, val)
+	limit := env.Runtime.MaxAllocBytes()
+	if val.Type == lisp.LError {
+		fields := []jsonField{{"type", []string{"error"}}, {"message", []string{s}}}
+		if ctx == nil || ctx.Err() == nil {
+			if loc, ok := val.Source(); ok && loc.Pos >= 0 {
+				// Format the numeric location separately from the unbounded file
+				// name, then escape both under the complete line's budget.
+				file := loc.File
+				loc.File = ""
+				fields = append(fields, jsonField{"source", []string{file, loc.String()}})
+			}
+		}
+		emitJSONLine(ctx, w, limit, fields...)
+		return
+	}
+	emitJSONLine(ctx, w, limit,
+		jsonField{"type", []string{"result"}},
+		jsonField{"value_type", []string{val.Type.String()}},
+		jsonField{"value", []string{s}},
+	)
+}
+
+// emitParseError writes a JSON parse_error object using the default budget.
 func emitParseError(w io.Writer, err error) {
-	emitJSONLine(w, jsonParseError{
-		Type:    "parse_error",
-		Message: err.Error(),
-	})
+	emitParseErrorContext(context.Background(), w, err, lisp.NewEnv(nil))
+}
+
+func emitParseErrorContext(ctx context.Context, w io.Writer, err error, env *lisp.LEnv) {
+	emitJSONLine(ctx, w, env.Runtime.MaxAllocBytes(),
+		jsonField{"type", []string{"parse_error"}},
+		jsonField{"message", []string{err.Error()}},
+	)
 }
 
 func historyPath() string {

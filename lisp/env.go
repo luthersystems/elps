@@ -1070,7 +1070,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
 			// embedder-facing half of that story is #351.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
+			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
 		}
 		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
 			registrationFormals(&formals, mac.Formals()), mac.Eval, builtinDocstring(mac))
@@ -1098,7 +1098,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic(fmt.Sprintf("macro already defined: %v (= %v)", name, exist))
+			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
 		}
 		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
 			registrationFormals(&formals, op.Formals()), op.Eval, builtinDocstring(op))
@@ -1135,6 +1135,44 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			pkg.externals = append(pkg.externals, name)
 		}
 	}
+}
+
+// errorStack snapshots the rendering policy along with the diagnostic frames.
+func (env *LEnv) errorStack() *CallStack {
+	stack := env.Runtime.Stack.Copy()
+	stack.renderLimit = env.Runtime.MaxAllocBytes()
+	stack.renderContext = env.evalCtx
+	return stack
+}
+
+// formatError bounds each Lisp operand before fmt can invoke its String method.
+func (env *LEnv) formatError(format string, args []interface{}) string {
+	remaining := env.Runtime.MaxAllocBytes()
+	copied := false
+	for i, arg := range args {
+		var v *LVal
+		switch arg := arg.(type) {
+		case *LVal:
+			v = arg
+		case *ErrorVal:
+			v = (*LVal)(arg)
+		}
+		if v != nil {
+			if !copied {
+				args = append([]interface{}(nil), args...)
+				copied = true
+			}
+			s, ok := v.boundedStringContext(remaining, env.evalCtx)
+			if !ok {
+				s = truncatedRender(s, remaining)
+			}
+			args[i] = s
+			remaining -= len(s)
+		}
+	}
+	// Keep generated condition data intact; diagnostic rendering applies the
+	// final cap, independently of the operation that raised the condition.
+	return fmt.Sprintf(format, args...)
 }
 
 // Error returns an LError value with an error message given by rendering msg.
@@ -1194,7 +1232,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) (result *LVa
 		// Copy preserves nil, which is the "<native code>" convention.
 		source: env.loc.Copy(),
 		Str:    condition,
-		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
+		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
 		Cells:  cells,
 	}
 	return env.notifyError(lerr)
@@ -1224,8 +1262,8 @@ func (env *LEnv) newErrorConditionf(condition string, format string, v ...interf
 		source: env.loc.Copy(),
 		Type:   LError,
 		Str:    condition,
-		Native: env.Runtime.Stack.Copy(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-		Cells:  []*LVal{String(fmt.Sprintf(format, v...))},
+		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
+		Cells:  []*LVal{String(env.formatError(format, v))},
 	}
 	return lerr
 }
@@ -1249,8 +1287,14 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	if lerr.Type != LError {
 		return env.Errorf("internal error: ErrorAssociate called with non-error: %v", lerr.Type)
 	}
-	if lerr.CallStack() == nil {
-		lerr.SetCallStack(env.Runtime.Stack.Copy())
+	if stack := lerr.CallStack(); stack == nil {
+		lerr.SetCallStack(env.errorStack())
+	} else if stack.renderLimit == 0 {
+		// Preserve a producer's frames while adding the policy at association.
+		stack = stack.Copy()
+		stack.renderLimit = env.Runtime.MaxAllocBytes()
+		stack.renderContext = env.evalCtx
+		lerr.SetCallStack(stack)
 	}
 	// This check smells a little funny.  An object's source may be absent
 	// (nil — the "<native code>" convention) or carry an invalid position
@@ -1368,9 +1412,16 @@ eval:
 	env.loc = v.source
 	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			if d.OnEval(env, v) {
-				d.WaitIfPaused(env, v)
-			}
+			func() {
+				// Protocol renderers inspect Context while this environment is
+				// paused, including outside a builtin's context bridge.
+				previous := env.evalCtx
+				env.evalCtx = ctx
+				defer func() { env.evalCtx = previous }()
+				if d.OnEval(env, v) {
+					d.WaitIfPaused(env, v)
+				}
+			}()
 		}
 	}
 	if v.quoted {
@@ -1900,7 +1951,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		}
 		if v.Type == LMarkTailRec {
 			_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
-			log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", v.Cells)
+			log.Panicf("tail-recursion optimization attempted during argument evaluation: %s", env.Render(SExpr(v.Cells)))
 		}
 
 		newCells = append(newCells, v)

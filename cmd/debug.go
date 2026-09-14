@@ -170,7 +170,7 @@ Examples:
 		// Wait for eval to finish and report any errors.
 		res := <-evalDone
 		if res.Type == lisp.LError {
-			renderLispError(env.Runtime, res, file)
+			renderLispErrorContext(cmd.Context(), env.Runtime, res, file)
 			os.Exit(1)
 		}
 	},

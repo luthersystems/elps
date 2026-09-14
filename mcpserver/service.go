@@ -29,6 +29,7 @@ import (
 	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
+	"github.com/modelcontextprotocol/go-sdk/jsonrpc"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
@@ -1960,103 +1961,147 @@ func (s *service) newTestEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 	return env, noopRelease, nil
 }
 
+// evalOutput shares rendering work and bytes across the entire request, even
+// when batch evaluation creates several runtimes. The 512-byte reserve covers
+// the MCP/JSON-RPC envelopes and metadata. Eighteen wire bytes per rendered byte
+// conservatively cover JSON escapes, the JSON-in-text copy, and structuredContent.
+type evalOutput struct {
+	renderer *lisp.DiagnosticRenderer
+	failures *lisp.DiagnosticRenderer
+	limit    int
+}
+
+func (o *evalOutput) useEnv(ctx context.Context, env *lisp.LEnv) bool {
+	limit := env.Runtime.MaxAllocBytes()
+	if o.renderer == nil {
+		o.limit = limit
+		budget := max(0, (limit-512)/18)
+		// Keep a small part of the same wire budget available for failures
+		// discovered after intermediate values exhaust normal rendering.
+		reserve := min(256, budget/2)
+		o.renderer = env.NewRendererWithLimit(ctx, budget-reserve)
+		o.failures = env.NewRendererWithLimit(ctx, reserve)
+		return true
+	}
+	// A factory may supply stricter limits later in a batch. Discard the earlier
+	// response rather than letting its already rendered fields exceed that cap.
+	if limit < o.limit {
+		o.limit = limit
+		return false
+	}
+	return true
+}
+
+func (o *evalOutput) text(parts ...string) string { return o.renderer.Text(parts...) }
+
+func (o *evalOutput) errorRenderer() *lisp.DiagnosticRenderer {
+	if o.renderer.Exhausted() {
+		return o.failures
+	}
+	return o.renderer
+}
+
 func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
 	start := time.Now()
 	if in.Expression == "" && len(in.Expressions) == 0 {
 		return nil, EvalResponse{}, newToolErr("invalid_input", "expression or expressions is required", "")
 	}
-
-	// Batch mode: each expression gets its own isolated env, released as soon
-	// as that expression is done so peak usage stays at one environment.
-	if len(in.Expressions) > 0 {
-		batch := make([]EvalResult, 0, len(in.Expressions))
-		for _, expr := range in.Expressions {
-			result := s.evalSingle(ctx, expr)
-			batch = append(batch, result)
+	output := &evalOutput{}
+	response := EvalResponse{}
+	expressions := in.Expressions
+	batch := len(expressions) > 0
+	if !batch {
+		expressions = []string{in.Expression}
+	}
+	for _, expression := range expressions {
+		env, release, err := s.newTestEnv(ctx)
+		if err != nil {
+			return nil, EvalResponse{}, err
 		}
-		return nil, EvalResponse{
-			Batch: batch,
-			Meta:  makeMeta("", time.Since(start), 0),
-		}, nil
-	}
-
-	// Single expression mode.
-	env, release, err := s.newTestEnv(ctx)
-	if err != nil {
-		return nil, EvalResponse{}, err
-	}
-	defer release()
-	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lisp.GoError(lerr) != nil {
-		return nil, EvalResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
-	}
-
-	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(in.Expression))
-	if parseErr != nil {
-		return nil, EvalResponse{
-			Error: parseErr.Error(),
-			Meta:  makeMeta("", time.Since(start), 0),
-		}, nil
-	}
-
-	var lastResult *lisp.LVal
-	var results []string
-	for _, expr := range exprs {
-		lastResult = env.Eval(expr)
-		if lastResult == nil || lastResult.Type == lisp.LError {
-			errMsg := "unknown error"
-			if lastResult != nil {
-				errMsg = lvalErrorString(lastResult)
+		if env.Runtime.MaxAllocBytes() < 256 {
+			release()
+			// A typed MCP result contains both text and structuredContent. When
+			// that envelope cannot fit, use a compact JSON-RPC error instead. "~"
+			// is the truncation marker for budgets too small for the full marker.
+			return nil, EvalResponse{}, &jsonrpc.Error{Code: -32603, Message: "~"}
+		}
+		if !output.useEnv(ctx, env) {
+			release()
+			response = EvalResponse{Value: "#<truncated>"}
+			break
+		}
+		collect := !output.renderer.Exhausted()
+		if batch {
+			output.text(strings.Repeat(" ", 32))
+			collect = !output.renderer.Exhausted()
+		}
+		result := s.evalSingle(ctx, env, expression, output, !batch)
+		release()
+		if batch {
+			if collect {
+				response.Batch = append(response.Batch, result.Batch...)
+				if len(result.Batch) == 0 {
+					response.Batch = append(response.Batch, EvalResult{Value: result.Value, Error: result.Error})
+				}
+			} else if response.Error == "" {
+				// Omitted batch items still run. Preserve a later failure in
+				// the envelope without growing an unbounded list of results.
+				response.Error = result.Error
 			}
-			return nil, EvalResponse{
-				Error: errMsg,
-				Meta:  makeMeta("", time.Since(start), 0),
-			}, nil
+		} else {
+			response = result
 		}
-		results = append(results, lastResult.String())
 	}
-
-	value := ""
-	if lastResult != nil {
-		value = lastResult.String()
+	if output.renderer != nil && output.renderer.Exhausted() {
+		// The envelope reserve includes a complete marker even when the last
+		// field used the final byte of the rendering budget.
+		response.Value = "#<truncated>"
 	}
-	return nil, EvalResponse{
-		Value:   value,
-		Results: results,
-		Meta:    makeMeta("", time.Since(start), 0),
-	}, nil
+	response.Meta = makeMeta("", time.Since(start), 0)
+	return nil, response, nil
 }
 
-func (s *service) evalSingle(ctx context.Context, expression string) EvalResult {
-	env, release, err := s.newTestEnv(ctx)
-	if err != nil {
-		return EvalResult{Expression: expression, Error: err.Error()}
-	}
-	defer release()
+func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression string, output *evalOutput, allResults bool) EvalResponse {
+	response := EvalResponse{}
+	fail := func(v *lisp.LVal) { response.Error = output.errorRenderer().Render(v) }
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lisp.GoError(lerr) != nil {
-		return EvalResult{Expression: expression, Error: lisp.GoError(lerr).Error()}
+	if lerr.Type == lisp.LError {
+		fail(lerr)
+		return response
 	}
 	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(expression))
 	if parseErr != nil {
-		return EvalResult{Expression: expression, Error: parseErr.Error()}
-	}
-	var lastResult *lisp.LVal
-	for _, expr := range exprs {
-		lastResult = env.Eval(expr)
-		if lastResult == nil || lastResult.Type == lisp.LError {
-			errMsg := "unknown error"
-			if lastResult != nil {
-				errMsg = lvalErrorString(lastResult)
+		response.Error = output.errorRenderer().Text(parseErr.Error())
+	} else {
+		var last *lisp.LVal
+		for _, expr := range exprs {
+			last = env.EvalContext(ctx, expr)
+			if last == nil || last.Type == lisp.LError {
+				fail(last)
+				break
 			}
-			return EvalResult{Expression: expression, Error: errMsg}
+			if allResults && !output.renderer.Exhausted() {
+				punctuation := output.text("    ")
+				if output.renderer.Exhausted() {
+					response.Results = append(response.Results, punctuation)
+					continue
+				}
+				response.Results = append(response.Results, output.renderer.Render(last))
+			}
+		}
+		if response.Error == "" && last != nil {
+			if allResults && len(response.Results) > 0 {
+				// Reuse the representation, but charge the second field as well.
+				response.Value = output.text(response.Results[len(response.Results)-1])
+			} else {
+				response.Value = output.renderer.Render(last)
+			}
 		}
 	}
-	value := ""
-	if lastResult != nil {
-		value = lastResult.String()
+	if !allResults {
+		response.Batch = []EvalResult{{Expression: output.text(expression), Value: response.Value, Error: response.Error}}
 	}
-	return EvalResult{Expression: expression, Value: value}
+	return response
 }
 
 func (s *service) helpTool(_ context.Context, _ *mcp.CallToolRequest, _ HelpInput) (*mcp.CallToolResult, HelpResponse, error) {

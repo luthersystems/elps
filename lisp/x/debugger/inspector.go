@@ -5,7 +5,6 @@ package debugger
 import (
 	"fmt"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -146,23 +145,70 @@ func InspectMacroExpansion(expr *lisp.LVal) []ScopeBinding {
 // FormatValue returns a human-readable string representation of an LVal,
 // suitable for display in a debugger variables view.
 func FormatValue(v *lisp.LVal) string {
+	return NewValueFormatter(nil, nil).Format(v)
+}
+
+// ValueFormatter formats all bindings in one debugger response with a shared
+// runtime rendering budget. Create a new formatter for each response.
+type ValueFormatter struct {
+	renderer *lisp.DiagnosticRenderer
+	engine   *Engine
+}
+
+// NewValueFormatter uses env's limits and context, or the engine's paused
+// environment when env is nil. Without either it uses the runtime defaults.
+func NewValueFormatter(env *lisp.LEnv, eng *Engine) *ValueFormatter {
+	if env == nil && eng != nil {
+		env, _ = eng.PausedState()
+	}
+	if env == nil {
+		env = lisp.NewEnv(nil)
+	}
+	return &ValueFormatter{renderer: env.NewRenderer(env.Context()), engine: eng}
+}
+
+// NewProtocolValueFormatter reserves framing and worst-case JSON escaping for
+// one DAP response. Six encoded bytes suffice for every input byte, including
+// invalid UTF-8. Each translated item must also charge its fixed JSON fields.
+func NewProtocolValueFormatter(env *lisp.LEnv, eng *Engine) *ValueFormatter {
+	if env == nil && eng != nil {
+		env, _ = eng.PausedState()
+	}
+	if env == nil {
+		env = lisp.NewEnv(nil)
+	}
+	return &ValueFormatter{renderer: env.NewRendererWithLimit(env.Context(), (env.Runtime.MaxAllocBytes()-512)/6), engine: eng}
+}
+
+// Text charges names, source fields and display punctuation to the same budget
+// as values, without first concatenating program-controlled strings.
+func (f *ValueFormatter) Text(parts ...string) string { return f.renderer.Text(parts...) }
+
+// Exhausted reports whether this response has exhausted its rendering budget.
+func (f *ValueFormatter) Exhausted() bool { return f.renderer.Exhausted() }
+
+// Format renders a value through the runtime's bounded, context-aware renderer.
+// Root summaries preserve the debugger's compact display for expandable values.
+func (f *ValueFormatter) Format(v *lisp.LVal) string {
+	if f.Exhausted() {
+		return ""
+	}
+	if s := f.renderer.Text(""); s != "" || f.Exhausted() {
+		return s
+	}
 	if v == nil {
-		return "<nil>"
+		return f.renderer.Text("<nil>")
 	}
 	switch v.Type {
-	case lisp.LInt:
-		return strconv.Itoa(v.Int)
-	case lisp.LFloat:
-		return fmt.Sprintf("%g", v.Float)
-	case lisp.LString:
-		return fmt.Sprintf("%q", v.Str)
-	case lisp.LSymbol:
-		return v.Str
 	case lisp.LSExpr:
-		if v.IsNil() {
-			return "()"
+		if v.Len() > 10 {
+			return f.renderer.Text(fmt.Sprintf("(%d elements)", v.Len()))
 		}
-		return formatList(v)
+		s := f.renderer.Render(v)
+		if v.IsQuoted() && strings.HasPrefix(s, "'(") && strings.HasSuffix(s, ")") {
+			return "[" + s[2:len(s)-1] + "]"
+		}
+		return s
 	case lisp.LFun:
 		name := v.Str
 		if name == "" {
@@ -170,59 +216,41 @@ func FormatValue(v *lisp.LVal) string {
 		}
 		switch {
 		case v.IsMacro():
-			return fmt.Sprintf("<macro %s>", name)
+			return f.renderer.Text("<macro ", name, ">")
 		case v.IsSpecialOp():
-			return fmt.Sprintf("<special-op %s>", name)
+			return f.renderer.Text("<special-op ", name, ">")
 		default:
-			return fmt.Sprintf("<function %s>", name)
+			return f.renderer.Text("<function ", name, ">")
 		}
 	case lisp.LError:
-		return fmt.Sprintf("<error: %s>", v.Str)
+		return f.renderer.Text("<error: ", v.Str, ">")
 	case lisp.LNative:
+		if f.engine != nil {
+			if s := f.engine.FormatNative(v.Native); s != "" {
+				return f.renderer.Text(s)
+			}
+		}
 		if v.Native == nil {
-			return "<native nil>"
+			return f.renderer.Text("<native nil>")
 		}
-		return fmt.Sprintf("<native %T>", v.Native)
+		return f.renderer.Text(fmt.Sprintf("<native %T>", v.Native))
 	case lisp.LTaggedVal:
-		return fmt.Sprintf("<tagged %s>", v.Str)
+		return f.renderer.Text("<tagged ", v.Str, ">")
 	case lisp.LArray:
-		return fmt.Sprintf("<array len=%d>", v.Len())
+		return f.renderer.Text(fmt.Sprintf("<array len=%d>", v.Len()))
 	case lisp.LSortMap:
-		return fmt.Sprintf("<sorted-map len=%d>", v.Len())
-	case lisp.LQSymbol:
-		return "'" + v.Str
+		return f.renderer.Text(fmt.Sprintf("<sorted-map len=%d>", v.Len()))
 	case lisp.LBytes:
-		return fmt.Sprintf("<bytes len=%d>", len(v.Bytes()))
+		return f.renderer.Text(fmt.Sprintf("<bytes len=%d>", len(v.Bytes())))
 	default:
-		return fmt.Sprintf("<%s>", v.Type)
+		return f.renderer.Render(v)
 	}
 }
 
-func formatList(v *lisp.LVal) string {
-	if v.Len() > 10 {
-		return fmt.Sprintf("(%d elements)", v.Len())
-	}
-	var parts []string
-	for _, cell := range v.Cells {
-		parts = append(parts, FormatValue(cell))
-	}
-	openTok, closeTok := "(", ")"
-	if v.IsQuoted() {
-		openTok, closeTok = "[", "]"
-	}
-	return openTok + strings.Join(parts, " ") + closeTok
-}
-
-// FormatValueWith returns a human-readable string representation of an LVal,
-// using the engine's registered formatters for LNative values. For all other
-// types it delegates to FormatValue. If eng is nil, falls back to FormatValue.
+// FormatValueWith formats one value using the engine's paused environment and
+// registered native formatters. Use NewValueFormatter for multiple bindings.
 func FormatValueWith(v *lisp.LVal, eng *Engine) string {
-	if eng != nil && v != nil && v.Type == lisp.LNative {
-		if s := eng.FormatNative(v.Native); s != "" {
-			return s
-		}
-	}
-	return FormatValue(v)
+	return NewValueFormatter(nil, eng).Format(v)
 }
 
 // EvalInContext parses and evaluates all expressions in the paused
