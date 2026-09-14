@@ -194,10 +194,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 		return val
 	}
 	env.loc = key.source
-	if err := env.checkLispPackageBinding(key.Str); err != nil {
-		return err
-	}
-	return env.Update(key, val)
+	return env.UpdateFromLisp(key, val)
 }
 
 func opAssert(env *LEnv, args *LVal) *LVal {

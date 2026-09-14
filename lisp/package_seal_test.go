@@ -4,11 +4,29 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+func TestLispPackageSealTrustedRegistration(t *testing.T) {
+	env := templateTestEnv(t)
+	require.NoError(t, lisp.GoError(env.InPackage(lisp.Symbol("lisp"))))
+	env.AddBuiltins(true, elpsutil.Function("host-function", lisp.Formals(),
+		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Int(42) }))
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("host-value"), lisp.Int(1))))
+	require.NoError(t, lisp.GoError(env.Update(lisp.Symbol("host-value"), lisp.Int(2))))
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("lisp:host-value"), lisp.Int(3))))
+	require.NoError(t, lisp.GoError(lisplib.LoadLibrary(env)))
+	assert.Equal(t, "3", env.GetGlobal(lisp.Symbol("lisp:host-value")).String())
+	assert.Equal(t, "42", env.LoadString("host.lisp", `(in-package 'host-client) (host-function)`).String())
+	got := env.LoadString("seal.lisp", `(set 'lisp:host-value 4)`)
+	assert.Equal(t, lisp.LError, got.Type)
+	assert.Contains(t, got.String(), "cannot rebind lisp package binding: host-value")
+	assert.Equal(t, "3", env.GetGlobal(lisp.Symbol("lisp:host-value")).String())
+}
 
 func TestLispPackageSeal(t *testing.T) {
 	for _, library := range []bool{false, true} {

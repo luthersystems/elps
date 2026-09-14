@@ -1348,7 +1348,7 @@ function, which changes the environment's working package.  Symbols bound using
 The core `lisp` package is sealed against binding changes from Lisp code once
 `InitializeUserEnv` finishes registering the language, before application
 configuration runs. The seal remains in effect after `LoadLibrary` and in
-VMs instantiated from a template. `set`, `set!`, `defun`, and `defmacro`
+VMs instantiated from a template. `set`, `set!`, `defun`, `defmacro`, and `s:deftype`
 cannot write a `lisp:`-qualified name, or an unqualified name while the current
 package is `lisp`. For example, `(set 'lisp:if 1)` raises the ordinary error
 `cannot rebind lisp package binding: if` at the assignment, leaving later
@@ -1357,6 +1357,9 @@ first does not bypass the seal. Lisp code cannot add new exports or import
 replacement bindings into `lisp`. Re-exporting an existing export is a no-op.
 Go registration APIs remain available to the host, and packages registered
 by embedders through `elpsutil` remain mutable.
+Go builtins that accept binding names from Lisp must use
+`LEnv.PutGlobalFromLisp` or `LEnv.UpdateFromLisp`; `PutGlobal` and `Update`
+are trusted host APIs. `LEnv.Put` only writes lexical bindings.
 
 ELPS is a Lisp-1: builtin and special-operator names are ordinary symbols in
 the same namespace as variables. Unqualified shadowing in your own package
