@@ -154,9 +154,9 @@ type copier struct {
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
 	failed    *LVal
-	depth     int
 	jobs      []copyJob
 	smallJobs [16]copyJob
+	depth     int
 	njobs     int
 	n         int
 }
@@ -277,9 +277,9 @@ type copyJob struct {
 	src     *LVal
 	dst     **LVal
 	mapping map[string]*LVal
-	key     string
 	md      *MapData
 	mapKey  *LVal
+	key     string
 	depth   int
 }
 

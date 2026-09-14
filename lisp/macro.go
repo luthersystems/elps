@@ -722,20 +722,22 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	type frame struct {
-		v                       *LVal
-		cells                   []*LVal
-		depth, quotes, i, total int
-		splices                 bool
+		v                                   *LVal
+		cells                               []*LVal
+		depth, valueDepth, quotes, i, total int
+		splices                             bool
 	}
 	var stack []frame
+	valueDepth := depth
 	for {
-		result, list, quotes := prepareUnquote(env, v, depth)
+		result, list, quotes, quoteEdges := prepareUnquote(env, v, depth, valueDepth)
 		if list != nil {
-			f := frame{v: list, cells: make([]*LVal, len(list.Cells)), depth: depth, quotes: quotes}
+			f := frame{v: list, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes}
 			if len(list.Cells) > 0 {
 				stack = append(stack, f)
 				v = list.Cells[0]
 				depth++
+				valueDepth = f.valueDepth + 1
 				continue
 			}
 			result = finishUnquote(list, f.cells, quotes, false, 0)
@@ -769,6 +771,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 			if f.i < len(f.cells) {
 				v = f.v.Cells[f.i]
 				depth = f.depth + 1
+				valueDepth = f.valueDepth + 1
 				break
 			}
 			result = finishUnquote(f.v, f.cells, f.quotes, f.splices, f.total)
@@ -777,21 +780,23 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	}
 }
 
-func prepareUnquote(env *LEnv, v *LVal, depth int) (result *LVal, list *LVal, quotes int) {
-	if depth >= env.Runtime.ValueDepthLimit() {
-		return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0
+func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int) {
+	if valueDepth >= env.Runtime.ValueDepthLimit() {
+		return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
 	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
-	// list-element position for splicing, not quasiquote nesting.
+	// list-element position for splicing. valueDepth counts every value edge,
+	// including ancestor quote wrappers; the quoted flag itself is not an edge.
 	inner := v
 	quoteLevel := 0
 	if inner.quoted {
 		quoteLevel += 1
 	}
 	for inner.Type == LQuote {
-		if depth+quoteLevel >= env.Runtime.ValueDepthLimit() {
-			return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0
+		quoteEdges++
+		if valueDepth+quoteEdges >= env.Runtime.ValueDepthLimit() {
+			return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
 		}
 		quoteLevel += 1
 		inner = inner.Cells[0]
@@ -799,29 +804,29 @@ func prepareUnquote(env *LEnv, v *LVal, depth int) (result *LVal, list *LVal, qu
 	if inner.Type != LSExpr {
 		// back out of the entire quote chain and return v to leave the value
 		// unchanged in the quasiquote.
-		return v, nil, 0
+		return v, nil, 0, 0
 	}
 	v = inner
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
 		env.loc = v.source
-		return env.Error(err), nil, 0
+		return env.Error(err), nil, 0, 0
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
 			env.loc = v.source
-			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0
+			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0
 		}
-		return doUnquoteSpliced(env, expr), nil, 0
+		return doUnquoteSpliced(env, expr), nil, 0, 0
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0
+		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, 0
 	}
-	return nil, v, quoteLevel
+	return nil, v, quoteLevel, quoteEdges
 }
 
 func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {

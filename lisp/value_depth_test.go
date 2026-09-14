@@ -154,13 +154,13 @@ func TestValueWalkDepth(t *testing.T) {
 		return
 	}
 	for _, depth := range []int{100_000, 3_000_000} {
-		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+		t.Run(strconv.Itoa(depth), func(t *testing.T) {
 			for _, mode := range []string{"copy", "Copy", "detach", "template", "template-sealed", "GoValue", "format-string", "equal", "quasiquote", "stamp", "classify", "seal", "locate"} {
 				t.Run(mode, func(t *testing.T) {
 					ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 					defer cancel()
 					cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestValueWalkDepth$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed test selector
-					cmd.Env = append(os.Environ(), "ELPS_DEPTH_WALK="+mode, "ELPS_DEPTH_SIZE="+fmt.Sprint(depth))
+					cmd.Env = append(os.Environ(), "ELPS_DEPTH_WALK="+mode, "ELPS_DEPTH_SIZE="+strconv.Itoa(depth))
 					start := time.Now()
 					out, err := cmd.CombinedOutput()
 					t.Logf("process_wall=%s %s", time.Since(start), out)

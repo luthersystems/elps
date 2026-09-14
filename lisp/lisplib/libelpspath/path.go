@@ -72,9 +72,9 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	type frame struct {
 		v      *lisp.LVal
 		dst    **lisp.LVal
+		finish func() error
 		g      cycleGuard
 		leave  bool
-		finish func() error
 	}
 	var out *lisp.LVal
 	pending := []frame{{v: v, dst: &out, g: g}}
@@ -141,6 +141,8 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 			cells = []*lisp.LVal{child}
 		case lisp.LSExpr:
 			cells = v.Cells
+		default:
+			return nil, fmt.Errorf("invalid container type: %v", v.Type)
 		}
 		copied := make([]*lisp.LVal, len(cells))
 		var cp *lisp.LVal
@@ -161,67 +163,6 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 		}
 	}
 	return out, nil
-}
-
-// copyContainer copies the container types. It is only ever called through
-// copyGuarded, which has already established that v is one and put it on g's
-// path.
-func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	switch v.Type {
-	case lisp.LTaggedVal, lisp.LQuote:
-		wrapped, err := wrapperValue(v)
-		if err != nil {
-			return nil, err
-		}
-		child, err := copyGuarded(wrapped, g)
-		if err != nil {
-			return nil, err
-		}
-		// Build a fresh wrapper and cell slice; its original may be sealed or
-		// shared. Preserve the tag and quoting without retaining source storage.
-		cp := &lisp.LVal{Type: v.Type, Str: v.Str, Cells: []*lisp.LVal{child}}
-		if loc, ok := v.Source(); ok {
-			cp.SetSource(&loc)
-		}
-		return sameQuoting(v, cp), nil
-	case lisp.LSortMap:
-		return copyMapGuarded(v, g)
-	case lisp.LArray:
-		// Exactly one dimension, the same rule toCells and
-		// okSimpleContainerContents enforce. The three sites spelling it
-		// differently is what produced the zero-dimensional array crash:
-		// each asked only about MORE than one dimension, so the shape with
-		// FEWER slipped past all of them.
-		if n := v.Cells[0].Len(); n != 1 {
-			if n > 1 {
-				// IMPORTANT: we cannnot recover from this!
-				//
-				// Unreachable through the builtins, and deliberately still
-				// so: okSimpleContainerType refuses a multi-dimensional
-				// array before any builtin reaches a copy. The cycle guard
-				// above adds a rejection to that gate, it does not remove
-				// this one. Left returning nil rather than an error because
-				// that was a deliberate choice on an unreachable path, and
-				// changing it is not what the zero case needs.
-				return lisp.Nil(), nil
-			}
-			// ZERO dimensions is a different failure and gets a different
-			// answer. copyVectorGuarded below rebuilds an array through
-			// lisp.Array(nil, cells), which DERIVES dims as [len], so a
-			// zero-dimensional array came back as a one-dimensional vector:
-			// `#<array dims='()>` copied to `(vector ())`. Silent, and a
-			// shape change rather than a lost value, so nothing downstream
-			// could notice. Measured through Index(0).Set on a vector
-			// holding one -- the builtins refuse it at okSimpleType, so
-			// only the Go API reached this.
-			return nil, errors.New("cannot index zero-dimensional array")
-		}
-		return copyVectorGuarded(v, g)
-	case lisp.LSExpr:
-		return copyListGuarded(v, g)
-	default:
-		return nil, fmt.Errorf("invalid container type: %v", v.Type)
-	}
 }
 
 // wrapperValue validates the payload before either recursive walker reads it.

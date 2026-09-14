@@ -103,6 +103,9 @@ type detacher struct {
 	// runtime is supplied only by Lisp copy. It limits each data backing
 	// allocation, not total graph size or the walker's bookkeeping.
 	runtime *Runtime
+	path    *detachPath
+	jobs    []detachJob
+	depth   int
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
@@ -113,9 +116,6 @@ type detacher struct {
 	// settles it before this flag is consulted.  Every data container is
 	// still rebuilt with fresh backing either way; this flag only decides
 	// what happens at a leaf the kernel cannot clone.
-	depth       int
-	jobs        []detachJob
-	path        *detachPath
 	shareOpaque bool
 }
 
@@ -130,17 +130,17 @@ func (d *detacher) checkAlloc(n int) error {
 
 type detachPath struct {
 	parent *detachPath
-	cell   int
 	label  string
+	cell   int
 }
 type detachJob struct {
 	run   func() error
-	depth int
 	path  *detachPath
+	depth int
 }
 
 func (d *detacher) schedule(path *detachPath, run func() error) {
-	d.jobs = append(d.jobs, detachJob{run, d.depth + 1, path})
+	d.jobs = append(d.jobs, detachJob{run: run, path: path, depth: d.depth + 1})
 }
 
 func (d *detacher) detach(v *LVal) (*LVal, error) {

@@ -1454,19 +1454,6 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
-// mayNest reports whether a walk over v can reach another value through it.
-//
-// Cells is where every nested value lives except a sorted-map's, which lives
-// in a MapData behind Native.  Anything else -- an int, a string, a symbol, a
-// byte slice, a native Go value, the empty list -- is a leaf: a walk that
-// reaches it stops there, so it never needs a place on a cycle guard's path.
-//
-// This is what keeps the guard off the common path.  Rendering and comparing
-// leaves is most of what those walks do, and this check is a length test.
-func (v *LVal) mayNest() bool {
-	return len(v.Cells) > 0 || v.Type == LSortMap
-}
-
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.

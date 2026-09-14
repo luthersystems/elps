@@ -51,9 +51,9 @@ func convertValue(root *LVal) (interface{}, bool) {
 	type frame struct {
 		v      *LVal
 		dst    *interface{}
+		finish func()
 		depth  int
 		leave  bool
-		finish func()
 	}
 	var out interface{}
 	pending := []frame{{v: root, dst: &out}}
@@ -249,5 +249,3 @@ func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
 	values, ok := out.(map[interface{}]interface{})
 	return values, ok
 }
-
-type gomap = map[interface{}]interface{}

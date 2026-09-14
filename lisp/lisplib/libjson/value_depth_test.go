@@ -78,7 +78,7 @@ func TestJSONValueDepth(t *testing.T) {
 				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 				defer cancel()
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestJSONValueDepth$", "-test.count=1") //nolint:gosec // executes this test binary, not a command supplied by the program under test
-				cmd.Env = append(os.Environ(), "ELPS_JSON_DEPTH="+mode, "ELPS_JSON_SIZE="+fmt.Sprint(depth))
+				cmd.Env = append(os.Environ(), "ELPS_JSON_DEPTH="+mode, "ELPS_JSON_SIZE="+strconv.Itoa(depth))
 				start := time.Now()
 				out, err := cmd.CombinedOutput()
 				t.Logf("process_wall=%s %s", time.Since(start), out)

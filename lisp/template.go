@@ -171,8 +171,8 @@ type templateInventory struct {
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
 	sharedCells []templateCellSpan
-	depth       int
 	jobs        []templateJob
+	depth       int
 	walking     bool
 }
 

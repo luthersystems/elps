@@ -2,7 +2,6 @@ package libelpspath
 
 import (
 	"context"
-	"fmt"
 	"github.com/luthersystems/elps/lisp"
 	"os"
 	"os/exec"
@@ -48,11 +47,11 @@ func TestPathValueDepth(t *testing.T) {
 		return
 	}
 	for _, depth := range []int{100_000, 3_000_000} {
-		t.Run(fmt.Sprint(depth), func(t *testing.T) {
+		t.Run(strconv.Itoa(depth), func(t *testing.T) {
 			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestPathValueDepth$", "-test.count=1") //nolint:gosec // this test binary with a fixed selector
-			cmd.Env = append(os.Environ(), "ELPS_PATH_DEPTH="+fmt.Sprint(depth))
+			cmd.Env = append(os.Environ(), "ELPS_PATH_DEPTH="+strconv.Itoa(depth))
 			if out, err := cmd.CombinedOutput(); err != nil {
 				t.Fatalf("depth child: %v\n%s", err, out)
 			}

@@ -708,7 +708,9 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // ordinary *lisp.ErrorVal implementing error, using lisp.MaxValueDepth.
 func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 	out, ok := s.convertValue(v, stringNums)
-	if !ok {
+	// Invalid maps retain GoValue's historical typed nil result. Only a
+	// failed walk with no conversion result becomes a depth error here.
+	if !ok && out == nil {
 		return (*lisp.ErrorVal)(lisp.Error(lisp.ValueDepthError(lisp.MaxValueDepth)))
 	}
 	return out
@@ -718,11 +720,12 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 	type frame struct {
 		v      *lisp.LVal
 		dst    *interface{}
+		finish func()
 		depth  int
 		leave  bool
-		finish func()
 	}
 	var out interface{}
+	valid := true
 	pending := []frame{{v: root, dst: &out}}
 	var path map[*lisp.LVal]bool
 	for len(pending) > 0 {
@@ -789,6 +792,11 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 						m[k] = kv[1]
 					} else {
 						*f.dst = map[string]any(nil)
+						// Nested maps are converted through GoValue semantics,
+						// which historically discard their validity flag.
+						if f.dst == &out {
+							valid = false
+						}
 					}
 				}}, frame{v: pair.Cells[1], dst: &kv[1], depth: f.depth + 1}, frame{v: pair.Cells[0], dst: &kv[0], depth: f.depth + 1})
 			}
@@ -804,7 +812,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 			pending = append(pending, frame{v: children[i], dst: &values[i], depth: f.depth + 1})
 		}
 	}
-	return out, true
+	return out, valid
 }
 
 func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) interface{} {
