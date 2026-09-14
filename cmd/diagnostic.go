@@ -6,6 +6,7 @@ import (
 	"os"
 
 	"github.com/luthersystems/elps/diagnostic"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	lintpkg "github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
 )
@@ -105,12 +106,13 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 
 // renderLispError renders a lisp error with diagnostic formatting to stderr.
 // If sourceFile is non-empty, a hint to run elps lint is appended.
-func renderLispError(lerr *lisp.LVal, sourceFiles ...string) {
+func renderLispError(runtime *lisp.Runtime, lerr *lisp.LVal, sourceFiles ...string) {
 	d := lispErrorToDiagnostic(lerr)
 	if len(sourceFiles) > 0 && sourceFiles[0] != "" {
 		d.Notes = append(d.Notes, "try: elps lint "+sourceFiles[0])
 	}
 	r := newRenderer()
+	r.SourceReader = diagnosticsource.SourceReader(runtime, lerr)
 	_ = r.Render(os.Stderr, d)
 }
 

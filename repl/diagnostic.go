@@ -6,6 +6,7 @@ import (
 	"io"
 
 	"github.com/luthersystems/elps/diagnostic"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -13,10 +14,11 @@ import (
 // Rust-style annotated output. For REPL errors, source snippets may not
 // be available (input comes from stdin, not files), but the renderer
 // degrades gracefully to show just the location and error message.
-func renderError(w io.Writer, lerr *lisp.LVal) {
+func renderError(w io.Writer, runtime *lisp.Runtime, lerr *lisp.LVal) {
 	d := lispErrorToDiag(lerr)
 	d.Notes = append(d.Notes, "use (help 'symbol) to browse available symbols")
 	r := &diagnostic.Renderer{Color: diagnostic.ColorAuto}
+	r.SourceReader = diagnosticsource.SourceReader(runtime, lerr)
 	_ = r.Render(w, d)
 }
 

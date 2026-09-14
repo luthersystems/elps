@@ -9,6 +9,8 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/luthersystems/elps/internal/diagnosticsource"
+	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -42,6 +44,10 @@ Transport modes (DAP):
 
 The --stop-on-entry flag pauses execution before the first expression,
 giving the editor time to set breakpoints.
+
+Source loads are confined to --root-dir (default: working directory) at open
+time. Relative symlinks within the root are allowed; escaping paths and
+absolute symlinks produce ordinary errors.
 
 Examples:
   elps debug myfile.lisp                     Debug with TCP on port 4711
@@ -81,9 +87,15 @@ Examples:
 		dbg.Enable()
 
 		// Set up the ELPS environment.
+		lib, err := rootlibrary.Open(rootDir)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 		env := lisp.NewEnv(nil)
-		env.Runtime.Reader = parser.NewReader()
-		env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS(rootDir)}
+		env.Runtime.Reader = diagnosticsource.NewReader(parser.NewReader())
+		env.Runtime.Library = lib
 		env.Runtime.Debugger = dbg
 
 		rc := lisp.InitializeUserEnv(env)
@@ -104,11 +116,7 @@ Examples:
 
 		// Interactive CLI debug REPL mode.
 		if debugREPL {
-			absFile, ferr := filepath.Abs(file)
-			if ferr != nil {
-				absFile = file
-			}
-			if err := debugrepl.Run(dbg, env, absFile); err != nil {
+			if err := debugrepl.Run(dbg, env, relFile); err != nil {
 				fmt.Fprintf(os.Stderr, "debug repl error: %v\n", err)
 				os.Exit(1)
 			}
@@ -162,7 +170,7 @@ Examples:
 		// Wait for eval to finish and report any errors.
 		res := <-evalDone
 		if res.Type == lisp.LError {
-			renderLispError(res, file)
+			renderLispError(env.Runtime, res, file)
 			os.Exit(1)
 		}
 	},
@@ -178,7 +186,7 @@ func init() {
 	debugCmd.Flags().BoolVar(&debugStopOnEntry, "stop-on-entry", false,
 		"Pause execution before the first expression")
 	debugCmd.Flags().StringVar(&debugRootDir, "root-dir", "",
-		"Root directory for file access confinement (default: working directory)")
+		"Root directory for source load confinement (default: working directory)")
 	debugCmd.Flags().BoolVar(&debugREPL, "repl", false,
 		"Start an interactive CLI debug REPL instead of a DAP server")
 }

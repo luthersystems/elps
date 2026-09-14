@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"github.com/ergochat/readline"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
+	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -86,7 +88,7 @@ func WithEval(expr string) Option {
 	}
 }
 
-// WithRootDir confines file access to the given directory tree.
+// WithRootDir confines source loads to the given directory tree at open time.
 // When empty, the working directory is used as the root.
 func WithRootDir(dir string) Option {
 	return func(c *config) {
@@ -183,9 +185,15 @@ func RunRepl(prompt string, opts ...Option) {
 		rootDir = wd
 	}
 
+	lib, err := rootlibrary.Open(rootDir)
+	if err != nil {
+		errlnf("Cannot open source library: %v", err)
+		os.Exit(1)
+	}
+	defer lib.Close() //nolint:errcheck // release the root handle after evaluation
 	envOpts := []lisp.Config{
-		lisp.WithReader(parser.NewReader()),
-		lisp.WithLibrary(&lisp.FSLibrary{FS: os.DirFS(rootDir)}),
+		lisp.WithReader(diagnosticsource.NewReader(parser.NewReader())),
+		lisp.WithLibrary(lib),
 	}
 
 	if cfg.stderr != nil {
@@ -355,7 +363,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		if cfg.json {
 			emitResult(os.Stdout, val)
 		} else if val.Type == lisp.LError {
-			renderError(env.Runtime.Stderr, val)
+			renderError(env.Runtime.Stderr, env.Runtime, val)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, val) //nolint:errcheck // best-effort REPL output
 		}
@@ -391,7 +399,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 			if cfg.json {
 				emitResult(stdout, last)
 			} else {
-				renderError(errw, last)
+				renderError(errw, env.Runtime, last)
 			}
 			return 1
 		}
@@ -466,7 +474,7 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		if cfg.json {
 			emitResult(stdout, val)
 		} else if val.Type == lisp.LError {
-			renderError(errw, val)
+			renderError(errw, env.Runtime, val)
 		} else {
 			fmt.Fprintln(stdout, val) //nolint:errcheck // best-effort output
 		}

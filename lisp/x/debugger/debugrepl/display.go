@@ -4,10 +4,9 @@ package debugrepl
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
 
 	"github.com/luthersystems/elps/lisp"
@@ -19,16 +18,19 @@ const sourceContextLines = 5
 
 // showSourceContext prints a window of source lines around the given line,
 // with a --> marker on the current line.
-func showSourceContext(w io.Writer, file string, line int, sourceRoot string) {
-	path := resolveSourceFile(file, sourceRoot)
-	f, err := os.Open(path) //#nosec G304
+func showSourceContext(w io.Writer, file string, line int, lib lisp.SourceLibrary) {
+	if lib == nil {
+		fmt.Fprintf(w, "  at %s:%d (source not available)\n", file, line) //nolint:errcheck
+		return
+	}
+	// Use the evaluation library, including its open root handle. Never fall
+	// back to cwd, basename searches, or unrestricted filesystem reads.
+	_, _, data, err := lib.LoadSource(lisp.NewSourceContext("", ""), file)
 	if err != nil {
 		fmt.Fprintf(w, "  at %s:%d (source not available)\n", file, line) //nolint:errcheck
 		return
 	}
-	defer f.Close() //nolint:errcheck
-
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	lineNum := 0
 	start := line - sourceContextLines
 	if start < 1 {
@@ -114,45 +116,4 @@ func showBreakpoints(w io.Writer, store *debugger.BreakpointStore) {
 		}
 		fmt.Fprintln(w, line) //nolint:errcheck
 	}
-}
-
-// resolveSourceFile attempts to find the source file by trying the file
-// path directly and then under the source root.
-func resolveSourceFile(file, sourceRoot string) string {
-	// Try as-is first.
-	if _, err := os.Stat(file); err == nil {
-		return file
-	}
-	// Try under sourceRoot.
-	if sourceRoot != "" {
-		// Try joining with sourceRoot.
-		joined := filepath.Join(sourceRoot, file)
-		if _, err := os.Stat(joined); err == nil {
-			return joined
-		}
-		// Try just the basename under sourceRoot.
-		base := filepath.Base(file)
-		if base != file {
-			joined = filepath.Join(sourceRoot, base)
-			if _, err := os.Stat(joined); err == nil {
-				return joined
-			}
-		}
-		// Walk sourceRoot looking for the basename.
-		var found string
-		_ = filepath.Walk(sourceRoot, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || found != "" {
-				return err
-			}
-			if filepath.Base(path) == base {
-				found = path
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if found != "" {
-			return found
-		}
-	}
-	return file
 }

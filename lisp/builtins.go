@@ -71,6 +71,10 @@ var (
 			Returns the result of the last evaluated expression.`},
 		{"load-file", Formals("source-location"), builtinLoadFile,
 			`Loads and evaluates the ELPS source file at source-location.
+			File access follows the runtime's source library policy. In elps run,
+			debug, and repl, loads are confined to --root-dir (default: working
+			directory) at open time. Relative symlinks within the root are allowed;
+			escaping paths and absolute symlinks return ordinary errors.
 			Returns the result of the last evaluated expression.`},
 		{"in-package", Formals("package-name", VarArgSymbol, "docstring"), builtinInPackage,
 			`Switches the current package to package-name, creating it if it

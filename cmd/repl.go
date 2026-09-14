@@ -27,6 +27,10 @@ All standard library packages are loaded automatically. Line editing and
 in-session command history are supported via readline. Use Ctrl-D or
 Ctrl-C to exit.
 
+Source loads are confined to --root-dir (default: working directory) at open
+time. Relative symlinks within the root are allowed; escaping paths and
+absolute symlinks produce ordinary errors.
+
 Flags:
   --json          Output each result as a single-line JSON object to stdout.
   --batch         Suppress readline and read raw lines from stdin (auto-enables --json).
@@ -85,5 +89,5 @@ func init() {
 	replCmd.Flags().StringVarP(&replEval, "eval", "e", "",
 		"Evaluate a single expression, print result, and exit")
 	replCmd.Flags().StringVar(&replRootDir, "root-dir", "",
-		"Root directory for file access confinement (default: working directory)")
+		"Root directory for source load confinement (default: working directory)")
 }

@@ -8,13 +8,14 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 
+	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/luthersystems/elps/repl"
 )
 
@@ -60,7 +61,7 @@ func Run(engine *debugger.Engine, env *lisp.LEnv, file string, opts ...Option) e
 
 	relFile := file
 	if h.sourceRoot != "" {
-		if rel, err := filepath.Rel(h.sourceRoot, file); err == nil {
+		if rel, err := rootlibrary.RelativePath(h.sourceRoot, file); err == nil {
 			relFile = rel
 		}
 	}
@@ -358,7 +359,7 @@ func (h *debugHandler) showStopBanner(evt debugger.Event) {
 	fmt.Fprintf(h.stderr, "stopped: %s\n", reason) //nolint:errcheck
 	if evt.Expr != nil {
 		if loc, ok := evt.Expr.Source(); ok {
-			showSourceContext(h.stderr, loc.File, loc.Line, h.sourceRoot)
+			h.showSource(loc)
 		}
 	}
 }
@@ -454,8 +455,16 @@ func (h *debugHandler) doWhere() bool {
 		fmt.Fprintln(h.stderr, "no source location") //nolint:errcheck
 		return true
 	}
-	showSourceContext(h.stderr, loc.File, loc.Line, h.sourceRoot)
+	h.showSource(loc)
 	return true
+}
+
+func (h *debugHandler) showSource(loc token.Location) {
+	file := loc.Path
+	if file == "" {
+		file = loc.File
+	}
+	showSourceContext(h.stderr, file, loc.Line, h.env.Runtime.Library)
 }
 
 func (h *debugHandler) doQuit() bool {
