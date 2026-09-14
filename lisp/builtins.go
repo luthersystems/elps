@@ -3370,7 +3370,7 @@ func (env *LEnv) renderError() *LVal {
 }
 
 func builtinDebugStack(env *LEnv, args *LVal) *LVal {
-	_, err := env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+	_, err := env.Runtime.Stack.debugPrintContext(env.evalCtx, env.Runtime.getStderr(), env.Runtime.MaxAllocBytes())
 	if err != nil {
 		return env.Error(err)
 	}

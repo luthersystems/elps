@@ -48,10 +48,19 @@ func truncatedRender(s string, limit int) string {
 }
 
 // Render returns diagnostic text bounded by the environment's output limit and
-// context. On exhaustion it substitutes #<truncated>; use builtins such as
+// active evaluation context. After evaluation, use RenderContext to pass the
+// request context explicitly. On exhaustion it substitutes #<truncated>; use builtins such as
 // format-string when the program must receive an ordinary allocation error.
 func (env *LEnv) Render(v *LVal) string {
-	s, ok := v.boundedStringContext(env.Runtime.MaxAllocBytes(), env.evalCtx)
+	return env.RenderContext(env.evalCtx, v)
+}
+
+// RenderContext returns diagnostic text bounded by the environment's output
+// limit and ctx, including after EvalContext or LoadStringContext returns.
+// Cancellation or exhaustion substitutes a fitting #<truncated> marker.
+// A nil context disables cancellation checks.
+func (env *LEnv) RenderContext(ctx context.Context, v *LVal) string {
+	s, ok := v.boundedStringContext(env.Runtime.MaxAllocBytes(), ctx)
 	if !ok {
 		return truncatedRender(s, env.Runtime.MaxAllocBytes())
 	}

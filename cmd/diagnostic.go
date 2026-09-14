@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"os"
 
 	"github.com/luthersystems/elps/diagnostic"
@@ -27,10 +28,18 @@ func newRenderer() *diagnostic.Renderer {
 
 // lispErrorToDiagnostic converts an LError value to a Diagnostic for display.
 func lispErrorToDiagnostic(lerr *lisp.LVal) diagnostic.Diagnostic {
+	return lispErrorToDiagnosticContext(nil, lerr)
+}
+
+func lispErrorToDiagnosticContext(ctx context.Context, lerr *lisp.LVal) diagnostic.Diagnostic {
 	ev := (*lisp.ErrorVal)(lerr)
 	d := diagnostic.Diagnostic{
 		Severity: diagnostic.SeverityError,
-		Message:  ev.ErrorMessage(),
+		Message:  ev.ErrorMessageContext(ctx),
+	}
+
+	if ctx != nil && ctx.Err() != nil {
+		return d
 	}
 
 	// Add the function context to the message if available
@@ -60,6 +69,10 @@ func lispErrorToDiagnostic(lerr *lisp.LVal) diagnostic.Diagnostic {
 	stack := lerr.CallStack()
 	if stack != nil {
 		for i := len(stack.Frames) - 1; i >= 0; i-- {
+			if ctx != nil && ctx.Err() != nil {
+				d.Notes = append(d.Notes, "#<truncated>")
+				break
+			}
 			frame := &stack.Frames[i]
 			name := frame.QualifiedFunName(lisp.DefaultUserPackage)
 			if name == "" {
@@ -106,7 +119,11 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 // renderLispError renders a lisp error with diagnostic formatting to stderr.
 // If sourceFile is non-empty, a hint to run elps lint is appended.
 func renderLispError(lerr *lisp.LVal, sourceFiles ...string) {
-	d := lispErrorToDiagnostic(lerr)
+	renderLispErrorContext(nil, lerr, sourceFiles...)
+}
+
+func renderLispErrorContext(ctx context.Context, lerr *lisp.LVal, sourceFiles ...string) {
+	d := lispErrorToDiagnosticContext(ctx, lerr)
 	if len(sourceFiles) > 0 && sourceFiles[0] != "" {
 		d.Notes = append(d.Notes, "try: elps lint "+sourceFiles[0])
 	}

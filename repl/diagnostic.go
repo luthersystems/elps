@@ -3,6 +3,7 @@
 package repl
 
 import (
+	"context"
 	"io"
 
 	"github.com/luthersystems/elps/diagnostic"
@@ -14,7 +15,11 @@ import (
 // be available (input comes from stdin, not files), but the renderer
 // degrades gracefully to show just the location and error message.
 func renderError(w io.Writer, lerr *lisp.LVal) {
-	d := lispErrorToDiag(lerr)
+	renderErrorContext(nil, w, lerr)
+}
+
+func renderErrorContext(ctx context.Context, w io.Writer, lerr *lisp.LVal) {
+	d := lispErrorToDiagContext(ctx, lerr)
 	d.Notes = append(d.Notes, "use (help 'symbol) to browse available symbols")
 	r := &diagnostic.Renderer{Color: diagnostic.ColorAuto}
 	_ = r.Render(w, d)
@@ -22,10 +27,18 @@ func renderError(w io.Writer, lerr *lisp.LVal) {
 
 // lispErrorToDiag converts an LError value to a Diagnostic for display.
 func lispErrorToDiag(lerr *lisp.LVal) diagnostic.Diagnostic {
+	return lispErrorToDiagContext(nil, lerr)
+}
+
+func lispErrorToDiagContext(ctx context.Context, lerr *lisp.LVal) diagnostic.Diagnostic {
 	ev := (*lisp.ErrorVal)(lerr)
 	d := diagnostic.Diagnostic{
 		Severity: diagnostic.SeverityError,
-		Message:  ev.ErrorMessage(),
+		Message:  ev.ErrorMessageContext(ctx),
+	}
+
+	if ctx != nil && ctx.Err() != nil {
+		return d
 	}
 
 	fname := ev.FunName()
@@ -51,6 +64,10 @@ func lispErrorToDiag(lerr *lisp.LVal) diagnostic.Diagnostic {
 	stack := lerr.CallStack()
 	if stack != nil {
 		for i := len(stack.Frames) - 1; i >= 0; i-- {
+			if ctx != nil && ctx.Err() != nil {
+				d.Notes = append(d.Notes, "#<truncated>")
+				break
+			}
 			frame := &stack.Frames[i]
 			name := frame.QualifiedFunName(lisp.DefaultUserPackage)
 			if name == "" {

@@ -5,6 +5,7 @@ package repl
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -23,6 +24,7 @@ import (
 )
 
 type config struct {
+	ctx         context.Context
 	stdin       io.ReadCloser
 	stderr      io.WriteCloser
 	json        bool
@@ -38,7 +40,7 @@ type config struct {
 }
 
 func newConfig(opts ...Option) *config {
-	config := &config{}
+	config := &config{ctx: context.Background()}
 	for _, opt := range opts {
 		opt(config)
 	}
@@ -46,6 +48,16 @@ func newConfig(opts ...Option) *config {
 }
 
 type Option func(*config)
+
+// WithContext sets the context used for evaluation and subsequent result and
+// error rendering. A nil context uses context.Background().
+func WithContext(ctx context.Context) Option {
+	return func(c *config) {
+		if ctx != nil {
+			c.ctx = ctx
+		}
+	}
+}
 
 // WithStdin allows overriding the input to the REPL.
 func WithStdin(stdin io.ReadCloser) Option {
@@ -345,7 +357,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			}
 			continue
 		}
-		evalFn := env.Eval
+		evalFn := func(expr *lisp.LVal) *lisp.LVal { return env.EvalContext(cfg.ctx, expr) }
 		if cfg.evalFn != nil {
 			evalFn = func(expr *lisp.LVal) *lisp.LVal {
 				return cfg.evalFn(env, expr)
@@ -353,11 +365,11 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		val := evalFn(expr)
 		if cfg.json {
-			emitResult(os.Stdout, val, env)
+			emitResultContext(cfg.ctx, os.Stdout, val, env)
 		} else if val.Type == lisp.LError {
-			renderError(env.Runtime.Stderr, val)
+			renderErrorContext(cfg.ctx, env.Runtime.Stderr, val)
 		} else {
-			fmt.Fprintln(env.Runtime.Stderr, env.Render(val)) //nolint:errcheck // best-effort REPL output
+			fmt.Fprintln(env.Runtime.Stderr, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort REPL output
 		}
 	}
 }
@@ -386,21 +398,21 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 
 	var last *lisp.LVal
 	for _, expr := range exprs {
-		last = env.Eval(expr)
+		last = env.EvalContext(cfg.ctx, expr)
 		if last.Type == lisp.LError {
 			if cfg.json {
-				emitResult(stdout, last, env)
+				emitResultContext(cfg.ctx, stdout, last, env)
 			} else {
-				renderError(errw, last)
+				renderErrorContext(cfg.ctx, errw, last)
 			}
 			return 1
 		}
 	}
 
 	if cfg.json {
-		emitResult(stdout, last, env)
+		emitResultContext(cfg.ctx, stdout, last, env)
 	} else {
-		fmt.Fprintln(stdout, env.Render(last)) //nolint:errcheck // best-effort output
+		fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, last)) //nolint:errcheck // best-effort output
 	}
 	return 0
 }
@@ -462,13 +474,13 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 			}
 			continue
 		}
-		val := env.Eval(expr)
+		val := env.EvalContext(cfg.ctx, expr)
 		if cfg.json {
-			emitResult(stdout, val, env)
+			emitResultContext(cfg.ctx, stdout, val, env)
 		} else if val.Type == lisp.LError {
-			renderError(errw, val)
+			renderErrorContext(cfg.ctx, errw, val)
 		} else {
-			fmt.Fprintln(stdout, env.Render(val)) //nolint:errcheck // best-effort output
+			fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort output
 		}
 	}
 }
@@ -488,22 +500,24 @@ func emitJSONLine(w io.Writer, obj any) {
 
 // emitResult writes a JSON object for a result (success or error) to w.
 func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
+	env := lisp.NewEnv(nil)
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	emitResultContext(env.Context(), w, val, env)
+}
+
+func emitResultContext(ctx context.Context, w io.Writer, val *lisp.LVal, env *lisp.LEnv) {
+	s := env.RenderContext(ctx, val)
 	if val.Type == lisp.LError {
-		obj := jsonError{
-			Type:    "error",
-			Message: (*lisp.ErrorVal)(val).Error(),
-		}
-		if loc, ok := val.Source(); ok && loc.Pos >= 0 {
-			obj.Source = loc.String()
+		obj := jsonError{Type: "error", Message: s}
+		if ctx == nil || ctx.Err() == nil {
+			if loc, ok := val.Source(); ok && loc.Pos >= 0 {
+				obj.Source = loc.String()
+			}
 		}
 		emitJSONLine(w, obj)
 		return
-	}
-	s := ""
-	if len(envs) > 0 {
-		s = envs[0].Render(val)
-	} else {
-		s = val.String()
 	}
 	emitJSONLine(w, jsonResult{
 		Type:      "result",

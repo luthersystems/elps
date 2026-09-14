@@ -3,7 +3,7 @@
 package lisp
 
 import (
-	"bufio"
+	"context"
 	"io"
 	"log"
 
@@ -42,20 +42,16 @@ func (e *ErrorVal) Error() string {
 }
 
 func (e *ErrorVal) render(message bool) string {
+	return e.renderContext(nil, message)
+}
+
+func (e *ErrorVal) renderContext(ctx context.Context, message bool) string {
 	if e == nil {
 		log.Printf("elps: ErrorVal rendering called on nil receiver; returning sentinel")
 		return nilErrorMessage
 	}
-	limit := DefaultMaxAlloc
-	var budget renderBudget
-	if stack := (*LVal)(e).CallStack(); stack != nil {
-		if stack.renderLimit > 0 {
-			limit = stack.renderLimit
-		}
-		budget = newRenderBudget(limit, stack.renderContext)
-	} else {
-		budget = newRenderBudget(limit, nil)
-	}
+	limit, ctx := e.renderPolicy(ctx)
+	budget := newRenderBudget(limit, ctx)
 	s, ok := (*LVal)(e).boundedRender(limit, &budget, message)
 	if !ok {
 		return truncatedRender(s, limit)
@@ -122,47 +118,62 @@ func (e *ErrorVal) ErrorMessage() string {
 	return e.render(true)
 }
 
-// WriteTrace writes the error and a stack trace to w.
-//
-// Defensive: a nil receiver writes the nilErrorMessage sentinel rather than
-// panicking. This keeps callers safe even when fed a corrupted LError pointer.
-func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
+// ErrorMessageContext returns the underlying error message bounded by the
+// originating output limit and ctx. A nil context uses the captured context.
+// Cancellation or exhaustion substitutes a fitting #<truncated> marker.
+func (e *ErrorVal) ErrorMessageContext(ctx context.Context) string {
+	return e.renderContext(ctx, true)
+}
+
+func (e *ErrorVal) renderPolicy(ctx context.Context) (int, context.Context) {
+	limit := DefaultMaxAlloc
 	if e == nil {
-		log.Printf("elps: ErrorVal.WriteTrace called on nil receiver; emitting sentinel")
-		bw := bufio.NewWriter(w)
-		n, err := bw.WriteString(nilErrorMessage + "\n")
-		if err != nil {
-			return n, err
+		return limit, ctx
+	}
+	if stack := (*LVal)(e).CallStack(); stack != nil {
+		if stack.renderLimit > 0 {
+			limit = stack.renderLimit
 		}
-		return n, bw.Flush()
-	}
-	bw := bufio.NewWriter(w)
-	var n int
-	var err error
-	wrote := func(_n int, _err error) bool {
-		n += _n
-		err = _err
-		return err == nil
-	}
-	if !wrote(bw.WriteString(e.Error())) {
-		return n, err
-	}
-	if !wrote(bw.WriteString("\n")) {
-		return n, err
-	}
-	stack := (*LVal)(e).CallStack()
-	if stack != nil {
-		if !wrote(stack.DebugPrint(bw)) {
-			return n, err
+		if ctx == nil {
+			ctx = stack.renderContext
 		}
-		if len(stack.GoStack) > 0 {
-			if !wrote(bw.WriteString("\nGo stack trace (panic origin):\n")) {
-				return n, err
+	}
+	return limit, ctx
+}
+
+// WriteTrace writes the error and stack trace under the captured output limit
+// and context. The entire trace shares one budget, including any Go stack.
+// A nil receiver writes the nilErrorMessage sentinel rather than panicking.
+func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
+	return e.WriteTraceContext(nil, w)
+}
+
+// WriteTraceContext writes the error, frames, and Go stack under one output
+// budget and ctx. Cancellation or exhaustion emits a fitting #<truncated>
+// marker. A nil context uses the error's captured context.
+func (e *ErrorVal) WriteTraceContext(ctx context.Context, w io.Writer) (int, error) {
+	limit, ctx := e.renderPolicy(ctx)
+	r := valueRenderer{limit: limit, budget: newRenderBudget(limit, ctx)}
+	if e == nil {
+		r.text(nilErrorMessage)
+		r.text("\n")
+		return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
+	} else {
+		s, ok := (*LVal)(e).boundedRender(limit, &r.budget, false)
+		r.text(s)
+		r.full = r.full || !ok
+	}
+	r.text("\n")
+	if stack := (*LVal)(e).CallStack(); stack != nil && !r.full {
+		r.stack(stack)
+		if len(stack.GoStack) > 0 && !r.full {
+			r.text("\nGo stack trace (panic origin):\n")
+			for data := stack.GoStack; len(data) > 0 && !r.full; {
+				n := min(len(data), 4096)
+				r.text(string(data[:n]))
+				data = data[n:]
 			}
-			if !wrote(bw.Write(stack.GoStack)) {
-				return n, err
-			}
 		}
 	}
-	return n, bw.Flush()
+	return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
 }

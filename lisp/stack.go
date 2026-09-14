@@ -312,22 +312,20 @@ func (s *CallStack) Pop() CallFrame {
 	return f
 }
 
-// DebugPrint prints s
+// DebugPrint prints s under its captured output limit and context, or the
+// default output limit for a live stack. Exhaustion emits #<truncated>.
 func (s *CallStack) DebugPrint(w io.Writer) (int, error) {
-	n, err := fmt.Fprintf(w, "Stack Trace [%d frames -- entrypoint last]:\n", len(s.Frames))
-	if err != nil {
-		return n, err
+	limit := s.renderLimit
+	if limit <= 0 {
+		limit = DefaultMaxAlloc
 	}
-	indent := "  "
-	for i := len(s.Frames) - 1; i >= 0; i-- {
-		fstr := s.Frames[i].String()
-		_n, err := fmt.Fprintf(w, "%sheight %d: %s\n", indent, i, fstr)
-		n += _n
-		if err != nil {
-			return n, err
-		}
-	}
-	return n, nil
+	return s.debugPrintContext(s.renderContext, w, limit)
+}
+
+func (s *CallStack) debugPrintContext(ctx context.Context, w io.Writer, limit int) (int, error) {
+	r := valueRenderer{limit: limit, budget: newRenderBudget(limit, ctx)}
+	r.stack(s)
+	return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
 }
 
 type LogicalStackOverflowError struct {

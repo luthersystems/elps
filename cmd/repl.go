@@ -60,6 +60,7 @@ Example batch/JSON usage:
 		}
 
 		opts := []repl.Option{
+			repl.WithContext(cmd.Context()),
 			repl.WithJSON(jsonFlag),
 			repl.WithBatch(replBatch),
 		}

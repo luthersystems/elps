@@ -145,3 +145,95 @@ func TestErrorFormattingPreservesArguments(t *testing.T) {
 	require.Equal(t, LError, env.Errorf("bad value: %v", args...).Type)
 	require.Same(t, v, args[0], "formatting must not replace a caller's arguments")
 }
+
+func TestTraceSharedOutputBudget(t *testing.T) {
+	for _, mode := range []string{"long-name", "many-frames", "go-stack", "tiny", "debug-stack"} {
+		t.Run(mode, func(t *testing.T) {
+			env := NewEnv(nil)
+			env.Runtime.MaxAlloc = 64
+			for range 100 {
+				env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{Name: "frame"})
+			}
+			if mode == "long-name" || mode == "debug-stack" {
+				env.Runtime.Stack.Top().Name = strings.Repeat("x", 4096)
+			}
+			if mode == "tiny" {
+				env.Runtime.MaxAlloc = 5
+			}
+			if mode == "go-stack" {
+				env.Runtime.Stack.Frames = nil
+			}
+			var out bytes.Buffer
+			if mode == "debug-stack" {
+				env.Runtime.Stderr = &out
+				builtinDebugStack(env, Nil())
+			} else {
+				e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
+				if mode == "go-stack" {
+					(*LVal)(e).CallStack().GoStack = bytes.Repeat([]byte("go frame\n"), 100)
+				}
+				n, err := e.WriteTrace(&out)
+				require.NoError(t, err)
+				require.Equal(t, out.Len(), n)
+			}
+			require.LessOrEqual(t, out.Len(), env.Runtime.MaxAlloc)
+			require.True(t, strings.HasSuffix(out.String(), renderTruncatedMark[:min(len(renderTruncatedMark), env.Runtime.MaxAlloc)]))
+		})
+	}
+}
+
+func TestTraceFrameCancellation(t *testing.T) {
+	for _, mode := range []string{"cancelled", "during-frames", "debug-stack"} {
+		t.Run(mode, func(t *testing.T) {
+			env := NewEnv(nil)
+			ctx := &renderCancelContext{Context: context.Background()}
+			env.evalCtx = ctx
+			for range 1000 {
+				env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{Name: "frame"})
+			}
+			var out bytes.Buffer
+			if mode == "debug-stack" {
+				env.Runtime.Stderr = &out
+				builtinDebugStack(env, Nil())
+			} else {
+				e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
+				env.evalCtx = nil
+				if mode == "cancelled" {
+					ctx.checks = 100
+				}
+				_, err := e.WriteTrace(&out)
+				require.NoError(t, err)
+			}
+			require.Less(t, strings.Count(out.String(), "height "), 100, "cancellation must stop frame output")
+			require.Contains(t, out.String(), renderTruncatedMark)
+			require.Less(t, ctx.checks, 200)
+		})
+	}
+}
+
+type cancelTraceWriter struct {
+	bytes.Buffer
+	cancel context.CancelFunc
+}
+
+func (w *cancelTraceWriter) WriteString(s string) (int, error) {
+	n, err := w.Buffer.WriteString(s)
+	w.cancel()
+	return n, err
+}
+
+func TestTraceCancellationWhileWriting(t *testing.T) {
+	env := NewEnv(nil)
+	for range 100 {
+		env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{Name: "frame"})
+	}
+	e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	out := &cancelTraceWriter{cancel: cancel}
+	n, err := e.WriteTraceContext(ctx, out)
+	require.NoError(t, err)
+	require.Equal(t, out.Len(), n)
+	require.Zero(t, strings.Count(out.String(), "height "), "cancellation after the message must stop frames")
+	require.Contains(t, out.String(), renderTruncatedMark)
+}

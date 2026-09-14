@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -48,7 +49,7 @@ Exit codes:
   0  Success
   1  Runtime error (use elps lint to catch common mistakes before running)`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := runElps(args, os.Stdout); err != nil {
+		if err := runElpsContext(cmd.Context(), args, os.Stdout); err != nil {
 			if !errors.Is(err, errRendered) {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
@@ -64,6 +65,10 @@ var errRendered = errors.New("elps: error already rendered")
 // runElps loads each argument — a source file, or with -e a Lisp expression —
 // into a fresh environment, writing values to stdout when -p is set.
 func runElps(args []string, stdout io.Writer) error {
+	return runElpsContext(context.Background(), args, stdout)
+}
+
+func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error {
 	rootDir := runRootDir
 	if rootDir == "" {
 		wd, err := os.Getwd()
@@ -96,22 +101,22 @@ func runElps(args []string, stdout io.Writer) error {
 		// expression has no file to lint, so it is left empty.
 		name := ""
 		if runExpression {
-			res = env.LoadString(fmt.Sprintf("expression %d", i+1), args[i])
+			res = env.LoadStringContext(ctx, fmt.Sprintf("expression %d", i+1), args[i])
 		} else {
 			arg, ferr := toRelativePath(rootDir, args[i])
 			if ferr != nil {
 				return ferr
 			}
-			res = env.LoadFile(arg)
+			res = env.LoadFileContext(ctx, arg)
 			name = args[i]
 		}
 		if res.Type == lisp.LError {
-			renderLispError(res, name)
+			renderLispErrorContext(ctx, res, name)
 			return errRendered
 		}
 		if runPrint {
 			//nolint:errcheck // best-effort output to stdout
-			fmt.Fprintln(stdout, env.Render(res))
+			fmt.Fprintln(stdout, env.RenderContext(ctx, res))
 		}
 	}
 	return nil
