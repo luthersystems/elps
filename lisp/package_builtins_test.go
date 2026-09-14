@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -49,7 +50,7 @@ func TestPackageBuiltinExportAtomic(t *testing.T) {
 
 func TestPackageBuiltinInPackageAtomic(t *testing.T) {
 	for _, existing := range []bool{false, true} {
-		t.Run(fmt.Sprint(existing), func(t *testing.T) {
+		t.Run(strconv.FormatBool(existing), func(t *testing.T) {
 			env := packageBuiltinEnv(t)
 			before := env.Runtime.Package
 			if existing {
@@ -71,7 +72,7 @@ func TestPackageBuiltinInPackageAtomic(t *testing.T) {
 		before := env.Runtime.Package
 		got := evalPackageBuiltin(t, env, `(handler-bind ((error (lambda (&rest args) ()))) (in-package 'docp2 1))`)
 		require.True(t, got.IsNil(), "%s", got)
-		require.True(t, evalPackageBuiltin(t, env, `(set 'after-error 42)`).Type == lisp.LInt)
+		require.Equal(t, lisp.LInt, evalPackageBuiltin(t, env, `(set 'after-error 42)`).Type)
 		_, ok := before.Symbol("after-error")
 		assert.True(t, ok, "binding after caught error went into wrong package")
 	})
@@ -106,7 +107,7 @@ func TestPackageBuiltinDeferredExport(t *testing.T) {
 	assert.Contains(t, got.String(), "package-builtins.lisp:1:")
 	assert.Contains(t, got.String(), "lisp:use-package")
 	assert.NotContains(t, got.String(), "<native code>")
-	require.True(t, evalPackageBuiltin(t, env, `(set 'deferred:never-defined 42)`).Type == lisp.LInt)
+	require.Equal(t, lisp.LInt, evalPackageBuiltin(t, env, `(set 'deferred:never-defined 42)`).Type)
 	require.True(t, evalPackageBuiltin(t, env, `(use-package 'deferred)`).IsNil())
 	assert.Equal(t, "42", evalPackageBuiltin(t, env, `never-defined`).String())
 }
