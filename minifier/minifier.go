@@ -450,10 +450,20 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		sym *analysis.Symbol
 	}
 
+	// Every definition of a package binding must make the same preservation
+	// decision, even when redefinitions have different kinds or source files.
+	preservedBindings := make(map[string]bool)
+	for _, file := range files {
+		for _, sym := range file.analysis.Symbols {
+			if key := packageBindingKey(sym); key != "" && !sym.External && !renameable(sym, cfg, preserved) {
+				preservedBindings[key] = true
+			}
+		}
+	}
 	var records []symbolRecord
 	for _, file := range files {
 		for _, sym := range file.analysis.Symbols {
-			if !renameable(sym, cfg, preserved) {
+			if !renameable(sym, cfg, preserved) || preservedBindings[packageBindingKey(sym)] {
 				continue
 			}
 			records = append(records, symbolRecord{sym: sym})
@@ -470,8 +480,17 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 	minToOrig := make(map[string]string, len(records))
 	origToMin := make(map[string][]string)
 
+	// Definition locations identify source occurrences, but redefinitions still
+	// write one runtime package binding. Keep their assignments identical.
+	packageNames := make(map[string]string)
 	next := 1
 	for _, record := range records {
+		binding := packageBindingKey(record.sym)
+		if newName, ok := packageNames[binding]; ok {
+			assignments[record.sym] = newName
+			assignmentKeys[symbolLookupKey(record.sym)] = newName
+			continue
+		}
 		newName := fmt.Sprintf("x%d", next)
 		for preserved.names[newName] {
 			next++
@@ -480,6 +499,9 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		next++
 		assignments[record.sym] = newName
 		assignmentKeys[symbolLookupKey(record.sym)] = newName
+		if binding != "" {
+			packageNames[binding] = newName
+		}
 
 		entry := SymbolMapEntry{
 			Minified: newName,
@@ -511,6 +533,13 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		MinifiedToOriginal: minToOrig,
 		OriginalToMinified: origToMin,
 	}
+}
+
+func packageBindingKey(sym *analysis.Symbol) string {
+	if sym == nil || sym.Scope == nil || sym.Scope.Kind != analysis.ScopeGlobal || sym.Package == "" {
+		return ""
+	}
+	return sym.Package + ":" + sym.Name
 }
 
 func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string, assignmentKeys map[string]string, cfg *Config) {
@@ -631,6 +660,11 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 	if sym.Kind == analysis.SymBuiltin || sym.Kind == analysis.SymSpecialOp {
 		return false
 	}
+	// Type names become runtime tags, visible in debug-print and serialized
+	// values even when all source references belong to this minification run.
+	if sym.Kind == analysis.SymType {
+		return false
+	}
 	if sym.Exported && !cfg.RenameExports {
 		return false
 	}
@@ -647,11 +681,8 @@ func renameable(sym *analysis.Symbol, cfg *Config, preserved *preservationSet) b
 			return false
 		case analysis.SymFunction, analysis.SymParameter,
 			analysis.SymSpecialOp, analysis.SymBuiltin, analysis.SymType:
-			// Renameable at global scope.  SymBuiltin and SymSpecialOp never
-			// get here (rejected above); SymParameter cannot be global.
-			// SymType is renamed along with its references -- deftype names
-			// reach LTaggedVal.Str and therefore serialized output, so this
-			// is only safe for a closed set of input files.
+			// Renameable at global scope. SymBuiltin, SymSpecialOp and SymType
+			// are rejected above; SymParameter cannot be global.
 		}
 	}
 	if preserved != nil && preserved.names[name] {
@@ -842,7 +873,7 @@ func collectQuotedSymbols(node *lisp.LVal, quoted bool, protected *preservationS
 		}
 	}
 	head := astutil.HeadSymbol(node)
-	if head == "quote" || head == "quasiquote" {
+	if head == "quote" || head == "lisp:quote" || head == "quasiquote" || head == "lisp:quasiquote" {
 		quoted = true
 	}
 	for _, child := range node.Cells {

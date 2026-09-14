@@ -391,9 +391,9 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		a.analyzeSet(node, scope, currentPkg)
 	case "set!":
 		a.analyzeSetBang(node, scope, currentPkg)
-	case "quote":
+	case "quote", "lisp:quote":
 		return // skip quoted data
-	case "quasiquote":
+	case "quasiquote", "lisp:quasiquote":
 		a.analyzeQuasiquote(node, scope, currentPkg)
 		return
 	case "in-package", "use-package", "export":

@@ -911,3 +911,48 @@ func evalMinifiedProgram(t *testing.T, files []InputFile) *lisp.LVal {
 
 	return result
 }
+
+func TestMinify_NestedRedefinitionExecutionEquivalence(t *testing.T) {
+	src := []byte(`(defun helper () 1)
+(debug-print (helper))
+(let () (defun helper () 2))
+(debug-print (helper))`)
+	out, symMap, err := MinifySource(src, "redefinition.lisp", nil)
+	require.NoError(t, err)
+	original, originalErr := evalDebugOutput(t, src)
+	require.NoError(t, originalErr)
+	require.Equal(t, "1\n2\n", original)
+	minified, minifiedErr := evalDebugOutput(t, out)
+	assert.NoError(t, minifiedErr, "minified source: %s", out)
+	assert.Equal(t, original, minified)
+	assert.Len(t, symMap.OriginalToMinified["helper"], 1)
+}
+
+func TestMinify_QualifiedQuoteExecutionEquivalence(t *testing.T) {
+	for _, form := range []string{"lisp:quote", "lisp:quasiquote"} {
+		t.Run(form, func(t *testing.T) {
+			src := []byte("(defun twice (x) (* 2 x)) (debug-print (" + form + " twice))")
+			out, symMap, err := MinifySource(src, "qualified-quote.lisp", nil)
+			require.NoError(t, err)
+			original, originalErr := evalDebugOutput(t, src)
+			require.NoError(t, originalErr)
+			require.Equal(t, "'twice\n", original)
+			minified, minifiedErr := evalDebugOutput(t, out)
+			assert.NoError(t, minifiedErr)
+			assert.Equal(t, original, minified)
+			assert.NotContains(t, symMap.OriginalToMinified, "twice")
+			assert.Contains(t, symMap.Excluded, SymbolExclusion{Original: "twice", Reason: "quoted-reference"})
+		})
+	}
+}
+
+func evalDebugOutput(t *testing.T, src []byte) (string, error) {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	require.True(t, lisp.InitializeUserEnv(env).IsNil())
+	env.Runtime.Reader = parser.NewReader()
+	var stderr bytes.Buffer
+	env.Runtime.Stderr = &stderr
+	result := env.LoadString("execution.lisp", string(src))
+	return stderr.String(), lisp.GoError(result)
+}

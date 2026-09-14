@@ -16,7 +16,7 @@ func PackageForms(exprs []*lisp.LVal) []*lisp.LVal {
 			return
 		}
 		head := HeadSymbol(node)
-		if head == "quote" || head == "quasiquote" {
+		if head == "quote" || head == "lisp:quote" || head == "quasiquote" || head == "lisp:quasiquote" {
 			return
 		}
 		if top || head == "defun" || head == "defmacro" || head == "set" || head == "export" {
