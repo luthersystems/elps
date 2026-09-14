@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -79,7 +81,7 @@ func TestRenderHardeningDeadline(t *testing.T) {
 				}
 				return
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			ctx, cancel := context.WithTimeout(t.Context(), testdeadline.Scale(5*time.Second))
 			defer cancel()
 			//nolint:gosec // Re-execute this test binary under an external deadline.
 			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRenderHardeningDeadline$/^"+mode+"$")
