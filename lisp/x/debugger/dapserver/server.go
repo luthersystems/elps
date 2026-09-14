@@ -16,7 +16,6 @@ import (
 	"bufio"
 	"bytes"
 	"errors"
-	"fmt"
 	"io"
 	"log"
 	"net"
@@ -201,7 +200,7 @@ func (s *Server) send(msg dap.Message) error {
 	if wire.Len() > limit {
 		response, ok := msg.(dap.ResponseMessage)
 		if !ok {
-			return fmt.Errorf("DAP response exceeds output budget")
+			return errors.New("DAP response exceeds output budget")
 		}
 		fallback := response.GetResponse()
 		bounded := *fallback
@@ -215,7 +214,7 @@ func (s *Server) send(msg dap.Message) error {
 			return err
 		}
 		if wire.Len() > limit {
-			return fmt.Errorf("DAP output budget cannot hold response envelope")
+			return errors.New("DAP output budget cannot hold response envelope")
 		}
 	}
 	// The complete frame is buffered so an over-budget response never produces
