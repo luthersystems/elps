@@ -38,9 +38,14 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc(`JSON serialization and deserialization. Marshal ELPS values to
-		JSON bytes or strings and unmarshal JSON into ELPS data structures.`)
+		JSON bytes or strings and unmarshal JSON into ELPS data structures.
+		The output-only sentinel json:null and () serialize as JSON null at
+		any value position, including nested maps, lists, and arrays. All load
+		functions decode JSON null as (), never as the json:null symbol.`)
 	env.PutGlobal(lisp.Symbol("null"), lisp.Symbol("json:null"))
-	env.SetSymbolDoc("null", "The JSON null sentinel symbol. Used to represent null in JSON serialization.")
+	env.SetSymbolDoc("null", `The output-only JSON null sentinel symbol. Serializes as JSON null
+		at any value position, including nested maps, lists, and arrays, just
+		like (). Loading JSON null returns (), never this symbol.`)
 	env.Runtime.Package.Exports("null")
 	s := DefaultSerializer()
 	for _, fn := range Builtins(s) {
@@ -61,9 +66,10 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpMessageBuiltin,
 			`Serializes an ELPS value to a native JSON message object
 			suitable for embedding in Go structures, and in a value passed
-			back to dump. The :string-numbers keyword controls whether
-			numbers are serialized as JSON strings (default: serializer
-			setting).`),
+			back to dump. The values json:null and () serialize as JSON null,
+			including inside containers. The :string-numbers keyword controls
+			whether numbers are serialized as JSON strings (default:
+			serializer setting).`),
 		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
 			`Parses a native JSON message object (one produced by
 			dump-message, or a json.RawMessage supplied by an embedder)
@@ -75,19 +81,24 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON and returns the result as
 			bytes. Sorted-maps become JSON objects, arrays become JSON
-			arrays, strings/ints/floats map naturally. The :string-numbers
-			keyword controls whether numbers are serialized as strings.`),
+			arrays, strings/ints/floats map naturally. The values json:null
+			and () serialize as JSON null, including inside containers. The
+			:string-numbers keyword controls whether numbers are serialized
+			as strings.`),
 		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
-			naturally. The :string-numbers keyword controls whether JSON
+			naturally. JSON null becomes (), never the json:null symbol.
+			The :string-numbers keyword controls whether JSON
 			numbers are returned as strings. The :exact-integers keyword
 			controls whether JSON integer literals are returned as ints
 			rather than floats.`),
 		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
 			`Serializes an ELPS value to a JSON string. Like dump-bytes
-			but returns a string instead of bytes. The :string-numbers
-			keyword controls whether numbers are serialized as strings.`),
+			but returns a string instead of bytes. The values json:null and
+			() serialize as JSON null, including inside containers. The
+			:string-numbers keyword controls whether numbers are serialized
+			as strings.`),
 		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
 			accepts a string argument. The :string-numbers keyword controls
