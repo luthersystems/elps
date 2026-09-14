@@ -63,7 +63,7 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 	}
 	formatter := debugger.NewValueFormatter(env, nil)
 	if stack == nil || len(stack.Frames) == 0 {
-		io.WriteString(w, formatter.Text("  (empty stack)\n")) //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text("  (empty stack)\n"))
 		return
 	}
 
@@ -80,11 +80,11 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 		if name == "" {
 			name = "<anonymous>"
 		}
-		io.WriteString(w, formatter.Text(fmt.Sprintf("  #%d  ", len(stack.Frames)-i))) //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text(fmt.Sprintf("  #%d  ", len(stack.Frames)-i)))
 		if frame.Package != "" {
-			io.WriteString(w, formatter.Text(frame.Package, ":")) //nolint:errcheck
+			_, _ = io.WriteString(w, formatter.Text(frame.Package, ":"))
 		}
-		io.WriteString(w, formatter.Text(name, "  at ")) //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text(name, "  at "))
 		var loc *token.Location
 		// For the top frame, use the paused expression's location.
 		var pausedLoc token.Location
@@ -98,16 +98,16 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 			loc = frame.Source
 		}
 		if loc == nil {
-			io.WriteString(w, formatter.Text("unknown\n")) //nolint:errcheck
+			_, _ = io.WriteString(w, formatter.Text("unknown\n"))
 		} else {
 			suffix := fmt.Sprintf(":%d:%d", loc.Line, loc.Col)
-			if !(i == len(stack.Frames)-1 && pausedOK) {
+			if i != len(stack.Frames)-1 || !pausedOK {
 				// Preserve Location.String's numeric forms without copying its file.
 				numeric := *loc
 				numeric.File = ""
 				suffix = numeric.String()
 			}
-			io.WriteString(w, formatter.Text(loc.File, suffix, "\n")) //nolint:errcheck
+			_, _ = io.WriteString(w, formatter.Text(loc.File, suffix, "\n"))
 		}
 	}
 }
@@ -117,18 +117,18 @@ func showLocals(w io.Writer, env *lisp.LEnv, engine *debugger.Engine) {
 	formatter := debugger.NewValueFormatter(env, engine)
 	locals := debugger.InspectFunctionLocals(env)
 	if len(locals) == 0 {
-		io.WriteString(w, formatter.Text("  (no locals)\n")) //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text("  (no locals)\n"))
 		return
 	}
 	for _, b := range locals {
 		if formatter.Exhausted() {
 			break
 		}
-		io.WriteString(w, formatter.Text("  "))                                               //nolint:errcheck
-		io.WriteString(w, formatter.Text(b.Name))                                             //nolint:errcheck
-		io.WriteString(w, formatter.Text(strings.Repeat(" ", max(0, 20-len(b.Name))), " = ")) //nolint:errcheck
-		io.WriteString(w, formatter.Format(b.Value))                                          //nolint:errcheck
-		io.WriteString(w, formatter.Text("\n"))                                               //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text("  "))
+		_, _ = io.WriteString(w, formatter.Text(b.Name))
+		_, _ = io.WriteString(w, formatter.Text(strings.Repeat(" ", max(0, 20-len(b.Name))), " = "))
+		_, _ = io.WriteString(w, formatter.Format(b.Value))
+		_, _ = io.WriteString(w, formatter.Text("\n"))
 	}
 }
 
