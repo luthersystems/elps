@@ -36,6 +36,9 @@ starts in the "user" package and can import other packages with use-package.
 
 File access is confined to the root directory (--root-dir, default: working
 directory). The load-file function can only read files within this tree.
+Symlinks in the root and requested paths are resolved before checking access;
+a link that escapes the resolved root is refused with an ordinary error.
+Symlinks whose targets remain inside the root are allowed.
 
 Examples:
   elps run hello.lisp              Run a source file
@@ -79,7 +82,9 @@ func runElps(args []string, stdout io.Writer) error {
 
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
-	env.Runtime.Library = &lisp.FSLibrary{FS: os.DirFS(rootDir)}
+	env.Runtime.Library = &runFileSystemLibrary{
+		RelativeFileSystemLibrary: lisp.RelativeFileSystemLibrary{RootDir: rootDir},
+	}
 	for _, rc := range []*lisp.LVal{
 		lisp.InitializeUserEnv(env),
 		lisplib.LoadLibrary(env),
@@ -115,6 +120,19 @@ func runElps(args []string, stdout io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// runFileSystemLibrary anchors initial loads and loads from -e expressions
+// at --root-dir. Nested loads use the calling file's resolved directory.
+type runFileSystemLibrary struct {
+	lisp.RelativeFileSystemLibrary
+}
+
+func (lib *runFileSystemLibrary) LoadSource(ctx lisp.SourceContext, loc string) (string, string, []byte, error) {
+	if ctx.Location() == "" && !filepath.IsAbs(loc) {
+		loc = filepath.Join(lib.RootDir, loc)
+	}
+	return lib.RelativeFileSystemLibrary.LoadSource(ctx, loc)
 }
 
 // toRelativePath converts a file path to be relative to rootDir.

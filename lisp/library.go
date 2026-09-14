@@ -118,7 +118,9 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 		if err != nil {
 			return "", "", nil, fmt.Errorf("cannot resolve path %s: %w", loc, err)
 		}
-		if !strings.HasPrefix(resolvedLoc, root+string(filepath.Separator)) && resolvedLoc != root {
+		// A filesystem root already ends in a separator ("/" or "C:\\").
+		rootPrefix := strings.TrimSuffix(root, string(filepath.Separator)) + string(filepath.Separator)
+		if !strings.HasPrefix(resolvedLoc, rootPrefix) && resolvedLoc != root {
 			return "", "", nil, fmt.Errorf("access denied: %s is outside root directory %s", loc, root)
 		}
 		// Read from the resolved path to prevent TOCTOU races where
@@ -130,19 +132,19 @@ func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) 
 	return name, loc, data, err
 }
 
-// FSLibrary implements SourceLibrary using an fs.FS, providing natural
-// confinement via the fs.FS contract (which rejects ".." path components
-// and absolute paths). Use os.DirFS(dir) to create an fs.FS rooted at a
-// directory.
+// FSLibrary implements SourceLibrary using an fs.FS. The fs.FS contract
+// requires unrooted slash-separated paths without ".." elements, but does
+// not guarantee confinement: os.DirFS follows symlinks outside its directory
+// and is not a security boundary. Use RelativeFileSystemLibrary with RootDir
+// set when filesystem loads must reject symlinks escaping a root directory.
 type FSLibrary struct {
 	FS fs.FS
 }
 
 var _ SourceLibrary = (*FSLibrary)(nil)
 
-// LoadSource reads loc from the embedded fs.FS. The fs.FS contract
-// inherently prevents path traversal — paths must be unrooted slash-
-// separated sequences without ".." elements.
+// LoadSource cleans loc relative to the calling file, strips a leading slash,
+// and reads it from FS. Access checks, including symlink handling, depend on FS.
 func (lib *FSLibrary) LoadSource(ctx SourceContext, loc string) (string, string, []byte, error) {
 	// Make the path relative to the calling file's directory within the FS.
 	if ctx.Location() != "" {

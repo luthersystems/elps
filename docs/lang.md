@@ -1310,6 +1310,27 @@ This is the default package for any file that does not contain an
 `(in-package ...)` declaration.  Files loaded via `load-file` inherit the
 caller's current package context at the point of the load call.
 
+### Loading Files (`load-file`)
+
+`(load-file "path.lisp")` loads and evaluates a source file and returns the
+value of its last expression. File access follows the host runtime's source
+library policy.
+
+With `elps run`, file arguments and `load-file` calls are confined to
+`--root-dir` (the working directory by default). Symlinks in both the root
+and the requested path are resolved before checking access. A symlinked file,
+directory, or chain that leads outside the resolved root is refused with an
+ordinary, catchable error. Symlinks whose targets remain inside the root
+are allowed. Move an escaping dependency inside the root or choose a root
+that contains it. This depends on filesystem state at runtime, so static
+linting cannot establish whether a load will be allowed.
+
+Initial relative file arguments and relative `load-file` calls in `-e`
+expressions start at the root directory. Nested loads are relative to the
+calling file's resolved directory, including when it was loaded through a
+symlink. Absolute paths outside the root and `..` paths escaping it are also
+refused.
+
 ### Basics
 
 Packages are created/modified using the `in-package`
