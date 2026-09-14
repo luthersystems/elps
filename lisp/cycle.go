@@ -88,7 +88,8 @@ type cycleState struct {
 	// walk's root and the current frame.
 	path map[*LVal]struct{}
 
-	cyclic bool
+	tooDeep bool
+	cyclic  bool
 }
 
 // cycleGuard detects cycles in a walk over an LVal graph, not excessive depth.
@@ -159,7 +160,7 @@ func (g cycleGuard) tracking() bool {
 // that sees this must return without descending any further; whatever it
 // returns is discarded.
 func (g cycleGuard) abandoned() bool {
-	return !g.strict && g.state.cyclic
+	return g.state.tooDeep || (!g.strict && g.state.cyclic)
 }
 
 // valuePair is a pair of values under comparison, the unit (*LVal).Equal
@@ -193,7 +194,8 @@ type pairGuard struct {
 type pairState struct {
 	path map[valuePair]struct{}
 
-	cyclic bool
+	tooDeep bool
+	cyclic  bool
 }
 
 // strictPairGuard returns the guard for the rerun of a comparison that stage 2
@@ -213,11 +215,15 @@ func strictPairGuard() pairGuard {
 // reaches nothing, so putting it on the path would tax every int and string
 // comparison to bound a walk that cannot recurse.
 func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
+	if g.state.tooDeep || g.depth >= MaxValueDepth {
+		g.state.tooDeep = true
+		return g, true
+	}
+	g.depth++
 	if !g.strict {
 		if g.state.cyclic {
 			return g, true
 		}
-		g.depth++
 		if g.depth < cycleGuardDepth {
 			return g, false
 		}

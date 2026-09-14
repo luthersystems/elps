@@ -142,7 +142,22 @@ func sealableNodeType(t LType) bool {
 	}
 }
 
-func (v *LVal) sealAST() {
+func (v *LVal) sealAST() { v.sealDepth(0) }
+
+func (v *LVal) sealDepth(depth int) {
+	if depth >= MaxValueDepth {
+		pending := []*LVal{v}
+		for len(pending) > 0 {
+			n := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if n == nil || n.sealed || isSingleton(n) || !sealableNodeType(n.Type) {
+				continue
+			}
+			n.sealed = true //elps:mutates parse-completion sealing with an explicit stack; same monotone flag as the recursive path
+			pending = append(pending, n.Cells...)
+		}
+		return
+	}
 	if v == nil || v.sealed || isSingleton(v) || !sealableNodeType(v.Type) {
 		return
 	}
@@ -152,7 +167,7 @@ func (v *LVal) sealAST() {
 	// monotone flag that forbids all further writes.
 	v.sealed = true //elps:mutates -- parse-completion sealing; single-threaded, pre-sharing, sets the flag that freezes the node
 	for _, c := range v.Cells {
-		c.sealAST()
+		c.sealDepth(depth + 1)
 	}
 }
 

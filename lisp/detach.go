@@ -112,6 +112,7 @@ type detacher struct {
 	// settles it before this flag is consulted.  Every data container is
 	// still rebuilt with fresh backing either way; this flag only decides
 	// what happens at a leaf the kernel cannot clone.
+	depth       int
 	shareOpaque bool
 }
 
@@ -136,6 +137,11 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// only in its address (lisp/singleton.go).
 		return v, nil
 	}
+	if d.depth >= d.runtime.ValueDepthLimit() {
+		return nil, ValueDepthError(d.runtime.ValueDepthLimit())
+	}
+	d.depth++
+	defer func() { d.depth-- }()
 	// cloner is non-nil when v is a native value or error message whose payload declares
 	// its own duplication protocol (lisp/fork.go) — the only authority on
 	// what copying an opaque handle means.  Captured here rather than

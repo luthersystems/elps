@@ -77,16 +77,9 @@ type encoder struct {
 // encoding/json escapes.  That leaves two gaps, and this reports the absence
 // of both:
 //
-//   - nestedDeep.  Nothing bounds how deep a lisp value nests, and
-//     encoding/json's DECODER stops at 10000, so a document nested deeper than
-//     that is one Dump writes and Load refuses.  That gap is real and predates
-//     this function -- `json:dump` of a 10001-deep value has always produced
-//     bytes `json:load` rejects -- and nothing here closes it; this only
-//     declines to make a claim about such a document.  The bound used is the
-//     counting pass's own: a document the counting pass finished nests less
-//     than encodeGuardDepth, two orders of magnitude inside the decoder's
-//     limit.  That is a much cheaper thing to know than the exact depth, and
-//     it covers every document anyone actually writes.
+//   - nestedDeep. The counting pass stopped at encodeGuardDepth. The
+//     second pass enforces lisp.MaxValueDepth, but we conservatively decline
+//     to vouch for a document outside the counting pass's shallow subset.
 //
 //   - wroteNative.  A native's bytes are not this encoder's.  checkLoadable
 //     clears them in isolation, but nesting composes: a native holding a
@@ -144,8 +137,8 @@ var errCyclicValue = errors.New("cannot serialize a value that contains itself")
 var errDeepValue = errors.New("value nests past the encoder's guard depth")
 
 // encodeGuard bounds the encoder's recursion over an LVal graph.  It is copied
-// by value down the walk, and which of its two fields is set says which of the
-// encoder's two passes this is.
+// by value down the walk. A non-nil path selects the second pass; both
+// passes carry the depth counter and effective limit.
 //
 // The first pass carries nothing but depth: an int on the stack, incremented
 // and compared, which is free next to the serialization the walk exists to do
@@ -154,7 +147,7 @@ var errDeepValue = errors.New("value nests past the encoder's guard depth")
 // with errDeepValue.
 //
 // The second pass carries path, the set of values between the root of the
-// document and the current frame, and no depth bound.  A value found on the
+// document and the current frame, together with the shared depth bound.  A value found on the
 // path is on the walk's own ancestry and so contains itself.  The set is
 // path-scoped rather than document-scoped, unwound by leave, because a
 // document that merely mentions a value twice -- a DAG, (list x x) -- is not
@@ -166,15 +159,13 @@ var errDeepValue = errors.New("value nests past the encoder's guard depth")
 // one level up; making it up front is also what lets the guard stay a value
 // with no shared state hanging off it.
 //
-// The second pass has no depth bound on purpose.  What is being bounded is the
-// cycle, not the nesting: an acyclic document recurses as far as its own
-// structure goes, exactly as it did before any of this existed, and a document
-// deep enough to trouble a goroutine stack needs a value per level to build,
-// which is not the 32-bytes-of-lisp denial of service issue #390 is about.
+// Both passes carry a counter bounded by lisp.MaxValueDepth (or a lower
+// runtime setting). Acyclic values must stop before Go stack exhaustion too.
 type encodeGuard struct {
 	path map[*lisp.LVal]struct{}
 
 	depth int
+	limit int
 }
 
 // enter descends into v.  It reports errCyclicValue if v is already on the
@@ -182,8 +173,11 @@ type encodeGuard struct {
 // document has nested past encodeGuardDepth.  A caller that gets nil back must
 // pair it with leave(v) on the returned guard.
 func (g encodeGuard) enter(v *lisp.LVal) (encodeGuard, error) {
+	if g.depth >= g.depthLimit() {
+		return g, lisp.ValueDepthError(g.depthLimit())
+	}
+	g.depth++
 	if g.path == nil {
-		g.depth++
 		if g.depth < encodeGuardDepth {
 			return g, nil
 		}
@@ -291,9 +285,18 @@ func (enc *encoder) donateBuffer() []byte {
 // majority that are three levels deep.  Paying a second pass on documents that
 // nest past 64 -- deeper than most JSON parsers will even accept -- is the
 // cheaper half of that trade by a wide margin.
-func (enc *encoder) encode(v *lisp.LVal) error {
+func (g encodeGuard) depthLimit() int {
+	if g.limit > 0 && g.limit < lisp.MaxValueDepth {
+		return g.limit
+	}
+	return lisp.MaxValueDepth
+}
+
+func (enc *encoder) encode(v *lisp.LVal) error { return enc.encodeLimit(v, lisp.MaxValueDepth) }
+
+func (enc *encoder) encodeLimit(v *lisp.LVal, limit int) error {
 	mark := enc.buf.Len()
-	err := enc.encodeValue(v, encodeGuard{})
+	err := enc.encodeValue(v, encodeGuard{limit: limit})
 	if !errors.Is(err, errDeepValue) {
 		return err
 	}
@@ -301,7 +304,7 @@ func (enc *encoder) encode(v *lisp.LVal) error {
 	// is a fragment.  Drop it and start the value over.
 	enc.nestedDeep = true
 	enc.buf.Truncate(mark)
-	return enc.encodeValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth)})
+	return enc.encodeValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit})
 }
 
 // encodeValue serializes one value of a document already in progress.  Every

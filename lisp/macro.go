@@ -469,6 +469,26 @@ func locateExpansionTree(v *LVal, callSite *token.Location, args []*LVal) {
 }
 
 func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}, g cycleGuard) {
+	if g.depth >= MaxValueDepth {
+		pending := []*LVal{v}
+		seen := make(map[*LVal]bool)
+		for len(pending) > 0 {
+			n := pending[len(pending)-1]
+			pending = pending[:len(pending)-1]
+			if n == nil || seen[n] || isSingleton(n) || n.sealed || isValueNode(n) {
+				continue
+			}
+			if _, isArg := boundary[n]; isArg {
+				continue
+			}
+			seen[n] = true
+			if needsStamp(n) {
+				n.source = callSite //elps:mutates locates fresh Go macro syntax after switching to an explicit stack; same contract as the recursive path below
+			}
+			pending = append(pending, n.Cells...)
+		}
+		return
+	}
 	if v == nil || isSingleton(v) || v.sealed || isValueNode(v) {
 		return
 	}
@@ -648,6 +668,9 @@ func (s *macroStamper) syntax(v *LVal, g cycleGuard) *LVal {
 			return cp
 		}
 	}
+	if g.depth >= MaxValueDepth {
+		return valueDepthError()
+	}
 	var cyclic bool
 	g, cyclic = g.descend(v)
 	if cyclic {
@@ -684,6 +707,9 @@ func (s *macroStamper) syntax(v *LVal, g cycleGuard) *LVal {
 			sc = s.value(c)
 		default:
 			sc = s.syntax(c, g)
+			if sc != nil && sc.Type == LError {
+				return sc
+			}
 		}
 		if cells != nil {
 			cells[i] = sc
@@ -749,6 +775,9 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 }
 
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
+	if depth >= env.Runtime.ValueDepthLimit() {
+		return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit()))
+	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
 	// list-element position for splicing, not quasiquote nesting.
@@ -758,6 +787,9 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		quoteLevel += 1
 	}
 	for inner.Type == LQuote {
+		if depth+quoteLevel >= env.Runtime.ValueDepthLimit() {
+			return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit()))
+		}
 		quoteLevel += 1
 		inner = inner.Cells[0]
 	}

@@ -154,6 +154,7 @@ type copier struct {
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
 	failed *LVal
+	depth  int
 	n      int
 }
 
@@ -274,7 +275,13 @@ func (c *copier) copy(v *LVal) *LVal {
 	if c.failed != nil {
 		return c.failed
 	}
+	if c.depth >= c.runtime.ValueDepthLimit() {
+		c.failed = Error(ValueDepthError(c.runtime.ValueDepthLimit()))
+		return c.failed
+	}
+	c.depth++
 	cp := c.copyNode(v)
+	c.depth--
 	if c.failed != nil {
 		return c.failed
 	}

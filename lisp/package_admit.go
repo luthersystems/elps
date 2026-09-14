@@ -167,7 +167,11 @@ func admitSymbolValue(v *LVal) *LVal {
 	if v == nil || !sealableNodeType(v.Type) {
 		return v
 	}
-	sealed, sealable := classifySymbolValue(v, cycleGuard{state: new(cycleState)})
+	var st cycleState
+	sealed, sealable := classifySymbolValue(v, cycleGuard{state: &st})
+	if st.tooDeep {
+		return valueDepthError()
+	}
 	if sealed || !sealable {
 		// Sealed throughout: the sanctioned share (immutability, not
 		// confinement, is what protects it).  Not sealable throughout: a
@@ -201,6 +205,10 @@ func admitSymbolValue(v *LVal) *LVal {
 // by-reference row where no copy is attempted.
 func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
 	if v == nil || !sealableNodeType(v.Type) {
+		return false, false
+	}
+	if g.depth >= MaxValueDepth {
+		g.state.tooDeep = true
 		return false, false
 	}
 	g, cyclic := g.descend(v)

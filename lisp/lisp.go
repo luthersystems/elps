@@ -1485,9 +1485,13 @@ func (v *LVal) IsNumeric() bool {
 // rather than a guess: false is only ever returned for a difference actually
 // found at a finite depth, so no equality is claimed that a longer walk could
 // refute.  See lisp/cycle.go and issue #390.
+// Comparison requiring recursion beyond MaxValueDepth returns an ordinary LError.
 func (v *LVal) Equal(other *LVal) *LVal {
 	var st pairState
 	eq := v.equal(other, pairGuard{state: &st})
+	if st.tooDeep {
+		return valueDepthError()
+	}
 	if !st.cyclic {
 		return eq
 	}
@@ -1495,7 +1499,12 @@ func (v *LVal) Equal(other *LVal) *LVal {
 	// above stopped as soon as it knew that, because unrolling a cycle to
 	// cycleGuardDepth levels is exponential in the width of the cycle; the
 	// rerun compares each pair once.
-	return v.equal(other, strictPairGuard())
+	g := strictPairGuard()
+	eq = v.equal(other, g)
+	if g.state.tooDeep {
+		return valueDepthError()
+	}
+	return eq
 }
 
 // equal is Equal, with g bounding the walk.  Every nested comparison must pass
@@ -1669,6 +1678,7 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // like a list's cells.  What stays shared: a closure's environment, an
 // LError's call stack, and a native payload that is not a NativeCloner.  See
 // copier in lisp/copier.go.
+// Walks exceeding MaxValueDepth return an ordinary LError instead of a partial copy.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil

@@ -76,6 +76,9 @@ func copyGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 		// Opaque leaves are shared; elpspath never indexes into their storage.
 		return v, nil
 	}
+	if g.depth >= lisp.MaxValueDepth {
+		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	}
 	g, cyclic := g.descend(v)
 	if cyclic {
 		return nil, errCyclicValue
@@ -855,6 +858,9 @@ func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 }
 
 func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path) (*lisp.LVal, error) {
+	if len(paths) > lisp.MaxValueDepth {
+		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	}
 	if len(paths) == 0 {
 		// in this case we're replacing the entire input with a new input
 		return newIn, nil
@@ -894,6 +900,9 @@ func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func deleteChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
+	if len(paths) > lisp.MaxValueDepth {
+		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	}
 	if len(paths) == 0 {
 		// Deleting the whole document leaves nothing, which is lisp nil --
 		// the same answer nullChain gives for the same empty chain.
@@ -953,6 +962,9 @@ func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func nullChain(in *lisp.LVal, paths []Path) (*lisp.LVal, error) {
+	if len(paths) > lisp.MaxValueDepth {
+		return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+	}
 	if len(paths) == 0 {
 		return lisp.Nil(), nil
 	}

@@ -97,6 +97,8 @@ func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 //
 // Initialization must itself be suitable for replay: transaction context, time,
 // randomness and external effects must be bound per VM when cold loads do so.
+// Recursive admission is bounded by the source Runtime.ValueDepthLimit,
+// including closure environments, visible cells and hidden capacity tails.
 func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 	if env == nil || env.Runtime == nil || env.Runtime.Registry == nil {
 		return nil, errors.New("template: nil environment, runtime or registry")
@@ -169,6 +171,7 @@ type templateInventory struct {
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
 	sharedCells []templateCellSpan
+	depth       int
 }
 
 func newTemplateInventory(config templateConfig) *templateInventory {
@@ -222,6 +225,11 @@ func sortedTemplateKeys[V any](m map[string]V) []string {
 }
 
 func (s *templateInventory) env(env *LEnv) error {
+	if s.depth >= s.runtime.ValueDepthLimit() {
+		return ValueDepthError(s.runtime.ValueDepthLimit())
+	}
+	s.depth++
+	defer func() { s.depth-- }()
 	if env == nil {
 		return nil
 	}
@@ -258,6 +266,11 @@ func (s *templateInventory) checkDiagnosticPayload(payload any) error {
 }
 
 func (s *templateInventory) shared(v *LVal) error {
+	if s.depth >= s.runtime.ValueDepthLimit() {
+		return ValueDepthError(s.runtime.ValueDepthLimit())
+	}
+	s.depth++
+	defer func() { s.depth-- }()
 	if v == nil || s.sealed[v] {
 		return nil
 	}
@@ -288,6 +301,11 @@ func (s *templateInventory) shared(v *LVal) error {
 }
 
 func (s *templateInventory) val(v *LVal) error {
+	if s.depth >= s.runtime.ValueDepthLimit() {
+		return ValueDepthError(s.runtime.ValueDepthLimit())
+	}
+	s.depth++
+	defer func() { s.depth-- }()
 	if v == nil {
 		return nil
 	}

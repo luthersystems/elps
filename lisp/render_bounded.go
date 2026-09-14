@@ -14,7 +14,7 @@ import (
 // maxRenderDepth bounds nested value rendering independently of cycle
 // detection, output budgets, and evaluator limits. Go's stack overflow is
 // fatal, so even an acyclic graph must stop before exhausting the stack.
-const maxRenderDepth = 1024
+const maxRenderDepth = MaxValueDepth
 
 const renderDepthMark = "#<depth-limit>"
 const renderTruncatedMark = "#<truncated>"

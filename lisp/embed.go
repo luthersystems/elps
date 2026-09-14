@@ -33,11 +33,18 @@ func Not(v *LVal) bool {
 // returned BY REFERENCE: the payload is the embedder's own, so GoValue hands
 // back what the caller already owns.
 //
+// Excessive nesting returns an ordinary *ErrorVal implementing error, using
+// MaxValueDepth. No partial converted container is returned. Cycles discovered
+// within the cap retain the historical return of the original *LVal.
+//
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
 	var st cycleState
 	x := goValue(v, cycleGuard{state: &st})
+	if st.tooDeep {
+		return (*ErrorVal)(valueDepthError())
+	}
 	if st.cyclic {
 		// A value that contains itself has no Go representation -- every
 		// conversion of one is infinite -- so it is returned as the *LVal it
@@ -60,6 +67,10 @@ func goValue(v *LVal, g cycleGuard) interface{} {
 	}
 	if g.abandoned() {
 		// The result is discarded; GoValue is about to return v itself.
+		return nil
+	}
+	if g.depth >= MaxValueDepth {
+		g.state.tooDeep = true
 		return nil
 	}
 	g, cyclic := g.descend(v)
@@ -233,11 +244,14 @@ func GoFloat64(v *LVal) (float64, bool) {
 	return float64(v.Int), true
 }
 
-// GoSlice returns the string that v represents and the value true.  If v does
-// not represent a string GoSlice returns a false second argument
+// GoSlice converts a list to a Go slice. Non-lists, cycles and walks exceeding
+// MaxValueDepth return (nil, false).
 func GoSlice(v *LVal) ([]interface{}, bool) {
 	var st cycleState
-	vs, ok := goSlice(v, cycleGuard{state: &st})
+	vs, ok := goSlice(v, cycleGuard{state: &st, depth: 1})
+	if st.tooDeep {
+		return nil, false
+	}
 	if st.cyclic {
 		// See GoValue: a value that contains itself has no Go representation,
 		// and "not representable" is what a false second argument means.
@@ -261,10 +275,13 @@ func goSlice(v *LVal, g cycleGuard) ([]interface{}, bool) {
 // second argument.  If v does not represent a map GoMap returns a false second
 // argument.  Application's using custom Map implementations which allow
 // arbitrary keys may not be able to construct a native Go map, in which case
-// GoMap returns (nil, true).
+// GoMap returns (nil, true). Cycles and excessive nesting return (nil, false).
 func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
 	var st cycleState
-	m, ok := goMap(v, cycleGuard{state: &st})
+	m, ok := goMap(v, cycleGuard{state: &st, depth: 1})
+	if st.tooDeep {
+		return nil, false
+	}
 	if st.cyclic {
 		// See GoValue: a value that contains itself has no Go representation.
 		return nil, false

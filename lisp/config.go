@@ -227,3 +227,12 @@ func WithDebugger(d Debugger) Config {
 		return Nil()
 	}
 }
+
+// WithMaxValueDepth lowers the depth limit for runtime-associated copying,
+// JSON dumping, quasiquote and template admission. Nonpositive values use
+// MaxValueDepth. Values above that hard ceiling are clamped; the guard cannot
+// be disabled. Diagnostic rendering and APIs without a Runtime retain the
+// fixed ceiling, independently of this option.
+func WithMaxValueDepth(n int) Config {
+	return func(env *LEnv) *LVal { env.Runtime.MaxValueDepth = n; return Nil() }
+}
