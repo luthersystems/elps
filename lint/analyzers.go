@@ -9,6 +9,7 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -2576,4 +2577,196 @@ func checkLispBindings(pass *Pass, sealed bool) error {
 		walk(expr, true)
 	}
 	return nil
+}
+
+// AnalyzerLambdaList diagnoses invalid formals before a definition is evaluated.
+var AnalyzerLambdaList = &Analyzer{
+	Name:     "lambda-list",
+	Severity: SeverityError,
+	Doc: "Check lambda lists for malformed control markers and duplicate parameter names.\n\n" +
+		"Use unique symbols, at most one of each marker, and exactly one final name after &rest. " +
+		"Checks literal definitions; shadowed constructors and macro templates are not checked.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if userDefs[HeadSymbol(v)] || skip[v] {
+				return
+			}
+			check := func(formals *lisp.LVal) {
+				if formals.Type != lisp.LSExpr {
+					return
+				}
+				for _, sym := range formals.Cells {
+					if sym.Type != lisp.LSymbol {
+						pass.ReportNode(sym, "lambda list requires symbol parameters; replace the non-symbol parameter")
+						return
+					}
+				}
+				if i, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
+					pass.ReportNode(formals.Cells[i], "%s; use unique parameter names and valid &optional, &key, or final &rest name", message)
+				}
+			}
+			switch unqualifiedLispName(HeadSymbol(v)) {
+			case "lambda":
+				if len(v.Cells) > 1 {
+					check(v.Cells[1])
+				}
+			case "defun", "defmacro":
+				if len(v.Cells) > 2 {
+					check(v.Cells[2])
+				}
+			case "labels", "flet", "macrolet":
+				if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+					for _, binding := range v.Cells[1].Cells {
+						if binding.Type == lisp.LSExpr && len(binding.Cells) > 1 {
+							check(binding.Cells[1])
+						}
+					}
+				}
+			}
+		})
+		return nil
+	},
+}
+
+// AnalyzerDuplicateBinding warns about legal last-wins local bindings.
+var AnalyzerDuplicateBinding = &Analyzer{
+	Name:     "duplicate-binding",
+	Severity: SeverityWarning,
+	Doc: "Warn about duplicate binding names in let, labels, and flet.\n\n" +
+		"The last binding wins at runtime. Use distinct names or let* for sequential rebinding.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if userDefs[HeadSymbol(v)] || skip[v] {
+				return
+			}
+			head := unqualifiedLispName(HeadSymbol(v))
+			if head != "let" && head != "labels" && head != "flet" {
+				return
+			}
+			if len(v.Cells) < 2 || v.Cells[1].Type != lisp.LSExpr {
+				return
+			}
+			seen := make(map[string]bool)
+			for _, binding := range v.Cells[1].Cells {
+				if binding.Type != lisp.LSExpr || len(binding.Cells) == 0 {
+					continue
+				}
+				name := binding.Cells[0]
+				if name.Type != lisp.LSymbol {
+					continue
+				}
+				if seen[name.Str] {
+					pass.ReportNode(name, "duplicate %s binding: %s; the last binding wins, use distinct names or let* for sequential rebinding", head, name.Str)
+				}
+				seen[name.Str] = true
+			}
+		})
+		return nil
+	},
+}
+
+// AnalyzerDuplicateKeyword warns about literal keyword pairs repeated in calls.
+var AnalyzerDuplicateKeyword = &Analyzer{
+	Name:     "duplicate-keyword",
+	Severity: SeverityWarning,
+	Doc: "Warn about duplicate literal keyword arguments in calls.\n\n" +
+		"ELPS uses the rightmost value, unlike Common Lisp. Remove the earlier pair. " +
+		"Checks literal keyword/value suffixes; dynamic keys and macro expansions are not checked. " +
+		"A callee may instead consume these pairs as positional data.",
+	Run: func(pass *Pass) error {
+		special := make(map[string]bool)
+		for _, def := range lisp.DefaultSpecialOps() {
+			special[def.Name()] = true
+		}
+		for _, def := range lisp.DefaultMacros() {
+			special[def.Name()] = true
+		}
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if special[unqualifiedLispName(HeadSymbol(v))] {
+				return
+			}
+			keyword := func(v *lisp.LVal) bool {
+				return v.Type == lisp.LSymbol && !v.IsQuoted() && strings.HasPrefix(v.Str, ":")
+			}
+			start := 1
+			for start < len(v.Cells) && !keyword(v.Cells[start]) {
+				start++
+			}
+			if (len(v.Cells)-start)%2 != 0 {
+				return
+			}
+			for i := start; i < len(v.Cells); i += 2 {
+				if !keyword(v.Cells[i]) {
+					return
+				}
+			}
+			seen := make(map[string]bool)
+			for i := start; i < len(v.Cells); i += 2 {
+				key := v.Cells[i]
+				if seen[key.Str] {
+					pass.ReportNode(key, "duplicate keyword argument: %s; the rightmost value wins, remove the earlier pair", key.Str)
+				}
+				seen[key.Str] = true
+			}
+		})
+		return nil
+	},
+}
+
+// walkLambdaListCalls excludes data, formals and binding entries, including
+// qualified core forms. Initializers and function bodies remain executable.
+func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
+	var walk func(*lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
+			return
+		}
+		head := unqualifiedLispName(HeadSymbol(v))
+		if head == "quote" || head == "quasiquote" {
+			return
+		}
+		visit(v)
+		start := 0
+		switch head {
+		case "lambda":
+			start = 2
+		case "defun", "defmacro", "deftype":
+			start = 3
+		case "let", "let*", "labels", "flet", "macrolet", "handler-bind":
+			if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+				for _, binding := range v.Cells[1].Cells {
+					if binding.Type != lisp.LSExpr {
+						continue
+					}
+					body := 1
+					if head == "labels" || head == "flet" || head == "macrolet" {
+						body = 2
+					}
+					for i := body; i < len(binding.Cells); i++ {
+						walk(binding.Cells[i])
+					}
+				}
+			}
+			start = 2
+		case "cond":
+			for _, clause := range v.Cells[1:] {
+				if clause.Type == lisp.LSExpr {
+					for _, expr := range clause.Cells {
+						walk(expr)
+					}
+				}
+			}
+			return
+		}
+		for i := start; i < len(v.Cells); i++ {
+			walk(v.Cells[i])
+		}
+	}
+	for _, expr := range exprs {
+		walk(expr)
+	}
 }
