@@ -1950,3 +1950,18 @@ func TestRepoFileRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+func TestRadixNumericSuffix(t *testing.T) {
+	for _, literal := range []string{"#x10:foo", "#o17:bar", "#x10x", "#o178"} {
+		t.Run(literal, func(t *testing.T) {
+			_, err := Format([]byte("'("+literal+")"), nil)
+			require.ErrorContains(t, err, "invalid numeric literal \""+literal+"\"")
+		})
+	}
+	src := "'(#x10 :foo #o17 :bar #x10 x #o17 8 #x10 #o17 #xFF)"
+	formatted, err := Format([]byte(src), nil)
+	require.NoError(t, err)
+	require.Equal(t, src+"\n", string(formatted))
+	_, err = Format([]byte("#x-1"), nil)
+	require.Error(t, err)
+}

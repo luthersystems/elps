@@ -48,7 +48,8 @@ func newScannerBuf(file string, r io.Reader, buf []byte) *Scanner {
 
 // DefaultBufSize is the size of the sliding window NewScanner allocates.  It
 // limits text retained between EmitToken or Ignore calls: the window never
-// grows. ScanLine releases chunks as it reads, so comments can exceed this size.
+// grows. Exhausting it reports the size in bytes at the token's start. ScanLine
+// releases chunks as it reads, so comments can exceed this size.
 const DefaultBufSize = 128 << 10
 
 // NewScanner initializes and returns a new Scanner reading through a
@@ -139,6 +140,10 @@ func (s *Scanner) Peek() (rune, bool) {
 		return 0, false
 	}
 	c, n := utf8.DecodeRune(s.buf[s.next:])
+	if c == '\ufeff' && s.totalPos+s.c.N != 0 {
+		s.scanErr = errors.New("unexpected byte-order mark")
+		return c, false
+	}
 	peek := Rune{c, n}
 	if peek.IsRuneError() {
 		s.scanErr = fmt.Errorf("invalid utf-8 sequence in source text starting with byte %q", s.buf[s.next])
@@ -402,6 +407,9 @@ func (s *Scanner) AcceptString(literal string) (int, bool) {
 }
 
 func (s *Scanner) checkRuneError() error {
+	if s.c.C == '\ufeff' && s.totalPos != 0 {
+		return errors.New("unexpected byte-order mark")
+	}
 	if !s.c.IsRuneError() {
 		return nil
 	}
@@ -463,7 +471,12 @@ func (s *Scanner) checkExtend() error {
 		}
 		// If this is happening then we haven't seen EOF and the extension
 		// routine was unable to do anything to extend the buffer.
-		return errors.New("token exceeds maximum allowable size")
+		return fmt.Errorf("token exceeds maximum allowable size (%d bytes)", len(s.buf))
+	}
+	// A valid multi-byte rune may straddle a full window. With no room to
+	// slide, this is a size limit, not evidence of malformed UTF-8.
+	if s.readErr == nil && !utf8.FullRune(s.buf[s.next:]) {
+		return fmt.Errorf("token exceeds maximum allowable size (%d bytes)", len(s.buf))
 	}
 	return nil
 }
