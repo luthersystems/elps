@@ -146,6 +146,24 @@ type Package struct {
 	// pointer across goroutines.  See issue #397.
 	funNames  map[string]string
 	externals []string
+	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
+	// Go registration APIs remain available to the host after initialization.
+	bindingsSealed bool
+}
+
+// checkLispPackageBinding checks a Lisp assignment's destination without
+// allocating on the ordinary user-package path. Qualified set! needs this
+// check too, even though Update otherwise searches literal lexical keys.
+func (env *LEnv) checkLispPackageBinding(name string) *LVal {
+	pkg := env.Runtime.Package
+	if ns, local, qualified := strings.Cut(name, ":"); qualified {
+		pkg = env.Runtime.Registry.packages[ns]
+		name = local
+	}
+	if pkg != nil && pkg.bindingsSealed {
+		return env.Errorf("cannot rebind lisp package binding: %s", name)
+	}
+	return nil
 }
 
 // NewPackage initializes and returns a package with the given name.

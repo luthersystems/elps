@@ -2102,10 +2102,11 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 23)
+	assert.Len(t, analyzers, 25)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
+		"builtin-shadowing",
 		"comparator-mutation",
 		"cond-missing-else",
 		"cond-structure",
@@ -2117,6 +2118,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"iteration-mutation",
 		"let-bindings",
 		"let-recursion",
+		"lisp-package-seal",
 		"package-builtins",
 		"quote-call",
 		"rethrow-context",
@@ -2557,6 +2559,8 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"set-usage":           SeverityWarning,
 		"in-package-toplevel": SeverityWarning,
 		"package-builtins":    SeverityError,
+		"lisp-package-seal":   SeverityError,
+		"builtin-shadowing":   SeverityWarning,
 		"if-arity":            SeverityError,
 		"let-bindings":        SeverityError,
 		"let-recursion":       SeverityWarning,
@@ -5027,4 +5031,78 @@ func TestPackageBuiltinsMigration(t *testing.T) {
 	t.Run("nolint", func(t *testing.T) {
 		assertNoDiags(t, lintCheck(t, analyzer, `(export '(a 1 b)) ; nolint:package-builtins`))
 	})
+}
+
+func TestLispBindingDiagnostics(t *testing.T) {
+	for _, check := range []struct {
+		name               string
+		severity           Severity
+		positive, negative []string
+	}{
+		{"lisp-package-seal", SeverityError, []string{
+			`(s:deftype "lisp:if" s:int)`,
+			`(in-package 'lisp) (s:deftype "if" s:int)`,
+			`(set 'lisp:if 1)`, `(set! lisp:if 1)`, `(lisp:set! lisp:if 1)`,
+			`(set! 'lisp:lambda 1)`,
+			`(defun lisp:car (x) x)`, `(defmacro lisp:car (x) x)`,
+			`(lisp:set (quote lisp:if) 1)`, `(set (lisp:quote lisp:if) 1)`,
+			`(defun f () (set 'lisp:if 1))`,
+			`(in-package 'lisp) (set 'if 1)`,
+			`(in-package 'lisp) (set! if 1)`, `(in-package 'lisp) (lisp:set! if 1)`,
+			`(in-package "lisp") (defun car (x) x)`,
+		}, []string{
+			`(s:deftype "if" s:int)`, `(s:deftype "mypkg:if" s:int)`,
+			`(s:deftype name s:int)`, `(other:deftype "lisp:if" s:int)`,
+			`(s:make-validator "lisp:if" s:int)`,
+			`'(s:deftype "lisp:if" s:int)`,
+			`(defun s:deftype (name type) ()) (s:deftype "lisp:if" s:int)`,
+			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'car 1)`,
+			`(set name 1)`, `(set (get m "name") 1)`,
+			`(set! (quote lisp:if) 1)`, `(lisp:set! (lisp:quote lisp:if) 1)`,
+			`'(set 'lisp:if 1)`, `(quote (set 'lisp:if 1))`,
+			`(lisp:quasiquote (set 'lisp:if 1))`,
+			`(defun set (x y) y) (set 'lisp:if 1)`,
+			`(let ((set list)) (set 'lisp:if 1))`,
+			`(lambda (set) (set 'lisp:if 1))`, `(other:set 'lisp:if 1)`,
+			`(in-package 'lisp) (in-package 'user) (set 'car 1)`,
+			`(lambda (set lisp:if x) x)`,
+		}},
+		{"builtin-shadowing", SeverityWarning, []string{
+			`(set 'if 1)`, `(set! if 1)`, `(lisp:set! if 1)`,
+			`(set! user:if 1)`, `(lisp:set! user:if 1)`, `(set 'quote 1)`,
+			`(set! 'lambda 1)`,
+			`(defun car (x) x)`, `(defmacro list (x) x)`,
+			`(lisp:set (quote if) 1)`, `(lisp:defun car (x) x)`,
+			`(in-package 'other) (defun car (x) x)`,
+		}, []string{
+			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'lisp:if 1)`,
+			`(defun my-car (x) (car x))`, `(let ((list 1)) list)`,
+			`(defun f () (set 'if 1))`, `(set name 1)`,
+			`(set! (quote if) 1)`, `(lisp:set! (lisp:quote if) 1)`,
+			`(quote (set 'if 1))`, `(quasiquote (defun car (x) x))`,
+			`(in-package 'lisp) (set 'if 1)`,
+		}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			var analyzer *Analyzer
+			for _, candidate := range DefaultAnalyzers() {
+				if candidate.Name == check.name {
+					analyzer = candidate
+				}
+			}
+			require.NotNil(t, analyzer, "%s must be registered", check.name)
+			for _, source := range check.positive {
+				t.Run(source, func(t *testing.T) {
+					diags := lintCheck(t, analyzer, source)
+					require.Len(t, diags, 1)
+					assert.Equal(t, check.severity, diags[0].Severity)
+					assertDiagOnLine(t, diags, 1, "lisp")
+				})
+			}
+			for _, source := range check.negative {
+				t.Run(source, func(t *testing.T) { assertNoDiags(t, lintCheck(t, analyzer, source)) })
+			}
+			assertNoDiags(t, lintCheck(t, analyzer, check.positive[0]+" ; nolint:"+check.name))
+		})
+	}
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"log"
 	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -17,6 +18,26 @@ func TestPackage(t *testing.T) {
 	r := &elpstest.Runner{}
 	defer r.Close()
 	r.RunTestFile(t, "libschema_test.lisp")
+}
+
+func TestDefTypeLispPackageSeal(t *testing.T) {
+	for _, source := range []string{
+		`(s:deftype "lisp:if" s:int)`,
+		`(in-package 'lisp) (s:deftype "if" s:int)`,
+		`(set 'target "lisp:if") (s:deftype target s:int)`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			env := newSchemaEnv(t)
+			got := env.LoadStringContext(context.Background(), "seal.lisp", source)
+			if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot rebind lisp package binding: if") {
+				t.Errorf("expected seal error, got %v", got)
+			}
+			got = env.LoadStringContext(context.Background(), "next.lisp", `(in-package 'mypkg) (if true 'a 'b)`)
+			if got.String() != "'a" {
+				t.Errorf("later package core behavior: got %v, want 'a", got)
+			}
+		})
+	}
 }
 
 // TestLenConstraintTypes pins the behaviour of the s:len* family across LType.

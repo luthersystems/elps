@@ -36,6 +36,10 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	if GoError(rc) != nil {
 		return rc
 	}
+	// All default and host-registered core macros, operators, builtins, and
+	// the metatype are installed. Seal Lisp writes before running user code;
+	// Go registration APIs and other packages remain mutable.
+	env.Runtime.Package.bindingsSealed = true
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
 	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
@@ -628,6 +632,8 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
 // value the binding is updated so that k is bound to v.
+// It only writes the lexical scope, never package bindings, so Lisp callers
+// may use it even when the current package is sealed.
 func (env *LEnv) Put(k, v *LVal) *LVal {
 	// Qualified names are retained verbatim for compatibility, but Get
 	// resolves them in a package, not this lexical scope; see docs/lang.md#scope.
@@ -652,6 +658,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 // Update updates the binding of k to v within the scope of env.  Update can
 // update either lexical or global bindings.  If k is not bound by env, an
 // enclosing LEnv, or the current package an error condition is signaled.
+// This is a trusted Go API; Lisp-facing writers must use UpdateFromLisp.
 func (env *LEnv) Update(k, v *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
@@ -660,6 +667,18 @@ func (env *LEnv) Update(k, v *LVal) *LVal {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
 	return env.update(k, v)
+}
+
+// UpdateFromLisp updates an existing binding with the core package seal
+// enforced. Use this for assignments with names controlled by Lisp code.
+func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
+	if k.Type != LSymbol && k.Type != LQSymbol {
+		return env.Errorf("key is not a symbol: %v", k.Type)
+	}
+	if err := env.checkLispPackageBinding(k.Str); err != nil {
+		return err
+	}
+	return env.Update(k, v)
 }
 
 func (env *LEnv) update(k, v *LVal) *LVal {
@@ -714,7 +733,22 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 	return env.packageGet(k)
 }
 
-// PutGlobal takes an LSymbol k and binds it to v in current package.
+// PutGlobalFromLisp binds k to v in the current or explicitly qualified package
+// with the core package seal enforced. Builtins accepting Lisp-controlled
+// binding names must use this instead of the trusted Go registration API.
+func (env *LEnv) PutGlobalFromLisp(k, v *LVal) *LVal {
+	if k.Type != LSymbol && k.Type != LQSymbol {
+		return env.Errorf("key is not a symbol: %v", k.Type)
+	}
+	if err := env.checkLispPackageBinding(k.Str); err != nil {
+		return err
+	}
+	return env.PutGlobal(k, v)
+}
+
+// PutGlobal takes an LSymbol k and binds it to v in the current or explicitly
+// qualified package. This trusted Go registration API bypasses the core package
+// seal; Lisp-facing writers must use PutGlobalFromLisp.
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	// Ownership check (elpscheck builds only; no-op otherwise).  This entry
 	// covers the package-scope binding path, including the pkg.Put calls

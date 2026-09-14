@@ -2476,3 +2476,104 @@ func validPackageLiteral(v *lisp.LVal) bool {
 	exprs, err := rdparser.New(token.NewScannerString("", v.Str)).ParseProgram()
 	return err == nil && len(exprs) == 1 && exprs[0].Type == lisp.LSymbol && exprs[0].Str == v.Str
 }
+
+// AnalyzerLispPackageSeal diagnoses statically recognizable writes to the
+// sealed core package. Dynamic names and opaque macro expansions need runtime
+// enforcement; shadowed calls are excluded conservatively.
+var AnalyzerLispPackageSeal = &Analyzer{
+	Name:     "lisp-package-seal",
+	Severity: SeverityError,
+	Doc: "Check set, set!, defun, defmacro, and s:deftype writes to the sealed lisp package.\n\n" +
+		"Define application bindings in your own package instead. Checks literal " +
+		"qualified names and unqualified names after a top-level in-package. " +
+		"Dynamic names, shadowed calls, and macro templates are not checked.",
+	Run: func(pass *Pass) error { return checkLispBindings(pass, true) },
+}
+
+// AnalyzerBuiltinShadowing warns about legal package-level Lisp-1 shadowing.
+// Local bindings remain the responsibility of AnalyzerShadowing.
+var AnalyzerBuiltinShadowing = &Analyzer{
+	Name:     "builtin-shadowing",
+	Severity: SeverityWarning,
+	Doc: "Warn when a top-level binding shadows a lisp export.\n\n" +
+		"Builtin, special operator, and macro names are ordinary symbols. " +
+		"Shadowing is legal in user packages, but changes later calls in that " +
+		"package. Rename the binding or call the core value with lisp: qualification. " +
+		"Dynamic names and macro-generated definitions are not checked.",
+	Run: func(pass *Pass) error { return checkLispBindings(pass, false) },
+}
+
+func checkLispBindings(pass *Pass, sealed bool) error {
+	userDefs := UserDefined(pass.Exprs)
+	skip := aritySkipNodes(pass.Exprs)
+	exports := make(map[string]string)
+	if !sealed {
+		for _, def := range lisp.DefaultBuiltins() {
+			exports[def.Name()] = "builtin"
+		}
+		for _, def := range lisp.DefaultSpecialOps() {
+			exports[def.Name()] = "special operator"
+		}
+		for _, def := range lisp.DefaultMacros() {
+			exports[def.Name()] = "macro"
+		}
+	}
+	pkg := lisp.DefaultUserPackage
+	var walk func(*lisp.LVal, bool)
+	walk = func(v *lisp.LVal, topLevel bool) {
+		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
+			return
+		}
+		head := unqualifiedLispName(HeadSymbol(v))
+		if head == "quote" || head == "quasiquote" {
+			return
+		}
+		if !skip[v] && !userDefs[HeadSymbol(v)] && len(v.Cells) > 1 {
+			arg := v.Cells[1]
+			if topLevel && head == "in-package" {
+				pkg = "" // A dynamic package switch makes the current package unknown.
+				if value, known := packageLiteralArg(arg); known && validPackageLiteral(value) {
+					pkg = value.Str
+				}
+			}
+			var name string
+			switch head {
+			case "s:deftype":
+				if sealed && arg.Type == lisp.LString {
+					name = arg.Str
+				}
+			case "set":
+				if value, known := packageLiteralArg(arg); known && value.Type == lisp.LSymbol {
+					name = value.Str
+				}
+			case "set!":
+				// Unlike set, set! takes its symbol argument unevaluated.
+				if arg.Type == lisp.LSymbol {
+					name = arg.Str
+				}
+			case "defun", "defmacro":
+				if arg.Type == lisp.LSymbol && !arg.IsQuoted() {
+					name = arg.Str
+				}
+			}
+			if name != "" {
+				target := pkg
+				if ns, local, qualified := strings.Cut(name, ":"); qualified {
+					target, name = ns, local
+				}
+				if target == lisp.DefaultLangPackage && sealed {
+					pass.ReportNode(arg, "cannot rebind lisp package binding: %s; define an unqualified name in your own package", name)
+				} else if target != lisp.DefaultLangPackage && !sealed && topLevel && exports[name] != "" {
+					pass.ReportNode(arg, "top-level binding '%s' shadows lisp %s; rename it or use lisp:%s for core calls", name, exports[name], name)
+				}
+			}
+		}
+		for _, child := range v.Cells {
+			walk(child, topLevel && head == "progn")
+		}
+	}
+	for _, expr := range pass.Exprs {
+		walk(expr, true)
+	}
+	return nil
+}

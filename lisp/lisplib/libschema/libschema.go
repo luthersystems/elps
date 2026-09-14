@@ -254,10 +254,10 @@ func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return res
 	}
 	if res != nil {
-		// BUG:  A regular function should not call PutGlobal in this way
+		// BUG:  A regular function should not bind globals in this way
 		// because functions aren't supposed to operate in the caller's lexical
 		// environment, but builtins don't get a lexical environment currently.
-		res = env.PutGlobal(lisp.Symbol(lname.Str), res)
+		res = env.PutGlobalFromLisp(lisp.Symbol(lname.Str), res)
 		if res != nil && res.Type == lisp.LError {
 			return res
 		}

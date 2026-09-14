@@ -1461,6 +1461,47 @@ Packages are created/modified using the `in-package`
 function, which changes the environment's working package.  Symbols bound using
 `set`, `defun`, `defmacro`, etc will be bound in the working package.
 
+The core `lisp` package is sealed against binding changes from Lisp code once
+`InitializeUserEnv` finishes registering the language, before application
+configuration runs. The seal remains in effect after `LoadLibrary` and in
+VMs instantiated from a template. `set`, `set!`, `defun`, `defmacro`, and `s:deftype`
+cannot write a `lisp:`-qualified name, or an unqualified name while the current
+package is `lisp`. For example, `(set 'lisp:if 1)` raises the ordinary error
+`cannot rebind lisp package binding: if` at the assignment, leaving later
+packages' `if` intact. This also rejects new names in `lisp`; exporting a name
+first does not bypass the seal. Lisp code cannot add new exports or import
+replacement bindings into `lisp`. Re-exporting an existing export is a no-op.
+Go registration APIs remain available to the host, and packages registered
+by embedders through `elpsutil` remain mutable.
+Go builtins that accept binding names from Lisp must use
+`LEnv.PutGlobalFromLisp` or `LEnv.UpdateFromLisp`; `PutGlobal` and `Update`
+are trusted host APIs. `LEnv.Put` only writes lexical bindings.
+
+ELPS is a Lisp-1: builtin and special-operator names are ordinary symbols in
+the same namespace as variables. Unqualified shadowing in your own package
+remains legal: `(defun car (x) x)`, `(set 'if 1)`, `(set 'lambda 1)`, and
+`(set 'quote 1)` all replace that package's binding. Later calls in that
+package use the replacement, which can break subsequent evaluation, including
+error handlers. Use a distinct name or a qualified core call such as
+`(lisp:car xs)` when that is what you intend.
+
+Shadowing is per-package. Imports copy bindings at import time; packages
+that already imported a name retain its old value if the source package
+later rebinds it. The changed value appears in subsequent imports. Before
+the core seal, changing `lisp:if` could therefore leave the current user
+package working while breaking packages created later, which automatically
+import `lisp`. Legal shadowing in a user package does not change `lisp` or
+the core bindings imported by newly created packages.
+
+The `lisp-package-seal` lint check diagnoses literal binding writes to `lisp`,
+including unqualified writes after a top-level `(in-package 'lisp)`.
+The `builtin-shadowing` check warns when a top-level `set`, `set!`, `defun`,
+or `defmacro` shadows a core export, even in another package with no explicit
+`use-package`. Local shadowing is covered by the existing `shadowing` check.
+These checks skip dynamic binding names, macro templates, and conservatively
+identified shadowed calls. They do not prove compatibility for runtime data
+or opaque macro expansions; the runtime seal also checks computed names.
+
 `in-package` takes a symbol or string naming the package, followed by zero or
 more documentation strings. The name must spell a non-empty [symbol
 identifier](#symbols), without a colon; keywords are not package names.

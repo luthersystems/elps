@@ -41,9 +41,15 @@ var langMacros = []*langBuiltin{
 		`Defines a named macro in the current package. The body receives
 		unevaluated forms and must return a form to be evaluated at the
 		call site. Use quasiquote/unquote to construct the expansion.
-		An optional leading string in the body serves as a docstring.`},
+		An optional leading string in the body serves as a docstring.
+		The lisp package is sealed after initialization; defining a name
+		there signals: cannot rebind lisp package binding: name. Unqualified
+		builtin shadowing in your own package remains legal.`},
 	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun,
-		`Defines a named function in the current package.`},
+		`Defines a named function in the current package.
+		The lisp package is sealed after initialization; defining a name there signals:
+		cannot rebind lisp package binding: name. Unqualified builtin
+		shadowing in your own package remains legal.`},
 	{"deftype", Formals("name", "constructor-formals", VarArgSymbol, "constructor-exprs"), macroDeftype,
 		`Defines a tagged type constructor bound to name in the current
 		package. The formals and body define a constructor function that

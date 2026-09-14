@@ -22,7 +22,9 @@ var langSpecialOps = []*langBuiltin{
 		`Mutates an existing variable binding. Evaluates expr and updates
 		the binding of the quoted symbol name. Signals an error if the
 		symbol is not already bound in any enclosing scope or the current
-		package. Cannot rebind the constants true and false.`},
+		package. Cannot rebind the constants true and false. After initialization,
+		writes to the lisp package signal: cannot rebind lisp package binding: name.
+		Unqualified builtin shadowing in your own package remains legal.`},
 	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert,
 		`Evaluates the test expression and signals an error if the result
 		is falsey. An optional format string and arguments (evaluated only
@@ -182,7 +184,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 		return val
 	}
 	env.loc = key.source
-	return env.Update(key, val)
+	return env.UpdateFromLisp(key, val)
 }
 
 func opAssert(env *LEnv, args *LVal) *LVal {
