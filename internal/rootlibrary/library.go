@@ -42,25 +42,47 @@ func (lib *Library) Close() error { return lib.root.Close() }
 // LoadSource anchors initial loads at the root and nested loads at the calling
 // source's directory. The root handle enforces confinement at read time.
 func (lib *Library) LoadSource(ctx lisp.SourceContext, loc string) (string, string, []byte, error) {
+	requested := loc
 	if !filepath.IsAbs(loc) && ctx.Location() != "" {
-		loc = filepath.Join(filepath.Dir(ctx.Location()), loc)
+		// Join without cleaning the unresolved suffix: link/.. must follow
+		// link before moving to its target's parent directory.
+		loc = filepath.Dir(ctx.Location()) + string(filepath.Separator) + loc
 	}
-	if filepath.IsAbs(loc) {
-		rel, err := filepath.Rel(lib.path, loc)
-		if err != nil {
-			return "", "", nil, err
-		}
-		loc = rel
+	loc, err := RelativePath(lib.path, loc)
+	if err != nil {
+		return "", "", nil, lib.loadError(requested)
 	}
 	// Never resolve a host pathname and then open it: directory components
 	// can change between those operations. Root.ReadFile confines the open
 	// even when a component is concurrently replaced by an escaping symlink.
 	data, err := lib.root.ReadFile(loc)
 	if err != nil {
-		return "", "", nil, fmt.Errorf("cannot load %s within root directory %s: %w", loc, lib.path, err)
+		return "", "", nil, lib.loadError(requested)
 	}
 	loc = lib.sourceLocation(loc)
 	return filepath.Base(loc), filepath.Join(lib.path, loc), data, nil
+}
+
+func (lib *Library) loadError(requested string) error {
+	// Filesystem errors and expanded contexts can contain paths the caller
+	// did not supply. Expose only the original request and configured root.
+	return fmt.Errorf("cannot load %q within root directory %q", requested, lib.path)
+}
+
+// RelativePath strips an absolute root prefix without cleaning the unresolved
+// request. Relative requests are passed through for os.Root to check at open time.
+func RelativePath(root, loc string) (string, error) {
+	if !filepath.IsAbs(loc) {
+		return loc, nil
+	}
+	prefix := strings.TrimSuffix(filepath.Clean(root), string(filepath.Separator)) + string(filepath.Separator)
+	if strings.HasPrefix(loc, prefix) {
+		return strings.TrimPrefix(loc, prefix), nil
+	}
+	if loc == filepath.Clean(root) {
+		return ".", nil
+	}
+	return "", fmt.Errorf("cannot load %q within root directory %q", loc, root)
 }
 
 // sourceLocation preserves target-relative nested loads through internal
@@ -69,28 +91,35 @@ func (lib *Library) LoadSource(ctx lisp.SourceContext, loc string) (string, stri
 // but every subsequent load still goes through the same root handle.
 func (lib *Library) sourceLocation(loc string) string {
 	original := loc
-	for links := 0; links < 40; links++ {
-		parts := strings.Split(filepath.Clean(loc), string(filepath.Separator))
-		changed := false
-		for i := range parts {
-			prefix := filepath.Join(parts[:i+1]...)
-			target, err := lib.root.Readlink(prefix)
-			if err != nil {
-				continue // Ordinary files are not symlinks; stale metadata is harmless.
+	parts := strings.Split(filepath.FromSlash(loc), string(filepath.Separator))
+	var resolved []string
+	links := 0
+	for len(parts) > 0 {
+		part := parts[0]
+		parts = parts[1:]
+		switch part {
+		case "", ".":
+			continue
+		case "..":
+			if len(resolved) == 0 {
+				return original // The path changed after the confined read.
 			}
-			if filepath.IsAbs(target) {
-				return original // The link changed after the read.
-			}
-			loc = filepath.Join(filepath.Dir(prefix), target, filepath.Join(parts[i+1:]...))
-			if !filepath.IsLocal(loc) {
-				return original
-			}
-			changed = true
-			break
+			resolved = resolved[:len(resolved)-1]
+			continue
 		}
-		if !changed {
-			return loc
+		prefix := filepath.Join(strings.Join(resolved, string(filepath.Separator)), part)
+		target, err := lib.root.Readlink(prefix)
+		if err != nil {
+			resolved = append(resolved, part) // Ordinary files are not symlinks.
+			continue
 		}
+		links++
+		if filepath.IsAbs(target) || links > 40 {
+			return original // Bound work if links change after the read.
+		}
+		// Expand the target before consuming any remaining components,
+		// including .. in either the target or the original suffix.
+		parts = append(strings.Split(filepath.FromSlash(target), string(filepath.Separator)), parts...)
 	}
-	return original // Bound work if links change or form a cycle after the read.
+	return filepath.Join(resolved...)
 }

@@ -115,8 +115,7 @@ Examples:
 
 		// Interactive CLI debug REPL mode.
 		if debugREPL {
-			absFile := filepath.Join(rootDir, relFile)
-			if err := debugrepl.Run(dbg, env, absFile); err != nil {
+			if err := debugrepl.Run(dbg, env, relFile); err != nil {
 				fmt.Fprintf(os.Stderr, "debug repl error: %v\n", err)
 				os.Exit(1)
 			}

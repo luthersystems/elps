@@ -56,7 +56,7 @@ func TestRunReplRootDirSymlinkCreatedAfterConstruction(t *testing.T) {
 			}
 			res := env.Eval(expr)
 			assert.Equal(t, lisp.LError, res.Type, "late escaping symlink loaded: %v", res)
-			assert.Contains(t, res.String(), "escapes")
+			assert.Contains(t, res.String(), `cannot load "late/outside.lisp" within root directory`)
 			caught := env.LoadString("test", `(ignore-errors (load-file "late/outside.lisp"))`)
 			assert.True(t, caught.IsNil(), "refused load must be catchable: %v", caught)
 			return caught

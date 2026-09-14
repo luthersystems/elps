@@ -133,18 +133,7 @@ func runElps(args []string, stdout io.Writer) error {
 // Relative paths are returned as-is. Absolute paths within rootDir
 // are converted; absolute paths outside rootDir produce an error.
 func toRelativePath(rootDir, path string) (string, error) {
-	if !filepath.IsAbs(path) {
-		return path, nil
-	}
-	rel, err := filepath.Rel(rootDir, path)
-	if err != nil {
-		return "", fmt.Errorf("%s: cannot make relative to root directory %s: %w", path, rootDir, err)
-	}
-	// filepath.Rel can produce ".." components for paths outside rootDir.
-	if len(rel) >= 2 && rel[:2] == ".." {
-		return "", fmt.Errorf("%s: outside root directory %s", path, rootDir)
-	}
-	return rel, nil
+	return rootlibrary.RelativePath(rootDir, path)
 }
 
 func init() {

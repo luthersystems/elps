@@ -213,3 +213,26 @@ func TestRunRootDirFilesystemRoot(t *testing.T) {
 	require.NoError(t, runElps([]string{path}, &out))
 	assert.Equal(t, "42\n", out.String())
 }
+
+func TestRunRootDirSymlinkBeforeParent(t *testing.T) {
+	root := t.TempDir()
+	require.NoError(t, os.MkdirAll(filepath.Join(root, "a", "b"), 0o700))
+	for name, source := range map[string]string{
+		"main.lisp":    `(load-file "value.lisp")`,
+		"a/main.lisp":  `(load-file "value.lisp")`,
+		"value.lisp":   "99",
+		"a/value.lisp": "42",
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(root, name), []byte(source), 0o600))
+	}
+	require.NoError(t, os.Symlink("a/b", filepath.Join(root, "link")))
+	for _, path := range []string{"link/../main.lisp", root + "/link/../main.lisp"} {
+		t.Run(path, func(t *testing.T) {
+			resetRunFlags(t)
+			runRootDir, runPrint = root, true
+			var out bytes.Buffer
+			require.NoError(t, runElps([]string{path}, &out))
+			assert.Equal(t, "42\n", out.String())
+		})
+	}
+}
