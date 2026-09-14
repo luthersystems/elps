@@ -22,8 +22,8 @@ func TestEvalAggregateWireBudget(t *testing.T) {
 		t.Run(map[bool]string{false: "single", true: "batch"}[batch], func(t *testing.T) {
 			srv := New()
 			client, server := connectTestServer(t, srv)
-			defer client.Close()
-			defer server.Close()
+			defer func() { _ = client.Close() }()
+			defer func() { _ = server.Close() }()
 			args := map[string]any{"expression": `(set 'x (string:repeat "a" 1000000))` + strings.Repeat(" x", 12)}
 			if batch {
 				expressions := make([]string, 13)
@@ -39,6 +39,41 @@ func TestEvalAggregateWireBudget(t *testing.T) {
 			t.Logf("complete MCP response bytes=%d cap=%d", len(wire)+1, lisp.DefaultMaxAlloc)
 			require.LessOrEqual(t, len(wire)+1, lisp.DefaultMaxAlloc)
 			require.Contains(t, string(wire), "truncated")
+		})
+	}
+}
+
+func TestEvalContinuesAfterRenderBudget(t *testing.T) {
+	const large = `(string:repeat "a" 600000)`
+	const failure = `(error 'boom "must run")`
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"single", map[string]any{"expression": large + " " + failure}},
+		{"progn", map[string]any{"expression": "(progn " + large + " " + failure + ")"}},
+		{"batch-forms", map[string]any{"expressions": []string{large + " " + failure}}},
+		{"batch-items", map[string]any{"expressions": []string{large, "42", failure}}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			client, server := connectTestServer(t, New())
+			defer func() { _ = client.Close() }()
+			defer func() { _ = server.Close() }()
+			res, err := client.CallTool(t.Context(), &mcp.CallToolParams{Name: "eval", Arguments: tc.args})
+			require.NoError(t, err)
+			out := decodeStructured[EvalResponse](t, res)
+			var failures strings.Builder
+			failures.WriteString(out.Error)
+			for _, result := range out.Batch {
+				failures.WriteString(result.Error)
+			}
+			failureText := failures.String()
+			wire, err := json.Marshal(map[string]any{"jsonrpc": "2.0", "id": 1, "result": res})
+			require.NoError(t, err)
+			t.Logf("complete MCP response bytes=%d cap=%d; error=%q", len(wire)+1, lisp.DefaultMaxAlloc, failureText)
+			require.LessOrEqual(t, len(wire)+1, lisp.DefaultMaxAlloc)
+			require.Contains(t, failureText, "boom")
+			require.Contains(t, failureText, "must run")
 		})
 	}
 }

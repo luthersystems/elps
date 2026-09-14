@@ -1967,6 +1967,7 @@ func (s *service) newTestEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 // conservatively cover JSON escapes, the JSON-in-text copy, and structuredContent.
 type evalOutput struct {
 	renderer *lisp.DiagnosticRenderer
+	failures *lisp.DiagnosticRenderer
 	limit    int
 }
 
@@ -1974,7 +1975,12 @@ func (o *evalOutput) useEnv(ctx context.Context, env *lisp.LEnv) bool {
 	limit := env.Runtime.MaxAllocBytes()
 	if o.renderer == nil {
 		o.limit = limit
-		o.renderer = env.NewRendererWithLimit(ctx, (limit-512)/18)
+		budget := max(0, (limit-512)/18)
+		// Keep a small part of the same wire budget available for failures
+		// discovered after intermediate values exhaust normal rendering.
+		reserve := min(256, budget/2)
+		o.renderer = env.NewRendererWithLimit(ctx, budget-reserve)
+		o.failures = env.NewRendererWithLimit(ctx, reserve)
 		return true
 	}
 	// A factory may supply stricter limits later in a batch. Discard the earlier
@@ -1987,6 +1993,13 @@ func (o *evalOutput) useEnv(ctx context.Context, env *lisp.LEnv) bool {
 }
 
 func (o *evalOutput) text(parts ...string) string { return o.renderer.Text(parts...) }
+
+func (o *evalOutput) errorRenderer() *lisp.DiagnosticRenderer {
+	if o.renderer.Exhausted() {
+		return o.failures
+	}
+	return o.renderer
+}
 
 func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
 	start := time.Now()
@@ -2017,31 +2030,26 @@ func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalI
 			response = EvalResponse{Value: "#<truncated>"}
 			break
 		}
-		if output.renderer.Exhausted() {
-			release()
-			response = EvalResponse{Value: "#<truncated>"}
-			break
-		}
+		collect := !output.renderer.Exhausted()
 		if batch {
-			overhead := output.text(strings.Repeat(" ", 32))
-			if output.renderer.Exhausted() {
-				release()
-				response.Batch = append(response.Batch, EvalResult{Value: overhead})
-				break
-			}
+			output.text(strings.Repeat(" ", 32))
+			collect = !output.renderer.Exhausted()
 		}
 		result := s.evalSingle(ctx, env, expression, output, !batch)
 		release()
 		if batch {
-			response.Batch = append(response.Batch, result.Batch...)
-			if len(result.Batch) == 0 {
-				response.Batch = append(response.Batch, EvalResult{Value: result.Value, Error: result.Error})
+			if collect {
+				response.Batch = append(response.Batch, result.Batch...)
+				if len(result.Batch) == 0 {
+					response.Batch = append(response.Batch, EvalResult{Value: result.Value, Error: result.Error})
+				}
+			} else if response.Error == "" {
+				// Omitted batch items still run. Preserve a later failure in
+				// the envelope without growing an unbounded list of results.
+				response.Error = result.Error
 			}
 		} else {
 			response = result
-		}
-		if output.renderer.Exhausted() {
-			break
 		}
 	}
 	if output.renderer != nil && output.renderer.Exhausted() {
@@ -2055,7 +2063,7 @@ func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalI
 
 func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression string, output *evalOutput, allResults bool) EvalResponse {
 	response := EvalResponse{}
-	fail := func(v *lisp.LVal) { response.Error = output.renderer.Render(v) }
+	fail := func(v *lisp.LVal) { response.Error = output.errorRenderer().Render(v) }
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
 	if lerr.Type == lisp.LError {
 		fail(lerr)
@@ -2063,7 +2071,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression str
 	}
 	exprs, parseErr := env.Runtime.Reader.Read("<eval>", strings.NewReader(expression))
 	if parseErr != nil {
-		response.Error = output.text(parseErr.Error())
+		response.Error = output.errorRenderer().Text(parseErr.Error())
 	} else {
 		var last *lisp.LVal
 		for _, expr := range exprs {
@@ -2076,12 +2084,9 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression str
 				punctuation := output.text("    ")
 				if output.renderer.Exhausted() {
 					response.Results = append(response.Results, punctuation)
-					break
+					continue
 				}
 				response.Results = append(response.Results, output.renderer.Render(last))
-			}
-			if output.renderer.Exhausted() {
-				break
 			}
 		}
 		if response.Error == "" && last != nil {
