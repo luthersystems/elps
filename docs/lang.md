@@ -158,7 +158,23 @@ argument symbols.
 
 Parameter lists contain symbols, including any `&optional`, `&rest`, or
 `&key` markers. Non-symbol parameters are rejected when a function or macro
-is defined. A call that cannot bind a parameter fails before entering the
+is defined. The entire lambda list is validated at creation in `lambda`,
+`defun`, `defmacro`, `labels`, and `flet` (also local macros in `macrolet`).
+Unknown `&` markers, repeated markers, and duplicate parameter names within
+one lambda list are errors. Each marker may appear at most once. `&key`
+must be followed by one or more names and no further markers; `&rest` must
+be followed by exactly one name at the end of the list. `&optional` cannot
+end the list and may precede `&key` or `&rest`. For example,
+`(lambda (x x) x)` and `(lambda (&rest a b) a)` fail immediately, without
+being called.
+
+Duplicate binding names in `let`, `let*`, `labels`, and `flet` remain legal;
+the last binding wins. Lint warns about duplicates within one `let`,
+`labels`, or `flet` binding list. Sequential rebinding in `let*` is idiomatic
+and does not produce this warning. Reusing a parameter name in different
+functions or a variable name in nested scopes is also legal.
+
+A call that cannot bind a parameter fails before entering the
 body: `true`, `false`, and keywords cannot be bound, including omitted
 optional/keyword parameters and empty rest parameters.
 
@@ -281,6 +297,19 @@ values for both, one, or neither.
 (point2d :x 1)      ; evaluates to '(1 0)
 (point2d :y 1 :x 1) ; evaluates to '(1 1)
 ```
+
+Duplicate keyword arguments at a call site use the **rightmost** value in
+ELPS. This differs from Common Lisp, which uses the leftmost value. For
+example, `(point2d :x 1 :x 2)` evaluates to `'(2 0)`. The
+`duplicate-keyword` lint check warns about repeated literal keyword/value
+pairs; remove the earlier pair to make the intended value clear.
+
+The `lambda-list` and `duplicate-binding` checks diagnose recognizable
+literal definitions and binding lists. These checks exclude quoted data
+and macro templates, and conservatively omit shadowed constructors.
+Dynamic keywords and macro-generated code may escape static checks. A
+keyword/value suffix can also be positional data for its callee, so a
+`duplicate-keyword` warning does not prove that the call uses keyword binding.
 
 Keyword arguments are useful but they can also lead to some confusing errors.
 Keywords are values.  And as values keywords can be passed to functions as

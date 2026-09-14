@@ -2102,7 +2102,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 25)
+	assert.Len(t, analyzers, 28)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2112,10 +2112,13 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"cond-structure",
 		"defun-structure",
 		"deprecated",
+		"duplicate-binding",
 		"duplicate-definition",
+		"duplicate-keyword",
 		"if-arity",
 		"in-package-toplevel",
 		"iteration-mutation",
+		"lambda-list",
 		"let-bindings",
 		"let-recursion",
 		"lisp-package-seal",
@@ -2565,6 +2568,9 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"let-bindings":        SeverityError,
 		"let-recursion":       SeverityWarning,
 		"defun-structure":     SeverityError,
+		"lambda-list":         SeverityError,
+		"duplicate-binding":   SeverityWarning,
+		"duplicate-keyword":   SeverityWarning,
 		"cond-structure":      SeverityError,
 		"builtin-arity":       SeverityError,
 		"quote-call":          SeverityWarning,
@@ -5079,6 +5085,80 @@ func TestLispBindingDiagnostics(t *testing.T) {
 					require.Len(t, diags, 1)
 					assert.Equal(t, check.severity, diags[0].Severity)
 					assertDiagOnLine(t, diags, 1, "lisp")
+				})
+			}
+			for _, source := range check.negative {
+				t.Run(source, func(t *testing.T) { assertNoDiags(t, lintCheck(t, analyzer, source)) })
+			}
+			assertNoDiags(t, lintCheck(t, analyzer, check.positive[0]+" ; nolint:"+check.name))
+		})
+	}
+}
+
+func TestLambdaListDiagnostics(t *testing.T) {
+	for _, check := range []struct {
+		name               string
+		severity           Severity
+		positive, negative []string
+	}{
+		{"lambda-list", SeverityError, []string{
+			`(defun f (&rest a &rest b) a)`, `(lambda (&rest) 1)`,
+			`(lambda (&rest a &optional b) a)`, `(lambda (&rest a &key b) a)`,
+			`(lambda (&rest a b) a)`, `(lambda (&bogus a) a)`,
+			`(lambda (&optional a &optional b) a)`, `(lambda (&key a &key b) a)`,
+			`(lambda (&optional) 1)`, `(lambda (&key) 1)`, `(lambda (&key (a 1)) a)`,
+			`(lambda (x x) x)`, `(lambda (x &rest x) x)`, `(lambda (x &key x) x)`,
+			`(defmacro m (x x) x)`, `(labels ((f (x x) x)) 1)`, `(flet ((f (&rest) 1)) 1)`,
+			`(lisp:lambda (x x) x)`, `(lisp:labels ((f (x x) x)) 1)`,
+		}, []string{
+			`(lambda (a &optional b) b)`, `(lambda (a &rest r) r)`, `(lambda (a &key k) k)`,
+			`(lambda (&optional a &rest r) r)`, `(lambda (&key a b) a)`,
+			`(lambda () 1)`, `(lambda (x) (lambda (x) x))`,
+			`(labels ((f (x) x) (g (x) x)) (f 1))`,
+			`'(lambda (x x) x)`, `(quote (lambda (x x) x))`, `(lisp:quote (lambda (x x) x))`,
+			`(quasiquote (lambda (x x) x))`, `(lisp:quasiquote (lambda (x x) x))`,
+			`(defun lambda (x y) x) (lambda '(x x) 1)`, `(other:lambda (x x) x)`,
+			`(let ((lambda list)) (lambda '(x x) 1))`,
+			`(lambda (lambda) (lambda '(x x) 1))`,
+		}},
+		{"duplicate-binding", SeverityWarning, []string{
+			`(let ((x 1) (x 2)) x)`, `(labels ((f (x) 1) (f (x) 2)) (f 0))`,
+			`(flet ((f (x) 1) (f (x) 2)) (f 0))`, `(lisp:let ((x 1) (x 2)) x)`,
+		}, []string{
+			`(let* ((x 1) (x (+ x 1))) x)`, `(let ((x 1)) (let ((x 2)) x))`,
+			`(labels ((f (x) x) (g (x) x)) (f 0))`,
+			`(labels ((f (x) (labels ((f (x) x)) (f x)))) (f 0))`,
+			`'(let ((x 1) (x 2)) x)`, `(quasiquote (let ((x 1) (x 2)) x))`,
+		}},
+		{"duplicate-keyword", SeverityWarning, []string{
+			`(kf 1 :b 2 :b 3)`, `((lambda (&key b) b) :b 2 :b 3)`,
+			`(kf :b :value :b 3)`, `(kf :a 1 :b 2 :a 3)`,
+		}, []string{
+			`(kf :a 1 :b 2)`, `(kf :a :b :c :b)`, `(kf key1 1 key2 2)`,
+			`'(kf :b 2 :b 3)`, `(quote (kf :b 2 :b 3))`, `(lisp:quasiquote (kf :b 2 :b 3))`,
+			`(lambda (x :b x :b) x)`, `(let ((x :b) (y :b)) x)`,
+			`(labels ((f (:b x :b y) x)) 1)`,
+		}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			var analyzer *Analyzer
+			for _, candidate := range DefaultAnalyzers() {
+				if candidate.Name == check.name {
+					analyzer = candidate
+				}
+			}
+			require.NotNil(t, analyzer, "%s must be registered", check.name)
+			for _, source := range check.positive {
+				t.Run(source, func(t *testing.T) {
+					diags := lintCheck(t, analyzer, source)
+					require.Len(t, diags, 1)
+					assert.Equal(t, check.severity, diags[0].Severity)
+					if check.name == "lambda-list" {
+						assert.Regexp(t, "lambda list|formal argument", diags[0].Message)
+					} else {
+						assertDiagOnLine(t, diags, 1, "duplicate")
+					}
+					assert.Equal(t, 1, diags[0].Pos.Line)
 				})
 			}
 			for _, source := range check.negative {

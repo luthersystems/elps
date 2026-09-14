@@ -11,6 +11,7 @@ import (
 	"log"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -837,6 +838,9 @@ func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
+	}
+	if _, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
+		return env.Errorf("%s", message)
 	}
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)

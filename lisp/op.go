@@ -40,6 +40,9 @@ var langSpecialOps = []*langBuiltin{
 	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
 		`Returns an anonymous function. Formals is a list of parameter
 		names that may include &optional, &rest, and &key markers.
+		Malformed lists and duplicate parameter names are errors at creation.
+		Each marker may occur once; &rest must have exactly one final name.
+		Duplicate keyword arguments use the rightmost value, unlike Common Lisp.
 		Parameter names must be symbols; binding true, false, or a keyword
 		is an error.
 		The body expressions are evaluated in order and the last value
@@ -73,25 +76,32 @@ var langSpecialOps = []*langBuiltin{
 		`Binds locally-scoped named functions and evaluates the body.
 		Each binding has the form (name formals &rest body). Unlike flet,
 		all functions share the same scope so they may call each other
-		and themselves recursively. Returns the last body value.`},
+		and themselves recursively. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Duplicate function names are legal (the last
+		binding wins), but lint warns. Returns the last body value.`},
 	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet,
 		`Binds locally-scoped macros and evaluates the body. Each binding
 		has the form (name formals &rest body). The macros do not share
-		scope with each other. Returns the last body value.`},
+		scope with each other. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Returns the last body value.`},
 	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet,
 		`Binds locally-scoped named functions and evaluates the body.
 		Each binding has the form (name formals &rest body). Functions
 		cannot reference each other or recurse by name. Use labels for
-		mutual or self-recursion. Returns the last body value.`},
+		mutual or self-recursion. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Duplicate function names are legal (the last
+		binding wins), but lint warns. Returns the last body value.`},
 	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq,
 		`Creates local variable bindings evaluated sequentially, so each
-		binding can refer to previously bound symbols. The first argument
-		is a list of [symbol value] pairs. Returns the last body value.`},
+		binding can refer to previously bound symbols. Repeated names are legal
+		sequential rebinding and do not produce duplicate-binding lint warnings.
+		The first argument is a list of [symbol value] pairs. Returns the last body value.`},
 	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet,
 		`Creates local variable bindings evaluated in parallel. All value
 		expressions are evaluated in the enclosing scope before any
 		bindings are established. The first argument is a list of
-		[symbol value] pairs. Returns the last body value.`},
+		[symbol value] pairs. Duplicate names are legal (the last binding wins),
+		but lint warns; use let* for sequential rebinding. Returns the last body value.`},
 	{"progn", Formals(VarArgSymbol, "expr"), opProgn,
 		`Evaluates its body forms sequentially and returns the value of
 		the last form. Returns () if no forms are given.`},

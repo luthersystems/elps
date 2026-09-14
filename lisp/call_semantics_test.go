@@ -256,3 +256,97 @@ func TestThreadRejectsSpecialFunctions(t *testing.T) {
 		}
 	}
 }
+
+func TestLambdaListCreationValidation(t *testing.T) {
+	for _, constructor := range []string{
+		`(lambda (%s) 1)`, `(defun bad (%s) 1)`, `(defmacro bad (%s) 1)`,
+		`(labels ((bad (%s) 1)) 42)`, `(flet ((bad (%s) 1)) 42)`,
+	} {
+		for _, tc := range []struct{ formals, message string }{
+			{"&rest a &rest b", "function formal argument list contains a control symbol at an invalid location: &rest"},
+			{"&rest", "function formal argument list contains a control symbol at an invalid location: &rest"},
+			{"&rest a &optional b", "function formal argument list contains a control symbol at an invalid location: &rest"},
+			{"&rest a &key b", "function formal argument list contains a control symbol at an invalid location: &rest"},
+			{"&rest a b", "function formal argument list contains a control symbol at an invalid location: &rest"},
+			{"&bogus a", "function formal argument list contains invalid control symbol ``&bogus''"},
+			{"&optional", "function formal argument list contains a control symbol at an invalid location: &optional"},
+			{"&key", "function formal argument list contains a control symbol at an invalid location: &key"},
+			{"&key a &optional b", "function formal argument list contains a control symbol at an invalid location: &key"},
+			{"&key a &key b", "function formal argument list contains a control symbol at an invalid location: &key"},
+			{"&optional a &optional b", "function formal argument list contains a control symbol at an invalid location: &optional"},
+			{"&key (a 1)", "first argument contains a non-symbol: list"},
+			{"x x", "duplicate formal argument name: x"},
+			{"x &optional x", "duplicate formal argument name: x"},
+			{"x &rest x", "duplicate formal argument name: x"},
+			{"x &key x", "duplicate formal argument name: x"},
+		} {
+			source := fmt.Sprintf(constructor, tc.formals)
+			t.Run(source, func(t *testing.T) {
+				result := newCallSemanticsEnv(t).LoadString("formals.lisp", source)
+				require.Equal(t, lisp.LError, result.Type, "creation accepted %s: %s", source, result)
+				require.Len(t, result.Cells, 1)
+				assert.Equal(t, tc.message, result.Cells[0].Str)
+			})
+		}
+	}
+}
+
+func TestLambdaListValidAndDuplicateCompatibility(t *testing.T) {
+	for _, tc := range []struct{ source, want string }{
+		{`((lambda (a &optional b) (list a b)) 1)`, "'(1 ())"},
+		{`((lambda (a &optional b) (list a b)) 1 2)`, "'(1 2)"},
+		{`((lambda (a &rest r) (list a r)) 1 2 3)`, "'(1 '(2 3))"},
+		{`((lambda (a &key k) (list a k)) 1 :k 2)`, "'(1 2)"},
+		{`((lambda (&optional a &rest r) (list a r)))`, "'(() '())"},
+		{`((lambda (&optional a &rest r) (list a r)) 1 2)`, "'(1 '(2))"},
+		{`((lambda (&key a b) (list a b)) :b 2 :a 1)`, "'(1 2)"},
+		{`((lambda (a &optional b &key k) (list a b k)) 1 2 :k 3)`, "'(1 2 3)"},
+		{`(let ((x 1) (x 2)) x)`, "2"},
+		{`(let* ((x 1) (x (+ x 1))) x)`, "2"},
+		{`(labels ((f (x) 1) (f (x) 2)) (f 0))`, "2"},
+		{`(flet ((f (x) 1) (f (x) 2)) (f 0))`, "2"},
+		{`((lambda (a &key b) (list a b)) 1 :b 2 :b 3)`, "'(1 3)"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			result := newCallSemanticsEnv(t).LoadString("formals.lisp", tc.source)
+			assert.Equal(t, tc.want, result.String())
+		})
+	}
+}
+
+func TestLambdaListLarge(t *testing.T) {
+	// Exercise generated lists beyond the validator's small-list fast path.
+	env := newCallSemanticsEnv(t)
+	names := make([]string, 20)
+	for i := range names {
+		names[i] = fmt.Sprintf("x%d", i)
+	}
+	require.Equal(t, lisp.LFun, env.Lambda(lisp.Formals(names...), nil).Type)
+	names = append(names, "x0")
+	result := env.Lambda(lisp.Formals(names...), nil)
+	require.Equal(t, lisp.LError, result.Type)
+	assert.Equal(t, "duplicate formal argument name: x0", result.Cells[0].Str)
+}
+
+func TestLambdaListCallBackstop(t *testing.T) {
+	for _, tc := range []struct{ formals, message string }{
+		{"&rest", "function formal argument list contains a control symbol at an invalid location: &rest"},
+		{"&bogus a", "function formal argument list contains invalid control symbol ``&bogus''"},
+	} {
+		t.Run(tc.formals, func(t *testing.T) {
+			env := newCallSemanticsEnv(t)
+			formals := env.LoadString("formals.lisp", "'("+tc.formals+")")
+			require.NoError(t, lisp.GoError(formals))
+			called := false
+			env.AddBuiltins(true, elpsutil.Function("bad-formals", formals,
+				func(*lisp.LEnv, *lisp.LVal) *lisp.LVal {
+					called = true
+					return lisp.Nil()
+				}))
+			result := env.LoadString("formals.lisp", "(bad-formals)")
+			require.Equal(t, lisp.LError, result.Type)
+			assert.Equal(t, tc.message, result.Cells[0].Str)
+			assert.False(t, called)
+		})
+	}
+}

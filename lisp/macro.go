@@ -42,11 +42,15 @@ var langMacros = []*langBuiltin{
 		unevaluated forms and must return a form to be evaluated at the
 		call site. Use quasiquote/unquote to construct the expansion.
 		An optional leading string in the body serves as a docstring.
+		Malformed lambda lists and duplicate parameter names are errors at
+		creation; see lambda for the parameter-list rules.
 		The lisp package is sealed after initialization; defining a name
 		there signals: cannot rebind lisp package binding: name. Unqualified
 		builtin shadowing in your own package remains legal.`},
 	{"defun", Formals("name", "formals", VarArgSymbol, "expr"), macroDefun,
 		`Defines a named function in the current package.
+		Malformed lambda lists and duplicate parameter names are errors at
+		creation; see lambda for parameter-list and duplicate keyword rules.
 		The lisp package is sealed after initialization; defining a name there signals:
 		cannot rebind lisp package binding: name. Unqualified builtin
 		shadowing in your own package remains legal.`},
