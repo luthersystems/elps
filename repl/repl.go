@@ -315,10 +315,10 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	inputClosed := make(chan struct{})
 	stopInput := context.AfterFunc(ctx, func() {
 		defer close(inputClosed)
-		// readline.Close interrupts ReadSlice but does not close Stdin.
-		// Release its ioloop's pending underlying read as well.
-		_ = stdin.Close()
+		// Restore terminal settings while stdin is still open, then release
+		// the ioloop's pending read; readline.Close does not close Stdin.
 		_ = rl.Close()
+		_ = stdin.Close()
 	})
 	defer func() {
 		if !stopInput() {
