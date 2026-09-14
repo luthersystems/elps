@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -57,7 +58,7 @@ func TestInlineSourceBudget(t *testing.T) {
 				value = lisp.Bytes([]byte(source))
 			}
 			env.Put(lisp.Symbol("source"), value)
-			for i := 0; i < 12; i++ {
+			for i := range 12 {
 				result := env.LoadString("driver", fmt.Sprintf("(%s source :name \"source-%d\")", builtin, i))
 				require.Equal(t, lisp.LInt, result.Type, result.String())
 				retained := 0
@@ -86,8 +87,8 @@ func TestInlineSourceEvictionRendering(t *testing.T) {
 	require.NoError(t, err)
 	t.Cleanup(func() { require.NoError(t, lib.Close()) })
 	env.Runtime.Library = lib
-	for i := 0; i < 5; i++ {
-		require.Equal(t, lisp.LInt, env.LoadString(fmt.Sprint(i), "42 ;"+strings.Repeat("x", 1<<20)).Type)
+	for i := range 5 {
+		require.Equal(t, lisp.LInt, env.LoadString(strconv.Itoa(i), "42 ;"+strings.Repeat("x", 1<<20)).Type)
 	}
 	recent := env.LoadString("recent", "missing-symbol ; recent snippet")
 	require.Equal(t, lisp.LError, recent.Type)
