@@ -19,7 +19,7 @@ func PackageForms(exprs []*lisp.LVal) []*lisp.LVal {
 		if head == "quote" || head == "lisp:quote" || head == "quasiquote" || head == "lisp:quasiquote" {
 			return
 		}
-		if top || head == "defun" || head == "defmacro" || head == "set" || head == "export" {
+		if top || head == "defun" || head == "defmacro" || head == "set" || head == "export" || head == "lisp:export" {
 			forms = append(forms, node)
 		}
 		// Binding specifications are syntax even when written with [].

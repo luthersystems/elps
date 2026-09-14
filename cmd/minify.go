@@ -43,6 +43,19 @@ are not shortened, even with --rename-exports; the symbol map records them in
 excluded with reason "quoted-reference". This conservative rule preserves quoted
 function designators such as (map 'list 'twice values).
 
+Calls to load-string, load-bytes, load-file, eval, macroexpand, macroexpand-1,
+gensym, type, or qualified-symbol preserve EVERY package-level binding name
+across all input files, even with --rename-exports. The same rule covers symbol
+and intern when supplied by a host, and lisp:-qualified spellings. References
+passed as function values or appearing in quoted templates also trigger it
+conservatively. Purely lexical locals can still be renamed.
+
+The symbol map records these globals in excluded with reason
+"dynamic-evaluation" (taking precedence over "quoted-reference"). One warning
+names the first detected site. This prevents runtime-generated names or code
+from referring to renamed globals, at the cost of larger output and potentially
+little identifier compression for programs using dynamic evaluation.
+
 defun, defmacro, set with a quoted symbol, and export affect package bindings at
 any nesting depth. A nested function still captures its enclosing lexical values.`,
 	Run: func(_ *cobra.Command, args []string) {
@@ -73,6 +86,9 @@ func buildMinifyConfig() (*minifier.Config, error) {
 		RenameExports:  minifyRenameExports,
 		PreserveParams: minifyPreserveParams,
 		Formatter:      formatter.DefaultConfig(),
+		Warn: func(message string) {
+			fmt.Fprintf(os.Stderr, "elps minify: warning: %s\n", message)
+		},
 	}
 	cfg.Formatter.Compact = true
 	cfg.Formatter.StripComments = true
@@ -183,7 +199,7 @@ func init() {
 	minifyCmd.Flags().StringVar(&minifyWorkspace, "workspace", "",
 		"Workspace root for cross-file semantic resolution.")
 	minifyCmd.Flags().BoolVar(&minifyRenameExports, "rename-exports", false,
-		"Rename exported symbols unless excluded (quoted names are always preserved).")
+		"Rename exported symbols unless excluded (literal export names and dynamic-evaluation globals are always preserved).")
 	minifyCmd.Flags().BoolVar(&minifyPreserveParams, "preserve-params", true,
 		"Preserve function and macro parameter names (default: true). Use --preserve-params=false to rename them.")
 }

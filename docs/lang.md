@@ -2323,6 +2323,22 @@ rule can increase output size. The symbol map records the names in `excluded`,
 with `original` and `reason: "quoted-reference"`; the existing assignment maps
 contain only renamed symbols.
 
+Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
+`macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
+package-level binding name across all input files**, even with `--rename-exports`.
+The rule also covers `symbol` and `intern` when supplied by a host, and
+`lisp:`-qualified spellings. References passed as function values or appearing in
+quoted templates also trigger it conservatively. Purely lexical locals can still
+be renamed. The CLI prints one warning naming the first detected site, and the
+symbol map records these globals under `excluded` with
+`reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
+This keeps runtime-generated names and code working, but produces larger output
+and may eliminate most identifier compression in programs using dynamic evaluation.
+
+Export arguments are evaluated in their lexical scope. Literal string exports
+and recursively nested export lists retain their binding names, including with
+`--rename-exports`.
+
 `defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
 bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`
 creates a package-level `helper` that captures the lexical value of `k`. Minifying

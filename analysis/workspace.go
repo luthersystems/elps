@@ -452,7 +452,7 @@ func scanExportedDefinitionKeys(exprs []*lisp.LVal) map[string]bool {
 			if name := scanPackageName(expr); name != "" {
 				currentPkg = name
 			}
-		case "export":
+		case "export", "lisp:export":
 			for _, name := range scanExportNames(expr) {
 				exported[definitionKey(currentPkg, name)] = true
 			}
@@ -532,19 +532,7 @@ func scanSet(expr *lisp.LVal) *ExternalSymbol {
 }
 
 func scanExportNames(expr *lisp.LVal) []string {
-	var names []string
-	for _, arg := range expr.Cells[1:] {
-		name := ""
-		if arg.Type == lisp.LSymbol {
-			name = arg.Str
-		} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-			name = arg.Cells[0].Str
-		}
-		if name != "" {
-			names = append(names, name)
-		}
-	}
-	return names
+	return astutil.ExportNames(expr.Cells[1:])
 }
 
 // scanUsePackages extracts use-package declarations grouped by their

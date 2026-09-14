@@ -79,7 +79,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			}
 			continue
 		}
-		if astutil.HeadSymbol(expr) == "export" {
+		if head := astutil.HeadSymbol(expr); head == "export" || head == "lisp:export" {
 			a.prescanExport(expr, scope, currentPkg)
 		}
 	}
@@ -212,16 +212,7 @@ func (a *analyzer) prescanDeftype(expr *lisp.LVal, scope *Scope, pkg string) {
 }
 
 func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
-	for _, arg := range expr.Cells[1:] {
-		name := ""
-		if arg.Type == lisp.LSymbol {
-			name = arg.Str
-		} else if arg.Type == lisp.LSExpr && arg.IsQuoted() && len(arg.Cells) > 0 && arg.Cells[0].Type == lisp.LSymbol {
-			name = arg.Cells[0].Str
-		}
-		if name == "" {
-			continue
-		}
+	for _, name := range astutil.ExportNames(expr.Cells[1:]) {
 		if sym := scope.LookupLocalInPackage(name, pkg); sym != nil {
 			sym.Exported = true
 		}
@@ -397,7 +388,11 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 	case "quasiquote", "lisp:quasiquote":
 		a.analyzeQuasiquote(node, scope, currentPkg)
 		return
-	case "in-package", "use-package", "export":
+	case "export", "lisp:export":
+		// export is a builtin: its arguments are evaluated in lexical scope.
+		// Static package export registration is handled separately by prescan.
+		a.analyzeCall(node, scope, currentPkg)
+	case "in-package", "use-package":
 		return // package management, skip
 	case "function":
 		a.analyzeFunction(node, scope, currentPkg)

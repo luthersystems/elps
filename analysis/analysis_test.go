@@ -2218,3 +2218,23 @@ func TestAnalyze_MacroExpansion_HandlerBindPattern(t *testing.T) {
 		assert.NotEqual(t, "e", u.Name, "e should resolve as lambda param")
 	}
 }
+
+func TestAnalyze_ExportLiteralListsAndEvaluatedArguments(t *testing.T) {
+	for _, arg := range []string{`"helper"`, `'(other ("helper"))`, `(quote (other (helper)))`} {
+		t.Run(arg, func(t *testing.T) {
+			result := parseAndAnalyze(t, "(export "+arg+") (defun helper () 42) (defun other () 1)")
+			require.True(t, result.RootScope.LookupLocal("helper").Exported)
+		})
+	}
+	t.Run("evaluated", func(t *testing.T) {
+		result := parseAndAnalyze(t, `(defun names () 1) (let ((names '(helper))) (export (identity names)))`)
+		require.False(t, result.RootScope.LookupLocal("names").Exported)
+		for _, sym := range result.Symbols {
+			if sym.Name == "names" && sym.Scope.Kind == ScopeLet {
+				require.Equal(t, 1, sym.References)
+				return
+			}
+		}
+		t.Fatal("missing lexical names binding")
+	})
+}

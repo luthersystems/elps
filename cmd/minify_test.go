@@ -129,3 +129,16 @@ func TestRunMinify_QuotedSymbolMap(t *testing.T) {
 	require.True(t, found, "quoted function must have an exclusion record")
 	require.Contains(t, out.String(), "(defun twice ")
 }
+
+func TestMinifyCommandDynamicEvaluationWarning(t *testing.T) {
+	bin := buildTestBinary(t)
+	dir := t.TempDir()
+	src := "(defun helper () 42)\n(debug-print (funcall (load-string \"'helper\")))\n(eval 1)"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "dynamic.lisp"), []byte(src), 0o600))
+	code, _, stderr := runCorpusCLI(t, bin, dir, "minify", "dynamic.lisp")
+	require.Equal(t, 0, code)
+	require.Contains(t, stderr, "dynamic.lisp:2:24")
+	require.Contains(t, stderr, "load-string")
+	require.Contains(t, stderr, "preserving all package-level binding names")
+	require.Equal(t, 1, bytes.Count([]byte(stderr), []byte("warning:")))
+}

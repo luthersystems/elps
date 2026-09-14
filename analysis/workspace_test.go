@@ -2038,3 +2038,17 @@ func TestScanWorkspaceRefs_MacroExpansionKeepsRefsInOwnFile(t *testing.T) {
 	require.Len(t, helper, 1)
 	assert.Equal(t, "a.lisp", filepath.Base(helper[0].File))
 }
+
+func TestScanWorkspace_StringAndNestedExports(t *testing.T) {
+	dir := t.TempDir()
+	src := `(defun first () 1) (defun second () 2) (defun names () 3)
+(export "first" '(("second")) names)`
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "exports.lisp"), []byte(src), 0o600))
+	syms, err := ScanWorkspace(dir)
+	require.NoError(t, err)
+	var names []string
+	for _, sym := range syms {
+		names = append(names, sym.Name)
+	}
+	require.ElementsMatch(t, []string{"first", "second"}, names)
+}

@@ -92,6 +92,22 @@ designators such as `(map 'list 'twice values)` working. Quoted names are not
 shortened, even with `--rename-exports`, so output may be larger. The JSON symbol
 map lists these names under `excluded` with `reason: "quoted-reference"`.
 
+Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
+`macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
+package-level binding name across all input files**, even with `--rename-exports`.
+The rule also covers `symbol` and `intern` when supplied by a host, and
+`lisp:`-qualified spellings. References passed as function values or appearing in
+quoted templates also trigger it conservatively. Purely lexical locals can still
+be renamed. The CLI prints one warning naming the first detected site, and the
+symbol map records these globals under `excluded` with
+`reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
+This keeps runtime-generated names and code working, but produces larger output
+and may eliminate most identifier compression in programs using dynamic evaluation.
+
+Export arguments are evaluated in their lexical scope. Literal string exports
+and recursively nested export lists retain their binding names, including with
+`--rename-exports`.
+
 `defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package
 bindings at every nesting depth. Functions defined inside `let` still capture
 its lexical values; their names remain accessible at package level.
