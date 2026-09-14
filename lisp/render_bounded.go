@@ -82,7 +82,14 @@ type DiagnosticRenderer struct {
 // NewRenderer creates a response renderer using the runtime's output limit.
 // Pass the request context explicitly when rendering after evaluation returns.
 func (env *LEnv) NewRenderer(ctx context.Context) *DiagnosticRenderer {
-	limit := env.Runtime.MaxAllocBytes()
+	return env.NewRendererWithLimit(ctx, env.Runtime.MaxAllocBytes())
+}
+
+// NewRendererWithLimit reserves a smaller output budget for a response whose
+// protocol adds framing, escaping or duplicate representations. The supplied
+// limit can only tighten the runtime limit; zero permits no output.
+func (env *LEnv) NewRendererWithLimit(ctx context.Context, limit int) *DiagnosticRenderer {
+	limit = max(0, min(limit, env.Runtime.MaxAllocBytes()))
 	return &DiagnosticRenderer{budget: newRenderBudget(limit, ctx), remaining: limit}
 }
 

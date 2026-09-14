@@ -1375,9 +1375,16 @@ eval:
 	env.loc = v.source
 	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			if d.OnEval(env, v) {
-				d.WaitIfPaused(env, v)
-			}
+			func() {
+				// Protocol renderers inspect Context while this environment is
+				// paused, including outside a builtin's context bridge.
+				previous := env.evalCtx
+				env.evalCtx = ctx
+				defer func() { env.evalCtx = previous }()
+				if d.OnEval(env, v) {
+					d.WaitIfPaused(env, v)
+				}
+			}()
 		}
 	}
 	if v.quoted {

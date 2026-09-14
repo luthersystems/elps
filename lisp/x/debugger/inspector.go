@@ -167,6 +167,23 @@ func NewValueFormatter(env *lisp.LEnv, eng *Engine) *ValueFormatter {
 	return &ValueFormatter{renderer: env.NewRenderer(env.Context()), engine: eng}
 }
 
+// NewProtocolValueFormatter reserves framing and worst-case JSON escaping for
+// one DAP response. Six encoded bytes suffice for every input byte, including
+// invalid UTF-8. Each translated item must also charge its fixed JSON fields.
+func NewProtocolValueFormatter(env *lisp.LEnv, eng *Engine) *ValueFormatter {
+	if env == nil && eng != nil {
+		env, _ = eng.PausedState()
+	}
+	if env == nil {
+		env = lisp.NewEnv(nil)
+	}
+	return &ValueFormatter{renderer: env.NewRendererWithLimit(env.Context(), (env.Runtime.MaxAllocBytes()-512)/6), engine: eng}
+}
+
+// Text charges names, source fields and display punctuation to the same budget
+// as values, without first concatenating program-controlled strings.
+func (f *ValueFormatter) Text(parts ...string) string { return f.renderer.Text(parts...) }
+
 // Exhausted reports whether this response has exhausted its rendering budget.
 func (f *ValueFormatter) Exhausted() bool { return f.renderer.Exhausted() }
 

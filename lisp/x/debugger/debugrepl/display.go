@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -53,20 +54,36 @@ func showSourceContext(w io.Writer, file string, line int, sourceRoot string) {
 }
 
 // showBacktrace prints the call stack in a human-readable format.
-func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string) {
+func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string, envs ...*lisp.LEnv) {
+	var env *lisp.LEnv
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	formatter := debugger.NewValueFormatter(env, nil)
 	if stack == nil || len(stack.Frames) == 0 {
-		fmt.Fprintln(w, "  (empty stack)") //nolint:errcheck
+		io.WriteString(w, formatter.Text("  (empty stack)\n")) //nolint:errcheck
 		return
 	}
 
 	// Print frames in reverse order (most recent first).
 	for i := len(stack.Frames) - 1; i >= 0; i-- {
+		if formatter.Exhausted() {
+			break
+		}
 		frame := &stack.Frames[i]
-		name := frame.QualifiedFunName()
+		name := frame.Name
+		if name == "" {
+			name = frame.FID
+		}
 		if name == "" {
 			name = "<anonymous>"
 		}
-		loc := "unknown"
+		io.WriteString(w, formatter.Text(fmt.Sprintf("  #%d  ", len(stack.Frames)-i))) //nolint:errcheck
+		if frame.Package != "" {
+			io.WriteString(w, formatter.Text(frame.Package, ":")) //nolint:errcheck
+		}
+		io.WriteString(w, formatter.Text(name, "  at ")) //nolint:errcheck
+		var loc *token.Location
 		// For the top frame, use the paused expression's location.
 		var pausedLoc token.Location
 		pausedOK := false
@@ -74,28 +91,42 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 			pausedLoc, pausedOK = pausedExpr.Source()
 		}
 		if i == len(stack.Frames)-1 && pausedOK {
-			loc = fmt.Sprintf("%s:%d:%d", pausedLoc.File, pausedLoc.Line, pausedLoc.Col)
+			loc = &pausedLoc
 		} else if frame.Source != nil {
-			loc = frame.Source.String()
+			loc = frame.Source
 		}
-		depth := len(stack.Frames) - i
-		fmt.Fprintf(w, "  #%d  %s  at %s\n", depth, name, loc) //nolint:errcheck
+		if loc == nil {
+			io.WriteString(w, formatter.Text("unknown\n")) //nolint:errcheck
+		} else {
+			suffix := fmt.Sprintf(":%d:%d", loc.Line, loc.Col)
+			if !(i == len(stack.Frames)-1 && pausedOK) {
+				// Preserve Location.String's numeric forms without copying its file.
+				numeric := *loc
+				numeric.File = ""
+				suffix = numeric.String()
+			}
+			io.WriteString(w, formatter.Text(loc.File, suffix, "\n")) //nolint:errcheck
+		}
 	}
 }
 
 // showLocals prints the local variable bindings in a tabular format.
 func showLocals(w io.Writer, env *lisp.LEnv, engine *debugger.Engine) {
+	formatter := debugger.NewValueFormatter(env, engine)
 	locals := debugger.InspectFunctionLocals(env)
 	if len(locals) == 0 {
-		fmt.Fprintln(w, "  (no locals)") //nolint:errcheck
+		io.WriteString(w, formatter.Text("  (no locals)\n")) //nolint:errcheck
 		return
 	}
-	formatter := debugger.NewValueFormatter(env, engine)
 	for _, b := range locals {
 		if formatter.Exhausted() {
 			break
 		}
-		fmt.Fprintf(w, "  %-20s = %s\n", b.Name, formatter.Format(b.Value)) //nolint:errcheck
+		io.WriteString(w, formatter.Text("  "))                                               //nolint:errcheck
+		io.WriteString(w, formatter.Text(b.Name))                                             //nolint:errcheck
+		io.WriteString(w, formatter.Text(strings.Repeat(" ", max(0, 20-len(b.Name))), " = ")) //nolint:errcheck
+		io.WriteString(w, formatter.Format(b.Value))                                          //nolint:errcheck
+		io.WriteString(w, formatter.Text("\n"))                                               //nolint:errcheck
 	}
 }
 

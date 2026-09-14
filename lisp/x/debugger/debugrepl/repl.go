@@ -413,7 +413,7 @@ func (h *debugHandler) doBacktrace() bool {
 		fmt.Fprintln(h.stderr, "not paused") //nolint:errcheck
 		return true
 	}
-	showBacktrace(h.stderr, env.Runtime.Stack, expr, h.sourceRoot)
+	showBacktrace(h.stderr, env.Runtime.Stack, expr, h.sourceRoot, env)
 	return true
 }
 
