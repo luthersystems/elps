@@ -84,6 +84,7 @@ var (
 			current package. Names must be symbols or strings spelling non-empty
 			symbol identifiers, without colons or a keyword prefix. An export
 			that is still unbound causes an error naming its package and symbol.
+			Cannot import bindings into the sealed lisp package.
 			Returns nil.`},
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
@@ -91,14 +92,18 @@ var (
 			symbols, strings, or nested lists of these; qualified names are
 			rejected. All arguments are validated before exporting anything.
 			Symbols may be defined later, but must be bound when use-package
-			imports them. Returns nil.`},
+			imports them. Cannot add exports to the sealed lisp package.
+			Returns nil.`},
 		{"set", Formals("sym", "val", VarArgSymbol, "docstring"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
 			creating or overwriting the binding. Optional trailing strings set
 			the symbol's documentation (concatenated; empty strings produce
 			paragraph breaks). Returns the bound value. This is the primary
 			way to create top-level bindings. Use set! to mutate an existing
-			binding without risk of accidental creation.`},
+			binding without risk of accidental creation. After initialization,
+			writes to lisp: names or names in package lisp signal an error:
+			cannot rebind lisp package binding: name. Unqualified builtin
+			shadowing in your own package remains legal.`},
 		{"gensym", Formals(), builtinGensym,
 			`Returns a new unique, uninterned symbol. Useful in macros to
 			avoid variable name collisions.`},
@@ -617,6 +622,15 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		if !validPackageName(pkg.Str) {
 			return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
 		}
+		if env.Runtime.Package.bindingsSealed {
+			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
+				for _, name := range source.externals {
+					if name != TrueSymbol && name != FalseSymbol {
+						return env.Errorf("cannot rebind lisp package binding: %s", name)
+					}
+				}
+			}
+		}
 		lerr := env.UsePackage(pkg)
 		if lerr.Type == LError {
 			return lerr
@@ -639,6 +653,20 @@ func validateExportArgs(env *LEnv, args *LVal) *LVal {
 		case LSymbol, LString:
 			if strings.Contains(arg.Str, ":") {
 				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
+			}
+			if env.Runtime.Package.bindingsSealed {
+				// Re-exporting an existing core name is a no-op. A new export
+				// could poison future imports even without assigning a value.
+				found := false
+				for _, name := range env.Runtime.Package.externals {
+					if name == arg.Str {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return env.Errorf("cannot rebind lisp package binding: %s", arg.Str)
+				}
 			}
 		case LSExpr:
 			if err := validateExportArgs(env, arg); err.Type == LError {
@@ -665,6 +693,9 @@ func exportArgs(pkg *Package, args *LVal) {
 func builtinSet(env *LEnv, v *LVal) *LVal {
 	if v.Cells[0].Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
+	}
+	if err := env.checkLispPackageBinding(v.Cells[0].Str); err != nil {
+		return err
 	}
 
 	lerr := env.PutGlobal(v.Cells[0], v.Cells[1])

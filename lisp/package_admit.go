@@ -125,10 +125,11 @@ package lisp
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package) *Package {
 	adm := &Package{
-		Name:     p.Name,
-		Doc:      p.Doc,
-		symbols:  make(map[string]*LVal, len(p.symbols)),
-		funNames: make(map[string]string, len(p.funNames)),
+		Name:           p.Name,
+		Doc:            p.Doc,
+		bindingsSealed: p.bindingsSealed,
+		symbols:        make(map[string]*LVal, len(p.symbols)),
+		funNames:       make(map[string]string, len(p.funNames)),
 	}
 	if len(p.externals) > 0 {
 		adm.externals = make([]string, len(p.externals))

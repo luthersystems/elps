@@ -44,6 +44,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
 			"symbols": "remapped: binding descriptors", "symbolDocs": "remapped: owned string pairs",
 			"funNames": "remapped: owned string pairs", "externals": "remapped: owned string list",
+			"bindingsSealed": "scalar: preserve core package Lisp binding protection",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",
