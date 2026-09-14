@@ -287,8 +287,12 @@ const DefaultMaxMacroExpansionDepth = 1000
 //
 // # DefaultMaxTailIterations — the runaway-loop backstop
 //
-// This bounds how many turns a single tail-recursive loop may take. Its unit
-// is loop turns, so it is a knob an operator can reason about.
+// This bounds turns per contiguous tail-call sequence at a single stack
+// frame. The counter resets when that call returns; another call starts a
+// fresh sequence. Nested calls have their own counters. Repeated calls that
+// each return below the limit can therefore do unbounded aggregate work.
+// WithMaxSteps is the total-work bound across those calls within a top-level
+// evaluation; it does not reset when a nested call returns.
 //
 // It is a backstop against a loop that never terminates, NOT a time bound.
 // One million turns of a trivial O(1) body costs ~4s of interpreter

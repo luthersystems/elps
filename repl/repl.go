@@ -5,6 +5,7 @@ package repl
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -24,6 +25,7 @@ import (
 )
 
 type config struct {
+	ctx         context.Context
 	stdin       io.ReadCloser
 	stderr      io.WriteCloser
 	json        bool
@@ -47,6 +49,38 @@ func newConfig(opts ...Option) *config {
 }
 
 type Option func(*config)
+
+// WithContext binds evaluation and input waits to ctx. Cancellation stops the
+// REPL and emits a bounded, one-line error (a JSON error in JSON mode).
+// A cancelled input wait closes the configured input. Nil preserves the
+// environment's context. It does not install process signal handlers.
+func WithContext(ctx context.Context) Option {
+	return func(c *config) {
+		c.ctx = ctx
+	}
+}
+
+func (c *config) bindContext(env *lisp.LEnv) context.Context {
+	if c.ctx != nil {
+		lisp.WithContext(c.ctx)(env)
+	}
+	return env.Context()
+}
+
+// reportCancellation avoids rendering arbitrary Lisp values or traces after
+// cancellation, and lets the caller stop before reading another expression.
+func reportCancellation(ctx context.Context, cfg *config, stdout, errw io.Writer) bool {
+	if err := ctx.Err(); err != nil {
+		message := "context-cancelled: " + err.Error()
+		if cfg.json {
+			emitJSONLine(stdout, jsonError{Type: "error", Message: message})
+		} else {
+			fmt.Fprintln(errw, message) //nolint:errcheck // best-effort error display
+		}
+		return true
+	}
+	return false
+}
 
 // WithStdin allows overriding the input to the REPL.
 func WithStdin(stdin io.ReadCloser) Option {
@@ -245,6 +279,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 	p.SetPrompts(prompt, cont)
 
 	cfg := newConfig(opts...)
+	ctx := cfg.bindContext(env)
 	if cfg.stderr != nil {
 		env.Runtime.Stderr = cfg.stderr
 	}
@@ -275,6 +310,8 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		os.Exit(1)
 	}
 	defer rl.Close() //nolint:errcheck // best-effort cleanup
+	stopInput := context.AfterFunc(ctx, func() { _ = rl.Close() })
+	defer stopInput()
 
 	p.Read = func() []*token.Token {
 		if cfg.doneCh != nil {
@@ -341,6 +378,9 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 
 	for {
 		expr, err := p.Parse()
+		if reportCancellation(ctx, cfg, os.Stdout, env.Runtime.Stderr) {
+			return
+		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -359,6 +399,9 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 			}
 		}
 		val := evalFn(expr)
+		if reportCancellation(ctx, cfg, os.Stdout, env.Runtime.Stderr) {
+			return
+		}
 		if cfg.json {
 			emitResult(os.Stdout, val)
 		} else if val.Type == lisp.LError {
@@ -372,6 +415,10 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 // runEval evaluates a single expression and returns an exit code.
 // stdout receives the result; errw receives error messages.
 func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
+	ctx := cfg.bindContext(env)
+	if reportCancellation(ctx, cfg, stdout, errw) {
+		return 1
+	}
 	reader := rdparser.NewReader()
 	exprs, err := reader.Read("eval", strings.NewReader(cfg.eval))
 	if err != nil {
@@ -394,6 +441,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	var last *lisp.LVal
 	for _, expr := range exprs {
 		last = env.Eval(expr)
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return 1
+		}
 		if last.Type == lisp.LError {
 			if cfg.json {
 				emitResult(stdout, last)
@@ -416,12 +466,15 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 // expressions using the interactive parser, and evaluates each one.
 // stdout receives results; errw receives error messages.
 func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
+	ctx := cfg.bindContext(env)
 	p := rdparser.NewInteractive(nil)
 
 	stdin := cfg.stdin
 	if stdin == nil {
 		stdin = os.Stdin
 	}
+	stopInput := context.AfterFunc(ctx, func() { _ = stdin.Close() })
+	defer stopInput()
 	scanner := bufio.NewScanner(stdin)
 
 	p.Read = func() []*token.Token {
@@ -458,6 +511,9 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 
 	for {
 		expr, err := p.Parse()
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return
+		}
 		if errors.Is(err, io.EOF) {
 			break
 		}
@@ -470,6 +526,9 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 			continue
 		}
 		val := env.Eval(expr)
+		if reportCancellation(ctx, cfg, stdout, errw) {
+			return
+		}
 		if cfg.json {
 			emitResult(stdout, val)
 		} else if val.Type == lisp.LError {

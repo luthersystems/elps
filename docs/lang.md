@@ -1953,6 +1953,29 @@ containers constructed by builtin operations, not the sum across calls, so a loo
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
 
+### Command-Line Limits and Signals
+
+`elps run --timeout 1s --max-steps 100000 file.lisp` sets a context deadline
+and an evaluation step budget. Both flags default to **0 (unlimited)** for
+compatibility; negative values are rejected. The timeout spans all file or
+`-e` expression arguments, while each argument gets a fresh step budget.
+Nested `load-file` calls share their enclosing argument's budget. Existing
+stack, nesting, allocation and tail-iteration defaults still apply.
+
+In `elps run` and `elps repl`, SIGINT (Ctrl-C during evaluation) or SIGTERM
+cancels the evaluation context. The interpreter reports a one-line
+`context-cancelled: context canceled` error, finishes output and exits with
+status 1. A timeout reports `context-cancelled: context deadline exceeded`.
+REPL JSON mode emits a single JSON error object. A second signal force-exits
+if evaluation or cleanup cannot finish (status 130 for SIGINT, 143 for
+SIGTERM). Cancellation is cooperative: native code must observe the context
+to return promptly. Output already written to stdout/stderr is retained.
+
+Embedded REPL callers can pass `repl.WithContext(ctx)` to bind evaluation
+and input waits to a context, without installing process signal handlers.
+Cancellation closes a pending REPL input wait and stops the session.
+The separate `elps debug` runner does not use these flags or signal handling.
+
 ### Rendering Depth
 
 Printing a value with `debug-print`, `format-string`, or Go's `LVal.String`
@@ -2192,12 +2215,17 @@ raises a catchable `eval-nesting-exceeded` condition:
 Override with `lisp.WithMaxEvalNesting(n)`; a negative value disables the
 check, which re-exposes the host process to an unrecoverable stack overflow.
 
-**Tail-call iterations** count the turns of a tail-recursive loop.  Tail
-calls run in constant stack space, so no stack-height limit can bound a
-runaway loop; this is the limit that does.  It is bounded by default
-(`DefaultMaxTailIterations`, 1,000,000) purely as a backstop against a loop
-that never terminates.  Override with `lisp.WithMaxTailIterations(n)`; 0
-disables the check.
+**Tail-call iterations** count turns per **contiguous tail-call sequence**
+at a single stack frame. The counter resets when that call returns; a new
+call starts a fresh sequence, and nested calls have their own counters.
+The default (`DefaultMaxTailIterations`, 1,000,000) bounds a runaway
+sequence running in constant stack space. Override with
+`lisp.WithMaxTailIterations(n)`; 0 disables the check.
+
+Repeated calls that each return within that limit can still perform
+unbounded aggregate work. **MaxSteps is the total-work bound** across such
+calls within one top-level evaluation: nested returns do not reset its
+budget. Neither limit is a time bound.
 
 It is **not** a time bound.  A million turns of a trivial body costs a few
 seconds, but turns say nothing about the work done per turn — a body that

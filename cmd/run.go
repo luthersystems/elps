@@ -3,11 +3,13 @@
 package cmd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
@@ -20,6 +22,8 @@ var (
 	runExpression bool
 	runPrint      bool
 	runRootDir    string
+	runTimeout    time.Duration
+	runMaxSteps   int64
 )
 
 // runCmd represents the run command
@@ -39,6 +43,11 @@ Source loads are confined to the root directory (--root-dir, default: working
 directory) at open time. Relative symlinks whose targets stay inside the root
 are allowed; escaping paths and absolute symlinks produce ordinary errors.
 
+--timeout bounds elapsed evaluation time across all arguments. --max-steps
+bounds evaluation steps per file or expression argument. Both default to
+unlimited (0). SIGINT or SIGTERM cancels evaluation, reports a one-line error,
+and exits with status 1 after cleanup; a second signal force-exits.
+
 Examples:
   elps run hello.lisp              Run a source file
   elps run lib.lisp app.lisp       Load files in order (lib first)
@@ -50,7 +59,7 @@ Exit codes:
   0  Success
   1  Runtime error (use elps lint to catch common mistakes before running)`,
 	Run: func(cmd *cobra.Command, args []string) {
-		if err := runElps(args, os.Stdout); err != nil {
+		if err := runElpsContext(cmd.Context(), args, os.Stdout); err != nil {
 			if !errors.Is(err, errRendered) {
 				fmt.Fprintf(os.Stderr, "%v\n", err)
 			}
@@ -64,8 +73,21 @@ Exit codes:
 var errRendered = errors.New("elps: error already rendered")
 
 // runElps loads each argument — a source file, or with -e a Lisp expression —
-// into a fresh environment, writing values to stdout when -p is set.
+// into one fresh environment, writing values to stdout when -p is set.
+// Each argument gets its own step budget; the timeout spans the entire run.
 func runElps(args []string, stdout io.Writer) error {
+	return runElpsContext(context.Background(), args, stdout)
+}
+
+func runElpsContext(parent context.Context, args []string, stdout io.Writer) error {
+	if runTimeout < 0 {
+		return errors.New("timeout must be non-negative")
+	}
+	if runMaxSteps < 0 {
+		return errors.New("max-steps must be non-negative")
+	}
+	ctx, stop := evaluationContext(parent, runTimeout)
+	defer stop()
 	rootDir := runRootDir
 	if rootDir == "" {
 		wd, err := os.Getwd()
@@ -102,20 +124,30 @@ func runElps(args []string, stdout io.Writer) error {
 		}
 	}
 
+	// Apply user limits after library initialization, so even a small step
+	// budget is available in full to each source argument.
+	lisp.WithMaxSteps(runMaxSteps)(env)
+	lisp.WithContext(ctx)(env)
 	for i := range args {
 		var res *lisp.LVal
 		// name selects the source shown in the "try: elps lint" hint. An
 		// expression has no file to lint, so it is left empty.
 		name := ""
 		if runExpression {
-			res = env.LoadString(fmt.Sprintf("expression %d", i+1), args[i])
+			res = env.LoadStringContext(ctx, fmt.Sprintf("expression %d", i+1), args[i])
 		} else {
 			arg, ferr := toRelativePath(rootDir, args[i])
 			if ferr != nil {
 				return ferr
 			}
-			res = env.LoadFile(arg)
+			res = env.LoadFileContext(ctx, arg)
 			name = args[i]
+		}
+		// Do not traverse Lisp values or stack traces after cancellation.
+		// The context supplies a bounded, one-line diagnostic.
+		if err := ctx.Err(); err != nil {
+			fmt.Fprintf(os.Stderr, "context-cancelled: %v\n", err)
+			return errRendered
 		}
 		if res.Type == lisp.LError {
 			renderLispError(res, name)
@@ -146,4 +178,8 @@ func init() {
 		"Print expression values to stdout")
 	runCmd.Flags().StringVar(&runRootDir, "root-dir", "",
 		"Root directory for source load confinement (default: working directory)")
+	runCmd.Flags().DurationVar(&runTimeout, "timeout", 0,
+		"Evaluation timeout across all arguments (0 = unlimited)")
+	runCmd.Flags().Int64Var(&runMaxSteps, "max-steps", 0,
+		"Maximum evaluation steps per file or expression argument (0 = unlimited)")
 }
