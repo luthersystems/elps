@@ -12,12 +12,17 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// Reader retains inline sources by display label. Physical sources continue
-// through the underlying reader and are retrieved through the active library.
+const inlineByteBudget = 4 << 20
+
+// Reader retains up to 4 MiB of inline sources by display label, evicting oldest
+// entries first. Physical sources continue through the underlying reader and are
+// retrieved through the active library.
 // Like the runtime reader it wraps, it is used by one evaluation at a time.
 type Reader struct {
 	lisp.Reader
-	inline map[string][]byte
+	inline      map[string][]byte
+	order       []string
+	inlineBytes int
 }
 
 // NewReader wraps the runtime's parser to retain load-string/load-bytes text.
@@ -31,8 +36,41 @@ func (r *Reader) Read(name string, input io.Reader) ([]*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	r.inline[name] = source
+	r.retain(name, source)
 	return r.Reader.Read(name, bytes.NewReader(source))
+}
+
+// retain refreshes a label's position and drops sources too large for the cache.
+func (r *Reader) retain(name string, source []byte) {
+	if previous, ok := r.inline[name]; ok {
+		r.inlineBytes -= len(previous)
+		delete(r.inline, name)
+		for i, label := range r.order {
+			if label == name {
+				copy(r.order[i:], r.order[i+1:])
+				r.order[len(r.order)-1] = ""
+				r.order = r.order[:len(r.order)-1]
+				break
+			}
+		}
+	}
+	// Empty inputs have no snippet and must not accumulate cache entries.
+	if len(source) == 0 || len(source) > inlineByteBudget {
+		return
+	}
+	for r.inlineBytes+len(source) > inlineByteBudget {
+		oldest := r.order[0]
+		r.inlineBytes -= len(r.inline[oldest])
+		delete(r.inline, oldest)
+		r.order[0] = ""
+		r.order = r.order[1:]
+	}
+	// io.ReadAll may allocate excess capacity; retain only the budgeted bytes.
+	retained := make([]byte, len(source))
+	copy(retained, source)
+	r.inline[name] = retained
+	r.order = append(r.order, name)
+	r.inlineBytes += len(retained)
 }
 
 // ReadLocation preserves physical source locations without caching file contents.
@@ -54,6 +92,7 @@ func SourceReader(runtime *lisp.Runtime, lerr *lisp.LVal) func(string) ([]byte, 
 					return source, nil
 				}
 			}
+			return nil, os.ErrNotExist
 		}
 		if runtime.Library == nil {
 			return nil, os.ErrNotExist
