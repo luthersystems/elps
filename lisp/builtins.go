@@ -694,11 +694,7 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 	if v.Cells[0].Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
 	}
-	if err := env.checkLispPackageBinding(v.Cells[0].Str); err != nil {
-		return err
-	}
-
-	lerr := env.PutGlobal(v.Cells[0], v.Cells[1])
+	lerr := env.PutGlobalFromLisp(v.Cells[0], v.Cells[1])
 	if lerr.Type == LError {
 		return lerr
 	}

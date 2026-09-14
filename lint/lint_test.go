@@ -5035,6 +5035,8 @@ func TestLispBindingDiagnostics(t *testing.T) {
 		positive, negative []string
 	}{
 		{"lisp-package-seal", SeverityError, []string{
+			`(s:deftype "lisp:if" s:int)`,
+			`(in-package 'lisp) (s:deftype "if" s:int)`,
 			`(set 'lisp:if 1)`, `(set! lisp:if 1)`, `(lisp:set! lisp:if 1)`,
 			`(set! 'lisp:lambda 1)`,
 			`(defun lisp:car (x) x)`, `(defmacro lisp:car (x) x)`,
@@ -5044,6 +5046,11 @@ func TestLispBindingDiagnostics(t *testing.T) {
 			`(in-package 'lisp) (set! if 1)`, `(in-package 'lisp) (lisp:set! if 1)`,
 			`(in-package "lisp") (defun car (x) x)`,
 		}, []string{
+			`(s:deftype "if" s:int)`, `(s:deftype "mypkg:if" s:int)`,
+			`(s:deftype name s:int)`, `(other:deftype "lisp:if" s:int)`,
+			`(s:make-validator "lisp:if" s:int)`,
+			`'(s:deftype "lisp:if" s:int)`,
+			`(defun s:deftype (name type) ()) (s:deftype "lisp:if" s:int)`,
 			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'car 1)`,
 			`(set name 1)`, `(set (get m "name") 1)`,
 			`(set! (quote lisp:if) 1)`, `(lisp:set! (lisp:quote lisp:if) 1)`,

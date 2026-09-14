@@ -2482,7 +2482,7 @@ func validPackageLiteral(v *lisp.LVal) bool {
 var AnalyzerLispPackageSeal = &Analyzer{
 	Name:     "lisp-package-seal",
 	Severity: SeverityError,
-	Doc: "Check set, set!, defun, and defmacro writes to the sealed lisp package.\n\n" +
+	Doc: "Check set, set!, defun, defmacro, and s:deftype writes to the sealed lisp package.\n\n" +
 		"Define application bindings in your own package instead. Checks literal " +
 		"qualified names and unqualified names after a top-level in-package. " +
 		"Dynamic names, shadowed calls, and macro templates are not checked.",
@@ -2537,6 +2537,10 @@ func checkLispBindings(pass *Pass, sealed bool) error {
 			}
 			var name string
 			switch head {
+			case "s:deftype":
+				if sealed && arg.Type == lisp.LString {
+					name = arg.Str
+				}
 			case "set":
 				if value, known := packageLiteralArg(arg); known && value.Type == lisp.LSymbol {
 					name = value.Str
