@@ -62,7 +62,14 @@ log() {
 # Record any unhandled failure (a `set -e` abort) with its line number, so a step that dies
 # in the cached phase leaves a breadcrumb in the log instead of vanishing silently. The
 # best-effort steps are already guarded with `|| log ...` / `|| true`, so they won't trip this.
-trap 'rc=$?; log "ERROR: setup aborted at line ${LINENO} (exit ${rc})"; exit ${rc}' ERR
+on_err() {
+  # $? on entry is the status of the command that tripped `set -e`; $1 is
+  # the caller's LINENO, passed in because the trap fires in this function.
+  local rc=$?
+  log "ERROR: setup aborted at line $1 (exit ${rc})"
+  exit "${rc}"
+}
+trap 'on_err "${LINENO}"' ERR
 
 ensure_go() {
   # The sandbox's PATH `go` has been OLDER than go.mod (go1.24.7 vs go 1.25.0). With
