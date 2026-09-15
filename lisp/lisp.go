@@ -1476,8 +1476,11 @@ func (v *LVal) IsNumeric() bool {
 func (v *LVal) Equal(other *LVal) *LVal { return v.EqualWithRuntime(other, nil) }
 
 // EqualWithRuntime is Equal with the runtime's configurable value depth limit.
-// Comparison uses an explicit stack, so limits above MaxValueDepth are safe.
+// Deep comparisons use an explicit stack, so limits above MaxValueDepth are safe.
 func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
+	if result := v.equalShallow(other, 0); result != nil {
+		return result
+	}
 	result, repeated := v.equalIter(other, rt.ValueDepthLimit(), false)
 	if repeated {
 		result, _ = v.equalIter(other, rt.ValueDepthLimit(), true)
@@ -1485,123 +1488,189 @@ func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
 	return result
 }
 
+// equalShallow compares ordinary values without traversal scratch or cycle
+// state. Like the JSON encoder's shallow pass, recursion stops at a fixed
+// small depth, below every supported runtime limit. A nil result abandons
+// the entire pass immediately and restarts in the iterative walker.
+func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
+	if v.Type != other.Type {
+		if v.IsNumeric() && other.IsNumeric() {
+			return v.equalNum(other)
+		}
+		return Bool(false)
+	}
+	if v.IsNumeric() {
+		return v.equalNum(other)
+	}
+	switch v.Type {
+	case LString, LSymbol:
+		return Bool(v.Str == other.Str)
+	case LSExpr, LArray:
+		if len(v.Cells) != len(other.Cells) {
+			return Bool(false)
+		}
+		if depth >= cycleGuardDepth {
+			return nil
+		}
+		for i, child := range v.Cells {
+			if result := child.equalShallow(other.Cells[i], depth+1); result != Bool(true) {
+				return result
+			}
+		}
+		return Bool(true)
+	case LTaggedVal:
+		if v.Str != other.Str {
+			return Bool(false)
+		}
+		if depth >= cycleGuardDepth {
+			return nil
+		}
+		return v.Cells[0].equalShallow(other.Cells[0], depth+1)
+	case LSortMap:
+		if v.Map().Len() != other.Map().Len() {
+			return Bool(false)
+		}
+		if depth >= cycleGuardDepth {
+			return nil
+		}
+		ae, be := sortedMapEntries(v.Map()), sortedMapEntries(other.Map())
+		if ae.Type == LError {
+			return ae
+		}
+		if be.Type == LError {
+			return be
+		}
+		if len(ae.Cells) != len(be.Cells) {
+			return Bool(false)
+		}
+		for i, pair := range ae.Cells {
+			a, b := pair.Cells[0], be.Cells[i].Cells[0]
+			if isStringLike(a) && isStringLike(b) {
+				if a.Str != b.Str {
+					return Bool(false)
+				}
+			} else if result := a.equalShallow(b, depth+1); result != Bool(true) {
+				return result
+			}
+			if result := pair.Cells[1].equalShallow(be.Cells[i].Cells[1], depth+1); result != Bool(true) {
+				return result
+			}
+		}
+		return Bool(true)
+	default:
+		return Bool(false)
+	}
+}
+
 // A repeated pair restarts the entire comparison with memoization from the
 // root. Merely skipping it would still unroll branching cycles exponentially
 // in the shallow frames that precede lazy cycle tracking.
 func (v *LVal) equalIter(other *LVal, limit int, strict bool) (*LVal, bool) {
 	type frame struct {
-		a, b                  *LVal
-		ac, bc                []*LVal
-		depth, index          int
-		key, entered, entries bool
+		ac, bc  []*LVal
+		index   int
+		entries bool
 	}
-	var local [64]frame
-	stack := append(local[:0], frame{a: v, b: other})
+	// Reuse one by-value cursor per ancestor. Leaves never create or clear
+	// a frame, and wide containers do not increase traversal scratch space.
+	stack := make([]frame, 0, 16)
 	var seen map[valuePair]bool
-	for len(stack) > 0 {
-		f := &stack[len(stack)-1]
-		if f.entered {
+	a, b := v, other
+	key := false
+walk:
+	for {
+		if key && isStringLike(a) && isStringLike(b) {
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+		} else if a.Type != b.Type {
+			if !a.IsNumeric() || !b.IsNumeric() || !True(a.equalNum(b)) {
+				return Bool(false), false
+			}
+		} else if a.IsNumeric() {
+			if !True(a.equalNum(b)) {
+				return Bool(false), false
+			}
+		} else if a.Type == LString || a.Type == LSymbol {
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+		} else {
+			var f frame
+			switch a.Type {
+			case LSExpr, LArray:
+				if len(a.Cells) != len(b.Cells) {
+					return Bool(false), false
+				}
+				f.ac, f.bc = a.Cells, b.Cells
+			case LTaggedVal:
+				if a.Str != b.Str {
+					return Bool(false), false
+				}
+				f.ac, f.bc = a.Cells[:1], b.Cells[:1]
+			case LSortMap:
+				if a.Map().Len() != b.Map().Len() {
+					return Bool(false), false
+				}
+			default:
+				return Bool(false), false
+			}
+			if len(stack) >= limit {
+				return Error(ValueDepthError(limit)), false
+			}
+			repeated := false
+			if strict || len(stack) >= cycleGuardDepth {
+				if seen == nil {
+					seen = make(map[valuePair]bool)
+				}
+				pair := valuePair{a, b}
+				repeated = seen[pair]
+				if repeated && !strict {
+					return nil, true
+				}
+				seen[pair] = true
+			}
+			if !repeated {
+				if a.Type == LSortMap {
+					ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
+					if ae.Type == LError {
+						return ae, false
+					}
+					if be.Type == LError {
+						return be, false
+					}
+					if len(ae.Cells) != len(be.Cells) {
+						return Bool(false), false
+					}
+					f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
+				}
+				if len(f.ac) > 0 {
+					stack = append(stack, f)
+				}
+			}
+		}
+		for len(stack) > 0 {
+			f := &stack[len(stack)-1]
 			n := len(f.ac)
 			if f.entries {
 				n *= 2
 			}
-			if f.index >= n {
-				stack = stack[:len(stack)-1]
-				continue
-			}
-			var a, b *LVal
-			key := false
-			if f.entries {
-				key = f.index%2 == 0
-				a = f.ac[f.index/2].Cells[f.index%2]
-				b = f.bc[f.index/2].Cells[f.index%2]
-			} else {
-				a = f.ac[f.index]
-				b = f.bc[f.index]
-			}
-			f.index++
-			stack = append(stack, frame{a: a, b: b, depth: f.depth + 1, key: key})
-			continue
-		}
-		a, b := f.a, f.b
-		if f.key && isStringLike(a) && isStringLike(b) {
-			if a.Str != b.Str {
-				return Bool(false), false
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		if a.Type != b.Type {
-			if a.IsNumeric() && b.IsNumeric() && True(a.equalNum(b)) {
-				stack = stack[:len(stack)-1]
-				continue
-			}
-			return Bool(false), false
-		}
-		if a.IsNumeric() {
-			if !True(a.equalNum(b)) {
-				return Bool(false), false
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		}
-		switch a.Type {
-		case LString, LSymbol:
-			if a.Str != b.Str {
-				return Bool(false), false
-			}
-			stack = stack[:len(stack)-1]
-			continue
-		case LSExpr, LArray:
-			if len(a.Cells) != len(b.Cells) {
-				return Bool(false), false
-			}
-			f.ac, f.bc = a.Cells, b.Cells
-		case LTaggedVal:
-			if a.Str != b.Str {
-				return Bool(false), false
-			}
-			f.ac, f.bc = a.Cells[:1], b.Cells[:1]
-		case LSortMap:
-			if a.Map().Len() != b.Map().Len() {
-				return Bool(false), false
-			}
-		default:
-			return Bool(false), false
-		}
-		if f.depth >= limit {
-			return Error(ValueDepthError(limit)), false
-		}
-		if strict || f.depth >= cycleGuardDepth {
-			if seen == nil {
-				seen = make(map[valuePair]bool)
-			}
-			pair := valuePair{a, b}
-			if seen[pair] {
-				if !strict {
-					return nil, true
+			if f.index < n {
+				key = f.entries && f.index%2 == 0
+				if f.entries {
+					a = f.ac[f.index/2].Cells[f.index%2]
+					b = f.bc[f.index/2].Cells[f.index%2]
+				} else {
+					a, b = f.ac[f.index], f.bc[f.index]
 				}
-				stack = stack[:len(stack)-1]
-				continue
+				f.index++
+				continue walk
 			}
-			seen[pair] = true
+			*f = frame{}
+			stack = stack[:len(stack)-1]
 		}
-		if a.Type == LSortMap {
-			ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
-			if ae.Type == LError {
-				return ae, false
-			}
-			if be.Type == LError {
-				return be, false
-			}
-			if len(ae.Cells) != len(be.Cells) {
-				return Bool(false), false
-			}
-			f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
-		}
-		f.entered = true
+		return Bool(true), false
 	}
-	return Bool(true), false
 }
 
 // isStringLike reports whether v is one of the name-carrying key types the

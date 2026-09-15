@@ -361,7 +361,7 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		r.full = true
 		return
 	}
-	if r.full || g.abandoned() {
+	if r.full {
 		return
 	}
 	quote := ""
@@ -370,19 +370,27 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	}
 	switch v.Type {
 	case LInt:
-		r.text(quote)
+		if quote != "" {
+			r.text(quote)
+		}
 		r.text(strconv.Itoa(v.Int))
 		return
 	case LFloat:
-		r.text(quote)
+		if quote != "" {
+			r.text(quote)
+		}
 		r.text(strconv.FormatFloat(v.Float, 'g', -1, 64))
 		return
 	case LString:
-		r.text(quote)
+		if quote != "" {
+			r.text(quote)
+		}
 		r.quotedString(v.Str)
 		return
 	case LBytes:
-		r.text(quote)
+		if quote != "" {
+			r.text(quote)
+		}
 		r.text("#<bytes")
 		for _, b := range v.Bytes() {
 			if !r.budget.step() {
@@ -401,7 +409,9 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		if v.quoted {
 			quote = "'"
 		}
-		r.text(quote)
+		if quote != "" {
+			r.text(quote)
+		}
 		if v.Type == LQSymbol {
 			r.text("'")
 		}
@@ -412,6 +422,15 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		return
 	default:
 		// The remaining types contain nested values and use the guard below.
+	}
+	r.container(v, onTheRecord, g)
+}
+
+// Keep guard, probe and recovery frames out of scalar rendering. In particular,
+// a scalar must not execute the deferred cleanup belonging to a container.
+func (r *valueRenderer) container(v *LVal, onTheRecord bool, g cycleGuard) {
+	if g.abandoned() {
+		return
 	}
 	if r.probe != nil && g.depth > maxRenderDepth {
 		return

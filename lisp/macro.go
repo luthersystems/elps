@@ -485,22 +485,48 @@ func locateExpansionTree(v *LVal, callSite *token.Location, args []*LVal) {
 }
 
 func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}, _ cycleGuard) {
-	pending := []*LVal{v}
+	if v == nil || isSingleton(v) || v.sealed || isValueNode(v) {
+		return
+	}
+	if _, arg := boundary[v]; arg {
+		return
+	}
+	if len(v.Cells) == 0 {
+		if needsStamp(v) {
+			v.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+		}
+		return
+	}
+	locateContainer(v, callSite, boundary)
+}
+
+func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}) {
+	pending := make([][]*LVal, 0, 16)
 	seen := make(map[*LVal]bool)
-	for len(pending) > 0 {
-		n := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if n == nil || seen[n] || isSingleton(n) || n.sealed || isValueNode(n) {
-			continue
+	for {
+		if v != nil && !isSingleton(v) && !v.sealed && !isValueNode(v) {
+			if _, arg := boundary[v]; !arg {
+				if needsStamp(v) {
+					v.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+				}
+				// Leaves cannot cycle or schedule work. Only containers need
+				// a memo and a by-value cursor for their remaining children.
+				if len(v.Cells) > 0 && !seen[v] {
+					seen[v] = true
+					pending = append(pending, v.Cells)
+				}
+			}
 		}
-		if _, arg := boundary[n]; arg {
-			continue
+		for len(pending) > 0 && len(pending[len(pending)-1]) == 0 {
+			pending[len(pending)-1] = nil
+			pending = pending[:len(pending)-1]
 		}
-		seen[n] = true
-		if needsStamp(n) {
-			n.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+		if len(pending) == 0 {
+			return
 		}
-		pending = append(pending, n.Cells...)
+		f := &pending[len(pending)-1]
+		i := len(*f) - 1
+		v, *f = (*f)[i], (*f)[:i]
 	}
 }
 
@@ -609,98 +635,101 @@ func (s *macroStamper) value(v *LVal) *LVal {
 // carrying the stamp and pointing at the stamped counterparts of v's cells.
 // It never writes to v or to anything reachable from v.
 func (s *macroStamper) syntax(v *LVal, g cycleGuard) *LVal {
-	type frame struct {
-		v, cp   *LVal
-		cells   []*LVal
-		depth   int
-		i       int
-		entered bool
+	if v == nil || isSingleton(v) || v.sealed {
+		return v
 	}
-	var local [64]frame
-	stack := append(local[:0], frame{v: v, depth: g.depth})
-	st := *g.state
-	defer func() { *g.state = st }()
-	var result *LVal
-	for len(stack) > 0 {
-		f := &stack[len(stack)-1]
-		v := f.v
-		if !f.entered {
-			switch {
-			case v == nil || isSingleton(v) || v.sealed:
-				result = v
-			case isValueNode(v):
-				result = s.value(v)
-			case len(v.Cells) == 0:
-				result = s.value(v)
-			case st.tooDeep || (!g.strict && st.cyclic):
-				result = v
-			default:
-				if cp, ok := s.copies[v]; ok {
-					result = cp
-					break
-				}
-				if f.depth >= s.rt.ValueDepthLimit() {
-					return Error(ValueDepthError(s.rt.ValueDepthLimit()))
-				}
-				next, cyclic := (cycleGuard{state: &st, depth: f.depth, strict: g.strict}).descend(v)
-				f.depth = next.depth
-				if cyclic {
-					result = v
-					break
-				}
-				if needsStamp(v) {
-					f.cp = s.stampedCopy(v)
-				}
-				if s.copies != nil {
-					if f.cp == nil {
-						cp := new(LVal)
-						*cp = *v
-						f.cp = cp
-					}
-					f.cells = make([]*LVal, len(v.Cells))
-					f.cp.Cells = f.cells //elps:mutates private header allocated above or by stampedCopy before publication
-					s.copies[v] = f.cp
-				}
-				f.entered = true
-				stack = append(stack, frame{v: v.Cells[0], depth: f.depth})
-				continue
+	if isValueNode(v) || len(v.Cells) == 0 {
+		return s.value(v)
+	}
+	return s.syntaxContainer(v, g)
+}
+
+func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) *LVal {
+	type frame struct {
+		v, cp *LVal
+		cells []*LVal
+		i     int
+	}
+	stack := make([]frame, 0, 16)
+walk:
+	for {
+		var result *LVal
+		switch {
+		case v == nil || isSingleton(v) || v.sealed:
+			result = v
+		case isValueNode(v) || len(v.Cells) == 0:
+			result = s.value(v)
+		case g.abandoned():
+			return v
+		default:
+			if cp, ok := s.copies[v]; ok {
+				result = cp
+				break
 			}
-		} else {
+			depth := g.depth + len(stack)
+			if depth >= s.rt.ValueDepthLimit() {
+				return Error(ValueDepthError(s.rt.ValueDepthLimit()))
+			}
+			_, cyclic := (cycleGuard{state: g.state, depth: depth, strict: g.strict}).descend(v)
+			if cyclic {
+				return v // The caller discards this pass and restarts in strict mode.
+			}
+			f := frame{v: v}
+			if needsStamp(v) {
+				f.cp = s.stampedCopy(v)
+			}
+			if s.copies != nil {
+				if f.cp == nil {
+					cp := new(LVal)
+					*cp = *v
+					f.cp = cp
+				}
+				f.cells = make([]*LVal, len(v.Cells))
+				f.cp.Cells = f.cells //elps:mutates private header allocated above or by stampedCopy before publication
+				s.copies[v] = f.cp
+			}
+			stack = append(stack, f)
+			v = v.Cells[0]
+			continue
+		}
+		for len(stack) > 0 {
 			if result != nil && result.Type == LError {
 				return result
 			}
+			f := &stack[len(stack)-1]
 			if f.cells != nil {
 				f.cells[f.i] = result
-			} else if result != v.Cells[f.i] {
-				f.cells = make([]*LVal, len(v.Cells))
-				copy(f.cells, v.Cells[:f.i])
+			} else if result != f.v.Cells[f.i] {
+				f.cells = make([]*LVal, len(f.v.Cells))
+				copy(f.cells, f.v.Cells[:f.i])
 				f.cells[f.i] = result
 			}
 			f.i++
-			if f.i < len(v.Cells) {
-				stack = append(stack, frame{v: v.Cells[f.i], depth: f.depth})
-				continue
+			if f.i < len(f.v.Cells) {
+				v = f.v.Cells[f.i]
+				continue walk
 			}
-			if !g.strict && f.depth >= cycleGuardDepth {
-				delete(st.path, v)
+			if !g.strict && g.depth+len(stack) >= cycleGuardDepth {
+				g.ascend(f.v)
 			}
 			if f.cp == nil && f.cells == nil {
-				result = v
+				result = f.v
 			} else {
 				cp := f.cp
 				if cp == nil {
 					cp = new(LVal)
-					*cp = *v
+					*cp = *f.v
 				}
 				if f.cells != nil {
 					cp.Cells = f.cells
 				} //elps:mutates private copy-on-write macro header allocated above or by stampedCopy
 				result = cp
 			}
+			*f = frame{}
+			stack = stack[:len(stack)-1]
 		}
-		stack = stack[:len(stack)-1]
+		return result
 	}
-	return result
 }
 
 type unquoteType int

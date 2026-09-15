@@ -62,43 +62,80 @@ func (r *Runtime) ValueDepthLimit() int {
 // checkValueDepth validates the conversion graph after bounded text rendering succeeds.
 // A visited node closes cycles; the counter bounds acyclic descent.
 func checkValueDepth(v *LVal, limit int, ctx context.Context) error {
-	type frame struct {
-		v     *LVal
-		depth int
+	if ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 	}
-	pending := []frame{{v, 0}}
+	if v == nil {
+		return nil
+	}
+	if limit <= 0 {
+		return ValueDepthError(limit)
+	}
+	if len(v.Cells) == 0 && v.Type != LSortMap {
+		return nil
+	}
+	return checkContainerDepth(v, limit, ctx)
+}
+
+func checkContainerDepth(v *LVal, limit int, ctx context.Context) error {
+	type frame struct {
+		cells, entries, pair []*LVal
+	}
+	// Only ancestors need cursors; only containers need identity tracking.
+	// Keep the visited set for DAGs as well as cycles, so shared expansions
+	// remain linear in graph size. Scalar siblings need neither structure.
+	pending := make([]frame, 0, 16)
 	seen := make(map[*LVal]bool)
 	visits := 0
-	for len(pending) > 0 {
+walk:
+	for {
 		visits++
-		if visits%4096 == 1 && ctx != nil {
+		if visits%4096 == 0 && ctx != nil {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
 		}
-		f := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
-		if f.v == nil || seen[f.v] {
-			continue
-		}
-		if f.depth >= limit {
-			return ValueDepthError(limit)
-		}
-		seen[f.v] = true
-		for _, c := range f.v.Cells {
-			pending = append(pending, frame{c, f.depth + 1})
-		}
-		if f.v.Type == LSortMap {
-			entries := sortedMapEntries(f.v.Map())
-			if entries.Type == LError {
-				return GoError(entries)
-			}
-			for _, p := range entries.Cells {
-				for _, c := range p.Cells {
-					pending = append(pending, frame{c, f.depth + 1})
+		if v != nil {
+			container := len(v.Cells) > 0 || v.Type == LSortMap
+			if !container || !seen[v] {
+				if len(pending) >= limit {
+					return ValueDepthError(limit)
+				}
+				if container {
+					seen[v] = true
+					f := frame{cells: v.Cells}
+					if v.Type == LSortMap {
+						entries := sortedMapEntries(v.Map())
+						if entries.Type == LError {
+							return GoError(entries)
+						}
+						f.entries = entries.Cells
+					}
+					pending = append(pending, f)
 				}
 			}
 		}
+		for len(pending) > 0 {
+			f := &pending[len(pending)-1]
+			// Preserve the previous last-in-first-out order: map pairs and
+			// their values first, then the header's cells, all in reverse.
+			for len(f.pair) == 0 && len(f.entries) > 0 {
+				i := len(f.entries) - 1
+				f.pair, f.entries = f.entries[i].Cells, f.entries[:i]
+			}
+			if n := len(f.pair); n > 0 {
+				v, f.pair = f.pair[n-1], f.pair[:n-1]
+				continue walk
+			}
+			if n := len(f.cells); n > 0 {
+				v, f.cells = f.cells[n-1], f.cells[:n-1]
+				continue walk
+			}
+			*f = frame{}
+			pending = pending[:len(pending)-1]
+		}
+		return nil
 	}
-	return nil
 }
