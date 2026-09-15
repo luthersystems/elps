@@ -2,7 +2,11 @@
 
 package lisp
 
-import "sort"
+import (
+	"cmp"
+	"slices"
+	"sort"
+)
 
 type Map interface {
 	Len() int
@@ -311,6 +315,35 @@ func sortedMapEntries(m Map) *LVal {
 		return lerr
 	}
 	return QExpr(cells)
+}
+
+// sortMapEntriesByKey orders a pair list sortedMapEntries produced, so a
+// walk over a map's entries -- and with it every host CloneNative call the
+// walk makes -- runs in an order that depends only on the map's contents
+// rather than on the order the backing Map's Entries happened to yield.
+// The Map interface above documents Keys as returning a sorted list and
+// says nothing whatever about the order of Entries, so an embedder's
+// implementation over a Go map yields whatever permutation it gets.
+//
+// By (Str, Type) rather than Str alone, so the order is total over the key
+// kinds Str does not separate: an LString and an LSymbol that spell the
+// same thing sort the same way on every walk.  Stable, so any pair the
+// comparison still cannot separate keeps the order Entries gave it rather
+// than moving under the sort.
+//
+// Both value walkers that reach a host clone hook through sortedMapEntries
+// call this -- copier.mapData's generic arm and detachMapData -- so one
+// embedder's map is walked in ONE order by both, rather than each walker
+// having its own comparison to drift.
+//
+//elps:mutates reorders a cells slice the caller owns outright: every caller passes the slice sortedMapEntries allocated for that call, held only by a local, so nothing outside the call can observe the permutation
+func sortMapEntriesByKey(entries []*LVal) {
+	slices.SortStableFunc(entries, func(a, b *LVal) int {
+		if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
+			return r
+		}
+		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
+	})
 }
 
 // mapEntriesByKey are internally known to be a list of pairs containing keys

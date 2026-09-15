@@ -465,6 +465,20 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	if entries.Type == LError {
 		return nil, &detachError{msg: fmt.Sprintf("sorted-map entries cannot be enumerated: %v", entries)}
 	}
+	// Sorted before a single entry is walked, and for the copier's reason
+	// (sortMapEntriesByKey, lisp/maps.go): the walk below calls the host's
+	// CloneNative once per cloneable value, in the order the backing Map's
+	// Entries yielded, and the Map interface promises nothing about that
+	// order.  Two detaches of one map therefore called the embedder's hook
+	// in two orders, and `copy` -- this walker in shareOpaque mode -- was as
+	// exposed as detach.  The copier sorts the entries of exactly this kind
+	// of map before copying a value; this is the same sort, through the same
+	// function, so one embedder's map is walked in one order by both.
+	//
+	// Unconditional, as the copier's generic arm is: the fast path the
+	// copier's other two arms take rests on keys that are unique Go strings
+	// by construction, and these keys arrive from the host as whole LVals.
+	sortMapEntriesByKey(entries.Cells)
 	m := &MapData{newmap()}
 	d.maps[md] = m
 	d.next.entries, d.next.mapping = entries.Cells, m

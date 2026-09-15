@@ -694,11 +694,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// Entries, which does sort; this arm is the one the stock map never
 	// reaches.
 	//
-	// By (Str, Type) rather than Str alone, so the order is total over the
-	// key kinds Str does not separate: an LString and an LSymbol that spell
-	// the same thing sort the same way on every copy.  Stable, so any pair
-	// the comparison still cannot separate keeps the order Entries gave it
-	// rather than moving under the sort.
+	// Through sortMapEntriesByKey (lisp/maps.go), which is also what
+	// detachMapData sorts with: both walkers reach the same embedder hook
+	// through the same sortedMapEntries, so the comparison lives in one
+	// place rather than once per walker.  See it for why the order is
+	// (Str, Type) and why the sort is stable.
 	//
 	// ALWAYS, unlike the two arms above, which skip the ordering when no
 	// value in the map can reach a host hook.  Their fast path rests on "no
@@ -717,13 +717,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// sort cannot answer the question.  The sort costs little here in any
 	// case, next to the per-entry boxing Entries has already done to hand
 	// these pairs over.
-	//elps:mutates reorders backing this call owns outright: sortedMapEntries allocates the cells slice for this call and wraps it in a QExpr held only by the local `entries`, so nothing outside this function can observe the permutation
-	slices.SortStableFunc(entries.Cells, func(a, b *LVal) int {
-		if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
-			return r
-		}
-		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
-	})
+	sortMapEntriesByKey(entries.Cells)
 	// Ordering makes the copy deterministic; it does not make it right.  Two
 	// entries the destination cannot hold apart are now ADJACENT, so they can
 	// be found -- and they are refused rather than silently resolved, because
