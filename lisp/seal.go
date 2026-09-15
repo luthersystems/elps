@@ -143,15 +143,43 @@ func sealableNodeType(t LType) bool {
 }
 
 func (v *LVal) sealAST() {
-	pending := []*LVal{v}
-	for len(pending) > 0 {
-		n := pending[len(pending)-1]
-		pending = pending[:len(pending)-1]
+	if v == nil || v.sealed || isSingleton(v) || !sealableNodeType(v.Type) {
+		return
+	}
+	v.sealed = true //elps:mutates parse-completion sealing, monotone flag before publication
+	if len(v.Cells) > 0 {
+		sealChildren(v.Cells)
+	}
+}
+
+func sealChildren(cells []*LVal) {
+	// Keep a slice cursor per ancestor with remaining siblings, rather than
+	// queueing all children. Leaves and single-child chains need no frames.
+	// The seal bit is set before descent and remains the cycle/DAG memo.
+	pending := make([][]*LVal, 0, 16)
+	for {
+		if len(cells) == 0 {
+			if len(pending) == 0 {
+				return
+			}
+			i := len(pending) - 1
+			cells = pending[i]
+			pending[i] = nil
+			pending = pending[:i]
+		}
+		i := len(cells) - 1
+		n := cells[i]
+		cells = cells[:i]
 		if n == nil || n.sealed || isSingleton(n) || !sealableNodeType(n.Type) {
 			continue
 		}
 		n.sealed = true //elps:mutates parse-completion sealing, monotone flag before publication
-		pending = append(pending, n.Cells...)
+		if len(n.Cells) > 0 {
+			if len(cells) > 0 {
+				pending = append(pending, cells)
+			}
+			cells = n.Cells
+		}
 	}
 }
 
