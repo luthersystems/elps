@@ -367,12 +367,26 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	return cp, nil
 }
 
+// detachCells prepares the child cursor for a node's cells and returns the
+// slice the copies land in.
+//
+// The frame reads its children back out of the DESTINATION slice, seeded
+// with the source's children here and overwritten slot by slot as the walk
+// passes them: detachFrame.child reads a slot immediately before
+// detachFrame.store writes it, so one slice is both the snapshot and the
+// output at no extra allocation.  Holding the caller's slice header instead
+// shared the source's backing array with the walk, so a host hook that ran
+// during the walk -- a NativeCloner.CloneNative, a custom Map's Entries --
+// and wrote into a cell not yet reached had that write land in the copy.
+// See copier.cells; the three value walkers agree that a walk copies the
+// children a container held when the walker entered it.
 func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 	if len(cells) == 0 {
 		return nil, nil
 	}
 	out := make([]*LVal, len(cells))
-	d.next.cells, d.next.copied = cells, out
+	copy(out, cells)
+	d.next.cells, d.next.copied = out, out
 
 	return out, nil
 }

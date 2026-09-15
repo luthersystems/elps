@@ -552,12 +552,33 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	return cp
 }
 
+// cells prepares the child cursor for v's cells and returns the slice the
+// copies land in.
+//
+// The frame reads its children back out of the DESTINATION slice, which is
+// seeded with v's children here and overwritten slot by slot as the walk
+// passes them -- a slot is read (copyFrame.child) immediately before it is
+// written (copyFrame.store), so one slice serves as both the snapshot and
+// the output and the walk allocates nothing extra for it.
+//
+// It used to hold v.Cells itself, which is a slice HEADER over the source's
+// backing array, not a snapshot of it.  The walk runs host code -- a
+// NativeCloner.CloneNative on a native child, a custom Map's Entries -- and
+// a hook that wrote into a cell the walk had not reached yet had that write
+// picked up, so the copy was neither the list as it was when Copy entered
+// it nor the list as the hook left it.  Copy's contract is a copy of a
+// value, and a value the source never held is not one; the walk therefore
+// copies the children the container held when it was entered, and a
+// concurrent append or overwrite is visible only in the source.
+// TestCopySnapshotsCellsAgainstAHostHook is the control, and the detacher
+// and the conversion walk agree with it.
 func (c *copier) cells(v *LVal) []*LVal {
 	if len(v.Cells) == 0 {
 		return nil
 	}
 	cells := make([]*LVal, len(v.Cells))
-	c.next = copyFrame{cells: v.Cells, copied: cells}
+	copy(cells, v.Cells)
+	c.next = copyFrame{cells: cells, copied: cells}
 
 	return cells
 }

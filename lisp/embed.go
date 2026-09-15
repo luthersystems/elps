@@ -146,13 +146,39 @@ walk:
 					path[v] = true
 				}
 				if v.Type != LSortMap && v.Type != LQuote && (v.Type != LArray || v.Cells[0].Len() != 0) {
+					// f.values doubles as the SNAPSHOT of this container's
+					// children: each slot starts out holding the source
+					// child and is replaced by that child's conversion as
+					// the walk passes it (a slot is read immediately before
+					// it is written, below), so the walk never reads a
+					// child back out of the source's own backing array.
+					//
+					// f.children used to serve that purpose, and it is a
+					// slice header over the source's cells, not a copy of
+					// them.  The walk runs host code -- a custom Map's
+					// Entries, through sortedMapEntries -- so a hook that
+					// wrote into a cell the walk had not reached yet had
+					// that write picked up, and the conversion was neither
+					// the container as it was nor as the hook left it.  A
+					// *LVal stored in an interface costs no allocation, so
+					// the snapshot is free (TestGoValueContainerAllocations
+					// pins that).  The copier and the detacher agree:
+					// a walk converts the children a container held when
+					// the walker entered it.
 					f.values = make([]interface{}, len(f.children))
+					for i, child := range f.children {
+						f.values[i] = child
+					}
 				}
 				if len(f.children) > 0 {
 					pending = append(pending, f)
-					v = f.children[0]
-					if f.mapping != nil {
-						v = v.Cells[0]
+					if f.values != nil {
+						v = f.values[0].(*LVal)
+					} else {
+						v = f.children[0]
+						if f.mapping != nil {
+							v = v.Cells[0]
+						}
 					}
 					continue
 				}
@@ -189,10 +215,14 @@ walk:
 					out = f.mapping
 				}
 			case f.values != nil:
+				// Read the next child out of the snapshot the slot still
+				// holds, then overwrite that slot with this child's
+				// conversion; f.values is the output once the cursor runs
+				// off the end.
 				f.values[f.index] = out
 				f.index++
-				if f.index < len(f.children) {
-					v = f.children[f.index]
+				if f.index < len(f.values) {
+					v = f.values[f.index].(*LVal)
 					continue walk
 				}
 				out = f.values
