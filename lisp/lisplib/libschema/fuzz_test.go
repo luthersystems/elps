@@ -56,9 +56,9 @@ func FuzzSchemaValidate(f *testing.F) {
 	// in the corpus at ~1/12th the cost.
 	valueSeeds := fuzzval.Seeds()
 	for i := range schemaFragments {
-		f.Add(uint8(i), valueSeeds[i%len(valueSeeds)])     //nolint:gosec // G115: i < 256 fragments
-		f.Add(uint8(i), valueSeeds[(i*7)%len(valueSeeds)]) //nolint:gosec // G115: as above
-		f.Add(uint8(i), []byte{0x11, 0x22, 0x33, 0x44})    //nolint:gosec // G115: as above
+		f.Add(uint8(i), valueSeeds[i%len(valueSeeds)])
+		f.Add(uint8(i), valueSeeds[(i*7)%len(valueSeeds)])
+		f.Add(uint8(i), []byte{0x11, 0x22, 0x33, 0x44})
 	}
 	for i, seed := range valueSeeds {
 		f.Add(uint8(i%len(schemaFragments)), seed) //nolint:gosec // G115: modulo fragment count

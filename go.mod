@@ -1,6 +1,6 @@
 module github.com/luthersystems/elps
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/ergochat/readline v0.1.3
@@ -15,12 +15,13 @@ require (
 	go.opentelemetry.io/otel v1.46.0
 	go.opentelemetry.io/otel/sdk v1.46.0
 	go.opentelemetry.io/otel/trace v1.46.0
-	// PINNED, and not by accident. golang.org/x/perf@HEAD declares `go 1.26.0`
-	// (upgraded 2026-08-19); this module and the benchmark workflow's GO_VERSION
-	// are on 1.25, and setup-go pins GOTOOLCHAIN=local, so `go get -u` here would
-	// force this module's go directive to 1.26 and break every CI job. This commit
-	// is the last one before that bump, and its benchfmt/ and benchmath/ trees are
-	// byte-identical to HEAD's. Advance it when this module moves to Go 1.26.
+	// PINNED, but the reason it was pinned has lapsed. golang.org/x/perf@HEAD
+	// declares `go 1.26.0` (upgraded 2026-08-19), and while this module and the
+	// workflows were on 1.25 -- with setup-go pinning GOTOOLCHAIN=local -- a
+	// `go get -u` here would have forced the go directive to 1.26 and broken
+	// every CI job. This module is on 1.26 as of the toolchain move, so that
+	// constraint is gone and the pin may be advanced in its own change. This
+	// commit's benchfmt/ and benchmath/ trees are byte-identical to HEAD's.
 	golang.org/x/perf v0.0.0-20260813145340-fd4a688df892 // used by cmd/benchgate
 	golang.org/x/tools v0.49.0
 	gopkg.in/yaml.v3 v3.0.1

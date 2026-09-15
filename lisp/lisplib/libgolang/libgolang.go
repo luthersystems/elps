@@ -198,7 +198,7 @@ func nameIsExported(name string) bool {
 }
 
 func derefPtr(v reflect.Value) reflect.Value {
-	if v.Kind() != reflect.Ptr {
+	if v.Kind() != reflect.Pointer {
 		return v
 	}
 	if v.IsNil() {

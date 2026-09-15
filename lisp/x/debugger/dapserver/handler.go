@@ -840,7 +840,7 @@ func (h *handler) handleHelpCommand(req *dap.EvaluateRequest) bool {
 	var b strings.Builder
 	b.WriteString("Available commands:")
 	for _, c := range cmds {
-		b.WriteString(fmt.Sprintf("\n  /%-*s", maxLen, c.name))
+		fmt.Fprintf(&b, "\n  /%-*s", maxLen, c.name)
 		if c.desc != "" {
 			b.WriteString("  " + c.desc)
 		}
