@@ -203,3 +203,54 @@ func TestBytesGoValue(t *testing.T) {
 		}
 	}
 }
+
+// TestGoValueDegenerateMapBacking: a sorted-map whose *MapData carries no
+// Map implementation at all -- the degenerate value
+// SortedMapFromData(NewMapData(nil)) builds -- must convert like an empty
+// map rather than dereference the nil backing.
+//
+// The other two value walkers already carry an arm for this shape: the
+// copier has `case nil:` in copier.mapData and the detacher checks
+// `md.mapBacking == nil` in detachMapData, both returning a fresh empty
+// *MapData with the nil backing preserved.  The conversion walk had no such
+// arm, so convertContainer's LSortMap case called sortedMapEntries, whose
+// first act is m.Len() -- a method call on a nil Map interface -- and
+// GoValue panicked with a nil pointer dereference.
+//
+// The result asserted here is whatever GoValue produces for an ordinary
+// EMPTY sorted map, which the sub-test below reads back rather than
+// hard-coding, so the degenerate map converts like the empty map it
+// represents.  The nested case exercises the container path, where the
+// conversion happens inside a frame rather than at the top of the walk.
+func TestGoValueDegenerateMapBacking(t *testing.T) {
+	degenerate := func() *LVal { return SortedMapFromData(NewMapData(nil)) }
+	want := GoValue(SortedMap())
+	if _, ok := want.(map[interface{}]interface{}); !ok {
+		t.Fatalf("anti-vacuity: GoValue of an empty sorted-map is %T, want a Go map", want)
+	}
+
+	t.Run("bare", func(t *testing.T) {
+		got := GoValue(degenerate())
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("GoValue(degenerate sorted-map) = %#v, want %#v (what an empty sorted-map gives)", got, want)
+		}
+	})
+
+	t.Run("nested in a list", func(t *testing.T) {
+		got := GoValue(QExpr([]*LVal{Int(1), degenerate()}))
+		if !reflect.DeepEqual(got, []interface{}{1, want}) {
+			t.Fatalf("GoValue(list holding a degenerate sorted-map) = %#v, want %#v",
+				got, []interface{}{1, want})
+		}
+	})
+
+	t.Run("GoMap", func(t *testing.T) {
+		got, ok := GoMap(degenerate())
+		if !ok {
+			t.Fatal("GoMap refused a degenerate sorted-map")
+		}
+		if len(got) != 0 {
+			t.Fatalf("GoMap(degenerate sorted-map) = %#v, want an empty map", got)
+		}
+	})
+}

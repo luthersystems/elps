@@ -103,7 +103,23 @@ walk:
 				}
 				f.children = v.Cells[1].Cells
 			case LSortMap:
-				entries := sortedMapEntries(v.Map())
+				md := v.Map()
+				if md.mapBacking == nil {
+					// Degenerate MapData with no implementation (possible
+					// via SortedMapFromData(NewMapData(nil))).  The other
+					// two value walkers each carry this arm -- copier.mapData
+					// has `case nil:` and detachMapData checks
+					// md.mapBacking == nil -- and without it the walk called
+					// sortedMapEntries, whose first act is a Len() method
+					// call on the nil Map, so GoValue panicked with a nil
+					// pointer dereference.  A backing-less map holds no
+					// entries, so it converts to the same empty Go map an
+					// ordinary empty sorted-map converts to.
+					f.mapping = make(map[interface{}]interface{})
+					out = f.mapping
+					break
+				}
+				entries := sortedMapEntries(md)
 				if entries.Type == LError {
 					return (*ErrorVal)(entries), true
 				}
