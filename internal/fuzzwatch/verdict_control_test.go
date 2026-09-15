@@ -113,7 +113,7 @@ func runControlProbe(t *testing.T, goBin, name, src string) bool {
 
 	dir := t.TempDir()
 	write := func(base, content string) {
-		if err := os.WriteFile(filepath.Join(dir, base), []byte(content), 0o600); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, base), []byte(content), 0o600); err != nil { //nolint:gosec // G703: writes a fixed file name into this test's own t.TempDir()
 			t.Fatalf("%s: writing %s: %v", name, base, err)
 		}
 	}

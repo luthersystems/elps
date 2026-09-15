@@ -841,7 +841,7 @@ func containerProbeBytes(i int) []byte {
 	b := make([]byte, 32)
 	for j := range b {
 		// Deliberate truncation: these are driver bytes, not a number.
-		b[j] = byte(i*(j+1)*7 + i>>(j%8) + j*13)
+		b[j] = byte(i*(j+1)*7 + i>>(j%8) + j*13) //nolint:gosec // G115: the truncation is the point; see the comment above
 	}
 	return b
 }
@@ -859,7 +859,7 @@ func TestContainerGenCoverage(t *testing.T) {
 	shapes := map[lisp.LType]int{}
 	hits, draws := 0, 0
 	for i := range 8192 {
-		g := newContainerGen([]byte{byte(i), byte(i >> 8), byte(i >> 4), byte(i * 7), byte(i * 13), byte(i * 31)})
+		g := newContainerGen([]byte{byte(i), byte(i >> 8), byte(i >> 4), byte(i * 7), byte(i * 13), byte(i * 31)}) //nolint:gosec // G115: deliberate truncation of the iteration counter into driver bytes
 		v := g.value(0)
 		shapes[v.Type]++
 

@@ -15,10 +15,10 @@
 # elps is a pure Go project (an embedded Lisp interpreter). There is no cloud infra, no
 # Docker, no Playwright. What the Makefile and CI actually need:
 #
-#   go 1.25.13            .github/workflows/*.yml `go-version`, hook GOTOOLCHAIN pin
-#   golangci-lint v2.6.x  elps.yml golangci-lint-action `version: v2.6`; hook pins 2.6.2
+#   go 1.26.8             .github/workflows/*.yml `go-version`, hook GOTOOLCHAIN pin
+#   golangci-lint v2.13.x elps.yml golangci-lint-action `version: v2.13`; hook pins 2.13.2
 #   betteralign v0.14.3   Makefile `fieldalign-fix` (via `go run ...@v0.14.3`)
-#   govulncheck v1.7.0    govulncheck.yml / govulncheck-scheduled.yml
+#   govulncheck v1.8.0    govulncheck.yml / govulncheck-scheduled.yml
 #   benchstat @latest     benchmark.yml (needs GOTOOLCHAIN=auto; see install_benchstat)
 #   (shellcheck)          scripts/ci-gates-test.sh (CI asserts it is present);
 #                         parenthesised so this line is not read as a directive
@@ -46,10 +46,10 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 : > "$LOG_FILE" 2>/dev/null || true
 
 # Keep these four in sync with .github/workflows/elps.yml and .claude/hooks/session-start.sh.
-GO_VERSION=1.25.13              # CI `go-version`; hook pins GOTOOLCHAIN=go1.25.13
-GOLANGCI_VERSION=v2.6.2         # CI pins v2.6 (golangci-lint-action); hook pins 2.6.2
+GO_VERSION=1.26.8               # CI `go-version`; hook pins GOTOOLCHAIN=go1.26.8
+GOLANGCI_VERSION=v2.13.2        # CI pins v2.13 (golangci-lint-action); hook pins 2.13.2
 BETTERALIGN_VERSION=v0.14.3     # Makefile `fieldalign-fix`
-GOVULNCHECK_VERSION=v1.7.0      # govulncheck.yml / govulncheck-scheduled.yml
+GOVULNCHECK_VERSION=v1.8.0      # govulncheck.yml / govulncheck-scheduled.yml
 ARCH="$(dpkg --print-architecture)"   # auto-detect: amd64 or arm64
 
 log() {
@@ -117,9 +117,9 @@ install_golangci() {
 install_gopls() {
   # Go language server for Claude Code's LSP (diagnostics, hover, go-to-def). Not part of
   # the Go toolchain, so it must be installed separately. GOBIN puts it on /usr/local/bin
-  # (on PATH). gopls@latest requires a Go newer than the CI pin (v0.23 needs >= 1.26), so it
-  # is built under GOTOOLCHAIN=auto, same as benchstat. Best-effort: a gopls hiccup shouldn't
-  # poison the whole cache.
+  # (on PATH). gopls@latest has required a Go newer than the CI pin before (v0.23 needed
+  # >= 1.26 while the pin was 1.25), so it is built under GOTOOLCHAIN=auto, same as
+  # benchstat. Best-effort: a gopls hiccup shouldn't poison the whole cache.
   log "installing gopls (Go LSP)"
   GOTOOLCHAIN=auto GOBIN=/usr/local/bin go install golang.org/x/tools/gopls@latest && gopls version \
     || log "gopls install failed (non-fatal; Go LSP unavailable)"
@@ -147,7 +147,8 @@ warm_betteralign() {
   # `make fieldalign-fix` runs `go run github.com/dkorunic/betteralign/cmd/betteralign@v0.14.3`.
   # It does NOT read PATH, so this only warms the module cache so the first `go run` in a
   # session is not also a download. betteralign itself needs Go >= 1.26 (Makefile comment),
-  # so it is fetched under GOTOOLCHAIN=auto, which also caches that newer toolchain.
+  # which GO_VERSION now satisfies; GOTOOLCHAIN=auto is kept so a future bump in its own
+  # go directive still resolves rather than failing the cached phase.
   # Best-effort: the Makefile target works without this, just slower the first time.
   log "warming module cache for betteralign ${BETTERALIGN_VERSION}"
   GOTOOLCHAIN=auto GOBIN=/usr/local/bin \

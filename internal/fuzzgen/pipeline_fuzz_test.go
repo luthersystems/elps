@@ -186,7 +186,7 @@ func sameStrings(a, b []string) bool {
 func FuzzGeneratedPipeline(f *testing.F) {
 	for _, script := range seedScripts() {
 		for shape := range limitProfiles {
-			f.Add(script, uint8(shape)) //nolint:gosec // G115: bounded by len(limitProfiles)
+			f.Add(script, uint8(shape))
 		}
 	}
 	f.Fuzz(func(t *testing.T, script []byte, shape uint8) {

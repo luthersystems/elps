@@ -4301,7 +4301,7 @@ func emptyResult(v any) bool {
 	}
 	rv := reflect.ValueOf(v)
 	switch rv.Kind() {
-	case reflect.Ptr, reflect.Map, reflect.Slice, reflect.Interface:
+	case reflect.Pointer, reflect.Map, reflect.Slice, reflect.Interface:
 		if rv.IsNil() {
 			return true
 		}

@@ -1285,8 +1285,8 @@ func script(steps ...[4]any) []byte {
 	for _, st := range steps {
 		out = append(out,
 			opcode(st[0].(string)),
-			byte(st[1].(int)),
-			byte(st[2].(int)),
+			byte(st[1].(int)), //nolint:gosec // G115: the step tables in this file are written with byte-ranged values
+			byte(st[2].(int)), //nolint:gosec // G115: as above
 			st[3].(byte),
 		)
 	}

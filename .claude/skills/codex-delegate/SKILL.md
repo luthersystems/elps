@@ -151,9 +151,12 @@ text**, or read its diff before you keep the work. The ones a brief must cite:
 - A new form with structural requirements needs a lint analyzer registered in
   `DefaultAnalyzers()`, and `TestDefaultAnalyzers`' count updated.
 - User-facing changes update `docs/lang.md`.
-- Never delete the two `//nolint:gosec` directives in `parser/token/token.go`
-  (lines 113 and 115). They are load-bearing under CI's golangci-lint; a local
-  lint run reporting them as unused is version skew, not a finding.
+- Never delete the `//nolint:gosec` directive on the last `return` of
+  `parser/token/token.go`'s `Type.String`. It is load-bearing under CI's
+  golangci-lint; a local lint run reporting it as unused is version skew, not
+  a finding. (The sibling directive on the preceding `return` was genuinely
+  dead under the v2.13 pin and was removed there — settle such a question
+  against CI's version, not against whatever is on PATH.)
 - Commit messages are plain sentences saying what changes and why.
 
 Codex writes files but it does not commit. Committing and pushing stays a
