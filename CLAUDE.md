@@ -45,13 +45,20 @@ version in `.github/workflows/elps.yml`. When the two differ the results
 differ, **in both directions and silently**, so the target now prints a
 warning naming both versions. Trust CI over a local run.
 
-The trap worth knowing, because it invites you to break the build: two
-`//nolint:gosec` directives in `parser/token/token.go` (lines 113 and 115)
-are **load-bearing** under CI's golangci-lint, but an older gosec does not
-flag those array indexes, so `nolintlint` reports the directives as unused
-and a local run reads as "two issues to clean up". Deleting them turns CI
-red. `main` being green in CI is the authority on whether a `//nolint` is
+The trap worth knowing, because it invites you to break the build: the
+`//nolint:gosec` directive on the last `return` of `parser/token/token.go`'s
+`Type.String` is **load-bearing** under CI's golangci-lint, but an older
+gosec does not flag that array index, so `nolintlint` reports the directive
+as unused and a local run reads as "an issue to clean up". Deleting it turns
+CI red. `main` being green in CI is the authority on whether a `//nolint` is
 dead — not a local run on a different version.
+
+The skew runs in both directions, which is the other half of the same trap.
+That function used to carry **two** such directives; gosec as shipped in
+golangci-lint v2.13 no longer flags the constant-index `typeStrings[INVALID]`
+return, so on the 1.26 toolchain move `nolintlint` called the first one dead
+and it was removed. A directive is kept or dropped on the evidence of CI's
+pinned version, never on a guess about which way the skew points.
 
 
 ## Architecture

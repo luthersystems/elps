@@ -453,7 +453,7 @@ func (g *Gen) pickFloat() float64 {
 	if g.Byte()&1 == 0 {
 		return interestingFloats[g.Intn(len(interestingFloats))]
 	}
-	return float64(int8(g.Byte())) / 8
+	return float64(int8(g.Byte())) / 8 //nolint:gosec // G115: deliberate reinterpretation of a fuzz byte as signed
 }
 
 func (g *Gen) pickString() string {
@@ -716,7 +716,7 @@ func stamped(k byte) byte {
 	for b < 0x80 {
 		b += kindNumKinds
 	}
-	return byte(b)
+	return byte(b) //nolint:gosec // G115: the loop above stops at the first b >= 0x80, so b < 0x80+kindNumKinds
 }
 
 // Seeds returns the shared seed corpus for the value-driven targets.
@@ -775,7 +775,7 @@ func Seeds() [][]byte {
 	// Preserve all raw-host seeds and explicitly cross each regexp pattern
 	// with the Lisp-produced representation as well. Both must be exercised
 	// during ordinary seed replay, not merely discoverable by mutation.
-	for pattern := range byte(len(fuzzPatterns)) {
+	for pattern := range byte(len(fuzzPatterns)) { //nolint:gosec // G115: fuzzPatterns is a fixed in-package table far below 256 entries
 		for _, selector := range []byte{8, nativeLispRegexp} {
 			seeds = append(seeds, []byte{kindNative, selector, pattern}, []byte{stamped(kindNative), selector, pattern})
 		}

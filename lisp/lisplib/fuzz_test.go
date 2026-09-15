@@ -233,7 +233,7 @@ func seedCross(f *testing.F, names []string) {
 	kindSeeds := fuzzval.KindSeeds()
 	located := fuzzval.LocatedKindSeeds()
 	for i := range names {
-		idx := uint16(i) //nolint:gosec // G115: i < len(names), a few hundred
+		idx := uint16(i)
 		for _, seed := range kindSeeds {
 			f.Add(idx, seed)
 		}

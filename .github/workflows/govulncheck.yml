@@ -47,12 +47,14 @@ jobs:
           # the findings.
           #
           # Exact rather than a range because every looser spelling was tried
-          # against this repo and each resolved somewhere unintended:
+          # against this repo and each resolved somewhere unintended. Measured
+          # while this line read 1.25.13, and the shape of each failure carries
+          # over to any minor:
           #
           #   "stable"      -> go1.26.5   manifest's newest, a patch behind the
           #                               1.26 fix. This is elps#404.
           #   "1.25"        -> go1.25.12  newest 1.25.x IN THE MANIFEST, which
-          #                               lagged go.dev; the fix is 1.25.13.
+          #                               lagged go.dev; the fix was 1.25.13.
           #   ">=1.25.13"   -> go1.26.5   satisfied by crossing the minor
           #                               boundary, straight back to the
           #                               vulnerable build.
@@ -61,20 +63,24 @@ jobs:
           # of that at run time. Re-running a failed job therefore never helps;
           # only changing this line does.
           #
-          # The 1.25 line is not a preference, it is a constraint: the pinned
-          # golangci-lint cannot analyse a Go 1.26 toolchain -- it does not
-          # report an error, it panics inside go/types and exits 2. Moving the
-          # build jobs to 1.26 means dealing with that first. Go backports
-          # security fixes to the two most recent minors, so staying on 1.25
-          # costs nothing in patch coverage: 1.25.13 scans clean.
-          go-version: "1.25.13"
+          # This line used to be held at 1.25 by a constraint rather than a
+          # preference: the then-pinned golangci-lint (v2.6) could not analyse
+          # a Go 1.26 toolchain -- it did not report an error, it panicked
+          # inside go/types and exited 2. golangci-lint v2.13 is built with Go
+          # 1.26 and lifts that, so the whole fleet moved to 1.26 together
+          # (dependabot #660 wants golang.org/x/tools v0.50.0, which declares
+          # `go 1.26.0`, and luthersystems/substrate is already on 1.26).
+          go-version: "1.26.8"
           check-latest: true
           cache: true
       - name: Run govulncheck
         run: |
-          # v1.8.0 requires Go 1.26. Keep installation on the audited build
-          # toolchain; the scanner still queries the live advisory DB (#634).
-          go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+          # Pinned to the audited release built for the build toolchain above;
+          # the scanner still queries the live advisory DB (#634). v1.8.0
+          # requires Go 1.26, which is why v1.7.0 stood here until the fleet
+          # moved. Both were run against this tree on go1.26.8 and both scan
+          # clean; v1.8.0 is the one whose x/tools matches the toolchain.
+          go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
           govulncheck ./...
 
   # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.

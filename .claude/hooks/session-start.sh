@@ -31,12 +31,13 @@
 #    CI uses, rather than whatever the image happens to ship.
 #
 # 2. golangci-lint findings are not stable across its minor versions, and an
-#    unpinned binary silently disagrees with CI.  Measured on this tree: the
-#    version below reports 0 issues, v2.11.4 reports 27.  A golangci-lint
-#    built with a Go older than the module's `go` directive additionally
-#    refuses to start at all ("the Go language version ... is lower than the
-#    targeted Go version"), which is how this bites a repository that has
-#    moved its `go` directive forward.
+#    unpinned binary silently disagrees with CI.  Measured on this tree back
+#    when the pin below was v2.6.2: that version reported 0 issues and
+#    v2.11.4 reported 27.  A golangci-lint built with a Go older than the
+#    module's `go` directive additionally refuses to start at all ("the Go
+#    language version ... is lower than the targeted Go version"), which is
+#    how this bites a repository that has moved its `go` directive forward --
+#    and is why the move to `go 1.26.0` had to take this pin with it.
 #
 # Both pins below must be kept in sync with .github/workflows/elps.yml.
 set -euo pipefail
@@ -46,9 +47,11 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 fi
 
 # Keep in sync with `go-version:` in .github/workflows/elps.yml.
-GO_TOOLCHAIN="go1.25.13"
-# Keep in sync with the golangci-lint-action `version:` in the same file.
-GOLANGCI_VERSION="2.6.2"
+GO_TOOLCHAIN="go1.26.8"
+# Keep in sync with the golangci-lint-action `version:` in the same file.  That
+# pin is a major.minor (the action resolves the newest patch); this one has to
+# name a release tarball, so it is the newest patch of that line.
+GOLANGCI_VERSION="2.13.2"
 
 # Version-scoped so a container reused across repositories does not have two
 # pins fighting over one path.

@@ -146,7 +146,7 @@ func fmtFile(path string, cfg *formatter.Config, write, diff, list bool) (bool, 
 		if err != nil {
 			return false, fmt.Errorf("%s: %w", path, err)
 		}
-		return true, os.WriteFile(path, out, info.Mode().Perm())
+		return true, os.WriteFile(path, out, info.Mode().Perm()) //nolint:gosec // G703: `elps fmt -w` writes back the file it was asked to format
 	}
 
 	// Default: print to stdout

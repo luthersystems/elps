@@ -198,7 +198,7 @@ func runAgreement(root string, src, wsSrc []byte) error {
 	// lint wraps its failures in toolErr, so the messages differ by design.
 	switch {
 	case diagErr != nil && lintErr != nil:
-		return nil
+		return nil //nolint:nilerr // both tools refusing the file is agreement; see the comment above
 	case diagErr != nil:
 		return fmt.Errorf("lint served %s but diagnostics returned: %w", agreeFileA, diagErr)
 	case lintErr != nil:
