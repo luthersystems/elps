@@ -153,21 +153,34 @@ func (s *Scanner) Peek() (rune, bool) {
 	return c, true
 }
 
+// fail records err as the scanner's terminal error and returns it unchanged.
+// EOF is never sticky: it reports that the input ended where it ended, and
+// Err, EOF and a later Peek all have to keep answering for the buffered runes
+// that precede it.  Every other error is terminal, so recording it here is
+// what makes it reported once and on every subsequent call.
+//
+// This is the explicit form of a deferred closure that used to run on every
+// return from ScanRune.  ScanRune is called once per rune of source, so that
+// closure put a defer, and a named result the closure forced onto the stack,
+// in the parser's hottest loop -- paid on every rune for bookkeeping that only
+// matters on the error paths.
+func (s *Scanner) fail(err error) error {
+	if !errors.Is(err, io.EOF) {
+		s.scanErr = err
+	}
+	return err
+}
+
 // ScanRune attempts to scan a utf-8 rune from the input for inclusion in the
 // current token.  If an error prevents a valid unicode rune from being scanned
 // then an error will be returned.
-func (s *Scanner) ScanRune() (scanErr error) {
+func (s *Scanner) ScanRune() error {
 	if s.scanErr != nil {
 		return s.scanErr
 	}
-	defer func() {
-		if scanErr != nil && !errors.Is(scanErr, io.EOF) {
-			s.scanErr = scanErr
-		}
-	}()
 	err := s.checkRuneError()
 	if err != nil {
-		return err
+		return s.fail(err)
 	}
 	if len(s.peek) > 0 {
 		s.scan(s.peek[0])
@@ -181,11 +194,14 @@ func (s *Scanner) ScanRune() (scanErr error) {
 		// more than one rune.
 		kept := copy(s.peek, s.peek[1:])
 		s.peek = s.peek[:kept]
-		return s.checkRuneError()
+		if err := s.checkRuneError(); err != nil {
+			return s.fail(err)
+		}
+		return nil
 	}
 	err = s.checkExtend()
 	if err != nil {
-		return err
+		return s.fail(err)
 	}
 	c, n := utf8.DecodeRune(s.buf[s.next:])
 	s.scan(Rune{c, n})
@@ -194,9 +210,9 @@ func (s *Scanner) ScanRune() (scanErr error) {
 		// The UTF-8 sequence may be invalid due to a read error so we have to
 		// check first.
 		if s.readErr != nil && !errors.Is(s.readErr, io.EOF) {
-			return s.readErr
+			return s.fail(s.readErr)
 		}
-		return err
+		return s.fail(err)
 	}
 	return nil
 }
@@ -223,23 +239,32 @@ func (s *Scanner) Err() error {
 	if s.readErr == nil {
 		return nil
 	}
+	// The position checks come before errors.Is deliberately.  Every read
+	// error, EOF included, is withheld while valid runes remain buffered ahead
+	// of it, so the kind of error cannot change the answer until the buffer is
+	// exhausted.  The lexer calls Err on every token it emits, and errors.Is
+	// does not inline; a scanner whose whole source is buffered (the common
+	// case) now reaches it once, at the end, instead of once per token.
+	if len(s.buf) != s.next {
+		// Buffer space remains to be accepted.
+		if len(s.buf)-s.next >= utf8.UTFMax {
+			// There are still runes to consume before the error needs to be
+			// reported.
+			return nil
+		}
+		c, n := utf8.DecodeRune(s.buf[s.next:])
+		if c != utf8.RuneError || n != 1 {
+			// Another valid rune can still be scanned.
+			return nil
+		}
+		// Not possible to scan another valid rune -- possibly truncated utf-8
+		// sequence.
+	}
+	// No rune remains to be accepted, so the read error is now due.
 	if errors.Is(s.readErr, io.EOF) {
 		return nil
 	}
-	if len(s.buf) == s.next {
-		// No buffer space remaining to be accepted
-		return s.readErr
-	}
-	if len(s.buf)-s.next < utf8.UTFMax {
-		c, n := utf8.DecodeRune(s.buf[s.next:])
-		if c == utf8.RuneError && n == 1 {
-			// Not possible to scan another valid rune -- possibly truncated
-			// utf-8 sequence.
-			return s.readErr
-		}
-	}
-	// There are still runes to consume before the error needs to be reported.
-	return nil
+	return s.readErr
 }
 
 func (s *Scanner) EOF() bool {
@@ -406,9 +431,31 @@ func (s *Scanner) AcceptString(literal string) (int, bool) {
 	return n, true
 }
 
+// checkRuneError reports whether the rune just scanned is one the scanner
+// refuses: an invalid utf-8 sequence, or a byte-order mark anywhere but offset
+// zero.
+//
+// ScanRune calls this up to twice per rune of source, so the body is only the
+// two compares that separate an ordinary rune from a suspect one -- the
+// offset test, the buffer bounds and the message formatting all live in
+// runeError, which keeps this small enough to inline into ScanRune.
 func (s *Scanner) checkRuneError() error {
-	if s.c.C == '\ufeff' && s.totalPos != 0 {
-		return errors.New("unexpected byte-order mark")
+	if c := s.c.C; c != '\ufeff' && c != utf8.RuneError {
+		return nil
+	}
+	return s.runeError()
+}
+
+// runeError returns the error for a rune checkRuneError flagged, or nil when
+// the rune turns out to be legal. Both of the fast path's compares admit a
+// legal rune: a byte-order mark is accepted at offset zero, and a source that
+// spells U+FFFD itself decodes to RuneError over more than one byte.
+func (s *Scanner) runeError() error {
+	if s.c.C == '\ufeff' {
+		if s.totalPos != 0 {
+			return errors.New("unexpected byte-order mark")
+		}
+		return nil
 	}
 	if !s.c.IsRuneError() {
 		return nil
@@ -457,11 +504,26 @@ func (s *Scanner) Loc() *Location {
 	}
 }
 
+// checkExtend reports whether another complete rune can be scanned, sliding
+// the window first if the remaining bytes cannot hold one.
+//
+// Peek and ScanRune both call this once per rune of source, so the body is
+// only the test that decides which of those two situations holds: with
+// utf8.UTFMax bytes left the window needs no slide, utf8.FullRune is
+// unconditionally true on a span that size, and neither exhaustion check below
+// can apply.  Everything else lives in checkExtendTail so this stays small
+// enough to inline into its callers.
 func (s *Scanner) checkExtend() error {
-	rem := len(s.buf) - s.next
-	if rem < utf8.UTFMax {
-		s.extend()
+	if len(s.buf)-s.next >= utf8.UTFMax {
+		return nil
 	}
+	return s.checkExtendTail()
+}
+
+// checkExtendTail slides the window and reports why no further rune can be
+// scanned. It runs only when fewer than utf8.UTFMax bytes remain buffered.
+func (s *Scanner) checkExtendTail() error {
+	s.extend()
 	if s.next == len(s.buf) {
 		if s.readErr != nil {
 			return s.readErr

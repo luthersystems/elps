@@ -113,6 +113,34 @@ func TestScannerInvalidUTF8IsNotEOF(t *testing.T) {
 	}
 }
 
+// checkRuneError's fast path admits a rune on two compares and defers to
+// runeError for the rest.  Both of those compares match runes that are legal,
+// so the split is only correct if runeError lets them through: a byte-order
+// mark at offset zero, and a source that spells U+FFFD itself, which decodes
+// to utf8.RuneError over three bytes rather than one.
+func TestScannerAcceptsLegalSuspectRunes(t *testing.T) {
+	const (
+		bom  = string(rune(0xfeff))
+		repl = string(rune(0xfffd))
+	)
+	for _, src := range []string{repl, "a" + repl + "b", bom + "a" + repl} {
+		t.Run(fmt.Sprintf("%+q", src), func(t *testing.T) {
+			s := NewScannerString("replacement.lisp", src)
+			for range []rune(src) {
+				require.NoError(t, s.ScanRune())
+			}
+			require.NoError(t, s.Err())
+			require.Equal(t, src, s.Text())
+		})
+	}
+	t.Run("interior BOM", func(t *testing.T) {
+		s := NewScannerString("bom.lisp", "a"+bom)
+		require.NoError(t, s.ScanRune())
+		require.ErrorContains(t, s.ScanRune(), "byte-order mark")
+		require.ErrorContains(t, s.Err(), "byte-order mark", "a rejected BOM is terminal")
+	})
+}
+
 type dataErrorReader struct {
 	reads int
 }
