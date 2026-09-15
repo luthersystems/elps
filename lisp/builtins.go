@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"math"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -70,25 +71,46 @@ var (
 			Returns the result of the last evaluated expression.`},
 		{"load-file", Formals("source-location"), builtinLoadFile,
 			`Loads and evaluates the ELPS source file at source-location.
+			File access follows the runtime's source library policy. In elps run,
+			debug, and repl, loads are confined to --root-dir (default: working
+			directory) at open time. Relative symlinks within the root are allowed;
+			escaping paths and absolute symlinks return ordinary errors.
 			Returns the result of the last evaluated expression.`},
 		{"in-package", Formals("package-name", VarArgSymbol, "docstring"), builtinInPackage,
 			`Switches the current package to package-name, creating it if it
-			does not exist. Optional trailing strings set the package
-			documentation (concatenated with spaces if multiple are given).
+			does not exist. The name must be a symbol or string spelling a
+			non-empty symbol identifier, without colons or a keyword prefix.
+			Optional trailing strings set the package documentation. All
+			arguments are validated before creating or switching packages.
+			This is an ordinary evaluated form: calling it from a helper can
+			change the caller's package for subsequent forms. Only loads
+			guarantee automatic restoration of the caller's package.
 			Returns nil.`},
 		{"use-package", Formals(VarArgSymbol, "package-name"), builtinUsePackage,
 			`Imports all exported symbols from the named packages into the
-			current package. Returns nil.`},
+			current package. Names must be symbols or strings spelling non-empty
+			symbol identifiers, without colons or a keyword prefix. An export
+			that is still unbound causes an error naming its package and symbol.
+			Cannot import bindings into the sealed lisp package.
+			Returns nil.`},
 		{"export", Formals(VarArgSymbol, "symbol"), builtinExport,
 			`Marks symbols as exported from the current package, making them
-			available to other packages via use-package. Returns nil.`},
+			available to other packages via use-package. Accepts unqualified
+			symbols, strings, or nested lists of these; qualified names are
+			rejected. All arguments are validated before exporting anything.
+			Symbols may be defined later, but must be bound when use-package
+			imports them. Cannot add exports to the sealed lisp package.
+			Returns nil.`},
 		{"set", Formals("sym", "val", VarArgSymbol, "docstring"), builtinSet,
 			`Binds val to the quoted symbol sym in the current package scope,
 			creating or overwriting the binding. Optional trailing strings set
 			the symbol's documentation (concatenated; empty strings produce
 			paragraph breaks). Returns the bound value. This is the primary
 			way to create top-level bindings. Use set! to mutate an existing
-			binding without risk of accidental creation.`},
+			binding without risk of accidental creation. After initialization,
+			writes to lisp: names or names in package lisp signal an error:
+			cannot rebind lisp package binding: name. Unqualified builtin
+			shadowing in your own package remains legal.`},
 		{"gensym", Formals(), builtinGensym,
 			`Returns a new unique, uninterned symbol. Useful in macros to
 			avoid variable name collisions.`},
@@ -96,17 +118,22 @@ var (
 			`Returns its argument unchanged.`},
 		{"macroexpand", Formals("quoted-form"), builtinMacroExpand,
 			`Repeatedly expands the macro call in quoted-form until the head
-			is no longer a macro. Returns the fully expanded form.`},
+			is no longer a macro. Returns the fully expanded form. Recursive
+			value walks exceeding 1000000 levels raise an ordinary depth error.`},
 		{"macroexpand-1", Formals("quoted-form"), builtinMacroExpand1,
 			`Performs a single macro expansion step on quoted-form and returns
-			the result. Useful for debugging macro expansion.`},
+			the result. Useful for debugging macro expansion. Recursive
+			value walks exceeding 1000000 levels raise an ordinary depth error.`},
 		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
-			`Calls fun with the given args and returns the result. Cannot be
-			used with special operators or macros.`},
+			`Calls fun with the given args and returns the result. fun may be
+			a function value or a quoted symbol resolved in the global package
+			environment. Cannot be used with special operators or macros.`},
 		{"apply", Formals("fun", VarArgSymbol, "args"), builtinApply,
 			`Calls fun with arguments formed by appending the last argument
 			(which must be a list) to any preceding arguments. For example,
-			(apply f 1 2 '(3 4)) calls f with arguments 1 2 3 4.`},
+			(apply f 1 2 '(3 4)) calls f with arguments 1 2 3 4. fun may be a
+			function value or a quoted symbol resolved in the global package
+			environment.`},
 		{"to-string", Formals("value"), builtinToString,
 			`Converts value to its string representation. Accepts strings,
 			symbols, bytes, integers, and floats.`},
@@ -115,7 +142,9 @@ var (
 			UTF-8) and bytes (returned as-is).`},
 		{"to-int", Formals("value"), builtinToInt,
 			`Converts value to an integer. Accepts strings (parsed as
-			decimal), integers (returned as-is), and floats (truncated).`},
+			decimal), integers (returned as-is), and floats (truncated toward
+			zero). Non-finite floats and truncated values outside the int
+			range return an error.`},
 		{"to-float", Formals("value"), builtinToFloat,
 			`Converts value to a float. Accepts strings (parsed), floats
 			(returned as-is), and integers (widened).`},
@@ -125,7 +154,9 @@ var (
 		{"error", Formals("condition", VarArgSymbol, "args"), builtinError,
 			`Signals an error with the given condition name (a symbol or
 			string) and optional data arguments. The condition can be caught
-			by handler-bind.`},
+			by handler-bind. Rendering error data and stack-trace messages honours
+			the runtime output/work limit and cancellation, using #<truncated>
+			on exhaustion without changing the condition data.`},
 		{"rethrow", Formals(), builtinRethrow,
 			`Re-throws the current error being handled by handler-bind,
 			preserving the original stack trace. Can only be called from
@@ -155,7 +186,8 @@ var (
 			"map", Formals("type-specifier", "fn", "seq"), builtinMap,
 			`Returns a sequence containing values returned by applying unary
 			function fn to elements of seq in order. The type-specifier
-			('list or 'vector) determines the return type.`,
+			('list or 'vector) determines the return type. fn may be a function
+			value or a quoted symbol resolved in the global package environment.`,
 		},
 		{"foldl", Formals("fn", "z", "seq"), builtinFoldLeft,
 			`Left-folds seq with binary function fn starting from accumulator
@@ -177,27 +209,40 @@ var (
 			arguments swapped.`},
 		{"assoc", Formals("map", "key", "value"), builtinAssoc,
 			`Returns a new sorted-map with key set to value, without
-			modifying the original. If map is nil, creates a new map.`},
+			modifying the original. If map is nil, creates a new map.
+			Keys must be strings or symbols. Keys with the same name are
+			interchangeable; last write wins for key spelling and value.`},
 		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate,
 			`Sets key to value in map, mutating it in place, and returns the
-			modified map.`},
+			modified map. Keys must be strings or symbols. Last write wins
+			for key spelling and value; JSON-decoded maps always retain
+			string keys, using a symbol's name when supplied.`},
 		{"dissoc", Formals("map", "key"), builtinDissoc,
 			`Returns a new sorted-map with key removed, without modifying the
 			original.`},
 		{"dissoc!", Formals("map", "key"), builtinDissocMutate,
 			`Removes key from map, mutating it in place, and returns the
-			modified map.`},
+			modified map. String and symbol keys with the same name are
+			interchangeable, including in JSON-decoded maps.`},
 		{"get", Formals("map", "key"), builtinGet,
 			`Returns the value associated with key in a sorted-map, or nil if
-			the key is not present or map is nil.`},
+			the key is not present or map is nil. String and symbol keys
+			with the same name are interchangeable, including in
+			JSON-decoded maps.`},
 		{"keys", Formals("map"), builtinKeys,
-			`Returns a list of all keys in a sorted-map in sorted order.`},
+			`Returns a list of all keys in a sorted-map in sorted order.
+			Key spelling follows the last write; JSON-decoded maps always
+			return string keys.`},
 		{"key?", Formals("map", "key"), builtinIsKey,
-			`Returns true if key exists in the sorted-map, false otherwise.`},
+			`Returns true if key exists in the sorted-map, false otherwise.
+			String and symbol keys with the same name are interchangeable,
+			including in JSON-decoded maps.`},
 		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap,
 			`Creates a new sorted-map from alternating key-value pairs. For
 			example, (sorted-map :a 1 :b 2). Keys are maintained in sorted
-			order.`},
+			order and must be strings or symbols; other types are unhashable.
+			Keys with the same name are interchangeable; last write wins
+			for key spelling and value.`},
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},
@@ -218,14 +263,18 @@ var (
 			slice produce -- is not. Use copy to take ownership of data
 			whose provenance you do not control:
 			the result is always mutable, even when the input is (or came
-			from) a quoted program literal.`},
+			from) a quoted program literal.
+			Raises an ordinary error if a value walk exceeds 1000000 levels
+			(or the configured WithMaxValueDepth setting).`},
 		{"insert-index", Formals("type-specifier", "seq", "index", "item"), builtinInsertIndex,
 			`Returns a new sequence with item inserted at the given index.
 			The type-specifier ('list or 'vector) determines the return type.`},
 		{"stable-sort", Formals("less-predicate", "list", VarArgSymbol, "key-fun"), builtinSortStable,
 			`Sorts list using the binary less-predicate and returns the
 			sorted list. The sort is stable. An optional key-fun extracts
-			comparison keys from elements. A mutable list is sorted in
+			comparison keys from elements. Both callbacks must be regular
+			functions; elements and keys are passed as data without evaluation.
+			A mutable list is sorted in
 			place, so sorting a slice view also sorts that region of its
 			source; sort (concat 'list x) when x is a view you do not own.
 			A quoted program literal is never modified: sorting a non-empty
@@ -234,7 +283,8 @@ var (
 		{"insert-sorted", Formals("type-specifier", "list", "predicate", "item", VarArgSymbol, "key-fun"), builtinInsertSorted,
 			`Returns a new sequence with item inserted at its sorted position
 			according to predicate. An optional key-fun extracts comparison
-			keys from elements.`},
+			keys from elements. Predicate and key-fun must be regular functions;
+			elements and keys are passed as data without evaluation.`},
 		{"search-sorted", Formals("n", "predicate"), builtinSearchSorted,
 			`Returns the smallest index i in [0, n) for which predicate
 			returns true, using binary search. Equivalent to Go's
@@ -259,13 +309,24 @@ var (
 			with corresponding values. Use {} for sequential substitution or
 			{0}, {1}, etc. for positional. Strings are interpolated without
 			quotes. Use {{ and }} for literal braces. Cannot mix sequential
-			and positional styles.`},
+			and positional styles. Whitespace around positional indices is
+			accepted: { 0 } means {0}. Surplus values are ignored; a placeholder
+			without a corresponding value raises an error.
+			Nested values deeper than 1024 levels render
+			as #<depth-limit>; cycles render as #<cycle>. Shared DAGs render in full up to the runtime
+			output/work limit; exceeding it raises an allocation error. Rendering
+			honours context cancellation.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
 			`Returns a new sequence with elements in reverse order. The
-			type-specifier ('list or 'vector) determines the return type.`},
+			type-specifier ('list or 'vector) determines the return type.
+			seq must be a list or vector; strings are not supported.`},
 		{"slice", Formals("type-specifier", "seq", "start", "end"), builtinSlice,
 			`Returns a subsequence from index start (inclusive) to end
-			(exclusive). Accepts lists, vectors, strings, and bytes. For
+			(exclusive). Accepts lists, vectors, strings, and bytes. String
+			indices count bytes, so slicing through a rune can produce invalid
+			UTF-8: (slice 'string "José" 0 4) ends with the byte 0xc3.
+			For rune-safe slicing, split with (string:split str ""), slice the
+			resulting list, then join with (string:join pieces ""). For
 			lists, vectors and bytes the result is a view sharing elements
 			with seq: appending to it cannot disturb seq, but sorting it in
 			place also sorts that region of seq. Use concat to take a copy.
@@ -284,8 +345,9 @@ var (
 		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend,
 			`Returns a new sequence with values appended to vec. The
 			type-specifier ('list, 'vector, or 'bytes) determines the return
-			type. Does not mutate vec and never shares storage with it, so
+			type. Does not mutate vec and never shares top-level storage with it, so
 			appending to the same source twice yields independent results.
+			This also applies when no values are added. Nested values remain shared.
 			This costs a copy, making append O(n); use append! to accumulate
 			in a loop. (append 'vector ...) over a non-empty quoted program
 			literal raises the catchable modify-literal-error condition --
@@ -360,19 +422,26 @@ var (
 			`Returns true if a and b are structurally equal, performing deep
 			comparison across all value types. Sorted-map keys compare by
 			name, matching how get and key? identify them, so a map keyed
-			by 'a is equal? to a map keyed by "a".`},
+			by 'a is equal? to a map keyed by "a". Raises an ordinary depth
+			error if comparison exceeds the configured value depth (default 1000000).`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the
-			first falsey result.`},
+			first falsey result. Predicate must be a regular function and
+			receives each element as data without evaluation.`},
 		{"any?", Formals("predicate", "seq"), builtinAnyP,
 			`Returns the first truthy result of applying predicate to
 			elements of seq, or false if none match. Short-circuits on the
-			first truthy result.`},
+			first truthy result. Predicate must be a regular function and
+			receives each element as data without evaluation.`},
 		{"max", Formals("real", VarArgSymbol, "rest"), builtinMax,
-			`Returns the largest of the given numeric arguments.`},
+			`Returns the largest of the given numeric arguments. Returns NaN
+			if any argument is NaN, regardless of position. All-int arguments
+			produce an int result.`},
 		{"min", Formals("real", VarArgSymbol, "rest"), builtinMin,
-			`Returns the smallest of the given numeric arguments.`},
+			`Returns the smallest of the given numeric arguments. Returns NaN
+			if any argument is NaN, regardless of position. All-int arguments
+			produce an int result.`},
 		{"string>=", Formals("a", "b"), builtinStringGEq,
 			`Returns true if string a is lexicographically >= string b.`},
 		{"string>", Formals("a", "b"), builtinStringGT,
@@ -397,10 +466,14 @@ var (
 			`Returns true if numeric values a and b are equal.`},
 		{"pow", Formals("a", "b"), builtinPow,
 			`Returns a raised to the power b. Returns int when both args are
-			ints and b >= 0; otherwise returns float.`},
+			ints and b >= 0; otherwise returns float. Raises an error containing
+			"integer overflow" if the integer result does not fit int.
+			A zero exponent returns 1, including (pow 0 0).`},
 		{"mod", Formals("a", "b"), builtinMod,
 			`Returns the remainder of integer division a mod b. Both
-			arguments must be ints and b must be non-zero.`},
+			arguments must be ints. A zero b raises an error with the message
+			"second argument is zero"; unlike /, mod does not return infinity
+			or NaN for a zero divisor.`},
 		{"+", Formals(VarArgSymbol, "x"), builtinAdd,
 			`Returns the sum of all arguments, or 0 with no arguments.
 			Returns int if all args are ints; otherwise float.`},
@@ -411,13 +484,19 @@ var (
 		{"/", Formals(VarArgSymbol, "x"), builtinDiv,
 			`With one argument, returns 1/x. With two or more, divides
 			the first by all subsequent. Returns int when all divisions are
-			exact; otherwise float.`},
+			exact; otherwise float. Division by zero returns IEEE infinity or
+			NaN, not an error: (/ 1 0) is +Inf and (/ 0.0 0.0) is NaN.
+			Guard count against zero before computing (/ total count).`},
 		{"*", Formals(VarArgSymbol, "x"), builtinMul,
 			`Returns the product of all arguments, or 1 with no arguments.
-			Returns int if all args are ints; otherwise float.`},
+			Returns int if all args are ints; otherwise converts all args to
+			float before multiplying. Integer arithmetic wraps on overflow.`},
 		{"debug-print", Formals(VarArgSymbol, "args"), builtinDebugPrint,
 			`Prints all arguments to stderr followed by a newline. Returns
-			nil.`},
+			nil. Nested values deeper than 1024 levels render as #<depth-limit>;
+			cycles render as #<cycle>. Shared DAGs render in full up to the runtime
+			output/work limit; exceeding it raises an allocation error. Rendering
+			honours context cancellation.`},
 		{"debug-stack", Formals(), builtinDebugStack,
 			`Prints the current call stack to stderr for debugging. Returns
 			nil.`},
@@ -555,6 +634,17 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol or a string: %v", args.Cells[0].Type)
 	}
 	name := args.Cells[0].Str
+	if !validPackageName(name) {
+		return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", name)
+	}
+	// Validate every argument before changing the registry, package, or docs.
+	var parts []string
+	for _, arg := range args.Cells[1:] {
+		if arg.Type != LString {
+			return env.Errorf("docstring argument is not a string: %v", arg.Type)
+		}
+		parts = append(parts, arg.Str)
+	}
 	pkg := env.Runtime.Registry.packages[name]
 	newpkg := false
 	if pkg == nil {
@@ -572,13 +662,6 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 	}
 	// Optional trailing doc strings
 	if len(args.Cells) > 1 {
-		var parts []string
-		for _, arg := range args.Cells[1:] {
-			if arg.Type != LString {
-				return env.Errorf("docstring argument is not a string: %v", arg.Type)
-			}
-			parts = append(parts, arg.Str)
-		}
 		pkg.Doc = JoinDocStrings(parts)
 	}
 	return Nil()
@@ -589,6 +672,18 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		if pkg.Type != LSymbol && pkg.Type != LString {
 			return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
 		}
+		if !validPackageName(pkg.Str) {
+			return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
+		}
+		if env.Runtime.Package.bindingsSealed {
+			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
+				for _, name := range source.externals {
+					if name != TrueSymbol && name != FalseSymbol {
+						return env.Errorf("cannot rebind lisp package binding: %s", name)
+					}
+				}
+			}
+		}
 		lerr := env.UsePackage(pkg)
 		if lerr.Type == LError {
 			return lerr
@@ -598,12 +693,38 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinExport(env *LEnv, args *LVal) *LVal {
+	if err := validateExportArgs(env, args); err.Type == LError {
+		return err
+	}
+	exportArgs(env.Runtime.Package, args)
+	return Nil()
+}
+
+func validateExportArgs(env *LEnv, args *LVal) *LVal {
 	for _, arg := range args.Cells {
 		switch arg.Type {
 		case LSymbol, LString:
-			env.Runtime.Package.Exports(arg.Str)
+			if strings.Contains(arg.Str, ":") {
+				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
+			}
+			if env.Runtime.Package.bindingsSealed {
+				// Re-exporting an existing core name is a no-op. A new export
+				// could poison future imports even without assigning a value.
+				found := false
+				for _, name := range env.Runtime.Package.externals {
+					if name == arg.Str {
+						found = true
+						break
+					}
+				}
+				if !found {
+					return env.Errorf("cannot rebind lisp package binding: %s", arg.Str)
+				}
+			}
 		case LSExpr:
-			builtinExport(env, arg)
+			if err := validateExportArgs(env, arg); err.Type == LError {
+				return err
+			}
 		default:
 			return env.Errorf("argument is not a symbol, a string, or a list of valid types: %v", arg.Type)
 		}
@@ -611,12 +732,22 @@ func builtinExport(env *LEnv, args *LVal) *LVal {
 	return Nil()
 }
 
+// exportArgs is the mutation pass, reached only after the entire call validates.
+func exportArgs(pkg *Package, args *LVal) {
+	for _, arg := range args.Cells {
+		if arg.Type == LSExpr {
+			exportArgs(pkg, arg)
+		} else {
+			pkg.Exports(arg.Str)
+		}
+	}
+}
+
 func builtinSet(env *LEnv, v *LVal) *LVal {
 	if v.Cells[0].Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
 	}
-
-	lerr := env.PutGlobal(v.Cells[0], v.Cells[1])
+	lerr := env.PutGlobalFromLisp(v.Cells[0], v.Cells[1])
 	if lerr.Type == LError {
 		return lerr
 	}
@@ -660,6 +791,20 @@ func builtinMacroExpand(env *LEnv, args *LVal) *LVal {
 			return form
 		}
 		mac := env.Get(macsym)
+		// Ordinary lookup failures mean no expansion; a recovered host fault
+		// must propagate before arguments are cloned or another call runs.
+		if IsInternalPanic(mac) {
+			return mac
+		}
+		if mac.Type != LFun || !mac.IsMacro() {
+			return form
+		}
+		// A native macro can re-expand without evaluating any Lisp. Charge
+		// each actual expansion before cloning its arguments or invoking it;
+		// no-op forms and the one-shot APIs retain their existing accounting.
+		if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+			return lerr
+		}
 		r, ok := macroExpand1(env, mac, macroArgList(form))
 		if !ok {
 			return form
@@ -684,6 +829,9 @@ func builtinMacroExpand1(env *LEnv, args *LVal) *LVal {
 		return form
 	}
 	mac := env.Get(macsym)
+	if IsInternalPanic(mac) {
+		return mac
+	}
 	r, ok := macroExpand1(env, mac, macroArgList(form))
 	if !ok {
 		return form
@@ -806,9 +954,21 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 
 func builtinToString(env *LEnv, args *LVal) *LVal {
 	val := args.Cells[0]
+	if val.Type == LBytes {
+		if msg := env.Runtime.CheckAlloc(val.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
+	}
 	s, err := toString(val)
 	if err != nil {
 		return env.Error(err)
+	}
+	// Numbers render into a fixed-size temporary. Strings and symbols
+	// reuse immutable storage; the bytes conversion was checked above.
+	if val.IsNumeric() {
+		if msg := env.Runtime.CheckAlloc(len(s)); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 	}
 	return String(s)
 }
@@ -819,6 +979,9 @@ func builtinToBytes(env *LEnv, args *LVal) *LVal {
 		return val
 	}
 	if val.Type == LString {
+		if msg := env.Runtime.CheckAlloc(len(val.Str)); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		return Bytes([]byte(val.Str))
 	}
 	// TODO:  Allow sequences of integers to be turned into bytes?
@@ -856,7 +1019,15 @@ func builtinToInt(env *LEnv, args *LVal) *LVal {
 	case LInt:
 		return val
 	case LFloat:
-		return Int(int(val.Float))
+		truncated := math.Trunc(val.Float)
+		limit := math.Ldexp(1, strconv.IntSize-1)
+		// Go leaves out-of-range float-to-int conversion implementation
+		// dependent. Reject it before conversion so ELPS never invents an
+		// integer from NaN, infinity, or an unrepresentable finite value.
+		if math.IsNaN(truncated) || truncated < -limit || truncated >= limit {
+			return env.Errorf("float cannot be represented as an int: %v", val.Float)
+		}
+		return Int(int(truncated))
 	default:
 		return env.Errorf("cannot convert type to int: %v", val.Type)
 	}
@@ -912,7 +1083,7 @@ func builtinRethrow(env *LEnv, args *LVal) *LVal {
 func builtinCAR(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if v.Type != LSExpr {
-		return env.Errorf("argument is not a list %v", v.Type)
+		return env.Errorf("argument is not a list: %v", v.Type)
 	}
 	if len(v.Cells) == 0 {
 		return Nil()
@@ -924,7 +1095,7 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 func builtinCDR(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if v.Type != LSExpr {
-		return env.Errorf("argument is not a list %v", v.Type)
+		return env.Errorf("argument is not a list: %v", v.Type)
 	}
 	if len(v.Cells) < 2 {
 		return Nil()
@@ -973,7 +1144,7 @@ func clampCapBytes(b []byte) []byte {
 func builtinRest(env *LEnv, args *LVal) *LVal {
 	v := args.Cells[0]
 	if !isSeq(v) {
-		return env.Errorf("argument is not a proper sequence %v", v.Type)
+		return env.Errorf("argument is not a proper sequence: %v", v.Type)
 	}
 	cells := seqCells(v)
 	if len(cells) < 2 {
@@ -1072,7 +1243,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 	}
 	for i, c := range seqCells(lis) {
 		fargs := QExpr([]*LVal{c})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1106,7 +1277,7 @@ func builtinFoldLeft(env *LEnv, args *LVal) *LVal {
 			acc,
 			c,
 		})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1140,7 +1311,7 @@ func builtinFoldRight(env *LEnv, args *LVal) *LVal {
 			c,
 			acc,
 		})
-		fret := env.FunCall(f, fargs)
+		fret := env.callValueFunction(f, fargs)
 		if fret.Type == LError {
 			return fret
 		}
@@ -1164,7 +1335,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	}
 	g = env.GetFunGlobal(g)
 	if g.Type == LError {
-		return f
+		return g
 	}
 	if g.Type != LFun {
 		return env.Errorf("second argument is not a function: %s", g.Type)
@@ -1177,6 +1348,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	body := SExpr([]*LVal{Symbol("lisp:funcall"), f, gcall})
 	gcall.Cells = append(gcall.Cells, Symbol("lisp:apply"), g)
 	var restSym *LVal
+	keywords := false
 	for i, argSym := range formals.Cells {
 		if argSym.Type != LSymbol {
 			// This should not happen.  The list of formals should be checked
@@ -1187,6 +1359,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 			continue
 		}
 		if argSym.Str == KeyArgSymbol {
+			keywords = true
 			continue
 		}
 		if argSym.Str == VarArgSymbol {
@@ -1197,6 +1370,11 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 			}
 			restSym = formals.Cells[i+1]
 			break
+		}
+		if keywords {
+			// The wrapper binds keyword values locally, but g still needs
+			// their labels. See docs/lang.md#keyword-arguments.
+			gcall.Cells = append(gcall.Cells, Symbol(":"+argSym.Str))
 		}
 		gcall.Cells = append(gcall.Cells, argSym)
 	}
@@ -1218,6 +1396,7 @@ func builtinCompose(env *LEnv, args *LVal) *LVal {
 	loc := env.loc.Copy()
 	setSynthesizedSource(loc, formals, gcall, gcall.Cells[0], body, body.Cells[0])
 	setSynthesizedSource(loc, formals.Cells...)
+	setSynthesizedSource(loc, gcall.Cells[2:len(gcall.Cells)-1]...)
 	newfun := env.Lambda(formals, []*LVal{body})
 	return newfun
 }
@@ -1262,11 +1441,19 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
+		if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		mdata, err := m.copyMapData()
 		if err != nil {
 			return env.Error(err)
 		}
 		m = SortedMapFromData(mdata)
+	}
+	// Copying an embedder map can change its key-identity rules. Check
+	// growth against the resulting map, where Set below will insert.
+	if lerr := checkMapInsertAlloc(env, m.Map(), k); lerr != nil {
+		return lerr
 	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
@@ -1284,11 +1471,33 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
+	if lerr := checkMapInsertAlloc(env, m.Map(), k); lerr != nil {
+		return lerr
+	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
-		return env.Error(err.String())
+		return env.Error(env.Render(err))
 	}
 	return m
+}
+
+// checkMapInsertAlloc permits replacements, which need no new entry.
+// Get also preserves the map's own
+// key validation and identity rules, including equivalent string/symbol keys.
+func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
+	if m.Len() < env.Runtime.MaxAllocBytes() {
+		return nil
+	}
+	v, exists := m.Get(key)
+	if !exists {
+		if v.Type == LError {
+			return v
+		}
+		if msg := env.Runtime.CheckAlloc(m.Len() + 1); msg != "" {
+			return env.Errorf("%s", msg)
+		}
+	}
+	return nil
 }
 
 func builtinDissoc(env *LEnv, args *LVal) *LVal {
@@ -1299,6 +1508,11 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
+		// dissoc copies before deleting, so even its temporary full map
+		// must fit the allocation cap (docs/lang.md#allocation-limits).
+		if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		mdata, err := m.copyMapData()
 		if err != nil {
 			return env.Error(err)
@@ -1322,7 +1536,7 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 	}
 	err := m.Map().Del(k)
 	if !err.IsNil() {
-		return env.Error(err.String())
+		return env.Error(env.Render(err))
 	}
 	return m
 }
@@ -1343,6 +1557,9 @@ func builtinKeys(env *LEnv, args *LVal) *LVal {
 	m := args.Cells[0]
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
+	}
+	if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+		return env.Errorf("%s", msg)
 	}
 	return m.Map().Keys()
 }
@@ -1369,6 +1586,9 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 	for len(args.Cells) >= 2 {
 		k := args.Cells[0]
 		v := args.Cells[1]
+		if lerr := checkMapInsertAlloc(env, data, k); lerr != nil {
+			return lerr
+		}
 		err := data.Set(k, v)
 		if !err.IsNil() {
 			return err
@@ -1548,8 +1768,11 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 	if less.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", less.Type)
 	}
+	if less.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", less.FunType)
+	}
 	if !isSeq(list) {
-		return env.Errorf("second arument is not a proper list: %v", list.Type)
+		return env.Errorf("second argument is not a proper list: %v", list.Type)
 	}
 	if len(optArgs) > 1 {
 		return env.Errorf("too many optional arguments provided")
@@ -1558,10 +1781,13 @@ func builtinSortStable(env *LEnv, args *LVal) *LVal {
 		keyFun = optArgs[0]
 		keyFun = env.GetFunGlobal(keyFun)
 		if keyFun.Type == LError {
-			return less
+			return keyFun
 		}
 		if keyFun.Type != LFun {
 			return env.Errorf("third argument is not a function: %v", keyFun.Type)
+		}
+		if keyFun.IsSpecialFun() {
+			return env.Errorf("third argument is not a regular function: %v", keyFun.FunType)
 		}
 	}
 	if list.sealed {
@@ -1640,20 +1866,22 @@ func (s *lvalByFun) Less(i, j int) bool {
 	// argument now sees the element itself -- and a write to an element
 	// that is a sealed program literal raises modify-literal-error where
 	// the copy used to absorb it silently (the #378 policy);
-	// TestSortComparatorArgumentsAreTheElements pins both.  The call is
-	// still an evaluated S-expression rather than a FunCall so an element
-	// that is an unquoted symbol is evaluated exactly as before.
-	var expr *LVal
-	if s.keyfun == nil {
-		expr = SExpr([]*LVal{s.fun, a, b})
-	} else {
-		expr = SExpr([]*LVal{
-			s.fun,
-			SExpr([]*LVal{s.keyfun, a}),
-			SExpr([]*LVal{s.keyfun, b}),
-		})
+	// TestSortComparatorArgumentsAreTheElements pins both. Pass those
+	// elements as values: evaluating an S-expression here would execute
+	// list data or resolve symbol data before the callback received it.
+	if s.keyfun != nil {
+		a = s.env.callValueFunction(s.keyfun, QExpr([]*LVal{a}))
+		if a.Type == LError {
+			s.err = a
+			return false
+		}
+		b = s.env.callValueFunction(s.keyfun, QExpr([]*LVal{b}))
+		if b.Type == LError {
+			s.err = b
+			return false
+		}
 	}
-	ok := s.env.Eval(expr)
+	ok := s.env.callValueFunction(s.fun, QExpr([]*LVal{a, b}))
 	if ok.Type == LError {
 		s.err = ok
 		return false
@@ -1670,10 +1898,13 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if index.Type != LInt {
-		return env.Errorf("third arument is not a integer: %v", index.Type)
+		return env.Errorf("third argument is not an integer: %v", index.Type)
 	}
 	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
+	}
+	if msg := env.Runtime.CheckAlloc(list.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
 	}
 	var v *LVal
 	var cells []*LVal
@@ -1700,11 +1931,17 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
+	if typespec.Str != "list" && typespec.Str != "vector" {
+		return env.Errorf("type specifier is invalid: %v", typespec)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if p.Type != LFun {
-		return env.Errorf("third arument is not a function: %v", p.Type)
+		return env.Errorf("third argument is not a function: %v", p.Type)
+	}
+	if p.IsSpecialFun() {
+		return env.Errorf("third argument is not a regular function: %v", p.FunType)
 	}
 	if len(optArgs) > 1 {
 		return env.Errorf("too many optional arguments provided")
@@ -1718,24 +1955,38 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 		if keyFun.Type != LFun {
 			return env.Errorf("last argument is not a function: %v", keyFun.Type)
 		}
+		if keyFun.IsSpecialFun() {
+			return env.Errorf("last argument is not a regular function: %v", keyFun.FunType)
+		}
+	}
+	if msg := env.Runtime.CheckAlloc(list.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
 	}
 	sortErr := Nil()
 	inCells := seqCells(list)
 	i := sort.Search(len(inCells), func(i int) bool {
+		// Errors terminate the call (docs/lang.md#errors), including a
+		// recovered host panic. Never replace it or evaluate another probe.
+		if !sortErr.IsNil() {
+			return false
+		}
 		// item and the probed element are passed by reference, exactly as
 		// lvalByFun.Less passes the elements it compares (see the comment
 		// there); this probe used to Copy both on every step of the search.
-		var expr *LVal
-		if keyFun == nil {
-			expr = SExpr([]*LVal{p, item, inCells[i]})
-		} else {
-			expr = SExpr([]*LVal{
-				p,
-				SExpr([]*LVal{keyFun, item}),
-				SExpr([]*LVal{keyFun, inCells[i]}),
-			})
+		a, b := item, inCells[i]
+		if keyFun != nil {
+			a = env.callValueFunction(keyFun, QExpr([]*LVal{a}))
+			if a.Type == LError {
+				sortErr = a
+				return false
+			}
+			b = env.callValueFunction(keyFun, QExpr([]*LVal{b}))
+			if b.Type == LError {
+				sortErr = b
+				return false
+			}
 		}
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(p, QExpr([]*LVal{a, b}))
 		if ok.Type == LError {
 			sortErr = ok
 			return false
@@ -1777,6 +2028,11 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 	}
 	sortErr := Nil()
 	i := sort.Search(n.Int, func(i int) bool {
+		// sort.Search cannot return an error itself; finish its Go probes
+		// without further ELPS evaluation once the first probe has failed.
+		if !sortErr.IsNil() {
+			return false
+		}
 		expr := SExpr([]*LVal{p, Int(i)})
 		ok := env.Eval(expr)
 		if ok.Type == LError {
@@ -1813,32 +2069,28 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	var cells []*LVal
 	switch typespec.Str {
 	case "vector":
-		// MakeVector sizes the vector for the whole input and lets Array
-		// derive the dims.  The resize below writes the cardinality in
-		// place, so the dims list it lands on must belong to this array
-		// alone; on the derived path Array builds that list itself, so it
-		// is reachable from nothing else and needs no defensive copy (the
-		// caller-dims path keeps its copy for exactly this write -- see
-		// TestArrayDoesNotAliasCallerDims).  MakeVector is load-bearing
-		// here: it is the only constructor that yields an n-CAPACITY
-		// backing through the derived-dims path.  Vector(make([]*LVal, 0,
-		// n)) would lose the capacity -- Array replaces an empty cells
-		// slice with a fresh full-length one -- and the cells[0:0:n]
-		// reslice below depends on it.
-		v = MakeVector(list.Len())
+		// MakeVector gives this result its own dimensions and backing.
+		// Cap the initial capacity: a large input may retain few elements.
+		// Vector over a zero-length slice would lose its spare capacity
+		// when Array constructs the backing (TestArrayDoesNotAliasCallerDims).
+		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		v = MakeVector(capacity)
 		cells = seqCells(v)
-		cells = cells[0:0:list.Len()]
+		cells = cells[:0]
 	case "list":
 		v = QExpr(nil)
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		ok := env.FunCall(pred, SExpr([]*LVal{v}))
+		ok := env.callValueFunction(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
 		if True(ok) {
+			if msg := env.Runtime.CheckAlloc(len(cells) + 1); msg != "" {
+				return env.Errorf("%s", msg)
+			}
 			cells = append(cells, v)
 		}
 	}
@@ -1876,20 +2128,24 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	case "vector":
 		// Array-derived dims, for the reason spelled out in builtinSelect:
 		// the resize below writes this array's cardinality in place.
-		v = MakeVector(list.Len())
+		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		v = MakeVector(capacity)
 		cells = seqCells(v)
-		cells = cells[0:0:list.Len()]
+		cells = cells[:0]
 	case "list":
 		v = QExpr(nil)
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
 	}
 	for _, v := range seqCells(list) {
-		ok := env.FunCall(pred, SExpr([]*LVal{v}))
+		ok := env.callValueFunction(pred, SExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
 		if !True(ok) {
+			if msg := env.Runtime.CheckAlloc(len(cells) + 1); msg != "" {
+				return env.Errorf("%s", msg)
+			}
 			cells = append(cells, v)
 		}
 	}
@@ -2041,11 +2297,37 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 			list.Cells = make([]*LVal, 0, n)
 		}
 	}
-	for x := start; lessNumeric(x, stop); x = addNumeric(x, step) {
+	for x := start; lessNumeric(x, stop); {
 		if msg := env.Runtime.CheckAlloc(len(list.Cells) + 1); msg != "" {
 			return env.Errorf("%s", msg)
 		}
 		list.Cells = append(list.Cells, x.Copy())
+		var next *LVal
+		if bothInt(x, step) && x.Int > int(^uint(0)>>1)-step.Int {
+			// The positive increment passes every possible integer stop.
+			// Wrapping here would restart the range below its original start.
+			if stop.Type == LInt {
+				break
+			}
+			// A floating stop can lie beyond the integer domain. Promote
+			// before adding, retaining the earlier integer-valued elements.
+			next = Float(toFloat(x) + toFloat(step))
+		} else {
+			next = addNumeric(x, step)
+		}
+		if next.Type == LFloat && math.IsNaN(next.Float) {
+			return env.Errorf("step does not advance sequence")
+		}
+		// Reaching the exclusive stop completes the range, including an
+		// infinite successor. Otherwise the increment must make progress:
+		// a small float step can round straight back to the current value.
+		if !lessNumeric(next, stop) {
+			break
+		}
+		if !lessNumeric(x, next) {
+			return env.Errorf("step does not advance sequence")
+		}
+		x = next
 	}
 	return list
 }
@@ -2056,7 +2338,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
 	if !isSeq(list) {
-		return env.Errorf("first argument is not a proper sequence: %v", args.Cells[0].Type)
+		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	if msg := env.Runtime.CheckAlloc(list.Len()); msg != "" {
 		return env.Errorf("%s", msg)
@@ -2091,7 +2373,7 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("third argument is not an integer: %v", start.Type)
 	}
 	if end.Type != LInt {
-		return env.Errorf("forth argument is not an integer: %v", end.Type)
+		return env.Errorf("fourth argument is not an integer: %v", end.Type)
 	}
 	n := list.Len()
 	i := start.Int
@@ -2110,6 +2392,22 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	}
 	if i > j {
 		return env.Errorf("end before start")
+	}
+	// Same-storage views need no new element backing. Conversions between
+	// bytes/strings and sequences do; bound their window before allocation.
+	allocates := false
+	switch typespec.Str {
+	case "string":
+		allocates = list.Type != LString
+	case "bytes":
+		allocates = list.Type != LBytes
+	case "list", "vector":
+		allocates = list.Type == LString || list.Type == LBytes
+	}
+	if allocates {
+		if msg := env.Runtime.CheckAlloc(j - i); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 	}
 
 	// Create an intermediate sliced list with a similar type.
@@ -2402,7 +2700,12 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		if seq.sealed && len(cells) > 0 {
 			return errModifyLiteral(env)
 		}
-		// clampCap makes this append PROVABLY non-aliasing: it returns a
+		// Appending zero values never reallocates, even at cap == len.
+		// append promises independent storage for mutable inputs too.
+		if len(vals) == 0 {
+			return Array(nil, slices.Clone(cells))
+		}
+		// For nonempty vals, clampCap makes this append non-aliasing: it returns a
 		// three-index reslice whose cap equals its len, so append cannot
 		// write into seq's backing and must reallocate.  That is the whole
 		// content of the issue #373 fix.  elpsvet's alias rule does not
@@ -2441,10 +2744,14 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
-		b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, x) //elps:mutates append to a cap==len input reallocates on the first byte
 	})
 	if err != nil {
 		return env.Error(err)
+	}
+	if len(b) == lbytes.Len() {
+		// No bytes were added, so the clamped append still aliases its input.
+		b = bytes.Clone(b)
 	}
 	return Bytes(b)
 }
@@ -2454,21 +2761,32 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	if lbytes.Type != LBytes {
 		return env.Errorf("first argument is not bytes: %v", lbytes.Type)
 	}
+	if byteseq.Type != LString && byteseq.Type != LBytes && !isSeq(byteseq) {
+		return env.Errorf("argument is not a sequence of bytes: %v", byteseq.Type)
+	}
+	// The result owns storage even for an empty addition, so the entire
+	// result must fit the per-allocation limit before appending or cloning.
+	if msg := env.Runtime.CheckAlloc(lbytes.Len() + byteseq.Len()); msg != "" {
+		return env.Errorf("%s", msg)
+	}
 	// Clamped so this append cannot write into lbytes' spare capacity
 	// (issue #373).  append-bytes! is the mutating variant.
 	b := clampCapBytes(lbytes.Bytes())
 	switch byteseq.Type {
 	case LString:
-		b = append(b, byteseq.Str...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, byteseq.Str...) //elps:mutates clamped append reallocates for nonempty data; empty results are cloned below
 	case LBytes:
-		b = append(b, byteseq.Bytes()...) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+		b = append(b, byteseq.Bytes()...) //elps:mutates clamped append reallocates for nonempty data; empty results are cloned below
 	default:
 		err := appendBytes(env, byteseq, func(x byte) {
-			b = append(b, x) //elps:mutates deliberate go-slice-style append: the result may share lbytes' backing so chained appends amortize, mirroring append 'vector (see #371 for the slice-retained-capacity caveat)
+			b = append(b, x) //elps:mutates append to a cap==len input reallocates on the first byte
 		})
 		if err != nil {
 			return env.Error(err)
 		}
+	}
+	if len(b) == lbytes.Len() {
+		b = bytes.Clone(b)
 	}
 	return Bytes(b)
 }
@@ -2480,7 +2798,12 @@ func builtinARef(env *LEnv, args *LVal) *LVal {
 	}
 	v := array.ArrayIndex(indices...)
 	if v.Type == LError {
-		return env.Error(v)
+		// ArrayIndex can return an error-valued element. Associate fresh
+		// index errors without replacing stored condition data or panic
+		// markers (docs/lang.md#errors).
+		if lerr := env.ErrorAssociate(v); lerr != nil {
+			return lerr
+		}
 	}
 	return v
 }
@@ -2508,7 +2831,10 @@ func builtinCons(env *LEnv, args *LVal) *LVal {
 	if tail.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %s", tail.Type)
 	}
-	cells := make([]*LVal, 0, 1+args.Len())
+	if msg := env.Runtime.CheckAlloc(tail.Len() + 1); msg != "" {
+		return env.Errorf("%s", msg)
+	}
+	cells := make([]*LVal, 0, 1+tail.Len())
 	cells = append(cells, head)
 	cells = append(cells, tail.Cells...)
 	return QExpr(cells)
@@ -2538,7 +2864,11 @@ func builtinIsType(env *LEnv, args *LVal) *LVal {
 		if typesym != env.Runtime.Registry.Lang+":typedef" {
 			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
 		}
-		typesym = typespec.Cells[0].Cells[0].Str
+		name, _, lerr := env.typedefFields(typespec)
+		if lerr != nil {
+			return lerr
+		}
+		typesym = name.Str
 	}
 	t := GetType(v)
 	return Bool(t.Str == typesym)
@@ -2634,7 +2964,7 @@ func builtinIsBytes(env *LEnv, args *LVal) *LVal {
 
 func builtinEqual(env *LEnv, args *LVal) *LVal {
 	a, b := args.Cells[0], args.Cells[1]
-	return a.Equal(b)
+	return a.EqualWithRuntime(b, env.Runtime)
 }
 
 func builtinAllP(env *LEnv, args *LVal) *LVal {
@@ -2646,12 +2976,14 @@ func builtinAllP(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", pred.FunType)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(pred, QExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
@@ -2671,12 +3003,14 @@ func builtinAnyP(env *LEnv, args *LVal) *LVal {
 	if pred.Type != LFun {
 		return env.Errorf("first argument is not a function: %v", pred.Type)
 	}
+	if pred.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", pred.FunType)
+	}
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a list: %v", list.Type)
 	}
 	for _, v := range seqCells(list) {
-		expr := SExpr([]*LVal{pred, v})
-		ok := env.Eval(expr)
+		ok := env.callValueFunction(pred, QExpr([]*LVal{v}))
 		if ok.Type == LError {
 			return ok
 		}
@@ -2696,7 +3030,7 @@ func builtinMax(env *LEnv, args *LVal) *LVal {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(maxVal, x) {
+		if (x.Type == LFloat && math.IsNaN(x.Float)) || lessNumeric(maxVal, x) {
 			maxVal = x
 		}
 	}
@@ -2712,7 +3046,7 @@ func builtinMin(env *LEnv, args *LVal) *LVal {
 		if !x.IsNumeric() {
 			return env.Errorf("argument is not a number: %s", x.Type)
 		}
-		if lessNumeric(x, minVal) {
+		if (x.Type == LFloat && math.IsNaN(x.Float)) || lessNumeric(x, minVal) {
 			minVal = x
 		}
 	}
@@ -2868,30 +3202,10 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 	return Float(math.Pow(toFloat(a), toFloat(b)))
 }
 
-// powInt raises a to the b-th power in int arithmetic, wrapping on overflow
-// exactly as Go's `*` does.
-//
-// Binary exponentiation: at most 63 iterations for any b, because b is
-// halved every turn.  The previous implementation doubled an exponent
-// accumulator instead --
-//
-//	n := 1; atob := a
-//	for 2*n < b { atob *= atob; n *= 2 }
-//	for n < b   { atob *= a;    n++ }
-//
-// -- and for b > 2^62 that loop never terminates.  n doubles 1, 2, ..., 2^62,
-// then 2^63 wraps to MinInt, then MinInt*2 wraps to exactly 0, and 2*0 < b is
-// true forever.  Zero is a true fixed point: the loop allocates nothing and
-// evaluates nothing, so it is invisible to MaxAlloc, to MaxSteps AND to a
-// context deadline -- none of those are consulted inside a builtin.
-// (pow -128 9223372036854775807) hung the process until something killed it.
-// Found by FuzzApplyStdlib as (pow -9223372036854775808 9223372036854775806).
-//
-// The result is unchanged wherever the old loop terminated.  Go's int
-// multiplication is arithmetic mod 2^64, which is a commutative ring, so the
-// order in which the b factors are associated cannot change the product --
-// squaring-and-multiplying and multiplying b times agree bit for bit,
-// including on the wrapped answers.  (pow 2 64) still returns 0.
+// powInt raises a to the b-th power, reporting overflow for integer results.
+// Binary exponentiation halves b every iteration, so even MaxInt exponents
+// terminate in at most 63 iterations. Do not use an exponent-doubling loop:
+// its counter can overflow to zero and hang inside this uninterruptible builtin.
 func powInt(a, b int) *LVal {
 	if b == 0 {
 		return Int(1)
@@ -2903,14 +3217,32 @@ func powInt(a, b int) *LVal {
 	base := a
 	for b > 0 {
 		if b&1 == 1 {
-			atob *= base
+			product, ok := checkedMulInt(atob, base)
+			if !ok {
+				return Errorf("integer overflow: power overflows int")
+			}
+			atob = product
 		}
 		b >>= 1
 		if b > 0 {
-			base *= base
+			product, ok := checkedMulInt(base, base)
+			if !ok {
+				return Errorf("integer overflow: power overflows int")
+			}
+			base = product
 		}
 	}
 	return Int(atob)
+}
+
+// checkedMulInt detects overflow by reversing the multiplication. MinInt * -1
+// needs an explicit check because Go's MinInt / -1 also wraps to MinInt.
+func checkedMulInt(a, b int) (int, bool) {
+	product := a * b
+	if a != 0 && (product/a != b || (a == -1 && b == math.MinInt)) {
+		return 0, false
+	}
+	return product, true
 }
 
 func builtinMod(env *LEnv, args *LVal) *LVal {
@@ -3068,6 +3400,11 @@ func builtinMul(env *LEnv, v *LVal) *LVal {
 			return env.Errorf("argument is not a number: %v", c.Type)
 		}
 	}
+	// Choose the arithmetic type before multiplying, as + does. Otherwise
+	// an integer prefix can wrap before a later float promotes the result.
+	if numericListType(v.Cells) == LFloat {
+		return mulFloat(Float(1), v)
+	}
 	return mulInt(Int(1), v)
 }
 
@@ -3110,27 +3447,41 @@ func mulFloat(x, args *LVal) *LVal {
 }
 
 func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
-	// There is deliberately no zero-argument special case here.  There used to
-	// be one, and it called fmt.Println -- writing the newline to os.Stdout,
-	// ignoring Runtime.Stderr entirely.  That contradicted both the builtin's
-	// documentation ("Prints all arguments to stderr") and its own non-empty
-	// branch, and it meant an embedder who had redirected debug output still
-	// got a stray newline on the host process's stdout, which for a
-	// stdout-is-the-protocol host (an LSP server, a JSON-RPC chaincode
-	// process) is a corrupted stream rather than cosmetic noise.
-	//
-	// fmt.Fprintln with no variadic arguments already writes exactly the
-	// newline, so removing the branch is the whole fix.
-	fmtargs := make([]interface{}, len(args.Cells))
-	for i := range args.Cells {
-		fmtargs[i] = args.Cells[i]
+	var out strings.Builder
+	limit := env.Runtime.MaxAllocBytes()
+	budget := newRenderBudget(limit, env.evalCtx)
+	for i, v := range args.Cells {
+		if i > 0 {
+			if out.Len() >= limit {
+				return env.renderError()
+			}
+			out.WriteByte(' ')
+		}
+		s, ok := v.boundedWithBudget(limit-out.Len(), &budget)
+		if !ok {
+			return env.renderError()
+		}
+		out.WriteString(s)
 	}
-	fmt.Fprintln(env.Runtime.getStderr(), fmtargs...) //nolint:errcheck // best-effort debug output
+	if out.Len() >= limit {
+		return env.renderError()
+	}
+	out.WriteByte('\n')
+	fmt.Fprint(env.Runtime.getStderr(), out.String()) //nolint:errcheck // best-effort debug output
 	return Nil()
 }
 
+// renderError reports cancellation before output exhaustion without re-rendering
+// the value that exceeded the limit.
+func (env *LEnv) renderError() *LVal {
+	if env.evalCtx != nil && env.evalCtx.Err() != nil {
+		return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", env.evalCtx.Err())
+	}
+	return env.Errorf("allocation size exceeds maximum (%d)", env.Runtime.MaxAllocBytes())
+}
+
 func builtinDebugStack(env *LEnv, args *LVal) *LVal {
-	_, err := env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+	_, err := env.Runtime.Stack.debugPrintContext(env.evalCtx, env.Runtime.getStderr(), env.Runtime.MaxAllocBytes())
 	if err != nil {
 		return env.Error(err)
 	}
@@ -3206,7 +3557,26 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 	}
 
 	var buf strings.Builder
-	buf.Grow(len(f) + len(fvals)*16)
+	limit := env.Runtime.MaxAllocBytes()
+	budget := newRenderBudget(limit, env.evalCtx)
+	// Reserve the usual small substitution allowance, capped before the
+	// multiplication so neither large formats nor argument counts overflow.
+	hint := min(len(f), limit)
+	hint += 16 * min(len(fvals), (limit-hint)/16)
+	buf.Grow(hint)
+	write := func(s string) bool {
+		if !budget.step() {
+			return false
+		}
+		if len(s) > limit-buf.Len() {
+			return false
+		}
+		buf.WriteString(s)
+		return true
+	}
+	allocationError := func() *LVal {
+		return env.renderError()
+	}
 
 	seqIndex := 0
 	// mode: 0 = undecided, 1 = sequential, 2 = positional
@@ -3219,10 +3589,15 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		j := i
 		for j < n && f[j] != '{' && f[j] != '}' {
 			j++
+			if j%4096 == 0 && !budget.step() {
+				return allocationError()
+			}
 		}
 		// Write any literal text before the brace.
 		if j > i {
-			buf.WriteString(f[i:j])
+			if !write(f[i:j]) {
+				return allocationError()
+			}
 		}
 		if j >= n {
 			break
@@ -3232,7 +3607,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		if ch == '}' {
 			// Must be a '}}' escape.
 			if j+1 < n && f[j+1] == '}' {
-				buf.WriteByte('}')
+				if !write("}") {
+					return allocationError()
+				}
 				i = j + 2
 				continue
 			}
@@ -3245,7 +3622,9 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("unclosed '{' in format string")
 		}
 		if f[j+1] == '{' {
-			buf.WriteByte('{')
+			if !write("{") {
+				return allocationError()
+			}
 			i = j + 2
 			continue
 		}
@@ -3295,9 +3674,25 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 
 		val := fvals[argIdx]
 		if val.Type == LString && !val.quoted {
-			buf.WriteString(val.Str)
+			if !write(val.Str) {
+				return allocationError()
+			}
 		} else {
-			buf.WriteString(val.String())
+			// Bound rendering itself, not just the already-rendered string:
+			// nested/shared data can have a very large printed expansion.
+			s, ok := val.boundedWithBudget(limit-buf.Len(), &budget)
+			if !ok || !write(s) {
+				return allocationError()
+			}
+		}
+
+		// Preserve the renderer's early stop on exhausted output budgets.
+		// Only a successfully rendered substitution needs full depth validation.
+		if err := checkValueDepth(val, env.Runtime.ValueDepthLimit(), env.evalCtx); err != nil {
+			if env.evalCtx != nil && env.evalCtx.Err() != nil {
+				return env.renderError()
+			}
+			return env.Error(err)
 		}
 
 		i = closeIdx + 1

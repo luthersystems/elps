@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"strings"
 
 	"github.com/google/go-dap"
 	"github.com/luthersystems/elps/lisp"
@@ -23,49 +24,61 @@ const elpsThreadID = 1
 // actually stopped (as opposed to the call site stored in the CallFrame).
 // If sourceRoot is non-empty, relative Source.Path values are resolved to
 // absolute paths so that DAP clients (VS Code) can open the source files.
-func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string) []dap.StackFrame {
+func translateStackFrames(stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string, envs ...*lisp.LEnv) []dap.StackFrame {
+	var env *lisp.LEnv
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	formatter := debugger.NewProtocolValueFormatter(env, nil)
 	if stack == nil || len(stack.Frames) == 0 {
 		return []dap.StackFrame{}
 	}
-	frames := make([]dap.StackFrame, 0, len(stack.Frames))
+	frames := make([]dap.StackFrame, 0, min(len(stack.Frames), 64))
 	for i := len(stack.Frames) - 1; i >= 0; i-- {
+		if formatter.Exhausted() {
+			break
+		}
+		overhead := formatter.Text(strings.Repeat(" ", 64)) // up to 384 encoded bytes of fixed fields
+		if formatter.Exhausted() {
+			frames = append(frames, dap.StackFrame{Id: i + 1, Name: overhead})
+			break
+		}
 		f := &stack.Frames[i]
+		name := f.Name
+		if name == "" {
+			name = f.FID
+		}
+		if f.Package != "" {
+			name = formatter.Text(f.Package, ":", name)
+		} else {
+			name = formatter.Text(name)
+		}
 		sf := dap.StackFrame{
 			Id:   i + 1, // 1-based IDs
-			Name: f.QualifiedFunName(),
+			Name: name,
 		}
-		if f.Source != nil {
-			sf.Source = &dap.Source{
-				Name: f.Source.File,
-				Path: resolveSourcePath(f.Source.Path, f.Source.File, sourceRoot),
-			}
-			sf.Line = f.Source.Line
-			sf.Column = f.Source.Col
-		}
-		// For the top frame (first appended), override with the paused
-		// expression's source to show where execution actually stopped.
-		// Always use the paused expression's file — when stepping into a
-		// function defined in a different file, the call frame still points
-		// to the caller's file, but we need to show the callee's source.
+		loc := f.Source
 		var pausedLoc token.Location
 		pausedOK := false
 		if pausedExpr != nil {
 			pausedLoc, pausedOK = pausedExpr.Source()
 		}
 		if len(frames) == 0 && pausedOK {
-			sf.Line = pausedLoc.Line
-			sf.Column = pausedLoc.Col
-			sf.Source = &dap.Source{
-				Name: pausedLoc.File,
-				Path: resolveSourcePath(pausedLoc.Path, pausedLoc.File, sourceRoot),
-			}
-			// Annotate with macro expansion name when paused inside a
-			// macro expansion, so the user can see which macro is active.
+			loc = &pausedLoc
+		}
+		if loc != nil {
+			sf.Source = &dap.Source{Name: formatter.Text(loc.File), Path: boundedSourcePath(formatter, loc.Path, loc.File, sourceRoot)}
+			sf.Line, sf.Column = loc.Line, loc.Col
+		}
+		if len(frames) == 0 && pausedOK {
 			if m, ok := pausedExpr.MacroExpansion(); ok {
-				sf.Name = sf.Name + " [macro: " + m.Name + "]"
+				sf.Name += formatter.Text(" [macro: ", m.Name, "]")
 			}
 		}
 		frames = append(frames, sf)
+	}
+	if formatter.Exhausted() {
+		frames = append(frames, dap.StackFrame{Name: "#<truncated>"})
 	}
 	return frames
 }
@@ -92,16 +105,30 @@ func resolveSourcePath(path, file, sourceRoot string) string {
 // translateVariables converts scope bindings to DAP Variable objects.
 // allocRef assigns a variable reference for expandable values. eng is used
 // for custom native type formatting.
-func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine) []dap.Variable {
-	vars := make([]dap.Variable, len(bindings))
-	for i, b := range bindings {
-		vars[i] = dap.Variable{
-			Name:               b.Name,
-			Value:              debugger.FormatValueWith(b.Value, eng),
+func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine, envs ...*lisp.LEnv) (result []dap.Variable) {
+	var env *lisp.LEnv
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	formatter := debugger.NewProtocolValueFormatter(env, eng)
+	defer func() {
+		if formatter.Exhausted() {
+			result = append(result, dap.Variable{Name: "#<truncated>"})
+		}
+	}()
+	vars := make([]dap.Variable, 0, min(len(bindings), 64))
+	for _, b := range bindings {
+		if formatter.Exhausted() {
+			return vars
+		}
+		v := dap.Variable{
+			Name:               variableName(formatter, b.Name),
+			Value:              formatter.Format(b.Value),
 			Type:               lvalTypeName(b.Value),
 			VariablesReference: allocRef(b.Value),
 		}
-		setChildHints(&vars[i], b.Value)
+		setChildHints(&v, b.Value)
+		vars = append(vars, v)
 	}
 	return vars
 }
@@ -109,17 +136,26 @@ func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LV
 // expandVariable returns the child variables of a structured LVal.
 // mapKeyFilter, if non-nil, filters sorted-map entries to only those whose
 // formatted key name matches the regex. It is ignored for non-map types.
-func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) []dap.Variable {
+func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) (result []dap.Variable) {
 	if v == nil {
 		return []dap.Variable{}
 	}
+	formatter := debugger.NewProtocolValueFormatter(nil, eng)
+	defer func() {
+		if formatter.Exhausted() {
+			result = append(result, dap.Variable{Name: "#<truncated>"})
+		}
+	}()
 	switch v.Type {
 	case lisp.LSExpr:
 		vars := make([]dap.Variable, len(v.Cells))
 		for i, cell := range v.Cells {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
-				Name:               fmt.Sprintf("[%d]", i),
-				Value:              debugger.FormatValueWith(cell, eng),
+				Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
+				Value:              formatter.Format(cell),
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
@@ -133,15 +169,23 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		var vars []dap.Variable
 		for _, pair := range entries.Cells {
+			if formatter.Exhausted() {
+				break
+			}
 			key := pair.Cells[0]
 			val := pair.Cells[1]
-			name := debugger.FormatValue(key)
+			overhead := formatter.Text(strings.Repeat(" ", 48))
+			if formatter.Exhausted() {
+				vars = append(vars, dap.Variable{Name: overhead})
+				break
+			}
+			name := formatter.Format(key)
 			if mapKeyFilter != nil && !mapKeyFilter.MatchString(name) {
 				continue
 			}
 			v := dap.Variable{
 				Name:               name,
-				Value:              debugger.FormatValueWith(val, eng),
+				Value:              formatter.Format(val),
 				Type:               lvalTypeName(val),
 				VariablesReference: allocRef(val),
 			}
@@ -154,9 +198,12 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		data := v.Cells[1]
 		vars := make([]dap.Variable, len(data.Cells))
 		for i, cell := range data.Cells {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
-				Name:               fmt.Sprintf("[%d]", i),
-				Value:              debugger.FormatValueWith(cell, eng),
+				Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
+				Value:              formatter.Format(cell),
 				Type:               lvalTypeName(cell),
 				VariablesReference: allocRef(cell),
 			}
@@ -169,8 +216,8 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		inner := v.Cells[0]
 		child := dap.Variable{
-			Name:               "data",
-			Value:              debugger.FormatValueWith(inner, eng),
+			Name:               variableName(formatter, "data"),
+			Value:              formatter.Format(inner),
 			Type:               lvalTypeName(inner),
 			VariablesReference: allocRef(inner),
 		}
@@ -186,9 +233,12 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		}
 		vars := make([]dap.Variable, len(children))
 		for i, ch := range children {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
 			vars[i] = dap.Variable{
-				Name:               ch.Name,
-				Value:              debugger.FormatValueWith(ch.Value, eng),
+				Name:               variableName(formatter, ch.Name),
+				Value:              formatter.Format(ch.Value),
 				Type:               lvalTypeName(ch.Value),
 				VariablesReference: allocRef(ch.Value),
 			}
@@ -257,4 +307,31 @@ func translateBreakpoints(bps []*debugger.Breakpoint) []dap.Breakpoint {
 		}
 	}
 	return result
+}
+
+// Fixed per-variable fields, quotes and separators fit in 48*6 wire bytes.
+func variableName(f *debugger.ValueFormatter, name string) string {
+	overhead := f.Text(strings.Repeat(" ", 48))
+	if f.Exhausted() {
+		return overhead
+	}
+	return f.Text(name)
+}
+
+func boundedSourcePath(f *debugger.ValueFormatter, path, file, root string) string {
+	if path == "" {
+		path = file
+	}
+	if path == "" {
+		return ""
+	}
+	if filepath.IsAbs(path) || root == "" {
+		return f.Text(path)
+	}
+	// Charge before filepath.Join can allocate or scan arbitrarily large names.
+	bounded := f.Text(root, string(filepath.Separator), path)
+	if f.Exhausted() {
+		return bounded
+	}
+	return filepath.Clean(bounded)
 }

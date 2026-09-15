@@ -28,7 +28,8 @@ func walkNode(node *lisp.LVal, parent *lisp.LVal, depth int, fn func(*lisp.LVal,
 	// templates where forms like (defun (unquote name) ...) are data,
 	// not actual function definitions or calls.
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 &&
-		node.Cells[0].Type == lisp.LSymbol && node.Cells[0].Str == "quasiquote" {
+		node.Cells[0].Type == lisp.LSymbol &&
+		(node.Cells[0].Str == "quasiquote" || node.Cells[0].Str == "lisp:quasiquote") {
 		return
 	}
 	for _, child := range node.Cells {

@@ -12,7 +12,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/luthersystems/elps/diagnostic"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/parser"
@@ -25,9 +24,8 @@ var genFunName = regexp.MustCompile(`_fun\d+`)
 
 // renderRunError writes src to a file in its own directory, loads it exactly
 // as `elps run` does, and returns what `elps run` would have printed for the
-// resulting error.  It renders through the command's own converter and
-// renderer rather than reimplementing them, so the goldens below are the
-// text a user sees.
+// resulting error. It uses the command's reporting path, so the goldens below
+// are the text a user sees.
 func renderRunError(t *testing.T, name, src string) string {
 	t.Helper()
 	dir := t.TempDir()
@@ -50,10 +48,8 @@ func renderRunError(t *testing.T, name, src string) string {
 
 	res := env.LoadFile(file)
 	require.Equal(t, lisp.LError, res.Type, "the program was expected to fail: %v", res)
-	d := lispErrorToDiagnostic(res)
-	d.Notes = append(d.Notes, "try: elps lint "+file)
 	var buf bytes.Buffer
-	require.NoError(t, (&diagnostic.Renderer{Color: diagnostic.ColorNever}).Render(&buf, d))
+	renderLispErrorTo(t.Context(), &buf, env.Runtime, res, file)
 	return genFunName.ReplaceAllString(buf.String(), "_funN")
 }
 
@@ -95,7 +91,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		src: "(defmacro m () (compose car car))\n" +
 			"(set 'f (m))\n" +
 			"(f 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> macro-root.lisp:1:16\n" +
 			"   |\n" +
 			" 1 |  (defmacro m () (compose car car))\n" +
@@ -109,7 +105,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		name: "macro-child",
 		src: "(defmacro m () (quasiquote (funcall (unquote (compose car car)) 1)))\n" +
 			"(m)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> macro-child.lisp:1:46\n" +
 			"   |\n" +
 			" 1 |  (defmacro m () (quasiquote (funcall (unquote (compose car car)) 1)))\n" +
@@ -126,7 +122,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 			"(defmacro m () gf)\n" +
 			"(set 'f (m))\n" +
 			"(f 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> global.lisp:1:10\n" +
 			"   |\n" +
 			" 1 |  (set 'gf (compose car car))\n" +
@@ -140,7 +136,7 @@ func TestSynthesizedFunctionsReportTheirConstructionSite(t *testing.T) {
 		name: "plain",
 		src: "(set 'g (compose car car))\n" +
 			"(g 1)\n",
-		want: "error: lisp:car: argument is not a list int\n" +
+		want: "error: lisp:car: argument is not a list: int\n" +
 			"  --> plain.lisp:1:9\n" +
 			"   |\n" +
 			" 1 |  (set 'g (compose car car))\n" +

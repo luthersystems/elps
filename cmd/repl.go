@@ -24,8 +24,13 @@ var replCmd = &cobra.Command{
 	Long: `Start an interactive read-eval-print loop for ELPS Lisp.
 
 All standard library packages are loaded automatically. Line editing and
-in-session command history are supported via readline. Use Ctrl-D or
-Ctrl-C to exit.
+in-session command history are supported via readline. Use Ctrl-D to exit.
+During evaluation, SIGINT (Ctrl-C) or SIGTERM cancels execution and exits
+with status 1 and a one-line error. A second signal force-exits.
+
+Source loads are confined to --root-dir (default: working directory) at open
+time. Relative symlinks within the root are allowed; escaping paths and
+absolute symlinks produce ordinary errors.
 
 Flags:
   --json          Output each result as a single-line JSON object to stdout.
@@ -53,6 +58,8 @@ Example batch/JSON usage:
   elps repl -e '(* 6 7)'
   elps repl -e '(* 6 7)' --json`,
 	Run: func(cmd *cobra.Command, args []string) {
+		ctx, stop := evaluationContext(cmd.Context(), 0)
+		defer stop()
 		jsonFlag := replJSON
 		// --batch auto-enables --json unless --json was explicitly set.
 		if replBatch && !cmd.Flags().Changed("json") {
@@ -60,6 +67,7 @@ Example batch/JSON usage:
 		}
 
 		opts := []repl.Option{
+			repl.WithContext(ctx),
 			repl.WithJSON(jsonFlag),
 			repl.WithBatch(replBatch),
 		}
@@ -70,6 +78,9 @@ Example batch/JSON usage:
 			opts = append(opts, repl.WithEval(replEval))
 		}
 		repl.RunRepl(filepath.Base(os.Args[0])+"> ", opts...)
+		if ctx.Err() != nil {
+			os.Exit(1)
+		}
 	},
 }
 
@@ -85,5 +96,5 @@ func init() {
 	replCmd.Flags().StringVarP(&replEval, "eval", "e", "",
 		"Evaluate a single expression, print result, and exit")
 	replCmd.Flags().StringVar(&replRootDir, "root-dir", "",
-		"Root directory for file access confinement (default: working directory)")
+		"Root directory for source load confinement (default: working directory)")
 }

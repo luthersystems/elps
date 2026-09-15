@@ -160,15 +160,18 @@
              (car seq)
              (accumulate op initial (cdr seq)))))
 
-(defun map (p seq)
+; SICP intentionally reimplements map using accumulate for teaching.
+(defun map (p seq) ; nolint:builtin-shadowing
   (accumulate (lambda (x ys) (cons (p x) ys))
               ()
               seq))
 
-(defun append (lis1 lis2)
+; SICP intentionally reimplements append using accumulate for teaching.
+(defun append (lis1 lis2) ; nolint:builtin-shadowing
   (accumulate 'cons lis2 lis1))
 
-(defun length (seq) ; nolint:unused-function
+; SICP intentionally reimplements length using accumulate for teaching.
+(defun length (seq) ; nolint:unused-function,builtin-shadowing
   (accumulate '+ 0 seq))
 
 (assert-equal '(2 4 6 8) (map #^(* 2 %) '(1 2 3 4)))

@@ -1,0 +1,78 @@
+// Copyright © 2026 The ELPS authors
+
+// Package lambdalist shares lambda-list validation between runtime and lint.
+package lambdalist
+
+import (
+	"fmt"
+	"strings"
+)
+
+// Validate checks n symbol names supplied by name without copying the list.
+// It returns the offending index and the runtime diagnostic, or (-1, "").
+// Callers check that the list contains only symbols before calling Validate.
+func Validate(n int, name func(int) string) (int, string) {
+	invalid := func(i int, control string) (int, string) {
+		return i, "function formal argument list contains a control symbol at an invalid location: " + control
+	}
+	optional := false
+	for i := range n {
+		s := name(i)
+		switch s {
+		case "&optional":
+			if optional || i == n-1 {
+				return invalid(i, s)
+			}
+			optional = true
+		case "&key":
+			if i == n-1 {
+				return invalid(i, s)
+			}
+			for j := i + 1; j < n; j++ {
+				if strings.HasPrefix(name(j), "&") {
+					return invalid(j, s)
+				}
+			}
+		case "&rest":
+			if i != n-2 {
+				return invalid(i, s)
+			}
+			if strings.HasPrefix(name(i+1), "&") {
+				// The binder reports the would-be rest name in this case.
+				return invalid(i+1, name(i+1))
+			}
+		default:
+			if strings.HasPrefix(s, "&") {
+				return i, fmt.Sprintf("function formal argument list contains invalid control symbol ``%s''", s)
+			}
+		}
+	}
+	// Small lists need no map allocation. Bound the quadratic scan so large
+	// generated lambda lists still take linear time.
+	var seen map[string]bool
+	if n > 16 {
+		seen = make(map[string]bool, n)
+	}
+	for i := range n {
+		s := name(i)
+		if strings.HasPrefix(s, "&") {
+			continue
+		}
+		duplicate := false
+		if seen != nil {
+			duplicate = seen[s]
+			seen[s] = true
+		} else {
+			for j := range i {
+				if name(j) == s {
+					duplicate = true
+					break
+				}
+			}
+		}
+		if duplicate {
+			return i, "duplicate formal argument name: " + s
+		}
+	}
+	return -1, ""
+}

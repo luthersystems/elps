@@ -3098,16 +3098,16 @@ func TestDocumentHighlight_FunctionRef(t *testing.T) {
 
 func TestDocumentHighlight_Variable(t *testing.T) {
 	s := testServer()
-	content := `(set *counter* 0)
+	content := `(set '*counter* 0)
 (set! *counter* (+ *counter* 1))
 (debug-print *counter*)`
 	openDoc(s, "file:///test.lisp", content)
 
-	// Cursor on "*counter*" definition (line 0, char 5).
+	// Cursor on "*counter*" definition (line 0, char 6).
 	highlights, err := s.textDocumentDocumentHighlight(mockContext(), &protocol.DocumentHighlightParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
-			Position:     protocol.Position{Line: 0, Character: 5}, // on "*counter*"
+			Position:     protocol.Position{Line: 0, Character: 6}, // on "*counter*"
 		},
 	})
 	require.NoError(t, err)
@@ -3287,14 +3287,14 @@ func TestLinkedEditing_Function(t *testing.T) {
 
 func TestLinkedEditing_Variable(t *testing.T) {
 	s := testServer()
-	content := "(set x 1)\n(+ x 2)"
+	content := "(set 'x 1)\n(+ x 2)"
 	openDoc(s, "file:///test.lisp", content)
 
-	// Cursor on "x" at definition (line 0, char 5).
+	// Cursor on "x" at definition (line 0, char 6).
 	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
 		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
 			TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
-			Position:     protocol.Position{Line: 0, Character: 5},
+			Position:     protocol.Position{Line: 0, Character: 6},
 		},
 	})
 	require.NoError(t, err)

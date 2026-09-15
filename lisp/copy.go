@@ -78,15 +78,24 @@ package lisp
 // must not rely on a backing-array alias surviving a copy.
 // TestCopyDoesNotPreserveBackingArraySharing pins it.
 //
-// The error return survives only for shapes lisp code cannot hold — the
+// Excessive nesting returns ValueDepthError. Other errors are for shapes
+// lisp code cannot hold — the
 // internal marker types and an unrecognized Native payload — so that a
 // kernel bug surfaces as an ordinary catchable condition rather than a
 // silently half-shared copy.
 func (v *LVal) deepCopy() (*LVal, error) {
+	return v.deepCopyWithRuntime(nil)
+}
+
+// deepCopyWithRuntime applies a runtime's per-container allocation limit only
+// when copying from Lisp. Go ownership helpers use the default depth limit. Immutable
+// string storage is shared, and allocation inside NativeCloner hooks remains
+// the host's responsibility; neither it nor walker bookkeeping is metered.
+func (v *LVal) deepCopyWithRuntime(runtime *Runtime) (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
-	d := &detacher{seen: make(map[*LVal]*LVal), shareOpaque: true}
+	d := &detacher{runtime: runtime, shareOpaque: true}
 	return d.detach(v)
 }
 
@@ -105,7 +114,7 @@ func (v *LVal) deepCopy() (*LVal, error) {
 // another binding, a container or a closure (issue #378).  Code that
 // intends to mutate data it did not construct copies first, full stop.
 func builtinCopy(env *LEnv, args *LVal) *LVal {
-	cp, err := args.Cells[0].deepCopy()
+	cp, err := args.Cells[0].deepCopyWithRuntime(env.Runtime)
 	if err != nil {
 		return env.Errorf("value cannot be copied: %v", err)
 	}

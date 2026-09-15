@@ -116,6 +116,18 @@ func (m walkerMemo) Kinds() []payloadKind {
 // memo-shaped field and no row fails the source scan.
 var walkerMemos = []walkerMemo{
 	{
+		// Rendering only reads the graph. The active path distinguishes
+		// actual cycles from repeated DAG nodes during bounded rendering;
+		// it never owns or reconstructs an LVal payload.
+		Walker:   "valueRenderer",
+		Rebuilds: false,
+		Graph:    []payloadKind{payloadValue},
+		Fields: map[payloadKind]string{
+			payloadValue: "active",
+		},
+		Doc: "lisp/render_bounded.go (boundedString)",
+	},
+	{
 		Walker:   "detacher",
 		Rebuilds: true,
 		Payloads: []payloadKind{payloadSortedMap, payloadBytes, payloadNative},
@@ -238,6 +250,12 @@ type memoExemption struct {
 // review, not a way to make a red guard green.  Every row states why the
 // subject cannot carry the aliasing bug the registry exists to prevent.
 var memoExemptions = []memoExemption{
+	{
+		Subject: "lisp.conversionFrame.mapping",
+		Reason: "the Go map being built by GoValue (lisp/embed.go), keyed by converted application keys, " +
+			"not source identities. It is output, not a payload memo; repeated source subtrees are " +
+			"independently converted, and the separate active path detects cycles.",
+	},
 	{
 		Subject: "*CallStack",
 		Reason: "an LError's recorded stack, deep-copied per header by detachCallStack rather than memoised per payload. " +

@@ -35,6 +35,103 @@ func TestVectorGoValue(t *testing.T) {
 	}
 }
 
+// Native payloads are opaque even when their reflected value is invalid or
+// contains nil pointers. Conversion must preserve them inside containers too.
+func TestNativeGoValueShapes(t *testing.T) {
+	type fields struct{ X int }
+	type embedded struct{ *fields }
+	for _, payload := range []any{
+		nil, (*fields)(nil), embedded{}, &embedded{}, reflect.Value{},
+		[]int(nil), map[string]int(nil), (chan int)(nil), (func())(nil),
+	} {
+		v := Native(payload)
+		m := SortedMap()
+		m.MapSet("native", v)
+		for _, tc := range []struct {
+			value *LVal
+			want  any
+		}{
+			{v, payload},
+			{QExpr([]*LVal{v}), []any{payload}},
+			{m, map[any]any{"native": payload}},
+		} {
+			if got := GoValue(tc.value); !reflect.DeepEqual(got, tc.want) {
+				t.Errorf("GoValue with payload %T = %#v, want %#v", payload, got, tc.want)
+			}
+		}
+	}
+}
+
+// oneEntryMap is the embedder extension point for a sorted-map backing
+// (NewMapData/SortedMapFromData).  It is how a key LVal that MapData's own
+// Set would reject -- a native payload -- reaches the Go conversion walk,
+// which is the only way the walk's key-comparability guard is reachable.
+type oneEntryMap struct {
+	key *LVal
+	val *LVal
+}
+
+func (m *oneEntryMap) Len() int { return 1 }
+
+func (m *oneEntryMap) Get(k *LVal) (*LVal, bool) { return Nil(), false }
+
+func (m *oneEntryMap) Set(k, v *LVal) *LVal { return Errorf("read-only map") }
+
+func (m *oneEntryMap) Del(k *LVal) *LVal { return Errorf("read-only map") }
+
+func (m *oneEntryMap) Keys() *LVal { return QExpr([]*LVal{m.key}) }
+
+func (m *oneEntryMap) Entries(buf []*LVal) *LVal {
+	if len(buf) < 1 {
+		return Errorf("buffer has insufficient length")
+	}
+	buf[0] = QExpr([]*LVal{m.key, m.val})
+	return Int(1)
+}
+
+// TestGoMapKeyReflectionGuards pins that converting a sorted-map to a Go map
+// rejects a key that is not comparable AT RUNTIME instead of panicking with
+// "hash of unhashable type" on insertion (#654 follow-up).  reflect.TypeOf(k)
+// reports a struct or array type as comparable even when an interface field
+// holds a slice, so the guard must ask reflect.ValueOf(k).
+func TestGoMapKeyReflectionGuards(t *testing.T) {
+	for _, tc := range []struct {
+		key  *LVal
+		name string
+		ok   bool
+	}{
+		{Nil(), "nil-list", false},
+		{Native(nil), "nil-native", false},
+		{Native([]int{1}), "slice", false},
+		{Native(struct{ X any }{X: []int{1}}), "struct-interface-slice", false},
+		{Native([1]any{[]int{1}}), "array-interface-slice", false},
+		{Native(map[string]int(nil)), "nil-map", false},
+		{Native((*int)(nil)), "nil-pointer", true},
+		{String("key"), "string", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lv := SortedMapFromData(NewMapData(&oneEntryMap{key: tc.key, val: Int(42)}))
+			got := GoValue(lv)
+			m, isMap := got.(map[interface{}]interface{})
+			if !isMap {
+				t.Fatalf("GoValue = %#v, want a map", got)
+			}
+			if !tc.ok {
+				if m != nil {
+					t.Errorf("rejected key inserted into map: %v", m)
+				}
+				return
+			}
+			if m == nil {
+				t.Fatalf("accepted key produced a nil map")
+			}
+			if v := m[GoValue(tc.key)]; v != 42 {
+				t.Errorf("map value = %v, want 42", v)
+			}
+		})
+	}
+}
+
 // TestBytesGoValue pins what GoValue hands an embedder for an LBytes value.
 //
 // The bug this covers (#548) was `return v.Bytes` in goValueNode's LBytes
@@ -105,4 +202,55 @@ func TestBytesGoValue(t *testing.T) {
 				empty.name, b, len(b))
 		}
 	}
+}
+
+// TestGoValueDegenerateMapBacking: a sorted-map whose *MapData carries no
+// Map implementation at all -- the degenerate value
+// SortedMapFromData(NewMapData(nil)) builds -- must convert like an empty
+// map rather than dereference the nil backing.
+//
+// The other two value walkers already carry an arm for this shape: the
+// copier has `case nil:` in copier.mapData and the detacher checks
+// `md.mapBacking == nil` in detachMapData, both returning a fresh empty
+// *MapData with the nil backing preserved.  The conversion walk had no such
+// arm, so convertContainer's LSortMap case called sortedMapEntries, whose
+// first act is m.Len() -- a method call on a nil Map interface -- and
+// GoValue panicked with a nil pointer dereference.
+//
+// The result asserted here is whatever GoValue produces for an ordinary
+// EMPTY sorted map, which the sub-test below reads back rather than
+// hard-coding, so the degenerate map converts like the empty map it
+// represents.  The nested case exercises the container path, where the
+// conversion happens inside a frame rather than at the top of the walk.
+func TestGoValueDegenerateMapBacking(t *testing.T) {
+	degenerate := func() *LVal { return SortedMapFromData(NewMapData(nil)) }
+	want := GoValue(SortedMap())
+	if _, ok := want.(map[interface{}]interface{}); !ok {
+		t.Fatalf("anti-vacuity: GoValue of an empty sorted-map is %T, want a Go map", want)
+	}
+
+	t.Run("bare", func(t *testing.T) {
+		got := GoValue(degenerate())
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("GoValue(degenerate sorted-map) = %#v, want %#v (what an empty sorted-map gives)", got, want)
+		}
+	})
+
+	t.Run("nested in a list", func(t *testing.T) {
+		got := GoValue(QExpr([]*LVal{Int(1), degenerate()}))
+		if !reflect.DeepEqual(got, []interface{}{1, want}) {
+			t.Fatalf("GoValue(list holding a degenerate sorted-map) = %#v, want %#v",
+				got, []interface{}{1, want})
+		}
+	})
+
+	t.Run("GoMap", func(t *testing.T) {
+		got, ok := GoMap(degenerate())
+		if !ok {
+			t.Fatal("GoMap refused a degenerate sorted-map")
+		}
+		if len(got) != 0 {
+			t.Fatalf("GoMap(degenerate sorted-map) = %#v, want an empty map", got)
+		}
+	})
 }

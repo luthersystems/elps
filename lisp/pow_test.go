@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"math"
+	"math/big"
 	"testing"
 	"time"
 )
@@ -44,8 +45,12 @@ func TestPowIntTerminates(t *testing.T) {
 		go func() { done <- powInt(c.a, c.b) }()
 		select {
 		case v := <-done:
-			if v.Type != LInt {
-				t.Errorf("powInt(%d, %d) returned %v, want an int", c.a, c.b, v.Type)
+			wantType := LError
+			if c.a >= -1 && c.a <= 1 {
+				wantType = LInt
+			}
+			if v.Type != wantType {
+				t.Errorf("powInt(%d, %d) returned %v, want %v", c.a, c.b, v.Type, wantType)
 			}
 		case <-time.After(500 * time.Millisecond):
 			t.Fatalf("powInt(%d, %d) did not terminate within 500ms", c.a, c.b)
@@ -53,21 +58,28 @@ func TestPowIntTerminates(t *testing.T) {
 	}
 }
 
-// powIntNaive is the definition of integer exponentiation in Go's wrapping
-// int arithmetic: b factors of a, multiplied left to right. It is the ground
-// truth TestPowIntMatchesDefinition compares against -- not the previous
-// implementation, so the sweep proves powInt is CORRECT rather than merely
-// bug-compatible with what it replaced.
-func powIntNaive(a, b int) int {
-	acc := 1
-	for range b {
-		acc *= a
+// powIntExact computes the exact mathematical result independently of the
+// checked machine-width implementation. Callers must bound b.
+func powIntExact(a, b int) *big.Int {
+	return new(big.Int).Exp(big.NewInt(int64(a)), big.NewInt(int64(b)), nil)
+}
+
+// checkPowInt checks both representable results and the overflow condition.
+func checkPowInt(t *testing.T, a, b int, got *LVal, want *big.Int) {
+	t.Helper()
+	if !want.IsInt64() {
+		if got.Type != LError || got.Str != "error" || got.Cells[0].Str != "integer overflow: power overflows int" {
+			t.Fatalf("powInt(%d, %d) = %v, want integer overflow error", a, b, got)
+		}
+		return
 	}
-	return acc
+	if got.Type != LInt || int64(got.Int) != want.Int64() {
+		t.Fatalf("powInt(%d, %d) = %v, want int %v", a, b, got, want)
+	}
 }
 
 // powIntLegacy is the pre-fix implementation, verbatim. Used only to confirm
-// the fix changed no answer the old code was able to produce.
+// representable results remain compatible with the old implementation.
 //
 // CALLERS MUST BOUND b. This function does not terminate for b > 2^62, and
 // costs O(b) even when it does.
@@ -89,7 +101,7 @@ func powIntLegacy(a, b int) int {
 }
 
 // sweepBases are the a-values swept. Sign, magnitude and the overflow
-// boundaries all change how the wrapping multiplications compose.
+// boundaries exercise both valid results and overflow.
 func sweepBases() []int {
 	bases := []int{
 		0, 1, -1, 2, -2, 3, -3, 7, -7, 10, -10, 16, -16, 127, -128,
@@ -113,7 +125,7 @@ func sweepBases() []int {
 // base above and every exponent in [0, sweepMaxExp).
 //
 // The naive reference is computed INCREMENTALLY (one multiply per exponent,
-// carried across the inner loop) rather than by calling powIntNaive per pair,
+// carried across the inner loop) rather than by calling powIntExact per pair,
 // which is what makes a multi-million-pair sweep affordable: the reference
 // costs O(1) per pair instead of O(b).
 func TestPowIntMatchesDefinition(t *testing.T) {
@@ -121,17 +133,16 @@ func TestPowIntMatchesDefinition(t *testing.T) {
 	bases := sweepBases()
 	pairs := 0
 	for _, a := range bases {
-		want := 1
+		want := big.NewInt(1)
+		factor := big.NewInt(int64(a))
 		for b := range sweepMaxExp {
-			got := powInt(a, b)
-			if got.Type != LInt {
-				t.Fatalf("powInt(%d, %d) returned %v, want an int", a, b, got.Type)
-			}
-			if got.Int != want {
-				t.Fatalf("powInt(%d, %d) = %d, want %d", a, b, got.Int, want)
-			}
+			checkPowInt(t, a, b, powInt(a, b), want)
 			pairs++
-			want *= a
+			// Once an integer power overflows, all higher powers do too.
+			// Stop growing the oracle to keep the million-pair sweep cheap.
+			if want.IsInt64() {
+				want.Mul(want, factor)
+			}
 		}
 	}
 	if pairs < 1_000_000 {
@@ -141,53 +152,46 @@ func TestPowIntMatchesDefinition(t *testing.T) {
 	t.Logf("swept %d (a,b) pairs against the naive definition", pairs)
 }
 
-// TestPowIntMatchesLegacy confirms the fix is not a behaviour change: for
-// every (a,b) the OLD implementation could actually compute, the new one
-// returns the same bits, wrapped answers included.
-//
+// TestPowIntMatchesLegacy checks every bounded legacy input: representable
+// powers retain their values, and powers outside int now report overflow.
 // b is bounded at 2048 because powIntLegacy is O(b).
 func TestPowIntMatchesLegacy(t *testing.T) {
 	const maxExp = 2048
 	for _, a := range sweepBases() {
+		exact := big.NewInt(1)
+		factor := big.NewInt(int64(a))
 		for b := range maxExp {
 			got := powInt(a, b)
-			if want := powIntLegacy(a, b); got.Int != want {
-				t.Fatalf("powInt(%d, %d) = %d, legacy = %d", a, b, got.Int, want)
+			checkPowInt(t, a, b, got, exact)
+			if exact.IsInt64() {
+				if want := powIntLegacy(a, b); got.Int != want {
+					t.Fatalf("powInt(%d, %d) = %d, legacy = %d", a, b, got.Int, want)
+				}
+				exact.Mul(exact, factor)
 			}
 		}
 	}
 }
 
-// TestPowIntWrapsLikeMultiplication pins the specific wrapped answers a caller
-// could be relying on. (pow 2 64) has always returned 0 -- 2^64 mod 2^64 --
-// and must keep doing so: switching association order is only safe because
-// mod-2^64 multiplication is commutative and associative, and this is the
-// test that would catch a "fix" that started saturating or erroring instead.
-func TestPowIntWrapsLikeMultiplication(t *testing.T) {
-	cases := []struct {
-		a, b, want int
-	}{
-		{2, 0, 1},
-		{2, 10, 1024},
-		{2, 62, 1 << 62},
-		{2, 63, math.MinInt}, // 2^63 wraps to the sign bit
-		{2, 64, 0},           // and 2^64 to exactly zero
-		{2, 65, 0},
-		{2, math.MaxInt, 0},
-		{-2, 63, math.MinInt},
-		{-2, 64, 0},
-		{0, 5, 0},
-		{1, math.MaxInt, 1},
-		{-1, math.MaxInt, -1},
-		{-1, math.MaxInt - 1, 1},
-		{3, 40, powIntNaive(3, 40)},
-		{10, 19, powIntNaive(10, 19)},
-		{10, 20, powIntNaive(10, 20)}, // 10^20 > MaxInt: wrapped
+// TestPowIntOverflowBoundaries replaces the old wraparound expectations with
+// the checked-power contract, retaining every original boundary input.
+func TestPowIntOverflowBoundaries(t *testing.T) {
+	cases := []struct{ a, b int }{
+		{2, 0}, {2, 10}, {2, 62}, {2, 63}, {2, 64}, {2, 65},
+		{-2, 63}, {-2, 64}, {0, 5}, {0, 0},
+		{3, 40}, {10, 18}, {10, 19}, {10, 20},
+		{math.MinInt, 1}, {math.MinInt, 2}, {math.MaxInt, 1},
+		{3037000499, 2}, {3037000500, 2},
 	}
 	for _, c := range cases {
-		if got := powInt(c.a, c.b); got.Int != c.want {
-			t.Errorf("powInt(%d, %d) = %d, want %d", c.a, c.b, got.Int, c.want)
-		}
+		checkPowInt(t, c.a, c.b, powInt(c.a, c.b), powIntExact(c.a, c.b))
+	}
+	// Huge exponents need bounded oracle values, not a huge big.Int.
+	checkPowInt(t, 2, math.MaxInt, powInt(2, math.MaxInt), powIntExact(2, 64))
+	for _, c := range []struct{ a, b, want int }{
+		{1, math.MaxInt, 1}, {-1, math.MaxInt, -1}, {-1, math.MaxInt - 1, 1},
+	} {
+		checkPowInt(t, c.a, c.b, powInt(c.a, c.b), big.NewInt(int64(c.want)))
 	}
 }
 

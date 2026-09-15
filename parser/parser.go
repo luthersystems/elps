@@ -26,6 +26,10 @@ func WithFormatPreserving() ReaderOption {
 
 // NewReader returns a new lisp.Reader. With no options, returns a
 // standard reader. Pass WithFormatPreserving() for tooling use.
+// Readers ignore one leading UTF-8 BOM and reject BOMs elsewhere. Tokens must
+// fit the fixed 128 KiB scanner window, including string quotes; exhaustion
+// produces a scan-error at the token start. Decimal numbers must be delimited
+// from adjacent symbol constituents (hexadecimal uses #x, octal uses #o).
 func NewReader(opts ...ReaderOption) lisp.Reader {
 	var cfg readerConfig
 	for _, opt := range opts {

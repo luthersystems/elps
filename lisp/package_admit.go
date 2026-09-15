@@ -125,10 +125,11 @@ package lisp
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package) *Package {
 	adm := &Package{
-		Name:     p.Name,
-		Doc:      p.Doc,
-		symbols:  make(map[string]*LVal, len(p.symbols)),
-		funNames: make(map[string]string, len(p.funNames)),
+		Name:           p.Name,
+		Doc:            p.Doc,
+		bindingsSealed: p.bindingsSealed,
+		symbols:        make(map[string]*LVal, len(p.symbols)),
+		funNames:       make(map[string]string, len(p.funNames)),
 	}
 	if len(p.externals) > 0 {
 		adm.externals = make([]string, len(p.externals))
@@ -167,7 +168,11 @@ func admitSymbolValue(v *LVal) *LVal {
 	if v == nil || !sealableNodeType(v.Type) {
 		return v
 	}
-	sealed, sealable := classifySymbolValue(v, cycleGuard{state: new(cycleState)})
+	var st cycleState
+	sealed, sealable := classifySymbolValue(v, cycleGuard{state: &st})
+	if st.tooDeep {
+		return valueDepthError()
+	}
 	if sealed || !sealable {
 		// Sealed throughout: the sanctioned share (immutability, not
 		// confinement, is what protects it).  Not sealable throughout: a
@@ -200,24 +205,37 @@ func admitSymbolValue(v *LVal) *LVal {
 // "neither", which lands the value in the
 // by-reference row where no copy is attempted.
 func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
-	if v == nil || !sealableNodeType(v.Type) {
-		return false, false
+	type frame struct {
+		v     *LVal
+		g     cycleGuard
+		leave bool
 	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return false, false
-	}
-	if g.tracking() {
-		defer g.ascend(v)
-	}
-	sealed, sealable = v.IsSealed(), true
-	for _, c := range v.Cells {
-		cellSealed, cellSealable := classifySymbolValue(c, g)
-		sealed = sealed && cellSealed
-		sealable = sealable && cellSealable
-		if !sealed && !sealable {
-			// Neither answer can change from here: both are conjunctions.
+	pending := []frame{{v: v, g: g}}
+	sealed, sealable = true, true
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.leave {
+			f.g.ascend(f.v)
+			continue
+		}
+		if f.v == nil || !sealableNodeType(f.v.Type) {
 			return false, false
+		}
+		if f.g.depth >= MaxValueDepth {
+			g.state.tooDeep = true
+			return false, false
+		}
+		next, cyclic := f.g.descend(f.v)
+		if cyclic {
+			return false, false
+		}
+		sealed = sealed && f.v.IsSealed()
+		if next.tracking() {
+			pending = append(pending, frame{v: f.v, g: next, leave: true})
+		}
+		for i := len(f.v.Cells) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: f.v.Cells[i], g: next})
 		}
 	}
 	return sealed, sealable

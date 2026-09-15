@@ -90,6 +90,7 @@ if-arity
 in-package-toplevel
 iteration-mutation
 let-bindings
+let-recursion
 quote-call
 rethrow-context
 set-usage

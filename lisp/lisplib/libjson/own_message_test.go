@@ -169,22 +169,10 @@ func TestEmbedderCannotObtainTheExemption(t *testing.T) {
 // TestDumpMessageOfAnUnvouchedDocumentIsStillRefused is the other half of the
 // seal, and the reason the exemption is not the type alone.
 //
-// `json:dump-message` mints an ownMessage for every document, so the skip
-// rides on the loadable flag the encoder set rather than on who called it.
-// These are the two documents libjson writes and libjson will not read back,
-// so these are the two for which the flag is false.  The gap itself predates
-// elps#412 -- `json:dump` of either value produces the same bytes today, and
-// always has -- but elps#412 must not make it SILENT by waving a document
-// through on the strength of its author.
-//
-// What refuses them, as TestEmbedderCannotObtainTheExemption also records, is
-// encoding/json rather than checkLoadable: both rows fail because they nest
-// past the limit, and json.Marshal compacts a MarshalJSON result against that
-// same limit before this package gets a word in.  So these rows hold the
-// OUTCOME -- an unvouched document does not get written -- and not the
-// mechanism.  The mechanism, that a false flag really does re-arm the check,
-// is only reachable from inside the package; TestExemptionRidesOnTheFlag in
-// own_message_internal_test.go holds it.
+// Program-built values may exceed the decoder limit while remaining within
+// lisp.MaxValueDepth. Such an ownMessage must not earn the loadable flag;
+// native payload nesting can also compose with Lisp wrappers past that limit.
+// TestExemptionRidesOnTheFlag covers the internal flag directly.
 func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 	env := newLispEnv(t)
 
@@ -195,18 +183,15 @@ func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 			m.MapSet("k", payload)
 			payload = m
 		}
-		msg := dumpMessage(t, env, payload)
-
-		// Premise: these really are bytes Load refuses.  Without it the row
-		// could pass because the document is fine.
-		require.Equal(t, lisp.LError, libjson.Load(messageBytes(t, env, msg), false).Type,
-			"premise broken: Load accepts the document, so the row proves nothing")
-
+		msg := libjson.DefaultSerializer().DumpMessageBuiltin(env, lisp.SExpr([]*lisp.LVal{payload, lisp.Nil()}))
+		require.Equal(t, lisp.LNative, msg.Type)
+		require.Equal(t, lisp.LError, libjson.Load(messageBytes(t, env, msg), false).Type)
 		envelope := lisp.SortedMap()
 		envelope.MapSet("result", msg)
-		enc, err := libjson.Dump(envelope, false)
-		require.Error(t, err, "Dump emitted %.80s, which Load rejects", enc)
-		assert.Contains(t, err.Error(), "exceeded max depth")
+		result := libjson.DefaultSerializer().DumpStringBuiltin(env, lisp.SExpr([]*lisp.LVal{envelope, lisp.Nil()}))
+		require.Equal(t, lisp.LError, result.Type)
+		assert.Contains(t, result.String(), "exceeded max depth")
+
 	})
 
 	t.Run("assembled over an embedder's native", func(t *testing.T) {

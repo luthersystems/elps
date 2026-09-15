@@ -65,19 +65,24 @@ func (r *Renderer) RenderAll(w io.Writer, diags []Diagnostic) error {
 // errWriter wraps a writer and captures the first error, short-circuiting
 // subsequent writes. This avoids checking every fmt.Fprintf return value.
 type errWriter struct {
-	w   io.Writer
-	err error
+	w       io.Writer
+	err     error
+	session *Session
 }
 
 func (ew *errWriter) printf(format string, a ...interface{}) {
-	if ew.err != nil {
+	if !ew.step() {
 		return
 	}
 	_, ew.err = fmt.Fprintf(ew.w, format, a...)
 }
 
 func (ew *errWriter) print(s string) {
-	if ew.err != nil {
+	if !ew.step() {
+		return
+	}
+	if ew.session != nil {
+		ew.session.Text(s)
 		return
 	}
 	_, ew.err = io.WriteString(ew.w, s)
@@ -103,18 +108,25 @@ func (r *Renderer) writeHeader(ew *errWriter, d Diagnostic, p palette) {
 }
 
 func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
-	// Location line: "  --> file:line:col"
-	loc := span.File
+	// Write the filename separately: it can exceed the entire output budget.
+	ew.print("  " + p.boldBlue + "-->" + p.reset + " ")
+	ew.print(span.File)
 	if span.Line > 0 {
-		loc = fmt.Sprintf("%s:%d", span.File, span.Line)
+		ew.printf(":%d", span.Line)
 		if span.Col > 0 {
-			loc = fmt.Sprintf("%s:%d:%d", span.File, span.Line, span.Col)
+			ew.printf(":%d", span.Col)
 		}
 	}
-	ew.printf("  %s-->%s %s\n", p.boldBlue, p.reset, loc)
+	ew.print("\n")
+	if !ew.step() {
+		return
+	}
 
 	// Try to read and display the source line
-	source := r.readSourceLine(span.File, span.Line)
+	source := r.readSourceLineFor(ew, span.File, span.Line)
+	if !ew.step() {
+		return
+	}
 	if source == "" {
 		// No source available — just show the location line with a gutter
 		ew.printf("   %s|%s\n", p.boldBlue, p.reset)
@@ -129,8 +141,9 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 
 	// Source line with line number
 	// Replace tabs with spaces for consistent alignment
-	displaySource := strings.ReplaceAll(source, "\t", tabExpansion)
-	ew.printf(" %s%s |%s  %s\n", p.boldBlue, lineStr, p.reset, displaySource)
+	ew.printf(" %s%s |%s  ", p.boldBlue, lineStr, p.reset)
+	ew.sourceText(source)
+	ew.print("\n")
 
 	// Underline.
 	//
@@ -155,7 +168,7 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 		col = 1
 	}
 	if endCol <= 0 {
-		endCol = r.detectEndCol(source, col)
+		endCol = r.detectEndColFor(ew, source, col)
 	}
 	if endCol < col {
 		endCol = col
@@ -177,8 +190,11 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 		end = start
 	}
 
-	displayCol := displayWidth(source[:start])
-	underLen := displayWidth(source[start:end])
+	displayCol := ew.displayWidth(source[:start])
+	underLen := ew.displayWidth(source[start:end])
+	if !ew.step() {
+		return
+	}
 	if underLen < 1 {
 		// A zero-width span still has to point somewhere: a caret under the
 		// start column is more use than a blank line.  Reachable when the
@@ -187,12 +203,15 @@ func (r *Renderer) writeSpan(ew *errWriter, span Span, p palette) {
 		underLen = 1
 	}
 
-	underPad := strings.Repeat(" ", displayCol)
-	underline := strings.Repeat("^", underLen)
-
-	ew.printf(" %s%s |%s  %s%s%s%s", p.boldBlue, pad, p.reset, underPad, p.boldRed, underline, p.reset)
+	ew.printf(" %s%s |%s  ", p.boldBlue, pad, p.reset)
+	ew.repeat(" ", displayCol)
+	ew.print(p.boldRed)
+	ew.repeat("^", underLen)
+	ew.print(p.reset)
 	if span.Label != "" {
-		ew.printf(" %s%s%s", p.boldRed, span.Label, p.reset)
+		ew.print(" " + p.boldRed)
+		ew.print(span.Label)
+		ew.print(p.reset)
 	}
 	ew.print("\n")
 
@@ -225,11 +244,18 @@ func (r *Renderer) readSourceLine(file string, line int) string {
 
 // detectEndCol scans from col to find the end of the current token.
 func (r *Renderer) detectEndCol(source string, col int) int {
+	return r.detectEndColFor(nil, source, col)
+}
+
+func (r *Renderer) detectEndColFor(ew *errWriter, source string, col int) int {
 	if col <= 0 || col > len(source) {
 		return col
 	}
 	end := col - 1 // 0-based
 	for end < len(source) {
+		if ew != nil && !ew.step() {
+			return col
+		}
 		ch, size := utf8.DecodeRuneInString(source[end:])
 		if ch == ' ' || ch == '\t' || ch == ')' || ch == ']' || ch == '(' || ch == '[' {
 			break
@@ -283,15 +309,7 @@ const (
 // of the shell that ran it.  Ambiguous-as-narrow is the choice essentially
 // every modern terminal makes.
 func displayWidth(s string) int {
-	w := 0
-	for _, ch := range s {
-		if ch == '\t' {
-			w += tabWidth
-			continue
-		}
-		w += runeCellWidth(ch)
-	}
-	return w
+	return (&errWriter{}).displayWidth(s)
 }
 
 // fileFromWriter attempts to extract an *os.File from a writer for terminal

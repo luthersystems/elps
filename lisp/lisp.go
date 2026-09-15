@@ -3,7 +3,7 @@
 package lisp
 
 import (
-	"bytes"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -30,9 +30,9 @@ const (
 	LInt
 	// LFloat values store a float64 in the LVal.Float field.
 	LFloat
-	// LError values use the LVal.Cells slice to store the following items:
-	//		[0] a symbol representing the error "condition" (class name)
-	//		[1:] error data (of any type)
+	// LError values store the condition name in Str and error data in Cells.
+	// Go errors become LString data, retaining the Go error in that string
+	// cell's Native field for host diagnostics.
 	//
 	// In addition, LError values store a copy of the function call stack at
 	// the time of their creation in the LVal.Native field.
@@ -694,15 +694,30 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
+		hasZero := false
 		for _, n := range dims.Cells {
 			if n.Type != LInt {
 				return Errorf("array dimension is not an integer: %v", n.Type)
 			}
+			if n.Int < 0 {
+				return Errorf("array dimension is negative: %d", n.Int)
+			}
+			hasZero = hasZero || n.Int == 0
 		}
-		for _, n := range dims.Cells {
-			totalSize *= n.Int
-			if totalSize < 0 {
-				return Errorf("integer overflow")
+		if hasZero {
+			// A zero dimension needs no backing, even if an earlier
+			// prefix of the dimension product would overflow.
+			totalSize = 0
+		} else {
+			// Bound the pointer backing's byte count, not just its element
+			// count. A wrapped positive product is no safer than a negative
+			// one: it can construct an array whose valid indices panic.
+			maxCells := int(^uint(0)>>1) / (strconv.IntSize / 8)
+			for _, n := range dims.Cells {
+				if n.Int > maxCells/totalSize {
+					return Errorf("array size exceeds maximum representable backing size")
+				}
+				totalSize *= n.Int
 			}
 		}
 	}
@@ -918,27 +933,38 @@ func SpecialOp(fid string, formals *LVal, fn LBuiltin) *LVal {
 // Cells and their condition type in Str.  The error condition type must be a
 // valid lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func Error(err error) *LVal {
 	return ErrorCondition("error", err)
 }
 
 // ErrorCondition returns an LError representing err and having the given
-// condition type.  Errors store their message/data in Cells and their
-// condition type in Str.  The condition type must be a valid lisp symbol.
+// condition type. Go errors become string data while their original value
+// remains recoverable through GoError and errors.Unwrap. If err is or wraps
+// an *ErrorVal, its original condition, data, stack and identity are preserved
+// instead of applying condition. The condition type must be a valid Lisp symbol.
 //
-// Errors generated during expression evaluation typically have a non-nil Stack
-// field.  The Env.Error() method is typically the preferred method for
-// creating error LVal objects because it initializes Stack with an appropriate
-// value.
+// Errors generated during expression evaluation typically have a call stack.
+// The LEnv.Error method captures that stack and is preferred during evaluation.
 func ErrorCondition(condition string, err error) *LVal {
+	var existing *ErrorVal
+	if errors.As(err, &existing) && existing != nil {
+		return (*LVal)(existing)
+	}
+	message := "<nil>"
+	if err != nil {
+		message = err.Error()
+	}
 	return &LVal{
-		Type:  LError,
-		Str:   condition,
-		Cells: []*LVal{Native(err)}, //elpsvet:allow-native the error-data cell holding the caller's Go error: publication classifies a native by its DYNAMIC type and admits only scalars or marked struct values, and every env-built error additionally carries the banned call stack, so this cell cannot be published
+		Type: LError,
+		Str:  condition,
+		Cells: []*LVal{{
+			Type: LString,
+			Str:  message,
+			// Keep host identity without exposing a native value to Lisp.
+			Native: err, //elpsvet:allow-native original Go error retained for diagnostics; template admission still checks this payload's dynamic type even on a string header
+		}},
 	}
 }
 
@@ -1341,7 +1367,7 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 			dims, len(index), dims.Len())
 	}
 	if len(index) == 0 {
-		return v.Cells[1]
+		return v.Cells[1].Cells[0]
 	}
 	for i, j := range index {
 		n := dims.Cells[i]
@@ -1352,7 +1378,7 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 			return Errorf("index is negative: %v", j)
 		}
 		if j.Int >= n.Int {
-			return Errorf("index %d out of bounds for array dimenion %d of %v", j.Int, i, dims)
+			return Errorf("index %d out of bounds for array dimension %d of %v", j.Int, i, dims)
 		}
 	}
 	i := 0
@@ -1428,19 +1454,6 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
-// mayNest reports whether a walk over v can reach another value through it.
-//
-// Cells is where every nested value lives except a sorted-map's, which lives
-// in a MapData behind Native.  Anything else -- an int, a string, a symbol, a
-// byte slice, a native Go value, the empty list -- is a leaf: a walk that
-// reaches it stops there, so it never needs a place on a cycle guard's path.
-//
-// This is what keeps the guard off the common path.  Rendering and comparing
-// leaves is most of what those walks do, and this check is a length test.
-func (v *LVal) mayNest() bool {
-	return len(v.Cells) > 0 || v.Type == LSortMap
-}
-
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
@@ -1459,26 +1472,27 @@ func (v *LVal) IsNumeric() bool {
 // rather than a guess: false is only ever returned for a difference actually
 // found at a finite depth, so no equality is claimed that a longer walk could
 // refute.  See lisp/cycle.go and issue #390.
-func (v *LVal) Equal(other *LVal) *LVal {
-	var st pairState
-	eq := v.equal(other, pairGuard{state: &st})
-	if !st.cyclic {
-		return eq
+// Comparison descending beyond MaxValueDepth returns an ordinary LError.
+func (v *LVal) Equal(other *LVal) *LVal { return v.EqualWithRuntime(other, nil) }
+
+// EqualWithRuntime is Equal with the runtime's configurable value depth limit.
+// Deep comparisons use an explicit stack, so limits above MaxValueDepth are safe.
+func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
+	if result := v.equalShallow(other, 0); result != nil {
+		return result
 	}
-	// Both operands reach a pair that is already under comparison.  The walk
-	// above stopped as soon as it knew that, because unrolling a cycle to
-	// cycleGuardDepth levels is exponential in the width of the cycle; the
-	// rerun compares each pair once.
-	return v.equal(other, strictPairGuard())
+	result, repeated := v.equalIter(other, rt.ValueDepthLimit(), false)
+	if repeated {
+		result, _ = v.equalIter(other, rt.ValueDepthLimit(), true)
+	}
+	return result
 }
 
-// equal is Equal, with g bounding the walk.  Every nested comparison must pass
-// g down rather than calling Equal, or the bound is lost.
-//
-// The guard sits inside the cases that recurse rather than at the top of the
-// function, so that comparing two ints or two strings runs exactly the code it
-// ran before the guard existed.
-func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
+// equalShallow compares ordinary values without traversal scratch or cycle
+// state. Like the JSON encoder's shallow pass, recursion stops at a fixed
+// small depth, below every supported runtime limit. A nil result abandons
+// the entire pass immediately and restarts in the iterative walker.
+func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 	if v.Type != other.Type {
 		if v.IsNumeric() && other.IsNumeric() {
 			return v.equalNum(other)
@@ -1491,31 +1505,16 @@ func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 	switch v.Type {
 	case LString, LSymbol:
 		return Bool(v.Str == other.Str)
-	case LSExpr:
-		if v.Len() != other.Len() {
+	case LSExpr, LArray:
+		if len(v.Cells) != len(other.Cells) {
 			return Bool(false)
 		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
+		if depth >= cycleGuardDepth {
+			return nil
 		}
-		for i := range v.Cells {
-			if !True(v.Cells[i].equal(other.Cells[i], g)) {
-				return Bool(false)
-			}
-		}
-		return Bool(true)
-	case LArray:
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
-		}
-		// NOTE:  This is a pretty cheeky for loop.  The first comparison it
-		// does will compare array dimensions, which will ensure that we don't
-		// hit an index out of bounds while comparing later indices.
-		for i := range v.Cells {
-			if Not(v.Cells[i].equal(other.Cells[i], g)) {
-				return Bool(false)
+		for i, child := range v.Cells {
+			if result := child.equalShallow(other.Cells[i], depth+1); result != Bool(true) {
+				return result
 			}
 		}
 		return Bool(true)
@@ -1523,67 +1522,155 @@ func (v *LVal) equal(other *LVal, g pairGuard) *LVal {
 		if v.Str != other.Str {
 			return Bool(false)
 		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
+		if depth >= cycleGuardDepth {
+			return nil
 		}
-		return v.Cells[0].equal(other.Cells[0], g)
+		return v.Cells[0].equalShallow(other.Cells[0], depth+1)
 	case LSortMap:
 		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
 		}
-		g, stop := g.descend(v, other)
-		if stop {
-			return Bool(true)
+		if depth >= cycleGuardDepth {
+			return nil
 		}
-		vEntries := sortedMapEntries(v.Map())
-		oEntries := sortedMapEntries(other.Map())
-		for i := range vEntries.Cells {
-			vPair := vEntries.Cells[i]
-			oPair := oEntries.Cells[i]
-			if !True(equalMapKey(vPair.Cells[0], oPair.Cells[0], g)) {
-				return Bool(false)
+		ae, be := sortedMapEntries(v.Map()), sortedMapEntries(other.Map())
+		if ae.Type == LError {
+			return ae
+		}
+		if be.Type == LError {
+			return be
+		}
+		if len(ae.Cells) != len(be.Cells) {
+			return Bool(false)
+		}
+		for i, pair := range ae.Cells {
+			a, b := pair.Cells[0], be.Cells[i].Cells[0]
+			if isStringLike(a) && isStringLike(b) {
+				if a.Str != b.Str {
+					return Bool(false)
+				}
+			} else if result := a.equalShallow(b, depth+1); result != Bool(true) {
+				return result
 			}
-			if !True(vPair.Cells[1].equal(oPair.Cells[1], g)) {
-				return Bool(false)
+			if result := pair.Cells[1].equalShallow(be.Cells[i].Cells[1], depth+1); result != Bool(true) {
+				return result
 			}
 		}
 		return Bool(true)
-	case LInvalid, LInt, LFloat, LError, LQSymbol, LFun, LQuote, LBytes,
-		LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
-		// No structural equality is defined for these types, so equal? reports
-		// false even when both operands are the same object.  Enumerated
-		// rather than left to fall through so that a new LType has to make
-		// this choice explicitly.
-		//
-		// LInt and LFloat are unreachable: the IsNumeric shortcut above
-		// diverts every numeric comparison to equalNum.  LInvalid, the LMark*
-		// sentinels and LTypeMax are not values an application can hold.
+	default:
 		return Bool(false)
 	}
-	return Bool(false)
 }
 
-// equalMapKey compares two sorted-map keys under the map's own notion of key
-// identity.
-//
-// For the string-like keys the stock sortedmap accepts, identity is the key
-// *name*: get, key?, assoc and dissoc all take either 'a or "a" for the same
-// entry (docs/lang.md), so equality must too.  The string/symbol distinction
-// is cosmetic — it reaches keys and printing, and nothing else.
-//
-// Every other key type falls back to Equal.  Map is an exported interface and
-// SortedMapFromData an exported extension point, so an embedder may back a
-// sorted-map with a store keyed by integers, tuples or anything else.  Those
-// keys carry no name at all: comparing Str would make every one of them equal
-// to every other, silently reporting structurally different maps as equal.
-// The name rule was reasoned about for string-like keys only, and it is
-// deliberately not extended past them.
-func equalMapKey(a, b *LVal, g pairGuard) *LVal {
-	if isStringLike(a) && isStringLike(b) {
-		return Bool(a.Str == b.Str)
+// A repeated pair restarts the entire comparison with memoization from the
+// root. Merely skipping it would still unroll branching cycles exponentially
+// in the shallow frames that precede lazy cycle tracking.
+func (v *LVal) equalIter(other *LVal, limit int, strict bool) (*LVal, bool) {
+	type frame struct {
+		ac, bc  []*LVal
+		index   int
+		entries bool
 	}
-	return a.equal(b, g)
+	// Reuse one by-value cursor per ancestor. Leaves never create or clear
+	// a frame, and wide containers do not increase traversal scratch space.
+	stack := make([]frame, 0, 16)
+	var seen map[valuePair]bool
+	a, b := v, other
+	key := false
+walk:
+	for {
+		if key && isStringLike(a) && isStringLike(b) {
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+		} else if a.Type != b.Type {
+			if !a.IsNumeric() || !b.IsNumeric() || !True(a.equalNum(b)) {
+				return Bool(false), false
+			}
+		} else if a.IsNumeric() {
+			if !True(a.equalNum(b)) {
+				return Bool(false), false
+			}
+		} else if a.Type == LString || a.Type == LSymbol {
+			if a.Str != b.Str {
+				return Bool(false), false
+			}
+		} else {
+			var f frame
+			switch a.Type {
+			case LSExpr, LArray:
+				if len(a.Cells) != len(b.Cells) {
+					return Bool(false), false
+				}
+				f.ac, f.bc = a.Cells, b.Cells
+			case LTaggedVal:
+				if a.Str != b.Str {
+					return Bool(false), false
+				}
+				f.ac, f.bc = a.Cells[:1], b.Cells[:1]
+			case LSortMap:
+				if a.Map().Len() != b.Map().Len() {
+					return Bool(false), false
+				}
+			default:
+				return Bool(false), false
+			}
+			if len(stack) >= limit {
+				return Error(ValueDepthError(limit)), false
+			}
+			repeated := false
+			if strict || len(stack) >= cycleGuardDepth {
+				if seen == nil {
+					seen = make(map[valuePair]bool)
+				}
+				pair := valuePair{a, b}
+				repeated = seen[pair]
+				if repeated && !strict {
+					return nil, true
+				}
+				seen[pair] = true
+			}
+			if !repeated {
+				if a.Type == LSortMap {
+					ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
+					if ae.Type == LError {
+						return ae, false
+					}
+					if be.Type == LError {
+						return be, false
+					}
+					if len(ae.Cells) != len(be.Cells) {
+						return Bool(false), false
+					}
+					f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
+				}
+				if len(f.ac) > 0 {
+					stack = append(stack, f)
+				}
+			}
+		}
+		for len(stack) > 0 {
+			f := &stack[len(stack)-1]
+			n := len(f.ac)
+			if f.entries {
+				n *= 2
+			}
+			if f.index < n {
+				key = f.entries && f.index%2 == 0
+				if f.entries {
+					a = f.ac[f.index/2].Cells[f.index%2]
+					b = f.bc[f.index/2].Cells[f.index%2]
+				} else {
+					a, b = f.ac[f.index], f.bc[f.index]
+				}
+				f.index++
+				continue walk
+			}
+			*f = frame{}
+			stack = stack[:len(stack)-1]
+		}
+		return Bool(true), false
+	}
 }
 
 // isStringLike reports whether v is one of the name-carrying key types the
@@ -1607,7 +1694,9 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 		return Bool(v.Int == other.Int)
 	}
 
-	// This may not be correct
+	// Mixed comparisons intentionally convert ints to float, including the
+	// loss of precision above 2^53 documented in
+	// docs/lang.md#json-numbers-and-integer-precision.
 	return Bool(toFloat(v) == toFloat(other))
 }
 
@@ -1641,6 +1730,7 @@ func (v *LVal) equalNum(other *LVal) *LVal {
 // like a list's cells.  What stays shared: a closure's environment, an
 // LError's call stack, and a native payload that is not a NativeCloner.  See
 // copier in lisp/copier.go.
+// Walks exceeding MaxValueDepth return an ordinary LError instead of a partial copy.
 func (v *LVal) Copy() *LVal {
 	if v == nil {
 		return nil
@@ -1678,7 +1768,11 @@ func (v *LVal) copyMapData() (*MapData, error) {
 		return &MapData{nm}, nil
 	}
 	m := &MapData{newmap()}
-	for _, pair := range sortedMapEntries(m0).Cells {
+	entries := sortedMapEntries(m0)
+	if entries.Type == LError {
+		return nil, fmt.Errorf("failed to copy map: %v", entries)
+	}
+	for _, pair := range entries.Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
 		if lerr.Type == LError {
 			return nil, fmt.Errorf("failed to copy map: %v", lerr)
@@ -1690,28 +1784,20 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // String renders v as lisp source.
 //
 // A value that contains itself renders the marker "#<cycle>" at the point the
-// walk reaches it a second time, so the result is finite and the walk cannot
-// overflow the goroutine stack and kill the process.  Rendering is otherwise
-// unchanged: an acyclic value renders in full, at any nesting depth, exactly
-// as it always did.  See lisp/cycle.go and issue #390.
+// walk reaches it a second time. Independently, rendering stops after 1024
+// nested values and replaces deeper subtrees with "#<depth-limit>", keeping
+// even acyclic graphs from overflowing the goroutine stack. Scalars at the
+// boundary still render in full. Output and work are bounded by DefaultMaxAlloc;
+// exhausted output is replaced by #<truncated>. Use LEnv.Render for runtime limits. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
-	var st cycleState
-	s := v.stringGuard(cycleGuard{state: &st})
-	if !st.cyclic {
-		return s
+	if v.Type == LError && !v.quoted {
+		return (*ErrorVal)(v).Error()
 	}
-	// v contains itself.  The walk above stopped as soon as it knew that,
-	// because unrolling a cycle to cycleGuardDepth levels is exponential in
-	// the width of the cycle; the rerun visits each node once.
-	return v.stringGuard(strictCycleGuard())
-}
-
-func (v *LVal) stringGuard(g cycleGuard) string {
-	const QUOTE = `'`
-	if v.Type == LQuote {
-		return QUOTE + v.Cells[0].str(true, g)
+	s, ok := v.boundedString(DefaultMaxAlloc)
+	if !ok {
+		return truncatedRender(s, DefaultMaxAlloc)
 	}
-	return v.str(false, g)
+	return s
 }
 
 // JoinDocStrings joins multiple doc string parts into a single string.
@@ -1765,178 +1851,6 @@ func (v *LVal) Docstring() string {
 		}
 	}
 	return ""
-}
-
-// str renders v, with g bounding the walk so that a value containing itself
-// renders cycleMark instead of recursing until the process dies.  Every
-// nested render must pass g down rather than starting a fresh walk with
-// String, or the bound is lost.  See lisp/cycle.go.
-//
-// The types that render from their own fields and reach nothing are handled
-// here, ahead of the guard and running exactly the code they ran before it
-// existed.  Rendering leaves is most of what this walk does, and none of them
-// can be part of a cycle.
-func (v *LVal) str(onTheRecord bool, g cycleGuard) string {
-	const QUOTE = `'`
-	// All types which may evaluate to things other than themselves must check
-	// v.quoted.
-	quote := ""
-	if onTheRecord {
-		quote = QUOTE
-	}
-	switch v.Type {
-	case LInt:
-		return quote + strconv.Itoa(v.Int)
-	case LFloat:
-		// NOTE:  The 'g' format can render a floating point number such that
-		// it appears as an integer (2.0 renders as 2) which can be confusing
-		// for those interested in the type of each numeric value.
-		return quote + strconv.FormatFloat(v.Float, 'g', -1, 64)
-	case LString:
-		return quote + fmt.Sprintf("%q", v.Str)
-	case LBytes:
-		b := v.Bytes()
-		if len(b) == 0 {
-			return quote + "#<bytes>"
-		}
-		return quote + "#<bytes " + strings.Trim(fmt.Sprint(b), "[]") + ">" //nolint:staticcheck // fmt.Sprint gives byte slice repr, not string conversion
-	case LSymbol:
-		if v.quoted {
-			quote = QUOTE
-		}
-		return quote + v.Str
-	case LQSymbol:
-		// A qsymbol carries a level of quoting in its type rather than in
-		// v.quoted, so it always renders with at least one quote -- the
-		// text a quoted symbol renders, and the text the debugger's
-		// inspector has always shown for one.  A further level (v.quoted,
-		// which Quote sets, or an enclosing LQuote, which passes
-		// onTheRecord) adds a second quote exactly as it does for LSymbol.
-		//
-		// Without this arm the value fell through to strNested's default,
-		// which printed %#v of the LVal and so leaked the address of
-		// v.source into the rendering: the same value rendered
-		// differently in two processes, and a copy rendered differently
-		// from its source in one.  See issue #606.
-		if v.quoted {
-			quote = QUOTE
-		}
-		return quote + QUOTE + v.Str
-	case LNative:
-		return fmt.Sprintf("#<native value: %T>", v.Native)
-	default:
-		// Every remaining type renders values reachable from v, and is
-		// handled by strNested below.  Enumerated as a default rather than
-		// left implicit so that a new LType has to decide which half of this
-		// function it belongs in.
-	}
-	// Everything left renders values reachable from v, so it is entered on the
-	// guard's path.
-	if g.abandoned() {
-		return ""
-	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return cycleMark
-	}
-	s := v.strNested(onTheRecord, g)
-	if g.tracking() {
-		g.ascend(v)
-	}
-	return s
-}
-
-// strNested renders the types that reach other values.  It is only ever
-// reached through str, which has already put v on g's path.
-func (v *LVal) strNested(onTheRecord bool, g cycleGuard) string {
-	const QUOTE = `'`
-	quote := ""
-	if onTheRecord {
-		quote = QUOTE
-	}
-	switch v.Type {
-	case LError:
-		if v.quoted {
-			quote = QUOTE
-			return quote + fmt.Sprintf("(error '%s %s)", v.Str, v.Cells[0].str(false, g))
-		}
-		return (*ErrorVal)(v).errorString(g)
-	case LSExpr:
-		if v.quoted {
-			quote = QUOTE
-		}
-		return exprString(v, 0, quote+"(", ")", g)
-	case LFun:
-		if v.quoted {
-			quote = QUOTE
-		}
-		if v.Builtin() != nil {
-			return quote + "#<builtin>"
-		}
-		// The formals render directly.  There is no second list to
-		// concatenate them with: what used to follow them was the
-		// function's own environment scope, which was always empty (see
-		// the note on funData.env), so this prints exactly what the
-		// concatenation printed.
-		return fmt.Sprintf("%s(lambda %s%s)", quote, exprString(v.Cells[0], 0, "(", ")", g), bodyStr(v.Cells[1:], g))
-	case LQuote:
-		// TODO: make more efficient
-		return QUOTE + v.Cells[0].str(true, g)
-	case LSortMap:
-		return quote + sortedMapString(v, g)
-	case LArray:
-		if v.Cells[0].Len() == 1 {
-			if v.Len() > 0 {
-				return exprString(v.Cells[1], 0, quote+"(vector ", ")", g)
-			} else {
-				return quote + "(vector)"
-			}
-		}
-		return fmt.Sprintf("#<array dims=%s>", v.Cells[0].str(false, g))
-	case LTaggedVal:
-		return fmt.Sprintf("#{%s %s}", v.Str, v.Cells[0].str(false, g))
-	case LMarkTerminal:
-		return quote + fmt.Sprintf("#<terminal-expression %s>", v.Cells[0].str(false, g))
-	case LMarkTailRec:
-		return quote + fmt.Sprintf("#<tail-recursion frames=%d (%s %s)>", v.Cells[0].Int, v.Cells[1].str(false, g), v.Cells[2].str(false, g))
-	case LMarkMacExpand:
-		return quote + fmt.Sprintf("#<macro-expansion %s)>", v.Cells[0].str(false, g))
-	default:
-		// Nothing reaches this arm today: every LType is rendered either
-		// here or by str above, and TestStringNoAddressForEveryLType
-		// fails if a newly added type stops being covered.  It renders
-		// the type name ALONE -- never %#v of the LVal, which printed
-		// the LVal's pointer fields and made the rendering depend on the
-		// allocator (issue #606).  ELPS output has to be byte-identical
-		// across processes; a fallback that can embed a heap address is
-		// not an acceptable one, however unreachable it looks.
-		return quote + fmt.Sprintf("#<%s>", v.Type)
-	}
-}
-
-func bodyStr(exprs []*LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	for i := range exprs {
-		buf.WriteString(" ")
-		buf.WriteString(exprs[i].str(false, g))
-	}
-	return buf.String()
-}
-
-func exprString(v *LVal, offset int, left string, right string, g cycleGuard) string {
-	if len(v.Cells[offset:]) == 0 {
-		return left + right
-	}
-	var buf bytes.Buffer
-	buf.WriteString(left)
-	for i, c := range v.Cells[offset:] {
-		if i > 0 {
-			buf.WriteString(" ")
-		}
-		buf.WriteString(c.str(false, g))
-	}
-	buf.WriteString(right)
-	return buf.String()
 }
 
 func isVec(v *LVal) bool {

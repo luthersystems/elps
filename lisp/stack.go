@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"io"
 	"log"
@@ -14,16 +15,19 @@ import (
 
 // CallStack is a function call stack.
 //
-// For errors produced by env.eval's recover() of a Go panic, GoStack carries
+// For errors produced by recovery of a Go panic, GoStack carries
 // the runtime.Stack output captured at the panic site so callers (via
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.
 //
-// Field order is layout-sensitive: the two slice headers lead so the GC scan
-// extent stops at 32 bytes instead of 48. Keep scalars trailing.
+// Keep pointer-bearing diagnostic context and slice headers before scalars.
 type CallStack struct {
-	Frames  []CallFrame
-	GoStack []byte
+	// Captured only for error reporting; ordinary live stacks leave these zero.
+	renderContext context.Context
+	Frames        []CallFrame
+	GoStack       []byte
+
+	renderLimit int
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
 	// every frame elided by tail-call optimization.  Its unit is *elided
@@ -144,6 +148,8 @@ func (s *CallStack) Copy() *CallStack {
 	frames := make([]CallFrame, len(s.Frames))
 	copy(frames, s.Frames)
 	return &CallStack{
+		renderContext:     s.renderContext,
+		renderLimit:       s.renderLimit,
 		MaxHeightLogical:  s.MaxHeightLogical,
 		MaxHeightPhysical: s.MaxHeightPhysical,
 		MaxTailIterations: s.MaxTailIterations,
@@ -306,22 +312,20 @@ func (s *CallStack) Pop() CallFrame {
 	return f
 }
 
-// DebugPrint prints s
+// DebugPrint prints s under its captured output limit and context, or the
+// default output limit for a live stack. Exhaustion emits #<truncated>.
 func (s *CallStack) DebugPrint(w io.Writer) (int, error) {
-	n, err := fmt.Fprintf(w, "Stack Trace [%d frames -- entrypoint last]:\n", len(s.Frames))
-	if err != nil {
-		return n, err
+	limit := s.renderLimit
+	if limit <= 0 {
+		limit = DefaultMaxAlloc
 	}
-	indent := "  "
-	for i := len(s.Frames) - 1; i >= 0; i-- {
-		fstr := s.Frames[i].String()
-		_n, err := fmt.Fprintf(w, "%sheight %d: %s\n", indent, i, fstr)
-		n += _n
-		if err != nil {
-			return n, err
-		}
-	}
-	return n, nil
+	return s.debugPrintContext(s.renderContext, w, limit)
+}
+
+func (s *CallStack) debugPrintContext(ctx context.Context, w io.Writer, limit int) (int, error) {
+	r := valueRenderer{limit: limit, budget: newRenderBudget(limit, ctx)}
+	r.stack(s)
+	return writeDiagnostic(ctx, w, r.diagnosticText(), limit)
 }
 
 type LogicalStackOverflowError struct {

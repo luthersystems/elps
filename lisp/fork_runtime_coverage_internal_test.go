@@ -32,6 +32,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 
 	// Copied by value: the template's configured limits become the fork's.
 	"MaxAlloc":               "copied",
+	"MaxValueDepth":          "copied",
 	"MaxMacroExpansionDepth": "copied",
 	"MaxEvalNesting":         "copied",
 	"MaxSleep":               "copied",

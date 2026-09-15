@@ -67,6 +67,15 @@ func newTestEnv(t *testing.T) *lisp.LEnv {
 	return env
 }
 
+func TestPackageLoaderLispSealLeavesEmbedderPackageMutable(t *testing.T) {
+	env := newTestEnv(t)
+	p := &testPackage{name: "embedder", builtins: []lisp.LBuiltinDef{testBuiltin("car")}}
+	require.NoError(t, lisp.GoError(elpsutil.Load(env, elpsutil.PackageLoader(p))))
+	assert.Equal(t, "7", env.LoadString("embedder.lisp", `(set 'embedder:car 7)`).String())
+	assert.Equal(t, "8", env.LoadString("embedder.lisp", `(in-package 'embedder) (lisp:use-package 'lisp) (set 'car 8) (set! 'car 9) (defun car () 8) (car)`).String())
+	assert.Contains(t, env.LoadString("sealed.lisp", `(set 'lisp:if 1)`).String(), "cannot rebind lisp package binding: if")
+}
+
 // assertBoundIn asserts that sym is bound and exported in package pkg, and
 // that it is not present in any other package.
 func assertBoundIn(t *testing.T, env *lisp.LEnv, pkg string, sym string) {

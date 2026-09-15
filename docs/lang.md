@@ -2,8 +2,37 @@
 
 ## Basics
 
-Lisp code interpreted by elps is given as a sequences of expressions encoded as
+Lisp code interpreted by elps is given as a sequence of expressions encoded as
 utf-8 text.
+
+A single UTF-8 byte-order mark (BOM, bytes `EF BB BF`) is accepted only at
+offset zero, including before a shebang. `run`, `lint`, `fmt`, `minify`, and
+`analyze` accept it; formatting and minification remove it. A BOM anywhere
+else in the source produces `unexpected byte-order mark`. To include U+FEFF
+as string data, write the escape `\uFEFF` instead of the literal codepoint.
+
+### Comments
+
+A semicolon `;` outside a string starts a comment that continues to the end of
+the line (or the end of the file). A `#!` shebang at the beginning of a file
+also consumes the rest of its line. Parentheses and other source text within
+either kind of comment are never evaluated:
+
+```lisp
+#!/usr/bin/env elps
+; (debug-print "not evaluated" 1)
+(debug-print "normal" 2) ; prints "normal" 2
+```
+
+Comments have no fixed line-length limit; even a comment longer than 128 KiB
+continues to the end of its line. The formatter preserves the entire comment.
+Source must still be valid utf-8, including comments.
+
+Other tokens must fit in the reader's 128 KiB scanner window. A token that
+fills the window before its end can be determined produces a `scan-error`
+containing `token exceeds maximum allowable size (131072 bytes)`, rather than being split
+into separate tokens. `elps lint` reports this parse error as the migration
+diagnostic for oversized tokens; split large values into smaller literals.
 
 ## Expressions
 
@@ -26,6 +55,11 @@ number.
 
 Symbols are currently case sensitive although this may change.
 
+A symbol must leave room in the 131072-byte scanner window to determine its
+end: 131071 ASCII characters followed by whitespace are accepted, while
+131072 or more produce the size error at the symbol's start. Formatting never
+splits an oversized identifier into separate symbols.
+
 A symbol may also be written in its package-qualified form, `pkg:name` (see
 [Packages](#packages)).  Both halves are identifiers and the rule above applies
 to each of them independently, so `a:1` is not a symbol: the reader rejects it
@@ -33,6 +67,10 @@ with an `invalid-symbol` condition rather than producing a symbol named `1` in
 package `a`, a name no other part of the language can write.  Note that `+1`
 and `.1` *are* identifiers — `+` and `.` are ordinary symbol characters — so
 `a:+1` and `a:.1` are both fine.
+
+Dotted-pair notation is not supported. A standalone `.` is an ordinary
+symbol, so `'(1 . 2)` is a three-element list, and
+`(length '(a . b . c))` evaluates to `5`.
 
 ### Keywords
 
@@ -54,17 +92,132 @@ so `:1` is only useful as data.
 Numbers can be either int or floating point and will be converted between the
 two forms as necessary.
 
+Decimal examples include `42`, `-1`, `1.5`, and `1e5` (also `1E+5` or
+`1.5e-2`). A leading dot is a symbol character: `.5` and `.3` are symbols,
+not floating-point literals; write `0.5` for the number.
+
+Integer literals may use `#x` (hexadecimal) or `#o` (octal), with uppercase
+`#X` and `#O` also accepted: `#x10` is 16 and `#o17` is 15. Digits must
+immediately follow the prefix. Decimal, hexadecimal, and octal integer
+literals that overflow the platform's `int` produce
+`integer-overflow-error`; they do not wrap silently like integer arithmetic.
+There is no `#b` binary prefix. An unsupported dispatch prefix reports the
+supported set: `#!`, `#'`, `#^`, `#o`, `#O`, `#x`, and `#X`.
+
+A number immediately followed by a symbol or number constituent without a
+delimiter is a `scan-error` naming the whole malformed literal. For example,
+`0x10`, `1_000`, `1.2.3`, and `1e5x` are rejected even inside quoted lists.
+Use `#x10` for hexadecimal, `1000` without digit separators, or whitespace
+between separate values. Valid look-alikes such as `x10` and `(1 .3)` retain
+their meaning. `elps lint` reports these scan errors as migration diagnostics;
+it checks source text, including quoted data, before evaluation.
+
 A float carries only 53 bits of integer precision, which matters when numbers
 arrive from outside the program: `json:load-string` and its siblings decode
 every JSON number as a float by default and silently round integers above
 2^53.  See [JSON numbers and integer
 precision](#json-numbers-and-integer-precision).
 
+`+`, `-`, and `*` use integer arithmetic when all operands are ints. If any
+operand is a float, they convert all operands to floats before doing the
+arithmetic. In particular, an integer prefix of a multiplication must not
+overflow before a later float is considered:
+
+```lisp
+(* 4611686018427387904 4 0.5)  ; 9.223372036854776e+18 (64-bit platform)
+```
+
+These all-integer operations use Go's native-width `int` and wrap on overflow;
+they do not signal an overflow condition. Introducing a float prevents integer
+wraparound, but floating-point rounding and IEEE infinities/NaN still apply.
+
+`pow` uses integer arithmetic when both operands are ints and the exponent is
+non-negative, but raises an `error` condition containing `integer overflow`
+if the result does not fit the platform's `int`, just as `math:abs` does for
+an overflowing absolute value. For example, `(pow 2 64)` errors on a 64-bit
+platform, while `(pow 2 62)` and `(pow -2 63)` fit. A zero exponent returns
+1, including `(pow 0 0)`. Negative exponents or any float operand use
+floating-point arithmetic.
+
+`max` and `min` propagate NaN regardless of its argument position. If all
+arguments are ints, the result remains an int. Comparisons such as `<` over
+NaN do not form a strict weak ordering. Passing such a comparator to
+`stable-sort` produces an unspecified order and no error; stability does
+not make an invalid comparator valid.
+
+Division by zero uses IEEE floating-point results rather than raising an
+error: `(/ 1 0)` returns `+Inf`, `(/ -1 0)` returns `-Inf`, and
+`(/ 0.0 0.0)` returns `NaN`. Thus `(/ total count)` can silently produce
+infinity or NaN when `count` is zero. Guard the denominator explicitly:
+
+```lisp
+(if (= count 0)
+  (error 'error "count must be non-zero")
+  (/ total count))
+```
+
+`mod` requires integer operands and raises an error with the message
+`second argument is zero` for `(mod 1 0)`.
+
+The external representation of a float may omit the decimal point: `100.0`
+prints as `100`, `(to-string 1.0)` returns `"1"`, and
+`(json:dump-string 100.0)` returns `"100"`. Printed text therefore does not
+preserve the distinction between ints and floats. Use `to-float` to recover
+the float type explicitly, for example `(to-float "100")` or `(to-float 100)`;
+both produce a float, which still prints as `100`.
+
+`to-int` truncates a finite float toward zero, then checks whether that integer
+fits the platform's `int`. NaN, either infinity, and out-of-range results are
+ordinary errors. They never saturate to a boundary value or silently become
+zero. On a 64-bit platform, the valid truncated range is -2^63 inclusive to
+2^63 exclusive. Checking after truncation matters on a 32-bit platform, where
+`2147483647.9` truncates to the valid maximum integer `2147483647`.
+
+```lisp
+(to-int -42.9)  ; -42
+(handler-bind ((condition (lambda (&rest _) 'rejected)))
+  (to-int (/ 1 0)))  ; 'rejected
+```
+
 ### Strings
 
 Strings are a sequence of utf-8 text delimited by double quotes `"`.  Strings
 cannot contain line breaks.  A codepoint in a string may be escaped with a
 preceding backslash `\`.
+
+Raw strings use triple double quotes (`"""text"""`), may span lines, and do
+not interpret backslash escapes. Both ordinary and raw string tokens must
+fit the reader's fixed 131072-byte (128 KiB) scanner window, including their
+opening and closing quotes and all bytes used to spell escapes. A string
+that cannot fit produces `scan-error: token exceeds maximum allowable size
+(131072 bytes)` at its opening quote. The scanner does not accumulate string
+tokens across windows. Split larger data into smaller literals or load it
+from an external file. This is a source-token limit, not a limit on the size
+of string values constructed at runtime.
+
+String `length` and `slice` indices count bytes. Slicing through a multi-byte
+rune can produce invalid UTF-8: `(slice 'string "José" 0 4)` contains the
+bytes `4a 6f 73 c3` (printed as `"Jos\xc3"`). Unicode operations such as
+`string:uppercase` and JSON encoding with `json:dump-string` replace the incomplete
+rune with U+FFFD. For rune-safe slicing, use the empty-separator form of
+`string:split`, slice the resulting list, and join it again:
+
+```lisp
+(string:split "José" "")                           ; '("J" "o" "s" "é")
+(string:join (slice 'list (string:split "José" "") 0 4) "") ; "José"
+```
+
+`string:split` takes exactly two arguments, the string and separator; it has
+no limit argument. Its runtime allocation limit is described under
+[Allocation Limits](#allocation-limits).
+
+`format-string` replaces `{}` placeholders in order or uses zero-based
+positional indices such as `{0}`. Whitespace around an index is accepted:
+`(format-string "{ 0 }" "hello")` returns `"hello"`. Use `{{` and `}}` for
+literal braces; sequential and positional placeholders cannot be mixed.
+Surplus values are ignored: `(format-string "{}" "one" "two")` returns
+`"one"`. Too few values for the placeholders raise an error, including a
+positional index outside the supplied values.
 
 ## Expression Evaluation
 
@@ -86,6 +239,21 @@ Quoted expressions evaluate to themselves.  Quoted numbers and strings are
 equivalent to their unquoted counterparts.  But a quoted nil value is not
 equivalent to nil.
 
+The reader spelling `'x` and the list spelling `(quote x)` both evaluate to
+the quoted value `x`, but their unevaluated representations are distinct.
+The reader uses a quote value for an additional quote layer, whereas the
+explicit `quote` form is a list:
+
+```lisp
+(type ''a)                  ; 'quote
+(type '(quote a))           ; 'list
+(equal? ''a '(quote a))     ; false
+```
+
+A macro receives unevaluated forms. A macro that inspects `(car form)` to
+recognize `(quote x)` must also handle the reader-quote representation of
+`'x`; it cannot assume both spellings arrive as a list headed by `quote`.
+
 ### Compound Expressions (Function Calls)
 
 An expression containing sub-expressions is typically evaluated by evaluating
@@ -106,6 +274,28 @@ and then the expr1's function in that scope.
 
 A function is a symbolic expression that utilizes some number of unbound
 argument symbols.
+
+Parameter lists contain symbols, including any `&optional`, `&rest`, or
+`&key` markers. Non-symbol parameters are rejected when a function or macro
+is defined. The entire lambda list is validated at creation in `lambda`,
+`defun`, `defmacro`, `labels`, and `flet` (also local macros in `macrolet`).
+Unknown `&` markers, repeated markers, and duplicate parameter names within
+one lambda list are errors. Each marker may appear at most once. `&key`
+must be followed by one or more names and no further markers; `&rest` must
+be followed by exactly one name at the end of the list. `&optional` cannot
+end the list and may precede `&key` or `&rest`. For example,
+`(lambda (x x) x)` and `(lambda (&rest a b) a)` fail immediately, without
+being called.
+
+Duplicate binding names in `let`, `let*`, `labels`, and `flet` remain legal;
+the last binding wins. Lint warns about duplicates within one `let`,
+`labels`, or `flet` binding list. Sequential rebinding in `let*` is idiomatic
+and does not produce this warning. Reusing a parameter name in different
+functions or a variable name in nested scopes is also legal.
+
+A call that cannot bind a parameter fails before entering the
+body: `true`, `false`, and keywords cannot be bound, including omitted
+optional/keyword parameters and empty rest parameters.
 
 ```lisp
 (lambda (x) (- x))
@@ -146,6 +336,18 @@ argument bound to `'(1 2 -2)`.  When funcall calls sum-list, it passes this
 list verbatim.  When sum-list passes this list to `apply`, the list is unpacked
 as if the list contents had been passed to `+` as its arguments.  Other than
 this distinction the two functions, `apply` and `funcall` operate the same way.
+
+`funcall`, `apply`, and `map` also accept a quoted symbol naming a function.
+They resolve that symbol in the global package environment (including
+package-qualified names), rather than looking up a local function binding:
+
+```lisp
+(funcall '+ 1 2)       ; 3
+(apply '+ '(1 2 3))    ; 6
+(map 'list '- '(1 2))  ; '(-1 -2)
+```
+
+Pass the function value itself when using a local binding.
 
 ### Optional function arguments
 
@@ -227,6 +429,19 @@ values for both, one, or neither.
 (point2d :y 1 :x 1) ; evaluates to '(1 1)
 ```
 
+Duplicate keyword arguments at a call site use the **rightmost** value in
+ELPS. This differs from Common Lisp, which uses the leftmost value. For
+example, `(point2d :x 1 :x 2)` evaluates to `'(2 0)`. The
+`duplicate-keyword` lint check warns about repeated literal keyword/value
+pairs; remove the earlier pair to make the intended value clear.
+
+The `lambda-list` and `duplicate-binding` checks diagnose recognizable
+literal definitions and binding lists. These checks exclude quoted data
+and macro templates, and conservatively omit shadowed constructors.
+Dynamic keywords and macro-generated code may escape static checks. A
+keyword/value suffix can also be positional data for its callee, so a
+`duplicate-keyword` warning does not prove that the call uses keyword binding.
+
 Keyword arguments are useful but they can also lead to some confusing errors.
 Keywords are values.  And as values keywords can be passed to functions as
 normal, required arguments.
@@ -244,6 +459,16 @@ and optional arguments.
 function utilizing both optional and keyword arguments may only have values
 bound to their keyword arguments once values have been bound to *all* optional
 arguments.
+
+`(compose f g)` creates an ordinary function with `g`'s required, optional,
+rest or keyword parameters. It calls `g` once with the bound values, then
+passes that result to `f` once. Keyword labels are forwarded, and omitted
+optional or keyword parameters retain their nil defaults. Argument values
+remain data, including symbols and lists.
+
+```lisp
+(funcall (compose identity (lambda (&key x) x)) :x 42) ; evaluates to 42
+```
 
 ### Unbound expressions
 
@@ -291,6 +516,23 @@ a macro form.
 The `gensym` builtin is used to generate a new symbol, which is most often used
 with macros to avoid avoid naming collisions.
 
+### Quasiquote traversal
+
+`quasiquote` searches the entire list template for bare `unquote` and
+`unquote-splicing` forms. Nested `quasiquote`, `quote` and reader-quote
+wrappers do not delay those evaluations. For example, both unquotes below
+run during the outer quasiquote:
+
+```lisp
+(let ((x 7)) (quasiquote (quasiquote (unquote x)))) ; '(quasiquote 7)
+(let ((x 7)) (quasiquote (quote (unquote x))))      ; '(quote 7)
+```
+
+The markers are recognized by their bare spelling: `lisp:unquote` inside a
+template is ordinary data. `unquote` inserts its value while preserving
+existing quote depth. `unquote-splicing` requires a list and a list-element
+position; it cannot be the whole template or a quoted splicing form.
+
 ## Parens () and braces []
 
 Matching braces produce a quoted list.  As with parens, an open brace `[`
@@ -311,10 +553,10 @@ Examples of special operators are `if`, `lambda`, and `quasiquote`.  There is
 no facility within the language for defining special operators.
 
 ### cond
-`cond` takes an arbitrary number of arguments called clauses. A clause consists
-of a list of exactly two expressions. The first expression in a clause is a
-condition, and there can be any number of expressions following the condition
-in a cond branch which get wrapped by an implicit progn.
+`cond` takes an arbitrary number of arguments called clauses. A clause is a
+nonempty list whose first expression is a condition. Any expressions following
+the condition form a body wrapped by an implicit `progn`. A matching clause
+with no body returns `()`, not the value of its condition.
 
 For example,
 
@@ -332,12 +574,31 @@ if ...; else return resultN.
 If none of the conditions are true (and there is no :else), then `()` is
 returned.
 
+Both bare `else` and keyword `:else` are supported unconditional defaults.
+Either must be the final clause; reaching a non-final default raises
+`invalid syntax: else`. This includes the formerly accepted non-final
+`:else`: move it to the end. The `cond-structure` linter reports misplaced
+defaults in source; dynamically constructed forms still need runtime checks.
+
 ### let vs let\*
 
-`let` and `let*` are used to create bindings for local variables within a
-new scope.  `let` bindings happens left-to-right/top-to-bottom and they can
-refer to previously bound symbols.  The result of the evaluation of the last
-expression within the `let` is returned.
+`let` and `let*` create local bindings. Both evaluate their initializer
+expressions from left to right and return the value of the last body expression.
+
+`let` evaluates every initializer in the enclosing scope, then establishes
+all bindings for the body. An initializer cannot see the new bindings, even
+through a closure that runs later.
+
+`let*` behaves like nested single-binding `let` forms. Each initializer can
+see earlier bindings. A closure retains the scopes available when it was
+created: a later binding with the same name shadows an earlier binding
+without changing what that closure sees. Neither form makes a function
+initializer recursive; use `labels` for local recursive functions.
+The default `elps lint` check `let-recursion` warns about recognizable
+self-references in initializer-created closures. Use `--workspace` to resolve
+outer functions from other files and `--fail-on=warning` to enforce migration
+in CI. Dynamic code and opaque macros limit static detection; see
+[the check's coverage](lint-checks.md#let-recursion).
 
 ```lisp
 (let ((variable1 result1)
@@ -362,6 +623,39 @@ expression within the `let` is returned.
 (let* ([x (+ x 1)]
        [x (+ x 1)])
   x)                ; evaluates to 2
+```
+
+```lisp
+(let ((x 1))
+  (let ((x 2) (f (lambda () x)))
+    (f)))                         ; evaluates to 1
+
+(let* ((x 1) (f (lambda () x)) (x 2))
+  (list (f) x))                   ; evaluates to '(1 2)
+```
+
+Captured bindings remain live: `set!` in a closure updates its captured
+binding, not a later binding that happens to have the same name.
+
+### dotimes and captured loop variables
+
+`dotimes` evaluates its count once in the enclosing scope. It reuses one
+loop-variable binding for successive values from zero to count minus one.
+After normal completion that binding holds the number of iterations (zero
+for a nonpositive count), including when the optional result expression runs.
+
+Closures created by the body share this live binding. To retain an individual
+iteration's value, introduce a fresh `let` binding inside the body:
+
+```lisp
+(let ((fs (vector)))
+  (dotimes (i 3) (append! fs (lambda () i)))
+  (map 'list (lambda (f) (funcall f)) fs))       ; '(3 3 3)
+
+(let ((fs (vector)))
+  (dotimes (i 3)
+    (let ((saved i)) (append! fs (lambda () saved))))
+  (map 'list (lambda (f) (funcall f)) fs))       ; '(0 1 2)
 ```
 
 ### flet vs labels
@@ -402,10 +696,23 @@ an analogous way as `flet` and `labels`.
 
 ### assert
 
-`assert` takes an expression and optional string, and evalutes the expression.
-If the result of the evaluation is truthy then assert returns `()`, otherwise
-`assert` will output the assertion failure message to stderr and raise an
-error.
+`assert` evaluates its test expression exactly once. It uses the original
+runtime values, so mutations have their usual effects and quoted literals
+remain protected. A truthy result returns `()`. A falsey result raises an
+assertion error; the optional message and formatting arguments are evaluated
+only on that failure path. An error from the test propagates unchanged,
+including an internal-panic marker, without evaluating the message.
+
+The message is an expression that must produce a string. On failure, it is
+evaluated before the formatting arguments, which run left to right. A
+message error or non-string result stops evaluation before those arguments;
+an error from any formatting argument also propagates immediately.
+
+```lisp
+(assert true (error 'must-not-run))            ; ()
+(let ((message "invalid amount"))
+  (assert false message))                     ; error: invalid amount
+```
 
 ### progn
 
@@ -424,8 +731,8 @@ discarded.
 
 ### thread-first, thread-last
 
-`thread-first` and `thread-last` help make nested function calls more readable,
-and function similar to the clojure `->` and `->>` macros.
+`thread-first` and `thread-last` help make nested function calls more readable.
+They are value pipelines with first-argument and last-argument insertion.
 
 The word "thread" in this context (meaning passing a value through a pipeline
 of functions) is unrelated to the concept of concurrent threads of execution.
@@ -434,6 +741,24 @@ of functions) is unrelated to the concept of concurrent threads of execution.
 function defined in the second argument. The result of evaluating this
 expression is then passed to the function defined in the third argument, and
 so on.
+
+The initial expression is evaluated exactly once, before any step's function
+expression or other arguments. Steps then run in order. Within a step, the
+function expression is evaluated first, followed by its explicit arguments
+from left to right. An error stops the pipeline immediately, so later
+arguments or steps do not run after that error.
+
+The intermediate result is passed as data without another evaluation. A
+returned symbol stays a symbol; a returned list is not executed as code, and
+its quote depth is preserved. Steps must call ordinary functions: macros,
+special operators such as `if` and `quote`, and non-functions are rejected
+before their arguments are evaluated. With no steps, the initial result is
+returned. A final ordinary function call remains eligible for tail-call
+optimization.
+
+```lisp
+(thread-first '(unbound-name) (car) (symbol?))  ; true, no name lookup
+```
 
 ```lisp
 (defun add1 (x) (+ x 1))
@@ -461,12 +786,24 @@ functions, for example:
 
 ## Scope
 
-All symbol expressions are lexically scoped and resolve to the deepest binding
+Unqualified symbol expressions are lexically scoped and resolve to the deepest binding
 of that symbol.  Functions naturally create a lexical scope that binds their
 argument symbols.  The other way to create a lexical scope is through the use
 of `let` and `let*` which take as their first argument a list of bindings
 following by expressions which are executed in a nested scope containing those
 bindings.
+
+Keywords cannot be local binding names. Package-qualified references such as
+`user:x` always look in that package, bypassing lexical scopes. A local
+declaration spelled `user:x` is still accepted for compatibility, but does
+not shadow the package binding and cannot be read through `user:x`. Use
+unqualified names for local variables and parameters:
+
+```lisp
+(set 'x 10)
+(let ((user:x 99)) user:x)  ; 10: qualified lookup reads the package
+(let ((x 99)) x)           ; 99: unqualified lookup reads the local binding
+```
 
 ```lisp
 (defun foo (x)
@@ -477,7 +814,7 @@ bindings.
 
 (let ((x 1))
     (let ((x 2))
-        (+ x 1)))   ; x evaluates to the value bound in the first let
+        (+ x 1)))   ; x evaluates to the value bound in the inner let
 ```
 
 If a function or `let` expression binds a symbol which was already bound in a
@@ -514,6 +851,11 @@ probably not desired.
 
 The most primitive data structure is a list, a quoted s-expression.
 
+`reverse` accepts a list or vector as its second argument and returns the
+type selected by its first argument (`'list` or `'vector`). Strings are not
+supported: `(reverse 'list "hello")` reports
+`second argument is not a proper sequence: string`.
+
 ```lisp
 '(1 2 3 4 "hello" ok)
 ```
@@ -549,6 +891,30 @@ whether the output should be a vector or a list.
 (map 'list double (vector 1 2 3))  ; evaluates to '(2 4 6)
 ```
 
+The Go `lisp.Array` constructor also supports other shapes. Every dimension
+must be a nonnegative integer. A shape containing a zero dimension has no
+elements, even when multiplying its other dimensions would overflow. All
+dimensions are validated, so a zero does not make a negative dimension valid.
+For a nonempty shape, both the element count and the pointer backing's byte
+count must fit the host integer range; otherwise construction returns an
+ordinary error. This representability check does not guarantee that an
+arbitrarily large array fits in available memory.
+
+A shape with no dimensions is different: it holds exactly one scalar.
+`(aref scalar-array)` returns that scalar itself, preserving its identity.
+For other shapes, `aref` requires one in-range index per dimension and uses
+row-major order.
+
+`make-sequence` constructs an increasing list with an exclusive stop:
+`(make-sequence 1 6 2)` returns `'(1 3 5)`. The step must be positive.
+Integer addition that would overflow completes the sequence when the stop
+is an integer. With a floating stop beyond the integer range, the successor
+is promoted to floating point before addition; earlier integer elements
+remain integers. Comparisons involving floats use the usual floating-point
+promotion and rounding. If a step cannot advance to a greater value below
+the stop (for example, adding `1.0` to `1e20`), construction returns an
+ordinary error instead of repeating the same value until a limit is reached.
+
 ### Sharing, copying and mutation
 
 Lists and arrays are *references*.  Binding one to a second name does not copy
@@ -567,6 +933,18 @@ not, and the mutating ones are spelled with a trailing `!`:
 
 `stable-sort` is the exception to the naming rule: it has no `!` but it sorts
 in place and returns the sequence it sorted.
+
+`append` allocates independent top-level storage even when no values are
+added. `append-bytes` likewise copies when its added byte sequence is empty.
+For lists and vectors this is a shallow copy: nested lists, maps, and other
+mutable values remain shared. Use `copy` when those must be independent too.
+
+```lisp
+(let* ((source (vector 20 10))
+       (snapshot (append 'vector source)))
+  (stable-sort < snapshot)
+  source)  ; (vector 20 10)
+```
 
 Two rules follow, and together they cover essentially every surprise in this
 area:
@@ -643,6 +1021,28 @@ not copies.  A side effect inside a comparator therefore has no defined
 schedule, and writing through an element it was handed writes through to the
 list being sorted, while it is being sorted.
 
+`all?`, `any?`, `stable-sort`, and `insert-sorted` pass elements directly to
+their callbacks as **data**. They do not evaluate a list element as a call or
+look up a symbol element as a variable. Key functions receive the original
+elements too, and their results are passed directly to the comparator. These
+callbacks must be ordinary functions; macros and special operators such as
+`quote` are rejected, even when the input sequence is empty.
+
+```lisp
+(all? list? '((1) (2)))       ; true
+(any? symbol? '(alice bob))  ; true, without looking up alice or bob
+(stable-sort < (copy '((2) (1))) first)  ; '((1) (2))
+```
+
+This is shallow reference passing: a callback can still mutate a mutable
+element it receives. Executing element data requires an explicit `eval` in
+the program.
+
+If a predicate or key function signals an error, `stable-sort`, `insert-sorted`
+and `search-sorted` propagate that first error without invoking another
+callback. This stops further evaluation; it does not undo changes already
+made by a callback or by an in-place sort.
+
 ```lisp
 ;; BAD -- runs an unknown number of times, in an unknown order
 (stable-sort
@@ -680,7 +1080,8 @@ held, so the traversal goes on walking exactly the sequence it was handed.
 
 A sorted map is a mapping between keys and values which ensures that key
 traversal is always done in sorted, increasing order.  Sorted maps can contain
-keys that are either symbols or strings.  Looking up values by key can be done
+only string or symbol keys (including keywords); other types, such as integers,
+produce an "unhashable type" error. Looking up values by key can be done
 with either a string or a symbol, regardless which type was used to insert/set
 the value originally.
 
@@ -720,19 +1121,107 @@ which merely return new sorted-map objects without modifying their arguments.
 
 It is a peculiarity of elps that `assoc` on `()` will return a new sorted-map
 with the corresponding key and value set.
-Similarly, `get` on `()` will return `()`.
+Similarly, `get` on `()` will return `()`, and `(get-default () "k" 42)`
+returns `42`. `get-default` evaluates its default expression only when the
+map is nil or the key is absent; a present key whose value is `()` still
+returns `()`.
 
-A map remembers whether a key was written as a symbol or a string and prints
-it back that way, so `keys` and the printed representation preserve the
-original spelling.  That spelling is presentation only: it is not part of the
-key's identity.  `get`, `key?`, `assoc` and `dissoc` all treat `'alice` and
-`"alice"` as the same key, and `equal?` follows the same rule.
+A map remembers whether a key was written as a symbol or a string:
+**last write wins** for both the value and the spelling returned by `keys`
+and printing. This applies to repeated constructor keys and to `assoc` and
+`assoc!`. That spelling is presentation only: it is not part of the key's
+identity. `get`, `key?`, `get-default`, `assoc`/`assoc!` and `dissoc`/`dissoc!`
+all treat `'alice` and `"alice"` as the same key, and `equal?` follows the
+same rule. JSON-decoded maps accept the same keys but always retain, print,
+and dump string keys, including after symbol writes with `assoc!`.
 
 ```lisp
 (equal? (sorted-map 'alice 0) (sorted-map "alice" 0))  ; evaluates to true
 (keys (sorted-map 'alice 0))                           ; evaluates to '('alice)
 (keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
+(keys (assoc (sorted-map 'alice 0) "alice" 1))          ; evaluates to '("alice")
+(keys (assoc (sorted-map "alice" 0) 'alice 1))          ; evaluates to '('alice)
 ```
+
+### Paths through nested data (`elpspath`)
+
+The `elpspath` package reads and updates nested sorted maps, lists and vectors.
+Each path step is an argument: a string selects a map key, an integer selects
+an element, `'*` visits every element, and `'(range from to)` selects a slice
+with an exclusive end. Omit `to` to select through the end. Negative indexes
+count backward from the end (`-1` is the last element).
+
+```lisp
+(set 'order (sorted-map "lines" (vector "a" "b") "id" 7))
+(elpspath:? order "lines" -1)          ; evaluates to "b"
+(elpspath:?set order "lines" 0 "c")    ; new order with lines = (vector "c" "b")
+(elpspath:?del order "lines" 0)        ; new order with lines = (vector "b")
+(elpspath:?nil order "lines" 0)        ; new order with lines = (vector () "b")
+(elpspath:? order "lines")             ; still (vector "a" "b")
+```
+
+`?del` removes a map key or a sequence element; `?nil` keeps the key or position
+and replaces its value with `()`. `?set` takes its replacement as the last
+argument. Without path steps, `?` returns the document, `?set` returns the
+replacement, and `?del` and `?nil` return `()`.
+
+The three copying writes rebuild the document's maps, lists and vectors,
+including those inside tagged values and quote wrappers.
+Their `!` counterparts update in place and return the original document.
+In-place edits of list elements are refused to protect shared program
+literals; use the copying form or a vector. `?` reads without copying, so its
+results can share storage with the document. A range replacement for `?set`
+or `?set!` must be a list or vector; its elements are spliced into the range.
+
+An out-of-range **integer index** is a no-op for writes: copying forms return
+an unchanged copy and mutating forms leave the original unchanged (the list
+mutation restriction still applies). No enclosing container is removed.
+Reads return `()` for a missing key or out-of-range index. Slice endpoints
+must be in bounds; an invalid range raises an error.
+
+For quoted lists, `?set`, `?del` and `?nil` preserve quoting on an
+out-of-range integer no-op but return an unquoted list after an in-range
+integer edit; this existing asymmetry also applies to lists nested in a
+document.
+
+```lisp
+(elpspath:?set '(1 2 3) 0 9)           ; evaluates to (9 2 3)
+(elpspath:?set '(1 2 3) 99 9)          ; evaluates to '(1 2 3)
+(elpspath:?set order "lines" 5 "c")    ; unchanged copy of order
+(elpspath:?del order "lines" -99)      ; unchanged copy of order
+(elpspath:?nil order "lines" 99)       ; unchanged copy of order
+(elpspath:? order "lines" 5)           ; evaluates to ()
+```
+
+Keywords, other symbols, bytes, functions and native values are opaque
+leaves. Reading a leaf or an unrelated field succeeds regardless of the
+leaf's type. A further step into a leaf raises an error naming its type and
+location. Tagged values and quote wrappers also refuse indexing, but copying
+writes rebuild their wrapped values recursively, including any containers.
+
+```lisp
+(set 'job (sorted-map "status" ':pending "id" 7))
+(elpspath:? job "status")              ; evaluates to :pending
+(elpspath:? job "id")                  ; evaluates to 7
+(elpspath:?set job "status" ':done)    ; new job with status = :done
+(elpspath:? job "status" "name")       ; error: cannot index into symbol at path status
+```
+
+Opaque leaves are shared by reference even in copying writes. For example,
+changing a shared bytes buffer outside `elpspath` affects both documents.
+Functions remain opaque: their bodies and captured environments are shared
+and are not walked for copying or cycle checks. The replacement supplied to
+`?set` or `?set!` is also stored by reference.
+
+All operations check for cyclic containers and arrays with other than one
+dimension throughout the document, including containers outside the path and
+inside tagged values or quote wrappers. Replacement values pass the same
+check. Opaque leaf internals are not walked.
+An iterator keeps its per-element error handling: a failed read contributes
+`()` and a failed write leaves that element unchanged.
+
+See `elps doc elpspath` for the package reference
+and `parse-path`, which converts a jq-style selector string to path arguments.
 
 ### User-Defined Types
 
@@ -756,6 +1245,52 @@ associates the type symbol with user data which can be any value.
 The core language only provides low-level functionality for defining and
 working with custom types.  For the time being it is left it up to the
 application to create more powerful abstractions over typed data.
+
+A type descriptor is tagged `lisp:typedef` and contains a two-element list:
+a symbol naming the type and an ordinary constructor function. Macros and
+special operators cannot serve as constructors. The tag alone does not make
+arbitrary user data a valid descriptor. Both `new` and `type?` validate the
+descriptor before using it; malformed descriptors raise an ordinary error,
+and `new` does not invoke their constructors. Validation happens on each use
+because descriptor data can be changed through `user-data`.
+
+### JSON null
+
+`json:null` is an output-only serialization sentinel. `json:dump-string`,
+`json:dump-bytes`, and `json:dump-message` encode both `json:null` and `()` as
+JSON `null`, at the top level or as a value in a map, list, or vector,
+including nested containers.
+
+```lisp
+(json:dump-string json:null)                       ; => "null"
+(json:dump-string (sorted-map "k" json:null))      ; => "{\"k\":null}"
+(json:dump-string (list json:null ()))             ; => "[null,null]"
+(json:load-string "null")                         ; => ()
+(json:load-string (json:dump-string json:null))    ; => ()
+```
+
+All three load functions (`json:load-string`, `json:load-bytes`, and
+`json:load-message`) decode JSON `null` as `()`, including inside containers;
+they never produce the `json:null` symbol. A dump/load round trip therefore
+does not preserve the distinction between the sentinel and `()`. The Lisp
+string `"json:null"` still encodes as a JSON string; use that string explicitly
+if you need the text instead of JSON `null`.
+
+### JSON object keys
+
+JSON objects decode to sorted maps, including nested objects. Their keys
+are stored as strings. Reads (`get`, `key?`, `get-default`) and mutations
+(`assoc!`, `dissoc!`) also accept symbols by their full name. These decoded
+maps always return string keys from `keys` and print/dump keys as strings,
+even after a symbol write. `copy` and non-mutating `assoc`/`dissoc` produce
+ordinary sorted maps with the usual last-write-wins spelling rule.
+
+Keywords keep their leading colon: `:height` names the key `":height"`,
+not `"height"`. For example, `(json:dump-string (sorted-map :height 1))`
+produces the JSON text `{":height":1}`. Loading it back yields the string
+key `":height"`, also accessible with `:height`; it does not recover a
+keyword key spelling. Use string keys for JSON interchange to make the
+intended property names explicit.
 
 ### JSON numbers and integer precision
 
@@ -990,14 +1525,107 @@ complexity increases.
 
 When the ELPS interpreter starts, all code executes in the `user` package.
 This is the default package for any file that does not contain an
-`(in-package ...)` declaration.  Files loaded via `load-file` inherit the
+`(in-package ...)` form.  Files loaded via `load-file` inherit the
 caller's current package context at the point of the load call.
+
+### Loading Files (`load-file`)
+
+`(load-file "path.lisp")` loads and evaluates a source file and returns the
+value of its last expression. File access follows the host runtime's source
+library policy.
+
+With `elps run`, `elps debug`, and `elps repl`, file arguments and `load-file`
+calls are confined to `--root-dir` (the working directory by default) through
+an open root directory handle. Confinement is enforced at open time, including
+when a directory component is replaced by a symlink. Relative symlinks within
+the root are allowed. Escaping paths and absolute symlinks (even those pointing
+inside the root) produce ordinary, catchable errors. Use a relative symlink
+for an internal dependency; move an escaping dependency inside the root or
+choose a root that contains it. This depends on filesystem state at runtime,
+so static linting cannot establish whether a load will be allowed.
+
+Initial relative file arguments and relative `load-file` calls in `-e`
+expressions start at the root directory. Nested loads are relative to the
+calling file's resolved directory, including when it was loaded through a
+symlink. Absolute paths outside the root and `..` paths escaping it are also
+refused.
 
 ### Basics
 
 Packages are created/modified using the `in-package`
 function, which changes the environment's working package.  Symbols bound using
 `set`, `defun`, `defmacro`, etc will be bound in the working package.
+
+`in-package` is an ordinary evaluated form, not a file-level declaration.
+Calling it inside a helper can change the caller's current package for all
+following top-level forms. Libraries must not use it in helpers:
+
+```lisp
+(in-package 'user)
+(set 'gv 42)
+(defun switcher () (in-package 'otherpkg) 'ok)
+(switcher)  ; 'ok; the current package is now otherpkg
+gv          ; error: symbol not bound: gv
+```
+
+Only loads guarantee automatic restoration: `load-file` and `load-string`
+(also `load-bytes`) restore the caller's package when the load returns,
+including on error. A function return is not a general restoration boundary.
+
+The core `lisp` package is sealed against binding changes from Lisp code once
+`InitializeUserEnv` finishes registering the language, before application
+configuration runs. The seal remains in effect after `LoadLibrary` and in
+VMs instantiated from a template. `set`, `set!`, `defun`, `defmacro`, and `s:deftype`
+cannot write a `lisp:`-qualified name, or an unqualified name while the current
+package is `lisp`. For example, `(set 'lisp:if 1)` raises the ordinary error
+`cannot rebind lisp package binding: if` at the assignment, leaving later
+packages' `if` intact. This also rejects new names in `lisp`; exporting a name
+first does not bypass the seal. Lisp code cannot add new exports or import
+replacement bindings into `lisp`. Re-exporting an existing export is a no-op.
+Go registration APIs remain available to the host, and packages registered
+by embedders through `elpsutil` remain mutable.
+Go builtins that accept binding names from Lisp must use
+`LEnv.PutGlobalFromLisp` or `LEnv.UpdateFromLisp`; `PutGlobal` and `Update`
+are trusted host APIs. `LEnv.Put` only writes lexical bindings.
+
+ELPS is a Lisp-1: builtin and special-operator names are ordinary symbols in
+the same namespace as variables. Unqualified shadowing in your own package
+remains legal: `(defun car (x) x)`, `(set 'if 1)`, `(set 'lambda 1)`, and
+`(set 'quote 1)` all replace that package's binding. Later calls in that
+package use the replacement, which can break subsequent evaluation, including
+error handlers. Use a distinct name or a qualified core call such as
+`(lisp:car xs)` when that is what you intend.
+
+Shadowing is per-package. Imports copy bindings at import time; packages
+that already imported a name retain its old value if the source package
+later rebinds it. The changed value appears in subsequent imports. Before
+the core seal, changing `lisp:if` could therefore leave the current user
+package working while breaking packages created later, which automatically
+import `lisp`. Legal shadowing in a user package does not change `lisp` or
+the core bindings imported by newly created packages.
+
+The `lisp-package-seal` lint check diagnoses literal binding writes to `lisp`,
+including unqualified writes after a top-level `(in-package 'lisp)`.
+The `builtin-shadowing` check warns when a top-level `set`, `set!`, `defun`,
+or `defmacro` shadows a core export, even in another package with no explicit
+`use-package`. Local shadowing is covered by the existing `shadowing` check.
+These checks skip dynamic binding names, macro templates, and conservatively
+identified shadowed calls. They do not prove compatibility for runtime data
+or opaque macro expansions; the runtime seal also checks computed names.
+
+`in-package` takes a symbol or string naming the package, followed by zero or
+more documentation strings. The name must spell a non-empty [symbol
+identifier](#symbols), without a colon; keywords are not package names.
+For example, `(in-package 'p "doc")` and `(in-package "valid-name")` are valid.
+Empty names, qualified names such as `"a:b"`, keywords such as `:kw`, and names
+that do not read as identifiers (such as `"1abc"` or `"a b"`) cause ordinary
+errors. All arguments are validated before creating a package, switching the
+current package, or changing its documentation. In particular,
+`(in-package 'p 1)` leaves the current package and registry unchanged.
+
+These name checks apply to the Lisp builtins. Go embedding APIs
+(`PackageRegistry.DefinePackage`, `AddPackage`, and `LEnv.InPackage` /
+`UsePackage`) continue to accept arbitrary registered names.
 
 ```lisp
 (in-package 'my-new-package)
@@ -1006,6 +1634,24 @@ function, which changes the environment's working package.  Symbols bound using
 (set 'thing "something else")
 (defun my-other-function () (debug-print thing))
 ```
+
+`export` accepts symbols, strings naming symbols, and lists (including nested
+lists) of those values: `(export '(a b))` and `(export "a")` are valid.
+It validates the entire call before exporting anything. An invalid element,
+such as the integer in `(export '(a 1 b))`, causes an ordinary error and leaves
+the export list unchanged. Qualified names are rejected at export time,
+whether supplied as symbols or strings: `(export 'qe:f)` is an error. Export
+an unqualified name from the package that provides it instead.
+
+The `package-builtins` lint check diagnoses invalid literal arguments to
+`export`, `in-package`, and `use-package`, and suggests valid replacements.
+It skips dynamic arguments, macro templates, and conservatively identified
+shadowed calls. A clean lint result cannot prove that dynamically computed
+arguments are valid or that deferred exports will be bound at import time.
+
+Exporting a name does not require it to be bound yet. The example above
+exports `my-special-function` before defining it; the binding must exist by
+the time another package imports it with `use-package`.
 
 Outside of the `my-new-package` package, the symbol `my-special-function` may
 be bound to other values.  Any symbol defined inside a package may be
@@ -1044,7 +1690,15 @@ argument declaration syntax is the same for all function definitions.
 ### Importing symbols
 
 Symbols exported within a package may be imported to another package with the
-`use-package` function.
+`use-package` function. Each argument must be a symbol or string naming an
+existing package, with the same identifier rules as `in-package`.
+
+If an exported symbol is still unbound at import time, `use-package` raises an
+ordinary error naming the exporting package and symbol. For example, after
+`(in-package 'deferred)` and `(export 'never-defined)`, importing `deferred`
+reports `package deferred: exported symbol is unbound: never-defined`, together
+with the source location and `use-package` call context. Define the exported
+symbol before importing the package; exporting before defining remains valid.
 
 ```lisp
 (in-package 'my-other-package)
@@ -1079,6 +1733,23 @@ names.
 (debug-print (time:format-rfc3339 now))
 ```
 
+The `golang` package reads native Go values supplied by the host.
+`golang:string` requires a native value containing a Go string (including
+defined types with underlying kind string); passing an ELPS string or any
+other non-native value returns an error. Use `to-string` for general string
+conversion.
+
+`(golang:struct-field native-value "X")` reads an exported Go struct field
+and returns its value as a native value. The field name may also be a symbol.
+Promoted fields through embedded structs and pointers are supported. If the
+path to `X` crosses a nil embedded pointer, the call returns the ordinary,
+catchable error `field X is reached through a nil embedded pointer`. A nil
+pointer stored in the requested field itself is returned as a native value.
+Nil top-level pointers, non-struct payloads, missing fields and unexported
+field names return ordinary errors as well. These checks depend on the host's
+runtime payload; static Lisp analysis cannot determine whether an embedded
+pointer is nil.
+
 ### User packages
 
 For packages outside of the standard library it in recommended that names use a
@@ -1110,7 +1781,7 @@ spaces. An empty string `""` inserts a paragraph break.
   "Evaluates body forms when test is truthy."
   ""
   "Like if but with no else branch and an implicit progn."
-  (list 'if test (cons 'progn body) ()))
+  (quasiquote (if (unquote test) (progn (unquote-splicing body)) ())))
 ```
 
 A body consisting entirely of strings (no executable expression after them)
@@ -1244,6 +1915,12 @@ error it will eventually be returned to the application embedding the lisp
 interpreter.  However lisp code has a few built-in ways to detect and deal with
 errors before the entire pending evaluation is terminated.
 
+An error-valued element supplied by a host remains the same error when
+extracted with `aref`: its condition, data, existing stack and internal-panic
+marker are preserved. Invalid array indices produce ordinary errors.
+Host map-enumeration failures also produce ordinary errors when copying a map;
+printing such a map uses a `#<map-error ...>` diagnostic instead of panicking.
+
 When a function call is understood to trigger non-fatal error conditions of a
 certain kind it may use the `handler-bind` built-in to intercept and correct
 that type of error.  For an example, consider the above error in a broader
@@ -1270,6 +1947,63 @@ handler function receives the arguments passed to the `error` built-in and
 returns them in this scenario, producing the result `'('double-not-number
 "value to double is not a number")` which is returned by handler-bind.
 
+Handlers must be ordinary functions, not macros or special operators. The
+first argument is the quoted condition symbol; the remaining arguments are
+copies of the condition data, passed as values without evaluation. A list in
+error data does not become a function call, and a symbol is not looked up:
+
+```lisp
+(handler-bind ((condition (lambda (c data) data)))
+  (error 'example (car '(unbound-data))))
+; returns the symbol unbound-data, without looking up its value
+```
+
+Errors from Go libraries supply their message as a string, so a handler can
+use `to-string` or string functions on it just like an interpreter error:
+
+```lisp
+(handler-bind ((condition (lambda (c &rest data)
+                            (string:join (map 'list to-string data) " "))))
+  (json:load-string "{"))
+; returns "unexpected end of JSON input"
+```
+
+For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
+`errors.Is` and `errors.As` can recover the original Go error. `rethrow`
+preserves that error and its original stack. Host errors implementing
+`NativeCloner` retain their usual copy behavior.
+
+Source errors from `load-string` and `load-file` retain the parser's condition
+name, message and source location, including when loading through Go APIs or
+`eval`. They can be handled by name:
+
+```lisp
+(handler-bind ((unmatched-syntax (lambda (c &rest data)
+                                 (list c (type (car data))))))
+  (load-string "("))
+; returns '('unmatched-syntax 'string)
+```
+
+Other parser conditions, such as `mismatched-syntax` and `invalid-symbol`, work
+the same way. No previously valid source syntax is rejected by this change.
+
+Copies follow the ordinary `copy` rules: the handler can mutate copied lists,
+maps and bytes without changing the original error data; closure environments
+and native payloads without a host copier remain shared. `rethrow` returns
+the original error, including its original data and stack, even if a handler
+has changed its copy.
+
+Each copied data container must fit `MaxAlloc`. If copying fails, the handler
+is not called and the copy error propagates. The limit does not meter native
+clone hooks or count the combined size of many smaller containers.
+
+With no body forms, `handler-bind` returns `()`. It still validates the
+binding list, but does not evaluate any handler expression:
+
+```lisp
+(handler-bind ())  ; ()
+```
+
 If a particular piece of lisp code should handle every kind of error with the
 same handler function, the handler-bind function allows callers to specify a
 handler for a special symbol `condition` which will match any error symbol.
@@ -1283,8 +2017,22 @@ inheriting from the `condition` type.
 ```
 
 In the above code double-not-number is handled by replacing the `(double x)`
-function call with the value 0, while any other error (like integer overflow)
+function call with the value 0, while any other error (like an unbound symbol)
 will be replaced with the string "ERROR DETECTED".
+
+An error raised while evaluating or calling a handler propagates past that
+`handler-bind`. Its other bindings do not catch the new error. An outer
+`handler-bind` can catch it:
+
+```lisp
+(handler-bind ((secondary (lambda (c message) message)))
+  (handler-bind ((initial (lambda (&rest _) (error 'secondary "handler failed")))
+                 (secondary (lambda (&rest _) "not reached")))
+    (error 'initial "body failed")))
+; returns "handler failed"
+```
+
+Without the outer handler, the `secondary` error propagates to the caller.
 
 #### A note on the name
 
@@ -1361,9 +2109,16 @@ promise that a form runs on the way out.  `with-cleanup` is that promise:
 (with-cleanup (cleanup-form ...) body-form ...)
 ```
 
-It evaluates the body forms, then **always** evaluates the cleanup forms —
+It evaluates the body forms, then **always attempts** the cleanup forms —
 whether the body returned normally or signalled.  It returns the last body
 value; cleanup values are discarded.
+
+Cleanup remains subject to the active execution limits. An already cancelled
+context or exhausted step budget prevents cleanup code from running; cleanup
+does not get a fresh budget. Error handlers have the same restriction. A host
+must release resources outside Lisp when release must survive those limits.
+Per-frame stack and tail-iteration limits can regain headroom while unwinding;
+use a step limit or context deadline for a ceiling across body and cleanup.
 
 If you know `try`/`finally` from another language, this is `finally` with no
 `catch` clause.  If you know Go, it is `defer`.
@@ -1462,8 +2217,11 @@ code try to use handler-bind.
 
 If Go code called during evaluation — a builtin or special operator supplied
 by the application embedding the interpreter — panics, the interpreter
-recovers the panic instead of letting it kill the host process, and turns it
-into an error with the condition `internal-panic`.
+recovers the panic and returns an error with the condition `internal-panic`.
+This also applies to direct Go calls through `FunCall`, `FunCallContext`,
+`EvalSExpr`, `MacroCall`, `SpecialOpCall` and `New`, and to source reader,
+input stream and library callbacks used by the `Load*` methods. Debugger and
+profiler callback panics are recovered at these evaluation/call boundaries.
 
 That condition is deliberately **not** treated as an ordinary error.  A panic
 means the host's Go code hit a bug (a nil dereference, an out-of-range index,
@@ -1497,19 +2255,165 @@ condition explicitly:
 The resulting error also carries the Go stack captured at the panic site, so
 an embedder can identify the offending Go function.
 
+Recovery does not invoke debugger error hooks: the debugger may itself have
+failed while holding a lock. Ordinary errors still notify the debugger.
+Panic diagnostics preserve primitive values and Go runtime fault messages;
+other payloads are described by type without calling application
+`String`, `Error` or `Format` methods, which could re-enter the failed object.
+
+Optional cache hooks have a different fallback: a panic in `ReaderIdentity`,
+`LoadCache.Load` or `LoadCache.Store` disables that operation and the source
+is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
+a panicking diagnostic writer is not retried. Nested loads from these hooks
+bypass identity and cache hooks on the same runtime.
+
+In `elpscheck` builds, detected ownership, sealed-program and singleton
+corruption deliberately remain hard Go panics so recovery cannot hide a
+failed invariant. These developer checks are distinct from language errors.
+
 ## Execution Limits
 
-ELPS bounds evaluation with five independent mechanisms: **context
-cancellation**, **step limits**, **stack height limits**, an **evaluation
+ELPS bounds evaluation with **context cancellation**, **step limits**,
+**macro expansion limits**, **stack height limits**, an **evaluation
 nesting limit** and a **tail-iteration limit**.  Context cancellation and step
 limits are optional and impose negligible overhead when not configured; the
 physical stack limit, the evaluation nesting limit and the tail-iteration
-limit are on by default.
+limit are on by default, as is the macro expansion limit.
 
-None of them bound *total* memory: `Runtime.MaxAlloc` caps the output size of
-a single builtin call, not the sum across calls, so a loop that allocates many
+None of them bound *total* memory: `Runtime.MaxAlloc` caps the sizes of data
+containers constructed by builtin operations, not the sum across calls, so a loop that allocates many
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
+
+### Command-Line Limits and Signals
+
+`elps run --timeout 1s --max-steps 100000 file.lisp` sets a context deadline
+and an evaluation step budget. Both flags default to **0 (unlimited)** for
+compatibility; negative values are rejected. The timeout spans all file or
+`-e` expression arguments, while each argument gets a fresh step budget.
+Nested `load-file` calls share their enclosing argument's budget. Existing
+stack, nesting, allocation and tail-iteration defaults still apply.
+
+In `elps run` and `elps repl`, SIGINT (Ctrl-C during evaluation) or SIGTERM
+cancels the evaluation context. The interpreter reports a one-line
+`context-cancelled: context canceled` error, finishes output and exits with
+status 1. A timeout reports `context-cancelled: context deadline exceeded`.
+REPL JSON mode emits a single JSON error object. A second signal force-exits
+if evaluation or cleanup cannot finish (status 130 for SIGINT, 143 for
+SIGTERM). Cancellation is cooperative: native code must observe the context
+to return promptly. Output already written to stdout/stderr is retained.
+
+Embedded REPL callers can pass `repl.WithContext(ctx)` to bind evaluation
+and input waits to a context, without installing process signal handlers.
+Cancellation closes a pending REPL input wait and stops the session.
+The separate `elps debug` runner does not use these flags or signal handling.
+
+### Rendering Limits
+
+Printing a value with `debug-print`, `format-string`, the CLI/REPL, error
+reporting, or Go's `LVal.String`
+renders at most **1024 nested values** along a path. A deeper subtree is
+replaced by `#<depth-limit>`; a scalar at the boundary still renders normally.
+Lists, vectors, sorted-maps, quoted values, error data and tagged values all
+share this limit. Surrounding delimiters and later siblings are retained.
+The outermost quote prefix does not consume a level.
+
+```lisp
+(set 'x 7)
+(dotimes (i 1025) (set 'x (list x)))
+(format-string "{}" x) ; 1024 list wrappers around #<depth-limit>
+```
+
+Cycles render as `#<cycle>`-style markers. Cycle detection runs before the
+depth marker is substituted; cycles beyond that boundary can still be omitted
+with the deeper subtree. Shared acyclic graphs (DAGs) render in full, including
+each repeated occurrence, up to the output cap. A total work budget also bounds
+traversal, cycle discovery, and retries, including work that emits no bytes.
+
+All these render paths honour `Runtime.MaxAlloc` (10,485,760 bytes by default)
+and evaluation context cancellation. `debug-print` (including separators and
+its newline) and `format-string` raise an ordinary allocation error when the
+output or work budget is exhausted, or a context cancellation condition when
+cancelled. Error reporting (including condition data in error lines and stack
+traces), top-level printing, and REPL output use `#<truncated>` on exhaustion.
+For caps smaller than that marker, only its fitting prefix is printed. Error
+condition data remains available unchanged to handlers. Go's `LVal.String`
+uses the default cap without an evaluation context; `LEnv.Render` uses the
+environment's cap and context. Errors retain the rendering policy captured
+when they were created.
+
+`to-string` accepts only scalar strings, symbols, bytes, and numbers; it never
+walks a container graph. Existing strings and symbols reuse their storage;
+byte conversions and numeric output are allocation-checked. Both it and
+`format-string` are subject to evaluation cancellation. Host callbacks such as
+a native Go error's `Error` method remain host code and must cooperate with
+cancellation themselves.
+
+The markers are diagnostic output, not source that can be read back. The depth
+and work limits remain active when evaluator limits are disabled. No source
+form is rejected by this rule; sharing and cycles assembled at runtime cannot
+be determined reliably by a static migration diagnostic.
+
+### Allocation Limits
+
+`WithMaxAlloc(n)` sets a size cap in **bytes** for newly built strings and
+byte buffers, and in **elements** for newly built sequences and map entries.
+A non-positive setting selects the default of 10,485,760. The cap measures
+logical lengths, not Go heap usage. Object headers, spare capacity,
+implementation scratch/conversion buffers, interpreter bookkeeping and
+storage retained by existing values are not counted. For example, Base64
+decoding limits the decoded result, not a possible temporary copy of its
+encoded input. Hosts must bound input sizes and total memory separately.
+
+The cap applies when an operation creates new backing storage. Returning an
+existing string or bytes value, or a `slice` view of existing storage, can
+return a value larger than the cap. A `slice` conversion that builds a new
+string, bytes buffer or byte-element sequence must fit the cap. String lengths
+and slice indices count UTF-8 bytes, not characters.
+
+`cons`, `insert-index` and `insert-sorted` check the new sequence length;
+`insert-sorted` rejects an oversized result before calling its comparator or
+key function. `select` and `reject` count retained elements, so a large input
+may produce a small allowed result. They stop when retaining another element
+would exceed the cap; earlier predicate side effects are not rolled back.
+`map` with a nil result type discards its results and has no output sequence
+to cap, but its callbacks still consume evaluation steps.
+
+Map construction counts distinct keys; repeated keys replace values without
+adding entries. `assoc!` can replace an existing entry at the cap, but cannot
+add one. `assoc` and `dissoc` copy the source map first, so that full copy must
+fit even if `dissoc` would then remove an entry. `keys` checks its result
+length. `copy` checks each backing container in the copied graph separately;
+many small nested containers can still exceed the cap in aggregate. Immutable
+string storage is shared. Allocation inside native copy hooks is the host's
+responsibility.
+
+`quasiquote` checks the final size of every list it constructs, including
+nested lists and lists produced by splicing. Empty splices can make a large
+template produce a small allowed result; staging slots are scratch, not
+retained output. A whole-template `unquote` that returns an existing list
+does not create new backing and may return a list above the cap. Unquotes
+run left to right and stop at the first error or oversized output; earlier
+side effects are not rolled back. A host-specific cap or dynamically
+generated template cannot in general be checked by a source-only linter.
+
+`format-string` checks the bytes emitted after substitution and brace
+escaping, including the printed representation of nested values. With a cap
+of 8, `(format-string "{0}{0}" "abcde")` signals an allocation error;
+`(format-string "{{{{{{{{{{{{{{{{")` returns eight opening braces.
+Allocation errors are ordinary catchable errors; checks occur before growing
+the result beyond its cap.
+
+For standard string helpers, `string:join` counts result bytes including
+separators, and `string:split` counts output pieces. An empty separator splits
+by UTF-8 rune; an empty input then produces no pieces. Unicode case conversion
+can grow or shrink the byte length, so `string:uppercase` and
+`string:lowercase` check the converted length. Unchanged strings reuse their
+storage. Base64 encoding counts encoded bytes including padding; decoding
+counts decoded bytes, excluding padding and ignored CR/LF in the input.
+`string:repeat` with count zero returns an empty string; count one reuses the
+input string storage. These cases do not allocate a repeated buffer and can
+succeed even when the input is larger than the cap.
 
 ### Context Cancellation
 
@@ -1523,14 +2427,25 @@ result := env.EvalContext(ctx, expr)
 ```
 
 If the context is cancelled or its deadline expires during evaluation, a
-`context-cancelled` condition is raised.  This can be caught in Lisp with
-`handler-bind`:
+`context-cancelled` condition is raised. The cancelled context also prevents
+evaluation of a matching `handler-bind` handler or cleanup form. Handle this
+failure at the Go entry point; naming the condition in Lisp does not restore
+the context or reserve time for recovery code.
 
-```lisp
-(handler-bind
-    ((context-cancelled (lambda (err) (debug-print "timed out"))))
-    (long-running-computation))
-```
+Cancellation is checked again before entering a function, macro or special
+operator, including native callbacks. If evaluating the function position
+or an argument cancels the context, the pending body does not run. This check
+does not charge an additional evaluation step. A direct Go `FunCallContext`
+likewise rejects an already cancelled context before invoking a native body.
+Cancellation first observed at the call boundary reports the caller's source
+location. If first observed on entry to an interpreted body, it reports the
+function's definition location.
+
+Native callbacks temporarily expose the active context through their
+environment so nested evaluations inherit it. The previous context is
+restored after the callback and any terminal expression, including ordinary
+errors and recovered host panics. Finishing a request must not install its
+cancelled context on an environment that previously had none.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.
@@ -1543,8 +2458,14 @@ full duration it was given, however long that is.
 ### Step Limits
 
 A step limit caps the number of evaluation steps in a **single top-level
-evaluation**.  Each entry to `Eval`, each tail-recursion iteration, and each
-macro re-expansion counts as one step.
+evaluation**. Each entry to `Eval`, tail-recursion iteration, macro
+re-expansion, and `dotimes` turn counts as one step. Each callback invocation
+in `map`, `foldl`, `foldr`, `select`, `reject`, `all?`, `any?`, `stable-sort`,
+and `insert-sorted`, each selected error-handler invocation, and each function
+invocation in a threading pipeline also counts one step and checks
+cancellation before running. This includes native callbacks that do not
+evaluate any Lisp; expressions in a Lisp callback's body consume their own
+steps as usual.
 
 ```go
 env := lisp.NewEnv(nil)
@@ -1561,17 +2482,43 @@ runtime had executed `n` steps in total, every later evaluation would fail
 however small it was.
 
 When the limit is reached, a `step-limit-exceeded` condition is raised.
+An error handler or cleanup form shares that exhausted budget and cannot
+continue evaluating Lisp until the host starts a new top-level evaluation.
 Use `Runtime.Steps()` to read the current evaluation's usage,
 `Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
 to reset the current counter explicitly.
 
-A step limit is the only mechanism here that bounds a loop which neither
-recurses nor tail-calls — no stack limit can see such a loop.
+A step limit also bounds loops which neither recurse nor tail-call; stack
+limits cannot see such loops. Cancellation is checked at their evaluation
+and callback checkpoints.
 
 It is not a time bound: a single step may run an arbitrary amount of work
 inside a builtin.  **Context cancellation with a deadline is the only limit
 here that measures elapsed time**, and it is what you want if the real
 requirement is "give up after N seconds".
+
+### Macro Expansion Limits
+
+When a macro expands into another macro call, ELPS limits the successive
+expansions. This applies during ordinary evaluation and to `macroexpand`.
+`WithMaxMacroExpansionDepth(n)` selects the limit; a nonpositive value uses
+the default of 1,000. A self-expanding or mutually expanding macro eventually
+returns an ordinary `macro expansion depth exceeded` error.
+
+`macroexpand-1` performs at most one outer expansion. `macroexpand` continues
+while the outer result is another macro call; it does not recursively expand
+every nested subexpression. Each actual expansion in its loop consumes one
+step, including a Go-defined macro whose body does not call the evaluator.
+A non-macro input adds no expansion step; `macroexpand-1` and direct Go
+`MacroCall` retain their ordinary one-call accounting.
+A macro that returns an ordinary function call
+containing a new macro call starts nested evaluation when that result is run.
+The evaluation nesting, stack and step limits bound that different shape.
+
+The expansion limit counts a successive chain, not all macro calls in a
+transaction, and does not measure the total size of generated code. Use a
+step budget and context deadline to bound work across those chains; the
+allocation limit remains a per-container cap.
 
 ### Stack Height, Nesting and Tail-Call Limits
 
@@ -1588,6 +2535,42 @@ catchable ELPS error.  Override with
 recommended.
 
 It bounds *frames*, not evaluation depth — see below.
+
+**Value nesting** is independent of evaluator nesting. Copying (`copy` and
+Go's `LVal.Copy`), detachment, JSON dumping, Go conversion, structural equality,
+quasiquote, macro stamping, package classification and template admission use
+explicit heap stacks. Their default limit is **1,000,000 levels**
+(`lisp.MaxValueDepth`), checked by a depth counter. A 100k-deep value completes;
+a 3M-deep value raises an ordinary error containing
+`value nesting depth exceeds maximum: 1000000`, catchable with `handler-bind`.
+Copies and conversions return no partial result. Existing cycle handling still
+applies; a long cycle may reach the depth limit before its back edge is discovered.
+
+`lisp.WithMaxValueDepth(n)` sets the runtime limit to any value **at least 1024**.
+Both lowering and raising the default are supported because these traversals
+are iterative. Invalid options return an error. Copying (including condition
+data), equality, JSON dumping, quasiquote, macro stamping, format conversion
+and template admission honor the runtime setting. Templates retain it in their
+VMs. Depth counts traversed value edges, including internal array storage and
+captured environments where visited, rather than printed delimiters alone.
+APIs without a runtime, including `lisp.GoValue`, use the default limit.
+`GoValue` returns an `*lisp.ErrorVal` implementing Go's `error` interface on
+excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
+JSON serializer conversion methods use the same convention.
+
+`format-string` checks the value conversion depth before returning a result. Its
+rendered text, like other diagnostic rendering, retains the separate fixed
+1024-level `#<depth-limit>` truncation behavior described above. Thus formatting
+a 100k-deep value succeeds with bounded text, while a 3M-deep value errors.
+Sealing and source-location assignment use explicit stacks throughout; these
+metadata-only APIs cannot return an error and finish the graph. Reader admission
+and JSON parsing retain their existing input-depth limits. Copying elpspath
+subtrees uses the default value limit; recursive path composition retains its
+separate limit of 1024 iterator steps or copying-chain steps.
+
+These limits concern values constructed at runtime, so source linting cannot
+reliably determine whether a walk will exceed them; check dynamically built
+inputs and handle the condition.
 
 **Evaluation nesting** is how deeply the evaluator recurses into itself, which
 is the true measure of Go stack consumed.  It is not the same as stack height
@@ -1623,12 +2606,17 @@ raises a catchable `eval-nesting-exceeded` condition:
 Override with `lisp.WithMaxEvalNesting(n)`; a negative value disables the
 check, which re-exposes the host process to an unrecoverable stack overflow.
 
-**Tail-call iterations** count the turns of a tail-recursive loop.  Tail
-calls run in constant stack space, so no stack-height limit can bound a
-runaway loop; this is the limit that does.  It is bounded by default
-(`DefaultMaxTailIterations`, 1,000,000) purely as a backstop against a loop
-that never terminates.  Override with `lisp.WithMaxTailIterations(n)`; 0
-disables the check.
+**Tail-call iterations** count turns per **contiguous tail-call sequence**
+at a single stack frame. The counter resets when that call returns; a new
+call starts a fresh sequence, and nested calls have their own counters.
+The default (`DefaultMaxTailIterations`, 1,000,000) bounds a runaway
+sequence running in constant stack space. Override with
+`lisp.WithMaxTailIterations(n)`; 0 disables the check.
+
+Repeated calls that each return within that limit can still perform
+unbounded aggregate work. **MaxSteps is the total-work bound** across such
+calls within one top-level evaluation: nested returns do not reset its
+budget. Neither limit is a time bound.
 
 It is **not** a time bound.  A million turns of a trivial body costs a few
 seconds, but turns say nothing about the work done per turn — a body that
@@ -1685,13 +2673,34 @@ Note this bounds one call, not their sum — N sleeps just under the cap still
 block for N times the cap.  A context deadline is what bounds total elapsed
 time.
 
-Because tail calls are optimized, a correctly written tail-recursive loop
-runs in constant stack space for an unbounded number of iterations:
+Tail calls run in constant stack space, subject to the tail-iteration and
+execution limits above. When a form is itself in tail position, these parts
+preserve tail position:
+
+| Form | Tail position |
+| --- | --- |
+| `if` | The selected `then` or `else` expression. |
+| `progn` | The last body expression, including a body of one expression. |
+| `cond` | The last body expression of the selected clause. Tests are not tail positions; a matching bodyless clause returns `()`. |
+| `let`, `let*` | The last body expression. Binding initializers are not tail positions. |
+| `or`, `and` | The final argument, if evaluation reaches it. Earlier arguments are not tail positions. |
+
+`and` still stops at the first falsey value and returns that value unchanged:
+`(and)` returns `true`, `(and 42)` returns `42`, and `(and 1 ())` returns `()`.
+Its final argument can call the enclosing function without growing the stack:
 
 ```lisp
 (defun spin (n) (if (= n 0) 'done (spin (- n 1))))
 (spin 500000)   ; constant stack space; evaluates to 'done
+
+(defun process (n acc)
+  (and (> n 0) (process (- n 1) (+ acc 1))))
+(process 1000000 0)   ; constant stack space; evaluates to false
 ```
+
+`when` and `unless` are not built-in control forms. The example `when` macro
+in this guide expands into `if` and `progn`, so its last body expression
+preserves tail position too.
 
 **A tail call that CROSSES a `with-cleanup` is not optimized.** A frame that
 still owes cleanup forms cannot be elided, so a recursion routed through the
@@ -1719,6 +2728,32 @@ in constant stack:
 (with-cleanup ((release)) (spin 500000))   ; 'done — constant stack
 ```
 
+**A tail call that crosses `handler-bind` is also not optimized**, even with
+an empty binding list. Its frame remains available to handle errors from
+the recursive call:
+
+```lisp
+(defun loop1 (n)
+  (if (= n 0) 'done (handler-bind () (loop1 (- n 1)))))
+(loop1 1000000)   ; physical stack height exceeded maximum: 25001
+```
+
+Keep the loop's recursive call outside the handler; handle each iteration's
+work inside it, then let that handler frame return before recurring:
+
+```lisp
+(defun loop1 (n)
+  (if (= n 0)
+      'done
+      (progn
+        (handler-bind ((condition (lambda (&rest _) ())))
+          (work n))
+        (loop1 (- n 1)))))
+```
+
+As with `with-cleanup`, this restriction applies to the frame crossed by the
+tail call: `(handler-bind () (spin 500000))` still uses constant stack.
+
 Note also that the cleanup forms run under their own fresh per-frame budgets:
 `MaxTailIterations` and `MaxHeightPhysical` are counted per frame and recover
 as the stack unwinds, so cleanup work on an error path adds to what the
@@ -1740,3 +2775,68 @@ Each method threads the context through the internal evaluation chain.
 The older non-context methods (`Eval`, `Load`, etc.) continue to work
 but are deprecated.  Builtins can access the current context via
 `env.Context()`.
+
+## Source minification
+
+`elps minify file.lisp --map symbols.json` shortens identifiers using deterministic,
+scope-aware renaming. Symbols quoted anywhere in the input files are excluded
+from renaming across all scopes and packages. This includes quoted lists and
+quasiquote templates, so quoted function designators such as
+`(map 'list 'twice '(1 2 3))` retain the function's name. Qualified quoted names
+also protect the corresponding bare name.
+
+Quoted names are never shortened, even with `--rename-exports`. This conservative
+rule can increase output size. The symbol map records the names in `excluded`,
+with `original` and `reason: "quoted-reference"`; the existing assignment maps
+contain only renamed symbols.
+
+Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
+`macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
+binding name, including lexical locals, across all input files**, even with `--rename-exports`.
+The rule also covers `symbol` and `intern` when supplied by a host, and
+`lisp:`-qualified spellings. References passed as function values or appearing in
+quoted templates also trigger it conservatively. No bindings are renamed in such
+a program. The CLI prints one warning naming the first dynamic-evaluation site,
+and the symbol map records preserved bindings under `excluded` with
+`reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
+This keeps runtime-generated names and code working, but produces larger output
+and disables all identifier compression in programs using dynamic evaluation.
+
+Package-level bindings are renamed only when package flow and exported names can
+be proven statically: every `export` argument must be a reader-quoted symbol,
+a literal string, or a reader-quoted list (possibly nested) of those, and every
+`in-package` / `use-package` form must be at the top level of a file with literal
+package names. A variable or expression passed to `export`, a computed package
+name, or a package switch/import nested inside any form (including `progn`,
+`let`, `when`, functions, and macros) preserves every package-level binding name
+across all input files,
+even with `--rename-exports`. Lexical locals can still shorten only when dynamic
+evaluation is absent. Package flow and dynamic evaluation are tracked independently.
+The symbol map records `unproven-package-flow` for the package fallback, taking
+precedence over `quoted-reference`; one warning names the first offending form.
+If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
+and warning take precedence regardless of source order.
+Literal export names remain preserved even with `--rename-exports`.
+
+Proof also requires directly evaluated package forms. Any `export`, `in-package`,
+or `use-package` inside `defmacro`, `macrolet`, or a quasiquote template triggers
+the package fallback, even if its arguments look literal. This includes quoted
+macro bodies and `unquote` forms: generated code may export different names.
+Macros without these package forms still allow renaming.
+
+Reader quoting in directly evaluated `(export 'foo)` or `(export '(a b))` supplies
+proof because it cannot be shadowed. Calls to `quote` or `lisp:quote` do not:
+unqualified `quote` can be shadowed. Qualified `lisp:quote` resolves in the named
+package and cannot be lexically shadowed; the standard runtime seals that package
+against Lisp writes. An embedder can nevertheless register a different `lisp`
+package before sealing, so the minifier cannot assume the standard runtime.
+Spelling an export as
+`(export (quote foo))` keeps all package-level names across the input files,
+even when `quote` is not shadowed. Use `(export 'foo)` to retain compression of
+private names. The repository's 83 source exports already use the reader-quote
+idiom, so the common case is unaffected.
+
+`defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
+bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`
+creates a package-level `helper` that captures the lexical value of `k`. Minifying
+this definition also renames its calls outside the `let` consistently.

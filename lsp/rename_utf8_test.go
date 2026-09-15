@@ -199,10 +199,10 @@ func TestRenameNonASCIIIdentifierRewritesWholeName(t *testing.T) {
 		want:    "(defun abc (x) x)\n(abc 1)\n",
 	}, {
 		name:    "greek-variable",
-		content: "(set λ 1)\nλ\n",
-		line:    0, char: 5,
+		content: "(set 'λ 1)\nλ\n",
+		line:    0, char: 6,
 		newName: "zz",
-		want:    "(set zz 1)\nzz\n",
+		want:    "(set 'zz 1)\nzz\n",
 	}, {
 		name:    "three-byte-runes", // CJK: 3 bytes per rune, so the range was 2/3 short
 		content: "(defun 加算 (a b) (+ a b))\n(加算 1 2)\n",
@@ -232,10 +232,10 @@ func TestRenameNonASCIIIdentifierRewritesWholeName(t *testing.T) {
 		guard:   true,
 	}, {
 		name:    "ascii-longer-new-name", // GUARD: passed on 4737835
-		content: "(set x 1)\nx\n",
-		line:    0, char: 5,
+		content: "(set 'x 1)\nx\n",
+		line:    0, char: 6,
 		newName: "counter",
-		want:    "(set counter 1)\ncounter\n",
+		want:    "(set 'counter 1)\ncounter\n",
 		guard:   true,
 	}} {
 		// The GUARD suffix is in the subtest NAME so that `go test -v` says

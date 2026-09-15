@@ -31,9 +31,10 @@ package lisp
 // itself, (list x x), is a DAG and not a cycle, and must still render as what
 // it is.
 //
-// Stage 3 exists because stages 1 and 2 bound the *depth* of a walk and not
-// its *width*.  A map holding itself under two keys is only one node deep in
-// the cycle, but unrolling it to cycleGuardDepth levels visits 2^depth nodes:
+// Stage 3 exists because stages 1 and 2 detect cycles along a path but do not
+// bound the work spent unrolling them. A map holding itself under two keys is
+// only one node deep in the cycle, but unrolling it to cycleGuardDepth levels
+// visits 2^depth nodes:
 // swapping a fatal crash for a walk that will not finish this century is no
 // fix at all.  So the first frame to find a cycle records that on a state
 // object shared by the whole walk, every frame above it returns immediately
@@ -41,12 +42,13 @@ package lisp
 // is allocated up front and nothing is ever removed from it, so every node is
 // visited at most once and the walk is linear in the size of the graph.
 //
-// The result is that acyclic values are untouched -- walked in full, at any
-// depth, byte for byte the same output, equality and JSON as before the guard
-// existed -- while a cyclic value terminates in time linear in the number of
-// values it can reach.  Strict mode's coarser rule, that any node reached
-// twice reads as a cycle, only ever applies to a value already known to
-// contain one, and such a value has no finite faithful rendering anyway.
+// The guard itself leaves acyclic values untouched; it does not cap their
+// depth or protect a recursive walker from stack overflow. Rendering adds a
+// separate depth cap in render_bounded.go. A cyclic value terminates in time
+// linear in the number of values it can reach. Strict mode's coarser rule,
+// that any node reached twice reads as a cycle, only ever applies to a value
+// already known to contain one, and such a value has no finite faithful
+// rendering anyway.
 //
 // cycleGuardDepth is chosen well above the nesting real values reach and well
 // below anything that troubles a goroutine stack, so neither property costs
@@ -86,10 +88,11 @@ type cycleState struct {
 	// walk's root and the current frame.
 	path map[*LVal]struct{}
 
-	cyclic bool
+	tooDeep bool
+	cyclic  bool
 }
 
-// cycleGuard bounds a recursive walk over an LVal graph.
+// cycleGuard detects cycles in a walk over an LVal graph, not excessive depth.
 //
 // It is copied by value down the walk: each frame holds its own depth, while
 // the state it points at -- including the path -- is shared, which is what
@@ -157,76 +160,11 @@ func (g cycleGuard) tracking() bool {
 // that sees this must return without descending any further; whatever it
 // returns is discarded.
 func (g cycleGuard) abandoned() bool {
-	return !g.strict && g.state.cyclic
+	return g.state.tooDeep || (!g.strict && g.state.cyclic)
 }
 
 // valuePair is a pair of values under comparison, the unit (*LVal).Equal
 // tracks to bound a comparison of two cyclic values.
 type valuePair struct {
 	a, b *LVal
-}
-
-// pairGuard is cycleGuard for a walk over two graphs at once.  Equality
-// recurses into a pair of values, so what repeats when both operands are
-// cyclic is a pair, not a value: a comparison can revisit a without revisiting
-// b.
-//
-// Unlike cycleGuard its path set is never unwound, and keeping a pair on it
-// forever is not an approximation.  A pair reached a second time either is
-// still under comparison further up the path, where taking it to be equal is
-// the co-inductive answer Equal documents, or has already been compared and
-// found equal -- a pair that compared unequal returned false out of every
-// frame up to the root instead of ever being reached again.
-type pairGuard struct {
-	state *pairState
-
-	depth  int
-	strict bool
-}
-
-// pairState is cycleState for a comparison.  The path set lives here, shared
-// by every frame, for the reason cycleState.path does: a set built in a guard
-// copy would be built once per pair sitting at exactly cycleGuardDepth, so a
-// comparison that is merely wide there would allocate per node.
-type pairState struct {
-	path map[valuePair]struct{}
-
-	cyclic bool
-}
-
-// strictPairGuard returns the guard for the rerun of a comparison that stage 2
-// abandoned.
-func strictPairGuard() pairGuard {
-	return pairGuard{state: new(pairState), strict: true}
-}
-
-// descend returns the guard for a comparison one level below g, entering the
-// pair (a, b), and reports whether the caller must stop -- because the pair is
-// already on the path, or because another frame has found a cycle and the
-// whole comparison is being unwound for a rerun in strict mode.  Both answers
-// are "return equal and do not recurse": in the first case that is the
-// co-inductive answer, in the second the result is discarded.
-//
-// Only a comparison that is about to recurse calls this.  A pair of leaves
-// reaches nothing, so putting it on the path would tax every int and string
-// comparison to bound a walk that cannot recurse.
-func (g pairGuard) descend(a, b *LVal) (pairGuard, bool) {
-	if !g.strict {
-		if g.state.cyclic {
-			return g, true
-		}
-		g.depth++
-		if g.depth < cycleGuardDepth {
-			return g, false
-		}
-	}
-	p := valuePair{a, b}
-	if g.state.path == nil {
-		g.state.path = make(map[valuePair]struct{}, cycleGuardDepth)
-	} else if _, ok := g.state.path[p]; ok {
-		g.state.cyclic = true
-		return g, true
-	}
-	g.state.path[p] = struct{}{}
-	return g, false
 }

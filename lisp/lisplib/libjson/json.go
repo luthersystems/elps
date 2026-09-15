@@ -38,9 +38,17 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc(`JSON serialization and deserialization. Marshal ELPS values to
-		JSON bytes or strings and unmarshal JSON into ELPS data structures.`)
+		JSON bytes or strings and unmarshal JSON into ELPS data structures.
+		The output-only sentinel json:null and () serialize as JSON null at
+		any value position, including nested maps, lists, and arrays. All load
+		functions decode JSON null as (), never as the json:null symbol.
+		Decoded maps accept string and symbol keys by name but always print
+		and dump string keys. Keyword names retain their leading colon;
+		use string keys for JSON interchange.`)
 	env.PutGlobal(lisp.Symbol("null"), lisp.Symbol("json:null"))
-	env.SetSymbolDoc("null", "The JSON null sentinel symbol. Used to represent null in JSON serialization.")
+	env.SetSymbolDoc("null", `The output-only JSON null sentinel symbol. Serializes as JSON null
+		at any value position, including nested maps, lists, and arrays, just
+		like (). Loading JSON null returns (), never this symbol.`)
 	env.Runtime.Package.Exports("null")
 	s := DefaultSerializer()
 	for _, fn := range Builtins(s) {
@@ -61,39 +69,55 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpMessageBuiltin,
 			`Serializes an ELPS value to a native JSON message object
 			suitable for embedding in Go structures, and in a value passed
-			back to dump. The :string-numbers keyword controls whether
-			numbers are serialized as JSON strings (default: serializer
-			setting).`),
+			back to dump. The values json:null and () serialize as JSON null,
+			including inside containers. The :string-numbers keyword controls
+			whether numbers are serialized as JSON strings (default:
+			serializer setting).
+			Raises an ordinary depth error beyond 1000000 value levels
+			(or the configured WithMaxValueDepth setting).`),
 		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
 			`Parses a native JSON message object (one produced by
 			dump-message, or a json.RawMessage supplied by an embedder)
-			into ELPS values. The :string-numbers keyword controls whether
-			JSON numbers are returned as strings (default: serializer
-			setting). The :exact-integers keyword controls whether JSON
-			integer literals are returned as ints rather than floats
+			into ELPS values. Decoded maps accept symbol keys by name but
+			always retain and emit string keys. The :string-numbers keyword
+			controls whether JSON numbers are returned as strings (default:
+			serializer setting). The :exact-integers keyword controls whether
+			JSON integer literals are returned as ints rather than floats
 			(default: serializer setting).`),
 		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON and returns the result as
 			bytes. Sorted-maps become JSON objects, arrays become JSON
-			arrays, strings/ints/floats map naturally. The :string-numbers
-			keyword controls whether numbers are serialized as strings.`),
+			arrays, strings/ints/floats map naturally. The values json:null
+			and () serialize as JSON null, including inside containers. The
+			:string-numbers keyword controls whether numbers are serialized
+			as strings.
+			Raises an ordinary depth error beyond 1000000 value levels
+			(or the configured WithMaxValueDepth setting).`),
 		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
-			naturally. The :string-numbers keyword controls whether JSON
+			naturally. JSON null becomes (), never the json:null symbol.
+			Decoded maps accept symbol keys by name but always retain and emit
+			string keys. The :string-numbers keyword controls whether JSON
 			numbers are returned as strings. The :exact-integers keyword
 			controls whether JSON integer literals are returned as ints
 			rather than floats.`),
 		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
 			`Serializes an ELPS value to a JSON string. Like dump-bytes
-			but returns a string instead of bytes. The :string-numbers
-			keyword controls whether numbers are serialized as strings.`),
+			but returns a string instead of bytes. The values json:null and
+			() serialize as JSON null, including inside containers. Map keys
+			use their full names: :height becomes ":height". Use string keys
+			for interchange. The :string-numbers keyword controls whether
+			numbers are serialized as strings.
+			Raises an ordinary depth error beyond 1000000 value levels
+			(or the configured WithMaxValueDepth setting).`),
 		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
-			accepts a string argument. The :string-numbers keyword controls
-			whether JSON numbers are returned as strings. The
-			:exact-integers keyword controls whether JSON integer literals
-			are returned as ints rather than floats.`),
+			accepts a string argument. Decoded maps accept symbol keys by
+			name but always retain and emit string keys.
+			The :string-numbers keyword controls whether JSON numbers are
+			returned as strings. The :exact-integers keyword controls whether
+			JSON integer literals are returned as ints rather than floats.`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON
@@ -464,8 +488,12 @@ func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
 func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable bool, err error) {
+	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth)
+}
+
+func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int) (b []byte, loadable bool, err error) {
 	enc := getEncoder(stringNums)
-	if err := enc.encode(v); err != nil {
+	if err := enc.encodeLimit(v, limit); err != nil {
 		putEncoder(enc)
 		return nil, false, err
 	}
@@ -501,9 +529,13 @@ func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable boo
 // caller asked for.  Measured on Package/dump-github, which is 1000
 // `json:dump-string` calls: 51.0 MiB/op -> 36.3 MiB/op.
 func (s *Serializer) dumpString(v *lisp.LVal, stringNums bool) (string, error) {
+	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth)
+}
+
+func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int) (string, error) {
 	enc := getEncoder(stringNums)
 	defer putEncoder(enc)
-	if err := enc.encode(v); err != nil {
+	if err := enc.encodeLimit(v, limit); err != nil {
 		return "", err
 	}
 	return string(enc.bytes()), nil
@@ -623,7 +655,7 @@ func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool,
 			return nil, false, stringNums
 		}
 	}
-	b, loadable, err := s.dump(obj, lisp.True(stringNums))
+	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit())
 	if err != nil {
 		return nil, false, env.Error(err)
 	}
@@ -667,7 +699,7 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	str, err := s.dumpString(obj, lisp.True(stringNums))
+	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit())
 	if err != nil {
 		return env.Error(err)
 	}
@@ -690,16 +722,121 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // The value Nil() is converted to nil.  Functions are returned as is.
 //
 // Deprecated:  GoValue is no longer used internally for serialization and
-// should be avoided.  It also walks its argument without a bound, so a value
-// that contains itself takes the process down with it (issue #390); Dump
-// refuses such a value with an error instead.
+// should be avoided. Excessive nesting (including cycles) returns an
+// ordinary *lisp.ErrorVal implementing error, using lisp.MaxValueDepth.
 func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
-	if v.IsNil() {
-		return nil
+	out, ok := s.convertValue(v, stringNums)
+	// Invalid maps retain GoValue's historical typed nil result. Only a
+	// failed walk with no conversion result becomes a depth error here.
+	if !ok && out == nil {
+		return (*lisp.ErrorVal)(lisp.Error(lisp.ValueDepthError(lisp.MaxValueDepth)))
 	}
+	return out
+}
+
+func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}, bool) {
+	type frame struct {
+		v      *lisp.LVal
+		dst    *interface{}
+		finish func()
+		depth  int
+		leave  bool
+	}
+	var out interface{}
+	valid := true
+	pending := []frame{{v: root, dst: &out}}
+	var path map[*lisp.LVal]bool
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.finish != nil {
+			f.finish()
+			continue
+		}
+		if f.leave {
+			delete(path, f.v)
+			continue
+		}
+		v := f.v
+		if f.depth >= lisp.MaxValueDepth {
+			return (*lisp.ErrorVal)(lisp.Error(lisp.ValueDepthError(lisp.MaxValueDepth))), true
+		}
+		if v.IsNil() {
+			*f.dst = nil
+			continue
+		}
+		var children []*lisp.LVal
+		switch v.Type {
+		case lisp.LQuote:
+			children = v.Cells[:1]
+		case lisp.LSExpr:
+			children = v.Cells
+		case lisp.LArray:
+			if v.Cells[0].Len() > 1 {
+				*f.dst = fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+				continue
+			}
+			children = v.Cells[1].Cells
+		case lisp.LSortMap:
+		default:
+			*f.dst = s.conversionLeaf(v, stringNums)
+			continue
+		}
+		if f.depth >= 64 {
+			if path == nil {
+				path = make(map[*lisp.LVal]bool)
+			}
+			if path[v] {
+				return nil, false
+			}
+			path[v] = true
+			pending = append(pending, frame{v: v, leave: true})
+		}
+		if v.Type == lisp.LSortMap {
+			entries := v.MapEntries()
+			if entries.Type == lisp.LError {
+				return (*lisp.ErrorVal)(entries), true
+			}
+			m := make(map[string]any, len(entries.Cells))
+			*f.dst = m
+			for i := len(entries.Cells) - 1; i >= 0; i-- {
+				pair := entries.Cells[i]
+				if len(pair.Cells) != 2 {
+					return nil, false
+				}
+				kv := make([]interface{}, 2)
+				pending = append(pending, frame{finish: func() {
+					if k, ok := kv[0].(string); ok {
+						m[k] = kv[1]
+					} else {
+						*f.dst = map[string]any(nil)
+						// Nested maps are converted through GoValue semantics,
+						// which historically discard their validity flag.
+						if f.dst == &out {
+							valid = false
+						}
+					}
+				}}, frame{v: pair.Cells[1], dst: &kv[1], depth: f.depth + 1}, frame{v: pair.Cells[0], dst: &kv[0], depth: f.depth + 1})
+			}
+			continue
+		}
+		if v.Type == lisp.LQuote || (v.Type == lisp.LArray && v.Cells[0].Len() == 0) {
+			pending = append(pending, frame{v: children[0], dst: f.dst, depth: f.depth + 1})
+			continue
+		}
+		values := make([]interface{}, len(children))
+		*f.dst = values
+		for i := len(children) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: children[i], dst: &values[i], depth: f.depth + 1})
+		}
+	}
+	return out, valid
+}
+
+func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) interface{} {
 	switch v.Type {
 	case lisp.LError:
-		return (error)((*lisp.ErrorVal)(v))
+		return (*lisp.ErrorVal)(v)
 	case lisp.LSymbol, lisp.LString:
 		if v.Type == lisp.LSymbol {
 			switch v.Str {
@@ -713,16 +850,6 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 		}
 		return v.Str
 	case lisp.LBytes:
-		// The same defect lisp.GoValue carried until issue #548: Bytes is a
-		// METHOD, so `return v.Bytes` hands back a func() []byte where every
-		// other arm returns data.  Found by an adversarial review of the fix
-		// to the other one, which had cited this method as "a different
-		// GoValue" without checking it for the same bug.
-		//
-		// Copied, for the reason lisp/embed.go's arm gives: the *[]byte
-		// under Native is the interpreter's storage, which lisp code
-		// observes writes through, and this method is exported and
-		// documented as kept for outside callers.
 		b := v.Bytes()
 		out := make([]byte, len(b))
 		copy(out, b)
@@ -739,40 +866,9 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 		return v.Float
 	case lisp.LNative:
 		return v.Native
-	case lisp.LQuote:
-		return s.GoValue(v.Cells[0], stringNums)
-	case lisp.LSExpr:
-		s, _ := s.GoSlice(v, stringNums)
-		return s
-	case lisp.LArray:
-		s, _ := s.GoSlice(v.Cells[1], stringNums)
-		switch v.Cells[0].Len() {
-		case 0:
-			return s[0]
-		case 1:
-			return s
-		default:
-			return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
-		}
-	case lisp.LSortMap:
-		m, _ := s.GoMap(v, stringNums)
-		return m
-	case lisp.LInvalid, lisp.LQSymbol, lisp.LFun, lisp.LTaggedVal,
-		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
-		lisp.LTypeMax:
-		// Returned as the *LVal itself -- the documented behaviour for
-		// functions ("Functions are returned as is") and what the other
-		// entries here have always done.
-		//
-		// This is NOT the serialization path.  Dump/DumpString go through
-		// encoder.encode in encode.go, which dispatches on the encoderFuncs
-		// table and returns "invalid type encountered" for any LType with no
-		// registered function -- see TestEncoderTypeCoverage.  GoValue is
-		// deprecated and kept only for outside callers, so its pass-through
-		// is preserved rather than turned into an error.
+	default:
 		return v
 	}
-	return v
 }
 
 // GoError returns an error that represents v.  If v is not LError then nil is
@@ -844,8 +940,8 @@ func (s *Serializer) GoFloat64(v *lisp.LVal) (float64, bool) {
 	return float64(v.Int), true
 }
 
-// GoSlice returns the string that v represents and the value true.  If v does
-// not represent a string GoSlice returns a false second argument
+// GoSlice converts a list to a Go slice. Non-lists or walks exceeding
+// lisp.MaxValueDepth return (nil, false).
 //
 // Deprecated:  GoSlice is no longer used internally for serialization and
 // should be avoided.
@@ -853,16 +949,20 @@ func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool
 	if v.Type != lisp.LSExpr {
 		return nil, false
 	}
-	vs := make([]interface{}, len(v.Cells))
-	for i := range vs {
-		vs[i] = s.GoValue(v.Cells[i], stringNums)
+	out, ok := s.convertValue(v, stringNums)
+	if !ok {
+		return nil, false
 	}
-	return vs, true
+	if v.IsNil() {
+		return []interface{}{}, true
+	}
+	values, ok := out.([]interface{})
+	return values, ok
 }
 
 // GoMap converts an LSortMap to its Go equivalent and returns it with a true
 // second argument.  If v does not represent a map json serializable map GoMap
-// returns a false second argument
+// returns a false second argument. Excessive nesting returns (nil, false).
 //
 // Deprecated:  GoMap is no longer used internally for serialization and should
 // be avoided.
@@ -870,19 +970,10 @@ func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (map[string]any, bool)
 	if v.Type != lisp.LSortMap {
 		return nil, false
 	}
-	m := make(map[string]any, v.Len())
-	for _, pair := range v.MapEntries().Cells {
-		if pair.Type != lisp.LSExpr || len(pair.Cells) != 2 {
-			// invalid map
-			return nil, false
-		}
-		kgo := s.GoValue(pair.Cells[0], stringNums)
-		vgo := s.GoValue(pair.Cells[1], stringNums)
-		kstr, ok := kgo.(string)
-		if !ok {
-			return nil, false
-		}
-		m[kstr] = vgo
+	out, ok := s.convertValue(v, stringNums)
+	if !ok {
+		return nil, false
 	}
-	return m, true
+	values, ok := out.(map[string]any)
+	return values, ok
 }

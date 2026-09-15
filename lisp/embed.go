@@ -28,110 +28,220 @@ func Not(v *LVal) bool {
 //
 // A bytes value is returned as a []byte that COPIES the lisp value's storage,
 // so writing to it cannot be observed through the original (issue #548).  The
-// cost is proportional to the length; see the LBytes arm of goValueNode for
+// cost is proportional to the length; see the LBytes arm of conversionLeaf for
 // why the copy is not optional.  A native value is the opposite case and is
 // returned BY REFERENCE: the payload is the embedder's own, so GoValue hands
 // back what the caller already owns.
 //
+// Excessive nesting returns an ordinary *ErrorVal implementing error, using
+// MaxValueDepth. No partial converted container is returned. Cycles discovered
+// within the cap retain the historical return of the original *LVal.
+//
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
-	var st cycleState
-	x := goValue(v, cycleGuard{state: &st})
-	if st.cyclic {
-		// A value that contains itself has no Go representation -- every
-		// conversion of one is infinite -- so it is returned as the *LVal it
-		// is, which is already what GoValue does for the types with no
-		// natural Go form.  Without the bound the walk would overflow the
-		// goroutine stack and kill the process; see lisp/cycle.go and issue
-		// #390.  GoValue is not reachable from lisp, but an embedder holding
-		// a value a program built is exactly the case #390 is about.
+	// Opaque native payloads are already Go values; even leaf conversion
+	// dispatch is unnecessary here.
+	if v != nil && v.Type == LNative {
+		return v.Native
+	}
+	out, ok := convertValue(v)
+	if !ok {
 		return v
 	}
-	return x
+	return out
 }
 
-func goValue(v *LVal, g cycleGuard) interface{} {
+func convertValue(v *LVal) (interface{}, bool) {
 	if v.IsNil() {
-		return nil
+		return nil, true
 	}
-	if !v.mayNest() {
-		return v.goValueNode(g)
+	switch v.Type {
+	case LQuote, LSExpr, LArray, LSortMap:
+		return convertContainer(v)
+	default:
+		// Leaves must not create an addressable result slot or walk state.
+		return conversionLeaf(v), true
 	}
-	if g.abandoned() {
-		// The result is discarded; GoValue is about to return v itself.
-		return nil
-	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return v
-	}
-	x := v.goValueNode(g)
-	if g.tracking() {
-		g.ascend(v)
-	}
-	return x
 }
 
-func (v *LVal) goValueNode(g cycleGuard) interface{} {
+// conversionFrame holds output under construction, not a memo of source
+// identities. Repeated subtrees are independently converted as before.
+type conversionFrame struct {
+	v        *LVal
+	mapping  map[interface{}]interface{}
+	kv       [2]interface{}
+	children []*LVal
+	values   []interface{}
+	index    int
+	invalid  bool
+}
+
+func convertContainer(v *LVal) (interface{}, bool) {
+	// One reusable continuation per ancestor, never one per sibling.
+	pending := make([]conversionFrame, 0, 16)
+	var path map[*LVal]bool
+walk:
+	for {
+		if len(pending) >= MaxValueDepth {
+			return (*ErrorVal)(Error(ValueDepthError(MaxValueDepth))), true
+		}
+		var out interface{}
+		f := conversionFrame{v: v}
+		container := true
+		if !v.IsNil() {
+			switch v.Type {
+			case LQuote:
+				f.children = v.Cells[:1]
+			case LSExpr:
+				f.children = v.Cells
+			case LArray:
+				if v.Cells[0].Len() > 1 {
+					container = false
+					out = v
+					break
+				}
+				f.children = v.Cells[1].Cells
+			case LSortMap:
+				md := v.Map()
+				if md.mapBacking == nil {
+					// Degenerate MapData with no implementation (possible
+					// via SortedMapFromData(NewMapData(nil))).  The other
+					// two value walkers each carry this arm -- copier.mapData
+					// has `case nil:` and detachMapData checks
+					// md.mapBacking == nil -- and without it the walk called
+					// sortedMapEntries, whose first act is a Len() method
+					// call on the nil Map, so GoValue panicked with a nil
+					// pointer dereference.  A backing-less map holds no
+					// entries, so it converts to the same empty Go map an
+					// ordinary empty sorted-map converts to.
+					f.mapping = make(map[interface{}]interface{})
+					out = f.mapping
+					break
+				}
+				entries := sortedMapEntries(md)
+				if entries.Type == LError {
+					return (*ErrorVal)(entries), true
+				}
+				for _, pair := range entries.Cells {
+					if len(pair.Cells) != 2 {
+						return nil, false
+					}
+				}
+				f.children = entries.Cells
+				f.mapping = make(map[interface{}]interface{}, len(entries.Cells))
+				out = f.mapping
+			default:
+				container = false
+				out = conversionLeaf(v)
+			}
+			if container {
+				if len(pending) >= 64 {
+					if path == nil {
+						path = make(map[*LVal]bool)
+					}
+					if path[v] {
+						return nil, false
+					}
+					path[v] = true
+				}
+				if v.Type != LSortMap && v.Type != LQuote && (v.Type != LArray || v.Cells[0].Len() != 0) {
+					// f.values doubles as the SNAPSHOT of this container's
+					// children: each slot starts out holding the source
+					// child and is replaced by that child's conversion as
+					// the walk passes it (a slot is read immediately before
+					// it is written, below), so the walk never reads a
+					// child back out of the source's own backing array.
+					//
+					// f.children used to serve that purpose, and it is a
+					// slice header over the source's cells, not a copy of
+					// them.  The walk runs host code -- a custom Map's
+					// Entries, through sortedMapEntries -- so a hook that
+					// wrote into a cell the walk had not reached yet had
+					// that write picked up, and the conversion was neither
+					// the container as it was nor as the hook left it.  A
+					// *LVal stored in an interface costs no allocation, so
+					// the snapshot is free (TestGoValueContainerAllocations
+					// pins that).  The copier and the detacher agree:
+					// a walk converts the children a container held when
+					// the walker entered it.
+					f.values = make([]interface{}, len(f.children))
+					for i, child := range f.children {
+						f.values[i] = child
+					}
+				}
+				if len(f.children) > 0 {
+					pending = append(pending, f)
+					if f.values != nil {
+						v = f.values[0].(*LVal)
+					} else {
+						v = f.children[0]
+						if f.mapping != nil {
+							v = v.Cells[0]
+						}
+					}
+					continue
+				}
+				// Only an empty container reaches here; a container with
+				// children is boxed once, in the pop arm below. Boxing it
+				// here as well cost one extra allocation per container.
+				if f.values != nil {
+					out = f.values
+				}
+				delete(path, v)
+			}
+		}
+		for len(pending) > 0 {
+			f := &pending[len(pending)-1]
+			switch {
+			case f.mapping != nil:
+				f.kv[f.index%2] = out
+				f.index++
+				if f.index%2 == 0 {
+					kv, m := f.kv, f.mapping
+					if kv[0] != nil && reflect.ValueOf(kv[0]).Comparable() {
+						m[kv[0]] = kv[1]
+					} else {
+						f.invalid = true
+					}
+				}
+				if f.index < 2*len(f.children) {
+					v = f.children[f.index/2].Cells[f.index%2]
+					continue walk
+				}
+				if f.invalid {
+					out = map[interface{}]interface{}(nil)
+				} else {
+					out = f.mapping
+				}
+			case f.values != nil:
+				// Read the next child out of the snapshot the slot still
+				// holds, then overwrite that slot with this child's
+				// conversion; f.values is the output once the cursor runs
+				// off the end.
+				f.values[f.index] = out
+				f.index++
+				if f.index < len(f.values) {
+					v = f.values[f.index].(*LVal)
+					continue walk
+				}
+				out = f.values
+			}
+			delete(path, f.v)
+			*f = conversionFrame{}
+			pending = pending[:len(pending)-1]
+		}
+		return out, true
+	}
+}
+
+func conversionLeaf(v *LVal) interface{} {
 	switch v.Type {
 	case LError:
-		return (error)((*ErrorVal)(v))
+		return (*ErrorVal)(v)
 	case LSymbol, LString:
 		return v.Str
 	case LBytes:
-		// v.Bytes is a METHOD, not a field (lisp/lisp.go), so the obvious
-		// `return v.Bytes` handed the embedder a func() []byte where every
-		// other arm of this switch returns plain data.  It type-checks,
-		// because the arm's result is interface{}, and only fails at use --
-		// which is why it survived (issue #548).  libjson's Serializer had
-		// the identical arm and the identical bug; both are fixed.
-		//
-		// The result is a COPY, and the reason is WHOSE DATA IT IS rather
-		// than any blanket no-aliasing rule: GoValue's doc comment does not
-		// promise one, and the LNative arm below hands its payload straight
-		// back uncopied.  That is right for LNative -- the payload is the
-		// EMBEDDER's, so returning it shares what they already own.  An
-		// LBytes is the other case: its bytes live in a *[]byte under Native
-		// so append! can grow them in place, so the storage is the
-		// INTERPRETER's and lisp code observes writes through it.
-		//
-		// Two concrete failures, neither of which needs that framing to bite:
-		//
-		//   - append! REPLACES the slice header (builtinAppendMutate ->
-		//     appendMutateBytes assigns through the *[]byte), so a live slice
-		//     handed out before an append is silently STALE afterwards:
-		//     right contents, wrong length, no error.
-		//   - (slice 'bytes ...) mints a distinct LBytes over the SAME
-		//     backing array, so a write through one live result corrupts its
-		//     siblings.
-		//
-		// Ownership, not seal: sealableNodeType (lisp/seal.go) does not
-		// include LBytes, so a bytes value is never sealed and only the
-		// ownership invariant is in play.
-		//
-		// COST: O(len).  This is the only LEAF arm here that is unbounded --
-		// NOT the only unbounded arm, which an earlier draft of this comment
-		// claimed and which is wrong: LSExpr, LSortMap and LArray all scale
-		// with their input and cost far more (a 65k-entry sorted map runs to
-		// ~150ms and tens of megabytes).  What is unusual here is copying
-		// PAYLOAD rather than building a container spine.
-		//
-		// Magnitudes on the authoring machine: tens of nanoseconds at 16
-		// bytes; hundreds of microseconds and a megabyte allocated at a
-		// megabyte; against single-digit nanoseconds and no allocation for
-		// an LNative carrying the same megabyte.  Magnitudes rather than
-		// figures on purpose -- the absolute numbers move by ~2x run to run
-		// on a shared box -- so BenchmarkGoValueBytes is where they live.
-		//
-		// One amplification worth knowing: N references to ONE LBytes inside
-		// a converted structure produce N copies, since each is converted
-		// where it is reached.  Strings do not do this (v.Str is shared).
-		//
-		// The cost is affordable because of who calls this: GoValue has no
-		// caller inside elps at all, so it is purely an embedder API, and a
-		// copy is what an embedder handing the result to something that
-		// outlives the call -- a logger, a queue, a serializer -- needs.
 		b := v.Bytes()
 		out := make([]byte, len(b))
 		copy(out, b)
@@ -140,43 +250,11 @@ func (v *LVal) goValueNode(g cycleGuard) interface{} {
 		return v.Int
 	case LFloat:
 		return v.Float
-	case LQuote:
-		return goValue(v.Cells[0], g)
-	case LSExpr:
-		s, _ := goSlice(v, g)
-		return s
-	case LSortMap:
-		m, _ := goMap(v, g)
-		return m
-	case LArray:
-		dims, storage := v.Cells[0], v.Cells[1]
-		s, _ := goSlice(SExpr(storage.Cells), g)
-		switch dims.Len() {
-		case 0:
-			return s[0]
-		case 1:
-			return s
-		default:
-			// TODO:  Slice up the backing storage s to create a multidimensional
-			// slice (e.g.  [][]interface{}).
-			return v
-		}
 	case LNative:
 		return v.Native
-	case LInvalid, LQSymbol, LFun, LTaggedVal,
-		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
-		// Returned as the *LVal itself, which is the documented behaviour for
-		// functions and the de-facto behaviour for everything else here.
-		// Enumerated so a new LType has to decide whether it has a natural Go
-		// representation instead of inheriting this one by accident.
-		//
-		// LTaggedVal is the interesting one: libjson's encoder unwraps a
-		// tagged value to its user-data (encodeTaggedVal), so GoValue and the
-		// JSON encoder disagree about it.  Left alone deliberately -- GoValue
-		// is an exported API with outside callers.
+	default:
 		return v
 	}
-	return v
 }
 
 // GoError returns an error that represents v.  If v is not LError then nil is
@@ -233,77 +311,36 @@ func GoFloat64(v *LVal) (float64, bool) {
 	return float64(v.Int), true
 }
 
-// GoSlice returns the string that v represents and the value true.  If v does
-// not represent a string GoSlice returns a false second argument
+// GoSlice converts a list to a Go slice. Non-lists, cycles and walks exceeding
+// MaxValueDepth return (nil, false).
 func GoSlice(v *LVal) ([]interface{}, bool) {
-	var st cycleState
-	vs, ok := goSlice(v, cycleGuard{state: &st})
-	if st.cyclic {
-		// See GoValue: a value that contains itself has no Go representation,
-		// and "not representable" is what a false second argument means.
-		return nil, false
-	}
-	return vs, ok
-}
-
-func goSlice(v *LVal, g cycleGuard) ([]interface{}, bool) {
 	if v.Type != LSExpr {
 		return nil, false
 	}
-	vs := make([]interface{}, len(v.Cells))
-	for i := range vs {
-		vs[i] = goValue(v.Cells[i], g)
+	out, ok := convertValue(v)
+	if !ok {
+		return nil, false
 	}
-	return vs, true
+	if v.IsNil() {
+		return []interface{}{}, true
+	}
+	values, ok := out.([]interface{})
+	return values, ok
 }
 
 // GoMap converts an LSortMap to its Go equivalent and returns it with a true
 // second argument.  If v does not represent a map GoMap returns a false second
 // argument.  Application's using custom Map implementations which allow
 // arbitrary keys may not be able to construct a native Go map, in which case
-// GoMap returns (nil, true).
+// GoMap returns (nil, true). Cycles and excessive nesting return (nil, false).
 func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
-	var st cycleState
-	m, ok := goMap(v, cycleGuard{state: &st})
-	if st.cyclic {
-		// See GoValue: a value that contains itself has no Go representation.
-		return nil, false
-	}
-	return m, ok
-}
-
-func goMap(v *LVal, g cycleGuard) (map[interface{}]interface{}, bool) {
 	if v.Type != LSortMap {
 		return nil, false
 	}
-	data := v.Map()
-	m := make(gomap, data.Len())
-	for _, pair := range sortedMapEntries(data).Cells {
-		if !checkGoMapInsert(m, pair.Cells[0], pair.Cells[1], g) {
-			return nil, true
-		}
+	out, ok := convertValue(v)
+	if !ok {
+		return nil, false
 	}
-	return m, true
+	values, ok := out.(map[interface{}]interface{})
+	return values, ok
 }
-
-func checkGoMapInsert(m gomap, lk, lv *LVal, g cycleGuard) (ok bool) {
-	// k is definitely assignable to m's key type (interface{}) but map keys
-	// must also be comparable which is not known without reflection on k's
-	// type (or through recovering a failed map assignment).
-	k := goValue(lk, g)
-	if k == nil {
-		// Either the walk has been abandoned -- goValue returns nil rather
-		// than descending, and the caller is about to discard this map -- or
-		// the key really converts to nil, which no Go map can hold as a key
-		// either.  reflect.TypeOf(nil) is nil and panics on Comparable, so
-		// this has to be checked before the reflection below.
-		return false
-	}
-	if reflect.TypeOf(k).Comparable() {
-		m[k] = goValue(lv, g)
-		return true
-	}
-	return false
-}
-
-type gomap = map[interface{}]interface{}

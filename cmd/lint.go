@@ -46,8 +46,9 @@ all findings to stderr.
 Semantic analysis (--workspace): When a workspace directory is specified,
 the linter performs scope-aware analysis that enables additional checks:
 undefined-symbol, unused-variable, unused-function, shadowing, and user-arity.
-Without --workspace, these checks are disabled and the linter only runs
-syntactic checks.
+Without --workspace, these checks are disabled. Structural checks and the
+let-recursion check still run; let-recursion resolves bindings within the file
+and recommends labels for recursive local functions.
 
 Exit codes:
   0  No problems found, or only diagnostics below the --fail-on threshold

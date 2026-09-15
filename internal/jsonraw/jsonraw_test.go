@@ -11,7 +11,7 @@ import (
 )
 
 // #627: moving the decoder's bridge under internal must not copy its raw
-// storage, collapse wrappers, or replace its string-only key semantics.
+// storage, collapse wrappers, or replace its string-key presentation.
 func TestWrapPreservesBackingIdentityAndStringKeys(t *testing.T) {
 	value := lisp.Int(1)
 	data := map[string]any{"key": value}
@@ -34,21 +34,30 @@ func TestWrapPreservesBackingIdentityAndStringKeys(t *testing.T) {
 	if data["added"] != added || second.MapGet("added") != added {
 		t.Fatal("Lisp write did not reach raw backing and the other wrapper")
 	}
-	for _, key := range []*lisp.LVal{lisp.Symbol("key"), lisp.Int(1)} {
+	if got := first.Map().Set(lisp.Symbol("key"), replacement); !got.IsNil() {
+		t.Fatal(got)
+	}
+	if got, found := second.Map().Get(lisp.Symbol("key")); !found || got != replacement {
+		t.Fatalf("symbol lookup lost backing alias: %v", got)
+	}
+	if keys := first.Map().Keys(); keys.String() != `'("added" "key")` {
+		t.Fatalf("symbol write changed string-key presentation: %v", keys)
+	}
+	for _, key := range []*lisp.LVal{lisp.Int(1), lisp.Nil()} {
 		if got := first.Map().Set(key, lisp.Int(99)); got.Type != lisp.LError {
-			t.Fatalf("non-string set accepted %v: %v", key, got)
+			t.Fatalf("invalid key set accepted %v: %v", key, got)
 		}
 		if got := first.Map().Del(key); got.Type != lisp.LError {
-			t.Fatalf("non-string delete accepted %v: %v", key, got)
+			t.Fatalf("invalid key delete accepted %v: %v", key, got)
 		}
 		if got, found := first.Map().Get(key); found || got.Type != lisp.LError {
-			t.Fatalf("non-string get accepted %v: got %v, found %t", key, got, found)
+			t.Fatalf("invalid key get accepted %v: got %v, found %t", key, got, found)
 		}
 		if len(data) != 2 || data["key"] != replacement || data["added"] != added {
 			t.Fatal("rejected key operation changed backing storage")
 		}
 	}
-	if got := second.Map().Del(lisp.String("key")); !got.IsNil() {
+	if got := second.Map().Del(lisp.Symbol("key")); !got.IsNil() {
 		t.Fatal(got)
 	}
 	if _, found := data["key"]; found || first.Len() != 1 {

@@ -298,17 +298,22 @@ func TestTemplateJSONMapKeyPolicyMatchesCold(t *testing.T) {
 	for _, env := range []*lisp.LEnv{cold, first, sibling} {
 		assertTemplateValue(t, env, `(get doc "k")`, lisp.Int(1))
 	}
-	for _, src := range []string{`(get doc 'k)`, `(assoc! doc 'k 9)`, `(dissoc! doc 'k)`} {
-		want := cold.LoadString("key-policy.lisp", src)
-		if want.Type != lisp.LError || !strings.Contains(want.String(), "decoded from json cannot hold key with type 'symbol") {
-			t.Fatalf("cold control did not reject symbol key: %v", want)
+	for _, tc := range []struct{ src, want string }{
+		{`(get doc 'k)`, `1`},
+		{`(assoc! doc 'k 9)`, `(sorted-map "k" 9)`},
+		{`(get doc 'k)`, `9`},
+		{`(dissoc! doc 'k)`, `(sorted-map)`},
+		{`(assoc! doc 'k 1)`, `(sorted-map "k" 1)`},
+	} {
+		want := cold.LoadString("key-policy.lisp", tc.src)
+		if want.Type == lisp.LError || want.String() != tc.want {
+			t.Fatalf("cold symbol-key access: got %v, want %s", want, tc.want)
 		}
 		for _, env := range []*lisp.LEnv{first, sibling} {
-			got := env.LoadString("key-policy.lisp", src)
-			if got.Type != lisp.LError || got.String() != want.String() {
-				t.Fatalf("%s: got %v, want cold error %v", src, got, want)
+			got := env.LoadString("key-policy.lisp", tc.src)
+			if got.Type == lisp.LError || got.String() != want.String() {
+				t.Fatalf("%s: got %v, want cold result %v", tc.src, got, want)
 			}
-			assertTemplateValue(t, env, `(get doc "k")`, lisp.Int(1))
 		}
 	}
 	for _, env := range []*lisp.LEnv{cold, first} {

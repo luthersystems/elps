@@ -44,11 +44,14 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
 			"symbols": "remapped: binding descriptors", "symbolDocs": "remapped: owned string pairs",
 			"funNames": "remapped: owned string pairs", "externals": "remapped: owned string list",
+			"bindingsSealed": "scalar: preserve core package Lisp binding protection",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",
 		}},
 		{reflect.TypeFor[CallStack](), map[string]string{
+			"renderContext":    "reset: per-error evaluation context; diagnostic stacks are rejected at publication",
+			"renderLimit":      "reset: per-error output cap; instantiated runtimes capture their own policy",
 			"Frames":           "reset: runtime starts empty; retained diagnostic stacks are rejected (#629)",
 			"GoStack":          "reset: source must be nil; references to its live header are rejected (#629)",
 			"MaxHeightLogical": "scalar: stack limit", "MaxHeightPhysical": "scalar: stack limit",
