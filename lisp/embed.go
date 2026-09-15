@@ -131,7 +131,6 @@ walk:
 				}
 				if v.Type != LSortMap && v.Type != LQuote && (v.Type != LArray || v.Cells[0].Len() != 0) {
 					f.values = make([]interface{}, len(f.children))
-					out = f.values
 				}
 				if len(f.children) > 0 {
 					pending = append(pending, f)
@@ -140,6 +139,12 @@ walk:
 						v = v.Cells[0]
 					}
 					continue
+				}
+				// Only an empty container reaches here; a container with
+				// children is boxed once, in the pop arm below. Boxing it
+				// here as well cost one extra allocation per container.
+				if f.values != nil {
+					out = f.values
 				}
 				delete(path, v)
 			}

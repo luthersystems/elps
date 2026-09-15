@@ -24,6 +24,27 @@ func TestGoValueLeafAllocations(t *testing.T) {
 	}
 }
 
+// A container costs exactly two allocations in GoValue: its []interface{}
+// backing and the interface box that carries it to the parent. The frame
+// arm used to box the slice a second time on push, which the pop arm then
+// discarded, so every non-empty container paid three.
+func TestGoValueContainerAllocations(t *testing.T) {
+	for _, n := range []int{1, 16, 1000} {
+		cells := make([]*LVal, n)
+		for i := range cells {
+			cells[i] = QExpr([]*LVal{Int(i % 200), Int((i + 1) % 200)})
+		}
+		v := QExpr(cells)
+		got := testing.AllocsPerRun(50, func() { goValueSink = GoValue(v) })
+		// Each sublist: its backing slice and its box. The root: the same
+		// two. Every int is a distinct value boxed once.
+		want := float64(2*n + 2)
+		if got != want {
+			t.Fatalf("%d sublists: got %g allocations, want %g", n, got, want)
+		}
+	}
+}
+
 // Width must not spill traversal scratch: only output headers and the one
 // backing slice are allocated, however many scalar siblings a list has.
 func TestCopyWideLeafAllocations(t *testing.T) {
