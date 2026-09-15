@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strings"
 
 	"github.com/luthersystems/elps/internal/templatepolicy"
 )
@@ -335,14 +336,40 @@ func (f *templateFrame) child() (templateVisit, bool) {
 	}
 }
 
-func (f *templateFrame) wrap(err error) error {
-	if f.stage == 2 && f.visitCapture {
-		return fmt.Errorf("builtin captures: %w", err)
+// wrapTemplatePath formats the active ancestors only on rejection, then wraps
+// the leaf once. Per-ancestor wrapping retains quadratic diagnostic text.
+// Keep at most 32 scope/capture entries and 1024 bytes of path (excluding the
+// omission marker and leaf error), so deep graphs and long names stay bounded.
+func wrapTemplatePath(pending []templateFrame, err error) error {
+	var path strings.Builder
+	shown, omitted := 0, 0
+	for i := range pending {
+		f := &pending[i]
+		var prefix, name string
+		switch {
+		case f.stage == 2 && f.visitCapture:
+			name = "builtin captures"
+		case f.stage == 3 && f.scope != nil && f.index > 0:
+			prefix, name = "scope ", f.key(f.index-1)
+		default:
+			continue
+		}
+		if omitted > 0 || shown >= 32 || len(prefix)+len(name)+2 > 1024-path.Len() {
+			omitted++
+			continue
+		}
+		path.WriteString(prefix)
+		path.WriteString(name)
+		path.WriteString(": ")
+		shown++
 	}
-	if f.stage == 3 && f.scope != nil && f.index > 0 {
-		return fmt.Errorf("scope %s: %w", f.key(f.index-1), err)
+	if omitted > 0 {
+		fmt.Fprintf(&path, "... (%d more): ", omitted)
 	}
-	return err
+	if path.Len() == 0 {
+		return err
+	}
+	return fmt.Errorf("%s%w", path.String(), err)
 }
 
 func (s *templateInventory) node(visit templateVisit) error {
@@ -389,9 +416,7 @@ func (s *templateInventory) walk(visit templateVisit) error {
 	}
 	s.next = templateFrame{}
 	if err != nil {
-		for i := len(pending) - 1; i >= 0; i-- {
-			err = pending[i].wrap(err)
-		}
+		return wrapTemplatePath(pending, err)
 	}
 	return err
 }
