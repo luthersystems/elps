@@ -59,12 +59,21 @@ assert_exit() {
 }
 
 # assert_contains <needle> <description> <command...>
+#
+# The needle test is a HERE-STRING, not `echo "$out" | grep -q`. This file runs
+# under `set -o pipefail`, and `grep -q` exits the instant it matches -- so on
+# an output larger than the pipe buffer (64 KiB) the `echo` feeding it dies of
+# SIGPIPE, the PIPELINE status becomes 141, and the match reads as a miss. The
+# 150 KB benchmark-report fixtures below are the first outputs in this suite big
+# enough to spring that, and it springs silently in both directions: a false
+# FAIL here, and in assert_not_contains a false PASS -- a present needle
+# reported absent, which is a gate that cannot fail.
 assert_contains() {
 	local needle="$1" desc="$2"
 	shift 2
 	local out
 	out=$("$@" 2>&1)
-	if echo "$out" | grep -qF -- "$needle"; then
+	if grep -qF -- "$needle" <<< "$out"; then
 		ok "$desc"
 	else
 		bad "$desc — output did not contain '$needle'"
@@ -92,7 +101,7 @@ assert_not_contains() {
 	if [ "$rc" -gt 125 ]; then
 		bad "$desc — the command could not run (exit $rc), so nothing was asserted"
 		echo "$out" | sed 's/^/        | /'
-	elif echo "$out" | grep -qF -- "$needle"; then
+	elif grep -qF -- "$needle" <<< "$out"; then    # here-string: see assert_contains
 		bad "$desc — output unexpectedly contained '$needle'"
 		echo "$out" | sed 's/^/        | /'
 	else
@@ -202,6 +211,23 @@ if [ -e "$NOT_A_SCRIPT" ]; then
 else
 	ok "the missing-command fixture is genuinely absent"
 fi
+
+# THE PIPE-BUFFER TRAP. Both needle helpers used to pipe the captured output
+# into `grep -q`, and `grep -q` exits the instant it matches. Under this file's
+# `set -o pipefail` that makes the feeding `echo` die of SIGPIPE on any output
+# larger than the 64 KiB pipe buffer, the pipeline status becomes 141, and a
+# PRESENT needle reads as absent -- a false FAIL from assert_contains and,
+# worse, a false PASS from assert_not_contains. Nothing in this suite produced
+# an output that big until the ~150 KB benchmark-report fixtures below, so it
+# would have sprung on the very assertions added to close PR #658.
+#
+# 200 KB of filler after the needle, so a match early in the stream leaves far
+# more than one buffer unread.
+big_output() { printf 'REGRESSION\n'; printf 'x%.0s' $(seq 1 200000); printf '\n'; }
+assert_helper_verdict PASS "assert_contains finds a needle in a 200 KB output (no SIGPIPE/pipefail miss)" \
+	assert_contains "REGRESSION" "inner: needle present, huge output" big_output
+assert_helper_verdict FAIL "assert_not_contains FAILS on a needle in a 200 KB output (it must not read as absent)" \
+	assert_not_contains "REGRESSION" "inner: needle present, huge output" big_output
 
 echo
 # Everything from here to the end of the "uninterpretable input" section drives
@@ -1406,8 +1432,16 @@ BENCH_COMPARE_SH="${SCRIPT_DIR}/bench-compare.sh"
 # (branching, $GITHUB_OUTPUT, annotations), and cmd/benchgate's own verdict
 # logic is already covered by the fixture sections above and by
 # `go test ./cmd/benchgate`.
+#
+# <rows> (optional, default 0) pads BOTH the stub benchstat table and the stub
+# gate report with that many ordinary no-finding rows, which is how the
+# too-long-body fixture below reproduces PR #658's ~1,300-line report (620
+# padding rows in each of the two collapsed sections). The
+# padding rows deliberately match none of the '^  (WAIVED|NOISE-FLOOR|
+# UNMEASURABLE)' patterns, so they all land BELOW the fold, where the comment
+# script is allowed to cut them.
 make_compare_sandbox() {
-	local dir="$1" arms_rc="$2" gate_rc="$3"
+	local dir="$1" arms_rc="$2" gate_rc="$3" rows="${4:-0}"
 	mkdir -p "${dir}/pr/scripts" "${dir}/work" "${dir}/bin"
 	{
 		echo '#!/usr/bin/env bash'
@@ -1419,11 +1453,17 @@ make_compare_sandbox() {
 		# Two leading spaces: the waiver extraction greps '^  (WAIVED|...)'.
 		echo "echo '  WAIVED      pkg B/op Encode-2 delta=+12.45% accepted: ceiling 14%'"
 		echo "echo 'stub gate report'"
+		echo "for i in \$(seq 1 ${rows}); do"
+		echo "  echo \"  github.com/luthersystems/elps/somepackage   ns/op   BenchmarkPaddingRowNumber\${i}-2   delta=+0.11% p=0.412 (gate 15%)\""
+		echo "done"
 		echo "exit ${gate_rc}"
 	} > "${dir}/bin/benchgate"
 	{
 		echo '#!/usr/bin/env bash'
 		echo "echo 'stub benchstat table'"
+		echo "for i in \$(seq 1 ${rows}); do"
+		echo "  echo \"github.com/luthersystems/elps/somepackage   BenchmarkPaddingRowNumber\${i}-2   12.3n +/- 2%   12.4n +/- 3%   +0.11% (p=0.412 n=10)\""
+		echo "done"
 	} > "${dir}/bin/benchstat"
 	# The shipped waiver list has to exist in the sandbox's PR tree, because
 	# bench-compare.sh names it on the gate's command line.
@@ -1435,11 +1475,18 @@ make_compare_sandbox() {
 }
 
 # compare_case <arms-rc> <gate-rc> [mode] -> prints the script's stdout, then
-# its exit status, then whatever it wrote to $GITHUB_OUTPUT, so a single
-# assertion can inspect any of the three.
+# its exit status, then whatever it wrote to $GITHUB_OUTPUT, then the assembled
+# comment body, so a single assertion can inspect any of the four.
+#
+# The comment body is a FILE now rather than the `result` step output, and the
+# path is FOLLOWED out of $GITHUB_OUTPUT rather than hardcoded here: a script
+# that advertised one path and wrote the body to another would make the "Post PR
+# comment" step read nothing and post nothing -- silently, because that step
+# treats its own failures as "expected for PRs from forks". Hardcoding the path
+# in this harness is precisely how that would pass unnoticed.
 compare_case() {
 	local arms_rc="$1" gate_rc="$2" mode="${3:-normal}"
-	local dir rc
+	local dir rc cf
 	dir="$(mktemp -d)"
 	make_compare_sandbox "$dir" "$arms_rc" "$gate_rc"
 	case "$mode" in
@@ -1459,7 +1506,32 @@ compare_case() {
 	echo "__EXIT__ ${rc}"
 	echo "__GITHUB_OUTPUT__"
 	cat "${dir}/gh-output.txt" 2>/dev/null
+	cf="$(sed -n 's/^comment_file=//p' "${dir}/gh-output.txt" 2>/dev/null | tail -n 1)"
+	echo "__COMMENT_BODY__"
+	if [ -z "$cf" ]; then
+		echo "__NO_COMMENT_FILE_OUTPUT__"
+	elif [ ! -f "$cf" ]; then
+		echo "__COMMENT_FILE_MISSING__ ${cf}"
+	else
+		cat "$cf"
+	fi
 	rm -rf "$dir"
+}
+
+# compare_case_output <arms-rc> <gate-rc> [mode] -> ONLY what reached
+# $GITHUB_OUTPUT. Used by the size assertions, which have to be able to tell
+# "small" from "the whole report is back in there".
+compare_case_output() {
+	compare_case "$@" | sed -n '/^__GITHUB_OUTPUT__$/,/^__COMMENT_BODY__$/p' | sed '1d;$d'
+}
+
+# compare_case_comment <arms-rc> <gate-rc> [mode] -> ONLY the assembled comment
+# body, read back from the path the script advertised. Assertions about what the
+# PR comment SAYS use this rather than compare_case, so they cannot be satisfied
+# by the same text appearing in $GITHUB_OUTPUT -- which is where it used to live
+# and is exactly the shape being moved away from.
+compare_case_comment() {
+	compare_case "$@" | sed -n '/^__COMMENT_BODY__$/,$p' | tail -n +2
 }
 
 # Every branch must exit 0: this script REPORTS a verdict via gate_status, and
@@ -1512,12 +1584,234 @@ assert_not_contains "gate_status=0" \
 
 # A waived row that is only visible to whoever expands a <details> block is an
 # accepted regression nobody reviews. It must be surfaced ABOVE the fold.
+#
+# Asserted against the comment BODY specifically (compare_case_comment), not
+# against the run as a whole: the gate prints the same text to stdout, so an
+# assertion over the combined output would keep passing on a build that had
+# stopped putting it in the comment at all.
 assert_contains "### Reviewed waivers" \
-	"bench-compare: a WAIVED row is lifted out of the collapsed section" \
-	compare_case 0 0
+	"bench-compare: a WAIVED row is lifted out of the collapsed section (in the comment body)" \
+	compare_case_comment 0 0
 assert_contains "n=10 each." \
 	"bench-compare: BENCH_COUNT reaches the comment footer from the environment" \
-	compare_case 0 0
+	compare_case_comment 0 0
+
+# The body must reach the PR comment through a FILE whose path is advertised as
+# a step output, and it must reach it on EVERY branch -- including the three
+# "could not run" ones, which are the branches whose comment is the only place
+# the cause is explained.
+for case_args in "0 0 normal" "0 1 normal" "0 2 normal" "1 0 normal" \
+	"0 0 missing-scripts" "0 0 empty-baseline"; do
+	# Deliberate word splitting of the case tuple into three arguments.
+	# shellcheck disable=SC2086
+	assert_contains "comment_file=" \
+		"bench-compare: advertises the comment body's PATH as a step output (${case_args})" \
+		compare_case_output $case_args
+	# shellcheck disable=SC2086
+	assert_not_contains "__NO_COMMENT_FILE_OUTPUT__" \
+		"bench-compare: no branch assembles a comment without advertising it (${case_args})" \
+		compare_case $case_args
+	# shellcheck disable=SC2086
+	assert_not_contains "__COMMENT_FILE_MISSING__" \
+		"bench-compare: the advertised comment_file path really exists (${case_args})" \
+		compare_case $case_args
+done
+
+# Each branch's body has to actually be IN that file -- an empty file at a
+# correct path posts an empty comment, which is the same silence as no comment.
+assert_contains "## Benchmark Comparison (main baseline vs PR)" \
+	"bench-compare: the comparison body lands in the comment file" \
+	compare_case_comment 0 0
+assert_contains "stub gate report" \
+	"bench-compare: the GATE REPORT reaches the comment body (not just the job log)" \
+	compare_case_comment 0 0
+assert_contains "stub benchstat table" \
+	"bench-compare: the benchstat table reaches the comment body" \
+	compare_case_comment 0 0
+assert_contains "## Benchmark gate could not run" \
+	"bench-compare: the missing-scripts cause reaches the comment body" \
+	compare_case_comment 0 0 missing-scripts
+assert_contains "## Benchmark Results (base arm FAILED" \
+	"bench-compare: the empty-baseline cause reaches the comment body" \
+	compare_case_comment 0 0 empty-baseline
+assert_contains "## Benchmark arms are NOT comparable" \
+	"bench-compare: the incomparable-arms cause reaches the comment body" \
+	compare_case_comment 1 0
+
+# THE REGRESSION ITSELF (PR #658). The report used to be the `result` step
+# output, which the comment step then passed to node through `env:` -- and a
+# step output becomes an environment variable in the child's argv/envp block,
+# which the kernel caps. At ~1,300 lines the step died with "Argument list too
+# long" BEFORE its script ran, so a job whose gate had PASSED ("0 at or above
+# the gate") went red, and with it the required aggregate. Nothing about that
+# failure mentioned size.
+assert_not_contains "result<<" \
+	"bench-compare: the report body no longer travels as a step output (PR #658: 'Argument list too long')" \
+	compare_case_output 0 0
+assert_not_contains "BENCHSTAT_EOF" \
+	"bench-compare: no multi-line heredoc output remains on \$GITHUB_OUTPUT" \
+	compare_case_output 0 0
+
+echo "== bench comment body: size and truncation ==============================="
+
+BENCH_COMMENT_CJS="${SCRIPT_DIR}/bench-comment.cjs"
+
+# bench_fixture_run <dest-dir> <rows> -- run bench-compare.sh against a stub
+# gate whose report carries <rows> padding rows, and leave BOTH artifacts in
+# <dest-dir>: gh-output.txt (what reached $GITHUB_OUTPUT) and comment.md (the
+# body, read back from the path gh-output.txt advertised). <rows>=620 puts a
+# padded row in each of the two collapsed sections, reproducing the ~1,300-line
+# report that killed the comment step on PR #658.
+bench_fixture_run() {
+	local dest="$1" rows="$2" dir cf
+	mkdir -p "$dest"
+	dir="$(mktemp -d)"
+	make_compare_sandbox "$dir" 0 0 "$rows"
+	(
+		cd "${dir}/work" || exit 99
+		PATH="${dir}/bin:${PATH}" \
+			GITHUB_WORKSPACE="$dir" \
+			GITHUB_OUTPUT="${dir}/gh-output.txt" \
+			BENCH_COUNT=10 \
+			bash "$BENCH_COMPARE_SH"
+	) >/dev/null 2>&1
+	cp "${dir}/gh-output.txt" "${dest}/gh-output.txt" 2>/dev/null ||
+		: > "${dest}/gh-output.txt"
+	cf="$(sed -n 's/^comment_file=//p' "${dest}/gh-output.txt" | tail -n 1)"
+	if [ -n "$cf" ] && [ -f "$cf" ]; then
+		cp "$cf" "${dest}/comment.md"
+	else
+		: > "${dest}/comment.md"
+	fi
+	rm -rf "$dir"
+}
+
+if [ ! -f "$BENCH_COMMENT_CJS" ]; then
+	bad "scripts/bench-comment.cjs is missing — the PR-comment body has no testable implementation"
+elif ! command -v node >/dev/null 2>&1; then
+	echo "SKIP  node not installed; cannot exercise bench-comment.cjs truncation"
+else
+	# truncate_fixture <body-file> -- run the REAL truncateBody from
+	# bench-comment.cjs over <body-file> and print '__LEN__ <n>' followed by
+	# the result. Reimplementing the rule here would test this file against
+	# itself, which is the failure mode the whole suite exists to avoid.
+	truncate_fixture() {
+		node -e '
+const fs = require("fs");
+const mod = require(process.argv[1]);
+const body = fs.readFileSync(process.argv[2], "utf8");
+const out = mod.truncateBody(body, "https://github.example/acme/elps/actions/runs/1234567");
+process.stdout.write("__LEN__ " + out.length + "\n");
+process.stdout.write(out);
+' "$BENCH_COMMENT_CJS" "$1"
+	}
+
+	bench_fx="$(mktemp -d)"
+	bench_fixture_run "${bench_fx}/big" 620
+	bench_fixture_run "${bench_fx}/small" 0
+
+	big_body="${bench_fx}/big/comment.md"
+	small_body="${bench_fx}/small/comment.md"
+	big_len=$(wc -c < "$big_body")
+	small_len=$(wc -c < "$small_body")
+	out_len=$(wc -c < "${bench_fx}/big/gh-output.txt")
+
+	# Without this the truncation assertions below are vacuous: an UNtruncated
+	# body satisfies every "the summary survives" check there is.
+	if [ "$big_len" -gt 60000 ]; then
+		ok "bench-comment fixture: the ~1,300-line report really does exceed the 60,000-character truncation limit (${big_len} chars)"
+	else
+		bad "bench-comment fixture: the ~1,300-line report is only ${big_len} chars — every truncation assertion below would pass on an untruncated body"
+	fi
+	if [ "$small_len" -lt 60000 ] && [ "$small_len" -gt 0 ]; then
+		ok "bench-comment fixture: the unpadded report is within the limit (${small_len} chars), so it is a usable negative control"
+	else
+		bad "bench-comment fixture: the unpadded report is ${small_len} chars — it cannot serve as the not-truncated control"
+	fi
+
+	# The size guarantee that PR #658 needed: whatever the report costs, the
+	# STEP OUTPUT stays small, because that is what becomes an environment
+	# variable. 2 KiB is generous for `gate_status=0` plus one path and still
+	# three orders of magnitude below where the failure lives.
+	if [ "$out_len" -le 2048 ]; then
+		ok "bench-compare: a ${big_len}-character report leaves \$GITHUB_OUTPUT at ${out_len} bytes (the env-size failure is structurally gone)"
+	else
+		bad "bench-compare: \$GITHUB_OUTPUT is ${out_len} bytes for a ${big_len}-character report — the body is travelling in the step output again (PR #658: 'Argument list too long')"
+	fi
+
+	# What must survive a cut, and what must go.
+	assert_contains "## Benchmark Comparison (main baseline vs PR)" \
+		"bench-comment: truncation keeps the gate summary heading" \
+		truncate_fixture "$big_body"
+	assert_contains "### Reviewed waivers" \
+		"bench-comment: truncation keeps the flagged-rows section above the fold" \
+		truncate_fixture "$big_body"
+	assert_contains "WAIVED      pkg B/op Encode-2" \
+		"bench-comment: truncation keeps the WAIVED row itself, not just its heading" \
+		truncate_fixture "$big_body"
+	assert_not_contains "<details>" \
+		"bench-comment: truncation cuts the collapsed per-row tables" \
+		truncate_fixture "$big_body"
+	assert_not_contains "BenchmarkPaddingRowNumber619" \
+		"bench-comment: truncation actually removes the per-row table rows" \
+		truncate_fixture "$big_body"
+	assert_contains "This comment was truncated" \
+		"bench-comment: a truncated body SAYS it was truncated" \
+		truncate_fixture "$big_body"
+	assert_contains "actions/runs/1234567" \
+		"bench-comment: a truncated body links the job log holding the full report" \
+		truncate_fixture "$big_body"
+
+	trunc_len="$(truncate_fixture "$big_body" | sed -n 's/^__LEN__ //p')"
+	if [ -n "$trunc_len" ] && [ "$trunc_len" -le 65536 ]; then
+		ok "bench-comment: the truncated body is ${trunc_len} characters, inside GitHub's 65,536 cap"
+	else
+		bad "bench-comment: the truncated body is ${trunc_len:-unmeasurable} characters — GitHub would reject it"
+	fi
+
+	# NEGATIVE CONTROL. A truncator that always truncates would pass every
+	# assertion above while destroying the ordinary comment.
+	assert_contains "<details>" \
+		"negative control: a body within the limit keeps its collapsed tables" \
+		truncate_fixture "$small_body"
+	assert_not_contains "This comment was truncated" \
+		"negative control: a body within the limit carries no truncation note" \
+		truncate_fixture "$small_body"
+
+	# The degenerate case: an above-the-fold section that is ITSELF over the
+	# limit (a waiver list in the hundreds). Nothing can preserve it whole --
+	# 65,536 is GitHub's number, not ours -- so the requirement is that the
+	# body still fits, still leads with the summary and still says what
+	# happened, rather than being rejected by the API.
+	nofold_body="${bench_fx}/nofold.md"
+	{
+		echo '## Benchmark Comparison (main baseline vs PR)'
+		echo ''
+		echo '### Reviewed waivers'
+		echo ''
+		awk 'BEGIN{for(i=0;i<1400;i++) printf "  WAIVED      github.com/luthersystems/elps/pkg B/op BenchmarkRowNumber%05d-2 delta=+12.45%% accepted: ceiling 14%%\n", i}'
+	} > "$nofold_body"
+	nofold_len=$(wc -c < "$nofold_body")
+	if [ "$nofold_len" -gt 60000 ]; then
+		ok "bench-comment fixture: the all-above-the-fold report exceeds the limit (${nofold_len} chars)"
+	else
+		bad "bench-comment fixture: the all-above-the-fold report is only ${nofold_len} chars — the degenerate-case assertions would be vacuous"
+	fi
+	assert_contains "## Benchmark Comparison (main baseline vs PR)" \
+		"bench-comment: a body with NO collapsed section still leads with the summary after truncation" \
+		truncate_fixture "$nofold_body"
+	assert_contains "This comment was truncated" \
+		"bench-comment: a body with NO collapsed section still says it was truncated" \
+		truncate_fixture "$nofold_body"
+	nofold_trunc_len="$(truncate_fixture "$nofold_body" | sed -n 's/^__LEN__ //p')"
+	if [ -n "$nofold_trunc_len" ] && [ "$nofold_trunc_len" -le 65536 ]; then
+		ok "bench-comment: a body with no collapsed section is still cut to fit (${nofold_trunc_len} characters)"
+	else
+		bad "bench-comment: a body with no collapsed section came out at ${nofold_trunc_len:-unmeasurable} characters — GitHub would reject it"
+	fi
+
+	rm -rf "$bench_fx"
+fi
 
 echo "== workflow shape guards ================================================="
 
@@ -1568,14 +1862,17 @@ invoked_in_any() {
 BENCH_COMPARE="${SCRIPT_DIR}/bench-compare.sh"
 BENCH_RUN_ARMS="${SCRIPT_DIR}/bench-run-arms.sh"
 BENCH_GATE_FAIL="${SCRIPT_DIR}/bench-gate-fail.sh"
+BENCH_COMMENT="${SCRIPT_DIR}/bench-comment.cjs"
 REQUIRE_JOBS="${SCRIPT_DIR}/require-jobs-succeeded.sh"
-BENCH_PLUMBING=("$BENCH_WF" "$BENCH_COMPARE" "$BENCH_RUN_ARMS" "$BENCH_GATE_FAIL" "$REQUIRE_JOBS")
+BENCH_PLUMBING=("$BENCH_WF" "$BENCH_COMPARE" "$BENCH_RUN_ARMS" "$BENCH_GATE_FAIL" \
+	"$BENCH_COMMENT" "$REQUIRE_JOBS")
 
 # Each extracted script must still be CALLED from the workflow. Without this,
 # deleting the `run:` line would leave a perfectly clean, perfectly linted
 # script that nothing executes -- the same "green because it stopped looking"
 # shape as the dead grep, one level up.
-for s in bench-run-arms.sh bench-compare.sh bench-gate-fail.sh require-jobs-succeeded.sh; do
+for s in bench-run-arms.sh bench-compare.sh bench-gate-fail.sh bench-comment.cjs \
+	require-jobs-succeeded.sh; do
 	if [ ! -f "${SCRIPT_DIR}/${s}" ]; then
 		bad "scripts/${s} is missing — the benchmark workflow calls it"
 	elif [ -n "$(invoked_in "$BENCH_WF" "scripts/${s}")" ]; then
@@ -1630,14 +1927,75 @@ else
 fi
 
 # A waived row that only ever appears in the job log is an accepted regression
-# nobody reviews. The gate's report must reach the PR comment, which means the
-# workflow has to capture it and put it in the comment body -- two halves, both
-# checkable, and the failure of either is invisible from the outside.
+# nobody reviews. The gate's report must reach the PR comment, and since PR #658
+# that is a THREE-link chain rather than one string: bench-compare.sh captures
+# gate-report.txt and writes it into a file, it advertises that file's PATH as
+# the `comment_file` step output, the workflow passes that path (not the report)
+# to the comment step, and bench-comment.cjs reads it back. Every link is
+# checked separately, because a break in any one of them is invisible from the
+# outside -- the comment simply stops appearing, and the job stays green.
+#
+# The behavioural half of this ("stub gate report" really does land in the
+# comment body) is asserted in the bench-compare fixture section above; these
+# are the wiring half, which fixtures cannot see.
 gate_report_hits="$(invoked_in_any 'gate-report.txt' "${BENCH_PLUMBING[@]}")"
 if [ "$(echo "$gate_report_hits" | wc -w)" -ge 2 ]; then
-	ok "the benchmark plumbing captures the gate report AND feeds it into the PR comment"
+	ok "the benchmark plumbing captures the gate report AND writes it into the comment body"
 else
-	bad "the benchmark plumbing does not carry the gate report into the PR comment — a WAIVED row would be visible only to whoever opens the job log"
+	bad "the benchmark plumbing does not carry the gate report into the comment body — a WAIVED row would be visible only to whoever opens the job log"
+fi
+if [ -n "$(invoked_in "$BENCH_COMPARE" 'comment_file=')" ]; then
+	ok "bench-compare.sh advertises the comment body's path as the comment_file step output"
+else
+	bad "bench-compare.sh emits no comment_file output — the comment step would have no body to read"
+fi
+if [ -n "$(invoked_in "$BENCH_WF" 'steps.benchstat.outputs.comment_file')" ]; then
+	ok "benchmark.yml passes the comment body's PATH to the comment step"
+else
+	bad "benchmark.yml does not consume steps.benchstat.outputs.comment_file — the comment step has nothing to read (or the whole report is back in an env var)"
+fi
+if [ -n "$(invoked_in "$BENCH_WF" 'BENCH_COMMENT_FILE')" ] &&
+	[ -n "$(invoked_in "$BENCH_COMMENT" 'BENCH_COMMENT_FILE')" ]; then
+	ok "BENCH_COMMENT_FILE is both set by benchmark.yml and read by bench-comment.cjs"
+else
+	bad "BENCH_COMMENT_FILE is set on one side only — the comment step reads a path nobody provides, or a path nobody reads"
+fi
+
+# THE REGRESSION GUARD (PR #658). The report must never travel as a step output
+# again. `env:` entries become part of the child process's environment block,
+# which the kernel caps, and the ~1,300-line report took the "Post PR comment"
+# step past it:
+#
+#   ##[error]An error occurred trying to start process '.../node24/bin/node'
+#   with working directory '/home/runner/work/elps/elps'. Argument list too long
+#
+# The gate had PASSED, so the benchmark job -- and the required aggregate that
+# depends on it -- went red on an infrastructure failure with nothing in the
+# message about size. Match an INVOCATION, not the word: this file and the
+# workflow both quote the broken shape in explanatory comments, and a bare
+# substring grep would fail on the very change that documents the fix.
+if [ -n "$(invoked_in "$BENCH_WF" 'outputs.result')" ]; then
+	bad "benchmark.yml passes a benchstat step output holding the whole report — that is the PR #658 'Argument list too long' failure; pass outputs.comment_file (a path) instead"
+else
+	ok "benchmark.yml passes no whole-report step output (the PR #658 'Argument list too long' shape is absent)"
+fi
+if [ -n "$(invoked_in "$BENCH_COMPARE" 'result<<')" ]; then
+	bad "bench-compare.sh writes the report body to \$GITHUB_OUTPUT again — it becomes an environment variable downstream and kills the comment step (PR #658)"
+else
+	ok "bench-compare.sh keeps the report out of \$GITHUB_OUTPUT (gate_status and comment_file only, both small)"
+fi
+
+# The 65,536-character comment cap is GitHub's, and it does not care how the
+# body arrived. bench-comment.cjs is the only place that can enforce it, so it
+# has to name the number and the fold it cuts at.
+if [ -f "$BENCH_COMMENT" ]; then
+	if grep -q '65536' "$BENCH_COMMENT"; then
+		ok "bench-comment.cjs knows GitHub's 65,536-character comment cap"
+	else
+		bad "bench-comment.cjs does not name the 65,536-character comment cap — a long report would be rejected by the API instead of truncated"
+	fi
+else
+	bad "scripts/bench-comment.cjs is missing — the PR comment body has no implementation"
 fi
 
 # The dead pattern must never come back, in any workflow. Match an INVOCATION,
@@ -1762,10 +2120,13 @@ def strip_comments(run):
     return "\n".join(out)
 
 
-# A path REFERENCE starts at a token boundary: start of line, whitespace, or a
-# shell separator. `${PR_TREE}/scripts/foo.sh` is preceded by '/', so it is a
-# suffix of a longer path and not root-relative -- exactly the fixed form.
-REF = re.compile(r"(?:^|[\s;&|(])(?:\./)?(scripts/[\w./-]+)", re.M)
+# A path REFERENCE starts at a token boundary: start of line, whitespace, a
+# shell separator, or a JS string delimiter -- the last because the PR-comment
+# step `require()`s a repo script, and `require('scripts/x.cjs')` from a
+# relocated checkout fails exactly like `bash scripts/x.sh` does.
+# `${PR_TREE}/scripts/foo.sh` is preceded by '/', so it is a suffix of a longer
+# path and not root-relative -- exactly the fixed form.
+REF = re.compile(r"""(?:^|[\s;&|("'`])(?:\./)?(scripts/[\w./-]+)""", re.M)
 
 doc = yaml.safe_load(open(path))
 hits = []
@@ -1781,11 +2142,16 @@ for job_id, job in (doc.get("jobs") or {}).items():
     if not paths or any(p == "" for p in paths):
         continue
     for st in steps:
-        run = st.get("run")
-        if not isinstance(run, str):
-            continue
-        for m in REF.finditer(strip_comments(run)):
-            hits.append(f"{job_id}: {m.group(1)}")
+        # `run:` bodies AND the inline `script:` of an actions/github-script
+        # step. The PR-comment step's body moved into scripts/bench-comment.cjs
+        # (PR #658) and is `require()`d from there, so a root-relative spelling
+        # there breaks in exactly the same way -- and was invisible to this
+        # guard while it looked only at `run:`.
+        for body in (st.get("run"), (st.get("with") or {}).get("script")):
+            if not isinstance(body, str):
+                continue
+            for m in REF.finditer(strip_comments(body)):
+                hits.append(f"{job_id}: {m.group(1)}")
 print("\n".join(sorted(set(hits))))
 PY_INNER
 )"
@@ -1838,17 +2204,19 @@ for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
         if has_checkout:
             continue
         for st in steps:
-            run = st.get("run")
-            if not isinstance(run, str):
-                continue
-            # Drop shell comments so a block that DOCUMENTS a path is not
-            # mistaken for one that invokes it.
-            code = "\n".join(
-                line[: m.start()] if (m := re.search(r"(?:^|\s)#", line)) else line
-                for line in run.splitlines()
-            )
-            for m in REF.finditer(code):
-                hits.append(f"{base}: job {job_id!r} runs {m.group(0).strip()} with no actions/checkout")
+            # `run:` bodies AND an actions/github-script `script:`, which can
+            # `require()` a repo script and needs the checkout just as much.
+            for body in (st.get("run"), (st.get("with") or {}).get("script")):
+                if not isinstance(body, str):
+                    continue
+                # Drop shell comments so a block that DOCUMENTS a path is not
+                # mistaken for one that invokes it.
+                code = "\n".join(
+                    line[: m.start()] if (m := re.search(r"(?:^|\s)#", line)) else line
+                    for line in body.splitlines()
+                )
+                for m in REF.finditer(code):
+                    hits.append(f"{base}: job {job_id!r} runs {m.group(0).strip()} with no actions/checkout")
 print("\n".join(sorted(set(hits))))
 PY_INNER
 )"
