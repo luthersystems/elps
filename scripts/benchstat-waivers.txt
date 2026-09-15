@@ -110,19 +110,11 @@
 # calls it, so the cost is paid once per CLI invocation by a developer.
 github.com/luthersystems/elps/mcpserver | LintTool | B/op | 8.5 | 2027-09-14 | elps#659 | Additional analysis from lisp-package-seal, builtin-shadowing, lambda-list, duplicate-binding and duplicate-keyword analyzers.
 
-# Two timing rows from PR #658's hardening passes, each a real, understood
-# per-call cost bought by a correctness fix, measured on two independent CI
-# runs within 3 points of each other. Allocation counts are unchanged or
-# within the allocation gate on both. Ceilings sit just above the measured
-# value; the short expiry forces a re-measurement on the next release rather
-# than an inherited decision.
-#
-# MacroDefun: the macro stamper now copies every expansion result
-# unconditionally (lisp/macro.go, the comment above macroStamper.value). The
-# conditional copy it replaced stamped a qualified symbol's raw package
-# binding, so a macro that expanded to `lisp:car` mutated the shared binding.
-# Measured +22.7% sec/op; allocs +4.98%, under the 5% gate.
-github.com/luthersystems/elps/lisp | MacroDefun | sec/op | 30 | 2026-12-31 | elps#659 | Unconditional expansion copy fixes stamping of a qualified symbol's shared package binding; conditional copy was the bug.
+# One timing row from PR #658's hardening passes: a real, understood per-call
+# cost bought by a correctness fix, measured on two independent CI runs
+# within 3 points of each other, with allocation counts unchanged. The
+# ceiling sits just above the measured value; the short expiry forces a
+# re-measurement on the next release rather than an inherited decision.
 #
 # Parser/complex.lisp: the lexer and byte scanner were rewritten so a comment
 # or literal longer than the 128 KiB scanner window is consumed in chunks
