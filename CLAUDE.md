@@ -354,6 +354,7 @@ Prescriptive workflows live in `.claude/skills/`. **Before starting a task, read
 | `benchmark/SKILL.md` | Performance — before/after benchstat comparison |
 | `audit/SKILL.md` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
 | `release/SKILL.md` | Create a tagged GitHub release with auto-generated notes from merged PRs |
+| `codex-delegate/SKILL.md` | Hand a bounded coding unit to Codex in a worktree; verify on host |
 
 Multiple skills can chain: e.g., a GitHub issue triggers `pickup-issue`, which uses `implement` for the code change, `verify` before committing, and `pr` to ship.
 

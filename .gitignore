@@ -10,6 +10,8 @@
 .firecrawl/
 .claude/settings.local.json
 .claude/worktrees/
+# scripts/codex-delegate.sh run artifacts: transcripts, snapshots, swept bundles.
+.codex-delegate/
 .tmp/
 node_modules/
 *.vsix
