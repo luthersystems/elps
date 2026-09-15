@@ -20,7 +20,8 @@
 #   betteralign v0.14.3   Makefile `fieldalign-fix` (via `go run ...@v0.14.3`)
 #   govulncheck v1.7.0    govulncheck.yml / govulncheck-scheduled.yml
 #   benchstat @latest     benchmark.yml (needs GOTOOLCHAIN=auto; see install_benchstat)
-#   shellcheck            scripts/ci-gates-test.sh (CI asserts it is present)
+#   (shellcheck)          scripts/ci-gates-test.sh (CI asserts it is present);
+#                         parenthesised so this line is not read as a directive
 #   gh                    Makefile release / release-notes targets
 #   node 20, python3      scripts/*.cjs, scripts/*.py, editors/vscode (both preinstalled)
 #

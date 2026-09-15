@@ -298,12 +298,23 @@ cmd_run() {
     fi
   }
 
+  finish_exit() {
+    # $? on entry is the status that triggered the EXIT trap.
+    local code=$?
+    if [ "$code" -ne 0 ]; then
+      status=3
+    fi
+    teardown
+    capture
+    exit "$status"
+  }
+
   finish() {
     # The detached background finisher inherits fd 9 and this EXIT trap, keeping
     # the lock through teardown and capture on success, failure or interruption.
     # SIGKILL cannot be finalized; already published monitor snapshots survive.
     trap 'status=3; log "Delegate interrupted; inspect remaining workers before retrying."; exit 3' INT TERM
-    trap 'code=$?; if [ "$code" -ne 0 ]; then status=3; fi; teardown; capture; exit "$status"' EXIT
+    trap finish_exit EXIT
     while :; do
       cat "$output/launch-error.txt" | tee -a "$output/transcript.log" >&2
       if [ "$status" -eq 0 ]; then
