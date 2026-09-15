@@ -221,7 +221,7 @@ systemctl stop apt-daily.timer apt-daily-upgrade.timer       >/dev/null 2>&1 || 
 systemctl stop apt-daily.service apt-daily-upgrade.service   >/dev/null 2>&1 || true
 
 # Phase 1 (sync): base packages the parallel installers depend on.
-#   shellcheck  -- scripts/ci-gates-test.sh lints every owned script with `shellcheck -S
+#   (shellcheck) -- scripts/ci-gates-test.sh lints every owned script with `shellcheck -S
 #                  warning`; CI sets CI_GATES_REQUIRE_SHELLCHECK=1 so a missing binary is fatal.
 #   bubblewrap  -- codex's sandbox runtime; without it on PATH codex warns on every
 #                  invocation and falls back to its bundled copy.
