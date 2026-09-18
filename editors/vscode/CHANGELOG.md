@@ -4,6 +4,38 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.62.0
+
+- Runtime hardening across the interpreter, shipped in the bundled `elps`
+  binary: closures created in `let*` initializers no longer see later
+  bindings, native calls stop after a cancelled request, host panics are
+  contained, deeply nested and cyclic values render with `#<depth-limit>` and
+  `#<cycle>` markers instead of overflowing the stack, and error text is
+  bounded and never blanked after the request that produced it ends.
+- Debugger: variables, frames and DAP responses render under one shared byte
+  and work budget with cancellation; the source view and error snippets read
+  only through the confined loader when `--root-dir` is set.
+- Formatter and parser: comments and shebang lines longer than 128 KiB are no
+  longer split into code; oversized strings and symbols, malformed numeric
+  literals and a UTF-8 BOM are diagnosed rather than mis-tokenised; `elps fmt`
+  no longer inserts a space inside an identifier.
+- Lint: new `let-recursion` migration check for closures that relied on
+  implicit self-recursion through a `let` binding, plus `lisp-package-seal`,
+  `builtin-shadowing`, `lambda-list`, `duplicate-binding` and
+  `duplicate-keyword` checks; malformed lambda lists and an `&optional` or
+  `&key` group with no names are reported statically.
+- Minify: renaming a package-level name now requires static proof of package
+  flow and export names; quoted function references, nested `defun`, package
+  redefinitions and computed `set` targets are preserved rather than
+  miscompiled.
+- `elps run`: `--timeout` and `--max-steps` flags; Ctrl-C cancels evaluation
+  and flushes output instead of killing the process.
+- Behaviour changes to read before upgrading: integer `pow` raises on
+  overflow; `max`/`min` propagate NaN; malformed lambda lists, keyword formals
+  and invalid package names are errors at definition time; writes to core
+  `lisp` package bindings from Lisp are refused; `json:null` encodes as
+  `null`; `format-string` prints a depth marker instead of raising.
+
 ## 1.61.2
 
 - LSP: bound parsing and disk reads for oversized documents, avoid expensive
