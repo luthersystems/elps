@@ -19,6 +19,28 @@ const maxRenderDepth = 1024
 const renderDepthMark = "#<depth-limit>"
 const renderTruncatedMark = "#<truncated>"
 
+// minRenderLimit floors the byte budget of text that DESCRIBES a failure.
+//
+// MaxAlloc caps the data a program may build, and it is documented in bytes
+// OR ELEMENTS: an embedder who sets it to 1000 to cap collection sizes has
+// said nothing about diagnostics, and had no reason to expect a 1000-byte cap
+// on error messages. At the small end it stops being a cap and becomes a gag —
+// WithMaxAlloc(32) rendered every message, including "allocation size 33
+// exceeds maximum (32)" itself, as the bare truncation marker, so the operator
+// was told only that something was too long to say.
+//
+// The floor applies where a diagnostic is rendered, never to a value rendered
+// FOR the program: format-string and friends still report an ordinary
+// allocation error at exactly MaxAlloc, which is what a program's own limits
+// are for.
+const minRenderLimit = 64 << 10
+
+// diagnosticLimit is the byte budget for text describing a failure: the
+// runtime's own limit, but never so small that the description disappears.
+func diagnosticLimit(limit int) int {
+	return max(limit, minRenderLimit)
+}
+
 // renderBudget bounds all attempts, including cycle probes which emit no text.
 // It is shared across retries so neither recovery nor cycle detection resets it.
 type renderBudget struct {
@@ -79,9 +101,10 @@ func (env *LEnv) Render(v *LVal) string {
 // Cancellation or exhaustion substitutes a fitting #<truncated> marker.
 // A nil context disables cancellation checks.
 func (env *LEnv) RenderContext(ctx context.Context, v *LVal) string {
-	s, ok := v.boundedStringContext(env.Runtime.MaxAllocBytes(), ctx)
+	limit := diagnosticLimit(env.Runtime.MaxAllocBytes())
+	s, ok := v.boundedStringContext(limit, ctx)
 	if !ok {
-		return truncatedRender(s, env.Runtime.MaxAllocBytes())
+		return truncatedRender(s, limit)
 	}
 	return s
 }
@@ -94,17 +117,19 @@ type DiagnosticRenderer struct {
 	done      bool
 }
 
-// NewRenderer creates a response renderer using the runtime's output limit.
+// NewRenderer creates a response renderer using the runtime's output limit,
+// floored at minRenderLimit: a response describes a failure, and MaxAlloc caps
+// program data rather than diagnostics.
 // Pass the request context explicitly when rendering after evaluation returns.
 func (env *LEnv) NewRenderer(ctx context.Context) *DiagnosticRenderer {
-	return env.NewRendererWithLimit(ctx, env.Runtime.MaxAllocBytes())
+	return env.NewRendererWithLimit(ctx, diagnosticLimit(env.Runtime.MaxAllocBytes()))
 }
 
 // NewRendererWithLimit reserves a smaller output budget for a response whose
 // protocol adds framing, escaping or duplicate representations. The supplied
-// limit can only tighten the runtime limit; zero permits no output.
+// limit can only tighten the diagnostic limit; zero permits no output.
 func (env *LEnv) NewRendererWithLimit(ctx context.Context, limit int) *DiagnosticRenderer {
-	limit = max(0, min(limit, env.Runtime.MaxAllocBytes()))
+	limit = max(0, min(limit, diagnosticLimit(env.Runtime.MaxAllocBytes())))
 	return &DiagnosticRenderer{budget: newRenderBudget(limit, ctx), remaining: limit}
 }
 

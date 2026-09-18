@@ -51,6 +51,7 @@ func (e *ErrorVal) renderContext(ctx context.Context, message bool) string {
 		return nilErrorMessage
 	}
 	limit, ctx := e.renderPolicy(ctx)
+	limit = diagnosticLimit(limit)
 	budget := newRenderBudget(limit, ctx)
 	s, ok := (*LVal)(e).boundedRender(limit, &budget, message)
 	if !ok {
@@ -153,6 +154,7 @@ func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
 // marker. A nil context uses the error's captured context.
 func (e *ErrorVal) WriteTraceContext(ctx context.Context, w io.Writer) (int, error) {
 	limit, ctx := e.renderPolicy(ctx)
+	limit = diagnosticLimit(limit)
 	r := valueRenderer{limit: limit, budget: newRenderBudget(limit, ctx)}
 	if e == nil {
 		r.text(nilErrorMessage)

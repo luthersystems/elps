@@ -1179,8 +1179,11 @@ func (env *LEnv) errorStack() *CallStack {
 }
 
 // formatError bounds each Lisp operand before fmt can invoke its String method.
+// The bound is the diagnostic limit, not MaxAlloc: this text explains a
+// failure, and a MaxAlloc small enough to cap collection sizes would otherwise
+// leave nothing of the explanation but a truncation marker.
 func (env *LEnv) formatError(format string, args []interface{}) string {
-	remaining := env.Runtime.MaxAllocBytes()
+	remaining := diagnosticLimit(env.Runtime.MaxAllocBytes())
 	copied := false
 	for i, arg := range args {
 		var v *LVal

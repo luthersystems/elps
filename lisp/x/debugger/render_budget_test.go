@@ -52,17 +52,21 @@ func TestFormatValueGraphDeadline(t *testing.T) {
 	}
 }
 
+// One response budget covers every value it formats. The limit is above the
+// floor the runtime applies to diagnostic text (MaxAlloc caps program data,
+// not the text describing it), so this measures the sharing, not the floor.
 func TestValueFormatterResponseBudget(t *testing.T) {
+	const limit = 128 << 10
 	env := lisp.NewEnv(nil)
-	env.Runtime.MaxAlloc = 64
+	env.Runtime.MaxAlloc = limit
 	eng := New()
 	eng.pausedEnv = env
 	f := NewValueFormatter(nil, eng)
 	var out strings.Builder
 	for range 100 {
-		out.WriteString(f.Format(lisp.String(strings.Repeat("x", 40))))
+		out.WriteString(f.Format(lisp.String(strings.Repeat("x", 2000))))
 	}
-	require.LessOrEqual(t, out.Len(), 64)
+	require.LessOrEqual(t, out.Len(), limit)
 	require.Contains(t, out.String(), "#<truncated>")
 	require.True(t, f.Exhausted())
 }

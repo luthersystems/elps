@@ -13,11 +13,15 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// The response budget is shared across the locals and truncates at it. The
+// limit is above the floor the runtime applies to diagnostic text (MaxAlloc
+// caps program data, not the text that describes it), so what is measured
+// here is the sharing rather than the floor.
 func TestLocalsResponseRenderBudget(t *testing.T) {
 	env := lisp.NewEnv(lisp.NewEnv(nil))
-	env.Runtime.MaxAlloc = 64
+	env.Runtime.MaxAlloc = 128 << 10
 	for _, name := range []string{"a", "b", "c"} {
-		env.Put(lisp.Symbol(name), lisp.String(strings.Repeat("x", 40)))
+		env.Put(lisp.Symbol(name), lisp.String(strings.Repeat("x", 50000)))
 	}
 	var out bytes.Buffer
 	showLocals(&out, env, nil)

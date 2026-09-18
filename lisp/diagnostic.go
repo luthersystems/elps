@@ -18,6 +18,7 @@ import (
 // A nil context uses the error's captured context.
 func (e *ErrorVal) WriteDiagnosticContext(ctx context.Context, w io.Writer, renderer *diagnostic.Renderer, hint ...string) (int, error) {
 	limit, ctx := e.renderPolicy(ctx)
+	limit = diagnosticLimit(limit)
 	s := renderer.NewSession(ctx, w, limit)
 	s.Header(func() {
 		if e == nil {

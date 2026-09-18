@@ -55,17 +55,32 @@ func (w *cancelDiagnosticWriter) Write(p []byte) (int, error) {
 
 func (w *cancelDiagnosticWriter) WriteString(s string) (int, error) { return w.Write([]byte(s)) }
 
+// MaxAlloc caps the diagnostic once it is above the floor the runtime applies
+// to text describing a failure; the fixture overruns both limits below.
 func TestRunDiagnosticSmallBudget(t *testing.T) {
+	resetRunFlags(t)
+	runExpression = true
+	name := strings.Repeat("x", 20000)
+	expr := "(defun " + name + " (n) (if (= n 0) (error 'boom) (+ 1 (" + name + " (- n 1))))) (" + name + " 20)"
+	for _, limit := range []int{128 << 10, 256 << 10} {
+		var out bytes.Buffer
+		require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(limit)), errRendered)
+		require.LessOrEqual(t, out.Len(), limit)
+		require.Contains(t, out.String(), "#<truncated>")
+	}
+}
+
+// Below the floor MaxAlloc caps program data only: an embedder who set it to
+// bound collection sizes still gets a diagnostic it can read.
+func TestRunDiagnosticFloorsTinyBudget(t *testing.T) {
 	resetRunFlags(t)
 	runExpression = true
 	name := strings.Repeat("x", 2048)
 	expr := "(defun " + name + " (n) (if (= n 0) (error 'boom) (+ 1 (" + name + " (- n 1))))) (" + name + " 20)"
-	for _, limit := range []int{5, 256} {
-		var out bytes.Buffer
-		require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(limit)), errRendered)
-		require.LessOrEqual(t, out.Len(), limit)
-		require.Contains(t, out.String(), "#<truncated>"[:min(limit, len("#<truncated>"))])
-	}
+	var out bytes.Buffer
+	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(5)), errRendered)
+	require.Contains(t, out.String(), "boom")
+	require.NotContains(t, out.String(), "#<truncated>")
 }
 
 func TestRunDiagnosticCancelWriting(t *testing.T) {
@@ -89,8 +104,9 @@ func TestRunDiagnosticConditionBudget(t *testing.T) {
 	resetRunFlags(t)
 	runExpression = true
 	var out bytes.Buffer
-	expr := "(error '" + strings.Repeat("condition", 10000) + ")"
-	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(256)), errRendered)
-	require.LessOrEqual(t, out.Len(), 256)
+	const limit = 128 << 10
+	expr := "(error '" + strings.Repeat("condition", 12000) + ")"
+	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(limit)), errRendered)
+	require.LessOrEqual(t, out.Len(), limit)
 	require.True(t, strings.HasSuffix(out.String(), "#<truncated>"))
 }

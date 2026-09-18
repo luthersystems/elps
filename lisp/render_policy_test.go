@@ -146,40 +146,63 @@ func TestErrorFormattingPreservesArguments(t *testing.T) {
 	require.Same(t, v, args[0], "formatting must not replace a caller's arguments")
 }
 
+// A trace shares ONE output budget across the message, the frames and any Go
+// stack, and stops at it whichever part runs out first. The budget is the
+// DIAGNOSTIC limit rather than MaxAlloc (minRenderLimit floors it, so that an
+// embedder capping collection sizes still gets a readable failure), so each
+// fixture below is sized to overrun that floor. The debug-stack builtin is
+// program-facing output and keeps MaxAlloc exactly.
 func TestTraceSharedOutputBudget(t *testing.T) {
-	for _, mode := range []string{"long-name", "many-frames", "go-stack", "tiny", "debug-stack"} {
+	for _, mode := range []string{"long-name", "many-frames", "go-stack", "debug-stack"} {
 		t.Run(mode, func(t *testing.T) {
 			env := NewEnv(nil)
 			env.Runtime.MaxAlloc = 64
-			for range 100 {
+			limit := diagnosticLimit(env.Runtime.MaxAlloc)
+			for range 20000 {
 				env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{Name: "frame"})
 			}
 			if mode == "long-name" || mode == "debug-stack" {
-				env.Runtime.Stack.Top().Name = strings.Repeat("x", 4096)
-			}
-			if mode == "tiny" {
-				env.Runtime.MaxAlloc = 5
+				env.Runtime.Stack.Top().Name = strings.Repeat("x", limit+4096)
 			}
 			if mode == "go-stack" {
 				env.Runtime.Stack.Frames = nil
 			}
 			var out bytes.Buffer
 			if mode == "debug-stack" {
+				limit = env.Runtime.MaxAlloc
 				env.Runtime.Stderr = &out
 				builtinDebugStack(env, Nil())
 			} else {
 				e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
 				if mode == "go-stack" {
-					(*LVal)(e).CallStack().GoStack = bytes.Repeat([]byte("go frame\n"), 100)
+					(*LVal)(e).CallStack().GoStack = bytes.Repeat([]byte("go frame\n"), limit/9+100)
 				}
 				n, err := e.WriteTrace(&out)
 				require.NoError(t, err)
 				require.Equal(t, out.Len(), n)
 			}
-			require.LessOrEqual(t, out.Len(), env.Runtime.MaxAlloc)
-			require.True(t, strings.HasSuffix(out.String(), renderTruncatedMark[:min(len(renderTruncatedMark), env.Runtime.MaxAlloc)]))
+			require.LessOrEqual(t, out.Len(), limit)
+			require.True(t, strings.HasSuffix(out.String(), renderTruncatedMark))
 		})
 	}
+}
+
+// The floor's own case: a MaxAlloc small enough to cap collection sizes caps
+// no diagnostic. The trace is readable rather than a lone truncation marker.
+func TestTraceFloorsTinyOutputBudget(t *testing.T) {
+	env := NewEnv(nil)
+	env.Runtime.MaxAlloc = 5
+	for range 100 {
+		env.Runtime.Stack.Frames = append(env.Runtime.Stack.Frames, CallFrame{Name: "frame"})
+	}
+	e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
+	var out bytes.Buffer
+	n, err := e.WriteTrace(&out)
+	require.NoError(t, err)
+	require.Equal(t, out.Len(), n)
+	require.NotContains(t, out.String(), renderTruncatedMark)
+	require.Contains(t, out.String(), "boom")
+	require.Contains(t, out.String(), "Stack Trace [100 frames")
 }
 
 func TestTraceFrameCancellation(t *testing.T) {
