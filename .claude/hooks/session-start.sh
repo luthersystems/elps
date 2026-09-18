@@ -40,7 +40,15 @@
 #    and is why the move to `go 1.26.0` had to take this pin with it.
 #
 # Both pins below must be kept in sync with .github/workflows/elps.yml.
-set -euo pipefail
+#
+# FAILURE POLICY: a SessionStart hook that exits non-zero can surface as a
+# session failure, so this script must never do that.  A tool install that
+# fails is a session missing that tool -- it is not a reason to fail the
+# session itself.  Hence no `-e` (every fallible command below is already
+# guarded by an `if`, an explicit `rc`, or `|| true`) and an EXIT trap that
+# forces status 0 even if a future edit slips an unguarded failure in.
+set -uo pipefail
+trap 'exit 0' EXIT
 
 if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 	exit 0
@@ -58,7 +66,7 @@ GOLANGCI_VERSION="2.13.2"
 TOOLS_BIN="${HOME}/.cache/claude-code-tools/golangci-lint-${GOLANGCI_VERSION}"
 ENV_FILE="${CLAUDE_ENV_FILE:-/dev/null}"
 
-mkdir -p "$TOOLS_BIN"
+mkdir -p "$TOOLS_BIN" || echo "session-start: WARNING could not create ${TOOLS_BIN}" >&2
 
 # --- Go toolchain ---------------------------------------------------------
 # Fetching it here means the first build of the session is not also a
