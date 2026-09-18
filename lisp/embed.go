@@ -37,28 +37,43 @@ func Not(v *LVal) bool {
 // MaxValueDepth. No partial converted container is returned. Cycles discovered
 // within the cap retain the historical return of the original *LVal.
 //
+// GoValue takes no Runtime, so it cannot read a WithMaxValueDepth override and
+// always walks to MaxValueDepth. A caller holding the runtime whose values
+// these are uses GoValueWithRuntime instead.
+//
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
+	return GoValueWithRuntime(nil, v)
+}
+
+// GoValueWithRuntime is GoValue bounded by rt's configured value-depth limit
+// (Runtime.ValueDepthLimit). A nil runtime is MaxValueDepth, which is what
+// GoValue passes.
+//
+// The runtime is a parameter rather than a field read off the value because a
+// *LVal carries no runtime: the same value is reachable from every environment
+// that was handed it, and only the caller knows which runtime's budget applies.
+func GoValueWithRuntime(rt *Runtime, v *LVal) interface{} {
 	// Opaque native payloads are already Go values; even leaf conversion
 	// dispatch is unnecessary here.
 	if v != nil && v.Type == LNative {
 		return v.Native
 	}
-	out, ok := convertValue(v)
+	out, ok := convertValue(v, rt.ValueDepthLimit())
 	if !ok {
 		return v
 	}
 	return out
 }
 
-func convertValue(v *LVal) (interface{}, bool) {
+func convertValue(v *LVal, limit int) (interface{}, bool) {
 	if v.IsNil() {
 		return nil, true
 	}
 	switch v.Type {
 	case LQuote, LSExpr, LArray, LSortMap:
-		return convertContainer(v)
+		return convertContainer(v, limit)
 	default:
 		// Leaves must not create an addressable result slot or walk state.
 		return conversionLeaf(v), true
@@ -77,14 +92,14 @@ type conversionFrame struct {
 	invalid  bool
 }
 
-func convertContainer(v *LVal) (interface{}, bool) {
+func convertContainer(v *LVal, limit int) (interface{}, bool) {
 	// One reusable continuation per ancestor, never one per sibling.
 	pending := make([]conversionFrame, 0, 16)
 	var path map[*LVal]bool
 walk:
 	for {
-		if len(pending) >= MaxValueDepth {
-			return (*ErrorVal)(Error(ValueDepthError(MaxValueDepth))), true
+		if len(pending) >= limit {
+			return (*ErrorVal)(Error(ValueDepthError(limit))), true
 		}
 		var out interface{}
 		f := conversionFrame{v: v}
@@ -312,12 +327,18 @@ func GoFloat64(v *LVal) (float64, bool) {
 }
 
 // GoSlice converts a list to a Go slice. Non-lists, cycles and walks exceeding
-// MaxValueDepth return (nil, false).
+// MaxValueDepth return (nil, false).  Like GoValue it has no runtime and so
+// cannot read a WithMaxValueDepth override; GoSliceWithRuntime does.
 func GoSlice(v *LVal) ([]interface{}, bool) {
+	return GoSliceWithRuntime(nil, v)
+}
+
+// GoSliceWithRuntime is GoSlice bounded by rt's configured value-depth limit.
+func GoSliceWithRuntime(rt *Runtime, v *LVal) ([]interface{}, bool) {
 	if v.Type != LSExpr {
 		return nil, false
 	}
-	out, ok := convertValue(v)
+	out, ok := convertValue(v, rt.ValueDepthLimit())
 	if !ok {
 		return nil, false
 	}
@@ -333,11 +354,18 @@ func GoSlice(v *LVal) ([]interface{}, bool) {
 // argument.  Application's using custom Map implementations which allow
 // arbitrary keys may not be able to construct a native Go map, in which case
 // GoMap returns (nil, true). Cycles and excessive nesting return (nil, false).
+// Like GoValue it has no runtime and so cannot read a WithMaxValueDepth
+// override; GoMapWithRuntime does.
 func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
+	return GoMapWithRuntime(nil, v)
+}
+
+// GoMapWithRuntime is GoMap bounded by rt's configured value-depth limit.
+func GoMapWithRuntime(rt *Runtime, v *LVal) (map[interface{}]interface{}, bool) {
 	if v.Type != LSortMap {
 		return nil, false
 	}
-	out, ok := convertValue(v)
+	out, ok := convertValue(v, rt.ValueDepthLimit())
 	if !ok {
 		return nil, false
 	}

@@ -35,7 +35,31 @@ func validPackageName(name string) bool {
 // PackageRegistry contains a set of packages.
 type PackageRegistry struct {
 	packages map[string]*Package
-	Lang     string // A default package used by all other packages
+	// runtime is the Runtime this registry is the interpreter state of.  It
+	// is set where a Runtime is first paired with an environment
+	// (NewEnvRuntime, StandardRuntime), and it is nil in a registry that has
+	// not been attached to one yet.  Admission reads
+	// runtime.ValueDepthLimit() through it, so a registry admitting into a
+	// runtime configured with WithMaxValueDepth applies the configured limit
+	// rather than the MaxValueDepth default; a detached registry keeps the
+	// default.  It is a back pointer to state the registry already belongs
+	// to and never a second owner of it.
+	runtime *Runtime
+	Lang    string // A default package used by all other packages
+}
+
+// bindRegistryRuntime attaches rt to its own registry so that package
+// admission can read rt.ValueDepthLimit().  It is called where a Runtime is
+// first paired with an environment rather than on every environment: a child
+// env inherits its parent's runtime, which is already bound, so the hot path
+// pays nothing.  A registry already bound to another runtime keeps it -- two
+// runtimes sharing one registry is not a configuration admission can resolve,
+// and the first binding is the one whose limits the registry was filled under.
+func bindRegistryRuntime(rt *Runtime) {
+	if rt == nil || rt.Registry == nil || rt.Registry.runtime != nil {
+		return
+	}
+	rt.Registry.runtime = rt
 }
 
 // NewRegistry initializes and returns a new PackageRegistry.
@@ -110,7 +134,7 @@ func (r *PackageRegistry) AddPackage(p *Package) bool {
 	if _, ok := r.packages[p.Name]; ok {
 		return false
 	}
-	r.packages[p.Name] = admitPackage(p)
+	r.packages[p.Name] = admitPackage(p, r.runtime.ValueDepthLimit())
 	return true
 }
 

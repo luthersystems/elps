@@ -96,7 +96,7 @@ func TestWrapperCyclesRejected(t *testing.T) {
 			doc := mapHolding("x", lisp.Int(1))
 			doc.MapSet("self", wrapper.wrap(doc))
 			require.ErrorIs(t, okSimpleType(doc), errCyclicValue)
-			_, err := copyLVal(doc)
+			_, err := copyLVal(doc, 0)
 			require.ErrorIs(t, err, errCyclicValue)
 			for _, op := range []struct {
 				name string
@@ -171,7 +171,7 @@ func TestMalformedWrappersRejected(t *testing.T) {
 				v.Cells = shape.cells
 				want := fmt.Sprintf("invalid %s wrapper: expected one value", v.Type)
 				require.EqualError(t, okSimpleType(v), want)
-				_, err := copyLVal(v)
+				_, err := copyLVal(v, 0)
 				require.EqualError(t, err, want)
 			})
 		}

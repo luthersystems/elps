@@ -626,7 +626,7 @@ func TestCopyPreservesQuoting(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			src := mk()
-			cp, err := copyLVal(src)
+			cp, err := copyLVal(src, 0)
 			require.NoError(t, err)
 			require.Equal(t, src.String(), cp.String(), "the copy must print the same")
 

@@ -19,7 +19,7 @@ import (
 // format value conversion | lisp/value_depth.go:64 | explicit stack / runtime counter | TestValueWalkDepth/{100000,3000000}/format-string
 // copy / detach | lisp/detach.go:146 | explicit jobs / runtime counter | TestValueWalkDepth/{100000,3000000}/{copy,detach}
 // LVal.Copy | lisp/copier.go:307 | explicit jobs / runtime counter | TestValueWalkDepth/{100000,3000000}/Copy; TestValueDepthRaisedLimit
-// GoValue / GoSlice / GoMap | lisp/embed.go:50 | explicit stack / default counter | TestValueWalkDepth/{100000,3000000}/GoValue; TestGoConversionRootDepth
+// GoValue / GoSlice / GoMap | lisp/embed.go:50 | explicit stack / runtime counter via the WithRuntime forms, default counter otherwise | TestValueWalkDepth/{100000,3000000}/GoValue; TestGoConversionRootDepth; TestGoValueHonoursRuntimeDepthLimit
 // JSON dump | lisp/lisplib/libjson/encode.go:313 | explicit stack / counter in both passes | TestJSONValueDepth; TestJSONValueDepthRaisedLimit
 // JSON Go conversion | lisp/lisplib/libjson/json.go:717 | explicit stack / default counter | TestJSONValueDepth
 // template admission (values / sealed / envs) | lisp/template.go:234 | explicit jobs / runtime counter | TestValueWalkDepth/{100000,3000000}/{template,template-sealed}
@@ -29,8 +29,8 @@ import (
 // quasiquote | lisp/macro.go:723 | explicit stack / runtime counter | TestValueWalkDepth/{100000,3000000}/quasiquote
 // sealing | lisp/seal.go:145 | explicit stack / sealed memo (void API completes) | TestValueWalkDepth/{100000,3000000}/seal
 // macro source locations | lisp/macro.go:471 | explicit stack / identity memo (void API completes) | TestValueWalkDepth/{100000,3000000}/locate
-// package classification | lisp/package_admit.go:206 | explicit stack / default counter | TestValueWalkDepth/{100000,3000000}/classify
-// elpspath copy | lisp/lisplib/libelpspath/path.go:71 | explicit stack / default counter | TestPathValueDepth
+// package classification | lisp/package_admit.go:206 | explicit stack / runtime counter (registry's runtime) | TestValueWalkDepth/{100000,3000000}/classify; TestPackageAdmissionHonoursRuntimeDepthLimit
+// elpspath copy | lisp/lisplib/libelpspath/path.go:71 | explicit stack / runtime counter (carried by the path step) | TestPathValueDepth; TestCopyHonoursRuntimeDepthLimit
 // elpspath copying chains | lisp/lisplib/libelpspath/path.go:933 | separate maxPathSteps (1024) | TestPathTraversalDepth
 // elpspath nested iterators | lisp/lisplib/libelpspath/query.go:125 | separate maxPathSteps (1024) | TestPathTraversalDepth
 // reader admission | lisp/loader.go:673 | existing loaderWalkMaxDepth | TestLoadCacheDepthCapSurvivesMemoHit
@@ -46,8 +46,6 @@ type ValueDepthError int
 func (e ValueDepthError) Error() string {
 	return fmt.Sprintf("value nesting depth exceeds maximum: %d", int(e))
 }
-
-func valueDepthError() *LVal { return Error(ValueDepthError(MaxValueDepth)) }
 
 // ValueDepthLimit returns the effective iterative value-walk limit. A nil
 // runtime or unset/invalid field uses MaxValueDepth. WithMaxValueDepth rejects

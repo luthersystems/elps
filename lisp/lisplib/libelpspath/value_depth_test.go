@@ -25,7 +25,7 @@ func TestPathValueDepth(t *testing.T) {
 			nodes[i].Type = lisp.LSExpr
 			nodes[i].Cells = cells[i : i+1 : i+1]
 		}
-		cp, err := copyLVal(&nodes[0])
+		cp, err := copyLVal(&nodes[0], 0)
 		if depth >= lisp.MaxValueDepth {
 			if err == nil || !strings.Contains(err.Error(), "value nesting depth exceeds maximum") {
 				t.Fatalf("expected ordinary depth error: %v", err)

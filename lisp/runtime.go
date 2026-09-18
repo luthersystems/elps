@@ -395,7 +395,7 @@ func (r *Runtime) MaxSleepCeiling() time.Duration {
 // StandardRuntime returns a new Runtime with an empty package registry and
 // Stderr set to os.Stderr.
 func StandardRuntime() *Runtime {
-	return &Runtime{
+	rt := &Runtime{
 		Registry: NewRegistry(),
 		Stderr:   os.Stderr,
 		Stack: &CallStack{
@@ -404,6 +404,8 @@ func StandardRuntime() *Runtime {
 			MaxTailIterations: DefaultMaxTailIterations,
 		},
 	}
+	bindRegistryRuntime(rt)
+	return rt
 }
 
 func (r *Runtime) GenEnvID() uint {

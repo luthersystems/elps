@@ -37,14 +37,16 @@ func TestCopyMapWideAllocations(t *testing.T) {
 func TestCopyGuardAllocations(t *testing.T) {
 	for name, doc := range guardCostDocs() {
 		t.Run(name, func(t *testing.T) {
-			measure := func(copyValue func(*lisp.LVal) (*lisp.LVal, error)) float64 {
+			measure := func(copyValue func(*lisp.LVal, int) (*lisp.LVal, error)) float64 {
 				return testing.AllocsPerRun(100, func() {
-					if _, err := copyValue(doc); err != nil {
+					if _, err := copyValue(doc, 0); err != nil {
 						t.Fatal(err)
 					}
 				})
 			}
-			guarded, unguarded := measure(copyLVal), measure(copyLValUnguarded)
+			guarded, unguarded := measure(copyLVal), measure(func(v *lisp.LVal, _ int) (*lisp.LVal, error) {
+				return copyLValUnguarded(v)
+			})
 			if guarded > unguarded {
 				t.Fatalf("guarded copy allocated %g times, unguarded %g", guarded, unguarded)
 			}

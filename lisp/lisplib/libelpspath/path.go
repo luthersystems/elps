@@ -60,9 +60,9 @@ type Path interface {
 // It returns an error rather than a value when v contains itself: such a value
 // has no finite copy, and walking one until the goroutine stack overflows
 // kills the process in a way recover() cannot intercept. See issue #393.
-func copyLVal(v *lisp.LVal) (*lisp.LVal, error) {
+func copyLVal(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 	var st cycleState
-	return copyGuarded(v, newCycleGuard(&st))
+	return copyGuarded(v, newCycleGuardLimit(&st, limit))
 }
 
 // copyGuarded is copyLVal continuing a walk already in progress rather than
@@ -97,8 +97,8 @@ walk:
 		switch v.Type {
 		case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
 			depth := g.depth + len(pending)
-			if depth >= lisp.MaxValueDepth {
-				return nil, lisp.ValueDepthError(lisp.MaxValueDepth)
+			if limit := g.valueDepthLimit(); depth >= limit {
+				return nil, lisp.ValueDepthError(limit)
 			}
 			next, cyclic := (cycleGuard{state: g.state, depth: depth}).descend(v)
 			if cyclic {
@@ -210,9 +210,9 @@ func wrapperValue(v *lisp.LVal) (*lisp.LVal, error) {
 // TestCopyHelpersAgreeOnNestingDepth holds to a common contract, and that
 // test is the drift guard issue #395 asked for. Deleting the helper deletes
 // a third of the guard.
-func copyMap(v *lisp.LVal) (*lisp.LVal, error) {
+func copyMap(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 	var st cycleState
-	return copyMapGuarded(v, newCycleGuard(&st))
+	return copyMapGuarded(v, newCycleGuardLimit(&st, limit))
 }
 
 // copyMapGuarded is copyMap continuing a walk already in progress.
@@ -236,9 +236,9 @@ func copyMapGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 //
 // IMPORTANT: what is skipped is the entry the caller's SetMutate/DeleteMutate
 // will land on, not "the entry whose key string matches". See sameMapSlot.
-func copyMapOffPath(v *lisp.LVal, key *lisp.LVal) (*lisp.LVal, error) {
+func copyMapOffPath(v *lisp.LVal, key *lisp.LVal, limit int) (*lisp.LVal, error) {
 	var st cycleState
-	return copyMapExcept(v, key, newCycleGuard(&st))
+	return copyMapExcept(v, key, newCycleGuardLimit(&st, limit))
 }
 
 // copyMapExcept is the shared body: skip is the key to leave out, or nil to
@@ -309,9 +309,9 @@ func sortedMapEntries(m lisp.Map) *lisp.LVal {
 
 // copyVector creates a new LVal that contains the same elements in the
 // original vector.
-func copyVector(v *lisp.LVal) (*lisp.LVal, error) {
+func copyVector(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 	var st cycleState
-	return copyVectorGuarded(v, newCycleGuard(&st))
+	return copyVectorGuarded(v, newCycleGuardLimit(&st, limit))
 }
 
 // copyVectorGuarded is copyVector continuing a walk already in progress.
@@ -332,9 +332,9 @@ func copyVectorGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 
 // copyList creates a new LVal that contains the same elements in the
 // original list.
-func copyList(v *lisp.LVal) (*lisp.LVal, error) {
+func copyList(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 	var st cycleState
-	return copyListGuarded(v, newCycleGuard(&st))
+	return copyListGuarded(v, newCycleGuardLimit(&st, limit))
 }
 
 // copyListGuarded is copyList continuing a walk already in progress.
@@ -365,10 +365,10 @@ func copyListGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 // either.
 //
 // from == to skips nothing and is the plain deep copy.
-func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int) (*lisp.LVal, error) {
+func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to, limit int) (*lisp.LVal, error) {
 	out := make([]*lisp.LVal, len(cells))
 	var st cycleState
-	g := newCycleGuard(&st)
+	g := newCycleGuardLimit(&st, limit)
 	for i := range cells {
 		if i >= from && i < to {
 			out[i] = lisp.Nil()
@@ -710,7 +710,9 @@ func expandPaths(paths ...Path) []Path {
 			subPaths := expandPaths(chain.paths...)
 			newPaths = append(newPaths, subPaths...)
 		case *iterPath:
-			newPaths = append(newPaths, Iter())
+			// Rebuild rather than Iter(), so the step's depth bound
+			// survives flattening; Iter is the limit-free spelling.
+			newPaths = append(newPaths, &iterPath{path: Chain(), limit: chain.limit})
 			subPaths := expandPaths(chain.path)
 			newPaths = append(newPaths, subPaths...)
 		default:
@@ -758,7 +760,8 @@ func normalizePaths(paths ...Path) []Path {
 	// Right to left, so the chain accumulates reversed; see the doc comment.
 	rev := make([]Path, 0, len(paths))
 	for i := len(paths) - 1; i >= 0; i-- {
-		if _, isIter := paths[i].(*iterPath); !isIter {
+		it, isIter := paths[i].(*iterPath)
+		if !isIter {
 			rev = append(rev, paths[i])
 			continue
 		}
@@ -769,7 +772,7 @@ func normalizePaths(paths ...Path) []Path {
 		// Each element is flipped at most once per enclosing iterator and
 		// an iterator empties the accumulator, so this stays linear.
 		inner := reversedPaths(rev)
-		rev = append(rev[:0], &iterPath{path: &chainPath{paths: inner}})
+		rev = append(rev[:0], &iterPath{path: &chainPath{paths: inner}, limit: it.limit})
 	}
 	return reversedPaths(rev)
 }
@@ -1043,6 +1046,9 @@ func (s *chainPath) appendString(sb *strings.Builder) {
 
 type dotPath struct {
 	key string
+	// limit is the value-walk depth bound this step's copies run under; see
+	// pathValueDepthLimit.  Zero is MaxValueDepth.
+	limit int
 }
 
 // Dot performs a map index operation (e.g., a["b"], a.b).
@@ -1093,7 +1099,7 @@ func (s *dotPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		// has already rebuilt independently of in. Copying the source's
 		// subtree under the key first would build a value with exactly one
 		// use: being overwritten on the next line.
-		cp, err := copyMapOffPath(in, lisp.String(s.key))
+		cp, err := copyMapOffPath(in, lisp.String(s.key), s.limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1128,7 +1134,7 @@ func (s *dotPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		// The entry at this key is about to be removed, so it is copied out
 		// by being left out. DeleteMutate below is then a no-op on it, which
 		// is the same answer it gave for an absent key before.
-		cp, err := copyMapOffPath(in, lisp.String(s.key))
+		cp, err := copyMapOffPath(in, lisp.String(s.key), s.limit)
 		if err != nil {
 			return nil, err
 		}
@@ -1156,6 +1162,8 @@ func (s *dotPath) appendString(sb *strings.Builder) {
 
 type indexPath struct {
 	index int
+	// limit is the value-walk depth bound this step's copies run under.
+	limit int
 }
 
 // Index performs an array index operation (e.g., [i]).
@@ -1226,9 +1234,9 @@ func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	from, to := skipIndex(len(cells), s.index)
 	if from == to {
 		// A missed index changes nothing, including a list's quoting.
-		return copyLVal(in)
+		return copyLVal(in, s.limit)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to)
+	cp, err := copySeqOffPath(in, cells, from, to, s.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1255,9 +1263,9 @@ func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	from, to := skipIndex(len(cells), s.index)
 	if from == to {
 		// A missed index changes nothing, including a list's quoting.
-		return copyLVal(in)
+		return copyLVal(in, s.limit)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to)
+	cp, err := copySeqOffPath(in, cells, from, to, s.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1332,8 +1340,10 @@ func (s *indexPath) appendString(sb *strings.Builder) {
 }
 
 type rangePath struct {
-	from       int
-	to         int
+	from int
+	to   int
+	// limit is the value-walk depth bound this step's copies run under.
+	limit      int
 	implicitTo bool
 }
 
@@ -1462,7 +1472,7 @@ func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	// The range is about to be spliced out and replaced by newIn's cells.
-	cp, err := copySeqOffPath(in, cells, from, to)
+	cp, err := copySeqOffPath(in, cells, from, to, s.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1520,7 +1530,7 @@ func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	// The range is about to be removed.
-	cp, err := copySeqOffPath(in, cells, from, to)
+	cp, err := copySeqOffPath(in, cells, from, to, s.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1573,7 +1583,7 @@ func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	if err != nil {
 		from, to = 0, 0
 	}
-	cp, err := copySeqOffPath(in, cells, from, to)
+	cp, err := copySeqOffPath(in, cells, from, to, s.limit)
 	if err != nil {
 		return nil, err
 	}
@@ -1629,6 +1639,8 @@ func validateRange(n int, from int, to int, implicitTo bool) (int, int, error) {
 // iterPath allows executing a path query on each element of na array.
 type iterPath struct {
 	path Path
+	// limit is the value-walk depth bound this step's copies run under.
+	limit int
 }
 
 // Iter iterates over an array of chains (e.g., "a[].b").
@@ -1730,7 +1742,7 @@ func (s *iterPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where set fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item)
+			in, err = copyLVal(item, s.limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1777,7 +1789,7 @@ func (s *iterPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where del fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item)
+			in, err = copyLVal(item, s.limit)
 			if err != nil {
 				return nil, err
 			}
@@ -1824,7 +1836,7 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 			// IMPORTANT: when iterating we ignore paths where nil fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item)
+			in, err = copyLVal(item, s.limit)
 			if err != nil {
 				return nil, err
 			}

@@ -228,6 +228,7 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 	if rt == nil {
 		rt = StandardRuntime()
 	}
+	bindRegistryRuntime(rt)
 	env := &LEnv{
 		ID:      rt.GenEnvID(),
 		scope:   make(map[string]*LVal),

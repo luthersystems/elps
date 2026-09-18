@@ -48,6 +48,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",
+			"runtime": "remapped: back pointer to the registry's own runtime, rebound to each VM's fresh runtime",
 		}},
 		{reflect.TypeFor[CallStack](), map[string]string{
 			"renderLimit":      "reset: per-error output cap; instantiated runtimes capture their own policy",

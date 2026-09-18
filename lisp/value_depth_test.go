@@ -62,7 +62,7 @@ func TestValueWalkDepth(t *testing.T) {
 		case "stamp":
 			got = stampMacroExpansion(v, &token.Location{File: "depth"}, nil, NewEnv(nil).Runtime)
 		case "classify":
-			got = admitSymbolValue(v)
+			got = admitSymbolValue(v, MaxValueDepth)
 		case "seal":
 			v.SealAST()
 			got = v

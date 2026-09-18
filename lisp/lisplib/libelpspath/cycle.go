@@ -107,6 +107,16 @@ type cycleState struct {
 	// walk leaves it, so the set still holds exactly the nodes between the
 	// walk's root and the current frame.
 	path map[*lisp.LVal]struct{}
+
+	// limit is the value-walk depth bound for this walk, taken from the
+	// runtime the operation is running under (Runtime.ValueDepthLimit).  It
+	// lives on the shared state rather than in the by-value guard because it
+	// is constant for a walk: putting it in the guard would widen every
+	// frame copy to carry a number none of them changes.  Zero -- the state
+	// a caller that never set one leaves it in -- means lisp.MaxValueDepth,
+	// which is the same answer Runtime.ValueDepthLimit gives for a nil
+	// runtime.
+	limit int
 }
 
 // cycleGuard bounds a recursive walk over an LVal graph.
@@ -145,6 +155,25 @@ type cycleGuard struct {
 // enough to record a path allocates nothing at all.
 func newCycleGuard(state *cycleState) cycleGuard {
 	return cycleGuard{state: state}
+}
+
+// newCycleGuardLimit is newCycleGuard for a walk whose depth bound comes from
+// a runtime rather than from the MaxValueDepth default.  A limit below the
+// floor WithMaxValueDepth accepts (and zero, the unset case) means the
+// default, so that a caller with no runtime in reach passes 0.
+func newCycleGuardLimit(state *cycleState, limit int) cycleGuard {
+	if limit >= 1024 {
+		state.limit = limit
+	}
+	return cycleGuard{state: state}
+}
+
+// valueDepthLimit reports the depth bound the walk is running under.
+func (g cycleGuard) valueDepthLimit() int {
+	if g.state != nil && g.state.limit >= 1024 {
+		return g.state.limit
+	}
+	return lisp.MaxValueDepth
 }
 
 // descend returns the guard for a walk one level below g, entering v, and

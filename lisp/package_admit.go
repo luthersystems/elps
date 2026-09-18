@@ -123,7 +123,7 @@ package lisp
 // The snapshot is taken by the calling goroutine and reads p's maps, so it
 // carries the same requirement every other read of a *Package does: no other
 // goroutine may be writing p at the time (issue #397).
-func admitPackage(p *Package) *Package {
+func admitPackage(p *Package, limit int) *Package {
 	adm := &Package{
 		Name:           p.Name,
 		Doc:            p.Doc,
@@ -136,7 +136,7 @@ func admitPackage(p *Package) *Package {
 		copy(adm.externals, p.externals)
 	}
 	for name, v := range p.symbols {
-		adm.symbols[name] = admitSymbolValue(v)
+		adm.symbols[name] = admitSymbolValue(v, limit)
 	}
 	// symbolDocs is allocated lazily (see the field comment): an undocumented
 	// package admits with a nil table rather than an empty one.
@@ -159,7 +159,7 @@ func admitPackage(p *Package) *Package {
 // admitSymbolValue returns the value a registry binds for one of an admitted
 // package's symbols: v itself when v is already safe to share, and a private
 // sealed copy when v is a code-like tree the caller may still be writing.
-func admitSymbolValue(v *LVal) *LVal {
+func admitSymbolValue(v *LVal, limit int) *LVal {
 	// Cheapest question first, and the one that answers most bindings in a
 	// real package: a function, native, map, array or byte string is not a
 	// class the seal covers, so there is nothing to copy and nothing to
@@ -169,9 +169,9 @@ func admitSymbolValue(v *LVal) *LVal {
 		return v
 	}
 	var st cycleState
-	sealed, sealable := classifySymbolValue(v, cycleGuard{state: &st})
+	sealed, sealable := classifySymbolValue(v, cycleGuard{state: &st}, limit)
 	if st.tooDeep {
-		return valueDepthError()
+		return Error(ValueDepthError(limit))
 	}
 	if sealed || !sealable {
 		// Sealed throughout: the sanctioned share (immutability, not
@@ -204,7 +204,7 @@ func admitSymbolValue(v *LVal) *LVal {
 // walk is what this classification is for).  A cycle therefore reports
 // "neither", which lands the value in the
 // by-reference row where no copy is attempted.
-func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
+func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable bool) {
 	type frame struct {
 		v     *LVal
 		g     cycleGuard
@@ -222,7 +222,7 @@ func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
 		if f.v == nil || !sealableNodeType(f.v.Type) {
 			return false, false
 		}
-		if f.g.depth >= MaxValueDepth {
+		if f.g.depth >= limit {
 			g.state.tooDeep = true
 			return false, false
 		}

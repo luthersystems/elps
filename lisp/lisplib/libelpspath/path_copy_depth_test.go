@@ -64,7 +64,7 @@ func TestCopyHelpersAgreeOnNestingDepth(t *testing.T) {
 
 	helpers := map[string]struct {
 		root lisp.LType
-		copy func(*lisp.LVal) (*lisp.LVal, error)
+		copy func(*lisp.LVal, int) (*lisp.LVal, error)
 	}{
 		"copyMap":    {lisp.LSortMap, copyMap},
 		"copyVector": {lisp.LArray, copyVector},
@@ -77,7 +77,7 @@ func TestCopyHelpersAgreeOnNestingDepth(t *testing.T) {
 		require.Equal(t, copyNestDepth, containerDepth(src),
 			"%s: the test value must actually nest %d deep", name, copyNestDepth)
 
-		cp, err := h.copy(src)
+		cp, err := h.copy(src, 0)
 		require.NoError(t, err)
 		require.Equal(t, src.String(), cp.String(), "%s must preserve the value", name)
 
@@ -110,7 +110,7 @@ func TestCopyMapIsDeep(t *testing.T) {
 	src := lisp.SortedMap()
 	src.MapSet("address", inner)
 
-	cp, err := copyMap(src)
+	cp, err := copyMap(src, 0)
 	require.NoError(t, err)
 
 	cpInner, ok := cp.Map().Get(lisp.String("address"))
