@@ -31,18 +31,37 @@ func Validate(n int, name func(int) string) (int, string) {
 	invalid := func(i int, control string) (int, string) {
 		return i, "function formal argument list contains a control symbol at an invalid location: " + control
 	}
+	// A marker introduces a group of parameter names, and a group with no
+	// names in it declares nothing. (a &optional &rest b) reads as if it
+	// declared an optional argument and does not: the marker was accepted
+	// because a later marker followed it, so the mistake surfaced -- if at
+	// all -- as a call that would not take the argument the definition seems
+	// to offer. &rest has always required exactly one name after it.
+	emptyGroup := func(i int, control string) (int, string) {
+		return i, "function formal argument list: " + control + " must be followed by at least one parameter name"
+	}
+	group := func(i int, control string) (int, string, bool) {
+		if i == n-1 || strings.HasPrefix(name(i+1), "&") {
+			i, message := emptyGroup(i, control)
+			return i, message, false
+		}
+		return 0, "", true
+	}
 	optional := false
 	for i := range n {
 		s := name(i)
 		switch s {
 		case "&optional":
-			if optional || i == n-1 {
+			if j, message, ok := group(i, s); !ok {
+				return j, message
+			}
+			if optional {
 				return invalid(i, s)
 			}
 			optional = true
 		case "&key":
-			if i == n-1 {
-				return invalid(i, s)
+			if j, message, ok := group(i, s); !ok {
+				return j, message
 			}
 			for j := i + 1; j < n; j++ {
 				if strings.HasPrefix(name(j), "&") {

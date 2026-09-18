@@ -5125,6 +5125,9 @@ func TestLambdaListDiagnostics(t *testing.T) {
 			`(lambda (&rest a b) a)`, `(lambda (&bogus a) a)`,
 			`(lambda (&optional a &optional b) a)`, `(lambda (&key a &key b) a)`,
 			`(lambda (&optional) 1)`, `(lambda (&key) 1)`, `(lambda (&key (a 1)) a)`,
+			// A marker group closed by the next marker names nothing.
+			`(lambda (a &optional &rest b) a)`, `(lambda (a &optional &key b) a)`,
+			`(lambda (a &optional) a)`, `(lambda (a &key) a)`, `(lambda (&key &rest b) b)`,
 			`(lambda (x x) x)`, `(lambda (x &rest x) x)`, `(lambda (x &key x) x)`,
 			`(defmacro m (x x) x)`, `(labels ((f (x x) x)) 1)`, `(flet ((f (&rest) 1)) 1)`,
 			`(lisp:lambda (x x) x)`, `(lisp:labels ((f (x x) x)) 1)`,
@@ -5133,6 +5136,7 @@ func TestLambdaListDiagnostics(t *testing.T) {
 		}, []string{
 			`(lambda (a &optional b) b)`, `(lambda (a &rest r) r)`, `(lambda (a &key k) k)`,
 			`(lambda (&optional a &rest r) r)`, `(lambda (&key a b) a)`,
+			`(lambda (a &optional b &rest r) r)`, `(lambda (&optional a b) a)`,
 			`(lambda () 1)`, `(lambda (x) (lambda (x) x))`,
 			`(labels ((f (x) x) (g (x) x)) (f 1))`,
 			`'(lambda (x x) x)`, `(quote (lambda (x x) x))`, `(lisp:quote (lambda (x x) x))`,

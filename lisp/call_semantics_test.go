@@ -276,8 +276,16 @@ func TestLambdaListCreationValidation(t *testing.T) {
 			{"&rest a &key b", "function formal argument list contains a control symbol at an invalid location: &rest"},
 			{"&rest a b", "function formal argument list contains a control symbol at an invalid location: &rest"},
 			{"&bogus a", "function formal argument list contains invalid control symbol ``&bogus''"},
-			{"&optional", "function formal argument list contains a control symbol at an invalid location: &optional"},
-			{"&key", "function formal argument list contains a control symbol at an invalid location: &key"},
+			{"&optional", "function formal argument list: &optional must be followed by at least one parameter name"},
+			{"&key", "function formal argument list: &key must be followed by at least one parameter name"},
+			{"a &optional", "function formal argument list: &optional must be followed by at least one parameter name"},
+			{"a &key", "function formal argument list: &key must be followed by at least one parameter name"},
+			// A marker group closed by the NEXT marker declares nothing;
+			// these lists used to be accepted, and the optional they seem
+			// to offer never existed.
+			{"a &optional &rest b", "function formal argument list: &optional must be followed by at least one parameter name"},
+			{"a &optional &key b", "function formal argument list: &optional must be followed by at least one parameter name"},
+			{"&key &rest b", "function formal argument list: &key must be followed by at least one parameter name"},
 			{"&key a &optional b", "function formal argument list contains a control symbol at an invalid location: &key"},
 			{"&key a &key b", "function formal argument list contains a control symbol at an invalid location: &key"},
 			{"&optional a &optional b", "function formal argument list contains a control symbol at an invalid location: &optional"},

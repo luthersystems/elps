@@ -2584,7 +2584,8 @@ var AnalyzerLambdaList = &Analyzer{
 	Name:     "lambda-list",
 	Severity: SeverityError,
 	Doc: "Check lambda lists for malformed control markers and duplicate parameter names.\n\n" +
-		"Use unique symbols, at most one of each marker, and exactly one final name after &rest. " +
+		"Use unique symbols, at most one of each marker, at least one name after &optional or &key, " +
+		"and exactly one final name after &rest. " +
 		"Checks literal definitions; shadowed constructors and macro templates are not checked.",
 	Run: func(pass *Pass) error {
 		userDefs := UserDefined(pass.Exprs)
