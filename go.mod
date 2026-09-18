@@ -5,7 +5,7 @@ go 1.26.0
 require (
 	github.com/ergochat/readline v0.1.3
 	github.com/google/go-dap v0.12.0
-	github.com/modelcontextprotocol/go-sdk v1.7.0
+	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/muesli/reflow v0.3.0
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/viper v1.21.0
