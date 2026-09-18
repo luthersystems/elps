@@ -1698,7 +1698,7 @@ func appendBytes(_ *LEnv, seq *LVal, fn func(x byte)) error {
 		}
 	}
 	for _, v := range cells {
-		fn(byte(v.Int))
+		fn(byte(v.Int)) //nolint:gosec // G115: the loop above rejected every cell outside 0..0xFF
 	}
 	return nil
 }

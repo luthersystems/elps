@@ -1217,7 +1217,7 @@ func buildSpec(strategy int, pkgs ...seedPkg) []byte {
 	if len(pkgs) == 0 || len(pkgs) > maxPackages {
 		panic(fmt.Sprintf("elpsutil fuzz seed: %d packages, want 1..%d", len(pkgs), maxPackages))
 	}
-	out := []byte{byte(len(pkgs) - 1)}
+	out := []byte{byte(len(pkgs) - 1)} //nolint:gosec // G115: len(pkgs) is 1..maxPackages, checked by the panic above
 	for _, p := range pkgs {
 		// The decoder reads the doc length modulo 8, so a longer doc would
 		// desynchronise every field after it and the seed would silently
@@ -1232,17 +1232,17 @@ func buildSpec(strategy int, pkgs ...seedPkg) []byte {
 			idxPkgType(p.typ),
 			idx(pkgNames, p.name),
 			idxInit(p.init),
-			byte(len(p.builtins)),
-			byte(len(p.ops)),
-			byte(len(p.macros)),
-			byte(len(p.doc)),
+			byte(len(p.builtins)), //nolint:gosec // G115: a seed byte, not a count; the decoder reads it modulo its own bound
+			byte(len(p.ops)),      //nolint:gosec // G115: as above
+			byte(len(p.macros)),   //nolint:gosec // G115: as above
+			byte(len(p.doc)),      //nolint:gosec // G115: as above
 		)
 		out = append(out, []byte(p.doc)...)
 		out = encodeDefs(out, p.builtins)
 		out = encodeDefs(out, p.ops)
 		out = encodeDefs(out, p.macros)
 	}
-	return append(out, byte(strategy))
+	return append(out, byte(strategy)) //nolint:gosec // G115: strategy selects a seed shape; truncation only picks another shape
 }
 
 // FuzzElpsutilEmbed installs fuzzer-described Go packages through elpsutil and

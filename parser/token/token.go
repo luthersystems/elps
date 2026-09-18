@@ -110,7 +110,7 @@ func (typ Type) String() string {
 		BRACE_R:         "]",
 	}
 	if typ >= numTokenTypes {
-		return typeStrings[INVALID] //nolint:gosec // INVALID is 0, always valid
+		return typeStrings[INVALID]
 	}
 	return typeStrings[typ] //nolint:gosec // bounds checked above
 }

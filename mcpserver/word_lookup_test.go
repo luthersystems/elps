@@ -26,7 +26,7 @@ func TestWordAtPositionAmpersand(t *testing.T) {
 	// Every column of "&rest", including the "&" itself and the end of the
 	// word, names the whole symbol.
 	for _, off := range []int{0, 1, 2, 5} {
-		t.Run("&rest+"+string(rune('0'+off)), func(t *testing.T) {
+		t.Run("&rest+"+string(rune('0'+off)), func(t *testing.T) { //nolint:gosec // G115: off comes from the literal offset list on the line above
 			assert.Equal(t, "&rest", wordAtPosition(content, 0, amp+off))
 		})
 	}

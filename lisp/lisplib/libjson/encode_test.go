@@ -211,7 +211,7 @@ func randBytes(r *mathrand.Rand, maxLen int) []byte {
 	n := r.Intn(maxLen)
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = byte(r.Intn(256))
+		b[i] = byte(r.Intn(256)) //nolint:gosec // G115: r.Intn(256) is 0..255 by construction
 	}
 	return b
 }

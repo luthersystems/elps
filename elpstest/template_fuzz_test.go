@@ -346,7 +346,8 @@ func buildTemplateParity(g templateParityCase) (*lisp.LEnv, templateParityTrust,
 		eval    func(*lisp.LEnv, *lisp.LVal, *lisp.LVal) *lisp.LVal
 	}{
 		{"overlap-write", first, func(_ *lisp.LEnv, args, values *lisp.LVal) *lisp.LVal {
-			values.Bytes()[2] = byte(args.Cells[0].Int) //elps:mutates explicit host mutation of an owned, admitted byte capture
+			b := byte(args.Cells[0].Int) //nolint:gosec // G115: the capture under test is a byte buffer and the driver supplies a byte
+			values.Bytes()[2] = b        //elps:mutates explicit host mutation of an owned, admitted byte capture
 			return lisp.Nil()
 		}},
 		{"header-add", header, func(_ *lisp.LEnv, args, values *lisp.LVal) *lisp.LVal {
@@ -698,7 +699,7 @@ func templateParitySeeds() [][]byte {
 		seed := make([]byte, 58)
 		seed[0], seed[1], seed[2] = byte(action%2), byte(action%5), byte(action%2)
 		for i := 16; i < len(seed); i += 2 {
-			seed[i], seed[i+1] = byte(action), byte(i)
+			seed[i], seed[i+1] = byte(action), byte(i) //nolint:gosec // G602: i steps by 2 from 16 while i < len(seed) == 58, so i+1 is 17..57
 		}
 		seeds = append(seeds, seed)
 	}

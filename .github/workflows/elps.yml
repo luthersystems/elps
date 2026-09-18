@@ -69,7 +69,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.8"
           cache: true
 
       - name: Download dependencies
@@ -78,7 +78,7 @@ jobs:
       - name: golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
         with:
-          version: v2.6
+          version: v2.13
           args: --timeout=5m ./...
           # `config verify` downloads the JSON schema from golangci-lint.run
           # on every run and was the one step in this job that needed a host
@@ -91,11 +91,11 @@ jobs:
           # next step against the schema vendored in .github/, offline.
           verify: false
 
-      # The schema check `verify: true` used to run, against the checked-in
-      # copy of the schema so it needs no network.  The Makefile derives the
-      # schema filename from the `version:` above, so bumping golangci-lint
-      # without re-vendoring the schema fails here with a missing file, not
-      # silently validating against the old one.  golangci-lint is on PATH
+      # The schema check `verify: true` used to run, in a form that needs no
+      # network.  Through v2.12 that meant `--schema` pointed at a copy of the
+      # schema vendored in .github/; v2.13 dropped the flag and embeds the
+      # schema in the binary, so the make target just runs `config verify` and
+      # there is nothing left to re-vendor on a bump.  golangci-lint is on PATH
       # because the action above adds its install dir (core.addPath in
       # src/run.ts, before the install-only branch).
       - name: golangci-lint config schema
@@ -178,7 +178,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: "1.25.13"
+          go-version: "1.26.8"
           cache: true
 
       - name: Build all packages

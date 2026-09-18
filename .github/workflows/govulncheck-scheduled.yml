@@ -52,14 +52,14 @@ jobs:
         with:
           # EXACT, and identical to every other workflow here -- see the long
           # note in .github/workflows/govulncheck.yml for why every looser
-          # spelling ("stable", "1.25", ">=1.25.13") resolved somewhere
-          # unintended, and why the 1.25 line is a golangci-lint constraint
-          # rather than a preference.
+          # spelling ("stable", a bare minor, a ">=" range) resolved somewhere
+          # unintended, and for the golangci-lint constraint that used to hold
+          # this line at 1.25.
           #
           # This scheduled run is the one that reports on main, so it is the
           # one where a toolchain mismatch would be least visible and most
           # misleading.
-          go-version: "1.25.13"
+          go-version: "1.26.8"
           check-latest: true
           cache: true
 
@@ -67,9 +67,10 @@ jobs:
       # dropped it and the scripts below then ran against a govulncheck binary
       # that was never installed.
       - name: Install govulncheck
-        # Match the PR scanner; v1.8.0 requires Go 1.26 (#634).
+        # Match the PR scanner; v1.8.0 requires Go 1.26, which the build
+        # toolchain above now supplies (#634).
         # This pins the executable, not the live vulnerability database.
-        run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.8.0
 
       - name: Run govulncheck
         id: scan
