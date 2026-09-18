@@ -1024,7 +1024,8 @@ list being sorted, while it is being sorted.
 `all?`, `any?`, `stable-sort`, and `insert-sorted` pass elements directly to
 their callbacks as **data**. They do not evaluate a list element as a call or
 look up a symbol element as a variable. Key functions receive the original
-elements too, and their results are passed directly to the comparator. These
+elements too, and their results are passed directly to the comparator.
+`search-sorted` hands its predicate each probed index the same way.  These
 callbacks must be ordinary functions; macros and special operators such as
 `quote` are rejected, even when the input sequence is empty.
 
