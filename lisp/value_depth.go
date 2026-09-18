@@ -16,7 +16,7 @@ import (
 // Walker inventory: walker | file:line | guard | regression.
 // Paths are relative to the repository root. Input and path-composition limits remain separate from value depth.
 // rendered text | lisp/render_bounded.go:17 | separate 1024 counter / marker | TestValueWalkDepth/100000/format-string
-// format value conversion | lisp/value_depth.go:64 | explicit stack / runtime counter | TestValueWalkDepth/{100000,3000000}/format-string
+// format value conversion | lisp/builtins.go builtinFormatString | rendered-text counter only (no value-depth verdict since the post-render check was dropped) | TestValueWalkDepth/{100000,3000000}/format-string
 // copy / detach | lisp/detach.go:146 | explicit jobs / runtime counter | TestValueWalkDepth/{100000,3000000}/{copy,detach}
 // LVal.Copy | lisp/copier.go:307 | explicit jobs / runtime counter | TestValueWalkDepth/{100000,3000000}/Copy; TestValueDepthRaisedLimit
 // GoValue / GoSlice / GoMap | lisp/embed.go:50 | explicit stack / runtime counter via the WithRuntime forms, default counter otherwise | TestValueWalkDepth/{100000,3000000}/GoValue; TestGoConversionRootDepth; TestGoValueHonoursRuntimeDepthLimit
@@ -57,8 +57,31 @@ func (r *Runtime) ValueDepthLimit() int {
 	return MaxValueDepth
 }
 
-// checkValueDepth validates the conversion graph after bounded text rendering succeeds.
-// A visited node closes cycles; the counter bounds acyclic descent.
+// checkValueDepth validates a value graph against a depth limit. A visited node
+// closes cycles; the counter bounds acyclic descent.
+//
+// It has NO caller outside tests since format-string stopped re-walking the
+// value it had just rendered: rendering substitutes the depth marker for a
+// subtree below its own 1024-level cap, so the second verdict could only turn
+// a printable value into an error. It is kept, and tested, as the one written
+// statement of what the limit means for a walk that only has to ANSWER --
+// every other walk builds something as it goes and carries the check inline.
+//
+// WHAT IT MEASURES is DISTINCT-CONTAINER depth, not nesting depth. Containers
+// are memoised -- a container already visited is not descended into again --
+// so the counter bounds the longest chain of DISTINCT containers, the same
+// quantity the copier and the detacher bound, and for the same reason: those
+// walks build one output per distinct container, so a graph they can rebuild
+// is a graph this can walk.
+//
+// The two quantities differ on a DAG. A container reached again deeper down
+// one path is not re-entered, so the depth reported for it is the one where it
+// was FIRST seen, and a value whose textual nesting is arbitrarily deep can
+// pass a limit far below that nesting. That is the intended answer, not an
+// approximation of the other one: the limit exists to bound the work and the
+// storage a walk commits to, and a shared subtree costs both of those once.
+// Rendered text, which does expand a shared subtree once per path, has its own
+// separate counter (maxRenderDepth).
 func checkValueDepth(v *LVal, limit int, ctx context.Context) error {
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {

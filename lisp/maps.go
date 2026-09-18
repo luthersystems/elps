@@ -8,6 +8,21 @@ import (
 	"sort"
 )
 
+// Map is the backing of a sorted-map value. NewMapData is the extension point
+// for an embedder that wants its own implementation.
+//
+// KEYS ARE LString OR LSymbol. Every key the interpreter puts in a map is one
+// of those two, and the walks that impose an order of their own on a map's
+// entries -- the copier's generic arm and the detacher, which run host code
+// per entry and so must run it in a defined order -- sort them with
+// sortMapEntriesByKey, which compares (Str, Type): the key's string and its
+// type tag. That is a total order over those two kinds and over nothing else:
+// an implementation admitting keys of other types (an LInt, say, whose Str is
+// empty) leaves every such key comparing equal to every other, and the stable
+// sort then leaves them in the order Entries returned. A custom Map that
+// accepts other key types is therefore walked in ITS OWN Entries order for
+// those keys, so an implementation wanting a defined order across walks must
+// give Entries one.
 type Map interface {
 	Len() int
 	// Get returns the value associated with the given key and a bool signaling
