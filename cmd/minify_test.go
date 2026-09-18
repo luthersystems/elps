@@ -113,7 +113,7 @@ func TestRunMinify_QuotedSymbolMap(t *testing.T) {
 	minifyMapPath = filepath.Join(t.TempDir(), "symbols.json")
 	var out bytes.Buffer
 	require.NoError(t, runMinify(nil, bytes.NewBufferString("(defun twice (x) (* 2 x)) (map 'list 'twice '(1 2 3))"), &out))
-	data, err := os.ReadFile(minifyMapPath)
+	data, err := os.ReadFile(minifyMapPath) //#nosec G304 -- path is inside this test's own t.TempDir()
 	require.NoError(t, err)
 	var symMap struct {
 		Excluded []struct{ Original, Reason string }

@@ -35,7 +35,7 @@ func TestEvaluationSignals(t *testing.T) {
 				case "repl-batch":
 					args = []string{"repl", "--batch", "--json=false"}
 				}
-				cmd := exec.CommandContext(ctx, bin, args...) //nolint:gosec // locally built test binary
+				cmd := exec.CommandContext(ctx, bin, args...)
 				cmd.Stdin = strings.NewReader(source + "\n")
 				stderr, err := cmd.StderrPipe()
 				require.NoError(t, err)

@@ -47,7 +47,7 @@ func TestMinifyCorpus(t *testing.T) {
 					}
 					data, err := os.ReadFile(filepath.Join(filepath.Dir(path), sibling.Name()))
 					require.NoError(t, err)
-					require.NoError(t, os.WriteFile(filepath.Join(dir, sibling.Name()), data, 0o600))
+					require.NoError(t, os.WriteFile(filepath.Join(dir, sibling.Name()), data, 0o600)) //nolint:gosec // G703: copies a corpus sibling into this test's own t.TempDir()
 				}
 				require.NoError(t, os.WriteFile(filepath.Join(dir, filepath.Base(path)), []byte(output), 0o600))
 				minCode, minOut, minErr := runCorpusCLI(t, bin, dir, "run", filepath.Base(path))
@@ -60,7 +60,7 @@ func TestMinifyCorpus(t *testing.T) {
 
 func runCorpusCLI(t *testing.T, bin, dir string, args ...string) (int, string, string) {
 	t.Helper()
-	cmd := exec.CommandContext(t.Context(), bin, args...)
+	cmd := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // G204: bin is the elps binary this test built into t.TempDir()
 	cmd.Dir = dir
 	var stdout, stderr bytes.Buffer
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
