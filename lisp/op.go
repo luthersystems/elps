@@ -772,7 +772,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
 	letenv := newEnvN(env, len(bindlist.Cells))
-	for _, bind := range bindlist.Cells {
+	for i, bind := range bindlist.Cells {
 		if bind.Type != LSExpr {
 			return env.Errorf("first argument is not a list of pairs")
 		}
@@ -797,7 +797,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		// that created a closure; every other binding goes into the scope it
 		// would have shared anyway, which is exactly the flat let* of before.
 		if env.Runtime.closuresCreated() != before {
-			letenv = newEnvN(letenv, 1)
+			letenv = newEnvN(letenv, len(bindlist.Cells)-i)
 		}
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.Type == LError {

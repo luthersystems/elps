@@ -460,6 +460,7 @@ stack for diagnosis.
 When paused, three built-in scopes are visible in the Variables panel:
 
 - **Local** — Function-local bindings (parameters, let-bindings, intermediate values). Walks the environment chain up to but not including the root scope.
+  `let*` bindings share one scope until an initializer creates a closure, at which point the remaining bindings go into a nested scope; so a name rebound by `let*` appears as two entries only when a closure was created between the two bindings.
 - **Package** — All exported symbols in the current package.
 - **Macro Expansion** — When paused inside macro-expanded code, shows the macro name, call-site arguments, and call-site location.
 

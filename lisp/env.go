@@ -865,6 +865,15 @@ func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
 }
 
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
+//
+// This is the one constructor that stores a live environment into a function
+// value, and let* relies on that: opLetSeq decides whether an initializer
+// could have captured its scope by whether the runtime's closure counter
+// moved while the initializer ran (see closuresCreated). A Go builtin or
+// debugger hook that retained its env argument and evaluated in it after
+// returning would sit outside that contract; nothing in the tree does, and
+// any new holder of a live *LEnv must either go through Lambda or count
+// itself the same way.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
