@@ -81,11 +81,29 @@ func liveRenderContext(ctx context.Context) context.Context {
 	return ctx
 }
 
+// truncatedRender replaces the tail of s with the truncation marker, within
+// limit bytes.
+//
+// The cut is a byte offset into text whose units are runes, so it is backed up
+// to a rune boundary: the diagnostic paths that keep the prefix hand it to
+// protocol encoders, and a rune cut in half is not text those can carry. The
+// marker is never emitted in part -- a partial "#<t" reads as content rather
+// than as a marker -- so a limit too small to hold it renders nothing at all.
 func truncatedRender(s string, limit int) string {
 	if limit < len(renderTruncatedMark) {
-		return renderTruncatedMark[:max(0, limit)]
+		return ""
 	}
-	return s[:min(len(s), limit-len(renderTruncatedMark))] + renderTruncatedMark
+	s = s[:min(len(s), limit-len(renderTruncatedMark))]
+	// A rune is at most utf8.UTFMax bytes, so a cut splits at most
+	// UTFMax-1 of them off. Text that was already invalid before the cut
+	// is left as it is; this repairs the cut, not the input.
+	for range utf8.UTFMax - 1 {
+		if r, size := utf8.DecodeLastRuneInString(s); size == 0 || r != utf8.RuneError || size > 1 {
+			break
+		}
+		s = s[:len(s)-1]
+	}
+	return s + renderTruncatedMark
 }
 
 // Render returns diagnostic text bounded by the environment's output limit and
