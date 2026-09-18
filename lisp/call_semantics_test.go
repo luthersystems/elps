@@ -48,6 +48,9 @@ func TestFunctionRejectsNonSymbolFormals(t *testing.T) {
 	}
 }
 
+// A constant formal is refused when the function is CREATED: Put would
+// refuse to bind it, so such a function could never be called.  The body
+// must not run either way.
 func TestFunctionPropagatesConstantBindingErrors(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -71,7 +74,7 @@ func TestFunctionPropagatesConstantBindingErrors(t *testing.T) {
 			result := env.LoadString("formals.lisp", src)
 			assert.Equal(t, "false", env.LoadString("formals.lisp", "ran").String(), "binding errors must abort before the body")
 			require.Equal(t, lisp.LError, result.Type)
-			assert.Contains(t, result.String(), "cannot rebind constant: "+tc.constant)
+			assert.Contains(t, result.String(), "contains the constant "+tc.constant)
 			assert.False(t, lisp.IsInternalPanic(result))
 		})
 	}
@@ -102,26 +105,30 @@ func TestFunctionRejectsMalformedHostFormals(t *testing.T) {
 }
 
 func TestLexicalBindingsRejectKeywords(t *testing.T) {
-	for _, expr := range []string{
-		`(let ((:k 1)) (set! ran true))`,
-		`(let* ((:k 1)) (set! ran true))`,
-		`((lambda (:k) (set! ran true)) 1)`,
-		`((lambda (&optional :k) (set! ran true)))`,
-		`((lambda (&optional :k) (set! ran true)) 1)`,
-		`((lambda (&rest :k) (set! ran true)) 1 2)`,
-		`((lambda (&rest :k) (set! ran true)))`,
-		`((lambda (&key :k) (set! ran true)))`,
-		`(dotimes (:k 1) (set! ran true))`,
-		`(flet ((:k () 1)) (set! ran true))`,
-		`(labels ((:k () 1)) (set! ran true))`,
+	// A keyword FORMAL is refused when the function is created; a keyword
+	// used as any other binding name is refused by the binding itself.
+	const formal = "function formal argument list contains a keyword: :k"
+	const bound = "value cannot be assigned to a keyword: :k"
+	for _, tc := range []struct{ expr, want string }{
+		{`(let ((:k 1)) (set! ran true))`, bound},
+		{`(let* ((:k 1)) (set! ran true))`, bound},
+		{`((lambda (:k) (set! ran true)) 1)`, formal},
+		{`((lambda (&optional :k) (set! ran true)))`, formal},
+		{`((lambda (&optional :k) (set! ran true)) 1)`, formal},
+		{`((lambda (&rest :k) (set! ran true)) 1 2)`, formal},
+		{`((lambda (&rest :k) (set! ran true)))`, formal},
+		{`((lambda (&key :k) (set! ran true)))`, formal},
+		{`(dotimes (:k 1) (set! ran true))`, bound},
+		{`(flet ((:k () 1)) (set! ran true))`, bound},
+		{`(labels ((:k () 1)) (set! ran true))`, bound},
 	} {
-		t.Run(expr, func(t *testing.T) {
+		t.Run(tc.expr, func(t *testing.T) {
 			env := newCallSemanticsEnv(t)
 			require.NoError(t, lisp.GoError(env.LoadString("keyword-bind.lisp", `(set 'ran false)`)))
-			result := env.LoadString("keyword-bind.lisp", expr)
+			result := env.LoadString("keyword-bind.lisp", tc.expr)
 			assert.Equal(t, "false", env.LoadString("keyword-bind.lisp", "ran").String())
 			require.Equal(t, lisp.LError, result.Type)
-			assert.Contains(t, result.String(), "value cannot be assigned to a keyword: :k")
+			assert.Contains(t, result.String(), tc.want)
 			assert.False(t, lisp.IsInternalPanic(result))
 		})
 	}

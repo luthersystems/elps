@@ -293,9 +293,12 @@ the last binding wins. Lint warns about duplicates within one `let`,
 and does not produce this warning. Reusing a parameter name in different
 functions or a variable name in nested scopes is also legal.
 
-A call that cannot bind a parameter fails before entering the
-body: `true`, `false`, and keywords cannot be bound, including omitted
-optional/keyword parameters and empty rest parameters.
+A parameter named `true`, `false`, or a keyword cannot be bound, so naming
+one is an error at creation, alongside the other lambda list errors above:
+`(lambda (:x) 1)` fails without being called. The `lambda-list` lint check
+reports the same mistake in a literal definition. A host-registered function
+declaring such a formal is refused when a call binds it, and
+`elpsutil.Validate` reports it when the package is registered.
 
 ```lisp
 (lambda (x) (- x))

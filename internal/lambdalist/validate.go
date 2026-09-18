@@ -8,6 +8,22 @@ import (
 	"strings"
 )
 
+// InvalidName reports why s cannot NAME a formal argument, or "" when it can.
+// A keyword and the constants true and false are refused by LEnv.Put at bind
+// time, so a function declaring one could never be called; saying so where the
+// function is written puts the diagnostic on the definition a reader can fix.
+// Control markers (&optional, &key, &rest) are a matter of position rather
+// than of the name alone and are checked by Validate.
+func InvalidName(s string) string {
+	switch {
+	case strings.HasPrefix(s, ":"):
+		return "function formal argument list contains a keyword: " + s
+	case s == "true" || s == "false":
+		return "function formal argument list contains the constant " + s
+	}
+	return ""
+}
+
 // Validate checks n symbol names supplied by name without copying the list.
 // It returns the offending index and the runtime diagnostic, or (-1, "").
 // Callers check that the list contains only symbols before calling Validate.
@@ -44,6 +60,9 @@ func Validate(n int, name func(int) string) (int, string) {
 		default:
 			if strings.HasPrefix(s, "&") {
 				return i, fmt.Sprintf("function formal argument list contains invalid control symbol ``%s''", s)
+			}
+			if message := InvalidName(s); message != "" {
+				return i, message
 			}
 		}
 	}

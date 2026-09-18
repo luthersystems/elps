@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -135,6 +136,12 @@ func checkFormals(formals *lisp.LVal) string {
 		}
 		if cell.Type != lisp.LSymbol {
 			return fmt.Sprintf("formal argument %d is a %v, not a symbol", i, cell.Type)
+		}
+		// A keyword or constant formal registers cleanly and is refused by
+		// the binder on the first call, so the embedder would learn about it
+		// from a user's call site rather than from registration.
+		if message := lambdalist.InvalidName(cell.Str); message != "" {
+			return fmt.Sprintf("formal argument %d cannot be bound: %s", i, message)
 		}
 	}
 	return ""

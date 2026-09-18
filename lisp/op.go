@@ -26,9 +26,11 @@ var langSpecialOps = []*langBuiltin{
 		writes to the lisp package signal: cannot rebind lisp package binding: name.
 		Unqualified builtin shadowing in your own package remains legal.`},
 	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert,
-		`Evaluates the test expression and signals an error if the result
-		is falsey. An optional format string and arguments (evaluated only
-		on failure) customize the error message using {} placeholders.`},
+		`Evaluates the test expression exactly once and signals an error if
+		the result is falsey. An optional message expression and formatting
+		arguments, evaluated only on the failure path, customize the error
+		message using {} placeholders. The message must produce a string and
+		is evaluated before the formatting arguments.`},
 	{"quote", Formals("expr"), opQuote,
 		`Returns its argument unevaluated. This is the operator behind
 		the ' prefix syntax.`},
@@ -44,8 +46,8 @@ var langSpecialOps = []*langBuiltin{
 		Malformed lists and duplicate parameter names are errors at creation.
 		Each marker may occur once; &rest must have exactly one final name.
 		Duplicate keyword arguments use the rightmost value, unlike Common Lisp.
-		Parameter names must be symbols; binding true, false, or a keyword
-		is an error.
+		Parameter names must be symbols; naming true, false, or a keyword
+		is an error at creation.
 		The body expressions are evaluated in order and the last value
 		is returned. A string literal as the first body expression
 		serves as a documentation string.`},

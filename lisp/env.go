@@ -933,6 +933,14 @@ func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
 		if sym.Type != LSymbol {
 			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
 		}
+		// A keyword or a constant is refused by Put when the call binds it,
+		// so a function naming one could never be called.  Refusing it here
+		// reports the mistake where the function is created -- including for
+		// a host-registered function, whose formals reach this check when
+		// the binder runs.
+		if message := lambdalist.InvalidName(sym.Str); message != "" {
+			return env.Errorf("%s", message)
+		}
 	}
 	return Nil()
 }

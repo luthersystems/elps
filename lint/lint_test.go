@@ -5128,6 +5128,8 @@ func TestLambdaListDiagnostics(t *testing.T) {
 			`(lambda (x x) x)`, `(lambda (x &rest x) x)`, `(lambda (x &key x) x)`,
 			`(defmacro m (x x) x)`, `(labels ((f (x x) x)) 1)`, `(flet ((f (&rest) 1)) 1)`,
 			`(lisp:lambda (x x) x)`, `(lisp:labels ((f (x x) x)) 1)`,
+			`(lambda (:x) 1)`, `(lambda (a &optional :x) 1)`, `(defun f (true) 1)`,
+			`(defmacro m (false) 1)`, `(flet ((f (:x) 1)) 1)`,
 		}, []string{
 			`(lambda (a &optional b) b)`, `(lambda (a &rest r) r)`, `(lambda (a &key k) k)`,
 			`(lambda (&optional a &rest r) r)`, `(lambda (&key a b) a)`,
