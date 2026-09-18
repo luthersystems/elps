@@ -52,6 +52,70 @@ func NewMapData(m Map) *MapData {
 	return &MapData{m}
 }
 
+// A MapData need not have a backing at all: NewMapData(nil), reached through
+// SortedMapFromData, is the documented extension point and nothing in it
+// requires an implementation.  The methods below answer for that degenerate
+// value as the empty, unwritable map it is, so that every walk over one --
+// rendering, equality, depth checking, the sorted-map builtins, the JSON
+// encoder -- reads it as empty instead of calling a method on a nil interface
+// and dying with a nil dereference the evaluator can only report as an
+// internal panic.  They shadow the promoted methods; a caller holding the
+// backing itself is unaffected.
+//
+// The three REBUILDING walkers (copier.mapData, detachMapData, GoValue) keep
+// the explicit arms they already have: each has to construct a fresh
+// degenerate map rather than merely read one.
+
+// Len reports the number of entries, or zero for a map with no backing.
+func (md *MapData) Len() int {
+	if md == nil || md.mapBacking == nil {
+		return 0
+	}
+	return md.mapBacking.Len()
+}
+
+// Get reads an entry.  A map with no backing holds none.
+func (md *MapData) Get(key *LVal) (*LVal, bool) {
+	if md == nil || md.mapBacking == nil {
+		return Nil(), false
+	}
+	return md.mapBacking.Get(key)
+}
+
+// Set associates key with val.  A map with no backing has nowhere to put it,
+// and reporting that is the only honest answer: silently dropping the write
+// would let a program believe an entry exists.
+func (md *MapData) Set(key, val *LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Errorf("sorted-map has no backing implementation")
+	}
+	return md.mapBacking.Set(key, val)
+}
+
+// Del removes an entry.  A map with no backing holds none to remove.
+func (md *MapData) Del(key *LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Nil()
+	}
+	return md.mapBacking.Del(key)
+}
+
+// Keys lists the keys, none for a map with no backing.
+func (md *MapData) Keys() *LVal {
+	if md == nil || md.mapBacking == nil {
+		return QExpr(nil)
+	}
+	return md.mapBacking.Keys()
+}
+
+// Entries writes the entries into buf, none for a map with no backing.
+func (md *MapData) Entries(buf []*LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Int(0)
+	}
+	return md.mapBacking.Entries(buf)
+}
+
 // a sentinal type used to describe string-like keys in a sortedmap.
 type keytype uint
 
