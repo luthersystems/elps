@@ -3,9 +3,12 @@
 package cmd
 
 import (
+	"context"
+	"io"
 	"os"
 
 	"github.com/luthersystems/elps/diagnostic"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	lintpkg "github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
 )
@@ -23,57 +26,6 @@ func colorMode() diagnostic.ColorMode {
 
 func newRenderer() *diagnostic.Renderer {
 	return &diagnostic.Renderer{Color: colorMode()}
-}
-
-// lispErrorToDiagnostic converts an LError value to a Diagnostic for display.
-func lispErrorToDiagnostic(lerr *lisp.LVal) diagnostic.Diagnostic {
-	ev := (*lisp.ErrorVal)(lerr)
-	d := diagnostic.Diagnostic{
-		Severity: diagnostic.SeverityError,
-		Message:  ev.ErrorMessage(),
-	}
-
-	// Add the function context to the message if available
-	fname := ev.FunName()
-	if fname != "" {
-		d.Message = fname + ": " + d.Message
-	}
-	if lerr.Str != "" && lerr.Str != "error" {
-		d.Message = lerr.Str + ": " + d.Message
-	}
-
-	// Add source span if available
-	if loc, ok := lerr.Source(); ok && loc.Pos >= 0 {
-		span := diagnostic.Span{
-			File: loc.File,
-			Line: loc.Line,
-			Col:  loc.Col,
-		}
-		// Prefer physical path for reading source
-		if loc.Path != "" {
-			span.File = loc.Path
-		}
-		d.Spans = append(d.Spans, span)
-	}
-
-	// Add stack trace frames as notes
-	stack := lerr.CallStack()
-	if stack != nil {
-		for i := len(stack.Frames) - 1; i >= 0; i-- {
-			frame := &stack.Frames[i]
-			name := frame.QualifiedFunName(lisp.DefaultUserPackage)
-			if name == "" {
-				continue
-			}
-			loc := "unknown"
-			if frame.Source != nil {
-				loc = frame.Source.String()
-			}
-			d.Notes = append(d.Notes, "in "+name+" at "+loc)
-		}
-	}
-
-	return d
 }
 
 // lintDiagToDiagnostic converts a lint.Diagnostic to a diagnostic.Diagnostic.
@@ -103,15 +55,20 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 	return d
 }
 
-// renderLispError renders a lisp error with diagnostic formatting to stderr.
+// renderLispErrorContext renders a lisp error with diagnostic formatting to stderr.
 // If sourceFile is non-empty, a hint to run elps lint is appended.
-func renderLispError(lerr *lisp.LVal, sourceFiles ...string) {
-	d := lispErrorToDiagnostic(lerr)
+func renderLispErrorContext(ctx context.Context, runtime *lisp.Runtime, lerr *lisp.LVal, sourceFiles ...string) {
+	renderLispErrorTo(ctx, os.Stderr, runtime, lerr, sourceFiles...)
+}
+
+func renderLispErrorTo(ctx context.Context, w io.Writer, runtime *lisp.Runtime, lerr *lisp.LVal, sourceFiles ...string) {
+	var hint []string
 	if len(sourceFiles) > 0 && sourceFiles[0] != "" {
-		d.Notes = append(d.Notes, "try: elps lint "+sourceFiles[0])
+		hint = []string{"try: elps lint ", sourceFiles[0]}
 	}
 	r := newRenderer()
-	_ = r.Render(os.Stderr, d)
+	r.SourceReader = diagnosticsource.SourceReader(runtime, lerr)
+	_, _ = (*lisp.ErrorVal)(lerr).WriteDiagnosticContext(ctx, w, r, hint...)
 }
 
 // renderLintDiagnostics renders lint diagnostics with diagnostic formatting to stderr.

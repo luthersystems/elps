@@ -33,11 +33,11 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	// nothing else in the language can write.
 	//
 	// "a:1abc" and "a:0x10" are the ones a naive check misses: neither is a
-	// number by strconv, but both start with a digit, so the reader gives them
-	// back as an INT followed by a separate symbol rather than as one symbol.
+	// number by strconv, but both start with a digit, so the reader rejects them
+	// as malformed numeric literals rather than reading them as one symbol.
 	for _, src := range []string{
 		"a:1", "a:1b", "a:-1", "a:1.5", "a:1e5", "a:0x10", "a:1abc", "a:1_",
-		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)",
+		"a:9", "(a:1)", "'a:1", "#'a:1", "[a:1]", "(f a:1 b)", "--:1", "--:-1",
 	} {
 		t.Run("rejected/"+src, func(t *testing.T) {
 			t.Parallel()
@@ -60,6 +60,7 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 	for _, src := range []string{
 		"a:b", "lisp:set", "xyz:abc?", "a:+1", "a:.1", "a:*1", "a:_1",
 		"a:true", "a:-", "a:--", "a:-a", "-a:b", "a:<=", "a:set!", "a:->",
+		"-:f", "--:f", "--:--",
 	} {
 		t.Run("accepted/"+src, func(t *testing.T) {
 			t.Parallel()
@@ -74,6 +75,32 @@ func TestQualifiedSymbolHalvesMustBeNames(t *testing.T) {
 			require.NoError(t, err, "printed form %q must re-parse", expr.String())
 			assert.Equal(t, lisp.LSymbol, rt.Type)
 			assert.Equal(t, expr.Str, rt.Str)
+		})
+	}
+}
+
+func TestQualifiedMinusRuns(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		src  string
+		want []string
+	}{
+		{"'(--:f)", []string{"--:f"}},
+		{"'(---:f)", []string{"-", "-", "-:f"}},
+		{"'(----:f)", []string{"-", "-", "-", "-:f"}},
+	} {
+		t.Run(tc.src, func(t *testing.T) {
+			expr, err := parseOne(t, tc.src)
+			require.NoError(t, err)
+			require.Equal(t, lisp.LSExpr, expr.Type)
+			require.True(t, expr.IsQuoted())
+			names := make([]string, len(expr.Cells))
+			for i, cell := range expr.Cells {
+				require.Equal(t, lisp.LSymbol, cell.Type)
+				names[i] = cell.Str
+			}
+			assert.Len(t, expr.Cells, len(tc.want))
+			assert.Equal(t, tc.want, names)
 		})
 	}
 }
@@ -114,15 +141,14 @@ func TestKeywordNamesAreNotIdentifiers(t *testing.T) {
 	}
 }
 
-// TestDigitBeforeColonSplitsTokens records that "1:1" was never one symbol to
-// begin with: the lexer stops the number at the ':' and starts a fresh token,
-// so it reads as the INT 1 followed by the keyword :1. Pinned because it looks
-// like a qualified symbol and is not one -- tightening the qualified-symbol
-// rule does not (and should not) change it.
-func TestDigitBeforeColonSplitsTokens(t *testing.T) {
+// TestDigitBeforeColonRequiresDelimiter rejects an undelimited numeric suffix.
+// Whitespace still separates the integer 1 from the keyword :1.
+func TestDigitBeforeColonRequiresDelimiter(t *testing.T) {
 	t.Parallel()
 
-	exprs, err := rdparser.New(token.NewScannerString("test", "1:1")).ParseProgram()
+	_, err := rdparser.New(token.NewScannerString("test", "1:1")).ParseProgram()
+	require.ErrorContains(t, err, `invalid numeric literal "1:1"`)
+	exprs, err := rdparser.New(token.NewScannerString("test", "1 :1")).ParseProgram()
 	require.NoError(t, err)
 	require.Len(t, exprs, 2)
 	assert.Equal(t, lisp.LInt, exprs[0].Type)

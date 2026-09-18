@@ -346,7 +346,7 @@ func (h *handler) onStackTrace(req *dap.StackTraceRequest) {
 		return
 	}
 
-	frames := translateStackFrames(env.Runtime.Stack, pausedExpr, h.engine.SourceRoot())
+	frames := translateStackFrames(env.Runtime.Stack, pausedExpr, h.engine.SourceRoot(), env)
 	resp.Body.TotalFrames = len(frames)
 
 	// Apply paging.

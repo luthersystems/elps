@@ -22,11 +22,15 @@ var langSpecialOps = []*langBuiltin{
 		`Mutates an existing variable binding. Evaluates expr and updates
 		the binding of the quoted symbol name. Signals an error if the
 		symbol is not already bound in any enclosing scope or the current
-		package. Cannot rebind the constants true and false.`},
+		package. Cannot rebind the constants true and false. After initialization,
+		writes to the lisp package signal: cannot rebind lisp package binding: name.
+		Unqualified builtin shadowing in your own package remains legal.`},
 	{"assert", Formals("expr", VarArgSymbol, "message-format-args"), opAssert,
-		`Evaluates the test expression and signals an error if the result
-		is falsey. An optional format string and arguments (evaluated only
-		on failure) customize the error message using {} placeholders.`},
+		`Evaluates the test expression exactly once and signals an error if
+		the result is falsey. An optional message expression and formatting
+		arguments, evaluated only on the failure path, customize the error
+		message using {} placeholders. The message must produce a string and
+		is evaluated before the formatting arguments.`},
 	{"quote", Formals("expr"), opQuote,
 		`Returns its argument unevaluated. This is the operator behind
 		the ' prefix syntax.`},
@@ -34,10 +38,16 @@ var langSpecialOps = []*langBuiltin{
 		`Returns a quoted template in which (unquote expr) forms are
 		evaluated and spliced in, and (unquote-splicing expr) forms are
 		evaluated and their list elements are spliced in. All other
-		subexpressions remain unevaluated.`},
+		subexpressions remain unevaluated. Raises an ordinary depth error
+		when traversal exceeds 1000000 levels or the configured WithMaxValueDepth setting.`},
 	{"lambda", Formals("formals", VarArgSymbol, "expr"), opLambda,
 		`Returns an anonymous function. Formals is a list of parameter
 		names that may include &optional, &rest, and &key markers.
+		Malformed lists and duplicate parameter names are errors at creation.
+		Each marker may occur once; &rest must have exactly one final name.
+		Duplicate keyword arguments use the rightmost value, unlike Common Lisp.
+		Parameter names must be symbols; naming true, false, or a keyword
+		is an error at creation.
 		The body expressions are evaluated in order and the last value
 		is returned. A string literal as the first body expression
 		serves as a documentation string.`},
@@ -49,13 +59,17 @@ var langSpecialOps = []*langBuiltin{
 	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst,
 		`Threads a value through a series of function calls by inserting
 		it as the first argument after the function name in each form.
-		Evaluates the initial value, then passes it through each
-		subsequent form. Returns the result of the final form.`},
+		Evaluates the initial value once, before any step's function or
+		arguments, then passes each result as data to the next step.
+		Steps must call regular functions; macros and special operators
+		are rejected. Returns the result of the final form.`},
 	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast,
 		`Threads a value through a series of function calls by inserting
-		it as the last argument in each form. Evaluates the initial
-		value, then passes it through each subsequent form. Returns
-		the result of the final form.`},
+		it as the last argument in each form. Evaluates the initial value
+		once, before any step's function or arguments, then passes each
+		result as data to the next step. Steps must call regular functions;
+		macros and special operators are rejected. Returns the result of
+		the final form.`},
 	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes,
 		`Iterates a body a fixed number of times. The control-sequence is
 		(symbol count [result]) where count evaluates to an integer. The
@@ -65,25 +79,32 @@ var langSpecialOps = []*langBuiltin{
 		`Binds locally-scoped named functions and evaluates the body.
 		Each binding has the form (name formals &rest body). Unlike flet,
 		all functions share the same scope so they may call each other
-		and themselves recursively. Returns the last body value.`},
+		and themselves recursively. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Duplicate function names are legal (the last
+		binding wins), but lint warns. Returns the last body value.`},
 	{"macrolet", Formals("bindings", VarArgSymbol, "expr"), opMacrolet,
 		`Binds locally-scoped macros and evaluates the body. Each binding
 		has the form (name formals &rest body). The macros do not share
-		scope with each other. Returns the last body value.`},
+		scope with each other. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Returns the last body value.`},
 	{"flet", Formals("bindings", VarArgSymbol, "expr"), opFlet,
 		`Binds locally-scoped named functions and evaluates the body.
 		Each binding has the form (name formals &rest body). Functions
 		cannot reference each other or recurse by name. Use labels for
-		mutual or self-recursion. Returns the last body value.`},
+		mutual or self-recursion. Malformed lambda lists and duplicate parameter
+		names are errors at creation. Duplicate function names are legal (the last
+		binding wins), but lint warns. Returns the last body value.`},
 	{"let*", Formals("bindings", VarArgSymbol, "expr"), opLetSeq,
 		`Creates local variable bindings evaluated sequentially, so each
-		binding can refer to previously bound symbols. The first argument
-		is a list of [symbol value] pairs. Returns the last body value.`},
+		binding can refer to previously bound symbols. Repeated names are legal
+		sequential rebinding and do not produce duplicate-binding lint warnings.
+		The first argument is a list of [symbol value] pairs. Returns the last body value.`},
 	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet,
 		`Creates local variable bindings evaluated in parallel. All value
 		expressions are evaluated in the enclosing scope before any
 		bindings are established. The first argument is a list of
-		[symbol value] pairs. Returns the last body value.`},
+		[symbol value] pairs. Duplicate names are legal (the last binding wins),
+		but lint warns; use let* for sequential rebinding. Returns the last body value.`},
 	{"progn", Formals(VarArgSymbol, "expr"), opProgn,
 		`Evaluates its body forms sequentially and returns the value of
 		the last form. Returns () if no forms are given.`},
@@ -91,10 +112,21 @@ var langSpecialOps = []*langBuiltin{
 		`Evaluates body forms with condition handlers in scope. The first
 		argument is a list of (condition-type handler-fn) pairs. If a
 		body form signals an error matching a condition type, the handler
-		is called with the condition name and error data. Use the symbol
+		is called with the condition name and error data as values, without
+		evaluating the data. Copying condition data beyond 1000000 levels
+		(or the configured WithMaxValueDepth setting) raises an ordinary depth error
+		that propagates to an outer handler: the copy failure keeps its own condition
+		name rather than being reclassified. Go errors supply message strings. Source parse
+		errors retain their parser condition names. An error raised by a handler
+		propagates past this handler-bind and can be caught by an outer one.
+		Handlers must be regular functions. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
-		and must be named explicitly to be intercepted.`},
+		and must be named explicitly to be intercepted. Returns () when
+		there are no body forms, after validating the bindings. Like
+		with-cleanup, blocks tail-call optimization across this form, even
+		with empty bindings. Keep recursion outside the handler and handle
+		each iteration's work inside it.`},
 	{"ignore-errors", Formals(VarArgSymbol, "exprs"), opIgnoreErrors,
 		`Evaluates body forms sequentially. If any form signals an error,
 		evaluation stops and () is returned instead of propagating the
@@ -114,9 +146,10 @@ var langSpecialOps = []*langBuiltin{
 	{"cond", Formals(VarArgSymbol, "branch"), opCond,
 		`Multi-way conditional. Each branch is a clause (test &rest body).
 		Clauses are evaluated in order: for the first truthy test, the
-		body forms are evaluated and the last value returned. Use 'else'
-		as the test in the final clause to match unconditionally. Returns
-		() if no clause matches.`},
+		body forms are evaluated and the last value returned. Use else or
+		:else as the test in the final clause to match unconditionally;
+		either spelling in a non-final clause raises an error when reached.
+		Returns () if no clause matches or the matching clause has no body.`},
 	{"if", Formals("condition", "then", "else"), opIf,
 		`Conditional branch. Evaluates condition; if truthy, evaluates
 		and returns then, otherwise evaluates and returns else. All three
@@ -128,7 +161,8 @@ var langSpecialOps = []*langBuiltin{
 	{"and", Formals(VarArgSymbol, "expr"), opAnd,
 		`Short-circuit logical conjunction. Evaluates arguments left to
 		right and returns the first falsey value. If all arguments are
-		truthy, returns the last value. Returns true with no arguments.`},
+		truthy, returns the last value. Returns true with no arguments.
+		The final argument preserves tail position if it is reached.`},
 	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol,
 		`Returns a quoted package-qualified symbol. If the symbol is
 		already qualified (contains a colon), returns it as-is. Otherwise
@@ -170,30 +204,34 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 		return val
 	}
 	env.loc = key.source
-	return env.Update(key, val)
+	return env.UpdateFromLisp(key, val)
 }
 
 func opAssert(env *LEnv, args *LVal) *LVal {
 	test := args.Cells[0]
-	var formatStr *LVal
-	var formatArgs []*LVal
-	if len(args.Cells) > 1 {
-		formatStr = args.Cells[1]
-		formatArgs = args.Cells[2:]
-		if formatStr.Type != LString {
-			return env.Errorf("second argument is not a string: %v", formatStr.Type)
-		}
-	}
-	ok := env.Eval(test.Copy())
+	// Evaluate the original expression (docs/lang.md#assert). Copying would
+	// redirect mutations to private runtime data and clear literal protection.
+	ok := env.Eval(test)
 	if ok.Type == LError {
 		return ok
 	}
 	if True(ok) {
 		return Nil()
 	}
-	if formatStr == nil {
+	if len(args.Cells) == 1 {
 		return env.Errorf("assertion failure: %s", test)
 	}
+	// The message is an expression too. Its evaluation and type check are
+	// deferred until failure, before any formatting argument is evaluated.
+	formatStr := env.Eval(args.Cells[1])
+	if formatStr.Type == LError {
+		return formatStr
+	}
+	if formatStr.Type != LString {
+		return env.Errorf("second argument is not a string: %v", formatStr.Type)
+	}
+	args.Cells[1] = formatStr //elps:mutates stores the evaluated message in this call's fresh arglist backing, not the original expression
+	formatArgs := args.Cells[2:]
 	for i := range formatArgs {
 		formatArgs[i] = env.Eval(formatArgs[i]) //elps:mutates writes evaluated results into this call's arglist backing, which evalSExprCells allocates fresh per call
 		if formatArgs[i].Type == LError {
@@ -236,11 +274,6 @@ func opQuasiquote(env *LEnv, args *LVal) *LVal {
 
 func opLambda(env *LEnv, args *LVal) *LVal {
 	formals, body := args.Cells[0], args.Cells[1:]
-	for _, sym := range formals.Cells {
-		if sym.Type != LSymbol {
-			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
-		}
-	}
 	// Construct the LVal and add env to the LEnv chain to get lexical scoping
 	// (I think... -bmatsuo)
 	lval := env.Lambda(formals, body)
@@ -285,7 +318,7 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 	body := args.Cells[0]
 	n, short, nopt, vargs, err := countExprArgs(body)
 	if err != nil {
-		return env.Errorf("%s", err)
+		return env.Error(err)
 	}
 	formals := SExpr(nil)
 	if short {
@@ -441,34 +474,14 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 }
 
 func opThreadLast(env *LEnv, args *LVal) *LVal {
-	val, exprs := args.Cells[0], args.Cells[1:]
-	for _, expr := range exprs {
-		if expr.Type != LSExpr || expr.quoted {
-			return env.Errorf("expression argument is not a function call")
-		}
-		if expr.Len() < 1 {
-			return env.Errorf("expression argument is nil")
-		}
-	}
-	if len(exprs) == 0 {
-		return env.Terminal(val)
-	}
-	for i, expr := range exprs {
-		cells := make([]*LVal, 0, len(expr.Cells)+1)
-		cells = append(cells, expr.Cells...)
-		cells = append(cells, val)
-		if i == len(exprs)-1 {
-			return env.Terminal(SExpr(cells))
-		}
-		val = env.Eval(SExpr(cells))
-		if val.Type == LError {
-			return val
-		}
-	}
-	return val
+	return threadValue(env, args, true)
 }
 
 func opThreadFirst(env *LEnv, args *LVal) *LVal {
+	return threadValue(env, args, false)
+}
+
+func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 	val, exprs := args.Cells[0], args.Cells[1:]
 	for _, expr := range exprs {
 		if expr.Type != LSExpr || expr.quoted {
@@ -481,15 +494,41 @@ func opThreadFirst(env *LEnv, args *LVal) *LVal {
 	if len(exprs) == 0 {
 		return env.Terminal(val)
 	}
+	val = env.Eval(val)
+	if val.Type == LError {
+		return val
+	}
 	for i, expr := range exprs {
-		cells := make([]*LVal, 0, len(expr.Cells)+1)
-		cells = append(cells, expr.Cells[0])
-		cells = append(cells, val)
-		cells = append(cells, expr.Cells[1:]...)
-		if i == len(exprs)-1 {
-			return env.Terminal(SExpr(cells))
+		fun := env.Eval(expr.Cells[0])
+		if fun.Type == LError {
+			return fun
 		}
-		val = env.Eval(SExpr(cells))
+		if fun.Type != LFun || fun.IsSpecialFun() {
+			return env.Errorf("thread step is not a regular function: %v", fun)
+		}
+		// FunCall accepts values directly. Substituting val into an
+		// evaluated expression would execute unquoted list or symbol data;
+		// quoting it would change the observable quote depth.
+		cells := make([]*LVal, 0, len(expr.Cells))
+		if !last {
+			cells = append(cells, val)
+		}
+		for _, arg := range expr.Cells[1:] {
+			argval := env.Eval(arg)
+			if argval.Type == LError {
+				return argval
+			}
+			cells = append(cells, argval)
+		}
+		if last {
+			cells = append(cells, val)
+		}
+		if i == len(exprs)-1 {
+			// Like builtinFunCall, the final invocation is terminal even
+			// though its arguments have already been evaluated.
+			env.Runtime.Stack.Top().Terminal = true
+		}
+		val = env.callValueFunction(fun, SExpr(cells))
 		if val.Type == LError {
 			return val
 		}
@@ -557,7 +596,10 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	if count.Type != LInt {
 		return env.Errorf("count did not evaluate to an int: %v", count.Type)
 	}
-	loopenv := newEnvN(env, 1) // single loop variable
+	// Reuse one live binding deliberately; body closures share its final
+	// value. See docs/lang.md#dotimes-and-captured-loop-variables for how to
+	// capture a separate value on each turn with an inner let.
+	loopenv := newEnvN(env, 1)
 	n := 0
 	for i := range count.Int {
 		// Count a step for the TURN ITSELF, not just for the forms in the
@@ -710,7 +752,9 @@ func opLet(env *LEnv, args *LVal) *LVal {
 		if len(bind.Cells) != 2 {
 			return env.Errorf("first argument is not a list of pairs")
 		}
-		vals[i] = letenv.Eval(bind.Cells[1])
+		// Initializers run outside the new bindings, including closures
+		// they return. Capturing letenv here would expose later bindings.
+		vals[i] = env.Eval(bind.Cells[1])
 		if vals[i].Type == LError {
 			return vals[i]
 		}
@@ -726,38 +770,38 @@ func opLet(env *LEnv, args *LVal) *LVal {
 
 func opLetSeq(env *LEnv, args *LVal) *LVal {
 	bindlist := args.Cells[0]
-	letenv := newEnvN(env, len(bindlist.Cells))
 	args.Cells = args.Cells[1:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) so we can call builtinProgn on args.
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
-	for _, bind := range bindlist.Cells {
+	letenv := newEnvN(env, len(bindlist.Cells))
+	for i, bind := range bindlist.Cells {
 		if bind.Type != LSExpr {
 			return env.Errorf("first argument is not a list of pairs")
 		}
 		if len(bind.Cells) != 2 {
 			return env.Errorf("first argument is not a list of pairs")
 		}
+		before := env.Runtime.closuresCreated()
 		val := letenv.Eval(bind.Cells[1])
 		if val.Type == LError {
 			return val
 		}
-		// BUG:  A function defined in a let* is not supposed to be able to
-		// reference itself (recursively) or any bindings defined following its
-		// entry in bindlist during a funcall.  So we should create a new
-		// environment to hold the actual function binding for this cell along
-		// with any following bindings (provided they don't also bind functions
-		// and cause further fracturing of the lexical scope).  Something like
-		// the following:
-		//
-		//if val.Type == LFun {
-		//	// NOTE:  The function val may not have been created during the
-		//	// evaluation of bind.Cells[1], but it isn't clear how to detect a
-		//	// newly created lambda vs one that was merely the result of, say,
-		//	// symbol resolution inside the bind.Cells[1] expression.  So, we
-		//	// assume for now that this is a newly created function.
-		//	letenv = NewEnv(letenv)
-		//}
+		// Semantically each binding is a nested scope: a closure created by
+		// an initializer retains the bindings that existed when it was
+		// created, so a later binding (a shadowing one included) must not
+		// become visible to it. Opening a scope per binding costs an
+		// environment per binding and a lookup that walks them all, several
+		// times the flat cost on ordinary binding lists. The only thing that
+		// can retain letenv past this iteration is a function value built by
+		// LEnv.Lambda, wherever it ends up (returned, stored in a vector,
+		// bound elsewhere), and every one of those moves the runtime's
+		// closure counter. So the scope is split only after an initializer
+		// that created a closure; every other binding goes into the scope it
+		// would have shared anyway, which is exactly the flat let* of before.
+		if env.Runtime.closuresCreated() != before {
+			letenv = newEnvN(letenv, len(bindlist.Cells)-i)
+		}
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.Type == LError {
 			return lerr
@@ -798,7 +842,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("binding type is not a symbol: %v", sym.Type)
 		}
 	}
-	if len(args.Cells) == 0 {
+	if len(forms) == 0 {
 		return Nil()
 	}
 	var val *LVal
@@ -826,20 +870,41 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// call it, passing the error.
 				hval := env.Eval(handler)
 				if hval.Type == LError {
-					// Well, we're boned
+					// Handler evaluation errors propagate to an outer handler-bind.
 					return hval
 				}
 				if hval.Type != LFun {
 					return env.Errorf("handler not a function for condition type %s: %v", sym.Str, hval.Type)
+				}
+				if hval.IsSpecialFun() {
+					return env.Errorf("handler not a regular function for condition type %s: %v", sym.Str, hval.FunType)
 				}
 				// Make the original error available to rethrow.
 				// Use defer to ensure the condition stack is cleaned up
 				// even if a Go panic propagates through the handler.
 				env.Runtime.PushCondition(val)
 				defer env.Runtime.PopCondition()
-				expr := []*LVal{hval, Quote(Symbol(val.Str))}
-				expr = append(expr, val.Copy().Cells...)
-				return env.Eval(SExpr(expr))
+				// Condition data is already evaluated. Rebuilding a call
+				// expression would execute any unquoted list or symbol it
+				// contains. Keep the existing private copy for the handler,
+				// while rethrow retains the original error on the stack.
+				copied, failure := val.copyWithRuntime(env.Runtime)
+				if failure != nil {
+					// The copier's failure is already a classified condition
+					// -- a value-depth error, an allocation error -- carrying
+					// the Go error behind it.  Rendering it into a freshly
+					// built 'error threw both away, so an outer handler could
+					// not match the depth error by name as this operator's
+					// docstring promises and a host could not reach it with
+					// errors.As.  ErrorCondition re-raises it under the
+					// copier's own condition with the Go error still wrapped,
+					// and hands a recovered host fault back unchanged.
+					return env.ErrorCondition(failure.Str,
+						fmt.Errorf("handler data cannot be copied: %w", GoError(failure)))
+				}
+				fargs := []*LVal{Quote(Symbol(val.Str))}
+				fargs = append(fargs, copied.Cells...)
+				return env.callValueFunction(hval, SExpr(fargs))
 			}
 			return val
 		}
@@ -995,7 +1060,7 @@ func opCond(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("argument is not a pair (length %d)", len(branch.Cells))
 		}
 		var test *LVal
-		if branch.Cells[0].Type == LSymbol && branch.Cells[0].Str == "else" {
+		if branch.Cells[0].Type == LSymbol && (branch.Cells[0].Str == "else" || branch.Cells[0].Str == ":else") {
 			if i != last {
 				return env.Errorf("invalid syntax: else")
 			}
@@ -1061,11 +1126,9 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 		// The identity for ``and'' is a true value.
 		return Bool(true)
 	}
-	// NOTE:  Because it is unknown which argument will be the last one
-	// evaluated ``and'' cannot use a Terminal expression (unlike ``or'').
-	var r *LVal
-	for _, c := range s.Cells {
-		r = env.Eval(c)
+	term := s.Cells[len(s.Cells)-1]
+	for _, c := range s.Cells[:len(s.Cells)-1] {
+		r := env.Eval(c)
 		if r.Type == LError {
 			return r
 		}
@@ -1073,16 +1136,9 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 			return r
 		}
 	}
-	// In the common lisp standard the ``and'' function returns the evaluated
-	// result of its final argument if all arguments evaluated true.
-	//		(and) == nil
-	//		(and x) == x
-	//		(and x1 x2 ... xn) == (cond
-	//		                       ((not x1) nil)
-	//		                       ((not x2) nil)
-	//		                       ...
-	//		                       (t xn))
-	return r
+	// Earlier falsey arguments return immediately. If the final argument is
+	// reached, its value is returned unchanged, so it preserves tail position.
+	return env.Terminal(term)
 }
 
 func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {

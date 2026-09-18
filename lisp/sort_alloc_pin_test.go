@@ -2,8 +2,7 @@
 
 // !race && !elpscheck for the same reason as TestVectorBuiltinAllocations:
 // the checked build adds ownership bookkeeping to every eval
-// (lisp/ownership_check_elpscheck.go), which moves this exact count (52
-// where the release build measures 43), and the race detector's
+// (lisp/ownership_check_elpscheck.go), which moves this exact count, and the race detector's
 // instrumentation does the same.  The width-independence property those
 // builds still hold is asserted, unconstrained, in
 // TestStableSortAllocationsDoNotDependOnMapWidth.
@@ -18,8 +17,8 @@ import "testing"
 // count on an already sorted eight-element list of maps, in the style of
 // TestVectorBuiltinAllocations: the list is sorted once, explicitly, before
 // the measurement (the anti-vacuity below), so every measured call
-// insertion-sorts a sorted list with a fixed seven comparisons, each an
-// evaluated (less-k? a b) form.
+// insertion-sorts a sorted list with a fixed seven comparisons, each passing
+// the two map values directly to less-k?.
 func TestStableSortAllocationCount(t *testing.T) {
 	env, lessK, key := stableSortAllocFixture(t)
 	list := stableSortAllocMaps(key, 1)
@@ -35,8 +34,9 @@ func TestStableSortAllocationCount(t *testing.T) {
 			t.Fatalf("list not sorted: element %d has k=%d", i, v.Int)
 		}
 	}
-	// Measured on the commit that removed the per-comparison copy.
-	const want = 43
+	// Value-passing comparisons remove the two temporary allocations of
+	// evaluating a call expression: seven comparisons reduce 43 to 29.
+	const want = 29
 	if n := testing.AllocsPerRun(200, func() { builtinSortStable(env, args) }); int(n) != want {
 		t.Errorf("stable-sort allocated %v times per call, want %d", n, want)
 	}

@@ -390,12 +390,13 @@ func checkDetachedNativeUnbound(payload interface{}) {
 		payload, bound, runtimePackageName(bound))})
 }
 
-// rethrowOwnershipViolation re-panics when r is an ownership violation.
-// env.eval's recover() calls it first so the violation stays a hard panic
-// instead of becoming a CondInternalPanic LError — an ownership bug found
-// in a checked build must stop the test, not decorate its output.
+// rethrowOwnershipViolation re-panics on checked ownership or seal violations.
+// Recovery boundaries call it first so a failed invariant stays a hard panic
+// instead of becoming a CondInternalPanic LError. A checked-build failure must
+// stop the test, not decorate its output; arbitrary host panic text is not one.
 func rethrowOwnershipViolation(r interface{}) {
-	if v, ok := r.(ownershipViolation); ok {
+	switch v := r.(type) {
+	case ownershipViolation, sealViolation:
 		panic(v)
 	}
 }

@@ -3,66 +3,20 @@
 package repl
 
 import (
+	"context"
 	"io"
 
 	"github.com/luthersystems/elps/diagnostic"
+	"github.com/luthersystems/elps/internal/diagnosticsource"
 	"github.com/luthersystems/elps/lisp"
 )
 
-// renderError renders a lisp error using the diagnostic renderer for
+// renderErrorContext renders a lisp error using the diagnostic renderer for
 // Rust-style annotated output. For REPL errors, source snippets may not
 // be available (input comes from stdin, not files), but the renderer
 // degrades gracefully to show just the location and error message.
-func renderError(w io.Writer, lerr *lisp.LVal) {
-	d := lispErrorToDiag(lerr)
-	d.Notes = append(d.Notes, "use (help 'symbol) to browse available symbols")
+func renderErrorContext(ctx context.Context, w io.Writer, runtime *lisp.Runtime, lerr *lisp.LVal) {
 	r := &diagnostic.Renderer{Color: diagnostic.ColorAuto}
-	_ = r.Render(w, d)
-}
-
-// lispErrorToDiag converts an LError value to a Diagnostic for display.
-func lispErrorToDiag(lerr *lisp.LVal) diagnostic.Diagnostic {
-	ev := (*lisp.ErrorVal)(lerr)
-	d := diagnostic.Diagnostic{
-		Severity: diagnostic.SeverityError,
-		Message:  ev.ErrorMessage(),
-	}
-
-	fname := ev.FunName()
-	if fname != "" {
-		d.Message = fname + ": " + d.Message
-	}
-	if lerr.Str != "" && lerr.Str != "error" {
-		d.Message = lerr.Str + ": " + d.Message
-	}
-
-	if loc, ok := lerr.Source(); ok && loc.Pos >= 0 {
-		span := diagnostic.Span{
-			File: loc.File,
-			Line: loc.Line,
-			Col:  loc.Col,
-		}
-		if loc.Path != "" {
-			span.File = loc.Path
-		}
-		d.Spans = append(d.Spans, span)
-	}
-
-	stack := lerr.CallStack()
-	if stack != nil {
-		for i := len(stack.Frames) - 1; i >= 0; i-- {
-			frame := &stack.Frames[i]
-			name := frame.QualifiedFunName(lisp.DefaultUserPackage)
-			if name == "" {
-				continue
-			}
-			loc := "unknown"
-			if frame.Source != nil {
-				loc = frame.Source.String()
-			}
-			d.Notes = append(d.Notes, "in "+name+" at "+loc)
-		}
-	}
-
-	return d
+	r.SourceReader = diagnosticsource.SourceReader(runtime, lerr)
+	_, _ = (*lisp.ErrorVal)(lerr).WriteDiagnosticContext(ctx, w, r, "use (help 'symbol) to browse available symbols")
 }

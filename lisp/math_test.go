@@ -178,3 +178,48 @@ func TestLogic(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+func TestPowOverflow(t *testing.T) {
+	for _, expr := range []string{"(pow 2 64)", "(pow 10 19)", "(pow 10 20)", "(pow 3 40)"} {
+		elpstest.RunTestSuite(t, elpstest.TestSuite{
+			{expr, elpstest.TestSequence{
+				{`(handler-bind ((error (lambda (c message) (list c message)))) ` + expr + `)`,
+					`'('error "integer overflow: power overflows int")`, ""},
+			}},
+		})
+	}
+}
+
+func TestPowNumericControls(t *testing.T) {
+	elpstest.RunTestSuite(t, elpstest.TestSuite{
+		{"integer boundaries", elpstest.TestSequence{
+			{`(list (pow 2 62) (pow -2 63) (pow 10 18) (pow 2 0) (pow 0 0))`,
+				`'(4611686018427387904 -9223372036854775808 1000000000000000000 1 1)`, ""},
+			{`(all? int? (list (pow 2 62) (pow -2 63) (pow 10 18) (pow 2 0) (pow 0 0)))`, `true`, ""},
+		}},
+		{"float paths", elpstest.TestSequence{
+			{`(list (pow 2 -2) (pow -2 -3) (pow 2.0 3) (pow 2 3.0) (pow 2.0 3.0))`, `'(0.25 -0.125 8 8 8)`, ""},
+			{`(all? float? (list (pow 2 -2) (pow -2 -3) (pow 2.0 3) (pow 2 3.0) (pow 2.0 3.0)))`, `true`, ""},
+			{`(= (pow 2.0 64) 18446744073709551616.0)`, `true`, ""},
+			{`(= (pow 2 64.0) 18446744073709551616.0)`, `true`, ""},
+		}},
+	})
+}
+
+func TestMaxMinNaN(t *testing.T) {
+	for _, name := range []string{"max", "min"} {
+		for _, args := range []string{"n", "n 1", "1 n", "n 1 2", "1 n 2", "1 2 n", "1 n 2 n", "n (/ 1 0)", "(/ 1 0) n", "n (/ -1 0)", "(/ -1 0) n"} {
+			expr := `(let ((n (/ 0.0 0.0))) (` + name + ` ` + args + `))`
+			elpstest.RunTestSuite(t, elpstest.TestSuite{
+				{name + " " + args, elpstest.TestSequence{{expr, `NaN`, ""}}},
+			})
+		}
+		elpstest.RunTestSuite(t, elpstest.TestSuite{
+			{name + " controls", elpstest.TestSequence{
+				{`(int? (` + name + ` 1 2 3))`, `true`, ""},
+				{`(handler-bind ((error (lambda (&rest _) 'invalid))) (` + name + ` (/ 0.0 0.0) "bad"))`, `'invalid`, ""},
+				{`(handler-bind ((error (lambda (&rest _) 'invalid))) (` + name + ` "bad" (/ 0.0 0.0)))`, `'invalid`, ""},
+			}},
+		})
+	}
+}

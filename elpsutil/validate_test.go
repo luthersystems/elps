@@ -126,6 +126,18 @@ func TestPackageLoaderRejectsBadDefinitions(t *testing.T) {
 		},
 		want: []string{"testpkg", "int-cell", "formal argument 0", "not a symbol"},
 	}, {
+		name: "keyword formal cell",
+		def: func() lisp.LBuiltinDef {
+			return elpsutil.Function("keyword-formal", lisp.Formals(":k"), nopBuiltin)
+		},
+		want: []string{"testpkg", "keyword-formal", "formal argument 0 cannot be bound", "keyword"},
+	}, {
+		name: "constant formal cell",
+		def: func() lisp.LBuiltinDef {
+			return elpsutil.Function("constant-formal", lisp.Formals("true"), nopBuiltin)
+		},
+		want: []string{"testpkg", "constant-formal", "formal argument 0 cannot be bound", "constant true"},
+	}, {
 		name: "reserved name true",
 		def:  func() lisp.LBuiltinDef { return elpsutil.Function("true", lisp.Formals(), nopBuiltin) },
 		want: []string{"testpkg", `"true"`, "reserved constant"},

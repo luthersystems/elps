@@ -129,6 +129,43 @@ causes unexpected nil bindings.
 (let ((x 1) (y 2)) ...)
 ```
 
+### `let-recursion`
+
+**Warns about an unresolved self-reference in an initializer-created closure.**
+
+The check runs on a single file without `--workspace`. A `let` initializer
+uses the enclosing environment; a `let*` initializer also sees earlier
+bindings. Neither can capture the binding it is about to introduce, even
+when a lambda defers the reference until the body runs. Use `labels` for
+local recursion:
+
+To make these migration warnings fail a CI check, run
+`elps lint --checks=let-recursion --fail-on=warning file.lisp`.
+
+```lisp
+;; BAD: the lambda cannot capture this f binding
+(let* ((f (lambda (n) (if (= n 0) 0 (f (- n 1))))))
+  (f 1))
+
+;; GOOD: labels binds the recursive function in its own environment
+(labels ((f (n) (if (= n 0) 0 (f (- n 1)))))
+  (f 1))
+```
+
+The warning points to the unresolved reference and links its binding.
+Known outer functions, earlier `let*` bindings, lambda parameters, and
+nested local bindings are respected. The check covers explicit lambdas
+and prefix lambdas (`#^`), including closures inside initializer expressions.
+The `lisp:`-qualified binding and lambda forms work too.
+
+Supply `--workspace` when the reference intentionally names a function
+defined in another file. Without that context, the check cannot distinguish
+an unavailable outer function from intended local recursion. Quoted data,
+quasiquote templates, opaque macro-dependent references, and known shadowed
+bare special-form names are skipped. Runtime-generated code and macros
+that introduce deferred evaluation are not fully covered; a clean result
+does not prove compatibility.
+
 ### `defun-structure`
 
 **Checks for malformed `defun`/`defmacro` definitions.**
@@ -459,23 +496,16 @@ The analyzer understands:
 (defmethod point :move (self dx) (+ self dx))
 ```
 
-**Known limitation — macros that delay evaluation:** The semantic analyzer
-operates on the unexpanded AST. Macros that capture an expression in a
-thunk (e.g., `stream-cons` wrapping its second argument in `delay`) create
-references that are not evaluated until after surrounding bindings exist.
-The analyzer cannot see through macro expansions, so self-referential
-bindings that rely on delayed evaluation will be flagged as undefined:
+**Known limitation — opaque macros:** A macro can introduce a binding that
+is absent from its unexpanded source. Supply workspace or embedder macro
+information when available; suppress a remaining diagnostic only after
+checking the expansion.
 
-```lisp
-;; False positive: guesses appears undefined in its own init-form,
-;; but stream-cons delays evaluation via (delay ...) so this works
-;; at runtime.
-(let ([guesses (stream-cons 1.0
-                            (stream-map f guesses))]) ; nolint:undefined-symbol
-  guesses)
-```
-
-Use `; nolint:undefined-symbol` to suppress these cases.
+Delaying evaluation does not make a `let` or `let*` initializer capture its
+own binding. A thunk still captures the environment where its initializer
+runs. Use `labels` for recursive local functions, as described by
+[`let-recursion`](#let-recursion), rather than suppressing this real missing
+binding as a presumed delayed-evaluation false positive.
 
 ### `unused-variable`
 

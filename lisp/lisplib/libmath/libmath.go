@@ -26,7 +26,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc(`Mathematical functions: trigonometry, logarithms, exponents, absolute
-		value, floor/ceiling, rounding, and mathematical constants (pi, inf).`)
+		value, floor/ceiling, and mathematical constants (pi, inf).`)
 	env.PutGlobal(lisp.Symbol("pi"), lisp.Float(math.Pi))
 	env.SetSymbolDoc("pi", "The ratio of a circle's circumference to its diameter (3.14159...).")
 	env.PutGlobal(lisp.Symbol("inf"), lisp.Float(math.Inf(1)))

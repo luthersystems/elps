@@ -155,10 +155,17 @@ Notes for implementers:
   Runtimes each holding their own `parser.NewReader()` of the same type still
   share entries; a reader that varies its parse behind one Go type distinguishes
   itself by implementing `lisp.ReaderIdentity`.
-- **`Load`/`Store` must not re-enter the load path.**  A cache that warms
+- **`ReaderIdentity`/`Load`/`Store` must not re-enter the load path.**  A cache that warms
   itself by loading is defended against — the re-entrant load is treated as a
   miss and parses without the cache — but relying on that gives up caching for
   the warmed load, so do the warming outside the hook.
+- **Cache-hook panics fall back to uncached work.** A failing identity hook
+  skips lookup and storage for that load. A failing lookup is a miss; a
+  failing store leaves the parsed program usable. Diagnostic writes to
+  `Stderr` are best effort and a panicking writer is not retried. Reader,
+  input-stream and library panics instead return a marked `internal-panic`
+  error with the Go stack. Checked-build ownership and seal violations
+  remain hard failures throughout these paths.
 - **A `Reader` must not retain and later mutate the nodes it returned.**  On
   the zero-copy fast path (a reader whose output is already sealed throughout)
   admission stores the reader's own nodes, so a reader that keeps a reference

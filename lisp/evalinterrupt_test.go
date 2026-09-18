@@ -114,7 +114,7 @@ func TestDoTimesHonoursContextDeadline(t *testing.T) {
 	case d := <-ch:
 		require.Equal(t, lisp.LError, d.res.Type,
 			"an empty-bodied 1e9-iteration dotimes must honour a 50ms deadline, got %v", d.res)
-		assert.Contains(t, d.res.String(), "context cancelled")
+		assert.Contains(t, diagnosticText(d.res), "context cancelled")
 		assert.Less(t, d.elapsed, 5*time.Second,
 			"the deadline should fire promptly, took %s", d.elapsed)
 	case <-time.After(30 * time.Second):

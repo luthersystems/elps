@@ -68,7 +68,8 @@ var builtins = []*builtin{
 		`Extracts a Go string from a native value and returns it as an
 		ELPS string. The native value must hold a Go string or a type
 		with underlying kind string. Does not convert non-string types
-		to strings (use to-string for that).`},
+		to strings (use to-string for that). Non-native arguments,
+		including ELPS strings, return an error.`},
 	{lisp.Formals("native-value"), BuiltinInt, "int",
 		`Extracts a Go integer from a native value and returns it as an
 		ELPS int. Accepts any native value with an underlying integer
@@ -81,7 +82,9 @@ var builtins = []*builtin{
 		`Reads an exported field from a native Go struct value using
 		reflection. field-name is a string or symbol naming the field
 		(must start with an uppercase letter). Returns the field value
-		as a native value. Automatically dereferences pointers.`},
+		as a native value. Automatically dereferences pointers. Promoted
+		fields are supported; a field reached through a nil embedded pointer
+		returns an error: field NAME is reached through a nil embedded pointer.`},
 }
 
 // Package init is single-threaded and runs before any environment exists,
@@ -96,6 +99,9 @@ func init() {
 // non-string values to strings).
 func BuiltinString(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	lval := args.Cells[0]
+	if lval.Type != lisp.LNative {
+		return env.Errorf("first argument is not a go string: %v", lval.Type)
+	}
 	s, ok := lval.Native.(string)
 	if !ok {
 		v := reflect.ValueOf(lval.Native)
@@ -176,9 +182,15 @@ func BuiltinStructField(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !nameIsExported(field.Str) {
 		return env.Errorf("cannot access unexported field name: %v", field.Str)
 	}
-	x := v.FieldByName(field.Str)
-	if !x.IsValid() {
+	structField, ok := v.Type().FieldByName(field.Str)
+	if !ok {
 		return env.Errorf("struct has no field: %v", field.Str)
+	}
+	// Resolve the path from the type first: Value.FieldByName panics if a
+	// promoted field requires dereferencing a nil embedded pointer.
+	x, err := v.FieldByIndexErr(structField.Index)
+	if err != nil {
+		return env.Errorf("field %s is reached through a nil embedded pointer", field.Str)
 	}
 	if !x.CanInterface() {
 		return env.Errorf("cannot return struct field: %v", field.Str)

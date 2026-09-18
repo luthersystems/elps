@@ -123,19 +123,20 @@ package lisp
 // The snapshot is taken by the calling goroutine and reads p's maps, so it
 // carries the same requirement every other read of a *Package does: no other
 // goroutine may be writing p at the time (issue #397).
-func admitPackage(p *Package) *Package {
+func admitPackage(p *Package, limit int) *Package {
 	adm := &Package{
-		Name:     p.Name,
-		Doc:      p.Doc,
-		symbols:  make(map[string]*LVal, len(p.symbols)),
-		funNames: make(map[string]string, len(p.funNames)),
+		Name:           p.Name,
+		Doc:            p.Doc,
+		bindingsSealed: p.bindingsSealed,
+		symbols:        make(map[string]*LVal, len(p.symbols)),
+		funNames:       make(map[string]string, len(p.funNames)),
 	}
 	if len(p.externals) > 0 {
 		adm.externals = make([]string, len(p.externals))
 		copy(adm.externals, p.externals)
 	}
 	for name, v := range p.symbols {
-		adm.symbols[name] = admitSymbolValue(v)
+		adm.symbols[name] = admitSymbolValue(v, limit)
 	}
 	// symbolDocs is allocated lazily (see the field comment): an undocumented
 	// package admits with a nil table rather than an empty one.
@@ -158,7 +159,7 @@ func admitPackage(p *Package) *Package {
 // admitSymbolValue returns the value a registry binds for one of an admitted
 // package's symbols: v itself when v is already safe to share, and a private
 // sealed copy when v is a code-like tree the caller may still be writing.
-func admitSymbolValue(v *LVal) *LVal {
+func admitSymbolValue(v *LVal, limit int) *LVal {
 	// Cheapest question first, and the one that answers most bindings in a
 	// real package: a function, native, map, array or byte string is not a
 	// class the seal covers, so there is nothing to copy and nothing to
@@ -167,7 +168,11 @@ func admitSymbolValue(v *LVal) *LVal {
 	if v == nil || !sealableNodeType(v.Type) {
 		return v
 	}
-	sealed, sealable := classifySymbolValue(v, cycleGuard{state: new(cycleState)})
+	var st cycleState
+	sealed, sealable := classifySymbolValue(v, cycleGuard{state: &st}, limit)
+	if st.tooDeep {
+		return Error(ValueDepthError(limit))
+	}
 	if sealed || !sealable {
 		// Sealed throughout: the sanctioned share (immutability, not
 		// confinement, is what protects it).  Not sealable throughout: a
@@ -199,25 +204,38 @@ func admitSymbolValue(v *LVal) *LVal {
 // walk is what this classification is for).  A cycle therefore reports
 // "neither", which lands the value in the
 // by-reference row where no copy is attempted.
-func classifySymbolValue(v *LVal, g cycleGuard) (sealed, sealable bool) {
-	if v == nil || !sealableNodeType(v.Type) {
-		return false, false
+func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable bool) {
+	type frame struct {
+		v     *LVal
+		g     cycleGuard
+		leave bool
 	}
-	g, cyclic := g.descend(v)
-	if cyclic {
-		return false, false
-	}
-	if g.tracking() {
-		defer g.ascend(v)
-	}
-	sealed, sealable = v.IsSealed(), true
-	for _, c := range v.Cells {
-		cellSealed, cellSealable := classifySymbolValue(c, g)
-		sealed = sealed && cellSealed
-		sealable = sealable && cellSealable
-		if !sealed && !sealable {
-			// Neither answer can change from here: both are conjunctions.
+	pending := []frame{{v: v, g: g}}
+	sealed, sealable = true, true
+	for len(pending) > 0 {
+		f := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if f.leave {
+			f.g.ascend(f.v)
+			continue
+		}
+		if f.v == nil || !sealableNodeType(f.v.Type) {
 			return false, false
+		}
+		if f.g.depth >= limit {
+			g.state.tooDeep = true
+			return false, false
+		}
+		next, cyclic := f.g.descend(f.v)
+		if cyclic {
+			return false, false
+		}
+		sealed = sealed && f.v.IsSealed()
+		if next.tracking() {
+			pending = append(pending, frame{v: f.v, g: next, leave: true})
+		}
+		for i := len(f.v.Cells) - 1; i >= 0; i-- {
+			pending = append(pending, frame{v: f.v.Cells[i], g: next})
 		}
 	}
 	return sealed, sealable

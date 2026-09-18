@@ -94,3 +94,20 @@ func TestNewReader_Standard_LocationReader(t *testing.T) {
 	assert.Equal(t, "logical", loc.File)
 	assert.Equal(t, "/path/to/file.lisp", loc.Path)
 }
+
+func TestRadixNumericSuffix(t *testing.T) {
+	for _, opts := range [][]ReaderOption{nil, {WithFormatPreserving()}} {
+		for _, literal := range []string{"#x10:foo", "#o17:bar", "#x10x", "#o178"} {
+			t.Run(literal, func(t *testing.T) {
+				_, err := NewReader(opts...).Read("number.lisp", strings.NewReader("'("+literal+")"))
+				require.ErrorContains(t, err, "invalid numeric literal \""+literal+"\"")
+			})
+		}
+		src := "'(#x10 :foo #o17 :bar #x10 x #o17 8 #x10 #o17 #xFF)"
+		exprs, err := NewReader(opts...).Read("number.lisp", strings.NewReader(src))
+		require.NoError(t, err)
+		require.Equal(t, "'(16 :foo 15 :bar 16 x 15 8 16 15 255)", exprs[0].String())
+		_, err = NewReader(opts...).Read("number.lisp", strings.NewReader("#x-1"))
+		require.Error(t, err)
+	}
+}

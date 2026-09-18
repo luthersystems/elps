@@ -9,7 +9,9 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -175,6 +177,162 @@ var AnalyzerLetBindings = &Analyzer{
 		})
 		return nil
 	},
+}
+
+// AnalyzerLetRecursion identifies unresolved self-references in closures
+// created by let/let* initializers. It also works without workspace analysis.
+var AnalyzerLetRecursion = &Analyzer{
+	Name:     "let-recursion",
+	Severity: SeverityWarning,
+	Doc: "Warn when an initializer-created closure refers to its unavailable let/let* binding.\n\n" +
+		"Use labels for local recursion. Known outer bindings and parameter shadows are respected. " +
+		"Runs without --workspace; supply workspace context for functions defined in other files. " +
+		"Quoted templates and opaque macro-dependent references are excluded; dynamic code is not fully covered.",
+	Run: func(pass *Pass) error {
+		semantics := pass.Semantics
+		if semantics == nil {
+			semantics = analysis.Analyze(pass.Exprs, nil)
+		}
+		state := letRecursionState{
+			pass:       pass,
+			unresolved: make(map[Position]string),
+			shadowed:   make(map[string]bool),
+			pending:    make(map[string][]letRecursionBinding),
+		}
+		for _, ref := range semantics.Unresolved {
+			if !ref.InsideMacroCall && ref.Source != nil {
+				state.unresolved[posFromSource(ref.Source)] = ref.Name
+			}
+		}
+		if len(state.unresolved) == 0 {
+			return nil
+		}
+		// Scope analysis recognizes special forms by spelling. Conservatively
+		// skip bare spellings shadowed anywhere in this file or workspace;
+		// explicitly qualified lisp: forms still identify the kernel forms.
+		for _, sym := range semantics.Symbols {
+			if sym.Source != nil || sym.External {
+				state.shadowed[sym.Name] = true
+			}
+		}
+		for _, expr := range pass.Exprs {
+			state.walk(expr, 0)
+		}
+		return nil
+	},
+}
+
+type letRecursionBinding struct {
+	name  *lisp.LVal
+	form  string
+	depth int
+}
+
+type letRecursionState struct {
+	pass       *Pass
+	unresolved map[Position]string
+	shadowed   map[string]bool
+	pending    map[string][]letRecursionBinding
+}
+
+// walk visits the source once, tracking which initializer encloses a closure.
+// Resolution is joined by source position: pass.Exprs and pass.Semantics can
+// be separate parses, so comparing their LVal pointers would miss every ref.
+func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
+	if node == nil || node.IsQuoted() {
+		return
+	}
+	if node.Type == lisp.LSymbol {
+		pos := posFromSource(astutil.SourceLoc(node))
+		if s.unresolved[pos] != node.Str {
+			return
+		}
+		bindings := s.pending[node.Str]
+		for i := len(bindings) - 1; i >= 0; i-- {
+			binding := bindings[i]
+			if depth <= binding.depth {
+				continue // an immediate initializer reference is not recursion
+			}
+			s.pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s initializer cannot refer to its own binding '%s'; use labels for local recursion", binding.form, node.Str),
+				Pos:     pos,
+				EndPos:  endPosFromNode(node),
+				Notes: []string{
+					"the closure captures the initializer's environment, which excludes the binding being introduced",
+					"if this names a function from another file, provide --workspace so its outer binding can be resolved",
+				},
+				Related: relatedFromSource(astutil.SymbolLoc(binding.name), "binding introduced after its initializer"),
+			})
+			return
+		}
+		return
+	}
+	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
+		return
+	}
+	spelling := HeadSymbol(node)
+	head := strings.TrimPrefix(spelling, "lisp:")
+	switch head {
+	case "quote", "quasiquote":
+		return
+	case "let", "let*", "lambda", "expr", "flet", "labels", "defun", "defmacro":
+		if spelling == head && s.shadowed[head] {
+			return
+		}
+	}
+	switch head {
+	case "let", "let*":
+		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
+			return
+		}
+		for _, binding := range node.Cells[1].Cells {
+			if binding == nil || binding.Type != lisp.LSExpr || len(binding.Cells) != 2 || binding.Cells[0] == nil || binding.Cells[0].Type != lisp.LSymbol {
+				continue
+			}
+			name := binding.Cells[0]
+			previous := s.pending[name.Str]
+			s.pending[name.Str] = append(previous, letRecursionBinding{name: name, form: spelling, depth: depth})
+			s.walk(binding.Cells[1], depth)
+			s.pending[name.Str] = previous
+		}
+		for _, body := range node.Cells[2:] {
+			s.walk(body, depth)
+		}
+	case "lambda":
+		if len(node.Cells) >= 2 {
+			for _, body := range node.Cells[2:] {
+				s.walk(body, depth+1)
+			}
+		}
+	case "expr":
+		for _, body := range node.Cells[1:] {
+			s.walk(body, depth+1)
+		}
+	case "flet", "labels":
+		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
+			return
+		}
+		for _, binding := range node.Cells[1].Cells {
+			if binding != nil && binding.Type == lisp.LSExpr && len(binding.Cells) >= 2 {
+				for _, body := range binding.Cells[2:] {
+					s.walk(body, depth+1)
+				}
+			}
+		}
+		for _, body := range node.Cells[2:] {
+			s.walk(body, depth)
+		}
+	case "defun", "defmacro":
+		if len(node.Cells) >= 3 {
+			for _, body := range node.Cells[3:] {
+				s.walk(body, depth+1)
+			}
+		}
+	default:
+		for _, child := range node.Cells {
+			s.walk(child, depth)
+		}
+	}
 }
 
 // AnalyzerQuoteCall warns when set is called with an unquoted symbol
@@ -2218,4 +2376,398 @@ func AnalyzerDoc() string {
 		fmt.Fprintf(&b, "    %s\n\n", lines[0])
 	}
 	return b.String()
+}
+
+// AnalyzerPackageBuiltins diagnoses literal arguments rejected by package builtins.
+var AnalyzerPackageBuiltins = &Analyzer{
+	Name:     "package-builtins",
+	Severity: SeverityError,
+	Doc: "Check literal export, in-package, and use-package arguments.\n\n" +
+		"Export accepts unqualified symbols, strings, and lists of these; invalid " +
+		"arguments now leave all exports unchanged. Package names must be non-empty " +
+		"symbol identifiers without colons, and package documentation must be strings. " +
+		"Dynamic arguments and macro templates are not checked. Shadowed calls are " +
+		"excluded conservatively; this check does not prove that deferred exports " +
+		"will be bound at import time.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		var walk func(*lisp.LVal)
+		walk = func(v *lisp.LVal) {
+			if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr {
+				return
+			}
+			head := unqualifiedLispName(HeadSymbol(v))
+			if head == "quote" || head == "quasiquote" {
+				return
+			}
+			if len(v.Cells) > 0 && !skip[v] && !userDefs[HeadSymbol(v)] {
+				for i, arg := range v.Cells[1:] {
+					value, known := packageLiteralArg(arg, userDefs, skip)
+					if !known {
+						continue
+					}
+					switch head {
+					case "export":
+						if message := invalidExportLiteral(value); message != "" {
+							pass.ReportNode(arg, "%s", message)
+						}
+					case "in-package", "use-package":
+						if head == "in-package" && i > 0 {
+							if value.Type != lisp.LString {
+								pass.ReportNode(arg, "in-package documentation arguments must be strings; fix the argument before switching packages")
+							}
+						} else if !validPackageLiteral(value) {
+							pass.ReportNode(arg, "%s package name must be a non-empty symbol identifier without colons; use a name such as 'my-package", head)
+						}
+					}
+				}
+			}
+			for _, child := range v.Cells {
+				walk(child)
+			}
+		}
+		for _, expr := range pass.Exprs {
+			walk(expr)
+		}
+		return nil
+	},
+}
+
+func packageLiteralArg(arg *lisp.LVal, userDefs map[string]bool, skip map[*lisp.LVal]bool) (*lisp.LVal, bool) {
+	if arg.IsQuoted() {
+		return arg, true
+	}
+	switch arg.Type {
+	case lisp.LSymbol:
+		return arg, strings.HasPrefix(arg.Str, ":")
+	case lisp.LSExpr:
+		head := HeadSymbol(arg)
+		if unqualifiedLispName(head) == "quote" && !userDefs[head] && !skip[arg] && len(arg.Cells) == 2 {
+			return arg.Cells[1], true
+		}
+		return arg, len(arg.Cells) == 0
+	default:
+		return arg, true
+	}
+}
+
+func invalidExportLiteral(v *lisp.LVal) string {
+	switch v.Type {
+	case lisp.LSymbol, lisp.LString:
+		if strings.Contains(v.Str, ":") {
+			return "export requires an unqualified name; export the local name from its providing package"
+		}
+	case lisp.LSExpr:
+		for _, child := range v.Cells {
+			if message := invalidExportLiteral(child); message != "" {
+				return message
+			}
+		}
+	default:
+		return "export expects symbols, strings, or lists of these; remove the invalid value (a failed call exports nothing)"
+	}
+	return ""
+}
+
+func validPackageLiteral(v *lisp.LVal) bool {
+	if (v.Type != lisp.LSymbol && v.Type != lisp.LString) || v.Str == "" || strings.Contains(v.Str, ":") {
+		return false
+	}
+	exprs, err := rdparser.New(token.NewScannerString("", v.Str)).ParseProgram()
+	return err == nil && len(exprs) == 1 && exprs[0].Type == lisp.LSymbol && exprs[0].Str == v.Str
+}
+
+// AnalyzerLispPackageSeal diagnoses statically recognizable writes to the
+// sealed core package. Dynamic names and opaque macro expansions need runtime
+// enforcement; shadowed calls are excluded conservatively.
+var AnalyzerLispPackageSeal = &Analyzer{
+	Name:     "lisp-package-seal",
+	Severity: SeverityError,
+	Doc: "Check set, set!, defun, defmacro, and s:deftype writes to the sealed lisp package.\n\n" +
+		"Define application bindings in your own package instead. Checks literal " +
+		"qualified names and unqualified names after a top-level in-package. " +
+		"Dynamic names, shadowed calls, and macro templates are not checked.",
+	Run: func(pass *Pass) error { return checkLispBindings(pass, true) },
+}
+
+// AnalyzerBuiltinShadowing warns about legal package-level Lisp-1 shadowing.
+// Local bindings remain the responsibility of AnalyzerShadowing.
+var AnalyzerBuiltinShadowing = &Analyzer{
+	Name:     "builtin-shadowing",
+	Severity: SeverityWarning,
+	Doc: "Warn when a top-level binding shadows a lisp export.\n\n" +
+		"Builtin, special operator, and macro names are ordinary symbols. " +
+		"Shadowing is legal in user packages, but changes later calls in that " +
+		"package. Rename the binding or call the core value with lisp: qualification. " +
+		"Dynamic names and macro-generated definitions are not checked.",
+	Run: func(pass *Pass) error { return checkLispBindings(pass, false) },
+}
+
+func checkLispBindings(pass *Pass, sealed bool) error {
+	userDefs := UserDefined(pass.Exprs)
+	skip := aritySkipNodes(pass.Exprs)
+	exports := make(map[string]string)
+	if !sealed {
+		for _, def := range lisp.DefaultBuiltins() {
+			exports[def.Name()] = "builtin"
+		}
+		for _, def := range lisp.DefaultSpecialOps() {
+			exports[def.Name()] = "special operator"
+		}
+		for _, def := range lisp.DefaultMacros() {
+			exports[def.Name()] = "macro"
+		}
+	}
+	pkg := lisp.DefaultUserPackage
+	var walk func(*lisp.LVal, bool)
+	walk = func(v *lisp.LVal, topLevel bool) {
+		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
+			return
+		}
+		head := unqualifiedLispName(HeadSymbol(v))
+		if head == "quote" || head == "quasiquote" {
+			return
+		}
+		if !skip[v] && !userDefs[HeadSymbol(v)] && len(v.Cells) > 1 {
+			arg := v.Cells[1]
+			if topLevel && head == "in-package" {
+				pkg = "" // A dynamic package switch makes the current package unknown.
+				if value, known := packageLiteralArg(arg, userDefs, skip); known && validPackageLiteral(value) {
+					pkg = value.Str
+				}
+			}
+			var name string
+			switch head {
+			case "s:deftype":
+				if sealed && arg.Type == lisp.LString {
+					name = arg.Str
+				}
+			case "set":
+				if value, known := packageLiteralArg(arg, userDefs, skip); known && value.Type == lisp.LSymbol {
+					name = value.Str
+				}
+			case "set!":
+				// Unlike set, set! takes its symbol argument unevaluated.
+				if arg.Type == lisp.LSymbol {
+					name = arg.Str
+				}
+			case "defun", "defmacro":
+				if arg.Type == lisp.LSymbol && !arg.IsQuoted() {
+					name = arg.Str
+				}
+			}
+			if name != "" {
+				target := pkg
+				if ns, local, qualified := strings.Cut(name, ":"); qualified {
+					target, name = ns, local
+				}
+				if target == lisp.DefaultLangPackage && sealed {
+					pass.ReportNode(arg, "cannot rebind lisp package binding: %s; define an unqualified name in your own package", name)
+				} else if target != lisp.DefaultLangPackage && !sealed && topLevel && exports[name] != "" {
+					pass.ReportNode(arg, "top-level binding '%s' shadows lisp %s; rename it or use lisp:%s for core calls", name, exports[name], name)
+				}
+			}
+		}
+		for _, child := range v.Cells {
+			walk(child, topLevel && head == "progn")
+		}
+	}
+	for _, expr := range pass.Exprs {
+		walk(expr, true)
+	}
+	return nil
+}
+
+// AnalyzerLambdaList diagnoses invalid formals before a definition is evaluated.
+var AnalyzerLambdaList = &Analyzer{
+	Name:     "lambda-list",
+	Severity: SeverityError,
+	Doc: "Check lambda lists for malformed control markers and duplicate parameter names.\n\n" +
+		"Use unique symbols, at most one of each marker, at least one name after &optional or &key, " +
+		"and exactly one final name after &rest. " +
+		"Checks literal definitions; shadowed constructors and macro templates are not checked.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if userDefs[HeadSymbol(v)] || skip[v] {
+				return
+			}
+			check := func(formals *lisp.LVal) {
+				if formals.Type != lisp.LSExpr {
+					return
+				}
+				for _, sym := range formals.Cells {
+					if sym.Type != lisp.LSymbol {
+						pass.ReportNode(sym, "lambda list requires symbol parameters; replace the non-symbol parameter")
+						return
+					}
+				}
+				if i, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
+					pass.ReportNode(formals.Cells[i], "%s; use unique parameter names and valid &optional, &key, or final &rest name", message)
+				}
+			}
+			switch unqualifiedLispName(HeadSymbol(v)) {
+			case "lambda":
+				if len(v.Cells) > 1 {
+					check(v.Cells[1])
+				}
+			case "defun", "defmacro":
+				if len(v.Cells) > 2 {
+					check(v.Cells[2])
+				}
+			case "labels", "flet", "macrolet":
+				if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+					for _, binding := range v.Cells[1].Cells {
+						if binding.Type == lisp.LSExpr && len(binding.Cells) > 1 {
+							check(binding.Cells[1])
+						}
+					}
+				}
+			}
+		})
+		return nil
+	},
+}
+
+// AnalyzerDuplicateBinding warns about legal last-wins local bindings.
+var AnalyzerDuplicateBinding = &Analyzer{
+	Name:     "duplicate-binding",
+	Severity: SeverityWarning,
+	Doc: "Warn about duplicate binding names in let, labels, and flet.\n\n" +
+		"The last binding wins at runtime. Use distinct names or let* for sequential rebinding.",
+	Run: func(pass *Pass) error {
+		userDefs := UserDefined(pass.Exprs)
+		skip := aritySkipNodes(pass.Exprs)
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if userDefs[HeadSymbol(v)] || skip[v] {
+				return
+			}
+			head := unqualifiedLispName(HeadSymbol(v))
+			if head != "let" && head != "labels" && head != "flet" {
+				return
+			}
+			if len(v.Cells) < 2 || v.Cells[1].Type != lisp.LSExpr {
+				return
+			}
+			seen := make(map[string]bool)
+			for _, binding := range v.Cells[1].Cells {
+				if binding.Type != lisp.LSExpr || len(binding.Cells) == 0 {
+					continue
+				}
+				name := binding.Cells[0]
+				if name.Type != lisp.LSymbol {
+					continue
+				}
+				if seen[name.Str] {
+					pass.ReportNode(name, "duplicate %s binding: %s; the last binding wins, use distinct names or let* for sequential rebinding", head, name.Str)
+				}
+				seen[name.Str] = true
+			}
+		})
+		return nil
+	},
+}
+
+// AnalyzerDuplicateKeyword warns about literal keyword pairs repeated in calls.
+var AnalyzerDuplicateKeyword = &Analyzer{
+	Name:     "duplicate-keyword",
+	Severity: SeverityWarning,
+	Doc: "Warn about duplicate literal keyword arguments in calls.\n\n" +
+		"ELPS uses the rightmost value, unlike Common Lisp. Remove the earlier pair. " +
+		"Checks literal keyword/value suffixes; dynamic keys and macro expansions are not checked. " +
+		"A callee may instead consume these pairs as positional data.",
+	Run: func(pass *Pass) error {
+		special := make(map[string]bool)
+		for _, def := range lisp.DefaultSpecialOps() {
+			special[def.Name()] = true
+		}
+		for _, def := range lisp.DefaultMacros() {
+			special[def.Name()] = true
+		}
+		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
+			if special[unqualifiedLispName(HeadSymbol(v))] {
+				return
+			}
+			keyword := func(v *lisp.LVal) bool {
+				return v.Type == lisp.LSymbol && !v.IsQuoted() && strings.HasPrefix(v.Str, ":")
+			}
+			start := 1
+			for start < len(v.Cells) && !keyword(v.Cells[start]) {
+				start++
+			}
+			if (len(v.Cells)-start)%2 != 0 {
+				return
+			}
+			for i := start; i < len(v.Cells); i += 2 {
+				if !keyword(v.Cells[i]) {
+					return
+				}
+			}
+			seen := make(map[string]bool)
+			for i := start; i < len(v.Cells); i += 2 {
+				key := v.Cells[i]
+				if seen[key.Str] {
+					pass.ReportNode(key, "duplicate keyword argument: %s; the rightmost value wins, remove the earlier pair", key.Str)
+				}
+				seen[key.Str] = true
+			}
+		})
+		return nil
+	},
+}
+
+// walkLambdaListCalls excludes data, formals and binding entries, including
+// qualified core forms. Initializers and function bodies remain executable.
+func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
+	var walk func(*lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
+			return
+		}
+		head := unqualifiedLispName(HeadSymbol(v))
+		if head == "quote" || head == "quasiquote" {
+			return
+		}
+		visit(v)
+		start := 0
+		switch head {
+		case "lambda":
+			start = 2
+		case "defun", "defmacro", "deftype":
+			start = 3
+		case "let", "let*", "labels", "flet", "macrolet", "handler-bind":
+			if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+				for _, binding := range v.Cells[1].Cells {
+					if binding.Type != lisp.LSExpr {
+						continue
+					}
+					body := 1
+					if head == "labels" || head == "flet" || head == "macrolet" {
+						body = 2
+					}
+					for i := body; i < len(binding.Cells); i++ {
+						walk(binding.Cells[i])
+					}
+				}
+			}
+			start = 2
+		case "cond":
+			for _, clause := range v.Cells[1:] {
+				if clause.Type == lisp.LSExpr {
+					for _, expr := range clause.Cells {
+						walk(expr)
+					}
+				}
+			}
+			return
+		}
+		for i := start; i < len(v.Cells); i++ {
+			walk(v.Cells[i])
+		}
+	}
+	for _, expr := range exprs {
+		walk(expr)
+	}
 }

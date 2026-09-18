@@ -439,6 +439,10 @@ program exited
 
 **Exception breakpoints** pause when an error condition is raised. Configure via the editor's exception breakpoint UI (filter ID: `all`).
 
+Recovered Go panics bypass exception hooks, since the debugger itself may
+have caused the fault. The returned `internal-panic` error carries the Go
+stack for diagnosis.
+
 ### Stepping
 
 | Action    | DAP Request | Description                              |
@@ -456,6 +460,7 @@ program exited
 When paused, three built-in scopes are visible in the Variables panel:
 
 - **Local** — Function-local bindings (parameters, let-bindings, intermediate values). Walks the environment chain up to but not including the root scope.
+  `let*` bindings share one scope until an initializer creates a closure, at which point the remaining bindings go into a nested scope; so a name rebound by `let*` appears as two entries only when a closure was created between the two bindings.
 - **Package** — All exported symbols in the current package.
 - **Macro Expansion** — When paused inside macro-expanded code, shows the macro name, call-site arguments, and call-site location.
 

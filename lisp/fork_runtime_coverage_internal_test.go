@@ -32,6 +32,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 
 	// Copied by value: the template's configured limits become the fork's.
 	"MaxAlloc":               "copied",
+	"MaxValueDepth":          "copied",
 	"MaxMacroExpansionDepth": "copied",
 	"MaxEvalNesting":         "copied",
 	"MaxSleep":               "copied",
@@ -58,6 +59,10 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"steps":           "not-carried",
 	"totalSteps":      "not-carried",
 	"macroExpSeq":     "not-carried",
+	// closures is only ever compared against itself within one let* call
+	// (opLetSeq reads it before and after each initializer), so its absolute
+	// value carries no meaning across a fork.
+	"closures": "not-carried",
 }
 
 // TestForkRuntimeFieldCoverage fails when Runtime grows a field nobody has

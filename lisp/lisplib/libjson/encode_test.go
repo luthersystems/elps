@@ -347,6 +347,30 @@ func TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard(t *testing.T) {
 	assert.Equal(t, want, string(b))
 }
 
+// Exercise every encoding fixture on both sides of the recursive/iterative
+// handoff. The deep pass must retain scalar formatting and container semantics.
+func TestEncodeFixturesAcrossGuard(t *testing.T) {
+	for _, stringNums := range []bool{false, true} {
+		tests := stdEncodeTests
+		if stringNums {
+			tests = stringNumberEncodeTests
+		}
+		for _, depth := range []int{encodeGuardDepth - 2, encodeGuardDepth} {
+			for i, test := range tests {
+				t.Run(fmt.Sprintf("stringNums=%t/depth=%d/fixture=%d", stringNums, depth, i), func(t *testing.T) {
+					v := test.v
+					for range depth {
+						v = lisp.SExpr([]*lisp.LVal{v})
+					}
+					b, err := Dump(v, stringNums)
+					require.NoError(t, err)
+					assert.Equal(t, strings.Repeat("[", depth)+test.js+strings.Repeat("]", depth), string(b))
+				})
+			}
+		}
+	}
+}
+
 // TestPooledEncoderCarriesNoStateBetweenDocuments is the guard on the hazard
 // pooling introduced (issue #379, item 6).
 //

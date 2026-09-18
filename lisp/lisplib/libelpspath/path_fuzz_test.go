@@ -368,7 +368,7 @@ func newViewWitness(doc *lisp.LVal, steps []*lisp.LVal) (*viewWitness, bool) {
 	if !ok {
 		return nil, false
 	}
-	cp, err := copyLVal(doc)
+	cp, err := copyLVal(doc, 0)
 	if err != nil || cp.Type != lisp.LArray || len(cp.Cells) != 2 {
 		return nil, false
 	}

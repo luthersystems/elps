@@ -2102,20 +2102,27 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 21)
+	assert.Len(t, analyzers, 28)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
+		"builtin-shadowing",
 		"comparator-mutation",
 		"cond-missing-else",
 		"cond-structure",
 		"defun-structure",
 		"deprecated",
+		"duplicate-binding",
 		"duplicate-definition",
+		"duplicate-keyword",
 		"if-arity",
 		"in-package-toplevel",
 		"iteration-mutation",
+		"lambda-list",
 		"let-bindings",
+		"let-recursion",
+		"lisp-package-seal",
+		"package-builtins",
 		"quote-call",
 		"rethrow-context",
 		"set-usage",
@@ -2127,6 +2134,111 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"user-arity",
 		"with-cleanup-forms",
 	}, names)
+}
+
+// Issue #657: a local closure created in a let initializer cannot capture
+// the binding being introduced. Diagnose the migration without evaluating it.
+func TestLetRecursion_Positive(t *testing.T) {
+	for _, tc := range []struct{ name, source, binding string }{
+		{"let", `(let ((f (lambda (n) (if (= n 0) 0 (f (- n 1)))))) (f 1))`, "f"},
+		{"let star", `(let* ((f (lambda (n) (if (= n 0) 0 (f (- n 1)))))) (f 1))`, "f"},
+		{"qualified forms", `(lisp:let* ((f (lisp:lambda (n) (f n)))) f)`, "f"},
+		{"prefix lambda", `(let* ((f #^(f %))) f)`, "f"},
+		{"closure inside vector", `(let* ((f (vector (lambda () (f))))) f)`, "f"},
+		{"recursive traversal under when", `(defun sum-inputs (values)
+  (let* ([total 0]
+         [visit (lambda (remaining)
+           (when (not (empty? remaining))
+             (let ([next (rest remaining)])
+               (set! total (+ total (first remaining)))
+               (visit next))))])
+    (visit values)
+    total))`, "visit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, semantic := range []bool{false, true} {
+				diags := lintLetRecursion(t, tc.source, semantic, nil)
+				require.Len(t, diags, 1)
+				assert.Equal(t, "let-recursion", diags[0].Analyzer)
+				assert.Equal(t, SeverityWarning, diags[0].Severity)
+				assert.Contains(t, diags[0].Message, "'"+tc.binding+"'")
+				assert.Contains(t, diags[0].Message, "labels")
+				assert.NotEmpty(t, diags[0].Notes)
+				assert.NotEmpty(t, diags[0].Related)
+			}
+		})
+	}
+}
+
+func TestLetRecursion_Negative(t *testing.T) {
+	for _, tc := range []struct{ name, source string }{
+		{"labels", `(labels ((f (n) (if (= n 0) 0 (f (- n 1))))) (f 1))`},
+		{"qualified labels", `(let* ((f (lambda () (lisp:labels ((f () 7)) (f))))) f)`},
+		{"qualified outer let", `(lisp:let ((f (lambda (n) 7))) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"qualified outer flet", `(lisp:flet ((f (n) 7)) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"parallel outer function", `(let ((f (lambda (n) 7))) (let ((f (lambda (n) (f n)))) (f 1)))`},
+		{"sequential outer function", `(let ((f (lambda (n) 7))) (let* ((f (lambda (n) (f n)))) (f 1)))`},
+		{"earlier sequential function", `(let* ((f (lambda () 7)) (f (lambda () (f)))) (f))`},
+		{"global function", `(defun f (n) n) (let* ((f (lambda (n) (f n)))) (f 1))`},
+		{"lambda parameter", `(let* ((f (lambda (f) (f 1)))) f)`},
+		{"nested parameter", `(let* ((f (lambda () (lambda (f) (f))))) f)`},
+		{"nested local function", `(let* ((f (lambda () (labels ((f () 7)) (f))))) f)`},
+		{"immediate self call", `(let* ((f (f 1))) f)`},
+		{"immediate value reference", `(let* ((f f)) f)`},
+		{"quoted function", `(let* ((f '(lambda () (f)))) f)`},
+		{"quoted body", `(let* ((f (lambda () '(f)))) f)`},
+		{"quasiquote", `(quasiquote (let* ((f (lambda () (f)))) f))`},
+		{"template in closure", `(let* ((f (lambda () (quasiquote (f))))) f)`},
+		{"opaque macro", `(defmacro with-f (&rest body) (quasiquote ())) (let* ((f (lambda () (with-f (f))))) f)`},
+		{"local special form shadow", `(let ((let* (lambda (bindings body) body))) (let* ((f (lambda () (f)))) f))`},
+		{"global special form shadow", `(defun let* (bindings body) body) (let* ((f (lambda () (f)))) f)`},
+		{"lambda form shadow", `(let ((lambda (lambda (args body) body))) (let* ((f (lambda () (f)))) f))`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			for _, semantic := range []bool{false, true} {
+				assertNoDiags(t, lintLetRecursion(t, tc.source, semantic, nil))
+			}
+		})
+	}
+}
+
+func TestLetRecursion_WorkspaceOuterFunction(t *testing.T) {
+	source := `(let* ((f (lambda (n) (f n)))) (f 1))`
+	config := &analysis.Config{ExtraGlobals: []analysis.ExternalSymbol{{Name: "f", Kind: analysis.SymFunction}}}
+	assertNoDiags(t, lintLetRecursion(t, source, true, config))
+}
+
+func TestLetRecursion_LocationAndSuppression(t *testing.T) {
+	source := "(let* ((f (lambda ()\n             (f))))\n  f)"
+	diags := lintLetRecursion(t, source, false, nil)
+	require.Len(t, diags, 1)
+	assert.Equal(t, 2, diags[0].Pos.Line)
+	assert.Equal(t, 15, diags[0].Pos.Col)
+	require.Len(t, diags[0].Related, 1)
+	assert.Equal(t, 1, diags[0].Related[0].Location.Line)
+	assertNoDiags(t, lintLetRecursion(t, strings.Replace(source, "(f))))", "(f)))) ; nolint:let-recursion", 1), false, nil))
+}
+
+// Look up by registered name so the red fixture proves an absent diagnostic,
+// rather than failing to compile before the new analyzer exists.
+func lintLetRecursion(t *testing.T, source string, semantic bool, cfg *analysis.Config) []Diagnostic {
+	t.Helper()
+	var analyzers []*Analyzer
+	for _, analyzer := range DefaultAnalyzers() {
+		if analyzer.Name == "let-recursion" {
+			analyzers = append(analyzers, analyzer)
+		}
+	}
+	linter := &Linter{Analyzers: analyzers}
+	var diags []Diagnostic
+	var err error
+	if semantic {
+		diags, err = linter.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	} else {
+		diags, err = linter.LintFile([]byte(source), "test.lisp")
+	}
+	require.NoError(t, err)
+	return diags
 }
 
 func TestAnalyzerDoc(t *testing.T) {
@@ -2449,9 +2561,16 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	expected := map[string]Severity{
 		"set-usage":           SeverityWarning,
 		"in-package-toplevel": SeverityWarning,
+		"package-builtins":    SeverityError,
+		"lisp-package-seal":   SeverityError,
+		"builtin-shadowing":   SeverityWarning,
 		"if-arity":            SeverityError,
 		"let-bindings":        SeverityError,
+		"let-recursion":       SeverityWarning,
 		"defun-structure":     SeverityError,
+		"lambda-list":         SeverityError,
+		"duplicate-binding":   SeverityWarning,
+		"duplicate-keyword":   SeverityWarning,
 		"cond-structure":      SeverityError,
 		"builtin-arity":       SeverityError,
 		"quote-call":          SeverityWarning,
@@ -4866,4 +4985,210 @@ func TestShadowing_Severity_HidingAUserFunctionIsAWarning(t *testing.T) {
 	require.Len(t, diags, 1)
 	assert.Equal(t, SeverityWarning, diags[0].Severity,
 		"hiding a user-defined function is the same hazard as hiding a builtin")
+}
+
+func TestPackageBuiltinsMigration(t *testing.T) {
+	var analyzer *Analyzer
+	for _, candidate := range DefaultAnalyzers() {
+		if candidate.Name == "package-builtins" {
+			analyzer = candidate
+		}
+	}
+	require.NotNil(t, analyzer, "package-builtins migration diagnostic must be registered")
+	for _, tc := range []struct{ source, message string }{
+		{`(export '(a 1 b))`, "export expects"},
+		{`(export 'a '(b (1)))`, "export expects"},
+		{`(export 'qe:f)`, "unqualified"},
+		{`(lisp:export "qe:f")`, "unqualified"},
+		{`(export (quote (a qe:f)))`, "unqualified"},
+		{`(in-package (quote 1))`, "package name"},
+		{`(in-package (lisp:quote 1))`, "package name"},
+		{`(let ((quote (lambda (x) "valid-name"))) (in-package (lisp:quote 1)))`, "package name"},
+		{`(in-package 'p 1)`, "documentation arguments must be strings"},
+		{`(in-package "")`, "package name"},
+		{`(in-package "a:b")`, "package name"},
+		{`(in-package ':kw)`, "package name"},
+		{`(use-package ':kw)`, "package name"},
+		{`(use-package "1abc")`, "package name"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			diags := lintCheck(t, analyzer, tc.source)
+			require.Len(t, diags, 1)
+			assertDiagOnLine(t, diags, 1, tc.message)
+		})
+	}
+	for _, source := range []string{
+		`(export '(a b))`, `(export "a")`, `(export '(a (b)))`,
+		`(export 'never-defined)`, `(in-package 'p "doc")`, `(in-package "valid-name")`,
+		`(in-package "+1")`, `(in-package "--")`, `(in-package "éλ")`,
+		`(export names)`, `(in-package name doc)`, `(use-package (get config "package"))`,
+		`(defun export (x) x) (export 1)`, `(let ((export identity)) (export 1))`,
+		`(lambda (export) (export 1))`, `(other:export 1)`,
+		`(let ((quote (lambda (x) "valid-name"))) (in-package (quote 1)))`,
+		`(defun quote (x) "valid-name") (in-package (quote 1))`,
+		`'(export '(a 1))`, `(quote (export '(a 1)))`, `(lisp:quote (export 1))`,
+		`(quasiquote (export 1))`, `(lisp:quasiquote (export 1))`,
+		`(thread-first 'p (in-package "doc"))`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			assertNoDiags(t, lintCheck(t, analyzer, source))
+		})
+	}
+	t.Run("nolint", func(t *testing.T) {
+		assertNoDiags(t, lintCheck(t, analyzer, `(export '(a 1 b)) ; nolint:package-builtins`))
+	})
+}
+
+func TestLispBindingDiagnostics(t *testing.T) {
+	for _, check := range []struct {
+		name               string
+		severity           Severity
+		positive, negative []string
+	}{
+		{"lisp-package-seal", SeverityError, []string{
+			`(s:deftype "lisp:if" s:int)`,
+			`(in-package 'lisp) (s:deftype "if" s:int)`,
+			`(set 'lisp:if 1)`, `(set! lisp:if 1)`, `(lisp:set! lisp:if 1)`,
+			`(set! 'lisp:lambda 1)`,
+			`(defun lisp:car (x) x)`, `(defmacro lisp:car (x) x)`,
+			`(lisp:set (quote lisp:if) 1)`, `(set (lisp:quote lisp:if) 1)`,
+			`(defun f () (set 'lisp:if 1))`,
+			`(in-package 'lisp) (set 'if 1)`,
+			`(in-package 'lisp) (set! if 1)`, `(in-package 'lisp) (lisp:set! if 1)`,
+			`(in-package "lisp") (defun car (x) x)`,
+		}, []string{
+			`(s:deftype "if" s:int)`, `(s:deftype "mypkg:if" s:int)`,
+			`(s:deftype name s:int)`, `(other:deftype "lisp:if" s:int)`,
+			`(s:make-validator "lisp:if" s:int)`,
+			`'(s:deftype "lisp:if" s:int)`,
+			`(defun s:deftype (name type) ()) (s:deftype "lisp:if" s:int)`,
+			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'car 1)`,
+			`(set name 1)`, `(set (get m "name") 1)`,
+			`(set! (quote lisp:if) 1)`, `(lisp:set! (lisp:quote lisp:if) 1)`,
+			`'(set 'lisp:if 1)`, `(quote (set 'lisp:if 1))`,
+			`(lisp:quasiquote (set 'lisp:if 1))`,
+			`(defun set (x y) y) (set 'lisp:if 1)`,
+			`(let ((set list)) (set 'lisp:if 1))`,
+			`(lambda (set) (set 'lisp:if 1))`, `(other:set 'lisp:if 1)`,
+			`(in-package 'lisp) (in-package 'user) (set 'car 1)`,
+			`(lambda (set lisp:if x) x)`,
+		}},
+		{"builtin-shadowing", SeverityWarning, []string{
+			`(set 'if 1)`, `(set! if 1)`, `(lisp:set! if 1)`,
+			`(set! user:if 1)`, `(lisp:set! user:if 1)`, `(set 'quote 1)`,
+			`(set! 'lambda 1)`,
+			`(defun car (x) x)`, `(defmacro list (x) x)`,
+			`(lisp:set (quote if) 1)`, `(lisp:defun car (x) x)`,
+			`(in-package 'other) (defun car (x) x)`,
+		}, []string{
+			`(set 'mypkg:x 1)`, `(get m 'lisp:car)`, `(set 'lisp:if 1)`,
+			`(defun my-car (x) (car x))`, `(let ((list 1)) list)`,
+			`(defun f () (set 'if 1))`, `(set name 1)`,
+			`(set! (quote if) 1)`, `(lisp:set! (lisp:quote if) 1)`,
+			`(quote (set 'if 1))`, `(quasiquote (defun car (x) x))`,
+			`(in-package 'lisp) (set 'if 1)`,
+		}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			var analyzer *Analyzer
+			for _, candidate := range DefaultAnalyzers() {
+				if candidate.Name == check.name {
+					analyzer = candidate
+				}
+			}
+			require.NotNil(t, analyzer, "%s must be registered", check.name)
+			for _, source := range check.positive {
+				t.Run(source, func(t *testing.T) {
+					diags := lintCheck(t, analyzer, source)
+					require.Len(t, diags, 1)
+					assert.Equal(t, check.severity, diags[0].Severity)
+					assertDiagOnLine(t, diags, 1, "lisp")
+				})
+			}
+			for _, source := range check.negative {
+				t.Run(source, func(t *testing.T) { assertNoDiags(t, lintCheck(t, analyzer, source)) })
+			}
+			assertNoDiags(t, lintCheck(t, analyzer, check.positive[0]+" ; nolint:"+check.name))
+		})
+	}
+}
+
+func TestLambdaListDiagnostics(t *testing.T) {
+	for _, check := range []struct {
+		name               string
+		severity           Severity
+		positive, negative []string
+	}{
+		{"lambda-list", SeverityError, []string{
+			`(defun f (&rest a &rest b) a)`, `(lambda (&rest) 1)`,
+			`(lambda (&rest a &optional b) a)`, `(lambda (&rest a &key b) a)`,
+			`(lambda (&rest a b) a)`, `(lambda (&bogus a) a)`,
+			`(lambda (&optional a &optional b) a)`, `(lambda (&key a &key b) a)`,
+			`(lambda (&optional) 1)`, `(lambda (&key) 1)`, `(lambda (&key (a 1)) a)`,
+			// A marker group closed by the next marker names nothing.
+			`(lambda (a &optional &rest b) a)`, `(lambda (a &optional &key b) a)`,
+			`(lambda (a &optional) a)`, `(lambda (a &key) a)`, `(lambda (&key &rest b) b)`,
+			`(lambda (x x) x)`, `(lambda (x &rest x) x)`, `(lambda (x &key x) x)`,
+			`(defmacro m (x x) x)`, `(labels ((f (x x) x)) 1)`, `(flet ((f (&rest) 1)) 1)`,
+			`(lisp:lambda (x x) x)`, `(lisp:labels ((f (x x) x)) 1)`,
+			`(lambda (:x) 1)`, `(lambda (a &optional :x) 1)`, `(defun f (true) 1)`,
+			`(defmacro m (false) 1)`, `(flet ((f (:x) 1)) 1)`,
+		}, []string{
+			`(lambda (a &optional b) b)`, `(lambda (a &rest r) r)`, `(lambda (a &key k) k)`,
+			`(lambda (&optional a &rest r) r)`, `(lambda (&key a b) a)`,
+			`(lambda (a &optional b &rest r) r)`, `(lambda (&optional a b) a)`,
+			`(lambda () 1)`, `(lambda (x) (lambda (x) x))`,
+			`(labels ((f (x) x) (g (x) x)) (f 1))`,
+			`'(lambda (x x) x)`, `(quote (lambda (x x) x))`, `(lisp:quote (lambda (x x) x))`,
+			`(quasiquote (lambda (x x) x))`, `(lisp:quasiquote (lambda (x x) x))`,
+			`(defun lambda (x y) x) (lambda '(x x) 1)`, `(other:lambda (x x) x)`,
+			`(let ((lambda list)) (lambda '(x x) 1))`,
+			`(lambda (lambda) (lambda '(x x) 1))`,
+		}},
+		{"duplicate-binding", SeverityWarning, []string{
+			`(let ((x 1) (x 2)) x)`, `(labels ((f (x) 1) (f (x) 2)) (f 0))`,
+			`(flet ((f (x) 1) (f (x) 2)) (f 0))`, `(lisp:let ((x 1) (x 2)) x)`,
+		}, []string{
+			`(let* ((x 1) (x (+ x 1))) x)`, `(let ((x 1)) (let ((x 2)) x))`,
+			`(labels ((f (x) x) (g (x) x)) (f 0))`,
+			`(labels ((f (x) (labels ((f (x) x)) (f x)))) (f 0))`,
+			`'(let ((x 1) (x 2)) x)`, `(quasiquote (let ((x 1) (x 2)) x))`,
+		}},
+		{"duplicate-keyword", SeverityWarning, []string{
+			`(kf 1 :b 2 :b 3)`, `((lambda (&key b) b) :b 2 :b 3)`,
+			`(kf :b :value :b 3)`, `(kf :a 1 :b 2 :a 3)`,
+		}, []string{
+			`(kf :a 1 :b 2)`, `(kf :a :b :c :b)`, `(kf key1 1 key2 2)`,
+			`'(kf :b 2 :b 3)`, `(quote (kf :b 2 :b 3))`, `(lisp:quasiquote (kf :b 2 :b 3))`,
+			`(lambda (x :b x :b) x)`, `(let ((x :b) (y :b)) x)`,
+			`(labels ((f (:b x :b y) x)) 1)`,
+		}},
+	} {
+		t.Run(check.name, func(t *testing.T) {
+			var analyzer *Analyzer
+			for _, candidate := range DefaultAnalyzers() {
+				if candidate.Name == check.name {
+					analyzer = candidate
+				}
+			}
+			require.NotNil(t, analyzer, "%s must be registered", check.name)
+			for _, source := range check.positive {
+				t.Run(source, func(t *testing.T) {
+					diags := lintCheck(t, analyzer, source)
+					require.Len(t, diags, 1)
+					assert.Equal(t, check.severity, diags[0].Severity)
+					if check.name == "lambda-list" {
+						assert.Regexp(t, "lambda list|formal argument", diags[0].Message)
+					} else {
+						assertDiagOnLine(t, diags, 1, "duplicate")
+					}
+					assert.Equal(t, 1, diags[0].Pos.Line)
+				})
+			}
+			for _, source := range check.negative {
+				t.Run(source, func(t *testing.T) { assertNoDiags(t, lintCheck(t, analyzer, source)) })
+			}
+			assertNoDiags(t, lintCheck(t, analyzer, check.positive[0]+" ; nolint:"+check.name))
+		})
+	}
 }

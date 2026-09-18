@@ -49,8 +49,8 @@ func TestMinifySource_PreservesQuotedDataAndQualifiedSymbols(t *testing.T) {
 	out, symMap, err := MinifySource(src, "quoted.lisp", nil)
 	require.NoError(t, err)
 
-	assert.Equal(t, "(defun x1 (x2) '(value pkg:qualified :kw) pkg:qualified x2)\n", string(out))
-	assert.Len(t, symMap.Entries, 2)
+	assert.Equal(t, "(defun x1 (value) '(value pkg:qualified :kw) pkg:qualified value)\n", string(out))
+	assert.Len(t, symMap.Entries, 1)
 }
 
 func TestMinifySource_ExportedSymbolsPreservedByDefault(t *testing.T) {
@@ -67,7 +67,7 @@ func TestMinifySource_ExportedSymbolsPreservedByDefault(t *testing.T) {
 	assert.Equal(t, "arg", symMap.MinifiedToOriginal["x1"])
 }
 
-func TestMinifySource_RenameExportsOptionRewritesExportForms(t *testing.T) {
+func TestMinifySource_RenameExportsOptionPreservesQuotedNames(t *testing.T) {
 	src := []byte(`(export 'public)
 (defun public (arg)
   arg)
@@ -76,9 +76,9 @@ func TestMinifySource_RenameExportsOptionRewritesExportForms(t *testing.T) {
 	out, symMap, err := MinifySource(src, "exports.lisp", &Config{RenameExports: true})
 	require.NoError(t, err)
 
-	assert.Equal(t, "(export 'x1)\n(defun x1 (x2) x2)\n", string(out))
-	assert.Len(t, symMap.Entries, 2)
-	assert.Equal(t, "public", symMap.MinifiedToOriginal["x1"])
+	assert.Equal(t, "(export 'public)\n(defun public (x1) x1)\n", string(out))
+	assert.Len(t, symMap.Entries, 1)
+	assert.NotContains(t, symMap.OriginalToMinified, "public")
 }
 
 func TestMinifySource_PreserveParams(t *testing.T) {
@@ -104,7 +104,7 @@ func TestMinifySource_PreserveParams_Lambda(t *testing.T) {
 	out, symMap, err := MinifySource(src, "test.lisp", cfg)
 	require.NoError(t, err)
 
-	// handler is a top-level set binding — preserved by default (not renamed).
+	// handler is an unresolved computed target, so its spelling is unchanged.
 	// Lambda params are preserved by PreserveParams.
 	assert.Equal(t, "(set handler (lambda (request response) response))\n", string(out))
 	assert.Empty(t, symMap.Entries, "nothing should be renamed")
@@ -178,7 +178,7 @@ func TestMinify_MultiFileRewritesCrossFileReferences(t *testing.T) {
 	assert.Equal(t, "outer", result.SymbolMap.MinifiedToOriginal["x2"])
 }
 
-// TestMinify_QuotedDefNameCrossFileReferenceStillRewrites pins the cross-file
+// TestMinify_QuotedDefNameCrossFileReferencePreserved pins the cross-file
 // half of elps#577.
 //
 // The minifier resolves a reference in b.lisp to a definition in a.lisp by
@@ -196,7 +196,7 @@ func TestMinify_MultiFileRewritesCrossFileReferences(t *testing.T) {
 // old name -- a program that no longer loads, emitted with no diagnostic.  An
 // unquoted name was unaffected, which is why the existing
 // TestMinify_MultiFileRewritesCrossFileReferences stayed green throughout.
-func TestMinify_QuotedDefNameCrossFileReferenceStillRewrites(t *testing.T) {
+func TestMinify_QuotedDefNameCrossFileReferencePreserved(t *testing.T) {
 	inputs := []InputFile{
 		{
 			Path:   "a.lisp",
@@ -215,9 +215,8 @@ func TestMinify_QuotedDefNameCrossFileReferenceStillRewrites(t *testing.T) {
 	a := string(result.Files[0].Output)
 	b := string(result.Files[1].Output)
 
-	assert.Contains(t, a, "(defun 'x", "the quoted definition should still be renamed")
-	assert.NotContains(t, b, "(helper)",
-		"a call in another file must follow the definition's new name; got %q", b)
+	assert.Contains(t, a, "(defun 'helper", "quoted names must be preserved")
+	assert.Contains(t, b, "(helper)", "cross-file calls must match the preserved name")
 }
 
 // TestScannerAndAnalysisAgreeOnDefinitionSource is the drift guard for the
@@ -255,7 +254,7 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 		"fn-plain", "fn-quoted",
 		"mac-plain", "mac-quoted",
 		"ty-plain", "ty-quoted",
-		"var-plain", "var-quoted",
+		"var-quoted",
 		"cus-plain",
 	}
 
@@ -271,7 +270,8 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 	// Names neither side may record: set takes a symbol, so (set '(a b) 1)
 	// binds nothing.  Both producers used to reach into the quoted list and
 	// invent a definition of its first element carrying the LIST's span.
-	wantNeither := []string{"lst-a", "lst-b"}
+	// An unquoted target is evaluated, not a static definition of its name.
+	wantNeither := []string{"lst-a", "lst-b", "var-plain"}
 
 	defForms := []analysis.DefFormSpec{{
 		Head:         "custom-def",
@@ -399,7 +399,7 @@ func TestMinifySource_PreservesMacroTemplateHelperReferences(t *testing.T) {
 	assert.Equal(t, 42, result.Int)
 
 	assert.Contains(t, string(out), "(defun helper")
-	assert.Contains(t, string(out), "(helper (unquote x")
+	assert.Contains(t, string(out), "(helper (unquote expr")
 	assert.NotContains(t, symMap.MinifiedToOriginal, "helper")
 	assert.Contains(t, symMap.OriginalToMinified, "outer")
 }
@@ -455,7 +455,7 @@ func TestMinifySource_PreservesMacroGeneratedLocalRecursion(t *testing.T) {
 	assert.NotContains(t, symMap.MinifiedToOriginal, "loop")
 }
 
-func TestMinifySource_MacroTemplateBindersDoNotBlockUnrelatedRenames(t *testing.T) {
+func TestMinifySource_MacroTemplateBindersPreserveNamesAcrossScopes(t *testing.T) {
 	src := []byte(`(defmacro m ()
   (quasiquote
     (let ((x 1))
@@ -469,9 +469,9 @@ func TestMinifySource_MacroTemplateBindersDoNotBlockUnrelatedRenames(t *testing.
 	require.NoError(t, err)
 
 	assert.Contains(t, string(out), "(let ((x 1)) x)")
-	assert.Equal(t, "(defmacro m () (quasiquote (let ((x 1)) x)))\n(defun x1 (x2) (+ x2 1))\n", string(out))
+	assert.Equal(t, "(defmacro m () (quasiquote (let ((x 1)) x)))\n(defun x1 (x) (+ x 1))\n", string(out))
 	assert.Equal(t, "f", symMap.MinifiedToOriginal["x1"])
-	assert.Equal(t, "x", symMap.MinifiedToOriginal["x2"])
+	assert.NotContains(t, symMap.OriginalToMinified, "x")
 	assert.NotContains(t, symMap.OriginalToMinified, "m")
 }
 
@@ -488,11 +488,23 @@ func TestMinifySource_DefaultCallDoesNotProduceInconsistentOptionalRename(t *tes
 	out, symMap, err := MinifySource(src, "default-optional.lisp", nil)
 	require.NoError(t, err)
 
-	assert.Equal(t, "(defun x1 () (labels ([x2 (x3 x4 &optional x5) (let* ([x6 (default x5 (sorted-map))]) (assoc! x6 \"id\" x3) (assoc! x6 \"name\" x4) x6)]) (x2 \"a\" \"b\")))\n", string(out))
-	assert.Equal(t, "ctx", symMap.MinifiedToOriginal["x5"])
+	// Square brackets are quoted lists too; the conservative exclusion
+	// includes all names inside the labels definition.
+	assert.Equal(t, "(defun x1 () (labels ([register (id name &optional ctx) (let* ([body (default ctx (sorted-map))]) (assoc! body \"id\" id) (assoc! body \"name\" name) body)]) (register \"a\" \"b\")))\n", string(out))
+	assert.NotContains(t, symMap.OriginalToMinified, "ctx")
 	result := evalMinifiedProgram(t, []InputFile{{Path: "default-optional.lisp", Source: out}})
 	require.NotNil(t, result)
 	assert.NotEqual(t, lisp.LError, result.Type)
+	// Keep the original optional-parameter rename regression exercised with
+	// unquoted binding syntax as well as the quoted bracket spelling above.
+	unquoted := bytes.ReplaceAll(bytes.ReplaceAll(src, []byte("["), []byte("(")), []byte("]"), []byte(")"))
+	out, symMap, err = MinifySource(unquoted, "default-optional.lisp", nil)
+	require.NoError(t, err)
+	assert.Equal(t, "ctx", symMap.MinifiedToOriginal["x5"])
+	assert.Contains(t, string(out), "(default x5 (sorted-map))")
+	result = evalMinifiedProgram(t, []InputFile{{Path: "default-optional.lisp", Source: out}})
+	assert.NotEqual(t, lisp.LError, result.Type)
+
 }
 
 func TestMinifySource_DefaultCallOutsideLabelsFallsBackToNormalCall(t *testing.T) {
@@ -624,7 +636,7 @@ func TestMinifySource_QualifiedInternalSetReferencePreservedSafely(t *testing.T)
 	assert.NotEqual(t, lisp.LError, evalResult.Type)
 }
 
-func TestMinifySource_RenameExportsRewritesQualifiedReferences(t *testing.T) {
+func TestMinifySource_RenameExportsPreservesQuotedQualifiedReferences(t *testing.T) {
 	inputs := []InputFile{
 		{
 			Path: "router.lisp",
@@ -648,21 +660,10 @@ func TestMinifySource_RenameExportsRewritesQualifiedReferences(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, result.Files, 2)
 
-	assert.Contains(t, string(result.Files[0].Output), "(export 'x")
-	assert.Contains(t, string(result.Files[0].Output), "(defun x")
-	assert.Contains(t, string(result.Files[1].Output), "(router:x")
-
-	var helperMinified string
-	for _, entry := range result.SymbolMap.Entries {
-		if entry.Original == "helper" {
-			helperMinified = entry.Minified
-			break
-		}
-	}
-	require.NotEmpty(t, helperMinified)
-	assert.Contains(t, string(result.Files[0].Output), "(export '"+helperMinified+")")
-	assert.Contains(t, string(result.Files[0].Output), "(defun "+helperMinified+" (")
-	assert.Contains(t, string(result.Files[1].Output), "(router:"+helperMinified+" 42)")
+	assert.Contains(t, string(result.Files[0].Output), "(export 'helper)")
+	assert.Contains(t, string(result.Files[0].Output), "(defun helper (")
+	assert.Contains(t, string(result.Files[1].Output), "(router:helper 42)")
+	assert.NotContains(t, result.SymbolMap.OriginalToMinified, "helper")
 
 	evalResult := evalMinifiedProgram(t, []InputFile{
 		{Path: result.Files[0].Path, Source: result.Files[0].Output},
@@ -741,15 +742,11 @@ func TestMinify_ImportedExportedSymbolBeatsUnrelatedPrivateHelper(t *testing.T) 
 	require.NoError(t, err)
 	require.Len(t, result.Files, 3)
 
-	var privateHelperMinified string
-	for _, entry := range result.SymbolMap.Entries {
-		if entry.Original == "string-starts-with?" {
-			privateHelperMinified = entry.Minified
-		}
-	}
-	require.NotEmpty(t, privateHelperMinified, "private helper should still be minified")
+	// A quoted export excludes this spelling in every package, including
+	// the unrelated private helper. The imported call still selects utils.
+	assert.NotContains(t, result.SymbolMap.OriginalToMinified, "string-starts-with?")
+	assert.Contains(t, string(result.Files[1].Output), "(defun string-starts-with? ")
 	assert.Contains(t, string(result.Files[2].Output), "(string-starts-with? x")
-	assert.NotContains(t, string(result.Files[2].Output), "("+privateHelperMinified+" x")
 
 	evalResult := evalMinifiedProgram(t, []InputFile{
 		{Path: result.Files[0].Path, Source: result.Files[0].Output},
@@ -914,4 +911,92 @@ func evalMinifiedProgram(t *testing.T, files []InputFile) *lisp.LVal {
 	}
 
 	return result
+}
+
+func TestMinify_NestedRedefinitionExecutionEquivalence(t *testing.T) {
+	src := []byte(`(defun helper () 1)
+(debug-print (helper))
+(let () (defun helper () 2))
+(debug-print (helper))`)
+	out, symMap, err := MinifySource(src, "redefinition.lisp", nil)
+	require.NoError(t, err)
+	original, originalErr := evalDebugOutput(t, src)
+	require.NoError(t, originalErr)
+	require.Equal(t, "1\n2\n", original)
+	minified, minifiedErr := evalDebugOutput(t, out)
+	require.NoError(t, minifiedErr, "minified source: %s", out)
+	assert.Equal(t, original, minified)
+	assert.Len(t, symMap.OriginalToMinified["helper"], 1)
+}
+
+func TestMinify_QualifiedQuoteExecutionEquivalence(t *testing.T) {
+	for _, form := range []string{"lisp:quote", "lisp:quasiquote"} {
+		t.Run(form, func(t *testing.T) {
+			src := []byte("(defun twice (x) (* 2 x)) (debug-print (" + form + " twice))")
+			out, symMap, err := MinifySource(src, "qualified-quote.lisp", nil)
+			require.NoError(t, err)
+			original, originalErr := evalDebugOutput(t, src)
+			require.NoError(t, originalErr)
+			require.Equal(t, "'twice\n", original)
+			minified, minifiedErr := evalDebugOutput(t, out)
+			require.NoError(t, minifiedErr)
+			assert.Equal(t, original, minified)
+			assert.NotContains(t, symMap.OriginalToMinified, "twice")
+			assert.Contains(t, symMap.Excluded, SymbolExclusion{Original: "twice", Reason: "quoted-reference"})
+		})
+	}
+}
+
+func evalDebugOutput(t *testing.T, src []byte) (string, error) {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	require.True(t, lisp.InitializeUserEnv(env).IsNil())
+	env.Runtime.Reader = parser.NewReader()
+	var stderr bytes.Buffer
+	env.Runtime.Stderr = &stderr
+	result := env.LoadString("execution.lisp", string(src))
+	return stderr.String(), lisp.GoError(result)
+}
+
+func TestMinify_PreservedBindingCollisionExecutionEquivalence(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		src  string
+		want string
+		cfg  *Config
+	}{
+		{"type", `(deftype x1 () 9) (defun other () 2) (debug-print (new x1))`, "#{user:x1 9}\n", nil},
+		{"macro", `(defmacro x1 () 9) (defun other () 2) (debug-print (x1))`, "9\n", nil},
+		{"type_lexical_capture", `(deftype x1 () 9) (let ((other 2)) (debug-print (new x1)))`, "#{user:x1 9}\n", nil},
+		{"preserved_parameter_lexical_capture", `((lambda (x1) (let ((other 2)) (debug-print x1))) 9)`, "9\n", &Config{PreserveParams: true}},
+		{"exported", `(export 'x1) (defun x1 () 9) (defun other () 2) (debug-print (x1))`, "9\n", nil},
+		{"quoted_reference_lexical_capture", `(let ((x1 9)) 'x1 (let ((other 2)) (debug-print x1)))`, "9\n", nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			original, err := evalDebugOutput(t, []byte(tt.src))
+			require.NoError(t, err)
+			require.Equal(t, tt.want, original)
+			out, _, err := MinifySource([]byte(tt.src), "collision.lisp", tt.cfg)
+			require.NoError(t, err)
+			minified, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified source: %s", out)
+			assert.Equal(t, original, minified, "minified source: %s", out)
+		})
+	}
+}
+
+func TestMinify_ComputedSetTargetExecutionEquivalence(t *testing.T) {
+	for _, target := range []string{"target", "(identity target)"} {
+		t.Run(target, func(t *testing.T) {
+			src := []byte("(let ((target 'answer)) (set " + target + " 42)) (debug-print answer)")
+			original, err := evalDebugOutput(t, src)
+			require.NoError(t, err)
+			require.Equal(t, "42\n", original)
+			out, _, err := MinifySource(src, "computed-set.lisp", nil)
+			require.NoError(t, err)
+			minified, err := evalDebugOutput(t, out)
+			require.NoError(t, err, "minified source: %s", out)
+			assert.Equal(t, original, minified, "minified source: %s", out)
+		})
+	}
 }

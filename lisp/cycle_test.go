@@ -308,7 +308,7 @@ func TestCyclicValueDoesNotKillTheProcess(t *testing.T) {
 var cyclicWalks = map[string]string{
 	"render":       `(sorted-map "k" #<cycle>)`,
 	"render-wide":  `(sorted-map "a" #<cycle> "b" #<cycle>)`,
-	"render-error": `<native code>: test-error: (sorted-map "k" <native code>: test-error: #<cycle>)`,
+	"render-error": `<native code>: test-error: (sorted-map "k" #<cycle>)`,
 	"equal":        "true",
 	"govalue":      "unconverted",
 	"stamp":        "stamped",

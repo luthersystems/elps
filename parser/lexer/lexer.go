@@ -8,6 +8,7 @@ import (
 	"io"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -24,9 +25,16 @@ type Lexer struct {
 	lex               LexFn
 	precedingNewlines int
 	precedingSpaces   int
+	minusRun          int // consecutive NEGATIVE tokens, capped at two
 }
 
+// New creates a lexer, ignoring a single UTF-8 BOM only at source offset zero.
+// The BOM is not emitted, so format-preserving readers also drop it on output.
 func New(s *token.Scanner) *Lexer {
+	if c, ok := s.Peek(); ok && c == '\ufeff' && s.LocStart().Pos == 0 {
+		s.AcceptRune('\ufeff')
+		s.Ignore()
+	}
 	lex := &Lexer{
 		scanner: s,
 		lex:     (*Lexer).readToken,
@@ -34,12 +42,35 @@ func New(s *token.Scanner) *Lexer {
 	return lex
 }
 
+// Err returns the terminal scanner error, if any. Lexical errors such as
+// malformed literals do not set Err and may allow parsing to continue.
+func (lex *Lexer) Err() error {
+	return lex.scanner.Err()
+}
+
 func (lex *Lexer) ReadToken() []*token.Token {
-	return lex.lex(lex)
+	toks := lex.lex(lex)
+	if toks[0].Type == token.NEGATIVE {
+		if lex.minusRun < 2 {
+			lex.minusRun++
+		}
+	} else {
+		lex.minusRun = 0
+	}
+	// Accept helpers report a count or boolean, so every token path must also
+	// check the scanner error. Never publish a partially scanned token as code.
+	if err := lex.scanner.Err(); err != nil {
+		toks[0].Type = token.ERROR
+		toks[0].Text = err.Error()
+	}
+	return toks
 }
 
 func (lex *Lexer) readToken() []*token.Token {
 	lex.skipWhitespace()
+	if lex.precedingNewlines > 0 || lex.precedingSpaces > 0 {
+		lex.minusRun = 0
+	}
 	if !lex.scanner.Accept(func(c rune) bool { return true }) {
 		if lex.scanner.EOF() {
 			return lex.emit(token.EOF, "")
@@ -48,10 +79,7 @@ func (lex *Lexer) readToken() []*token.Token {
 			return lex.emitError(err, false)
 		}
 		// The scanner could not produce a rune, is not at EOF, and reports no
-		// read error.  Either the input holds a byte sequence that is not
-		// valid UTF-8, or the current token has outgrown the scanner buffer.
-		// ScanRune reports which, and for an invalid sequence it also consumes
-		// the offending byte.
+		// scan error. Keep a defensive error path for this inconsistent state.
 		//
 		// Returning an ERROR token here is load-bearing.  Falling through to
 		// the dispatch below re-examines the PREVIOUS rune without having
@@ -81,12 +109,9 @@ func (lex *Lexer) readToken() []*token.Token {
 	case ':':
 		return lex.readSymbol()
 	case ';':
-		lex.scanner.AcceptSeq(func(c rune) bool { return c != '\n' })
-		return lex.emitText(token.COMMENT)
+		return lex.readComment()
 	case '#':
-		_ = lex.readChar()
-		err := lex.scanner.Err()
-		if err != nil {
+		if err := lex.scanner.ScanRune(); err != nil {
 			return lex.emitError(err, false)
 		}
 		switch lex.scanner.Rune() {
@@ -121,8 +146,7 @@ func (lex *Lexer) readToken() []*token.Token {
 			lex.lex = (*Lexer).readHexLiteral
 			return lex.emitMacroChar(tok)
 		default:
-			lex.scanner.Ignore()
-			return lex.errorf("invalid dispatch macro character %q", lex.scanner.Rune())
+			return lex.errorf("invalid dispatch macro character %q (supported prefixes: #!, #', #^, #o, #O, #x, #X)", lex.scanner.Rune())
 		}
 	case '-':
 		// '-' is the subtraction/negation symbol on its own, and the sign of
@@ -140,6 +164,11 @@ func (lex *Lexer) readToken() []*token.Token {
 		// FuzzFormatCompact on "(------ )".
 		if c, ok := lex.scanner.Peek(); !ok || unicode.IsSpace(c) || c == ')' || c == ']' {
 			return lex.emitText(token.SYMBOL)
+		} else if c == ':' && lex.minusRun == 1 {
+			// Only the complete two-minus spelling gets this exception.
+			// ParseNegative merges it into "--:f"; longer runs must retain
+			// their separate minuses followed by "-:f".
+			return lex.readSymbol()
 		}
 		return lex.emitText(token.NEGATIVE)
 	case '"':
@@ -262,8 +291,20 @@ func (lex *Lexer) charToken(typ token.Type) []*token.Token {
 
 func (lex *Lexer) readHashBang() []*token.Token {
 	lex.resetState()
-	lex.scanner.AcceptSeq(func(c rune) bool { return c != '\n' })
-	return lex.emitText(token.COMMENT)
+	return lex.readComment()
+}
+
+func (lex *Lexer) readComment() []*token.Token {
+	start := lex.scanner.LocStart()
+	text, err := lex.scanner.ScanLine()
+	var toks []*token.Token
+	if err != nil {
+		toks = lex.emitError(err, false)
+	} else {
+		toks = lex.emit(token.COMMENT, text)
+	}
+	toks[0].Source = start
+	return toks
 }
 
 func (lex *Lexer) readFunRef() []*token.Token {
@@ -316,6 +357,8 @@ func (lex *Lexer) readSymbol() []*token.Token {
 }
 
 func (lex *Lexer) readOctalLiteral() []*token.Token {
+	// The dispatch token has been emitted; retain its spelling for diagnostics.
+	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return '0' <= c && c <= '7'
@@ -323,28 +366,24 @@ func (lex *Lexer) readOctalLiteral() []*token.Token {
 	if n == 0 {
 		return lex.errorf("invalid octal literal character: %q", lex.peekRune())
 	}
-	if unicode.IsDigit(lex.peekRune()) || isWord(lex.peekRune()) {
-		return lex.errorf("invalid octal literal character: %q", lex.peekRune())
-	}
-	return lex.emitText(token.INT_OCTAL)
+	return lex.emitNumber(token.INT_OCTAL, prefix)
 }
 
 func (lex *Lexer) readHexLiteral() []*token.Token {
+	// The dispatch token has been emitted; retain its spelling for diagnostics.
+	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return isDigit(c) || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
 	})
 	if n == 0 {
-		return lex.errorf("invalid hexidecimal literal character: %q", lex.peekRune())
+		return lex.errorf("invalid hexadecimal literal character: %q", lex.peekRune())
 	}
-	if unicode.IsDigit(lex.peekRune()) || isWord(lex.peekRune()) {
-		return lex.errorf("invalid hexidecimal literal character: %q", lex.peekRune())
-	}
-	return lex.emitText(token.INT_HEX)
+	return lex.emitNumber(token.INT_HEX, prefix)
 }
 
 func (lex *Lexer) readNumber() []*token.Token {
-	// TODO: support octal and hex integer literals
+	// Octal and hexadecimal integers are handled by the #o and #x dispatches.
 	lex.scanner.AcceptSeqDigit() // the first digit already scanned
 	switch {
 	case lex.scanner.AcceptRune('.'):
@@ -352,7 +391,7 @@ func (lex *Lexer) readNumber() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitText(token.INT)
+		return lex.emitNumber(token.INT, "")
 	}
 	// the returned string may not actually be a usable number (overflow), but
 	// we can find that out at parse time -- not scan time.
@@ -366,7 +405,7 @@ func (lex *Lexer) readFloatFraction() []*token.Token {
 	case lex.scanner.AcceptAny("eE"):
 		return lex.readFloatExponent()
 	default:
-		return lex.emitText(token.FLOAT)
+		return lex.emitNumber(token.FLOAT, "")
 	}
 }
 
@@ -385,7 +424,20 @@ func (lex *Lexer) readFloatExponent() []*token.Token {
 	if lex.scanner.AcceptSeqDigit() == 0 {
 		return lex.errorf("invalid floating point literal starting: %v", lex.scanner.Text())
 	}
-	return lex.emitText(token.FLOAT)
+	return lex.emitNumber(token.FLOAT, "")
+}
+
+// emitNumber rejects an undelimited suffix instead of silently splitting one
+// malformed literal into several values. Lint surfaces the same scan error.
+func (lex *Lexer) emitNumber(typ token.Type, prefix string) []*token.Token {
+	if lex.scanner.AcceptSeq(func(c rune) bool { return isWord(c) || c == ':' || unicode.IsDigit(c) }) > 0 {
+		literal := prefix + lex.scanner.Text()
+		if strings.HasPrefix(literal, "0x") || strings.HasPrefix(literal, "0X") {
+			return lex.errorf("invalid numeric literal %q (hex is spelled #x%s)", literal, literal[2:])
+		}
+		return lex.errorf("invalid numeric literal %q (separate values with whitespace)", literal)
+	}
+	return lex.emitText(typ)
 }
 
 // trailingBackslashes counts the backslashes at the end of s.
@@ -398,17 +450,18 @@ func trailingBackslashes(s string) int {
 }
 
 func (lex *Lexer) skipWhitespace() {
-	if lex.scanner.AcceptSeqSpace() > 0 {
-		text := lex.scanner.Text()
-		lex.precedingNewlines = strings.Count(text, "\n")
-		if lex.precedingNewlines == 0 {
-			lex.precedingSpaces = len(text)
-		} else {
-			lex.precedingSpaces = 0
+	lex.precedingNewlines = 0
+	lex.precedingSpaces = 0
+	for lex.scanner.AcceptSpace() {
+		c := lex.scanner.Rune()
+		if c == '\n' {
+			lex.precedingNewlines++
 		}
+		lex.precedingSpaces += utf8.RuneLen(c)
+		// Whitespace, like comments, must not fill the token window.
 		lex.scanner.Ignore()
-	} else {
-		lex.precedingNewlines = 0
+	}
+	if lex.precedingNewlines > 0 {
 		lex.precedingSpaces = 0
 	}
 }
@@ -416,11 +469,6 @@ func (lex *Lexer) skipWhitespace() {
 func (lex *Lexer) peekRune() rune {
 	r, _ := lex.scanner.Peek()
 	return r
-}
-
-func (lex *Lexer) readChar() error {
-	_ = lex.scanner.ScanRune()
-	return nil
 }
 
 func isWordStart(c rune) bool {

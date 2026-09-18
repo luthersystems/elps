@@ -510,6 +510,24 @@ func TestAnalyze_SetBang(t *testing.T) {
 	}
 }
 
+func TestAnalyze_ComputedSetTarget(t *testing.T) {
+	for _, target := range []string{"target", "(identity target)"} {
+		t.Run(target, func(t *testing.T) {
+			result := parseAndAnalyze(t, "(let ((target 'answer)) (set "+target+" 42))")
+			assert.Nil(t, result.RootScope.LookupLocalInPackage("target", "user"), "computed targets must not create static package bindings")
+			assert.Nil(t, result.RootScope.LookupLocalInPackage("answer", "user"))
+			var local *Symbol
+			for _, sym := range result.Symbols {
+				if sym.Name == "target" && sym.Scope.Kind == ScopeLet {
+					local = sym
+				}
+			}
+			require.NotNil(t, local)
+			assert.Equal(t, 1, local.References, "set target must reference the lexical binding")
+		})
+	}
+}
+
 func TestAnalyze_Set_InLambdaReferencesGlobal(t *testing.T) {
 	// Regression test for #260: (set 'x ...) inside a lambda writes to the
 	// package-global scope (PutGlobal), not a lambda-local binding. The
@@ -2199,4 +2217,24 @@ func TestAnalyze_MacroExpansion_HandlerBindPattern(t *testing.T) {
 		assert.NotEqual(t, "f", u.Name, "f should resolve through expansion")
 		assert.NotEqual(t, "e", u.Name, "e should resolve as lambda param")
 	}
+}
+
+func TestAnalyze_ExportLiteralListsAndEvaluatedArguments(t *testing.T) {
+	for _, arg := range []string{`"helper"`, `'(other ("helper"))`, `(quote (other (helper)))`} {
+		t.Run(arg, func(t *testing.T) {
+			result := parseAndAnalyze(t, "(export "+arg+") (defun helper () 42) (defun other () 1)")
+			require.True(t, result.RootScope.LookupLocal("helper").Exported)
+		})
+	}
+	t.Run("evaluated", func(t *testing.T) {
+		result := parseAndAnalyze(t, `(defun names () 1) (let ((names '(helper))) (export (identity names)))`)
+		require.False(t, result.RootScope.LookupLocal("names").Exported)
+		for _, sym := range result.Symbols {
+			if sym.Name == "names" && sym.Scope.Kind == ScopeLet {
+				require.Equal(t, 1, sym.References)
+				return
+			}
+		}
+		t.Fatal("missing lexical names binding")
+	})
 }

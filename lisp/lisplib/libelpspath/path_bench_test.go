@@ -49,7 +49,7 @@ func BenchmarkCopy(b *testing.B) {
 	doc := benchDoc()
 	b.ReportAllocs()
 	for b.Loop() {
-		if _, err := copyLVal(doc); err != nil {
+		if _, err := copyLVal(doc, 0); err != nil {
 			b.Fatal(err)
 		}
 	}

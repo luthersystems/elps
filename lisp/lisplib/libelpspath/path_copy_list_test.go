@@ -148,7 +148,7 @@ func TestCopyOpOnListDoesNotWriteThroughASharedLeaf(t *testing.T) {
 				before := fpAST([]*lisp.LVal{doc})
 
 				// The copy an ordinary ?set on an unrelated key returns.
-				cp, err := copyLVal(doc)
+				cp, err := copyLVal(doc, 0)
 				require.NoError(t, err)
 				cpList, ok := cp.Map().Get(lisp.String("l"))
 				require.True(t, ok)

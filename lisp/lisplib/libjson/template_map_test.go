@@ -49,19 +49,25 @@ func TestJSONTemplateMapPreservesBehaviorAndIdentity(t *testing.T) {
 		if got, found := alias.Get(lisp.String("value")); !found || got.Int != i+2 {
 			t.Fatalf("VM %d lost backing alias: %v", i, got)
 		}
+		if got := m.Set(lisp.Symbol("value"), lisp.Int(i+2)); !got.IsNil() {
+			t.Fatalf("VM %d symbol write failed: %v", i, got)
+		}
+		if got, found := m.Get(lisp.Symbol("value")); !found || got.Type != lisp.LInt || got.Int != i+2 {
+			t.Fatalf("VM %d symbol read failed: %v", i, got)
+		}
 		for name, got := range map[string]*lisp.LVal{
-			"symbol set":    m.Set(lisp.Symbol("value"), lisp.Int(99)),
-			"symbol delete": m.Del(lisp.Symbol("value")),
+			"integer set":    m.Set(lisp.Int(1), lisp.Int(99)),
+			"integer delete": m.Del(lisp.Int(1)),
 		} {
 			if got.Type != lisp.LError || got.Str != "error" {
 				t.Fatalf("VM %d %s lost JSON key policy: %v", i, name, got)
 			}
 		}
-		if got, found := m.Get(lisp.Symbol("value")); found || got.Type != lisp.LError {
-			t.Fatalf("VM %d symbol read lost key policy: %v", i, got)
+		if got, found := m.Get(lisp.Int(1)); found || got.Type != lisp.LError {
+			t.Fatalf("VM %d integer read lost key policy: %v", i, got)
 		}
 		keys := m.Keys()
-		if len(keys.Cells) != 2 || keys.Cells[0].Type != lisp.LString || keys.Cells[0].Str != "source" || keys.Cells[1].Str != "value" {
+		if len(keys.Cells) != 2 || keys.Cells[0].Type != lisp.LString || keys.Cells[0].Str != "source" || keys.Cells[1].Type != lisp.LString || keys.Cells[1].Str != "value" {
 			t.Fatalf("VM %d keys changed: %v", i, keys)
 		}
 	}

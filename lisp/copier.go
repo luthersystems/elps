@@ -96,9 +96,8 @@ import (
 //
 // # Cost, and why the memo is not simply a map
 //
-// Copy is a per-call primitive on small values: `assert` copies its test
-// expression on every evaluation, lambda creation copies its formals,
-// make-sequence copies each number it emits, and
+// Copy is a per-call primitive on small values: lambda creation copies its
+// formals, make-sequence copies each number it emits, and
 // TestCopyLeafAllocatesLikeAStructCopy pins the leaf cost as an equality.
 // (The sort comparators, once the heaviest per-call callers, no longer copy
 // at all -- stable-sort and insert-sorted pass their elements by reference,
@@ -148,10 +147,15 @@ type copier struct {
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
 	natives map[interface{}]interface{}
+	// runtime optionally limits each copied data backing allocation.
+	// Ordinary Go Copy calls retain their existing unlimited behavior.
+	runtime *Runtime
 	// failed is the error the walk stopped on, and is NOT a memo: it holds
 	// one value for the whole walk, it is never looked up by a source
 	// pointer, and it is what Copy returns once it is set.
 	failed *LVal
+	next   copyFrame
+	depth  int
 	n      int
 }
 
@@ -237,6 +241,91 @@ func (v *LVal) copyWithHint(n int) *LVal {
 	return c.copy(v)
 }
 
+// copyWithRuntime keeps Copy's within-runtime sharing rules, with allocation
+// checks for interpreter calls. Failure is separate because a successfully
+// copied condition is itself an LError.
+func (v *LVal) copyWithRuntime(runtime *Runtime) (*LVal, *LVal) {
+	c := copier{runtime: runtime}
+	cp := c.copy(v)
+	return cp, c.failed
+}
+
+func (c *copier) checkAlloc(n int) error {
+	if c.runtime != nil {
+		if msg := c.runtime.CheckAlloc(n); msg != "" {
+			if c.failed == nil {
+				c.failed = Errorf("%s", msg)
+			}
+			return errors.New(msg)
+		}
+	}
+	return nil
+}
+
+// copyFrame retains one container's cursor. It owns no child result slots
+// or closures, and width never increases the continuation stack.
+type copyFrame struct {
+	mapping       map[string]*LVal
+	md            *MapData
+	cells, copied []*LVal
+	// values holds the map's values in keys' order, read out of the source
+	// map before the first of them is walked.  It used to be the source map
+	// itself, looked up key by key as the walk reached each key -- and the
+	// walk runs host code (a NativeCloner.CloneNative on a value, a custom
+	// Map's Entries), so a hook that deleted a key the walk had not reached
+	// yet had the copy store the Go nil the lookup returned.  See cells
+	// above: the same contract, one container over.
+	values []*LVal
+	keys   []string
+	pairs  []copyStringKV
+	index  int
+}
+
+type copyStringKV struct {
+	v *LVal
+	k string
+}
+
+func (f *copyFrame) len() int {
+	if f.keys != nil {
+		return len(f.keys)
+	}
+	if f.pairs != nil {
+		return len(f.pairs)
+	}
+	return len(f.cells)
+}
+
+func (f *copyFrame) child() *LVal {
+	switch {
+	case f.keys != nil:
+		return f.values[f.index]
+	case f.pairs != nil:
+		return f.pairs[f.index].v
+	case f.md != nil:
+		return f.cells[f.index].Cells[1]
+	default:
+		return f.cells[f.index]
+	}
+}
+
+func (f *copyFrame) store(child *LVal) *LVal {
+	switch {
+	case f.keys != nil:
+		f.mapping[f.keys[f.index]] = child
+	case f.pairs != nil:
+		f.mapping[f.pairs[f.index].k] = child
+	case f.md != nil:
+		if err := f.md.Set(f.cells[f.index].Cells[0], child); err.Type == LError {
+			return err
+		}
+	default:
+		f.copied[f.index] = child
+	}
+	f.index++
+	return nil
+}
+
 // copy is the walk's only entry point, and the fail-stop's.  Once an arm
 // has recorded a failure in c.failed every level returns it without
 // descending -- the OUTERMOST level included, which is what makes
@@ -245,24 +334,63 @@ func (v *LVal) copyWithHint(n int) *LVal {
 // published over unfinished storage still hanging off it.  See the type
 // comment for why repairing the failing node alone is not enough.
 func (c *copier) copy(v *LVal) *LVal {
-	if v == nil {
-		return nil
-	}
 	if c.failed != nil {
 		return c.failed
 	}
+	if v == nil {
+		return nil
+	}
+	c.next = copyFrame{}
 	cp := c.copyNode(v)
+	if c.next.len() == 0 { // Leaves need no continuation stack.
+		if c.failed != nil {
+			return c.failed
+		}
+		return cp
+	}
+	pending := make([]copyFrame, 0, 16)
+	pending = append(pending, c.next)
+	depth := c.depth
+	for len(pending) > 0 && c.failed == nil {
+		f := &pending[len(pending)-1]
+		if f.index == f.len() {
+			*f = copyFrame{}
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		c.depth = depth + len(pending)
+		if c.depth >= c.runtime.ValueDepthLimit() {
+			c.failed = Error(ValueDepthError(c.runtime.ValueDepthLimit()))
+			break
+		}
+		c.next = copyFrame{}
+		child := c.copyNode(f.child())
+		if c.failed != nil {
+			break
+		}
+		if err := f.store(child); err != nil {
+			c.failed = err
+			break
+		}
+		if c.next.len() > 0 {
+			pending = append(pending, c.next)
+		}
+	}
+	c.depth = depth
+	c.next = copyFrame{}
 	if c.failed != nil {
 		return c.failed
 	}
 	return cp
 }
 
-// copyNode copies one node and its children.  Callers go through copy,
-// which is where the fail-stop lives; nothing here has to check c.failed
-// except the cell loop, which stops early rather than copying the error
-// into every remaining cell of a container that is about to be discarded.
+// copyNode copies one header and prepares its child cursor in c.next.
+// Callers go through copy, which stops the whole walk on c.failed before
+// visiting another sibling.
 func (c *copier) copyNode(v *LVal) *LVal {
+	if v == nil {
+		return nil
+	}
 	// Only a node that can be reached twice in a way the copy could observe
 	// is memoised: one with cell storage (a container, or a header over
 	// hidden capacity) or a payload.  A leaf -- a number, string, symbol, an
@@ -280,6 +408,14 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	if memoise {
 		if cp, ok := c.lookup(v); ok {
 			return cp
+		}
+	}
+	// Array/quote/tag Cells are fixed representation headers; their child
+	// lists carry the variable data spans. Check these spans before any
+	// child clone hook or backing allocation can run.
+	if v.Type == LSExpr || v.Type == LError || v.Type == LFun {
+		if c.checkAlloc(len(v.Cells)) != nil {
+			return c.failed
 		}
 	}
 	// Constructed here and written here, in one function: cmd/elpsvet's
@@ -390,7 +526,9 @@ func (c *copier) copyNode(v *LVal) *LVal {
 			// (see the type comment).
 			e := Errorf("copy sorted-map: %v", err)
 			*cp = *e
-			c.failed = cp
+			if c.failed == nil {
+				c.failed = cp
+			}
 			return cp
 		}
 		cp.Native = md
@@ -398,6 +536,14 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	case LBytes:
 		if b, ok := v.Native.(*[]byte); ok && b != nil {
 			cp.Native = c.byteSlice(b)
+		}
+	case LString:
+		// Error messages retain their original Go error for host diagnostics.
+		// Honor its copy protocol just as when the data cell was LNative.
+		if _, ok := v.Native.(error); ok {
+			if cl, ok := v.Native.(NativeCloner); ok {
+				cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native copy protocol for the original Go error; template admission checks the cloned payload independently
+			}
 		}
 	case LNative:
 		if cl, ok := v.Native.(NativeCloner); ok {
@@ -414,20 +560,34 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	return cp
 }
 
+// cells prepares the child cursor for v's cells and returns the slice the
+// copies land in.
+//
+// The frame reads its children back out of the DESTINATION slice, which is
+// seeded with v's children here and overwritten slot by slot as the walk
+// passes them -- a slot is read (copyFrame.child) immediately before it is
+// written (copyFrame.store), so one slice serves as both the snapshot and
+// the output and the walk allocates nothing extra for it.
+//
+// It used to hold v.Cells itself, which is a slice HEADER over the source's
+// backing array, not a snapshot of it.  The walk runs host code -- a
+// NativeCloner.CloneNative on a native child, a custom Map's Entries -- and
+// a hook that wrote into a cell the walk had not reached yet had that write
+// picked up, so the copy was neither the list as it was when Copy entered
+// it nor the list as the hook left it.  Copy's contract is a copy of a
+// value, and a value the source never held is not one; the walk therefore
+// copies the children the container held when it was entered, and a
+// concurrent append or overwrite is visible only in the source.
+// TestCopySnapshotsCellsAgainstAHostHook is the control, and the detacher
+// and the conversion walk agree with it.
 func (c *copier) cells(v *LVal) []*LVal {
 	if len(v.Cells) == 0 {
 		return nil
 	}
 	cells := make([]*LVal, len(v.Cells))
-	for i := range cells {
-		cells[i] = c.copy(v.Cells[i])
-		if c.failed != nil {
-			// Fail-stop: the container being built is discarded by Copy,
-			// so there is nothing to finish and every further cell would
-			// only be another copy of the error.
-			return nil
-		}
-	}
+	copy(cells, v.Cells)
+	c.next = copyFrame{cells: cells, copied: cells}
+
 	return cells
 }
 
@@ -449,6 +609,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			return nil, errCopyMapFailed
 		}
 		return cp, nil
+	}
+	if md.mapBacking != nil {
+		if err := c.checkAlloc(md.Len()); err != nil {
+			return nil, err
+		}
 	}
 	if c.maps == nil {
 		c.maps = make(map[*MapData]*MapData)
@@ -488,17 +653,32 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// back by lookup: a []string sorted by slices.Sort measured
 		// cheaper than a []{key,value} sorted by slices.SortFunc, whose
 		// comparison closure costs more than the hash lookups it saves
-		// (+74 % against +52 % on the 64-entry copy).  A map of fewer
-		// than two entries is already ordered and collects nothing.
+		// (+74 % against +52 % on the 64-entry copy).
 		sm := m0.emptyLike()
-		if len(m0.m) < 2 || !copierValueOrderMatters(m0.m) {
+		if !copierValueOrderMatters(m0.m) {
+			// These leaves cannot schedule children or invoke host code. Copy
+			// them directly without collecting keys or queuing siblings.
+			if len(m0.m) > 0 && c.depth+1 >= c.runtime.ValueDepthLimit() {
+				err := ValueDepthError(c.runtime.ValueDepthLimit())
+				c.failed = Error(err)
+				return c.failMap(md, err)
+			}
 			for k, v := range m0.m {
-				sm.m[k] = c.copy(v)
+				sm.m[k] = c.copyNode(v)
 			}
 		} else {
-			for _, k := range copierSortedKeys(m0.m) {
-				sm.m[k] = c.copy(m0.m[k])
+			// The values are read out now, in key order, rather than
+			// looked up as the walk reaches each key: the walk calls a
+			// host hook per value, and an entry a hook deletes must
+			// still be the entry the map held when Copy entered it.
+			// Two slices rather than one []{key,value}: the sort stays
+			// the cheap sort of a []string (see above).
+			keys := copierSortedKeys(m0.m)
+			values := make([]*LVal, len(keys))
+			for i, k := range keys {
+				values[i] = m0.m[k]
 			}
+			c.next = copyFrame{keys: keys, values: values, mapping: sm.m}
 		}
 		for k, t := range m0.tm {
 			sm.tm[k] = t
@@ -509,13 +689,9 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	if r, ok := md.mapBacking.(StringKeyRanger); ok {
 		// Collect first, copy after: the callback must not capture c (see
 		// the sortedmap case).
-		type stringKV struct {
-			v *LVal
-			k string
-		}
-		pairs := make([]stringKV, 0, md.Len())
+		pairs := make([]copyStringKV, 0, md.Len())
 		if err := r.RangeStringKeys(func(k string, v *LVal) {
-			pairs = append(pairs, stringKV{v: v, k: k})
+			pairs = append(pairs, copyStringKV{v: v, k: k})
 		}); err != nil {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %w", err))
 		}
@@ -533,12 +709,10 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			}
 		}
 		if order {
-			slices.SortFunc(pairs, func(a, b stringKV) int { return cmp.Compare(a.k, b.k) })
+			slices.SortFunc(pairs, func(a, b copyStringKV) int { return cmp.Compare(a.k, b.k) })
 		}
 		sm := emptyForStringKeys(len(pairs))
-		for _, p := range pairs {
-			sm.m[p.k] = c.copy(p.v)
-		}
+		c.next = copyFrame{pairs: pairs, mapping: sm.m}
 		nm.mapBacking = sm
 		return nm, nil
 	}
@@ -560,11 +734,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// Entries, which does sort; this arm is the one the stock map never
 	// reaches.
 	//
-	// By (Str, Type) rather than Str alone, so the order is total over the
-	// key kinds Str does not separate: an LString and an LSymbol that spell
-	// the same thing sort the same way on every copy.  Stable, so any pair
-	// the comparison still cannot separate keeps the order Entries gave it
-	// rather than moving under the sort.
+	// Through sortMapEntriesByKey (lisp/maps.go), which is also what
+	// detachMapData sorts with: both walkers reach the same embedder hook
+	// through the same sortedMapEntries, so the comparison lives in one
+	// place rather than once per walker.  See it for why the order is
+	// (Str, Type) and why the sort is stable.
 	//
 	// ALWAYS, unlike the two arms above, which skip the ordering when no
 	// value in the map can reach a host hook.  Their fast path rests on "no
@@ -583,13 +757,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// sort cannot answer the question.  The sort costs little here in any
 	// case, next to the per-entry boxing Entries has already done to hand
 	// these pairs over.
-	//elps:mutates reorders backing this call owns outright: sortedMapEntries allocates the cells slice for this call and wraps it in a QExpr held only by the local `entries`, so nothing outside this function can observe the permutation
-	slices.SortStableFunc(entries.Cells, func(a, b *LVal) int {
-		if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
-			return r
-		}
-		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
-	})
+	sortMapEntriesByKey(entries.Cells)
 	// Ordering makes the copy deterministic; it does not make it right.  Two
 	// entries the destination cannot hold apart are now ADJACENT, so they can
 	// be found -- and they are refused rather than silently resolved, because
@@ -623,11 +791,9 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
 		}
 		prev = key
-		if lerr := m.Set(key, c.copy(pair.Cells[1])); lerr.Type == LError {
-			return c.failMap(md, fmt.Errorf("failed to copy map: %v", lerr))
-		}
 	}
 	nm.mapBacking = m.mapBacking
+	c.next = copyFrame{cells: entries.Cells, md: nm}
 	return nm, nil
 }
 
@@ -697,6 +863,9 @@ func (c *copier) failMap(md *MapData, err error) (*MapData, error) {
 func (c *copier) byteSlice(b *[]byte) *[]byte {
 	if cp, ok := c.bytes[b]; ok {
 		return cp
+	}
+	if c.checkAlloc(len(*b)) != nil {
+		return nil
 	}
 	nb := make([]byte, len(*b))
 	copy(nb, *b)

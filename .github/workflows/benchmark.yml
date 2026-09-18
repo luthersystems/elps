@@ -392,48 +392,32 @@ jobs:
       - name: Post PR comment
         if: github.event_name == 'pull_request'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3  # v9
+        # The report arrives as a PATH, not as its contents. It used to be
+        # `BENCH_RESULT: ${{ steps.benchstat.outputs.result }}` -- the whole
+        # ~1,300-line report as one environment variable -- and on PR #658 the
+        # step died before the script ran:
+        #
+        #   ##[error]An error occurred trying to start process
+        #   '/home/runner/extracted/externals/node24/bin/node' with working
+        #   directory '/home/runner/work/elps/elps'. Argument list too long
+        #
+        # A step output becomes an env var in the child's argv/envp block, which
+        # the kernel caps; the gate had PASSED ("0 at or above the gate"), so
+        # this job and the required aggregate below went red on an
+        # infrastructure failure rather than on a benchmark result. A path is a
+        # few dozen bytes. GitHub's separate 65,536-character cap on a comment
+        # BODY is handled inside bench-comment.cjs.
         env:
-          BENCH_RESULT: ${{ steps.benchstat.outputs.result }}
+          BENCH_COMMENT_FILE: ${{ steps.benchstat.outputs.comment_file }}
         with:
+          # Body lives in scripts/bench-comment.cjs, so it is `node --check`ed
+          # and fixture-tested by scripts/ci-gates-test.sh -- which an inline
+          # `script:` block can never be. Referenced through
+          # $GITHUB_WORKSPACE/pr because BOTH checkouts in this job are
+          # relocated, so a root-relative path would not resolve.
           script: |
-            const body = process.env.BENCH_RESULT;
-            const marker = '<!-- benchmark-comparison-comment -->';
-            const fullBody = marker + '\n' + body;
-
-            let existingComment = null;
-            try {
-              const { data: comments } = await github.rest.issues.listComments({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                per_page: 100,
-              });
-              existingComment = comments.find(c => c.body.includes(marker));
-            } catch (e) {
-              core.warning(`Could not list PR comments: ${e.message}`);
-            }
-
-            try {
-              if (existingComment) {
-                await github.rest.issues.updateComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  comment_id: existingComment.id,
-                  body: fullBody,
-                });
-                core.info(`Updated existing benchmark comment ${existingComment.id}`);
-              } else {
-                await github.rest.issues.createComment({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  issue_number: context.issue.number,
-                  body: fullBody,
-                });
-                core.info('Created new benchmark comment');
-              }
-            } catch (e) {
-              core.warning(`Could not post PR comment: ${e.message}. This is expected for PRs from forks.`);
-            }
+            const post = require(`${process.env.GITHUB_WORKSPACE}/pr/scripts/bench-comment.cjs`);
+            await post({ github, context, core });
 
       # `always()` so this cannot be silently skipped when an earlier step is
       # cancelled or fails: a gate that only runs on the happy path is not a

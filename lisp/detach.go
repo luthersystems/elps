@@ -70,7 +70,7 @@ func (v *LVal) detach() (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
-	d := &detacher{seen: make(map[*LVal]*LVal)}
+	d := &detacher{}
 	return d.detach(v)
 }
 
@@ -99,6 +99,11 @@ type detacher struct {
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
 	natives map[interface{}]interface{}
+	// runtime is supplied only by Lisp copy. It limits each data backing
+	// allocation, not total graph size or the walker's bookkeeping.
+	runtime *Runtime
+	next    detachFrame
+	depth   int
 
 	// shareOpaque switches the walk from transfer semantics (detach) to
 	// within-env ownership semantics (deepCopy, lisp/copy.go): the two
@@ -112,7 +117,109 @@ type detacher struct {
 	shareOpaque bool
 }
 
+func (d *detacher) checkAlloc(n int) error {
+	if d.runtime != nil {
+		if msg := d.runtime.CheckAlloc(n); msg != "" {
+			return &detachError{msg: msg}
+		}
+	}
+	return nil
+}
+
+// detachFrame holds a container's traversal cursor by value. Map keys and
+// values precede Cells, matching the payload-before-cells copy order. Paths
+// are rendered from active ancestor cursors only when a detach fails.
+type detachFrame struct {
+	mapping                *MapData
+	key                    *LVal
+	cells, copied, entries []*LVal
+	index                  int
+}
+
+func (f *detachFrame) len() int { return 2*len(f.entries) + len(f.cells) }
+
+func (f *detachFrame) child() *LVal {
+	if f.index < 2*len(f.entries) {
+		return f.entries[f.index/2].Cells[f.index%2]
+	}
+	return f.cells[f.index-2*len(f.entries)]
+}
+
+func (f *detachFrame) store(cp *LVal) error {
+	i := f.index - 1
+	if i < 2*len(f.entries) {
+		if i%2 == 0 {
+			f.key = cp
+		} else if lerr := f.mapping.Set(f.key, cp); lerr.Type == LError {
+			return &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", f.entries[i/2].Cells[0], lerr)}
+		}
+	} else {
+		f.copied[i-2*len(f.entries)] = cp
+	}
+	return nil
+}
+
+func (f *detachFrame) path() string {
+	i := f.index - 1
+	if i < 2*len(f.entries) {
+		if i%2 == 0 {
+			return fmt.Sprintf("MapKey[%s]", f.entries[i/2].Cells[0])
+		}
+		return fmt.Sprintf("Map[%s]", f.entries[i/2].Cells[0])
+	}
+	return fmt.Sprintf("Cells[%d]", i-2*len(f.entries))
+}
+
 func (d *detacher) detach(v *LVal) (*LVal, error) {
+	d.next = detachFrame{}
+	cp, err := d.detachNode(v)
+	if err != nil || d.next.len() == 0 {
+		return cp, err
+	}
+	pending := make([]detachFrame, 0, 16)
+	pending = append(pending, d.next)
+	depth := d.depth
+	for len(pending) > 0 {
+		f := &pending[len(pending)-1]
+		if f.index == f.len() {
+			*f = detachFrame{}
+			pending = pending[:len(pending)-1]
+			continue
+		}
+		d.depth = depth + len(pending)
+		v = f.child()
+		f.index++
+		if d.depth >= d.runtime.ValueDepthLimit() {
+			err = ValueDepthError(d.runtime.ValueDepthLimit())
+			break
+		}
+		d.next = detachFrame{}
+		var child *LVal
+		child, err = d.detachNode(v)
+		if err != nil {
+			break
+		}
+		if err = f.store(child); err != nil {
+			break
+		}
+		if d.next.len() > 0 {
+			pending = append(pending, d.next)
+		}
+	}
+	d.depth = depth
+	d.next = detachFrame{}
+	if err != nil {
+		if _, ok := err.(*detachError); ok { //nolint:errorlint // detach errors are created in this file, never wrapped
+			for i := len(pending) - 1; i >= 0; i-- {
+				err = prependPath(err, pending[i].path())
+			}
+		}
+		return nil, err
+	}
+	return cp, nil
+}
+
+func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	if v == nil {
 		return nil, nil
 	}
@@ -124,7 +231,10 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// only in its address (lisp/singleton.go).
 		return v, nil
 	}
-	// cloner is non-nil exactly when v is an LNative whose payload declares
+	if d.depth >= d.runtime.ValueDepthLimit() {
+		return nil, ValueDepthError(d.runtime.ValueDepthLimit())
+	}
+	// cloner is non-nil when v is a native value or error message whose payload declares
 	// its own duplication protocol (lisp/fork.go) — the only authority on
 	// what copying an opaque handle means.  Captured here rather than
 	// re-asserted at the clone site below, so that a future change to the
@@ -133,6 +243,17 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// panic.
 	var cloner NativeCloner
 	switch v.Type {
+	case LString:
+		if _, ok := v.Native.(error); !ok {
+			break
+		}
+		if c, ok := v.Native.(NativeCloner); ok {
+			cloner = c
+			break
+		}
+		if !d.shareOpaque {
+			return nil, &detachError{msg: fmt.Sprintf("native error (%T) cannot be detached", v.Native)}
+		}
 	case LNative:
 		if c, ok := v.Native.(NativeCloner); ok {
 			// Fall through to the general path; the payload is replaced
@@ -153,7 +274,7 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		// Not values an application can hold; refuse loudly instead of
 		// guessing at a copy.
 		return nil, &detachError{msg: fmt.Sprintf("internal %v value cannot be detached", v.Type)}
-	case LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LQuote, LString,
+	case LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LQuote,
 		LBytes, LSortMap, LArray, LTaggedVal:
 		// Detachable; handled below.
 	}
@@ -165,7 +286,14 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	// Register the copy before descending so a value reachable twice maps to
 	// one copy and a cycle in v becomes the same cycle in the copy instead of
 	// infinite recursion.
-	d.seen[v] = cp
+	// A standalone scalar cannot alias another node. Start the header memo
+	// only for a graph; once started it still records every leaf alias.
+	if d.seen == nil && (cap(v.Cells) > 0 || v.Native != nil) {
+		d.seen = make(map[*LVal]*LVal)
+	}
+	if d.seen != nil {
+		d.seen[v] = cp
+	}
 
 	// Under the unexported-source API (issue #362) a value constructed by Go
 	// code carries a nil location; copyLocation preserves nil, so a detached
@@ -196,7 +324,11 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 				return nil, unexpectedNativeError(v)
 			}
 			if native != nil {
-				cp.Native = d.byteSlice(native)
+				b, err := d.byteSlice(native)
+				if err != nil {
+					return nil, err
+				}
+				cp.Native = b
 			}
 		case *MapData:
 			if v.Type != LSortMap {
@@ -213,10 +345,20 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 			}
 			cp.Native = detachCallStack(native) //elpsvet:allow-native a deep copy of a detached error's stack: publication refuses any value carrying a CallStack (checkDiagnosticPayload, lisp/template.go), so a detached error cannot carry this into a template
 		default:
+			if _, ok := native.(error); ok && v.Type == LString && d.shareOpaque {
+				break
+			}
 			return nil, unexpectedNativeError(v)
 		}
 	}
 
+	// Array/quote/tag Cells are fixed-size representation headers. Their
+	// child lists carry the actual data spans and are checked recursively.
+	if v.Type == LSExpr || v.Type == LError {
+		if err := d.checkAlloc(len(v.Cells)); err != nil {
+			return nil, err
+		}
+	}
 	cells, err := d.detachCells(v.Cells)
 	if err != nil {
 		return nil, err
@@ -225,18 +367,27 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 	return cp, nil
 }
 
+// detachCells prepares the child cursor for a node's cells and returns the
+// slice the copies land in.
+//
+// The frame reads its children back out of the DESTINATION slice, seeded
+// with the source's children here and overwritten slot by slot as the walk
+// passes them: detachFrame.child reads a slot immediately before
+// detachFrame.store writes it, so one slice is both the snapshot and the
+// output at no extra allocation.  Holding the caller's slice header instead
+// shared the source's backing array with the walk, so a host hook that ran
+// during the walk -- a NativeCloner.CloneNative, a custom Map's Entries --
+// and wrote into a cell not yet reached had that write land in the copy.
+// See copier.cells; the three value walkers agree that a walk copies the
+// children a container held when the walker entered it.
 func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 	if len(cells) == 0 {
 		return nil, nil
 	}
 	out := make([]*LVal, len(cells))
-	for i := range cells {
-		cp, err := d.detach(cells[i])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("Cells[%d]", i))
-		}
-		out[i] = cp
-	}
+	copy(out, cells)
+	d.next.cells, d.next.copied = out, out
+
 	return out, nil
 }
 
@@ -277,9 +428,12 @@ func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interfa
 // byteSlice copies one LBytes backing array, once per original array
 // however many headers reach it (issue #585).  No cycle is possible through
 // bytes, so the memo is filled after the copy.
-func (d *detacher) byteSlice(b *[]byte) *[]byte {
+func (d *detacher) byteSlice(b *[]byte) (*[]byte, error) {
 	if cp, ok := d.bytes[b]; ok {
-		return cp
+		return cp, nil
+	}
+	if err := d.checkAlloc(len(*b)); err != nil {
+		return nil, err
 	}
 	nb := make([]byte, len(*b))
 	copy(nb, *b)
@@ -287,7 +441,7 @@ func (d *detacher) byteSlice(b *[]byte) *[]byte {
 		d.bytes = make(map[*[]byte]*[]byte)
 	}
 	d.bytes[b] = &nb
-	return &nb
+	return &nb, nil
 }
 
 // detachMapData rebuilds md as a fresh stock sortedmap whose keys and values
@@ -318,25 +472,31 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 		d.maps[md] = cp
 		return cp, nil
 	}
+	if err := d.checkAlloc(md.Len()); err != nil {
+		return nil, err
+	}
 	entries := sortedMapEntries(md)
 	if entries.Type == LError {
 		return nil, &detachError{msg: fmt.Sprintf("sorted-map entries cannot be enumerated: %v", entries)}
 	}
+	// Sorted before a single entry is walked, and for the copier's reason
+	// (sortMapEntriesByKey, lisp/maps.go): the walk below calls the host's
+	// CloneNative once per cloneable value, in the order the backing Map's
+	// Entries yielded, and the Map interface promises nothing about that
+	// order.  Two detaches of one map therefore called the embedder's hook
+	// in two orders, and `copy` -- this walker in shareOpaque mode -- was as
+	// exposed as detach.  The copier sorts the entries of exactly this kind
+	// of map before copying a value; this is the same sort, through the same
+	// function, so one embedder's map is walked in one order by both.
+	//
+	// Unconditional, as the copier's generic arm is: the fast path the
+	// copier's other two arms take rests on keys that are unique Go strings
+	// by construction, and these keys arrive from the host as whole LVals.
+	sortMapEntriesByKey(entries.Cells)
 	m := &MapData{newmap()}
 	d.maps[md] = m
-	for _, pair := range entries.Cells {
-		key, err := d.detach(pair.Cells[0])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("MapKey[%s]", pair.Cells[0]))
-		}
-		val, err := d.detach(pair.Cells[1])
-		if err != nil {
-			return nil, prependPath(err, fmt.Sprintf("Map[%s]", pair.Cells[0]))
-		}
-		if lerr := m.Set(key, val); lerr.Type == LError {
-			return nil, &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", pair.Cells[0], lerr)}
-		}
-	}
+	d.next.entries, d.next.mapping = entries.Cells, m
+
 	return m, nil
 }
 

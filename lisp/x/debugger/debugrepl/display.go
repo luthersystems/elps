@@ -4,11 +4,11 @@ package debugrepl
 
 import (
 	"bufio"
+	"bytes"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"sort"
+	"strings"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -19,16 +19,19 @@ const sourceContextLines = 5
 
 // showSourceContext prints a window of source lines around the given line,
 // with a --> marker on the current line.
-func showSourceContext(w io.Writer, file string, line int, sourceRoot string) {
-	path := resolveSourceFile(file, sourceRoot)
-	f, err := os.Open(path) //#nosec G304
+func showSourceContext(w io.Writer, file string, line int, lib lisp.SourceLibrary) {
+	if lib == nil {
+		fmt.Fprintf(w, "  at %s:%d (source not available)\n", file, line) //nolint:errcheck
+		return
+	}
+	// Use the evaluation library, including its open root handle. Never fall
+	// back to cwd, basename searches, or unrestricted filesystem reads.
+	_, _, data, err := lib.LoadSource(lisp.NewSourceContext("", ""), file)
 	if err != nil {
 		fmt.Fprintf(w, "  at %s:%d (source not available)\n", file, line) //nolint:errcheck
 		return
 	}
-	defer f.Close() //nolint:errcheck
-
-	scanner := bufio.NewScanner(f)
+	scanner := bufio.NewScanner(bytes.NewReader(data))
 	lineNum := 0
 	start := line - sourceContextLines
 	if start < 1 {
@@ -53,20 +56,36 @@ func showSourceContext(w io.Writer, file string, line int, sourceRoot string) {
 }
 
 // showBacktrace prints the call stack in a human-readable format.
-func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string) {
+func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string, envs ...*lisp.LEnv) {
+	var env *lisp.LEnv
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	formatter := debugger.NewValueFormatter(env, nil)
 	if stack == nil || len(stack.Frames) == 0 {
-		fmt.Fprintln(w, "  (empty stack)") //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text("  (empty stack)\n"))
 		return
 	}
 
 	// Print frames in reverse order (most recent first).
 	for i := len(stack.Frames) - 1; i >= 0; i-- {
+		if formatter.Exhausted() {
+			break
+		}
 		frame := &stack.Frames[i]
-		name := frame.QualifiedFunName()
+		name := frame.Name
+		if name == "" {
+			name = frame.FID
+		}
 		if name == "" {
 			name = "<anonymous>"
 		}
-		loc := "unknown"
+		_, _ = io.WriteString(w, formatter.Text(fmt.Sprintf("  #%d  ", len(stack.Frames)-i)))
+		if frame.Package != "" {
+			_, _ = io.WriteString(w, formatter.Text(frame.Package, ":"))
+		}
+		_, _ = io.WriteString(w, formatter.Text(name, "  at "))
+		var loc *token.Location
 		// For the top frame, use the paused expression's location.
 		var pausedLoc token.Location
 		pausedOK := false
@@ -74,24 +93,42 @@ func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, so
 			pausedLoc, pausedOK = pausedExpr.Source()
 		}
 		if i == len(stack.Frames)-1 && pausedOK {
-			loc = fmt.Sprintf("%s:%d:%d", pausedLoc.File, pausedLoc.Line, pausedLoc.Col)
+			loc = &pausedLoc
 		} else if frame.Source != nil {
-			loc = frame.Source.String()
+			loc = frame.Source
 		}
-		depth := len(stack.Frames) - i
-		fmt.Fprintf(w, "  #%d  %s  at %s\n", depth, name, loc) //nolint:errcheck
+		if loc == nil {
+			_, _ = io.WriteString(w, formatter.Text("unknown\n"))
+		} else {
+			suffix := fmt.Sprintf(":%d:%d", loc.Line, loc.Col)
+			if i != len(stack.Frames)-1 || !pausedOK {
+				// Preserve Location.String's numeric forms without copying its file.
+				numeric := *loc
+				numeric.File = ""
+				suffix = numeric.String()
+			}
+			_, _ = io.WriteString(w, formatter.Text(loc.File, suffix, "\n"))
+		}
 	}
 }
 
 // showLocals prints the local variable bindings in a tabular format.
 func showLocals(w io.Writer, env *lisp.LEnv, engine *debugger.Engine) {
+	formatter := debugger.NewValueFormatter(env, engine)
 	locals := debugger.InspectFunctionLocals(env)
 	if len(locals) == 0 {
-		fmt.Fprintln(w, "  (no locals)") //nolint:errcheck
+		_, _ = io.WriteString(w, formatter.Text("  (no locals)\n"))
 		return
 	}
 	for _, b := range locals {
-		fmt.Fprintf(w, "  %-20s = %s\n", b.Name, debugger.FormatValueWith(b.Value, engine)) //nolint:errcheck
+		if formatter.Exhausted() {
+			break
+		}
+		_, _ = io.WriteString(w, formatter.Text("  "))
+		_, _ = io.WriteString(w, formatter.Text(b.Name))
+		_, _ = io.WriteString(w, formatter.Text(strings.Repeat(" ", max(0, 20-len(b.Name))), " = "))
+		_, _ = io.WriteString(w, formatter.Format(b.Value))
+		_, _ = io.WriteString(w, formatter.Text("\n"))
 	}
 }
 
@@ -114,45 +151,4 @@ func showBreakpoints(w io.Writer, store *debugger.BreakpointStore) {
 		}
 		fmt.Fprintln(w, line) //nolint:errcheck
 	}
-}
-
-// resolveSourceFile attempts to find the source file by trying the file
-// path directly and then under the source root.
-func resolveSourceFile(file, sourceRoot string) string {
-	// Try as-is first.
-	if _, err := os.Stat(file); err == nil {
-		return file
-	}
-	// Try under sourceRoot.
-	if sourceRoot != "" {
-		// Try joining with sourceRoot.
-		joined := filepath.Join(sourceRoot, file)
-		if _, err := os.Stat(joined); err == nil {
-			return joined
-		}
-		// Try just the basename under sourceRoot.
-		base := filepath.Base(file)
-		if base != file {
-			joined = filepath.Join(sourceRoot, base)
-			if _, err := os.Stat(joined); err == nil {
-				return joined
-			}
-		}
-		// Walk sourceRoot looking for the basename.
-		var found string
-		_ = filepath.Walk(sourceRoot, func(path string, info os.FileInfo, err error) error {
-			if err != nil || info.IsDir() || found != "" {
-				return err
-			}
-			if filepath.Base(path) == base {
-				found = path
-				return filepath.SkipAll
-			}
-			return nil
-		})
-		if found != "" {
-			return found
-		}
-	}
-	return file
 }
