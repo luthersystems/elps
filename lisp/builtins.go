@@ -2072,6 +2072,28 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 	return Int(i)
 }
 
+// filterStartCapacity is where select and reject start their 'vector result.
+// How much of the input a predicate keeps is not knowable before it runs, and
+// presizing to the whole input made the cost of filtering proportional to what
+// was REJECTED: a 100k-element vector filtered down to nothing still allocated
+// the 100k-pointer backing. A small start plus append's growth pays the copies
+// of a growing slice for a result that does grow large -- on that same 100k
+// input, keeping everything costs about 4.5MB of result backing where the exact
+// presize cost 800KB -- and nothing at all for one that stays small.  That is
+// the direction worth paying for: filtering is asked for when much of the input
+// is expected to go, and a caller who keeps everything already knows the size.
+// The constant is above the width of the inputs the vector allocation fixtures
+// measure, so those results are presized exactly as before.
+const filterStartCapacity = 16
+
+// filterResultCapacity picks that starting capacity for a filtered result. It
+// never exceeds the input, so an empty or tiny input allocates nothing spare,
+// and never exceeds the allocation budget, which the per-element check below
+// enforces on every append in any case.
+func filterResultCapacity(env *LEnv, list *LVal) int {
+	return min(list.Len(), env.Runtime.MaxAllocBytes(), filterStartCapacity)
+}
+
 func builtinSelect(env *LEnv, args *LVal) *LVal {
 	typespec, pred, list := args.Cells[0], args.Cells[1], args.Cells[2]
 	if typespec.Type != LSymbol {
@@ -2095,10 +2117,10 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	switch typespec.Str {
 	case "vector":
 		// MakeVector gives this result its own dimensions and backing.
-		// Cap the initial capacity: a large input may retain few elements.
 		// Vector over a zero-length slice would lose its spare capacity
-		// when Array constructs the backing (TestArrayDoesNotAliasCallerDims).
-		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		// when Array constructs the backing (TestArrayDoesNotAliasCallerDims),
+		// so start small and let append grow it.
+		capacity := filterResultCapacity(env, list)
 		v = MakeVector(capacity)
 		cells = seqCells(v)
 		cells = cells[:0]
@@ -2153,7 +2175,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	case "vector":
 		// Array-derived dims, for the reason spelled out in builtinSelect:
 		// the resize below writes this array's cardinality in place.
-		capacity := min(list.Len(), env.Runtime.MaxAllocBytes())
+		capacity := filterResultCapacity(env, list)
 		v = MakeVector(capacity)
 		cells = seqCells(v)
 		cells = cells[:0]
