@@ -1998,12 +1998,20 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 	}
 	var v *LVal
 	var cells []*LVal
+	// Size the result from inCells, the snapshot the search read and the
+	// copies below draw from -- never from list, which the callbacks have
+	// had every opportunity to grow (a comparator or key function is free
+	// to append! to the very sequence being inserted into).  Sizing from
+	// the live sequence leaves the trailing slots with nothing copied into
+	// them: Go-nil cells for a list, which panic the interpreter on first
+	// use, and placeholder () cells for a vector, whose dimensions then
+	// disagree with the elements it holds.
 	switch typespec.Str {
 	case "vector":
-		v = MakeVector(1 + list.Len())
+		v = MakeVector(1 + len(inCells))
 		cells = seqCells(v)
 	case "list":
-		cells = make([]*LVal, 1+list.Len())
+		cells = make([]*LVal, 1+len(inCells))
 		v = QExpr(cells)
 	default:
 		return env.Errorf("type specifier is invalid: %v", typespec)
