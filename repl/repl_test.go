@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func runReplWithString(t *testing.T, input string) (string, error) {
+func runReplWithString(t *testing.T, input string, opts ...Option) (string, error) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -27,7 +27,7 @@ func runReplWithString(t *testing.T, input string) (string, error) {
 	}()
 
 	go func() {
-		RunRepl("elps> ", WithStdin(inR), WithStderr(outW))
+		RunRepl("elps> ", append(opts, WithStdin(inR), WithStderr(outW))...)
 		inR.Close()  //nolint:errcheck,gosec // test cleanup
 		outW.Close() //nolint:errcheck,gosec // test cleanup
 	}()
@@ -37,6 +37,32 @@ func runReplWithString(t *testing.T, input string) (string, error) {
 	outR.Close() //nolint:errcheck,gosec // test cleanup
 
 	return output.String(), nil
+}
+
+func TestRunReplRootDirSymlinkCreatedAfterConstruction(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "root")
+	require.NoError(t, os.Mkdir(root, 0o700))
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "outside.lisp"), []byte("42"), 0o600))
+	called := false
+	_, err := runReplWithString(t, `(load-file "late/outside.lisp")`,
+		WithRootDir(root),
+		WithEvalFunc(func(env *lisp.LEnv, expr *lisp.LVal) *lisp.LVal {
+			called = true
+			// RunRepl has already constructed and installed its loader.
+			if err := os.Symlink("..", filepath.Join(root, "late")); err != nil {
+				t.Error(err)
+				return lisp.Nil()
+			}
+			res := env.Eval(expr)
+			assert.Equal(t, lisp.LError, res.Type, "late escaping symlink loaded: %v", res)
+			assert.Contains(t, res.String(), `cannot load "late/outside.lisp" within root directory`)
+			caught := env.LoadString("test", `(ignore-errors (load-file "late/outside.lisp"))`)
+			assert.True(t, caught.IsNil(), "refused load must be catchable: %v", caught)
+			return caught
+		}))
+	require.NoError(t, err)
+	require.True(t, called)
 }
 
 // newTestEnv creates a fully initialized environment for testing, matching

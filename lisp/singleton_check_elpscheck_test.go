@@ -40,10 +40,11 @@ func TestCheckSingleton_DetectsCorruption(t *testing.T) {
 		if r == nil {
 			t.Fatal("expected checkSingleton to panic, got nil")
 		}
-		msg, ok := r.(string)
+		failure, ok := r.(sealViolation)
 		if !ok {
-			t.Fatalf("expected panic to be a string, got %T: %v", r, r)
+			t.Fatalf("expected a sealViolation panic, got %T: %v", r, r)
 		}
+		msg := failure.Error()
 		assert.Contains(t, msg, "Bool(true)",
 			"panic message should name the offending singleton; got: %s", msg)
 	}()

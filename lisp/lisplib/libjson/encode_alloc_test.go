@@ -13,11 +13,39 @@ package libjson
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 )
+
+// A shallow, wide sequence needs no heap storage for the traversal. Reserve
+// the output buffer so this measures the walk, not the JSON bytes themselves.
+// Queuing every sibling and separator instead of resuming the parent allocates
+// megabytes here even though the document is only two value levels deep.
+func TestEncodeWideSequenceTraversalSpace(t *testing.T) {
+	const width = 16_384
+	cells := make([]*lisp.LVal, width)
+	for i := range cells {
+		cells[i] = lisp.Int(7)
+	}
+	v := lisp.SExpr(cells)
+	want := "[" + strings.Repeat("7,", width-1) + "7]"
+	enc := getEncoder(false)
+	defer putEncoder(enc)
+	enc.buf.Grow(len(want))
+	result := testing.Benchmark(func(b *testing.B) {
+		for range b.N {
+			enc.buf.Reset()
+			if err := enc.encode(v); err != nil {
+				b.Fatal(err)
+			}
+		}
+	})
+	assert.Equal(t, want, enc.buf.String())
+	assert.Zero(t, result.AllocedBytesPerOp(), "shallow traversal allocated scratch storage")
+}
 
 // TestEncodeDoesNotAllocateForCycleTracking pins the guard's stated contract:
 // a document that is not cyclic pays nothing for it.  Serializing costs

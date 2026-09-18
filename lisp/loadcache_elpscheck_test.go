@@ -233,8 +233,8 @@ func TestVerifyCachedSourceOnHitCatchesSubstitutedRoots(t *testing.T) {
 			t.Fatal("the entry-level check did not fire: a cache entry now holding another file's" +
 				" roots was served as if it were the program it was admitted with")
 		}
-		msg, ok := r.(string)
-		if !ok || !strings.Contains(msg, "load-cache entry changed after admission") {
+		failure, ok := r.(sealViolation)
+		if !ok || !strings.Contains(failure.Error(), "load-cache entry changed after admission") {
 			t.Fatalf("the panic did not name the violation: %v", r)
 		}
 	}()

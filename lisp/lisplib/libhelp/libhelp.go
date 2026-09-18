@@ -43,9 +43,6 @@ type PackageDoc struct {
 // QueryPackages returns structured documentation for all packages in
 // the environment, suitable for JSON serialization.
 func QueryPackages(env *lisp.LEnv) []PackageDoc {
-	// Collect core builtins into the "lisp" package.
-	lispSyms := queryCoreSymbols()
-
 	names := env.Runtime.Registry.PackageNames()
 
 	var pkgs []PackageDoc
@@ -56,7 +53,8 @@ func QueryPackages(env *lisp.LEnv) []PackageDoc {
 			Doc:  cleanDocRaw(pkg.Doc),
 		}
 		if name == "lisp" {
-			pd.Symbols = lispSyms
+			// Only read core documentation when the environment includes lisp.
+			pd.Symbols = queryCoreSymbols()
 		} else {
 			pd.Symbols = queryPackageSymbols(pkg)
 		}
@@ -488,7 +486,8 @@ func RenderPackageList(w io.Writer, env *lisp.LEnv) error {
 
 // RenderPkgExported writes to w formatted documentation for exported symbols
 // in the query package within env.  The exact formatting of the rendered
-// documentation is subject to change across elps versions.
+// documentation is subject to change across elps versions. Value rendering
+// honours the environment output limit and cancellation.
 func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 	pkg := env.Runtime.Registry.Package(query)
 	if pkg == nil {
@@ -519,14 +518,14 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		v := pkg.Get(lisp.Symbol(exsym))
 		switch v.Type {
 		case lisp.LError:
-			fmt.Fprintln(w, v) //nolint:errcheck // best-effort error display
+			fmt.Fprintln(w, env.Render(v)) //nolint:errcheck // best-effort error display
 		case lisp.LFun:
-			err := renderFun(w, exsym, v, pkg.SymbolDoc(exsym))
+			err := renderFun(w, env, exsym, v, pkg.SymbolDoc(exsym))
 			if err != nil {
 				return fmt.Errorf("function %s: %w", exsym, err)
 			}
 		default:
-			err := renderVal(w, exsym, v, pkg.SymbolDoc(exsym))
+			err := renderVal(w, env, exsym, v, pkg.SymbolDoc(exsym))
 			if err != nil {
 				return fmt.Errorf("variable %s: %w", exsym, err)
 			}
@@ -545,9 +544,9 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		return err
 	}
 	if v.Type != lisp.LFun {
-		return renderVal(w, sym, v, LookupSymbolDoc(env, sym))
+		return renderVal(w, env, sym, v, LookupSymbolDoc(env, sym))
 	}
-	return renderFun(w, sym, v, LookupSymbolDoc(env, sym))
+	return renderFun(w, env, sym, v, LookupSymbolDoc(env, sym))
 }
 
 // LookupSymbolDoc resolves a symbol's documentation from its package.
@@ -571,8 +570,8 @@ func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
 	return env.Runtime.Package.SymbolDoc(sym)
 }
 
-func renderVal(w io.Writer, sym string, v *lisp.LVal, doc string) error {
-	_, err := fmt.Fprintf(w, "%v %s %v\n", lisp.GetType(v).Str, sym, v)
+func renderVal(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, doc string) error {
+	_, err := fmt.Fprintf(w, "%v %s %v\n", lisp.GetType(v).Str, sym, env.Render(v))
 	if err != nil {
 		return err
 	}
@@ -583,7 +582,7 @@ func renderVal(w io.Writer, sym string, v *lisp.LVal, doc string) error {
 	return err
 }
 
-func renderFun(w io.Writer, sym string, v *lisp.LVal, symbolDoc string) error {
+func renderFun(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, symbolDoc string) error {
 	_, err := fmt.Fprintf(w, "%s ", v.FunType)
 	if err != nil {
 		return fmt.Errorf("rendering function type: %w", err)
@@ -592,7 +591,7 @@ func renderFun(w io.Writer, sym string, v *lisp.LVal, symbolDoc string) error {
 	siglist := lisp.SExpr(make([]*lisp.LVal, 1+args.Len()))
 	siglist.Cells[0] = lisp.Symbol(sym)
 	copy(siglist.Cells[1:], args.Cells)
-	_, err = fmt.Fprintln(w, siglist)
+	_, err = fmt.Fprintln(w, env.Render(siglist))
 	if err != nil {
 		return fmt.Errorf("rendering signature: %w", err)
 	}

@@ -44,11 +44,14 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
 			"symbols": "remapped: binding descriptors", "symbolDocs": "remapped: owned string pairs",
 			"funNames": "remapped: owned string pairs", "externals": "remapped: owned string list",
+			"bindingsSealed": "scalar: preserve core package Lisp binding protection",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",
+			"runtime": "remapped: back pointer to the registry's own runtime, rebound to each VM's fresh runtime",
 		}},
 		{reflect.TypeFor[CallStack](), map[string]string{
+			"renderLimit":      "reset: per-error output cap; instantiated runtimes capture their own policy",
 			"Frames":           "reset: runtime starts empty; retained diagnostic stacks are rejected (#629)",
 			"GoStack":          "reset: source must be nil; references to its live header are rejected (#629)",
 			"MaxHeightLogical": "scalar: stack limit", "MaxHeightPhysical": "scalar: stack limit",
@@ -103,5 +106,22 @@ func templateScalarKind(kind reflect.Kind) bool {
 		return true
 	default:
 		return false
+	}
+}
+
+// An error outlives the request that produced it, so the stack it carries must
+// not retain anything with a lifetime: it once stored the evaluation context,
+// which pinned that context's whole value chain for the error's life and was
+// stale by the time the error was logged.  Every renderer is handed a context
+// by its caller instead.  An interface-typed field is how such a reference
+// would come back, so no CallStack field may have one.
+func TestCallStackRetainsNoInterface(t *testing.T) {
+	typ := reflect.TypeFor[CallStack]()
+	for index := range typ.NumField() {
+		field := typ.Field(index)
+		if field.Type.Kind() == reflect.Interface {
+			t.Errorf("CallStack.%s is %s: a stack attached to an error must retain"+
+				" no interface value, whose lifetime it cannot reason about", field.Name, field.Type)
+		}
 	}
 }

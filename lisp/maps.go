@@ -3,10 +3,26 @@
 package lisp
 
 import (
-	"bytes"
+	"cmp"
+	"slices"
 	"sort"
 )
 
+// Map is the backing of a sorted-map value. NewMapData is the extension point
+// for an embedder that wants its own implementation.
+//
+// KEYS ARE LString OR LSymbol. Every key the interpreter puts in a map is one
+// of those two, and the walks that impose an order of their own on a map's
+// entries -- the copier's generic arm and the detacher, which run host code
+// per entry and so must run it in a defined order -- sort them with
+// sortMapEntriesByKey, which compares (Str, Type): the key's string and its
+// type tag. That is a total order over those two kinds and over nothing else:
+// an implementation admitting keys of other types (an LInt, say, whose Str is
+// empty) leaves every such key comparing equal to every other, and the stable
+// sort then leaves them in the order Entries returned. A custom Map that
+// accepts other key types is therefore walked in ITS OWN Entries order for
+// those keys, so an implementation wanting a defined order across walks must
+// give Entries one.
 type Map interface {
 	Len() int
 	// Get returns the value associated with the given key and a bool signaling
@@ -49,6 +65,70 @@ type MapData struct {
 // sorted-map with a custom Map implementation.
 func NewMapData(m Map) *MapData {
 	return &MapData{m}
+}
+
+// A MapData need not have a backing at all: NewMapData(nil), reached through
+// SortedMapFromData, is the documented extension point and nothing in it
+// requires an implementation.  The methods below answer for that degenerate
+// value as the empty, unwritable map it is, so that every walk over one --
+// rendering, equality, depth checking, the sorted-map builtins, the JSON
+// encoder -- reads it as empty instead of calling a method on a nil interface
+// and dying with a nil dereference the evaluator can only report as an
+// internal panic.  They shadow the promoted methods; a caller holding the
+// backing itself is unaffected.
+//
+// The three REBUILDING walkers (copier.mapData, detachMapData, GoValue) keep
+// the explicit arms they already have: each has to construct a fresh
+// degenerate map rather than merely read one.
+
+// Len reports the number of entries, or zero for a map with no backing.
+func (md *MapData) Len() int {
+	if md == nil || md.mapBacking == nil {
+		return 0
+	}
+	return md.mapBacking.Len()
+}
+
+// Get reads an entry.  A map with no backing holds none.
+func (md *MapData) Get(key *LVal) (*LVal, bool) {
+	if md == nil || md.mapBacking == nil {
+		return Nil(), false
+	}
+	return md.mapBacking.Get(key)
+}
+
+// Set associates key with val.  A map with no backing has nowhere to put it,
+// and reporting that is the only honest answer: silently dropping the write
+// would let a program believe an entry exists.
+func (md *MapData) Set(key, val *LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Errorf("sorted-map has no backing implementation")
+	}
+	return md.mapBacking.Set(key, val)
+}
+
+// Del removes an entry.  A map with no backing holds none to remove.
+func (md *MapData) Del(key *LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Nil()
+	}
+	return md.mapBacking.Del(key)
+}
+
+// Keys lists the keys, none for a map with no backing.
+func (md *MapData) Keys() *LVal {
+	if md == nil || md.mapBacking == nil {
+		return QExpr(nil)
+	}
+	return md.mapBacking.Keys()
+}
+
+// Entries writes the entries into buf, none for a map with no backing.
+func (md *MapData) Entries(buf []*LVal) *LVal {
+	if md == nil || md.mapBacking == nil {
+		return Int(0)
+	}
+	return md.mapBacking.Entries(buf)
 }
 
 // a sentinal type used to describe string-like keys in a sortedmap.
@@ -123,9 +203,8 @@ func (m sortedmap) emptyLike() sortedmap {
 // of m, passing each value through val (nil shares the value pointer).  The
 // entries are what Set stores -- the value under its key string -- and the
 // key-type map is copied verbatim, which is what Entries reads when it
-// decides whether a key comes back as a string or a symbol (including a
-// stale symbol flag on a key later re-set as a string: Set does not clear
-// it, and neither path invents or drops one).  The result is therefore
+// decides whether a key comes back as a string or a symbol according to
+// its most recent write.  The result is therefore
 // indistinguishable from enumerating the entries in sorted order and
 // re-inserting them, minus the sort, the per-entry pair cells and the
 // incremental map growth.
@@ -221,6 +300,7 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 	switch key.Type {
 	case LString:
 		m.m[key.Str] = val
+		m.deltype(key.Str)
 		return Nil()
 	case LSymbol:
 		m.m[key.Str] = val
@@ -316,17 +396,33 @@ func sortedMapEntries(m Map) *LVal {
 	return QExpr(cells)
 }
 
-func sortedMapString(m *LVal, g cycleGuard) string {
-	var buf bytes.Buffer
-	buf.WriteString("(sorted-map")
-	for _, pair := range sortedMapEntries(m.Map()).Cells {
-		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[0].str(false, g))
-		buf.WriteString(" ")
-		buf.WriteString(pair.Cells[1].str(false, g))
-	}
-	buf.WriteString(")")
-	return buf.String()
+// sortMapEntriesByKey orders a pair list sortedMapEntries produced, so a
+// walk over a map's entries -- and with it every host CloneNative call the
+// walk makes -- runs in an order that depends only on the map's contents
+// rather than on the order the backing Map's Entries happened to yield.
+// The Map interface above documents Keys as returning a sorted list and
+// says nothing whatever about the order of Entries, so an embedder's
+// implementation over a Go map yields whatever permutation it gets.
+//
+// By (Str, Type) rather than Str alone, so the order is total over the key
+// kinds Str does not separate: an LString and an LSymbol that spell the
+// same thing sort the same way on every walk.  Stable, so any pair the
+// comparison still cannot separate keeps the order Entries gave it rather
+// than moving under the sort.
+//
+// Both value walkers that reach a host clone hook through sortedMapEntries
+// call this -- copier.mapData's generic arm and detachMapData -- so one
+// embedder's map is walked in ONE order by both, rather than each walker
+// having its own comparison to drift.
+//
+//elps:mutates reorders a cells slice the caller owns outright: every caller passes the slice sortedMapEntries allocated for that call, held only by a local, so nothing outside the call can observe the permutation
+func sortMapEntriesByKey(entries []*LVal) {
+	slices.SortStableFunc(entries, func(a, b *LVal) int {
+		if r := cmp.Compare(a.Cells[0].Str, b.Cells[0].Str); r != 0 {
+			return r
+		}
+		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
+	})
 }
 
 // mapEntriesByKey are internally known to be a list of pairs containing keys

@@ -2,12 +2,64 @@
 
 package lisp
 
-import "sort"
+import (
+	"sort"
+	"strings"
+
+	"github.com/luthersystems/elps/parser/lexer"
+	"github.com/luthersystems/elps/parser/token"
+)
+
+// validPackageName checks the Lisp builtin boundary only. Go registration and
+// LEnv.InPackage/UsePackage deliberately continue to accept arbitrary names.
+func validPackageName(name string) bool {
+	if name == "" || strings.Contains(name, ":") {
+		return false
+	}
+	// Use the reader's lexer rather than a second symbol alphabet. The only
+	// parser rule needed without colons is ParseNegative: a leading minus
+	// followed by a SYMBOL becomes one symbol; a numeric token does not.
+	lex := lexer.New(token.NewScannerString("", name))
+	tok := lex.ReadToken()[0]
+	if tok.Type == token.NEGATIVE {
+		tok = lex.ReadToken()[0]
+		if tok.Text != name[1:] {
+			return false
+		}
+	} else if tok.Text != name {
+		return false
+	}
+	return tok.Type == token.SYMBOL && lex.ReadToken()[0].Type == token.EOF
+}
 
 // PackageRegistry contains a set of packages.
 type PackageRegistry struct {
 	packages map[string]*Package
-	Lang     string // A default package used by all other packages
+	// runtime is the Runtime this registry is the interpreter state of.  It
+	// is set where a Runtime is first paired with an environment
+	// (NewEnvRuntime, StandardRuntime), and it is nil in a registry that has
+	// not been attached to one yet.  Admission reads
+	// runtime.ValueDepthLimit() through it, so a registry admitting into a
+	// runtime configured with WithMaxValueDepth applies the configured limit
+	// rather than the MaxValueDepth default; a detached registry keeps the
+	// default.  It is a back pointer to state the registry already belongs
+	// to and never a second owner of it.
+	runtime *Runtime
+	Lang    string // A default package used by all other packages
+}
+
+// bindRegistryRuntime attaches rt to its own registry so that package
+// admission can read rt.ValueDepthLimit().  It is called where a Runtime is
+// first paired with an environment rather than on every environment: a child
+// env inherits its parent's runtime, which is already bound, so the hot path
+// pays nothing.  A registry already bound to another runtime keeps it -- two
+// runtimes sharing one registry is not a configuration admission can resolve,
+// and the first binding is the one whose limits the registry was filled under.
+func bindRegistryRuntime(rt *Runtime) {
+	if rt == nil || rt.Registry == nil || rt.Registry.runtime != nil {
+		return
+	}
+	rt.Registry.runtime = rt
 }
 
 // NewRegistry initializes and returns a new PackageRegistry.
@@ -82,7 +134,7 @@ func (r *PackageRegistry) AddPackage(p *Package) bool {
 	if _, ok := r.packages[p.Name]; ok {
 		return false
 	}
-	r.packages[p.Name] = admitPackage(p)
+	r.packages[p.Name] = admitPackage(p, r.runtime.ValueDepthLimit())
 	return true
 }
 
@@ -118,6 +170,24 @@ type Package struct {
 	// pointer across goroutines.  See issue #397.
 	funNames  map[string]string
 	externals []string
+	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
+	// Go registration APIs remain available to the host after initialization.
+	bindingsSealed bool
+}
+
+// checkLispPackageBinding checks a Lisp assignment's destination without
+// allocating on the ordinary user-package path. Qualified set! needs this
+// check too, even though Update otherwise searches literal lexical keys.
+func (env *LEnv) checkLispPackageBinding(name string) *LVal {
+	pkg := env.Runtime.Package
+	if ns, local, qualified := strings.Cut(name, ":"); qualified {
+		pkg = env.Runtime.Registry.packages[ns]
+		name = local
+	}
+	if pkg != nil && pkg.bindingsSealed {
+		return env.Errorf("cannot rebind lisp package binding: %s", name)
+	}
+	return nil
 }
 
 // NewPackage initializes and returns a package with the given name.

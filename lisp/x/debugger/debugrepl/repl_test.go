@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/x/debugger"
@@ -115,7 +116,7 @@ func TestShowBacktrace_EmptyStack(t *testing.T) {
 func TestShowSourceContext_MissingFile(t *testing.T) {
 	t.Parallel()
 	var buf bytes.Buffer
-	showSourceContext(&buf, "nonexistent_file.lisp", 5, "")
+	showSourceContext(&buf, "nonexistent_file.lisp", 5, &lisp.RelativeFileSystemLibrary{})
 	assert.Contains(t, buf.String(), "source not available")
 }
 
@@ -127,7 +128,7 @@ func TestShowSourceContext_ValidFile(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644)) //nolint:gosec
 
 	var buf bytes.Buffer
-	showSourceContext(&buf, path, 5, "")
+	showSourceContext(&buf, path, 5, &lisp.RelativeFileSystemLibrary{})
 	out := buf.String()
 	// Line 5 should have the --> marker.
 	assert.Contains(t, out, "-->    5  line5")
@@ -144,7 +145,7 @@ func TestShowSourceContext_FirstLine(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644)) //nolint:gosec
 
 	var buf bytes.Buffer
-	showSourceContext(&buf, path, 1, "")
+	showSourceContext(&buf, path, 1, &lisp.RelativeFileSystemLibrary{})
 	out := buf.String()
 	// Line 1 should have the marker.
 	assert.Contains(t, out, "-->    1  first")
@@ -162,7 +163,7 @@ func TestShowSourceContext_LastLine(t *testing.T) {
 	require.NoError(t, os.WriteFile(path, []byte(content), 0644)) //nolint:gosec
 
 	var buf bytes.Buffer
-	showSourceContext(&buf, path, 3, "")
+	showSourceContext(&buf, path, 3, &lisp.RelativeFileSystemLibrary{})
 	out := buf.String()
 	// Line 3 should have the marker.
 	assert.Contains(t, out, "-->    3  three")
@@ -181,9 +182,43 @@ func TestShowSourceContext_WithSourceRoot(t *testing.T) {
 
 	var buf bytes.Buffer
 	// Use just the filename with sourceRoot pointing to parent.
-	showSourceContext(&buf, "test.lisp", 1, subdir)
+	showSourceContext(&buf, "test.lisp", 1, newConfinedLibrary(t, subdir))
 	out := buf.String()
 	assert.Contains(t, out, "-->    1  hello")
+}
+
+func TestShowSourceContext_ConfinedBasenameCollision(t *testing.T) {
+	parent := t.TempDir()
+	t.Chdir(parent)
+	root := filepath.Join(parent, "jail")
+	require.NoError(t, os.Mkdir(root, 0o700))
+	require.NoError(t, os.WriteFile("main.lisp", []byte("outside-secret\n"), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(root, "main.lisp"), []byte("confined-content\n"), 0o600))
+	var buf bytes.Buffer
+	showSourceContext(&buf, "main.lisp", 1, newConfinedLibrary(t, root))
+	assert.NotContains(t, buf.String(), "outside-secret")
+	assert.Contains(t, buf.String(), "confined-content")
+}
+
+func TestShowSourceContext_ConfinedSymlinkReplacement(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "jail")
+	require.NoError(t, os.Mkdir(root, 0o700))
+	path := filepath.Join(root, "main.lisp")
+	require.NoError(t, os.WriteFile(filepath.Join(parent, "secret.lisp"), []byte("outside-secret\n"), 0o600))
+	require.NoError(t, os.WriteFile(path, []byte("42\n"), 0o600))
+	lib, err := rootlibrary.Open(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lib.Close()) })
+	env := newTestEnv(t, debugger.New())
+	env.Runtime.Library = lib
+	require.Equal(t, "42", env.LoadFile("main.lisp").String())
+	require.NoError(t, os.Remove(path))
+	require.NoError(t, os.Symlink("../secret.lisp", path))
+	var buf bytes.Buffer
+	showSourceContext(&buf, "main.lisp", 1, lib)
+	assert.NotContains(t, buf.String(), "outside-secret")
+	assert.True(t, strings.Contains(buf.String(), "42") || strings.Contains(buf.String(), "source not available"), "display must retain confined content or refuse: %s", buf.String())
 }
 
 func TestHandleLine_DebugCommands(t *testing.T) {
@@ -438,21 +473,12 @@ func TestDebugCompleter_EmptyPrefix(t *testing.T) {
 	assert.Empty(t, matches)
 }
 
-func TestResolveSourceFile(t *testing.T) {
-	t.Parallel()
-	dir := t.TempDir()
-	path := filepath.Join(dir, "test.lisp")
-	require.NoError(t, os.WriteFile(path, []byte("(+ 1 2)"), 0644)) //nolint:gosec
-
-	// Direct path.
-	assert.Equal(t, path, resolveSourceFile(path, ""))
-
-	// Relative under sourceRoot.
-	assert.Equal(t, path, resolveSourceFile("test.lisp", dir))
-
-	// Non-existent.
-	result := resolveSourceFile("nonexistent.lisp", dir)
-	assert.Equal(t, "nonexistent.lisp", result)
+func newConfinedLibrary(t *testing.T, root string) *rootlibrary.Library {
+	t.Helper()
+	lib, err := rootlibrary.Open(root)
+	require.NoError(t, err)
+	t.Cleanup(func() { require.NoError(t, lib.Close()) })
+	return lib
 }
 
 func TestPrompt(t *testing.T) {

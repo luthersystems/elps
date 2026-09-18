@@ -20,14 +20,36 @@
 # Inputs (env):
 #   GITHUB_WORKSPACE  root holding the two checkouts (pr/ and base/)
 #   BENCH_COUNT       samples per arm, for the comment footer
-#   GITHUB_OUTPUT     step-output file; `gate_status` and `result` are written
+#   GITHUB_OUTPUT     step-output file; `gate_status` and `comment_file` are
+#                     written -- both SMALL, see below
 #   BENCHGATE         path to the benchgate binary; defaults to
 #                     $GITHUB_WORKSPACE/bin/benchgate, which the workflow's
 #                     "Build the benchmark gate" step produces FROM THE PR TREE
 #
 # Reads bench-baseline.txt / bench-current.txt from $PWD (written by
 # scripts/bench-run-arms.sh) and writes arms-check.txt, benchstat-output.txt and
-# gate-report.txt beside them.
+# gate-report.txt beside them. The assembled comment body goes to
+# $GITHUB_WORKSPACE/bench-comment.md.
+#
+# The comment body is a FILE and only its PATH is a step output. It used to be
+# the `result` step output, which the "Post PR comment" step then passed to
+# actions/github-script through `env:` -- and a step output becomes an
+# environment variable in the child process's argv/envp block, which the kernel
+# caps (MAX_ARG_STRLEN, 128 KiB per single string on Linux; the whole block is
+# capped too). On PR #658 the report reached ~1,300 lines and the step died
+# before the script ran:
+#
+#   ##[error]An error occurred trying to start process
+#   '/home/runner/extracted/externals/node24/bin/node' with working directory
+#   '/home/runner/work/elps/elps'. Argument list too long
+#
+# The gate itself had PASSED ("0 at or above the gate"), so the job -- and the
+# required aggregate that depends on it -- went red on an infrastructure
+# failure rather than on a benchmark result, which is the exact "a gate that
+# fails for a fictional cause" shape the rest of this file exists to prevent.
+# A path is a few dozen bytes, so the size of the report can no longer break
+# the step that reports it. GitHub's own 65,536-character cap on a comment
+# BODY is a separate limit, handled in scripts/bench-comment.cjs.
 #
 # Exits 0 in every branch: this script REPORTS the verdict via
 # `gate_status` on $GITHUB_OUTPUT, and the workflow's "Fail on regressions" step
@@ -59,6 +81,16 @@ ARMS="${PR_TREE}/scripts/bench-arms-check.sh"
 # entirely, which can only make the gate stricter.
 WAIVERS="${PR_TREE}/scripts/benchstat-waivers.txt"
 
+# Every branch below assembles a comment body, and EVERY branch must both write
+# it here and advertise it, or the "Post PR comment" step reads a path that is
+# empty (no output) and posts nothing -- silently, since that step swallows its
+# own errors as "expected for PRs from forks". Writing the file and emitting the
+# output through one function is what keeps the two from drifting apart.
+COMMENT_FILE="${GITHUB_WORKSPACE}/bench-comment.md"
+emit_comment_file() {
+  echo "comment_file=${COMMENT_FILE}" >> "$GITHUB_OUTPUT"
+}
+
 missing=""
 for s in "$GATE" "$ARMS"; do
   [ -f "$s" ] || missing="${missing} ${s}"
@@ -67,15 +99,14 @@ if [ -n "$missing" ]; then
   echo "::error::benchmark gate scripts missing from the PR checkout:${missing}. The workflow expects the repository at \$GITHUB_WORKSPACE/pr and the benchgate binary at \$GITHUB_WORKSPACE/bin/benchgate (see the two-tree checkout and the \"Build the benchmark gate\" step above); if the checkout layout changed, these paths must change with it."
   echo "gate_status=2" >> "$GITHUB_OUTPUT"
   {
-    echo 'result<<BENCHSTAT_EOF'
     echo '## Benchmark gate could not run'
     echo ''
     echo 'The gate scripts were not found in the PR checkout:'
     echo '```'
     echo "${missing}"
     echo '```'
-    echo 'BENCHSTAT_EOF'
-  } >> "$GITHUB_OUTPUT"
+  } > "$COMMENT_FILE"
+  emit_comment_file
   exit 0
 fi
 
@@ -87,7 +118,6 @@ if [ ! -s bench-baseline.txt ]; then
   echo "::error::bench-baseline.txt is empty — the base arm did not produce results."
   echo "gate_status=2" >> "$GITHUB_OUTPUT"
   {
-    echo 'result<<BENCHSTAT_EOF'
     echo '## Benchmark Results (base arm FAILED — no comparison)'
     echo ''
     echo 'The base checkout or its benchmark run produced nothing.'
@@ -96,8 +126,8 @@ if [ ! -s bench-baseline.txt ]; then
     echo '```'
     cat bench-current.txt
     echo '```'
-    echo 'BENCHSTAT_EOF'
-  } >> "$GITHUB_OUTPUT"
+  } > "$COMMENT_FILE"
+  emit_comment_file
   exit 0
 fi
 
@@ -114,14 +144,13 @@ if [ "$arms_rc" -ne 0 ]; then
   echo "::error::The two benchmark arms are not comparable; see the pre-flight report above."
   echo "gate_status=2" >> "$GITHUB_OUTPUT"
   {
-    echo 'result<<BENCHSTAT_EOF'
     echo '## Benchmark arms are NOT comparable — no comparison was made'
     echo ''
     echo '```'
     cat arms-check.txt
     echo '```'
-    echo 'BENCHSTAT_EOF'
-  } >> "$GITHUB_OUTPUT"
+  } > "$COMMENT_FILE"
+  emit_comment_file
   exit 0
 fi
 
@@ -191,8 +220,12 @@ noise_lines="$(grep -E '^  NOISE-FLOOR' gate-report.txt || true)"
 # is how "we could not measure it" gets read as "it was fine".
 unfit_lines="$(grep -E '^  UNMEASURABLE' gate-report.txt || true)"
 
+# The order here is the contract scripts/bench-comment.cjs truncates against:
+# everything that must survive a too-long body -- the heading, the UNMEASURABLE
+# rows, the NOISE-FLOOR rows and the waivers -- comes BEFORE the first
+# `<details>`, and everything inside a `<details>` is the per-row table that may
+# be cut. Moving a flagged section below the fold would make it truncatable.
 {
-  echo 'result<<BENCHSTAT_EOF'
   echo '## Benchmark Comparison (main baseline vs PR)'
   echo ''
   if [ -n "$unfit_lines" ]; then
@@ -257,5 +290,5 @@ unfit_lines="$(grep -E '^  UNMEASURABLE' gate-report.txt || true)"
   echo '</details>'
   echo ''
   echo "_Both arms measured on the same runner in the same job, interleaved, n=${BENCH_COUNT} each._"
-  echo 'BENCHSTAT_EOF'
-} >> "$GITHUB_OUTPUT"
+} > "$COMMENT_FILE"
+emit_comment_file

@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"testing"
@@ -864,5 +865,116 @@ func BenchmarkDetach50KB(b *testing.B) {
 		if len(detached.Cells) != len(forms) {
 			b.Fatalf("bad detach")
 		}
+	}
+}
+
+// detachOrderEntries is a custom Map whose Entries yields a DIFFERENT
+// permutation of its entries on every call -- it rotates the key list by
+// the call count.  The Map interface (lisp/maps.go) documents Keys as
+// returning "a sorted list" and says NOTHING about the order of Entries, so
+// this is a conforming implementation: an embedder's map over a Go map
+// would yield an arbitrary permutation without trying.
+//
+// It reuses copier_test.go's copierStringMap for everything but Entries,
+// and the shared fixtures are the point: the claim under test is that the
+// detacher and the copier walk one such map in the SAME order.
+type detachOrderEntries struct {
+	*copierStringMap
+	calls int
+}
+
+func (m *detachOrderEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
+	keys := m.sortedKeys()
+	if len(buf) < len(keys) {
+		return lisp.Errorf("buffer has insufficient length")
+	}
+	m.calls++
+	if n := len(keys); n > 0 {
+		r := m.calls % n
+		rotated := make([]string, 0, n)
+		rotated = append(rotated, keys[r:]...)
+		rotated = append(rotated, keys[:r]...)
+		keys = rotated
+	}
+	for i, k := range keys {
+		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(k), m.m[k]})
+	}
+	return lisp.Int(len(keys))
+}
+
+// detachCloneAssignment detaches m with copier_test.go's sequence counter
+// reset and reads back which number each key's value was cloned with, so
+// the returned map records the ORDER the detacher walked the entries in.
+// It shares the counter and the cloner with copierCloneAssignment on
+// purpose: the two assignments are compared directly below, and neither
+// test runs in parallel.
+func detachCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
+	t.Helper()
+	copierCloneSeq = 0
+	cp, err := lisp.Detach(m)
+	if err != nil {
+		t.Fatalf("detach: %v", err)
+	}
+	got := make(map[string]int)
+	for _, k := range cp.MapKeys().Cells {
+		c, ok := cp.MapGet(k).Native.(copierSeqCloner)
+		if !ok {
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGet(k).Native)
+		}
+		got[k.Str] = c.seq
+	}
+	if len(got) == 0 {
+		t.Fatal("anti-vacuity: the detach reached no map values")
+	}
+	return got
+}
+
+// TestDetachMapValueCloneOrderIsDeterministic: detaching one sorted map
+// twice assigns the same clone to the same key, and assigns the same clones
+// (*LVal).Copy assigns.
+//
+// detachMapData walks the pairs sortedMapEntries hands it, in whatever
+// order the backing Map's Entries yielded, and the walk calls a host hook
+// per value -- NativeCloner.CloneNative, which the embedder writes and which
+// may draw on state outside the value (a counter, an id allocator, an rng).
+// So two detaches of IDENTICAL input called the hook in different orders and
+// the same key came back with a different clone.  The copier fixed exactly
+// this for itself (TestCopyMapValueCloneOrderIsDeterministic) by sorting the
+// entries before copying a single value; the detacher reaches the same
+// embedder hook through the same sortedMapEntries and had no such sort.
+//
+// Twenty detaches rather than two: the fixture yields a different rotation
+// on every call, so an unsorted walk disagrees with its first run on the
+// very next one, but the margin costs nothing here.
+//
+// The cross-walker assertion is the second half and the load-bearing one: a
+// determinism fix that ordered the detacher its own way would pass the first
+// assertion and still have two value walkers calling one embedder's hook in
+// two orders over one map.
+func TestDetachMapValueCloneOrderIsDeterministic(t *testing.T) {
+	const n = 64
+	newMap := func() *lisp.LVal {
+		kv := make(map[string]*lisp.LVal, n)
+		for i := range n {
+			kv[fmt.Sprintf("k%02d", i)] = lisp.Native(copierSeqCloner{})
+		}
+		return lisp.SortedMapFromData(lisp.NewMapData(&detachOrderEntries{copierStringMap: newCopierStringMap(kv)}))
+	}
+
+	m := newMap()
+	want := detachCloneAssignment(t, m)
+	for i := range 20 {
+		got := detachCloneAssignment(t, m)
+		if !maps.Equal(want, got) {
+			t.Fatalf("detach %d assigned different clones to the same keys than detach 0:\n first: %v\n  this: %v",
+				i+1, want, got)
+		}
+	}
+
+	// The copier's order, over an equivalent map: the two walkers reach one
+	// embedder's CloneNative and must call it in one order.
+	if copied := copierCloneAssignment(t, newMap()); !maps.Equal(want, copied) {
+		t.Errorf("detach and Copy walk one map's values in different orders:\ndetach: %v\n  copy: %v",
+			want, copied)
 	}
 }

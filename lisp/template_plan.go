@@ -77,6 +77,7 @@ type templatePackage struct {
 	bindings             []templateBinding
 	funNames, symbolDocs []templateStringPair
 	externals            []string
+	bindingsSealed       bool
 }
 type templatePlan struct {
 	values            []templateValue
@@ -131,7 +132,8 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 		c.plan.packages = append(c.plan.packages, templatePackage{
 			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(pkg.symbols),
 			funNames: templateStringPairs(pkg.funNames), symbolDocs: templateStringPairs(pkg.symbolDocs),
-			externals: append([]string(nil), pkg.externals...),
+			externals:      append([]string(nil), pkg.externals...),
+			bindingsSealed: pkg.bindingsSealed,
 		})
 	}
 	for index, env := range inventory.envQueue {
@@ -511,6 +513,7 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 	}
 	for _, pkg := range p.packages {
 		out := &Package{Name: pkg.name, Doc: pkg.doc, symbols: make(map[string]*LVal, len(pkg.bindings)), funNames: make(map[string]string, len(pkg.funNames))}
+		out.bindingsSealed = pkg.bindingsSealed
 		for _, binding := range pkg.bindings {
 			out.symbols[binding.name] = instance.ref(binding.value)
 		}

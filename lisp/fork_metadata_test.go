@@ -68,13 +68,21 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 	// forker.env too, and it is the environment whose register a template
 	// holds a *definition-site* location in.  A top-level lambda captures
 	// the root environment itself and would leave the walk with one env.
+	initializer := Int(1)
+	definition := lambdaExpr()
 	lam := SExpr([]*LVal{
 		Symbol("let"),
-		SExpr([]*LVal{SExpr([]*LVal{Symbol("y"), Int(1)})}),
-		lambdaExpr(),
+		SExpr([]*LVal{SExpr([]*LVal{Symbol("y"), initializer})}),
+		definition,
 	})
 	templateLoc := &token.Location{File: "template.lisp", Path: "template.lisp", Line: 12, Col: 3, Pos: 40}
+	definitionLoc := &token.Location{File: "template.lisp", Path: "template.lisp", Line: 13, Col: 3, Pos: 60}
 	lam.SetSource(templateLoc)
+	// let evaluates initializers in the outer scope and its body in the
+	// captured scope. Stamp both evaluated nodes, as the parser would, so
+	// neither register is cleared by a source-less synthetic expression.
+	initializer.SetSource(templateLoc)
+	definition.SetSource(definitionLoc)
 	fun := env.Eval(lam)
 	if fun.Type != LFun {
 		t.Fatalf("lambda eval: %v", fun)
@@ -89,7 +97,14 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 		t.Fatal("template's evaluator location register is empty; the assertions below would pass vacuously")
 	}
 	if got := env.Source(); got == nil || got.Line != 12 {
-		t.Fatalf("template Source() = %v, want the lambda's line 12", got)
+		t.Fatalf("template Source() = %v, want the initializer's line 12", got)
+	}
+	captured := fun.funData().env
+	if captured == nil || captured == env {
+		t.Fatal("closure must capture a distinct let scope")
+	}
+	if captured.loc != definitionLoc {
+		t.Fatalf("captured evaluator location = %v, want the lambda's definition location %v", captured.loc, definitionLoc)
 	}
 
 	fork, err := forkTestSnapshot(env)
@@ -105,7 +120,7 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 		if e.loc == nil {
 			continue
 		}
-		if e.loc == templateLoc {
+		if e.loc == env.loc || e.loc == captured.loc {
 			t.Errorf("forked env %d SHARES the template's Location pointer (%v); the register must not travel", e.ID, e.loc)
 			continue
 		}
@@ -128,6 +143,9 @@ func TestForkDropsEvaluatorLocation(t *testing.T) {
 	}
 	if got := env.Source(); got == nil || got.Line != 12 {
 		t.Errorf("template Source() = %v after the fork evaluated; want its own line 12 — the registers are not independent", got)
+	}
+	if got := captured.Source(); got == nil || got.Line != 13 {
+		t.Errorf("captured Source() = %v after the fork evaluated; want its own line 13", got)
 	}
 }
 

@@ -41,6 +41,7 @@ type templateRuntime struct {
 	languagePackage        string
 	maxAlloc               int
 	maxMacroExpansionDepth int
+	maxValueDepth          int
 	maxEvalNesting         int
 	maxSleep               time.Duration
 	maxSteps               int64
@@ -56,7 +57,7 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 	c := templateRuntime{
 		reader: rt.Reader, library: rt.Library, loadCache: rt.LoadCache, stderr: rt.Stderr,
 		languagePackage: rt.Registry.Lang, maxAlloc: rt.MaxAlloc, maxMacroExpansionDepth: rt.MaxMacroExpansionDepth,
-		maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
+		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
 		maxHeightLogical: rt.Stack.MaxHeightLogical, maxHeightPhysical: rt.Stack.MaxHeightPhysical, maxTailIterations: rt.Stack.MaxTailIterations,
 	}
 	if rt.Package != nil {
@@ -75,9 +76,14 @@ func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
 		Stack:  &CallStack{MaxHeightLogical: c.maxHeightLogical, MaxHeightPhysical: c.maxHeightPhysical, MaxTailIterations: c.maxTailIterations},
 		Reader: c.reader, Library: c.library, LoadCache: c.loadCache,
 		MaxAlloc: c.maxAlloc, MaxMacroExpansionDepth: c.maxMacroExpansionDepth,
-		MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
+		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
 	}
 	rt.Registry.Lang = c.languagePackage
+	// The VM's environments are built by the planner rather than by
+	// NewEnvRuntime, so bind the fresh registry to the fresh runtime here:
+	// admission into this VM must read THIS runtime's value-depth limit, and
+	// the source runtime is not reachable from the plan at all.
+	bindRegistryRuntime(rt)
 	if opts.stderr != nil {
 		rt.Stderr = opts.stderr
 	}

@@ -76,7 +76,7 @@ func TestCopyRefusesCyclicValue(t *testing.T) {
 		"nested":   lisp.Vector([]*lisp.LVal{cyclicMap("k")}),
 	} {
 		t.Run(name, func(t *testing.T) {
-			_, err := copyLVal(v)
+			_, err := copyLVal(v, 0)
 			require.Error(t, err, "a cyclic value has no finite copy")
 			assert.ErrorIs(t, err, errCyclicValue)
 		})
@@ -107,7 +107,7 @@ func TestAcyclicValuesAreUnaffectedByTheGuard(t *testing.T) {
 	for name, v := range map[string]*lisp.LVal{"deep": deep, "dag": dag, "deep-dag": mapHolding("d", dag)} {
 		t.Run(name, func(t *testing.T) {
 			require.NoError(t, okSimpleType(v), "an acyclic value must be accepted at any depth")
-			cp, err := copyLVal(v)
+			cp, err := copyLVal(v, 0)
 			require.NoError(t, err)
 			assert.Equal(t, v.String(), cp.String(), "an acyclic value must be copied in full")
 		})
@@ -168,7 +168,7 @@ func TestCyclicWalkHelper(t *testing.T) {
 	case "typecheck":
 		refused = okSimpleType(cyclicVector()) != nil
 	case "copy":
-		_, err := copyLVal(cyclicMap("a", "b"))
+		_, err := copyLVal(cyclicMap("a", "b"), 0)
 		refused = err != nil
 	case "builtin-get":
 		// The reproduction from issue #393, driven through the builtin:

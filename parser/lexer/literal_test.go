@@ -69,7 +69,7 @@ func TestFloatExponentSingleDigit(t *testing.T) {
 		})
 	}
 
-	reject := []string{"1e", "1e+", "1e-", "1.", "1.e5", "1.5e", "1.5e+"}
+	reject := []string{"1e", "1e+", "1e-", "1.", "1.e5", "1.5e", "1.5e+", "1e5e5", "1abc", "1.2.3e4"}
 	for _, src := range reject {
 		t.Run("reject/"+src, func(t *testing.T) {
 			if _, ok := lexAll(t, src); ok {
@@ -78,13 +78,12 @@ func TestFloatExponentSingleDigit(t *testing.T) {
 		})
 	}
 
-	// Shapes that must keep SPLITTING rather than becoming one token.  This is
-	// how the lexer has always treated a number glued to a word ("1abc" is INT
-	// then SYMBOL), so "1e5e5" following suit is the consistent outcome.
+	// Separate values require a delimiter. Their formerly glued spellings
+	// above are malformed numeric literals, not implicit token boundaries.
 	split := map[string][]string{
-		"1e5e5":   {"1e5", "e5"},
-		"1abc":    {"1", "abc"},
-		"1.2.3e4": {"1.2", ".3e4"},
+		"1e5 e5":   {"1e5", "e5"},
+		"1 abc":    {"1", "abc"},
+		"1.2 .3e4": {"1.2", ".3e4"},
 	}
 	for src, want := range split {
 		t.Run("split/"+src, func(t *testing.T) {

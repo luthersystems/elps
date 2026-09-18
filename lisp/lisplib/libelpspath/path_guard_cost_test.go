@@ -178,7 +178,7 @@ func BenchmarkCycleGuardCost(b *testing.B) {
 			b.Run("walk=copy/arm=guarded", func(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
-					if _, err := copyLVal(doc); err != nil {
+					if _, err := copyLVal(doc, 0); err != nil {
 						b.Fatal(err)
 					}
 				}
@@ -210,7 +210,7 @@ func TestUnguardedReplicasMatchTheShippedWalkers(t *testing.T) {
 			assert.Equal(t, okSimpleTypeUnguarded(doc), okSimpleType(doc),
 				"the replica gate disagrees with the shipped one")
 			want, wantErr := copyLValUnguarded(doc)
-			got, gotErr := copyLVal(doc)
+			got, gotErr := copyLVal(doc, 0)
 			require.Equal(t, wantErr, gotErr)
 			assert.Equal(t, want.String(), got.String(),
 				"the replica copy disagrees with the shipped one")

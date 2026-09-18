@@ -117,7 +117,7 @@ func TestTemplatePlanGraph(t *testing.T) {
 	if self, _ := m1.Map().Get(lisp.String("self")); self != m2 {
 		t.Fatal("map cycle changed")
 	}
-	if rc, _ := m1.Map().Get(lisp.Symbol("n")); rc.Type != lisp.LError || rc.String() != "<native code>: sorted-map decoded from json cannot hold key with type 'symbol" {
+	if rc, found := m1.Map().Get(lisp.Symbol("n")); !found || rc.Type != lisp.LInt || rc.Int != 8 {
 		t.Fatalf("key policy changed: %v", rc)
 	}
 	fn := get(a, "captured")
