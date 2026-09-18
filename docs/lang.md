@@ -1580,8 +1580,11 @@ VMs instantiated from a template. `set`, `set!`, `defun`, `defmacro`, and `s:def
 cannot write a `lisp:`-qualified name, or an unqualified name while the current
 package is `lisp`. For example, `(set 'lisp:if 1)` raises the ordinary error
 `cannot rebind lisp package binding: if` at the assignment, leaving later
-packages' `if` intact. This also rejects new names in `lisp`; exporting a name
-first does not bypass the seal. Lisp code cannot add new exports or import
+packages' `if` intact. The seal protects package bindings only: `set!` on a
+lexical binding introduced by `let`, `lambda`, or a handler is always allowed,
+including in package `lisp` and including a name that shadows a core symbol, as
+such a write cannot reach the sealed namespace. This also rejects new names in
+`lisp`; exporting a name first does not bypass the seal. Lisp code cannot add new exports or import
 replacement bindings into `lisp`. Re-exporting an existing export is a no-op.
 Go registration APIs remain available to the host, and packages registered
 by embedders through `elpsutil` remain mutable.

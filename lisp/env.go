@@ -667,7 +667,7 @@ func (env *LEnv) Update(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	return env.update(k, v)
+	return env.update(k, v, false)
 }
 
 // UpdateFromLisp updates an existing binding with the core package seal
@@ -676,13 +676,20 @@ func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
-	if err := env.checkLispPackageBinding(k.Str); err != nil {
-		return err
+	if k.Str == TrueSymbol || k.Str == FalseSymbol {
+		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	return env.Update(k, v)
+	return env.update(k, v, true)
 }
 
-func (env *LEnv) update(k, v *LVal) *LVal {
+// update resolves k the way a reader would: the lexical chain first, then the
+// current (or explicitly qualified) package.  The core package's seal belongs
+// to the package branch alone -- a lexical binding is owned by the let, lambda
+// or handler frame that introduced it, so writing to it cannot reach a sealed
+// namespace even when the name shadows a core symbol.  fromLisp says whether
+// the name came from Lisp source; a trusted Go caller (Update) writes through
+// the seal, as the registration APIs do.
+func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 	for {
 		_, ok := env.scope[k.Str]
 		if ok {
@@ -690,6 +697,11 @@ func (env *LEnv) update(k, v *LVal) *LVal {
 			return Nil()
 		}
 		if env.parent == nil {
+			if fromLisp {
+				if err := env.checkLispPackageBinding(k.Str); err != nil {
+					return err
+				}
+			}
 			lerr := env.Runtime.Package.Update(k, v)
 			if lerr.Type == LError {
 				if err := env.ErrorAssociate(lerr); err != nil {
