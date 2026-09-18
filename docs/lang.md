@@ -2581,7 +2581,7 @@ applies; a long cycle may reach the depth limit before its back edge is discover
 `lisp.WithMaxValueDepth(n)` sets the runtime limit to any value **at least 1024**.
 Both lowering and raising the default are supported because these traversals
 are iterative. Invalid options return an error. Copying (including condition
-data), equality, JSON dumping, quasiquote, macro stamping, format conversion
+data), equality, JSON dumping, quasiquote, macro stamping
 and template admission honor the runtime setting. Templates retain it in their
 VMs. Depth counts traversed value edges, including internal array storage and
 captured environments where visited, rather than printed delimiters alone.
@@ -2590,10 +2590,11 @@ APIs without a runtime, including `lisp.GoValue`, use the default limit.
 excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
 JSON serializer conversion methods use the same convention.
 
-`format-string` checks the value conversion depth before returning a result. Its
-rendered text, like other diagnostic rendering, retains the separate fixed
-1024-level `#<depth-limit>` truncation behavior described above. Thus formatting
-a 100k-deep value succeeds with bounded text, while a 3M-deep value errors.
+`format-string` does not check the value nesting depth: like `debug-print` and
+every other render path, it truncates at the separate fixed 1024 levels and
+writes `#<depth-limit>` for what lies below. Formatting a 100k-deep value and a
+3M-deep value both succeed with the same bounded text. Printing a value is
+never a depth error; the byte and work budgets still apply.
 Sealing and source-location assignment use explicit stacks throughout; these
 metadata-only APIs cannot return an error and finish the graph. Reader admission
 and JSON parsing retain their existing input-depth limits. Copying elpspath

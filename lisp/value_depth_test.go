@@ -107,13 +107,14 @@ func TestValueWalkDepth(t *testing.T) {
 			}
 		case "format-string":
 			got = builtinFormatString(initSafetyTestEnv(t), SExpr([]*LVal{String("{}"), v}))
-			if depth < MaxValueDepth {
-				want := strings.Repeat("(", 1024) + "#<depth-limit>" + strings.Repeat(")", 1024)
-				if got.Type != LString || got.Str != want {
-					t.Fatal("incorrect bounded rendered text")
-				}
-				got = nil
+			// Rendering answers with its own fixed 1024-level marker at
+			// every value depth; the value-depth limit no longer decides
+			// whether printing a value is an error.
+			want := strings.Repeat("(", 1024) + "#<depth-limit>" + strings.Repeat(")", 1024)
+			if got.Type != LString || got.Str != want {
+				t.Fatal("incorrect bounded rendered text")
 			}
+			got = nil
 		}
 		if got != nil && got.Type == LError {
 			if IsInternalPanic(got) {
@@ -121,7 +122,7 @@ func TestValueWalkDepth(t *testing.T) {
 			}
 			err = GoError(got)
 		}
-		if depth >= MaxValueDepth && mode != "seal" && mode != "locate" {
+		if depth >= MaxValueDepth && mode != "seal" && mode != "locate" && mode != "format-string" {
 			if err == nil || !strings.Contains(err.Error(), "value nesting depth exceeds maximum: 1000000") {
 				t.Fatalf("expected ordinary depth error, got %v", err)
 			}

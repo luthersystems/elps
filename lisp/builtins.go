@@ -314,7 +314,9 @@ var (
 			accepted: { 0 } means {0}. Surplus values are ignored; a placeholder
 			without a corresponding value raises an error.
 			Nested values deeper than 1024 levels render
-			as #<depth-limit>; cycles render as #<cycle>. Shared DAGs render in full up to the runtime
+			as #<depth-limit>, however deeply the value itself nests: printing
+			a value is never a depth error, and debug-print agrees.
+			Cycles render as #<cycle>. Shared DAGs render in full up to the runtime
 			output/work limit; exceeding it raises an allocation error. Rendering
 			honours context cancellation.`},
 		{"reverse", Formals("type-specifier", "seq"), builtinReverse,
@@ -3730,15 +3732,14 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 			}
 		}
 
-		// Preserve the renderer's early stop on exhausted output budgets.
-		// Only a successfully rendered substitution needs full depth validation.
-		if err := checkValueDepth(val, env.Runtime.ValueDepthLimit(), env.evalCtx); err != nil {
-			if env.evalCtx != nil && env.evalCtx.Err() != nil {
-				return env.renderError(nil)
-			}
-			return env.Error(err)
-		}
-
+		// No second walk against the value-depth limit: the renderer above
+		// already bounded this substitution at its own fixed 1024 levels and
+		// wrote #<depth-limit> for what lies below.  Re-walking the value and
+		// raising made the same value printable through debug-print and an
+		// error through format-string, which is the one difference neither
+		// builtin's contract has a reason for.  The byte and work budgets
+		// (write, budget.step) still bound this loop, and cancellation is
+		// reported by the renderer itself.
 		i = closeIdx + 1
 	}
 
