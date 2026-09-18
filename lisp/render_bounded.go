@@ -44,6 +44,21 @@ func (b *renderBudget) step() bool {
 	return b.ctx == nil || b.ctx.Err() == nil
 }
 
+// liveRenderContext adopts a captured context only while it can still bound
+// work.  An error outlives the request that produced it -- a handler returns
+// it, the host cancels the request context, and only then is the error logged
+// -- and a captured context that has already been cancelled would fail the
+// FIRST budget step, blanking the whole message to #<truncated>.  Rendering an
+// error must be total, so a dead context is treated as no context and the byte
+// limit alone bounds the output.  A context that is still live is kept: it must
+// continue to stop a bulk render that is cancelled mid-traversal.
+func liveRenderContext(ctx context.Context) context.Context {
+	if ctx != nil && ctx.Err() != nil {
+		return nil
+	}
+	return ctx
+}
+
 func truncatedRender(s string, limit int) string {
 	if limit < len(renderTruncatedMark) {
 		return renderTruncatedMark[:max(0, limit)]

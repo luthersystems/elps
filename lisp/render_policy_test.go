@@ -183,6 +183,12 @@ func TestTraceSharedOutputBudget(t *testing.T) {
 }
 
 func TestTraceFrameCancellation(t *testing.T) {
+	// "cancelled" is the totality case: the captured context is already dead
+	// when the trace is written, which is the ordinary shape of an error
+	// logged after its request ended.  A dead captured context is no context
+	// at all, so the whole trace renders under the byte limit alone.  The
+	// other modes pin the live-context property: a context that is cancelled
+	// DURING the traversal still stops the frame output promptly.
 	for _, mode := range []string{"cancelled", "during-frames", "debug-stack"} {
 		t.Run(mode, func(t *testing.T) {
 			env := NewEnv(nil)
@@ -203,6 +209,13 @@ func TestTraceFrameCancellation(t *testing.T) {
 				}
 				_, err := e.WriteTrace(&out)
 				require.NoError(t, err)
+			}
+			if mode == "cancelled" {
+				require.Contains(t, out.String(), "boom: bad", "a dead context must not blank the message")
+				require.NotContains(t, out.String(), renderTruncatedMark)
+				require.Equal(t, 1000, strings.Count(out.String(), "height "))
+				require.Equal(t, 101, ctx.checks, "a dead context is consulted once and then dropped")
+				return
 			}
 			require.Less(t, strings.Count(out.String(), "height "), 100, "cancellation must stop frame output")
 			require.Contains(t, out.String(), renderTruncatedMark)

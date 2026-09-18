@@ -135,7 +135,7 @@ func (e *ErrorVal) renderPolicy(ctx context.Context) (int, context.Context) {
 			limit = stack.renderLimit
 		}
 		if ctx == nil {
-			ctx = stack.renderContext
+			ctx = liveRenderContext(stack.renderContext)
 		}
 	}
 	return limit, ctx

@@ -319,7 +319,7 @@ func (s *CallStack) DebugPrint(w io.Writer) (int, error) {
 	if limit <= 0 {
 		limit = DefaultMaxAlloc
 	}
-	return s.debugPrintContext(s.renderContext, w, limit)
+	return s.debugPrintContext(liveRenderContext(s.renderContext), w, limit)
 }
 
 func (s *CallStack) debugPrintContext(ctx context.Context, w io.Writer, limit int) (int, error) {
