@@ -1485,10 +1485,19 @@ func (v *LVal) IsNumeric() bool {
 // found at a finite depth, so no equality is claimed that a longer walk could
 // refute.  See lisp/cycle.go and issue #390.
 // Comparison descending beyond MaxValueDepth returns an ordinary LError.
+//
+// Equal is the RUNTIME-LESS form and always uses MaxValueDepth: it takes no
+// Runtime and an *LVal carries none, so it cannot see a WithMaxValueDepth
+// override.  Kernel code holding an environment calls EqualWithRuntime
+// instead, which is what the equal? builtin does, so a configured limit bounds
+// the comparison a program asks for.  Equal remains for callers with no
+// runtime in reach -- test support, embedder code comparing two values it
+// owns -- where the default is the only answer available.
 func (v *LVal) Equal(other *LVal) *LVal { return v.EqualWithRuntime(other, nil) }
 
 // EqualWithRuntime is Equal with the runtime's configurable value depth limit.
 // Deep comparisons use an explicit stack, so limits above MaxValueDepth are safe.
+// A nil runtime is MaxValueDepth, which is what Equal passes.
 func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
 	if result := v.equalShallow(other, 0); result != nil {
 		return result
