@@ -1980,6 +1980,13 @@ For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
 preserves that error and its original stack. Host errors implementing
 `NativeCloner` retain their usual copy behavior.
 
+If copying the condition data for a handler fails — the data nests past the
+value-depth limit, or the allocation budget is exhausted — the handler is not
+called and the copier's own error propagates instead, prefixed with `handler
+data cannot be copied`. It keeps that error's condition name and its Go error,
+so an outer `handler-bind` can match it by name and `errors.As` still reaches
+`lisp.ValueDepthError`.
+
 Passing an `*ErrorVal` back into `Error` or `ErrorCondition` returns that
 same value, condition and stack intact, so a handler can hand back exactly
 what it was given. Passing a Go error that merely *wraps* an `*ErrorVal`

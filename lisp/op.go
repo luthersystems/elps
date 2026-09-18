@@ -115,7 +115,8 @@ var langSpecialOps = []*langBuiltin{
 		is called with the condition name and error data as values, without
 		evaluating the data. Copying condition data beyond 1000000 levels
 		(or the configured WithMaxValueDepth setting) raises an ordinary depth error
-		that propagates to an outer handler. Go errors supply message strings. Source parse
+		that propagates to an outer handler: the copy failure keeps its own condition
+		name rather than being reclassified. Go errors supply message strings. Source parse
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
 		Handlers must be regular functions. Use the symbol
@@ -889,7 +890,17 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// while rethrow retains the original error on the stack.
 				copied, failure := val.copyWithRuntime(env.Runtime)
 				if failure != nil {
-					return env.Errorf("handler data cannot be copied: %v", failure)
+					// The copier's failure is already a classified condition
+					// -- a value-depth error, an allocation error -- carrying
+					// the Go error behind it.  Rendering it into a freshly
+					// built 'error threw both away, so an outer handler could
+					// not match the depth error by name as this operator's
+					// docstring promises and a host could not reach it with
+					// errors.As.  ErrorCondition re-raises it under the
+					// copier's own condition with the Go error still wrapped,
+					// and hands a recovered host fault back unchanged.
+					return env.ErrorCondition(failure.Str,
+						fmt.Errorf("handler data cannot be copied: %w", GoError(failure)))
 				}
 				fargs := []*LVal{Quote(Symbol(val.Str))}
 				fargs = append(fargs, copied.Cells...)
