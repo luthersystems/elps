@@ -875,6 +875,10 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
 	cells = append(cells, body...)
+	// Every function value that captures an environment is built here, so
+	// this counter is how opLetSeq learns that an initializer may have
+	// captured the let* scope (see closuresCreated).
+	env.Runtime.closures.Add(1)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc

@@ -57,6 +57,7 @@ type Runtime struct {
 	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
+	closures               atomicCounter // Closures created so far; let* reads it to learn whether an initializer could have captured its scope.
 	macroExpSeq            int64 // monotonic counter for macroExpansionInfo.ID
 }
 
@@ -407,6 +408,13 @@ func StandardRuntime() *Runtime {
 
 func (r *Runtime) GenEnvID() uint {
 	return r.getEnvID()
+}
+
+// closuresCreated returns the number of closures the runtime has built so
+// far. It only ever moves forward, so two reads that agree prove no closure
+// was created between them.
+func (r *Runtime) closuresCreated() uint64 {
+	return atomic.LoadUint64((*uint64)(&r.closures))
 }
 
 func (r *Runtime) GenSym() string {

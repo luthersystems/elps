@@ -771,10 +771,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 	if bindlist.Type != LSExpr {
 		return env.Errorf("first argument is not a list: %s", bindlist.Type)
 	}
-	letenv := env
-	if len(bindlist.Cells) == 0 {
-		letenv = NewEnv(env)
-	}
+	letenv := newEnvN(env, len(bindlist.Cells))
 	for _, bind := range bindlist.Cells {
 		if bind.Type != LSExpr {
 			return env.Errorf("first argument is not a list of pairs")
@@ -782,15 +779,26 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		if len(bind.Cells) != 2 {
 			return env.Errorf("first argument is not a list of pairs")
 		}
+		before := env.Runtime.closuresCreated()
 		val := letenv.Eval(bind.Cells[1])
 		if val.Type == LError {
 			return val
 		}
-		// Each binding is a nested scope. An initializer's closures retain
-		// earlier bindings; the new binding can shadow them without changing
-		// what those closures see. This also covers closures inside values
-		// such as vectors, rather than only a directly returned LFun.
-		letenv = newEnvN(letenv, 1)
+		// Semantically each binding is a nested scope: a closure created by
+		// an initializer retains the bindings that existed when it was
+		// created, so a later binding (a shadowing one included) must not
+		// become visible to it. Opening a scope per binding costs an
+		// environment per binding and a lookup that walks them all, several
+		// times the flat cost on ordinary binding lists. The only thing that
+		// can retain letenv past this iteration is a function value built by
+		// LEnv.Lambda, wherever it ends up (returned, stored in a vector,
+		// bound elsewhere), and every one of those moves the runtime's
+		// closure counter. So the scope is split only after an initializer
+		// that created a closure; every other binding goes into the scope it
+		// would have shared anyway, which is exactly the flat let* of before.
+		if env.Runtime.closuresCreated() != before {
+			letenv = newEnvN(letenv, 1)
+		}
 		lerr := letenv.Put(bind.Cells[0], val)
 		if lerr.Type == LError {
 			return lerr
