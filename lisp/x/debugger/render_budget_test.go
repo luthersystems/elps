@@ -19,7 +19,14 @@ func TestFormatValueGraphDeadline(t *testing.T) {
 	for _, mode := range []string{"dag", "cycle"} {
 		t.Run(mode, func(t *testing.T) {
 			if os.Getenv("ELPS_TEST_DEBUG_RENDER") != mode {
-				ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+				// The deadline exists to turn a runaway render or a fatal
+				// stack overflow in the child into a test failure, so it
+				// only needs to be far below the package timeout. It also
+				// covers the child's process start-up and teardown, which
+				// under -race on a loaded CI runner has exceeded ten
+				// seconds AFTER the child printed PASS; a minute keeps the
+				// guard and stops that from reading as a failure.
+				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
 				defer cancel()
 				//nolint:gosec // Isolate runaway rendering and fatal stack overflow.
 				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFormatValueGraphDeadline$/^"+mode+"$")
