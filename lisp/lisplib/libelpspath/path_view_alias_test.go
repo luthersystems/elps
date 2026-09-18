@@ -55,7 +55,7 @@ type viewDeleteFn func(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error)
 // shippedViewDelete is the real thing, reached exactly as a builtin reaches
 // it.
 func shippedViewDelete(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error) {
-	p, err := argToStep(step, 0)
+	p, err := argToStep(step)
 	if err != nil {
 		return nil, err
 	}
@@ -106,7 +106,7 @@ func inPlaceViewDelete(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func mustStep(step *lisp.LVal) Path {
-	p, err := argToStep(step, 0)
+	p, err := argToStep(step)
 	if err != nil {
 		panic(fmt.Sprintf("bad step %v: %v", step, err))
 	}
@@ -247,14 +247,14 @@ var viewMutateOps = []struct {
 }{
 	{"?del!", shippedViewDelete},
 	{"?set!", func(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error) {
-		p, err := argToStep(step, 0)
+		p, err := argToStep(step)
 		if err != nil {
 			return nil, err
 		}
 		return p.SetMutate(in, lisp.Vector([]*lisp.LVal{lisp.String("W0"), lisp.String("W1")}))
 	}},
 	{"?nil!", func(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error) {
-		p, err := argToStep(step, 0)
+		p, err := argToStep(step)
 		if err != nil {
 			return nil, err
 		}

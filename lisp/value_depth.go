@@ -30,7 +30,7 @@ import (
 // sealing | lisp/seal.go:145 | explicit stack / sealed memo (void API completes) | TestValueWalkDepth/{100000,3000000}/seal
 // macro source locations | lisp/macro.go:471 | explicit stack / identity memo (void API completes) | TestValueWalkDepth/{100000,3000000}/locate
 // package classification | lisp/package_admit.go:206 | explicit stack / runtime counter (registry's runtime) | TestValueWalkDepth/{100000,3000000}/classify; TestPackageAdmissionHonoursRuntimeDepthLimit
-// elpspath copy | lisp/lisplib/libelpspath/path.go:71 | explicit stack / runtime counter (carried by the path step) | TestPathValueDepth; TestCopyHonoursRuntimeDepthLimit
+// elpspath copy | lisp/lisplib/libelpspath/path.go:71 | explicit stack / runtime counter (carried down the walk by setPath/deletePath/nilPath) | TestPathValueDepth; TestCopyHonoursRuntimeDepthLimit
 // elpspath copying chains | lisp/lisplib/libelpspath/path.go:933 | separate maxPathSteps (1024) | TestPathTraversalDepth
 // elpspath nested iterators | lisp/lisplib/libelpspath/query.go:125 | separate maxPathSteps (1024) | TestPathTraversalDepth
 // reader admission | lisp/loader.go:673 | existing loaderWalkMaxDepth | TestLoadCacheDepthCapSurvivesMemoHit

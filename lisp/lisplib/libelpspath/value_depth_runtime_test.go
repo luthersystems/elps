@@ -46,7 +46,7 @@ func TestCopyHonoursRuntimeDepthLimit(t *testing.T) {
 }
 
 // The builtins are where the runtime is in reach, so they are what carries the
-// configured limit into the steps ArgsToPathWithLimit builds.
+// configured limit into the walk, through setPath/deletePath/nilPath.
 func TestQueryBuiltinHonoursRuntimeDepthLimit(t *testing.T) {
 	t.Parallel()
 
@@ -66,5 +66,47 @@ func TestQueryBuiltinHonoursRuntimeDepthLimit(t *testing.T) {
 	}
 	if got := set(underRuntimeLimit); got.Type == lisp.LError {
 		t.Fatalf("?set rejected a %d-deep value under a %d limit: %s", underRuntimeLimit, runtimeDepthLimit, got)
+	}
+}
+
+// The limit travels as an argument now, so every step that recurses has to
+// pass it on: a chain into a nested document, and an iterator running a chain
+// per element, are the two that do.
+func TestNestedStepsCarryRuntimeDepthLimit(t *testing.T) {
+	t.Parallel()
+
+	run := func(t *testing.T, depth int, steps ...*lisp.LVal) *lisp.LVal {
+		t.Helper()
+		env := lisp.NewEnv(nil)
+		if rc := lisp.WithMaxValueDepth(runtimeDepthLimit)(env); rc.Type == lisp.LError {
+			t.Fatalf("configuring the limit failed: %s", rc)
+		}
+		// Each element is (deep 1); the write lands on index 1 and the deep
+		// value at index 0 is the off-path copy.
+		element := func() *lisp.LVal {
+			return lisp.QExpr([]*lisp.LVal{deepList(depth), lisp.Int(1)})
+		}
+		doc := lisp.QExpr([]*lisp.LVal{element(), element()})
+		args := append([]*lisp.LVal{doc}, steps...)
+		args = append(args, lisp.Int(2))
+		return BuiltinQuerySet(env, lisp.SExpr(args))
+	}
+
+	for _, tc := range []struct {
+		name  string
+		steps []*lisp.LVal
+	}{
+		{"chain", []*lisp.LVal{lisp.Int(0), lisp.Int(1)}},
+		{"iterator", []*lisp.LVal{lisp.Symbol("*"), lisp.Int(1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := run(t, overRuntimeLimit, tc.steps...)
+			if got.Type != lisp.LError || !strings.Contains(got.String(), "maximum: 2048") {
+				t.Fatalf("accepted a %d-deep value under a %d limit: %s", overRuntimeLimit, runtimeDepthLimit, got)
+			}
+			if got := run(t, underRuntimeLimit, tc.steps...); got.Type == lisp.LError {
+				t.Fatalf("rejected a %d-deep value under a %d limit: %s", underRuntimeLimit, runtimeDepthLimit, got)
+			}
+		})
 	}
 }

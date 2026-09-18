@@ -72,9 +72,9 @@ func TestPathTraversalDepth(t *testing.T) {
 		t.Error("expected path depth error")
 	}
 	for _, call := range []func() (*lisp.LVal, error){
-		func() (*lisp.LVal, error) { return setChain(v, lisp.Int(9), paths) },
-		func() (*lisp.LVal, error) { return deleteChain(v, paths) },
-		func() (*lisp.LVal, error) { return nullChain(v, paths) },
+		func() (*lisp.LVal, error) { return setChain(v, lisp.Int(9), paths, 0) },
+		func() (*lisp.LVal, error) { return deleteChain(v, paths, 0) },
+		func() (*lisp.LVal, error) { return nullChain(v, paths, 0) },
 	} {
 		if _, err := call(); err == nil {
 			t.Error("expected traversal depth error")

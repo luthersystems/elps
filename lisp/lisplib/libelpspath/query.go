@@ -123,32 +123,17 @@ import (
 // More than maxPathSteps iterator steps are refused before compiling
 // nested iterators, which would otherwise recurse over program-built values.
 //
-// The steps it builds copy at MaxValueDepth.  A caller holding the runtime
-// the operation runs under uses ArgsToPathWithLimit so that a
-// WithMaxValueDepth override bounds those copies instead.
+// A step copies at MaxValueDepth unless the operation is run through
+// setPath, deletePath or nilPath, which carry the caller's own limit; the
+// query builtins below take that from env.Runtime.ValueDepthLimit().
 func ArgsToPath(args []*lisp.LVal) (Path, error) {
-	return ArgsToPathWithLimit(args, 0)
-}
-
-// ArgsToPathWithLimit is ArgsToPath building steps whose copies are bounded by
-// limit, which the query builtins take from env.Runtime.ValueDepthLimit().
-// A limit below the floor WithMaxValueDepth accepts -- including zero, which
-// is what ArgsToPath passes -- means MaxValueDepth.
-//
-// The limit is fixed when the path is BUILT rather than read when it runs,
-// because the Path interface is the package's exported surface and carries no
-// runtime: an embedder implements it, and widening eight methods to thread a
-// limit through would change every implementation for a bound only the steps
-// this package builds can apply.  Every lisp-visible path is built here, once
-// per call, so the limit a step carries is the one its own runtime configured.
-func ArgsToPathWithLimit(args []*lisp.LVal, limit int) (Path, error) {
 	if len(args) == 0 {
 		return Root(Chain()), nil
 	}
 	steps := make([]Path, 0, len(args))
 	iterators := 0
 	for i, arg := range args {
-		step, err := argToStep(arg, limit)
+		step, err := argToStep(arg)
 		if err != nil {
 			return nil, fmt.Errorf("step %d: %w", i, err)
 		}
@@ -163,26 +148,26 @@ func ArgsToPathWithLimit(args []*lisp.LVal, limit int) (Path, error) {
 	return Root(Chain(steps...)), nil
 }
 
-func argToStep(arg *lisp.LVal, limit int) (Path, error) {
+func argToStep(arg *lisp.LVal) (Path, error) {
 	switch arg.Type {
 	case lisp.LString:
-		return &dotPath{key: arg.Str, limit: limit}, nil
+		return Dot(arg.Str), nil
 	case lisp.LInt:
-		return &indexPath{index: arg.Int, limit: limit}, nil
+		return Index(arg.Int), nil
 	case lisp.LSymbol:
 		if arg.Str == "*" {
-			return &iterPath{path: Chain(), limit: limit}, nil
+			return Iter(), nil
 		}
 		return nil, fmt.Errorf("unsupported symbol: %s (only '* is supported)", arg.Str)
 	case lisp.LSExpr:
-		return parseSExprStep(arg, limit)
+		return parseSExprStep(arg)
 	default:
 		return nil, fmt.Errorf("unsupported path step type: %v", arg.Type)
 	}
 }
 
 // parseSExprStep parses an s-expression path step like (range 1 3).
-func parseSExprStep(expr *lisp.LVal, limit int) (Path, error) {
+func parseSExprStep(expr *lisp.LVal) (Path, error) {
 	cells := expr.Cells
 	if len(cells) == 0 {
 		return nil, errors.New("empty path expression")
@@ -211,13 +196,13 @@ func parseSExprStep(expr *lisp.LVal, limit int) (Path, error) {
 		if len(cells) == 2 {
 			// to is ignored when implicitTo is set; validateRange
 			// overwrites it with the input length.
-			return &rangePath{from: from.Int, implicitTo: true, limit: limit}, nil
+			return Range(from.Int, 0, true), nil
 		}
 		to := cells[2]
 		if to.Type != lisp.LInt {
 			return nil, fmt.Errorf("range 'to' must be an integer, got %v", to.Type)
 		}
-		return &rangePath{from: from.Int, to: to.Int, limit: limit}, nil
+		return Range(from.Int, to.Int, false), nil
 	default:
 		return nil, fmt.Errorf("unsupported path expression: %s", head.Str)
 	}
@@ -269,7 +254,7 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(val); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -298,7 +283,7 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(newVal); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -327,11 +312,11 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(newVal); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.Set(val, newVal)
+	data, err := setPath(path, val, newVal, env.Runtime.ValueDepthLimit())
 	if err != nil {
 		return env.Error(err)
 	}
@@ -348,7 +333,7 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(val); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -369,11 +354,11 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(val); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.Delete(val)
+	data, err := deletePath(path, val, env.Runtime.ValueDepthLimit())
 	if err != nil {
 		return env.Error(err)
 	}
@@ -390,7 +375,7 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(val); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -411,11 +396,11 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := okSimpleType(val); err != nil {
 		return env.Error(err)
 	}
-	path, err := ArgsToPathWithLimit(steps, env.Runtime.ValueDepthLimit())
+	path, err := ArgsToPath(steps)
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.Nil(val)
+	data, err := nilPath(path, val, env.Runtime.ValueDepthLimit())
 	if err != nil {
 		return env.Error(err)
 	}
