@@ -416,7 +416,10 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 		return got
 	}
 	var st cycleState
-	got := s.syntax(v, cycleGuard{state: &st})
+	got, fail := s.syntax(v, cycleGuard{state: &st})
+	if fail != nil {
+		return fail
+	}
 	if st.cyclic {
 		// The walk above stopped as soon as it knew the expansion contains
 		// itself, and whatever it built on the way is discarded -- copies
@@ -427,7 +430,10 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 		// expansion did.
 		s.copies = make(map[*LVal]*LVal)
 		s.nextID = s.firstID
-		got = s.syntax(v, strictCycleGuard())
+		got, fail = s.syntax(v, strictCycleGuard())
+		if fail != nil {
+			return fail
+		}
 	}
 	s.commitIDs()
 	return got
@@ -634,17 +640,22 @@ func (s *macroStamper) value(v *LVal) *LVal {
 // v -- its own header and, when any cell changed, its own cell slice --
 // carrying the stamp and pointing at the stamped counterparts of v's cells.
 // It never writes to v or to anything reachable from v.
-func (s *macroStamper) syntax(v *LVal, g cycleGuard) *LVal {
+// A second result reports the walk's own FAILURE -- today only the value
+// depth limit.  It cannot be carried in the first: an error is an ordinary
+// first-class VALUE in ELPS, so a Go macro may splice one into its expansion
+// as data, and sniffing the converted node's type for LError would truncate
+// such an expansion at that node.
+func (s *macroStamper) syntax(v *LVal, g cycleGuard) (*LVal, *LVal) {
 	if v == nil || isSingleton(v) || v.sealed {
-		return v
+		return v, nil
 	}
 	if isValueNode(v) || len(v.Cells) == 0 {
-		return s.value(v)
+		return s.value(v), nil
 	}
 	return s.syntaxContainer(v, g)
 }
 
-func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) *LVal {
+func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) (*LVal, *LVal) {
 	type frame struct {
 		v, cp *LVal
 		cells []*LVal
@@ -660,7 +671,7 @@ walk:
 		case isValueNode(v) || len(v.Cells) == 0:
 			result = s.value(v)
 		case g.abandoned():
-			return v
+			return v, nil
 		default:
 			if cp, ok := s.copies[v]; ok {
 				result = cp
@@ -668,11 +679,11 @@ walk:
 			}
 			depth := g.depth + len(stack)
 			if depth >= s.rt.ValueDepthLimit() {
-				return Error(ValueDepthError(s.rt.ValueDepthLimit()))
+				return nil, Error(ValueDepthError(s.rt.ValueDepthLimit()))
 			}
 			_, cyclic := (cycleGuard{state: g.state, depth: depth, strict: g.strict}).descend(v)
 			if cyclic {
-				return v // The caller discards this pass and restarts in strict mode.
+				return v, nil // The caller discards this pass and restarts in strict mode.
 			}
 			f := frame{v: v}
 			if needsStamp(v) {
@@ -693,9 +704,6 @@ walk:
 			continue
 		}
 		for len(stack) > 0 {
-			if result != nil && result.Type == LError {
-				return result
-			}
 			f := &stack[len(stack)-1]
 			if f.cells != nil {
 				f.cells[f.i] = result
@@ -728,7 +736,7 @@ walk:
 			*f = frame{}
 			stack = stack[:len(stack)-1]
 		}
-		return result
+		return result, nil
 	}
 }
 
