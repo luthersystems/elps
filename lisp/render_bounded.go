@@ -461,6 +461,15 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 	if r.full {
 		return
 	}
+	if v == nil {
+		// A container's Cells may hold a nil the value API cannot produce
+		// but a malformed host value can. errorMessage already renders one
+		// rather than dereferencing it; rendering is diagnostic code and a
+		// nil child is exactly what it is most likely to be handed.
+		log.Printf("elps: valueRenderer rendering a nil child (container has a malformed Cells slice)")
+		r.text("<nil>")
+		return
+	}
 	quote := ""
 	if onTheRecord {
 		quote = "'"

@@ -265,12 +265,20 @@ func (c *copier) checkAlloc(n int) error {
 // copyFrame retains one container's cursor. It owns no child result slots
 // or closures, and width never increases the continuation stack.
 type copyFrame struct {
-	mapping, source map[string]*LVal
-	md              *MapData
-	cells, copied   []*LVal
-	keys            []string
-	pairs           []copyStringKV
-	index           int
+	mapping       map[string]*LVal
+	md            *MapData
+	cells, copied []*LVal
+	// values holds the map's values in keys' order, read out of the source
+	// map before the first of them is walked.  It used to be the source map
+	// itself, looked up key by key as the walk reached each key -- and the
+	// walk runs host code (a NativeCloner.CloneNative on a value, a custom
+	// Map's Entries), so a hook that deleted a key the walk had not reached
+	// yet had the copy store the Go nil the lookup returned.  See cells
+	// above: the same contract, one container over.
+	values []*LVal
+	keys   []string
+	pairs  []copyStringKV
+	index  int
 }
 
 type copyStringKV struct {
@@ -291,7 +299,7 @@ func (f *copyFrame) len() int {
 func (f *copyFrame) child() *LVal {
 	switch {
 	case f.keys != nil:
-		return f.source[f.keys[f.index]]
+		return f.values[f.index]
 	case f.pairs != nil:
 		return f.pairs[f.index].v
 	case f.md != nil:
@@ -659,7 +667,18 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 				sm.m[k] = c.copyNode(v)
 			}
 		} else {
-			c.next = copyFrame{keys: copierSortedKeys(m0.m), source: m0.m, mapping: sm.m}
+			// The values are read out now, in key order, rather than
+			// looked up as the walk reaches each key: the walk calls a
+			// host hook per value, and an entry a hook deletes must
+			// still be the entry the map held when Copy entered it.
+			// Two slices rather than one []{key,value}: the sort stays
+			// the cheap sort of a []string (see above).
+			keys := copierSortedKeys(m0.m)
+			values := make([]*LVal, len(keys))
+			for i, k := range keys {
+				values[i] = m0.m[k]
+			}
+			c.next = copyFrame{keys: keys, values: values, mapping: sm.m}
 		}
 		for k, t := range m0.tm {
 			sm.tm[k] = t

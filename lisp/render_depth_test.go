@@ -173,8 +173,18 @@ func TestBoundedStringAgreesWithStringOnLongCycle(t *testing.T) {
 	}
 }
 
+// malformedRenderLeaf is a value whose rendering panics: a sorted-map header
+// whose Native is not the *MapData the type promises. The fixtures below need
+// a panic inside an error message to exercise the renderer's recovery, and a
+// nil cell -- which they used to use -- no longer panics: the renderer reports
+// one as <nil> rather than dereferencing it, so that a malformed value reached
+// outside an error message is a wrong answer and not a dead process.
+func malformedRenderLeaf() *LVal {
+	return &LVal{Type: LSortMap}
+}
+
 func TestBoundedRenderCycleProbePreservesErrorRecovery(t *testing.T) {
-	bad := SExpr([]*LVal{nil})
+	bad := SExpr([]*LVal{malformedRenderLeaf()})
 	first := ErrorConditionf("first", "placeholder")
 	first.Cells = []*LVal{bad}
 	second := ErrorConditionf("second", "placeholder")
@@ -211,8 +221,8 @@ func TestBoundedRenderCycleProbePreservesErrorRecovery(t *testing.T) {
 }
 
 func TestBoundedRenderCycleProbePreservesDepthDependentRecovery(t *testing.T) {
-	var bad *LVal
-	for range 900 {
+	bad := malformedRenderLeaf()
+	for range 899 {
 		bad = SExpr([]*LVal{bad})
 	}
 	e := ErrorConditionf("bad", "placeholder")
