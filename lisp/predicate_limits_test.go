@@ -67,6 +67,7 @@ func TestPredicateLimitsObserveCancellationBetweenCallbacks(t *testing.T) {
 		{"insert first key", `(insert-sorted 'vector source predicate 0 key)`, 1, 1, 0, false},
 		{"insert second key", `(insert-sorted 'vector source predicate 0 key)`, 2, 2, 0, false},
 		{"insert predicate after keys", `(insert-sorted 'vector source predicate 0 key)`, 0, 2, 1, false},
+		{"search predicate", `(search-sorted 8 predicate)`, 0, 0, 1, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := newPredicateValuesEnv(t)
@@ -129,6 +130,9 @@ func TestPredicateLimitsBoundNativeCallbackSteps(t *testing.T) {
 		{"sort key", `(stable-sort predicate source key)`, false},
 		{"insert", `(insert-sorted 'vector source predicate 0)`, false},
 		{"insert key", `(insert-sorted 'vector source predicate 0 key)`, false},
+		// A binary search over 2^20 indices probes 20 times, which the
+		// budget below cannot pay for and the larger limit can.
+		{"search", `(search-sorted 1048576 predicate)`, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			for _, limit := range []int64{10000, budget} {
@@ -181,6 +185,9 @@ func TestPredicateLimitsBoundNativeCallbackSteps(t *testing.T) {
 				case "select", "reject":
 					assert.Equal(t, size, calls, "the control must inspect every element")
 					assert.True(t, lisp.True(got.Equal(lisp.Vector(cells))), "the predicate keeps every input element: %v", got)
+				case "search":
+					assert.Equal(t, 20, calls, "a binary search over 2^20 indices probes 20 times")
+					assert.Equal(t, "1048576", got.String(), "no index satisfies a predicate that never returns true")
 				case "insert", "insert key":
 					assert.Equal(t, size+1, got.Len())
 					assert.Equal(t, "0", got.ArrayIndex(lisp.Int(size)).String())

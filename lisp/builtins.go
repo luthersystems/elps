@@ -288,7 +288,8 @@ var (
 		{"search-sorted", Formals("n", "predicate"), builtinSearchSorted,
 			`Returns the smallest index i in [0, n) for which predicate
 			returns true, using binary search. Equivalent to Go's
-			sort.Search.`},
+			sort.Search. Predicate must be a regular function and receives
+			each probed index as data without evaluation.`},
 		{"select", Formals("type-specifier", "predicate", "seq"), builtinSelect,
 			`Returns a new sequence containing only elements for which
 			predicate returns truthy. The type-specifier ('list or 'vector)
@@ -2032,7 +2033,10 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 		return p
 	}
 	if p.Type != LFun {
-		return env.Errorf("second arument is not a function: %v", p.Type)
+		return env.Errorf("second argument is not a function: %v", p.Type)
+	}
+	if p.IsSpecialFun() {
+		return env.Errorf("second argument is not a regular function: %v", p.FunType)
 	}
 	sortErr := Nil()
 	i := sort.Search(n.Int, func(i int) bool {
@@ -2041,8 +2045,11 @@ func builtinSearchSorted(env *LEnv, args *LVal) *LVal {
 		if !sortErr.IsNil() {
 			return false
 		}
-		expr := SExpr([]*LVal{p, Int(i)})
-		ok := env.Eval(expr)
+		// The index is handed over as a value, as every other higher-order
+		// builtin hands its callback arguments over; evaluating an
+		// S-expression here would call the predicate through a path that
+		// charges no step of its own for a native callback.
+		ok := env.callValueFunction(p, QExpr([]*LVal{Int(i)}))
 		if ok.Type == LError {
 			sortErr = ok
 			return false

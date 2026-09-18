@@ -45,6 +45,7 @@ func TestPredicateValuesRemainData(t *testing.T) {
 		{"insert nested list keys", `(map 'list first (insert-sorted 'vector '((1) (3)) < '(2) first))`, `'(1 2 3)`},
 		{"insert symbols", `(map 'list to-string (insert-sorted 'list '(alice carol) (lambda (a b) (string< (to-string a) (to-string b))) 'bob))`, `'("alice" "bob" "carol")`},
 		{"insert symbol keys", `(map 'list to-string (insert-sorted 'vector '(alice carol) string< 'bob to-string))`, `'("alice" "bob" "carol")`},
+		{"search index values", `(search-sorted 8 (lambda (i) (and (int? i) (>= i 4))))`, `4`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := newPredicateValuesEnv(t).LoadString("predicate-values.lisp", tc.expr)
@@ -168,6 +169,7 @@ func TestPredicateValuesRejectSpecialFunctions(t *testing.T) {
 			`(stable-sort < (list) %s)`, `(stable-sort < (list 2 1) %s)`,
 			`(insert-sorted 'list () %s 1)`, `(insert-sorted 'list '(2) %s 1)`,
 			`(insert-sorted 'list () < 1 %s)`, `(insert-sorted 'list '(2) < 1 %s)`,
+			`(search-sorted 0 %s)`, `(search-sorted 5 %s)`,
 		} {
 			expr := fmt.Sprintf(expr, form)
 			t.Run(expr, func(t *testing.T) {
