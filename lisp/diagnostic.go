@@ -15,7 +15,8 @@ import (
 // originating runtime's byte/work cap and request context. Prefixes, messages,
 // source snippets, stack notes, hints and writes all share one session. Hint
 // fields are passed separately to avoid allocating concatenated strings.
-// A nil context uses the error's captured context.
+// A nil context, or one that is already cancelled, disables cancellation
+// checks so the whole diagnostic still renders under the byte cap.
 func (e *ErrorVal) WriteDiagnosticContext(ctx context.Context, w io.Writer, renderer *diagnostic.Renderer, hint ...string) (int, error) {
 	limit, ctx := e.renderPolicy(ctx)
 	limit = diagnosticLimit(limit)

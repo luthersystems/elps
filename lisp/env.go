@@ -1171,10 +1171,12 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 }
 
 // errorStack snapshots the rendering policy along with the diagnostic frames.
+// Only the byte cap is captured: it answers a question a late renderer cannot
+// answer for itself (whose runtime produced this?), while a context answers
+// one that is already stale by the time the error is rendered.
 func (env *LEnv) errorStack() *CallStack {
 	stack := env.Runtime.Stack.Copy()
 	stack.renderLimit = env.Runtime.MaxAllocBytes()
-	stack.renderContext = env.evalCtx
 	return stack
 }
 
@@ -1329,7 +1331,6 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 		// Preserve a producer's frames while adding the policy at association.
 		stack = stack.Copy()
 		stack.renderLimit = env.Runtime.MaxAllocBytes()
-		stack.renderContext = env.evalCtx
 		lerr.SetCallStack(stack)
 	}
 	// This check smells a little funny.  An object's source may be absent
@@ -1959,7 +1960,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		return env.Errorf("first element of expression is not a function: %v", f)
 	}
 	if f.Type == LMarkTailRec {
-		_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+		_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
 		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
 	}
 
@@ -1986,7 +1987,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 			return v
 		}
 		if v.Type == LMarkTailRec {
-			_, _ = env.Runtime.Stack.DebugPrint(env.Runtime.getStderr())
+			_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
 			log.Panicf("tail-recursion optimization attempted during argument evaluation: %s", env.Render(SExpr(v.Cells)))
 		}
 

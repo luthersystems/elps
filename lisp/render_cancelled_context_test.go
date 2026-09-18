@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/diagnostic"
 	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
@@ -26,7 +27,7 @@ func newCancelRenderEnv(t *testing.T) *lisp.LEnv {
 
 // An error outlives the request that produced it: a handler returns it, the
 // host cancels the request context, and only then does the caller log it.
-// Rendering must not be blanked by the captured context's cancellation.
+// Rendering through the no-context readers must not be blanked.
 func TestErrorRendersAfterRequestContextCancelled(t *testing.T) {
 	env := newCancelRenderEnv(t)
 	ctx, cancel := context.WithCancel(t.Context())
@@ -105,4 +106,40 @@ func TestCancelledContextStillHonoursRenderLimit(t *testing.T) {
 	require.LessOrEqual(t, len(s), limit)
 	require.Contains(t, s, "#<truncated>")
 	require.True(t, strings.HasSuffix(s, "#<truncated>"))
+}
+
+// The same shape, but the caller hands the now-dead request context to the
+// explicit readers, which is what "log the error after defer cancel()" looks
+// like. A dead context bounds no work, so it must not blank the text: each
+// reader must produce byte for byte what its no-context form produces.
+func TestDeadCallerContextRendersLikeNoContext(t *testing.T) {
+	env := newCancelRenderEnv(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	v := env.LoadStringContext(ctx, "x.lisp", `(car 1)`)
+	require.Equal(t, lisp.LError, v.Type)
+	e := (*lisp.ErrorVal)(v)
+	cancel()
+	require.Error(t, ctx.Err())
+
+	require.Equal(t, e.ErrorMessage(), e.ErrorMessageContext(ctx))
+
+	var plainTrace, deadTrace bytes.Buffer
+	_, err := e.WriteTrace(&plainTrace)
+	require.NoError(t, err)
+	_, err = e.WriteTraceContext(ctx, &deadTrace)
+	require.NoError(t, err)
+	require.Equal(t, plainTrace.String(), deadTrace.String())
+
+	var plainDiag, deadDiag bytes.Buffer
+	//nolint:staticcheck // the nil-context render is the comparison baseline
+	_, err = e.WriteDiagnosticContext(nil, &plainDiag, &diagnostic.Renderer{})
+	require.NoError(t, err)
+	_, err = e.WriteDiagnosticContext(ctx, &deadDiag, &diagnostic.Renderer{})
+	require.NoError(t, err)
+	require.Equal(t, plainDiag.String(), deadDiag.String())
+
+	for _, s := range []string{e.ErrorMessageContext(ctx), deadTrace.String(), deadDiag.String()} {
+		require.NotContains(t, s, "#<truncated>")
+		require.Contains(t, s, "argument is not a list")
+	}
 }

@@ -8,18 +8,22 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/diagnostic"
 	"github.com/stretchr/testify/require"
 )
 
 // Cancels during the traversal, rather than at the evaluator's entry check.
+// A context with dead set is cancelled from the outset, which is what a caller
+// holding an already-finished request context passes in.
 type renderCancelContext struct {
 	context.Context
 	checks int
+	dead   bool
 }
 
 func (c *renderCancelContext) Err() error {
 	c.checks++
-	if c.checks > 100 {
+	if c.dead || c.checks > 100 {
 		return context.Canceled
 	}
 	return nil
@@ -59,7 +63,7 @@ func TestRenderCancellationDuringTraversal(t *testing.T) {
 	for range 40 {
 		dag = SExpr([]*LVal{dag, dag})
 	}
-	for _, mode := range []string{"debug", "format", "format-scalars", "diagnostic", "error", "error-message", "trace"} {
+	for _, mode := range []string{"debug", "format", "format-scalars", "diagnostic", "error", "error-message", "trace", "diagnostic-error"} {
 		t.Run(mode, func(t *testing.T) {
 			env := NewEnv(nil)
 			ctx := &renderCancelContext{Context: context.Background()}
@@ -83,15 +87,22 @@ func TestRenderCancellationDuringTraversal(t *testing.T) {
 				require.Equal(t, renderTruncatedMark, env.Render(dag))
 			default:
 				e := (*ErrorVal)(env.ErrorCondition("boom", dag))
-				// Retain the original context even after the builtin boundary restores it.
+				// The error stores no context; the reader is handed the
+				// request context explicitly, as an in-request caller does.
 				env.evalCtx = nil
 				switch mode {
 				case "error":
-					require.Equal(t, renderTruncatedMark, e.Error())
+					// Error() has no exported context form, so this is what
+					// it would be: the same render with message=false.
+					require.Equal(t, renderTruncatedMark, e.renderContext(ctx, false))
 				case "error-message":
-					require.Equal(t, renderTruncatedMark, e.ErrorMessage())
+					require.Equal(t, renderTruncatedMark, e.ErrorMessageContext(ctx))
 				case "trace":
-					_, err := e.WriteTrace(&out)
+					_, err := e.WriteTraceContext(ctx, &out)
+					require.NoError(t, err)
+					require.Contains(t, out.String(), renderTruncatedMark)
+				case "diagnostic-error":
+					_, err := e.WriteDiagnosticContext(ctx, &out, &diagnostic.Renderer{})
 					require.NoError(t, err)
 					require.Contains(t, out.String(), renderTruncatedMark)
 				}
@@ -206,12 +217,12 @@ func TestTraceFloorsTinyOutputBudget(t *testing.T) {
 }
 
 func TestTraceFrameCancellation(t *testing.T) {
-	// "cancelled" is the totality case: the captured context is already dead
-	// when the trace is written, which is the ordinary shape of an error
-	// logged after its request ended.  A dead captured context is no context
-	// at all, so the whole trace renders under the byte limit alone.  The
-	// other modes pin the live-context property: a context that is cancelled
-	// DURING the traversal still stops the frame output promptly.
+	// "cancelled" is the totality case: the context the caller hands the
+	// reader is already dead, which is the ordinary shape of an error logged
+	// after its request ended.  A dead context is no context at all, so the
+	// whole trace renders under the byte limit alone.  The other modes pin
+	// the live-context property: a context that is cancelled DURING the
+	// traversal still stops the frame output promptly.
 	for _, mode := range []string{"cancelled", "during-frames", "debug-stack"} {
 		t.Run(mode, func(t *testing.T) {
 			env := NewEnv(nil)
@@ -228,16 +239,16 @@ func TestTraceFrameCancellation(t *testing.T) {
 				e := (*ErrorVal)(env.ErrorCondition("boom", String("bad")))
 				env.evalCtx = nil
 				if mode == "cancelled" {
-					ctx.checks = 100
+					ctx.dead = true
 				}
-				_, err := e.WriteTrace(&out)
+				_, err := e.WriteTraceContext(ctx, &out)
 				require.NoError(t, err)
 			}
 			if mode == "cancelled" {
 				require.Contains(t, out.String(), "boom: bad", "a dead context must not blank the message")
 				require.NotContains(t, out.String(), renderTruncatedMark)
 				require.Equal(t, 1000, strings.Count(out.String(), "height "))
-				require.Equal(t, 101, ctx.checks, "a dead context is consulted once and then dropped")
+				require.Equal(t, 1, ctx.checks, "an explicitly passed dead context is consulted once and then dropped")
 				return
 			}
 			require.Less(t, strings.Count(out.String(), "height "), 100, "cancellation must stop frame output")

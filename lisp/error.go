@@ -11,9 +11,11 @@ import (
 )
 
 // ErrorVal implements the error interface so that errors can be first class lisp
-// objects. Rendering honours the originating runtime output limit and context,
-// using #<truncated> on exhaustion. The condition name is stored in Str,
-// message/data in Cells, and the captured call stack in Native.
+// objects. Rendering honours the originating runtime output limit, using
+// #<truncated> on exhaustion; cancellation comes from the context a caller
+// passes to a *Context reader, never from one the error stores. The condition
+// name is stored in Str, message/data in Cells, and the captured call stack in
+// Native.
 type ErrorVal LVal
 
 // nilErrorMessage is the sentinel returned by the rendering chain when a nil
@@ -42,7 +44,7 @@ func (e *ErrorVal) Error() string {
 }
 
 func (e *ErrorVal) render(message bool) string {
-	return e.renderContext(nil, message) //nolint:staticcheck // nil selects the error's captured cancellation context
+	return e.renderContext(nil, message) //nolint:staticcheck // no context is in reach here; nil disables cancellation checks
 }
 
 func (e *ErrorVal) renderContext(ctx context.Context, message bool) string {
@@ -120,38 +122,44 @@ func (e *ErrorVal) ErrorMessage() string {
 }
 
 // ErrorMessageContext returns the underlying error message bounded by the
-// originating output limit and ctx. A nil context uses the captured context.
-// Cancellation or exhaustion substitutes a fitting #<truncated> marker.
+// originating output limit and ctx. A nil context, or one that is already
+// cancelled, disables cancellation checks and leaves the byte limit alone to
+// bound the render. Cancellation of a live ctx during the traversal, or
+// exhaustion, substitutes a fitting #<truncated> marker.
 func (e *ErrorVal) ErrorMessageContext(ctx context.Context) string {
 	return e.renderContext(ctx, true)
 }
 
+// renderPolicy resolves the byte cap and the cancellation context for one
+// render. The cap is the error's own -- the originating runtime's, captured
+// when the error was raised, because no env is in reach at a late render. The
+// context is the caller's alone, filtered by liveRenderContext: a caller
+// logging an error after its request ended holds a dead context, and obeying
+// it would blank the whole diagnostic.
 func (e *ErrorVal) renderPolicy(ctx context.Context) (int, context.Context) {
 	limit := DefaultMaxAlloc
 	if e == nil {
-		return limit, ctx
+		return limit, liveRenderContext(ctx)
 	}
-	if stack := (*LVal)(e).CallStack(); stack != nil {
-		if stack.renderLimit > 0 {
-			limit = stack.renderLimit
-		}
-		if ctx == nil {
-			ctx = liveRenderContext(stack.renderContext)
-		}
+	if stack := (*LVal)(e).CallStack(); stack != nil && stack.renderLimit > 0 {
+		limit = stack.renderLimit
 	}
-	return limit, ctx
+	return limit, liveRenderContext(ctx)
 }
 
-// WriteTrace writes the error and stack trace under the captured output limit
-// and context. The entire trace shares one budget, including any Go stack.
-// A nil receiver writes the nilErrorMessage sentinel rather than panicking.
+// WriteTrace writes the error and stack trace under the captured output limit,
+// with no cancellation. The entire trace shares one budget, including any Go
+// stack. A nil receiver writes the nilErrorMessage sentinel rather than
+// panicking.
 func (e *ErrorVal) WriteTrace(w io.Writer) (int, error) {
-	return e.WriteTraceContext(nil, w) //nolint:staticcheck // nil selects the error's captured cancellation context
+	return e.WriteTraceContext(nil, w) //nolint:staticcheck // no context is in reach here; nil disables cancellation checks
 }
 
 // WriteTraceContext writes the error, frames, and Go stack under one output
-// budget and ctx. Cancellation or exhaustion emits a fitting #<truncated>
-// marker. A nil context uses the error's captured context.
+// budget and ctx. A nil context, or one that is already cancelled, disables
+// cancellation checks so the whole trace still renders under the byte limit.
+// Cancellation of a live ctx during the traversal, or exhaustion, emits a
+// fitting #<truncated> marker.
 func (e *ErrorVal) WriteTraceContext(ctx context.Context, w io.Writer) (int, error) {
 	limit, ctx := e.renderPolicy(ctx)
 	limit = diagnosticLimit(limit)

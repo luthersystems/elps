@@ -2360,8 +2360,12 @@ itself keep `MaxAlloc` exactly. The marker is never printed in part; a cap too
 small to hold it prints nothing. Error
 condition data remains available unchanged to handlers. Go's `LVal.String`
 uses the default cap without an evaluation context; `LEnv.Render` uses the
-environment's cap and context. Errors retain the rendering policy captured
-when they were created.
+environment's cap and context. Errors retain the output cap captured when they
+were created, but no context: an error outlives the request that produced it,
+so cancellation comes from the context the caller hands a reader such as
+`ErrorMessageContext` or `WriteTraceContext`. A context that is already dead
+bounds nothing and is ignored, so a diagnostic logged after its request ended
+still renders in full under the byte cap.
 
 `to-string` accepts only scalar strings, symbols, bytes, and numbers; it never
 walks a container graph. Existing strings and symbols reuse their storage;

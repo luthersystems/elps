@@ -20,13 +20,14 @@ import (
 // ErrorVal.WriteTrace or direct access) can render the Go-level origin
 // alongside the ELPS frames. It is nil for non-panic errors.
 //
-// Keep pointer-bearing diagnostic context and slice headers before scalars.
+// Keep slice headers before scalars.
 type CallStack struct {
-	// Captured only for error reporting; ordinary live stacks leave these zero.
-	renderContext context.Context
-	Frames        []CallFrame
-	GoStack       []byte
+	Frames  []CallFrame
+	GoStack []byte
 
+	// Captured only for error reporting; ordinary live stacks leave this zero.
+	// The stack deliberately retains no context: an error outlives the request
+	// that produced it, so every renderer is handed a context by its caller.
 	renderLimit int
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
@@ -148,7 +149,6 @@ func (s *CallStack) Copy() *CallStack {
 	frames := make([]CallFrame, len(s.Frames))
 	copy(frames, s.Frames)
 	return &CallStack{
-		renderContext:     s.renderContext,
 		renderLimit:       s.renderLimit,
 		MaxHeightLogical:  s.MaxHeightLogical,
 		MaxHeightPhysical: s.MaxHeightPhysical,
@@ -312,14 +312,16 @@ func (s *CallStack) Pop() CallFrame {
 	return f
 }
 
-// DebugPrint prints s under its captured output limit and context, or the
-// default output limit for a live stack. Exhaustion emits #<truncated>.
+// DebugPrint prints s under its captured output limit, or the default output
+// limit for a live stack, with no cancellation. Exhaustion emits #<truncated>.
+// A caller with a request context in hand renders the stack through the
+// error's WriteTraceContext instead.
 func (s *CallStack) DebugPrint(w io.Writer) (int, error) {
 	limit := s.renderLimit
 	if limit <= 0 {
 		limit = DefaultMaxAlloc
 	}
-	return s.debugPrintContext(liveRenderContext(s.renderContext), w, limit)
+	return s.debugPrintContext(nil, w, limit) //nolint:staticcheck // a stack carries no context; nil disables cancellation checks
 }
 
 func (s *CallStack) debugPrintContext(ctx context.Context, w io.Writer, limit int) (int, error) {
