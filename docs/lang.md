@@ -1048,7 +1048,11 @@ the program.
 If a predicate or key function signals an error, `stable-sort`, `insert-sorted`
 and `search-sorted` propagate that first error without invoking another
 callback. This stops further evaluation; it does not undo changes already
-made by a callback or by an in-place sort.
+made by a callback or by an in-place sort. Because `stable-sort` sorts a
+mutable sequence in place, a predicate error leaves that sequence in an
+unspecified order — neither the original order nor a sorted one — and the
+first error is what propagates; sort a `copy` if the input must survive a
+failing predicate intact.
 
 ```lisp
 ;; BAD -- runs an unknown number of times, in an unknown order
