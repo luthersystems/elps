@@ -44,7 +44,19 @@ func Not(v *LVal) bool {
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
 func GoValue(v *LVal) interface{} {
-	return GoValueWithRuntime(nil, v)
+	// Same body as GoValueWithRuntime with the default limit spelled as the
+	// constant: this is the hot conversion entry point (BenchmarkGoValueBytes
+	// measures it at tens of nanoseconds), and routing it through the
+	// runtime-taking form costs two call frames and a nil-receiver method
+	// call on every leaf.
+	if v != nil && v.Type == LNative {
+		return v.Native
+	}
+	out, ok := convertValue(v, MaxValueDepth)
+	if !ok {
+		return v
+	}
+	return out
 }
 
 // GoValueWithRuntime is GoValue bounded by rt's configured value-depth limit
