@@ -109,3 +109,16 @@
 # `elps doc --json` (cmd/doc.go); nothing on an embedded or request path
 # calls it, so the cost is paid once per CLI invocation by a developer.
 github.com/luthersystems/elps/mcpserver | LintTool | B/op | 8.5 | 2027-09-14 | elps#659 | Additional analysis from lisp-package-seal, builtin-shadowing, lambda-list, duplicate-binding and duplicate-keyword analyzers.
+
+# TemplateConstruction/functions=250/NewTemplate is a 2.4 ms whole-publication
+# timing whose sec/op moves with code placement, not with the work it does.
+# PR #658's final follow-ups (the admission entry snapshot and the registry's
+# runtime back-pointer) put it at +15.22% and +17.50% on the shared runner
+# with allocations flat (1.673k -> 1.674k allocs/op, one entries slice per
+# publication). Measured locally with order-counterbalanced arms: the commits
+# are at parity with the base (p=0.16 to 0.94 across the bisection), and a
+# control that adds one never-executed function to package lisp -- zero added
+# work -- moves this same row by +8.21% (p=0.009). Two runs of identical base
+# code minutes apart differ by 10%. The row's allocation columns stay under the
+# ordinary gate; only its timing is waived.
+github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=250/NewTemplate | sec/op | 25 | 2027-03-31 | elps#659 | Placement-sensitive whole-publication timing; parity with base under counterbalanced measurement, allocations stable, zero-work control moves it as much.
