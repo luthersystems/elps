@@ -209,3 +209,36 @@ func TestPowIntNegativeExponent(t *testing.T) {
 		t.Errorf("powInt(2, MinInt) returned %v, want a float", v.Type)
 	}
 }
+
+// TestPowOverflowErrorIsRaisedThroughEnv pins that the integer-overflow error
+// builtinPow returns is raised through the environment, like every other
+// arithmetic error in builtins.go, so it carries a captured call stack and the
+// function attribution rendered from it.  powInt itself is a pure helper with
+// no env to raise through, which is why its overflow error used to reach the
+// caller unattributed: it rendered as a bare "integer overflow: power
+// overflows int", with no "lisp:pow:" prefix and no stack note, while pow's
+// own argument-type errors a few lines above rendered with both.  The rendered
+// spellings are pinned in TestBuiltinDiagnosticMessages.
+func TestPowOverflowErrorIsRaisedThroughEnv(t *testing.T) {
+	const message = "integer overflow: power overflows int"
+	env := NewEnv(nil)
+	got := builtinPow(env, QExpr([]*LVal{Int(2), Int(200)}))
+	if got.Type != LError {
+		t.Fatalf("(pow 2 200) = %v, want an error", got)
+	}
+	// checkPowInt pins this condition for the helper; env errors use it too.
+	if got.Str != "error" {
+		t.Errorf("condition is %q, want %q", got.Str, "error")
+	}
+	if len(got.Cells) != 1 || got.Cells[0].Str != message {
+		t.Errorf("(pow 2 200) = %v, want the overflow message unchanged", got)
+	}
+	if got.CallStack() == nil {
+		t.Errorf("the overflow error carries no call stack, so it renders with no function attribution")
+	}
+	// The pure helper is unchanged: it still reports overflow, and still has
+	// no environment to capture a stack from.
+	if v := powInt(2, 200); v.Type != LError || v.CallStack() != nil {
+		t.Errorf("powInt(2, 200) = %v, want a bare error with no stack", v)
+	}
+}

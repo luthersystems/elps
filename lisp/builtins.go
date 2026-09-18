@@ -3212,7 +3212,16 @@ func builtinPow(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a number: %s", b.Type)
 	}
 	if bothInt(a, b) {
-		return powInt(a.Int, b.Int)
+		v := powInt(a.Int, b.Int)
+		if v.Type == LError {
+			// powInt is a pure helper with no env to raise through, so its
+			// overflow error carries neither the captured stack nor the
+			// function attribution rendered from it. Re-raise it here, where
+			// there is an env, so overflow reports itself as lisp:pow like
+			// every other arithmetic error in this file.
+			return env.Errorf("%s", v.Cells[0].Str)
+		}
+		return v
 	}
 	return Float(math.Pow(toFloat(a), toFloat(b)))
 }

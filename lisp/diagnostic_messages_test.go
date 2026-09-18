@@ -34,6 +34,10 @@ func TestBuiltinDiagnosticMessages(t *testing.T) {
 		{"insert-sorted", elpstest.TestSequence{
 			{`(insert-sorted 'list () 1 2)`, `test:1:1: lisp:insert-sorted: third argument is not a function: int`, ""},
 		}},
+		{"pow", elpstest.TestSequence{
+			{`(pow "a" 2)`, `test:1:1: lisp:pow: first argument is not a number: string`, ""},
+			{`(pow 2 200)`, `test:1:1: lisp:pow: integer overflow: power overflows int`, ""},
+		}},
 		{"slice", elpstest.TestSequence{
 			{`(slice 'list () 0 "1")`, `test:1:1: lisp:slice: fourth argument is not an integer: string`, ""},
 		}},
