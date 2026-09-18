@@ -461,9 +461,13 @@ type valueRenderer struct {
 	recovered map[renderProbeNode]bool
 	out       strings.Builder
 	limit     int
-	full      bool
-	lazyCycle bool
-	message   bool
+	// messageDepth counts the errorMessage frames on the Go stack. Each one
+	// installs a recover, so a positive count is exactly the condition
+	// "a panic raised here is contained by this renderer".
+	messageDepth int
+	full         bool
+	lazyCycle    bool
+	message      bool
 	// counting walks for the traversal alone: text is charged to the work
 	// budget and dropped, so a rendering too large to keep can still be
 	// established to exist. See lazyRenderTerminates.
@@ -596,7 +600,20 @@ func (r *valueRenderer) container(v *LVal, onTheRecord bool, g cycleGuard) {
 			parent.children[node] = struct{}{}
 		}
 		if previous := p.nodes[node]; previous != nil {
-			if previous.panicVal != nil {
+			// Replaying a recorded panic is how a cache hit still makes its
+			// enclosing error skip the rest of its message, and errorMessage's
+			// recover is what contains the replay. That containment is a frame
+			// on the Go stack, not a property of the node: the same (value,
+			// depth) node can be reached again from a parent that is not an
+			// error -- a DAG whose shared child sits at one depth under two
+			// parents -- and there the replay would leave boundedRender
+			// entirely, turning a malformed value into a process crash.
+			//
+			// So replay only where the first visit's containment exists. Off
+			// that path the node renders as the first visit ended up
+			// rendering, the recorded sentinel text, which under a probe is
+			// the same nothing every other node writes.
+			if previous.panicVal != nil && r.messageDepth > 0 {
 				panic(previous.panicVal)
 			}
 			return
@@ -891,7 +908,9 @@ func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
 		return
 	}
 	start := r.out.Len()
+	r.messageDepth++
 	defer func() {
+		r.messageDepth--
 		if recovered := recover(); recovered != nil {
 			if r.probe != nil {
 				if r.probe.recovered == nil {
