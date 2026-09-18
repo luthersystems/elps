@@ -1485,15 +1485,23 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 // checkMapInsertAlloc permits replacements, which need no new entry.
 // Get also preserves the map's own
 // key validation and identity rules, including equivalent string/symbol keys.
+//
+// The probe reports allocation growth and nothing else. A key Get rejects
+// cannot be inserted at all, so its rejection is left to the caller's own
+// Set, which refuses the same key and wraps the refusal however that builtin
+// wraps it. Returning Get's error from here instead made the rendered message
+// depend on how close the map happened to be to MaxAlloc: the very same
+// insert reported "lisp:assoc!: <native code>: unhashable type: int" below
+// the cap and a bare "unhashable type: int" at it.
 func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
 	if m.Len() < env.Runtime.MaxAllocBytes() {
 		return nil
 	}
 	v, exists := m.Get(key)
+	if v.Type == LError {
+		return nil
+	}
 	if !exists {
-		if v.Type == LError {
-			return v
-		}
 		if msg := env.Runtime.CheckAlloc(m.Len() + 1); msg != "" {
 			return env.Errorf("%s", msg)
 		}
