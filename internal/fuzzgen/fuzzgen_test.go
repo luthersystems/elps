@@ -74,7 +74,7 @@ func lcgScripts(n int, seed uint64) [][]byte {
 	for range n {
 		script := make([]byte, next()%400)
 		for i := range script {
-			script[i] = byte(next())
+			script[i] = byte(next()) //nolint:gosec // G115: deliberate truncation of a PRNG word into one script byte
 		}
 		out = append(out, script)
 	}

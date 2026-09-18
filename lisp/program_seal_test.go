@@ -44,7 +44,7 @@ func TestProgramSeal(t *testing.T) {
 		}
 		seen[typ] = true
 		switch typ.Kind() {
-		case reflect.Ptr, reflect.Slice, reflect.Array, reflect.Chan:
+		case reflect.Pointer, reflect.Slice, reflect.Array, reflect.Chan:
 			return exposes(typ.Elem())
 		case reflect.Map:
 			return exposes(typ.Key()) || exposes(typ.Elem())

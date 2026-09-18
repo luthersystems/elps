@@ -57,7 +57,7 @@ const maxKnots = 8
 // inputs whose shape nobody can read.
 func FuzzCyclicValueWalks(f *testing.F) {
 	for i, seed := range fuzzval.Seeds() {
-		f.Add(seed, uint8(i%maxKnots)) //nolint:gosec // G115: bounded by maxKnots
+		f.Add(seed, uint8(i%maxKnots))
 	}
 	f.Add([]byte{0x00}, uint8(1))
 	f.Add([]byte{0xff, 0xff, 0xff, 0xff}, uint8(maxKnots))

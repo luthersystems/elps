@@ -87,7 +87,7 @@ func TestLValFieldSeal(t *testing.T) {
 	// The unexported fields are readable through these accessors; their
 	// presence proves the channel was mediated, not deleted.
 	for _, method := range []string{"IsQuoted", "MacroExpansion", "Source", "FID", "Package", "Builtin"} {
-		if _, ok := reflect.PtrTo(typ).MethodByName(method); !ok {
+		if _, ok := reflect.PointerTo(typ).MethodByName(method); !ok {
 			t.Errorf("(*LVal).%s missing — the unexported-field read surface changed; "+
 				"update the #382 accessor set deliberately, not by accident", method)
 		}
@@ -106,7 +106,7 @@ func TestLValFieldSeal(t *testing.T) {
 	}
 	// Anti-vacuity: the promoted read/write surface embedders rely on.
 	for _, method := range []string{"Get", "Set", "Del", "Keys", "Entries", "Len"} {
-		if _, ok := reflect.PtrTo(mdType).MethodByName(method); !ok {
+		if _, ok := reflect.PointerTo(mdType).MethodByName(method); !ok {
 			t.Errorf("(*MapData).%s missing — the promoted Map method set is public "+
 				"API; the #382 seal must not remove it", method)
 		}
@@ -149,7 +149,7 @@ func TestFunDataPayloadFieldSeal(t *testing.T) {
 	}
 
 	typ := reflect.TypeOf(fn.Native)
-	if typ.Kind() == reflect.Ptr {
+	if typ.Kind() == reflect.Pointer {
 		typ = typ.Elem()
 	}
 	if typ.Kind() != reflect.Struct {
@@ -223,7 +223,7 @@ func TestLEnvFieldSeal(t *testing.T) {
 
 	// Anti-vacuity: the mediated read surface that replaced the fields.
 	for _, method := range []string{"Bindings", "NumBindings", "Parent", "Source", "Get", "Put", "GetGlobal", "PutGlobal"} {
-		if _, ok := reflect.PtrTo(typ).MethodByName(method); !ok {
+		if _, ok := reflect.PointerTo(typ).MethodByName(method); !ok {
 			t.Errorf("(*LEnv).%s missing — the environment read/bind surface changed; "+
 				"update the #382 accessor set deliberately, not by accident", method)
 		}

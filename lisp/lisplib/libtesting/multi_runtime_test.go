@@ -197,8 +197,10 @@ func runParent(t *testing.T, scenario string) {
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 	defer cancel()
 
-	// #nosec G204 -- os.Args[0] is this test binary; the only variable part
-	// is a scenario name from childScenarioNames, passed via the environment.
+	// #nosec G204 G702 -- os.Args[0] is this test binary; the only variable
+	// part is a scenario name from childScenarioNames, passed via the
+	// environment. G702 is gosec's taint-analysis restatement of G204 and
+	// needs naming separately.
 	cmd := exec.CommandContext(ctx, os.Args[0],
 		"-test.run=^"+childTestName+"$",
 		"-test.count=1",
