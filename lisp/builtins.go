@@ -1215,7 +1215,7 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("second argument is not a function: %s", f.Type)
 	}
 	if f.IsSpecialFun() {
-		return env.Errorf("first argument is not a regular function: %v", f.FunType)
+		return env.Errorf("second argument is not a regular function: %v", f.FunType)
 	}
 	if !isSeq(lis) {
 		return env.Errorf("third argument is not a proper sequence: %s", lis.Type)

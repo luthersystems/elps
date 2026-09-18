@@ -28,6 +28,9 @@ func TestBuiltinDiagnosticMessages(t *testing.T) {
 		{"insert-index", elpstest.TestSequence{
 			{`(insert-index 'list () "0" 1)`, `test:1:1: lisp:insert-index: third argument is not an integer: string`, ""},
 		}},
+		{"map", elpstest.TestSequence{
+			{`(map 'list quasiquote '(1 2))`, `test:1:1: lisp:map: second argument is not a regular function: operator`, ""},
+		}},
 		{"insert-sorted", elpstest.TestSequence{
 			{`(insert-sorted 'list () 1 2)`, `test:1:1: lisp:insert-sorted: third argument is not a function: int`, ""},
 		}},
