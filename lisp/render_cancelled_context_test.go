@@ -85,20 +85,24 @@ func TestCancellationErrorRendersInProcess(t *testing.T) {
 }
 
 // The byte limit still bounds rendering when the captured context is dead: a
-// cancelled request must not turn the output budget off.
+// cancelled request must not turn the output budget off. The limit sits above
+// the diagnostic floor (minRenderLimit, 64 KiB), which exists so that a small
+// MaxAlloc meant for data does not gag error text; the property under test is
+// that a dead context changes nothing about the budget that does apply.
 func TestCancelledContextStillHonoursRenderLimit(t *testing.T) {
+	const limit = 70_000
 	env := lisp.NewEnv(nil)
 	require.NoError(t, lisp.GoError(lisp.InitializeUserEnv(env,
-		lisp.WithReader(parser.NewReader()), lisp.WithMaxAlloc(64))))
+		lisp.WithReader(parser.NewReader()), lisp.WithMaxAlloc(limit))))
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	v := env.LoadStringContext(ctx, "big.lisp",
-		`(error 'boom "`+strings.Repeat("x", 200)+`")`)
+		`(error 'boom "`+strings.Repeat("x", 100_000)+`")`) // under the scanner's 128 KiB token cap, over the limit
 	require.Equal(t, lisp.LError, v.Type)
 	cancel()
 	e := (*lisp.ErrorVal)(v)
 	s := e.Error()
-	require.LessOrEqual(t, len(s), 64)
+	require.LessOrEqual(t, len(s), limit)
 	require.Contains(t, s, "#<truncated>")
 	require.True(t, strings.HasSuffix(s, "#<truncated>"))
 }
