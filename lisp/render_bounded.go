@@ -226,20 +226,44 @@ func (v *LVal) boundedRender(limit int, budget *renderBudget, message bool) (str
 	if !r.full && !st.cyclic {
 		return r.out.String(), true
 	}
+	// The first pass is speculative: a cycle it cannot observe it unrolls
+	// until something stops it, so what it spent says nothing about what the
+	// rendering costs. Every pass below is linear in the size of the graph
+	// by construction, so they share a budget of their own and the caller is
+	// charged whichever pass spent more -- a response-wide budget still only
+	// shrinks, but one value's failed guess cannot bankrupt it.
+	work := newRenderBudget(limit, budget.ctx)
+	work.stepFn = budget.stepFn
+	analysis := 0
+	defer func() { budget.remaining = min(budget.remaining, work.remaining-analysis) }()
 	// A lazy cycle walk can exhaust the budget before discovering that
 	// String's eventual strict rendering is small enough. Retry with the
 	// same strict visited set String uses, but also track the active path:
 	// repeated DAG nodes alone must NEVER justify a truncated rendering.
 	// Nor may a long cycle hidden beyond the lazy walk's depth cap: String
 	// uses depth truncation, not strict-cycle rendering, in that case.
-	r = valueRenderer{limit: limit, budget: *budget, message: message, active: make(map[*LVal]int)}
+	r = valueRenderer{limit: limit, budget: work, message: message, active: make(map[*LVal]int)}
 	r.root(v, strictCycleGuard())
-	budget.remaining = r.budget.remaining
-	if r.full || budget.remaining <= 0 || (budget.ctx != nil && budget.ctx.Err() != nil) {
+	work = r.budget
+	if r.full || work.remaining <= 0 || (work.ctx != nil && work.ctx.Err() != nil) {
 		return "", false
 	}
 	if !st.cyclic && !r.lazyCycle {
-		probe, cyclic := probeRenderCycles(v, budget, message)
+		probe, cyclic := probeRenderCycles(v, &work, message)
+		if !cyclic {
+			// Neither the lazy walk nor the probe descends past
+			// maxRenderDepth, so neither observes a cycle whose period
+			// exceeds the cap: a ring of 1200 nodes is indistinguishable
+			// from a 1200-deep tree that was truncated. The strict
+			// rendering may stand for such a value only if BOTH remaining
+			// questions say so -- the lazy rendering String is defined by
+			// cannot be produced at all, and the value really does contain
+			// a cycle. Each runs on a fixed allowance of its own so that
+			// the answers are properties of the value rather than of this
+			// call's byte limit, and so that what they spend is never
+			// mistaken for the rendering itself having failed.
+			cyclic = strictRenderingStands(v, message, budget.ctx, &analysis)
+		}
 		if !cyclic {
 			if len(probe.recovered) == 0 {
 				return "", false
@@ -248,19 +272,73 @@ func (v *LVal) boundedRender(limit int, budget *renderBudget, message bool) (str
 			// recovery replaces it with a short sentinel. The probe has
 			// established exactly which messages recover at each depth.
 			// Replay the acyclic rendering with those replacements known.
-			r = valueRenderer{limit: limit, budget: *budget, message: message, recovered: probe.recovered}
+			r = valueRenderer{limit: limit, budget: work, message: message, recovered: probe.recovered}
 			var retry cycleState
 			r.root(v, cycleGuard{state: &retry})
-			budget.remaining = r.budget.remaining
+			work = r.budget
 			if r.full || retry.cyclic {
 				return "", false
 			}
 		}
 	}
-	if budget.remaining <= 0 || (budget.ctx != nil && budget.ctx.Err() != nil) {
+	if work.remaining <= 0 || (work.ctx != nil && work.ctx.Err() != nil) {
 		return "", false
 	}
 	return r.out.String(), true
+}
+
+// strictRenderingStands reports whether the strict rendering of v may be
+// returned as the value's representation: it may when the lazy rendering
+// String is defined by cannot be produced at all AND the value does contain a
+// cycle, which is the case strict mode exists for.
+//
+// Both walks reach parts of the value the rendering itself does not -- past
+// the depth cap, past the byte limit -- so either can be the first to touch a
+// malformed header or to call a host Map's Entries. A panic there must not
+// become a crash in a value the renderer was about to describe perfectly
+// well, so it is contained and answered conservatively.
+//
+// What the two walks spend is charged to the caller through analysis rather
+// than to the rendering's own budget: neither produces output, and an
+// exhausted rendering budget means something else entirely.
+func strictRenderingStands(v *LVal, message bool, ctx context.Context, analysis *int) (stands bool) {
+	lazy, search := newRenderBudget(0, ctx), newRenderBudget(0, ctx)
+	start := lazy.remaining + search.remaining
+	defer func() {
+		*analysis += start - lazy.remaining - search.remaining
+		if recovered := recover(); recovered != nil {
+			log.Printf("elps: render cycle analysis recovered panic: %v; keeping the depth-bounded verdict", recovered)
+			stands = false
+		}
+	}()
+	return !lazyRenderTerminates(v, message, &lazy) && containsCycle(v, &search)
+}
+
+// lazyRenderTerminates reports whether the representation String is defined
+// by -- the lazy walk's, with its depth cap and its lazy cycle guard -- can be
+// produced at all.
+//
+// A byte limit cannot answer that. A rendering that overruns the caller's
+// limit by one byte and a rendering of 2^1024 nodes both come back as "full",
+// and the difference decides whether the strict rendering may stand in: it is
+// the only representation a branching ring has, and it must never replace a
+// representation the value really does have, or the same value would read
+// differently at different budgets.
+//
+// So the walk is repeated with no byte cap and nothing kept -- only the work
+// budget, sized independently of limit so the verdict is a property of the
+// value. A walk that found the cycle for itself reports false as well: its
+// rendering IS the strict one.
+//
+// The allowance is the budget floor, so a value whose lazy rendering needs
+// more work than that reads as having none. Such a rendering is megabytes of
+// text; between it and the strict one, the caller gets the strict one.
+func lazyRenderTerminates(v *LVal, message bool, budget *renderBudget) bool {
+	r := valueRenderer{limit: -1, budget: *budget, message: message, counting: true}
+	var st cycleState
+	r.root(v, cycleGuard{state: &st})
+	*budget = r.budget
+	return !r.full && !st.cyclic
 }
 
 // probeRenderCycles handles shared nodes which the strict retry first reached
@@ -342,13 +420,17 @@ type valueRenderer struct {
 	full      bool
 	lazyCycle bool
 	message   bool
+	// counting walks for the traversal alone: text is charged to the work
+	// budget and dropped, so a rendering too large to keep can still be
+	// established to exist. See lazyRenderTerminates.
+	counting bool
 }
 
 func (r *valueRenderer) text(s string) {
 	if r.budget.ctx != nil && r.budget.ctx.Err() != nil {
 		r.full = true
 	}
-	if r.full || r.probe != nil {
+	if r.full || r.probe != nil || r.counting {
 		return
 	}
 	if r.limit >= 0 && len(s) > r.limit-r.out.Len() {

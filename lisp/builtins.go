@@ -3485,18 +3485,18 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 	for i, v := range args.Cells {
 		if i > 0 {
 			if out.Len() >= limit {
-				return env.renderError()
+				return env.renderError(nil)
 			}
 			out.WriteByte(' ')
 		}
 		s, ok := v.boundedWithBudget(limit-out.Len(), &budget)
 		if !ok {
-			return env.renderError()
+			return env.renderError(&budget)
 		}
 		out.WriteString(s)
 	}
 	if out.Len() >= limit {
-		return env.renderError()
+		return env.renderError(nil)
 	}
 	out.WriteByte('\n')
 	fmt.Fprint(env.Runtime.getStderr(), out.String()) //nolint:errcheck // best-effort debug output
@@ -3505,9 +3505,21 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 
 // renderError reports cancellation before output exhaustion without re-rendering
 // the value that exceeded the limit.
-func (env *LEnv) renderError() *LVal {
+//
+// A rendering has two ways to fail and they are not the same failure. The byte
+// cap is the allocation limit the program set, and naming it tells the author
+// what to change. The traversal budget is the renderer's own guard against a
+// value whose printed form expands without bound -- a cycle with fan-out, a
+// deeply shared graph -- and reporting THAT as "allocation size exceeds
+// maximum (10485760)" for a value whose rendering is 36 KB sends the reader
+// after a limit that was never reached. A nil budget means the caller already
+// knows the byte cap is what stopped it.
+func (env *LEnv) renderError(budget *renderBudget) *LVal {
 	if env.evalCtx != nil && env.evalCtx.Err() != nil {
 		return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", env.evalCtx.Err())
+	}
+	if budget != nil && budget.remaining <= 0 {
+		return env.Errorf("value rendering exceeded the maximum traversal budget")
 	}
 	return env.Errorf("allocation size exceeds maximum (%d)", env.Runtime.MaxAllocBytes())
 }
@@ -3607,7 +3619,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		return true
 	}
 	allocationError := func() *LVal {
-		return env.renderError()
+		return env.renderError(&budget)
 	}
 
 	seqIndex := 0
@@ -3722,7 +3734,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 		// Only a successfully rendered substitution needs full depth validation.
 		if err := checkValueDepth(val, env.Runtime.ValueDepthLimit(), env.evalCtx); err != nil {
 			if env.evalCtx != nil && env.evalCtx.Err() != nil {
-				return env.renderError()
+				return env.renderError(nil)
 			}
 			return env.Error(err)
 		}

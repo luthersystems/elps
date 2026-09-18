@@ -168,3 +168,103 @@ func (g cycleGuard) abandoned() bool {
 type valuePair struct {
 	a, b *LVal
 }
+
+// containsCycle reports whether v can reach itself through the children a
+// render descends into.
+//
+// It exists because the renderer's own walks cannot answer that for every
+// value they have to render.  Both the lazy walk and the cycle probe recurse
+// on the goroutine stack and so stop at maxRenderDepth, and a cycle whose
+// period exceeds that cap never brings either walk back to a node it has
+// already recorded: a ring of 1200 nodes is indistinguishable, to them, from
+// a 1200-deep tree the depth cap truncated.  The renderer then treats the
+// value as acyclic and unrolls it -- exponentially, when the ring branches --
+// until a budget stops it, and a value the previous release rendered in 36 KB
+// produces no output at all.
+//
+// This walk is iterative, so its stack is heap memory and it needs no depth
+// cap at all, and it is the textbook colouring -- a node on the current path
+// reached again is a cycle, a node already finished is a share -- so it
+// visits every value once and every edge once whatever the shape of the
+// graph.  It answers only the question stage 2 cannot; the rendering itself
+// stays where it is.
+//
+// A walk that cannot pay for itself reports false, leaving the caller with
+// the conservative answer it already had.
+func containsCycle(v *LVal, budget *renderBudget) bool {
+	const (
+		onPath   = 1
+		finished = 2
+	)
+	type frame struct {
+		v        *LVal
+		children []*LVal
+	}
+	state := make(map[*LVal]int)
+	var stack []frame
+	cur := v
+	for {
+		if cur != nil {
+			if !budget.step() {
+				return false
+			}
+			switch state[cur] {
+			case onPath:
+				return true
+			case finished:
+			default:
+				// A value with no children cannot lie on a cycle, and
+				// leaving it unrecorded keeps the walk's memory
+				// proportional to the containers rather than to every
+				// scalar they hold.
+				if children := renderChildren(cur); len(children) > 0 {
+					state[cur] = onPath
+					stack = append(stack, frame{v: cur, children: children})
+				}
+			}
+			cur = nil
+		}
+		for cur == nil {
+			if len(stack) == 0 {
+				return false
+			}
+			f := &stack[len(stack)-1]
+			if n := len(f.children); n > 0 {
+				cur, f.children = f.children[n-1], f.children[:n-1]
+				continue
+			}
+			state[f.v] = finished
+			*f = frame{}
+			stack = stack[:len(stack)-1]
+		}
+	}
+}
+
+// renderChildren returns the values a render of v descends into.  Cells are
+// returned as they are, without copying: nothing here runs host code that
+// could write into them while the walk holds the slice, and a copy per
+// container would cost more than the walk.  A map's entries have to be
+// materialized, and an enumeration the host refuses contributes no children,
+// exactly as it contributes no rendered entries.
+func renderChildren(v *LVal) []*LVal {
+	if v.Type != LSortMap {
+		return v.Cells
+	}
+	// By assertion rather than through Map(), which panics: this walk goes
+	// where the rendering does not, so it can be the first to reach a
+	// malformed header, and a value it cannot read holds no children it can
+	// follow.
+	md, ok := v.Native.(*MapData)
+	if !ok {
+		return nil
+	}
+	entries := sortedMapEntries(md)
+	if entries.Type == LError {
+		return nil
+	}
+	children := make([]*LVal, 0, 2*len(entries.Cells))
+	for _, pair := range entries.Cells {
+		children = append(children, pair.Cells[0], pair.Cells[1])
+	}
+	return children
+}
