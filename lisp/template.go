@@ -245,9 +245,8 @@ const (
 type templateFrame struct {
 	capture, shared                     *LVal
 	env, scope                          *LEnv
-	mapping                             *MapData
-	keys                                []string
-	smallKeys                           [4]string
+	entries                             []templateMapEntry
+	smallEntries                        [4]templateMapEntry
 	cells                               []*LVal
 	nkeys                               int
 	index                               int
@@ -255,27 +254,68 @@ type templateFrame struct {
 	visitCapture, visitEnv, sharedCells bool
 }
 
-// Keep tiny key sets inside the by-value frame. A slice into this array
-// would escape when the continuation grows, so select each key by index.
-func (f *templateFrame) key(i int) string {
-	if f.keys != nil {
-		return f.keys[i]
-	}
-	return f.smallKeys[i]
+// templateMapEntry is one key/value pair a frame took from a scope or a map
+// backing when the walk ENTERED it.
+//
+// The value is snapshotted with the key rather than read back out of the
+// backing when the walk reaches it, which is the copier's contract (see the
+// comment on copier.cells) applied to admission: a walk admits the entries a
+// container held when the walker entered it. Admission runs embedder policy
+// callbacks -- TemplateWithNativePolicy, TemplateWithBuiltinPolicy -- and a
+// callback holding the source environment can write the very map under
+// admission. Reading live, a callback could delete an entry before the walk
+// reached it and have a value admitted that was never inspected, and for a
+// jsonMap backing the deleted key's `backing[key].(*LVal)` asserted on a nil
+// interface and took the walk down with it.
+//
+// The pair replaces the frame's key list rather than sitting beside it, so a
+// map or scope of any size still costs the ONE slice the key list cost.
+type templateMapEntry struct {
+	v   *LVal
+	key string
 }
 
-func setTemplateFrameKeys[V any](f *templateFrame, values map[string]V) {
-	f.nkeys = len(values)
-	if len(values) > len(f.smallKeys) {
-		f.keys = sortedTemplateKeys(values)
-		return
+// Keep tiny entry sets inside the by-value frame. A slice into this array
+// would escape when the continuation grows, so select each entry by index.
+func (f *templateFrame) entry(i int) templateMapEntry {
+	if f.entries != nil {
+		return f.entries[i]
 	}
-	i := 0
-	for key := range values {
-		f.smallKeys[i] = key
-		i++
+	return f.smallEntries[i]
+}
+
+func (f *templateFrame) key(i int) string { return f.entry(i).key }
+
+// allocEntries returns empty storage for n entries, inside the frame when it
+// fits. The caller appends exactly n and passes the result to commitEntries.
+func (f *templateFrame) allocEntries(n int) []templateMapEntry {
+	f.nkeys = n
+	if n > len(f.smallEntries) {
+		f.entries = make([]templateMapEntry, 0, n)
+		return f.entries
 	}
-	sort.Strings(f.smallKeys[:f.nkeys])
+	return f.smallEntries[:0]
+}
+
+// commitEntries installs the filled storage and orders it by key, so that the
+// policy callbacks a walk makes run in an order that depends only on what the
+// container held and not on Go's map iteration order.
+func (f *templateFrame) commitEntries(entries []templateMapEntry) {
+	if f.entries != nil {
+		f.entries = entries
+	}
+	slices.SortFunc(entries, func(a, b templateMapEntry) int {
+		return strings.Compare(a.key, b.key)
+	})
+}
+
+// setTemplateFrameEntries snapshots an LVal-valued scope or map backing.
+func setTemplateFrameEntries(f *templateFrame, values map[string]*LVal) {
+	entries := f.allocEntries(len(values))
+	for key, v := range values {
+		entries = append(entries, templateMapEntry{key: key, v: v})
+	}
+	f.commitEntries(entries)
 }
 
 func (f *templateFrame) empty() bool {
@@ -302,17 +342,9 @@ func (f *templateFrame) child() (templateVisit, bool) {
 			}
 		case 3:
 			if f.index < f.nkeys {
-				key := f.key(f.index)
+				entry := f.entry(f.index)
 				f.index++
-				if f.scope != nil {
-					return templateVisit{v: f.scope.scope[key]}, true
-				}
-				switch backing := f.mapping.mapBacking.(type) {
-				case sortedmap:
-					return templateVisit{v: backing.m[key]}, true
-				case jsonMap:
-					return templateVisit{v: backing[key].(*LVal)}, true
-				}
+				return templateVisit{v: entry.v}, true
 			}
 			f.index = 0
 			f.stage++
@@ -441,7 +473,7 @@ func (s *templateInventory) envNode(env *LEnv) error {
 	s.envs[env] = len(s.envQueue) + 1
 	s.envQueue = append(s.envQueue, env)
 	s.next = templateFrame{scope: env, env: env.parent, visitEnv: true}
-	setTemplateFrameKeys(&s.next, env.scope)
+	setTemplateFrameEntries(&s.next, env.scope)
 	return nil
 }
 
@@ -645,21 +677,34 @@ func (s *templateInventory) mapData(data *MapData) error {
 	case sortedmap:
 		// Keys and type flags are Go scalars, not source value identities.
 		// Avoid manufacturing temporary keys/pairs solely to discard them.
-		s.next.mapping = data
-		setTemplateFrameKeys(&s.next, backing.m)
+		setTemplateFrameEntries(&s.next, backing.m)
 	case jsonMap:
 		if backing == nil {
 			return errors.New("nil JSON map is not writable")
 		}
-		s.next.mapping = data
-		setTemplateFrameKeys(&s.next, backing)
-		// Reject malformed decoder storage before invoking admission callbacks.
-		for i := range s.next.nkeys {
-			key := s.next.key(i)
-			if _, ok := backing[key].(*LVal); !ok {
-				return fmt.Errorf("JSON map entry %q is not an LVal: %T", key, backing[key])
+		// Reject malformed decoder storage before invoking admission
+		// callbacks, and snapshot in the same pass: the type assertion and
+		// the value the walk later admits then read the backing once,
+		// together, before any callback can change it.
+		entries := s.next.allocEntries(len(backing))
+		// Which malformed entry is REPORTED must not depend on Go's map
+		// iteration order, so the scan notes the offender with the smallest
+		// key rather than the first one it happens to meet, which is the
+		// entry the old key-sorted validation pass named.
+		var bad templateMapEntry
+		var badPayload any
+		malformed := false
+		for key, x := range backing {
+			v, ok := x.(*LVal)
+			if !ok && (!malformed || key < bad.key) {
+				bad, badPayload, malformed = templateMapEntry{key: key}, x, true
 			}
+			entries = append(entries, templateMapEntry{key: key, v: v})
 		}
+		if malformed {
+			return fmt.Errorf("JSON map entry %q is not an LVal: %T", bad.key, badPayload)
+		}
+		s.next.commitEntries(entries)
 	default:
 		return fmt.Errorf("map backing %T is not interpreter-owned", data.mapBacking)
 	}
