@@ -1980,6 +1980,15 @@ For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
 preserves that error and its original stack. Host errors implementing
 `NativeCloner` retain their usual copy behavior.
 
+Passing an `*ErrorVal` back into `Error` or `ErrorCondition` returns that
+same value, condition and stack intact, so a handler can hand back exactly
+what it was given. Passing a Go error that merely *wraps* an `*ErrorVal`
+(`fmt.Errorf` with `%w`) is a request to reclassify: the result carries the
+condition you asked for and the wrapper's text as its message, and
+`errors.As` still reaches the inner value. The one exception is a wrapped
+`internal-panic`, which keeps its identity so the marker of a host fault
+survives a host wrapper.
+
 Source errors from `load-string` and `load-file` retain the parser's condition
 name, message and source location, including when loading through Go APIs or
 `eval`. They can be handled by name:
@@ -2343,7 +2352,12 @@ its newline) and `format-string` raise an ordinary allocation error when the
 output or work budget is exhausted, or a context cancellation condition when
 cancelled. Error reporting (including condition data in error lines and stack
 traces), top-level printing, and REPL output use `#<truncated>` on exhaustion.
-For caps smaller than that marker, only its fitting prefix is printed. Error
+Text that describes a failure (error messages, stack traces, CLI and REPL
+diagnostics) renders under `max(MaxAlloc, 65536)` bytes: `MaxAlloc` caps the
+data a program builds, and a small cap chosen for data must not blank the
+sentence that explains why something failed. Values rendered for the program
+itself keep `MaxAlloc` exactly. The marker is never printed in part; a cap too
+small to hold it prints nothing. Error
 condition data remains available unchanged to handlers. Go's `LVal.String`
 uses the default cap without an evaluation context; `LEnv.Render` uses the
 environment's cap and context. Errors retain the rendering policy captured

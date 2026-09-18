@@ -41,27 +41,58 @@ func TestConditionPreservesErrorValIdentity(t *testing.T) {
 	require.Equal(t, lisp.LError, original.Type)
 	stack := original.CallStack()
 	loc, _ := original.Source()
-	for _, wrapped := range []bool{false, true} {
-		err := lisp.GoError(original)
-		if wrapped {
-			err = fmt.Errorf("reader context: %w", err)
-		}
-		for name, got := range map[string]*lisp.LVal{
-			"Error":              lisp.Error(err),
-			"ErrorCondition":     lisp.ErrorCondition("replacement", err),
-			"env.Error":          env.Error(err),
-			"env.ErrorCondition": env.ErrorCondition("replacement", err),
-		} {
-			t.Run(fmt.Sprintf("%s/wrapped=%t", name, wrapped), func(t *testing.T) {
-				require.Same(t, original, got)
-				require.Same(t, stack, got.CallStack())
-				gotLoc, _ := got.Source()
-				require.Equal(t, loc, gotLoc)
-				require.Equal(t, "backend-error", got.Str)
-				require.Equal(t, "amount", got.Cells[0].Str)
-				require.Equal(t, 17, got.Cells[1].Int)
-			})
-		}
+	err := lisp.GoError(original)
+	for name, got := range map[string]*lisp.LVal{
+		"Error":              lisp.Error(err),
+		"ErrorCondition":     lisp.ErrorCondition("replacement", err),
+		"env.Error":          env.Error(err),
+		"env.ErrorCondition": env.ErrorCondition("replacement", err),
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.Same(t, original, got)
+			require.Same(t, stack, got.CallStack())
+			gotLoc, _ := got.Source()
+			require.Equal(t, loc, gotLoc)
+			require.Equal(t, "backend-error", got.Str)
+			require.Equal(t, "amount", got.Cells[0].Str)
+			require.Equal(t, 17, got.Cells[1].Int)
+		})
+	}
+}
+
+// A Go error that merely WRAPS an *ErrorVal is a request to reclassify: the
+// result carries the requested condition and the wrapper's text, and the
+// original stays reachable through errors.As. The bare value keeps its
+// identity (above); a wrapped internal panic keeps its marker
+// (TestConditionHostPanicAndRethrowIdentity).
+func TestConditionReclassifiesWrappedErrorVal(t *testing.T) {
+	env := newSortErrorEnv(t)
+	original := env.LoadString("original.lisp", `(error 'backend-error "amount" 17)`)
+	require.Equal(t, lisp.LError, original.Type)
+	wrapped := fmt.Errorf("reader context: %w", lisp.GoError(original))
+	for name, tc := range map[string]struct {
+		got  *lisp.LVal
+		cond string
+	}{
+		"Error":              {lisp.Error(wrapped), "error"},
+		"ErrorCondition":     {lisp.ErrorCondition("replacement", wrapped), "replacement"},
+		"env.Error":          {env.Error(wrapped), "error"},
+		"env.ErrorCondition": {env.ErrorCondition("replacement", wrapped), "replacement"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			require.NotSame(t, original, tc.got)
+			require.Equal(t, lisp.LError, tc.got.Type)
+			require.Equal(t, tc.cond, tc.got.Str)
+			require.Equal(t, lisp.LString, tc.got.Cells[0].Type)
+			require.Contains(t, tc.got.Cells[0].Str, "reader context: ")
+			require.Contains(t, tc.got.Cells[0].Str, "amount")
+			// The new value is itself an *ErrorVal, so search from the Go
+			// error it carries, which is the wrapper.
+			require.Same(t, wrapped, errors.Unwrap(lisp.GoError(tc.got)))
+			var inner *lisp.ErrorVal
+			require.ErrorAs(t, errors.Unwrap(lisp.GoError(tc.got)), &inner)
+			require.Same(t, (*lisp.LVal)(inner), original)
+		})
 	}
 }
 

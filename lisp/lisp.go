@@ -941,16 +941,28 @@ func Error(err error) *LVal {
 
 // ErrorCondition returns an LError representing err and having the given
 // condition type. Go errors become string data while their original value
-// remains recoverable through GoError and errors.Unwrap. If err is or wraps
-// an *ErrorVal, its original condition, data, stack and identity are preserved
-// instead of applying condition. The condition type must be a valid Lisp symbol.
+// remains recoverable through GoError and errors.Unwrap. The condition type
+// must be a valid Lisp symbol.
+//
+// If err IS an *ErrorVal it is returned as itself: condition, data, stack and
+// identity are preserved, which is what lets a handler rethrow the value it
+// was given. If err merely WRAPS an *ErrorVal (fmt.Errorf with %w, or any
+// Unwrap chain), the caller has asked for a new classification, and gets one:
+// the result carries condition, the wrapper's full text as its message, and
+// err as its Go error, so errors.As still reaches the inner value. The one
+// exception is a wrapped internal panic: its marker is the non-forgeable
+// evidence of a host fault and must survive a host wrapper unchanged, so it
+// keeps its identity like a bare *ErrorVal.
 //
 // Errors generated during expression evaluation typically have a call stack.
 // The LEnv.Error method captures that stack and is preferred during evaluation.
 func ErrorCondition(condition string, err error) *LVal {
-	var existing *ErrorVal
-	if errors.As(err, &existing) && existing != nil {
+	if existing, ok := err.(*ErrorVal); ok && existing != nil { //nolint:errorlint // a WRAPPED *ErrorVal must not match here: that is the reclassification case below
 		return (*LVal)(existing)
+	}
+	var wrapped *ErrorVal
+	if errors.As(err, &wrapped) && wrapped != nil && IsInternalPanic((*LVal)(wrapped)) {
+		return (*LVal)(wrapped)
 	}
 	message := "<nil>"
 	if err != nil {
