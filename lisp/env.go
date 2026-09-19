@@ -924,26 +924,47 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	return fun
 }
 
-// validateFormalSymbols is shared by every Lisp function constructor and the
-// binder, which also receives formals from host-registered functions.
+// validateFormalSymbols is shared by every Lisp function constructor
+// (LEnv.Lambda, and so every lambda, defun, defmacro, labels and flet form)
+// and by registration of a host-defined function (the Add* methods below,
+// through formalSymbolsMessage).  It is NOT called by the binder: formals are
+// validated once, where the function value is created or registered, never on
+// the calling path.  See the invariant recorded in bind.
 func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
-	if formals.Type != LSExpr {
-		return env.Errorf("formals is not a list of symbols: %v", formals.Type)
-	}
-	for _, sym := range formals.Cells {
-		if sym.Type != LSymbol {
-			return env.Errorf("first argument contains a non-symbol: %v", sym.Type)
-		}
-		// A keyword or a constant is refused by Put when the call binds it,
-		// so a function naming one could never be called.  Refusing it here
-		// reports the mistake where the function is created -- including for
-		// a host-registered function, whose formals reach this check when
-		// the binder runs.
-		if message := lambdalist.InvalidName(sym.Str); message != "" {
-			return env.Errorf("%s", message)
-		}
+	if message := formalSymbolsMessage(formals); message != "" {
+		return env.Errorf("%s", message)
 	}
 	return Nil()
+}
+
+// formalSymbolsMessage reports what is wrong with a formal argument list, or
+// "" when every name in it can be bound.  The message text is the diagnostic
+// callers see, whether the list came from a lisp definition form (where
+// validateFormalSymbols turns it into an error value) or from a host
+// registration (where the Add* methods panic with it): one wording, quoted in
+// docs/lang.md and matched by the lambda-list lint check.
+func formalSymbolsMessage(formals *LVal) string {
+	if formals == nil {
+		return "formals is not a list of symbols: <nil>"
+	}
+	if formals.Type != LSExpr {
+		return fmt.Sprintf("formals is not a list of symbols: %v", formals.Type)
+	}
+	for _, sym := range formals.Cells {
+		if sym == nil {
+			return "first argument contains a non-symbol: <nil>"
+		}
+		if sym.Type != LSymbol {
+			return fmt.Sprintf("first argument contains a non-symbol: %v", sym.Type)
+		}
+		// A keyword or a constant is refused by Put when the call binds it,
+		// so a function naming one could never be called.  Refusing it at
+		// construction reports the mistake where the function is written.
+		if message := lambdalist.InvalidName(sym.Str); message != "" {
+			return message
+		}
+	}
+	return ""
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
@@ -1042,6 +1063,27 @@ func registrationBound(pkg *Package, name string) (*LVal, bool) {
 	return pkg.Symbol(name)
 }
 
+// checkRegistrationFormals panics when a definition being registered names a
+// formal argument that can never be bound: a keyword, a constant, or a
+// non-symbol.  The message is the one a lisp definition form produces for the
+// same mistake (formalSymbolsMessage), so docs/lang.md and the lambda-list
+// lint check describe registration too.
+//
+// NOT LISP-REACHABLE (#367): AddBuiltins, AddSpecialOps and AddMacros are
+// registration-time Go API an embedder drives, never lisp source, and they
+// already panic on a duplicate name.  Failing loudly here is the same
+// convention, and it is what moves the check off the calling path: the binder
+// no longer re-validates formals on every call (issue #666).
+//
+// An embedder that prefers an error to a panic has one: elpsutil.PackageLoader
+// validates a package's definitions -- these formals included -- and returns a
+// lisp error before registering anything.
+func checkRegistrationFormals(kind, name string, formals *LVal) {
+	if message := formalSymbolsMessage(formals); message != "" {
+		panic(kind + " " + name + " cannot be registered: " + message)
+	}
+}
+
 // registrationFunValue builds the function value the Add* methods install: a
 // fresh LFun header over the (possibly shared, sealed) formals and the
 // documentation string.  It is FunInPackage/MacroInPackage/SpecialOpInPackage
@@ -1106,8 +1148,13 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			// embedder-facing half of that story is #351.
 			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
 		}
+		// Formals() is read ONCE: a definition is free to build its list
+		// afresh on every call, and the list that is checked must be the
+		// list that is registered.
+		macFormals := mac.Formals()
+		checkRegistrationFormals("macro", name, macFormals)
 		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
-			registrationFormals(&formals, mac.Formals()), mac.Eval, builtinDocstring(mac))
+			registrationFormals(&formals, macFormals), mac.Eval, builtinDocstring(mac))
 		pkg.putName(name, fn)
 		if external {
 			pkg.externals = append(pkg.externals, name)
@@ -1134,8 +1181,11 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			// is Go API an embedder drives, never lisp source.
 			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
 		}
+		// One read of Formals(); see AddMacros.
+		opFormals := op.Formals()
+		checkRegistrationFormals("special operator", name, opFormals)
 		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
-			registrationFormals(&formals, op.Formals()), op.Eval, builtinDocstring(op))
+			registrationFormals(&formals, opFormals), op.Eval, builtinDocstring(op))
 		pkg.putName(name, fn)
 		if external {
 			pkg.externals = append(pkg.externals, name)
@@ -1162,8 +1212,11 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + name)
 		}
+		// One read of Formals(); see AddMacros.
+		funFormals := f.Formals()
+		checkRegistrationFormals("builtin", name, funFormals)
 		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
-			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
+			registrationFormals(&formals, funFormals), f.Eval, builtinDocstring(f))
 		pkg.putName(name, v)
 		if external {
 			pkg.externals = append(pkg.externals, name)
@@ -2094,9 +2147,40 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 //
 // The bind function does not modify fun or args.
 func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
-	if lerr := env.validateFormalSymbols(fun.Cells[0]); lerr.Type == LError {
-		return nil, lerr
-	}
+	// NO FORMALS VALIDATION HERE (issue #666).  Formals are validated once,
+	// when the function value is constructed or registered, never on the
+	// calling path -- this ran a linear scan with a string test per name on
+	// every call of every function, measured at roughly a third of the
+	// v1.61.2 -> v1.62.0 CPU regression in substrate's unit-test benchmark.
+	//
+	// The sites that uphold the invariant:
+	//
+	//   - LEnv.Lambda validates before building the value, so every function
+	//     a lisp program can define is covered: lambda and the short lambda
+	//     form, defun, labels and flet (op.go), defmacro and macrolet
+	//     (macro.go), the partial-application helpers (builtins.go), and
+	//     testing:test / testing:benchmark (libtesting).  Lambda is also the
+	//     ONLY constructor that stores an environment into a function value,
+	//     so it is the only one whose formals are ever Put into a scope.
+	//   - AddBuiltins, AddSpecialOps and AddMacros validate each definition's
+	//     formals before registering it, and panic on a bad name exactly as
+	//     they do on a duplicate one (registration is Go API an embedder
+	//     drives; NOT LISP-REACHABLE, #367).  That covers the default tables,
+	//     the RegisterDefault* entry points, every lisplib package and every
+	//     embedder table handed to elpsutil.
+	//   - elpsutil.PackageLoader validates an embedder's package before
+	//     registering anything (elpsutil/validate.go, checkFormals), so the
+	//     public embedding path reports the same mistake as an error rather
+	//     than a panic.
+	//   - The low-level constructors (Fun, FunInPackage, Macro*, SpecialOp*,
+	//     newCapturedBuiltin) build host functions, which have no captured
+	//     environment: bind collects their arguments positionally and never
+	//     Puts a formal name, so a name in one of their lists binds nothing.
+	//     In-repo callers spell literal valid formals.
+	//   - FunRef, LVal.Copy (copier.go) and template instantiation
+	//     (template_plan.go) rebuild an existing function value and carry its
+	//     already-validated formals through unchanged; detach refuses LFun
+	//     outright.
 	argsp := argParser{args: args.Cells}
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)

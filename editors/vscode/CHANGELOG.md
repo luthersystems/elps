@@ -4,6 +4,14 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.62.1
+
+- Formal argument lists are validated once, where a function is defined or
+  registered, instead of on every call (issue #666). A host-registered builtin,
+  macro or special operator whose formals name a keyword or a constant now
+  fails at registration -- loudly, like a duplicate name -- rather than on the
+  first call; `elpsutil.PackageLoader` still reports it as an error.
+
 ## 1.62.0
 
 - Runtime hardening across the interpreter, shipped in the bundled `elps`

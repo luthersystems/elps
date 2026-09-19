@@ -115,11 +115,13 @@ func Validate(p Package) error {
 // checkFormals reports what is wrong with an embedder-supplied formal argument
 // list, or "" when the list is usable.
 //
-// A nil formals list is the motivating case: it registers cleanly and is first
-// dereferenced by LEnv.bind at fun.Cells[0].Cells, so the embedder learns
-// about it as an opaque internal-panic the first time a user calls the
-// function.  lisp.Formals() -- an empty list -- is the correct spelling of
-// "takes no arguments".
+// A nil formals list is the motivating case: it used to register cleanly and
+// was first dereferenced by LEnv.bind at fun.Cells[0].Cells, so the embedder
+// learned about it as an opaque internal-panic the first time a user called
+// the function.  lisp's registration now refuses it (issue #666), with a
+// panic; this check reports it as an error naming the package and definition,
+// before anything is registered.  lisp.Formals() -- an empty list -- is the
+// correct spelling of "takes no arguments".
 func checkFormals(formals *lisp.LVal) string {
 	if formals == nil {
 		return "formals are nil (use lisp.Formals() to declare a function that takes no arguments)"
@@ -137,9 +139,10 @@ func checkFormals(formals *lisp.LVal) string {
 		if cell.Type != lisp.LSymbol {
 			return fmt.Sprintf("formal argument %d is a %v, not a symbol", i, cell.Type)
 		}
-		// A keyword or constant formal registers cleanly and is refused by
-		// the binder on the first call, so the embedder would learn about it
-		// from a user's call site rather than from registration.
+		// A keyword or constant formal can never be bound.  lisp's own
+		// registration refuses it too (LEnv.AddBuiltins and friends, issue
+		// #666), but it does so with a panic; reporting it here names the
+		// package and definition and keeps the whole load on the error path.
 		if message := lambdalist.InvalidName(cell.Str); message != "" {
 			return fmt.Sprintf("formal argument %d cannot be bound: %s", i, message)
 		}

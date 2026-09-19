@@ -300,8 +300,10 @@ A parameter named `true`, `false`, or a keyword cannot be bound, so naming
 one is an error at creation, alongside the other lambda list errors above:
 `(lambda (:x) 1)` fails without being called. The `lambda-list` lint check
 reports the same mistake in a literal definition. A host-registered function
-declaring such a formal is refused when a call binds it, and
-`elpsutil.Validate` reports it when the package is registered.
+declaring such a formal is refused when it is registered -- `LEnv.AddBuiltins`,
+`AddSpecialOps` and `AddMacros` fail loudly on it, as they already do on a
+duplicate name -- and `elpsutil.Validate` and `elpsutil.PackageLoader` report
+it as an error rather than a panic.
 
 ```lisp
 (lambda (x) (- x))
