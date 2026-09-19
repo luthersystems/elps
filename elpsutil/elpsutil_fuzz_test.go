@@ -217,11 +217,18 @@ import (
 //     than presumed: markRejectEvidence marks formals-reject/<shape> only
 //     when a load error names the def and carries the shape's problem text;
 //
-//   - buildDefs registers a copy of the def through env.AddBuiltins(true,
-//     ...) -- the documented route that bypasses elpsutil's validation,
-//     available to any embedder that skips PackageLoader -- under a fresh
+//   - buildDefs binds a copy of the def built with lisp.FunInPackage -- the
+//     low-level constructor, which performs no validation -- under a fresh
 //     fz-bind-N name in the user package, so autoCall still drives the shape
 //     into bind, and formals/<shape> is marked at exactly that registration.
+//
+// The bypass used to be env.AddBuiltins(true, ...). That route validates its
+// formals since issue #666 moved the check off the calling path: LEnv.bind no
+// longer examines formals at all, so registration is where a malformed list is
+// refused, and AddBuiltins panics on one exactly as it does on a duplicate
+// name. The low-level constructors are what is left of the old behaviour --
+// they build a host function value with whatever formals they are handed --
+// and they are how a malformed list can still reach bind as data.
 //
 // go-nil is the exception: it takes the refusal half only. Calling a builtin
 // whose formals are Go nil still nil-derefs inside bind -- that panic is
@@ -415,9 +422,9 @@ var formalsTable = []struct {
 	// rejected marks shapes PackageLoader refuses at install time.
 	rejected bool
 	// bindBypass routes a copy of the def into LEnv.bind through
-	// env.AddBuiltins(true, ...). False only for go-nil: calling a builtin
-	// whose formals are Go nil still nil-derefs inside bind, and the harness
-	// asserts IsInternalPanic on every call result.
+	// lisp.FunInPackage, which validates nothing. False only for go-nil:
+	// calling a builtin whose formals are Go nil still nil-derefs inside
+	// bind, and the harness asserts IsInternalPanic on every call result.
 	bindBypass bool
 }{
 	{label: "nullary", make: func() *lisp.LVal { return lisp.Formals() }},
@@ -752,17 +759,18 @@ func (in *install) buildDefs(r *specReader, pkgName string, n int) []lisp.LBuilt
 				defName: name, label: fsel.label, problem: fsel.problem,
 			})
 			if fsel.bindBypass {
-				// Register a copy through the documented validation bypass so
-				// bind still meets the shape as data (see the header). This
-				// runs at decode time, before any loader: the env is fresh,
-				// the current package is `user`, and fz-bind-N cannot be
-				// bound yet, so AddBuiltins -- which panics on collision, see
-				// TestCollisionPanicIsReal -- cannot be handed one. A
-				// fuzzer-chosen def that later collides with this name is
-				// refused by PackageLoader like any other collision.
+				// Bind a copy built by the low-level constructor so bind
+				// still meets the shape as data (see the header): every
+				// registration path validates formals now, so this is the
+				// one route left. It runs at decode time, before any loader:
+				// the env is fresh, the current package is `user`, and
+				// fz-bind-N cannot be bound yet. A fuzzer-chosen def that
+				// later collides with this name is refused by PackageLoader
+				// like any other collision.
 				bname := fmt.Sprintf("fz-bind-%d", in.nbypass)
 				in.nbypass++
-				in.env.AddBuiltins(true, elpsutil.Function(bname, fsel.make(), bsel.fn))
+				in.env.Put(lisp.Symbol(bname),
+					lisp.FunInPackage(lisp.DefaultUserPackage, bname, fsel.make(), bsel.fn))
 				in.mark("formals/" + fsel.label)
 				in.mark("body/" + bsel.label)
 				in.callable = append(in.callable, bname)
@@ -1297,9 +1305,10 @@ func FuzzElpsutilEmbed(f *testing.F) {
 	add(ordinary, ``)
 
 	// Every formals shape, one seed each, called with zero, one and three
-	// arguments. The malformed shapes are the point: they are accepted at
-	// registration and only examined by LEnv.bind at call time, so a seed that
-	// never calls them covers nothing.
+	// arguments. The malformed shapes are the point: they are refused by
+	// PackageLoader, and the copy bound through the low-level constructor is
+	// only exercised when it is called, so a seed that never calls them covers
+	// nothing.
 	for _, fs := range formalsTable {
 		sp := buildSpec(0, seedPkg{
 			typ: "type/defs", name: "fuzzpkg", init: "init/nil",

@@ -55,14 +55,18 @@ func TestFormalsAcceptOrdinaryNames(t *testing.T) {
 	}
 }
 
-// A host-registered function's formals run through the same check when the
-// function is bound, so a Go embedder learns of the mistake on the call
-// rather than getting a binding error from deep inside the binder.
+// A host-registered function's formals run through the same check, once, when
+// the function is REGISTERED (issue #666): the embedder learns of the mistake
+// where the definition is installed rather than from a user's call site, and
+// the binder never looks at formals again.  The diagnostic is the one a lisp
+// definition form produces for the same mistake.
 func TestFormalsRejectKeywordFromHostRegistration(t *testing.T) {
 	env := newGoMacroEnv(t)
-	env.AddBuiltins(true, elpsutil.Function("host-keyword", lisp.Formals(":x"),
-		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }))
+	def := elpsutil.Function("host-keyword", lisp.Formals(":x"),
+		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() })
+	assert.PanicsWithValue(t,
+		"builtin host-keyword cannot be registered: function formal argument list contains a keyword: :x",
+		func() { env.AddBuiltins(true, def) })
 	got := env.LoadString("host.lisp", `(host-keyword 1)`)
 	require.Equal(t, lisp.LError, got.Type, "got %v", got)
-	assert.Contains(t, got.String(), "keyword")
 }

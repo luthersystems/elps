@@ -80,6 +80,13 @@ func TestFunctionPropagatesConstantBindingErrors(t *testing.T) {
 	}
 }
 
+// A host registration does not bypass formal symbol validation either.  It is
+// checked once, at registration, rather than on every call (issue #666): the
+// binder no longer looks at formals, so a malformed host list is refused where
+// the embedder wrote it, and loudly -- registration is Go API an embedder
+// drives, and it already panics on a duplicate name (#367).  An embedder that
+// wants an error instead has elpsutil.PackageLoader, which validates the whole
+// package before registering anything.
 func TestFunctionRejectsMalformedHostFormals(t *testing.T) {
 	for _, formals := range []*lisp.LVal{
 		lisp.QExpr([]*lisp.LVal{lisp.Int(123)}),
@@ -90,15 +97,20 @@ func TestFunctionRejectsMalformedHostFormals(t *testing.T) {
 		t.Run(formals.String(), func(t *testing.T) {
 			env := newCallSemanticsEnv(t)
 			called := false
-			env.AddBuiltins(true, elpsutil.Function("invalid-host-formals", formals,
+			def := elpsutil.Function("invalid-host-formals", formals,
 				func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 					called = true
 					return lisp.Int(42)
-				}))
-			result := env.LoadString("formals.lisp", `(invalid-host-formals)`)
+				})
+			assert.PanicsWithValue(t,
+				"builtin invalid-host-formals cannot be registered: first argument contains a non-symbol: int",
+				func() { env.AddBuiltins(true, def) })
 			assert.False(t, called, "host registrations must not bypass formal symbol validation")
+			// The name never became bound, so a call is an ordinary unbound
+			// symbol error rather than a call into the unregistered function.
+			result := env.LoadString("formals.lisp", `(invalid-host-formals)`)
 			require.Equal(t, lisp.LError, result.Type)
-			assert.Contains(t, result.String(), "non-symbol")
+			assert.Contains(t, result.String(), "unbound symbol")
 			assert.False(t, lisp.IsInternalPanic(result))
 		})
 	}
