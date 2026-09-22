@@ -46,7 +46,7 @@ func validPackageName(name string) bool {
 // (substrate#504).  TestValidPackageNameFastPathAgreesWithLexer pins the
 // agreement exhaustively over short strings.
 func isPlainASCIIName(name string) bool {
-	for i := 0; i < len(name); i++ {
+	for i := range len(name) {
 		c := name[i]
 		switch {
 		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', c == '_':
