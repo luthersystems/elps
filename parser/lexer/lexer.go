@@ -309,7 +309,7 @@ func (lex *Lexer) readComment() []*token.Token {
 	} else {
 		toks = lex.emit(token.COMMENT, text)
 	}
-	toks[0].Source = start
+	toks[0].Source = start //elps:aliases the comment token takes the Location LocStart minted for it before ScanLine advanced the scanner; every LocStart result is issued once and never recycled, so no producer fixes it up after this write
 	return toks
 }
 
