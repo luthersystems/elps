@@ -1146,14 +1146,15 @@ func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return env.Errorf("argument is not a symbol: %v", GetType(sym))
 	}
-	pieces := SplitSymbol(sym)
-	if pieces.Type == LError {
+	_, _, n := splitSymbolParts(sym.Str)
+	if n > 2 {
+		pieces := SplitSymbol(sym)
 		if err := env.ErrorAssociate(pieces); err != nil {
 			return err
 		}
 		return pieces
 	}
-	if pieces.Len() == 2 {
+	if n == 2 {
 		if sym.quoted {
 			return sym
 		}

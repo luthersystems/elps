@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strconv"
 	"sync/atomic"
 	"time"
 )
@@ -52,13 +53,15 @@ type Runtime struct {
 	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
+	evalNestingSetting     int           // MaxEvalNesting used to derive evalNestingLimit.
+	evalNestingLimit       int           // Cached positive cap; zero means not yet resolved.
 	maxSteps               int64         // Per-evaluation step limit (0 = unlimited).
 	steps                  int64         // Steps consumed by the current top-level evaluation.
 	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
 	closures               atomicCounter // Closures created so far; let* reads it to learn whether an initializer could have captured its scope.
-	macroExpSeq            int64 // monotonic counter for macroExpansionInfo.ID
+	macroExpSeq            int64         // monotonic counter for macroExpansionInfo.ID
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -107,13 +110,22 @@ func (r *Runtime) EvalNesting() int {
 // counter the caller has already incremented, with no function call in the
 // common case (it inlines).
 func (r *Runtime) evalNestingExceeded() bool {
-	limit := r.MaxEvalNesting
-	if limit == 0 {
-		limit = DefaultMaxEvalNesting
-	} else if limit < 0 {
-		return false
+	// MaxEvalNesting is public: embedders, Config and template instantiation
+	// can all set it directly. Also lazily initialize a zero-value Runtime.
+	if r.evalNestingSetting != r.MaxEvalNesting || r.evalNestingLimit == 0 {
+		r.resolveEvalNestingLimit()
 	}
-	return r.evalNesting > limit
+	return r.evalNesting > r.evalNestingLimit
+}
+
+func (r *Runtime) resolveEvalNestingLimit() {
+	limit := r.MaxEvalNestingDepth()
+	if limit == 0 {
+		// No int-valued nesting depth can exceed this disabled cap.
+		limit = int(^uint(0) >> 1)
+	}
+	r.evalNestingSetting = r.MaxEvalNesting
+	r.evalNestingLimit = limit
 }
 
 // CheckAlloc returns a non-empty error message if n exceeds the per-operation
@@ -420,7 +432,18 @@ func (r *Runtime) closuresCreated() uint64 {
 }
 
 func (r *Runtime) GenSym() string {
-	return fmt.Sprintf("gen%08d", r.gensym())
+	// "gen" plus at least eight decimal digits, zero-padded, as
+	// fmt.Sprintf("gen%08d") produced; one allocation, the final string.
+	const zeros = "00000000"
+	var digits [20]byte // the full decimal range of uint64
+	d := strconv.AppendUint(digits[:0], uint64(r.gensym()), 10)
+	var buf [3 + len(zeros) + len(digits)]byte
+	name := append(buf[:0], "gen"...)
+	if len(d) < len(zeros) {
+		name = append(name, zeros[len(d):]...)
+	}
+	name = append(name, d...)
+	return string(name)
 }
 
 func (r *Runtime) getStderr() io.Writer {

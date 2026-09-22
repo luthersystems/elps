@@ -31,6 +31,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"env":     "remapped: environment index", "captures": "remapped: values index and immutable code",
 			"loc": "shared-immutable: compiler-owned definition location snapshot (#624)",
 			"fid": "scalar: function identifier", "pkg": "scalar: package name",
+			"name": "scalar: most recently bound display name memo",
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",
@@ -44,7 +45,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
 			"symbols": "remapped: binding descriptors", "symbolDocs": "remapped: owned string pairs",
 			"funNames": "remapped: owned string pairs", "externals": "remapped: owned string list",
-			"bindingsSealed": "scalar: preserve core package Lisp binding protection",
+			"externalsSortedLen": "reset: a derived token over the export list; zero in a fresh package means the list is re-sorted before it is searched",
+			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",

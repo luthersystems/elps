@@ -23,6 +23,7 @@ const (
 type Lexer struct {
 	scanner           *token.Scanner
 	lex               LexFn
+	single            [1]*token.Token
 	precedingNewlines int
 	precedingSpaces   int
 	minusRun          int // consecutive NEGATIVE tokens, capped at two
@@ -48,6 +49,9 @@ func (lex *Lexer) Err() error {
 	return lex.scanner.Err()
 }
 
+// ReadToken returns the next tokens. The returned slice is valid only until
+// the next call; callers retaining it must copy its elements. The Token and
+// Location pointers themselves remain valid and are never reused.
 func (lex *Lexer) ReadToken() []*token.Token {
 	toks := lex.lex(lex)
 	if toks[0].Type == token.NEGATIVE {
@@ -250,22 +254,23 @@ func (lex *Lexer) emitMacroChar(tok []*token.Token) []*token.Token {
 }
 
 func (lex *Lexer) emit(typ token.Type, text string) []*token.Token {
-	tok := []*token.Token{{
+	lex.single[0] = &token.Token{
 		Type:              typ,
 		Text:              text,
 		Source:            lex.scanner.LocStart(),
 		PrecedingNewlines: lex.precedingNewlines,
 		PrecedingSpaces:   lex.precedingSpaces,
-	}}
+	}
 	lex.scanner.Ignore()
-	return tok
+	return lex.single[:]
 }
 
 func (lex *Lexer) emitText(typ token.Type) []*token.Token {
 	tok := lex.scanner.EmitToken(typ)
 	tok.PrecedingNewlines = lex.precedingNewlines
 	tok.PrecedingSpaces = lex.precedingSpaces
-	return []*token.Token{tok}
+	lex.single[0] = tok
+	return lex.single[:]
 }
 
 func (lex *Lexer) emitError(err error, expectEOF bool) []*token.Token {
@@ -286,7 +291,8 @@ func (lex *Lexer) charToken(typ token.Type) []*token.Token {
 	tok := lex.scanner.EmitToken(typ)
 	tok.PrecedingNewlines = lex.precedingNewlines
 	tok.PrecedingSpaces = lex.precedingSpaces
-	return []*token.Token{tok}
+	lex.single[0] = tok
+	return lex.single[:]
 }
 
 func (lex *Lexer) readHashBang() []*token.Token {
@@ -303,7 +309,7 @@ func (lex *Lexer) readComment() []*token.Token {
 	} else {
 		toks = lex.emit(token.COMMENT, text)
 	}
-	toks[0].Source = start
+	toks[0].Source = start //elps:aliases the comment token takes the Location LocStart minted for it before ScanLine advanced the scanner; every LocStart result is issued once and never recycled, so no producer fixes it up after this write
 	return toks
 }
 
