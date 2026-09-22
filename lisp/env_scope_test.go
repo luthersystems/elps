@@ -80,8 +80,8 @@ func TestLazyCallScope(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			fun := env.Lambda(tc.formals, []*LVal{Symbol("captured")})
-			call, body := env.bind(fun, tc.args)
-			require.NotEqual(t, LError, body.Type, "%v", body)
+			call, list := env.bind(fun, tc.args)
+			require.Nil(t, list, "a lambda's body is read from fun, not returned")
 			require.NotNil(t, call)
 			assert.Same(t, env, call.parent)
 			assert.Equal(t, tc.formals.Len(), call.scopeHint)
