@@ -26,7 +26,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: "20"
+          node-version: "22"
       - name: Install the locked publishing client without lifecycle scripts
         working-directory: editors/vscode
         run: npm ci --ignore-scripts --no-audit --no-fund
@@ -127,7 +127,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Extract version from tag
         id: version
@@ -174,7 +174,7 @@ jobs:
       - name: Set up Node.js
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: "20"
+          node-version: "22"
 
       - name: Extract version from tag
         id: version
