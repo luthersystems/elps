@@ -32,11 +32,11 @@ func TestTemplateRejectionDiagnosticSpace(t *testing.T) {
 						v = rejectionCapture(v)
 					} else {
 						captured := NewEnv(env)
-						captured.scope["next"] = v
+						captured.scope = map[string]*LVal{"next": v}
 						v = captured.Lambda(Formals(), []*LVal{Nil()})
 					}
 				}
-				env.scope["next"] = v
+				env.scope = map[string]*LVal{"next": v}
 				// A later sibling must not replace the first rejection.
 				env.scope["zz"] = Native(&CallStack{})
 
@@ -97,10 +97,10 @@ func TestTemplateRejectionDiagnosticPath(t *testing.T) {
 				if tc.capture {
 					v = rejectionCapture(v)
 				}
-				current.scope[name] = v
+				current.scope = map[string]*LVal{name: v}
 				current = child
 			}
-			current.scope[tc.scopes[len(tc.scopes)-1]] = Native(new(int))
+			current.scope = map[string]*LVal{tc.scopes[len(tc.scopes)-1]: Native(new(int))}
 			_, err := NewTemplate(env)
 			if err == nil || err.Error() != tc.want {
 				t.Fatalf("rejection = %v, want %q", err, tc.want)

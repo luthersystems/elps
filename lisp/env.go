@@ -138,14 +138,15 @@ func InitializeTypedef(env *LEnv) *LVal {
 // live name lookup is Package.funNames, reached through GetFunName.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
-// scan extent stops at 48 bytes instead of 56. Keep scalars (ID) trailing.
+// scan extent stops at 48 bytes. Keep scalars (ID and scopeHint) trailing.
 type LEnv struct {
-	loc     *token.Location
-	scope   map[string]*LVal
-	parent  *LEnv
-	Runtime *Runtime
-	evalCtx context.Context // transient: set by call() at builtin boundary
-	ID      uint
+	loc       *token.Location
+	scope     map[string]*LVal // nil until the first successful Put; reads treat nil as empty
+	parent    *LEnv
+	Runtime   *Runtime
+	evalCtx   context.Context // transient: set by call() at builtin boundary
+	ID        uint
+	scopeHint int // initial capacity to use when scope is first allocated
 }
 
 // Parent returns env's lexically enclosing environment, or nil when env is a
@@ -232,7 +233,6 @@ func NewEnvRuntime(rt *Runtime) *LEnv {
 	bindRegistryRuntime(rt)
 	env := &LEnv{
 		ID:      rt.GenEnvID(),
-		scope:   make(map[string]*LVal),
 		Runtime: rt,
 	}
 	return env
@@ -243,9 +243,10 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv with its scope map pre-sized to hold n
-// bindings.  Callers that know the number of bindings up front (let, let*,
-// dotimes, etc.) can avoid map growth by passing the exact count.
+// newEnvN creates a child LEnv whose scope map is allocated on the first
+// successful Put, pre-sized to hold n bindings. Callers that know the number
+// of bindings up front (let, let*, dotimes, etc.) can avoid map growth by
+// passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location
@@ -258,12 +259,12 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 		runtime = StandardRuntime()
 	}
 	env := &LEnv{
-		ID:      runtime.GenEnvID(),
-		loc:     loc,
-		scope:   make(map[string]*LVal, n),
-		parent:  parent,
-		Runtime: runtime,
-		evalCtx: evalCtx,
+		ID:        runtime.GenEnvID(),
+		loc:       loc,
+		scopeHint: n,
+		parent:    parent,
+		Runtime:   runtime,
+		evalCtx:   evalCtx,
 	}
 	//elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
 	return env
@@ -656,6 +657,9 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
+	}
+	if env.scope == nil {
+		env.scope = make(map[string]*LVal, env.scopeHint)
 	}
 	env.scope[k.Str] = v
 	return Nil()
@@ -2206,7 +2210,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	//
 	// The call environment starts as a shallow copy of the captured one so
 	// that a register added to LEnv later cannot silently arrive here
-	// zeroed; the three registers a call must not inherit are then
+	// zeroed; the registers a call must not inherit are then
 	// overridden.  The location register is the definition-site snapshot
 	// taken in Lambda rather than the captured environment's live value,
 	// because eval reads env.loc before it rebinds it -- see funData.loc.
@@ -2215,7 +2219,8 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		cp := *fenv
 		cp.parent = fenv
 		cp.loc = fun.funData().loc
-		cp.scope = make(map[string]*LVal, formals.Len())
+		cp.scope = nil
+		cp.scopeHint = formals.Len()
 		funenv = &cp
 	}
 	putArg := func(k, v *LVal) *LVal {
@@ -2282,11 +2287,25 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
 		keyCells := formals.Rest()
-		keymap := make(map[string]*LVal, len(keyCells))
-		keys := make([]string, 0, len(keyCells))
 		if args.Rem()%2 != 0 {
 			return env.Errorf("function called with an odd number of keyword arguments")
 		}
+		if args.IsEOF() {
+			// No keywords supplied, the common call shape: every key formal
+			// binds nil. Same checks, same order, same results as the general
+			// path below, without its keyword map and key-order slice.
+			for _, key := range keyCells {
+				if strings.HasPrefix(key.Str, MetaArgPrefix) {
+					return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
+				}
+				if lerr := put(key, Nil()); lerr.Type == LError {
+					return lerr
+				}
+			}
+			return Nil()
+		}
+		keymap := make(map[string]*LVal, len(keyCells))
+		keys := make([]string, 0, len(keyCells))
 		for !args.IsEOF() {
 			key := args.Advance()
 			val := args.Advance()

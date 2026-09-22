@@ -5,7 +5,6 @@ package lisp
 import (
 	"cmp"
 	"slices"
-	"sort"
 )
 
 // Map is the backing of a sorted-map value. NewMapData is the extension point
@@ -369,22 +368,53 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 		buf[i] = &pairs[i]
 		i++
 	}
-	sort.Sort(mapEntriesByKey(buf[:n]))
+	slices.SortFunc(buf[:n], comparePairKeyStr)
 	return Int(n)
 }
 
+// Keys builds the sorted key list directly rather than through Entries, so
+// it pays for no pair headers or value slots that would only be discarded.
+// Each key is the same fresh value Entries puts in its pair: a string key is
+// an unquoted LString (carved from one batch array), a symbol key is
+// Quote(Symbol(k)).  The list and every key are fresh per call.
 func (m sortedmap) Keys() *LVal {
-	keys := sortedMapEntries(m)
-	if keys.IsNil() || keys.Type == LError {
-		return keys
+	n := len(m.m)
+	cells := make([]*LVal, n)
+	if n == 0 {
+		return QExpr(cells)
 	}
-	for i := range keys.Cells {
-		// Modifying lvals is shady in general but because they are generated
-		// internally we know their structure.
-		//elps:mutates keys and its pair cells are freshly built by sortedMapEntries above; rewriting the slots drops the values in place
-		keys.Cells[i] = keys.Cells[i].Cells[0]
+	var keys []LVal
+	i := 0
+	for ks := range m.m {
+		switch m.keytype(ks) {
+		case stringkey:
+			if keys == nil {
+				keys = make([]LVal, n)
+			}
+			keys[i] = LVal{Type: LString, Str: ks}
+			cells[i] = &keys[i]
+		default:
+			cells[i] = Quote(Symbol(ks))
+		}
+		i++
 	}
-	return keys
+	slices.SortFunc(cells, compareKeyStr)
+	return QExpr(cells)
+}
+
+// compareKeyStr orders built-in map keys by their spelling, the comparison
+// every built-in Map's Keys and Entries sort by.  Built-in map keys are
+// unique strings, so the order is total and stability is irrelevant.
+func compareKeyStr(a, b *LVal) int {
+	return cmp.Compare(a.Str, b.Str)
+}
+
+// comparePairKeyStr orders the pairs a built-in Map's Entries builds by
+// their keys' spelling: the comparison the former sort.Interface adapters
+// made, as a slices.SortFunc comparator so a sort boxes nothing.  Built-in
+// map keys are unique strings, so stability is irrelevant.
+func comparePairKeyStr(a, b *LVal) int {
+	return cmp.Compare(a.Cells[0].Str, b.Cells[0].Str)
 }
 
 func sortedMapEntries(m Map) *LVal {
@@ -423,22 +453,6 @@ func sortMapEntriesByKey(entries []*LVal) {
 		}
 		return cmp.Compare(a.Cells[0].Type, b.Cells[0].Type)
 	})
-}
-
-// mapEntriesByKey are internally known to be a list of pairs containing keys
-// with valid types.
-type mapEntriesByKey []*LVal
-
-func (m mapEntriesByKey) Len() int {
-	return len(m)
-}
-
-func (m mapEntriesByKey) Less(i, j int) bool {
-	return m[i].Cells[0].Str < m[j].Cells[0].Str
-}
-
-func (m mapEntriesByKey) Swap(i, j int) {
-	m[i], m[j] = m[j], m[i]
 }
 
 func mklist(v ...*LVal) *LVal {

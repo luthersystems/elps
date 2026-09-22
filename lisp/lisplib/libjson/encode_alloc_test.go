@@ -65,6 +65,10 @@ func TestEncodeWideSequenceTraversalSpace(t *testing.T) {
 // three objects into three arrays is a wash.  A count that fell further than
 // one would mean the shapes below stopped being the shapes described.
 //
+// They dropped again by exactly one per map (62 maps in the nested case)
+// when Entries stopped sorting through a sort.Interface adapter, whose
+// conversion boxed the slice once per call (issue #670, item 3).
+//
 // Red-proof: replacing encodeGuard{} in encode with a guard whose path set is
 // made up front fails every case here.
 func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
@@ -77,10 +81,10 @@ func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
 		want int
 	}{
 		{"leaf", lisp.Int(1), 1},
-		{"flat object", shared, 8},
+		{"flat object", shared, 7},
 		// One map short of the depth that abandons the counting pass: the
 		// value at the bottom sits at encodeGuardDepth-1.
-		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 438},
+		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 376},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
