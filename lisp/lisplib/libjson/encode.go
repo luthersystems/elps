@@ -443,8 +443,52 @@ func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) (err error) {
 	}
 }
 
+// mapPairPool holds the scratch slices encodeSortMap sorts a map's entries
+// into.  It is a pool of its own rather than a field of encoder because the
+// encoder fills its size class exactly (TestEncoderFitsItsSizeClass) and most
+// documents never need the slice's header charged to them.  One slice is
+// taken per map, nested maps included, so no two maps ever share one.
+var mapPairPool = sync.Pool{
+	New: func() interface{} { return new([]lisp.MapPair) },
+}
+
+// mapPairRetentionLimit bounds the entries a scratch slice may carry back
+// into mapPairPool, so one unusually wide map does not pin its slice per P.
+const mapPairRetentionLimit = 1 << 12
+
 func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
-	// TODO:  Cache map entries slices to help with "widely nested" objects
+	sp := mapPairPool.Get().(*[]lisp.MapPair)
+	pairs, ok := v.AppendSortedPairs((*sp)[:0])
+	defer func() {
+		clear(pairs) // drop value references before the slice is pooled
+		if cap(pairs) <= mapPairRetentionLimit {
+			*sp = pairs[:0]
+			mapPairPool.Put(sp)
+		}
+	}()
+	if !ok {
+		return enc.encodeSortMapEntries(v, g)
+	}
+	enc.buf.WriteByte('{')
+	for i := range pairs {
+		if i > 0 {
+			enc.buf.WriteByte(',')
+		}
+		if err = enc.encodeString(pairs[i].Key); err != nil {
+			return err
+		}
+		enc.buf.WriteByte(':')
+		if err = enc.encodeValue(pairs[i].Val, g); err != nil {
+			return err
+		}
+	}
+	enc.buf.WriteByte('}')
+	return nil
+}
+
+// encodeSortMapEntries encodes a map whose backing is an embedder's own Map
+// implementation, through the generic pair list.
+func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) (err error) {
 	ents := v.MapEntries()
 	if ents.Type == lisp.LError {
 		return lisp.GoError(ents)

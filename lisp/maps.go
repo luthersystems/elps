@@ -458,3 +458,49 @@ func sortMapEntriesByKey(entries []*LVal) {
 func mklist(v ...*LVal) *LVal {
 	return QExpr(v)
 }
+
+// MapPair is one sorted-map entry viewed as its key spelling and its value,
+// with no LVal built for the key or the pair.
+type MapPair struct {
+	Val *LVal
+	Key string
+}
+
+// AppendSortedPairs appends the entries of the sorted-map v to dst, ordered
+// by key spelling -- the order MapEntries yields -- and returns the extended
+// slice.  Only dst[len(dst):] is sorted; the prefix is left alone, so a
+// caller can use one scratch slice as a stack across nested maps.  Values
+// are the map's own, exactly as MapEntries would hand them out.
+//
+// It exists so a read-only walk (the JSON encoder) can visit a map without
+// materialising a pair list: MapEntries builds a pair LVal, a key LVal and
+// two cell slots per entry, all garbage the moment the walk moves on.  Key
+// kind (string or symbol) is not reported, which is why this is only for
+// callers that treat both kinds alike.
+//
+// ok is false when v's backing is not one of the built-in maps (the stock
+// sortedmap or a decoded JSON map); dst is then returned unchanged and the
+// caller must fall back to MapEntries.  A map with no backing is empty.
+// AppendSortedPairs panics if v.Type is not LSortMap.
+func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
+	md := v.Map()
+	if md == nil || md.mapBacking == nil {
+		return dst, true
+	}
+	base := len(dst)
+	switch b := md.mapBacking.(type) {
+	case sortedmap:
+		for k, val := range b.m {
+			dst = append(dst, MapPair{Key: k, Val: val})
+		}
+	case jsonMap:
+		for k, x := range b {
+			dst = append(dst, MapPair{Key: k, Val: jsonMapLVal(x)})
+		}
+	default:
+		return dst, false
+	}
+	// Built-in map keys are unique strings, so the order is total.
+	slices.SortFunc(dst[base:], func(a, b MapPair) int { return cmp.Compare(a.Key, b.Key) })
+	return dst, true
+}
