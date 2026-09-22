@@ -622,6 +622,9 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if f.Type != LFun {
 		return "", fmt.Errorf("not a function: %v", f.Type)
 	}
+	if name := f.funData().name; name != "" {
+		return name, nil
+	}
 	pkgname := f.Package()
 	if pkgname == "" {
 		return "", fmt.Errorf("unknown package for function %s", f.FID())

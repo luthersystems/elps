@@ -202,6 +202,16 @@ type funData struct {
 
 	fid string
 	pkg string
+	// name memoises the display name pkgFunName would resolve through the
+	// defining package's funNames table: the name this function was most
+	// recently bound to in that package.  putName writes it on the same
+	// line as the table entry, and only when the binding package is the
+	// defining one, so a foreign package's binding never shadows it and the
+	// documented most-recently-bound semantics hold.  Empty means fall back
+	// to the table.  It exists because every call pushed a frame whose name
+	// nobody reads until a stack is rendered, at the price of two map
+	// lookups per call.
+	name string
 }
 
 // macroExpansionContext is shared by all nodes in a single macro expansion.

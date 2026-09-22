@@ -462,6 +462,9 @@ func (pkg *Package) put(k, v *LVal) {
 func (pkg *Package) putName(name string, v *LVal) {
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
+		if v.Package() == pkg.Name {
+			v.funData().name = name // see funData.name
+		}
 	}
 	pkg.symbols[name] = v
 }
