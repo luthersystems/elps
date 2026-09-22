@@ -43,7 +43,7 @@ def validate_diagnostic(job):
     assert steps[0]["uses"].startswith("actions/checkout@")
     assert steps[0]["with"] == {"persist-credentials": False}
     assert steps[1]["uses"].startswith("actions/setup-node@")
-    assert steps[1]["with"] == {"node-version": "20"}
+    assert steps[1]["with"] == {"node-version": "22"}
     assert steps[2]["run"] == "npm ci --ignore-scripts --no-audit --no-fund"
     assert steps[2]["working-directory"] == "editors/vscode"
     assert steps[3]["run"] == "node --test scripts/marketplace-sdk.test.cjs"
