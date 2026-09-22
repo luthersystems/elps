@@ -562,16 +562,27 @@ func Bytes(b []byte) *LVal {
 	}
 }
 
+// splitSymbolParts returns the namespace, name and number of colon-separated
+// parts without allocating. An unqualified symbol has an empty namespace.
+func splitSymbolParts(s string) (ns, name string, n int) {
+	i := strings.IndexByte(s, ':')
+	if i < 0 {
+		return "", s, 1
+	}
+	ns, name = s[:i], s[i+1:]
+	return ns, name, 2 + strings.Count(name, ":")
+}
+
 func SplitSymbol(sym *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return Errorf("not a symbol")
 	}
-	pieces := strings.Split(sym.Str, ":")
-	switch len(pieces) {
+	ns, name, n := splitSymbolParts(sym.Str)
+	switch n {
 	case 1:
 		return QExpr([]*LVal{sym})
 	case 2:
-		return QExpr([]*LVal{Symbol(pieces[0]), Symbol(pieces[1])})
+		return QExpr([]*LVal{Symbol(ns), Symbol(name)})
 	default:
 		return Errorf("illegal symbol: %q", sym.Str)
 	}
@@ -1058,10 +1069,17 @@ func Formals(argSymbols ...string) *LVal {
 }
 
 func markTailRec(npop int, fun *LVal, args *LVal) *LVal {
-	return &LVal{
-		Type:  LMarkTailRec,
-		Cells: []*LVal{Int(npop), Int(npop), fun, args},
-	}
+	// All storage belongs to this internal marker and dies with the trampoline.
+	x := &struct {
+		c      [4]*LVal
+		counts [2]LVal
+		v      LVal
+	}{}
+	x.counts[0] = LVal{Type: LInt, Int: npop}
+	x.counts[1] = LVal{Type: LInt, Int: npop}
+	x.c = [4]*LVal{&x.counts[0], &x.counts[1], fun, args}
+	x.v = LVal{Type: LMarkTailRec, Cells: x.c[:]}
+	return &x.v
 }
 
 // tailRecElided, tailRecFun and tailRecArgs read a tail-recursion mark.
@@ -1094,10 +1112,13 @@ func (v *LVal) tailRecArgs() *LVal {
 }
 
 func markMacExpand(expr *LVal) *LVal {
-	return &LVal{
-		Type:  LMarkMacExpand,
-		Cells: []*LVal{expr},
-	}
+	x := &struct {
+		c [1]*LVal
+		v LVal
+	}{}
+	x.c[0] = expr
+	x.v = LVal{Type: LMarkMacExpand, Cells: x.c[:]}
+	return &x.v
 }
 
 // IsInternalPanic reports whether v is an error produced by recovering a Go

@@ -63,6 +63,10 @@ var forkRuntimeFieldPolicy = map[string]string{
 	// (opLetSeq reads it before and after each initializer), so its absolute
 	// value carries no meaning across a fork.
 	"closures": "not-carried",
+	// Derived from the copied MaxEvalNesting setting on first eval. A zero
+	// cache is valid for a fresh VM even when its configured cap is nonzero.
+	"evalNestingSetting": "not-carried",
+	"evalNestingLimit":   "not-carried",
 }
 
 // TestForkRuntimeFieldCoverage fails when Runtime grows a field nobody has
