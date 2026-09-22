@@ -7,14 +7,20 @@ import "testing"
 func TestScannerAllocationCounts(t *testing.T) {
 	// Empty text excludes string allocation. Each run starts fresh so slab
 	// refills, including the partially used last chunk, are measured.
+	// Chunks grow 8, 16, 32, 64, 64, ... (nextChunk), so cumulative capacity
+	// runs 8, 24, 56, 120, 184, 248, 312: n tokens take as many Token chunks
+	// as that ladder needs, and EmitToken also draws one Location per token
+	// from the same ladder, so it allocates twice as often as LocStart alone.
 	for _, tc := range []struct {
 		name                         string
 		n, wantTokens, wantLocations int
 	}{
 		{"one", 1, 2, 1},
-		{"full", 64, 2, 1},
-		{"refill", 65, 4, 2},
-		{"two", 128, 4, 2},
+		{"first-chunk", 8, 2, 1},
+		{"grow", 9, 4, 2},
+		{"64", 64, 8, 4},
+		{"128", 128, 10, 5},
+		{"256", 256, 14, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var tok *Token

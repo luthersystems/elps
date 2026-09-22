@@ -24,7 +24,12 @@ type Scanner struct {
 	// never recycled: callers may retain and independently mutate them.
 	tokbuf []Token
 	locbuf []Location
-	c      Rune
+	// Chunk sizes grow from tokenChunkMin toward tokenChunkMax as a scanner
+	// keeps emitting, so a one-form source pays for a handful of slots and
+	// a whole file pays one allocation per 64 tokens.
+	tokChunk int
+	locChunk int
+	c        Rune
 
 	linePos      int // totalPos at the first byte of the line
 	startLine    int // line number at startLinePos
@@ -93,7 +98,8 @@ func (s *Scanner) SetPath(path string) {
 // either EmitToken or Ignore.
 func (s *Scanner) EmitToken(typ Type) *Token {
 	if len(s.tokbuf) == 0 {
-		s.tokbuf = make([]Token, 64)
+		s.tokChunk = nextChunk(s.tokChunk)
+		s.tokbuf = make([]Token, s.tokChunk)
 	}
 	tok := &s.tokbuf[0]
 	s.tokbuf = s.tokbuf[1:]
@@ -493,7 +499,8 @@ func (s *Scanner) LocStart() *Location {
 		startPos = s.totalPos + s.c.N
 	}
 	if len(s.locbuf) == 0 {
-		s.locbuf = make([]Location, 64)
+		s.locChunk = nextChunk(s.locChunk)
+		s.locbuf = make([]Location, s.locChunk)
 	}
 	loc := &s.locbuf[0]
 	s.locbuf = s.locbuf[1:]
@@ -602,4 +609,24 @@ type Rune struct {
 // by utf8.DecodeRune.
 func (r Rune) IsRuneError() bool {
 	return r.C == utf8.RuneError && r.N == 1
+}
+
+// Token and Location chunk sizing: the first chunk is small so a scanner
+// that reads one form (a REPL line, a JSON-decoded package's source, a
+// test snippet) does not carry 63 idle slots, and each refill doubles the
+// chunk up to tokenChunkMax so a whole file still costs one allocation per
+// 64 tokens. Issued slots are never recycled whatever the chunk size.
+const (
+	tokenChunkMin = 8
+	tokenChunkMax = 64
+)
+
+func nextChunk(prev int) int {
+	if prev == 0 {
+		return tokenChunkMin
+	}
+	if prev >= tokenChunkMax {
+		return tokenChunkMax
+	}
+	return prev * 2
 }
