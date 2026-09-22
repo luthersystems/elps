@@ -1594,7 +1594,9 @@ func (v *LVal) equalIter(other *LVal, limit int, strict bool) (*LVal, bool) {
 	}
 	// Reuse one by-value cursor per ancestor. Leaves never create or clear
 	// a frame, and wide containers do not increase traversal scratch space.
-	stack := make([]frame, 0, 16)
+	// The first 16 frames live on the Go stack; append spills past that.
+	var buf [16]frame
+	stack := buf[:0]
 	var seen map[valuePair]bool
 	a, b := v, other
 	key := false

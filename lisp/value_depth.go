@@ -107,7 +107,8 @@ func checkContainerDepth(v *LVal, limit int, ctx context.Context) error {
 	// Only ancestors need cursors; only containers need identity tracking.
 	// Keep the visited set for DAGs as well as cycles, so shared expansions
 	// remain linear in graph size. Scalar siblings need neither structure.
-	pending := make([]frame, 0, 16)
+	var buf [16]frame // stack-resident until a value nests deeper than 16
+	pending := buf[:0]
 	seen := make(map[*LVal]bool)
 	visits := 0
 walk:

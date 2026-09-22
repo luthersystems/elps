@@ -507,7 +507,8 @@ func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{
 }
 
 func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struct{}) {
-	pending := make([][]*LVal, 0, 16)
+	var buf [16][]*LVal // stack-resident until an expansion nests deeper than 16
+	pending := buf[:0]
 	seen := make(map[*LVal]bool)
 	for {
 		if v != nil && !isSingleton(v) && !v.sealed && !isValueNode(v) {
@@ -661,7 +662,8 @@ func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) (*LVal, *LVal) {
 		cells []*LVal
 		i     int
 	}
-	stack := make([]frame, 0, 16)
+	var buf [16]frame // stack-resident until a stamp walks deeper than 16
+	stack := buf[:0]
 walk:
 	for {
 		var result *LVal
@@ -780,7 +782,12 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		depth, valueDepth, quotes, i, total int
 		splices                             bool
 	}
-	var stack []frame
+	// The cursor stack lives on the Go stack for the depths a real template
+	// reaches; append spills to the heap only past that.  Growing a nil
+	// slice cost a heap allocation per doubling on EVERY quasiquote
+	// evaluation, which is per macro call (substrate#504).
+	var buf [8]frame
+	stack := buf[:0]
 	valueDepth := depth
 	for {
 		result, list, quotes, quoteEdges := prepareUnquote(env, v, depth, valueDepth)
