@@ -64,7 +64,7 @@ func runExportScript(t *testing.T, steps []exportStep, exports func(*Package, ..
 // a name already exported, and raw Export appends that leave the list
 // unsorted between calls.
 func TestExportsMatchesPreviousImplementation(t *testing.T) {
-	rng := rand.New(rand.NewSource(1))
+	rng := rand.New(rand.NewSource(1)) //nolint:gosec // a fixed seed makes the oracle comparison reproducible; nothing here is security-sensitive
 	pool := []string{"a", "b", "c", "delta", "echo", "a", "zz", "m", "b", "n"}
 	for trial := range 300 {
 		steps := make([]exportStep, 0, 12)

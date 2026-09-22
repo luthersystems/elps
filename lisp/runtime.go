@@ -432,17 +432,17 @@ func (r *Runtime) closuresCreated() uint64 {
 }
 
 func (r *Runtime) GenSym() string {
-	var buf [23]byte // prefix plus the full decimal range of uint64
-	copy(buf[:], "gen")
-	name := strconv.AppendUint(buf[:3], uint64(r.gensym()), 10)
-	if len(name) < 11 {
-		padding := 11 - len(name)
-		copy(buf[3+padding:], name[3:])
-		for i := 3; i < 3+padding; i++ {
-			buf[i] = '0'
-		}
-		name = buf[:11]
+	// "gen" plus at least eight decimal digits, zero-padded, as
+	// fmt.Sprintf("gen%08d") produced; one allocation, the final string.
+	const zeros = "00000000"
+	var digits [20]byte // the full decimal range of uint64
+	d := strconv.AppendUint(digits[:0], uint64(r.gensym()), 10)
+	var buf [3 + len(zeros) + len(digits)]byte
+	name := append(buf[:0], "gen"...)
+	if len(d) < len(zeros) {
+		name = append(name, zeros[len(d):]...)
 	}
+	name = append(name, d...)
 	return string(name)
 }
 
