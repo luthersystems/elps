@@ -9,6 +9,7 @@ import (
 	"io"
 	"iter"
 	"log"
+	"strconv"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/lambdalist"
@@ -719,15 +720,16 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 // GetGlobal takes LSymbol k and returns the value it is bound to in the
 // current package.
 func (env *LEnv) GetGlobal(k *LVal) *LVal {
-	pieces := SplitSymbol(k)
-	if pieces.Type == LError {
+	ns, name, n := splitSymbolParts(k.Str)
+	if k.Type != LSymbol || n > 2 {
+		// Keep SplitSymbol's error construction and association unchanged.
+		pieces := SplitSymbol(k)
 		if err := env.ErrorAssociate(pieces); err != nil {
 			return err
 		}
 		return pieces
 	}
-	if pieces.Len() == 2 {
-		ns := pieces.Cells[0].Str
+	if n == 2 {
 		if ns == "" {
 			// keyword
 			return k
@@ -736,7 +738,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
-		lerr := pkg.Get(pieces.Cells[1])
+		lerr := pkg.Get(Symbol(name))
 		if lerr.Type == LError {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
@@ -771,15 +773,16 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	// write funnels through here first.
 	checkOwnership(env.Runtime, k)
 	checkOwnership(env.Runtime, v)
-	pieces := SplitSymbol(k)
-	if pieces.Type == LError {
+	ns, name, n := splitSymbolParts(k.Str)
+	if k.Type != LSymbol || n > 2 {
+		// Keep SplitSymbol's error construction and association unchanged.
+		pieces := SplitSymbol(k)
 		if err := env.ErrorAssociate(pieces); err != nil {
 			return err
 		}
 		return pieces
 	}
-	if pieces.Len() == 2 {
-		ns := pieces.Cells[0].Str
+	if n == 2 {
 		if ns == "" {
 			return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 		}
@@ -787,7 +790,7 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
-		lerr := pkg.Put(pieces.Cells[1], v)
+		lerr := pkg.Put(Symbol(name), v)
 		if lerr.Type == LError {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
@@ -901,6 +904,9 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	// this counter is how opLetSeq learns that an initializer may have
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
+	var name [24]byte
+	copy(name[:], "_fun")
+	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
@@ -913,7 +919,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 			// definition, per call-site Copy, and per fork remap.  The FID
 			// still consumes exactly one environment ID, so generated names
 			// are unchanged.
-			fid: fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
+			fid: string(fid),
 			pkg: env.Runtime.Package.Name,
 			env: env,
 			//elps:aliases deliberate in-runtime alias: the definition-site snapshot of the environment's location register, the same pointer NewEnv(env) froze into the per-function child environment this replaces, and the function value lives inside the same runtime as env.loc
@@ -968,11 +974,17 @@ func formalSymbolsMessage(formals *LVal) string {
 }
 
 func (env *LEnv) Terminal(expr *LVal) *LVal {
-	return &LVal{
+	x := &struct {
+		c [1]*LVal
+		v LVal
+	}{}
+	x.c[0] = expr
+	x.v = LVal{
 		Type:   LMarkTerminal,
-		Native: env, //elpsvet:allow-native evaluator-internal trampoline marker: an LMarkTerminal is consumed by the eval loop that produced it and never bound into a scope, so it cannot reach a template, and detach refuses it
-		Cells:  []*LVal{expr},
+		Native: env, //elpsvet:allow-native evaluator-internal trampoline marker consumed by call before it can reach a Lisp binding
+		Cells:  x.c[:],
 	}
+	return &x.v
 }
 
 func (env *LEnv) root() *LEnv {
