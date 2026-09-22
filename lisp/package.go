@@ -16,6 +16,9 @@ func validPackageName(name string) bool {
 	if name == "" || strings.Contains(name, ":") {
 		return false
 	}
+	if isPlainASCIIName(name) {
+		return true
+	}
 	// Use the reader's lexer rather than a second symbol alphabet. The only
 	// parser rule needed without colons is ParseNegative: a leading minus
 	// followed by a SYMBOL becomes one symbol; a numeric token does not.
@@ -30,6 +33,29 @@ func validPackageName(name string) bool {
 		return false
 	}
 	return tok.Type == token.SYMBOL && lex.ReadToken()[0].Type == token.EOF
+}
+
+// isPlainASCIIName is the allocation-free fast path of validPackageName: an
+// ASCII letter or underscore followed by ASCII letters, digits, underscores
+// and hyphens.  Every such string lexes as exactly one SYMBOL token
+// (isWordStart admits letters and '_', isWord admits these plus digits and
+// '-', and nothing here is a quote, colon, dispatch or number prefix), so the
+// lexer below would return true; the lexer stays the authority for every
+// other spelling.  Running the lexer here cost a lexer, a scanner and a token
+// slice per in-package, use-package and export, which is every phylum load
+// (substrate#504).  TestValidPackageNameFastPathAgreesWithLexer pins the
+// agreement exhaustively over short strings.
+func isPlainASCIIName(name string) bool {
+	for i := range len(name) {
+		c := name[i]
+		switch {
+		case 'a' <= c && c <= 'z', 'A' <= c && c <= 'Z', c == '_':
+		case i > 0 && ('0' <= c && c <= '9' || c == '-'):
+		default:
+			return false
+		}
+	}
+	return len(name) > 0
 }
 
 // PackageRegistry contains a set of packages.
