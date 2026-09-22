@@ -37,8 +37,9 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",
 		}},
 		{reflect.TypeFor[LEnv](), map[string]string{
-			"loc": "reset: transient evaluation location", "scope": "remapped: binding descriptors",
-			"parent": "remapped: environment index", "Runtime": "remapped: fresh runtime configuration",
+			"loc": "reset: transient evaluation location", "scope": "remapped: binding descriptors; empty scopes stay nil",
+			"scopeHint": "scalar: initial capacity for a lazily allocated scope",
+			"parent":    "remapped: environment index", "Runtime": "remapped: fresh runtime configuration",
 			"evalCtx": "reset: context supplied per instance", "ID": "scalar: inherited environment identity",
 		}},
 		{reflect.TypeFor[Package](), map[string]string{
