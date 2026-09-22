@@ -20,7 +20,11 @@ type Scanner struct {
 	file    string
 	peek    []Rune
 	buf     []byte
-	c       Rune
+	// Unused slots in the current chunks. Issued tokens and locations are
+	// never recycled: callers may retain and independently mutate them.
+	tokbuf []Token
+	locbuf []Location
+	c      Rune
 
 	linePos      int // totalPos at the first byte of the line
 	startLine    int // line number at startLinePos
@@ -88,7 +92,12 @@ func (s *Scanner) SetPath(path string) {
 // EmitToken returns a token containing the text scanned since the last call to
 // either EmitToken or Ignore.
 func (s *Scanner) EmitToken(typ Type) *Token {
-	tok := &Token{
+	if len(s.tokbuf) == 0 {
+		s.tokbuf = make([]Token, 64)
+	}
+	tok := &s.tokbuf[0]
+	s.tokbuf = s.tokbuf[1:]
+	*tok = Token{
 		Type:   typ,
 		Text:   s.Text(),
 		Source: s.LocStart(),
@@ -483,13 +492,19 @@ func (s *Scanner) LocStart() *Location {
 	if s.start > s.pos {
 		startPos = s.totalPos + s.c.N
 	}
-	return &Location{
+	if len(s.locbuf) == 0 {
+		s.locbuf = make([]Location, 64)
+	}
+	loc := &s.locbuf[0]
+	s.locbuf = s.locbuf[1:]
+	*loc = Location{
 		File: s.file,
 		Path: s.path,
 		Line: s.startLine,
 		Pos:  startPos,
 		Col:  startPos - s.startLinePos + 1,
 	}
+	return loc
 }
 
 // Loc returns a Location referencing the current scanner position, the last
