@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"slices"
 	"sort"
 	"strings"
 
@@ -196,6 +197,15 @@ type Package struct {
 	// pointer across goroutines.  See issue #397.
 	funNames  map[string]string
 	externals []string
+	// externalsSortedLen records the length externals had the last time
+	// Exports left it in sorted order.  It is a validity token, not a flag:
+	// every other writer of externals (Export, and the AddBuiltins family in
+	// lisp/env.go) only ever APPENDS, so a length that no longer matches is
+	// proof that unsorted names may have arrived since and the list must be
+	// re-sorted before it can be binary searched.  A package copied
+	// field-by-field (package admission, the template planner) starts at
+	// zero, which matches only an empty -- and so trivially sorted -- list.
+	externalsSortedLen int
 	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
 	// Go registration APIs remain available to the host after initialization.
 	bindingsSealed bool
@@ -334,7 +344,24 @@ func (pkg *Package) Export(names ...string) {
 
 // Exports declares symbols exported by the package.  The symbols are not
 // required to be bound at the time Exports is called.
+//
+// The result is always the sorted union of the package's existing export
+// list with the names in sym that it did not already contain -- names
+// repeated WITHIN one call are appended once each, matching the historical
+// implementation, which tested membership against the pre-call list only.
+//
+// The single-name case has its own path because it is the only one the
+// interpreter reaches: `(export 'a 'b)` recurses one symbol at a time
+// (exportArgs, lisp/builtins.go), so exporting n names used to copy and sort
+// a one-element slice, scan the whole export list and re-sort it n times
+// over.  The fast path skips the copy and the input sort and splices the new
+// name into its sorted position instead, keeping the list sorted for the
+// next call.
 func (pkg *Package) Exports(sym ...string) {
+	if len(sym) == 1 {
+		pkg.exportSorted(sym[0])
+		return
+	}
 	// Copy sym before sorting to avoid mutating the caller's backing
 	// array (e.g., a package-level var passed via ...).
 	sorted := make([]string, len(sym))
@@ -352,6 +379,24 @@ addloop:
 	}
 	sort.Strings(externs)
 	pkg.externals = externs
+	pkg.externalsSortedLen = len(externs)
+}
+
+// exportSorted adds one name to the export list, leaving it sorted.  It is
+// equivalent to Exports(name): the old implementation finished by sorting
+// the whole list, so the result is fully determined as the sorted union and
+// an insertion at the searched position reproduces it byte for byte.
+func (pkg *Package) exportSorted(name string) {
+	if pkg.externalsSortedLen != len(pkg.externals) {
+		sort.Strings(pkg.externals)
+		pkg.externalsSortedLen = len(pkg.externals)
+	}
+	i := sort.SearchStrings(pkg.externals, name)
+	if i < len(pkg.externals) && pkg.externals[i] == name {
+		return
+	}
+	pkg.externals = slices.Insert(pkg.externals, i, name)
+	pkg.externalsSortedLen = len(pkg.externals)
 }
 
 // GetFunName returns the function name (if any) known to be bound to the given
