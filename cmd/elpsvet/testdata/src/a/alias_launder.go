@@ -1,6 +1,6 @@
 // Slice-alias laundering shapes that require more than ident-assignment
 // tracking: taint through plain var declarations and through slice type
-// conversions (the mapEntriesByKey sort-carrier shape from lisp/maps.go).
+// conversions (the mapEntriesByKey sort-carrier shape lisp/maps.go used until #670).
 package a
 
 import (
@@ -22,7 +22,7 @@ func varDeclTypedAlias(list, x *lisp.LVal) {
 	cells[0] = x // want `index write through a local slice alias of lisp\.LVal backing storage`
 }
 
-// cellSlice mirrors lisp.mapEntriesByKey: a named slice of *LVal that
+// cellSlice mirrors the former lisp.mapEntriesByKey (removed in #670): a named slice of *LVal that
 // implements sort.Interface so the raw backing can be handed to sort.Sort.
 type cellSlice []*lisp.LVal
 

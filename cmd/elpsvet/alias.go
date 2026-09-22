@@ -36,7 +36,7 @@
 // (a := v.Cells; b := a; b[i] = x flags at any depth), through plain var
 // declarations (var a = v.Cells is a ValueSpec, not an AssignStmt), through
 // slice type conversions (cellSlice(a) shares backing — the
-// sort.Sort(mapEntriesByKey(buf)) shape from lisp/maps.go), and through slice
+// sort.Sort(mapEntriesByKey(buf)) shape lisp/maps.go used until #670), and through slice
 // expressions (b := a[1:3] shares backing, so it inherits taint).  Tracking
 // is last-assignment-wins in source order and path-insensitive, exactly like
 // the freshness map: reassigning the variable to provably fresh storage
