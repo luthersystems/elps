@@ -46,6 +46,14 @@ func TestPackageNullSentinel(t *testing.T) {
 	r.RunTestFile(t, "libjson_null_test.lisp")
 }
 
+// TestPackageStringNumbersGetter covers json:string-numbers?.  Same reasoning
+// as TestPackageCyclicValue for why it gets its own file.
+func TestPackageStringNumbersGetter(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libjson_string_numbers_test.lisp")
+}
+
 func BenchmarkPackage(b *testing.B) {
 	r := &elpstest.Runner{}
 	defer r.Close()
