@@ -2,7 +2,10 @@
 
 package lisp
 
-import "sort"
+import (
+	"slices"
+	"sort"
+)
 
 // jsonMap is the interpreter-owned string-keyed map used for decoded JSON.
 // Symbol keys use their names for access; keys are always emitted as strings.
@@ -102,17 +105,23 @@ func (m jsonMap) Entries(cells []*LVal) *LVal {
 	return Int(len(cells))
 }
 
-func (m jsonMap) Keys() (keys *LVal) {
-	cells := make([]*LVal, len(m))
-	keys = m.Entries(cells) // save stack space :\
-	if keys.Type == LError {
-		return keys
+// Keys builds the sorted key list directly rather than through Entries: one
+// batch of fresh LString keys and the list's cells, nothing else.
+func (m jsonMap) Keys() *LVal {
+	n := len(m)
+	cells := make([]*LVal, n)
+	if n == 0 {
+		return QExpr(cells)
 	}
-	keys = QExpr(cells)
-	for i := range cells {
-		cells[i] = cells[i].Cells[0]
+	keys := make([]LVal, n)
+	i := 0
+	for k := range m {
+		keys[i] = LVal{Type: LString, Str: k}
+		cells[i] = &keys[i]
+		i++
 	}
-	return keys
+	slices.SortFunc(cells, compareKeyStr)
+	return QExpr(cells)
 }
 
 // JSON keys are all strings; their order is independent of the stock map's

@@ -373,18 +373,41 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 	return Int(n)
 }
 
+// Keys builds the sorted key list directly rather than through Entries, so
+// it pays for no pair headers or value slots that would only be discarded.
+// Each key is the same fresh value Entries puts in its pair: a string key is
+// an unquoted LString (carved from one batch array), a symbol key is
+// Quote(Symbol(k)).  The list and every key are fresh per call.
 func (m sortedmap) Keys() *LVal {
-	keys := sortedMapEntries(m)
-	if keys.IsNil() || keys.Type == LError {
-		return keys
+	n := len(m.m)
+	cells := make([]*LVal, n)
+	if n == 0 {
+		return QExpr(cells)
 	}
-	for i := range keys.Cells {
-		// Modifying lvals is shady in general but because they are generated
-		// internally we know their structure.
-		//elps:mutates keys and its pair cells are freshly built by sortedMapEntries above; rewriting the slots drops the values in place
-		keys.Cells[i] = keys.Cells[i].Cells[0]
+	var keys []LVal
+	i := 0
+	for ks := range m.m {
+		switch m.keytype(ks) {
+		case stringkey:
+			if keys == nil {
+				keys = make([]LVal, n)
+			}
+			keys[i] = LVal{Type: LString, Str: ks}
+			cells[i] = &keys[i]
+		default:
+			cells[i] = Quote(Symbol(ks))
+		}
+		i++
 	}
-	return keys
+	slices.SortFunc(cells, compareKeyStr)
+	return QExpr(cells)
+}
+
+// compareKeyStr orders built-in map keys by their spelling, the comparison
+// every built-in Map's Keys and Entries sort by.  Built-in map keys are
+// unique strings, so the order is total and stability is irrelevant.
+func compareKeyStr(a, b *LVal) int {
+	return cmp.Compare(a.Str, b.Str)
 }
 
 func sortedMapEntries(m Map) *LVal {
