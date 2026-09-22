@@ -5,6 +5,7 @@ package lisp
 import (
 	"fmt"
 	"math/rand"
+	"sort"
 	"testing"
 )
 
@@ -89,6 +90,58 @@ func TestMapKeysMatchesOldImplementation(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// oldJSONMapEntries is the pre-#670 jsonMap.Entries, kept as the oracle.
+func oldJSONMapEntries(m jsonMap) []*LVal {
+	cells := make([]*LVal, len(m))
+	slots := make([]*LVal, 2*len(m))
+	keys := make([]LVal, len(m))
+	i := 0
+	for k, x := range m {
+		keys[i] = LVal{Type: LString, Str: k}
+		pair := slots[2*i : 2*i+2 : 2*i+2]
+		pair[0] = &keys[i]
+		pair[1] = jsonMapLVal(x)
+		cells[i] = QExpr(pair)
+		i++
+	}
+	sort.Slice(cells, func(i, j int) bool { return cells[i].Cells[0].Str < cells[j].Cells[0].Str })
+	return cells
+}
+
+func TestJSONMapEntriesMatchesOldImplementation(t *testing.T) {
+	r := rand.New(rand.NewSource(671))
+	for iter := 0; iter < 300; iter++ {
+		_, jm := randomKeysMaps(r, 1+r.Intn(40))
+		got := make([]*LVal, len(jm))
+		if n := jm.Entries(got); n.Type != LInt || n.Int != len(jm) {
+			t.Fatalf("Entries returned %v", n)
+		}
+		want := oldJSONMapEntries(jm)
+		seen := map[*LVal]bool{}
+		for i := range want {
+			g, w := got[i], want[i]
+			if g.Type != w.Type || g.quoted != w.quoted || len(g.Cells) != 2 || cap(g.Cells) != 2 {
+				t.Fatalf("pair %d shape: got %#v, want %#v", i, g, w)
+			}
+			if g.Cells[0].Type != w.Cells[0].Type || g.Cells[0].Str != w.Cells[0].Str || g.Cells[1] != w.Cells[1] {
+				t.Fatalf("pair %d contents: got %v, want %v", i, g, w)
+			}
+			if seen[g] || seen[g.Cells[0]] {
+				t.Fatalf("pair %d shares a header", i)
+			}
+			seen[g], seen[g.Cells[0]] = true, true
+		}
+	}
+}
+
+func TestMapEntriesAllocs(t *testing.T) {
+	_, jm := benchKeysMaps()
+	buf := make([]*LVal, jm.Len())
+	if got := testing.AllocsPerRun(50, func() { _ = jm.Entries(buf) }); got > 5 {
+		t.Errorf("jsonMap.Entries allocs = %v, want <= 5 (three batch arrays, the sort.Interface box, the count)", got)
 	}
 }
 

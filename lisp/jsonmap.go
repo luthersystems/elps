@@ -62,11 +62,11 @@ func (m jsonMap) Set(k *LVal, v *LVal) *LVal {
 // Entries materialises the map as sorted two-element pair lists.
 //
 // A pair used to cost three allocations -- the two-element Cells slice, the
-// key LVal, and the pair LVal itself -- so a map of n entries cost 3n.  Two of
-// the three are now carved out of arrays sized once from len(m): all the Cells
-// slices share one backing array, and all the key LVals share another.  Only
-// the pair LVal is still allocated per entry. n entries therefore cost n+2
-// allocations. Keeping this layout preserves the existing encoder cost.
+// key LVal, and the pair LVal itself -- so a map of n entries cost 3n.  All
+// three are now carved out of arrays sized once from len(m): all the Cells
+// slices share one backing array, all the key LVals share another, and all
+// the pair headers a third, as the stock sortedmap.Entries does.  n entries
+// therefore cost three allocations.
 //
 // Nothing observable changes.  Each pair is still a distinct quoted LVal, each
 // Cells slice is capped to its own two slots so an append cannot reach the
@@ -79,7 +79,7 @@ func (m jsonMap) Set(k *LVal, v *LVal) *LVal {
 //
 // The arrays are jointly retained: holding one pair or one key keeps all of
 // them alive. The encoder drops entries as a unit; callers retaining entries
-// should be aware that one entry retains the batch's key and slot arrays.
+// should be aware that one entry retains the batch's pair, key and slot arrays.
 func (m jsonMap) Entries(cells []*LVal) *LVal {
 	n := len(m)
 	if n == 0 {
@@ -88,6 +88,7 @@ func (m jsonMap) Entries(cells []*LVal) *LVal {
 	if len(cells) < n {
 		return Errorf("buffer has insufficient length")
 	}
+	pairs := make([]LVal, n)
 	slots := make([]*LVal, 2*n)
 	keys := make([]LVal, n)
 	i := 0
@@ -98,7 +99,9 @@ func (m jsonMap) Entries(cells []*LVal) *LVal {
 		pair := slots[2*i : 2*i+2 : 2*i+2]
 		pair[0] = &keys[i]
 		pair[1] = jsonMapLVal(x)
-		cells[i] = QExpr(pair)
+		// The same header QExpr(pair) builds, carved from one array.
+		pairs[i] = LVal{Type: LSExpr, quoted: true, Cells: pair}
+		cells[i] = &pairs[i]
 		i++
 	}
 	sort.Sort(jsonMapEntriesByKey(cells[:i]))
