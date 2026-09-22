@@ -664,6 +664,15 @@ func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) (*LVal, *LVal) {
 	}
 	var buf [16]frame // stack-resident until a stamp walks deeper than 16
 	stack := buf[:0]
+	// The depth limit is read once for the whole walk rather than once per
+	// container.  The boundary that makes that safe is the walk itself: a
+	// stamp runs AFTER the macro body has returned, over a finished
+	// expansion, and every function it calls -- isSingleton, isValueNode,
+	// needsStamp, s.value/stampedCopy, cycleGuard.descend/ascend -- is pure
+	// kernel code.  No Lisp evaluation, no native clone hook and no embedder
+	// callback runs between this read and its uses, so nothing can adjust
+	// the runtime's limit mid-walk.
+	depthLimit := s.rt.ValueDepthLimit()
 walk:
 	for {
 		var result *LVal
@@ -680,8 +689,8 @@ walk:
 				break
 			}
 			depth := g.depth + len(stack)
-			if depth >= s.rt.ValueDepthLimit() {
-				return nil, Error(ValueDepthError(s.rt.ValueDepthLimit()))
+			if depth >= depthLimit {
+				return nil, Error(ValueDepthError(depthLimit))
 			}
 			_, cyclic := (cycleGuard{state: g.state, depth: depth, strict: g.strict}).descend(v)
 			if cyclic {
@@ -802,6 +811,12 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 			}
 			result = finishUnquote(list, f.cells, quotes, false, 0)
 		}
+		// Read the allocation cap once per unquote step rather than once per
+		// frame the loop below unwinds.  The boundary is that loop: it only
+		// fills cells and calls finishUnquote, both pure, and every path that
+		// can evaluate user code leaves it first (the `break` returns to the
+		// outer loop, which calls prepareUnquote again and re-reads).
+		allocLimit := env.Runtime.MaxAllocBytes()
 		for {
 			if result.Type == LError {
 				return result
@@ -819,12 +834,11 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				f.splices = true
 				added = len(result.Cells)
 			}
-			limit := env.Runtime.MaxAllocBytes()
-			if added > limit-f.total {
+			if added > allocLimit-f.total {
 				if added > math.MaxInt-f.total {
-					return env.Errorf("allocation size exceeds maximum (%d): element count overflows int", limit)
+					return env.Errorf("allocation size exceeds maximum (%d): element count overflows int", allocLimit)
 				}
-				return env.Errorf("allocation size %d exceeds maximum (%d)", f.total+added, limit)
+				return env.Errorf("allocation size %d exceeds maximum (%d)", f.total+added, allocLimit)
 			}
 			f.total += added
 			f.i++
@@ -841,8 +855,17 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 }
 
 func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int) {
-	if valueDepth >= env.Runtime.ValueDepthLimit() {
-		return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
+	// Read the depth limit once per call.  The boundary is this function:
+	// the quote-unwrapping loop below runs no user code (getUnquoteType is a
+	// pure shape test), and the only evaluation this function reaches --
+	// doUnquoteValue/doUnquoteSpliced -- happens after the last use, on a
+	// path that returns immediately.  Hoisting any further, into
+	// findAndUnquote's loop, would span those evaluations, and a host that
+	// adjusts the limit from an unquoted expression must still be obeyed on
+	// the next element.
+	depthLimit := env.Runtime.ValueDepthLimit()
+	if valueDepth >= depthLimit {
+		return env.Error(ValueDepthError(depthLimit)), nil, 0, 0
 	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
@@ -855,8 +878,8 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, li
 	}
 	for inner.Type == LQuote {
 		quoteEdges++
-		if valueDepth+quoteEdges >= env.Runtime.ValueDepthLimit() {
-			return env.Error(ValueDepthError(env.Runtime.ValueDepthLimit())), nil, 0, 0
+		if valueDepth+quoteEdges >= depthLimit {
+			return env.Error(ValueDepthError(depthLimit)), nil, 0, 0
 		}
 		quoteLevel += 1
 		inner = inner.Cells[0]
