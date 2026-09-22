@@ -140,8 +140,8 @@ func TestJSONMapEntriesMatchesOldImplementation(t *testing.T) {
 func TestMapEntriesAllocs(t *testing.T) {
 	_, jm := benchKeysMaps()
 	buf := make([]*LVal, jm.Len())
-	if got := testing.AllocsPerRun(50, func() { _ = jm.Entries(buf) }); got > 5 {
-		t.Errorf("jsonMap.Entries allocs = %v, want <= 5 (three batch arrays, the sort.Interface box, the count)", got)
+	if got := testing.AllocsPerRun(50, func() { _ = jm.Entries(buf) }); got > 4 {
+		t.Errorf("jsonMap.Entries allocs = %v, want <= 4 (three batch arrays and the count)", got)
 	}
 }
 
