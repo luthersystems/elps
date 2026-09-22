@@ -2287,11 +2287,25 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVar
 			return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 		}
 		keyCells := formals.Rest()
-		keymap := make(map[string]*LVal, len(keyCells))
-		keys := make([]string, 0, len(keyCells))
 		if args.Rem()%2 != 0 {
 			return env.Errorf("function called with an odd number of keyword arguments")
 		}
+		if args.IsEOF() {
+			// No keywords supplied, the common call shape: every key formal
+			// binds nil. Same checks, same order, same results as the general
+			// path below, without its keyword map and key-order slice.
+			for _, key := range keyCells {
+				if strings.HasPrefix(key.Str, MetaArgPrefix) {
+					return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
+				}
+				if lerr := put(key, Nil()); lerr.Type == LError {
+					return lerr
+				}
+			}
+			return Nil()
+		}
+		keymap := make(map[string]*LVal, len(keyCells))
+		keys := make([]string, 0, len(keyCells))
 		for !args.IsEOF() {
 			key := args.Advance()
 			val := args.Advance()
