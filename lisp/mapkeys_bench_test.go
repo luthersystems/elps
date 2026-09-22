@@ -13,7 +13,7 @@ import (
 func benchKeysMaps() (sortedmap, jsonMap) {
 	sm := newmap()
 	jm := make(jsonMap, 100)
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		k := fmt.Sprintf("key-%04d", i)
 		kv := String(k)
 		if i%10 == 0 {

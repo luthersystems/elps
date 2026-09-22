@@ -59,7 +59,7 @@ func sameKeyList(t *testing.T, got, want *LVal) {
 func randomKeysMaps(r *rand.Rand, n int) (sortedmap, jsonMap) {
 	sm := newmap()
 	jm := make(jsonMap, n)
-	for i := 0; i < n; i++ {
+	for i := range n {
 		k := fmt.Sprintf("k%d", r.Intn(4*n+1))
 		if r.Intn(3) == 0 {
 			sm.Set(Symbol(k), Int(i))
@@ -72,8 +72,8 @@ func randomKeysMaps(r *rand.Rand, n int) (sortedmap, jsonMap) {
 }
 
 func TestMapKeysMatchesOldImplementation(t *testing.T) {
-	r := rand.New(rand.NewSource(670))
-	for iter := 0; iter < 300; iter++ {
+	r := rand.New(rand.NewSource(670)) //nolint:gosec // fixed seed keeps the oracle comparison reproducible; not security-sensitive
+	for range 300 {
 		sm, jm := randomKeysMaps(r, r.Intn(40))
 		sameKeyList(t, sm.Keys(), oldSortedMapKeys(sm))
 		sameKeyList(t, jm.Keys(), oldJSONMapKeys(jm))
@@ -112,8 +112,8 @@ func oldJSONMapEntries(m jsonMap) []*LVal {
 }
 
 func TestJSONMapEntriesMatchesOldImplementation(t *testing.T) {
-	r := rand.New(rand.NewSource(671))
-	for iter := 0; iter < 300; iter++ {
+	r := rand.New(rand.NewSource(671)) //nolint:gosec // fixed seed keeps the oracle comparison reproducible; not security-sensitive
+	for range 300 {
 		_, jm := randomKeysMaps(r, 1+r.Intn(40))
 		got := make([]*LVal, len(jm))
 		if n := jm.Entries(got); n.Type != LInt || n.Int != len(jm) {
