@@ -39,9 +39,10 @@ const (
 )
 
 type templateEnv struct {
-	bindings []templateBinding
-	parent   int
-	id       uint
+	bindings  []templateBinding
+	parent    int
+	id        uint
+	scopeHint int
 }
 type templateFunctionData struct {
 	values   templateRef
@@ -137,7 +138,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 		})
 	}
 	for index, env := range inventory.envQueue {
-		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.bindings(env.scope)}
+		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.bindings(env.scope), scopeHint: env.scopeHint}
 	}
 	for index, source := range inventory.valueQueue {
 		value, err := c.value(source)
@@ -448,7 +449,10 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		instance.envs[index].ID = env.id
 		instance.envs[index].Runtime = rt
 		instance.envs[index].parent = instance.env(env.parent)
-		instance.envs[index].scope = make(map[string]*LVal, len(env.bindings))
+		instance.envs[index].scopeHint = env.scopeHint
+		if len(env.bindings) > 0 {
+			instance.envs[index].scope = make(map[string]*LVal, len(env.bindings))
+		}
 		for _, binding := range env.bindings {
 			instance.envs[index].scope[binding.name] = instance.ref(binding.value)
 		}

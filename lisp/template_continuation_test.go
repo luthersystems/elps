@@ -21,7 +21,7 @@ func TestTemplateContinuationPolicyOrder(t *testing.T) {
 	stock.MapSet("a", leaf(1))
 	decoded := SortedMapFromData(NewMapData(jsonMap{"b": leaf(4), "a": leaf(3)}))
 	lexical := NewEnv(env)
-	lexical.scope["b"] = leaf(7)
+	lexical.scope = map[string]*LVal{"b": leaf(7)}
 	lexical.scope["a"] = leaf(6)
 	closure := lexical.Lambda(Formals(), []*LVal{Nil()})
 	capture := newCapturedBuiltin(capturedBuiltin{
@@ -33,7 +33,7 @@ func TestTemplateContinuationPolicyOrder(t *testing.T) {
 	for range 80 {
 		v = QExpr([]*LVal{v})
 	}
-	env.scope["subject"] = v
+	env.scope = map[string]*LVal{"subject": v}
 	_, err := NewTemplate(env, TemplateWithNativePolicy(func(payload any) bool {
 		calls = append(calls, *payload.(*int))
 		return true
@@ -58,7 +58,7 @@ func TestTemplateContinuationDepthBoundary(t *testing.T) {
 		if sealed {
 			v.SealAST()
 		}
-		env.scope["subject"] = v
+		env.scope = map[string]*LVal{"subject": v}
 		if _, err := NewTemplate(env); err != nil {
 			t.Fatalf("sealed=%t: valid depth rejected: %v", sealed, err)
 		}

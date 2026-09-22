@@ -43,7 +43,7 @@ func TestTemplateCompilerRejectsMissingAdmittedIdentity(t *testing.T) {
 				}
 			case "closure-env":
 				missingEnv = NewEnv(env)
-				missingEnv.scope["leaf"] = leaf
+				missingEnv.scope = map[string]*LVal{"leaf": leaf}
 				subject = missingEnv.Lambda(Formals(), []*LVal{Symbol("leaf")})
 				missingEnv.scope["self"] = subject
 			}
@@ -141,7 +141,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	source := templateOwnershipEnv()
 	lexical := NewEnv(source)
 	leaf := Int(17)
-	lexical.scope["leaf"] = leaf
+	lexical.scope = map[string]*LVal{"leaf": leaf}
 	closure := lexical.Lambda(Formals(), []*LVal{Symbol("leaf")})
 	lexical.scope["self"] = closure
 	captures := QExpr([]*LVal{leaf, closure, nil})
@@ -154,7 +154,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	literal.SealAST()
 	source.Runtime.Package.symbols["callback"] = callback
 	source.Runtime.Package.symbols["literal"] = literal
-	source.scope["leaf"] = leaf
+	source.scope = map[string]*LVal{"leaf": leaf}
 	inventory := newTemplateInventory(templateConfig{})
 	if err := inventory.scan(source); err != nil {
 		t.Fatal(err)
