@@ -314,11 +314,22 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 	}
 	dst := env.Runtime.Package
 	if dst.base != nil {
+		// A frozen destination accepts only a use-package that imports
+		// nothing new -- every export already bound to the same value, as
+		// when re-using an imported package or using the package itself.
 		for _, sym := range pkg.externals {
-			if sym != TrueSymbol && sym != FalseSymbol {
+			if sym == TrueSymbol || sym == FalseSymbol {
+				continue
+			}
+			v, ok := pkg.Symbol(sym)
+			if !ok {
+				return env.Errorf("package %s: exported symbol is unbound: %s", pkg.Name, sym)
+			}
+			if have, bound := dst.lookup(sym); !bound || have != v {
 				return env.Errorf("%s", dst.frozenMessage(sym))
 			}
 		}
+		return Nil()
 	}
 	for _, sym := range pkg.externals {
 		if sym == TrueSymbol || sym == FalseSymbol {

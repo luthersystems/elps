@@ -206,3 +206,23 @@ func TestTemplateFrozenQualifiedSetDoc(t *testing.T) {
 		t.Fatalf("cold doc on target package = %q", doc)
 	}
 }
+
+// use-package into a frozen package succeeds when it would import nothing
+// new (as in a cold env) and errors only when it would add bindings.
+func TestTemplateFrozenNoOpUsePackage(t *testing.T) {
+	_, tmpl := frozenTemplate(t)
+	vm := frozenVM(t, tmpl)
+	for _, src := range []string{
+		`(in-package 'frozen-lib) (use-package 'lisp)`,
+		`(in-package 'frozen-lib) (use-package 'frozen-lib)`,
+	} {
+		if got := vm.LoadString("use.lisp", src); got.Type == lisp.LError {
+			t.Fatalf("%s: no-op use-package failed: %v", src, got)
+		}
+	}
+	frozenEval(t, vm, `(in-package 'user) (in-package 'fresh-pkg) (export 'extra) (set 'extra 1) (in-package 'user)`)
+	got := vm.LoadString("use.lisp", `(in-package 'frozen-lib) (use-package 'fresh-pkg)`)
+	if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot modify frozen package frozen-lib: symbol extra") {
+		t.Fatalf("importing new bindings into a frozen package: %v", got)
+	}
+}

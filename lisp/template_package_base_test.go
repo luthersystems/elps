@@ -104,7 +104,7 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 		if r := vm.InPackage(String("frozen")); r.Type == LError {
 			t.Fatal(r)
 		}
-		if r := vm.UsePackage(String("frozen")); r.Type != LError || !strings.Contains(r.String(), "cannot modify frozen package frozen: symbol zeta") {
+		if r := vm.UsePackage(String("frozen")); r.Type != LError || !strings.Contains(r.String(), "exported symbol is unbound: zeta") {
 			t.Fatalf("use-package into a frozen package: %v", r)
 		}
 		if r := vm.InPackage(String("user")); r.Type == LError {
