@@ -5,6 +5,7 @@ package lisp
 import (
 	"context"
 	"io"
+	"maps"
 	"time"
 )
 
@@ -36,6 +37,7 @@ type templateRuntime struct {
 	reader                 Reader
 	library                SourceLibrary
 	loadCache              LoadCache
+	settings               map[string]bool
 	stderr                 io.Writer
 	currentPackage         string
 	languagePackage        string
@@ -60,6 +62,9 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
 		maxHeightLogical: rt.Stack.MaxHeightLogical, maxHeightPhysical: rt.Stack.MaxHeightPhysical, maxTailIterations: rt.Stack.MaxTailIterations,
 	}
+	if len(rt.settings) > 0 {
+		c.settings = maps.Clone(rt.settings)
+	}
 	if rt.Package != nil {
 		c.currentPackage = rt.Package.Name
 		c.hasCurrentPackage = true
@@ -79,6 +84,9 @@ func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
 		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
 	}
 	rt.Registry.Lang = c.languagePackage
+	if c.settings != nil {
+		rt.settings = maps.Clone(c.settings)
+	}
 	// The VM's environments are built by the planner rather than by
 	// NewEnvRuntime, so bind the fresh registry to the fresh runtime here:
 	// admission into this VM must read THIS runtime's value-depth limit, and

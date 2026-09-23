@@ -33,17 +33,18 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 112 bytes instead of 144. Add scalars below conditionStack.
+// extent stops at 136 bytes. Add scalars below conditionStack.
 type Runtime struct {
-	Registry               *PackageRegistry
-	Package                *Package
 	Stderr                 io.Writer
-	Stack                  *CallStack
 	Reader                 Reader
 	Library                SourceLibrary
 	Profiler               Profiler
 	Debugger               Debugger  // nil = disabled (zero overhead on hot path)
 	LoadCache              LoadCache // nil = disabled (the load path is then byte-identical to having no hook); see lisp/loadcache.go
+	Registry               *PackageRegistry
+	Package                *Package
+	Stack                  *CallStack
+	settings               map[string]bool // Per-VM library flags; see Setting.
 	conditionStack         []*LVal
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
@@ -51,7 +52,6 @@ type Runtime struct {
 	MaxEvalNesting         int           // Evaluator recursion depth cap (0 = use default, negative = disabled).
 	MaxSleep               time.Duration // Hard ceiling on a single time:sleep (0 or negative = none). See MaxSleepCeiling.
 	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
-	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
 	evalNestingSetting     int           // MaxEvalNesting used to derive evalNestingLimit.
 	evalNestingLimit       int           // Cached positive cap; zero means not yet resolved.
@@ -62,6 +62,7 @@ type Runtime struct {
 	numsym                 atomicCounter
 	closures               atomicCounter // Closures created so far; let* reads it to learn whether an initializer could have captured its scope.
 	macroExpSeq            int64         // monotonic counter for macroExpansionInfo.ID
+	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -499,4 +500,23 @@ type atomicCounter uint64
 
 func (c *atomicCounter) Add(n uint) uint {
 	return uint(atomic.AddUint64((*uint64)(c), uint64(n)))
+}
+
+// Setting reports the value of a named per-VM library flag and whether it
+// has been set. Settings are interpreter state of this Runtime: a template
+// publishes the source's settings and every VM it mints starts from a
+// private copy, so SetSetting in one VM is invisible to every other. They
+// let a library keep Lisp-controlled modes without writing a package, which
+// may be frozen (TemplateWithFrozenPackages).
+func (rt *Runtime) Setting(name string) (value, ok bool) {
+	value, ok = rt.settings[name]
+	return value, ok
+}
+
+// SetSetting sets a named per-VM library flag (see Setting).
+func (rt *Runtime) SetSetting(name string, value bool) {
+	if rt.settings == nil {
+		rt.settings = make(map[string]bool, 1)
+	}
+	rt.settings[name] = value
 }

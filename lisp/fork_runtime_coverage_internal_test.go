@@ -46,6 +46,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"Package":  "rebuilt",
 	"numenv":   "rebuilt",
 	"numsym":   "rebuilt",
+	"settings": "copied",
 
 	// Deliberately NOT carried: an observer the embedder attaches itself, or
 	// state about an evaluation/load in progress (the template is quiescent,
