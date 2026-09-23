@@ -756,20 +756,28 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 	if v.Cells[0].Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
 	}
+	// Validate every docstring before anything is written.
+	var parts []string
+	for _, arg := range v.Cells[min(2, len(v.Cells)):] {
+		if arg.Type != LString {
+			return env.Errorf("docstring argument is not a string: %v", arg.Type)
+		}
+		parts = append(parts, arg.Str)
+	}
 	lerr := env.PutGlobalFromLisp(v.Cells[0], v.Cells[1])
 	if lerr.Type == LError {
 		return lerr
 	}
-	// Optional trailing doc strings
+	// The doc belongs to the package the binding went to, under the
+	// unqualified name.  PutGlobalFromLisp already refused a frozen target.
 	if len(v.Cells) > 2 {
-		var parts []string
-		for _, arg := range v.Cells[2:] {
-			if arg.Type != LString {
-				return env.Errorf("docstring argument is not a string: %v", arg.Type)
-			}
-			parts = append(parts, arg.Str)
+		pkg, name := env.Runtime.Package, v.Cells[0].Str
+		if ns, local, qualified := strings.Cut(name, ":"); qualified {
+			pkg, name = env.Runtime.Registry.packages[ns], local
 		}
-		env.Runtime.Package.setSymbolDoc(v.Cells[0].Str, JoinDocStrings(parts))
+		if pkg != nil {
+			pkg.setSymbolDoc(name, JoinDocStrings(parts))
+		}
 	}
 	return env.GetGlobal(v.Cells[0])
 }

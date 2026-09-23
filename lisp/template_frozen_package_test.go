@@ -171,3 +171,38 @@ func TestTemplateFrozenPackageConcurrentVMs(t *testing.T) {
 		t.Fatalf("template changed under concurrent VMs: %s", got)
 	}
 }
+
+// A qualified set with a docstring documents the TARGET package's symbol,
+// and a frozen current package does not stop it.
+func TestTemplateFrozenQualifiedSetDoc(t *testing.T) {
+	_, tmpl := frozenTemplate(t)
+	vm := frozenVM(t, tmpl)
+	got := vm.LoadString("doc.lisp", `(in-package 'frozen-lib) (lisp:set 'user:qx 1 "the doc") (in-package 'user) qx`)
+	if got.Type == lisp.LError || lisp.IsInternalPanic(got) || got.String() != "1" {
+		t.Fatalf("qualified set from a frozen package: %v", got)
+	}
+	if doc := vm.Runtime.Registry.Package("user").SymbolDoc("qx"); doc != "the doc" {
+		t.Fatalf("doc on target package = %q", doc)
+	}
+	// A refused target is refused before anything is written.
+	got = vm.LoadString("doc.lisp", `(lisp:set 'frozen-lib:counter 5 "d")`)
+	if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot modify frozen package frozen-lib: symbol counter") {
+		t.Fatalf("want frozen error, got %v", got)
+	}
+	if v := frozenEval(t, vm, `frozen-lib:counter`); v != "1" {
+		t.Fatalf("counter changed: %s", v)
+	}
+	// A bad docstring is rejected before the binding is written.
+	if got := vm.LoadString("doc.lisp", `(set 'badoc 1 2)`); got.Type != lisp.LError {
+		t.Fatalf("want docstring error, got %v", got)
+	}
+	if v := vm.LoadString("doc.lisp", `badoc`); v.Type != lisp.LError {
+		t.Fatalf("binding written before docstring validation: %v", v)
+	}
+	// Cold envs document the target package too.
+	cold := templateTestEnv(t)
+	frozenEval(t, cold, frozenProgram+`(in-package 'frozen-lib) (set 'user:qx 1 "cold doc") (in-package 'user)`)
+	if doc := cold.Runtime.Registry.Package("user").SymbolDoc("qx"); doc != "cold doc" {
+		t.Fatalf("cold doc on target package = %q", doc)
+	}
+}
