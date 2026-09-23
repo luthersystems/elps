@@ -144,3 +144,71 @@ func convertedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	calls = 3 // want `convertedBuiltin writes package-level var calls`
 	return args
 }
+
+type Gen[T any] struct{ f T }
+
+var genSvc = &Gen[int]{}
+
+func (g *Gen[T]) GenBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	var zero T
+	g.f = zero // want `GenBuiltin writes receiver g`
+	return args
+}
+
+func genericFn[T any](env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	calls = 5 // want `genericFn writes package-level var calls`
+	return args
+}
+
+func genericFn2[T, U any](env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	calls = 6 // want `genericFn2 writes package-level var calls`
+	return args
+}
+
+type Value struct {
+	f   int
+	m   map[string]int
+	s   []int
+	p   *int
+	arr [2]int
+}
+
+func (v Value) ValueBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	v.f = 1
+	v.arr[0] = 2
+	v.m["k"] = 1 // want `ValueBuiltin writes receiver v`
+	v.s[0] = 1   // want `ValueBuiltin writes receiver v`
+	*v.p = 1     // want `ValueBuiltin writes receiver v`
+	return args
+}
+
+func RegisterMore() {
+	c := 0
+	d := 0
+	e := 0
+	f := 0
+	_ = lisp.Fun("gen", nil, genSvc.GenBuiltin)
+	_ = lisp.Fun("genfn", nil, genericFn[int])
+	_ = lisp.Fun("genfn2", nil, genericFn2[int, string])
+	_ = lisp.Fun("value", nil, Value{}.ValueBuiltin)
+	_ = map[string]lisp.LBuiltin{
+		"x": func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			c++ // want `builtin writes captured var c`
+			return args
+		},
+	}
+	_ = []lisp.LBuiltin{func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+		d++ // want `builtin writes captured var d`
+		return args
+	}}
+	var b lisp.LBuiltin = func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+		e++ // want `builtin writes captured var e`
+		return args
+	}
+	var b2 lisp.LBuiltin
+	b2 = func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+		f++ // want `builtin writes captured var f`
+		return args
+	}
+	_, _ = b, b2
+}

@@ -318,15 +318,19 @@ TYPE rather than by constructor name, so there is no spelling list to drift:
 any expression handed to a `lisp.LBuiltin`-typed slot — a call parameter
 (`libutil.Function*`, `elpsutil.Function*`, `lisp.Fun`, `FunInPackage`,
 `Macro*`, `SpecialOp*`, `RegisterDefault*`, `libschema.NewValidator*`), a
-keyed or positional struct field (the kernel's builtin tables), or a
-`lisp.LBuiltin(f)` conversion. For a function literal the body is read with
+keyed or positional struct field (the kernel's builtin tables), a map value
+or slice/array element typed `lisp.LBuiltin`, a `var`/`:=`/`=` whose static
+type is `lisp.LBuiltin`, or a `lisp.LBuiltin(f)` conversion; an explicitly
+instantiated generic (`F[int]`) is unwrapped as `calleeFunc` does. For a function literal the body is read with
 every variable declared outside the literal treated as captured; for a method
 value declared in the package, the method body with its receiver tracked; for
 a plain function, its body for package-level writes. Reported: an
 assignment, `op=`, `++`/`--`, `x = append(x, ...)` or `m[k] = v` whose
 left-hand side is rooted — through fields, indexing and derefs — at the
 receiver, a captured variable or a package-level var, and a `delete` on such
-a map. Exempt: writes rooted at the builtin's own parameters (`env`, `args`)
+a map. A field write on a VALUE receiver lands in the method's copy and is not
+reported; a write through a map, slice or pointer reached from it is.
+Exempt: writes rooted at the builtin's own parameters (`env`, `args`)
 and locals, a left-hand side of a `sync/atomic` type, and every call (the
 rule reads write statements, so `atomic.AddInt64(&s.n, 1)` and `s.mu.Lock()`
 are not writes). Mutex- or Once-guarded state is **not** exempt by being

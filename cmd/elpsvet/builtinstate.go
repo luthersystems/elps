@@ -21,7 +21,10 @@ package main
 // lisp.Fun, FunInPackage, Macro, MacroInPackage, SpecialOp,
 // SpecialOpInPackage, libschema.NewValidator, ...) or a keyed or positional
 // composite-literal element whose field is lisp.LBuiltin (the kernel's own
-// builtin tables), or the operand of a lisp.LBuiltin(f) conversion.  Of
+// builtin tables), a map value or slice/array element typed lisp.LBuiltin,
+// an assignment or var declaration whose static type is lisp.LBuiltin, or
+// the operand of a lisp.LBuiltin(f) conversion; an explicitly instantiated
+// generic (F[int]) is unwrapped first.  Of
 // those expressions three shapes are analysed:
 //
 //   - a function literal: its body, with every variable declared OUTSIDE the
@@ -57,7 +60,9 @@ package main
 // INVISIBLE, deliberately: a builtin reached through a variable, a returned
 // function or reflection; a method declared in another package; calls the
 // body makes (a write in a helper the builtin calls is not seen -- only the
-// registered body is read); pointer-method calls that mutate (s.buf.Reset());
+// registered body is read); pointer-method calls that mutate (s.buf.Reset()); a
+// field write on a VALUE receiver, which lands in the method's copy (a write
+// through a map, slice or pointer reached from one IS reported);
 // writes through a LOCAL alias of shared state (p := s.cache; p[k] = v); and
 // callbacks typed other than lisp.LBuiltin (libschema's internal
 // three-argument validator callbacks, which carry their state in an LVal
@@ -162,6 +167,10 @@ func runBuiltinState(pass *analysis.Pass) (interface{}, error) {
 				r.checkCall(x)
 			case *ast.CompositeLit:
 				r.checkLiteral(x)
+			case *ast.AssignStmt:
+				r.checkAssign(x)
+			case *ast.ValueSpec:
+				r.checkValueSpec(x)
 			}
 			return true
 		})
@@ -211,6 +220,27 @@ func (r *builtinStateRun) checkLiteral(lit *ast.CompositeLit) {
 	if t == nil {
 		return
 	}
+	switch u := t.Underlying().(type) {
+	case *types.Map:
+		if isLBuiltin(u.Elem()) {
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					r.checkBuiltin(kv.Value)
+				}
+			}
+		}
+		return
+	case *types.Slice, *types.Array:
+		if isLBuiltin(u.(interface{ Elem() types.Type }).Elem()) {
+			for _, elt := range lit.Elts {
+				if kv, ok := elt.(*ast.KeyValueExpr); ok {
+					elt = kv.Value // [...]lisp.LBuiltin{3: f}
+				}
+				r.checkBuiltin(elt)
+			}
+		}
+		return
+	}
 	st, ok := t.Underlying().(*types.Struct)
 	if !ok {
 		if p, ok := t.Underlying().(*types.Pointer); ok {
@@ -237,9 +267,44 @@ func (r *builtinStateRun) checkLiteral(lit *ast.CompositeLit) {
 	}
 }
 
+// checkAssign treats an assignment (or short declaration) whose left-hand
+// side has static type lisp.LBuiltin as a slot.
+func (r *builtinStateRun) checkAssign(stmt *ast.AssignStmt) {
+	if len(stmt.Lhs) != len(stmt.Rhs) {
+		return
+	}
+	for i, lhs := range stmt.Lhs {
+		if t := r.pass.TypesInfo.TypeOf(lhs); t != nil && isLBuiltin(t) {
+			r.checkBuiltin(stmt.Rhs[i])
+		}
+	}
+}
+
+// checkValueSpec covers `var b lisp.LBuiltin = f`.
+func (r *builtinStateRun) checkValueSpec(spec *ast.ValueSpec) {
+	if len(spec.Names) != len(spec.Values) {
+		return
+	}
+	for i, name := range spec.Names {
+		if obj := r.pass.TypesInfo.Defs[name]; obj != nil && isLBuiltin(obj.Type()) {
+			r.checkBuiltin(spec.Values[i])
+		}
+	}
+}
+
 // checkBuiltin analyses one registered function value.
 func (r *builtinStateRun) checkBuiltin(expr ast.Expr) {
 	expr = ast.Unparen(expr)
+	// An explicitly instantiated generic (F[int], F[int, string]) wraps the
+	// function in an index expression, as calleeFunc unwraps for
+	// lisp.NativeOf[T] (#453).  A slice index never yields an LBuiltin
+	// declaration, so unwrapping unconditionally is safe.
+	switch idx := expr.(type) {
+	case *ast.IndexExpr:
+		expr = ast.Unparen(idx.X)
+	case *ast.IndexListExpr:
+		expr = ast.Unparen(idx.X)
+	}
 	switch x := expr.(type) {
 	case *ast.FuncLit:
 		if r.analysed[x] {
@@ -297,6 +362,9 @@ func (r *builtinStateRun) checkBody(body *ast.BlockStmt, lit *ast.FuncLit, recv 
 		kind, v := r.sharedRoot(lhs, lit, recv)
 		if kind == "" {
 			return
+		}
+		if kind == "receiver" && !r.escapesValueReceiver(lhs, recv) {
+			return // a write into a value receiver's own copy
 		}
 		if t := r.pass.TypesInfo.TypeOf(lhs); t != nil && fromSyncAtomic(t) {
 			return
@@ -368,6 +436,40 @@ func (r *builtinStateRun) sharedRoot(lhs ast.Expr, lit *ast.FuncLit, recv *types
 			return "", nil
 		default:
 			return "", nil
+		}
+	}
+}
+
+// escapesValueReceiver reports whether a write rooted at recv reaches memory
+// outside the method's copy of it.  A pointer receiver always does.  For a
+// value receiver the write stays in the copy unless the path from the
+// receiver passes through a reference: a map index, a slice index or a
+// pointer dereference (explicit, or implicit in a field selection).
+func (r *builtinStateRun) escapesValueReceiver(lhs ast.Expr, recv *types.Var) bool {
+	if _, ok := recv.Type().Underlying().(*types.Pointer); ok {
+		return true
+	}
+	e := lhs
+	for {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.SelectorExpr:
+			if sel := r.pass.TypesInfo.Selections[x]; sel != nil && sel.Indirect() {
+				return true
+			}
+			if _, ok := r.pass.TypesInfo.TypeOf(x.X).Underlying().(*types.Pointer); ok {
+				return true
+			}
+			e = x.X
+		case *ast.IndexExpr:
+			switch r.pass.TypesInfo.TypeOf(x.X).Underlying().(type) {
+			case *types.Map, *types.Slice, *types.Pointer:
+				return true
+			}
+			e = x.X
+		case *ast.StarExpr:
+			return true
+		default:
+			return false
 		}
 	}
 }
