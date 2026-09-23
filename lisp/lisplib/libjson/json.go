@@ -125,10 +125,11 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			that don't explicitly pass :string-numbers. Returns nil.`),
 		libutil.FunctionDoc("string-numbers?", lisp.Formals(), s.StringNumbersBuiltin,
 			`Returns true if the JSON serializer's default string-numbers
-			mode is on and false otherwise. The mode is the one the last
-			call to use-string-numbers set, false if it was never called.
-			Dump and load functions use it when they are not passed
-			:string-numbers.`),
+			mode is on and false otherwise. It is false unless
+			use-string-numbers enabled it. Dump and load functions use it
+			when they are not passed :string-numbers. The mode belongs to
+			the serializer, not to a single evaluation, so set it only while
+			a program loads.`),
 		libutil.FunctionDoc("use-exact-integers", lisp.Formals("bool"), s.UseExactIntegersBuiltin,
 			`Sets the default exact-integers mode for the JSON serializer.
 			When true, a JSON number written as an integer is parsed as an
