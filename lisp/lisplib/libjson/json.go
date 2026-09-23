@@ -59,6 +59,14 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 
 // Builtins takes the default serializer for a lisp environment and returns a
 // set of package builtin functions that use it.
+//
+// The string-numbers and exact-integers modes the builtins set are stored as
+// bindings in the runtime's DefaultPackageName ("json") package, whichever
+// package the builtins are registered in, so template-forked VMs each keep
+// their own copy (#678). Register them through LoadPackage. An environment
+// that has no "json" package falls back to the serializer's fields, which
+// every VM sharing s also shares; do not publish such an environment as a
+// template.
 func Builtins(s *Serializer) []*libutil.Builtin {
 	return []*libutil.Builtin{
 		libutil.FunctionDoc("message-bytes", lisp.Formals("json-message"), s.MessageBytesBuiltin,
@@ -469,8 +477,10 @@ const (
 	exactIntegersModeSym = "%exact-integers-mode%"
 )
 
-// modePackage returns the json package of env's runtime, or nil when the
-// builtins were registered somewhere other than DefaultPackageName.
+// modePackage returns the runtime's DefaultPackageName package, or nil when
+// the runtime has none. It does not depend on the package the builtins were
+// registered in, so builtins registered under another name still share the
+// json package's modes whenever that package exists.
 func modePackage(env *lisp.LEnv) *lisp.Package {
 	if env == nil || env.Runtime == nil || env.Runtime.Registry == nil {
 		return nil
