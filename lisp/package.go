@@ -446,6 +446,9 @@ func (pkg *Package) NumExternals() int {
 // semantics on the package's export list).  Use Exports for the
 // deduplicating, sorting variant.
 func (pkg *Package) Export(names ...string) {
+	if len(names) == 0 {
+		pkg.checkWritable("")
+	}
 	for _, name := range names {
 		pkg.checkWritable(name)
 	}
@@ -468,6 +471,11 @@ func (pkg *Package) Export(names ...string) {
 // name into its sorted position instead, keeping the list sorted for the
 // next call.
 func (pkg *Package) Exports(sym ...string) {
+	if len(sym) == 0 {
+		// Even a no-name call re-sorts the list in place; refuse it at entry
+		// so a frozen package's shared list is never touched.
+		pkg.checkWritable("")
+	}
 	if len(sym) == 1 {
 		pkg.exportSorted(sym[0])
 		return

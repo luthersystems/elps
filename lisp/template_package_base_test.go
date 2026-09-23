@@ -128,3 +128,27 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 		t.Fatal("unfrozen write leaked into the template")
 	}
 }
+
+// Zero-argument mutator calls on a frozen package are refused at entry: a
+// no-name Exports() used to sort the shared export list in place.
+func TestTemplateFrozenPackageEmptyArgumentMutators(t *testing.T) {
+	source := templateOwnershipEnv()
+	frozen := source.Runtime.Registry.DefinePackage("frozen")
+	frozen.Put(Symbol("a"), Int(1))
+	frozen.Export("zeta", "a") // unsorted
+	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("frozen"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, _ := tmpl.NewVM()
+	p := vm.Runtime.Registry.Package("frozen")
+	expectFrozenPanic(t, "Exports()", func() { p.Exports() })
+	expectFrozenPanic(t, "Export()", func() { p.Export() })
+	expectFrozenPanic(t, "Exports(empty slice)", func() { p.Exports([]string{}...) })
+	expectFrozenPanic(t, "setSymbolDoc empty", func() { p.setSymbolDoc("", "") })
+	expectFrozenPanic(t, "putName empty", func() { p.putName("", Int(1)) })
+	expectFrozenPanic(t, "appendExternal empty", func() { p.appendExternal("") })
+	if got := tmpl.plan.packages[0].base.externals; !slices.Equal(got, []string{"zeta", "a"}) {
+		t.Fatalf("shared export list was reordered: %v", got)
+	}
+}
