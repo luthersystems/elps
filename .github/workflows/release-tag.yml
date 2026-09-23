@@ -62,6 +62,17 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0 # all tags + history for validation and release notes
+      # claude-code-action@v1 installs its own Claude Code CLI, and that build
+      # can lag the model pinned below: claude-opus-5-5 needs Claude Code
+      # >= 2.1.280, and the bundled 2.1.278 refused it with
+      # claude_code_version_too_old (run 35825136056). Install an exact,
+      # pinned CLI and hand its path to the action instead. Bump this pin when
+      # the model pin moves.
+      - name: Install pinned Claude Code CLI
+        id: claude_cli
+        run: |
+          npm install -g @anthropic-ai/claude-code@2.1.280
+          echo "path=$(command -v claude)" >> "$GITHUB_OUTPUT"
       - name: Cut the release via Claude
         uses: anthropics/claude-code-action@v1
         env:
@@ -72,6 +83,7 @@ jobs:
           # add a `github_token:` here — a default GITHUB_TOKEN tag does not
           # trigger vscode-publish.yml, which this release depends on.
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
             Cut a release of elps at the version in the RELEASE_VERSION env
             var. Do exactly this and nothing else — no source changes, no
