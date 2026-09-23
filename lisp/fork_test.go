@@ -142,10 +142,10 @@ func TestForkCounterContinuity(t *testing.T) {
 	// Inherited FIDs: every FID recorded anywhere in the forked registry.
 	inherited := make(map[string]bool)
 	for _, pkg := range fork.Runtime.Registry.packages {
-		for _, fid := range pkg.funNames {
+		for _, fid := range pkg.funNameTable() {
 			inherited[fid] = true
 		}
-		for _, v := range pkg.symbols {
+		for _, v := range pkg.symbolTable() {
 			if v.Type == LFun {
 				if fd := v.funData(); fd != nil {
 					inherited[fd.fid] = true
@@ -375,7 +375,7 @@ func TestForkEmptyCellsSpareCapacity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
-	fempty := fork.Runtime.Registry.packages[env.Runtime.Package.Name].symbols["emptycap"]
+	fempty := fork.Runtime.Registry.packages[env.Runtime.Package.Name].symbolTable()["emptycap"]
 	if fempty == nil || fempty == empty {
 		t.Fatalf("value not copied: %v", fempty)
 	}
@@ -435,11 +435,11 @@ func TestForkSharingContract(t *testing.T) {
 		if !ok {
 			t.Fatalf("package %q missing in fork", name)
 		}
-		if len(npkg.symbols) != len(opkg.symbols) {
+		if len(npkg.symbolTable()) != len(opkg.symbolTable()) {
 			t.Fatalf("package %q symbol count differs", name)
 		}
-		for sym, ov := range opkg.symbols {
-			a.val("pkg:"+name+":"+sym, ov, npkg.symbols[sym])
+		for sym, ov := range opkg.symbolTable() {
+			a.val("pkg:"+name+":"+sym, ov, npkg.symbolTable()[sym])
 		}
 	}
 	if t.Failed() {
@@ -465,7 +465,7 @@ func TestForkSharingContract(t *testing.T) {
 	}
 
 	// The fork-side cycle must close onto the fork-side copy.
-	fcyc := fork.Runtime.Registry.packages[env.Runtime.Package.Name].symbols["cyclic"]
+	fcyc := fork.Runtime.Registry.packages[env.Runtime.Package.Name].symbolTable()["cyclic"]
 	if fcyc == nil || fcyc == cyc {
 		t.Fatalf("cyclic value not copied")
 	}

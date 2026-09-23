@@ -649,6 +649,9 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		parts = append(parts, arg.Str)
 	}
 	pkg := env.Runtime.Registry.packages[name]
+	if pkg != nil && pkg.base != nil && len(args.Cells) > 1 {
+		return env.Errorf("cannot modify frozen package %s: package documentation", name)
+	}
 	newpkg := false
 	if pkg == nil {
 		newpkg = true
@@ -709,6 +712,9 @@ func validateExportArgs(env *LEnv, args *LVal) *LVal {
 		case LSymbol, LString:
 			if strings.Contains(arg.Str, ":") {
 				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
+			}
+			if env.Runtime.Package.base != nil {
+				return env.Errorf("%s", env.Runtime.Package.frozenMessage(arg.Str))
 			}
 			if env.Runtime.Package.bindingsSealed {
 				// Re-exporting an existing core name is a no-op. A new export

@@ -45,7 +45,7 @@ func TestTemplatePreservesEmptyCellsInBuiltinCaptures(t *testing.T) {
 				t.Fatal(err)
 			}
 			for _, env := range []*LEnv{source, cold, vm} {
-				got := env.FunCall(env.Runtime.Package.symbols["probe"], SExpr(nil))
+				got := env.FunCall(env.Runtime.Package.symbolTable()["probe"], SExpr(nil))
 				if got.Type != LInt || got.Int != want {
 					t.Fatalf("nonnil=%t: got %v, want %d", nonnil, got, want)
 				}
@@ -67,7 +67,7 @@ func TestTemplateEmptyCellsDoNotRetainSourceBacking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := vm.Runtime.Package.symbols["empty"]
+	got := vm.Runtime.Package.symbolTable()["empty"]
 	if got.Cells == nil || len(got.Cells) != 0 || cap(got.Cells) != 0 {
 		t.Fatal("empty zero-capacity representation changed")
 	}

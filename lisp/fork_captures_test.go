@@ -54,7 +54,7 @@ func TestForkBuiltinCapturesPreserveAliasesAndCycles(t *testing.T) {
 	child, sibling := fork(template), fork(template)
 	audit := newForkAuditor(t)
 	for name, value := range map[string]*LVal{"state": state, "first": first, "second": second} {
-		audit.val(name, value, child.Runtime.Registry.packages[DefaultUserPackage].symbols[name])
+		audit.val(name, value, child.Runtime.Registry.packages[DefaultUserPackage].symbolTable()[name])
 	}
 	if got := child.Get(Symbol("state")).Map().Set(String("value"), Int(5)); got.Type == LError {
 		t.Fatal(got)

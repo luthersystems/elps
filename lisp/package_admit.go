@@ -124,25 +124,26 @@ package lisp
 // carries the same requirement every other read of a *Package does: no other
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package, limit int) *Package {
+	symbols, funNames, symbolDocs := p.symbolTable(), p.funNameTable(), p.symbolDocTable()
 	adm := &Package{
 		Name:           p.Name,
 		Doc:            p.Doc,
 		bindingsSealed: p.bindingsSealed,
-		symbols:        make(map[string]*LVal, len(p.symbols)),
-		funNames:       make(map[string]string, len(p.funNames)),
+		symbols:        make(map[string]*LVal, len(symbols)),
+		funNames:       make(map[string]string, len(funNames)),
 	}
 	if len(p.externals) > 0 {
 		adm.externals = make([]string, len(p.externals))
 		copy(adm.externals, p.externals)
 	}
-	for name, v := range p.symbols {
+	for name, v := range symbols {
 		adm.symbols[name] = admitSymbolValue(v, limit)
 	}
 	// symbolDocs is allocated lazily (see the field comment): an undocumented
 	// package admits with a nil table rather than an empty one.
-	if len(p.symbolDocs) > 0 {
-		adm.symbolDocs = make(map[string]string, len(p.symbolDocs))
-		for name, doc := range p.symbolDocs {
+	if len(symbolDocs) > 0 {
+		adm.symbolDocs = make(map[string]string, len(symbolDocs))
+		for name, doc := range symbolDocs {
 			adm.symbolDocs[name] = doc
 		}
 	}
@@ -150,7 +151,7 @@ func admitPackage(p *Package, limit int) *Package {
 	// (functions are not sealable), so every recorded FID still names the
 	// value the snapshot holds.  Carrying it over keeps stack traces and
 	// error messages naming the same functions they did before the transfer.
-	for fid, name := range p.funNames {
+	for fid, name := range funNames {
 		adm.funNames[fid] = name
 	}
 	return adm

@@ -313,6 +313,13 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
 	dst := env.Runtime.Package
+	if dst.base != nil {
+		for _, sym := range pkg.externals {
+			if sym != TrueSymbol && sym != FalseSymbol {
+				return env.Errorf("%s", dst.frozenMessage(sym))
+			}
+		}
+	}
 	for _, sym := range pkg.externals {
 		if sym == TrueSymbol || sym == FalseSymbol {
 			// Exporting a boolean constant was always a no-op: pkg.Get
@@ -634,7 +641,7 @@ func (env *LEnv) pkgFunName(f *LVal) (string, error) {
 	if pkg == nil {
 		return "", fmt.Errorf("package not found: %q", pkgname)
 	}
-	return pkg.funNames[f.FID()], nil
+	return pkg.GetFunName(f.FID()), nil
 }
 
 // Put takes an LSymbol k and binds it to v in env.  If k is already bound to a
@@ -1176,7 +1183,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			registrationFormals(&formals, macFormals), mac.Eval, builtinDocstring(mac))
 		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, name)
+			pkg.appendExternal(name)
 		}
 	}
 }
@@ -1207,7 +1214,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 			registrationFormals(&formals, opFormals), op.Eval, builtinDocstring(op))
 		pkg.putName(name, fn)
 		if external {
-			pkg.externals = append(pkg.externals, name)
+			pkg.appendExternal(name)
 		}
 	}
 }
@@ -1238,7 +1245,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			registrationFormals(&formals, funFormals), f.Eval, builtinDocstring(f))
 		pkg.putName(name, v)
 		if external {
-			pkg.externals = append(pkg.externals, name)
+			pkg.appendExternal(name)
 		}
 	}
 }

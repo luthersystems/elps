@@ -76,7 +76,7 @@ func TestTemplateCompilerRejectsMissingAdmittedIdentity(t *testing.T) {
 			if err == nil || !strings.Contains(err.Error(), want) || plan.root != 0 {
 				t.Fatalf("missing identity did not reject the entire plan: root=%d err=%v", plan.root, err)
 			}
-			if env.Runtime.Package.symbols["subject"] != subject || leaf.Type != original.Type || leaf.Int != original.Int || leaf.Native != original.Native {
+			if env.Runtime.Package.symbolTable()["subject"] != subject || leaf.Type != original.Type || leaf.Int != original.Int || leaf.Native != original.Native {
 				t.Fatal("compiler rejection changed source state")
 			}
 		})
@@ -181,7 +181,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		fn := vm.Runtime.Package.symbols["callback"]
+		fn := vm.Runtime.Package.symbolTable()["callback"]
 		got := vm.FunCall(fn, Nil())
 		if got.Type != LSExpr || len(got.Cells) != 3 || got.Cells[0] != vm.scope["leaf"] || got.Cells[0].Int != 17 || got.Cells[2] != fn {
 			t.Fatalf("explicit capture cycle or snapshot changed: %v", got.Type)
@@ -191,7 +191,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 		if copyEnv == lexical || copyEnv.parent != vm || copyEnv.scope["self"] != copyClosure || copyEnv.scope["leaf"] != got.Cells[0] {
 			t.Fatal("lexical environment cycle or aliases changed")
 		}
-		if vm.Runtime.Package.symbols["literal"] != literal {
+		if vm.Runtime.Package.symbolTable()["literal"] != literal {
 			t.Fatal("shared literal lost its source identity")
 		}
 		if value := vm.FunCall(copyClosure, Nil()); value.Type != LInt || value.Int != 17 {

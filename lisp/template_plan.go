@@ -72,10 +72,19 @@ type templateBytes struct {
 	view           templateView
 	nonnil, backed bool
 }
+
 type templateStringPair struct{ key, value string }
+
+// templatePackage describes one package.  An unfrozen package is rebuilt per
+// VM from bindings, funNames, symbolDocs and externals.  A frozen package
+// (TemplateWithFrozenPackages) instead has a base, built once at publication
+// and SHARED by every VM the plan instantiates; refs[i] is the value of
+// base.index's slot i, resolved per VM into Package.baseValues.
 type templatePackage struct {
+	base                 *packageBase
 	name, doc            string
 	bindings             []templateBinding
+	refs                 []templateRef
 	funNames, symbolDocs []templateStringPair
 	externals            []string
 	bindingsSealed       bool
@@ -92,6 +101,7 @@ type templatePlan struct {
 	cells             [][]templateRef
 	packages          []templatePackage
 	runtime           templateRuntime
+	numPackageSlots   int
 	root, numCaptures int
 }
 type templateCompiler struct {
@@ -130,12 +140,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.root = c.env(env)
 	for _, name := range sortedTemplateKeys(env.Runtime.Registry.packages) {
 		pkg := env.Runtime.Registry.packages[name]
-		c.plan.packages = append(c.plan.packages, templatePackage{
-			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(pkg.symbols),
-			funNames: templateStringPairs(pkg.funNames), symbolDocs: templateStringPairs(pkg.symbolDocs),
-			externals:      append([]string(nil), pkg.externals...),
-			bindingsSealed: pkg.bindingsSealed,
-		})
+		c.plan.packages = append(c.plan.packages, c.packageDescriptor(pkg, inventory.config.frozen[name]))
 	}
 	for index, env := range inventory.envQueue {
 		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.bindings(env.scope), scopeHint: env.scopeHint}
@@ -162,6 +167,45 @@ func templateStringPairs(values map[string]string) []templateStringPair {
 		out = append(out, templateStringPair{key: key, value: value})
 	}
 	slices.SortFunc(out, func(a, b templateStringPair) int { return cmp.Compare(a.key, b.key) })
+	return out
+}
+
+// packageDescriptor describes one package.  For a frozen package every map
+// and slice in its base is freshly allocated here and never written again:
+// the base is published with the plan and read concurrently by every VM.
+func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) templatePackage {
+	if !frozen {
+		return templatePackage{
+			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(pkg.symbolTable()),
+			funNames: templateStringPairs(pkg.funNameTable()), symbolDocs: templateStringPairs(pkg.symbolDocTable()),
+			externals:      append([]string(nil), pkg.externals...),
+			bindingsSealed: pkg.bindingsSealed,
+		}
+	}
+	bindings := c.bindings(pkg.symbolTable())
+	base := &packageBase{index: make(map[string]int, len(bindings))}
+	refs := make([]templateRef, len(bindings))
+	for i, binding := range bindings {
+		base.index[binding.name] = i
+		refs[i] = binding.value
+	}
+	base.funNames = cloneStringMap(pkg.funNameTable())
+	base.symbolDocs = cloneStringMap(pkg.symbolDocTable())
+	if len(pkg.externals) > 0 {
+		base.externals = slices.Clip(slices.Clone(pkg.externals))
+	}
+	c.plan.numPackageSlots += len(refs)
+	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, bindingsSealed: pkg.bindingsSealed}
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
 	return out
 }
 
@@ -515,7 +559,24 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		}
 		*instance.values[index] = *out //elps:mutates templateObjects allocated these private destinations for this instance; no source or published VM points to them
 	}
+	// A frozen package's tables are not copied: it reads the plan's shared
+	// base, and only its slot values are per VM, in one allocation for all
+	// frozen packages.  Every other package is rebuilt privately.
+	var slots []*LVal
+	if p.numPackageSlots > 0 {
+		slots = make([]*LVal, p.numPackageSlots)
+	}
 	for _, pkg := range p.packages {
+		if pkg.base != nil {
+			values := slots[:len(pkg.refs):len(pkg.refs)]
+			slots = slots[len(pkg.refs):]
+			for slot, ref := range pkg.refs {
+				values[slot] = instance.ref(ref)
+			}
+			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
+				base: pkg.base, baseValues: values, externals: pkg.base.externals}
+			continue
+		}
 		out := &Package{Name: pkg.name, Doc: pkg.doc, symbols: make(map[string]*LVal, len(pkg.bindings)), funNames: make(map[string]string, len(pkg.funNames))}
 		out.bindingsSealed = pkg.bindingsSealed
 		for _, binding := range pkg.bindings {

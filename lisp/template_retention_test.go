@@ -88,7 +88,7 @@ func exerciseTemplateRetention(t *testing.T, shape string, sealed bool) weak.Poi
 			t.Fatal(err)
 		}
 		siblings = append(siblings, vm)
-		value := vm.Runtime.Package.symbols["root"]
+		value := vm.Runtime.Package.symbolTable()["root"]
 		if value == nil {
 			t.Fatal("instance lost root")
 		}

@@ -399,7 +399,7 @@ func (s *valueFP) errorProvenance(v *lisp.LVal) {
 }
 
 // walkMap digests a sorted-map through the Map interface's SORTED key list.
-// Reading pkg.symbols or the backing Go map directly would make the digest
+// Reading pkg.symbolTable() or the backing Go map directly would make the digest
 // depend on Go's randomised map iteration order, which would turn every
 // before/after comparison into noise.
 func (s *valueFP) walkMap(v *lisp.LVal, depth int) {

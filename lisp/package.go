@@ -168,8 +168,6 @@ func (r *PackageRegistry) AddPackage(p *Package) bool {
 // Package is a named set of bound symbols.  A package is interpreted code and
 // belongs to the LEnv that creates it.
 type Package struct {
-	Name string
-	Doc  string
 	// symbols holds the package's bindings.  Unexported (issue #382): the
 	// registry's LVal-bearing surface is the widest write channel into
 	// another environment's interpreter state, so external packages read it
@@ -195,8 +193,19 @@ type Package struct {
 	// under in this package.  It is populated exclusively by the write path
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
-	funNames  map[string]string
+	funNames map[string]string
+	// base is non-nil exactly when the package is FROZEN: it was named by
+	// TemplateWithFrozenPackages and this Package belongs to a VM minted
+	// from that template.  The base's tables are shared by every such VM
+	// and never written; symbols, funNames and symbolDocs are then nil and
+	// every mutator refuses (see checkWritable).
+	base      *packageBase
+	Name      string
+	Doc       string
 	externals []string
+	// baseValues holds this VM's values for base.index's slots.  The slice
+	// is per VM; only the name->slot index is shared.
+	baseValues []*LVal
 	// externalsSortedLen records the length externals had the last time
 	// Exports left it in sorted order.  It is a validity token, not a flag:
 	// every other writer of externals (Export, and the AddBuiltins family in
@@ -211,6 +220,90 @@ type Package struct {
 	bindingsSealed bool
 }
 
+// packageBase holds a frozen package's tables.  The template compiler builds
+// it once at publication; nothing writes it afterwards, and every VM minted
+// from the template reads it concurrently.  Every Package mutator calls
+// checkWritable (or is reached only through one that does) before touching
+// a table, and a frozen Package's own table fields are nil, so no write path
+// can reach these maps.
+type packageBase struct {
+	index      map[string]int
+	funNames   map[string]string
+	symbolDocs map[string]string
+	externals  []string
+}
+
+// Frozen reports whether pkg is a template-frozen package whose tables are
+// shared by every VM the template mints.  Any write to it is refused.
+func (pkg *Package) Frozen() bool {
+	return pkg.base != nil
+}
+
+// frozenError is the one message every refused write reports.
+func (pkg *Package) frozenError(name string) *LVal {
+	return Errorf("%s", pkg.frozenMessage(name))
+}
+
+func (pkg *Package) frozenMessage(name string) string {
+	return "cannot modify frozen package " + pkg.Name + ": symbol " + name
+}
+
+// checkWritable is the write guard for Go callers that cannot return an
+// error LVal.  Lisp-reachable paths refuse earlier with an error (see
+// checkLispPackageBinding, Put, Update, UsePackage and validateExportArgs),
+// so reaching this panic means a host wrote a frozen package directly.
+func (pkg *Package) checkWritable(name string) {
+	if pkg.base != nil {
+		panic(pkg.frozenMessage(name))
+	}
+}
+
+// lookup is the raw symbol read.
+func (pkg *Package) lookup(name string) (*LVal, bool) {
+	if pkg.base == nil {
+		v, ok := pkg.symbols[name]
+		return v, ok
+	}
+	if i, ok := pkg.base.index[name]; ok {
+		return pkg.baseValues[i], true
+	}
+	return nil, false
+}
+
+// symbolTable returns every binding of pkg for read-only iteration.  An
+// unfrozen package returns its own map; a frozen one a freshly built map.
+func (pkg *Package) symbolTable() map[string]*LVal {
+	if pkg.base == nil {
+		return pkg.symbols
+	}
+	m := make(map[string]*LVal, len(pkg.base.index))
+	for name, i := range pkg.base.index {
+		m[name] = pkg.baseValues[i]
+	}
+	return m
+}
+
+// funNameTable and symbolDocTable are symbolTable's read-only counterparts.
+func (pkg *Package) funNameTable() map[string]string {
+	if pkg.base == nil {
+		return pkg.funNames
+	}
+	return pkg.base.funNames
+}
+
+func (pkg *Package) symbolDocTable() map[string]string {
+	if pkg.base == nil {
+		return pkg.symbolDocs
+	}
+	return pkg.base.symbolDocs
+}
+
+// appendExternal appends one name to the export list.
+func (pkg *Package) appendExternal(name string) {
+	pkg.checkWritable(name)
+	pkg.externals = append(pkg.externals, name)
+}
+
 // checkLispPackageBinding checks a Lisp assignment's destination without
 // allocating on the ordinary user-package path. Qualified set! needs this
 // check too, even though Update otherwise searches literal lexical keys.
@@ -220,7 +313,13 @@ func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 		pkg = env.Runtime.Registry.packages[ns]
 		name = local
 	}
-	if pkg != nil && pkg.bindingsSealed {
+	if pkg == nil {
+		return nil
+	}
+	if pkg.base != nil {
+		return env.Errorf("%s", pkg.frozenMessage(name))
+	}
+	if pkg.bindingsSealed {
 		return env.Errorf("cannot rebind lisp package binding: %s", name)
 	}
 	return nil
@@ -269,7 +368,7 @@ func (pkg *Package) get(k *LVal) *LVal {
 	if k.Str == FalseSymbol {
 		return Symbol(FalseSymbol)
 	}
-	v, ok := pkg.symbols[k.Str]
+	v, ok := pkg.lookup(k.Str)
 	if ok {
 		return v
 	}
@@ -287,16 +386,23 @@ func (pkg *Package) get(k *LVal) *LVal {
 // the true/false constants, does not record function names, and returns
 // (nil, false) instead of an error LVal when name is unbound.
 func (pkg *Package) Symbol(name string) (*LVal, bool) {
-	v, ok := pkg.symbols[name]
-	return v, ok
+	return pkg.lookup(name)
 }
 
 // SymbolNames returns the names of all symbols bound in pkg in sorted order.
 // SymbolNames allocates a new slice on every call.
 func (pkg *Package) SymbolNames() []string {
-	names := make([]string, 0, len(pkg.symbols))
-	for name := range pkg.symbols {
-		names = append(names, name)
+	var names []string
+	if pkg.base == nil {
+		names = make([]string, 0, len(pkg.symbols))
+		for name := range pkg.symbols {
+			names = append(names, name)
+		}
+	} else {
+		names = make([]string, 0, len(pkg.base.index))
+		for name := range pkg.base.index {
+			names = append(names, name)
+		}
 	}
 	sort.Strings(names)
 	return names
@@ -305,7 +411,7 @@ func (pkg *Package) SymbolNames() []string {
 // SymbolDoc returns the documentation string bound to name in pkg, or the
 // empty string when name has no documentation.
 func (pkg *Package) SymbolDoc(name string) string {
-	return pkg.symbolDocs[name]
+	return pkg.symbolDocTable()[name]
 }
 
 // setSymbolDoc records doc as the documentation string for name, allocating
@@ -313,6 +419,7 @@ func (pkg *Package) SymbolDoc(name string) string {
 // symbolDocs; the field's doc comment states why that matters (a nil table
 // is the common case, and only a writer may not assume the map exists).
 func (pkg *Package) setSymbolDoc(name, doc string) {
+	pkg.checkWritable(name)
 	if pkg.symbolDocs == nil {
 		pkg.symbolDocs = make(map[string]string, 1)
 	}
@@ -339,6 +446,9 @@ func (pkg *Package) NumExternals() int {
 // semantics on the package's export list).  Use Exports for the
 // deduplicating, sorting variant.
 func (pkg *Package) Export(names ...string) {
+	for _, name := range names {
+		pkg.checkWritable(name)
+	}
 	pkg.externals = append(pkg.externals, names...)
 }
 
@@ -361,6 +471,9 @@ func (pkg *Package) Exports(sym ...string) {
 	if len(sym) == 1 {
 		pkg.exportSorted(sym[0])
 		return
+	}
+	for _, name := range sym {
+		pkg.checkWritable(name)
 	}
 	// Copy sym before sorting to avoid mutating the caller's backing
 	// array (e.g., a package-level var passed via ...).
@@ -387,6 +500,7 @@ addloop:
 // the whole list, so the result is fully determined as the sorted union and
 // an insertion at the searched position reproduces it byte for byte.
 func (pkg *Package) exportSorted(name string) {
+	pkg.checkWritable(name)
 	if pkg.externalsSortedLen != len(pkg.externals) {
 		sort.Strings(pkg.externals)
 		pkg.externalsSortedLen = len(pkg.externals)
@@ -402,11 +516,7 @@ func (pkg *Package) exportSorted(name string) {
 // GetFunName returns the function name (if any) known to be bound to the given
 // FID.
 func (pkg *Package) GetFunName(fid string) string {
-	name, ok := pkg.funNames[fid]
-	if ok {
-		return name
-	}
-	return ""
+	return pkg.funNameTable()[fid]
 }
 
 // Put takes an LSymbol k and binds it to v in pkg.
@@ -427,6 +537,9 @@ func (pkg *Package) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return Errorf("cannot rebind constant: %v", k.Str)
 	}
+	if pkg.base != nil {
+		return pkg.frozenError(k.Str)
+	}
 	pkg.put(k, v)
 	return Nil()
 }
@@ -440,7 +553,10 @@ func (pkg *Package) Update(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return Errorf("cannot rebind constant: %v", k.Str)
 	}
-	_, ok := pkg.symbols[k.Str]
+	if pkg.base != nil {
+		return pkg.frozenError(k.Str)
+	}
+	_, ok := pkg.lookup(k.Str)
 	if !ok {
 		return Errorf("symbol not bound: %v (set! only mutates existing bindings; use set to create new ones)", k)
 	}
@@ -460,6 +576,7 @@ func (pkg *Package) put(k, v *LVal) {
 // constant-rebind check Put performs — the Add* methods and UsePackage guard
 // TrueSymbol/FalseSymbol explicitly before calling.
 func (pkg *Package) putName(name string, v *LVal) {
+	pkg.checkWritable(name)
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
 		if v.Package() == pkg.Name {

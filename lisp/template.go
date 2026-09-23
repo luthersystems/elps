@@ -44,6 +44,7 @@ type TemplateOption func(*templateConfig)
 type templateConfig struct {
 	builtinPolicy func(*LVal) bool
 	nativePolicy  func(any) bool
+	frozen        map[string]bool
 }
 
 // TemplateWithBuiltinPolicy explicitly approves legacy Go builtin code for
@@ -72,6 +73,29 @@ func TemplateWithBuiltinPolicy(approve func(*LVal) bool) TemplateOption {
 // before this policy is consulted.
 func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 	return func(c *templateConfig) { c.nativePolicy = approve }
+}
+
+// TemplateWithFrozenPackages freezes the named packages at publication. A
+// frozen package's symbol, function-name and documentation tables are built
+// once and shared by every VM the template mints, so NewVM does not copy
+// them; each VM gets only its own values for the package's bindings. Any
+// write to a frozen package in a VM -- set, set!, defun, export, use-package
+// into it, a symbol docstring, or a Go Package mutator -- is refused with
+// "cannot modify frozen package NAME: symbol SYM" (Go mutators with no error
+// result panic with that message). Values bound in a frozen package remain
+// per-VM copies with the usual template semantics: freezing constrains the
+// package's bindings, not the contents of mutable values they refer to.
+// Reads, lookups and iteration are unchanged. Naming a package the source
+// does not register makes NewTemplate fail. Options accumulate.
+func TemplateWithFrozenPackages(names ...string) TemplateOption {
+	return func(c *templateConfig) {
+		if c.frozen == nil {
+			c.frozen = make(map[string]bool, len(names))
+		}
+		for _, name := range names {
+			c.frozen[name] = true
+		}
+	}
 }
 
 // NewTemplate validates env and takes a private snapshot of its mutable state.
@@ -113,6 +137,11 @@ func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 			return nil, errors.New("template: nil option")
 		}
 		opt(&config)
+	}
+	for _, name := range sortedTemplateKeys(config.frozen) {
+		if env.Runtime.Registry.packages[name] == nil {
+			return nil, fmt.Errorf("template: frozen package %q is not registered", name)
+		}
 	}
 	input := newTemplateInventory(config)
 	if err := input.scan(env); err != nil {
@@ -207,8 +236,9 @@ func (s *templateInventory) scan(env *LEnv) error {
 	}
 	for _, name := range packages {
 		pkg := env.Runtime.Registry.packages[name]
-		for _, symbol := range sortedTemplateKeys(pkg.symbols) {
-			if err := s.val(pkg.symbols[symbol]); err != nil {
+		symbols := pkg.symbolTable()
+		for _, symbol := range sortedTemplateKeys(symbols) {
+			if err := s.val(symbols[symbol]); err != nil {
 				return fmt.Errorf("template: %s:%s: %w", name, symbol, err)
 			}
 		}
