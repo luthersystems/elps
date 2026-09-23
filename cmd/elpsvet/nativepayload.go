@@ -200,7 +200,6 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
-	"strings"
 
 	"golang.org/x/tools/go/analysis"
 )
@@ -1040,18 +1039,7 @@ func calleeFunc(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
 // that the words are true, only that somebody wrote a sentence down where
 // the next reader will see it.
 func justifiedNativeAllow(text string) bool {
-	text = strings.TrimPrefix(text, "//")
-	text = strings.TrimPrefix(text, "/*")
-	text = strings.TrimSuffix(text, "*/")
-	text = strings.TrimSpace(text)
-	rest, ok := strings.CutPrefix(text, nativeAllowMarker)
-	if !ok || rest == "" {
-		return false
-	}
-	if rest[0] != ' ' && rest[0] != '\t' {
-		return false // a different marker sharing the prefix
-	}
-	return len(strings.Fields(rest)) >= nativeAllowMinWords
+	return justifiedAllow(text, nativeAllowMarker, nativeAllowMinWords)
 }
 
 func hasJustifiedNativeAllow(cg *ast.CommentGroup) bool {

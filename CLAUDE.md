@@ -130,7 +130,7 @@ Functions return `*LVal`. Errors are LVal values with type `LError`. Check with 
 - **`lint/`** — Static analysis modeled after `go vet`. Each check is an `Analyzer` with a `Run func(pass *Pass) error`. Uses `Walk()`/`WalkSExprs()` for AST traversal, plus custom walkers for context-sensitive checks.
 - **`diagnostic/`** — Rust-style annotated source snippets for error and lint output. Zero dependencies on `lisp/`.
 - **`internal/symtext/`** — The one definition of an ELPS symbol *as text*: the symbol alphabet (`IsSymbolChar`), the word bounds under a cursor (`WordBoundsInLine`, `WordAt`), and the allocation-free walk to a line (`LineAt`). Both cursor servers call it — `lsp/` (hover, definition, references, completion, rename) and `mcpserver/` (hover, definition) — where each previously kept a private copy, and the copies drifted in both of the ways a duplicated helper drifts (#654): the MCP copy left `&` out of the alphabet, so a cursor in `&rest` answered for `rest` and one in `p&q:a&b` (`&` is legal in ELPS package and symbol names) answered for `q:a`, and it ran `strings.Split(content, "\n")` over the whole document to read one line — 1 alloc and 270 KiB per hover on a 112 KiB file, against lsp's 0. Columns are **bytes** throughout; an LSP wire column is converted at lsp's inbound boundary (#464) before it gets here. It is under `internal/` on purpose: an embedder gets the servers, not their cursor arithmetic, so the alphabet stays free to follow the lexer with no exported API to hold still.
-- **`cmd/elpsvet/`** — Go static analyzers over elps's *own* Go source, enforcing invariants the compiler cannot: the freshness rule (writes rooted at `lisp.LVal` storage), the slice-alias tracking that catches writes laundered through a local alias first (issues #369, #371), and the native-payload audit (see "Go static analysis over elps's own sources" below).
+- **`cmd/elpsvet/`** — Go static analyzers over elps's *own* Go source, enforcing invariants the compiler cannot: the freshness rule (writes rooted at `lisp.LVal` storage), the slice-alias tracking that catches writes laundered through a local alias first (issues #369, #371), the native-payload audit, and the builtin shared-state rule (see "Go static analysis over elps's own sources" below).
 
 ## Go static analysis over elps's own sources
 
@@ -271,7 +271,7 @@ row in `allowedPayloadTypes` must appear in the test's audited inventory with
 a justification long enough to read AND with the `LType` header it belongs to
 (so adding a row, or moving one to another header, is a two-file change a
 reviewer sees), the rows the re-audit dropped must stay dropped, and
-`TestRegisteredAnalyzers` pins the four-rule set `make elpsvet` actually
+`TestRegisteredAnalyzers` pins the five-rule set `make elpsvet` actually
 runs. The `analysistest` fixtures live in five packages across three testdata
 roots. Under `testdata/src`: `nativepayload` for the spellings, the allowlist
 and the marker placements, `github.com/luthersystems/elps/nativemarker` for
@@ -307,6 +307,46 @@ reported. Three positive controls (`lisp.Native(int64(1))`, a marked struct
 value, and the kernel's own `LSortMap` literal) are what stop "tighten until
 nothing passes" from looking like a fix. **Change a tier and this test is
 where the claim is checked**, not the fixtures.
+
+Its fifth rule, `elpsbuiltinstate` (`cmd/elpsvet/builtinstate.go`, #680),
+is the same class one level up: a template approves a builtin by IDENTITY
+and shares its Go function value with every VM it mints, and publication
+never looks at what that function's receiver or closure captures. #678 was a
+setter builtin registered as a method value (`s.SetFooBuiltin`) that wrote
+`s.foo`, so every VM saw every other VM's writes. A builtin is recognised by
+TYPE rather than by constructor name, so there is no spelling list to drift:
+any expression handed to a `lisp.LBuiltin`-typed slot — a call parameter
+(`libutil.Function*`, `elpsutil.Function*`, `lisp.Fun`, `FunInPackage`,
+`Macro*`, `SpecialOp*`, `RegisterDefault*`, `libschema.NewValidator*`), a
+keyed or positional struct field (the kernel's builtin tables), a map value
+or slice/array element typed `lisp.LBuiltin`, a `var`/`:=`/`=` whose static
+type is `lisp.LBuiltin`, or a `lisp.LBuiltin(f)` conversion; an explicitly
+instantiated generic (`F[int]`) is unwrapped as `calleeFunc` does. For a function literal the body is read with
+every variable declared outside the literal treated as captured; for a method
+value declared in the package, the method body with its receiver tracked; for
+a plain function, its body for package-level writes. Reported: an
+assignment, `op=`, `++`/`--`, `x = append(x, ...)` or `m[k] = v` whose
+left-hand side is rooted — through fields, indexing and derefs — at the
+receiver, a captured variable or a package-level var, and a `delete` on such
+a map. A field write on a VALUE receiver lands in the method's copy and is not
+reported; a write through a map, slice or pointer reached from it is.
+Exempt: writes rooted at the builtin's own parameters (`env`, `args`)
+and locals, a left-hand side of a `sync/atomic` type, and every call (the
+rule reads write statements, so `atomic.AddInt64(&s.n, 1)` and `s.mu.Lock()`
+are not writes). Mutex- or Once-guarded state is **not** exempt by being
+guarded: it is still shared across VMs and needs
+`//elpsvet:allow-shared <justification>` (trailing, the line above, or the
+analysed method's doc; at least three words, like allow-native, and matched
+so neither `elpsvet:allow` nor `allow-native` collides with it). Invisible,
+and named in the header: builtins reached through a variable or reflection,
+methods declared in another package, helpers the body calls, mutating
+pointer-method calls (`s.buf.Reset()`), writes through a local alias of
+shared state, and callbacks not typed `lisp.LBuiltin` (libschema's internal
+three-argument validators, whose state lives in a captures LVal the template
+remaps). A clean run is evidence, not proof. On its introduction the whole
+tree was clean (#678 was already fixed). The runtime half of #680 — an
+opt-in shareability contract on `TemplateWithBuiltinPolicy` — is not built;
+fixtures are in `testdata/src/builtinstate`.
 
 ## Development Workflow
 
