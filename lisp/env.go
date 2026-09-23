@@ -2084,7 +2084,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		}
 	}
 	fenv, list := env.bind(fun, args)
-	if list.Type == LError {
+	if list != nil && list.Type == LError {
 		return list
 	}
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
@@ -2142,10 +2142,12 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		}
 	}
 
-	if list.Len() == 0 {
+	// A lambda's body is read straight from its definition: bind returns
+	// no list for a lambda, so a call allocates no wrapper around it.
+	body := fun.Cells[1:]
+	if len(body) == 0 {
 		return Nil()
 	}
-	body := list.Cells
 	var ret *LVal
 	for i := range len(body) - 1 {
 		ret = fenv.eval(ctx, body[i])
@@ -2161,7 +2163,8 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 
 // If fun is a builtin bind returns an LEnv for executing fun and a list of
 // arguments.  If fun is a lambda bind returns a non-nil lexical environment
-// and a list of body expressions (subslice of fun.Cells).  If an error is
+// and a nil list: the caller reads the body from fun.Cells[1:] itself, so a
+// call does not allocate a list header to wrap it.  If an error is
 // encountered then bind returns it as the second argument.
 //
 // The bind function does not modify fun or args.
@@ -2274,7 +2277,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	if funenv == nil {
 		return env, QExpr(builtinArgs)
 	}
-	return funenv, QExpr(fun.Cells[1:]) //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
+	return funenv, nil //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
 }
 
 type bindfunc func(k, v *LVal) *LVal

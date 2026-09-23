@@ -67,13 +67,15 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	fun := env.Lambda(Formals(), []*LVal{value})
 	args := Nil()
 	let := SExpr([]*LVal{Symbol("let"), Nil(), value})
-	// Before lazy scopes these allocated 3 and 8 objects respectively.
+	// Before lazy scopes these allocated 3 and 8 objects respectively.  The
+	// lambda call fell from 2 to 1 when bind stopped wrapping the body in a
+	// fresh list header on every call; the one left is the call env.
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
 		want float64
 	}{
-		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 2},
+		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
 		{"EmptyLet", func() *LVal { return env.Eval(let) }, 7},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

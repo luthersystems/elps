@@ -69,6 +69,12 @@ func TestEncodeWideSequenceTraversalSpace(t *testing.T) {
 // when Entries stopped sorting through a sort.Interface adapter, whose
 // conversion boxed the slice once per call (issue #670, item 3).
 //
+// They fell to a per-document constant when encodeSortMap stopped
+// materialising pair lists and began sorting (key, value) views into a pooled
+// scratch slice: a built-in map now costs no allocation of its own, so the
+// flat object costs what the leaf does and the 62-map nest costs only its
+// fixed per-document overhead.
+//
 // Red-proof: replacing encodeGuard{} in encode with a guard whose path set is
 // made up front fails every case here.
 func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
@@ -81,10 +87,10 @@ func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
 		want int
 	}{
 		{"leaf", lisp.Int(1), 1},
-		{"flat object", shared, 7},
+		{"flat object", shared, 1},
 		// One map short of the depth that abandons the counting pass: the
 		// value at the bottom sits at encodeGuardDepth-1.
-		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 376},
+		{"nested to the last depth the counting pass writes", nestMaps(encodeGuardDepth-2, lisp.Int(1)), 4},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
