@@ -101,7 +101,7 @@ jobs:
           claude_args: |
             --allowedTools Bash,Read,Grep,Glob
             --max-turns 30
-            --model claude-opus-4-8
+            --model claude-opus-5-5
       # Capture the agent's stream-json conversation so a deliberate STOP
       # (validation refusal) is explainable after the fact — the action hides
       # the transcript from the job log. Mirrors buildenv's release-patch.yml.
