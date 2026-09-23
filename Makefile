@@ -166,13 +166,15 @@ static-checks: check-golangci-version check-golangci-config
 	golangci-lint run --build-tags elpscheck ./lisp/...
 
 # elpsvet: the seal contract's static half.  golangci-lint checks Go style;
-# this checks the four rules that exist because a Go write can launder around
+# this checks the five rules that exist because a Go write can launder around
 # the seal bit (see cmd/elpsvet/main.go): no package-level var keeps an *LVal
 # reachable by every Runtime, no function writes an LVal field on a value it
 # did not construct, no runtime-owned *token.Location escapes uncopied, and
 # no native payload is minted without a type a template may publish
 # (cmd/elpsvet/nativepayload.go -- an admitted payload is shared by every VM
-# the template mints).  The package list is ./..., so there is no hand-scoped
+# the template mints), and no registered builtin writes its receiver,
+# captured variables or package-level state (cmd/elpsvet/builtinstate.go,
+# issue #680 -- a template shares the builtin's function value too).  The package list is ./..., so there is no hand-scoped
 # list for native construction sites to drift out of.
 #
 # TWO PASSES, and the second one is not optional.  elpsvet ACCEPTS -tags and

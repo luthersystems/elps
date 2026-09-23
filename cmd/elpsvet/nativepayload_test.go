@@ -373,9 +373,9 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // whatever multichecker.Main is handed, so a rule dropped from the slice --
 // or one added and never wired -- leaves a green gate checking less than the
 // Makefile comment, the workflow comment and CLAUDE.md all claim it does.
-// The payload rule is the fourth, and the reason this test exists.
+// The payload rule is the fourth and the builtin-state rule the fifth.
 func TestRegisteredAnalyzers(t *testing.T) {
-	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload"}
+	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate"}
 	got := make([]string, 0, len(analyzers))
 	for _, a := range analyzers {
 		got = append(got, a.Name)

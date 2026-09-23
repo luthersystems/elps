@@ -111,11 +111,12 @@ jobs:
         run: make test-elpscheck
 
       # The seal contract's static half.  golangci-lint above checks Go style;
-      # this checks the four rules that exist because a raw Go write can
+      # this checks the five rules that exist because a raw Go write can
       # launder around the seal bit -- package-level LVal tables, writes to
       # LVal fields on values the function did not construct, escaping
       # uncopied *token.Location pointers, and native payloads whose type a
-      # template could not publish safely.  ~3s.
+      # template could not publish safely, and builtins that write receiver,
+      # captured or package-level state a template would share.  ~3s.
       #
       # Runs TWO passes.  The second is the whole reason this is a make target
       # rather than one line here: elpsvet accepts -tags and silently ignores
