@@ -19,7 +19,7 @@ func TestLazyReadAnalyzer(t *testing.T) {
 // reason long enough to read.
 func TestLazyTableAllowlist(t *testing.T) {
 	want := []string{
-		"Package.baseValue", "Package.symbol", "Package.materializeSymbols",
+		"Package.baseValue", "Package.symbol", "Package.fillSymbol", "Package.lookupRaw", "Package.fillBaseValue", "sortedmap.Get", "Package.materializeSymbols",
 		"sortedmap.entry", "sortedmap.forceAll", "sortedmap.discardPending",
 		"Package.symbolTable", "Package.thaw", "sortedmap.Entries", "sortedmap.copyInto",
 		"LVal.AppendSortedPairs", "copier.mapData", "templateInventory.mapData",

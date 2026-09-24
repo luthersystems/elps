@@ -265,12 +265,23 @@ func (pkg *Package) Frozen() bool {
 // a lazy plan on first read.
 func (pkg *Package) baseValue(i int) *LVal {
 	v := pkg.baseValues[i]
-	if v == nil && pkg.lazy != nil && pkg.lazy.refs[i].index != 0 {
-		lazy := pkg.lazy
-		v = lazy.inst.ref(lazy.refs[i])
-		pkg.baseValues[i] = v
-		lazy.settle(pkg)
+	if v == nil && pkg.lazy != nil {
+		v = pkg.fillBaseValue(i)
 	}
+	return v
+}
+
+// fillBaseValue materializes one base slot of a lazy package.
+//
+//go:noinline
+func (pkg *Package) fillBaseValue(i int) *LVal {
+	lazy := pkg.lazy
+	if lazy.refs[i].index == 0 {
+		return nil
+	}
+	v := lazy.inst.ref(lazy.refs[i])
+	pkg.baseValues[i] = v
+	lazy.settle(pkg)
 	return v
 }
 
@@ -284,9 +295,21 @@ func (lazy *lazyPackage) settle(pkg *Package) {
 }
 
 // symbol is the only read of an unfrozen table entry: it replaces a pending
-// binding left by thaw.
+// binding left by thaw. The check is small enough to inline into lookup; the
+// fill is kept out of line.
 func (pkg *Package) symbol(name string) (*LVal, bool) {
 	v, ok := pkg.symbols[name]
+	if v == lazyPending {
+		v = pkg.fillSymbol(name)
+	}
+	return v, ok
+}
+
+// fillSymbol materializes one pending binding left by thaw.
+//
+//go:noinline
+func (pkg *Package) fillSymbol(name string) *LVal {
+	v := pkg.symbols[name]
 	if v == lazyPending {
 		lazy := pkg.lazy
 		i, _ := lazy.index.Lookup(name)
@@ -294,7 +317,7 @@ func (pkg *Package) symbol(name string) (*LVal, bool) {
 		pkg.symbols[name] = v
 		lazy.settle(pkg)
 	}
-	return v, ok
+	return v
 }
 
 // materializeSymbols replaces every pending binding, before a caller that
@@ -352,13 +375,41 @@ func (pkg *Package) thaw() {
 
 // lookup is the raw symbol read.
 func (pkg *Package) lookup(name string) (*LVal, bool) {
+	v, ok := pkg.lookupRaw(name)
+	if v == lazyPending {
+		v = pkg.lookupFill(name)
+	}
+	return v, ok
+}
+
+// lookupRaw is lookup without the fill: it returns lazyPending for a binding
+// a lazy plan has not materialized. It is small enough to inline, so the hot
+// callers (get) pay one comparison over the pre-lazy read; they must pass a
+// lazyPending result to lookupFill and never return it.
+func (pkg *Package) lookupRaw(name string) (*LVal, bool) {
 	if pkg.base == nil {
-		return pkg.symbol(name)
+		v, ok := pkg.symbols[name]
+		return v, ok
 	}
-	if i, ok := pkg.base.index.Lookup(name); ok {
-		return pkg.baseValue(i), true
+	i, ok := pkg.base.index.Lookup(name)
+	if !ok {
+		return nil, false
 	}
-	return nil, false
+	if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil {
+		return v, true
+	}
+	return lazyPending, true
+}
+
+// lookupFill materializes the binding lookup found pending.
+//
+//go:noinline
+func (pkg *Package) lookupFill(name string) *LVal {
+	if pkg.base == nil {
+		return pkg.fillSymbol(name)
+	}
+	i, _ := pkg.base.index.Lookup(name)
+	return pkg.fillBaseValue(i)
 }
 
 // symbolTable returns a copy of the binding table. Values retain their identity;
@@ -465,7 +516,10 @@ func (pkg *Package) get(k *LVal) *LVal {
 	if k.Str == FalseSymbol {
 		return Symbol(FalseSymbol)
 	}
-	v, ok := pkg.lookup(k.Str)
+	v, ok := pkg.lookupRaw(k.Str)
+	if v == lazyPending {
+		v = pkg.lookupFill(k.Str)
+	}
 	if ok {
 		return v
 	}

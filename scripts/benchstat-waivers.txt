@@ -122,3 +122,15 @@ github.com/luthersystems/elps/mcpserver | LintTool | B/op | 8.5 | 2027-09-14 | e
 # code minutes apart differ by 10%. The row's allocation columns stay under the
 # ordinary gate; only its timing is waived.
 github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=250/NewTemplate | sec/op | 25 | 2027-03-31 | elps#659 | Placement-sensitive whole-publication timing; parity with base under counterbalanced measurement, allocations stable, zero-work control moves it as much.
+
+# Lazy template instantiation gives every package (not only frozen ones) a
+# shared plan base -- index, packageBase, refs -- so its bindings can start
+# unmaterialized per VM: a flat +106 allocations per NewTemplate, paid once
+# at publication, per package rather than per binding. NewVM drops from ~4.9k
+# allocations to ~57 on the same fixture. Trimming the base is tracked in #687.
+github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=0/phase=publish | allocs/op | 28 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=0/phase=publish | B/op | 14 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=250/phase=publish | allocs/op | 8 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=0/NewTemplate | allocs/op | 28 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=0/NewTemplate | B/op | 14 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=250/NewTemplate | allocs/op | 8 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.

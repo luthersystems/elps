@@ -43,6 +43,10 @@ var lazyTableFunctions = map[string]string{
 	// The accessors that fill placeholders, and their sweeps.
 	"Package.baseValue":          "the filling accessor for base slots: a nil slot of a lazy package is materialized here",
 	"Package.symbol":             "the filling accessor for thawed bindings: replaces a lazyPending entry before returning it",
+	"Package.lookupRaw":          "returns a materialized binding or lazyPending, never nil for an unmaterialized slot; its callers (lookup, get) send lazyPending to lookupFill",
+	"Package.fillSymbol":         "the out-of-line fill behind Package.symbol: materializes one lazyPending binding",
+	"Package.fillBaseValue":      "the out-of-line fill behind Package.baseValue: materializes one nil base slot",
+	"sortedmap.Get":              "inlines the lazyPending check and calls sortedmap.entry to fill before returning",
 	"Package.materializeSymbols": "the forcing sweep over thawed bindings; each pending entry goes through Package.symbol",
 	"sortedmap.entry":            "the filling accessor for sorted-map entries: replaces a lazyPending entry before returning it",
 	"sortedmap.forceAll":         "the forcing sweep over sorted-map entries; each pending entry goes through sortedmap.entry",

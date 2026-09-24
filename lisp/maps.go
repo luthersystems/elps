@@ -278,7 +278,13 @@ func (m sortedmap) Len() int {
 func (m sortedmap) Get(key *LVal) (*LVal, bool) {
 	switch key.Type {
 	case LString, LSymbol:
-		v := m.entry(key.Str)
+		// The pending check is inlined here and the fill kept out of line:
+		// Get is the hottest map path and must cost what it did before lazy
+		// instantiation for every map that is not pending.
+		v := m.m[key.Str]
+		if v == lazyPending {
+			v = m.entry(key.Str)
+		}
 		if v != nil {
 			return v, true
 		}
@@ -516,6 +522,8 @@ func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
 
 // entry is the single-key read of a sorted map's table: it materializes a
 // pending entry of a lazily instantiated map.
+//
+//go:noinline
 func (m sortedmap) entry(k string) *LVal {
 	v := m.m[k]
 	if v == lazyPending {

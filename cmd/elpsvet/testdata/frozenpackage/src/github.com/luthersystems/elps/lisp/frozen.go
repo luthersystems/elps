@@ -98,8 +98,8 @@ type templatePlan struct{}
 
 func (templatePlan) instantiateEager(p *Package) { p.symbols = nil }
 func (templatePlan) instantiateLazy(p *Package)  { p.symbols = nil }
-func (p *Package) baseValue()                    { p.baseValues[0] = 1 }
-func (p *Package) symbol()                       { p.symbols["x"] = 1 }
+func (p *Package) fillSymbol()                   { p.symbols["x"] = 1 }
+func (p *Package) fillBaseValue()                { p.baseValues[0] = 1 }
 
 type templateCompiler struct{}
 
