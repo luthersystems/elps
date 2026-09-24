@@ -107,7 +107,6 @@ type templatePlan struct {
 	cells             [][]templateRef
 	packages          []templatePackage
 	runtime           templateRuntime
-	numPackageSlots   int
 	root, numCaptures int
 	eager             bool // TemplateWithEagerInstantiation
 }
@@ -217,7 +216,6 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 		externals:  packagetable.NewStrings(pkg.Externals()),
 	}
 	base.publish()
-	c.plan.numPackageSlots += len(refs)
 	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, pending: pending, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
 }
 
@@ -570,17 +568,13 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 		*instance.values[index] = *out //elps:mutates templateObjects allocated these private destinations for this instance; no source or published VM points to them
 	}
 	// A frozen package's tables are not copied: it reads the plan's shared
-	// base, and only its slot values are per VM, in one allocation for all
-	// frozen packages. Every other package is rebuilt unfrozen and unpublished;
-	// only these constructors may initialize its tables without the write gate.
-	var slots []*LVal
-	if p.numPackageSlots > 0 {
-		slots = make([]*LVal, p.numPackageSlots)
-	}
+	// base, and only its slot values are per VM, one allocation per package so
+	// a retained package cannot keep another package's values alive. Every
+	// other package is rebuilt unfrozen and unpublished; only these
+	// constructors may initialize its tables without the write gate.
 	for _, pkg := range p.packages {
 		if pkg.base != nil {
-			values := slots[:len(pkg.refs):len(pkg.refs)]
-			slots = slots[len(pkg.refs):]
+			values := make([]*LVal, len(pkg.refs))
 			for slot, ref := range pkg.refs {
 				values[slot] = instance.ref(ref)
 			}

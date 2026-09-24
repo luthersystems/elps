@@ -354,14 +354,11 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		bytes: make([]*[]byte, len(p.bytes)), cells: make([][]*LVal, len(p.cells)),
 		byteBackings: make([][]byte, len(p.byteBackings)),
 	}
-	var slots []*LVal
-	if p.numPackageSlots > 0 {
-		slots = make([]*LVal, p.numPackageSlots)
-	}
 	for i := range p.packages {
 		pkg := &p.packages[i]
-		values := slots[:len(pkg.refs):len(pkg.refs)]
-		slots = slots[len(pkg.refs):]
+		// One allocation per package: a shared backing array would let a
+		// retained package keep every other package's values alive.
+		values := make([]*LVal, len(pkg.refs))
 		var lazy *lazyPackage
 		if pkg.pending > 0 {
 			lazy = &lazyPackage{inst: l, index: pkg.base.index, refs: pkg.refs, pending: pkg.pending}

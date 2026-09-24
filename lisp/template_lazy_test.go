@@ -3,8 +3,10 @@
 package lisp
 
 import (
+	"runtime"
 	"strconv"
 	"testing"
+	"weak"
 )
 
 // lazyFixture publishes a graph with sharing and a cycle:
@@ -298,4 +300,52 @@ func TestTemplateLazyPrewarm(t *testing.T) {
 	if err != nil || lazyInstanceOf(eager) != nil {
 		t.Fatalf("VMWithPrewarm on an eager template: %v", err)
 	}
+}
+
+// TestTemplatePackageSlotsDoNotRetainOtherPackages: retaining one package of
+// a VM must not keep another package's values alive through a shared slot
+// backing array.
+func TestTemplatePackageSlotsDoNotRetainOtherPackages(t *testing.T) {
+	for _, mode := range []string{"lazy", "lazy-frozen", "eager-frozen"} {
+		t.Run(mode, func(t *testing.T) {
+			source := templateOwnershipEnv()
+			source.Runtime.Registry.DefinePackage("tiny").Put(Symbol("x"), Int(1))
+			source.Runtime.Registry.DefinePackage("bulk").Put(Symbol("blob"), Bytes(make([]byte, 8<<20)))
+			var opts []TemplateOption
+			if mode != "lazy" {
+				opts = append(opts, TemplateWithFrozenPackages("tiny", "bulk"))
+			}
+			if mode == "eager-frozen" {
+				opts = append(opts, TemplateWithEagerInstantiation())
+			}
+			tmpl, err := NewTemplate(source, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			tiny, blob := lazySlotRetentionVM(t, tmpl)
+			runtime.GC()
+			runtime.GC()
+			if blob.Value() != nil {
+				t.Fatal("retaining one package kept another package's value alive")
+			}
+			if v, _ := tiny.Symbol("x"); v.Int != 1 {
+				t.Fatalf("tiny:x = %v", v)
+			}
+		})
+	}
+}
+
+//go:noinline
+func lazySlotRetentionVM(t *testing.T, tmpl *Template) (*Package, weak.Pointer[LVal]) {
+	vm, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	tiny := vm.Runtime.Registry.Package("tiny")
+	tiny.Symbol("x")
+	blob, _ := vm.Runtime.Registry.Package("bulk").Symbol("blob")
+	if len(blob.Bytes()) != 8<<20 {
+		t.Fatal("bulk not built")
+	}
+	return tiny, weak.Make(blob)
 }
