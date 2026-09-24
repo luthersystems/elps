@@ -373,9 +373,9 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // whatever multichecker.Main is handed, so a rule dropped from the slice --
 // or one added and never wired -- leaves a green gate checking less than the
 // Makefile comment, the workflow comment and CLAUDE.md all claim it does.
-// The payload rule is fourth, builtin-state fifth, and frozen-package sixth.
+// The payload rule is fourth, builtin-state fifth, frozen-package sixth, and lazy-read seventh.
 func TestRegisteredAnalyzers(t *testing.T) {
-	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage"}
+	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread"}
 	got := make([]string, 0, len(analyzers))
 	for _, a := range analyzers {
 		got = append(got, a.Name)

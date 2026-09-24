@@ -75,6 +75,7 @@ var analyzers = []*analysis.Analyzer{
 	nativePayloadAnalyzer,
 	builtinStateAnalyzer,
 	frozenPackageAnalyzer,
+	lazyReadAnalyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }

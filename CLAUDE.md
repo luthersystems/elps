@@ -271,7 +271,7 @@ row in `allowedPayloadTypes` must appear in the test's audited inventory with
 a justification long enough to read AND with the `LType` header it belongs to
 (so adding a row, or moving one to another header, is a two-file change a
 reviewer sees), the rows the re-audit dropped must stay dropped, and
-`TestRegisteredAnalyzers` pins the six-rule set `make elpsvet` actually
+`TestRegisteredAnalyzers` pins the seven-rule set `make elpsvet` actually
 runs. The `analysistest` fixtures live in five packages across three testdata
 roots. Under `testdata/src`: `nativepayload` for the spellings, the allowlist
 and the marker placements, `github.com/luthersystems/elps/nativemarker` for
@@ -370,6 +370,25 @@ unsafe. The frozen tables'
 backing storage lives in `internal/packagetable`, whose types only expose scalar
 reads, iteration and copies. Checked builds fingerprint the base at publication
 and verify it in `Template.NewVM`; production builds compile that check out.
+
+Its seventh rule, `elpslazyread` (`cmd/elpsvet/lazyread.go`), guards lazy
+template instantiation (`lisp/template_lazy.go`). `Template.NewVM` builds only
+package shells and the root environment; a package binding, a sorted-map entry
+and everything they reach are created on first use, once per VM (memoized by
+plan index, so identity and sharing match the source), from an explicit work
+queue rather than recursion. Every package gets a plan base under a lazy plan;
+`unfrozenBase` keeps `Frozen()` false for the ones not named frozen. An
+unmaterialized base slot is nil in `baseValues`; an unmaterialized thawed
+binding or sorted-map entry holds the `lazyPending` marker. The rule reports
+every selector on `Package.symbols`, `Package.baseValues` or `sortedmap.m`
+outside the audited functions in `lazyTableFunctions`: the filling accessors
+(`Package.baseValue`, `Package.symbol`, `sortedmap.entry`), the sweeps that
+force first (`materializeSymbols`, `forceAll`), and writers or key/length-only
+readers. A new direct reader fails until it is audited. A VM is
+single-goroutine because reads now write; checked builds panic on an
+overlapping fill (`lazyGuard`). `TemplateWithEagerInstantiation` restores the
+old eager build. A map or package with pending entries retains its whole VM
+(measured in `TestTemplateForkEscapedLeafDoesNotRetainVM`).
 
 ## Development Workflow
 
