@@ -27,6 +27,10 @@ import (
 // keys or the length only, or it builds a table no lazy VM has reached).
 // There are no comment suppressions: a new reader requires an audit here.
 //
+// A conversion of a Package or sortedmap (or a pointer to one) to any other
+// type is reported too: a separately declared struct with identical fields
+// reads the same storage through field objects this rule does not know.
+//
 // Invisible: an alias of a table taken inside an allowlisted function and
 // passed out, and reflection or unsafe.
 var lazyReadAnalyzer = &analysis.Analyzer{
@@ -125,6 +129,10 @@ func runLazyRead(pass *analysis.Pass) (interface{}, error) {
 				continue
 			}
 			ast.Inspect(decl, func(n ast.Node) bool {
+				if call, ok := n.(*ast.CallExpr); ok {
+					checkLazyConversion(pass, call)
+					return true
+				}
 				sel, ok := n.(*ast.SelectorExpr)
 				if !ok {
 					return true
@@ -137,4 +145,30 @@ func runLazyRead(pass *analysis.Pass) (interface{}, error) {
 		}
 	}
 	return nil, nil
+}
+
+// lazyTableType names Package or sortedmap when t is one of them or a
+// pointer to one.
+func lazyTableType(t types.Type) string {
+	named := packageNamedType(t)
+	if named == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != lispPkgPath {
+		return ""
+	}
+	switch named.Obj().Name() {
+	case "Package", "sortedmap":
+		return named.Obj().Name()
+	}
+	return ""
+}
+
+func checkLazyConversion(pass *analysis.Pass, call *ast.CallExpr) {
+	if len(call.Args) != 1 || !pass.TypesInfo.Types[call.Fun].IsType() {
+		return
+	}
+	src := pass.TypesInfo.TypeOf(call.Args[0])
+	name := lazyTableType(src)
+	if name == "" || types.Identical(src, pass.TypesInfo.TypeOf(call)) {
+		return
+	}
+	pass.Reportf(call.Pos(), "conversion of lazily materialized type %s to another type bypasses its filling accessors; read it through the %s methods, or audit the function in lazyTableFunctions", name, name)
 }

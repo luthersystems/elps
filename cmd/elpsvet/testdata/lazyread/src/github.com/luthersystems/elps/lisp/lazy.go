@@ -33,6 +33,25 @@ func bad(p *Package, s sortedmap, mp *mirror, e embedded) *LVal {
 	return e.baseValues[1] // want "direct access to lazily materialized table Package.baseValues"
 }
 
+type rawMap struct {
+	m  map[string]*LVal
+	tm map[string]int
+}
+
+type rawPackage struct {
+	symbols    map[string]*LVal
+	baseValues []*LVal
+	Name       string
+}
+
+func converted(s sortedmap, p *Package, pv Package) {
+	_ = rawMap(s).m["k"]          // want "conversion of lazily materialized type sortedmap"
+	_ = (*rawPackage)(p).symbols  // want "conversion of lazily materialized type Package"
+	_ = rawPackage(pv).baseValues // want "conversion of lazily materialized type Package"
+	_ = sortedmap(rawMap{})       // converting TO the type reads nothing
+	_ = (*mirror)(p)              // want "conversion of lazily materialized type Package"
+}
+
 func good(u unrelated, s sortedmap, p *Package) {
 	_ = u.symbols["x"]
 	_ = u.m["x"]
