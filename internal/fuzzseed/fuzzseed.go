@@ -57,54 +57,50 @@ var lispDirs = []string{
 	filepath.Join("lisp", "lisplib"),
 }
 
-var (
-	lispOnce    sync.Once
-	lispSources [][]byte
-)
-
 // LispSources returns the contents of every .lisp file in the repository
 // directories listed in lispDirs, sorted by path so the corpus is stable.
 // It returns nil if the source tree cannot be located, which the callers
 // assert against in a plain (non-fuzz) test.
-func LispSources() [][]byte {
-	lispOnce.Do(func() {
-		root := repoRoot()
-		if root == "" {
-			return
-		}
-		var paths []string
-		for _, dir := range lispDirs {
-			// The walk func never returns an error, so the result is
-			// deliberately discarded. (Plain comment, not //nolint:errcheck --
-			// the explicit `_ =` already satisfies errcheck, which made the
-			// directive dead weight that nolintlint flags.)
-			_ = filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
-				if err != nil {
-					// A missing or unreadable directory is not fatal here:
-					// the callers' assertion on the total seed count is the
-					// real guard against a broken path.
-					return nil //nolint:nilerr // best-effort walk
-				}
-				if d.IsDir() || !strings.HasSuffix(path, ".lisp") {
-					return nil
-				}
-				paths = append(paths, path)
-				return nil
-			})
-		}
-		// WalkDir already yields lexical order per root; sorting the combined
-		// list keeps the corpus byte-identical across roots and platforms.
-		slices.Sort(paths)
-		for _, path := range paths {
-			b, err := os.ReadFile(path) //nolint:gosec // G304: fixed in-repo fixture paths
+func LispSources() [][]byte { return lispSources() }
+
+var lispSources = sync.OnceValue(func() [][]byte {
+	root := repoRoot()
+	if root == "" {
+		return nil
+	}
+	var paths []string
+	for _, dir := range lispDirs {
+		// The walk func never returns an error, so the result is
+		// deliberately discarded. (Plain comment, not //nolint:errcheck --
+		// the explicit `_ =` already satisfies errcheck, which made the
+		// directive dead weight that nolintlint flags.)
+		_ = filepath.WalkDir(filepath.Join(root, dir), func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
-				continue
+				// A missing or unreadable directory is not fatal here:
+				// the callers' assertion on the total seed count is the
+				// real guard against a broken path.
+				return nil //nolint:nilerr // best-effort walk
 			}
-			lispSources = append(lispSources, b)
+			if d.IsDir() || !strings.HasSuffix(path, ".lisp") {
+				return nil
+			}
+			paths = append(paths, path)
+			return nil
+		})
+	}
+	// WalkDir already yields lexical order per root; sorting the combined
+	// list keeps the corpus byte-identical across roots and platforms.
+	slices.Sort(paths)
+	var sources [][]byte
+	for _, path := range paths {
+		b, err := os.ReadFile(path) //nolint:gosec // G304: fixed in-repo fixture paths
+		if err != nil {
+			continue
 		}
-	})
-	return lispSources
-}
+		sources = append(sources, b)
+	}
+	return sources
+})
 
 // Adversarial returns hand-written inputs targeting the failure modes a lisp
 // scanner and recursive-descent parser are actually vulnerable to.  Each entry
