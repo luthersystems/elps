@@ -49,6 +49,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"externalsSortedLen": "reset: a derived token over the export list; zero in a fresh package means the list is re-sorted before it is searched",
 			"base":               "shared-immutable: frozen package tables built once at publication (TestTemplateFrozenPackageBaseImmutable)",
 			"baseValues":         "remapped: per-VM slot values of a frozen package, resolved from the plan's binding descriptors",
+			"slotFunNames":       "reset: a frozen VM's per-VM overlay on base function names; a source package's overlay is folded into the base by funNameTable at publication (TestFrozenPackagePerTransactionGlobalsDoNotThaw)",
 			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{

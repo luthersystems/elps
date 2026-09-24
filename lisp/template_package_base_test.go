@@ -64,10 +64,9 @@ func TestTemplateFrozenPackageThawMutators(t *testing.T) {
 		}
 	}
 	mutators := map[string]func(vm *LEnv, p *Package){
-		"Put":                func(_ *LEnv, p *Package) { p.Put(Symbol("value"), Int(2)) },
+		"Put new fn":         func(vm *LEnv, p *Package) { p.Put(Symbol("newfn"), vm.Lambda(Formals(), []*LVal{Int(2)})) },
 		"Put new":            func(_ *LEnv, p *Package) { p.Put(Symbol("new"), Int(2)) },
-		"Update":             func(vm *LEnv, p *Package) { p.Update(Symbol("fn"), vm.Lambda(Formals(), []*LVal{Int(2)})) },
-		"PutGlobal":          func(vm *LEnv, _ *Package) { vm.PutGlobal(Symbol("frozen:value"), Int(3)) },
+		"PutGlobal":          func(vm *LEnv, _ *Package) { vm.PutGlobal(Symbol("frozen:fresh"), Int(3)) },
 		"setSymbolDoc":       func(_ *LEnv, p *Package) { p.setSymbolDoc("value", "vm doc") },
 		"setSymbolDoc empty": func(_ *LEnv, p *Package) { p.setSymbolDoc("", "") },
 		"Exports one":        func(_ *LEnv, p *Package) { p.Exports("alpha") },
@@ -101,7 +100,7 @@ func TestTemplateFrozenPackageThawMutators(t *testing.T) {
 		if p.Frozen() || p.symbols == nil || p.funNames == nil {
 			t.Fatalf("%s: package did not thaw", name)
 		}
-		if f, _ := p.Symbol("fn"); name != "Update" && (f == fn || p.GetFunName(f.FID()) != "fn") {
+		if f, _ := p.Symbol("fn"); f == fn || p.GetFunName(f.FID()) != "fn" {
 			t.Fatalf("%s: thaw lost function naming or isolation", name)
 		}
 		if name != "setSymbolDoc" && p.SymbolDoc("value") != "original doc" {

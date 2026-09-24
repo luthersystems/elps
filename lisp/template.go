@@ -80,10 +80,13 @@ func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 // VM. A frozen package's symbol, function-name, documentation and export
 // tables are built once and shared by every VM the template mints, so NewVM
 // does not copy them; each VM gets only its own values for the package's
-// bindings. The first write of any kind in a VM -- set, set!, defun, export,
-// use-package into it, a docstring, or a Go Package mutator -- copies that one
-// package's tables into the VM and then applies the write exactly as it
-// would in an unfrozen package. Other packages, other VMs and the template
+// bindings. Rebinding a name the package already binds -- set, set! or defun
+// of an existing global, including to a new function or closure -- writes
+// only that VM's value for it and does not thaw; the function-name entry such
+// a write records is kept per VM too. Any other write in a VM -- a new name,
+// export, use-package into it, a docstring, or another Go Package mutator --
+// copies that one package's tables into the VM and then applies the write
+// exactly as it would in an unfrozen package. Other packages, other VMs and the template
 // are unaffected, so every program behaves as it does without the option.
 // Values bound in a frozen package remain per-VM copies with the usual
 // template semantics, and mutating a value never thaws its package. Reads,

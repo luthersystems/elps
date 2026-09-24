@@ -11,6 +11,8 @@ type Package struct {
 	externals            []string
 	base                 *packageBase
 	Name                 string
+	baseValues           []int
+	slotFunNames         map[string]string
 }
 
 type packageBase struct {
@@ -50,6 +52,8 @@ func bad(p *Package, b *packageBase, e embedded) {
 	b.fingerprint = 0                                             // want "package table write outside the write gate"
 	_ = &b.index                                                  // want "package table write outside the write gate"
 	p.base = nil                                                  // want "package table write outside the write gate"
+	p.baseValues[0] = 1                                           // want "package table write outside the write gate"
+	p.slotFunNames["f"] = "x"                                     // want "package table write outside the write gate"
 	*p = Package{}                                                // want "package table write outside the write gate"
 	*b = packageBase{}                                            // want "package table write outside the write gate"
 	e.externals = nil                                             // want "package table write outside the write gate"
@@ -83,6 +87,7 @@ func reads(p *Package, b *packageBase) {
 
 func NewPackage() *Package       { return &Package{symbols: make(map[string]int)} }
 func (p *Package) putName()      { p.symbols["x"] = 1 }
+func (p *Package) putSlot()      { p.baseValues[0] = 1; p.slotFunNames["f"] = "x" }
 func (p *Package) setSymbolDoc() { p.symbolDocs["x"] = "doc" }
 func (p *Package) Export()       { p.externals = append(p.externals, "x") }
 func (p *Package) Exports()      { sort.Strings(p.externals) }

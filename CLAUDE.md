@@ -354,7 +354,13 @@ allowlist of guarded methods and unpublished constructors. A frozen package
 (`TemplateWithFrozenPackages`) is shared until its first write; every mutator
 passes the one write gate, `Package.ensureWritable`, which thaws a private copy
 for that VM (`Package.thaw`, the only function allowed to build private tables
-from a base), so no program behaves differently for being frozen. It checks field and
+from a base), so no program behaves differently for being frozen. The one
+write that does not thaw is a rebinding of a name the package already has
+(`set`/`set!` on an existing global, `Package.putSlot`): it writes only that
+VM's `baseValues` slot, and a function value's FID->name entry goes to the
+VM's `slotFunNames` overlay, which `GetFunName` reads before the base and
+`thaw` merges. A new name, a doc, an export or a use-package still thaws. Both
+fields are guarded by this rule, and `putSlot` holds an allowlist row. It checks field and
 index assignments, append, delete/clear/copy, sort/slices mutations,
 address-taking, and local map/slice aliases. The allowlist test pins the audit;
 fixtures live in `cmd/elpsvet/testdata/frozenpackage`. It also protects replacement

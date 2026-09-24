@@ -209,8 +209,15 @@ type Package struct {
 	Doc       string
 	externals []string
 	// baseValues holds this VM's values for base.index's slots.  The slice
-	// is per VM; only the name->slot index is shared.
+	// is per VM; only the name->slot index is shared.  putSlot writes it in
+	// place when a frozen package rebinds a name it already has.
 	baseValues []*LVal
+	// slotFunNames is this VM's overlay on base.funNames while the package
+	// is frozen: the FID->name entries that slot writes of function values
+	// recorded (see putSlot).  It is nil until the first such write, is
+	// consulted before the base by GetFunName, and is merged into the private
+	// table by thaw, so function naming matches an unfrozen package exactly.
+	slotFunNames map[string]string
 	// externalsSortedLen records the length externals had the last time
 	// Exports left it in sorted order.  It is a validity token, not a flag:
 	// every other writer of externals (Export, and the AddBuiltins family in
@@ -267,7 +274,9 @@ func (pkg *Package) thaw() {
 		funNames = make(map[string]string)
 	}
 	pkg.symbols = symbols
+	maps.Copy(funNames, pkg.slotFunNames)
 	pkg.funNames = funNames
+	pkg.slotFunNames = nil
 	pkg.symbolDocs = base.symbolDocs.Copy()
 	pkg.externals = base.externals.Copy()
 	pkg.externalsSortedLen = 0
@@ -306,7 +315,14 @@ func (pkg *Package) funNameTable() map[string]string {
 	if pkg.base == nil {
 		return maps.Clone(pkg.funNames)
 	}
-	return pkg.base.funNames.Copy()
+	m := pkg.base.funNames.Copy()
+	if len(pkg.slotFunNames) > 0 {
+		if m == nil {
+			m = make(map[string]string, len(pkg.slotFunNames))
+		}
+		maps.Copy(m, pkg.slotFunNames)
+	}
+	return m
 }
 
 func (pkg *Package) symbolDocTable() map[string]string {
@@ -541,6 +557,9 @@ func (pkg *Package) exportSorted(name string) {
 // FID.
 func (pkg *Package) GetFunName(fid string) string {
 	if pkg.base != nil {
+		if name, ok := pkg.slotFunNames[fid]; ok {
+			return name
+		}
 		name, _ := pkg.base.funNames.Lookup(fid)
 		return name
 	}
@@ -598,6 +617,9 @@ func (pkg *Package) put(k, v *LVal) {
 // constant-rebind check Put performs — the Add* methods and UsePackage guard
 // TrueSymbol/FalseSymbol explicitly before calling.
 func (pkg *Package) putName(name string, v *LVal) {
+	if pkg.base != nil && pkg.putSlot(name, v) {
+		return
+	}
 	pkg.ensureWritable()
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
@@ -606,4 +628,36 @@ func (pkg *Package) putName(name string, v *LVal) {
 		}
 	}
 	pkg.symbols[name] = v
+}
+
+// putSlot rebinds a name a frozen package ALREADY binds by writing only this
+// VM's baseValues slot, without thawing, and reports whether it did.  It
+// reports false, leaving the package untouched, for a name the shared index
+// does not hold; binding a new name changes the shared index, so the caller
+// thaws.  A function value's FID->name entry goes to this VM's slotFunNames
+// overlay unless the shared base already records exactly that entry.  The
+// observable effect is the thawed path's: the binding, the function's own
+// name and GetFunName all read as they would after putName on a thawed copy.
+// Docs, exports and the index stay shared, and so do other VMs' slots.
+func (pkg *Package) putSlot(name string, v *LVal) bool {
+	i, ok := pkg.base.index.Lookup(name)
+	if !ok {
+		return false
+	}
+	if v.Type == LFun {
+		fid := v.FID()
+		if prev, ok := pkg.base.funNames.Lookup(fid); ok && prev == name {
+			delete(pkg.slotFunNames, fid)
+		} else {
+			if pkg.slotFunNames == nil {
+				pkg.slotFunNames = make(map[string]string, 1)
+			}
+			pkg.slotFunNames[fid] = name
+		}
+		if v.Package() == pkg.Name {
+			v.funData().name = name // see funData.name
+		}
+	}
+	pkg.baseValues[i] = v
+	return true
 }
