@@ -277,7 +277,7 @@ func TestCopyTerminatesOnACycle(t *testing.T) {
 
 type copierCloner struct{ clones int }
 
-func (c *copierCloner) CloneNative() interface{} { return &copierCloner{clones: c.clones + 1} }
+func (c *copierCloner) CloneNative() any { return &copierCloner{clones: c.clones + 1} }
 
 // TestCopyClonesANativeClonerOncePerPayload: a NativeCloner reachable under
 // two headers is cloned once, and the clone is shared by both copied
@@ -783,7 +783,7 @@ var copierCloneSeq int
 // ORDER the copier walked the map's values in.
 type copierSeqCloner struct{ seq int }
 
-func (c copierSeqCloner) CloneNative() interface{} {
+func (c copierSeqCloner) CloneNative() any {
 	copierCloneSeq++
 	return copierSeqCloner{seq: copierCloneSeq}
 }

@@ -146,7 +146,7 @@ type copier struct {
 	seen    map[*LVal]*LVal
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
-	natives map[interface{}]interface{}
+	natives map[any]any
 	// runtime optionally limits each copied data backing allocation.
 	// Ordinary Go Copy calls retain their existing unlimited behavior.
 	runtime *Runtime
@@ -881,7 +881,7 @@ func (c *copier) byteSlice(b *[]byte) *[]byte {
 // exactly as the detacher does in copy mode (detacher.cloneNative with
 // shareOpaque set): a payload held by value has no identity to preserve and
 // is cloned per header.
-func (c *copier) cloneNative(payload interface{}, cl NativeCloner) interface{} {
+func (c *copier) cloneNative(payload any, cl NativeCloner) any {
 	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
 	if memo {
 		if clone, ok := c.natives[payload]; ok {
@@ -891,7 +891,7 @@ func (c *copier) cloneNative(payload interface{}, cl NativeCloner) interface{} {
 	clone := cl.CloneNative()
 	if memo {
 		if c.natives == nil {
-			c.natives = make(map[interface{}]interface{})
+			c.natives = make(map[any]any)
 		}
 		c.natives[payload] = clone
 	}

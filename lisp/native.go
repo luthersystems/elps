@@ -13,7 +13,7 @@ import "reflect"
 // payloads, including NativeCloner implementations. Approved immutable payloads
 // are shared without invoking CloneNative. Create mutable services per VM.
 type NativeCloner interface {
-	CloneNative() interface{}
+	CloneNative() any
 }
 
 // NativeValue reads the Go payload of an LNative value as a T, reporting

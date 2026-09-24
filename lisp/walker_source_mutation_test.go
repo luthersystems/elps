@@ -131,7 +131,7 @@ func TestGoValueSnapshotsCellsAgainstAHostHook(t *testing.T) {
 	parent := walkerMutationFixture()
 	out := lisp.GoValue(parent)
 	assertWalkerSawTheSource(t, parent)
-	got, ok := out.([]interface{})
+	got, ok := out.([]any)
 	if !ok {
 		t.Fatalf("GoValue returned %T, want []interface{}", out)
 	}

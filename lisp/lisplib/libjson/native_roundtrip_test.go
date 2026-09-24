@@ -145,14 +145,14 @@ func TestDumpRefusesUnloadableNativeBeyondRawMessage(t *testing.T) {
 
 	cases := []struct {
 		name string
-		v    interface{}
+		v    any
 	}{
 		{"custom json.Marshaler", unloadableMarshaler{}},
 		{"big.Int", huge},
 		{"big.Int in a struct field", struct {
 			N *big.Int `json:"n"`
 		}{huge}},
-		{"big.Int in a map value", map[string]interface{}{"n": huge}},
+		{"big.Int in a map value", map[string]any{"n": huge}},
 		{"big.Int in a slice element", []*big.Int{huge}},
 		{"RawMessage in a struct field", struct {
 			P json.RawMessage `json:"p"`
@@ -192,10 +192,10 @@ func TestDumpRefusesUnloadableNativeBeyondRawMessage(t *testing.T) {
 // deepNative builds a native Go value nested n levels deep. It is deliberately
 // NOT a json.RawMessage: the point of the rows below is a value encoding/json
 // serializes itself.
-func deepNative(n int) interface{} {
-	var v interface{} = 1
+func deepNative(n int) any {
+	var v any = 1
 	for range n {
-		v = []interface{}{v}
+		v = []any{v}
 	}
 	return v
 }

@@ -8,7 +8,7 @@ import "slices"
 // Symbol keys use their names for access; keys are always emitted as strings.
 // Values must be *LVal. It reuses encoding/json's map storage without conversion.
 // Like other VM values it is mutable, and must not be shared between runtimes.
-type jsonMap map[string]interface{}
+type jsonMap map[string]any
 
 var _ Map = jsonMap(nil)
 var _ StringKeyRanger = jsonMap(nil)
@@ -124,7 +124,7 @@ func (m jsonMap) Keys() *LVal {
 	return QExpr(cells)
 }
 
-func jsonMapLVal(x interface{}) (v *LVal) {
+func jsonMapLVal(x any) (v *LVal) {
 	var ok bool
 	if v, ok = x.(*LVal); ok {
 		return v

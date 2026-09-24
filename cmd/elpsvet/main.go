@@ -80,7 +80,7 @@ var analyzers = []*analysis.Analyzer{
 
 func main() { multichecker.Main(analyzers...) }
 
-func run(pass *analysis.Pass) (interface{}, error) {
+func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
 			gd, ok := decl.(*ast.GenDecl)

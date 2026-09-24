@@ -1203,8 +1203,8 @@ func runSession(srcA, srcB, script []byte) error {
 // serves the fuzz target and the ordinary corpus tests.
 type fatalf interface {
 	Helper()
-	Fatalf(format string, args ...interface{})
-	Skipf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Skipf(format string, args ...any)
 }
 
 // runSessionBudgeted runs a session on its own goroutine under the watchdog.

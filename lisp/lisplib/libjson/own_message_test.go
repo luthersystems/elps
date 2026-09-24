@@ -126,7 +126,7 @@ func TestEmbedderCannotObtainTheExemption(t *testing.T) {
 
 	cases := []struct {
 		name    string
-		v       interface{}
+		v       any
 		wantErr string
 	}{
 		{"pointer to RawMessage, out-of-range number", &outOfRange, byTheCheck},

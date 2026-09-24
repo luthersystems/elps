@@ -1110,14 +1110,14 @@ func (p *Parser) Accept(typ ...token.Type) bool {
 	return p.src.AcceptType(typ...)
 }
 
-func (p *Parser) errorf(condition string, format string, v ...interface{}) *lisp.LVal {
+func (p *Parser) errorf(condition string, format string, v ...any) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
 	//elps:aliases producer-fixup contract (SetSource's documented convention): the parser owns the current token's Location and may still fix up its end-position fields; a parse error's position moving with those fixups is the intended behavior
 	err.SetSource(p.Location())
 	return err
 }
 
-func (p *Parser) errorAtf(source *token.Location, condition, format string, v ...interface{}) *lisp.LVal {
+func (p *Parser) errorAtf(source *token.Location, condition, format string, v ...any) *lisp.LVal {
 	err := lisp.ErrorConditionf(condition, format, v...)
 	err.SetSource(source)
 	return err

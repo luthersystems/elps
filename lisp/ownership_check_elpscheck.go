@@ -321,7 +321,7 @@ func checkOwnership(rt *Runtime, v *LVal) {
 // payload, or is nil) falls back to the header, for isClosureFreeBuiltin's
 // reason: a value that has not answered what its storage is gets the
 // stricter treatment, not an exemption.
-func ownershipKey(v *LVal) interface{} {
+func ownershipKey(v *LVal) any {
 	switch v.Type {
 	case LFun:
 		if fd, ok := v.Native.(*funData); ok && fd != nil {
@@ -349,7 +349,7 @@ func ownershipKey(v *LVal) interface{} {
 // rule raises, so rethrowOwnershipViolation keeps it a hard panic through
 // env.eval's recover(): an affinity bug in a checked build must stop the
 // test, not be laundered into an LError that ignore-errors absorbs.
-func checkNativeAffinity(rt *Runtime, payload interface{}) {
+func checkNativeAffinity(rt *Runtime, payload any) {
 	b, ok := payload.(RuntimeBound)
 	if !ok {
 		return
@@ -372,7 +372,7 @@ func checkNativeAffinity(rt *Runtime, payload interface{}) {
 // into the destination inside a container, below what the shallow use-time
 // check can see.  The panic value is ownershipViolation for the usual
 // reason: hard panic, never a catchable LError.
-func checkDetachedNativeUnbound(payload interface{}) {
+func checkDetachedNativeUnbound(payload any) {
 	b, ok := payload.(RuntimeBound)
 	if !ok {
 		return
@@ -394,7 +394,7 @@ func checkDetachedNativeUnbound(payload interface{}) {
 // Recovery boundaries call it first so a failed invariant stays a hard panic
 // instead of becoming a CondInternalPanic LError. A checked-build failure must
 // stop the test, not decorate its output; arbitrary host panic text is not one.
-func rethrowOwnershipViolation(r interface{}) {
+func rethrowOwnershipViolation(r any) {
 	switch v := r.(type) {
 	case ownershipViolation, sealViolation:
 		panic(v)
@@ -440,7 +440,7 @@ func ownershipViolationMessage(owner, second *Runtime, v *LVal) string {
 // embedder value inside a panic path is how one panic becomes two.  Even %p
 // is out: on a value-type payload fmt falls back to %!p(type=value), which
 // formats the value and so calls straight into an embedder String method.
-func affinityViolationMessage(bound, using *Runtime, payload interface{}) string {
+func affinityViolationMessage(bound, using *Runtime, payload any) string {
 	return fmt.Sprintf("native affinity violation: payload used by a foreign Runtime\n"+
 		"  payload type: %T\n"+
 		"  bound runtime: %p (package %s)\n"+

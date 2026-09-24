@@ -630,7 +630,7 @@ func ensureHistoryFilePermissions(path string) {
 	}
 }
 
-func errlnf(format string, v ...interface{}) {
+func errlnf(format string, v ...any) {
 	if strings.HasSuffix(format, "\n") {
 		errf(format, v...)
 		return
@@ -638,6 +638,6 @@ func errlnf(format string, v ...interface{}) {
 	errf(format+"\n", v...)
 }
 
-func errf(format string, v ...interface{}) {
+func errf(format string, v ...any) {
 	fmt.Fprintf(os.Stderr, format, v...)
 }

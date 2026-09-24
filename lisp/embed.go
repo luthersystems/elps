@@ -43,7 +43,7 @@ func Not(v *LVal) bool {
 //
 // NOTE:  These semantics may change.  It's unclear what the exact need is in
 // corner cases.
-func GoValue(v *LVal) interface{} {
+func GoValue(v *LVal) any {
 	// Same body as GoValueWithRuntime with the default limit spelled as the
 	// constant: this is the hot conversion entry point (BenchmarkGoValueBytes
 	// measures it at tens of nanoseconds), and routing it through the
@@ -66,7 +66,7 @@ func GoValue(v *LVal) interface{} {
 // The runtime is a parameter rather than a field read off the value because a
 // *LVal carries no runtime: the same value is reachable from every environment
 // that was handed it, and only the caller knows which runtime's budget applies.
-func GoValueWithRuntime(rt *Runtime, v *LVal) interface{} {
+func GoValueWithRuntime(rt *Runtime, v *LVal) any {
 	// Opaque native payloads are already Go values; even leaf conversion
 	// dispatch is unnecessary here.
 	if v != nil && v.Type == LNative {
@@ -79,7 +79,7 @@ func GoValueWithRuntime(rt *Runtime, v *LVal) interface{} {
 	return out
 }
 
-func convertValue(v *LVal, limit int) (interface{}, bool) {
+func convertValue(v *LVal, limit int) (any, bool) {
 	if v.IsNil() {
 		return nil, true
 	}
@@ -96,15 +96,15 @@ func convertValue(v *LVal, limit int) (interface{}, bool) {
 // identities. Repeated subtrees are independently converted as before.
 type conversionFrame struct {
 	v        *LVal
-	mapping  map[interface{}]interface{}
-	kv       [2]interface{}
+	mapping  map[any]any
+	kv       [2]any
 	children []*LVal
-	values   []interface{}
+	values   []any
 	index    int
 	invalid  bool
 }
 
-func convertContainer(v *LVal, limit int) (interface{}, bool) {
+func convertContainer(v *LVal, limit int) (any, bool) {
 	// One reusable continuation per ancestor, never one per sibling.
 	pending := make([]conversionFrame, 0, 16)
 	var path map[*LVal]bool
@@ -113,7 +113,7 @@ walk:
 		if len(pending) >= limit {
 			return (*ErrorVal)(Error(ValueDepthError(limit))), true
 		}
-		var out interface{}
+		var out any
 		f := conversionFrame{v: v}
 		container := true
 		if !v.IsNil() {
@@ -142,7 +142,7 @@ walk:
 					// pointer dereference.  A backing-less map holds no
 					// entries, so it converts to the same empty Go map an
 					// ordinary empty sorted-map converts to.
-					f.mapping = make(map[interface{}]interface{})
+					f.mapping = make(map[any]any)
 					out = f.mapping
 					break
 				}
@@ -156,7 +156,7 @@ walk:
 					}
 				}
 				f.children = entries.Cells
-				f.mapping = make(map[interface{}]interface{}, len(entries.Cells))
+				f.mapping = make(map[any]any, len(entries.Cells))
 				out = f.mapping
 			default:
 				container = false
@@ -192,7 +192,7 @@ walk:
 					// pins that).  The copier and the detacher agree:
 					// a walk converts the children a container held when
 					// the walker entered it.
-					f.values = make([]interface{}, len(f.children))
+					f.values = make([]any, len(f.children))
 					for i, child := range f.children {
 						f.values[i] = child
 					}
@@ -237,7 +237,7 @@ walk:
 					continue walk
 				}
 				if f.invalid {
-					out = map[interface{}]interface{}(nil)
+					out = map[any]any(nil)
 				} else {
 					out = f.mapping
 				}
@@ -262,7 +262,7 @@ walk:
 	}
 }
 
-func conversionLeaf(v *LVal) interface{} {
+func conversionLeaf(v *LVal) any {
 	switch v.Type {
 	case LError:
 		return (*ErrorVal)(v)
@@ -341,12 +341,12 @@ func GoFloat64(v *LVal) (float64, bool) {
 // GoSlice converts a list to a Go slice. Non-lists, cycles and walks exceeding
 // MaxValueDepth return (nil, false).  Like GoValue it has no runtime and so
 // cannot read a WithMaxValueDepth override; GoSliceWithRuntime does.
-func GoSlice(v *LVal) ([]interface{}, bool) {
+func GoSlice(v *LVal) ([]any, bool) {
 	return GoSliceWithRuntime(nil, v)
 }
 
 // GoSliceWithRuntime is GoSlice bounded by rt's configured value-depth limit.
-func GoSliceWithRuntime(rt *Runtime, v *LVal) ([]interface{}, bool) {
+func GoSliceWithRuntime(rt *Runtime, v *LVal) ([]any, bool) {
 	if v.Type != LSExpr {
 		return nil, false
 	}
@@ -355,9 +355,9 @@ func GoSliceWithRuntime(rt *Runtime, v *LVal) ([]interface{}, bool) {
 		return nil, false
 	}
 	if v.IsNil() {
-		return []interface{}{}, true
+		return []any{}, true
 	}
-	values, ok := out.([]interface{})
+	values, ok := out.([]any)
 	return values, ok
 }
 
@@ -368,12 +368,12 @@ func GoSliceWithRuntime(rt *Runtime, v *LVal) ([]interface{}, bool) {
 // GoMap returns (nil, true). Cycles and excessive nesting return (nil, false).
 // Like GoValue it has no runtime and so cannot read a WithMaxValueDepth
 // override; GoMapWithRuntime does.
-func GoMap(v *LVal) (map[interface{}]interface{}, bool) {
+func GoMap(v *LVal) (map[any]any, bool) {
 	return GoMapWithRuntime(nil, v)
 }
 
 // GoMapWithRuntime is GoMap bounded by rt's configured value-depth limit.
-func GoMapWithRuntime(rt *Runtime, v *LVal) (map[interface{}]interface{}, bool) {
+func GoMapWithRuntime(rt *Runtime, v *LVal) (map[any]any, bool) {
 	if v.Type != LSortMap {
 		return nil, false
 	}
@@ -381,7 +381,7 @@ func GoMapWithRuntime(rt *Runtime, v *LVal) (map[interface{}]interface{}, bool) 
 	if !ok {
 		return nil, false
 	}
-	values, ok := out.(map[interface{}]interface{})
+	values, ok := out.(map[any]any)
 	return values, ok
 }
 

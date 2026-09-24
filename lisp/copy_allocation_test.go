@@ -118,7 +118,7 @@ func TestCopyAllocationLimitPreservesCyclesAndSharedStrings(t *testing.T) {
 
 type copyAllocationNativeProbe struct{ calls *int }
 
-func (p *copyAllocationNativeProbe) CloneNative() interface{} {
+func (p *copyAllocationNativeProbe) CloneNative() any {
 	*p.calls++
 	return &copyAllocationNativeProbe{calls: p.calls}
 }

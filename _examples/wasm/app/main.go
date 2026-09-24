@@ -19,7 +19,7 @@ func LoadString(s string) *lisp.LVal {
 	return env.LoadString("source", s)
 }
 
-func JSLoadString(this js.Value, vals []js.Value) interface{} {
+func JSLoadString(this js.Value, vals []js.Value) any {
 	if len(vals) != 2 {
 		log.Printf("invalid number argument: %v", len(vals))
 		return nil
@@ -59,14 +59,14 @@ func main() {
 
 	done := make(chan struct{})
 	var exportCallbacks []js.Func
-	export := func(name string, fn func(js.Value, []js.Value) interface{}) js.Func {
+	export := func(name string, fn func(js.Value, []js.Value) any) js.Func {
 		cb := js.FuncOf(fn)
 		js.Global().Set(name, cb)
 		exportCallbacks = append(exportCallbacks, cb)
 		return cb
 	}
 	export("LoadString", JSLoadString)
-	export("GoKill", func(js.Value, []js.Value) interface{} {
+	export("GoKill", func(js.Value, []js.Value) any {
 		close(done)
 		return nil
 	})

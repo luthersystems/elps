@@ -94,7 +94,7 @@ func NewTestSuite() *TestSuite {
 // functions are retained by pointer and still belong to their original VM.
 // This does not transfer a populated suite across runtimes: Template rejects
 // suites, and each VM must register and execute its own tests.
-func (s *TestSuite) CloneNative() interface{} {
+func (s *TestSuite) CloneNative() any {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	cp := NewTestSuite()

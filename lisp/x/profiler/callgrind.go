@@ -20,7 +20,7 @@ type errWriter struct {
 	err error
 }
 
-func (ew *errWriter) printf(format string, args ...interface{}) {
+func (ew *errWriter) printf(format string, args ...any) {
 	if ew.err != nil {
 		return
 	}

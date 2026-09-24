@@ -18,7 +18,7 @@ type mapDeletingClone struct {
 	victim string
 }
 
-func (p *mapDeletingClone) CloneNative() interface{} {
+func (p *mapDeletingClone) CloneNative() any {
 	p.source.Map().Del(lisp.String(p.victim))
 	return &mapDeletingClone{source: p.source, victim: p.victim}
 }

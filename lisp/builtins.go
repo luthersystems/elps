@@ -1076,7 +1076,7 @@ func builtinError(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("condition type is not a symbol: %v", condition.Type)
 	}
 
-	iargs := make([]interface{}, len(rest))
+	iargs := make([]any, len(rest))
 	for i, arg := range rest {
 		iargs[i] = arg
 	}

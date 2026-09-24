@@ -278,8 +278,8 @@ func newDebugEnv(script, watch []byte) (*lisp.LEnv, *debugger.Engine, *lisp.LVal
 // serves the fuzz target and the ordinary corpus tests.
 type fatalf interface {
 	Helper()
-	Fatalf(format string, args ...interface{})
-	Skipf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Skipf(format string, args ...any)
 }
 
 // debugEvalBudgeted parses and evaluates src with a debugger attached, on its

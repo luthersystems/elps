@@ -319,7 +319,7 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
-	Native interface{}
+	Native any
 
 	// source is the value's originating location in source code.  The
 	// reference may be shared by multiple LVals (and with scanner tokens),
@@ -505,7 +505,7 @@ func GetType(v *LVal) *LVal {
 // directly in lisp will be converted to the appropriate LVal.  All other types
 // will be turned into a Native LVal.  Value is the inverse of the GoValue
 // function.
-func Value(v interface{}) *LVal {
+func Value(v any) *LVal {
 	switch v := v.(type) {
 	case bool:
 		return Bool(v)
@@ -625,7 +625,7 @@ func Nil() *LVal {
 }
 
 // Native returns an LVal containng a native Go value.
-func Native(v interface{}) *LVal {
+func Native(v any) *LVal {
 	return &LVal{
 		Type:   LNative,
 		Native: v, //elpsvet:allow-native the constructor itself: the payload type is the caller's, and every Native call is checked at its own call site
@@ -1009,7 +1009,7 @@ func ErrorCondition(condition string, err error) *LVal {
 // field.  The Env.Errorf() method is typically the preferred method for
 // creating error LVal objects because it initializes Stack with an appropriate
 // value.
-func Errorf(format string, v ...interface{}) *LVal {
+func Errorf(format string, v ...any) *LVal {
 	return ErrorConditionf("error", format, v...)
 }
 
@@ -1021,7 +1021,7 @@ func Errorf(format string, v ...interface{}) *LVal {
 // field.  The Env.ErrorConditionf() method is typically the preferred method
 // for creating error LVal objects because it initializes Stack with an
 // appropriate value.
-func ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
+func ErrorConditionf(condition string, format string, v ...any) *LVal {
 	return &LVal{
 		Type:  LError,
 		Str:   condition,
@@ -1469,7 +1469,7 @@ func (v *LVal) MapSetString(k string, val *LVal) *LVal {
 //
 // Deprecated: use MapGetLVal or MapGetString, which check the key type at
 // compile time.
-func (v *LVal) MapGet(k interface{}) *LVal {
+func (v *LVal) MapGet(k any) *LVal {
 	switch k := k.(type) {
 	case *LVal:
 		x, _ := v.Map().Get(k)
@@ -1491,7 +1491,7 @@ func (v *LVal) MapGet(k interface{}) *LVal {
 //
 // Deprecated: use MapSetLVal or MapSetString, which check the key type at
 // compile time.
-func (v *LVal) MapSet(k interface{}, val *LVal) *LVal {
+func (v *LVal) MapSet(k any, val *LVal) *LVal {
 	if v.Type != LSortMap {
 		return Errorf("not sorted-map: %v", v.Type)
 	}

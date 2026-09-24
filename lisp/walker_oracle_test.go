@@ -139,7 +139,7 @@ func oracleTemplateCopiesWithOptions(v *LVal, opts ...TemplateOption) (*LVal, *L
 
 type oracleNative struct{ n int }
 
-func (v *oracleNative) CloneNative() interface{} { return &oracleNative{n: v.n} }
+func (v *oracleNative) CloneNative() any { return &oracleNative{n: v.n} }
 
 // Equal-content distinct payloads are deliberate: an oracle that compares only
 // values, or assumes every equal value aliases, must fail the negative controls.

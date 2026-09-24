@@ -137,7 +137,7 @@ func TestHandlerRaisedErrorPropagatesOutward(t *testing.T) {
 type conditionCloneError struct{ message string }
 
 func (e *conditionCloneError) Error() string { return e.message }
-func (e *conditionCloneError) CloneNative() interface{} {
+func (e *conditionCloneError) CloneNative() any {
 	return &conditionCloneError{message: e.message}
 }
 
@@ -175,7 +175,7 @@ func (e conditionHookError) Error() string {
 	}
 	return "host failure"
 }
-func (e conditionHookError) As(interface{}) bool {
+func (e conditionHookError) As(any) bool {
 	if e.hook == "As" {
 		panic("As hook fault")
 	}

@@ -58,4 +58,4 @@ func BenchmarkGoValueLeafArms(b *testing.B) {
 }
 
 // goValueSink keeps the benchmarked conversions from being optimized away.
-var goValueSink interface{}
+var goValueSink any

@@ -283,7 +283,7 @@ func (lex *Lexer) emitError(err error, expectEOF bool) []*token.Token {
 	return lex.emit(token.ERROR, err.Error())
 }
 
-func (lex *Lexer) errorf(format string, v ...interface{}) []*token.Token {
+func (lex *Lexer) errorf(format string, v ...any) []*token.Token {
 	return lex.emitError(fmt.Errorf(format, v...), false)
 }
 

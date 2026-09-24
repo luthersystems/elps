@@ -163,7 +163,7 @@ type countingCloner struct {
 	clones *int
 }
 
-func (c *countingCloner) CloneNative() interface{} {
+func (c *countingCloner) CloneNative() any {
 	*c.clones++
 	return &countingCloner{clones: c.clones}
 }

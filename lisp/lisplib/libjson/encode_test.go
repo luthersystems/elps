@@ -61,13 +61,13 @@ var stdEncodeTests = []encodeTest{
 		`"TG9yZW0gaXBzdW0gZG9sb3Igc2l0IGFtZXQsIGNvbnNlY3RldHVyIGFkaXBpc2NpbmcgZWxpdC4="`,
 	},
 	{lisp.SortedMap(), `{}`},
-	{lisp.Value(map[string]interface{}{}), `{}`},
+	{lisp.Value(map[string]any{}), `{}`},
 	{
-		lisp.Value(map[string]interface{}{"a": "1"}),
+		lisp.Value(map[string]any{"a": "1"}),
 		`{"a":"1"}`,
 	},
 	{
-		lisp.Value(map[string]interface{}{"a": "1", "b": "2"}),
+		lisp.Value(map[string]any{"a": "1", "b": "2"}),
 		`{"a":"1","b":"2"}`,
 	},
 	{literalSortedMap(map[string]any{}), `{}`},

@@ -31,7 +31,7 @@ type copierObservedCloner struct {
 	observe func(int)
 }
 
-func (c copierObservedCloner) CloneNative() interface{} {
+func (c copierObservedCloner) CloneNative() any {
 	c.observe(c.id)
 	return c.id
 }
