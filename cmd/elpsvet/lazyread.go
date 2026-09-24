@@ -152,8 +152,13 @@ func runLazyRead(pass *analysis.Pass) (interface{}, error) {
 }
 
 // lazyTableType names Package or sortedmap when t is one of them or a
-// pointer to one.
+// pointer to one, or a type parameter whose constraint's type set has such
+// a term (a generic function can otherwise convert one away unseen).
 func lazyTableType(t types.Type) string {
+	if tp, ok := types.Unalias(t).(*types.TypeParam); ok {
+		return lazyTypeParamTerm(tp)
+	}
+
 	named := packageNamedType(t)
 	if named == nil || named.Obj().Pkg() == nil || named.Obj().Pkg().Path() != lispPkgPath {
 		return ""
@@ -175,4 +180,26 @@ func checkLazyConversion(pass *analysis.Pass, call *ast.CallExpr) {
 		return
 	}
 	pass.Reportf(call.Pos(), "conversion of lazily materialized type %s to another type bypasses its filling accessors; read it through the %s methods, or audit the function in lazyTableFunctions", name, name)
+}
+
+func lazyTypeParamTerm(tp *types.TypeParam) string {
+	iface, ok := tp.Constraint().Underlying().(*types.Interface)
+	if !ok {
+		return ""
+	}
+	for i := range iface.NumEmbeddeds() {
+		embedded := iface.EmbeddedType(i)
+		if union, ok := embedded.(*types.Union); ok {
+			for j := range union.Len() {
+				if name := lazyTableType(union.Term(j).Type()); name != "" {
+					return name
+				}
+			}
+			continue
+		}
+		if name := lazyTableType(embedded); name != "" {
+			return name
+		}
+	}
+	return ""
 }

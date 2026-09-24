@@ -52,6 +52,22 @@ func converted(s sortedmap, p *Package, pv Package) {
 	_ = (*mirror)(p)              // want "conversion of lazily materialized type Package"
 }
 
+type lazyConstraint interface{ sortedmap | rawMap }
+
+func leak[T sortedmap](s T) *LVal {
+	return rawMap(s).m["x"] // want "conversion of lazily materialized type sortedmap"
+}
+
+func leakUnion[T lazyConstraint](s T) {
+	_ = rawMap(s) // want "conversion of lazily materialized type sortedmap"
+}
+
+func leakPkg[T Package](p T) {
+	_ = rawPackage(p) // want "conversion of lazily materialized type Package"
+}
+
+func harmless[T ~int](v T) int { return int(v) }
+
 func good(u unrelated, s sortedmap, p *Package) {
 	_ = u.symbols["x"]
 	_ = u.m["x"]
