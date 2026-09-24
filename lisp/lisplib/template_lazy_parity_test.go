@@ -51,6 +51,7 @@ func lazyParityTemplates(t *testing.T) map[string]*lisp.Template {
 		"eager":       {templateFixturePolicy(), lisp.TemplateWithEagerInstantiation()},
 		"lazy":        {templateFixturePolicy()},
 		"lazy-frozen": {templateFixturePolicy(), lisp.TemplateWithFrozenPackages("lib")},
+		"prewarm":     {templateFixturePolicy(), lisp.TemplateWithFrozenPackages("lib")},
 	} {
 		env := loadTemplateFixture(t, lazyParitySource)
 		tmpl, err := lisp.NewTemplate(env, opts...)
@@ -138,8 +139,18 @@ func TestTemplateLazyWalkParity(t *testing.T) {
 			if strings.Contains(want, "lazy-pending") {
 				t.Fatalf("eager result mentions the marker: %s", want)
 			}
-			for _, mode := range []string{"lazy", "lazy-frozen"} {
-				got := path(t, forkTemplateFixture(t, templates[mode]))
+			// Run the probe once on the prewarm template so its hot set is
+			// populated; the compared VM then starts partly built.
+			forkTemplateFixture(t, templates["prewarm"]).LoadString("probe.lisp", lazyParityProbe)
+			for _, mode := range []string{"lazy", "lazy-frozen", "prewarm"} {
+				vm := forkTemplateFixture(t, templates[mode])
+				if mode == "prewarm" {
+					var err error
+					if vm, err = templates[mode].NewVM(lisp.VMWithPrewarm()); err != nil {
+						t.Fatal(err)
+					}
+				}
+				got := path(t, vm)
 				if got != want {
 					t.Errorf("%s differs from eager:\n got: %s\nwant: %s", mode, got, want)
 				}
@@ -163,8 +174,12 @@ func TestTemplateLazyConcurrentVMs(t *testing.T) {
 		wg.Add(2)
 		go func() {
 			defer wg.Done()
-			for range 4 {
-				vm, err := tmpl.NewVM()
+			for i := range 4 {
+				var opts []lisp.VMOption
+				if i%2 == 0 {
+					opts = append(opts, lisp.VMWithPrewarm()) // reads the hot set other VMs are writing
+				}
+				vm, err := tmpl.NewVM(opts...)
 				if err != nil {
 					errs <- err.Error()
 					return

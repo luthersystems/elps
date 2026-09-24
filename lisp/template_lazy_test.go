@@ -248,3 +248,54 @@ func TestTemplateLazySlotWrite(t *testing.T) {
 		t.Fatal("sharing broken after a slot write")
 	}
 }
+
+// TestTemplateLazyPrewarm: a VM created with VMWithPrewarm builds, at NewVM,
+// exactly the values earlier VMs used, with the same identities and sharing,
+// and a VM created without it still builds nothing.
+func TestTemplateLazyPrewarm(t *testing.T) {
+	tmpl := lazyFixture(t)
+	first, err := tmpl.NewVM(VMWithPrewarm()) // nothing is hot yet
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := lazyInstanceOf(first).count; n != 0 {
+		t.Fatalf("prewarm with an empty hot set built %d values", n)
+	}
+	lib := first.Runtime.Registry.Package("lib")
+	lib.Symbol("v7")
+	a, _ := first.Runtime.Registry.Package("user").Symbol("a")
+	a.MapGet("x")
+	used := lazyInstanceOf(first).count
+
+	warm, err := tmpl.NewVM(VMWithPrewarm())
+	if err != nil {
+		t.Fatal(err)
+	}
+	inst := lazyInstanceOf(warm)
+	if inst.count != used {
+		t.Fatalf("prewarm built %d values, earlier VM used %d", inst.count, used)
+	}
+	user := warm.Runtime.Registry.Package("user")
+	wa, _ := user.Symbol("a")
+	shared, _ := user.Symbol("shared")
+	if wa.MapGet("x") != shared || wa.MapGet("self") != wa || wa.MapGet("inner").MapGet("z") != shared {
+		t.Fatal("prewarm broke identity or sharing")
+	}
+	if v, _ := warm.Runtime.Registry.Package("lib").Symbol("v7"); v.Cells[0].Int != 7 {
+		t.Fatalf("v7 = %v", v)
+	}
+	if fa, _ := first.Runtime.Registry.Package("user").Symbol("a"); fa == wa {
+		t.Fatal("prewarmed VM shares a value with another VM")
+	}
+	cold, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := lazyInstanceOf(cold).count; n != 0 {
+		t.Fatalf("a VM without VMWithPrewarm built %d values", n)
+	}
+	eager, err := lazyFixture(t, TemplateWithEagerInstantiation()).NewVM(VMWithPrewarm())
+	if err != nil || lazyInstanceOf(eager) != nil {
+		t.Fatalf("VMWithPrewarm on an eager template: %v", err)
+	}
+}

@@ -387,7 +387,9 @@ force first (`materializeSymbols`, `forceAll`), and writers or key/length-only
 readers. A new direct reader fails until it is audited. A VM is
 single-goroutine because reads now write; checked builds panic on an
 overlapping fill (`lazyGuard`). `TemplateWithEagerInstantiation` restores the
-old eager build. A map or package with pending entries retains its whole VM
+old eager build. `VMWithPrewarm` builds, at NewVM, every value any earlier VM of
+the template used (a per-template atomic hot set), for hosts that mint VMs
+off the request path. A map or package with pending entries retains its whole VM
 (measured in `TestTemplateForkEscapedLeafDoesNotRetainVM`).
 
 ## Development Workflow

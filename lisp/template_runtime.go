@@ -13,8 +13,20 @@ import (
 type VMOption func(*vmConfig)
 
 type vmConfig struct {
-	ctx    context.Context
-	stderr io.Writer
+	ctx     context.Context
+	stderr  io.Writer
+	prewarm bool
+}
+
+// VMWithPrewarm builds, during NewVM, every template value that any earlier
+// VM of the same template has used, instead of on first use. A host that
+// creates VMs ahead of demand (a pool filled by a background goroutine) uses
+// it to move that work off the request path. The set is learned from use: it
+// only grows, and is bounded by the template's size, so a value used once by
+// any VM is built by every later prewarmed VM. Results are identical with or
+// without it; it has no effect on a TemplateWithEagerInstantiation template.
+func VMWithPrewarm() VMOption {
+	return func(c *vmConfig) { c.prewarm = true }
 }
 
 // VMWithContext binds the new VM's evaluation context. The source context is

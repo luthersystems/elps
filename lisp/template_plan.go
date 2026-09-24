@@ -95,6 +95,7 @@ type templatePackage struct {
 	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
+	hot               *templateHotSet // values any lazy VM has materialized (VMWithPrewarm)
 	values            []templateValue
 	envs              []templateEnv
 	functions         []templateFunctionData
@@ -142,6 +143,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.packages = make([]templatePackage, 0, len(env.Runtime.Registry.packages))
 	c.plan.runtime = snapshotTemplateRuntime(env.Runtime)
 	c.plan.eager = inventory.config.eager
+	c.plan.hot = newTemplateHotSet(len(inventory.valueQueue))
 	c.plan.cells = make([][]templateRef, len(storage.cells))
 	c.plan.byteBackings = storage.bytes
 	c.plan.root = c.env(env)

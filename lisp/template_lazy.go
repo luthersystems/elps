@@ -5,7 +5,9 @@ package lisp
 import (
 	"cmp"
 	"errors"
+	"math/bits"
 	"slices"
+	"sync/atomic"
 
 	"github.com/luthersystems/elps/internal/packagetable"
 )
@@ -156,6 +158,7 @@ func (l *lazyInstance) value(i int) *LVal {
 	out := new(LVal)
 	l.values[i] = out
 	l.count++
+	l.p.hot.mark(i)
 	l.queue = append(l.queue, lazyTask{lazyFillValue, i})
 	return out
 }
@@ -375,6 +378,9 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		rt.Package = rt.Registry.packages[p.runtime.currentPackage]
 	}
 	root := l.rootEnv(p.root)
+	if config.prewarm {
+		l.prewarm()
+	}
 	if config.ctx != nil {
 		root.evalCtx = config.ctx
 	}
@@ -393,4 +399,38 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		return p.instantiateEager(config), nil
 	}
 	return p.instantiateLazy(config), nil
+}
+
+// templateHotSet records, across every VM of one template, which plan values
+// have been materialized. It is the only template state lazy VMs write, and
+// it is written only through atomics, so VMs on different goroutines share
+// it safely. It never shrinks.
+type templateHotSet struct {
+	bits []atomic.Uint64
+}
+
+func newTemplateHotSet(n int) *templateHotSet {
+	return &templateHotSet{bits: make([]atomic.Uint64, (n+63)/64)}
+}
+
+func (h *templateHotSet) mark(i int) {
+	word, bit := &h.bits[i/64], uint64(1)<<(uint(i)%64)
+	if word.Load()&bit == 0 {
+		word.Or(bit)
+	}
+}
+
+// prewarm materializes every hot value in one queue drain (VMWithPrewarm).
+func (l *lazyInstance) prewarm() {
+	l.guard.enter()
+	for w := range l.p.hot.bits {
+		word := l.p.hot.bits[w].Load()
+		for word != 0 {
+			i := w*64 + bits.TrailingZeros64(word)
+			word &= word - 1
+			l.value(i)
+		}
+	}
+	l.drain()
+	l.guard.leave()
 }
