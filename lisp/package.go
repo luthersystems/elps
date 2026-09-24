@@ -6,6 +6,7 @@ import (
 	"iter"
 	"maps"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/packagetable"
@@ -670,8 +671,8 @@ func (pkg *Package) exportSorted(name string) {
 		slices.Sort(pkg.externals)
 		pkg.externalsSortedLen = len(pkg.externals)
 	}
-	i, found := slices.BinarySearch(pkg.externals, name)
-	if found {
+	i := sort.SearchStrings(pkg.externals, name)
+	if i < len(pkg.externals) && pkg.externals[i] == name {
 		return
 	}
 	pkg.externals = slices.Insert(pkg.externals, i, name)
