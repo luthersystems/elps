@@ -193,7 +193,7 @@ func Solve(graph *CallGraph, cfg *Config) ([]*SolvedFunction, []Issue) {
 			// Only report once per cycle (on the first member alphabetically)
 			sorted := make([]string, len(cycle))
 			copy(sorted, cycle)
-			sort.Strings(sorted)
+			slices.Sort(sorted)
 			if sorted[0] == name {
 				var trace []TraceEntry
 				for _, member := range sorted {
@@ -488,7 +488,7 @@ func topoSort(adj map[string][]string, funcs map[string]*FunctionSummary, cycleM
 	for name := range funcs {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 
 	for _, name := range names {
 		visit(name)

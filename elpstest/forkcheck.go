@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -339,14 +339,14 @@ func normalizeFunIDs(s string) string {
 func roots(env *lisp.LEnv, visit func(pkg, name string, v *lisp.LVal)) {
 	reg := env.Runtime.Registry
 	names := reg.PackageNames()
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, pn := range names {
 		pkg := reg.Package(pn)
 		if pkg == nil {
 			continue
 		}
 		syms := pkg.SymbolNames()
-		sort.Strings(syms)
+		slices.Sort(syms)
 		for _, sn := range syms {
 			v, ok := pkg.Symbol(sn)
 			if !ok || v == nil {
@@ -365,7 +365,7 @@ func sortedBindings(e *lisp.LEnv) (keys []string, vals map[string]*lisp.LVal) {
 		keys = append(keys, k)
 		vals[k] = v
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys, vals
 }
 

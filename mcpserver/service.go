@@ -10,6 +10,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -564,7 +565,7 @@ func (s *service) selectPerfFiles(in PerfSelectionInput) ([]string, error) {
 			}
 			files = append(files, resolved)
 		}
-		sort.Strings(files)
+		slices.Sort(files)
 		return files, nil
 	}
 	return s.listPerfWorkspaceFiles(root, s.perfConfig, in.IncludeTests)
@@ -2482,7 +2483,7 @@ func filterLinter(original *lint.Linter, checks []string) (*lint.Linter, []strin
 	for name := range selected {
 		unknown = append(unknown, name)
 	}
-	sort.Strings(unknown)
+	slices.Sort(unknown)
 	return &lint.Linter{Analyzers: filtered}, unknown
 }
 

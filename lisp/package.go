@@ -6,7 +6,6 @@ import (
 	"iter"
 	"maps"
 	"slices"
-	"sort"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/packagetable"
@@ -122,7 +121,7 @@ func (r *PackageRegistry) PackageNames() []string {
 	for name := range r.packages {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -556,7 +555,7 @@ func (pkg *Package) SymbolNames() []string {
 	for name := range pkg.symbols {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
@@ -645,7 +644,7 @@ func (pkg *Package) Exports(sym ...string) {
 	// array (e.g., a package-level var passed via ...).
 	sorted := make([]string, len(sym))
 	copy(sorted, sym)
-	sort.Strings(sorted)
+	slices.Sort(sorted)
 	externs := pkg.externals
 addloop:
 	for _, symnew := range sorted {
@@ -656,7 +655,7 @@ addloop:
 		}
 		externs = append(externs, symnew)
 	}
-	sort.Strings(externs)
+	slices.Sort(externs)
 	pkg.externals = externs
 	pkg.externalsSortedLen = len(externs)
 }
@@ -668,11 +667,11 @@ addloop:
 func (pkg *Package) exportSorted(name string) {
 	pkg.ensureWritable()
 	if pkg.externalsSortedLen != len(pkg.externals) {
-		sort.Strings(pkg.externals)
+		slices.Sort(pkg.externals)
 		pkg.externalsSortedLen = len(pkg.externals)
 	}
-	i := sort.SearchStrings(pkg.externals, name)
-	if i < len(pkg.externals) && pkg.externals[i] == name {
+	i, found := slices.BinarySearch(pkg.externals, name)
+	if found {
 		return
 	}
 	pkg.externals = slices.Insert(pkg.externals, i, name)

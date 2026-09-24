@@ -3,7 +3,7 @@
 package debugrepl
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -80,7 +80,7 @@ func (c *debugCompleter) Do(line []rune, pos int) ([][]rune, int) {
 		}
 	}
 
-	sort.Strings(candidates)
+	slices.Sort(candidates)
 
 	result := make([][]rune, 0, len(candidates))
 	for _, sym := range candidates {

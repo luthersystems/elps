@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 
@@ -526,7 +527,7 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 	}
 
 	for name := range origToMin {
-		sort.Strings(origToMin[name])
+		slices.Sort(origToMin[name])
 	}
 
 	exclusionReasons := make(map[string]string)

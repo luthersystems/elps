@@ -4,7 +4,7 @@ package lsp
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
@@ -147,7 +147,7 @@ func usePackageActions(uri string, _ protocol.Range, symName, content string, cf
 	for pkg := range cfg.PackageExports {
 		packages = append(packages, pkg)
 	}
-	sort.Strings(packages)
+	slices.Sort(packages)
 
 	var actions []protocol.CodeAction
 	for _, pkg := range packages {

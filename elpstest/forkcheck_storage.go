@@ -7,7 +7,7 @@ import (
 	"hash/fnv"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/funraw"
@@ -296,7 +296,7 @@ func sharedOracleCensuses(a, b oracleCensus, allowNative func(nativePayloadIdent
 		}
 		shared = append(shared, path)
 	}
-	sort.Strings(shared)
+	slices.Sort(shared)
 	runtime.KeepAlive(a.retained)
 	runtime.KeepAlive(b.retained)
 	return shared

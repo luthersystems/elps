@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -2363,7 +2364,7 @@ func AnalyzerNames() []string {
 	for i, a := range analyzers {
 		names[i] = a.Name
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 
