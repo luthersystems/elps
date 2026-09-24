@@ -58,7 +58,7 @@ func frozenEval(t *testing.T, env *lisp.LEnv, src string) string {
 // can. Before thawing existed each one failed with a frozen-package error;
 // each must now behave exactly as in a cold environment.
 var frozenWrites = []string{
-	`(in-package 'frozen-lib) (set 'counter 99) (in-package 'user)`, // acre: override a library constant at load
+	`(in-package 'frozen-lib) (set 'counter 99) (in-package 'user)`, // a phylum overriding a library constant at load
 	`(set 'frozen-lib:counter 2)`,
 	`(set! frozen-lib:counter 2)`,
 	`(in-package 'frozen-lib) (set! counter 2) (in-package 'user)`,
