@@ -54,53 +54,73 @@ func frozenEval(t *testing.T, env *lisp.LEnv, src string) string {
 	return v.String()
 }
 
-// Every Lisp-level write to a frozen package fails with the frozen-package
-// error; siblings, later VMs and the source are unaffected; writes to the
-// unfrozen user package keep working per VM.
-func TestTemplateFrozenPackageWrites(t *testing.T) {
+// frozenWrites are programs that write a frozen package in every way Lisp
+// can. Before thawing existed each one failed with a frozen-package error;
+// each must now behave exactly as in a cold environment.
+var frozenWrites = []string{
+	`(in-package 'frozen-lib) (set 'counter 99) (in-package 'user)`, // acre: override a library constant at load
+	`(set 'frozen-lib:counter 2)`,
+	`(set! frozen-lib:counter 2)`,
+	`(in-package 'frozen-lib) (set! counter 2) (in-package 'user)`,
+	`(in-package 'frozen-lib) (set 'fresh 2 "fresh doc") (in-package 'user)`,
+	`(in-package 'frozen-lib) (defun bump () 0) (in-package 'user)`,
+	`(in-package 'frozen-lib) (defmacro mac () 0) (in-package 'user)`,
+	`(in-package 'frozen-lib) (export 'extra) (set 'extra 3) (in-package 'user)`,
+	`(in-package 'frozen-lib) (use-package 'user) (in-package 'user)`,
+	`(in-package 'frozen-lib) (use-package 'lisp) (in-package 'user)`,
+	`(in-package 'frozen-lib "new doc") (in-package 'user)`,
+	`(in-package 'fresh-pkg) (export 'e) (set 'e 1) (in-package 'frozen-lib) (use-package 'fresh-pkg) (in-package 'user)`,
+}
+
+// A write to a frozen package thaws a private copy for that VM: the write
+// succeeds, the VM then matches a cold environment given the same program,
+// and siblings, later VMs and the template are untouched.
+func TestTemplateFrozenPackageThawOnWrite(t *testing.T) {
 	source, tmpl := frozenTemplate(t)
-	a, b := frozenVM(t, tmpl), frozenVM(t, tmpl)
-	for _, tc := range []struct{ src, want string }{
-		{`(set 'frozen-lib:counter 2)`, "frozen-lib: symbol counter"},
-		{`(set! frozen-lib:counter 2)`, "frozen-lib: symbol counter"},
-		{`(in-package 'frozen-lib) (set! counter 2)`, "frozen-lib: symbol counter"},
-		{`(in-package 'frozen-lib) (set 'fresh 2)`, "frozen-lib: symbol fresh"},
-		{`(in-package 'frozen-lib) (defun bump () 0)`, "frozen-lib: symbol bump"},
-		{`(in-package 'frozen-lib) (defmacro mac () 0)`, "frozen-lib: symbol mac"},
-		{`(in-package 'frozen-lib) (export 'counter)`, "frozen-lib: symbol counter"},
-		{`(in-package 'frozen-lib) (use-package 'user)`, ""},
-		{`(in-package 'frozen-lib "new doc")`, "frozen-lib: package documentation"},
-		{`(set 'lisp:car 1)`, "lisp: symbol car"},
-	} {
-		t.Run(tc.src, func(t *testing.T) {
-			got := a.LoadString("write.lisp", tc.src)
-			if tc.want == "" {
-				// user exports nothing: use-package into a frozen package is a no-op.
-				if got.Type == lisp.LError {
-					t.Fatalf("got %v", got)
-				}
-			} else if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot modify frozen package "+tc.want) {
-				t.Fatalf("want frozen error %q, got %v", tc.want, got)
+	pristine := packageView(frozenVM(t, tmpl))
+	for _, src := range frozenWrites {
+		t.Run(src, func(t *testing.T) {
+			vm, sibling := frozenVM(t, tmpl), frozenVM(t, tmpl)
+			cold := templateTestEnv(t)
+			frozenEval(t, cold, frozenProgram)
+			if got, want := vm.LoadString("write.lisp", src).String(), cold.LoadString("write.lisp", src).String(); got != want {
+				t.Fatalf("write result %s, cold env %s", got, want)
 			}
-			if rc := a.InPackage(lisp.String("user")); rc.Type == lisp.LError {
-				t.Fatal(rc)
+			if got, want := packageView(vm), packageView(cold); got != want {
+				t.Fatalf("thawed VM differs from cold env:\n%s\nwant\n%s", got, want)
+			}
+			const probe = `(list frozen-lib:counter (frozen-lib:bump) (greet))`
+			if got, want := vm.LoadString("p.lisp", probe).String(), cold.LoadString("p.lisp", probe).String(); got != want {
+				t.Fatalf("thawed VM evaluates %s, cold env %s", got, want)
+			}
+			if !vm.Runtime.Registry.Package("lisp").Frozen() {
+				t.Fatal("an unrelated frozen package thawed")
+			}
+			for name, env := range map[string]*lisp.LEnv{"sibling": sibling, "later": frozenVM(t, tmpl)} {
+				if got := packageView(env); got != pristine {
+					t.Fatalf("%s observed another VM's write:\n%s", name, got)
+				}
+				if !env.Runtime.Registry.Package("frozen-lib").Frozen() {
+					t.Fatalf("%s thawed", name)
+				}
+			}
+			if got := frozenEval(t, source, `frozen-lib:counter`); got != "1" {
+				t.Fatalf("source changed: %s", got)
 			}
 		})
 	}
-	frozenEval(t, a, `(bump) (set! greeting "changed") (set 'mine 42) (defun greet () "shadowed")`)
-	if got := frozenEval(t, a, `(list frozen-lib:counter (get frozen-lib:state "n") greeting mine (greet))`); got != `'(1 1 "changed" 42 "shadowed")` {
-		t.Fatalf("writing VM: %s", got)
+}
+
+// Reads do not thaw; a mutation of a bound VALUE is per-VM without thawing.
+func TestTemplateFrozenPackageReadsStayShared(t *testing.T) {
+	_, tmpl := frozenTemplate(t)
+	a, b := frozenVM(t, tmpl), frozenVM(t, tmpl)
+	frozenEval(t, a, `(list frozen-lib:counter (frozen-lib:bump) (frozen-lib:bump))`)
+	if !a.Runtime.Registry.Package("frozen-lib").Frozen() {
+		t.Fatal("reads or value mutation thawed the package")
 	}
-	for name, env := range map[string]*lisp.LEnv{"sibling": b, "later": frozenVM(t, tmpl), "source": source} {
-		if got := frozenEval(t, env, `(list frozen-lib:counter (get frozen-lib:state "n") greeting (greet))`); got != `'(1 0 "hello" "hello")` {
-			t.Fatalf("%s observed another VM's writes: %s", name, got)
-		}
-		if v := env.LoadString("probe.lisp", `mine`); v.Type != lisp.LError {
-			t.Fatalf("%s sees another VM's binding: %v", name, v)
-		}
-		if doc := env.Runtime.Registry.Package("frozen-lib").SymbolDoc("counter"); doc != "a documented counter" {
-			t.Fatalf("%s doc = %q", name, doc)
-		}
+	if got := frozenEval(t, b, `(get frozen-lib:state "n")`); got != "0" {
+		t.Fatalf("value mutation leaked: %s", got)
 	}
 }
 
@@ -158,10 +178,10 @@ func TestTemplateFrozenPackageConcurrentVMs(t *testing.T) {
 				return
 			}
 			src := fmt.Sprintf(`(set 'mine %d) (bump) (bump) (set! greeting "g%d")
-(ignore-errors (set 'frozen-lib:counter %d))
-(list mine (get frozen-lib:state "n") frozen-lib:counter (greet))`, n, n, n)
+(set 'frozen-lib:counter %d)
+(list mine (get frozen-lib:state "n") frozen-lib:counter (greet))`, n, n, n+10)
 			got := vm.LoadString("race.lisp", src)
-			if want := fmt.Sprintf(`'(%d 2 1 "g%d")`, n, n); got.String() != want {
+			if want := fmt.Sprintf(`'(%d 2 %d "g%d")`, n, n+10, n); got.String() != want {
 				t.Errorf("vm %d: got %v want %s", n, got, want)
 			}
 		}()
@@ -173,24 +193,23 @@ func TestTemplateFrozenPackageConcurrentVMs(t *testing.T) {
 }
 
 // A qualified set with a docstring documents the TARGET package's symbol,
-// and a frozen current package does not stop it.
+// from a frozen current package and into a frozen target alike.
 func TestTemplateFrozenQualifiedSetDoc(t *testing.T) {
 	_, tmpl := frozenTemplate(t)
 	vm := frozenVM(t, tmpl)
 	got := vm.LoadString("doc.lisp", `(in-package 'frozen-lib) (lisp:set 'user:qx 1 "the doc") (in-package 'user) qx`)
-	if got.Type == lisp.LError || lisp.IsInternalPanic(got) || got.String() != "1" {
+	if got.Type == lisp.LError || got.String() != "1" {
 		t.Fatalf("qualified set from a frozen package: %v", got)
 	}
 	if doc := vm.Runtime.Registry.Package("user").SymbolDoc("qx"); doc != "the doc" {
 		t.Fatalf("doc on target package = %q", doc)
 	}
-	// A refused target is refused before anything is written.
-	got = vm.LoadString("doc.lisp", `(lisp:set 'frozen-lib:counter 5 "d")`)
-	if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot modify frozen package frozen-lib: symbol counter") {
-		t.Fatalf("want frozen error, got %v", got)
+	if !vm.Runtime.Registry.Package("frozen-lib").Frozen() {
+		t.Fatal("a write to user thawed the current package")
 	}
-	if v := frozenEval(t, vm, `frozen-lib:counter`); v != "1" {
-		t.Fatalf("counter changed: %s", v)
+	frozenEval(t, vm, `(lisp:set 'frozen-lib:counter 5 "d")`)
+	if v, doc := frozenEval(t, vm, `frozen-lib:counter`), vm.Runtime.Registry.Package("frozen-lib").SymbolDoc("counter"); v != "5" || doc != "d" {
+		t.Fatalf("frozen target: %s %q", v, doc)
 	}
 	// A bad docstring is rejected before the binding is written.
 	if got := vm.LoadString("doc.lisp", `(set 'badoc 1 2)`); got.Type != lisp.LError {
@@ -199,30 +218,9 @@ func TestTemplateFrozenQualifiedSetDoc(t *testing.T) {
 	if v := vm.LoadString("doc.lisp", `badoc`); v.Type != lisp.LError {
 		t.Fatalf("binding written before docstring validation: %v", v)
 	}
-	// Cold envs document the target package too.
 	cold := templateTestEnv(t)
 	frozenEval(t, cold, frozenProgram+`(in-package 'frozen-lib) (set 'user:qx 1 "cold doc") (in-package 'user)`)
 	if doc := cold.Runtime.Registry.Package("user").SymbolDoc("qx"); doc != "cold doc" {
 		t.Fatalf("cold doc on target package = %q", doc)
-	}
-}
-
-// use-package into a frozen package succeeds when it would import nothing
-// new (as in a cold env) and errors only when it would add bindings.
-func TestTemplateFrozenNoOpUsePackage(t *testing.T) {
-	_, tmpl := frozenTemplate(t)
-	vm := frozenVM(t, tmpl)
-	for _, src := range []string{
-		`(in-package 'frozen-lib) (use-package 'lisp)`,
-		`(in-package 'frozen-lib) (use-package 'frozen-lib)`,
-	} {
-		if got := vm.LoadString("use.lisp", src); got.Type == lisp.LError {
-			t.Fatalf("%s: no-op use-package failed: %v", src, got)
-		}
-	}
-	frozenEval(t, vm, `(in-package 'user) (in-package 'fresh-pkg) (export 'extra) (set 'extra 1) (in-package 'user)`)
-	got := vm.LoadString("use.lisp", `(in-package 'frozen-lib) (use-package 'fresh-pkg)`)
-	if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot modify frozen package frozen-lib: symbol extra") {
-		t.Fatalf("importing new bindings into a frozen package: %v", got)
 	}
 }

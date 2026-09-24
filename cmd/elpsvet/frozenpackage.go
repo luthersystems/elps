@@ -27,11 +27,12 @@ var frozenPackageAnalyzer = &analysis.Analyzer{
 // Each exemption names a function, including its receiver where applicable.
 // There are no comment suppressions: a new writer requires an audit here.
 var packageWriteFunctions = map[string]string{
-	"Package.putName":                    "checks checkWritable before binding and function-name bookkeeping",
-	"Package.setSymbolDoc":               "checks checkWritable before allocating or writing documentation",
-	"Package.Export":                     "checks checkWritable before appending exports",
-	"Package.Exports":                    "checks checkWritable before merging and sorting exports",
-	"Package.exportSorted":               "checks checkWritable before inserting a sorted export",
+	"Package.putName":                    "passes ensureWritable (which thaws a frozen package) before binding and function-name bookkeeping",
+	"Package.setSymbolDoc":               "passes ensureWritable (which thaws a frozen package) before allocating or writing documentation",
+	"Package.Export":                     "passes ensureWritable (which thaws a frozen package) before appending exports",
+	"Package.Exports":                    "passes ensureWritable (which thaws a frozen package) before merging and sorting exports",
+	"Package.exportSorted":               "passes ensureWritable (which thaws a frozen package) before inserting a sorted export",
+	"Package.thaw":                       "the only builder of private tables from a frozen base; reached only through ensureWritable",
 	"NewPackage":                         "constructs an unpublished unfrozen package",
 	"admitPackage":                       "constructs an unpublished unfrozen admission snapshot",
 	"templatePlan.instantiate":           "constructs private VM packages before registry publication",

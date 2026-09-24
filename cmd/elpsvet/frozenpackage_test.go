@@ -16,7 +16,7 @@ func TestFrozenPackageAnalyzer(t *testing.T) {
 
 func TestPackageWriteAllowlist(t *testing.T) {
 	want := []string{
-		"Package.putName", "Package.setSymbolDoc", "Package.Export", "Package.Exports", "Package.exportSorted",
+		"Package.putName", "Package.setSymbolDoc", "Package.Export", "Package.Exports", "Package.exportSorted", "Package.thaw",
 		"NewPackage", "admitPackage", "templatePlan.instantiate", "templateCompiler.packageDescriptor", "packageBase.publish",
 	}
 	if len(packageWriteFunctions) != len(want) {

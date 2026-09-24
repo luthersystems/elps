@@ -197,11 +197,13 @@ type Package struct {
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
 	funNames map[string]string
-	// base is non-nil exactly when the package is FROZEN: it was named by
-	// TemplateWithFrozenPackages and this Package belongs to a VM minted
-	// from that template.  The base's tables are shared by every such VM
-	// and never written; symbols, funNames, symbolDocs and externals are nil and
-	// every mutator refuses (see checkWritable).
+	// base is non-nil exactly while the package is FROZEN: it was named by
+	// TemplateWithFrozenPackages, this Package belongs to a VM minted from
+	// that template, and the VM has not written it yet.  The base's tables
+	// are shared by every such VM and never written; symbols, funNames,
+	// symbolDocs and externals are nil.  The first write of any kind thaws
+	// the package (see ensureWritable): it gets private tables and base
+	// becomes nil, for this VM only.
 	base      *packageBase
 	Name      string
 	Doc       string
@@ -235,29 +237,42 @@ type packageBase struct {
 	externals  packagetable.Strings
 }
 
-// Frozen reports whether pkg is a template-frozen package whose tables are
-// shared by every VM the template mints.  Any write to it is refused.
+// Frozen reports whether pkg still reads a template-frozen package's shared
+// tables. A frozen package is shared until its first write; that write thaws
+// a private copy for this VM (see ensureWritable), after which Frozen is false.
 func (pkg *Package) Frozen() bool {
 	return pkg.base != nil
 }
 
-// frozenError is the one message every refused write reports.
-func (pkg *Package) frozenError(name string) *LVal {
-	return Errorf("%s", pkg.frozenMessage(name))
-}
-
-func (pkg *Package) frozenMessage(name string) string {
-	return "cannot modify frozen package " + pkg.Name + ": symbol " + name
-}
-
-// checkWritable is the write guard for Go callers that cannot return an
-// error LVal.  Lisp-reachable paths refuse earlier with an error (see
-// checkLispPackageBinding, Put, Update, UsePackage and validateExportArgs),
-// so reaching this panic means a host wrote a frozen package directly.
-func (pkg *Package) checkWritable(name string) {
+// ensureWritable is the single write gate every Package mutator passes. For
+// a frozen package it thaws first; otherwise it does nothing.
+func (pkg *Package) ensureWritable() {
 	if pkg.base != nil {
-		panic(pkg.frozenMessage(name))
+		pkg.thaw()
 	}
+}
+
+// thaw gives a frozen package private tables built from the shared base and
+// this VM's slot values, then detaches the base. It copies this one package
+// only; the base, other VMs and the template are untouched. It is the only
+// function that builds private tables from a base.
+func (pkg *Package) thaw() {
+	base := pkg.base
+	symbols := make(map[string]*LVal, base.index.Len())
+	for name, i := range base.index.All() {
+		symbols[name] = pkg.baseValues[i]
+	}
+	funNames := base.funNames.Copy()
+	if funNames == nil {
+		funNames = make(map[string]string)
+	}
+	pkg.symbols = symbols
+	pkg.funNames = funNames
+	pkg.symbolDocs = base.symbolDocs.Copy()
+	pkg.externals = base.externals.Copy()
+	pkg.externalsSortedLen = 0
+	pkg.baseValues = nil
+	pkg.base = nil
 }
 
 // lookup is the raw symbol read.
@@ -317,9 +332,6 @@ func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 	}
 	if pkg == nil {
 		return nil
-	}
-	if pkg.base != nil {
-		return env.Errorf("%s", pkg.frozenMessage(name))
 	}
 	if pkg.bindingsSealed {
 		return env.Errorf("cannot rebind lisp package binding: %s", name)
@@ -421,7 +433,7 @@ func (pkg *Package) SymbolDoc(name string) string {
 // symbolDocs; the field's doc comment states why that matters (a nil table
 // is the common case, and only a writer may not assume the map exists).
 func (pkg *Package) setSymbolDoc(name, doc string) {
-	pkg.checkWritable(name)
+	pkg.ensureWritable()
 	if pkg.symbolDocs == nil {
 		pkg.symbolDocs = make(map[string]string, 1)
 	}
@@ -457,20 +469,12 @@ func (pkg *Package) externalNames() iter.Seq[string] {
 	return slices.Values(pkg.externals)
 }
 
-// firstPackageName preserves the diagnostic's symbol for variadic writes.
-func firstPackageName(names []string) string {
-	if len(names) == 0 {
-		return ""
-	}
-	return names[0]
-}
-
 // Export appends names to the package's export list verbatim, preserving
 // existing order and without deduplicating (matching historical append
 // semantics on the package's export list).  Use Exports for the
 // deduplicating, sorting variant.
 func (pkg *Package) Export(names ...string) {
-	pkg.checkWritable(firstPackageName(names))
+	pkg.ensureWritable()
 	pkg.externals = append(pkg.externals, names...)
 }
 
@@ -490,9 +494,9 @@ func (pkg *Package) Export(names ...string) {
 // name into its sorted position instead, keeping the list sorted for the
 // next call.
 func (pkg *Package) Exports(sym ...string) {
-	pkg.checkWritable(firstPackageName(sym))
+	pkg.ensureWritable()
 	if len(sym) == 1 {
-		pkg.exportSorted(firstPackageName(sym))
+		pkg.exportSorted(sym[0])
 		return
 	}
 	// Copy sym before sorting to avoid mutating the caller's backing
@@ -520,7 +524,7 @@ addloop:
 // the whole list, so the result is fully determined as the sorted union and
 // an insertion at the searched position reproduces it byte for byte.
 func (pkg *Package) exportSorted(name string) {
-	pkg.checkWritable(name)
+	pkg.ensureWritable()
 	if pkg.externalsSortedLen != len(pkg.externals) {
 		sort.Strings(pkg.externals)
 		pkg.externalsSortedLen = len(pkg.externals)
@@ -561,9 +565,6 @@ func (pkg *Package) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return Errorf("cannot rebind constant: %v", k.Str)
 	}
-	if pkg.base != nil {
-		return pkg.frozenError(k.Str)
-	}
 	pkg.put(k, v)
 	return Nil()
 }
@@ -576,9 +577,6 @@ func (pkg *Package) Update(k, v *LVal) *LVal {
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return Errorf("cannot rebind constant: %v", k.Str)
-	}
-	if pkg.base != nil {
-		return pkg.frozenError(k.Str)
 	}
 	_, ok := pkg.lookup(k.Str)
 	if !ok {
@@ -600,7 +598,7 @@ func (pkg *Package) put(k, v *LVal) {
 // constant-rebind check Put performs — the Add* methods and UsePackage guard
 // TrueSymbol/FalseSymbol explicitly before calling.
 func (pkg *Package) putName(name string, v *LVal) {
-	pkg.checkWritable(name)
+	pkg.ensureWritable()
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
 		if v.Package() == pkg.Name {

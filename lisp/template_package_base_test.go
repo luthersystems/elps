@@ -4,7 +4,9 @@ package lisp
 
 import (
 	"reflect"
+	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -22,23 +24,8 @@ func clonePackageBase(b *packageBase) packageBaseSnapshot {
 	}
 }
 
-func expectFrozenPanic(t *testing.T, what string, f func()) {
+func frozenFixture(t *testing.T) (*Template, *LVal) {
 	t.Helper()
-	defer func() {
-		t.Helper()
-		r := recover()
-		msg, _ := r.(string)
-		if !strings.HasPrefix(msg, "cannot modify frozen package frozen: symbol ") {
-			t.Fatalf("%s: want frozen-package panic, got %v", what, r)
-		}
-	}()
-	f()
-}
-
-// TestTemplateFrozenPackageBaseImmutable drives every Package mutator at a
-// frozen package in template VMs: each is refused, and the published base
-// is byte-for-byte unchanged afterwards.
-func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 	source := templateOwnershipEnv()
 	frozen := source.Runtime.Registry.DefinePackage("frozen")
 	frozen.setSymbolDoc("value", "original doc")
@@ -46,104 +33,133 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 	frozen.Put(Symbol("fn"), fn)
 	frozen.Put(Symbol("value"), Int(1))
 	frozen.Export("zeta", "value") // deliberately unsorted
-	source.Runtime.Package.Put(Symbol("mine"), Int(1))
-	if _, err := NewTemplate(source, TemplateWithFrozenPackages("missing")); err == nil || !strings.Contains(err.Error(), `frozen package "missing" is not registered`) {
-		t.Fatalf("unregistered frozen package accepted: %v", err)
+	big := source.Runtime.Registry.DefinePackage("big")
+	for n := range 500 {
+		big.Put(Symbol("b"+strconv.Itoa(n)), Int(n))
 	}
-	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("frozen"))
+	source.Runtime.Package.Put(Symbol("mine"), Int(1))
+	source.Runtime.Package.Export("mine")
+	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("frozen", "big"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	var before packageBaseSnapshot
+	return tmpl, fn
+}
+
+// TestTemplateFrozenPackageThawMutators drives every Package mutator, with
+// and without arguments, at a frozen package: each thaws a private copy for
+// its VM and succeeds, and the published base is unchanged afterwards.
+func TestTemplateFrozenPackageThawMutators(t *testing.T) {
+	tmpl, fn := frozenFixture(t)
+	if _, err := NewTemplate(templateOwnershipEnv(), TemplateWithFrozenPackages("missing")); err == nil || !strings.Contains(err.Error(), `frozen package "missing" is not registered`) {
+		t.Fatalf("unregistered frozen package accepted: %v", err)
+	}
+	before := map[string]packageBaseSnapshot{}
 	for _, p := range tmpl.plan.packages {
-		if (p.base != nil) != (p.name == "frozen") {
+		if (p.base != nil) != (p.name == "frozen" || p.name == "big") {
 			t.Fatalf("package %s frozen=%v", p.name, p.base != nil)
 		}
 		if p.base != nil {
-			before = clonePackageBase(p.base)
+			before[p.name] = clonePackageBase(p.base)
 		}
 	}
-	for range 3 {
+	mutators := map[string]func(vm *LEnv, p *Package){
+		"Put":                func(_ *LEnv, p *Package) { p.Put(Symbol("value"), Int(2)) },
+		"Put new":            func(_ *LEnv, p *Package) { p.Put(Symbol("new"), Int(2)) },
+		"Update":             func(vm *LEnv, p *Package) { p.Update(Symbol("fn"), vm.Lambda(Formals(), []*LVal{Int(2)})) },
+		"PutGlobal":          func(vm *LEnv, _ *Package) { vm.PutGlobal(Symbol("frozen:value"), Int(3)) },
+		"setSymbolDoc":       func(_ *LEnv, p *Package) { p.setSymbolDoc("value", "vm doc") },
+		"setSymbolDoc empty": func(_ *LEnv, p *Package) { p.setSymbolDoc("", "") },
+		"Exports one":        func(_ *LEnv, p *Package) { p.Exports("alpha") },
+		"Exports many":       func(_ *LEnv, p *Package) { p.Exports("b", "a") },
+		"Exports none":       func(_ *LEnv, p *Package) { p.Exports() },
+		"Export":             func(_ *LEnv, p *Package) { p.Export("appended") },
+		"Export none":        func(_ *LEnv, p *Package) { p.Export() },
+		"appendExternal":     func(_ *LEnv, p *Package) { p.appendExternal("more") },
+		"putName":            func(_ *LEnv, p *Package) { p.putName("more", Int(1)) },
+		"AddBuiltins": func(vm *LEnv, _ *Package) {
+			vm.InPackage(String("frozen"))
+			vm.AddBuiltins(true, testBuiltin{"tb"})
+			vm.InPackage(String("user"))
+		},
+		"UsePackage": func(vm *LEnv, _ *Package) {
+			vm.InPackage(String("frozen"))
+			vm.UsePackage(String("user"))
+			vm.InPackage(String("user"))
+		},
+	}
+	for name, mutate := range mutators {
 		vm, err := tmpl.NewVM()
 		if err != nil {
 			t.Fatal(err)
 		}
 		p := vm.Runtime.Registry.Package("frozen")
-		if !p.Frozen() || p.symbols != nil || p.funNames != nil || p.symbolDocs != nil || p.externals != nil {
-			t.Fatal("VM package does not read the shared base")
+		if !p.Frozen() || p.symbols != nil {
+			t.Fatal("fresh VM package does not read the shared base")
 		}
-		if v, _ := p.Symbol("value"); v.Int != 1 || p.SymbolDoc("value") != "original doc" || !slices.Equal(p.SymbolNames(), []string{"fn", "value"}) {
-			t.Fatal("frozen package reads changed")
+		mutate(vm, p)
+		if p.Frozen() || p.symbols == nil || p.funNames == nil {
+			t.Fatalf("%s: package did not thaw", name)
 		}
-		if f, _ := p.Symbol("fn"); p.GetFunName(f.FID()) != "fn" || f == fn {
-			t.Fatal("function naming or isolation changed")
+		if f, _ := p.Symbol("fn"); name != "Update" && (f == fn || p.GetFunName(f.FID()) != "fn") {
+			t.Fatalf("%s: thaw lost function naming or isolation", name)
 		}
-		fn2 := vm.Lambda(Formals(), []*LVal{Int(2)})
-		for name, r := range map[string]*LVal{
-			"Put": p.Put(Symbol("value"), Int(2)), "Update": p.Update(Symbol("fn"), fn2), "Put new": p.Put(Symbol("new"), fn2),
-			"PutGlobal qualified": vm.PutGlobal(Symbol("frozen:value"), Int(3)),
-		} {
-			if r.Type != LError || !strings.Contains(r.String(), "cannot modify frozen package frozen: symbol ") {
-				t.Fatalf("%s: want frozen error, got %v", name, r)
-			}
+		if name != "setSymbolDoc" && p.SymbolDoc("value") != "original doc" {
+			t.Fatalf("%s: thaw lost symbol docs", name)
 		}
-		expectFrozenPanic(t, "setSymbolDoc", func() { p.setSymbolDoc("value", "vm doc") })
-		expectFrozenPanic(t, "Exports one", func() { p.Exports("alpha") })
-		expectFrozenPanic(t, "Exports many", func() { p.Exports("b", "a") })
-		expectFrozenPanic(t, "Export", func() { p.Export("appended") })
-		expectFrozenPanic(t, "appendExternal", func() { p.appendExternal("more") })
-		expectFrozenPanic(t, "putName", func() { p.putName("more", Int(1)) })
-		expectFrozenPanic(t, "put", func() { p.put(Symbol("more"), Int(1)) })
-		expectFrozenPanic(t, "exportSorted", func() { p.exportSorted("more") })
-		checkPackageBases(tmpl.plan.packages)
-		if r := vm.InPackage(String("frozen")); r.Type == LError {
-			t.Fatal(r)
+		if !vm.Runtime.Registry.Package("big").Frozen() {
+			t.Fatalf("%s: an unrelated package thawed", name)
 		}
-		if r := vm.UsePackage(String("frozen")); r.Type != LError || !strings.Contains(r.String(), "exported symbol is unbound: zeta") {
-			t.Fatalf("use-package into a frozen package: %v", r)
-		}
-		if r := vm.InPackage(String("user")); r.Type == LError {
-			t.Fatal(r)
-		}
-		// Unfrozen packages keep ordinary per-VM writes.
-		if r := vm.Runtime.Package.Put(Symbol("mine"), Int(9)); r.Type == LError {
-			t.Fatal(r)
+		if other, _ := tmpl.NewVM(); !other.Runtime.Registry.Package("frozen").Frozen() {
+			t.Fatalf("%s: a later VM starts thawed", name)
 		}
 	}
 	for _, p := range tmpl.plan.packages {
-		if p.base != nil && !reflect.DeepEqual(before, clonePackageBase(p.base)) {
+		if p.base != nil && !reflect.DeepEqual(before[p.name], clonePackageBase(p.base)) {
 			t.Fatalf("package %s: published base was written", p.name)
 		}
 	}
-	if !slices.Equal(before.externals, []string{"zeta", "value"}) {
-		t.Fatalf("shared export list reordered: %v", before.externals)
-	}
-	vm, _ := tmpl.NewVM()
-	if v, _ := vm.Runtime.Package.Symbol("mine"); v.Int != 1 {
-		t.Fatal("unfrozen write leaked into the template")
+	if !slices.Equal(before["frozen"].externals, []string{"zeta", "value"}) {
+		t.Fatalf("shared export list reordered: %v", before["frozen"].externals)
 	}
 }
 
-// Zero-argument mutator calls on a frozen package are refused at entry: a
-// no-name Exports() used to sort the shared export list in place.
-func TestTemplateFrozenPackageEmptyArgumentMutators(t *testing.T) {
-	source := templateOwnershipEnv()
-	frozen := source.Runtime.Registry.DefinePackage("frozen")
-	frozen.Put(Symbol("a"), Int(1))
-	frozen.Export("zeta", "a") // unsorted
-	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("frozen"))
-	if err != nil {
-		t.Fatal(err)
+type testBuiltin struct{ name string }
+
+func (b testBuiltin) Name() string                     { return b.name }
+func (b testBuiltin) Formals() *LVal                   { return Formals() }
+func (b testBuiltin) Eval(env *LEnv, args *LVal) *LVal { return Nil() }
+func (b testBuiltin) Docstring() string                { return "test builtin" }
+
+// thawBytes reports the bytes one NewVM plus one write to the named frozen
+// package allocates beyond a bare NewVM, averaged over n runs.
+func thawBytes(tmpl *Template, name string, n int) float64 {
+	measure := func(write bool) float64 {
+		var before, after runtime.MemStats
+		runtime.GC()
+		runtime.ReadMemStats(&before)
+		for range n {
+			vm, _ := tmpl.NewVM()
+			if write {
+				vm.Runtime.Registry.Package(name).Put(Symbol("x"), Int(1))
+			}
+		}
+		runtime.ReadMemStats(&after)
+		return float64(after.TotalAlloc-before.TotalAlloc) / float64(n)
 	}
-	vm, _ := tmpl.NewVM()
-	p := vm.Runtime.Registry.Package("frozen")
-	expectFrozenPanic(t, "Exports()", func() { p.Exports() })
-	expectFrozenPanic(t, "Export()", func() { p.Export() })
-	expectFrozenPanic(t, "Exports(empty slice)", func() { p.Exports([]string{}...) })
-	expectFrozenPanic(t, "setSymbolDoc empty", func() { p.setSymbolDoc("", "") })
-	expectFrozenPanic(t, "putName empty", func() { p.putName("", Int(1)) })
-	expectFrozenPanic(t, "appendExternal empty", func() { p.appendExternal("") })
-	if got := tmpl.plan.packages[0].base.externals.Copy(); !slices.Equal(got, []string{"zeta", "a"}) {
-		t.Fatalf("shared export list was reordered: %v", got)
+	return measure(true) - measure(false)
+}
+
+// A VM that writes one frozen package pays for that package only: thawing a
+// 3-symbol package beside a 500-symbol frozen package costs a few hundred
+// bytes, while thawing the big one costs in proportion to its size.
+func TestTemplateFrozenPackageThawCostIsPerPackage(t *testing.T) {
+	tmpl, _ := frozenFixture(t)
+	small, big := thawBytes(tmpl, "frozen", 200), thawBytes(tmpl, "big", 200)
+	if small > 2048 {
+		t.Fatalf("thawing a 3-symbol package cost %.0f bytes", small)
+	}
+	if big < 10*small || big < 8192 {
+		t.Fatalf("thaw cost is not per package: small=%.0f big=%.0f bytes", small, big)
 	}
 }

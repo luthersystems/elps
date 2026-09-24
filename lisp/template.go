@@ -75,18 +75,20 @@ func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 	return func(c *templateConfig) { c.nativePolicy = approve }
 }
 
-// TemplateWithFrozenPackages freezes the named packages at publication. A
-// frozen package's symbol, function-name and documentation tables are built
-// once and shared by every VM the template mints, so NewVM does not copy
-// them; each VM gets only its own values for the package's bindings. Any
-// write to a frozen package in a VM -- set, set!, defun, export, use-package
-// into it, a symbol docstring, or a Go Package mutator -- is refused with
-// "cannot modify frozen package NAME: symbol SYM" (Go mutators with no error
-// result panic with that message). Values bound in a frozen package remain
-// per-VM copies with the usual template semantics: freezing constrains the
-// package's bindings, not the contents of mutable values they refer to.
-// Reads, lookups and iteration are unchanged. Naming a package the source
-// does not register makes NewTemplate fail. Options accumulate.
+// TemplateWithFrozenPackages freezes the named packages at publication: each
+// is shared until its first write, and a write thaws a private copy for that
+// VM. A frozen package's symbol, function-name, documentation and export
+// tables are built once and shared by every VM the template mints, so NewVM
+// does not copy them; each VM gets only its own values for the package's
+// bindings. The first write of any kind in a VM -- set, set!, defun, export,
+// use-package into it, a docstring, or a Go Package mutator -- copies that one
+// package's tables into the VM and then applies the write exactly as it
+// would in an unfrozen package. Other packages, other VMs and the template
+// are unaffected, so every program behaves as it does without the option.
+// Values bound in a frozen package remain per-VM copies with the usual
+// template semantics, and mutating a value never thaws its package. Reads,
+// lookups and iteration are unchanged. Naming a package the source does not
+// register makes NewTemplate fail. Options accumulate.
 func TemplateWithFrozenPackages(names ...string) TemplateOption {
 	return func(c *templateConfig) {
 		if c.frozen == nil {

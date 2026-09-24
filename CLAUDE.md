@@ -350,7 +350,11 @@ fixtures are in `testdata/src/builtinstate`.
 
 Its sixth rule, `elpsfrozenpackage` (`cmd/elpsvet/frozenpackage.go`), confines
 writes to `Package` tables and every `packageBase` field to a named, justified
-allowlist of guarded methods and unpublished constructors. It checks field and
+allowlist of guarded methods and unpublished constructors. A frozen package
+(`TemplateWithFrozenPackages`) is shared until its first write; every mutator
+passes the one write gate, `Package.ensureWritable`, which thaws a private copy
+for that VM (`Package.thaw`, the only function allowed to build private tables
+from a base), so no program behaves differently for being frozen. It checks field and
 index assignments, append, delete/clear/copy, sort/slices mutations,
 address-taking, and local map/slice aliases. The allowlist test pins the audit;
 fixtures live in `cmd/elpsvet/testdata/frozenpackage`. It also protects replacement
