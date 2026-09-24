@@ -118,13 +118,17 @@ package lisp
 
 // admitPackage returns the private snapshot of p that a registry stores.
 // See the file comment for the per-class rule; the traversal decisions are
-// in admitSymbolValue.
+// in admitSymbolValue. The destination is unfrozen and unpublished while its
+// tables are built, so construction does not use the write gate.
 //
 // The snapshot is taken by the calling goroutine and reads p's maps, so it
 // carries the same requirement every other read of a *Package does: no other
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package, limit int) *Package {
-	symbols, funNames, symbolDocs := p.symbolTable(), p.funNameTable(), p.symbolDocTable()
+	symbols, funNames, symbolDocs := p.symbols, p.funNames, p.symbolDocs
+	if p.base != nil {
+		symbols, funNames, symbolDocs = p.symbolTable(), p.funNameTable(), p.symbolDocTable()
+	}
 	adm := &Package{
 		Name:           p.Name,
 		Doc:            p.Doc,
@@ -132,9 +136,8 @@ func admitPackage(p *Package, limit int) *Package {
 		symbols:        make(map[string]*LVal, len(symbols)),
 		funNames:       make(map[string]string, len(funNames)),
 	}
-	if len(p.externals) > 0 {
-		adm.externals = make([]string, len(p.externals))
-		copy(adm.externals, p.externals)
+	if p.NumExternals() > 0 {
+		adm.externals = p.Externals()
 	}
 	for name, v := range symbols {
 		adm.symbols[name] = admitSymbolValue(v, limit)

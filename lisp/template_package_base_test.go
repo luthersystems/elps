@@ -9,25 +9,17 @@ import (
 	"testing"
 )
 
-func clonePackageBase(b *packageBase) packageBase {
-	out := packageBase{index: make(map[string]int, len(b.index)), externals: slices.Clone(b.externals)}
-	for k, v := range b.index {
-		out.index[k] = v
-	}
-	out.funNames = cloneFrozenStrings(b.funNames)
-	out.symbolDocs = cloneFrozenStrings(b.symbolDocs)
-	return out
+type packageBaseSnapshot struct {
+	index                map[string]int
+	funNames, symbolDocs map[string]string
+	externals            []string
 }
 
-func cloneFrozenStrings(m map[string]string) map[string]string {
-	if m == nil {
-		return nil
+func clonePackageBase(b *packageBase) packageBaseSnapshot {
+	return packageBaseSnapshot{
+		index: b.index.Copy(), funNames: b.funNames.Copy(),
+		symbolDocs: b.symbolDocs.Copy(), externals: b.externals.Copy(),
 	}
-	out := make(map[string]string, len(m))
-	for k, v := range m {
-		out[k] = v
-	}
-	return out
 }
 
 func expectFrozenPanic(t *testing.T, what string, f func()) {
@@ -62,7 +54,7 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	var before packageBase
+	var before packageBaseSnapshot
 	for _, p := range tmpl.plan.packages {
 		if (p.base != nil) != (p.name == "frozen") {
 			t.Fatalf("package %s frozen=%v", p.name, p.base != nil)
@@ -77,7 +69,7 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 			t.Fatal(err)
 		}
 		p := vm.Runtime.Registry.Package("frozen")
-		if !p.Frozen() || p.symbols != nil || p.funNames != nil || p.symbolDocs != nil {
+		if !p.Frozen() || p.symbols != nil || p.funNames != nil || p.symbolDocs != nil || p.externals != nil {
 			t.Fatal("VM package does not read the shared base")
 		}
 		if v, _ := p.Symbol("value"); v.Int != 1 || p.SymbolDoc("value") != "original doc" || !slices.Equal(p.SymbolNames(), []string{"fn", "value"}) {
@@ -101,6 +93,9 @@ func TestTemplateFrozenPackageBaseImmutable(t *testing.T) {
 		expectFrozenPanic(t, "Export", func() { p.Export("appended") })
 		expectFrozenPanic(t, "appendExternal", func() { p.appendExternal("more") })
 		expectFrozenPanic(t, "putName", func() { p.putName("more", Int(1)) })
+		expectFrozenPanic(t, "put", func() { p.put(Symbol("more"), Int(1)) })
+		expectFrozenPanic(t, "exportSorted", func() { p.exportSorted("more") })
+		checkPackageBases(tmpl.plan.packages)
 		if r := vm.InPackage(String("frozen")); r.Type == LError {
 			t.Fatal(r)
 		}
@@ -148,7 +143,7 @@ func TestTemplateFrozenPackageEmptyArgumentMutators(t *testing.T) {
 	expectFrozenPanic(t, "setSymbolDoc empty", func() { p.setSymbolDoc("", "") })
 	expectFrozenPanic(t, "putName empty", func() { p.putName("", Int(1)) })
 	expectFrozenPanic(t, "appendExternal empty", func() { p.appendExternal("") })
-	if got := tmpl.plan.packages[0].base.externals; !slices.Equal(got, []string{"zeta", "a"}) {
+	if got := tmpl.plan.packages[0].base.externals.Copy(); !slices.Equal(got, []string{"zeta", "a"}) {
 		t.Fatalf("shared export list was reordered: %v", got)
 	}
 }

@@ -317,7 +317,7 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		// A frozen destination accepts only a use-package that imports
 		// nothing new -- every export already bound to the same value, as
 		// when re-using an imported package or using the package itself.
-		for _, sym := range pkg.externals {
+		for sym := range pkg.externalNames() {
 			if sym == TrueSymbol || sym == FalseSymbol {
 				continue
 			}
@@ -331,7 +331,7 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		}
 		return Nil()
 	}
-	for _, sym := range pkg.externals {
+	for sym := range pkg.externalNames() {
 		if sym == TrueSymbol || sym == FalseSymbol {
 			// Exporting a boolean constant was always a no-op: pkg.Get
 			// resolved the constant to itself and Put refused the rebind

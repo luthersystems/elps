@@ -683,7 +683,7 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		}
 		if env.Runtime.Package.bindingsSealed {
 			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
-				for _, name := range source.externals {
+				for name := range source.externalNames() {
 					if name != TrueSymbol && name != FalseSymbol {
 						return env.Errorf("cannot rebind lisp package binding: %s", name)
 					}
@@ -720,7 +720,7 @@ func validateExportArgs(env *LEnv, args *LVal) *LVal {
 				// Re-exporting an existing core name is a no-op. A new export
 				// could poison future imports even without assigning a value.
 				found := false
-				for _, name := range env.Runtime.Package.externals {
+				for name := range env.Runtime.Package.externalNames() {
 					if name == arg.Str {
 						found = true
 						break

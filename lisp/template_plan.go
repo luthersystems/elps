@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+
+	"github.com/luthersystems/elps/internal/packagetable"
 )
 
 // A template plan represents mutable VM state with immutable descriptors.
@@ -174,39 +176,36 @@ func templateStringPairs(values map[string]string) []templateStringPair {
 // and slice in its base is freshly allocated here and never written again:
 // the base is published with the plan and read concurrently by every VM.
 func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) templatePackage {
+	// Borrow unfrozen source maps only for construction. Every descriptor and
+	// base below takes its own snapshot before publication.
+	symbols, funNames, symbolDocs := pkg.symbols, pkg.funNames, pkg.symbolDocs
+	if pkg.base != nil {
+		symbols, funNames, symbolDocs = pkg.symbolTable(), pkg.funNameTable(), pkg.symbolDocTable()
+	}
 	if !frozen {
 		return templatePackage{
-			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(pkg.symbolTable()),
-			funNames: templateStringPairs(pkg.funNameTable()), symbolDocs: templateStringPairs(pkg.symbolDocTable()),
-			externals:      append([]string(nil), pkg.externals...),
+			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(symbols),
+			funNames: templateStringPairs(funNames), symbolDocs: templateStringPairs(symbolDocs),
+			externals:      pkg.Externals(),
 			bindingsSealed: pkg.bindingsSealed,
 		}
 	}
-	bindings := c.bindings(pkg.symbolTable())
-	base := &packageBase{index: make(map[string]int, len(bindings))}
+	bindings := c.bindings(symbols)
+	index := make(map[string]int, len(bindings))
 	refs := make([]templateRef, len(bindings))
 	for i, binding := range bindings {
-		base.index[binding.name] = i
+		index[binding.name] = i
 		refs[i] = binding.value
 	}
-	base.funNames = cloneStringMap(pkg.funNameTable())
-	base.symbolDocs = cloneStringMap(pkg.symbolDocTable())
-	if len(pkg.externals) > 0 {
-		base.externals = slices.Clip(slices.Clone(pkg.externals))
+	base := &packageBase{
+		index:      packagetable.NewMap(index),
+		funNames:   packagetable.NewMap(funNames),
+		symbolDocs: packagetable.NewMap(symbolDocs),
+		externals:  packagetable.NewStrings(pkg.Externals()),
 	}
+	base.publish()
 	c.plan.numPackageSlots += len(refs)
 	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, bindingsSealed: pkg.bindingsSealed}
-}
-
-func cloneStringMap(values map[string]string) map[string]string {
-	if len(values) == 0 {
-		return nil
-	}
-	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
 }
 
 func (c *templateCompiler) ref(v *LVal) templateRef {
@@ -561,7 +560,8 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 	}
 	// A frozen package's tables are not copied: it reads the plan's shared
 	// base, and only its slot values are per VM, in one allocation for all
-	// frozen packages.  Every other package is rebuilt privately.
+	// frozen packages. Every other package is rebuilt unfrozen and unpublished;
+	// only these constructors may initialize its tables without the write gate.
 	var slots []*LVal
 	if p.numPackageSlots > 0 {
 		slots = make([]*LVal, p.numPackageSlots)
@@ -574,7 +574,7 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 				values[slot] = instance.ref(ref)
 			}
 			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
-				base: pkg.base, baseValues: values, externals: pkg.base.externals}
+				base: pkg.base, baseValues: values}
 			continue
 		}
 		out := &Package{Name: pkg.name, Doc: pkg.doc, symbols: make(map[string]*LVal, len(pkg.bindings)), funNames: make(map[string]string, len(pkg.funNames))}

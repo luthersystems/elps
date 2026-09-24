@@ -45,7 +45,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		{reflect.TypeFor[Package](), map[string]string{
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
 			"symbols": "remapped: binding descriptors; nil in a frozen package", "symbolDocs": "remapped: owned string pairs; nil in a frozen package",
-			"funNames": "remapped: owned string pairs; nil in a frozen package", "externals": "remapped: owned string list; a frozen package reads its base's list, which every mutator refuses to write",
+			"funNames": "remapped: owned string pairs; nil in a frozen package", "externals": "remapped: owned string list; nil in a frozen package, which iterates the base through read-only accessors",
 			"externalsSortedLen": "reset: a derived token over the export list; zero in a fresh package means the list is re-sorted before it is searched",
 			"base":               "shared-immutable: frozen package tables built once at publication (TestTemplateFrozenPackageBaseImmutable)",
 			"baseValues":         "remapped: per-VM slot values of a frozen package, resolved from the plan's binding descriptors",

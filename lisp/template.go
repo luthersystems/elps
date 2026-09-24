@@ -161,6 +161,7 @@ func (t *Template) NewVM(opts ...VMOption) (*LEnv, error) {
 	if t == nil || t.plan.root == 0 {
 		return nil, errors.New("template: uninitialized template")
 	}
+	checkPackageBases(t.plan.packages)
 	return t.plan.instantiate(opts)
 }
 
@@ -236,9 +237,9 @@ func (s *templateInventory) scan(env *LEnv) error {
 	}
 	for _, name := range packages {
 		pkg := env.Runtime.Registry.packages[name]
-		symbols := pkg.symbolTable()
-		for _, symbol := range sortedTemplateKeys(symbols) {
-			if err := s.val(symbols[symbol]); err != nil {
+		for _, symbol := range pkg.SymbolNames() {
+			value, _ := pkg.lookup(symbol)
+			if err := s.val(value); err != nil {
 				return fmt.Errorf("template: %s:%s: %w", name, symbol, err)
 			}
 		}

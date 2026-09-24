@@ -271,7 +271,7 @@ row in `allowedPayloadTypes` must appear in the test's audited inventory with
 a justification long enough to read AND with the `LType` header it belongs to
 (so adding a row, or moving one to another header, is a two-file change a
 reviewer sees), the rows the re-audit dropped must stay dropped, and
-`TestRegisteredAnalyzers` pins the five-rule set `make elpsvet` actually
+`TestRegisteredAnalyzers` pins the six-rule set `make elpsvet` actually
 runs. The `analysistest` fixtures live in five packages across three testdata
 roots. Under `testdata/src`: `nativepayload` for the spellings, the allowlist
 and the marker placements, `github.com/luthersystems/elps/nativemarker` for
@@ -347,6 +347,19 @@ remaps). A clean run is evidence, not proof. On its introduction the whole
 tree was clean (#678 was already fixed). The runtime half of #680 — an
 opt-in shareability contract on `TemplateWithBuiltinPolicy` — is not built;
 fixtures are in `testdata/src/builtinstate`.
+
+Its sixth rule, `elpsfrozenpackage` (`cmd/elpsvet/frozenpackage.go`), confines
+writes to `Package` tables and every `packageBase` field to a named, justified
+allowlist of guarded methods and unpublished constructors. It checks field and
+index assignments, append, delete/clear/copy, sort/slices mutations,
+address-taking, and local map/slice aliases. The allowlist test pins the audit;
+fixtures live in `cmd/elpsvet/testdata/frozenpackage`. It also protects replacement
+of `Package.base` and whole package/base pointees. It does not follow aliases
+across function calls or aggregate containers, indirect calls, reflection or
+unsafe. The frozen tables'
+backing storage lives in `internal/packagetable`, whose types only expose scalar
+reads, iteration and copies. Checked builds fingerprint the base at publication
+and verify it in `Template.NewVM`; production builds compile that check out.
 
 ## Development Workflow
 

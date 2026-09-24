@@ -3,10 +3,13 @@
 package lisp
 
 import (
+	"iter"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/packagetable"
 	"github.com/luthersystems/elps/parser/lexer"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -197,7 +200,7 @@ type Package struct {
 	// base is non-nil exactly when the package is FROZEN: it was named by
 	// TemplateWithFrozenPackages and this Package belongs to a VM minted
 	// from that template.  The base's tables are shared by every such VM
-	// and never written; symbols, funNames and symbolDocs are then nil and
+	// and never written; symbols, funNames, symbolDocs and externals are nil and
 	// every mutator refuses (see checkWritable).
 	base      *packageBase
 	Name      string
@@ -220,17 +223,16 @@ type Package struct {
 	bindingsSealed bool
 }
 
-// packageBase holds a frozen package's tables.  The template compiler builds
-// it once at publication; nothing writes it afterwards, and every VM minted
-// from the template reads it concurrently.  Every Package mutator calls
-// checkWritable (or is reached only through one that does) before touching
-// a table, and a frozen Package's own table fields are nil, so no write path
-// can reach these maps.
+// packageBase holds a frozen package's read-only tables. The backing maps and
+// slice live in packagetable, outside the kernel's reach. The compiler builds
+// the base before publication; elpsfrozenpackage confines field replacement to
+// that constructor and checks writes to Package's mutable tables as well.
 type packageBase struct {
-	index      map[string]int
-	funNames   map[string]string
-	symbolDocs map[string]string
-	externals  []string
+	check      packageBaseCheck
+	index      packagetable.Map[int]
+	funNames   packagetable.Map[string]
+	symbolDocs packagetable.Map[string]
+	externals  packagetable.Strings
 }
 
 // Frozen reports whether pkg is a template-frozen package whose tables are
@@ -264,44 +266,44 @@ func (pkg *Package) lookup(name string) (*LVal, bool) {
 		v, ok := pkg.symbols[name]
 		return v, ok
 	}
-	if i, ok := pkg.base.index[name]; ok {
+	if i, ok := pkg.base.index.Lookup(name); ok {
 		return pkg.baseValues[i], true
 	}
 	return nil, false
 }
 
-// symbolTable returns every binding of pkg for read-only iteration.  An
-// unfrozen package returns its own map; a frozen one a freshly built map.
+// symbolTable returns a copy of the binding table. Values retain their identity;
+// changing a binding in the returned map cannot change the package.
 func (pkg *Package) symbolTable() map[string]*LVal {
 	if pkg.base == nil {
-		return pkg.symbols
+		return maps.Clone(pkg.symbols)
 	}
-	m := make(map[string]*LVal, len(pkg.base.index))
-	for name, i := range pkg.base.index {
+	m := make(map[string]*LVal, pkg.base.index.Len())
+	for name, i := range pkg.base.index.All() {
 		m[name] = pkg.baseValues[i]
 	}
 	return m
 }
 
-// funNameTable and symbolDocTable are symbolTable's read-only counterparts.
+// funNameTable and symbolDocTable return private copies for inventory and
+// admission. Single-name reads use GetFunName and SymbolDoc without copying.
 func (pkg *Package) funNameTable() map[string]string {
 	if pkg.base == nil {
-		return pkg.funNames
+		return maps.Clone(pkg.funNames)
 	}
-	return pkg.base.funNames
+	return pkg.base.funNames.Copy()
 }
 
 func (pkg *Package) symbolDocTable() map[string]string {
 	if pkg.base == nil {
-		return pkg.symbolDocs
+		return maps.Clone(pkg.symbolDocs)
 	}
-	return pkg.base.symbolDocs
+	return pkg.base.symbolDocs.Copy()
 }
 
 // appendExternal appends one name to the export list.
 func (pkg *Package) appendExternal(name string) {
-	pkg.checkWritable(name)
-	pkg.externals = append(pkg.externals, name)
+	pkg.Export(name)
 }
 
 // checkLispPackageBinding checks a Lisp assignment's destination without
@@ -325,7 +327,8 @@ func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 	return nil
 }
 
-// NewPackage initializes and returns a package with the given name.
+// NewPackage initializes and returns a package with the given name. Direct
+// table initialization is safe here: the package is unfrozen and unpublished.
 func NewPackage(name string) *Package {
 	return &Package{
 		Name:     name,
@@ -392,17 +395,12 @@ func (pkg *Package) Symbol(name string) (*LVal, bool) {
 // SymbolNames returns the names of all symbols bound in pkg in sorted order.
 // SymbolNames allocates a new slice on every call.
 func (pkg *Package) SymbolNames() []string {
-	var names []string
-	if pkg.base == nil {
-		names = make([]string, 0, len(pkg.symbols))
-		for name := range pkg.symbols {
-			names = append(names, name)
-		}
-	} else {
-		names = make([]string, 0, len(pkg.base.index))
-		for name := range pkg.base.index {
-			names = append(names, name)
-		}
+	if pkg.base != nil {
+		return pkg.base.index.Keys()
+	}
+	names := make([]string, 0, len(pkg.symbols))
+	for name := range pkg.symbols {
+		names = append(names, name)
 	}
 	sort.Strings(names)
 	return names
@@ -411,7 +409,11 @@ func (pkg *Package) SymbolNames() []string {
 // SymbolDoc returns the documentation string bound to name in pkg, or the
 // empty string when name has no documentation.
 func (pkg *Package) SymbolDoc(name string) string {
-	return pkg.symbolDocTable()[name]
+	if pkg.base != nil {
+		doc, _ := pkg.base.symbolDocs.Lookup(name)
+		return doc
+	}
+	return pkg.symbolDocs[name]
 }
 
 // setSymbolDoc records doc as the documentation string for name, allocating
@@ -430,6 +432,9 @@ func (pkg *Package) setSymbolDoc(name, doc string) {
 // order.  Externals allocates and returns a copy on every call so callers
 // cannot modify the package's export list.
 func (pkg *Package) Externals() []string {
+	if pkg.base != nil {
+		return pkg.base.externals.Copy()
+	}
 	externals := make([]string, len(pkg.externals))
 	copy(externals, pkg.externals)
 	return externals
@@ -438,7 +443,26 @@ func (pkg *Package) Externals() []string {
 // NumExternals returns the number of exported symbol names without copying
 // the export list.
 func (pkg *Package) NumExternals() int {
+	if pkg.base != nil {
+		return pkg.base.externals.Len()
+	}
 	return len(pkg.externals)
+}
+
+// externalNames iterates exports without lending out their backing slice.
+func (pkg *Package) externalNames() iter.Seq[string] {
+	if pkg.base != nil {
+		return pkg.base.externals.All()
+	}
+	return slices.Values(pkg.externals)
+}
+
+// firstPackageName preserves the diagnostic's symbol for variadic writes.
+func firstPackageName(names []string) string {
+	if len(names) == 0 {
+		return ""
+	}
+	return names[0]
 }
 
 // Export appends names to the package's export list verbatim, preserving
@@ -446,12 +470,7 @@ func (pkg *Package) NumExternals() int {
 // semantics on the package's export list).  Use Exports for the
 // deduplicating, sorting variant.
 func (pkg *Package) Export(names ...string) {
-	if len(names) == 0 {
-		pkg.checkWritable("")
-	}
-	for _, name := range names {
-		pkg.checkWritable(name)
-	}
+	pkg.checkWritable(firstPackageName(names))
 	pkg.externals = append(pkg.externals, names...)
 }
 
@@ -471,17 +490,10 @@ func (pkg *Package) Export(names ...string) {
 // name into its sorted position instead, keeping the list sorted for the
 // next call.
 func (pkg *Package) Exports(sym ...string) {
-	if len(sym) == 0 {
-		// Even a no-name call re-sorts the list in place; refuse it at entry
-		// so a frozen package's shared list is never touched.
-		pkg.checkWritable("")
-	}
+	pkg.checkWritable(firstPackageName(sym))
 	if len(sym) == 1 {
-		pkg.exportSorted(sym[0])
+		pkg.exportSorted(firstPackageName(sym))
 		return
-	}
-	for _, name := range sym {
-		pkg.checkWritable(name)
 	}
 	// Copy sym before sorting to avoid mutating the caller's backing
 	// array (e.g., a package-level var passed via ...).
@@ -524,7 +536,11 @@ func (pkg *Package) exportSorted(name string) {
 // GetFunName returns the function name (if any) known to be bound to the given
 // FID.
 func (pkg *Package) GetFunName(fid string) string {
-	return pkg.funNameTable()[fid]
+	if pkg.base != nil {
+		name, _ := pkg.base.funNames.Lookup(fid)
+		return name
+	}
+	return pkg.funNames[fid]
 }
 
 // Put takes an LSymbol k and binds it to v in pkg.
