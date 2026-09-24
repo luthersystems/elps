@@ -112,6 +112,7 @@ type templatePlan struct {
 }
 type templateCompiler struct {
 	err         error
+	onThaw      func(pkg string)
 	storage     *templateStorage
 	values      map[*LVal]int
 	envs        map[*LEnv]int
@@ -142,6 +143,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.packages = make([]templatePackage, 0, len(env.Runtime.Registry.packages))
 	c.plan.runtime = snapshotTemplateRuntime(env.Runtime)
 	c.plan.eager = inventory.config.eager
+	c.onThaw = inventory.config.thawHook
 	c.plan.hot = newTemplateHotSet(len(inventory.valueQueue))
 	c.plan.cells = make([][]templateRef, len(storage.cells))
 	c.plan.byteBackings = storage.bytes
@@ -214,6 +216,7 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 		funNames:   packagetable.NewMap(funNames),
 		symbolDocs: packagetable.NewMap(symbolDocs),
 		externals:  packagetable.NewStrings(pkg.Externals()),
+		onThaw:     c.onThaw,
 	}
 	base.publish()
 	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, pending: pending, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}

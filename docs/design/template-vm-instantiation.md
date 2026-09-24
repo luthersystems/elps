@@ -58,6 +58,16 @@ needs a table change (a new name, a doc, an export, a `use-package`) calls
 `Package.thaw`. `thaw` gives that VM a private copy of that one package. The
 other VMs and the template do not see the change.
 
+A thaw is correct but costs a copy, so a host may want to see it happen.
+`TemplateWithThawHook(func(pkg string))` installs a callback that `thaw`
+calls with the package name before copying. It runs at most once per
+package per VM, on the VM's goroutine, and must be safe to call from every
+VM at once. The callback is stored on the shared package base at
+publication and never written again. When no hook is set the thaw path pays
+one nil check, and a slot write (Layer 2) never reaches it. Substrate
+exports it as the `substrate_elps_package_thaw_total{package}` counter; a
+healthy program thaws nothing per transaction.
+
 ### Layer 2: slot writes
 
 Most writes at request time rebind a name the package already has: `set`,

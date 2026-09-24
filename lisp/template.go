@@ -45,7 +45,21 @@ type templateConfig struct {
 	builtinPolicy func(*LVal) bool
 	nativePolicy  func(any) bool
 	frozen        map[string]bool
+	thawHook      func(pkg string)
 	eager         bool
+}
+
+// TemplateWithThawHook installs fn to observe copy-on-write thaws. fn is
+// called with the package name each time a VM minted by the template copies
+// a package's shared tables into itself: the first write to a frozen package
+// that is not a rebinding of an existing name (a new name, export,
+// use-package, docstring), or the first such write to a package a lazy plan
+// had not yet given private tables. It runs at most once per package per VM,
+// synchronously on the VM's goroutine, before the write is applied; fn must
+// be safe to call from every VM concurrently and must not evaluate in the
+// VM. Unset, the thaw path costs one nil check.
+func TemplateWithThawHook(fn func(pkg string)) TemplateOption {
+	return func(c *templateConfig) { c.thawHook = fn }
 }
 
 // TemplateWithEagerInstantiation makes every NewVM build the template's whole

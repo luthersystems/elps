@@ -247,7 +247,10 @@ type Package struct {
 // the base before publication; elpsfrozenpackage confines field replacement to
 // that constructor and checks writes to Package's mutable tables as well.
 type packageBase struct {
-	check      packageBaseCheck
+	check packageBaseCheck
+	// onThaw is the template's TemplateWithThawHook callback, or nil. It is
+	// set once at publication and only read afterwards.
+	onThaw     func(pkg string)
 	index      packagetable.Map[int]
 	funNames   packagetable.Map[string]
 	symbolDocs packagetable.Map[string]
@@ -347,6 +350,9 @@ func (pkg *Package) ensureWritable() {
 // function that builds private tables from a base.
 func (pkg *Package) thaw() {
 	base := pkg.base
+	if base.onThaw != nil {
+		base.onThaw(pkg.Name)
+	}
 	symbols := make(map[string]*LVal, base.index.Len())
 	for name, i := range base.index.All() {
 		// A slot a lazy plan has not materialized stays pending: a write to

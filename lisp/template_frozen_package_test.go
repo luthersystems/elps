@@ -365,3 +365,39 @@ func TestFrozenPackagePerTransactionGlobalsDoNotThaw(t *testing.T) {
 		t.Fatalf("fresh VM sees %s", got)
 	}
 }
+
+// TestTemplateThawHook pins TemplateWithThawHook: a slot write (rebinding an
+// existing name) does not thaw, and exporting a new name thaws the package
+// exactly once however many further table writes follow.
+func TestTemplateThawHook(t *testing.T) {
+	env := templateTestEnv(t)
+	if rc := env.LoadString("frozen.lisp", frozenProgram); rc.Type == lisp.LError {
+		t.Fatal(rc)
+	}
+	var mu sync.Mutex
+	thaws := map[string]int{}
+	tmpl, err := lisp.NewTemplate(env, templateCorePolicy(),
+		lisp.TemplateWithFrozenPackages("lisp", "frozen-lib"),
+		lisp.TemplateWithThawHook(func(pkg string) {
+			mu.Lock()
+			thaws[pkg]++
+			mu.Unlock()
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm := frozenVM(t, tmpl)
+	frozenEval(t, vm, `(in-package 'frozen-lib) (set 'counter 42) (set! counter 43) (defun bump () 0) (in-package 'user)`)
+	if n := thaws["frozen-lib"]; n != 0 {
+		t.Fatalf("slot writes thawed frozen-lib %d times, want 0", n)
+	}
+	frozenEval(t, vm, `(in-package 'frozen-lib) (set 'fresh 1) (export 'fresh) (set 'fresh2 2) (export 'fresh2) (in-package 'user)`)
+	if n := thaws["frozen-lib"]; n != 1 {
+		t.Fatalf("new exported names thawed frozen-lib %d times, want 1", n)
+	}
+	vm2 := frozenVM(t, tmpl)
+	frozenEval(t, vm2, `(in-package 'frozen-lib) (export 'counter2) (in-package 'user)`)
+	if n := thaws["frozen-lib"]; n != 2 {
+		t.Fatalf("second VM: frozen-lib thaws = %d, want 2", n)
+	}
+}
