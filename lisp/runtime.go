@@ -62,6 +62,7 @@ type Runtime struct {
 	numsym                 atomicCounter
 	closures               atomicCounter // Closures created so far; let* reads it to learn whether an initializer could have captured its scope.
 	macroExpSeq            int64         // monotonic counter for macroExpansionInfo.ID
+	LegacyKeywordFormals   bool          // Accept keyword parameter names with v1.61 semantics; see WithLegacyKeywordFormals.
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 }
 

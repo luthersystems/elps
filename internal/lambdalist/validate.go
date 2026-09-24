@@ -28,6 +28,17 @@ func InvalidName(s string) string {
 // It returns the offending index and the runtime diagnostic, or (-1, "").
 // Callers check that the list contains only symbols before calling Validate.
 func Validate(n int, name func(int) string) (int, string) {
+	return validateNames(n, name, false)
+}
+
+// ValidateLegacyKeywords is Validate with keyword parameter names accepted, as
+// they were through v1.61.0: each binds positionally like any other name.  It
+// backs the runtime's opt-in LegacyKeywordFormals override (issue #686).
+func ValidateLegacyKeywords(n int, name func(int) string) (int, string) {
+	return validateNames(n, name, true)
+}
+
+func validateNames(n int, name func(int) string, legacyKeywords bool) (int, string) {
 	invalid := func(i int, control string) (int, string) {
 		return i, "function formal argument list contains a control symbol at an invalid location: " + control
 	}
@@ -79,6 +90,9 @@ func Validate(n int, name func(int) string) (int, string) {
 		default:
 			if strings.HasPrefix(s, "&") {
 				return i, fmt.Sprintf("function formal argument list contains invalid control symbol ``%s''", s)
+			}
+			if legacyKeywords && strings.HasPrefix(s, ":") {
+				continue
 			}
 			if message := InvalidName(s); message != "" {
 				return i, message

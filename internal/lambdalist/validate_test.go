@@ -84,3 +84,20 @@ func TestValidateKeepsPositionalDiagnostics(t *testing.T) {
 		}
 	}
 }
+
+// ValidateLegacyKeywords accepts keyword names (issue #686) and nothing else
+// that Validate refuses.
+func TestValidateLegacyKeywords(t *testing.T) {
+	names := []string{":a", "a", "&optional", ":o"}
+	if _, message := ValidateLegacyKeywords(len(names), func(i int) string { return names[i] }); message != "" {
+		t.Fatalf("ValidateLegacyKeywords(%v) = %q, want accepted", names, message)
+	}
+	if _, message := Validate(len(names), func(i int) string { return names[i] }); !strings.Contains(message, "contains a keyword") {
+		t.Fatalf("Validate(%v) = %q, want keyword refusal", names, message)
+	}
+	for _, bad := range [][]string{{"true"}, {"a", "a"}, {"&rest"}} {
+		if _, message := ValidateLegacyKeywords(len(bad), func(i int) string { return bad[i] }); message == "" {
+			t.Errorf("ValidateLegacyKeywords(%v) accepted", bad)
+		}
+	}
+}

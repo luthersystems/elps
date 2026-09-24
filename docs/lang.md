@@ -305,6 +305,16 @@ declaring such a formal is refused when it is registered -- `LEnv.AddBuiltins`,
 duplicate name -- and `elpsutil.Validate` and `elpsutil.PackageLoader` report
 it as an error rather than a panic.
 
+A keyword parameter name is almost always a misspelt keyword-argument list:
+`(defun f (:a a :b b) ...)` declares four *positional* parameters, and `:a`
+inside the body still evaluates to `:a`. Write `(defun f (&key a b) ...)`
+instead; callers that pass `:a 1 :b 2` are unchanged. ELPS v1.61.0 and earlier
+accepted such definitions. An embedder that needs time to migrate can restore
+that behavior exactly with the `lisp.WithLegacyKeywordFormals(true)` runtime
+option (off by default; a template published from such an environment carries
+it into each VM). The `lambda-list` lint check still reports every affected
+definition as an error.
+
 ```lisp
 (lambda (x) (- x))
 ```

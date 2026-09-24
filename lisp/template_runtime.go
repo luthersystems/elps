@@ -53,6 +53,7 @@ type templateRuntime struct {
 	maxHeightPhysical      int
 	maxTailIterations      int
 	hasCurrentPackage      bool
+	legacyKeywordFormals   bool
 }
 
 func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
@@ -61,6 +62,7 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 		languagePackage: rt.Registry.Lang, maxAlloc: rt.MaxAlloc, maxMacroExpansionDepth: rt.MaxMacroExpansionDepth,
 		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
 		maxHeightLogical: rt.Stack.MaxHeightLogical, maxHeightPhysical: rt.Stack.MaxHeightPhysical, maxTailIterations: rt.Stack.MaxTailIterations,
+		legacyKeywordFormals: rt.LegacyKeywordFormals,
 	}
 	if len(rt.settings) > 0 {
 		c.settings = maps.Clone(rt.settings)
@@ -82,6 +84,7 @@ func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
 		Reader: c.reader, Library: c.library, LoadCache: c.loadCache,
 		MaxAlloc: c.maxAlloc, MaxMacroExpansionDepth: c.maxMacroExpansionDepth,
 		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
+		LegacyKeywordFormals: c.legacyKeywordFormals,
 	}
 	rt.Registry.Lang = c.languagePackage
 	if c.settings != nil {

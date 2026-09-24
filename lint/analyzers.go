@@ -2605,7 +2605,14 @@ var AnalyzerLambdaList = &Analyzer{
 					}
 				}
 				if i, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
-					pass.ReportNode(formals.Cells[i], "%s; use unique parameter names and valid &optional, &key, or final &rest name", message)
+					hint := "use unique parameter names and valid &optional, &key, or final &rest name"
+					if name := formals.Cells[i].Str; strings.HasPrefix(name, ":") {
+						// Issue #686: a keyword formal is positional and
+						// evaluates to itself -- almost always a
+						// misspelt &key list.
+						hint = fmt.Sprintf("a keyword parameter name is positional, not a keyword argument; use &key for keyword arguments, e.g. (&key %s ...), or rename it to a plain symbol", strings.TrimLeft(name, ":"))
+					}
+					pass.ReportNode(formals.Cells[i], "%s; %s", message, hint)
 				}
 			}
 			switch unqualifiedLispName(HeadSymbol(v)) {

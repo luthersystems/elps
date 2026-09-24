@@ -652,7 +652,9 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
-	if isKeyword(k.Str) {
+	// WithLegacyKeywordFormals (issue #686) restores v1.61's lexical keyword
+	// bindings; package bindings of keywords stay refused (PutGlobal).
+	if isKeyword(k.Str) && (env.Runtime == nil || !env.Runtime.LegacyKeywordFormals) {
 		return env.Errorf("value cannot be assigned to a keyword: %s", k.Str)
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
@@ -901,7 +903,14 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
 	}
-	if _, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
+	formalName := func(i int) string { return formals.Cells[i].Str }
+	var message string
+	if env.Runtime.LegacyKeywordFormals {
+		_, message = lambdalist.ValidateLegacyKeywords(len(formals.Cells), formalName)
+	} else {
+		_, message = lambdalist.Validate(len(formals.Cells), formalName)
+	}
+	if message != "" {
 		return env.Errorf("%s", message)
 	}
 	cells := make([]*LVal, 0, len(body)+1)
@@ -944,7 +953,10 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 // validated once, where the function value is created or registered, never on
 // the calling path.  See the invariant recorded in bind.
 func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
-	if message := formalSymbolsMessage(formals); message != "" {
+	if message := formalSymbolsMessage(formals, env.Runtime.LegacyKeywordFormals); message != "" {
+		if strings.HasPrefix(message, keywordFormalMessage) {
+			message += keywordFormalHint
+		}
 		return env.Errorf("%s", message)
 	}
 	return Nil()
@@ -956,7 +968,14 @@ func (env *LEnv) validateFormalSymbols(formals *LVal) *LVal {
 // validateFormalSymbols turns it into an error value) or from a host
 // registration (where the Add* methods panic with it): one wording, quoted in
 // docs/lang.md and matched by the lambda-list lint check.
-func formalSymbolsMessage(formals *LVal) string {
+// keywordFormalMessage prefixes lambdalist.InvalidName's keyword diagnostic;
+// a Lisp definition appends keywordFormalHint to it (issue #686).
+const (
+	keywordFormalMessage = "function formal argument list contains a keyword: "
+	keywordFormalHint    = " (a keyword parameter name is positional and evaluates to itself; use &key for keyword arguments, e.g. (defun f (&key a b) ...); an embedder can restore the pre-v1.62 behavior with lisp.WithLegacyKeywordFormals while migrating)"
+)
+
+func formalSymbolsMessage(formals *LVal, legacyKeywords bool) string {
 	if formals == nil {
 		return "formals is not a list of symbols: <nil>"
 	}
@@ -973,6 +992,9 @@ func formalSymbolsMessage(formals *LVal) string {
 		// A keyword or a constant is refused by Put when the call binds it,
 		// so a function naming one could never be called.  Refusing it at
 		// construction reports the mistake where the function is written.
+		if legacyKeywords && isKeyword(sym.Str) {
+			continue
+		}
 		if message := lambdalist.InvalidName(sym.Str); message != "" {
 			return message
 		}
@@ -1098,7 +1120,7 @@ func registrationBound(pkg *Package, name string) (*LVal, bool) {
 // validates a package's definitions -- these formals included -- and returns a
 // lisp error before registering anything.
 func checkRegistrationFormals(kind, name string, formals *LVal) {
-	if message := formalSymbolsMessage(formals); message != "" {
+	if message := formalSymbolsMessage(formals, false); message != "" {
 		panic(kind + " " + name + " cannot be registered: " + message)
 	}
 }
