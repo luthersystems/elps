@@ -204,20 +204,20 @@ type Package struct {
 	// symbolDocs and externals are nil.  The first write of any kind thaws
 	// the package (see ensureWritable): it gets private tables and base
 	// becomes nil, for this VM only.
-	base      *packageBase
-	Name      string
-	Doc       string
-	externals []string
-	// baseValues holds this VM's values for base.index's slots.  The slice
-	// is per VM; only the name->slot index is shared.  putSlot writes it in
-	// place when a frozen package rebinds a name it already has.
-	baseValues []*LVal
+	base *packageBase
 	// slotFunNames is this VM's overlay on base.funNames while the package
 	// is frozen: the FID->name entries that slot writes of function values
 	// recorded (see putSlot).  It is nil until the first such write, is
 	// consulted before the base by GetFunName, and is merged into the private
 	// table by thaw, so function naming matches an unfrozen package exactly.
 	slotFunNames map[string]string
+	Name         string
+	Doc          string
+	externals    []string
+	// baseValues holds this VM's values for base.index's slots.  The slice
+	// is per VM; only the name->slot index is shared.  putSlot writes it in
+	// place when a frozen package rebinds a name it already has.
+	baseValues []*LVal
 	// externalsSortedLen records the length externals had the last time
 	// Exports left it in sorted order.  It is a validity token, not a flag:
 	// every other writer of externals (Export, and the AddBuiltins family in
