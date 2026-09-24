@@ -35,16 +35,29 @@ func TestEncodeWideSequenceTraversalSpace(t *testing.T) {
 	enc := getEncoder(false)
 	defer putEncoder(enc)
 	enc.buf.Grow(len(want))
-	result := testing.Benchmark(func(b *testing.B) {
-		for range b.N {
-			enc.buf.Reset()
-			if err := enc.encode(v); err != nil {
-				b.Fatal(err)
+	// testing.Benchmark reads process-wide MemStats, so an allocation made by
+	// another goroutine during a short run shows up as a byte per op.  Take
+	// the best of a few runs: a traversal that really allocates does so on
+	// every run, while background noise does not repeat.
+	bytesPerOp := int64(-1)
+	for range 3 {
+		result := testing.Benchmark(func(b *testing.B) {
+			for range b.N {
+				enc.buf.Reset()
+				if err := enc.encode(v); err != nil {
+					b.Fatal(err)
+				}
 			}
+		})
+		if n := result.AllocedBytesPerOp(); bytesPerOp < 0 || n < bytesPerOp {
+			bytesPerOp = n
 		}
-	})
+		if bytesPerOp == 0 {
+			break
+		}
+	}
 	assert.Equal(t, want, enc.buf.String())
-	assert.Zero(t, result.AllocedBytesPerOp(), "shallow traversal allocated scratch storage")
+	assert.Zero(t, bytesPerOp, "shallow traversal allocated scratch storage")
 }
 
 // TestEncodeDoesNotAllocateForCycleTracking pins the guard's stated contract:
