@@ -27,7 +27,7 @@ func TestTemplateRejectsSealedMacroExpansionMetadata(t *testing.T) {
 		if forkErr != nil {
 			t.Fatal(forkErr)
 		}
-		got, ok := vm.Runtime.Package.symbols["node"].MacroExpansion()
+		got, ok := vm.Runtime.Package.symbolTable()["node"].MacroExpansion()
 		leaked := ok && len(got.Args) == 1 && got.Args[0] == fn && got.Args[0].Native.(*funData).env == source
 		t.Fatalf("sealed debug graph admitted: public metadata exposes source closure=%t", leaked)
 	}
@@ -53,7 +53,7 @@ func TestTemplateDropsUnsealedMacroExpansionMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := vm.Runtime.Package.symbols["node"]; got.Int != 1 || got.macroExpansion != nil {
+	if got := vm.Runtime.Package.symbolTable()["node"]; got.Int != 1 || got.macroExpansion != nil {
 		t.Fatal("transient debug graph was retained")
 	}
 	if _, ok := node.MacroExpansion(); !ok {
@@ -86,7 +86,7 @@ func TestTemplateValidatesSealedCellCapacity(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got := vm.Runtime.Package.symbols["node"]
+				got := vm.Runtime.Package.symbolTable()["node"]
 				if got.Cells[0].Int != 7 || cap(got.Cells) != 3 || got.Cells[:3][1] != nil || got.Cells[:3][2] != nil {
 					t.Fatal("safe sealed capacity changed")
 				}

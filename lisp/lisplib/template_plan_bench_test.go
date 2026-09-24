@@ -72,6 +72,31 @@ func BenchmarkTemplatePlan(b *testing.B) {
 				b.StopTimer()
 				check(b, result)
 			})
+			// Every package except the program's own is frozen, the shape an
+			// embedder with a large shared library uses.
+			var frozen []string
+			for _, name := range env.Runtime.Registry.PackageNames() {
+				if name != lisp.DefaultUserPackage {
+					frozen = append(frozen, name)
+				}
+			}
+			frozenTmpl, err := lisp.NewTemplate(env, templateFixturePolicy(), lisp.TemplateWithFrozenPackages(frozen...))
+			if err != nil {
+				b.Fatal(err)
+			}
+			b.Run("phase=fork-frozen", func(b *testing.B) {
+				var result *lisp.LEnv
+				b.ReportAllocs()
+				b.ResetTimer()
+				for range b.N {
+					result, err = frozenTmpl.NewVM()
+					if err != nil {
+						b.Fatal(err)
+					}
+				}
+				b.StopTimer()
+				check(b, result)
+			})
 		})
 	}
 }

@@ -463,54 +463,42 @@ func (s *Serializer) attachStack(env *lisp.LEnv, lerr *lisp.LVal) *lisp.LVal {
 	return lerr
 }
 
-// The Lisp-visible serializer modes are stored as bindings in the
-// environment's own json package rather than as fields on the Serializer.
-// Every builtin in an environment closes over one Serializer, and a template
-// shares its builtins with every VM it mints, so a field written from Lisp
-// would leak across VMs and race between them (issue #678).  A package
-// binding is per-Runtime state that templates already fork correctly: a mode
-// set while the program loads is published with the template and every VM
-// starts from it, and a mode set inside one VM stays in that VM.  The names
-// are not exported and cannot be typed as a plain symbol by accident.
+// The Lisp-visible serializer modes are per-VM Runtime settings rather than
+// fields on the Serializer.  Every builtin in an environment closes over one
+// Serializer, and a template shares its builtins with every VM it mints, so a
+// field written from Lisp would leak across VMs and race between them (issue
+// #678).  Runtime settings are forked by templates: a mode set while the
+// program loads is published and every VM starts from it, and a mode set
+// inside one VM stays in that VM.  They used to be bindings in the json
+// package, which made the package impossible to freeze.
 const (
-	stringNumbersModeSym = "%string-numbers-mode%"
-	exactIntegersModeSym = "%exact-integers-mode%"
+	stringNumbersModeSetting = "json:string-numbers"
+	exactIntegersModeSetting = "json:exact-integers"
 )
 
-// modePackage returns the runtime's DefaultPackageName package, or nil when
-// the runtime has none. It does not depend on the package the builtins were
-// registered in, so builtins registered under another name still share the
-// json package's modes whenever that package exists.
-func modePackage(env *lisp.LEnv) *lisp.Package {
-	if env == nil || env.Runtime == nil || env.Runtime.Registry == nil {
-		return nil
-	}
-	return env.Runtime.Registry.Package(DefaultPackageName)
-}
-
-// mode reads a mode binding, falling back to the Serializer field.
+// mode reads a mode setting, falling back to the Serializer field.
 func (s *Serializer) mode(env *lisp.LEnv, name string, fallback bool) bool {
-	if pkg := modePackage(env); pkg != nil {
-		if v, ok := pkg.Symbol(name); ok {
-			return lisp.True(v)
+	if env != nil && env.Runtime != nil {
+		if v, ok := env.Runtime.Setting(name); ok {
+			return v
 		}
 	}
 	return fallback
 }
 
-// setMode writes a mode binding.  An embedder that registered the builtins
-// under another package name keeps the historical shared-field behaviour.
+// setMode records a mode setting on the calling VM's runtime.
 func (s *Serializer) setMode(env *lisp.LEnv, name string, on bool, field *bool) *lisp.LVal {
-	if pkg := modePackage(env); pkg != nil {
-		return pkg.Put(lisp.Symbol(name), lisp.Bool(on))
+	if env == nil || env.Runtime == nil {
+		*field = on
+		return lisp.Nil()
 	}
-	*field = on
+	env.Runtime.SetSetting(name, on)
 	return lisp.Nil()
 }
 
 func (s *Serializer) UseStringNumbersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	confirm := args.Cells[0]
-	if r := s.setMode(env, stringNumbersModeSym, lisp.True(confirm), &s.UseStringNumbers); r.Type == lisp.LError {
+	if r := s.setMode(env, stringNumbersModeSetting, lisp.True(confirm), &s.UseStringNumbers); r.Type == lisp.LError {
 		return r
 	}
 	return lisp.Nil()
@@ -522,7 +510,7 @@ func (s *Serializer) StringNumbersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp
 }
 
 func (s *Serializer) useStringNumbers(env *lisp.LEnv) *lisp.LVal {
-	return lisp.Bool(s.mode(env, stringNumbersModeSym, s.UseStringNumbers))
+	return lisp.Bool(s.mode(env, stringNumbersModeSetting, s.UseStringNumbers))
 }
 
 func (s *Serializer) UseExactIntegersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -530,7 +518,7 @@ func (s *Serializer) UseExactIntegersBuiltin(env *lisp.LEnv, args *lisp.LVal) *l
 	if confirm.Type == lisp.LError {
 		return confirm
 	}
-	if r := s.setMode(env, exactIntegersModeSym, lisp.True(confirm), &s.UseExactIntegers); r.Type == lisp.LError {
+	if r := s.setMode(env, exactIntegersModeSetting, lisp.True(confirm), &s.UseExactIntegers); r.Type == lisp.LError {
 		return r
 	}
 	return lisp.Nil()
@@ -542,8 +530,8 @@ func (s *Serializer) UseExactIntegersBuiltin(env *lisp.LEnv, args *lisp.LVal) *l
 func (s *Serializer) loadOpts(env *lisp.LEnv, stringNums, exactInts *lisp.LVal) LoadOpts {
 	opts := LoadOpts{
 		MaxAlloc:      env.Runtime.MaxAllocBytes(),
-		StringNumbers: s.mode(env, stringNumbersModeSym, s.UseStringNumbers),
-		ExactIntegers: s.mode(env, exactIntegersModeSym, s.UseExactIntegers),
+		StringNumbers: s.mode(env, stringNumbersModeSetting, s.UseStringNumbers),
+		ExactIntegers: s.mode(env, exactIntegersModeSetting, s.UseExactIntegers),
 	}
 	if !stringNums.IsNil() {
 		opts.StringNumbers = lisp.True(stringNums)

@@ -5,6 +5,7 @@ package lisp
 import (
 	"context"
 	"io"
+	"maps"
 	"time"
 )
 
@@ -12,8 +13,20 @@ import (
 type VMOption func(*vmConfig)
 
 type vmConfig struct {
-	ctx    context.Context
-	stderr io.Writer
+	ctx     context.Context
+	stderr  io.Writer
+	prewarm bool
+}
+
+// VMWithPrewarm builds, during NewVM, every template value that any earlier
+// VM of the same template has used, instead of on first use. A host that
+// creates VMs ahead of demand (a pool filled by a background goroutine) uses
+// it to move that work off the request path. The set is learned from use: it
+// only grows, and is bounded by the template's size, so a value used once by
+// any VM is built by every later prewarmed VM. Results are identical with or
+// without it; it has no effect on a TemplateWithEagerInstantiation template.
+func VMWithPrewarm() VMOption {
+	return func(c *vmConfig) { c.prewarm = true }
 }
 
 // VMWithContext binds the new VM's evaluation context. The source context is
@@ -36,6 +49,7 @@ type templateRuntime struct {
 	reader                 Reader
 	library                SourceLibrary
 	loadCache              LoadCache
+	settings               map[string]bool
 	stderr                 io.Writer
 	currentPackage         string
 	languagePackage        string
@@ -51,6 +65,7 @@ type templateRuntime struct {
 	maxHeightPhysical      int
 	maxTailIterations      int
 	hasCurrentPackage      bool
+	legacyKeywordFormals   bool
 }
 
 func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
@@ -59,6 +74,10 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 		languagePackage: rt.Registry.Lang, maxAlloc: rt.MaxAlloc, maxMacroExpansionDepth: rt.MaxMacroExpansionDepth,
 		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
 		maxHeightLogical: rt.Stack.MaxHeightLogical, maxHeightPhysical: rt.Stack.MaxHeightPhysical, maxTailIterations: rt.Stack.MaxTailIterations,
+		legacyKeywordFormals: rt.LegacyKeywordFormals,
+	}
+	if len(rt.settings) > 0 {
+		c.settings = maps.Clone(rt.settings)
 	}
 	if rt.Package != nil {
 		c.currentPackage = rt.Package.Name
@@ -77,8 +96,12 @@ func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
 		Reader: c.reader, Library: c.library, LoadCache: c.loadCache,
 		MaxAlloc: c.maxAlloc, MaxMacroExpansionDepth: c.maxMacroExpansionDepth,
 		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
+		LegacyKeywordFormals: c.legacyKeywordFormals,
 	}
 	rt.Registry.Lang = c.languagePackage
+	if c.settings != nil {
+		rt.settings = maps.Clone(c.settings)
+	}
 	// The VM's environments are built by the planner rather than by
 	// NewEnvRuntime, so bind the fresh registry to the fresh runtime here:
 	// admission into this VM must read THIS runtime's value-depth limit, and

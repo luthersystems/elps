@@ -243,3 +243,28 @@ func WithMaxValueDepth(n int) Config {
 		return Nil()
 	}
 }
+
+// WithLegacyKeywordFormals returns a Config that restores the v1.61.0
+// treatment of a keyword used as a parameter or lexical binding name (issue
+// #686).  It is OFF by default, and off is the intended end state: such a name
+// is a bug, and a definition declaring one is refused with an error that says
+// to use &key.
+//
+// When on, `(defun f (:a a :b b) ...)` is accepted and declares four
+// POSITIONAL parameters, exactly as v1.61.0 did: `(f :a 1 :b 2)` binds a to 1
+// and b to 2 because the caller passes the keywords in the keyword slots.  The
+// keyword itself is bound in the lexical scope, but reading it still yields the
+// keyword (a keyword evaluates to itself); set! on it succeeds.  let, let*,
+// dotimes, flet and labels accept keyword names the same way.  Package
+// (global) bindings of keywords stay refused, as they always were, and so do
+// keyword formals in host-registered functions.
+//
+// The setting belongs to the runtime: it does not affect other environments,
+// and a Template published from an environment carries it into every VM.  It is
+// meant as a migration window; `elps lint` reports every affected definition.
+func WithLegacyKeywordFormals(on bool) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.LegacyKeywordFormals = on
+		return Nil()
+	}
+}

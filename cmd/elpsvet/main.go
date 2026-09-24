@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs five go/analysis rules: no
+// Command elpsvet runs six go/analysis rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
 // below), no function may write a lisp.LVal field on a value it did not
 // construct (elpsfreshness, freshness.go), no function may store a
@@ -8,7 +8,8 @@
 // (elpsescape, escape.go), and no native payload may be minted with a type a
 // template could not publish safely (elpsnativepayload, nativepayload.go),
 // and no registered builtin may write its receiver, captured variables or
-// package-level state (elpsbuiltinstate, builtinstate.go).
+// package-level state (elpsbuiltinstate, builtinstate.go). Package table writes
+// must pass the frozen-package gate (elpsfrozenpackage, frozenpackage.go).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -73,6 +74,8 @@ var analyzers = []*analysis.Analyzer{
 	escapeAnalyzer,
 	nativePayloadAnalyzer,
 	builtinStateAnalyzer,
+	frozenPackageAnalyzer,
+	lazyReadAnalyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }

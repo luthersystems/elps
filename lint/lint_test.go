@@ -5192,3 +5192,22 @@ func TestLambdaListDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+// Issue #686: a keyword formal stays a lambda-list ERROR, and its diagnostic
+// points at the &key rewrite rather than the generic lambda-list advice.
+func TestLambdaListKeywordFormalHint(t *testing.T) {
+	for _, tc := range []struct{ source, name string }{
+		{`(defun f (:a a :b b) a)`, "a"},
+		{`(lambda (a &optional :x) 1)`, "x"},
+		{`(flet ((f (:x) 1)) 1)`, "x"},
+	} {
+		t.Run(tc.source, func(t *testing.T) {
+			diags := lintCheck(t, AnalyzerLambdaList, tc.source)
+			require.Len(t, diags, 1)
+			assert.Equal(t, SeverityError, diags[0].Severity)
+			assert.Contains(t, diags[0].Message, "contains a keyword: :"+tc.name)
+			assert.Contains(t, diags[0].Message, "use &key for keyword arguments, e.g. (&key "+tc.name+" ...)")
+			assertNoDiags(t, lintCheck(t, AnalyzerLambdaList, tc.source+" ; nolint:lambda-list"))
+		})
+	}
+}

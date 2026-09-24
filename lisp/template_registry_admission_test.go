@@ -71,7 +71,7 @@ func TestTemplatePreservesCurrentPackagePresence(t *testing.T) {
 				return
 			}
 			got := vm.Runtime.Package
-			if got == nil || got == source.Runtime.Package || got != vm.Runtime.Registry.Package(tc.name) || got.Name != tc.name || got.symbols["value"].Int != 7 {
+			if got == nil || got == source.Runtime.Package || got != vm.Runtime.Registry.Package(tc.name) || got.Name != tc.name || got.symbolTable()["value"].Int != 7 {
 				t.Fatalf("current package presence or contents changed: %+v", got)
 			}
 		})

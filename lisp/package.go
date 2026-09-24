@@ -3,10 +3,13 @@
 package lisp
 
 import (
+	"iter"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/packagetable"
 	"github.com/luthersystems/elps/parser/lexer"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -168,8 +171,6 @@ func (r *PackageRegistry) AddPackage(p *Package) bool {
 // Package is a named set of bound symbols.  A package is interpreted code and
 // belongs to the LEnv that creates it.
 type Package struct {
-	Name string
-	Doc  string
 	// symbols holds the package's bindings.  Unexported (issue #382): the
 	// registry's LVal-bearing surface is the widest write channel into
 	// another environment's interpreter state, so external packages read it
@@ -195,8 +196,34 @@ type Package struct {
 	// under in this package.  It is populated exclusively by the write path
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
-	funNames  map[string]string
-	externals []string
+	funNames map[string]string
+	// lazy is non-nil while some binding of this VM's package is not yet
+	// materialized from a lazy template plan: a nil baseValues slot, or (after
+	// a thaw) a lazyPending entry in symbols. See template_lazy.go.
+	lazy *lazyPackage
+	// base is non-nil while this Package belongs to a VM minted from a
+	// template that gave it a shared base -- it was named by
+	// TemplateWithFrozenPackages, or the template instantiates lazily, which
+	// gives every package a base (unfrozenBase then keeps Frozen false) --
+	// and the VM has not written it yet.  The base's tables
+	// are shared by every such VM and never written; symbols, funNames,
+	// symbolDocs and externals are nil.  The first write of any kind thaws
+	// the package (see ensureWritable): it gets private tables and base
+	// becomes nil, for this VM only.
+	base *packageBase
+	// slotFunNames is this VM's overlay on base.funNames while the package
+	// is frozen: the FID->name entries that slot writes of function values
+	// recorded (see putSlot).  It is nil until the first such write, is
+	// consulted before the base by GetFunName, and is merged into the private
+	// table by thaw, so function naming matches an unfrozen package exactly.
+	slotFunNames map[string]string
+	Name         string
+	Doc          string
+	externals    []string
+	// baseValues holds this VM's values for base.index's slots.  The slice
+	// is per VM; only the name->slot index is shared.  putSlot writes it in
+	// place when a frozen package rebinds a name it already has.
+	baseValues []*LVal
 	// externalsSortedLen records the length externals had the last time
 	// Exports left it in sorted order.  It is a validity token, not a flag:
 	// every other writer of externals (Export, and the AddBuiltins family in
@@ -206,9 +233,225 @@ type Package struct {
 	// field-by-field (package admission, the template planner) starts at
 	// zero, which matches only an empty -- and so trivially sorted -- list.
 	externalsSortedLen int
+	// unfrozenBase marks a package that reads a lazy plan's shared base
+	// although it was not named frozen: it behaves exactly as an unfrozen
+	// package (Frozen reports false) and thaws on its first write.
+	unfrozenBase bool
 	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
 	// Go registration APIs remain available to the host after initialization.
 	bindingsSealed bool
+}
+
+// packageBase holds a frozen package's read-only tables. The backing maps and
+// slice live in packagetable, outside the kernel's reach. The compiler builds
+// the base before publication; elpsfrozenpackage confines field replacement to
+// that constructor and checks writes to Package's mutable tables as well.
+type packageBase struct {
+	check      packageBaseCheck
+	index      packagetable.Map[int]
+	funNames   packagetable.Map[string]
+	symbolDocs packagetable.Map[string]
+	externals  packagetable.Strings
+}
+
+// Frozen reports whether pkg still reads a template-frozen package's shared
+// tables. A frozen package is shared until its first write; that write thaws
+// a private copy for this VM (see ensureWritable), after which Frozen is false.
+func (pkg *Package) Frozen() bool {
+	return pkg.base != nil && !pkg.unfrozenBase
+}
+
+// baseValue is the only read of a base slot: it materializes the slot from
+// a lazy plan on first read.
+func (pkg *Package) baseValue(i int) *LVal {
+	v := pkg.baseValues[i]
+	if v == nil && pkg.lazy != nil {
+		v = pkg.fillBaseValue(i)
+	}
+	return v
+}
+
+// fillBaseValue materializes one base slot of a lazy package.
+//
+//go:noinline
+func (pkg *Package) fillBaseValue(i int) *LVal {
+	lazy := pkg.lazy
+	if lazy.refs[i].index == 0 {
+		return nil
+	}
+	v := lazy.inst.ref(lazy.refs[i])
+	pkg.baseValues[i] = v
+	lazy.settle(pkg)
+	return v
+}
+
+// settle records one materialized binding and drops the link to the lazy
+// instance after the last, so a fully materialized package retains nothing.
+func (lazy *lazyPackage) settle(pkg *Package) {
+	lazy.pending--
+	if lazy.pending == 0 {
+		pkg.lazy = nil
+	}
+}
+
+// symbol is the only read of an unfrozen table entry: it replaces a pending
+// binding left by thaw. The check is small enough to inline into lookup; the
+// fill is kept out of line.
+func (pkg *Package) symbol(name string) (*LVal, bool) {
+	v, ok := pkg.symbols[name]
+	if v == lazyPending {
+		v = pkg.fillSymbol(name)
+	}
+	return v, ok
+}
+
+// fillSymbol materializes one pending binding left by thaw.
+//
+//go:noinline
+func (pkg *Package) fillSymbol(name string) *LVal {
+	v := pkg.symbols[name]
+	if v == lazyPending {
+		lazy := pkg.lazy
+		i, _ := lazy.index.Lookup(name)
+		v = lazy.inst.ref(lazy.refs[i])
+		pkg.symbols[name] = v
+		lazy.settle(pkg)
+	}
+	return v
+}
+
+// materializeSymbols replaces every pending binding, before a caller that
+// reads the whole table.
+func (pkg *Package) materializeSymbols() {
+	if pkg.lazy == nil || pkg.base != nil {
+		return
+	}
+	for name, v := range pkg.symbols {
+		if v == lazyPending {
+			pkg.symbol(name)
+		}
+	}
+}
+
+// ensureWritable is the single write gate every Package mutator passes. For
+// a frozen package it thaws first; otherwise it does nothing.
+func (pkg *Package) ensureWritable() {
+	if pkg.base != nil {
+		pkg.thaw()
+	}
+}
+
+// thaw gives a frozen package private tables built from the shared base and
+// this VM's slot values, then detaches the base. It copies this one package
+// only; the base, other VMs and the template are untouched. It is the only
+// function that builds private tables from a base.
+func (pkg *Package) thaw() {
+	base := pkg.base
+	symbols := make(map[string]*LVal, base.index.Len())
+	for name, i := range base.index.All() {
+		// A slot a lazy plan has not materialized stays pending: a write to
+		// one binding must not build the rest of the package.
+		if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil || pkg.lazy.refs[i].index == 0 {
+			symbols[name] = v
+		} else {
+			symbols[name] = lazyPending
+		}
+	}
+	funNames := base.funNames.Copy()
+	if funNames == nil {
+		funNames = make(map[string]string)
+	}
+	pkg.symbols = symbols
+	maps.Copy(funNames, pkg.slotFunNames)
+	pkg.funNames = funNames
+	pkg.slotFunNames = nil
+	pkg.symbolDocs = base.symbolDocs.Copy()
+	pkg.externals = base.externals.Copy()
+	pkg.externalsSortedLen = 0
+	pkg.baseValues = nil
+	pkg.unfrozenBase = false
+	pkg.base = nil
+}
+
+// lookup is the raw symbol read.
+func (pkg *Package) lookup(name string) (*LVal, bool) {
+	v, ok := pkg.lookupRaw(name)
+	if v == lazyPending {
+		v = pkg.lookupFill(name)
+	}
+	return v, ok
+}
+
+// lookupRaw is lookup without the fill: it returns lazyPending for a binding
+// a lazy plan has not materialized. It is small enough to inline, so the hot
+// callers (get) pay one comparison over the pre-lazy read; they must pass a
+// lazyPending result to lookupFill and never return it.
+func (pkg *Package) lookupRaw(name string) (*LVal, bool) {
+	if pkg.base == nil {
+		v, ok := pkg.symbols[name]
+		return v, ok
+	}
+	i, ok := pkg.base.index.Lookup(name)
+	if !ok {
+		return nil, false
+	}
+	if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil {
+		return v, true
+	}
+	return lazyPending, true
+}
+
+// lookupFill materializes the binding lookup found pending.
+//
+//go:noinline
+func (pkg *Package) lookupFill(name string) *LVal {
+	if pkg.base == nil {
+		return pkg.fillSymbol(name)
+	}
+	i, _ := pkg.base.index.Lookup(name)
+	return pkg.fillBaseValue(i)
+}
+
+// symbolTable returns a copy of the binding table. Values retain their identity;
+// changing a binding in the returned map cannot change the package.
+func (pkg *Package) symbolTable() map[string]*LVal {
+	if pkg.base == nil {
+		pkg.materializeSymbols()
+		return maps.Clone(pkg.symbols)
+	}
+	m := make(map[string]*LVal, pkg.base.index.Len())
+	for name, i := range pkg.base.index.All() {
+		m[name] = pkg.baseValue(i)
+	}
+	return m
+}
+
+// funNameTable and symbolDocTable return private copies for inventory and
+// admission. Single-name reads use GetFunName and SymbolDoc without copying.
+func (pkg *Package) funNameTable() map[string]string {
+	if pkg.base == nil {
+		return maps.Clone(pkg.funNames)
+	}
+	m := pkg.base.funNames.Copy()
+	if len(pkg.slotFunNames) > 0 {
+		if m == nil {
+			m = make(map[string]string, len(pkg.slotFunNames))
+		}
+		maps.Copy(m, pkg.slotFunNames)
+	}
+	return m
+}
+
+func (pkg *Package) symbolDocTable() map[string]string {
+	if pkg.base == nil {
+		return maps.Clone(pkg.symbolDocs)
+	}
+	return pkg.base.symbolDocs.Copy()
+}
+
+// appendExternal appends one name to the export list.
+func (pkg *Package) appendExternal(name string) {
+	pkg.Export(name)
 }
 
 // checkLispPackageBinding checks a Lisp assignment's destination without
@@ -220,13 +463,17 @@ func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 		pkg = env.Runtime.Registry.packages[ns]
 		name = local
 	}
-	if pkg != nil && pkg.bindingsSealed {
+	if pkg == nil {
+		return nil
+	}
+	if pkg.bindingsSealed {
 		return env.Errorf("cannot rebind lisp package binding: %s", name)
 	}
 	return nil
 }
 
-// NewPackage initializes and returns a package with the given name.
+// NewPackage initializes and returns a package with the given name. Direct
+// table initialization is safe here: the package is unfrozen and unpublished.
 func NewPackage(name string) *Package {
 	return &Package{
 		Name:     name,
@@ -269,7 +516,10 @@ func (pkg *Package) get(k *LVal) *LVal {
 	if k.Str == FalseSymbol {
 		return Symbol(FalseSymbol)
 	}
-	v, ok := pkg.symbols[k.Str]
+	v, ok := pkg.lookupRaw(k.Str)
+	if v == lazyPending {
+		v = pkg.lookupFill(k.Str)
+	}
 	if ok {
 		return v
 	}
@@ -287,13 +537,15 @@ func (pkg *Package) get(k *LVal) *LVal {
 // the true/false constants, does not record function names, and returns
 // (nil, false) instead of an error LVal when name is unbound.
 func (pkg *Package) Symbol(name string) (*LVal, bool) {
-	v, ok := pkg.symbols[name]
-	return v, ok
+	return pkg.lookup(name)
 }
 
 // SymbolNames returns the names of all symbols bound in pkg in sorted order.
 // SymbolNames allocates a new slice on every call.
 func (pkg *Package) SymbolNames() []string {
+	if pkg.base != nil {
+		return pkg.base.index.Keys()
+	}
 	names := make([]string, 0, len(pkg.symbols))
 	for name := range pkg.symbols {
 		names = append(names, name)
@@ -305,6 +557,10 @@ func (pkg *Package) SymbolNames() []string {
 // SymbolDoc returns the documentation string bound to name in pkg, or the
 // empty string when name has no documentation.
 func (pkg *Package) SymbolDoc(name string) string {
+	if pkg.base != nil {
+		doc, _ := pkg.base.symbolDocs.Lookup(name)
+		return doc
+	}
 	return pkg.symbolDocs[name]
 }
 
@@ -313,6 +569,7 @@ func (pkg *Package) SymbolDoc(name string) string {
 // symbolDocs; the field's doc comment states why that matters (a nil table
 // is the common case, and only a writer may not assume the map exists).
 func (pkg *Package) setSymbolDoc(name, doc string) {
+	pkg.ensureWritable()
 	if pkg.symbolDocs == nil {
 		pkg.symbolDocs = make(map[string]string, 1)
 	}
@@ -323,6 +580,9 @@ func (pkg *Package) setSymbolDoc(name, doc string) {
 // order.  Externals allocates and returns a copy on every call so callers
 // cannot modify the package's export list.
 func (pkg *Package) Externals() []string {
+	if pkg.base != nil {
+		return pkg.base.externals.Copy()
+	}
 	externals := make([]string, len(pkg.externals))
 	copy(externals, pkg.externals)
 	return externals
@@ -331,7 +591,18 @@ func (pkg *Package) Externals() []string {
 // NumExternals returns the number of exported symbol names without copying
 // the export list.
 func (pkg *Package) NumExternals() int {
+	if pkg.base != nil {
+		return pkg.base.externals.Len()
+	}
 	return len(pkg.externals)
+}
+
+// externalNames iterates exports without lending out their backing slice.
+func (pkg *Package) externalNames() iter.Seq[string] {
+	if pkg.base != nil {
+		return pkg.base.externals.All()
+	}
+	return slices.Values(pkg.externals)
 }
 
 // Export appends names to the package's export list verbatim, preserving
@@ -339,6 +610,7 @@ func (pkg *Package) NumExternals() int {
 // semantics on the package's export list).  Use Exports for the
 // deduplicating, sorting variant.
 func (pkg *Package) Export(names ...string) {
+	pkg.ensureWritable()
 	pkg.externals = append(pkg.externals, names...)
 }
 
@@ -358,6 +630,7 @@ func (pkg *Package) Export(names ...string) {
 // name into its sorted position instead, keeping the list sorted for the
 // next call.
 func (pkg *Package) Exports(sym ...string) {
+	pkg.ensureWritable()
 	if len(sym) == 1 {
 		pkg.exportSorted(sym[0])
 		return
@@ -387,6 +660,7 @@ addloop:
 // the whole list, so the result is fully determined as the sorted union and
 // an insertion at the searched position reproduces it byte for byte.
 func (pkg *Package) exportSorted(name string) {
+	pkg.ensureWritable()
 	if pkg.externalsSortedLen != len(pkg.externals) {
 		sort.Strings(pkg.externals)
 		pkg.externalsSortedLen = len(pkg.externals)
@@ -402,11 +676,14 @@ func (pkg *Package) exportSorted(name string) {
 // GetFunName returns the function name (if any) known to be bound to the given
 // FID.
 func (pkg *Package) GetFunName(fid string) string {
-	name, ok := pkg.funNames[fid]
-	if ok {
+	if pkg.base != nil {
+		if name, ok := pkg.slotFunNames[fid]; ok {
+			return name
+		}
+		name, _ := pkg.base.funNames.Lookup(fid)
 		return name
 	}
-	return ""
+	return pkg.funNames[fid]
 }
 
 // Put takes an LSymbol k and binds it to v in pkg.
@@ -440,7 +717,7 @@ func (pkg *Package) Update(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return Errorf("cannot rebind constant: %v", k.Str)
 	}
-	_, ok := pkg.symbols[k.Str]
+	_, ok := pkg.lookup(k.Str)
 	if !ok {
 		return Errorf("symbol not bound: %v (set! only mutates existing bindings; use set to create new ones)", k)
 	}
@@ -460,11 +737,53 @@ func (pkg *Package) put(k, v *LVal) {
 // constant-rebind check Put performs — the Add* methods and UsePackage guard
 // TrueSymbol/FalseSymbol explicitly before calling.
 func (pkg *Package) putName(name string, v *LVal) {
+	if pkg.base != nil && pkg.putSlot(name, v) {
+		return
+	}
+	pkg.ensureWritable()
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
 		if v.Package() == pkg.Name {
 			v.funData().name = name // see funData.name
 		}
 	}
+	if pkg.lazy != nil && pkg.symbols[name] == lazyPending {
+		pkg.lazy.settle(pkg)
+	}
 	pkg.symbols[name] = v
+}
+
+// putSlot rebinds a name a frozen package ALREADY binds by writing only this
+// VM's baseValues slot, without thawing, and reports whether it did.  It
+// reports false, leaving the package untouched, for a name the shared index
+// does not hold; binding a new name changes the shared index, so the caller
+// thaws.  A function value's FID->name entry goes to this VM's slotFunNames
+// overlay unless the shared base already records exactly that entry.  The
+// observable effect is the thawed path's: the binding, the function's own
+// name and GetFunName all read as they would after putName on a thawed copy.
+// Docs, exports and the index stay shared, and so do other VMs' slots.
+func (pkg *Package) putSlot(name string, v *LVal) bool {
+	i, ok := pkg.base.index.Lookup(name)
+	if !ok {
+		return false
+	}
+	if v.Type == LFun {
+		fid := v.FID()
+		if prev, ok := pkg.base.funNames.Lookup(fid); ok && prev == name {
+			delete(pkg.slotFunNames, fid)
+		} else {
+			if pkg.slotFunNames == nil {
+				pkg.slotFunNames = make(map[string]string, 1)
+			}
+			pkg.slotFunNames[fid] = name
+		}
+		if v.Package() == pkg.Name {
+			v.funData().name = name // see funData.name
+		}
+	}
+	if pkg.lazy != nil && pkg.baseValues[i] == nil && pkg.lazy.refs[i].index != 0 {
+		pkg.lazy.settle(pkg) // overwriting a binding a lazy plan never materialized
+	}
+	pkg.baseValues[i] = v
+	return true
 }

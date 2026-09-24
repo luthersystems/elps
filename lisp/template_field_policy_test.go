@@ -44,10 +44,15 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		}},
 		{reflect.TypeFor[Package](), map[string]string{
 			"Name": "scalar: package name", "Doc": "scalar: package documentation",
-			"symbols": "remapped: binding descriptors", "symbolDocs": "remapped: owned string pairs",
-			"funNames": "remapped: owned string pairs", "externals": "remapped: owned string list",
+			"symbols": "remapped: binding descriptors; nil in a frozen package", "symbolDocs": "remapped: owned string pairs; nil in a frozen package",
+			"funNames": "remapped: owned string pairs; nil in a frozen package", "externals": "remapped: owned string list; nil in a frozen package, which iterates the base through read-only accessors",
 			"externalsSortedLen": "reset: a derived token over the export list; zero in a fresh package means the list is re-sorted before it is searched",
+			"base":               "shared-immutable: frozen package tables built once at publication (TestTemplateFrozenPackageBaseImmutable)",
+			"baseValues":         "remapped: per-VM slot values of a frozen package, resolved from the plan's binding descriptors",
+			"slotFunNames":       "reset: a frozen VM's per-VM overlay on base function names; a source package's overlay is folded into the base by funNameTable at publication (TestFrozenPackagePerTransactionGlobalsDoNotThaw)",
 			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
+			"lazy":               "remapped: per-VM link to this VM's lazy instance, built by NewVM and never published; nil once every binding is materialized (TestTemplateLazyRetention)",
+			"unfrozenBase":       "scalar: a lazy plan's base for a package not named frozen; Frozen reports false",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",

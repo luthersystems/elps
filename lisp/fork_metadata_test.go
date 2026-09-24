@@ -32,7 +32,7 @@ func forkedEnvs(root *LEnv) map[*LEnv]bool {
 	walk(root)
 	if root.Runtime != nil && root.Runtime.Registry != nil {
 		for _, pkg := range root.Runtime.Registry.packages {
-			for _, v := range pkg.symbols {
+			for _, v := range pkg.symbolTable() {
 				if v.Type == LFun {
 					if fd := v.funData(); fd != nil {
 						walk(fd.env)
@@ -194,7 +194,7 @@ func TestForkSymbolDocs(t *testing.T) {
 	// one must not, or neither half of the assertion means anything.
 	documented, undocumented := 0, 0
 	for _, p := range env.Runtime.Registry.packages {
-		if len(p.symbolDocs) > 0 {
+		if len(p.symbolDocTable()) > 0 {
 			documented++
 		} else {
 			undocumented++
@@ -214,21 +214,21 @@ func TestForkSymbolDocs(t *testing.T) {
 		if fp == nil {
 			t.Fatalf("package %q missing from the fork", name)
 		}
-		if len(p.symbolDocs) == 0 {
-			if fp.symbolDocs != nil {
+		if len(p.symbolDocTable()) == 0 {
+			if fp.symbolDocTable() != nil {
 				t.Errorf("package %q has no documented symbols but forked with an allocated table", name)
 			}
 			continue
 		}
-		if fp.symbolDocs == nil {
+		if fp.symbolDocTable() == nil {
 			t.Errorf("package %q forked without its documentation table", name)
 			continue
 		}
-		if reflect.ValueOf(fp.symbolDocs).Pointer() == reflect.ValueOf(p.symbolDocs).Pointer() {
+		if reflect.ValueOf(fp.symbolDocTable()).Pointer() == reflect.ValueOf(p.symbolDocTable()).Pointer() {
 			t.Errorf("package %q: fork SHARES the template's documentation table; the template stays "+
 				"writable after a fork, so a shared table is a concurrent map write away from issue #397", name)
 		}
-		for sym, doc := range p.symbolDocs {
+		for sym, doc := range p.symbolDocTable() {
 			if got := fp.SymbolDoc(sym); got != doc {
 				t.Errorf("package %q symbol %q: fork doc %q, template doc %q", name, sym, got, doc)
 			}

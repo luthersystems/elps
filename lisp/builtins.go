@@ -680,7 +680,7 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		}
 		if env.Runtime.Package.bindingsSealed {
 			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
-				for _, name := range source.externals {
+				for name := range source.externalNames() {
 					if name != TrueSymbol && name != FalseSymbol {
 						return env.Errorf("cannot rebind lisp package binding: %s", name)
 					}
@@ -714,7 +714,7 @@ func validateExportArgs(env *LEnv, args *LVal) *LVal {
 				// Re-exporting an existing core name is a no-op. A new export
 				// could poison future imports even without assigning a value.
 				found := false
-				for _, name := range env.Runtime.Package.externals {
+				for name := range env.Runtime.Package.externalNames() {
 					if name == arg.Str {
 						found = true
 						break
@@ -750,20 +750,28 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 	if v.Cells[0].Type != LSymbol {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
 	}
+	// Validate every docstring before anything is written.
+	var parts []string
+	for _, arg := range v.Cells[min(2, len(v.Cells)):] {
+		if arg.Type != LString {
+			return env.Errorf("docstring argument is not a string: %v", arg.Type)
+		}
+		parts = append(parts, arg.Str)
+	}
 	lerr := env.PutGlobalFromLisp(v.Cells[0], v.Cells[1])
 	if lerr.Type == LError {
 		return lerr
 	}
-	// Optional trailing doc strings
+	// The doc belongs to the package the binding went to, under the
+	// unqualified name.  A frozen target thaws on write.
 	if len(v.Cells) > 2 {
-		var parts []string
-		for _, arg := range v.Cells[2:] {
-			if arg.Type != LString {
-				return env.Errorf("docstring argument is not a string: %v", arg.Type)
-			}
-			parts = append(parts, arg.Str)
+		pkg, name := env.Runtime.Package, v.Cells[0].Str
+		if ns, local, qualified := strings.Cut(name, ":"); qualified {
+			pkg, name = env.Runtime.Registry.packages[ns], local
 		}
-		env.Runtime.Package.setSymbolDoc(v.Cells[0].Str, JoinDocStrings(parts))
+		if pkg != nil {
+			pkg.setSymbolDoc(name, JoinDocStrings(parts))
+		}
 	}
 	return env.GetGlobal(v.Cells[0])
 }

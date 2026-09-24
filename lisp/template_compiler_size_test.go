@@ -46,7 +46,7 @@ func TestTemplateCompilerSizesPrivateDescriptors(t *testing.T) {
 				if err != nil {
 					t.Fatal(err)
 				}
-				got := vm.Runtime.Package.symbols
+				got := vm.Runtime.Package.symbolTable()
 				for n := range count {
 					key, alias := fmt.Sprintf("value-%d", n), fmt.Sprintf("alias-%d", n)
 					if got[key] == symbols[key] || got[key] != got[alias] || got[key].Type != LInt || got[key].Int != n {
@@ -113,8 +113,8 @@ func TestTemplateCompilerSizesMapDescriptors(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					got := vm.Runtime.Package.symbols["value"]
-					if got.Map() == value.Map() || got.Map() != vm.Runtime.Package.symbols["alias"].Map() || got.Map().Len() != count {
+					got := vm.Runtime.Package.symbolTable()["value"]
+					if got.Map() == value.Map() || got.Map() != vm.Runtime.Package.symbolTable()["alias"].Map() || got.Map().Len() != count {
 						t.Fatal("map alias, isolation or entry count changed")
 					}
 					for _, key := range got.Map().Keys().Cells {

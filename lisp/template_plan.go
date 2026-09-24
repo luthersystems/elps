@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"reflect"
 	"slices"
+
+	"github.com/luthersystems/elps/internal/packagetable"
 )
 
 // A template plan represents mutable VM state with immutable descriptors.
@@ -63,6 +65,7 @@ type templateMapBacking struct {
 	entries []templateBinding
 	types   []templateKeyType
 	json    bool
+	indexed bool // some entry is a per-VM value (index != 0)
 }
 type templateMapIdentity struct {
 	values, types uintptr
@@ -72,15 +75,27 @@ type templateBytes struct {
 	view           templateView
 	nonnil, backed bool
 }
+
 type templateStringPair struct{ key, value string }
+
+// templatePackage describes one package.  An unfrozen package is rebuilt per
+// VM from bindings, funNames, symbolDocs and externals.  A frozen package
+// (TemplateWithFrozenPackages) instead has a base, built once at publication
+// and SHARED by every VM the plan instantiates; refs[i] is the value of
+// base.index's slot i, resolved per VM into Package.baseValues.
 type templatePackage struct {
+	base                 *packageBase
 	name, doc            string
 	bindings             []templateBinding
+	refs                 []templateRef
 	funNames, symbolDocs []templateStringPair
 	externals            []string
+	pending              int // refs with a per-VM value (index != 0)
 	bindingsSealed       bool
+	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
+	hot               *templateHotSet // values any lazy VM has materialized (VMWithPrewarm)
 	values            []templateValue
 	envs              []templateEnv
 	functions         []templateFunctionData
@@ -93,6 +108,7 @@ type templatePlan struct {
 	packages          []templatePackage
 	runtime           templateRuntime
 	root, numCaptures int
+	eager             bool // TemplateWithEagerInstantiation
 }
 type templateCompiler struct {
 	err         error
@@ -125,17 +141,14 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.bytes = make([]templateBytes, 0, len(inventory.byteSeen))
 	c.plan.packages = make([]templatePackage, 0, len(env.Runtime.Registry.packages))
 	c.plan.runtime = snapshotTemplateRuntime(env.Runtime)
+	c.plan.eager = inventory.config.eager
+	c.plan.hot = newTemplateHotSet(len(inventory.valueQueue))
 	c.plan.cells = make([][]templateRef, len(storage.cells))
 	c.plan.byteBackings = storage.bytes
 	c.plan.root = c.env(env)
 	for _, name := range sortedTemplateKeys(env.Runtime.Registry.packages) {
 		pkg := env.Runtime.Registry.packages[name]
-		c.plan.packages = append(c.plan.packages, templatePackage{
-			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(pkg.symbols),
-			funNames: templateStringPairs(pkg.funNames), symbolDocs: templateStringPairs(pkg.symbolDocs),
-			externals:      append([]string(nil), pkg.externals...),
-			bindingsSealed: pkg.bindingsSealed,
-		})
+		c.plan.packages = append(c.plan.packages, c.packageDescriptor(pkg, inventory.config.frozen[name]))
 	}
 	for index, env := range inventory.envQueue {
 		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.bindings(env.scope), scopeHint: env.scopeHint}
@@ -163,6 +176,47 @@ func templateStringPairs(values map[string]string) []templateStringPair {
 	}
 	slices.SortFunc(out, func(a, b templateStringPair) int { return cmp.Compare(a.key, b.key) })
 	return out
+}
+
+// packageDescriptor describes one package.  For a frozen package every map
+// and slice in its base is freshly allocated here and never written again:
+// the base is published with the plan and read concurrently by every VM.
+func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) templatePackage {
+	// Borrow unfrozen source maps only for construction. Every descriptor and
+	// base below takes its own snapshot before publication.
+	symbols, funNames, symbolDocs := pkg.symbols, pkg.funNames, pkg.symbolDocs
+	if pkg.base != nil || pkg.lazy != nil {
+		symbols, funNames, symbolDocs = pkg.symbolTable(), pkg.funNameTable(), pkg.symbolDocTable()
+	}
+	// A lazy plan gives every package a base, so each binding can start
+	// unmaterialized; an eager plan rebuilds unfrozen packages per VM.
+	if !frozen && c.plan.eager {
+		return templatePackage{
+			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(symbols),
+			funNames: templateStringPairs(funNames), symbolDocs: templateStringPairs(symbolDocs),
+			externals:      pkg.Externals(),
+			bindingsSealed: pkg.bindingsSealed,
+		}
+	}
+	bindings := c.bindings(symbols)
+	index := make(map[string]int, len(bindings))
+	refs := make([]templateRef, len(bindings))
+	pending := 0
+	for i, binding := range bindings {
+		index[binding.name] = i
+		refs[i] = binding.value
+		if binding.value.index != 0 {
+			pending++
+		}
+	}
+	base := &packageBase{
+		index:      packagetable.AdoptMap(index), // built above, referenced nowhere else
+		funNames:   packagetable.NewMap(funNames),
+		symbolDocs: packagetable.NewMap(symbolDocs),
+		externals:  packagetable.NewStrings(pkg.Externals()),
+	}
+	base.publish()
+	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, pending: pending, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
 }
 
 func (c *templateCompiler) ref(v *LVal) templateRef {
@@ -348,7 +402,11 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 			c.plan.maps[index].backing = existing
 			return index, nil
 		}
+		sourceMap.forceAll()
 		backing.entries = c.bindings(sourceMap.m)
+		for _, entry := range backing.entries {
+			backing.indexed = backing.indexed || entry.value.index != 0
+		}
 		backing.types = make([]templateKeyType, 0, len(sourceMap.tm))
 		for key, kind := range sourceMap.tm {
 			backing.types = append(backing.types, templateKeyType{key: key, kind: kind})
@@ -408,14 +466,8 @@ func (i *templateInstance) env(index int) *LEnv {
 	return i.envs[index-1]
 }
 
-func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
-	var config vmConfig
-	for _, opt := range opts {
-		if opt == nil {
-			return nil, errors.New("template: nil VM option")
-		}
-		opt(&config)
-	}
+// instantiateEager rebuilds the whole value graph (TemplateWithEagerInstantiation).
+func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 	rt := p.runtime.newRuntime(config)
 	instance := templateInstance{
 		values: templateObjects[LVal](len(p.values)), envs: templateObjects[LEnv](len(p.envs)),
@@ -515,7 +567,21 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		}
 		*instance.values[index] = *out //elps:mutates templateObjects allocated these private destinations for this instance; no source or published VM points to them
 	}
+	// A frozen package's tables are not copied: it reads the plan's shared
+	// base, and only its slot values are per VM, one allocation per package so
+	// a retained package cannot keep another package's values alive. Every
+	// other package is rebuilt unfrozen and unpublished; only these
+	// constructors may initialize its tables without the write gate.
 	for _, pkg := range p.packages {
+		if pkg.base != nil {
+			values := make([]*LVal, len(pkg.refs))
+			for slot, ref := range pkg.refs {
+				values[slot] = instance.ref(ref)
+			}
+			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
+				base: pkg.base, baseValues: values}
+			continue
+		}
 		out := &Package{Name: pkg.name, Doc: pkg.doc, symbols: make(map[string]*LVal, len(pkg.bindings)), funNames: make(map[string]string, len(pkg.funNames))}
 		out.bindingsSealed = pkg.bindingsSealed
 		for _, binding := range pkg.bindings {
@@ -542,5 +608,5 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 	if config.ctx != nil {
 		root.evalCtx = config.ctx
 	}
-	return root, nil
+	return root
 }

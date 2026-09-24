@@ -192,8 +192,8 @@ func TestForkCopiesUnsealedFunctionCells(t *testing.T) {
 		if !ok {
 			t.Fatalf("package %q missing in fork", name)
 		}
-		for sym, ov := range opkg.symbols {
-			a.val("pkg:"+name+":"+sym, ov, npkg.symbols[sym])
+		for sym, ov := range opkg.symbolTable() {
+			a.val("pkg:"+name+":"+sym, ov, npkg.symbolTable()[sym])
 		}
 	}
 	if a.copied < 10 {

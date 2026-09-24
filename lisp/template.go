@@ -44,6 +44,19 @@ type TemplateOption func(*templateConfig)
 type templateConfig struct {
 	builtinPolicy func(*LVal) bool
 	nativePolicy  func(any) bool
+	frozen        map[string]bool
+	eager         bool
+}
+
+// TemplateWithEagerInstantiation makes every NewVM build the template's whole
+// value graph up front, as releases before lazy instantiation did. By default
+// a VM materializes each package binding, sorted-map entry and everything
+// they reach on first use, which is observably identical but costs only what
+// a VM touches. Eager instantiation is the escape hatch for a host that reads
+// one VM from several goroutines at once (lazy materialization turns reads
+// into writes) or that wants every allocation paid at NewVM.
+func TemplateWithEagerInstantiation() TemplateOption {
+	return func(c *templateConfig) { c.eager = true }
 }
 
 // TemplateWithBuiltinPolicy explicitly approves legacy Go builtin code for
@@ -72,6 +85,34 @@ func TemplateWithBuiltinPolicy(approve func(*LVal) bool) TemplateOption {
 // before this policy is consulted.
 func TemplateWithNativePolicy(approve func(any) bool) TemplateOption {
 	return func(c *templateConfig) { c.nativePolicy = approve }
+}
+
+// TemplateWithFrozenPackages freezes the named packages at publication: each
+// is shared until its first write, and a write thaws a private copy for that
+// VM. A frozen package's symbol, function-name, documentation and export
+// tables are built once and shared by every VM the template mints, so NewVM
+// does not copy them; each VM gets only its own values for the package's
+// bindings. Rebinding a name the package already binds -- set, set! or defun
+// of an existing global, including to a new function or closure -- writes
+// only that VM's value for it and does not thaw; the function-name entry such
+// a write records is kept per VM too. Any other write in a VM -- a new name,
+// export, use-package into it, a docstring, or another Go Package mutator --
+// copies that one package's tables into the VM and then applies the write
+// exactly as it would in an unfrozen package. Other packages, other VMs and the template
+// are unaffected, so every program behaves as it does without the option.
+// Values bound in a frozen package remain per-VM copies with the usual
+// template semantics, and mutating a value never thaws its package. Reads,
+// lookups and iteration are unchanged. Naming a package the source does not
+// register makes NewTemplate fail. Options accumulate.
+func TemplateWithFrozenPackages(names ...string) TemplateOption {
+	return func(c *templateConfig) {
+		if c.frozen == nil {
+			c.frozen = make(map[string]bool, len(names))
+		}
+		for _, name := range names {
+			c.frozen[name] = true
+		}
+	}
 }
 
 // NewTemplate validates env and takes a private snapshot of its mutable state.
@@ -114,6 +155,11 @@ func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 		}
 		opt(&config)
 	}
+	for _, name := range sortedTemplateKeys(config.frozen) {
+		if env.Runtime.Registry.packages[name] == nil {
+			return nil, fmt.Errorf("template: frozen package %q is not registered", name)
+		}
+	}
 	input := newTemplateInventory(config)
 	if err := input.scan(env); err != nil {
 		return nil, err
@@ -128,10 +174,23 @@ func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 // NewVM constructs an independent VM from the template. Mutable values use
 // independent allocations, so retaining one returned scalar or byte view does
 // not retain unrelated VM storage. Context and stderr may be set per instance.
+//
+// Unless the template was published with TemplateWithEagerInstantiation, the
+// VM is built lazily: package bindings, sorted-map entries and what they reach
+// are created on first use, once per VM. A VM must therefore be used by one
+// goroutine at a time, including reads such as symbol lookups and map gets
+// made by the host; hand it between goroutines only with a happens-before
+// edge (a channel send, a mutex). Checked builds (-tags elpscheck) panic when
+// two goroutines materialize in one VM concurrently. Any number of goroutines
+// may call NewVM on one Template concurrently. A retained sorted map or
+// package with unmaterialized entries keeps the whole VM alive, as a retained
+// function or environment always has, until its last entry is materialized;
+// a fully read map retains only itself.
 func (t *Template) NewVM(opts ...VMOption) (*LEnv, error) {
 	if t == nil || t.plan.root == 0 {
 		return nil, errors.New("template: uninitialized template")
 	}
+	checkPackageBases(t.plan.packages)
 	return t.plan.instantiate(opts)
 }
 
@@ -207,8 +266,9 @@ func (s *templateInventory) scan(env *LEnv) error {
 	}
 	for _, name := range packages {
 		pkg := env.Runtime.Registry.packages[name]
-		for _, symbol := range sortedTemplateKeys(pkg.symbols) {
-			if err := s.val(pkg.symbols[symbol]); err != nil {
+		for _, symbol := range pkg.SymbolNames() {
+			value, _ := pkg.lookup(symbol)
+			if err := s.val(value); err != nil {
 				return fmt.Errorf("template: %s:%s: %w", name, symbol, err)
 			}
 		}
@@ -677,6 +737,9 @@ func (s *templateInventory) mapData(data *MapData) error {
 	case sortedmap:
 		// Keys and type flags are Go scalars, not source value identities.
 		// Avoid manufacturing temporary keys/pairs solely to discard them.
+		// Republishing a lazily instantiated VM: materialize pending entries
+		// before the direct table read.
+		backing.forceAll()
 		setTemplateFrameEntries(&s.next, backing.m)
 	case jsonMap:
 		if backing == nil {

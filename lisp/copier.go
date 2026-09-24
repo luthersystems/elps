@@ -627,6 +627,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// nothing, with the nil Map preserved.
 		return nm, nil
 	case sortedmap:
+		m0.forceAll()
 		// By loop rather than m0.clone(c.copy): a method value capturing c
 		// would send the copier to the heap on every Copy call.
 		//

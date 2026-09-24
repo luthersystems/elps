@@ -36,6 +36,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"MaxMacroExpansionDepth": "copied",
 	"MaxEvalNesting":         "copied",
 	"MaxSleep":               "copied",
+	"LegacyKeywordFormals":   "copied",
 	"maxSteps":               "copied",
 
 	// Rebuilt for the fork: fresh instance, seeded from the template where
@@ -46,6 +47,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"Package":  "rebuilt",
 	"numenv":   "rebuilt",
 	"numsym":   "rebuilt",
+	"settings": "copied",
 
 	// Deliberately NOT carried: an observer the embedder attaches itself, or
 	// state about an evaluation/load in progress (the template is quiescent,
@@ -102,6 +104,7 @@ func TestForkCarriesSharedRuntimeFields(t *testing.T) {
 	env.Runtime.Library = &fieldCoverageLibrary{}
 	env.Runtime.LoadCache = cache
 	env.Runtime.MaxSleep = 5 * time.Nanosecond
+	env.Runtime.LegacyKeywordFormals = true
 
 	fork, err := forkTestSnapshot(env)
 	if err != nil {
@@ -122,6 +125,9 @@ func TestForkCarriesSharedRuntimeFields(t *testing.T) {
 	}
 	if fork.Runtime.MaxSleep != env.Runtime.MaxSleep {
 		t.Error("fork did not copy Runtime.MaxSleep")
+	}
+	if !fork.Runtime.LegacyKeywordFormals {
+		t.Error("fork did not copy Runtime.LegacyKeywordFormals")
 	}
 	if fork.Runtime.Profiler != nil || fork.Runtime.Debugger != nil {
 		t.Error("fork carried an observer it should not have")

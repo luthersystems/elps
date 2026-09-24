@@ -47,5 +47,12 @@ func oracleMapBackingIDs(data *lisp.MapData) []nativePayloadIdentity {
 			ids = append(ids, nativePayloadIdentity{reflect.Map, field.Pointer()})
 		}
 	}
+	// lz, a lazily instantiated map's link to its VM's lazy instance, is
+	// not program-visible storage: it is allocated per VM beside m, is nil
+	// in a source map and becomes inert once no entry is pending, so it is
+	// not an identity the oracle compares with the source.
+	if backing.FieldByName("lz").Kind() != reflect.Pointer {
+		panic("fork oracle: stock map layout changed")
+	}
 	return ids
 }

@@ -28,7 +28,7 @@ func TestTemplatePlanOwnsFunctionDefinitionLocation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := vm.Runtime.Package.symbols["fn"].Native.(*funData)
+		got := vm.Runtime.Package.symbolTable()["fn"].Native.(*funData)
 		if got.loc == nil || got.loc == fd.loc || got.loc.File != "definitions.lisp" || got.loc.Line != 7 || got.loc.Col != 3 {
 			t.Fatalf("definition location was dropped or borrowed: %+v", got.loc)
 		}

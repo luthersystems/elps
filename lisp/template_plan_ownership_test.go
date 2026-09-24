@@ -59,15 +59,15 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 		if vm.Runtime.MaxAlloc != 17 || vm.Runtime.Stack.MaxHeightPhysical != 23 || vm.Runtime.numenv != 41 || vm.Runtime.numsym != 43 {
 			t.Fatal("runtime configuration or identifier counters changed")
 		}
-		recorded, other := got.symbols["failure"], got.symbols["alias"]
+		recorded, other := got.symbolTable()["failure"], got.symbolTable()["alias"]
 		if recorded == errValue || other == alias || recorded == other || recorded.Type != LError || other.Type != LError || recorded.Str != "error" || other.Str != "error" || recorded.Native != nil || other.Native != nil || recorded.Cells[0].Str != "saved failure" || recorded.Cells[0] != other.Cells[0] || &recorded.Cells[0] != &other.Cells[0] {
 			t.Fatalf("stack-free error ownership or aliases changed: %v / %v", recorded, other)
 		}
 	}
-	a := siblings[0].Runtime.Package.symbols["failure"]
-	b := siblings[1].Runtime.Package.symbols["failure"]
+	a := siblings[0].Runtime.Package.symbolTable()["failure"]
+	b := siblings[1].Runtime.Package.symbolTable()["failure"]
 	a.Cells[0] = String("sibling failure")
-	if siblings[0].Runtime.Package.symbols["alias"].Cells[0].Str != "sibling failure" {
+	if siblings[0].Runtime.Package.symbolTable()["alias"].Cells[0].Str != "sibling failure" {
 		t.Fatal("saved errors lost their shared cell slot")
 	}
 	siblings[0].Runtime.Package.setSymbolDoc("failure", "sibling changed")
@@ -78,7 +78,7 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := third.Runtime.Package.symbols["failure"]; got.Native != nil || got.Cells[0].Str != "saved failure" {
+	if got := third.Runtime.Package.symbolTable()["failure"]; got.Native != nil || got.Cells[0].Str != "saved failure" {
 		t.Fatal("VM mutated published stack-free error descriptors")
 	}
 }
@@ -104,7 +104,7 @@ func TestTemplatePlanStockMapBackingAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fa, fb := vm.Runtime.Package.symbols["a"], vm.Runtime.Package.symbols["b"]
+	fa, fb := vm.Runtime.Package.symbolTable()["a"], vm.Runtime.Package.symbolTable()["b"]
 	if fa.Map() == fb.Map() || fa.Map() == a.Map() {
 		t.Fatal("map wrapper identities collapsed")
 	}
@@ -124,7 +124,7 @@ func TestTemplatePlanStockMapBackingAliases(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, _ := sibling.Runtime.Package.symbols["b"].Map().Get(Symbol("key")); got.Int != 1 {
+	if got, _ := sibling.Runtime.Package.symbolTable()["b"].Map().Get(Symbol("key")); got.Int != 1 {
 		t.Fatal("sibling map changed")
 	}
 	if got := sortedMapEntries(fa.Map()); got.Type == LError || got.Cells[0].Cells[0].Type != LSymbol {
