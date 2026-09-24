@@ -36,7 +36,10 @@ var packageWriteFunctions = map[string]string{
 	"Package.thaw":                       "the only builder of private tables from a frozen base; reached only through ensureWritable",
 	"NewPackage":                         "constructs an unpublished unfrozen package",
 	"admitPackage":                       "constructs an unpublished unfrozen admission snapshot",
-	"templatePlan.instantiate":           "constructs private VM packages before registry publication",
+	"templatePlan.instantiateEager":      "constructs private VM packages before registry publication",
+	"templatePlan.instantiateLazy":       "constructs private VM package shells before registry publication",
+	"Package.baseValue":                  "fills this VM's own nil baseValues slot with the value materialized from a lazy plan; shared base tables are never written",
+	"Package.symbol":                     "replaces a lazyPending binding with its materialized value; the binding is unchanged from the program's view",
 	"templateCompiler.packageDescriptor": "constructs a fresh base before template publication",
 	"packageBase.publish":                "records the checked-build fingerprint before publication",
 }

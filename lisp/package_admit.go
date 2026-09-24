@@ -126,7 +126,7 @@ package lisp
 // goroutine may be writing p at the time (issue #397).
 func admitPackage(p *Package, limit int) *Package {
 	symbols, funNames, symbolDocs := p.symbols, p.funNames, p.symbolDocs
-	if p.base != nil {
+	if p.base != nil || p.lazy != nil {
 		symbols, funNames, symbolDocs = p.symbolTable(), p.funNameTable(), p.symbolDocTable()
 	}
 	adm := &Package{

@@ -96,7 +96,10 @@ func admitPackage() *Package     { return &Package{externals: []string{"x"}} }
 
 type templatePlan struct{}
 
-func (templatePlan) instantiate(p *Package) { p.symbols = nil }
+func (templatePlan) instantiateEager(p *Package) { p.symbols = nil }
+func (templatePlan) instantiateLazy(p *Package)  { p.symbols = nil }
+func (p *Package) baseValue()                    { p.baseValues[0] = 1 }
+func (p *Package) symbol()                       { p.symbols["x"] = 1 }
 
 type templateCompiler struct{}
 

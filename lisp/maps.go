@@ -149,6 +149,9 @@ type typemap map[string]keytype
 type sortedmap struct {
 	m  map[string]*LVal
 	tm typemap
+	// lz is non-nil for a map a lazy template plan built: entries holding
+	// lazyPending are materialized on first read (see template_lazy.go).
+	lz *lazySorted
 }
 
 func newmap() sortedmap {
@@ -216,6 +219,7 @@ func (m sortedmap) emptyLike() sortedmap {
 // unspecified; a caller that must see entries in a fixed order (detach,
 // which reports the first failing key) stays on the Entries path.
 func (m sortedmap) copyInto(cp sortedmap, val func(*LVal) *LVal) {
+	m.forceAll()
 	if val == nil {
 		for k, v := range m.m {
 			cp.m[k] = v
@@ -274,7 +278,7 @@ func (m sortedmap) Len() int {
 func (m sortedmap) Get(key *LVal) (*LVal, bool) {
 	switch key.Type {
 	case LString, LSymbol:
-		v := m.m[key.Str]
+		v := m.entry(key.Str)
 		if v != nil {
 			return v, true
 		}
@@ -287,6 +291,7 @@ func (m sortedmap) Get(key *LVal) (*LVal, bool) {
 func (m sortedmap) Del(key *LVal) *LVal {
 	switch key.Type {
 	case LString, LSymbol:
+		m.discardPending(key.Str)
 		delete(m.m, key.Str)
 		m.deltype(key.Str)
 		return Nil()
@@ -298,10 +303,12 @@ func (m sortedmap) Del(key *LVal) *LVal {
 func (m sortedmap) Set(key, val *LVal) *LVal {
 	switch key.Type {
 	case LString:
+		m.discardPending(key.Str)
 		m.m[key.Str] = val
 		m.deltype(key.Str)
 		return Nil()
 	case LSymbol:
+		m.discardPending(key.Str)
 		m.m[key.Str] = val
 		m.puttype(key.Str, symbolkey)
 		return Nil()
@@ -333,6 +340,7 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 // whole map and every in-tree caller (the encoder, Keys, sortedMapString,
 // the sorted-map builtins) drops the entries as a unit.
 func (m sortedmap) Entries(buf []*LVal) *LVal {
+	m.forceAll()
 	n := len(m.m)
 	if n == 0 {
 		return Int(0)
@@ -490,6 +498,7 @@ func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
 	base := len(dst)
 	switch b := md.mapBacking.(type) {
 	case sortedmap:
+		b.forceAll()
 		for k, val := range b.m {
 			dst = append(dst, MapPair{Key: k, Val: val})
 		}
@@ -503,4 +512,41 @@ func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
 	// Built-in map keys are unique strings, so the order is total.
 	slices.SortFunc(dst[base:], func(a, b MapPair) int { return cmp.Compare(a.Key, b.Key) })
 	return dst, true
+}
+
+// entry is the single-key read of a sorted map's table: it materializes a
+// pending entry of a lazily instantiated map.
+func (m sortedmap) entry(k string) *LVal {
+	v := m.m[k]
+	if v == lazyPending {
+		v = m.lz.resolve(k)
+		m.m[k] = v
+	}
+	return v
+}
+
+// forceAll materializes every pending entry, before a caller that reads the
+// whole table directly.
+func (m sortedmap) forceAll() {
+	if m.lz == nil || m.lz.pending == 0 {
+		return
+	}
+	for k, v := range m.m {
+		if v == lazyPending {
+			m.entry(k)
+		}
+	}
+}
+
+// discardPending accounts for a pending entry about to be overwritten or
+// deleted, so the map drops its link to the lazy instance once nothing is
+// pending.
+func (m sortedmap) discardPending(k string) {
+	if m.lz == nil || m.lz.pending == 0 || m.m[k] != lazyPending {
+		return
+	}
+	m.lz.pending--
+	if m.lz.pending == 0 {
+		m.lz.inst, m.lz.entries = nil, nil
+	}
 }

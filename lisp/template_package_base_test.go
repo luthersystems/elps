@@ -56,8 +56,13 @@ func TestTemplateFrozenPackageThawMutators(t *testing.T) {
 	}
 	before := map[string]packageBaseSnapshot{}
 	for _, p := range tmpl.plan.packages {
-		if (p.base != nil) != (p.name == "frozen" || p.name == "big") {
-			t.Fatalf("package %s frozen=%v", p.name, p.base != nil)
+		// A lazy plan gives every package a shared base so its bindings can
+		// start unmaterialized; only the named ones are frozen.
+		if frozen := p.base != nil && !p.unfrozen; frozen != (p.name == "frozen" || p.name == "big") {
+			t.Fatalf("package %s frozen=%v", p.name, frozen)
+		}
+		if p.base == nil {
+			t.Fatalf("package %s has no base in a lazy plan", p.name)
 		}
 		if p.base != nil {
 			before[p.name] = clonePackageBase(p.base)

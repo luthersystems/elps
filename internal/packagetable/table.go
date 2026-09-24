@@ -26,6 +26,12 @@ func NewMap[V Scalar](values map[string]V) Map[V] {
 	return Map[V]{values: maps.Clone(values)}
 }
 
+// AdoptMap takes ownership of values without copying. The caller must hold no
+// other reference to values; it is for a map the caller has just built.
+func AdoptMap[V Scalar](values map[string]V) Map[V] {
+	return Map[V]{values: values}
+}
+
 // Lookup returns an entry and whether it exists.
 func (m Map[V]) Lookup(key string) (V, bool) {
 	v, ok := m.values[key]

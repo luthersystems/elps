@@ -197,9 +197,15 @@ type Package struct {
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
 	funNames map[string]string
-	// base is non-nil exactly while the package is FROZEN: it was named by
-	// TemplateWithFrozenPackages, this Package belongs to a VM minted from
-	// that template, and the VM has not written it yet.  The base's tables
+	// lazy is non-nil while some binding of this VM's package is not yet
+	// materialized from a lazy template plan: a nil baseValues slot, or (after
+	// a thaw) a lazyPending entry in symbols. See template_lazy.go.
+	lazy *lazyPackage
+	// base is non-nil while this Package belongs to a VM minted from a
+	// template that gave it a shared base -- it was named by
+	// TemplateWithFrozenPackages, or the template instantiates lazily, which
+	// gives every package a base (unfrozenBase then keeps Frozen false) --
+	// and the VM has not written it yet.  The base's tables
 	// are shared by every such VM and never written; symbols, funNames,
 	// symbolDocs and externals are nil.  The first write of any kind thaws
 	// the package (see ensureWritable): it gets private tables and base
@@ -227,6 +233,10 @@ type Package struct {
 	// field-by-field (package admission, the template planner) starts at
 	// zero, which matches only an empty -- and so trivially sorted -- list.
 	externalsSortedLen int
+	// unfrozenBase marks a package that reads a lazy plan's shared base
+	// although it was not named frozen: it behaves exactly as an unfrozen
+	// package (Frozen reports false) and thaws on its first write.
+	unfrozenBase bool
 	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
 	// Go registration APIs remain available to the host after initialization.
 	bindingsSealed bool
@@ -248,7 +258,56 @@ type packageBase struct {
 // tables. A frozen package is shared until its first write; that write thaws
 // a private copy for this VM (see ensureWritable), after which Frozen is false.
 func (pkg *Package) Frozen() bool {
-	return pkg.base != nil
+	return pkg.base != nil && !pkg.unfrozenBase
+}
+
+// baseValue is the only read of a base slot: it materializes the slot from
+// a lazy plan on first read.
+func (pkg *Package) baseValue(i int) *LVal {
+	v := pkg.baseValues[i]
+	if v == nil && pkg.lazy != nil && pkg.lazy.refs[i].index != 0 {
+		lazy := pkg.lazy
+		v = lazy.inst.ref(lazy.refs[i])
+		pkg.baseValues[i] = v
+		lazy.settle(pkg)
+	}
+	return v
+}
+
+// settle records one materialized binding and drops the link to the lazy
+// instance after the last, so a fully materialized package retains nothing.
+func (lazy *lazyPackage) settle(pkg *Package) {
+	lazy.pending--
+	if lazy.pending == 0 {
+		pkg.lazy = nil
+	}
+}
+
+// symbol is the only read of an unfrozen table entry: it replaces a pending
+// binding left by thaw.
+func (pkg *Package) symbol(name string) (*LVal, bool) {
+	v, ok := pkg.symbols[name]
+	if v == lazyPending {
+		lazy := pkg.lazy
+		i, _ := lazy.index.Lookup(name)
+		v = lazy.inst.ref(lazy.refs[i])
+		pkg.symbols[name] = v
+		lazy.settle(pkg)
+	}
+	return v, ok
+}
+
+// materializeSymbols replaces every pending binding, before a caller that
+// reads the whole table.
+func (pkg *Package) materializeSymbols() {
+	if pkg.lazy == nil || pkg.base != nil {
+		return
+	}
+	for name, v := range pkg.symbols {
+		if v == lazyPending {
+			pkg.symbol(name)
+		}
+	}
 }
 
 // ensureWritable is the single write gate every Package mutator passes. For
@@ -267,7 +326,13 @@ func (pkg *Package) thaw() {
 	base := pkg.base
 	symbols := make(map[string]*LVal, base.index.Len())
 	for name, i := range base.index.All() {
-		symbols[name] = pkg.baseValues[i]
+		// A slot a lazy plan has not materialized stays pending: a write to
+		// one binding must not build the rest of the package.
+		if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil || pkg.lazy.refs[i].index == 0 {
+			symbols[name] = v
+		} else {
+			symbols[name] = lazyPending
+		}
 	}
 	funNames := base.funNames.Copy()
 	if funNames == nil {
@@ -281,17 +346,17 @@ func (pkg *Package) thaw() {
 	pkg.externals = base.externals.Copy()
 	pkg.externalsSortedLen = 0
 	pkg.baseValues = nil
+	pkg.unfrozenBase = false
 	pkg.base = nil
 }
 
 // lookup is the raw symbol read.
 func (pkg *Package) lookup(name string) (*LVal, bool) {
 	if pkg.base == nil {
-		v, ok := pkg.symbols[name]
-		return v, ok
+		return pkg.symbol(name)
 	}
 	if i, ok := pkg.base.index.Lookup(name); ok {
-		return pkg.baseValues[i], true
+		return pkg.baseValue(i), true
 	}
 	return nil, false
 }
@@ -300,11 +365,12 @@ func (pkg *Package) lookup(name string) (*LVal, bool) {
 // changing a binding in the returned map cannot change the package.
 func (pkg *Package) symbolTable() map[string]*LVal {
 	if pkg.base == nil {
+		pkg.materializeSymbols()
 		return maps.Clone(pkg.symbols)
 	}
 	m := make(map[string]*LVal, pkg.base.index.Len())
 	for name, i := range pkg.base.index.All() {
-		m[name] = pkg.baseValues[i]
+		m[name] = pkg.baseValue(i)
 	}
 	return m
 }
@@ -627,6 +693,9 @@ func (pkg *Package) putName(name string, v *LVal) {
 			v.funData().name = name // see funData.name
 		}
 	}
+	if pkg.lazy != nil && pkg.symbols[name] == lazyPending {
+		pkg.lazy.settle(pkg)
+	}
 	pkg.symbols[name] = v
 }
 
@@ -657,6 +726,9 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 		if v.Package() == pkg.Name {
 			v.funData().name = name // see funData.name
 		}
+	}
+	if pkg.lazy != nil && pkg.baseValues[i] == nil && pkg.lazy.refs[i].index != 0 {
+		pkg.lazy.settle(pkg) // overwriting a binding a lazy plan never materialized
 	}
 	pkg.baseValues[i] = v
 	return true

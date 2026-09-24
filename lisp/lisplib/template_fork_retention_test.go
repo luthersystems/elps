@@ -64,7 +64,7 @@ func TestTemplateForkEscapedLeafDoesNotRetainVM(t *testing.T) {
 		}
 	}
 	template := snapshotFixture(t, env)
-	for _, shape := range []string{"environment", "scalar", "bytes"} {
+	for _, shape := range []string{"environment", "scalar", "bytes", "lazy-map", "lazy-package", "forced-map"} {
 		t.Run(shape, func(t *testing.T) {
 			// The 4-to-12-VM slope removes fixed template retention and GC
 			// bootstrap costs. A scalar or raw byte slice references no bulk data.
@@ -80,12 +80,26 @@ func TestTemplateForkEscapedLeafDoesNotRetainVM(t *testing.T) {
 			after := templateSettledHeap()
 			perVM := (after - before) / additional
 			t.Logf("retained bytes per VM: %d", perVM)
-			if shape == "environment" {
+			switch shape {
+			case "environment":
 				if perVM < 1<<20 {
 					t.Fatalf("full-VM positive control retained only %d bytes", perVM)
 				}
-			} else if perVM > 16<<10 {
-				t.Fatalf("independent %s retains unrelated VM data: %d bytes per result", shape, perVM)
+			case "lazy-map", "lazy-package":
+				// Lazy instantiation's documented retention: a map or
+				// package with pending entries keeps its lazy instance, and
+				// so the VM's materialized objects and index arrays, alive.
+				// Measured 2.43 MiB per VM on this fixture, identical to the
+				// whole environment (an eager VM's escaped row retains about
+				// 1 KiB, the forced-map case below), which is the cost the
+				// Template.NewVM doc states.
+				if perVM < 64<<10 {
+					t.Fatalf("%s retained only %d bytes: the lazy link no longer pins the VM; update the NewVM doc", shape, perVM)
+				}
+			default:
+				if perVM > 16<<10 {
+					t.Fatalf("independent %s retains unrelated VM data: %d bytes per result", shape, perVM)
+				}
 			}
 			runtime.KeepAlive(keep)
 		})
@@ -116,6 +130,16 @@ func escapedTemplateLeaf(t *testing.T, template *lisp.Template, shape string) an
 	switch shape {
 	case "environment":
 		return env
+	case "lazy-map":
+		// A row whose "blob" entry was never read is still pending.
+		return bulk.Cells[4095]
+	case "lazy-package":
+		return env.Runtime.Registry.Package(lisp.DefaultUserPackage)
+	case "forced-map":
+		// Reading every entry settles the map, which drops its lazy link.
+		row := bulk.Cells[4095]
+		row.MapEntries()
+		return row
 	case "scalar":
 		value := env.GetGlobal(lisp.Symbol("escape-scalar"))
 		if value.Type != lisp.LInt || value.Int != 7 {

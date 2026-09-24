@@ -51,6 +51,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"baseValues":         "remapped: per-VM slot values of a frozen package, resolved from the plan's binding descriptors",
 			"slotFunNames":       "reset: a frozen VM's per-VM overlay on base function names; a source package's overlay is folded into the base by funNameTable at publication (TestFrozenPackagePerTransactionGlobalsDoNotThaw)",
 			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
+			"lazy":               "remapped: per-VM link to this VM's lazy instance, built by NewVM and never published; nil once every binding is materialized (TestTemplateLazyRetention)",
+			"unfrozenBase":       "scalar: a lazy plan's base for a package not named frozen; Frozen reports false",
 		}},
 		{reflect.TypeFor[PackageRegistry](), map[string]string{
 			"packages": "remapped: name- and identity-validated package descriptors", "Lang": "scalar: language package name",

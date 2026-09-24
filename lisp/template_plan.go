@@ -65,6 +65,7 @@ type templateMapBacking struct {
 	entries []templateBinding
 	types   []templateKeyType
 	json    bool
+	indexed bool // some entry is a per-VM value (index != 0)
 }
 type templateMapIdentity struct {
 	values, types uintptr
@@ -89,7 +90,9 @@ type templatePackage struct {
 	refs                 []templateRef
 	funNames, symbolDocs []templateStringPair
 	externals            []string
+	pending              int // refs with a per-VM value (index != 0)
 	bindingsSealed       bool
+	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
 	values            []templateValue
@@ -105,6 +108,7 @@ type templatePlan struct {
 	runtime           templateRuntime
 	numPackageSlots   int
 	root, numCaptures int
+	eager             bool // TemplateWithEagerInstantiation
 }
 type templateCompiler struct {
 	err         error
@@ -137,6 +141,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.bytes = make([]templateBytes, 0, len(inventory.byteSeen))
 	c.plan.packages = make([]templatePackage, 0, len(env.Runtime.Registry.packages))
 	c.plan.runtime = snapshotTemplateRuntime(env.Runtime)
+	c.plan.eager = inventory.config.eager
 	c.plan.cells = make([][]templateRef, len(storage.cells))
 	c.plan.byteBackings = storage.bytes
 	c.plan.root = c.env(env)
@@ -179,10 +184,12 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 	// Borrow unfrozen source maps only for construction. Every descriptor and
 	// base below takes its own snapshot before publication.
 	symbols, funNames, symbolDocs := pkg.symbols, pkg.funNames, pkg.symbolDocs
-	if pkg.base != nil {
+	if pkg.base != nil || pkg.lazy != nil {
 		symbols, funNames, symbolDocs = pkg.symbolTable(), pkg.funNameTable(), pkg.symbolDocTable()
 	}
-	if !frozen {
+	// A lazy plan gives every package a base, so each binding can start
+	// unmaterialized; an eager plan rebuilds unfrozen packages per VM.
+	if !frozen && c.plan.eager {
 		return templatePackage{
 			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(symbols),
 			funNames: templateStringPairs(funNames), symbolDocs: templateStringPairs(symbolDocs),
@@ -193,19 +200,23 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 	bindings := c.bindings(symbols)
 	index := make(map[string]int, len(bindings))
 	refs := make([]templateRef, len(bindings))
+	pending := 0
 	for i, binding := range bindings {
 		index[binding.name] = i
 		refs[i] = binding.value
+		if binding.value.index != 0 {
+			pending++
+		}
 	}
 	base := &packageBase{
-		index:      packagetable.NewMap(index),
+		index:      packagetable.AdoptMap(index), // built above, referenced nowhere else
 		funNames:   packagetable.NewMap(funNames),
 		symbolDocs: packagetable.NewMap(symbolDocs),
 		externals:  packagetable.NewStrings(pkg.Externals()),
 	}
 	base.publish()
 	c.plan.numPackageSlots += len(refs)
-	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, bindingsSealed: pkg.bindingsSealed}
+	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, pending: pending, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
 }
 
 func (c *templateCompiler) ref(v *LVal) templateRef {
@@ -391,7 +402,11 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 			c.plan.maps[index].backing = existing
 			return index, nil
 		}
+		sourceMap.forceAll()
 		backing.entries = c.bindings(sourceMap.m)
+		for _, entry := range backing.entries {
+			backing.indexed = backing.indexed || entry.value.index != 0
+		}
 		backing.types = make([]templateKeyType, 0, len(sourceMap.tm))
 		for key, kind := range sourceMap.tm {
 			backing.types = append(backing.types, templateKeyType{key: key, kind: kind})
@@ -451,14 +466,8 @@ func (i *templateInstance) env(index int) *LEnv {
 	return i.envs[index-1]
 }
 
-func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
-	var config vmConfig
-	for _, opt := range opts {
-		if opt == nil {
-			return nil, errors.New("template: nil VM option")
-		}
-		opt(&config)
-	}
+// instantiateEager rebuilds the whole value graph (TemplateWithEagerInstantiation).
+func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 	rt := p.runtime.newRuntime(config)
 	instance := templateInstance{
 		values: templateObjects[LVal](len(p.values)), envs: templateObjects[LEnv](len(p.envs)),
@@ -603,5 +612,5 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 	if config.ctx != nil {
 		root.evalCtx = config.ctx
 	}
-	return root, nil
+	return root
 }

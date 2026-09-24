@@ -423,7 +423,7 @@ var lvalCopyExemptions = []lvalCopyExemption{
 			"before `out.header = *header` publishes it into the plan (the second site).",
 	},
 	{
-		Func:  "(*templatePlan).instantiate",
+		Func:  "(*templatePlan).instantiateEager",
 		Sites: 1,
 		Reason: "a write into a PRIVATE per-VM allocation: instance.values comes from templateObjects, which " +
 			"news one LVal per plan entry for this instantiation alone, and every pointer field written into " +

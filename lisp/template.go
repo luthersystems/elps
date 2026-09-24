@@ -45,6 +45,18 @@ type templateConfig struct {
 	builtinPolicy func(*LVal) bool
 	nativePolicy  func(any) bool
 	frozen        map[string]bool
+	eager         bool
+}
+
+// TemplateWithEagerInstantiation makes every NewVM build the template's whole
+// value graph up front, as releases before lazy instantiation did. By default
+// a VM materializes each package binding, sorted-map entry and everything
+// they reach on first use, which is observably identical but costs only what
+// a VM touches. Eager instantiation is the escape hatch for a host that reads
+// one VM from several goroutines at once (lazy materialization turns reads
+// into writes) or that wants every allocation paid at NewVM.
+func TemplateWithEagerInstantiation() TemplateOption {
+	return func(c *templateConfig) { c.eager = true }
 }
 
 // TemplateWithBuiltinPolicy explicitly approves legacy Go builtin code for
@@ -162,6 +174,18 @@ func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 // NewVM constructs an independent VM from the template. Mutable values use
 // independent allocations, so retaining one returned scalar or byte view does
 // not retain unrelated VM storage. Context and stderr may be set per instance.
+//
+// Unless the template was published with TemplateWithEagerInstantiation, the
+// VM is built lazily: package bindings, sorted-map entries and what they reach
+// are created on first use, once per VM. A VM must therefore be used by one
+// goroutine at a time, including reads such as symbol lookups and map gets
+// made by the host; hand it between goroutines only with a happens-before
+// edge (a channel send, a mutex). Checked builds (-tags elpscheck) panic when
+// two goroutines materialize in one VM concurrently. Any number of goroutines
+// may call NewVM on one Template concurrently. A retained sorted map or
+// package with unmaterialized entries keeps the whole VM alive, as a retained
+// function or environment always has, until its last entry is materialized;
+// a fully read map retains only itself.
 func (t *Template) NewVM(opts ...VMOption) (*LEnv, error) {
 	if t == nil || t.plan.root == 0 {
 		return nil, errors.New("template: uninitialized template")
@@ -713,6 +737,9 @@ func (s *templateInventory) mapData(data *MapData) error {
 	case sortedmap:
 		// Keys and type flags are Go scalars, not source value identities.
 		// Avoid manufacturing temporary keys/pairs solely to discard them.
+		// Republishing a lazily instantiated VM: materialize pending entries
+		// before the direct table read.
+		backing.forceAll()
 		setTemplateFrameEntries(&s.next, backing.m)
 	case jsonMap:
 		if backing == nil {
