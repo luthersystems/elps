@@ -25,12 +25,12 @@ const (
 
 // jsonEqual compares two JSON documents structurally.
 func jsonEqual(a, b string) bool {
-	var aRaw interface{}
+	var aRaw any
 	err := json.Unmarshal([]byte(a), &aRaw)
 	if err != nil {
 		return false
 	}
-	var bRaw interface{}
+	var bRaw any
 	err = json.Unmarshal([]byte(b), &bRaw)
 	if err != nil {
 		return false

@@ -8,23 +8,23 @@ import (
 func TestVectorGoValue(t *testing.T) {
 	tests := []struct {
 		lval *LVal
-		gval interface{}
+		gval any
 	}{
 		{
 			Array(QExpr([]*LVal{Int(0)}), []*LVal{}),
-			[]interface{}{},
+			[]any{},
 		},
 		{
 			Array(nil, []*LVal{}),
-			[]interface{}{},
+			[]any{},
 		},
 		{
 			Array(QExpr([]*LVal{Int(1)}), []*LVal{Int(1)}),
-			[]interface{}{int(1)},
+			[]any{int(1)},
 		},
 		{
 			Array(nil, []*LVal{Int(1)}),
-			[]interface{}{int(1)},
+			[]any{int(1)},
 		},
 	}
 	for i, test := range tests {
@@ -112,7 +112,7 @@ func TestGoMapKeyReflectionGuards(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			lv := SortedMapFromData(NewMapData(&oneEntryMap{key: tc.key, val: Int(42)}))
 			got := GoValue(lv)
-			m, isMap := got.(map[interface{}]interface{})
+			m, isMap := got.(map[any]any)
 			if !isMap {
 				t.Fatalf("GoValue = %#v, want a map", got)
 			}
@@ -225,7 +225,7 @@ func TestBytesGoValue(t *testing.T) {
 func TestGoValueDegenerateMapBacking(t *testing.T) {
 	degenerate := func() *LVal { return SortedMapFromData(NewMapData(nil)) }
 	want := GoValue(SortedMap())
-	if _, ok := want.(map[interface{}]interface{}); !ok {
+	if _, ok := want.(map[any]any); !ok {
 		t.Fatalf("anti-vacuity: GoValue of an empty sorted-map is %T, want a Go map", want)
 	}
 
@@ -238,9 +238,9 @@ func TestGoValueDegenerateMapBacking(t *testing.T) {
 
 	t.Run("nested in a list", func(t *testing.T) {
 		got := GoValue(QExpr([]*LVal{Int(1), degenerate()}))
-		if !reflect.DeepEqual(got, []interface{}{1, want}) {
+		if !reflect.DeepEqual(got, []any{1, want}) {
 			t.Fatalf("GoValue(list holding a degenerate sorted-map) = %#v, want %#v",
-				got, []interface{}{1, want})
+				got, []any{1, want})
 		}
 	})
 

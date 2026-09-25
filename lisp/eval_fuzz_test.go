@@ -320,11 +320,11 @@ func (w *locationWatch) verify(t fatalf, src []byte) {
 // same code serves the fuzz target and the ordinary corpus tests.
 type fatalf interface {
 	Helper()
-	Fatalf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
 	// Skipf is how the harness declines to answer for one input when the
 	// process was starved throughout its watchdog window -- see
 	// internal/fuzzwatch. Both *testing.T and *testing.F have it.
-	Skipf(format string, args ...interface{})
+	Skipf(format string, args ...any)
 }
 
 // evalBudgeted parses and evaluates FUZZED src under the full budget,

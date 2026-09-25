@@ -392,13 +392,13 @@ func TestPackageLoader_SubstrateShape(t *testing.T) {
 func TestFunctionDoc_Docstring(t *testing.T) {
 	const docs = "Blend two paths.\n\nDeprecated: use join-paths instead."
 
-	documented, ok := interface{}(elpsutil.FunctionDoc(
+	documented, ok := any(elpsutil.FunctionDoc(
 		"blend-paths", lisp.Formals("a", "b"), nilFun, docs)).(interface{ Docstring() string })
 	require.True(t, ok, "*Builtin must satisfy the docstring interface lisp duck-types")
 	assert.Equal(t, docs, documented.Docstring())
 
 	// Function keeps working unchanged, with no documentation.
-	plain, ok := interface{}(elpsutil.Function(
+	plain, ok := any(elpsutil.Function(
 		"blend-paths", lisp.Formals("a", "b"), nilFun)).(interface{ Docstring() string })
 	require.True(t, ok)
 	assert.Empty(t, plain.Docstring())

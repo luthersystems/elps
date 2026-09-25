@@ -196,7 +196,7 @@ type handlerDataCloneProbe struct {
 	name  string
 }
 
-func (p *handlerDataCloneProbe) CloneNative() interface{} {
+func (p *handlerDataCloneProbe) CloneNative() any {
 	*p.order = append(*p.order, p.name)
 	return &handlerDataCloneProbe{order: p.order, name: p.name}
 }

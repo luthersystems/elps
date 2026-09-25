@@ -98,7 +98,7 @@ type detacher struct {
 	seen    map[*LVal]*LVal
 	maps    map[*MapData]*MapData
 	bytes   map[*[]byte]*[]byte
-	natives map[interface{}]interface{}
+	natives map[any]any
 	// runtime is supplied only by Lisp copy. It limits each data backing
 	// allocation, not total graph size or the walker's bookkeeping.
 	runtime *Runtime
@@ -401,7 +401,7 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 // the memo is filled after the clone, as byteSlice does.  The memo key is
 // pointer identity per Go ==, so every typed-nil pointer of one type, and
 // every pointer to a zero-size struct, shares one clone.
-func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interface{} {
+func (d *detacher) cloneNative(payload any, cloner NativeCloner) any {
 	memo := reflect.TypeOf(payload).Kind() == reflect.Pointer
 	if memo {
 		if clone, ok := d.natives[payload]; ok {
@@ -418,7 +418,7 @@ func (d *detacher) cloneNative(payload interface{}, cloner NativeCloner) interfa
 	}
 	if memo {
 		if d.natives == nil {
-			d.natives = make(map[interface{}]interface{})
+			d.natives = make(map[any]any)
 		}
 		d.natives[payload] = clone
 	}

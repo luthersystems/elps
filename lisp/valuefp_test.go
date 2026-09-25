@@ -230,7 +230,7 @@ func (s *valueFP) run(vs []*lisp.LVal) string {
 	return fmt.Sprintf("%016x", s.root.Sum64())
 }
 
-func (s *valueFP) mix(format string, args ...interface{}) {
+func (s *valueFP) mix(format string, args ...any) {
 	_, _ = fmt.Fprintf(s.h, format, args...)
 }
 

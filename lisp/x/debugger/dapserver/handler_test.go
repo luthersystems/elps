@@ -3211,7 +3211,7 @@ func TestDAPServer_StopOnEntry_AttachTrue(t *testing.T) {
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Client sends attach with stopOnEntry: true.
-	args, err := json.Marshal(map[string]interface{}{"stopOnEntry": true})
+	args, err := json.Marshal(map[string]any{"stopOnEntry": true})
 	require.NoError(t, err)
 	s.send(&dap.AttachRequest{
 		Request: dap.Request{
@@ -3261,7 +3261,7 @@ func TestDAPServer_StopOnEntry_AttachFalse(t *testing.T) {
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
 
 	// Client sends attach with stopOnEntry: false.
-	args, err := json.Marshal(map[string]interface{}{"stopOnEntry": false})
+	args, err := json.Marshal(map[string]any{"stopOnEntry": false})
 	require.NoError(t, err)
 	s.send(&dap.AttachRequest{
 		Request: dap.Request{

@@ -16,7 +16,7 @@ package debugger
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"sync"
 	"sync/atomic"
 
@@ -368,7 +368,7 @@ func (e *Engine) CommandNames() []string {
 	for name := range e.commands {
 		names = append(names, name)
 	}
-	sort.Strings(names)
+	slices.Sort(names)
 	return names
 }
 

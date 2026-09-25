@@ -7,7 +7,7 @@ import (
 	"hash/fnv"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/funraw"
@@ -224,13 +224,13 @@ func (s *sealedOracleState) digest(v *lisp.LVal) uint64 {
 // Physical addresses are meaningful only while their owners remain live. Keep
 // identity maps and their retainers together through every comparison (#625).
 type oracleCensus struct {
-	ids      map[interface{}]string
+	ids      map[any]string
 	natives  map[nativePayloadIdentity]any
 	retained []any // Keep snapshot addresses alive even after bindings/backings change.
 }
 
 func newOracleCensus(env *lisp.LEnv) oracleCensus {
-	ids := make(map[interface{}]string)
+	ids := make(map[any]string)
 	natives := make(map[nativePayloadIdentity]any)
 	retained := []any{env}
 	owned := make(map[nativePayloadIdentity]bool)
@@ -296,7 +296,7 @@ func sharedOracleCensuses(a, b oracleCensus, allowNative func(nativePayloadIdent
 		}
 		shared = append(shared, path)
 	}
-	sort.Strings(shared)
+	slices.Sort(shared)
 	runtime.KeepAlive(a.retained)
 	runtime.KeepAlive(b.retained)
 	return shared

@@ -150,7 +150,7 @@ func TestPanicWithNonStringValues(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name     string
-		panicVal interface{}
+		panicVal any
 		contains string
 	}{
 		{"integer", 42, "42"},

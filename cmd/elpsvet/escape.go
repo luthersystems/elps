@@ -91,7 +91,7 @@ var escapeAnalyzer = &analysis.Analyzer{
 	FactTypes: []analysis.Fact{new(freshLocation)},
 }
 
-func runEscape(pass *analysis.Pass) (interface{}, error) {
+func runEscape(pass *analysis.Pass) (any, error) {
 	// Summarise this package's location-returning functions first: an
 	// in-package call site below must be able to consult the fact, and the
 	// callee may live in a file this loop has not reached yet.

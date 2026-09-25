@@ -69,7 +69,7 @@ func BenchmarkStableSortMaps(b *testing.B) {
 // exists for.
 type benchCloner struct{ seq int }
 
-func (c benchCloner) CloneNative() interface{} { return benchCloner{seq: c.seq + 1} }
+func (c benchCloner) CloneNative() any { return benchCloner{seq: c.seq + 1} }
 
 // benchSortedMap builds a sorted map of n entries in one of three shapes:
 //

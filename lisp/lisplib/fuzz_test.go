@@ -720,8 +720,8 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 // interface for the same reason.
 type fuzzT interface {
 	Helper()
-	Fatalf(format string, args ...interface{})
-	Skipf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Skipf(format string, args ...any)
 }
 
 // spyT records a Fatalf instead of failing the test, so the wiring test can
@@ -739,9 +739,9 @@ type spyT struct {
 type spyFatal struct{}
 
 func (s *spyT) Helper() {}
-func (s *spyT) Fatalf(format string, args ...interface{}) {
+func (s *spyT) Fatalf(format string, args ...any) {
 	s.failed = true
 	s.msg = fmt.Sprintf(format, args...)
 	panic(spyFatal{})
 }
-func (s *spyT) Skipf(format string, args ...interface{}) { panic(spyFatal{}) }
+func (s *spyT) Skipf(format string, args ...any) { panic(spyFatal{}) }

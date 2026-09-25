@@ -1187,7 +1187,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
 			// embedder-facing half of that story is #351.
-			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
+			panic(env.formatError("macro already defined: %v (= %v)", []any{name, exist}))
 		}
 		// Formals() is read ONCE: a definition is free to build its list
 		// afresh on every call, and the list that is checked must be the
@@ -1220,7 +1220,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
-			panic(env.formatError("macro already defined: %v (= %v)", []interface{}{name, exist}))
+			panic(env.formatError("macro already defined: %v (= %v)", []any{name, exist}))
 		}
 		// One read of Formals(); see AddMacros.
 		opFormals := op.Formals()
@@ -1279,7 +1279,7 @@ func (env *LEnv) errorStack() *CallStack {
 // The bound is the diagnostic limit, not MaxAlloc: this text explains a
 // failure, and a MaxAlloc small enough to cap collection sizes would otherwise
 // leave nothing of the explanation but a truncation marker.
-func (env *LEnv) formatError(format string, args []interface{}) string {
+func (env *LEnv) formatError(format string, args []any) string {
 	remaining := diagnosticLimit(env.Runtime.MaxAllocBytes())
 	copied := false
 	for i, arg := range args {
@@ -1292,7 +1292,7 @@ func (env *LEnv) formatError(format string, args []interface{}) string {
 		}
 		if v != nil {
 			if !copied {
-				args = append([]interface{}(nil), args...)
+				args = append([]any(nil), args...)
 				copied = true
 			}
 			s, ok := v.boundedStringContext(remaining, env.evalCtx)
@@ -1316,7 +1316,7 @@ func (env *LEnv) formatError(format string, args []interface{}) string {
 //
 // Unlike the exported function, the Error method returns LVal with a copy
 // env.Runtime.Stack.
-func (env *LEnv) Error(msg ...interface{}) *LVal {
+func (env *LEnv) Error(msg ...any) *LVal {
 	return env.ErrorCondition("error", msg...)
 }
 
@@ -1330,7 +1330,7 @@ func (env *LEnv) Error(msg ...interface{}) *LVal {
 //
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
-func (env *LEnv) ErrorCondition(condition string, v ...interface{}) (result *LVal) {
+func (env *LEnv) ErrorCondition(condition string, v ...any) (result *LVal) {
 	// Error/As/Unwrap are host hooks, including when a source reader returns
 	// an error outside env.eval. Contain faults at this boundary as well.
 	defer env.recoverPanic(&result)
@@ -1375,7 +1375,7 @@ func (env *LEnv) ErrorCondition(condition string, v ...interface{}) (result *LVa
 //
 // Unlike the exported function, the Errorf method returns an LVal with a copy
 // env.Runtime.Stack.
-func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
+func (env *LEnv) Errorf(format string, v ...any) *LVal {
 	return env.ErrorConditionf("error", format, v...)
 }
 
@@ -1384,11 +1384,11 @@ func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 //
 // Unlike the exported function, the ErrorConditionf method returns an LVal
 // with a copy env.Runtime.Stack.
-func (env *LEnv) ErrorConditionf(condition string, format string, v ...interface{}) *LVal {
+func (env *LEnv) ErrorConditionf(condition string, format string, v ...any) *LVal {
 	return env.notifyError(env.newErrorConditionf(condition, format, v...))
 }
 
-func (env *LEnv) newErrorConditionf(condition string, format string, v ...interface{}) *LVal {
+func (env *LEnv) newErrorConditionf(condition string, format string, v ...any) *LVal {
 	lerr := &LVal{
 		// Copied, not aliased -- see ErrorCondition and ErrorAssociate
 		// (issue #366).

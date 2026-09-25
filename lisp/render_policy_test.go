@@ -152,7 +152,7 @@ func TestDebugPrintAggregateLimit(t *testing.T) {
 func TestErrorFormattingPreservesArguments(t *testing.T) {
 	env := NewEnv(nil)
 	v := SExpr([]*LVal{Int(1)})
-	args := []interface{}{v}
+	args := []any{v}
 	require.Equal(t, LError, env.Errorf("bad value: %v", args...).Type)
 	require.Same(t, v, args[0], "formatting must not replace a caller's arguments")
 }

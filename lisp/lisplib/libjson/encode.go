@@ -215,7 +215,7 @@ func (g encodeGuard) leave(v *lisp.LVal) {
 // puts the encoder back with an empty one.  See donateBuffer for why those two
 // differ.
 var encoderPool = sync.Pool{
-	New: func() interface{} { return &encoder{} },
+	New: func() any { return &encoder{} },
 }
 
 // encoderBufferRetentionLimit is the largest buffer an encoder may carry back
@@ -449,7 +449,7 @@ func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) (err error) {
 // documents never need the slice's header charged to them.  One slice is
 // taken per map, nested maps included, so no two maps ever share one.
 var mapPairPool = sync.Pool{
-	New: func() interface{} { return new([]lisp.MapPair) },
+	New: func() any { return new([]lisp.MapPair) },
 }
 
 // mapPairRetentionLimit bounds the entries a scratch slice may carry back
@@ -580,7 +580,7 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 // bytes are now already in enc.buf when checkLoadable runs, so a native that
 // fails the check is rolled back rather than never written.  Both are
 // invisible to a caller: an encode that errors discards its buffer.
-func (enc *encoder) encodeNative(v interface{}) error {
+func (enc *encoder) encodeNative(v any) error {
 	enc.wroteNative = true
 	mark := enc.buf.Len()
 	if err := json.NewEncoder(&enc.buf).Encode(v); err != nil {
@@ -708,7 +708,7 @@ func (enc *encoder) encodeNative(v interface{}) error {
 // element at any depth behind an interface. The property is only decidable on
 // the bytes. TestDumpRefusesUnloadableNativeBeyondRawMessage holds that line.
 func (enc *encoder) checkLoadable(b []byte) error {
-	var x interface{}
+	var x any
 	if err := jsonDecode(b, &x, enc.stringNums); err != nil {
 		return encodeUnloadableNativeError{err: err}
 	}

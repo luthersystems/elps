@@ -95,7 +95,7 @@ func TestValueWalkDepth(t *testing.T) {
 			err, _ = x.(error)
 			if err == nil {
 				for range depth {
-					xs, ok := x.([]interface{})
+					xs, ok := x.([]any)
 					if !ok || len(xs) != 1 {
 						t.Fatal("conversion lost container")
 					}

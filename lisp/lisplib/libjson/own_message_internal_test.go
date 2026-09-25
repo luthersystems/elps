@@ -39,7 +39,7 @@ import (
 func TestExemptionRidesOnTheFlag(t *testing.T) {
 	const unloadable = "1E1000"
 
-	envelope := func(native interface{}) *lisp.LVal {
+	envelope := func(native any) *lisp.LVal {
 		m := lisp.SortedMap()
 		m.MapSetString("result", lisp.Native(native))
 		return m

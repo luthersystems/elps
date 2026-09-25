@@ -252,7 +252,7 @@ func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
 // every document the direct decoder declines, which makes it the single
 // source of every load error.
 func (s *Serializer) loadIndirect(b []byte, opts LoadOpts) *lisp.LVal {
-	var x interface{}
+	var x any
 	err := s.jsonDecodeOpts(b, &x, opts)
 	if err != nil {
 		var syntaxErr *json.SyntaxError
@@ -267,7 +267,7 @@ func (s *Serializer) loadIndirect(b []byte, opts LoadOpts) *lisp.LVal {
 	return s.loadInterfaceOpts(x, opts)
 }
 
-func (s *Serializer) jsonDecodeOpts(b []byte, dst interface{}, opts LoadOpts) error {
+func (s *Serializer) jsonDecodeOpts(b []byte, dst any, opts LoadOpts) error {
 	if opts.StringNumbers {
 		return s.jsonDecode(b, dst, true)
 	}
@@ -277,7 +277,7 @@ func (s *Serializer) jsonDecodeOpts(b []byte, dst interface{}, opts LoadOpts) er
 	return decodeExactNumbers(b, dst)
 }
 
-func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) error {
+func (s *Serializer) jsonDecode(b []byte, dst any, stringNums bool) error {
 	return jsonDecode(b, dst, stringNums)
 }
 
@@ -289,7 +289,7 @@ func (s *Serializer) jsonDecode(b []byte, dst interface{}, stringNums bool) erro
 // documents it then refuses to read, which is elps#410: `1E1000` is
 // syntactically valid JSON and encoding/json marshals it straight through a
 // json.RawMessage, but unmarshalling it into a float64 overflows.
-func jsonDecode(b []byte, dst interface{}, stringNums bool) error {
+func jsonDecode(b []byte, dst any, stringNums bool) error {
 	if !stringNums {
 		return json.Unmarshal(b, dst)
 	}
@@ -321,7 +321,7 @@ func (e syntaxError) Error() string { return string(e) }
 
 // decodeExactNumbers decodes b with numbers left as their literal text, so
 // loadNumber can decide per value whether it is an integer or a float.
-func decodeExactNumbers(b []byte, dst interface{}) error {
+func decodeExactNumbers(b []byte, dst any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	if err := d.Decode(dst); err != nil {
@@ -416,14 +416,14 @@ func (*unmarshalFailer) UnmarshalJSON([]byte) error {
 	return errUnexpectedJSON
 }
 
-func (s *Serializer) loadInterfaceOpts(x interface{}, opts LoadOpts) *lisp.LVal {
+func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 	maxAlloc := opts.MaxAlloc
 	// NOTE:  The order of types in this switch is deliberate to try and
 	// minimize the number of skipped branches.
 	switch x := x.(type) {
 	case string:
 		return lisp.String(x)
-	case map[string]interface{}:
+	case map[string]any:
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
 		}
@@ -435,7 +435,7 @@ func (s *Serializer) loadInterfaceOpts(x interface{}, opts LoadOpts) *lisp.LVal 
 			x[k] = lval
 		}
 		return jsonraw.Wrap(x)
-	case []interface{}:
+	case []any:
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
 		}
@@ -663,7 +663,7 @@ var _ json.Marshaler = (*ownMessage)(nil)
 // message on the Go side has always passed in, and elps#412 is not a reason to
 // stop reading those.  It is only the WRITE side -- which type gets the
 // loadability exemption -- that distinguishes the two.
-func jsonMessage(v interface{}) (json.RawMessage, bool) {
+func jsonMessage(v any) (json.RawMessage, bool) {
 	switch m := v.(type) {
 	case *ownMessage:
 		return m.msg, true
@@ -799,7 +799,7 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // Deprecated:  GoValue is no longer used internally for serialization and
 // should be avoided. Excessive nesting (including cycles) returns an
 // ordinary *lisp.ErrorVal implementing error, using lisp.MaxValueDepth.
-func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
+func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) any {
 	out, ok := s.convertValue(v, stringNums)
 	// Invalid maps retain GoValue's historical typed nil result. Only a
 	// failed walk with no conversion result becomes a depth error here.
@@ -809,15 +809,15 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) interface{} {
 	return out
 }
 
-func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}, bool) {
+func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) {
 	type frame struct {
 		v      *lisp.LVal
-		dst    *interface{}
+		dst    *any
 		finish func()
 		depth  int
 		leave  bool
 	}
-	var out interface{}
+	var out any
 	valid := true
 	pending := []frame{{v: root, dst: &out}}
 	var path map[*lisp.LVal]bool
@@ -879,7 +879,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 				if len(pair.Cells) != 2 {
 					return nil, false
 				}
-				kv := make([]interface{}, 2)
+				kv := make([]any, 2)
 				pending = append(pending, frame{finish: func() {
 					if k, ok := kv[0].(string); ok {
 						m[k] = kv[1]
@@ -899,7 +899,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 			pending = append(pending, frame{v: children[0], dst: f.dst, depth: f.depth + 1})
 			continue
 		}
-		values := make([]interface{}, len(children))
+		values := make([]any, len(children))
 		*f.dst = values
 		for i := len(children) - 1; i >= 0; i-- {
 			pending = append(pending, frame{v: children[i], dst: &values[i], depth: f.depth + 1})
@@ -908,7 +908,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (interface{}
 	return out, valid
 }
 
-func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) interface{} {
+func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) any {
 	switch v.Type {
 	case lisp.LError:
 		return (*lisp.ErrorVal)(v)
@@ -1020,7 +1020,7 @@ func (s *Serializer) GoFloat64(v *lisp.LVal) (float64, bool) {
 //
 // Deprecated:  GoSlice is no longer used internally for serialization and
 // should be avoided.
-func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool) {
+func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]any, bool) {
 	if v.Type != lisp.LSExpr {
 		return nil, false
 	}
@@ -1029,9 +1029,9 @@ func (s *Serializer) GoSlice(v *lisp.LVal, stringNums bool) ([]interface{}, bool
 		return nil, false
 	}
 	if v.IsNil() {
-		return []interface{}{}, true
+		return []any{}, true
 	}
-	values, ok := out.([]interface{})
+	values, ok := out.([]any)
 	return values, ok
 }
 

@@ -7,7 +7,7 @@ import (
 	"reflect"
 	"regexp"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 
@@ -339,14 +339,14 @@ func normalizeFunIDs(s string) string {
 func roots(env *lisp.LEnv, visit func(pkg, name string, v *lisp.LVal)) {
 	reg := env.Runtime.Registry
 	names := reg.PackageNames()
-	sort.Strings(names)
+	slices.Sort(names)
 	for _, pn := range names {
 		pkg := reg.Package(pn)
 		if pkg == nil {
 			continue
 		}
 		syms := pkg.SymbolNames()
-		sort.Strings(syms)
+		slices.Sort(syms)
 		for _, sn := range syms {
 			v, ok := pkg.Symbol(sn)
 			if !ok || v == nil {
@@ -365,7 +365,7 @@ func sortedBindings(e *lisp.LEnv) (keys []string, vals map[string]*lisp.LVal) {
 		keys = append(keys, k)
 		vals[k] = v
 	}
-	sort.Strings(keys)
+	slices.Sort(keys)
 	return keys, vals
 }
 
@@ -549,7 +549,7 @@ func (w *stateWalker) env(e *lisp.LEnv) {
 // once per path in would be exponential on a diamond-shaped graph.
 func aliasSignature(env *lisp.LEnv) string {
 	var b strings.Builder
-	w := &aliasWalker{sb: &b, ids: map[interface{}]int{}, seen: map[interface{}]bool{}}
+	w := &aliasWalker{sb: &b, ids: map[any]int{}, seen: map[any]bool{}}
 	roots(env, func(pkg, name string, v *lisp.LVal) {
 		fmt.Fprintf(&b, "%s:%s = ", pkg, name)
 		w.value(v)
@@ -563,12 +563,12 @@ func aliasSignature(env *lisp.LEnv) string {
 
 type aliasWalker struct {
 	sb   *strings.Builder
-	ids  map[interface{}]int
-	seen map[interface{}]bool
+	ids  map[any]int
+	seen map[any]bool
 }
 
 // id numbers an identity on first sight.
-func (w *aliasWalker) id(key interface{}) int {
+func (w *aliasWalker) id(key any) int {
 	n, ok := w.ids[key]
 	if !ok {
 		n = len(w.ids)
@@ -586,7 +586,7 @@ func (w *aliasWalker) value(v *lisp.LVal) {
 		w.sb.WriteString("_")
 		return
 	}
-	var key interface{} = v
+	var key any = v
 	if p, ok := payloadIdentity(v); ok {
 		key = p
 		fmt.Fprintf(w.sb, "#%d", w.id(p))
@@ -662,7 +662,7 @@ func (w *aliasWalker) env(e *lisp.LEnv) {
 // a copying interface must never be used as a mutability classifier.
 // payloadIdentity returns the primary payload identity; oracleValueIDs also
 // includes all physical slots. Sealed Lisp values have no mutable identity.
-func payloadIdentity(v *lisp.LVal) (interface{}, bool) {
+func payloadIdentity(v *lisp.LVal) (any, bool) {
 	if v.IsSealed() {
 		return nil, false
 	}

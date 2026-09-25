@@ -398,7 +398,7 @@ func (s payloadSite) exemptsRow(row payloadRow) bool {
 	}
 }
 
-func runNativePayload(pass *analysis.Pass) (interface{}, error) {
+func runNativePayload(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
 		allow := markerLinesMatching(pass.Fset, file, justifiedNativeAllow)
 		for _, decl := range file.Decls {

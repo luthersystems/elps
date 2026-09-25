@@ -138,24 +138,21 @@ func InterpolateLogMessage(env *lisp.LEnv, template string) string {
 	}
 	var buf strings.Builder
 	for {
-		open := strings.Index(template, "{")
-		if open < 0 {
-			buf.WriteString(template)
+		before, rest, found := strings.Cut(template, "{")
+		buf.WriteString(before)
+		if !found {
 			break
 		}
-		buf.WriteString(template[:open])
-		rest := template[open+1:]
-		closeIdx := strings.Index(rest, "}")
-		if closeIdx < 0 {
+		expr, after, found := strings.Cut(rest, "}")
+		if !found {
 			// Unterminated brace — emit remainder literally.
 			buf.WriteByte('{')
 			buf.WriteString(rest)
 			break
 		}
-		expr := rest[:closeIdx]
 		result := EvalInContext(env, expr)
 		buf.WriteString(FormatValue(result))
-		template = rest[closeIdx+1:]
+		template = after
 	}
 	return buf.String()
 }

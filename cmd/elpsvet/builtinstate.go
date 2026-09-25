@@ -140,7 +140,7 @@ type builtinStateRun struct {
 	analysed map[ast.Node]bool
 }
 
-func runBuiltinState(pass *analysis.Pass) (interface{}, error) {
+func runBuiltinState(pass *analysis.Pass) (any, error) {
 	r := &builtinStateRun{
 		pass:     pass,
 		allow:    make(map[lineKey]bool),

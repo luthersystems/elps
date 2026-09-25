@@ -212,7 +212,7 @@ func (p *Pass) ReportWithNotes(d Diagnostic, notes ...string) {
 // extracts both start and end positions from the node. If the node
 // lacks end position information, it falls back to using the symbol
 // name length as a heuristic.
-func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...interface{}) {
+func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...any) {
 	d := Diagnostic{
 		Message: fmt.Sprintf(format, args...),
 	}
@@ -228,7 +228,7 @@ func (p *Pass) ReportNode(node *lisp.LVal, format string, args ...interface{}) {
 }
 
 // Reportf is a convenience for reporting a diagnostic at a position.
-func (p *Pass) Reportf(source *token.Location, format string, args ...interface{}) {
+func (p *Pass) Reportf(source *token.Location, format string, args ...any) {
 	d := Diagnostic{
 		Message: fmt.Sprintf(format, args...),
 	}

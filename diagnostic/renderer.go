@@ -70,7 +70,7 @@ type errWriter struct {
 	session *Session
 }
 
-func (ew *errWriter) printf(format string, a ...interface{}) {
+func (ew *errWriter) printf(format string, a ...any) {
 	if !ew.step() {
 		return
 	}

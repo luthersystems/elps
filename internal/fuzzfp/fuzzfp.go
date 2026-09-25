@@ -78,7 +78,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -386,7 +386,7 @@ func (s *goWalk) mapValue(b *strings.Builder, v reflect.Value, depth int) {
 		s.budget -= maxGoNodes/4 - sub.budget
 		entries = append(entries, eb.String())
 	}
-	sort.Strings(entries)
+	slices.Sort(entries)
 	for _, e := range entries {
 		b.WriteByte(' ')
 		b.WriteString(e)

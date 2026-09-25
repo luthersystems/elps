@@ -5,7 +5,7 @@ package perf
 import (
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -38,7 +38,7 @@ func FormatMermaid(w io.Writer, result *Result) error {
 	for name := range nodeSet {
 		nodes = append(nodes, name)
 	}
-	sort.Strings(nodes)
+	slices.Sort(nodes)
 
 	// Assign stable IDs to nodes (Mermaid IDs can't contain special chars).
 	nodeID := make(map[string]string, len(nodes))

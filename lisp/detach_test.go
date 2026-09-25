@@ -597,7 +597,7 @@ type cloneableNative struct {
 	clones int
 }
 
-func (c *cloneableNative) CloneNative() interface{} {
+func (c *cloneableNative) CloneNative() any {
 	c.clones++
 	return &cloneableNative{state: c.state}
 }

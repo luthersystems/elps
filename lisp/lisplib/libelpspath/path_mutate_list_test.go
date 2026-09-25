@@ -99,7 +99,7 @@ func parseOnce(t *testing.T, src string) []*lisp.LVal {
 // still inspect the (possibly corrupted) AST afterwards. On the unfixed
 // tree the list ! ops panic inside the LArray dims bookkeeping AFTER the
 // backing cells have already been shifted.
-func evalAll(env *lisp.LEnv, exprs []*lisp.LVal) (results []*lisp.LVal, panicked interface{}) {
+func evalAll(env *lisp.LEnv, exprs []*lisp.LVal) (results []*lisp.LVal, panicked any) {
 	defer func() { panicked = recover() }()
 	for _, e := range exprs {
 		results = append(results, env.EvalContext(context.Background(), e))

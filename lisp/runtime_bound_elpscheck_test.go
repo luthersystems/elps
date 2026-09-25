@@ -40,7 +40,7 @@ type rebindingNative struct {
 
 func (b *rebindingNative) BoundRuntime() *Runtime { return b.rt }
 
-func (b *rebindingNative) CloneNative() interface{} { return &rebindingNative{} }
+func (b *rebindingNative) CloneNative() any { return &rebindingNative{} }
 
 // expectAffinityPanic runs fn and fails the test unless fn panics with an
 // ownershipViolation naming an affinity violation on a payload of the named
@@ -86,7 +86,7 @@ func TestRuntimeBound_SameRuntimeUseIsAllowed(t *testing.T) {
 	if res.Type == LError {
 		t.Fatalf("read bound native: %v", res)
 	}
-	if res.Native != interface{}(payload) {
+	if res.Native != any(payload) {
 		t.Fatalf("read back a different payload: %#v", res.Native)
 	}
 	if out := env.Eval(Native(payload)); out.Type == LError {
@@ -179,7 +179,7 @@ type stickyNative struct {
 
 func (b *stickyNative) BoundRuntime() *Runtime { return b.rt }
 
-func (b *stickyNative) CloneNative() interface{} { return &stickyNative{rt: b.rt} }
+func (b *stickyNative) CloneNative() any { return &stickyNative{rt: b.rt} }
 
 // TestRuntimeBound_DetachRejectsBindingRetainingClone: a strict detach is a
 // cross-runtime transfer, and CloneNative cannot know the destination, so a

@@ -55,7 +55,7 @@ func Validate(p Package) error {
 		return errors.New("package is nil")
 	}
 	var problems []error
-	add := func(format string, v ...interface{}) {
+	add := func(format string, v ...any) {
 		problems = append(problems, fmt.Errorf(format, v...))
 	}
 

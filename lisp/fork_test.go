@@ -480,7 +480,7 @@ type statefulNative struct {
 	clones int
 }
 
-func (s *statefulNative) CloneNative() interface{} {
+func (s *statefulNative) CloneNative() any {
 	s.clones++
 	return &statefulNative{}
 }

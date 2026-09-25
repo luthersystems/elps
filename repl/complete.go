@@ -3,7 +3,7 @@
 package repl
 
 import (
-	"sort"
+	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/lisp"
@@ -92,6 +92,6 @@ func (c *symbolCompleter) collectSymbols(prefix string) []string {
 		}
 	}
 
-	sort.Strings(result)
+	slices.Sort(result)
 	return result
 }

@@ -85,9 +85,7 @@ func QueryPackage(env *lisp.LEnv, name string) (*PackageDoc, error) {
 // resolved in the context of env. Supports qualified names (pkg:sym).
 func QuerySymbol(env *lisp.LEnv, sym string) (*SymbolDoc, error) {
 	// Check if it's a qualified name.
-	if i := strings.Index(sym, ":"); i >= 0 {
-		pkgName := sym[:i]
-		symName := sym[i+1:]
+	if pkgName, symName, ok := strings.Cut(sym, ":"); ok {
 		pkg := env.Runtime.Registry.Package(pkgName)
 		if pkg == nil {
 			return nil, fmt.Errorf("no package: %q", pkgName)
@@ -553,9 +551,7 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 // Handles qualified names (pkg:sym) and unqualified names (current package).
 // Returns "" if the environment is not fully initialized.
 func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
-	if i := strings.Index(sym, ":"); i >= 0 {
-		pkgName := sym[:i]
-		symName := sym[i+1:]
+	if pkgName, symName, ok := strings.Cut(sym, ":"); ok {
 		if env.Runtime.Registry == nil {
 			return ""
 		}

@@ -12,8 +12,8 @@ func TestGoConversionContinuationSiblings(t *testing.T) {
 	shared := SortedMap()
 	shared.MapSetString("x", Vector([]*LVal{Int(7), String("value")}))
 	v := QExpr([]*LVal{shared, shared, Vector(nil)})
-	wantMap := map[interface{}]interface{}{"x": []interface{}{7, "value"}}
-	want := []interface{}{wantMap, wantMap, []interface{}{}}
+	wantMap := map[any]any{"x": []any{7, "value"}}
+	want := []any{wantMap, wantMap, []any{}}
 	// Force stack growth and cycle tracking before the shared siblings.
 	for range 80 {
 		v = &LVal{Type: LQuote, Cells: []*LVal{v}}

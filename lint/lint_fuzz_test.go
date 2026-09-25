@@ -684,8 +684,8 @@ func FuzzLintSource(f *testing.F) {
 // tests can pass something else.
 type fatalf interface {
 	Helper()
-	Fatalf(format string, args ...interface{})
-	Skipf(format string, args ...interface{})
+	Fatalf(format string, args ...any)
+	Skipf(format string, args ...any)
 }
 
 func runLintBudgeted(t fatalf, root string, src, wsSrc, scriptBytes []byte) {
