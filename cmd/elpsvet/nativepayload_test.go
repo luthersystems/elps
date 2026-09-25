@@ -372,7 +372,8 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // TestRegisteredAnalyzers pins the gate's rule set. `make elpsvet` runs
 // whatever multichecker.Main is handed, so a rule dropped from the slice --
 // or one added and never wired -- leaves a green gate checking less than the
-// Makefile comment, the workflow comment and CLAUDE.md all claim it does.
+// Makefile comment, the workflow comment and the elpsvet skill
+// (.claude/skills/elpsvet/SKILL.md) all claim it does.
 // The payload rule is fourth, builtin-state fifth, frozen-package sixth, and lazy-read seventh.
 func TestRegisteredAnalyzers(t *testing.T) {
 	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread"}

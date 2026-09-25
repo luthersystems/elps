@@ -248,7 +248,8 @@ payload never reaches a template. A `NativeCloner` method is not an exemption,
 for the reason above: an approved payload is shared unchanged and the clone
 hook is never called. The rule audits elps's own sources only; an embedder's
 payloads are the embedder's census to take (substrate runs the same rule over
-its tree). See CLAUDE.md, "Go static analysis over elps's own sources".
+its tree). See the header of `cmd/elpsvet/nativepayload.go` and the elpsvet skill
+(`.claude/skills/elpsvet/SKILL.md`).
 
 A callback obtains request state from `env.Context()`; it must not fall back
 to a captured load-time context. Shared caches, readers, writers and other

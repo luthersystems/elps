@@ -25,12 +25,16 @@ package lib<name>
 
 import (
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/lisp/lisplib/libutil"
+	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
+// DefaultPackageName is the package name used by LoadPackage.
 const DefaultPackageName = "<name>"
 
+// LoadPackage adds the <name> package to env.
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
+	prevPkg := env.Runtime.Package.Name
+	defer env.InPackage(lisp.Symbol(prevPkg))
 	name := lisp.Symbol(DefaultPackageName)
 
 	e := env.DefinePackage(name)
@@ -59,6 +63,7 @@ Detailed description of what the package provides.`)
 	return lisp.Nil()
 }
 
+//elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("my-func",
 		lisp.Formals("arg1", "arg2"),
@@ -81,20 +86,26 @@ func builtinMyFunc(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 ### Key Rules
 
 - **Always use `libutil.FunctionDoc()`** — never `libutil.Function()`. All functions must have docstrings. CI enforces this via `elps doc -m`.
-- **Use `lisp.Formals()`** for argument declarations. Available modifiers:
+- **Use `lisp.Formals()`** for argument declarations. Modifiers are plain symbols:
   - Required: `lisp.Formals("arg1", "arg2")`
-  - Optional: `lisp.Formals("required", lisp.FmtString("&optional"), "opt-arg")`
-  - Variadic: `lisp.Formals("required", lisp.FmtString("&rest"), "rest-args")`
-  - Keyword: `lisp.Formals("required", lisp.FmtString("&key"), "key-arg")`
+  - Optional: `lisp.Formals("required", lisp.OptArgSymbol, "opt-arg")` (`&optional`)
+  - Variadic: `lisp.Formals("required", lisp.VarArgSymbol, "rest-args")` (`&rest`)
+  - Keyword: `lisp.Formals("required", lisp.KeyArgSymbol, "key-arg")` (`&key`)
 - **Error propagation**: Return `env.Errorf("message: %v", detail)` for errors — never use Go's `error` interface
-- **Export symbols**: Call `env.Runtime.Package.Exports("func1", "func2", ...)` for all public symbols
+- **Exports**: `env.AddBuiltins(true, fn)` exports each function. Globals need an explicit `env.Runtime.Package.Exports("name", ...)`
+- **The `//elpsvet:allow` on the `builtins` table is required**: `make elpsvet` flags any package-level var that keeps `*lisp.LVal` reachable. Keep the justification; see `/elpsvet`
+- **Native Go values** returned to lisp must be publishable by templates — a scalar or a struct value embedding `internal/templatepolicy.Marker` (see `libtime`, `libregexp`). `make elpsvet` reports anything else; see `/elpsvet`
+- **Allocation limits**: size-dependent results must check `env.Runtime.CheckAlloc` / `MaxAllocBytes()` before allocating (see `libbase64`)
 
-### 3. Register in `LoadLibrary()`
+### 3. Register in the stdlib loader
 
-Edit `lisp/lisplib/lisplib.go`:
+`lisplib.LoadLibrary()` and `LoadRuntimeLibrary()` both delegate to
+`stdlib.Load` in `internal/stdlib/stdlib.go`. Edit that file:
 
 1. Add import: `"github.com/luthersystems/elps/lisp/lisplib/lib<name>"`
-2. Add to the package loader list in `LoadLibrary()`:
+2. Add to the loader sequence in `Load()`, before the final `InPackage` (only
+   inside the `if testing` block if the package holds mutable per-VM state,
+   like `libtesting`):
 
 ```go
 e = lib<name>.LoadPackage(env)
@@ -105,7 +116,7 @@ if !e.IsNil() {
 
 ### 4. Write Tests
 
-Create a lisp test file at `lisp/lisplib/lib<name>/lib<name>_test.go`:
+Create `lisp/lisplib/lib<name>/lib<name>_test.go` (the `_test` package suffix avoids an import cycle):
 
 ```go
 package lib<name>_test
@@ -116,13 +127,14 @@ import (
 	"github.com/luthersystems/elps/elpstest"
 )
 
-func TestLib<Name>(t *testing.T) {
-	runner := &elpstest.Runner{}
-	runner.RunTestFile(t, "testdata/<name>_test.lisp")
+func TestPackage(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "lib<name>_test.lisp")
 }
 ```
 
-Create the lisp test at `lisp/lisplib/lib<name>/testdata/<name>_test.lisp`:
+Create the lisp test beside it at `lisp/lisplib/lib<name>/lib<name>_test.lisp`:
 
 ```lisp
 (use-package 'testing)
@@ -153,7 +165,9 @@ make test                                # Full suite passes
 - [ ] `LoadPackage()` follows DefinePackage → InPackage → SetPackageDoc → AddBuiltins pattern
 - [ ] All functions use `libutil.FunctionDoc()` (not `Function()`)
 - [ ] All public symbols exported via `Exports()`
-- [ ] Package registered in `lisplib.go` `LoadLibrary()`
+- [ ] Package registered in `internal/stdlib/stdlib.go` `Load()`
+- [ ] `builtins` table carries its `//elpsvet:allow` justification; `make elpsvet` clean
+- [ ] Package listed in the `lisp/lisplib/` bullet of `AGENTS.md`
 - [ ] Tests written with `elpstest.Runner` + `.lisp` test file
 - [ ] `elps doc -m` passes (no missing docstrings)
 - [ ] `make test` passes

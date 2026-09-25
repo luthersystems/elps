@@ -141,11 +141,11 @@ go test ./lisp/...   # the interpreter core alone, for a narrow unit
 
 ## What Codex does not know
 
-Codex has not read `CLAUDE.md`. **Put the rules it must obey into the task
+Do not assume Codex has read `AGENTS.md` or the skills. **Put the rules it must obey into the task
 text**, or read its diff before you keep the work. The ones a brief must cite:
 
 - Read the matching `.claude/skills/*/SKILL.md` before starting, and follow it.
-- Run `make test && make static-checks` before committing.
+- Run `make test && make static-checks && make elpsvet` before handing back (the full gate is `.claude/skills/verify/SKILL.md`).
 - Every new builtin, special operator, or macro needs a docstring; CI runs
   `elps doc -m`.
 - A new form with structural requirements needs a lint analyzer registered in

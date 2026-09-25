@@ -115,10 +115,10 @@ GOLANGCI_CI_VERSION := $(shell sed -n 's/^[[:space:]]*version:[[:space:]]*\(v[0-
 # This exists because the failure mode is SILENT and costs real time: a local
 # run on a different version produces findings CI does not have, or misses
 # findings CI does. Both directions have happened here. The sharp one is
-# nolintlint: parser/token/token.go carries two //nolint:gosec directives that
-# are load-bearing under CI's version but report as "unused" under an older
+# nolintlint: parser/token/token.go carries a //nolint:gosec directive that
+# is load-bearing under CI's version but reports as "unused" under an older
 # gosec -- so an older local golangci-lint invites you to delete the very
-# directives that keep CI green.
+# directive that keeps CI green.
 .PHONY: check-golangci-version
 check-golangci-version:
 	@command -v golangci-lint >/dev/null 2>&1 || { \

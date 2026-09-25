@@ -40,7 +40,7 @@ Scan for:
 - Integer overflow in numeric operations
 - Unsafe type assertions without checking
 
-Run: `golangci-lint run --enable gosec ./...`
+Run: `make static-checks` (gosec is enabled in `.golangci.yml`), `make elpsvet` (shared-state and native-payload invariants; `/elpsvet`), and a `make fuzz` pass over the packages in scope (`/fuzz`)
 
 Where to look: `lisp/lisplib/`, `cmd/`, `repl/`
 
@@ -55,7 +55,7 @@ Scan for:
 
 Run benchmarks before/after: Follow `/benchmark` skill workflow.
 
-Where to look: `lisp/eval.go`, `lisp/builtins.go`, `parser/rdparser/`
+Where to look: `lisp/env.go` (eval loop), `lisp/builtins.go`, `parser/rdparser/`
 
 #### Category 4: Tests
 
@@ -78,12 +78,12 @@ Scan for:
 - Incorrect help text (description doesn't match behavior)
 - Missing examples in documentation
 
-Where to look: `docs/lang.md`, builtin/op/macro definitions, `CLAUDE.md`
+Where to look: `docs/lang.md`, `docs/lint-checks.md`, builtin/op/macro definitions, `AGENTS.md`, `.claude/skills/`
 
 #### Category 6: Code Quality
 
 Scan for:
-- golangci-lint findings: `golangci-lint run ./...`
+- golangci-lint findings: `make static-checks` (mind the version-skew note in `AGENTS.md` before removing a `//nolint`)
 - Inconsistent patterns (e.g., some builtins check errors, others don't)
 - Dead imports
 - TODO/FIXME/HACK comments that should be resolved

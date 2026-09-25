@@ -28,6 +28,8 @@ fi
 
 **STOP** if on main/master. Create a feature branch before proceeding. Never push directly to the default branch.
 
+Run this guard before every commit, not just before pushing: `git checkout main && git pull` mid-session leaves you on main, and the next commit lands there (this has happened). `git branch --show-current` is cheap.
+
 ### 3. Fetch and Rebase
 
 ```bash
@@ -39,7 +41,7 @@ If there are conflicts, resolve them before proceeding.
 
 ### 4. Run Full Verification
 
-Run the complete `/verify` pipeline (all 6 steps). If any step fails, stop and fix before creating the PR.
+Run the complete `/verify` pipeline. If any step fails, stop and fix before creating the PR.
 
 ### 5. Push
 
@@ -56,11 +58,8 @@ gh pr create --title "<concise title>" --body "$(cat <<'EOF'
 - <bullet point describing why>
 
 ## Test Plan
-- [ ] `make test` passes
-- [ ] `make static-checks` passes
-- [ ] `./elps fmt -l ./...` reports no changes
-- [ ] `./elps lint ./...` reports no diagnostics
-- [ ] `./elps doc -m` reports no missing docs
+- [ ] `/verify` pipeline passes (tests, race, elpscheck, static-checks, elpsvet, fmt, lint, doc)
+- [ ] <change-specific checks>
 
 Closes #<N>
 EOF
@@ -82,7 +81,7 @@ Return the PR URL so the user can review it.
 - **Summary**: 1-3 bullet points explaining what and why
 - **Test Plan**: Checklist of verification steps
 - **Closes #N**: Link to the issue if this PR resolves one
-- Include the Claude Code attribution line
+- End with the attribution line your session instructions specify
 
 ## Checklist
 
