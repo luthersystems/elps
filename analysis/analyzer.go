@@ -1489,6 +1489,7 @@ func isLispBuiltinSymbol(sym *Symbol) bool {
 	switch sym.Kind {
 	case SymBuiltin, SymSpecialOp, SymMacro:
 		return true
+	default:
+		return false
 	}
-	return false
 }
