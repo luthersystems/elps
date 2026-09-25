@@ -52,6 +52,16 @@ on:
         required: false
         default: "60s"
 
+# DOCS-ONLY PULL REQUESTS. The `changes` job runs scripts/docs-only-changes.sh
+# and the heavy jobs below carry `if: needs.changes.outputs.docs_only != 'true'`,
+# so a pull request that changes only documentation skips them. The workflow
+# itself is NOT path-filtered: the `Required: *` aggregate still runs on every
+# PR and passes a docs-only skip only through scripts/require-jobs-succeeded.sh,
+# which accepts `skipped` solely when DOCS_ONLY is `true` on a pull_request
+# event and still fails on any `failure` or `cancelled`. Pushes to main and
+# scheduled/dispatched runs always get docs_only=false, so they run everything.
+# What counts as docs-only is documented in that script.
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
@@ -60,6 +70,32 @@ permissions:
   contents: read
 
 jobs:
+  # DOCS-ONLY DETECTION -- see "DOCS-ONLY PULL REQUESTS" at the top of this
+  # file. Cheap (one shallow checkout, one git diff), runs on EVERY event, and
+  # is upstream of the aggregate so its own failure fails the required check.
+  changes:
+    name: Detect docs-only change
+    # ARM for the reason spelled out on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
+    # 5 minutes against a job that is a checkout and a `git diff`. It gates
+    # every heavy job and feeds the required aggregate, so it must be bounded.
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # The PR merge commit plus its parents, so HEAD^1..HEAD is exactly
+          # what merging this PR changes on the base branch.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/docs-only-changes.sh
+
   fuzz:
     # strategy.job-total, not a literal: a "/5" that did not move when the
     # matrix gained a sixth shard once had the board reading
@@ -179,6 +215,8 @@ jobs:
     # Do not raise this by hand to make a red gate green -- run
     # `make fuzz-budget-check`, which prints the arithmetic and the options.
     timeout-minutes: 60
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     env:
       # 30s on a PR, 10m on the nightly schedule, whatever was asked for on a
       # manual dispatch. The PR budget is intentionally small: this job is a
@@ -313,18 +351,23 @@ jobs:
     # none, and it is the job whose NAME is in branch protection -- so a wedge
     # here blocks the PR with a spinner and no red signal (#468).
     timeout-minutes: 5
-    needs: fuzz
+    needs: [changes, fuzz]
     if: always()
     steps:
-      - name: Check shard results
+      # NOTE: this checkout is NEW -- see the same note in elps.yml (#493).
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Delegated, NOT inlined. This body used to be an inline scalar compare
+      # of `needs.fuzz.result` against "success" -- legitimately inline under
+      # the #493 guard, because the empty string failed it. Accepting a
+      # docs-only `skipped` would have put a second, untested decision into
+      # that inline shell, so it now runs the same shellchecked,
+      # fixture-tested script as every other aggregate. `needs.fuzz.result`
+      # is the matrix's single rolled-up result, so the fan-in over
+      # [changes, fuzz] still covers every shard.
+      - name: Assert every job in this workflow succeeded
         env:
-          RESULT: ${{ needs.fuzz.result }}
-        run: |
-          echo "fuzz matrix result: ${RESULT}"
-          # success is the only pass. failure, cancelled and skipped all mean
-          # the sweep did not demonstrably run to completion.
-          if [ "${RESULT}" != "success" ]; then
-            echo "::error::The fuzz sweep did not succeed (matrix result: ${RESULT}). Open the individual shard jobs for the failing target."
-            exit 1
-          fi
-          echo "All fuzz shards passed."
+          RESULTS: ${{ join(needs.*.result, ' ') }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/require-jobs-succeeded.sh

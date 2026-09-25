@@ -1154,6 +1154,421 @@ else
 fi
 rm -rf "$reqjobs_tmp"
 
+echo
+echo "== docs-only PRs: heavy jobs may skip, required checks must still report ==="
+
+# Every workflow with a `Required: *` aggregate skips its heavy jobs on a PR
+# that changes only documentation (scripts/docs-only-changes.sh), and the
+# aggregate accepts that `skipped` through require-jobs-succeeded.sh's
+# DOCS_ONLY mode. This is the ONE place `skipped` is allowed to read as a pass,
+# so each condition on it is pinned in both directions, and the workflows'
+# wiring is simulated end to end further down.
+
+# (1) The aggregate script in docs-only mode.
+assert_exit 0 "docs-only: heavy jobs SKIPPED, changes succeeded -> aggregate passes" \
+	env RESULTS='success success skipped skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 0 "code change: every job ran and succeeded -> aggregate passes" \
+	env RESULTS='success success success success' DOCS_ONLY=false EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "code change: a SKIPPED heavy job still fails the aggregate (DOCS_ONLY=false)" \
+	env RESULTS='success success skipped' DOCS_ONLY=false EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "code change: a FAILED heavy job fails the aggregate" \
+	env RESULTS='success failure success' DOCS_ONLY=false EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "code change: a CANCELLED heavy job fails the aggregate" \
+	env RESULTS='success cancelled success' DOCS_ONLY=false EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "docs-only: a FAILED job still fails the aggregate" \
+	env RESULTS='success failure skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "docs-only: a CANCELLED job still fails the aggregate" \
+	env RESULTS='success cancelled skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "docs-only is NOT honoured on a push to main" \
+	env RESULTS='success skipped' DOCS_ONLY=true EVENT_NAME=push bash "$REQ_JOBS"
+assert_exit 1 "docs-only is NOT honoured on a scheduled run" \
+	env RESULTS='success skipped' DOCS_ONLY=true EVENT_NAME=schedule bash "$REQ_JOBS"
+assert_exit 1 "docs-only is NOT honoured when EVENT_NAME is unset" \
+	env -u EVENT_NAME RESULTS='success skipped' DOCS_ONLY=true bash "$REQ_JOBS"
+assert_exit 1 "DOCS_ONLY must be exactly 'true' (not 'True')" \
+	env RESULTS='success skipped' DOCS_ONLY=True EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "DOCS_ONLY must be exactly 'true' (not '1')" \
+	env RESULTS='success skipped' DOCS_ONLY=1 EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "a failed changes job (empty DOCS_ONLY) leaves its dependants' skip a failure" \
+	env RESULTS='failure skipped skipped' DOCS_ONLY='' EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "docs-only: ALL skipped (nothing succeeded, not even changes) fails" \
+	env RESULTS='skipped skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_exit 1 "docs-only: EMPTY results still fail (#485)" \
+	env RESULTS='' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+assert_contains "changes only documentation" \
+	"docs-only: the pass SAYS the skips were docs-only rather than claiming every job ran" \
+	env RESULTS='success skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS"
+if env RESULTS='success skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "$REQ_JOBS" 2>&1 |
+	grep -q "All jobs in this workflow succeeded"; then
+	bad "docs-only: the aggregate claims every job succeeded when some were skipped"
+else
+	ok "docs-only: the aggregate does not claim skipped jobs succeeded"
+fi
+
+# NEGATIVE CONTROLS: strip each docs-only condition out of a COPY of the live
+# script and require the unsafe pass to come back, so the assertions above are
+# shown to be load-bearing. Mutated from the real file, never a fixture.
+docsonly_tmp="$(mktemp -d)"
+docsonly_mut() { # <mutation> <dest> -- exit 3 if the target cannot be found
+	python3 - "$REQ_JOBS" "$2" "$1" <<'PY'
+import re, sys
+src, dst, which = open(sys.argv[1]).read(), sys.argv[2], sys.argv[3]
+if which == "no-event-check":
+    out, n = re.subn(r' && \[ "\$\{EVENT_NAME-\}" = "pull_request" \]', "", src)
+elif which == "no-success-floor":
+    out, n = re.subn(r'\nif \[ "\$allow_skip" -eq 1 \] && \[ "\$rc" -eq 0 \] && \[ "\$saw_success" -eq 0 \]; then\n.*?\nfi\n',
+                     "\n", src, flags=re.S)
+else:
+    sys.exit("unknown mutation")
+if n != 1:
+    sys.stderr.write("mutation %r applied %d times, expected 1\n" % (which, n))
+    sys.exit(3)
+open(dst, "w").write(out)
+PY
+}
+if docsonly_mut no-event-check "${docsonly_tmp}/noevent.sh"; then
+	if env RESULTS='success skipped' DOCS_ONLY=true EVENT_NAME=push bash "${docsonly_tmp}/noevent.sh" >/dev/null 2>&1; then
+		ok "negative control: REMOVING the pull_request check lets a push skip -- the event assertion is load-bearing"
+	else
+		bad "negative control: removing the pull_request check did not change the push verdict -- the assertion may pass for the wrong reason"
+	fi
+else
+	bad "negative control: could not locate the EVENT_NAME condition in require-jobs-succeeded.sh -- reworded?"
+fi
+if docsonly_mut no-success-floor "${docsonly_tmp}/nofloor.sh"; then
+	if env RESULTS='skipped skipped' DOCS_ONLY=true EVENT_NAME=pull_request bash "${docsonly_tmp}/nofloor.sh" >/dev/null 2>&1; then
+		ok "negative control: REMOVING the at-least-one-success floor lets an all-skipped run pass -- the floor is load-bearing"
+	else
+		bad "negative control: removing the success floor did not change the all-skipped verdict"
+	fi
+else
+	bad "negative control: could not locate the success floor in require-jobs-succeeded.sh -- reworded?"
+fi
+
+# (2) The classifier. When in doubt it must say false.
+DOCS_CLASSIFY="${SCRIPT_DIR}/docs-only-changes.sh"
+classify_is() { # <want true|false> <description> <path>...
+	local want="$1" desc="$2" got
+	shift 2
+	got="$(printf '%s\n' "$@" | bash "$DOCS_CLASSIFY" --classify 2>/dev/null)"
+	if [ "$got" = "$want" ]; then
+		ok "classify: ${desc} -> ${want}"
+	else
+		bad "classify: ${desc} -> want ${want}, got '${got}'"
+	fi
+}
+classify_is true "a root README" README.md
+classify_is true "prose docs, CLAUDE.md, editor READMEs" \
+	docs/fork.md docs/design/tailrec-optimization.md CLAUDE.md CONTRIBUTING.md \
+	editors/vscode/README.md editors/vscode/CHANGELOG.md lisp/lisplib/libschema/README.md
+classify_is true "LICENSE, AUTHORS, CONTRIBUTORS" LICENSE AUTHORS CONTRIBUTORS
+classify_is true ".claude/ agent tooling (read by no CI job)" \
+	.claude/skills/verify/SKILL.md .claude/hooks/session-start.sh .claude/settings.json
+classify_is false "docs/lang.md is //go:embed-ed into the binary" docs/lang.md
+classify_is false "docs/debugging-guide.md is //go:embed-ed" docs/debugging-guide.md
+classify_is false "docs/lsp-guide.md is //go:embed-ed" docs/lsp-guide.md
+classify_is false "docs plus ONE Go file" README.md lisp/env.go
+classify_is false "a .lisp file" lisp/lisplib/libtesting/testing.lisp
+classify_is false "go.mod" go.mod
+classify_is false "go.sum" go.sum
+classify_is false "Makefile" Makefile
+classify_is false "a workflow" .github/workflows/elps.yml
+classify_is false "markdown under .github/" .github/pull_request_template.md
+classify_is false "markdown under scripts/" scripts/README.md
+classify_is false "markdown under tree-sitter-elps/" tree-sitter-elps/README.md
+classify_is false "editor code (not its markdown)" editors/vscode/package.json
+classify_is false "markdown a test reads (testdata/)" parser/rdparser/testdata/bench/sicp/README.md
+classify_is false "the embedding Go file" docs/embed.go
+classify_is false "a non-markdown file under docs/" docs/template-poc/production-benchmark.txt
+classify_is false "a LICENSE that is not the root one" vendor/LICENSE
+classify_is false "a suffix that only looks like markdown" README.md.go
+classify_is false "an EMPTY change list" ""
+
+# (3) The git half, against a real merge commit shaped like GitHub's PR merge
+# ref (first parent = base tip, second parent = PR head), fetched the way
+# actions/checkout does it: shallow, depth 2. The base moves on AFTER the PR
+# branches, touching Go, so diffing against the fork point instead of HEAD^1
+# would misread a docs-only PR as a code change -- that is pinned too.
+docs_git_case() { # <event> <pr-file> -> prints the docs_only line from GITHUB_OUTPUT
+	local event="$1" prfile="$2" d="${docsonly_tmp}/git-$RANDOM$RANDOM"
+	mkdir -p "$d"
+	(
+		set -e
+		export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+			GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+		git init -q -b main "$d/origin"
+		cd "$d/origin"
+		echo base >README.md && echo 'package x' >x.go && git add . && git commit -qm base
+		git checkout -qb pr
+		echo change >>"$prfile" && git add . && git commit -qm pr
+		git checkout -q main
+		echo '// base moved' >>x.go && git commit -qam base2
+		git merge -q --no-ff -m merge pr
+		git clone -q --depth 2 "file://$d/origin" "$d/co"
+	) >/dev/null 2>&1 || { echo "setup-failed"; return; }
+	(cd "$d/co" && GITHUB_OUTPUT="$d/out" EVENT_NAME="$event" bash "$DOCS_CLASSIFY" >/dev/null 2>&1)
+	cat "$d/out" 2>/dev/null || echo "no-output"
+}
+got="$(docs_git_case pull_request README.md)"
+if [ "$got" = "docs_only=true" ]; then
+	ok "git: a PR merge commit touching only README.md (base moved on in Go) -> docs_only=true"
+else
+	bad "git: docs-only PR merge commit -> want docs_only=true, got '${got}'"
+fi
+got="$(docs_git_case pull_request y.go)"
+if [ "$got" = "docs_only=false" ]; then
+	ok "git: a PR merge commit touching Go -> docs_only=false"
+else
+	bad "git: code PR merge commit -> want docs_only=false, got '${got}'"
+fi
+got="$(docs_git_case push README.md)"
+if [ "$got" = "docs_only=false" ]; then
+	ok "git: a push event always runs everything, even for a README-only change"
+else
+	bad "git: push event -> want docs_only=false, got '${got}'"
+fi
+# HEAD that is not a merge commit: the diff is not the one the script reasons
+# about, so it must fall back to running everything.
+nm="${docsonly_tmp}/nomerge"
+if (
+	set -e
+	export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.invalid \
+		GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.invalid
+	git init -q -b main "$nm" && cd "$nm"
+	echo a >README.md && git add . && git commit -qm a
+	echo b >>README.md && git commit -qam b
+) >/dev/null 2>&1; then
+	got="$(cd "$nm" && GITHUB_OUTPUT="$nm/out" EVENT_NAME=pull_request bash "$DOCS_CLASSIFY" >/dev/null 2>&1; cat "$nm/out" 2>/dev/null)"
+	if [ "$got" = "docs_only=false" ]; then
+		ok "git: a HEAD that is not a merge commit falls back to docs_only=false"
+	else
+		bad "git: non-merge HEAD -> want docs_only=false, got '${got}'"
+	fi
+else
+	bad "git: could not build the non-merge fixture repository"
+fi
+
+# (4) The workflows' wiring, simulated. For every pull_request workflow with a
+# `Required: *` aggregate, read the LIVE file, find the `changes` job and the
+# jobs conditioned on it, and run the aggregate's real script with the env the
+# aggregate step binds, under each scenario. Structural rules first:
+#   * a `changes` job exists, runs scripts/docs-only-changes.sh, has no `if:`,
+#     checks out with fetch-depth >= 2, and exports docs_only;
+#   * every conditioned ("heavy") job needs `changes` and carries EXACTLY
+#     `needs.changes.outputs.docs_only != 'true'` -- no always()/||, so a
+#     failed `changes` job skips it and that skip is then NOT excused;
+#   * no other non-aggregate job has any `if:`, since in docs-only mode the
+#     aggregate would excuse a skip that had nothing to do with docs.
+cat >"${docsonly_tmp}/wiring.py" <<'PY_WIRE'
+import glob, os, re, subprocess, sys
+
+root, script_root = sys.argv[1], sys.argv[2]
+try:
+    import yaml
+except ImportError:
+    print("__SKIP__ pyyaml unavailable")
+    sys.exit(0)
+
+COND = "needs.changes.outputs.docs_only != 'true'"
+failures, passes, wired = [], [], []
+
+
+def as_list(v):
+    return [v] if isinstance(v, str) else list(v or [])
+
+
+for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml"))):
+    base = os.path.basename(f)
+    try:
+        doc = yaml.safe_load(open(f))
+    except Exception:  # noqa: BLE001 -- the YAML-parse guard owns this
+        continue
+    if not isinstance(doc, dict):
+        continue
+    triggers = doc.get("on", doc.get(True)) or {}
+    if isinstance(triggers, (str, list)):
+        triggers = {t: None for t in as_list(triggers)}
+    if "pull_request" not in triggers:
+        continue
+    jobs = {k: v for k, v in (doc.get("jobs") or {}).items() if isinstance(v, dict)}
+    aggs = [j for j in jobs if str(jobs[j].get("name") or j).startswith("Required:")]
+    if len(aggs) != 1:
+        continue  # the aggregate-coverage guard owns this
+    agg = aggs[0]
+    wired.append(base)
+
+    ch = jobs.get("changes")
+    if not ch:
+        failures.append(f"{base}: no `changes` job -- every PR workflow with a required aggregate classifies docs-only changes the same way")
+        continue
+    steps = ch.get("steps") or []
+    if "if" in ch:
+        failures.append(f"{base}: the `changes` job has an `if:`; it must run on every event")
+    if not any("scripts/docs-only-changes.sh" in str(s.get("run") or "") for s in steps):
+        failures.append(f"{base}: the `changes` job does not run scripts/docs-only-changes.sh")
+    depth = [int((s.get("with") or {}).get("fetch-depth", 1)) for s in steps if "actions/checkout" in str(s.get("uses") or "")]
+    if not depth or not (min(depth) == 0 or min(depth) >= 2):
+        failures.append(f"{base}: the `changes` checkout needs fetch-depth >= 2 (the merge commit AND its parents)")
+    if "docs_only" not in (ch.get("outputs") or {}):
+        failures.append(f"{base}: the `changes` job does not export a docs_only output")
+
+    heavy, others = [], []
+    for jid, job in jobs.items():
+        if jid in (agg, "changes"):
+            continue
+        cond = job.get("if")
+        if cond is None:
+            others.append(jid)
+            continue
+        if str(cond).strip() != COND:
+            failures.append(
+                f"{base}: job {jid!r} has `if: {cond}`. In a docs-only-aware workflow the only "
+                f"permitted condition is `{COND}`: anything else could skip the job for an "
+                f"unrelated reason that the aggregate would then excuse on a docs-only PR, or "
+                f"(with always()/||) keep it running after `changes` failed.")
+            others.append(jid)  # still simulated below, as an always-on job
+            continue
+        if "changes" not in as_list(job.get("needs")):
+            failures.append(f"{base}: job {jid!r} is conditioned on docs_only but does not need `changes`")
+            continue
+        heavy.append(jid)
+
+    # The aggregate's deciding step and the env it binds.
+    step = next((s for s in jobs[agg].get("steps") or [] if "require-jobs-succeeded.sh" in str(s.get("run") or "")), None)
+    if step is None:
+        failures.append(f"{base}: {agg!r} does not run scripts/require-jobs-succeeded.sh, so its docs-only handling is untested")
+        continue
+    needs = as_list(jobs[agg].get("needs"))
+
+    def simulate(results, docs_only, event):
+        env = dict(os.environ)
+        for k in ("RESULTS", "DOCS_ONLY", "EVENT_NAME"):
+            env.pop(k, None)
+        for k, v in (step.get("env") or {}).items():
+            v = str(v)
+            if re.fullmatch(r"\$\{\{\s*join\(needs\.\*\.result,\s*' '\)\s*\}\}", v):
+                env[k] = " ".join(results[n] for n in needs)
+            elif re.fullmatch(r"\$\{\{\s*needs\.changes\.outputs\.docs_only\s*\}\}", v):
+                env[k] = docs_only
+            elif re.fullmatch(r"\$\{\{\s*github\.event_name\s*\}\}", v):
+                env[k] = event
+            else:
+                return None
+        r = subprocess.run(["bash", os.path.join(script_root, "require-jobs-succeeded.sh")],
+                           env=env, capture_output=True, text=True, timeout=60)
+        return r.returncode
+
+    def outcome(heavy_result, changes="success", other="success"):
+        res = {"changes": changes}
+        for j in heavy:
+            res[j] = heavy_result
+        for j in others:
+            res[j] = other
+        return res
+
+    # Heavy jobs carry exactly COND (checked above), so they are `skipped`
+    # when docs_only is 'true' and run otherwise.
+    scenarios = [
+        # (label, results, DOCS_ONLY, event, want_exit)
+        ("docs-only PR: heavy jobs skipped", outcome("skipped"), "true", "pull_request", 0),
+        ("code PR: heavy jobs run and pass", outcome("success"), "false", "pull_request", 0),
+        ("code PR: a heavy job FAILED", outcome("failure"), "false", "pull_request", 1 if heavy else 0),
+        ("code PR: a heavy job CANCELLED", outcome("cancelled"), "false", "pull_request", 1 if heavy else 0),
+        ("docs-only PR: an always-on job FAILED", outcome("skipped", other="failure"), "true", "pull_request", 1 if others else 0),
+        ("`changes` FAILED: heavy jobs skipped, DOCS_ONLY empty", outcome("skipped", changes="failure"), "", "pull_request", 1),
+        ("push to main can never skip", outcome("skipped"), "true", "push", 1 if heavy else 0),
+    ]
+    bad_ = []
+    for label, results, docs_only, event, want in scenarios:
+        got = simulate(results, docs_only, event)
+        if got is None:
+            bad_.append(f"cannot simulate: {agg!r}'s step binds an env value this guard does not model")
+            break
+        if (got == 0) != (want == 0):
+            bad_.append(f"{label}: aggregate exit {got}, want {'0' if want == 0 else 'non-zero'}")
+    if bad_:
+        failures.extend(f"{base}: {b}" for b in bad_)
+    else:
+        passes.append(
+            f"{base}: '{jobs[agg].get('name')}' passes a docs-only PR with {sorted(heavy) or 'no'} skipped, "
+            f"and fails on a failed/cancelled heavy job, a failed `changes`, and a push")
+
+FLOOR = 5
+if len(wired) < FLOOR:
+    failures.append(f"discovered only {len(wired)} PR workflows with a required aggregate (floor {FLOOR}): {wired}")
+
+for p_ in passes:
+    print(f"PASS  {p_}")
+for f_ in failures:
+    print(f"FAIL  {f_}")
+print(f"__COUNTS__ {len(passes)} {len(failures)}")
+PY_WIRE
+
+wire_out="$(python3 "${docsonly_tmp}/wiring.py" "$REPO_ROOT" "$SCRIPT_DIR")"
+case "$wire_out" in
+	__SKIP__*) echo "SKIP  docs-only wiring guard ($wire_out)" ;;
+	*)
+		echo "$wire_out" | grep -v '^__COUNTS__' || true
+		wire_counts="$(echo "$wire_out" | sed -n 's/^__COUNTS__ //p')"
+		if [ -n "$wire_counts" ]; then
+			read -r wr_pass wr_fail <<<"$wire_counts"
+			pass=$((pass + wr_pass))
+			fail=$((fail + wr_fail))
+		else
+			bad "docs-only wiring guard did not run"
+		fi
+
+		# NEGATIVE CONTROLS, generated from the live workflows: the guard must
+		# object to (a) a heavy job that keeps running after `changes` failed
+		# or is skipped for another reason, and (b) an aggregate that stops
+		# passing DOCS_ONLY, which would leave every docs-only PR red.
+		wire_mut() { # <mutation> <dest-dir>
+			mkdir -p "$2/.github/workflows"
+			cp "$REPO_ROOT"/.github/workflows/*.y*ml "$2/.github/workflows/"
+			python3 - "$2/.github/workflows/elps.yml" "$1" <<'PY_WMUT'
+import sys
+path, which = sys.argv[1], sys.argv[2]
+src = open(path).read()
+if which == "always":
+    old = "    if: needs.changes.outputs.docs_only != 'true'\n"
+    new = "    if: always() && needs.changes.outputs.docs_only != 'true'\n"
+elif which == "no-docs-env":
+    old = "          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}\n"
+    new = ""
+else:
+    sys.exit("unknown mutation")
+if src.count(old) < 1:
+    sys.stderr.write("mutation %r found no target\n" % which)
+    sys.exit(3)
+open(path, "w").write(src.replace(old, new, 1))
+PY_WMUT
+		}
+		if wire_mut always "${docsonly_tmp}/mut_always" 2>/dev/null; then
+			w1="$(python3 "${docsonly_tmp}/wiring.py" "${docsonly_tmp}/mut_always" "$SCRIPT_DIR" 2>&1)"
+			if grep -q '^FAIL  elps.yml: job .* has `if: always()' <<<"$w1"; then
+				ok "negative control: an always() on a docs-only-conditioned job is caught"
+			else
+				bad "negative control: an always() heavy-job condition went undetected -- the wiring guard is dead"
+				printf '%s\n' "$w1" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not find a docs-only condition in elps.yml to mutate"
+		fi
+		if wire_mut no-docs-env "${docsonly_tmp}/mut_noenv" 2>/dev/null; then
+			w2="$(python3 "${docsonly_tmp}/wiring.py" "${docsonly_tmp}/mut_noenv" "$SCRIPT_DIR" 2>&1)"
+			if grep -q '^FAIL  elps.yml: docs-only PR: heavy jobs skipped' <<<"$w2"; then
+				ok "negative control: an aggregate that drops DOCS_ONLY is caught by the simulation"
+			else
+				bad "negative control: an aggregate without DOCS_ONLY went undetected -- the simulation is dead"
+				printf '%s\n' "$w2" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not find DOCS_ONLY in elps.yml's aggregate to mutate"
+		fi
+		;;
+esac
+rm -rf "$docsonly_tmp"
+
 assert_exit 0 "govulncheck installs a pinned Go-compatible scanner (#634)" \
 	python3 "${SCRIPT_DIR}/govulncheck-toolchain-test.py"
 
@@ -3677,10 +4092,11 @@ echo "== required aggregates must not re-inline the job-success check ==========
 #       any spelling of it: it does not care how the body is written, only
 #       whether the thing can report success having checked nothing.
 #
-# (B) is what keeps `Required: fuzz` legitimately inline. It compares a single
-# scalar `needs.fuzz.result` against "success" with `!=`, so the empty string
-# fails it -- there is no loop and therefore no never-entered loop body. It is
-# re-proved on every run of this file rather than trusted.
+# (B) used to be what kept `Required: fuzz` legitimately inline (a scalar
+# `needs.fuzz.result` compare). That aggregate now delegates too, because
+# accepting a docs-only `skipped` is a decision that belongs in the tested
+# script, so no live aggregate is inline today. (B) stays as the guard for the
+# next one, and control 2 below synthesises an inline body to prove it fires.
 #
 # WHAT THIS DOES NOT CATCH, stated plainly:
 #   * a `run:` body whose emptiness behaviour depends on the GitHub Actions
@@ -3920,12 +4336,26 @@ if which == "reinline":
     )
 elif which == "vacuous-scalar":
     # A DIFFERENT vacuous shape, deliberately not the join() one, so it slips
-    # past check (A) and only the behavioural check (B) can catch it. The
-    # scalar compare is replaced by a loop over the same single value.
+    # past check (A) and only the behavioural check (B) can catch it.
+    #
+    # "Required: fuzz" used to be the one legitimately-inline aggregate (a
+    # scalar `needs.fuzz.result` compare) and this control mutated that
+    # compare. It now delegates like the others (docs-only skip, see
+    # scripts/require-jobs-succeeded.sh), so the control SYNTHESISES the
+    # inline shape instead: the delegating step's env and run line become a
+    # loop over the single scalar result, which never enters its body when
+    # the value is empty.
     new, n = re.subn(
-        r'if \[ "\$\{RESULT\}" != "success" \]; then',
-        'rc=0\n          for r in ${RESULT}; do [ "$r" = "success" ] || rc=1; done\n'
-        '          if [ "$rc" -ne 0 ]; then',
+        r"RESULTS: \$\{\{ join\(needs\.\*\.result, ' '\) \}\}\n"
+        r"(?:[ \t]+[A-Z_]+: .*\n)*"
+        r"([ \t]+)run: bash scripts/require-jobs-succeeded\.sh",
+        lambda m: (
+            "RESULT: ${{ needs.fuzz.result }}\n"
+            + m.group(1) + "run: |\n"
+            + m.group(1) + '  rc=0\n'
+            + m.group(1) + '  for r in ${RESULT}; do [ "$r" = "success" ] || rc=1; done\n'
+            + m.group(1) + '  if [ "$rc" -ne 0 ]; then exit 1; fi'
+        ),
         src, count=1,
     )
 else:
@@ -3970,10 +4400,11 @@ PY_MUT
 			bad "negative control: could not re-inline the loop into elps.yml — has the delegation line been reworded? (#493)"
 		fi
 
-		# Control 2 -- check (B): give fuzz.yml's scalar compare the vacuous
-		# loop shape, WITHOUT a join(needs.*.result) env. Check (A) cannot see
-		# this one, so only the behavioural run can catch it. This is what
-		# proves (B) is load-bearing rather than decorative.
+		# Control 2 -- check (B): replace fuzz.yml's delegation with a vacuous
+		# inline loop over a scalar result, WITHOUT a join(needs.*.result)
+		# env. Check (A) cannot see this one, so only the behavioural run
+		# can catch it. This is what proves (B) is load-bearing rather than
+		# decorative.
 		if mutate fuzz.yml vacuous-scalar mut_scalar; then
 			agg_neg2="$(python3 "${agg_tmp}/check.py" "${agg_tmp}/mut_scalar" 2>&1)"
 			if grep -q '^FAIL.*verified nothing' <<<"$agg_neg2"; then
