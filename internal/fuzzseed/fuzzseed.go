@@ -79,7 +79,7 @@ var lispSources = sync.OnceValue(func() [][]byte {
 				// A missing or unreadable directory is not fatal here:
 				// the callers' assertion on the total seed count is the
 				// real guard against a broken path.
-				return nil //nolint:nilerr // best-effort walk
+				return nil // best-effort walk: skip unreadable entries
 			}
 			if d.IsDir() || !strings.HasSuffix(path, ".lisp") {
 				return nil
