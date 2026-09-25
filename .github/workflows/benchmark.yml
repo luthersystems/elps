@@ -112,6 +112,17 @@ env:
   # today.
   GOMAXPROCS: "2"
 
+# DOCS-ONLY PULL REQUESTS. The `changes` job runs scripts/docs-only-changes.sh
+# and the heavy jobs below carry `if: needs.changes.outputs.docs_only != 'true'`,
+# so a pull request that changes only documentation skips them. The workflow
+# itself is NOT path-filtered: the `Required: *` aggregate still runs on every
+# PR and passes a docs-only skip only through scripts/require-jobs-succeeded.sh,
+# which accepts `skipped` solely when DOCS_ONLY is `true` on a pull_request
+# event and still fails on any `failure` or `cancelled`. This workflow only
+# fires on pull_request. `gates` (the CI gate self-test, ~20s, no Go) is
+# deliberately NOT conditioned: it is cheap and keeps one real check running.
+# What counts as docs-only is documented in that script.
+
 permissions:
   contents: read
   pull-requests: write
@@ -119,6 +130,32 @@ permissions:
   actions: read
 
 jobs:
+  # DOCS-ONLY DETECTION -- see "DOCS-ONLY PULL REQUESTS" at the top of this
+  # file. Cheap (one shallow checkout, one git diff), runs on EVERY event, and
+  # is upstream of the aggregate so its own failure fails the required check.
+  changes:
+    name: Detect docs-only change
+    # ARM for the reason spelled out on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
+    # 5 minutes against a job that is a checkout and a `git diff`. It gates
+    # every heavy job and feeds the required aggregate, so it must be bounded.
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          # The PR merge commit plus its parents, so HEAD^1..HEAD is exactly
+          # what merging this PR changes on the base branch.
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: bash scripts/docs-only-changes.sh
+
   # Proves the regression gate can actually FAIL. This job exists because the
   # gate it guards was dead for 473 runs -- an inline `grep -E '^\S.*\+$'` that
   # no benchstat line can match -- and nothing noticed, because a gate that can
@@ -222,6 +259,10 @@ jobs:
     # Generous: the budget below is the real bound, and this only backstops a
     # watchdog that itself wedges.
     timeout-minutes: 30
+    # Same condition as the job it watches: there is nothing to watch for on
+    # a docs-only PR, and sharing `needs` keeps both starting together.
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     steps:
       - name: Check out code
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -303,6 +344,8 @@ jobs:
     # fires, read it as "the job wedged", not "the benchmarks got slower"; the
     # budget to re-derive is BENCH_COUNT, not this number.
     timeout-minutes: 45
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
     steps:
       # Two working trees, measured on the SAME runner in the SAME job. This
       # replaces the cached-baseline design, which compared this PR against
@@ -466,7 +509,7 @@ jobs:
     # here for which "stuck in_progress" and "blocks the PR forever" are the
     # same sentence.
     timeout-minutes: 5
-    needs: [gates, queue-watchdog, benchmark]
+    needs: [changes, gates, queue-watchdog, benchmark]
     if: always()
     steps:
       # NOTE: this checkout is NEW. This job previously carried its assertion
@@ -482,4 +525,6 @@ jobs:
       - name: Assert every job in this workflow succeeded
         env:
           RESULTS: ${{ join(needs.*.result, ' ') }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          EVENT_NAME: ${{ github.event_name }}
         run: bash scripts/require-jobs-succeeded.sh
