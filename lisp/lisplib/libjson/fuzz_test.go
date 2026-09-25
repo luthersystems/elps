@@ -77,6 +77,9 @@ func FuzzLoadJSON(f *testing.F) {
 		if v == nil {
 			t.Fatal("Load returned a nil LVal")
 		}
+		assertDirectMatchesIndirect(t, data, libjson.LoadOpts{StringNumbers: stringNums})
+		assertDirectMatchesIndirect(t, data, libjson.LoadOpts{ExactIntegers: true})
+		assertDirectMatchesIndirect(t, data, libjson.LoadOpts{StringNumbers: stringNums, MaxAlloc: 3})
 		_ = v.String()
 		if v.Type == lisp.LError {
 			return
@@ -492,4 +495,18 @@ func bareJSONInteger(data []byte) (string, bool) {
 		}
 	}
 	return s, true
+}
+
+// assertDirectMatchesIndirect is the elps#689 differential: LoadWith's direct
+// decoder must accept and reject exactly what the original interface{}-tree
+// decode does, and produce the same value (type, printed form and, for
+// errors, condition and message).
+func assertDirectMatchesIndirect(t *testing.T, data []byte, opts libjson.LoadOpts) {
+	t.Helper()
+	got := libjson.LoadWith(data, opts)
+	want := libjson.LoadIndirectForTest(data, opts)
+	if got.Type != want.Type || got.Str != want.Str || got.String() != want.String() {
+		t.Fatalf("direct and indirect decoders disagree (opts %+v) on %q\n--- direct ---\n%s\n--- indirect ---\n%s",
+			opts, data, got, want)
+	}
 }
