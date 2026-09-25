@@ -255,7 +255,7 @@ func TestLoadMaxAllocMap(t *testing.T) {
 func cyclicMap(keys ...string) *lisp.LVal {
 	m := lisp.SortedMap()
 	for _, k := range keys {
-		m.MapSet(k, m)
+		m.MapSetString(k, m)
 	}
 	return m
 }
@@ -266,7 +266,7 @@ func nestMaps(depth int, inner *lisp.LVal) *lisp.LVal {
 	v := inner
 	for range depth {
 		m := lisp.SortedMap()
-		m.MapSet("k", v)
+		m.MapSetString("k", v)
 		v = m
 	}
 	return v
@@ -339,7 +339,7 @@ func TestEncodeAcyclicValueIsUnchangedBelowAndAboveTheGuard(t *testing.T) {
 	// serialize in full even though the second reaches a value the encoder has
 	// already written.
 	shared := lisp.SortedMap()
-	shared.MapSet("a", lisp.Int(1))
+	shared.MapSetString("a", lisp.Int(1))
 	dag := nestMaps(2*encodeGuardDepth, lisp.SExpr([]*lisp.LVal{shared, shared}))
 	want := strings.Repeat(`{"k":`, 2*encodeGuardDepth) + `[{"a":1},{"a":1}]` + strings.Repeat("}", 2*encodeGuardDepth)
 	b, err := Dump(dag, false)
@@ -545,7 +545,7 @@ func TestEncoderPoolConcurrent(t *testing.T) {
 		for i := range 24 {
 			k := fmt.Sprintf("g%02d-key-%02d", g, i)
 			v := fmt.Sprintf("g%02d-value-%02d-padding-padding", g, i)
-			m.MapSet(k, lisp.String(v))
+			m.MapSetString(k, lisp.String(v))
 			if i > 0 {
 				want.WriteByte(',')
 			}

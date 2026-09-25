@@ -22,11 +22,11 @@ func lazyFixture(t *testing.T, opts ...TemplateOption) *Template {
 	shared := QExpr([]*LVal{Int(1), Int(2)})
 	a := SortedMap()
 	inner := SortedMap()
-	inner.MapSet("z", shared)
-	a.MapSet("x", shared)
-	a.MapSet("y", shared)
-	a.MapSet("inner", inner)
-	a.MapSet("self", a)
+	inner.MapSetString("z", shared)
+	a.MapSetString("x", shared)
+	a.MapSetString("y", shared)
+	a.MapSetString("inner", inner)
+	a.MapSetString("self", a)
 	user.Put(Symbol("shared"), shared)
 	user.Put(Symbol("a"), a)
 	user.Put(Symbol("b"), shared)
@@ -68,11 +68,11 @@ func TestTemplateLazyIdentityAndSharing(t *testing.T) {
 			}
 			// Reach the shared list through the map first, then the slots.
 			a, _ := user.Symbol("a")
-			x := a.MapGet("x")
-			if a.MapGet("y") != x || a.MapGet("inner").MapGet("z") != x {
+			x := a.MapGetString("x")
+			if a.MapGetString("y") != x || a.MapGetString("inner").MapGetString("z") != x {
 				t.Fatal("shared value materialized twice through one map")
 			}
-			if a.MapGet("self") != a {
+			if a.MapGetString("self") != a {
 				t.Fatal("cycle not closed")
 			}
 			b, _ := user.Symbol("b")
@@ -203,7 +203,7 @@ func TestTemplateLazyDetachParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		inner, _ := vm.Runtime.Registry.Package("user").Symbol("a")
-		d, err := inner.MapGet("inner").detach()
+		d, err := inner.MapGetString("inner").detach()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -246,7 +246,7 @@ func TestTemplateLazySlotWrite(t *testing.T) {
 	// The overwritten slot's old value is still shared correctly elsewhere.
 	a, _ := vm.Runtime.Registry.Package("user").Symbol("a")
 	shared, _ := vm.Runtime.Registry.Package("user").Symbol("shared")
-	if a.MapGet("x") != shared {
+	if a.MapGetString("x") != shared {
 		t.Fatal("sharing broken after a slot write")
 	}
 }
@@ -266,7 +266,7 @@ func TestTemplateLazyPrewarm(t *testing.T) {
 	lib := first.Runtime.Registry.Package("lib")
 	lib.Symbol("v7")
 	a, _ := first.Runtime.Registry.Package("user").Symbol("a")
-	a.MapGet("x")
+	a.MapGetString("x")
 	used := lazyInstanceOf(first).count
 
 	warm, err := tmpl.NewVM(VMWithPrewarm())
@@ -280,7 +280,7 @@ func TestTemplateLazyPrewarm(t *testing.T) {
 	user := warm.Runtime.Registry.Package("user")
 	wa, _ := user.Symbol("a")
 	shared, _ := user.Symbol("shared")
-	if wa.MapGet("x") != shared || wa.MapGet("self") != wa || wa.MapGet("inner").MapGet("z") != shared {
+	if wa.MapGetString("x") != shared || wa.MapGetString("self") != wa || wa.MapGetString("inner").MapGetString("z") != shared {
 		t.Fatal("prewarm broke identity or sharing")
 	}
 	if v, _ := warm.Runtime.Registry.Package("lib").Symbol("v7"); v.Cells[0].Int != 7 {

@@ -341,10 +341,14 @@ keys are not supported. Symbol keys are coerced to string to avoid programming
 errors causing symbol and string keys with equal string values from existing in
 the same map.
 
-Use `l.MapSet(k,v)` to set keys on the map, which returns the mutated map.
-`v` must be an LVal.
+Use `l.MapSetString(k,v)` (string key) or `l.MapSetLVal(k,v)` (LVal key) to
+set keys on the map, which returns the mutated map. `v` must be an LVal.
 
-Use `l.MapGet(k)` to return the LVal corresponding to `k`.
+Use `l.MapGetString(k)` or `l.MapGetLVal(k)` to return the LVal corresponding
+to `k`.
+
+`MapSet` and `MapGet`, which take the key as `interface{}` and reject any other
+key type only at run time, are deprecated in favour of the typed forms.
 
 Use `l.MapKeys()` to return the LVal list of keys in hte map.
 

@@ -18,17 +18,17 @@ import (
 func benchSpineDoc(depth int) *lisp.LVal {
 	rec := func(id int) *lisp.LVal {
 		m := lisp.SortedMap()
-		m.MapSet("id", lisp.Int(id))
-		m.MapSet("name", lisp.String("name"))
+		m.MapSetString("id", lisp.Int(id))
+		m.MapSetString("name", lisp.String("name"))
 		return m
 	}
 	v := lisp.String("leaf")
 	for i := depth - 1; i >= 0; i-- {
 		m := lisp.SortedMap()
-		m.MapSet("child", v)
-		m.MapSet("tag", lisp.String("level"+strconv.Itoa(i)))
-		m.MapSet("count", lisp.Int(i))
-		m.MapSet("items", lisp.Vector([]*lisp.LVal{rec(1), rec(2)}))
+		m.MapSetString("child", v)
+		m.MapSetString("tag", lisp.String("level"+strconv.Itoa(i)))
+		m.MapSetString("count", lisp.Int(i))
+		m.MapSetString("items", lisp.Vector([]*lisp.LVal{rec(1), rec(2)}))
 		v = m
 	}
 	return v

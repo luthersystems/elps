@@ -41,7 +41,7 @@ func TestWrapperCopyIsolation(t *testing.T) {
 				inner := mapHolding("n", lisp.Int(1))
 				wrapped := wrapper.wrap(inner)
 				doc := mapHolding("wrapped", wrapped)
-				doc.MapSet("k", lisp.Int(1))
+				doc.MapSetString("k", lisp.Int(1))
 				args := []*lisp.LVal{doc, lisp.String("k")}
 				if op.set {
 					args = append(args, lisp.Int(2))
@@ -70,11 +70,11 @@ func TestWrapperCopyIsolation(t *testing.T) {
 					cp = cp.Cells[0]
 				}
 				require.Equal(t, lisp.LSortMap, cp.Type)
-				require.NoError(t, lisp.GoError(inner.MapSet("n", lisp.Int(99))))
+				require.NoError(t, lisp.GoError(inner.MapSetString("n", lisp.Int(99))))
 				got, ok := cp.Map().Get(lisp.String("n"))
 				require.True(t, ok)
 				assert.Equal(t, "1", got.String(), "source mutation must not reach copy")
-				require.NoError(t, lisp.GoError(cp.MapSet("n", lisp.Int(77))))
+				require.NoError(t, lisp.GoError(cp.MapSetString("n", lisp.Int(77))))
 				got, ok = inner.Map().Get(lisp.String("n"))
 				require.True(t, ok)
 				assert.Equal(t, "99", got.String(), "copy mutation must not reach source")
@@ -94,7 +94,7 @@ func TestWrapperCyclesRejected(t *testing.T) {
 	} {
 		t.Run(wrapper.name, func(t *testing.T) {
 			doc := mapHolding("x", lisp.Int(1))
-			doc.MapSet("self", wrapper.wrap(doc))
+			doc.MapSetString("self", wrapper.wrap(doc))
 			require.ErrorIs(t, okSimpleType(doc), errCyclicValue)
 			_, err := copyLVal(doc, 0)
 			require.ErrorIs(t, err, errCyclicValue)

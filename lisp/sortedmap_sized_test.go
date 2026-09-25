@@ -27,7 +27,7 @@ func TestSortedMapSizedIsAHintOnly(t *testing.T) {
 		// Sized or not, the map starts empty and grows past the hint.
 		assert.Equal(t, 0, m.Len(), "hint %d", n)
 		for i := range 100 {
-			m.MapSet(string(rune('a'+i%26))+string(rune('a'+i/26)), lisp.Int(i))
+			m.MapSetString(string(rune('a'+i%26))+string(rune('a'+i/26)), lisp.Int(i))
 		}
 		assert.Equal(t, 100, m.Len(), "hint %d", n)
 	}

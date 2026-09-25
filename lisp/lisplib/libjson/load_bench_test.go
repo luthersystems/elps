@@ -3,6 +3,8 @@
 package libjson_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -78,4 +80,52 @@ func BenchmarkLoadIntegers(b *testing.B) {
 			return libjson.LoadWith([]byte(doc), libjson.LoadOpts{ExactIntegers: true})
 		})
 	})
+}
+
+// benchRecords builds a deterministic array of n realistic records: nested
+// objects, arrays of strings and numbers, escapes, nulls and booleans.
+func benchRecords(n int) []byte {
+	var sb strings.Builder
+	sb.WriteByte('[')
+	for i := range n {
+		if i > 0 {
+			sb.WriteByte(',')
+		}
+		fmt.Fprintf(&sb, `{"id":%d,"account":"acct-%06d","amount":%d.%02d,"active":%t,`+
+			`"memo":"line \"%d\"\nnext","tags":["t%d","t%d","t%d"],`+
+			`"owner":{"name":"owner %d","roles":["admin","user"],"limits":{"daily":%d,"monthly":%d}},`+
+			`"history":[{"seq":1,"ok":true},{"seq":2,"ok":false,"err":null}],"note":null}`,
+			9007199254740000+i, i, i*37%100000, i%100, i%2 == 0, i, i%7, i%11, i%13, i, i*10, i*300)
+	}
+	sb.WriteByte(']')
+	return []byte(sb.String())
+}
+
+// BenchmarkLoadSizes measures load across document sizes: small (the record
+// above), medium (~5 KB) and large (~1 MB), in each number mode.
+func BenchmarkLoadSizes(b *testing.B) {
+	docs := []struct {
+		name string
+		doc  []byte
+	}{
+		{"small", []byte(benchLoadDocument)},
+		{"medium", benchRecords(20)},
+		{"large", benchRecords(4000)},
+	}
+	for _, d := range docs {
+		b.Run(d.name+"/default", func(b *testing.B) {
+			b.SetBytes(int64(len(d.doc)))
+			benchLoad(b, func([]byte) *lisp.LVal { return libjson.Load(d.doc, false) })
+		})
+		b.Run(d.name+"/stringNumbers", func(b *testing.B) {
+			b.SetBytes(int64(len(d.doc)))
+			benchLoad(b, func([]byte) *lisp.LVal { return libjson.Load(d.doc, true) })
+		})
+		b.Run(d.name+"/exactIntegers", func(b *testing.B) {
+			b.SetBytes(int64(len(d.doc)))
+			benchLoad(b, func([]byte) *lisp.LVal {
+				return libjson.LoadWith(d.doc, libjson.LoadOpts{ExactIntegers: true})
+			})
+		})
+	}
 }

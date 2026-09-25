@@ -241,6 +241,17 @@ func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal
 
 // LoadWith parses b under opts and returns an LVal representing its structure.
 func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
+	if v, ok := s.loadDirect(b, opts); ok {
+		return v
+	}
+	return s.loadIndirect(b, opts)
+}
+
+// loadIndirect is the original two-step decode: json.Unmarshal into an
+// interface{} tree, then a walk that builds LVals. It remains the path for
+// every document the direct decoder declines, which makes it the single
+// source of every load error.
+func (s *Serializer) loadIndirect(b []byte, opts LoadOpts) *lisp.LVal {
 	var x interface{}
 	err := s.jsonDecodeOpts(b, &x, opts)
 	if err != nil {

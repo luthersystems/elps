@@ -24,8 +24,8 @@ func branchingRingMaps(t *testing.T, n int) *LVal {
 	}
 	for i, node := range nodes {
 		next := nodes[(i+1)%n]
-		require.True(t, node.MapSet(String("a"), next).IsNil())
-		require.True(t, node.MapSet(String("b"), next).IsNil())
+		require.True(t, node.MapSetLVal(String("a"), next).IsNil())
+		require.True(t, node.MapSetLVal(String("b"), next).IsNil())
 	}
 	return nodes[0]
 }

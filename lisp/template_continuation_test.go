@@ -17,8 +17,8 @@ func TestTemplateContinuationPolicyOrder(t *testing.T) {
 	var calls []int
 	leaf := func(n int) *LVal { return Native(&n) }
 	stock := SortedMap()
-	stock.MapSet("b", leaf(2))
-	stock.MapSet("a", leaf(1))
+	stock.MapSetString("b", leaf(2))
+	stock.MapSetString("a", leaf(1))
 	decoded := SortedMapFromData(NewMapData(jsonMap{"b": leaf(4), "a": leaf(3)}))
 	lexical := NewEnv(env)
 	lexical.scope = map[string]*LVal{"b": leaf(7)}

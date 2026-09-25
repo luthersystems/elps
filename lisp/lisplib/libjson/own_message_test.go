@@ -157,8 +157,8 @@ func TestEmbedderCannotObtainTheExemption(t *testing.T) {
 			// that escaped it in a container and not at the root would be a
 			// hole nothing else here catches.
 			envelope := lisp.SortedMap()
-			envelope.MapSet("jsonrpc", lisp.String("2.0"))
-			envelope.MapSet("result", v)
+			envelope.MapSetString("jsonrpc", lisp.String("2.0"))
+			envelope.MapSetString("result", v)
 			if enc, err := libjson.Dump(envelope, false); err == nil {
 				t.Fatalf("Dump emitted %.80s inside an envelope -- elps#410 reopened", enc)
 			}
@@ -180,14 +180,14 @@ func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 		payload := lisp.Int(1)
 		for range 10001 {
 			m := lisp.SortedMap()
-			m.MapSet("k", payload)
+			m.MapSetString("k", payload)
 			payload = m
 		}
 		msg := libjson.DefaultSerializer().DumpMessageBuiltin(env, lisp.SExpr([]*lisp.LVal{payload, lisp.Nil()}))
 		require.Equal(t, lisp.LNative, msg.Type)
 		require.Equal(t, lisp.LError, libjson.Load(messageBytes(t, env, msg), false).Type)
 		envelope := lisp.SortedMap()
-		envelope.MapSet("result", msg)
+		envelope.MapSetString("result", msg)
 		result := libjson.DefaultSerializer().DumpStringBuiltin(env, lisp.SExpr([]*lisp.LVal{envelope, lisp.Nil()}))
 		require.Equal(t, lisp.LError, result.Type)
 		assert.Contains(t, result.String(), "exceeded max depth")
@@ -206,14 +206,14 @@ func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 			"premise broken: the native alone must load, or the check refuses it first")
 
 		payload := lisp.SortedMap()
-		payload.MapSet("k", lisp.Native(&deep))
+		payload.MapSetString("k", lisp.Native(&deep))
 		msg := dumpMessage(t, env, payload)
 
 		require.Equal(t, lisp.LError, libjson.Load(messageBytes(t, env, msg), false).Type,
 			"premise broken: the composed document loads, so the row proves nothing")
 
 		envelope := lisp.SortedMap()
-		envelope.MapSet("result", msg)
+		envelope.MapSetString("result", msg)
 		enc, err := libjson.Dump(envelope, false)
 		require.Error(t, err, "Dump emitted %.80s, which Load rejects", enc)
 	})
@@ -231,8 +231,8 @@ func TestDumpMessageOutputIsUnchanged(t *testing.T) {
 	env := newLispEnv(t)
 
 	m := lisp.SortedMap()
-	m.MapSet("a", lisp.Int(1))
-	m.MapSet("html", lisp.String("<&>"))
+	m.MapSetString("a", lisp.Int(1))
+	m.MapSetString("html", lisp.String("<&>"))
 
 	payloads := []*lisp.LVal{
 		lisp.String("plain"),
@@ -252,9 +252,9 @@ func TestDumpMessageOutputIsUnchanged(t *testing.T) {
 
 			for _, stringNums := range []bool{false, true} {
 				envOwn := lisp.SortedMap()
-				envOwn.MapSet("result", own)
+				envOwn.MapSetString("result", own)
 				envRaw := lisp.SortedMap()
-				envRaw.MapSet("result", lisp.Native(&raw))
+				envRaw.MapSetString("result", lisp.Native(&raw))
 
 				gotOwn, err := libjson.Dump(envOwn, stringNums)
 				require.NoError(t, err)
@@ -321,7 +321,7 @@ func TestMessageAccessorsStillTakeAnEmbeddersRawMessage(t *testing.T) {
 	s := libjson.DefaultSerializer()
 
 	payload := lisp.SortedMap()
-	payload.MapSet("a", lisp.Int(1))
+	payload.MapSetString("a", lisp.Int(1))
 	raw := json.RawMessage(`{"a":1}`)
 
 	for _, tc := range []struct {

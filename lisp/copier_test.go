@@ -163,7 +163,7 @@ func (p *copierProbe) walk(v *lisp.LVal) {
 	case lisp.LSortMap:
 		p.maps[v.Map()] = true
 		for _, k := range v.MapKeys().Cells {
-			p.walk(v.MapGet(k))
+			p.walk(v.MapGetLVal(k))
 		}
 	case lisp.LBytes:
 		if buf, ok := v.Native.(*[]byte); ok {
@@ -628,7 +628,7 @@ func copierSafeWalk(v *lisp.LVal, seen map[*lisp.LVal]bool) {
 		func() {
 			defer func() { _ = recover() }()
 			for _, k := range v.MapKeys().Cells {
-				copierSafeWalk(v.MapGet(k), seen)
+				copierSafeWalk(v.MapGetLVal(k), seen)
 			}
 		}()
 	}
@@ -673,7 +673,7 @@ func assertFailedCopyFailsAsAWhole(t *testing.T, v *lisp.LVal, srcMD *lisp.MapDa
 						"HALF-BUILT payload, seeded so a self-reference could close onto it and never finished.", r)
 				}
 			}()
-			h.MapSet("mutation-probe", lisp.Int(99))
+			h.MapSetString("mutation-probe", lisp.Int(99))
 		}()
 	}
 	if _, ok := srcMD.Get(lisp.String("mutation-probe")); ok {
@@ -799,9 +799,9 @@ func copierCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		c, ok := cp.MapGet(k).Native.(copierSeqCloner)
+		c, ok := cp.MapGetLVal(k).Native.(copierSeqCloner)
 		if !ok {
-			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGet(k).Native)
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGetLVal(k).Native)
 		}
 		got[k.Str] = c.seq
 	}
@@ -896,7 +896,7 @@ func TestCopyMapValueCloneOrderIsDeterministic(t *testing.T) {
 	t.Run("stock sorted map", func(t *testing.T) {
 		m := lisp.SortedMap()
 		for i := range n {
-			if rc := m.MapSet(fmt.Sprintf("k%02d", i), lisp.Native(copierSeqCloner{})); rc.Type == lisp.LError {
+			if rc := m.MapSetString(fmt.Sprintf("k%02d", i), lisp.Native(copierSeqCloner{})); rc.Type == lisp.LError {
 				t.Fatalf("set: %v", rc)
 			}
 		}
@@ -936,7 +936,7 @@ func copierNestedCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		v := cp.MapGet(k)
+		v := cp.MapGetLVal(k)
 		if len(v.Cells) == 0 {
 			continue // one of the scalar values
 		}
@@ -997,7 +997,7 @@ func TestCopyMapWithANestedNativeStillCopiesInKeyOrder(t *testing.T) {
 	t.Run("stock sorted map", func(t *testing.T) {
 		m := lisp.SortedMap()
 		for k, v := range kv() {
-			if rc := m.MapSet(k, v); rc.Type == lisp.LError {
+			if rc := m.MapSetString(k, v); rc.Type == lisp.LError {
 				t.Fatalf("set: %v", rc)
 			}
 		}

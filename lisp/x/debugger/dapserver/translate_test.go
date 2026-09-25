@@ -228,8 +228,8 @@ func TestExpandVariable_List(t *testing.T) {
 
 func TestExpandVariable_SortedMap(t *testing.T) {
 	m := lisp.SortedMap()
-	m.MapSet(lisp.String("alpha"), lisp.Int(1))
-	m.MapSet(lisp.String("beta"), lisp.Int(2))
+	m.MapSetLVal(lisp.String("alpha"), lisp.Int(1))
+	m.MapSetLVal(lisp.String("beta"), lisp.Int(2))
 	noRef := func(v *lisp.LVal) int { return 0 }
 
 	children := expandVariable(m, noRef, nil, nil)
@@ -331,8 +331,8 @@ func TestChildInfo(t *testing.T) {
 			name: "sorted-map with 2 entries",
 			val: func() *lisp.LVal {
 				m := lisp.SortedMap()
-				m.MapSet(lisp.String("x"), lisp.Int(1))
-				m.MapSet(lisp.String("y"), lisp.Int(2))
+				m.MapSetLVal(lisp.String("x"), lisp.Int(1))
+				m.MapSetLVal(lisp.String("y"), lisp.Int(2))
 				return m
 			}(),
 			wantIndexed: 0,
@@ -379,7 +379,7 @@ func TestTranslateVariables_PaginationHints(t *testing.T) {
 		{Name: "items", Value: lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})},
 		{Name: "m", Value: func() *lisp.LVal {
 			m := lisp.SortedMap()
-			m.MapSet(lisp.String("a"), lisp.Int(1))
+			m.MapSetLVal(lisp.String("a"), lisp.Int(1))
 			return m
 		}()},
 	}
@@ -426,10 +426,10 @@ func TestExpandVariable_List_Hints(t *testing.T) {
 func TestExpandVariable_SortedMap_WithFilter(t *testing.T) {
 	t.Parallel()
 	m := lisp.SortedMap()
-	m.MapSet(lisp.String("apple"), lisp.Int(1))
-	m.MapSet(lisp.String("banana"), lisp.Int(2))
-	m.MapSet(lisp.String("avocado"), lisp.Int(3))
-	m.MapSet(lisp.String("cherry"), lisp.Int(4))
+	m.MapSetLVal(lisp.String("apple"), lisp.Int(1))
+	m.MapSetLVal(lisp.String("banana"), lisp.Int(2))
+	m.MapSetLVal(lisp.String("avocado"), lisp.Int(3))
+	m.MapSetLVal(lisp.String("cherry"), lisp.Int(4))
 	noRef := func(v *lisp.LVal) int { return 0 }
 
 	// Filter: keys containing "a" at the start (formatted as `"apple"`, `"avocado"`, etc.)
@@ -450,8 +450,8 @@ func TestExpandVariable_SortedMap_WithFilter(t *testing.T) {
 func TestExpandVariable_SortedMap_FilterNoMatch(t *testing.T) {
 	t.Parallel()
 	m := lisp.SortedMap()
-	m.MapSet(lisp.String("alpha"), lisp.Int(1))
-	m.MapSet(lisp.String("beta"), lisp.Int(2))
+	m.MapSetLVal(lisp.String("alpha"), lisp.Int(1))
+	m.MapSetLVal(lisp.String("beta"), lisp.Int(2))
 	noRef := func(v *lisp.LVal) int { return 0 }
 
 	filter := regexp.MustCompile(`zzz`)
@@ -462,8 +462,8 @@ func TestExpandVariable_SortedMap_FilterNoMatch(t *testing.T) {
 func TestExpandVariable_SortedMap_NilFilter(t *testing.T) {
 	t.Parallel()
 	m := lisp.SortedMap()
-	m.MapSet(lisp.String("x"), lisp.Int(1))
-	m.MapSet(lisp.String("y"), lisp.Int(2))
+	m.MapSetLVal(lisp.String("x"), lisp.Int(1))
+	m.MapSetLVal(lisp.String("y"), lisp.Int(2))
 	noRef := func(v *lisp.LVal) int { return 0 }
 
 	children := expandVariable(m, noRef, nil, nil)

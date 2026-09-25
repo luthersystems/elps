@@ -293,8 +293,8 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 		m := lisp.SortedMap()
 		for i := range n {
 			inner := lisp.SortedMap()
-			inner.MapSet("v", lisp.Int(i))
-			m.MapSet("k"+strconv.Itoa(i), inner)
+			inner.MapSetString("v", lisp.Int(i))
+			m.MapSetString("k"+strconv.Itoa(i), inner)
 		}
 		return m
 	}
@@ -314,8 +314,8 @@ func TestCycleGuardAllocationDoesNotScale(t *testing.T) {
 		v := wideMap(n)
 		for i := range cycleGuardDepth - 2 {
 			m := lisp.SortedMap()
-			m.MapSet("child", v)
-			m.MapSet("tag", lisp.String("level"+strconv.Itoa(i)))
+			m.MapSetString("child", v)
+			m.MapSetString("tag", lisp.String("level"+strconv.Itoa(i)))
 			v = m
 		}
 		return v

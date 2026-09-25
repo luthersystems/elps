@@ -34,8 +34,8 @@ func TestTemplateAdmissionSnapshotsMapEntries(t *testing.T) {
 			switch backing {
 			case "sorted-map":
 				m = SortedMap()
-				m.MapSet("a-trigger", trigger)
-				m.MapSet("z-rejected", rejected)
+				m.MapSetString("a-trigger", trigger)
+				m.MapSetString("z-rejected", rejected)
 				del = func() { m.Map().Del(String("z-rejected")) }
 			case "json-map":
 				raw := jsonMap{"a-trigger": trigger, "z-rejected": rejected}

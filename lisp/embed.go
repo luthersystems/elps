@@ -384,3 +384,88 @@ func GoMapWithRuntime(rt *Runtime, v *LVal) (map[interface{}]interface{}, bool) 
 	values, ok := out.(map[interface{}]interface{})
 	return values, ok
 }
+
+// GoSliceOf is GoSlice with every element asserted to T (elps#690).  It
+// returns (nil, false) wherever GoSlice does, and also when any element's
+// GoValue conversion is not a T; there is no partial result.
+//
+// T is matched against what GoValue produces for each element, not against
+// the lisp type: a string or symbol is a string, an int an int, a float a
+// float64, a nested list a []interface{}, a sorted-map a
+// map[interface{}]interface{}, a native value its own payload, and nil (the
+// empty list) the untyped nil, which only an interface T accepts.  A value
+// GoValue returns as is -- a function, for example -- is a *LVal, so
+// GoSliceOf[*LVal] collects those and nothing else; it is not a way to get
+// the list's cells back unconverted.
+//
+// Like GoSlice it has no runtime and walks to MaxValueDepth;
+// GoSliceOfWithRuntime reads a WithMaxValueDepth override.
+func GoSliceOf[T any](v *LVal) ([]T, bool) {
+	return GoSliceOfWithRuntime[T](nil, v)
+}
+
+// GoSliceOfWithRuntime is GoSliceOf bounded by rt's configured value-depth
+// limit.
+func GoSliceOfWithRuntime[T any](rt *Runtime, v *LVal) ([]T, bool) {
+	values, ok := GoSliceWithRuntime(rt, v)
+	if !ok {
+		return nil, false
+	}
+	out := make([]T, len(values))
+	for i, x := range values {
+		t, ok := assertConverted[T](x)
+		if !ok {
+			return nil, false
+		}
+		out[i] = t
+	}
+	return out, true
+}
+
+// GoMapOf is GoMap with every key asserted to K and every value to V
+// (elps#690).  Keys and values are matched against what GoValue produces, as
+// for GoSliceOf; a sorted-map's keys are strings.  It returns (nil, false)
+// wherever GoMap does and on the first key or value of the wrong type, and
+// (nil, true) where GoMap does, for a custom map with no Go equivalent.
+//
+// Like GoMap it has no runtime and walks to MaxValueDepth; GoMapOfWithRuntime
+// reads a WithMaxValueDepth override.
+func GoMapOf[K comparable, V any](v *LVal) (map[K]V, bool) {
+	return GoMapOfWithRuntime[K, V](nil, v)
+}
+
+// GoMapOfWithRuntime is GoMapOf bounded by rt's configured value-depth limit.
+func GoMapOfWithRuntime[K comparable, V any](rt *Runtime, v *LVal) (map[K]V, bool) {
+	values, ok := GoMapWithRuntime(rt, v)
+	if !ok {
+		return nil, false
+	}
+	if values == nil {
+		return nil, true
+	}
+	out := make(map[K]V, len(values))
+	for k, x := range values {
+		kt, ok := assertConverted[K](k)
+		if !ok {
+			return nil, false
+		}
+		vt, ok := assertConverted[V](x)
+		if !ok {
+			return nil, false
+		}
+		out[kt] = vt
+	}
+	return out, true
+}
+
+// assertConverted asserts a GoValue result to T.  A nil result (the empty
+// list) is accepted only by an interface T, whose zero value is that same
+// nil; a plain x.(T) refuses nil for every T, interfaces included.
+func assertConverted[T any](x interface{}) (T, bool) {
+	if x == nil {
+		var zero T
+		return zero, interface{}(zero) == nil
+	}
+	t, ok := x.(T)
+	return t, ok
+}

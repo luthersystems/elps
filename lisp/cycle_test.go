@@ -24,7 +24,7 @@ import (
 func cyclicMap(keys ...string) *LVal {
 	m := SortedMap()
 	for _, k := range keys {
-		m.MapSet(k, m)
+		m.MapSetString(k, m)
 	}
 	return m
 }
@@ -53,7 +53,7 @@ func nestList(depth int, inner *LVal) *LVal {
 func TestStringOfCyclicValue(t *testing.T) {
 	tagged := &LVal{Type: LTaggedVal, Str: "wrapper", Cells: []*LVal{Nil()}}
 	taggedMap := SortedMap()
-	taggedMap.MapSet("t", tagged)
+	taggedMap.MapSetString("t", tagged)
 	tagged.Cells[0] = taggedMap
 
 	tests := []struct {
@@ -78,8 +78,8 @@ func TestStringOfCyclicValue(t *testing.T) {
 func TestEqualOfCyclicValue(t *testing.T) {
 	a, b := cyclicMap("k"), cyclicMap("k")
 	different := SortedMap()
-	different.MapSet("k", cyclicMap("k"))
-	different.MapSet("other", Int(1))
+	different.MapSetString("k", cyclicMap("k"))
+	different.MapSetString("other", Int(1))
 
 	// Two operands whose infinite unfoldings agree compare equal, which is the
 	// co-inductive answer Equal documents.  Two that differ compare unequal on
@@ -337,7 +337,7 @@ func TestCyclicWalkHelper(t *testing.T) {
 		// to be bounded by the same walk rather than restarting it.
 		lerr := ErrorConditionf("test-error", "placeholder")
 		m := SortedMap()
-		m.MapSet("k", lerr)
+		m.MapSetString("k", lerr)
 		lerr.Cells = []*LVal{m}
 		result = GoError(lerr).Error()
 	case "equal":

@@ -31,10 +31,10 @@ func (p *mapDeletingClone) CloneNative() interface{} {
 func TestCopySnapshotsMapValuesAgainstAHostHook(t *testing.T) {
 	m := lisp.SortedMap()
 	payload := &mapDeletingClone{victim: "b"}
-	if lerr := m.MapSet(lisp.String("a"), lisp.Native(payload)); lerr.Type == lisp.LError {
+	if lerr := m.MapSetLVal(lisp.String("a"), lisp.Native(payload)); lerr.Type == lisp.LError {
 		t.Fatalf("map set: %v", lerr)
 	}
-	if lerr := m.MapSet(lisp.String("b"), lisp.String("sibling")); lerr.Type == lisp.LError {
+	if lerr := m.MapSetLVal(lisp.String("b"), lisp.String("sibling")); lerr.Type == lisp.LError {
 		t.Fatalf("map set: %v", lerr)
 	}
 	payload.source = m

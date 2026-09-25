@@ -10,7 +10,7 @@ import (
 
 func TestGoConversionContinuationSiblings(t *testing.T) {
 	shared := SortedMap()
-	shared.MapSet("x", Vector([]*LVal{Int(7), String("value")}))
+	shared.MapSetString("x", Vector([]*LVal{Int(7), String("value")}))
 	v := QExpr([]*LVal{shared, shared, Vector(nil)})
 	wantMap := map[interface{}]interface{}{"x": []interface{}{7, "value"}}
 	want := []interface{}{wantMap, wantMap, []interface{}{}}
@@ -21,7 +21,7 @@ func TestGoConversionContinuationSiblings(t *testing.T) {
 	if got := GoValue(v); !reflect.DeepEqual(got, want) {
 		t.Fatalf("converted siblings = %#v, want %#v", got, want)
 	}
-	shared.MapSet("cycle", shared)
+	shared.MapSetString("cycle", shared)
 	if got := GoValue(v); got != v {
 		t.Fatal("cycle must return the original root")
 	}
@@ -31,7 +31,7 @@ func TestGoConversionContinuationSiblings(t *testing.T) {
 // preserve the typed error an embedder can inspect with errors.As.
 func TestCopyScalarMapDepthBoundary(t *testing.T) {
 	v := SortedMap()
-	v.MapSet("leaf", Int(7))
+	v.MapSetString("leaf", Int(7))
 	for range 1023 {
 		v = QExpr([]*LVal{v})
 	}
@@ -47,7 +47,7 @@ func TestCopyScalarMapDepthBoundary(t *testing.T) {
 	for range 1023 {
 		cp = cp.Cells[0]
 	}
-	if cp.MapGet("leaf").Int != 7 {
+	if cp.MapGetString("leaf").Int != 7 {
 		t.Fatal("copy lost leaf at valid depth")
 	}
 }

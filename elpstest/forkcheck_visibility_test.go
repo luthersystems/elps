@@ -241,10 +241,10 @@ func TestForkOracleSeesMapBackingBehindDistinctWrappers(t *testing.T) {
 	if aliasSignature(aliased) == aliasSignature(independent) {
 		t.Fatal("distinct wrappers concealed shared map backing from alias parity")
 	}
-	if rc := one.MapSet("witness", lisp.Int(17)); rc.Type == lisp.LError {
+	if rc := one.MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
-	if got := two.MapGet("witness"); got.Type != lisp.LInt || got.Int != 17 {
+	if got := two.MapGetString("witness"); got.Type != lisp.LInt || got.Int != 17 {
 		t.Fatal("premise: wrappers did not share actual map storage")
 	}
 }

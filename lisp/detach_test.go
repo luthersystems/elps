@@ -275,10 +275,10 @@ func buildRichValue(t *testing.T, env *lisp.LEnv) *lisp.LVal {
 		lisp.Int(1), lisp.Float(2.5), lisp.String("s"), lisp.Symbol("sym"),
 	})
 	m := lisp.SortedMap()
-	if lerr := m.MapSet("k", lisp.QExpr([]*lisp.LVal{lisp.Int(7), lisp.String("seven")})); lerr.Type == lisp.LError {
+	if lerr := m.MapSetString("k", lisp.QExpr([]*lisp.LVal{lisp.Int(7), lisp.String("seven")})); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
-	if lerr := m.MapSet(lisp.Symbol("j"), lisp.Int(3)); lerr.Type == lisp.LError {
+	if lerr := m.MapSetLVal(lisp.Symbol("j"), lisp.Int(3)); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	arr := lisp.Array(nil, []*lisp.LVal{lisp.Int(10), lisp.Int(20), lisp.QExpr([]*lisp.LVal{lisp.Int(30)})})
@@ -451,7 +451,7 @@ func TestCopyRebuildsBytesAndMapValues(t *testing.T) {
 
 	m := lisp.SortedMap()
 	val := lisp.QExpr([]*lisp.LVal{lisp.Int(1)})
-	if lerr := m.MapSet("k", val); lerr.Type == lisp.LError {
+	if lerr := m.MapSetString("k", val); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	mcp := m.Copy()
@@ -478,7 +478,7 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 
 	m := lisp.SortedMap()
 	val := lisp.QExpr([]*lisp.LVal{lisp.Int(1)})
-	if lerr := m.MapSet("k", val); lerr.Type == lisp.LError {
+	if lerr := m.MapSetString("k", val); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	dm, err := lisp.Detach(m)
@@ -493,7 +493,7 @@ func TestDetachBytesAndMapDisjoint(t *testing.T) {
 	if val.Cells[0].Int != 1 {
 		t.Fatalf("mutating a detached map value changed the original")
 	}
-	if lerr := dm.MapSet("k2", lisp.Int(2)); lerr.Type == lisp.LError {
+	if lerr := dm.MapSetString("k2", lisp.Int(2)); lerr.Type == lisp.LError {
 		t.Fatalf("map-set on detached map: %v", lerr)
 	}
 	if _, found := m.Map().Get(lisp.String("k2")); found {
@@ -710,7 +710,7 @@ func TestDetachNativeClonerPreservesAliasing(t *testing.T) {
 func TestDetachRejectsNativeInsideMap(t *testing.T) {
 	now := time.Now()
 	m := lisp.SortedMap()
-	if lerr := m.MapSet("k", lisp.Native(&now)); lerr.Type == lisp.LError {
+	if lerr := m.MapSetString("k", lisp.Native(&now)); lerr.Type == lisp.LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	orig := lisp.QExpr([]*lisp.LVal{lisp.Int(0), m})
@@ -917,9 +917,9 @@ func detachCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		c, ok := cp.MapGet(k).Native.(copierSeqCloner)
+		c, ok := cp.MapGetLVal(k).Native.(copierSeqCloner)
 		if !ok {
-			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGet(k).Native)
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGetLVal(k).Native)
 		}
 		got[k.Str] = c.seq
 	}
