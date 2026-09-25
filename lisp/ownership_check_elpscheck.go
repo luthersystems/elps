@@ -6,8 +6,10 @@ package lisp
 
 import (
 	"fmt"
+	"runtime"
 	"sync"
 	"sync/atomic"
+	"weak"
 )
 
 // Runtime ownership checking — the dynamic half of hermetic sealing.
@@ -21,7 +23,8 @@ import (
 //
 // # How it works
 //
-// A process-wide side table maps *LVal → the *Runtime that first used it.
+// A process-wide side table maps weak value identities to the weak identity
+// of the Runtime that first used them.
 // Constructors cannot populate it — Int(1) has no idea which runtime it is
 // destined for — so the table is populated lazily: THE FIRST TOUCH ADOPTS.
 // The first instrumented sighting of a value (LEnv.Put, LEnv.PutGlobal, or
@@ -202,20 +205,32 @@ import (
 //
 // # Memory
 //
-// The table grows with every distinct LVal the process touches.  Go has no
-// cheap weak references (runtime.AddCleanup exists but a cleanup per LVal
-// costs more than the leak it prevents in a test process), so growth is
-// accepted and bounded crudely instead: after ownershipTableMaxEntries
-// adoptions the table is dropped and restarted empty.  A reset forgets
-// every prior adoption, so a violation that straddles a reset is missed —
-// the trade is boundedness (fuzzing would otherwise OOM) for a detection
-// gap proportional to how rarely resets happen.  Violations overwhelmingly
-// occur close in time to adoption, so the gap is small in practice, but it
-// is a gap and this comment is where you learn about it.
+// Both keys (LVal, funData, or MapData) and Runtime owners are weak pointers.
+// Neither the table nor its cleanup bookkeeping keeps values, environments,
+// runtimes, or their embedder context alive. Weak identities survive collection
+// without confusing a new allocation at a reused address with an old value.
+// One runtime.AddCleanup per adopting Runtime removes its entries and its side
+// record after collection; the record holds only weak keys, never the Runtime.
+// Cleanup is asynchronous and deletes only the entries whose VALUE is dead.
+// An entry whose value outlived its owner (an embedder retained it) is kept:
+// its weak owner handle is a tombstone that equals no live Runtime's handle
+// and references nothing, so a later use by any other Runtime still panics,
+// naming the owner as <collected>.  Collecting a Runtime never launders the
+// values it adopted.  Those tombstones go on an orphan list that every
+// Runtime cleanup sweeps, deleting each once its value dies.
 //
-// Cost: one sync.Map LoadOrStore per eval step and two per Put in checked
-// builds — the tagged suite runs several times slower than untagged (see
-// the ownership-tag experiment report for measured numbers).  Only enabled
+// Weak handles and table/list storage still cost memory. Dead values owned by
+// a LIVE Runtime keep that metadata until the Runtime dies or the table resets;
+// there is deliberately no cleanup per value. As a backstop, after
+// ownershipTableMaxEntries adoptions the table and old per-runtime key lists
+// are dropped. A reset forgets every prior adoption, so a violation that
+// straddles a reset is missed. The side record and its single cleanup persist
+// until their Runtime dies, including across resets.
+//
+// Cost: weak identity creation and one sync.Map LoadOrStore per eval step
+// and two per Put, plus a side-map lookup and locked append on first adoption
+// in checked builds — the tagged suite runs several times slower than untagged
+// (see the ownership-tag experiment report for measured numbers). Only enabled
 // under the `elpscheck` build tag; release builds compile all of this out
 // (no LVal field was added — the fieldalignment layout guard is untouched).
 var ownershipTable ownershipState
@@ -228,8 +243,18 @@ var ownershipTable ownershipState
 const ownershipTableMaxEntries = 4 << 20
 
 type ownershipState struct {
-	m     atomic.Pointer[sync.Map] // *LVal → *Runtime
+	m     atomic.Pointer[sync.Map] // weak value identity → weak.Pointer[Runtime]
 	count atomic.Int64             // adoptions since the last reset
+}
+
+// This map and cleanup arguments must never strongly reference a Runtime,
+// even indirectly through a value or captured environment.
+var ownershipRuntimes sync.Map // weak.Pointer[Runtime] → *ownershipAdoptions
+
+type ownershipAdoptions struct {
+	table *sync.Map
+	keys  []any
+	mu    sync.Mutex
 }
 
 func init() {
@@ -277,24 +302,156 @@ func checkOwnership(rt *Runtime, v *LVal) {
 	if isClosureFreeBuiltin(v) {
 		return
 	}
+	// Weak handles alone do not keep these alive until bookkeeping finishes.
+	defer runtime.KeepAlive(rt)
+	defer runtime.KeepAlive(v)
 	m := ownershipTable.m.Load()
-	owner, loaded := m.LoadOrStore(ownershipKey(v), rt)
+	key := ownershipKey(v)
+	wrt := weak.Make(rt)
+	owner, loaded := m.LoadOrStore(key, wrt)
 	if !loaded {
+		recordOwnershipAdoption(rt, wrt, m, key)
 		if ownershipTable.count.Add(1) >= ownershipTableMaxEntries {
 			resetOwnershipTable()
 		}
 		return
 	}
-	if owner.(*Runtime) == rt {
+	if owner.(weak.Pointer[Runtime]) == wrt {
 		return
 	}
-	panic(ownershipViolation{msg: ownershipViolationMessage(owner.(*Runtime), rt, v)})
+	panic(ownershipViolation{msg: ownershipViolationMessage(owner.(weak.Pointer[Runtime]).Value(), rt, v)})
+}
+
+func recordOwnershipAdoption(rt *Runtime, owner weak.Pointer[Runtime], table *sync.Map, key any) {
+	entry, ok := ownershipRuntimes.Load(owner)
+	if !ok {
+		var loaded bool
+		entry, loaded = ownershipRuntimes.LoadOrStore(owner, new(ownershipAdoptions))
+		if !loaded {
+			runtime.AddCleanup(rt, cleanupOwnership, owner)
+		}
+	}
+	adoptions := entry.(*ownershipAdoptions)
+	adoptions.mu.Lock()
+	defer adoptions.mu.Unlock()
+	// A concurrent reset may have already discarded this insertion. Do not
+	// resurrect an old table or its list after the reset has swept it.
+	if table != ownershipTable.m.Load() {
+		return
+	}
+	if adoptions.table != table {
+		adoptions.table = table
+		adoptions.keys = nil
+	}
+	adoptions.keys = append(adoptions.keys, key)
+}
+
+func cleanupOwnership(owner weak.Pointer[Runtime]) {
+	entry, ok := ownershipRuntimes.LoadAndDelete(owner)
+	if !ok {
+		return
+	}
+	adoptions := entry.(*ownershipAdoptions)
+	adoptions.mu.Lock()
+	defer adoptions.mu.Unlock()
+	table := ownershipTable.m.Load()
+	if adoptions.table != table {
+		return // a reset already discarded these adoptions
+	}
+	var live []any
+	for _, key := range adoptions.keys {
+		if ownershipKeyLive(key) {
+			// The value outlived its owner.  Keep the entry: the stored owner
+			// handle is now a tombstone that no live Runtime's handle equals
+			// and that references nothing, so a later adoption by any other
+			// Runtime still panics (naming the owner as <collected>).
+			live = append(live, key)
+			continue
+		}
+		// A reset may have let another Runtime adopt this same value. Its
+		// ownership must survive a delayed cleanup of the previous owner.
+		table.CompareAndDelete(key, owner)
+	}
+	adoptions.keys = nil
+	if len(live) > 0 {
+		ownershipOrphans.mu.Lock()
+		if ownershipOrphans.table != table {
+			ownershipOrphans.table = table
+			ownershipOrphans.entries = nil
+		}
+		for _, key := range live {
+			ownershipOrphans.entries = append(ownershipOrphans.entries, ownershipOrphan{key: key, owner: owner})
+		}
+		ownershipOrphans.mu.Unlock()
+	}
+	sweepOwnershipOrphans()
+}
+
+// ownershipOrphans holds the table entries whose owner Runtime was collected
+// while the value itself was still live.  Those entries are tombstones and
+// must stay until the value dies; sweepOwnershipOrphans removes them then, so
+// the table does not accumulate entries for dead values of dead Runtimes.
+//elpsvet:allow weak.Pointer[Runtime] only type-tags *LVal via a zero-length array; nothing is strongly held
+var ownershipOrphans struct {
+	table   *sync.Map
+	entries []ownershipOrphan
+	mu      sync.Mutex
+}
+
+type ownershipOrphan struct {
+	key   any
+	owner weak.Pointer[Runtime]
+}
+
+// sweepOwnershipOrphans deletes tombstone entries whose value has been
+// collected.  It runs from every Runtime cleanup, so it is amortized over
+// Runtime lifetimes rather than paid per adoption.
+func sweepOwnershipOrphans() {
+	ownershipOrphans.mu.Lock()
+	defer ownershipOrphans.mu.Unlock()
+	table := ownershipTable.m.Load()
+	if ownershipOrphans.table != table {
+		ownershipOrphans.table = nil
+		ownershipOrphans.entries = nil
+		return
+	}
+	kept := ownershipOrphans.entries[:0]
+	for _, o := range ownershipOrphans.entries {
+		if ownershipKeyLive(o.key) {
+			kept = append(kept, o)
+			continue
+		}
+		table.CompareAndDelete(o.key, o.owner)
+	}
+	clear(ownershipOrphans.entries[len(kept):])
+	ownershipOrphans.entries = kept
+}
+
+func ownershipOrphanCount() int {
+	ownershipOrphans.mu.Lock()
+	defer ownershipOrphans.mu.Unlock()
+	return len(ownershipOrphans.entries)
+}
+
+// ownershipKeyLive reports whether the object behind an ownershipKey result
+// is still reachable.
+func ownershipKeyLive(key any) bool {
+	switch k := key.(type) {
+	case weak.Pointer[LVal]:
+		return k.Value() != nil
+	case weak.Pointer[funData]:
+		return k.Value() != nil
+	case weak.Pointer[MapData]:
+		return k.Value() != nil
+	default:
+		return false
+	}
 }
 
 // ownershipKey returns the identity checkOwnership tracks for v.
 //
-// For most types that is the *LVal itself.  Two are keyed on the pointer to
-// their SHARED STORAGE instead, because for those a distinct header is not a
+// For most types that is a weak pointer to the *LVal itself. Two use weak
+// pointers to their SHARED STORAGE instead, because a distinct header is not a
 // distinct value: an LFun's *funData carries the whole function (the Go
 // builtin or the captured *LEnv), and an LSortMap's *MapData carries the
 // whole map, while the header around either can be duplicated freely.  Two
@@ -325,16 +482,16 @@ func ownershipKey(v *LVal) any {
 	switch v.Type {
 	case LFun:
 		if fd, ok := v.Native.(*funData); ok && fd != nil {
-			return fd
+			return weak.Make(fd)
 		}
 	case LSortMap:
 		if md, ok := v.Native.(*MapData); ok && md != nil {
-			return md
+			return weak.Make(md)
 		}
 	default:
 		// Every other type: the header is the value's identity.
 	}
-	return v
+	return weak.Make(v)
 }
 
 // checkNativeAffinity asserts a native payload's DECLARED runtime binding:
@@ -402,12 +559,24 @@ func rethrowOwnershipViolation(r any) {
 }
 
 // resetOwnershipTable drops every recorded adoption and starts the table
-// empty.  Called automatically when the table exceeds its size bound; also
-// available to long-running checked-build hosts as a periodic reset hook.
+// empty. Called automatically when the table exceeds its size bound.
 // Every reset opens a detection gap — see the Memory section above.
 func resetOwnershipTable() {
 	ownershipTable.m.Store(new(sync.Map))
 	ownershipTable.count.Store(0)
+	// Keep the one cleanup registration per Runtime, but discard metadata
+	// from old tables too. Locking and checking the CURRENT table protects
+	// new adoptions even if another reset or adoption races with this sweep.
+	ownershipRuntimes.Range(func(_, entry any) bool {
+		adoptions := entry.(*ownershipAdoptions)
+		adoptions.mu.Lock()
+		if adoptions.table != ownershipTable.m.Load() {
+			adoptions.table = nil
+			adoptions.keys = nil
+		}
+		adoptions.mu.Unlock()
+		return true
+	})
 }
 
 // ownershipViolationMessage renders the panic message: both runtime
@@ -423,13 +592,17 @@ func ownershipViolationMessage(owner, second *Runtime, v *LVal) string {
 	if src, ok := v.Source(); ok {
 		loc = src.String()
 	}
+	ownerIdentity := "<collected>"
+	if owner != nil {
+		ownerIdentity = fmt.Sprintf("%p (package %s)", owner, runtimePackageName(owner))
+	}
 	return fmt.Sprintf("ownership violation: LVal used by two Runtimes\n"+
 		"  value: %p type=%s str=%q cells=%d source=%s\n"+
-		"  owner runtime:  %p (package %s)\n"+
+		"  owner runtime:  %s\n"+
 		"  second runtime: %p (package %s)\n"+
 		"an LVal must be used by at most one Runtime; see lisp/ownership_check_elpscheck.go",
 		v, v.Type, str, len(v.Cells), loc,
-		owner, runtimePackageName(owner),
+		ownerIdentity,
 		second, runtimePackageName(second))
 }
 

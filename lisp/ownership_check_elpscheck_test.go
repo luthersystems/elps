@@ -5,8 +5,11 @@
 package lisp
 
 import (
+	"runtime"
 	"strings"
 	"testing"
+	"time"
+	"weak"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -16,6 +19,100 @@ import (
 // the ownership checker enforces.
 func newOwnershipTestEnv() *LEnv {
 	return NewEnvRuntime(StandardRuntime())
+}
+
+// Count actual entries, not the cumulative adoption counter used for resets.
+func ownershipTestEntryCount() int {
+	n := 0
+	ownershipTable.m.Load().Range(func(_, _ any) bool {
+		n++
+		return true
+	})
+	return n
+}
+
+func makeOwnershipTestGarbage(t *testing.T, n int) ([]weak.Pointer[Runtime], []weak.Pointer[LEnv]) {
+	t.Helper()
+	runtimes := make([]weak.Pointer[Runtime], 0, n)
+	envs := make([]weak.Pointer[LEnv], 0, n)
+	for range n {
+		env := newOwnershipTestEnv()
+		if res := InitializeUserEnv(env); res.Type == LError {
+			t.Fatal(res)
+		}
+		if res := env.Put(Symbol("x"), Int(42)); res.Type == LError {
+			t.Fatal(res)
+		}
+		// Construct and evaluate (lambda () (+ x 1)) without importing the
+		// parser (which would introduce an import cycle).
+		closure := env.Eval(SExpr([]*LVal{
+			Symbol("lambda"), SExpr(nil),
+			SExpr([]*LVal{Symbol("+"), Symbol("x"), Int(1)}),
+		}))
+		if closure.Type != LFun {
+			t.Fatalf("expected a closure, got %v", closure)
+		}
+		if res := env.Put(Symbol("f"), closure); res.Type == LError {
+			t.Fatal(res)
+		}
+		if res := env.Eval(SExpr([]*LVal{Symbol("f")})); res.Type != LInt || res.Int != 43 {
+			t.Fatalf("unexpected eval result: %v", res)
+		}
+		// A strong MapData key would also keep this environment alive.
+		m := SortedMap()
+		if res := m.MapSet(String("env"), Native(env)); res.Type == LError {
+			t.Fatal(res)
+		}
+		if res := env.Put(Symbol("m"), m); res.Type == LError {
+			t.Fatal(res)
+		}
+		for _, v := range []*LVal{closure, m} {
+			if _, ok := ownershipTable.m.Load().Load(ownershipKey(v)); !ok {
+				t.Fatal("workload value was not adopted")
+			}
+		}
+		runtimes = append(runtimes, weak.Make(env.Runtime))
+		envs = append(envs, weak.Make(env))
+	}
+	return runtimes, envs
+}
+
+func ownershipTestLiveCount[T any](ptrs []weak.Pointer[T]) int {
+	n := 0
+	for _, ptr := range ptrs {
+		if ptr.Value() != nil {
+			n++
+		}
+	}
+	return n
+}
+
+func TestOwnershipCheck_DoesNotRetainRuntimes(t *testing.T) {
+	baseline := ownershipTestEntryCount()
+	runtimes, envs := makeOwnershipTestGarbage(t, 50)
+	// Cleanups run asynchronously after GC. Poll only weak handles, and
+	// allow time for both collection and removal of the table entries.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		runtime.GC()
+		liveRuntimes := ownershipTestLiveCount(runtimes)
+		liveEnvs := ownershipTestLiveCount(envs)
+		entries := ownershipTestEntryCount()
+		records := 0
+		for _, rt := range runtimes {
+			if _, ok := ownershipRuntimes.Load(rt); ok {
+				records++
+			}
+		}
+		if liveRuntimes == 0 && liveEnvs == 0 && entries <= baseline && records == 0 {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("ownership table retained %d/50 runtimes and %d/50 environments; entries=%d, baseline=%d, runtime records=%d",
+				liveRuntimes, liveEnvs, entries, baseline, records)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 // expectOwnershipPanic runs fn and fails the test unless fn panics with an
@@ -139,11 +236,50 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 	if lerr := envA.Put(Symbol("x"), v); lerr.Type == LError {
 		t.Fatalf("put in runtime A failed: %v", lerr)
 	}
+	record, _ := ownershipRuntimes.Load(weak.Make(envA.Runtime))
 	resetOwnershipTable()
+	// The backstop must discard the per-runtime lists as well as the table,
+	// while keeping the single cleanup registration for this live Runtime.
+	afterReset, ok := ownershipRuntimes.Load(weak.Make(envA.Runtime))
+	if !ok || afterReset != record {
+		t.Fatal("reset lost the live runtime's cleanup record")
+	}
+	adoptions := record.(*ownershipAdoptions)
+	adoptions.mu.Lock()
+	cleared := adoptions.keys == nil && adoptions.table == nil
+	adoptions.mu.Unlock()
+	if !cleared {
+		t.Fatal("reset retained obsolete adoption metadata")
+	}
 	// After the reset the table has no memory of envA's adoption, so envB
 	// adopts v afresh and no panic occurs.
 	if lerr := envB.Put(Symbol("y"), v); lerr.Type == LError {
 		t.Fatalf("put in runtime B after reset failed: %v", lerr)
+	}
+	runtime.KeepAlive(envA)
+}
+
+func TestOwnershipCheck_SortedMapHeaderKeepsIdentity(t *testing.T) {
+	envA := newOwnershipTestEnv()
+	envB := newOwnershipTestEnv()
+	m := SortedMap()
+	if res := envA.Put(Symbol("m"), m); res.Type == LError {
+		t.Fatal(res)
+	}
+	header := *m
+	if res := envA.Eval(&header); res.Type == LError {
+		t.Fatal(res)
+	}
+	expectOwnershipPanic(t, func() {
+		envB.Eval(&header)
+	})
+	runtime.KeepAlive(envA)
+}
+
+func TestOwnershipCheck_CollectedOwnerMessage(t *testing.T) {
+	msg := ownershipViolationMessage(nil, newOwnershipTestEnv().Runtime, Int(42))
+	if !strings.Contains(msg, "owner runtime:  <collected>") {
+		t.Fatalf("message did not identify a collected owner: %s", msg)
 	}
 }
 
