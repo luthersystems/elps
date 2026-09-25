@@ -598,6 +598,37 @@ Either must be the final clause; reaching a non-final default raises
 `:else`: move it to the end. The `cond-structure` linter reports misplaced
 defaults in source; dynamically constructed forms still need runtime checks.
 
+### when, unless, while and default
+
+These four one-liners are special operators rather than macros, so using one
+costs no macro expansion per evaluation.
+
+```lisp
+(when test body...)      ; if test is truthy, the last body value, else ()
+(unless test body...)    ; if test is falsey, the last body value, else ()
+(while test body...)     ; loop while test is truthy; always returns ()
+(default value fallback) ; value unless it is (), else fallback
+```
+
+`when` and `unless` return `()` when the body does not run or is empty, and
+leave their last body form in tail position, like `if` and `progn`. `default`
+evaluates `value` exactly once and evaluates `fallback` only when `value` is
+`()` -- `false`, `0` and `""` are returned as-is. `while` is an iterative loop:
+its body shares the enclosing scope, an error in the test or body propagates,
+and every turn counts against the execution limits (the step limit and
+context deadline when configured, and the tail-iteration limit, which is on
+by default), so a `while` that never ends stops the way a tail-recursive loop
+would.
+
+They were added to `lisp` after many programs had defined their own. A
+package that defines or imports its own `when`, `unless`, `while` or
+`default` keeps using it: a symbol resolves through the current package's
+table, and `use-package` copies an exporting package's bindings into it, so
+the package's own definition shadows the operator there (`lisp:when` still
+reaches the operator). `elps lint` reports such a definition as
+`builtin-shadowing`; if its behavior matches the operator, deleting it makes
+the package's calls cheaper.
+
 ### let vs let\*
 
 `let` and `let*` create local bindings. Both evaluate their initializer

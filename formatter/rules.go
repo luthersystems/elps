@@ -61,6 +61,7 @@ func DefaultRules() map[string]*IndentRule {
 		"do":           {Style: IndentSpecial, HeaderArgs: 1},
 		"unless":       {Style: IndentSpecial, HeaderArgs: 1},
 		"when":         {Style: IndentSpecial, HeaderArgs: 1},
+		"while":        {Style: IndentSpecial, HeaderArgs: 1},
 
 		// testing forms
 		"test":             {Style: IndentSpecial, HeaderArgs: 1},
