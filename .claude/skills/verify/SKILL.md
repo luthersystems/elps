@@ -66,4 +66,4 @@ before pushing:
 
 ## CI on docs-only PRs
 
-A pull request that changes only documentation (`*.md` outside `.github/`, `scripts/`, `tree-sitter-elps/` and `testdata/`; root `LICENSE`/`AUTHORS`/`CONTRIBUTORS`; `.claude/**`) skips the heavy CI jobs; the `Required: *` checks still report and pass. `docs/lang.md`, `docs/debugging-guide.md` and `docs/lsp-guide.md` are embedded in the binary and always get the full suite, as do pushes to main and scheduled runs. Rules: `scripts/docs-only-changes.sh`; skip acceptance: `scripts/require-jobs-succeeded.sh`.
+A pull request that changes only documentation (`*.md` outside `.github/`, `scripts/`, `tree-sitter-elps/` and `testdata/`; root `LICENSE`/`AUTHORS`/`CONTRIBUTORS`) skips the heavy CI jobs; the `Required: *` checks still report and pass. `docs/lang.md`, `docs/debugging-guide.md` and `docs/lsp-guide.md` are embedded in the binary and always get the full suite, as do pushes to main and scheduled runs. Rules: `scripts/docs-only-changes.sh`; skip acceptance: `scripts/require-jobs-succeeded.sh`.

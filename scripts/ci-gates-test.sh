@@ -1262,8 +1262,12 @@ classify_is true "prose docs, CLAUDE.md, editor READMEs" \
 	docs/fork.md docs/design/tailrec-optimization.md CLAUDE.md CONTRIBUTING.md \
 	editors/vscode/README.md editors/vscode/CHANGELOG.md lisp/lisplib/libschema/README.md
 classify_is true "LICENSE, AUTHORS, CONTRIBUTORS" LICENSE AUTHORS CONTRIBUTORS
-classify_is true ".claude/ agent tooling (read by no CI job)" \
-	.claude/skills/verify/SKILL.md .claude/hooks/session-start.sh .claude/settings.json
+classify_is true ".claude/ skills and agent definitions (markdown)" \
+	.claude/skills/verify/SKILL.md .claude/agents/reviewer.md
+classify_is false "a .go file under .claude/ (callsite_guard_test.go walks the whole repo)" \
+	.claude/skills/verify/SKILL.md .claude/probe.go
+classify_is false ".claude/ hook script" .claude/hooks/session-start.sh
+classify_is false ".claude/ settings" .claude/settings.json
 classify_is false "docs/lang.md is //go:embed-ed into the binary" docs/lang.md
 classify_is false "docs/debugging-guide.md is //go:embed-ed" docs/debugging-guide.md
 classify_is false "docs/lsp-guide.md is //go:embed-ed" docs/lsp-guide.md
@@ -1409,8 +1413,17 @@ for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
     depth = [int((s.get("with") or {}).get("fetch-depth", 1)) for s in steps if "actions/checkout" in str(s.get("uses") or "")]
     if not depth or not (min(depth) == 0 or min(depth) >= 2):
         failures.append(f"{base}: the `changes` checkout needs fetch-depth >= 2 (the merge commit AND its parents)")
-    if "docs_only" not in (ch.get("outputs") or {}):
+    out = str((ch.get("outputs") or {}).get("docs_only", "")).strip()
+    cls = [s for s in steps if "scripts/docs-only-changes.sh" in str(s.get("run") or "")]
+    cls_id = cls[0].get("id") if cls else None
+    want_out = "${{ steps.%s.outputs.docs_only }}" % cls_id
+    if not out:
         failures.append(f"{base}: the `changes` job does not export a docs_only output")
+    elif not cls_id or out != want_out:
+        failures.append(
+            f"{base}: the `changes` job's docs_only output is `{out}`, not `{want_out}` -- "
+            f"it must come from the step that runs scripts/docs-only-changes.sh, or a "
+            f"constant/miswired output could skip heavy jobs on a code change")
 
     heavy, others = [], []
     for jid, job in jobs.items():
@@ -1532,6 +1545,9 @@ src = open(path).read()
 if which == "always":
     old = "    if: needs.changes.outputs.docs_only != 'true'\n"
     new = "    if: always() && needs.changes.outputs.docs_only != 'true'\n"
+elif which == "const-output":
+    old = "      docs_only: ${{ steps.classify.outputs.docs_only }}\n"
+    new = "      docs_only: 'true'\n"
 elif which == "no-docs-env":
     old = "          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}\n"
     new = ""
@@ -1553,6 +1569,17 @@ PY_WMUT
 			fi
 		else
 			bad "negative control: could not find a docs-only condition in elps.yml to mutate"
+		fi
+		if wire_mut const-output "${docsonly_tmp}/mut_const" 2>/dev/null; then
+			w3="$(python3 "${docsonly_tmp}/wiring.py" "${docsonly_tmp}/mut_const" "$SCRIPT_DIR" 2>&1)"
+			if grep -q "^FAIL  elps.yml: the \`changes\` job's docs_only output is" <<<"$w3"; then
+				ok "negative control: a constant docs_only output on the changes job is caught"
+			else
+				bad "negative control: a constant docs_only output went undetected -- the output-wiring check is dead"
+				printf '%s\n' "$w3" | sed 's/^/        | /'
+			fi
+		else
+			bad "negative control: could not find the classify output in elps.yml to mutate"
 		fi
 		if wire_mut no-docs-env "${docsonly_tmp}/mut_noenv" 2>/dev/null; then
 			w2="$(python3 "${docsonly_tmp}/wiring.py" "${docsonly_tmp}/mut_noenv" "$SCRIPT_DIR" 2>&1)"

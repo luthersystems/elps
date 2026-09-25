@@ -33,11 +33,11 @@
 #       - anything under .github/, scripts/ or tree-sitter-elps/, which are CI
 #         configuration, gate code and a separately tested module.
 #   * LICENSE, AUTHORS, CONTRIBUTORS at the repository root.
-#   * anything under .claude/ -- agent skills, agent definitions, a session
-#     hook and its settings. No build, test, lint or gate in this repository
-#     reads that directory (only prose mentions it), so no heavy job can
-#     observe a change there. The confidentiality guard, which scans the whole
-#     tracked tree, still runs on every PR.
+#   * .claude/ gets no blanket exemption: its *.md files (skills, agent
+#     definitions) are docs by the rule above, but anything else there -- a
+#     hook script, settings, and above all a .go file -- is not.
+#     internal/fuzzwatch/callsite_guard_test.go walks the whole repository,
+#     .claude/ included, and checks every .go file it finds.
 # Everything else -- *.go, *.lisp, go.mod/go.sum, Makefile, editors/ code
 # (editors/**/*.md is docs), config files, images -- is not docs-only.
 #
@@ -64,7 +64,6 @@ is_docs_path() {
 	.github/* | scripts/* | tree-sitter-elps/*) return 1 ;;
 	testdata/* | */testdata/*) return 1 ;;
 	# Docs.
-	.claude/*) return 0 ;;
 	LICENSE | AUTHORS | CONTRIBUTORS) return 0 ;;
 	*.md) return 0 ;;
 	esac
