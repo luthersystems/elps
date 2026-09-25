@@ -211,10 +211,13 @@ import (
 // without confusing a new allocation at a reused address with an old value.
 // One runtime.AddCleanup per adopting Runtime removes its entries and its side
 // record after collection; the record holds only weak keys, never the Runtime.
-// Cleanup is asynchronous. Until it runs, a surviving value still carries its
-// dead owner's identity and a cross-runtime use reports a collected owner.
-// Once cleanup removes the entry, that use can adopt afresh: ownership history
-// is not preserved beyond the owner's lifetime.
+// Cleanup is asynchronous and deletes only the entries whose VALUE is dead.
+// An entry whose value outlived its owner (an embedder retained it) is kept:
+// its weak owner handle is a tombstone that equals no live Runtime's handle
+// and references nothing, so a later use by any other Runtime still panics,
+// naming the owner as <collected>.  Collecting a Runtime never launders the
+// values it adopted.  Those tombstones go on an orphan list that every
+// Runtime cleanup sweeps, deleting each once its value dies.
 //
 // Weak handles and table/list storage still cost memory. Dead values owned by
 // a LIVE Runtime keep that metadata until the Runtime dies or the table resets;
@@ -352,10 +355,96 @@ func cleanupOwnership(owner weak.Pointer[Runtime]) {
 	adoptions.mu.Lock()
 	defer adoptions.mu.Unlock()
 	table := ownershipTable.m.Load()
+	if adoptions.table != table {
+		return // a reset already discarded these adoptions
+	}
+	var live []any
 	for _, key := range adoptions.keys {
+		if ownershipKeyLive(key) {
+			// The value outlived its owner.  Keep the entry: the stored owner
+			// handle is now a tombstone that no live Runtime's handle equals
+			// and that references nothing, so a later adoption by any other
+			// Runtime still panics (naming the owner as <collected>).
+			live = append(live, key)
+			continue
+		}
 		// A reset may have let another Runtime adopt this same value. Its
 		// ownership must survive a delayed cleanup of the previous owner.
 		table.CompareAndDelete(key, owner)
+	}
+	adoptions.keys = nil
+	if len(live) > 0 {
+		ownershipOrphans.mu.Lock()
+		if ownershipOrphans.table != table {
+			ownershipOrphans.table = table
+			ownershipOrphans.entries = nil
+		}
+		for _, key := range live {
+			ownershipOrphans.entries = append(ownershipOrphans.entries, ownershipOrphan{key: key, owner: owner})
+		}
+		ownershipOrphans.mu.Unlock()
+	}
+	sweepOwnershipOrphans()
+}
+
+// ownershipOrphans holds the table entries whose owner Runtime was collected
+// while the value itself was still live.  Those entries are tombstones and
+// must stay until the value dies; sweepOwnershipOrphans removes them then, so
+// the table does not accumulate entries for dead values of dead Runtimes.
+//elpsvet:allow weak.Pointer[Runtime] only type-tags *LVal via a zero-length array; nothing is strongly held
+var ownershipOrphans struct {
+	table   *sync.Map
+	entries []ownershipOrphan
+	mu      sync.Mutex
+}
+
+type ownershipOrphan struct {
+	key   any
+	owner weak.Pointer[Runtime]
+}
+
+// sweepOwnershipOrphans deletes tombstone entries whose value has been
+// collected.  It runs from every Runtime cleanup, so it is amortized over
+// Runtime lifetimes rather than paid per adoption.
+func sweepOwnershipOrphans() {
+	ownershipOrphans.mu.Lock()
+	defer ownershipOrphans.mu.Unlock()
+	table := ownershipTable.m.Load()
+	if ownershipOrphans.table != table {
+		ownershipOrphans.table = nil
+		ownershipOrphans.entries = nil
+		return
+	}
+	kept := ownershipOrphans.entries[:0]
+	for _, o := range ownershipOrphans.entries {
+		if ownershipKeyLive(o.key) {
+			kept = append(kept, o)
+			continue
+		}
+		table.CompareAndDelete(o.key, o.owner)
+	}
+	clear(ownershipOrphans.entries[len(kept):])
+	ownershipOrphans.entries = kept
+}
+
+func ownershipOrphanCount() int {
+	ownershipOrphans.mu.Lock()
+	defer ownershipOrphans.mu.Unlock()
+	return len(ownershipOrphans.entries)
+}
+
+// ownershipKeyLive reports whether the object behind an ownershipKey result
+// is still reachable.
+func ownershipKeyLive(key any) bool {
+	switch k := key.(type) {
+	case weak.Pointer[LVal]:
+		return k.Value() != nil
+	case weak.Pointer[funData]:
+		return k.Value() != nil
+	case weak.Pointer[MapData]:
+		return k.Value() != nil
+	default:
+		return false
 	}
 }
 
