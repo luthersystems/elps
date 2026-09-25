@@ -100,37 +100,7 @@
 # the row `waiver-unused` on every run; see elps#514 for the remaining
 # eval-path reclaim.)
 
-# QueryPackages copies every package's docstrings into PackageDoc structs, so
-# its B/op grows with the size of the help corpus itself. PR #658 added the
-# documentation for the second hardening pass (elpspath copy/mutate and leaf
-# semantics, the `and` tail-position rule, render depth limits, condition-data
-# rules, the long-comment rule) and moved the row to +5.24% against the 5%
-# gate with no change under lisp/lisplib/libhelp. The only caller is
-# `elps doc --json` (cmd/doc.go); nothing on an embedded or request path
-# calls it, so the cost is paid once per CLI invocation by a developer.
-github.com/luthersystems/elps/mcpserver | LintTool | B/op | 8.5 | 2027-09-14 | elps#659 | Additional analysis from lisp-package-seal, builtin-shadowing, lambda-list, duplicate-binding and duplicate-keyword analyzers.
-
-# TemplateConstruction/functions=250/NewTemplate is a 2.4 ms whole-publication
-# timing whose sec/op moves with code placement, not with the work it does.
-# PR #658's final follow-ups (the admission entry snapshot and the registry's
-# runtime back-pointer) put it at +15.22% and +17.50% on the shared runner
-# with allocations flat (1.673k -> 1.674k allocs/op, one entries slice per
-# publication). Measured locally with order-counterbalanced arms: the commits
-# are at parity with the base (p=0.16 to 0.94 across the bisection), and a
-# control that adds one never-executed function to package lisp -- zero added
-# work -- moves this same row by +8.21% (p=0.009). Two runs of identical base
-# code minutes apart differ by 10%. The row's allocation columns stay under the
-# ordinary gate; only its timing is waived.
-github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=250/NewTemplate | sec/op | 25 | 2027-03-31 | elps#659 | Placement-sensitive whole-publication timing; parity with base under counterbalanced measurement, allocations stable, zero-work control moves it as much.
-
-# Lazy template instantiation gives every package (not only frozen ones) a
-# shared plan base -- index, packageBase, refs -- so its bindings can start
-# unmaterialized per VM: a flat +106 allocations per NewTemplate, paid once
-# at publication, per package rather than per binding. NewVM drops from ~4.9k
-# allocations to ~57 on the same fixture. Trimming the base is tracked in #687.
-github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=0/phase=publish | allocs/op | 28 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
-github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=0/phase=publish | B/op | 14 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
-github.com/luthersystems/elps/lisp/lisplib | TemplatePlan/functions=250/phase=publish | allocs/op | 8 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
-github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=0/NewTemplate | allocs/op | 28 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
-github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=0/NewTemplate | B/op | 14 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
-github.com/luthersystems/elps/lisp/lisplib | TemplateConstruction/functions=250/NewTemplate | allocs/op | 8 | 2027-03-31 | elps#687 | Per-package plan bases for lazy instantiation; one-off publication cost buying a ~99 percent cut in per-VM allocations.
+# (The elps#659 LintTool B/op and TemplateConstruction/functions=250 sec/op
+# waivers, and the six elps#687 lazy-instantiation publication waivers, were
+# deleted once main's baseline included them and the gate reported every row
+# `waiver-unused` -- see elps#688's benchmark run.)
