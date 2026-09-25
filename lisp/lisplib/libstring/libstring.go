@@ -69,17 +69,17 @@ var builtins = []*libutil.Builtin{
 		The cutset is a string of individual characters to trim.`),
 	libutil.FunctionDoc("has-prefix?", lisp.Formals("str", "prefix"), builtinHasPrefix,
 		`Returns true if str begins with prefix. An empty prefix matches every
-		string. Comparison is by bytes, which for valid UTF-8 gives the same
-		result as comparing runes; no Unicode normalization is applied.`),
+		string. Comparison is by bytes; when both strings are valid UTF-8
+		this equals comparing runes. No Unicode normalization is applied.`),
 	libutil.FunctionDoc("has-suffix?", lisp.Formals("str", "suffix"), builtinHasSuffix,
 		`Returns true if str ends with suffix. An empty suffix matches every
-		string. Comparison is by bytes, which for valid UTF-8 gives the same
-		result as comparing runes; no Unicode normalization is applied.`),
+		string. Comparison is by bytes; when both strings are valid UTF-8
+		this equals comparing runes. No Unicode normalization is applied.`),
 	libutil.FunctionDoc("contains?", lisp.Formals("str", "substr"), builtinContains,
 		`Returns true if substr occurs anywhere in str. An empty substr is
-		contained in every string. Comparison is by bytes, which for valid
-		UTF-8 gives the same result as comparing runes; no Unicode
-		normalization is applied.`),
+		contained in every string. Comparison is by bytes; when both strings
+		are valid UTF-8 this equals comparing runes. No Unicode normalization
+		is applied.`),
 	libutil.FunctionDoc("trim-prefix", lisp.Formals("str", "prefix"), builtinTrimPrefix,
 		`Returns str with one leading occurrence of prefix removed. If str does
 		not begin with prefix, str is returned unchanged. Unlike trim-left,

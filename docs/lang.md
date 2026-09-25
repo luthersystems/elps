@@ -1869,8 +1869,8 @@ prefixes and suffixes:
 
 An empty prefix, suffix or substring matches every string. Arguments must be
 strings; bytes values are rejected, as with the other `string` functions.
-Matching compares bytes, which for valid UTF-8 gives the same result as
-comparing runes, and applies no Unicode normalization. Unlike `trim-left` and
+Matching compares bytes; when both strings are valid UTF-8 this equals
+comparing runes. No Unicode normalization is applied. Unlike `trim-left` and
 `trim-right`, whose second argument is a set of characters, `trim-prefix` and
 `trim-suffix` remove the exact string once.
 

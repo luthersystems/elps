@@ -61,6 +61,8 @@ func TestStringAffixResults(t *testing.T) {
 		{`(string:has-prefix? "é" "\xc3")`, "true"},
 		{`(string:contains? "é" "\xa9")`, "true"},
 		{`(string:trim-prefix "é" "\xc3")`, `"\xa9"`},
+		{`(string:has-suffix? "é" "\xa9")`, "true"},
+		{`(string:trim-suffix "é" "\xa9")`, `"\xc3"`},
 		// Precomposed é (U+00E9) and e + combining acute (U+0301) differ:
 		// no normalization is applied.
 		{`(string:contains? "José" "é")`, "false"},
@@ -80,5 +82,24 @@ func TestStringAffixPredicatesReturnBooleans(t *testing.T) {
 		got = env.LoadString("affix.lisp", "(string:"+fn+` "" "abc")`)
 		require.Equal(t, lisp.LSymbol, got.Type, "%v", got)
 		assert.Equal(t, lisp.FalseSymbol, got.Str, fn)
+	}
+}
+
+// The trims return a substring of the input without allocating a new buffer,
+// so, like trim-left and trim-right, they succeed on inputs larger than the
+// runtime allocation cap.
+func TestStringAffixAboveAllocationCap(t *testing.T) {
+	const limit = 4
+	env := newStringAllocationEnv(t, limit)
+	for _, tc := range []struct{ expr, want string }{
+		{`(string:trim-prefix "abcdefgh" "ab")`, `"cdefgh"`},
+		{`(string:trim-suffix "abcdefgh" "gh")`, `"abcdef"`},
+		{`(string:trim-prefix "abcdefgh" "")`, `"abcdefgh"`},
+		{`(string:has-prefix? "abcdefgh" "abcdefg")`, "true"},
+		{`(string:contains? "abcdefgh" "cdefg")`, "true"},
+	} {
+		got := env.LoadString("affix-alloc.lisp", tc.expr)
+		require.False(t, lisp.IsInternalPanic(got), "%v", got)
+		assert.Equal(t, tc.want, got.String(), tc.expr)
 	}
 }
