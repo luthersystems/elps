@@ -1853,6 +1853,27 @@ names.
 (debug-print (time:format-rfc3339 now))
 ```
 
+The `string` package follows the names of Go's `strings` package. Besides
+case conversion, `split`, `join`, `repeat` and the cutset trims (`trim`,
+`trim-left`, `trim-right`, `trim-space`), it tests and removes whole
+prefixes and suffixes:
+
+```lisp
+(string:has-prefix? "user:alice" "user:") ; true
+(string:has-suffix? "report.csv" ".csv")  ; true
+(string:contains? "a,b,c" ",b,")          ; true
+(string:trim-prefix "user:alice" "user:") ; "alice"
+(string:trim-suffix "report.csv" ".txt")  ; "report.csv" (no match, unchanged)
+(string:trim-prefix "ababab" "ab")        ; "abab" (one occurrence only)
+```
+
+An empty prefix, suffix or substring matches every string. Arguments must be
+strings; bytes values are rejected, as with the other `string` functions.
+Matching compares bytes; when both strings are valid UTF-8 this equals
+comparing runes. No Unicode normalization is applied. Unlike `trim-left` and
+`trim-right`, whose second argument is a set of characters, `trim-prefix` and
+`trim-suffix` remove the exact string once.
+
 The `golang` package reads native Go values supplied by the host.
 `golang:string` requires a native value containing a Go string (including
 defined types with underlying kind string); passing an ELPS string or any
