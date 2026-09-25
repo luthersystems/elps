@@ -629,6 +629,17 @@ reaches the operator). `elps lint` reports such a definition as
 `builtin-shadowing`; if its behavior matches the operator, deleting it makes
 the package's calls cheaper.
 
+A Go host that registers its own `when`, `unless`, `while` or `default`
+(`RegisterDefaultSpecialOp`, or `AddBuiltins`/`AddMacros`/`AddSpecialOps`
+into package `lisp`) replaces the operator instead of colliding with it.
+Because these are operators, not macros, `macroexpand` leaves them unchanged,
+and they do not depend on the caller's bindings of `if`, `progn`, `not` or
+`nil?` the way an expansion does. A `while` body runs in the caller's frame,
+with no hidden lambda, so it has no frame of its own in stack traces. With a
+debugger attached, or with the tail-iteration limit disabled, the runaway
+backstop falls back to the physical (debugger) or logical stack-height limit,
+mirroring what stopped the old recursive macro in the same configuration.
+
 ### let vs let\*
 
 `let` and `let*` create local bindings. Both evaluate their initializer
@@ -2781,9 +2792,9 @@ Its final argument can call the enclosing function without growing the stack:
 (process 1000000 0)   ; constant stack space; evaluates to false
 ```
 
-`when` and `unless` are not built-in control forms. The example `when` macro
-in this guide expands into `if` and `progn`, so its last body expression
-preserves tail position too.
+`when` and `unless` are special operators whose last body expression is in
+tail position, like `if`'s branches. A `when` macro that expands into `if`
+and `progn`, like the example in this guide, preserves tail position too.
 
 **A tail call that CROSSES a `with-cleanup` is not optimized.** A frame that
 still owes cleanup forms cannot be elided, so a recursion routed through the

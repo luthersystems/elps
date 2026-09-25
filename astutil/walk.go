@@ -81,6 +81,7 @@ func ArgCount(sexpr *lisp.LVal) int {
 // shadow builtins. This includes:
 //   - Function/macro names from defun/defmacro
 //   - Parameter names from defun/defmacro/lambda formals lists
+//   - Names rebound by (set 'name ...) or (set! 'name ...)
 //
 // The result is file-global (not scope-aware), which is conservative: it may
 // suppress a valid finding but will never produce a false positive.
@@ -100,6 +101,13 @@ func UserDefined(exprs []*lisp.LVal) map[string]bool {
 		case "lambda":
 			if ArgCount(sexpr) >= 1 {
 				CollectFormals(sexpr.Cells[1], defs)
+			}
+		case "set", "set!":
+			// (set 'name v) rebinds name, e.g. a program's own when.
+			if ArgCount(sexpr) >= 1 {
+				if name := quotedSymbolName(sexpr.Cells[1]); name != "" {
+					defs[name] = true
+				}
 			}
 		}
 	})
@@ -268,4 +276,19 @@ func SourceOf(v *lisp.LVal) *lisp.LVal {
 		}
 	}
 	return v
+}
+
+// quotedSymbolName returns the name of a quoted symbol literal ('name or
+// (quote name)), or "" for anything else.
+func quotedSymbolName(v *lisp.LVal) string {
+	switch {
+	case (v.Type == lisp.LSymbol || v.Type == lisp.LQSymbol) && v.IsQuoted():
+		return v.Str
+	case v.Type == lisp.LQSymbol:
+		return v.Str
+	case v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+		v.Cells[0].Str == "quote" && v.Cells[1].Type == lisp.LSymbol:
+		return v.Cells[1].Str
+	}
+	return ""
 }

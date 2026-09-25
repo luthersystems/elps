@@ -2239,3 +2239,24 @@ func TestAnalyze_ExportLiteralListsAndEvaluatedArguments(t *testing.T) {
 		t.Fatal("missing lexical names binding")
 	})
 }
+
+// TestAnalyze_ImportedWhenShadowsLispOp pins that a package importing a
+// library's own when resolves to the library's definition, as the runtime
+// does (use-package copies the export over lisp's special operator).
+func TestAnalyze_ImportedWhenShadowsLispOp(t *testing.T) {
+	source := "(in-package 'svc)\n(use-package 'utils)\n(defun f () (when true 1))"
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	var found *Symbol
+	for _, ref := range result.References {
+		if ref.Symbol != nil && ref.Symbol.Name == "when" {
+			found = ref.Symbol
+		}
+	}
+	require.NotNil(t, found, "when should be a resolved reference")
+	assert.Equal(t, "utils", found.Package)
+}

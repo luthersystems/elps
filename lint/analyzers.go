@@ -865,6 +865,9 @@ var implicitPrognForms = map[string]int{
 	"with-cleanup":  2, // (with-cleanup (cleanup...) body...)
 	"dotimes":       2, // (dotimes (var n) body...)
 	"progn":         1, // (progn body...) — nested progn
+	"when":          2, // (when test body...)
+	"unless":        2, // (unless test body...)
+	"while":         2, // (while test body...)
 }
 
 // AnalyzerWithCleanupForms warns about two degenerate spellings of the

@@ -86,7 +86,7 @@ func TestWhileRespectsLimits(t *testing.T) {
 		for _, src := range []string{`(while true)`, `(while true 1)`} {
 			got := env.LoadString("w.lisp", src)
 			require.Equal(t, lisp.LError, got.Type, src)
-			assert.Contains(t, got.String(), "tail-call iteration limit exceeded")
+			assert.Contains(t, got.String(), "while: loop exceeded 1000 turns")
 			assert.False(t, lisp.IsInternalPanic(got))
 		}
 		// a bounded loop under the limit completes, and the counter is per

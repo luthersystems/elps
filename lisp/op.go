@@ -212,15 +212,44 @@ func RegisterDefaultSpecialOp(name string, formals *LVal, fn LBuiltin) {
 // DefaultSpecialOps returns the default set of LBuiltinDef added to LEnv
 // objects when LEnv.AddSpecialOps is called without arguments.
 func DefaultSpecialOps() []LBuiltinDef {
-	ops := make([]LBuiltinDef, len(langSpecialOps)+len(userSpecialOps))
+	ops := make([]LBuiltinDef, 0, len(langSpecialOps)+len(userSpecialOps))
 	for i := range langSpecialOps {
-		ops[i] = langSpecialOps[i]
+		// A host that registered its own operator under a name lisp gained
+		// later keeps it; see lateSpecialOps.
+		if lateSpecialOps[langSpecialOps[i].Name()] && userSpecialOpNamed(langSpecialOps[i].Name()) {
+			continue
+		}
+		ops = append(ops, langSpecialOps[i])
 	}
-	offset := len(langSpecialOps)
 	for i := range userSpecialOps {
-		ops[offset+i] = userSpecialOps[i]
+		ops = append(ops, userSpecialOps[i])
 	}
 	return ops
+}
+
+// lateSpecialOps names the special operators added to package lisp after
+// hosts and programs had long supplied their own under the same names.  A
+// host registration under one of these names replaces lisp's operator
+// instead of colliding with it (RegisterDefaultSpecialOp, and AddBuiltins,
+// AddMacros or AddSpecialOps into package lisp), so an embedding that
+// defined its own when before lisp had one keeps initializing unchanged.
+var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true}
+
+func userSpecialOpNamed(name string) bool {
+	for _, op := range userSpecialOps {
+		if op.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceableLateOp reports whether exist, found under name in pkg during a
+// host registration, is lisp's own late special operator, which that
+// registration may replace (see lateSpecialOps).
+func replaceableLateOp(pkg *Package, name string, exist *LVal) bool {
+	return pkg.Name == DefaultLangPackage && lateSpecialOps[name] &&
+		exist.Type == LFun && exist.FunType == LFunSpecialOp && exist.Package() == DefaultLangPackage
 }
 
 func opFunction(env *LEnv, args *LVal) *LVal {
@@ -1181,6 +1210,33 @@ func opDefault(env *LEnv, s *LVal) *LVal {
 	return env.Terminal(s.Cells[1])
 }
 
+// whileTurnLimit is the per-entry turn bound for opWhile: the limit that
+// stopped the labels macro it replaces in the same configuration, so that no
+// runaway loop the macro stopped runs forever and no bounded loop the macro
+// completed now errors.
+//
+//   - Normally each macro turn was one optimized tail call, bounded by
+//     MaxTailIterations.  If that is disabled but the opt-in logical height
+//     limit is on, the macro was stopped by logical height, which grows by at
+//     least one elided frame per turn, so MaxHeightLogical turns is a bound
+//     at least as loose.
+//   - With a debugger attached tail-call optimization is off, so the macro
+//     recursed at least one physical frame per turn and was bounded only by
+//     MaxHeightPhysical; MaxTailIterations never counted.  Bounding turns by
+//     MaxHeightPhysical is again at least as loose as the macro was.
+//
+// Zero means unbounded (step and context limits still apply per turn).
+func whileTurnLimit(env *LEnv) int {
+	st := env.Runtime.Stack
+	if env.Runtime.Debugger != nil {
+		return st.MaxHeightPhysical
+	}
+	if st.MaxTailIterations > 0 {
+		return st.MaxTailIterations
+	}
+	return st.MaxHeightLogical
+}
+
 // (while test-form body-form*)
 //
 // An iterative loop: no closure, no recursion, no tail-call machinery.  The
@@ -1194,10 +1250,12 @@ func opWhile(env *LEnv, s *LVal) *LVal {
 		return env.Errorf("while: condition argument expected")
 	}
 	cond, body := s.Cells[0], s.Cells[1:]
-	maxTurns := env.Runtime.Stack.MaxTailIterations
+	maxTurns := whileTurnLimit(env)
 	for turns := 0; ; turns++ {
 		if maxTurns > 0 && turns > maxTurns {
-			return env.Error(&TailIterationLimitError{turns})
+			return env.Errorf("while: loop exceeded %d turns: a runaway-loop backstop"+
+				" derived from the tail-iteration (or, when that is disabled or a debugger is"+
+				" attached, stack height) limit; raise or disable it with WithMaxTailIterations", maxTurns)
 		}
 		if lerr := env.checkLimits(env.evalCtx); lerr != nil {
 			return lerr

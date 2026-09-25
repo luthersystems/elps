@@ -46,6 +46,8 @@ func EvalRunaway() map[string]string {
 		"tail-recursion-forever": `(defun loop () (loop)) (loop)`,
 		"mutual-tail-recursion":  `(defun a () (b)) (defun b () (a)) (a)`,
 		"tail-loop-with-counter": `(defun countup (n) (countup (+ n 1))) (countup 0)`,
+		"while-forever":          `(while true)`,
+		"while-forever-body":     `(set 'n 0) (while true (set! n (+ n 1)))`,
 
 		// --- unbounded NON-tail recursion (MaxHeightPhysical).  This is the
 		// shape that overflows the Go goroutine stack, an abort recover()
@@ -124,10 +126,12 @@ func EvalTerminating() map[string]string {
 		"empty": ``,
 		"whitespace": `
 `,
-		"nil":     `()`,
-		"integer": `42`,
-		"string":  `"hello"`,
-		"comment": `; nothing but a comment`,
+		"nil":                 `()`,
+		"when-unless-default": `(list (when true 1 2) (unless () 3) (default () 4) (default 5 (error 'x "y")))`,
+		"while-bounded":       `(set 'i 0) (while (< i 100) (set! i (+ i 1))) i`,
+		"integer":             `42`,
+		"string":              `"hello"`,
+		"comment":             `; nothing but a comment`,
 
 		// --- bounded tail recursion.  Deep enough to exercise the TRO path
 		// and the tail-iteration counter, far below the default backstop. ---

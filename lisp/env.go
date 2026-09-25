@@ -1182,7 +1182,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		name := mac.Name()
 		// registrationBound replicates the probe pkg.Get used to answer,
 		// without Get's per-miss error construction; see its comment.
-		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
@@ -1217,7 +1217,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	pkg := env.Runtime.Package
 	for _, op := range ops {
 		name := op.Name()
-		if exist, bound := registrationBound(pkg, name); bound && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic(env.formatError("macro already defined: %v (= %v)", []any{name, exist}))
@@ -1248,7 +1248,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	pkg := env.Runtime.Package
 	for _, f := range funs {
 		name := f.Name()
-		if exist, bound := registrationBound(pkg, name); bound && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
+		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + name)

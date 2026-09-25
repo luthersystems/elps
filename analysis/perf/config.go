@@ -79,7 +79,7 @@ func DefaultConfig() *Config {
 		ExpensiveFunctions: []string{"db-*", "put-state", "get-state", "http-*"},
 		ExpensiveCost:      50,
 		LoopKeywords: []string{
-			"dotimes", "map", "foldl", "foldr",
+			"dotimes", "while", "map", "foldl", "foldr",
 			"select", "reject",
 		},
 		LoopMultiplier:        20,
