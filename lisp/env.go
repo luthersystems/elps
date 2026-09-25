@@ -1466,10 +1466,25 @@ func (env *LEnv) checkLimits(ctx context.Context) *LVal {
 
 // checkLimitsSlow is the cold-path limit check.  It increments the step
 // counter, checks the step limit, and checks the context for cancellation.
+//
+// The increment saturates: ChargeSteps can legitimately drive the counter
+// to math.MaxInt64, and a wrapping increment after that (an error handler
+// or cleanup form still evaluating under the exhausted budget) would turn
+// the counter negative and silently refill the budget.  See
+// Runtime.addStepsToCurrent.
 func (env *LEnv) checkLimitsSlow(ctx context.Context) *LVal {
+	env.Runtime.addStepsToCurrent(1)
+	return env.limitViolation(ctx)
+}
+
+// limitViolation reports the first evaluation limit the current step count
+// and ctx violate, or nil.  The step limit is checked before the context, so
+// a step that both exhausts the budget and observes a cancelled context
+// reports the step limit.  checkLimitsSlow and ChargeSteps share it so a
+// native charge raises exactly the condition and message the evaluator does.
+func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 	r := env.Runtime
-	r.steps++
-	if r.maxSteps > 0 && r.steps > r.maxSteps {
+	if r.stepLimitExceeded() {
 		return env.ErrorConditionf(CondStepLimitExceeded,
 			"step limit exceeded (%d steps)", r.maxSteps)
 	}
@@ -1480,6 +1495,82 @@ func (env *LEnv) checkLimitsSlow(ctx context.Context) *LVal {
 		}
 	}
 	return nil
+}
+
+// ChargeSteps charges n evaluation steps to the current top-level
+// evaluation on behalf of Go code, and reports whether the evaluation may
+// continue.  It exists for native builtins that do work the interpreter would
+// otherwise have counted: the evaluator charges a builtin's call form but
+// nothing for the work inside it, so a builtin that replaces a Lisp loop
+// costs the same few steps however many elements it visits, which silently
+// loosens a WithMaxSteps budget.  Charging per element keeps the budget
+// honest; the cost of a unit of work is the host's choice.
+//
+// ChargeSteps returns Nil() when the evaluation may continue and an LError
+// otherwise, so a builtin checks it the way it checks any other result and
+// returns the error unchanged:
+//
+//	if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
+//		return lerr
+//	}
+//
+// The accounting is the evaluator's own, applied n times at once:
+//
+//   - When the runtime has neither a step limit nor a context (the default),
+//     the evaluator counts nothing, and neither does ChargeSteps: it returns
+//     Nil() without touching Steps or TotalSteps.  The check is a couple of
+//     comparisons.
+//   - Otherwise Steps (and so TotalSteps) grows by n, saturating at
+//     math.MaxInt64 rather than wrapping.  The full n is recorded even when
+//     it overruns the budget, just as the evaluator records the step that
+//     overruns it.  A count that saturates exceeds every budget, including
+//     one of math.MaxInt64.
+//   - If the step count now exceeds the WithMaxSteps budget, ChargeSteps
+//     returns the same step-limit-exceeded condition (CondStepLimitExceeded)
+//     with the same message the evaluator raises, so handler-bind, Go
+//     callers and errors.Is see no difference.  Once over budget, every later
+//     charge and every later evaluation step in the same top-level
+//     evaluation fails the same way.
+//   - Otherwise, if the evaluation's context is done, it returns the
+//     context-cancelled condition (CondContextCancelled), as the evaluator
+//     does between steps.  A long native loop that charges per element is
+//     therefore also interruptible by a deadline.
+//
+// A zero n is a no-op that returns Nil() and checks nothing.  A negative n is
+// a programming error in the builtin: ChargeSteps returns an ordinary error
+// and changes no counter, whatever limits are configured, rather than
+// refunding steps.
+//
+// The charge applies to the runtime's current top-level evaluation, which is
+// reset (and its count folded into TotalSteps) when the next exported entry
+// point is entered from outside an evaluation, or by Runtime.ResetSteps.
+// Called outside any evaluation it charges the most recent one's counter,
+// which the next evaluation resets.
+//
+// Like the rest of the evaluator, ChargeSteps is not safe for concurrent use:
+// call it only from the goroutine evaluating on env's runtime.  The counters
+// live on that Runtime alone, so a VM instantiated from a Template charges
+// only its own budget.
+//
+// ChargeSteps bounds work, not time.  It does not make a builtin that blocks
+// inside a single charge responsive to cancellation.
+func (env *LEnv) ChargeSteps(n int64) *LVal {
+	if n <= 0 {
+		if n == 0 {
+			return Nil()
+		}
+		return env.Errorf("negative step charge: %d", n)
+	}
+	r := env.Runtime
+	ctx := env.evalCtx
+	if ctx == nil && r.maxSteps == 0 {
+		return Nil()
+	}
+	r.addStepsToCurrent(n)
+	if lerr := env.limitViolation(ctx); lerr != nil {
+		return lerr
+	}
+	return Nil()
 }
 
 // Eval evaluates v in the context (scope) of env and returns the resulting

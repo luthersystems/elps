@@ -60,6 +60,8 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"evalNesting":     "not-carried",
 	"steps":           "not-carried",
 	"totalSteps":      "not-carried",
+	// Per-evaluation companion of steps: a fresh VM has not overflowed.
+	"stepsOverflowed": "not-carried",
 	"macroExpSeq":     "not-carried",
 	// closures is only ever compared against itself within one let* call
 	// (opLetSeq reads it before and after each initializer), so its absolute

@@ -5,6 +5,7 @@ package lisp
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"strconv"
 	"sync/atomic"
@@ -64,6 +65,7 @@ type Runtime struct {
 	macroExpSeq            int64         // monotonic counter for macroExpansionInfo.ID
 	LegacyKeywordFormals   bool          // Accept keyword parameter names with v1.61 semantics; see WithLegacyKeywordFormals.
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
+	stepsOverflowed        bool          // steps saturated: the true count exceeds math.MaxInt64, so it exceeds any budget.
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -148,7 +150,10 @@ func (r *Runtime) CheckAlloc(n int) string {
 // turn, and value-passing callback, error handler or threading step (callValueFunction)
 // increments the counter by one. Counting dotimes turns matters because an empty body
 // evaluates nothing and would otherwise consume no budget at all -- see
-// opDoTimes, which also records the measured per-turn cost.
+// opDoTimes, which also records the measured per-turn cost.  A native
+// builtin adds to it with LEnv.ChargeSteps.  Steps are counted only while a
+// step limit or an evaluation context is configured; otherwise the counter
+// stays at zero.
 //
 // The counter is reset when a new top-level evaluation begins (see
 // WithMaxSteps), so it is not a lifetime total.  Use TotalSteps for that.
@@ -159,15 +164,48 @@ func (r *Runtime) Steps() int64 {
 // TotalSteps returns the number of steps consumed over the lifetime of the
 // Runtime, across every top-level evaluation.  Unlike Steps it is not reset
 // when a new evaluation begins.
+//
+// Both counters saturate at math.MaxInt64 rather than wrapping; see
+// LEnv.ChargeSteps, which can advance them by arbitrary amounts.
 func (r *Runtime) TotalSteps() int64 {
-	return r.totalSteps + r.steps
+	return addSteps(r.totalSteps, r.steps)
 }
 
 // ResetSteps resets the current evaluation's step counter to zero.  It does
 // not affect TotalSteps.
 func (r *Runtime) ResetSteps() {
-	r.totalSteps += r.steps
+	r.totalSteps = addSteps(r.totalSteps, r.steps)
 	r.steps = 0
+	r.stepsOverflowed = false
+}
+
+// addStepsToCurrent adds n (non-negative) to the current evaluation's step
+// count.  On overflow the count saturates at math.MaxInt64 and
+// stepsOverflowed records that the true count is larger, so a budget of
+// exactly math.MaxInt64 is still reported as exceeded.
+func (r *Runtime) addStepsToCurrent(n int64) {
+	if n > math.MaxInt64-r.steps {
+		r.steps = math.MaxInt64
+		r.stepsOverflowed = true
+		return
+	}
+	r.steps += n
+}
+
+// stepLimitExceeded reports whether the current evaluation has used more
+// steps than its budget allows.
+func (r *Runtime) stepLimitExceeded() bool {
+	return r.maxSteps > 0 && (r.steps > r.maxSteps || r.stepsOverflowed)
+}
+
+// addSteps adds two non-negative step counts, saturating at math.MaxInt64.
+// Step counts only grow, so saturation is the one overflow behavior that
+// cannot turn an exhausted budget back into an available one.
+func addSteps(a, b int64) int64 {
+	if b > math.MaxInt64-a {
+		return math.MaxInt64
+	}
+	return a + b
 }
 
 // beginEval marks entry into a top-level evaluation and returns a function
@@ -180,8 +218,7 @@ func (r *Runtime) ResetSteps() {
 func (r *Runtime) beginEval() func() {
 	r.evalDepth++
 	if r.evalDepth == 1 {
-		r.totalSteps += r.steps
-		r.steps = 0
+		r.ResetSteps()
 	}
 	return r.endEval
 }
@@ -315,7 +352,8 @@ const DefaultMaxMacroExpansionDepth = 1000
 // overhead, but turns say nothing about the work done per turn: a body that
 // conses a list, concatenates a string, or calls any O(n) builtin can run
 // for minutes — or effectively forever — inside the same turn budget, and a
-// step limit does not help either because an O(n) builtin is one step. To
+// step limit does not help either because an O(n) builtin is one step
+// (unless the builtin charges its work with LEnv.ChargeSteps). To
 // bound wall-clock time, pass a context with a deadline (WithContext, or the
 // *Context methods on LEnv). That is the only limit here that measures time.
 //
