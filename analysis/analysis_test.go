@@ -1706,15 +1706,16 @@ func TestScope_LookupAllLocal(t *testing.T) {
 }
 
 func TestAnalyze_CrossFileUsePackage(t *testing.T) {
-	// Regression test for #250: a file in package 'svc' uses 'when' from
+	// Regression test for #250 (the name is not when: that is now a lisp
+	// special operator and always resolves): a file in package 'svc' uses 'my-when' from
 	// 'utils' without its own use-package. The workspace-level PackageImports
-	// (from main.lisp having use-package 'utils) should make 'when' resolve.
+	// (from main.lisp having use-package 'utils) should make 'my-when' resolve.
 
-	// Without PackageImports, 'when' is unresolved.
-	source := "(in-package 'svc)\n(defun f () (when true 1))"
+	// Without PackageImports, 'my-when' is unresolved.
+	source := "(in-package 'svc)\n(defun f () (my-when true 1))"
 	cfgWithout := &Config{
 		PackageExports: map[string][]ExternalSymbol{
-			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+			"utils": {{Name: "my-when", Kind: SymMacro, Package: "utils"}},
 		},
 	}
 	result := parseAndAnalyzeWithConfig(t, source, cfgWithout)
@@ -1722,12 +1723,12 @@ func TestAnalyze_CrossFileUsePackage(t *testing.T) {
 	for _, u := range result.Unresolved {
 		unresolvedNames[u.Name] = true
 	}
-	assert.True(t, unresolvedNames["when"], "without PackageImports, 'when' should be unresolved")
+	assert.True(t, unresolvedNames["my-when"], "without PackageImports, 'my-when' should be unresolved")
 
-	// With PackageImports, 'when' resolves via cross-file use-package.
+	// With PackageImports, 'my-when' resolves via cross-file use-package.
 	cfgWith := &Config{
 		PackageExports: map[string][]ExternalSymbol{
-			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+			"utils": {{Name: "my-when", Kind: SymMacro, Package: "utils"}},
 		},
 		PackageImports: map[string][]string{
 			"svc": {"utils"},
@@ -1738,16 +1739,16 @@ func TestAnalyze_CrossFileUsePackage(t *testing.T) {
 	for _, u := range result.Unresolved {
 		unresolvedNames[u.Name] = true
 	}
-	assert.False(t, unresolvedNames["when"], "with PackageImports, 'when' should not be unresolved")
+	assert.False(t, unresolvedNames["my-when"], "with PackageImports, 'my-when' should not be unresolved")
 
-	// Positive assertion: 'when' should appear as a resolved reference.
+	// Positive assertion: 'my-when' should appear as a resolved reference.
 	resolvedNames := make(map[string]bool)
 	for _, ref := range result.References {
 		if ref.Symbol != nil {
 			resolvedNames[ref.Symbol.Name] = true
 		}
 	}
-	assert.True(t, resolvedNames["when"], "with PackageImports, 'when' should be a resolved reference")
+	assert.True(t, resolvedNames["my-when"], "with PackageImports, 'my-when' should be a resolved reference")
 }
 
 func TestAnalyze_CrossFileUsePackage_MultiPackageFile(t *testing.T) {
@@ -1777,10 +1778,10 @@ func TestAnalyze_CrossFileUsePackage_MultiPackageFile(t *testing.T) {
 func TestAnalyzeFile_PreservesPackageImports(t *testing.T) {
 	// Regression test: AnalyzeFile must forward PackageImports and DefForms
 	// to Analyze. Previously it dropped them when constructing the internal Config.
-	source := []byte("(in-package 'svc)\n(defun f () (when true 1))")
+	source := []byte("(in-package 'svc)\n(defun f () (my-when true 1))")
 	cfg := &Config{
 		PackageExports: map[string][]ExternalSymbol{
-			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+			"utils": {{Name: "my-when", Kind: SymMacro, Package: "utils"}},
 		},
 		PackageImports: map[string][]string{
 			"svc": {"utils"},
@@ -1793,8 +1794,8 @@ func TestAnalyzeFile_PreservesPackageImports(t *testing.T) {
 	for _, u := range result.Unresolved {
 		unresolvedNames[u.Name] = true
 	}
-	assert.False(t, unresolvedNames["when"],
-		"AnalyzeFile should forward PackageImports so 'when' resolves")
+	assert.False(t, unresolvedNames["my-when"],
+		"AnalyzeFile should forward PackageImports so 'my-when' resolves")
 }
 
 func TestAnalyze_DefaultPackage_BareFile(t *testing.T) {
@@ -2237,4 +2238,25 @@ func TestAnalyze_ExportLiteralListsAndEvaluatedArguments(t *testing.T) {
 		}
 		t.Fatal("missing lexical names binding")
 	})
+}
+
+// TestAnalyze_ImportedWhenShadowsLispOp pins that a package importing a
+// library's own when resolves to the library's definition, as the runtime
+// does (use-package copies the export over lisp's special operator).
+func TestAnalyze_ImportedWhenShadowsLispOp(t *testing.T) {
+	source := "(in-package 'svc)\n(use-package 'utils)\n(defun f () (when true 1))"
+	cfg := &Config{
+		PackageExports: map[string][]ExternalSymbol{
+			"utils": {{Name: "when", Kind: SymMacro, Package: "utils"}},
+		},
+	}
+	result := parseAndAnalyzeWithConfig(t, source, cfg)
+	var found *Symbol
+	for _, ref := range result.References {
+		if ref.Symbol != nil && ref.Symbol.Name == "when" {
+			found = ref.Symbol
+		}
+	}
+	require.NotNil(t, found, "when should be a resolved reference")
+	assert.Equal(t, "utils", found.Package)
 }

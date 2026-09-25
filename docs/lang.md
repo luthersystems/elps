@@ -598,6 +598,48 @@ Either must be the final clause; reaching a non-final default raises
 `:else`: move it to the end. The `cond-structure` linter reports misplaced
 defaults in source; dynamically constructed forms still need runtime checks.
 
+### when, unless, while and default
+
+These four one-liners are special operators rather than macros, so using one
+costs no macro expansion per evaluation.
+
+```lisp
+(when test body...)      ; if test is truthy, the last body value, else ()
+(unless test body...)    ; if test is falsey, the last body value, else ()
+(while test body...)     ; loop while test is truthy; always returns ()
+(default value fallback) ; value unless it is (), else fallback
+```
+
+`when` and `unless` return `()` when the body does not run or is empty, and
+leave their last body form in tail position, like `if` and `progn`. `default`
+evaluates `value` exactly once and evaluates `fallback` only when `value` is
+`()` -- `false`, `0` and `""` are returned as-is. `while` is an iterative loop:
+its body shares the enclosing scope, an error in the test or body propagates,
+and every turn counts against the execution limits (the step limit and
+context deadline when configured, and the tail-iteration limit, which is on
+by default), so a `while` that never ends stops the way a tail-recursive loop
+would.
+
+They were added to `lisp` after many programs had defined their own. A
+package that defines or imports its own `when`, `unless`, `while` or
+`default` keeps using it: a symbol resolves through the current package's
+table, and `use-package` copies an exporting package's bindings into it, so
+the package's own definition shadows the operator there (`lisp:when` still
+reaches the operator). `elps lint` reports such a definition as
+`builtin-shadowing`; if its behavior matches the operator, deleting it makes
+the package's calls cheaper.
+
+A Go host that registers its own `when`, `unless`, `while` or `default`
+(`RegisterDefaultSpecialOp`, or `AddBuiltins`/`AddMacros`/`AddSpecialOps`
+into package `lisp`) replaces the operator instead of colliding with it.
+Because these are operators, not macros, `macroexpand` leaves them unchanged,
+and they do not depend on the caller's bindings of `if`, `progn`, `not` or
+`nil?` the way an expansion does. A `while` body runs in the caller's frame,
+with no hidden lambda, so it has no frame of its own in stack traces. With a
+debugger attached, or with the tail-iteration limit disabled, the runaway
+backstop falls back to the physical (debugger) or logical stack-height limit,
+mirroring what stopped the old recursive macro in the same configuration.
+
 ### let vs let\*
 
 `let` and `let*` create local bindings. Both evaluate their initializer
@@ -2709,9 +2751,9 @@ Its final argument can call the enclosing function without growing the stack:
 (process 1000000 0)   ; constant stack space; evaluates to false
 ```
 
-`when` and `unless` are not built-in control forms. The example `when` macro
-in this guide expands into `if` and `progn`, so its last body expression
-preserves tail position too.
+`when` and `unless` are special operators whose last body expression is in
+tail position, like `if`'s branches. A `when` macro that expands into `if`
+and `progn`, like the example in this guide, preserves tail position too.
 
 **A tail call that CROSSES a `with-cleanup` is not optimized.** A frame that
 still owes cleanup forms cannot be elided, so a recursion routed through the

@@ -154,6 +154,40 @@ var langSpecialOps = []*langBuiltin{
 		`Conditional branch. Evaluates condition; if truthy, evaluates
 		and returns then, otherwise evaluates and returns else. All three
 		arguments are required. Only one branch is evaluated.`},
+	{"when", Formals("condition", VarArgSymbol, "body"), opWhen,
+		`One-armed conditional. Evaluates condition; if truthy, evaluates
+		the body forms in order and returns the last value (() when there
+		is no body). If condition is falsey the body is not evaluated and
+		() is returned. The last body form is in tail position. Equivalent
+		to (if condition (progn body...) ()) without a macro expansion. A
+		package may still define or import its own when, which shadows
+		this operator there.`},
+	{"unless", Formals("condition", VarArgSymbol, "body"), opUnless,
+		`Inverse one-armed conditional. Evaluates condition; if falsey,
+		evaluates the body forms in order and returns the last value (()
+		when there is no body). If condition is truthy the body is not
+		evaluated and () is returned. The last body form is in tail
+		position. Equivalent to (if (not condition) (progn body...) ()).
+		A package may still define or import its own unless, which
+		shadows this operator there.`},
+	{"default", Formals("value", "fallback"), opDefault,
+		`Nil coalescing. Evaluates value exactly once; if it is not nil it
+		is returned and fallback is not evaluated. Otherwise fallback is
+		evaluated (in tail position) and its value returned. Note that
+		only () counts as missing: false, 0 and "" are returned as-is. A
+		package may still define or import its own default, which shadows
+		this operator there.`},
+	{"while", Formals("condition", VarArgSymbol, "body"), opWhile,
+		`Loop. Evaluates condition; while it is truthy, evaluates the body
+		forms in order and then re-evaluates condition. Always returns ().
+		An error in condition or body stops the loop and propagates. Each
+		turn counts against the evaluation limits: the step limit and
+		context deadline when configured, and the tail-iteration limit
+		(WithMaxTailIterations, on by default) as a runaway-loop backstop,
+		so a while that never terminates stops as the equivalent
+		tail-recursive loop would. The body introduces no new scope. A
+		package may still define or import its own while, which shadows
+		this operator there.`},
 	{"or", Formals(VarArgSymbol, "expr"), opOr,
 		`Short-circuit logical disjunction. Evaluates arguments left to
 		right and returns the first truthy value. If no argument is
@@ -178,15 +212,44 @@ func RegisterDefaultSpecialOp(name string, formals *LVal, fn LBuiltin) {
 // DefaultSpecialOps returns the default set of LBuiltinDef added to LEnv
 // objects when LEnv.AddSpecialOps is called without arguments.
 func DefaultSpecialOps() []LBuiltinDef {
-	ops := make([]LBuiltinDef, len(langSpecialOps)+len(userSpecialOps))
+	ops := make([]LBuiltinDef, 0, len(langSpecialOps)+len(userSpecialOps))
 	for i := range langSpecialOps {
-		ops[i] = langSpecialOps[i]
+		// A host that registered its own operator under a name lisp gained
+		// later keeps it; see lateSpecialOps.
+		if lateSpecialOps[langSpecialOps[i].Name()] && userSpecialOpNamed(langSpecialOps[i].Name()) {
+			continue
+		}
+		ops = append(ops, langSpecialOps[i])
 	}
-	offset := len(langSpecialOps)
 	for i := range userSpecialOps {
-		ops[offset+i] = userSpecialOps[i]
+		ops = append(ops, userSpecialOps[i])
 	}
 	return ops
+}
+
+// lateSpecialOps names the special operators added to package lisp after
+// hosts and programs had long supplied their own under the same names.  A
+// host registration under one of these names replaces lisp's operator
+// instead of colliding with it (RegisterDefaultSpecialOp, and AddBuiltins,
+// AddMacros or AddSpecialOps into package lisp), so an embedding that
+// defined its own when before lisp had one keeps initializing unchanged.
+var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true}
+
+func userSpecialOpNamed(name string) bool {
+	for _, op := range userSpecialOps {
+		if op.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// replaceableLateOp reports whether exist, found under name in pkg during a
+// host registration, is lisp's own late special operator, which that
+// registration may replace (see lateSpecialOps).
+func replaceableLateOp(pkg *Package, name string, exist *LVal) bool {
+	return pkg.Name == DefaultLangPackage && lateSpecialOps[name] &&
+		exist.Type == LFun && exist.FunType == LFunSpecialOp && exist.Package() == DefaultLangPackage
 }
 
 func opFunction(env *LEnv, args *LVal) *LVal {
@@ -1094,6 +1157,122 @@ func opIf(env *LEnv, s *LVal) *LVal {
 	}
 	// test-form evaluated to something non-nil (true)
 	return env.Terminal(s.Cells[1])
+}
+
+// (when test-form body-form*)
+func opWhen(env *LEnv, s *LVal) *LVal {
+	return opWhenUnless(env, s, "when", false)
+}
+
+// (unless test-form body-form*)
+func opUnless(env *LEnv, s *LVal) *LVal {
+	return opWhenUnless(env, s, "unless", true)
+}
+
+// opWhenUnless evaluates the body of when (negate false) or unless (negate
+// true) as progn does, leaving the last body form in tail position.  It is
+// allocation-free on the hot path: no macro expansion and no argument copy.
+func opWhenUnless(env *LEnv, s *LVal, name string, negate bool) *LVal {
+	if len(s.Cells) == 0 {
+		return env.Errorf("%s: condition argument expected", name)
+	}
+	r := env.Eval(s.Cells[0])
+	if r.Type == LError {
+		return r
+	}
+	if Not(r) != negate {
+		return Nil()
+	}
+	body := s.Cells[1:]
+	if len(body) == 0 {
+		return Nil()
+	}
+	for _, c := range body[:len(body)-1] {
+		if v := env.Eval(c); v.Type == LError {
+			return v
+		}
+	}
+	return env.Terminal(body[len(body)-1])
+}
+
+// (default value-form fallback-form)
+func opDefault(env *LEnv, s *LVal) *LVal {
+	if len(s.Cells) != 2 {
+		return env.Errorf("two arguments expected (got %d)", len(s.Cells))
+	}
+	v := env.Eval(s.Cells[0])
+	if v.Type == LError {
+		return v
+	}
+	if !v.IsNil() {
+		return v
+	}
+	return env.Terminal(s.Cells[1])
+}
+
+// whileTurnLimit is the per-entry turn bound for opWhile: the limit that
+// stopped the labels macro it replaces in the same configuration, so that no
+// runaway loop the macro stopped runs forever and no bounded loop the macro
+// completed now errors.
+//
+//   - Normally each macro turn was one optimized tail call, bounded by
+//     MaxTailIterations.  If that is disabled but the opt-in logical height
+//     limit is on, the macro was stopped by logical height, which grows by at
+//     least one elided frame per turn, so MaxHeightLogical turns is a bound
+//     at least as loose.
+//   - With a debugger attached tail-call optimization is off, so the macro
+//     recursed at least one physical frame per turn and was bounded only by
+//     MaxHeightPhysical; MaxTailIterations never counted.  Bounding turns by
+//     MaxHeightPhysical is again at least as loose as the macro was.
+//
+// Zero means unbounded (step and context limits still apply per turn).
+func whileTurnLimit(env *LEnv) int {
+	st := env.Runtime.Stack
+	if env.Runtime.Debugger != nil {
+		return st.MaxHeightPhysical
+	}
+	if st.MaxTailIterations > 0 {
+		return st.MaxTailIterations
+	}
+	return st.MaxHeightLogical
+}
+
+// (while test-form body-form*)
+//
+// An iterative loop: no closure, no recursion, no tail-call machinery.  The
+// quasiquote/labels macro it replaces was bounded by the tail-iteration
+// backstop because each turn was a tail call; an iterative loop never makes
+// one, so the same bound is applied here explicitly, per loop entry, and
+// checkLimits is consulted once per turn so that a step budget or context
+// deadline stops even an empty-bodied loop (compare opDoTimes, issue #320).
+func opWhile(env *LEnv, s *LVal) *LVal {
+	if len(s.Cells) == 0 {
+		return env.Errorf("while: condition argument expected")
+	}
+	cond, body := s.Cells[0], s.Cells[1:]
+	maxTurns := whileTurnLimit(env)
+	for turns := 0; ; turns++ {
+		if maxTurns > 0 && turns > maxTurns {
+			return env.Errorf("while: loop exceeded %d turns: a runaway-loop backstop"+
+				" derived from the tail-iteration (or, when that is disabled or a debugger is"+
+				" attached, stack height) limit; raise or disable it with WithMaxTailIterations", maxTurns)
+		}
+		if lerr := env.checkLimits(env.evalCtx); lerr != nil {
+			return lerr
+		}
+		r := env.Eval(cond)
+		if r.Type == LError {
+			return r
+		}
+		if Not(r) {
+			return Nil()
+		}
+		for _, c := range body {
+			if v := env.Eval(c); v.Type == LError {
+				return v
+			}
+		}
+	}
 }
 
 func opOr(env *LEnv, s *LVal) *LVal {

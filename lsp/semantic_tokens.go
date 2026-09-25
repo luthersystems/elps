@@ -272,7 +272,7 @@ func buildSymbolRefsMap(res *analysis.Result) map[symbolKey]*analysis.Symbol {
 var specialOps = map[string]bool{
 	"defun": true, "defmacro": true, "deftype": true, "defmethod": true,
 	"lambda": true, "let": true, "let*": true, "flet": true, "labels": true,
-	"if": true, "cond": true, "or": true, "and": true, "not": true,
+	"if": true, "cond": true, "when": true, "unless": true, "while": true, "default": true, "or": true, "and": true, "not": true,
 	"set": true, "set!": true,
 	"progn": true, "loop": true, "dotimes": true,
 	"handler-bind": true, "ignore-errors": true, "rethrow": true,

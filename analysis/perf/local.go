@@ -191,7 +191,7 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 func isCallable(name string) bool {
 	switch name {
 	case // special operators
-		"if", "cond", "progn", "let", "let*", "flet", "labels", "macrolet",
+		"if", "cond", "when", "unless", "while", "default", "progn", "let", "let*", "flet", "labels", "macrolet",
 		"set", "set!", "and", "or",
 		"handler-bind", "ignore-errors", "with-cleanup",
 		"in-package", "use-package", "export",

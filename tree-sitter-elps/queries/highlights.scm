@@ -85,7 +85,7 @@
 ; recognized as special forms by the ELPS interpreter.
 (list . (symbol) @keyword
  (#any-of? @keyword
-  "if" "cond" "and" "or" "progn"
+  "if" "cond" "when" "unless" "while" "default" "and" "or" "progn"
   "set" "set!" "export" "use-package" "in-package"
   "handler-bind" "ignore-errors" "with-cleanup"
   "dotimes" "assert"

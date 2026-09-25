@@ -242,8 +242,11 @@ func (a *analyzer) importPackageSymbols(scope *Scope, pkgName, currentPkg string
 		return
 	}
 	for _, ext := range syms {
-		// Don't overwrite locally defined symbols
-		if scope.LookupLocalVisible(ext.Name, currentPkg) != nil {
+		// Don't overwrite locally defined symbols.  A lisp builtin is not
+		// local: at runtime use-package copies the export over it, so the
+		// imported definition must win here too (a library that exports its
+		// own when keeps it after lisp gained a when special operator).
+		if existing := scope.LookupLocalVisible(ext.Name, currentPkg); existing != nil && !isLispBuiltinSymbol(existing) {
 			continue
 		}
 		sym := &Symbol{
@@ -1474,4 +1477,19 @@ func (a *analyzer) resolveTemplateSymbol(node *lisp.LVal, scope *Scope, currentP
 	}
 	// Unlike resolveSymbol, we intentionally do NOT append to Unresolved here.
 	// Template symbols may refer to names introduced at macro expansion time.
+}
+
+// isLispBuiltinSymbol reports whether sym is one of the lisp package's own
+// builtins, special operators or macros as registered by the builtin scope
+// (no package, no source).
+func isLispBuiltinSymbol(sym *Symbol) bool {
+	if sym.Package != "" || sym.Source != nil {
+		return false
+	}
+	switch sym.Kind {
+	case SymBuiltin, SymSpecialOp, SymMacro:
+		return true
+	default:
+		return false
+	}
 }

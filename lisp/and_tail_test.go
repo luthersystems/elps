@@ -95,6 +95,10 @@ func TestRelatedFormsPreserveTailPosition(t *testing.T) {
 		{"cond single clause", "", `(cond (true (if (= n 0) 42 (loop (- n 1)))))`, "42"},
 		{"let body", "", `(let ([next (- n 1)]) (if (= n 0) 42 (loop next)))`, "42"},
 		{"let star body", "", `(let* ([next (- n 1)] [done (= n 0)]) true (if done 42 (loop next)))`, "42"},
+		{"when special op", "", `(when (> n 0) (loop (- n 1)))`, "()"},
+		{"when special op last of many", "", `(when true n (if (= n 0) 42 (loop (- n 1))))`, "42"},
+		{"unless special op", "", `(unless (= n 0) (loop (- n 1)))`, "()"},
+		{"default special op fallback", "", `(default () (if (= n 0) 42 (loop (- n 1))))`, "42"},
 		{"documented when macro", `(defmacro when (test &rest body)
 			(quasiquote (if (unquote test) (progn (unquote-splicing body)) ())))`, `(when (> n 0) (loop (- n 1)))`, "()"},
 	} {
