@@ -37,7 +37,7 @@ func TestSetStoresTheSuppliedValueByReference(t *testing.T) {
 	env.Runtime.Reader = nil
 
 	doc := lisp.SortedMap()
-	doc.MapSet("tag", lisp.String("x"))
+	doc.MapSetString("tag", lisp.String("x"))
 
 	// A vector, as in the issue's reproduction: lists refuse in-place path
 	// ops (errMutateList), so a vector is the value the reach is visible on.

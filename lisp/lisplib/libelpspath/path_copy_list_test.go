@@ -144,7 +144,7 @@ func TestCopyOpOnListDoesNotWriteThroughASharedLeaf(t *testing.T) {
 
 				src := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
 				doc := lisp.SortedMap()
-				doc.MapSet("l", src)
+				doc.MapSetString("l", src)
 				before := fpAST([]*lisp.LVal{doc})
 
 				// The copy an ordinary ?set on an unrelated key returns.

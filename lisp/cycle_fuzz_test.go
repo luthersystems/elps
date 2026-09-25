@@ -158,7 +158,7 @@ func knot(v *lisp.LVal, gen *fuzzval.Gen, n int) {
 		target := targets[gen.Intn(len(targets))]
 		switch into.Type {
 		case lisp.LSortMap:
-			into.MapSet(string(rune('a'+i%26)), target)
+			into.MapSetString(string(rune('a'+i%26)), target)
 		case lisp.LArray:
 			into.Cells[1].Cells = append(into.Cells[1].Cells, target)
 			if into.Cells[0].Len() == 1 {

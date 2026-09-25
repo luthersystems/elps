@@ -225,10 +225,10 @@ func panicSweepEnv(t *testing.T) *lisp.LEnv {
 // it will be offered.
 func panicSweepValues(env *lisp.LEnv) []*lisp.LVal {
 	m := lisp.SortedMap()
-	m.MapSet("a", lisp.Int(1))
+	m.MapSetString("a", lisp.Int(1))
 	nested := lisp.SortedMap()
-	nested.MapSet("a", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.SortedMap()}))
-	nested.MapSet("b", lisp.Bytes([]byte("z")))
+	nested.MapSetString("a", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.SortedMap()}))
+	nested.MapSetString("b", lisp.Bytes([]byte("z")))
 	return []*lisp.LVal{
 		lisp.Nil(),
 		lisp.Bool(true),

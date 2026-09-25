@@ -30,7 +30,7 @@ func TestGoMapReturnsOrdinaryGoValues(t *testing.T) {
 		}
 		got["number"] = "changed"
 		got["nested"].(map[string]any)["text"] = "changed"
-		if source.MapGet("number").Int != 7 || nested.MapGet("text").Str != "value" {
+		if source.MapGetString("number").Int != 7 || nested.MapGetString("text").Str != "value" {
 			t.Fatal("Go map writes changed Lisp source values")
 		}
 	}

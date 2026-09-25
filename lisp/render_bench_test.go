@@ -32,9 +32,9 @@ func benchValues() []benchValue {
 		return v
 	}
 	m := lisp.SortedMap()
-	m.MapSet("alpha", lisp.Int(1))
-	m.MapSet("beta", lisp.String("two"))
-	m.MapSet("gamma", lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}))
+	m.MapSetString("alpha", lisp.Int(1))
+	m.MapSetString("beta", lisp.String("two"))
+	m.MapSetString("gamma", lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}))
 	wide := make([]*lisp.LVal, 64)
 	for i := range wide {
 		wide[i] = lisp.Int(i)

@@ -106,9 +106,9 @@ func TestCopyMapIsDeep(t *testing.T) {
 	t.Parallel()
 
 	inner := lisp.SortedMap()
-	inner.MapSet("city", lisp.String("London"))
+	inner.MapSetString("city", lisp.String("London"))
 	src := lisp.SortedMap()
-	src.MapSet("address", inner)
+	src.MapSetString("address", inner)
 
 	cp, err := copyMap(src, 0)
 	require.NoError(t, err)
@@ -116,7 +116,7 @@ func TestCopyMapIsDeep(t *testing.T) {
 	cpInner, ok := cp.Map().Get(lisp.String("address"))
 	require.True(t, ok)
 	require.Equal(t, lisp.LSortMap, cpInner.Type)
-	cpInner.MapSet("city", lisp.String("REDACTED"))
+	cpInner.MapSetString("city", lisp.String("REDACTED"))
 
 	cpCity, _ := cpInner.Map().Get(lisp.String("city"))
 	srcCity, _ := inner.Map().Get(lisp.String("city"))
@@ -159,8 +159,8 @@ func wrap(kind lisp.LType, child *lisp.LVal) *lisp.LVal {
 	switch kind {
 	case lisp.LSortMap:
 		m := lisp.SortedMap()
-		m.MapSet("child", child)
-		m.MapSet("sibling", lisp.Int(1))
+		m.MapSetString("child", child)
+		m.MapSetString("sibling", lisp.Int(1))
 		return m
 	case lisp.LArray:
 		return lisp.Vector([]*lisp.LVal{child, lisp.Int(1)})
@@ -269,7 +269,7 @@ func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
 
 	cyclicMap := func() *lisp.LVal {
 		c := lisp.SortedMap()
-		c.MapSet("self", c)
+		c.MapSetString("self", c)
 		return c
 	}
 	cyclicVec := func() *lisp.LVal {
@@ -280,8 +280,8 @@ func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
 
 	t.Run("on the path, a map entry", func(t *testing.T) {
 		src := lisp.SortedMap()
-		src.MapSet("a", cyclicMap())
-		src.MapSet("b", lisp.String("keep"))
+		src.MapSetString("a", cyclicMap())
+		src.MapSetString("b", lisp.String("keep"))
 
 		for name, op := range map[string]func(Path) (*lisp.LVal, error){
 			"Set":    func(p Path) (*lisp.LVal, error) { return p.Set(src, lisp.String("v")) },
@@ -313,8 +313,8 @@ func TestPathDirectedCopySkipsTheSubtreeItReplaces(t *testing.T) {
 
 	t.Run("off the path, still refused", func(t *testing.T) {
 		src := lisp.SortedMap()
-		src.MapSet("a", lisp.String("plain"))
-		src.MapSet("b", cyclicMap())
+		src.MapSetString("a", lisp.String("plain"))
+		src.MapSetString("b", cyclicMap())
 
 		_, err := Root(Chain(Dot("a"))).Set(src, lisp.String("v"))
 		require.ErrorIs(t, err, errCyclicValue,

@@ -38,16 +38,16 @@ func benchOwnMessage(b *testing.B, rows int, wantBytes int) {
 	items := make([]*lisp.LVal, rows)
 	for i := range rows {
 		row := lisp.SortedMap()
-		row.MapSet("id", lisp.Int(1000000+i))
-		row.MapSet("name", lisp.String(fmt.Sprintf("record number %d", i)))
-		row.MapSet("score", lisp.Float(1.5))
-		row.MapSet("tags", lisp.QExpr([]*lisp.LVal{
+		row.MapSetString("id", lisp.Int(1000000+i))
+		row.MapSetString("name", lisp.String(fmt.Sprintf("record number %d", i)))
+		row.MapSetString("score", lisp.Float(1.5))
+		row.MapSetString("tags", lisp.QExpr([]*lisp.LVal{
 			lisp.String("alpha"), lisp.String("beta"), lisp.String("gamma"),
 		}))
 		items[i] = row
 	}
-	payload.MapSet("items", lisp.QExpr(items))
-	payload.MapSet("count", lisp.Int(rows))
+	payload.MapSetString("items", lisp.QExpr(items))
+	payload.MapSetString("count", lisp.Int(rows))
 
 	msg := s.DumpMessageBuiltin(env, lisp.SExpr([]*lisp.LVal{payload, lisp.Nil()}))
 	if msg.Type == lisp.LError {
@@ -67,9 +67,9 @@ func benchOwnMessage(b *testing.B, rows int, wantBytes int) {
 
 	// The envelope shirocore builds around every response.
 	envelope := lisp.SortedMap()
-	envelope.MapSet("jsonrpc", lisp.String("2.0"))
-	envelope.MapSet("id", lisp.Int(1))
-	envelope.MapSet("result", msg)
+	envelope.MapSetString("jsonrpc", lisp.String("2.0"))
+	envelope.MapSetString("id", lisp.Int(1))
+	envelope.MapSetString("result", msg)
 
 	b.ReportAllocs()
 	b.ResetTimer()

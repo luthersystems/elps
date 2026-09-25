@@ -41,12 +41,12 @@ func TestTemplateForkEscapedLeafDoesNotRetainVM(t *testing.T) {
 	rows := make([]*lisp.LVal, 4096)
 	for i := range rows {
 		row := lisp.SortedMap()
-		if rc := row.MapSet("number", lisp.Int(i)); rc.Type == lisp.LError {
+		if rc := row.MapSetString("number", lisp.Int(i)); rc.Type == lisp.LError {
 			t.Fatal(rc)
 		}
 		data := make([]byte, 256)
 		data[0], data[len(data)-1] = byte(i), byte(i>>8)
-		if rc := row.MapSet("blob", lisp.Bytes(data)); rc.Type == lisp.LError {
+		if rc := row.MapSetString("blob", lisp.Bytes(data)); rc.Type == lisp.LError {
 			t.Fatal(rc)
 		}
 		rows[i] = row
@@ -124,7 +124,7 @@ func escapedTemplateLeaf(t *testing.T, template *lisp.Template, shape string) an
 	t.Helper()
 	env := forkTemplateFixture(t, template)
 	bulk := env.GetGlobal(lisp.Symbol("bulk"))
-	if len(bulk.Cells) != 4096 || bulk.Cells[4095].MapGet("number").Int != 4095 {
+	if len(bulk.Cells) != 4096 || bulk.Cells[4095].MapGetString("number").Int != 4095 {
 		t.Fatal("fork did not construct the full graph")
 	}
 	switch shape {

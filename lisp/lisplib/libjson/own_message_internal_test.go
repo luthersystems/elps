@@ -41,7 +41,7 @@ func TestExemptionRidesOnTheFlag(t *testing.T) {
 
 	envelope := func(native interface{}) *lisp.LVal {
 		m := lisp.SortedMap()
-		m.MapSet("result", lisp.Native(native))
+		m.MapSetString("result", lisp.Native(native))
 		return m
 	}
 

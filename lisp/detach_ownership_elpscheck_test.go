@@ -43,10 +43,10 @@ func TestOwnershipCheck_DetachedValueCrossesRuntimes(t *testing.T) {
 	// Build a compound value carrying every hop the checker walks through
 	// binding and evaluation: a sorted map holding a list and nested cells.
 	m := SortedMap()
-	if lerr := m.MapSet("k", QExpr([]*LVal{Int(1), Float(2.5), String("s")})); lerr.Type == LError {
+	if lerr := m.MapSetString("k", QExpr([]*LVal{Int(1), Float(2.5), String("s")})); lerr.Type == LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
-	if lerr := m.MapSet("v", QExpr([]*LVal{Int(7), Int(8), Int(9)})); lerr.Type == LError {
+	if lerr := m.MapSetString("v", QExpr([]*LVal{Int(7), Int(8), Int(9)})); lerr.Type == LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	orig := QExpr([]*LVal{m, String("tail")})

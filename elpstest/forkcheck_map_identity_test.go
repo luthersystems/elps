@@ -36,7 +36,7 @@ func TestForkOracleSeesSwappedNativeAndLispMapBacking(t *testing.T) {
 	if shared := sharedOracleCensuses(newOracleCensus(first), newOracleCensus(independent), nil); len(shared) != 0 {
 		t.Fatalf("independent maps incorrectly reported shared: %v", shared)
 	}
-	if rc := first.Get(lisp.Symbol("a")).MapSet("witness", lisp.Int(17)); rc.Type == lisp.LError {
+	if rc := first.Get(lisp.Symbol("a")).MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
 	if got := second.Get(lisp.Symbol("b")).Native.(map[string]any)["witness"]; got.(*lisp.LVal).Int != 17 {

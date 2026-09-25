@@ -436,7 +436,7 @@ func TestArrayIndexOnNonArray(t *testing.T) {
 func TestMapSetOnNonSortMap(t *testing.T) {
 	t.Parallel()
 	v := Int(42)
-	msg := requireLError(t, v.MapSet("key", String("val")))
+	msg := requireLError(t, v.MapSetString("key", String("val")))
 	if !strings.Contains(msg, "not sorted-map") {
 		t.Errorf("wrong error message: %s", msg)
 	}

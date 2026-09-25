@@ -92,7 +92,7 @@ func TestEncodeWideSequenceTraversalSpace(t *testing.T) {
 // made up front fails every case here.
 func TestEncodeDoesNotAllocateForCycleTracking(t *testing.T) {
 	shared := lisp.SortedMap()
-	shared.MapSet("a", lisp.Int(1))
+	shared.MapSetString("a", lisp.Int(1))
 
 	tests := []struct {
 		name string

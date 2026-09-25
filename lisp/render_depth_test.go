@@ -55,7 +55,7 @@ func TestRenderDepthHelper(t *testing.T) {
 			left = "(vector "
 		case "map":
 			m := SortedMap()
-			if err := m.MapSet("k", v); err.Type == LError {
+			if err := m.MapSetString("k", v); err.Type == LError {
 				t.Fatal(err)
 			}
 			v = m

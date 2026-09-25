@@ -208,7 +208,7 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 		"string-mt": func() *lisp.LVal { return lisp.String("") },
 		"bytes":     func() *lisp.LVal { return lisp.Bytes([]byte("ab")) },
 		"bytes-nil": func() *lisp.LVal { return lisp.Bytes(nil) },
-		"sortmap":   func() *lisp.LVal { m := lisp.SortedMap(); m.MapSet(lisp.String("a"), lisp.Int(1)); return m },
+		"sortmap":   func() *lisp.LVal { m := lisp.SortedMap(); m.MapSetLVal(lisp.String("a"), lisp.Int(1)); return m },
 		"array":     func() *lisp.LVal { return lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}) },
 		"array-0d":  func() *lisp.LVal { return lisp.Array(lisp.QExpr(nil), nil) },
 		"array-2d": func() *lisp.LVal {
@@ -222,7 +222,7 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 		},
 		"tagged-map": func() *lisp.LVal {
 			m := lisp.SortedMap()
-			m.MapSet(lisp.String("a"), lisp.Int(1))
+			m.MapSetLVal(lisp.String("a"), lisp.Int(1))
 			return tagged.TaggedValue(lisp.Symbol("mytype"), m)
 		},
 		// A tagged value stripped of its payload, which the accessors reach
@@ -459,7 +459,7 @@ func deepNested(depth int, shape string) *lisp.LVal {
 			v = lisp.QExpr([]*lisp.LVal{v})
 		case "map":
 			m := lisp.SortedMap()
-			m.MapSet(lisp.String("k"), v)
+			m.MapSetLVal(lisp.String("k"), v)
 			v = m
 		}
 	}

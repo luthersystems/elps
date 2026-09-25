@@ -19,19 +19,19 @@ func TestWrapPreservesBackingIdentityAndStringKeys(t *testing.T) {
 	if first.Map() == second.Map() {
 		t.Fatal("distinct wrappers collapsed")
 	}
-	if got := first.MapGet("key"); got != value {
+	if got := first.MapGetString("key"); got != value {
 		t.Fatalf("wrapped value identity changed: got %v, want %v", got, value)
 	}
 	replacement := lisp.Int(2)
 	data["key"] = replacement
-	if got := first.MapGet("key"); got != replacement {
+	if got := first.MapGetString("key"); got != replacement {
 		t.Fatalf("raw backing write disappeared: got %v, want %v", got, replacement)
 	}
 	added := lisp.Int(3)
-	if got := first.MapSet("added", added); !got.IsNil() {
+	if got := first.MapSetString("added", added); !got.IsNil() {
 		t.Fatal(got)
 	}
-	if data["added"] != added || second.MapGet("added") != added {
+	if data["added"] != added || second.MapGetString("added") != added {
 		t.Fatal("Lisp write did not reach raw backing and the other wrapper")
 	}
 	if got := first.Map().Set(lisp.Symbol("key"), replacement); !got.IsNil() {

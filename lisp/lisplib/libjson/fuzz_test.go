@@ -309,7 +309,7 @@ func containsNative(v *lisp.LVal) bool {
 		}
 		if v.Type == lisp.LSortMap {
 			for _, k := range v.MapKeys().Cells {
-				walk(v.MapGet(k), depth+1)
+				walk(v.MapGetLVal(k), depth+1)
 			}
 		}
 	}

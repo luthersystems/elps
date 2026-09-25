@@ -37,7 +37,7 @@ func TestOutOfRangeWriteParity(t *testing.T) {
 							steps := make([]*lisp.LVal, 0, depth+1)
 							for range depth {
 								doc = mapHolding("lines", doc)
-								doc.MapSet("id", lisp.Int(7))
+								doc.MapSetString("id", lisp.Int(7))
 								steps = append(steps, lisp.String("lines"))
 							}
 							steps = append(steps, lisp.Int(index))
@@ -100,7 +100,7 @@ func TestArbitraryLeaves(t *testing.T) {
 		t.Run(leaf.name, func(t *testing.T) {
 			env := testEnv(t)
 			doc := mapHolding("status", leaf.value)
-			doc.MapSet("id", lisp.Int(7))
+			doc.MapSetString("id", lisp.Int(7))
 			for _, tc := range []struct {
 				name  string
 				steps []*lisp.LVal
@@ -127,7 +127,7 @@ func TestArbitraryLeaves(t *testing.T) {
 			} {
 				t.Run(op.name, func(t *testing.T) {
 					src := mapHolding("status", leaf.value)
-					src.MapSet("id", lisp.Int(7))
+					src.MapSetString("id", lisp.Int(7))
 					args := []*lisp.LVal{src, lisp.String("id")}
 					if op.set {
 						args = append(args, leaf.value)

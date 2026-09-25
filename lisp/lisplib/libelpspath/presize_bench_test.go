@@ -19,7 +19,7 @@ import (
 func benchWideMap(n int) *lisp.LVal {
 	m := lisp.SortedMap()
 	for i := range n {
-		m.MapSet(fmt.Sprintf("key%04d", i), lisp.Int(i))
+		m.MapSetString(fmt.Sprintf("key%04d", i), lisp.Int(i))
 	}
 	return m
 }
@@ -28,8 +28,8 @@ func benchRecords(n int) *lisp.LVal {
 	cells := make([]*lisp.LVal, n)
 	for i := range cells {
 		m := lisp.SortedMap()
-		m.MapSet("id", lisp.Int(i))
-		m.MapSet("name", lisp.String("name"))
+		m.MapSetString("id", lisp.Int(i))
+		m.MapSetString("name", lisp.String("name"))
 		cells[i] = m
 	}
 	return lisp.Vector(cells)

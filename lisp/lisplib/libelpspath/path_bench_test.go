@@ -15,20 +15,20 @@ import (
 func benchDoc() *lisp.LVal {
 	rec := func(id int) *lisp.LVal {
 		m := lisp.SortedMap()
-		m.MapSet("id", lisp.Int(id))
-		m.MapSet("name", lisp.String("name"))
-		m.MapSet("active", lisp.Bool(true))
+		m.MapSetString("id", lisp.Int(id))
+		m.MapSetString("name", lisp.String("name"))
+		m.MapSetString("active", lisp.Bool(true))
 		return m
 	}
 	addr := lisp.SortedMap()
-	addr.MapSet("city", lisp.String("London"))
-	addr.MapSet("postcode", lisp.String("EC1"))
+	addr.MapSetString("city", lisp.String("London"))
+	addr.MapSetString("postcode", lisp.String("EC1"))
 
 	doc := lisp.SortedMap()
-	doc.MapSet("id", lisp.String("abc123"))
-	doc.MapSet("count", lisp.Int(7))
-	doc.MapSet("address", addr)
-	doc.MapSet("items", lisp.Vector([]*lisp.LVal{rec(1), rec(2), rec(3), rec(4)}))
+	doc.MapSetString("id", lisp.String("abc123"))
+	doc.MapSetString("count", lisp.Int(7))
+	doc.MapSetString("address", addr)
+	doc.MapSetString("items", lisp.Vector([]*lisp.LVal{rec(1), rec(2), rec(3), rec(4)}))
 	return doc
 }
 

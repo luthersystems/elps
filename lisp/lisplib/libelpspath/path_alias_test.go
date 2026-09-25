@@ -49,8 +49,8 @@ import (
 func aliasDoc() *lisp.LVal {
 	lines := lisp.Vector([]*lisp.LVal{lisp.String("10 Downing"), lisp.String("SW1")})
 	addr := lisp.SortedMap()
-	addr.MapSet("city", lisp.String("London"))
-	addr.MapSet("lines", lines)
+	addr.MapSetString("city", lisp.String("London"))
+	addr.MapSetString("lines", lines)
 
 	item := func(id int, tags ...string) *lisp.LVal {
 		cells := make([]*lisp.LVal, len(tags))
@@ -58,17 +58,17 @@ func aliasDoc() *lisp.LVal {
 			cells[i] = lisp.String(t)
 		}
 		m := lisp.SortedMap()
-		m.MapSet("id", lisp.Int(id))
-		m.MapSet("tags", lisp.Vector(cells))
+		m.MapSetString("id", lisp.Int(id))
+		m.MapSetString("tags", lisp.Vector(cells))
 		return m
 	}
 
 	doc := lisp.SortedMap()
-	doc.MapSet("ssn", lisp.String("123"))
-	doc.MapSet("count", lisp.Int(7))
-	doc.MapSet("address", addr)
-	doc.MapSet("items", lisp.Vector([]*lisp.LVal{item(1, "a", "b"), item(2, "c")}))
-	doc.MapSet("notes", lisp.QExpr([]*lisp.LVal{lisp.String("n1"), lisp.String("n2")}))
+	doc.MapSetString("ssn", lisp.String("123"))
+	doc.MapSetString("count", lisp.Int(7))
+	doc.MapSetString("address", addr)
+	doc.MapSetString("items", lisp.Vector([]*lisp.LVal{item(1, "a", "b"), item(2, "c")}))
+	doc.MapSetString("notes", lisp.QExpr([]*lisp.LVal{lisp.String("n1"), lisp.String("n2")}))
 	return doc
 }
 
@@ -77,8 +77,8 @@ func aliasDoc() *lisp.LVal {
 // roots and not only as nested values.
 func aliasListDoc() *lisp.LVal {
 	inner := lisp.SortedMap()
-	inner.MapSet("k", lisp.String("v"))
-	inner.MapSet("deep", lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
+	inner.MapSetString("k", lisp.String("v"))
+	inner.MapSetString("deep", lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
 	return lisp.QExpr([]*lisp.LVal{
 		lisp.String("head"),
 		inner,
@@ -89,8 +89,8 @@ func aliasListDoc() *lisp.LVal {
 // aliasVectorDoc is the same again rooted at a vector.
 func aliasVectorDoc() *lisp.LVal {
 	inner := lisp.SortedMap()
-	inner.MapSet("k", lisp.String("v"))
-	inner.MapSet("deep", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
+	inner.MapSetString("k", lisp.String("v"))
+	inner.MapSetString("deep", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
 	return lisp.Vector([]*lisp.LVal{
 		lisp.String("head"),
 		inner,
@@ -552,10 +552,10 @@ func TestIssue395Reproduction(t *testing.T) {
 	env.Runtime.Reader = nil
 
 	inner := lisp.SortedMap()
-	inner.MapSet("city", lisp.String("London"))
+	inner.MapSetString("city", lisp.String("London"))
 	patient := lisp.SortedMap()
-	patient.MapSet("ssn", lisp.String("123"))
-	patient.MapSet("address", inner)
+	patient.MapSetString("ssn", lisp.String("123"))
+	patient.MapSetString("address", inner)
 
 	redacted := callBuiltin(env, BuiltinQueryNil, patient, lisp.String("ssn"))
 	require.NotEqual(t, lisp.LError, redacted.Type, "%v", redacted)
@@ -589,7 +589,7 @@ func TestIssue395StructuralReproduction(t *testing.T) {
 
 	vec := lisp.Vector([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
 	src := lisp.SortedMap()
-	src.MapSet("v", vec)
+	src.MapSetString("v", vec)
 	before := src.String()
 
 	cp := callBuiltin(env, BuiltinQuerySet, src, lisp.String("other"), lisp.String("x"))
@@ -613,8 +613,8 @@ func TestCopyPreservesQuoting(t *testing.T) {
 	for name, mk := range map[string]func() *lisp.LVal{
 		"nested in a map": func() *lisp.LVal {
 			m := lisp.SortedMap()
-			m.MapSet("notes", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
-			m.MapSet("other", lisp.String("x"))
+			m.MapSetString("notes", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
+			m.MapSetString("other", lisp.String("x"))
 			return m
 		},
 		"nested in a vector": func() *lisp.LVal {

@@ -304,10 +304,10 @@ func buildTemplateParity(g templateParityCase) (*lisp.LEnv, templateParityTrust,
 	}
 	put := func(name string, v *lisp.LVal) error { return lisp.GoError(env.PutGlobal(lisp.Symbol(name), v)) }
 	capture := lisp.SortedMap()
-	if rc := capture.MapSet("n", lisp.Int(g.initial.capture)); rc.Type == lisp.LError {
+	if rc := capture.MapSetString("n", lisp.Int(g.initial.capture)); rc.Type == lisp.LError {
 		return nil, nil, lisp.GoError(rc)
 	}
-	if rc := capture.MapSet("self", capture); rc.Type == lisp.LError {
+	if rc := capture.MapSetString("self", capture); rc.Type == lisp.LError {
 		return nil, nil, lisp.GoError(rc)
 	}
 	for _, name := range []string{"captured-read", "captured-read-again", "captured-add"} {
@@ -319,16 +319,16 @@ func buildTemplateParity(g templateParityCase) (*lisp.LEnv, templateParityTrust,
 			Formals: formals, Captures: capture,
 			Eval: func(_ *lisp.LEnv, args, values *lisp.LVal) *lisp.LVal {
 				if len(args.Cells) != 0 {
-					if rc := values.MapSet("n", lisp.Int(values.MapGet("n").Int+args.Cells[0].Int)); rc.Type == lisp.LError {
+					if rc := values.MapSetString("n", lisp.Int(values.MapGetString("n").Int+args.Cells[0].Int)); rc.Type == lisp.LError {
 						return rc
 					}
 				}
-				return values.MapGet("n")
+				return values.MapGetString("n")
 			}})
 		if err := put(name, fn); err != nil {
 			return nil, nil, err
 		}
-		if rc := capture.MapSet(name, fn); rc.Type == lisp.LError {
+		if rc := capture.MapSetString(name, fn); rc.Type == lisp.LError {
 			return nil, nil, lisp.GoError(rc)
 		}
 	}
@@ -679,7 +679,7 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 	}
 	// Mutating the original environment after publication must not alter the
 	// saved plan or any existing instance, in either direction of ownership.
-	if rc := source.Get(lisp.Symbol("a")).MapSet("n", lisp.Int(999)); rc.Type == lisp.LError {
+	if rc := source.Get(lisp.Symbol("a")).MapSetString("n", lisp.Int(999)); rc.Type == lisp.LError {
 		return lisp.GoError(rc)
 	}
 	if _, err := take("after-source-write"); err != nil {
@@ -737,7 +737,7 @@ func TestTemplateParityInputReallyChangesGraphEdges(t *testing.T) {
 				for node, target := range edges {
 					from := env.Get(lisp.Symbol(fmt.Sprintf("graph%d", node)))
 					to := env.Get(lisp.Symbol(fmt.Sprintf("graph%d", target)))
-					if from.MapGet("edge").Map() != to.Map() {
+					if from.MapGetString("edge").Map() != to.Map() {
 						t.Fatalf("input edges=%v: emitted edge %d does not reach node %d's actual storage", edges, node, target)
 					}
 				}
@@ -755,7 +755,7 @@ func TestTemplateParityInputReallyChangesGraphEdges(t *testing.T) {
 				if got := env.LoadString("graph-rewire.lisp", g.tx[0][1].source); got.Type == lisp.LError {
 					t.Fatal(got)
 				}
-				if env.Get(lisp.Symbol("graph1")).MapGet("edge").Map() != env.Get(lisp.Symbol("graph2")).Map() {
+				if env.Get(lisp.Symbol("graph1")).MapGetString("edge").Map() != env.Get(lisp.Symbol("graph2")).Map() {
 					t.Fatalf("input edges=%v: transaction did not rewire graph1 to graph2", edges)
 				}
 			}
@@ -856,13 +856,13 @@ func TestTemplateParityRejectsBrokenConstructors(t *testing.T) {
 		}},
 		{"later-fork-corruption", "later/state", func(role string, _, vm *lisp.LEnv) error {
 			if role == "later" {
-				return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSet("n", lisp.Int(-1)))
+				return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSetString("n", lisp.Int(-1)))
 			}
 			return nil
 		}},
 		{"capture-corruption", "state", func(role string, _, vm *lisp.LEnv) error {
 			if role == "initial" {
-				return lisp.GoError(funraw.Captures(vm.Get(lisp.Symbol("captured-read"))).MapSet("n", lisp.Int(-1)))
+				return lisp.GoError(funraw.Captures(vm.Get(lisp.Symbol("captured-read"))).MapSetString("n", lisp.Int(-1)))
 			}
 			return nil
 		}},
@@ -890,7 +890,7 @@ func TestTemplateParityRejectsBrokenConstructors(t *testing.T) {
 		}},
 		{"source-corruption", "source/state", func(role string, source, _ *lisp.LEnv) error {
 			if role == "initial" {
-				return lisp.GoError(source.Get(lisp.Symbol("a")).MapSet("n", lisp.Int(-1)))
+				return lisp.GoError(source.Get(lisp.Symbol("a")).MapSetString("n", lisp.Int(-1)))
 			}
 			return nil
 		}},
@@ -908,7 +908,7 @@ func TestTemplateParityRejectsBrokenConstructors(t *testing.T) {
 		}},
 		{"cold-load-asymmetry", "result/model cold", func(role string, _, vm *lisp.LEnv) error {
 			if role == "cold" {
-				return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSet("n", lisp.Int(-1)))
+				return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSetString("n", lisp.Int(-1)))
 			}
 			return nil
 		}},
@@ -987,7 +987,7 @@ func TestTemplateParitySecondHopReallyPublishesTheAnchor(t *testing.T) {
 				return nil
 			}
 			anchors++
-			return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSet("n", lisp.Int(-1)))
+			return lisp.GoError(vm.Get(lisp.Symbol("a")).MapSetString("n", lisp.Int(-1)))
 		}
 		err := runTemplateParity(g, schedule, fault)
 		if anchors != 1 || err == nil || !strings.Contains(err.Error(), "initial/state") {

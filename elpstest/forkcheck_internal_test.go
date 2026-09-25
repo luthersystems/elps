@@ -165,7 +165,7 @@ func capturedOracleEnv(t *testing.T, first, second *lisp.LVal) *lisp.LEnv {
 		fn := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
 			Package: lisp.DefaultUserPackage, FID: binding.name, Formals: lisp.Formals(), Captures: binding.captures,
 			Eval: func(_ *lisp.LEnv, _ *lisp.LVal, captures *lisp.LVal) *lisp.LVal {
-				if rc := captures.MapSet("n", lisp.Int(2)); rc.Type == lisp.LError {
+				if rc := captures.MapSetString("n", lisp.Int(2)); rc.Type == lisp.LError {
 					return rc
 				}
 				return lisp.Int(0) // the result intentionally reveals no capture state
@@ -181,10 +181,10 @@ func capturedOracleEnv(t *testing.T, first, second *lisp.LVal) *lisp.LEnv {
 func capturedOracleMap(t *testing.T) *lisp.LVal {
 	t.Helper()
 	value := lisp.SortedMap()
-	if rc := value.MapSet("n", lisp.Int(1)); rc.Type == lisp.LError {
+	if rc := value.MapSetString("n", lisp.Int(1)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
-	if rc := value.MapSet("self", value); rc.Type == lisp.LError {
+	if rc := value.MapSetString("self", value); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
 	return value
@@ -198,7 +198,7 @@ func TestOraclesSeeExplicitBuiltinCaptureGraphs(t *testing.T) {
 		if got := env.LoadString("tx.lisp", "(first)"); got.Type != lisp.LInt || got.Int != 0 {
 			t.Fatalf("callback result: %v, want 0", got)
 		}
-		if got := state.MapGet("n"); got.Type != lisp.LInt || got.Int != 2 {
+		if got := state.MapGetString("n"); got.Type != lisp.LInt || got.Int != 2 {
 			t.Fatalf("fixture did not mutate captures: %v", got)
 		}
 		if envState(env) == before {

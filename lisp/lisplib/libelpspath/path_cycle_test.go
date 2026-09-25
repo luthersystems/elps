@@ -30,7 +30,7 @@ func cyclicVector() *lisp.LVal {
 func cyclicMap(keys ...string) *lisp.LVal {
 	m := lisp.SortedMap()
 	for _, k := range keys {
-		m.MapSet(k, m)
+		m.MapSetString(k, m)
 	}
 	return m
 }
@@ -93,16 +93,16 @@ func TestAcyclicValuesAreUnaffectedByTheGuard(t *testing.T) {
 	inner := deep
 	for range 200 {
 		next := lisp.SortedMap()
-		inner.MapSet("k", next)
+		inner.MapSetString("k", next)
 		inner = next
 	}
-	inner.MapSet("k", lisp.String("leaf"))
+	inner.MapSetString("k", lisp.String("leaf"))
 
 	shared := lisp.SortedMap()
-	shared.MapSet("k", lisp.String("v"))
+	shared.MapSetString("k", lisp.String("v"))
 	dag := lisp.SortedMap()
-	dag.MapSet("a", shared)
-	dag.MapSet("b", shared)
+	dag.MapSetString("a", shared)
+	dag.MapSetString("b", shared)
 
 	for name, v := range map[string]*lisp.LVal{"deep": deep, "dag": dag, "deep-dag": mapHolding("d", dag)} {
 		t.Run(name, func(t *testing.T) {
@@ -116,7 +116,7 @@ func TestAcyclicValuesAreUnaffectedByTheGuard(t *testing.T) {
 
 func mapHolding(key string, v *lisp.LVal) *lisp.LVal {
 	m := lisp.SortedMap()
-	m.MapSet(key, v)
+	m.MapSetString(key, v)
 	return m
 }
 

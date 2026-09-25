@@ -46,7 +46,7 @@ func TestNativeGoValueShapes(t *testing.T) {
 	} {
 		v := Native(payload)
 		m := SortedMap()
-		m.MapSet("native", v)
+		m.MapSetString("native", v)
 		for _, tc := range []struct {
 			value *LVal
 			want  any

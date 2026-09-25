@@ -55,26 +55,26 @@ func entriesDump(t *testing.T, buf *bytes.Buffer, v *lisp.LVal) {
 // maps, and the two nested in each other.
 func TestDumpMapsMatchEntriesPath(t *testing.T) {
 	mixed := lisp.SortedMap()
-	mixed.MapSet(lisp.Symbol("zeta"), lisp.Int(1))
-	mixed.MapSet(lisp.String("alpha"), lisp.String("x\"y"))
-	mixed.MapSet(lisp.Symbol("Mid"), lisp.Float(2.5))
-	mixed.MapSet(lisp.String("é-unicode"), lisp.Nil())
-	mixed.MapSet(lisp.String(""), lisp.Symbol("true"))
+	mixed.MapSetLVal(lisp.Symbol("zeta"), lisp.Int(1))
+	mixed.MapSetLVal(lisp.String("alpha"), lisp.String("x\"y"))
+	mixed.MapSetLVal(lisp.Symbol("Mid"), lisp.Float(2.5))
+	mixed.MapSetLVal(lisp.String("é-unicode"), lisp.Nil())
+	mixed.MapSetLVal(lisp.String(""), lisp.Symbol("true"))
 
 	inner := lisp.SortedMap()
-	inner.MapSet(lisp.Symbol("b"), lisp.Int(2))
-	inner.MapSet(lisp.String("a"), lisp.SExpr([]*lisp.LVal{mixed, lisp.Int(3)}))
+	inner.MapSetLVal(lisp.Symbol("b"), lisp.Int(2))
+	inner.MapSetLVal(lisp.String("a"), lisp.SExpr([]*lisp.LVal{mixed, lisp.Int(3)}))
 	nested := lisp.SortedMap()
-	nested.MapSet(lisp.String("inner"), inner)
-	nested.MapSet(lisp.Symbol("empty"), lisp.SortedMap())
-	nested.MapSet(lisp.String("deep"), nestMaps(5, mixed))
+	nested.MapSetLVal(lisp.String("inner"), inner)
+	nested.MapSetLVal(lisp.Symbol("empty"), lisp.SortedMap())
+	nested.MapSetLVal(lisp.String("deep"), nestMaps(5, mixed))
 
 	loaded := Load([]byte(`{"z":{"y":[1,{"b":true,"a":null}],"x":"s"},"a":2.5,"m":{},"k":"v"}`), false)
 	require.Equal(t, lisp.LSortMap, loaded.Type, "%v", loaded)
 
 	hybrid := lisp.SortedMap()
-	hybrid.MapSet(lisp.Symbol("loaded"), loaded)
-	hybrid.MapSet(lisp.String("stock"), nested)
+	hybrid.MapSetLVal(lisp.Symbol("loaded"), loaded)
+	hybrid.MapSetLVal(lisp.String("stock"), nested)
 
 	for _, tc := range []struct {
 		name string

@@ -91,7 +91,7 @@ func benchSortedMap(b *testing.B, shape string, n int) *lisp.LVal {
 			if shape == "nested" {
 				v = lisp.QExpr([]*lisp.LVal{lisp.Native(benchCloner{})})
 			}
-			if rc := m.MapSet(fmt.Sprintf("k%05d", i), v); rc.Type == lisp.LError {
+			if rc := m.MapSetString(fmt.Sprintf("k%05d", i), v); rc.Type == lisp.LError {
 				b.Fatalf("set: %v", rc)
 			}
 		}

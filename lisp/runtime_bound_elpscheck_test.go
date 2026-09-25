@@ -143,7 +143,7 @@ func TestRuntimeBound_ForkRejectsSharedBoundNative(t *testing.T) {
 	payload := &boundNative{rt: env.Runtime}
 
 	m := SortedMap()
-	if lerr := m.MapSet("handle", Native(payload)); lerr.Type == LError {
+	if lerr := m.MapSetString("handle", Native(payload)); lerr.Type == LError {
 		t.Fatalf("map-set: %v", lerr)
 	}
 	if lerr := env.PutGlobal(Symbol("state"), m); lerr.Type == LError {
