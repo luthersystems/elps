@@ -8,7 +8,7 @@ import (
 )
 
 // Tests pinning the fork/context contract that pooled embedders depend on
-// (issue #380, "Context" in docs/fork.md): a request-scoped value carried by
+// (issue #380, "Context" in docs/templates.md): a request-scoped value carried by
 // the context.Context bound to a fork — at fork time via VMWithContext, or
 // after the fact via WithContext — is observable from inside a builtin
 // running on that fork through env.Context().Value, including through

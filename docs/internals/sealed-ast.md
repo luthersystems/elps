@@ -11,7 +11,7 @@ elps or extends it with builtins.
 
 The invariant this document establishes also pays a construction dividend:
 `Template.NewVM` instantiates a validated construction plan, sharing only
-transitively sealed code and rebuilding mutable data. See [docs/fork.md](fork.md) for that
+transitively sealed code and rebuilding mutable data. See [docs/templates.md](../templates.md) for that
 API and its embedder contract.
 
 ---

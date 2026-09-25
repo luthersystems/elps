@@ -81,5 +81,5 @@
 // The full design argument, admission rules, sharing contracts, migration guide,
 // and executable coverage matrix are in the repository's [template design].
 //
-// [template design]: https://github.com/luthersystems/elps/blob/main/docs/fork.md
+// [template design]: https://github.com/luthersystems/elps/blob/main/docs/templates.md
 package lisp

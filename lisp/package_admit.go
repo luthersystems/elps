@@ -113,7 +113,7 @@ package lisp
 // registry's live *Package, which is how the doc/LSP/MCP merges enumerate a
 // booted registry in the first place, and a caller can Put through it.  That
 // is the same residual the seal design records for exported LVal fields
-// (docs/sealed-ast.md §2.7): the boundary stops accidental sharing, not a
+// (docs/internals/sealed-ast.md §2.7): the boundary stops accidental sharing, not a
 // caller that goes looking for interpreter state.
 
 // admitPackage returns the private snapshot of p that a registry stores.

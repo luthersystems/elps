@@ -1,8 +1,27 @@
 # Editor Setup
 
-This guide covers setting up the ELPS LSP server in various editors and tools.
+Per-editor setup for the ELPS language server (`elps lsp`) and debugger
+(`elps debug`) lives next to each editor's integration under
+[`editors/`](../editors/):
 
-For LSP features and capabilities, see `elps doc --lsp-guide` or [lsp-guide.md](lsp-guide.md).
+| Editor | LSP | DAP | Setup |
+|--------|-----|-----|-------|
+| VS Code | Yes (extension) | Yes (extension) | [editors/vscode/README.md](../editors/vscode/README.md) |
+| Neovim | `vim.lsp` | nvim-dap | [editors/neovim/README.md](../editors/neovim/README.md) |
+| Emacs | eglot, lsp-mode | dap-mode | [editors/emacs/README.md](../editors/emacs/README.md) |
+| Helix | Yes | Attach only (experimental) | [editors/helix/README.md](../editors/helix/README.md) |
+| JetBrains IDEs | LSP4IJ | LSP4IJ | [editors/jetbrains/README.md](../editors/jetbrains/README.md) |
+| Claude Code | Plugin | — | [below](#claude-code) |
+
+Any other LSP client can run `elps lsp --stdio` for `*.lisp` files (stdio is
+the default transport; `elps lsp --port N` listens on TCP instead). Any other
+DAP client can spawn `elps debug --stdio file.lisp`, or attach over TCP to
+`elps debug file.lisp` (port 4711 by default). Note that `elps debug` takes
+the file on the command line.
+
+For features and configuration, see `elps doc --lsp-guide`
+([lsp-guide.md](lsp-guide.md)) and `elps doc --debug-guide`
+([debugging-guide.md](debugging-guide.md)).
 
 ## Claude Code
 
@@ -100,46 +119,6 @@ claude plugin install elps-lsp@my-plugins
 The LSP starts on demand when Claude reads or edits `.lisp` files. Diagnostics
 appear inline in tool results.
 
-## VS Code
-
-Use any generic LSP client extension (e.g., [vscode-languageclient](https://github.com/ArtifactDB/vscode-lsp-sample)).
-
-Add to `.vscode/settings.json`:
-
-```json
-{
-  "elps.server.command": "elps",
-  "elps.server.args": ["lsp", "--stdio"]
-}
-```
-
-Or configure a generic LSP client extension to run `elps lsp --stdio` for
-files matching `*.lisp`.
-
-## Neovim (nvim-lspconfig)
-
-```lua
-vim.api.nvim_create_autocmd('FileType', {
-  pattern = 'lisp',
-  callback = function()
-    vim.lsp.start({
-      name = 'elps',
-      cmd = { 'elps', 'lsp', '--stdio' },
-      root_dir = vim.fs.dirname(vim.fs.find({ '.git' }, { upward = true })[1]),
-    })
-  end,
-})
-```
-
-## Emacs (eglot)
-
-```elisp
-(add-to-list 'eglot-server-programs
-             '(lisp-mode . ("elps" "lsp" "--stdio")))
-```
-
-Then `M-x eglot` in a `.lisp` buffer.
-
 ## Embedder Variant
 
 When ELPS is embedded in a Go application (e.g., `shirotester`), the embedder
@@ -147,7 +126,7 @@ can expose an LSP command that boots the full runtime. This ensures
 Go-registered builtins are resolved correctly for hover, completion, and
 diagnostics.
 
-Replace `elps` with the embedder binary in any of the configurations above:
+Replace `elps` with the embedder binary in any editor configuration:
 
 ```bash
 shirotester lsp --stdio
@@ -155,17 +134,3 @@ shirotester lsp --stdio
 
 The embedder wires the LSP server with `lsp.WithEnv(env)` or
 `lsp.WithRegistry(reg)` to inject its packages.
-
-## Available Features
-
-| Feature            | Description                                        |
-|--------------------|----------------------------------------------------|
-| Diagnostics        | Parse errors and lint warnings as you type          |
-| Hover              | Function signatures, docstrings, source locations   |
-| Go to Definition   | Jump to defun/defmacro/set definition sites         |
-| Find References    | Find all uses of a symbol across the file           |
-| Document Symbols   | Outline of top-level definitions                    |
-| Completion         | Scope-aware symbol + package-qualified completion   |
-| Rename             | Rename a symbol at definition and all references    |
-| Formatting         | Source code formatting via `textDocument/formatting` |
-| Signature Help     | Parameter hints for function calls                  |

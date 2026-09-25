@@ -124,7 +124,7 @@ import (
 //     in checked builds (lisp/sealfp.go, VerifySealedASTs), so a hole in
 //     that protection is a test failure rather than a silently-trusted
 //     exemption; and the -race seal watchdog covers the concurrent case.
-//     The layers are laid out together in docs/sealed-ast.md section 3.
+//     The layers are laid out together in docs/internals/sealed-ast.md section 3.
 //     Immutability, not per-runtime confinement, is what protects a sealed
 //     node — the same reasoning that exempts the singletons.
 //

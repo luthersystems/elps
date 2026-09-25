@@ -18,7 +18,7 @@ import (
 // paying a fresh full load.
 //
 // The NewEnvFn below is also the reference implementation of the
-// stateful-native contract documented in docs/fork.md: the lisp testing
+// stateful-native contract documented in docs/templates.md: the lisp testing
 // suite is an accumulator whose ops and macros are Go closures over the
 // suite instance, so the TEMPLATE IS BUILT WITHOUT IT — stop the template
 // before the stateful hooks — and each fork loads the testing package

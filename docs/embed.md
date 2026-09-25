@@ -82,7 +82,7 @@ unexported until a real embedder consumer materializes.
 
 The guarantee runs in both directions.  Outward, `Program` seals the
 parse/cache boundary so AST nodes cannot *escape* to the embedder.  Inward,
-the constructors establish the hermetic seal (`docs/sealed-ast.md`) on the
+the constructors establish the hermetic seal (`docs/internals/sealed-ast.md`) on the
 expressions they admit: reader output that is not already sealed throughout
 — a format-preserving parser, a caller-written `Reader` — is privately
 copied and sealed, and output the seal cannot protect (reference types,
@@ -128,7 +128,7 @@ What makes the alias legal is that elps owns the AST type: the cached tree is
 sealed throughout, lisp-level writes through it raise `modify-literal-error`,
 the evaluator's own metadata writes skip sealed nodes (so an attached debugger
 needs no private copy), and checked builds re-verify the tree's fingerprint
-after every load.  See `docs/sealed-ast.md` §2.9.
+after every load.  See `docs/internals/sealed-ast.md` §2.9.
 
 Notes for implementers:
 
@@ -428,6 +428,189 @@ the golang package.
         (debug-print (string:format "My name is {}" name))))
 ```
 
+## Errors and Host Panics
+
+The language reference (`elps doc --guide`, "Errors" and "Host Panics")
+describes how Lisp code raises, handles and rethrows conditions, and why
+`internal-panic` escapes catch-all handlers. This section covers the Go side.
+
+### Go errors
+
+For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
+`errors.Is` and `errors.As` can recover the original Go error. `rethrow`
+preserves that error and its original stack. Host errors implementing
+`NativeCloner` retain their usual copy behavior.
+
+Passing an `*ErrorVal` back into `Error` or `ErrorCondition` returns that
+same value, condition and stack intact, so a handler can hand back exactly
+what it was given. Passing a Go error that merely *wraps* an `*ErrorVal`
+(`fmt.Errorf` with `%w`) is a request to reclassify: the result carries the
+condition you asked for and the wrapper's text as its message, and
+`errors.As` still reaches the inner value. The one exception is a wrapped
+`internal-panic`, which keeps its identity so the marker of a host fault
+survives a host wrapper.
+
+### Host panics
+
+If Go code called during evaluation — a builtin or special operator supplied
+by the host — panics, the interpreter recovers the panic and returns an error
+with the condition `internal-panic`.
+This also applies to direct Go calls through `FunCall`, `FunCallContext`,
+`EvalSExpr`, `MacroCall`, `SpecialOpCall` and `New`, and to source reader,
+input stream and library callbacks used by the `Load*` methods. Debugger and
+profiler callback panics are recovered at these evaluation/call boundaries.
+
+The carve-out that stops `ignore-errors` and the catch-all `condition` handler
+from swallowing the panic keys off a Go stack snapshot the interpreter attaches
+when it recovers the panic, not off the condition name. Embedders testing for
+one should use `lisp.IsInternalPanic(v)` rather than comparing the condition
+name.
+
+The resulting error also carries the Go stack captured at the panic site, so
+an embedder can identify the offending Go function.
+
+Recovery does not invoke debugger error hooks: the debugger may itself have
+failed while holding a lock. Ordinary errors still notify the debugger.
+Panic diagnostics preserve primitive values and Go runtime fault messages;
+other payloads are described by type without calling application
+`String`, `Error` or `Format` methods, which could re-enter the failed object.
+
+Optional cache hooks have a different fallback: a panic in `ReaderIdentity`,
+`LoadCache.Load` or `LoadCache.Store` disables that operation and the source
+is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
+a panicking diagnostic writer is not retried. Nested loads from these hooks
+bypass identity and cache hooks on the same runtime.
+
+In `elpscheck` builds, detected ownership, sealed-program and singleton
+corruption deliberately remain hard Go panics so recovery cannot hide a
+failed invariant. These developer checks are distinct from language errors.
+
+## Execution Limits
+
+The language reference (`elps doc --guide`, "Execution Limits") describes each
+limit as a Lisp program experiences it: what it bounds, its default, and the
+condition it raises. This section covers how a Go host configures and
+observes them.
+
+### Configuring limits
+
+Limits are set with `lisp.Config` options passed to `lisp.InitializeUserEnv`:
+
+```go
+env := lisp.NewEnv(nil)
+lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
+```
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `WithMaxSteps(n)` | unlimited | Steps per top-level evaluation (see below). |
+| `WithMaxAlloc(n)` | 10,485,760 (`DefaultMaxAlloc`) | Per-container size cap in bytes or elements; non-positive selects the default. Stored in `Runtime.MaxAlloc`. |
+| `WithMaxMacroExpansionDepth(n)` | 1,000 (`DefaultMaxMacroExpansionDepth`) | Successive macro expansions; nonpositive selects the default. |
+| `WithMaximumPhysicalStackHeight(n)` | 25,000 (`DefaultMaxPhysicalStackHeight`) | 0 disables the check. |
+| `WithMaxEvalNesting(n)` | 100,000 (`DefaultMaxEvalNesting`) | A negative value disables the check. |
+| `WithMaxTailIterations(n)` | 1,000,000 (`DefaultMaxTailIterations`) | 0 disables the check. |
+| `WithMaximumLogicalStackHeight(n)` | 0, disabled (`DefaultMaxLogicalStackHeight`) | Opt-in logical (virtual) stack limit. |
+| `WithMaxValueDepth(n)` | 1,000,000 (`lisp.MaxValueDepth`) | Must be at least 1024. |
+| `WithMaxSleep(d)` | one hour (`DefaultMaxSleep`) | Ceiling that `time:sleep`'s `:max` cannot exceed. |
+
+`WithMaxMacroExpansionDepth(n)` selects the limit; a nonpositive value uses
+the default of 1,000.
+
+The physical stack limit can be overridden with
+`lisp.WithMaximumPhysicalStackHeight(n)`; 0 disables the check, which is not
+recommended.
+
+Override the evaluation nesting limit with `lisp.WithMaxEvalNesting(n)`; a
+negative value disables the check, which re-exposes the host process to an
+unrecoverable stack overflow.
+
+Override the tail-iteration limit with `lisp.WithMaxTailIterations(n)`; 0
+disables the check.
+
+The logical stack height limit is disabled by default. Callers who
+specifically want it can opt in with `lisp.WithMaximumLogicalStackHeight(n)`.
+
+`lisp.WithMaxValueDepth(n)` sets the runtime limit to any value **at least 1024**.
+Both lowering and raising the default are supported because these traversals
+are iterative. Invalid options return an error. Copying (including condition
+data), equality, JSON dumping, quasiquote, macro stamping
+and template admission honor the runtime setting. Templates retain it in their
+VMs. Depth counts traversed value edges, including internal array storage and
+captured environments where visited, rather than printed delimiters alone.
+APIs without a runtime, including `lisp.GoValue`, use the default limit.
+`GoValue` returns an `*lisp.ErrorVal` implementing Go's `error` interface on
+excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
+JSON serializer conversion methods use the same convention.
+
+Sealing and source-location assignment use explicit stacks throughout; these
+metadata-only APIs cannot return an error and finish the graph.
+
+### Context cancellation
+
+Pass a Go `context.Context` to any of the `*Context` methods on `LEnv`:
+
+```go
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()
+
+result := env.EvalContext(ctx, expr)
+```
+
+A direct Go `FunCallContext` rejects an already cancelled context before
+invoking a native body.
+
+Native callbacks temporarily expose the active context through their
+environment so nested evaluations inherit it. The previous context is
+restored after the callback and any terminal expression, including ordinary
+errors and recovered host panics. Finishing a request must not install its
+cancelled context on an environment that previously had none.
+
+Embedded REPL callers can pass `repl.WithContext(ctx)` to bind evaluation
+and input waits to a context, without installing process signal handlers.
+Cancellation closes a pending REPL input wait and stops the session.
+
+### Available Context Methods
+
+| Method | Purpose |
+|--------|---------|
+| `EvalContext` | Evaluate an expression |
+| `LoadContext` | Load from an `io.Reader` |
+| `LoadFileContext` | Load a source file |
+| `LoadStringContext` | Load from a string |
+| `LoadLocationContext` | Load with explicit name/location |
+| `FunCallContext` | Invoke a function |
+
+Each method threads the context through the internal evaluation chain.
+The older non-context methods (`Eval`, `Load`, etc.) continue to work
+but are deprecated.  Builtins can access the current context via
+`env.Context()`.
+
+### Step accounting
+
+The counter is reset each time an exported entry point (`Eval`,
+`EvalContext`, `EvalSExpr`, `FunCall`, `FunCallContext`, `SpecialOpCall`,
+`MacroCall`, or any `Load*`) is entered from outside an evaluation.  Nested evaluation — a
+builtin calling back into `Eval`, a tail-call loop, the forms evaluated by a
+single `Load` — shares the enclosing budget and does not refill it.  Without
+that reset, `WithMaxSteps(n)` would be a *lifetime* quota: once a long-lived
+runtime had executed `n` steps in total, every later evaluation would fail
+however small it was.
+
+Use `Runtime.Steps()` to read the current evaluation's usage,
+`Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
+to reset the current counter explicitly.
+
+### Rendering from Go
+
+Go's `LVal.String`
+uses the default cap without an evaluation context; `LEnv.Render` uses the
+environment's cap and context. Errors retain the output cap captured when they
+were created, but no context: an error outlives the request that produced it,
+so cancellation comes from the context the caller hands a reader such as
+`ErrorMessageContext` or `WriteTraceContext`. A context that is already dead
+bounds nothing and is ignored, so a diagnostic logged after its request ended
+still renders in full under the byte cap.
+
 ## Tooling for Embedders
 
 ELPS ships three CLI tools (`lint`, `doc`, `fmt`). The `lint` and `doc` tools
@@ -459,7 +642,7 @@ hand-built package — go through `PackageRegistry.AddPackage`, which is an
 - The snapshot reads the package's maps on the calling goroutine, so no other
   goroutine may be writing that package while `AddPackage` runs.
 
-[docs/sealed-ast.md §2.8](sealed-ast.md) states the rule per value class and
+[docs/internals/sealed-ast.md §2.8](internals/sealed-ast.md) states the rule per value class and
 the reasoning behind it.
 
 ### Linting
@@ -484,6 +667,30 @@ diags, err := l.LintFiles(&lint.LintConfig{
 
 Without the `Registry` field, the linter only knows about stdlib symbols and
 will report false positives for embedder-provided bindings.
+
+### Documenting Go builtins
+
+Go-implemented builtins provide documentation through their definition.
+Use `libutil.FunctionDoc` (for library packages) or the `langBuiltin`
+struct (for core builtins) and pass a docstring as the last argument:
+
+```go
+// Library package function
+libutil.FunctionDoc("my-fn", lisp.Formals("x", "y"), myFnImpl,
+    `Computes something useful from x and y.`)
+
+// Core builtin registration
+RegisterDefaultBuiltin("my-builtin",
+    lisp.Formals("arg"), myBuiltinImpl)
+```
+
+`libutil` is internal to the standard library; code outside this module uses
+`elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a
+builtin" below).
+
+All builtins, macros, and exported symbols are required to have
+documentation. The `elps doc -m` command checks for missing docstrings
+and is typically run in CI.
 
 ### Deprecating a builtin
 

@@ -10,7 +10,7 @@ Current executable integration tests and benchmarks belong to
 [Substrate's preheater package](https://github.com/luthersystems/substrate/tree/refactor/template-preheater/internal/substrate/shiro/preheat)
 in [Substrate #483](https://github.com/luthersystems/substrate/pull/483).
 Use that PR's revision-labelled CI for current performance evidence and
-[the current template contract](../../fork.md) for API guidance.
+[the current template contract](../../../templates.md) for API guidance.
 
 ## What the historical experiment measured
 

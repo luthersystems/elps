@@ -319,7 +319,7 @@ func TestCopySharesNativeWithoutCloneProtocol(t *testing.T) {
 //
 // This is not a bug that can be fixed at this layer — copying the LFun
 // would copy a pointer to the same *LEnv — so the behaviour is pinned here
-// and warned about in docs/func.md.  If a future change makes `copy` fork
+// and warned about in docs/lang.md ("What `copy` does not do").  If a future change makes `copy` fork
 // captured environments, this test is the one that must be rewritten
 // deliberately rather than silently.
 func TestCopySharedClosureKeepsTheOriginalsBindings(t *testing.T) {

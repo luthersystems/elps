@@ -188,7 +188,7 @@ func TestSliceCapacityAliasing(t *testing.T) {
 			{`v`, `(vector 10 20 30 40)`, ``},
 		}},
 
-		// The concat-as-copy idiom documented in docs/func.md: concat
+		// The concat-as-copy idiom documented in docs/lang.md: concat
 		// always allocates, so it is the way to take a snapshot that no
 		// later append can disturb.
 		{"concat is a copy that later appends cannot disturb", elpstest.TestSequence{

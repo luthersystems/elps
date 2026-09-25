@@ -1,49 +1,65 @@
-# ELPS DAP for JetBrains IDEs
+# ELPS for JetBrains IDEs
 
-Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin
-which includes DAP client support.
+Language server (LSP) and debugger (DAP) setup for IntelliJ-based IDEs. Both
+use the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin,
+which includes LSP and DAP client support, and need the `elps` binary on your
+`$PATH` (`go install github.com/luthersystems/elps@latest`).
 
-## Setup
+Install **LSP4IJ** from the JetBrains Marketplace first.
 
-1. Install the **LSP4IJ** plugin from the JetBrains Marketplace
-2. Go to **Settings > Languages & Frameworks > LSP4IJ > DAP**
-3. Add a new DAP server configuration:
+## Language Server (LSP)
 
-| Field | Value |
-|-------|-------|
-| Name | ELPS Debug |
-| Command | `elps debug --stdio` |
-| File types | `*.lisp`, `*.elps` |
+1. Go to **Settings > Languages & Frameworks > Language Servers** and add a
+   new server.
+2. Set **Command** to `elps lsp --stdio`.
+3. Under **Mappings > File name patterns**, add `*.lisp` (and `*.elps` if you
+   use it).
 
-## Launch Configuration
+## Debugger (DAP)
 
-Create a Run Configuration:
+`elps debug` takes the file to debug as a command-line argument, so the most
+reliable setup is to start the DAP server yourself and attach to it.
 
-1. **Run > Edit Configurations > + > DAP**
-2. Set:
+### Attach Configuration (recommended)
+
+1. Start a DAP server, e.g. in the IDE terminal:
+   `elps debug --stop-on-entry myfile.lisp` (listens on `localhost:4711`), or
+   start one from your Go application.
+2. **Run > Edit Configurations > + > DAP**
+3. Set:
+   - **Request**: attach
+   - **Host**: localhost
+   - **Port**: 4711
+4. Run the configuration.
+
+### Launch Configuration
+
+1. Go to **Settings > Languages & Frameworks > LSP4IJ > DAP** and add a new
+   DAP server:
+
+   | Field      | Value                                              |
+   |------------|----------------------------------------------------|
+   | Name       | ELPS Debug                                         |
+   | Command    | `elps debug --stdio --stop-on-entry path/to/file.lisp` |
+   | File types | `*.lisp`, `*.elps`                                 |
+
+   The file path is part of the command because `elps debug` does not read
+   it from the launch request. It must lie under the working directory (or
+   pass `--root-dir DIR`).
+2. **Run > Edit Configurations > + > DAP**
+3. Set:
    - **DAP Server**: ELPS Debug
    - **Request**: launch
    - **Program**: `$FilePath$`
    - **Stop on Entry**: true
 
-## Attach Configuration
-
-To connect to a running ELPS DAP server:
-
-1. **Run > Edit Configurations > + > DAP**
-2. Set:
-   - **DAP Server**: ELPS Debug
-   - **Request**: attach
-   - **Host**: localhost
-   - **Port**: 4711
-
-Start the DAP server in your Go application, then run the attach
-configuration in the IDE.
-
 ## Alternative: External Tool
 
-If LSP4IJ is not available, you can configure ELPS as an External Tool:
+If LSP4IJ is not available, you can run ELPS as an External Tool:
 
 1. **Settings > Tools > External Tools > +**
-2. Set **Program** to `elps`, **Arguments** to `debug --stdio $FilePath$`
-3. Use this for non-DAP debugging (output only, no breakpoints)
+2. Set **Program** to `elps` and **Arguments** to `run $FilePath$` (output
+   only), or `debug --repl $FilePath$` for the interactive CLI debugger in the
+   tool window.
+
+See `elps doc --debug-guide` for the launch/attach fields the adapter accepts.

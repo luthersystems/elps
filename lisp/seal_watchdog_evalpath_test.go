@@ -37,7 +37,7 @@ import (
 // rather than a skip.  The shape is therefore constructed directly, with
 // SealAST doing to a hand-built tree exactly what the parser does to its own
 // output -- which is a contract the design doc states for embedders anyway
-// (docs/sealed-ast.md 2.5).  What is lost is the claim that the reader
+// (docs/internals/sealed-ast.md 2.5).  What is lost is the claim that the reader
 // reaches this write path on ordinary input; what is kept, and is the point,
 // is that EVALUATION does not write a sealed node when it does.
 func TestSealWatchdogMacroStampEvalPath(t *testing.T) {

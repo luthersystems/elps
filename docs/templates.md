@@ -297,7 +297,7 @@ benchmarks. Compare identical program/library sets, include publication
 amortization, and measure escaped-value retention as well as allocation churn.
 The full repository suite, race/checked configurations, fuzzing and benchmark
 regression gates run in CI. Historical experiments and the public Substrate
-sample harness are recorded in [the experiment archive](template-poc/README.md).
+sample harness are recorded in [the experiment archive](internals/template-poc/README.md).
 
 ### Differential coverage and its limits
 
