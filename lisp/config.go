@@ -207,7 +207,8 @@ func WithContext(ctx context.Context) Config {
 // that permanently kills a long-lived Runtime once it was reached.
 //
 // Runtime.Steps reports the current evaluation's usage; Runtime.TotalSteps
-// reports the lifetime total.
+// reports the lifetime total.  A native builtin that does work proportional
+// to its input charges it to the same budget with LEnv.ChargeSteps.
 //
 // A step budget is the only limit here that bounds an infinite loop which
 // neither recurses nor tail-calls; the stack limits cannot see such a loop.

@@ -2562,7 +2562,9 @@ limits cannot see such loops. Cancellation is checked at their evaluation
 and callback checkpoints.
 
 It is not a time bound: a single step may run an arbitrary amount of work
-inside a builtin.  **Context cancellation with a deadline is the only limit
+inside a builtin.  (A host-provided builtin may charge the budget for its own
+work, several steps per call; its overrun raises the same
+`step-limit-exceeded` condition.)  **Context cancellation with a deadline is the only limit
 here that measures elapsed time**, and it is what you want if the real
 requirement is "give up after N seconds".
 

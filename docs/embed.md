@@ -600,6 +600,61 @@ Use `Runtime.Steps()` to read the current evaluation's usage,
 `Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
 to reset the current counter explicitly.
 
+Steps are counted only while a step budget or an evaluation context is
+configured; with neither, both counters stay at zero. Both saturate at
+`math.MaxInt64` instead of wrapping.
+
+### Charging steps from a Go builtin
+
+The evaluator charges a native builtin's call like any other (the call form
+and its arguments), but nothing for the work inside it. When a native
+builtin replaces a Lisp loop — a fold over a map, say — work that cost
+hundreds of steps now costs a handful, which silently loosens a
+`WithMaxSteps` budget. `LEnv.ChargeSteps(n int64) *LVal` lets the builtin
+charge its work to the same budget. How many steps a unit of work costs is
+the host's choice: one per element is the simplest bound on work; to keep
+an existing budget's behaviour close to the Lisp it replaces, measure that
+Lisp's `Runtime.Steps()` per element and charge that instead.
+
+```go
+func builtinSumValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	sum := 0
+	for _, x := range args.Cells[0].Cells {
+		// One step per element: a host-chosen cost for the work done.
+		if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
+			return lerr
+		}
+		sum += x.Int
+	}
+	return lisp.Int(sum)
+}
+```
+
+`ChargeSteps` returns `Nil()` when evaluation may continue and an `LError`
+otherwise; return that error unchanged. It applies the evaluator's own
+accounting `n` times at once:
+
+- With neither a step budget nor a context configured it counts nothing and
+  returns `Nil()`, exactly as the evaluator counts nothing.
+- Otherwise `Steps()` and `TotalSteps()` grow by `n`, saturating at
+  `math.MaxInt64`. The whole `n` is recorded even when it overruns the budget.
+- Past the budget it returns the evaluator's `step-limit-exceeded` condition
+  (`lisp.CondStepLimitExceeded`) with the same message, so `handler-bind` and
+  Go callers cannot tell a native overrun from an evaluator overrun. Every
+  later charge or step in the same top-level evaluation fails the same way.
+- Otherwise, if the evaluation's context is done, it returns
+  `context-cancelled`, so a long native loop that charges per element also
+  stops at a deadline.
+- `n == 0` is a no-op that checks nothing. A negative `n` returns an ordinary
+  error and changes no counter; charges cannot be refunded.
+- A count that saturates exceeds every budget, including
+  `WithMaxSteps(math.MaxInt64)`.
+
+The charge lands on the current top-level evaluation and follows the reset
+rules above. It is per-`Runtime` state: a VM created from a `Template`
+charges only its own budget, and, like evaluation itself, `ChargeSteps` must
+only be called from the goroutine evaluating on that runtime.
+
 ### Rendering from Go
 
 Go's `LVal.String`
