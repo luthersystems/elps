@@ -11,8 +11,9 @@ no transport flag is given).
 ### eglot (built in since Emacs 29)
 
 ```elisp
-(add-to-list 'eglot-server-programs
-             '(lisp-mode . ("elps" "lsp" "--stdio")))
+(with-eval-after-load 'eglot
+  (add-to-list 'eglot-server-programs
+               '(lisp-mode . ("elps" "lsp" "--stdio"))))
 ```
 
 Then `M-x eglot` in a `.lisp` buffer.
@@ -38,7 +39,8 @@ Requires [dap-mode](https://emacs-lsp.github.io/dap-mode/).
 `elps debug` takes the file to debug as a command-line argument (the DAP
 `program` field alone is not enough), so the provider builds the adapter
 command from the configuration. For an attach request it sets no server
-command, and dap-mode connects to `:host`/`:port` instead.
+command, and dap-mode connects to `:host` on the `:debugServer` port instead
+(dap-mode reads the TCP port only from `:debugServer`).
 
 ```elisp
 (require 'dap-mode)
@@ -72,7 +74,7 @@ command, and dap-mode connects to `:host`/`:port` instead.
        :request "attach"
        :name "Attach to ELPS"
        :host "localhost"
-       :port 4711))
+       :debugServer 4711))
 ```
 
 The file must live under the working directory; `elps debug` confines source

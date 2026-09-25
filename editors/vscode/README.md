@@ -123,12 +123,12 @@ Create a `.vscode/launch.json` (or use the auto-generated snippet from `Cmd+Shif
 |-----------|------|---------|-------------|
 | `program` | string | `${file}` | Path to the `.lisp` file to debug |
 | `stopOnEntry` | boolean | `true` | Pause before the first expression |
-| `rootDir` | string | `${workspaceFolder}` | Source root for file resolution |
+| `rootDir` | string | (unset) | Source root for file resolution; passed as `--root-dir` only when set |
 | `elpsPath` | string | `""` | Override `elps.path` setting for this session |
 | `skipBuiltins` | boolean | `true` | Auto step-over builtins on untargeted step-in (passed to the adapter) |
 | `sourceRoot` | string | `""` | Absolute path prefix for resolving relative source paths (passed to the adapter) |
 
-`program` must lie under `rootDir`: the extension passes `rootDir` as `elps debug --root-dir`, which confines source loads to that directory.
+`program` must lie under the source root. When `rootDir` is set, the extension passes it as `elps debug --root-dir`, which confines source loads to that directory; when it is unset, the root is the debug adapter's working directory. Set `"rootDir": "${workspaceFolder}"` to pin it.
 
 ### Debug Attach Attributes
 

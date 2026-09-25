@@ -174,7 +174,10 @@ expected-output}`. Native fuzz targets live in `fuzz_test.go` files; see the
 - New builtin / special op / macro, and **static migration diagnostics** for
   behavior changes → `implement`.
 - New lint analyzer → `add-linter-check`.
-- Go-side invariants (native payloads, LVal ownership) → `elpsvet`.
+- Go-side invariants → `elpsvet`: native payloads, LVal ownership and
+  freshness, builtins that capture state (method values, closures,
+  package-level vars), writes to `Package` tables or `packageBase`, and reads
+  of `Package.symbols`, `Package.baseValues` or `sortedmap.m`.
 - Before committing → `verify` (mirrors CI). Never commit to `main`.
 
 ## Skills

@@ -615,8 +615,8 @@ initializer recursive; use `labels` for local recursive functions.
 The default `elps lint` check `let-recursion` warns about recognizable
 self-references in initializer-created closures. Use `--workspace` to resolve
 outer functions from other files and `--fail-on=warning` to enforce migration
-in CI. Dynamic code and opaque macros limit static detection; see
-[the check's coverage](lint-checks.md#let-recursion).
+in CI. Dynamic code and opaque macros limit static detection; see the
+`let-recursion` section of `docs/lint-checks.md` in the repository.
 
 ```lisp
 (let ((variable1 result1)

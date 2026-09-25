@@ -81,10 +81,10 @@ fmt.Println(res) // "hello, world"
 ## Editor Support
 
 - **[VS Code Extension](editors/vscode/)** — Syntax highlighting, LSP, debugger ([Marketplace](https://marketplace.visualstudio.com/items?itemName=LutherSystems.elps-lang))
-- **[Neovim](editors/neovim/)** — DAP configuration
-- **[Emacs](editors/emacs/)** — DAP mode configuration
-- **[Helix](editors/helix/)** — DAP configuration
-- **[JetBrains](editors/jetbrains/)** — LSP4IJ plugin configuration
+- **[Neovim](editors/neovim/)** — LSP and DAP configuration
+- **[Emacs](editors/emacs/)** — lsp-mode/eglot and dap-mode configuration
+- **[Helix](editors/helix/)** — LSP and DAP configuration
+- **[JetBrains](editors/jetbrains/)** — LSP4IJ configuration (LSP and DAP)
 
 ## CLI
 

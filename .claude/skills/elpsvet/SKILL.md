@@ -232,6 +232,11 @@ together and stay green, so a tier change is checked against the runtime:
    - `testdata/src/nativepayload/` — spellings, allowlist, marker placements;
    - `testdata/src/github.com/luthersystems/elps/nativemarker/` — marker tier;
    - `testdata/nativelisp/` — in-kernel (import path is the `lisp` package).
+     It is its own testdata root on purpose: the kernel-path stub under
+     `testdata/src/github.com/luthersystems/elps/lisp` carries expectations
+     for the escape rule, and `analysistest` checks every expectation in a
+     package against the one analyzer it runs. Don't add native-payload
+     cases to that stub.
 4. Add a **paired case** to `TestNativePayloadAnalyzerMirrorsTemplateAdmission`
    (`cmd/elpsvet/nativepayload_runtime_test.go`): the same construction spelled
    in `testdata/src/github.com/luthersystems/elps/nativepaired/` (or

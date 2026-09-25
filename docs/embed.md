@@ -679,10 +679,13 @@ struct (for core builtins) and pass a docstring as the last argument:
 libutil.FunctionDoc("my-fn", lisp.Formals("x", "y"), myFnImpl,
     `Computes something useful from x and y.`)
 
-// Core builtin registration
-RegisterDefaultBuiltin("my-builtin",
-    lisp.Formals("arg"), myBuiltinImpl)
+// Core builtin (an entry in langBuiltins, lisp/builtins.go)
+{"my-builtin", Formals("arg"), builtinMyBuiltin,
+    `Returns something useful from arg.`},
 ```
+
+`RegisterDefaultBuiltin` takes no docstring, so a builtin registered through
+it is undocumented; prefer the forms above.
 
 `libutil` is internal to the standard library; code outside this module uses
 `elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a

@@ -147,7 +147,10 @@ Create the lisp test beside it at `lisp/lisplib/lib<name>/lib<name>_test.lisp`:
   (assert-nil (my-func "" "")))
 
 (test "my-func error handling"
-  (assert-error (my-func)))  ; missing args
+  ;; testing has no assert-error: catch the condition and check it was raised
+  (assert (handler-bind ([condition (lambda (c &rest _) true)])
+            (my-func)
+            false)))  ; missing args
 ```
 
 ### 5. Verify

@@ -29,8 +29,8 @@ Run in order. Stop and report on the first failure.
 Notes:
 
 - **Step 2**: `make static-checks` runs `golangci-lint config verify`, then
-  `golangci-lint run ./...`, then a second pass under `--build-tags elpscheck`
-  (tagged files are invisible to the first). It warns when your golangci-lint
+  `golangci-lint run ./...`, then a second pass under `--build-tags elpscheck` scoped to `./lisp/...`
+  (tagged files are invisible to the first, and today they only live there). It warns when your golangci-lint
   differs from CI's pin; on a mismatch, trust CI — see "golangci-lint version
   skew" in `AGENTS.md` before deleting any `//nolint`.
 - **Step 6**: two passes (untagged and `GOFLAGS=-tags=elpscheck`). For
