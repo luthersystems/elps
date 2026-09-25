@@ -45,7 +45,7 @@ type NativeCloner interface {
 // therefore succeeds on any ordinary lisp bytes value and hands the caller
 // the pointer the interpreter is itself holding — a write through it
 // mutates a live value behind the kernel's back, past the ownership and
-// seal invariants that make sharing safe (docs/sealed-ast.md, lisp/seal.go)
+// seal invariants that make sharing safe (docs/internals/sealed-ast.md, lisp/seal.go)
 // and past `copy`'s promise that a copy shares no storage with its original
 // (issue #378).  The same shape reaches a sorted map's whole backing
 // implementation, and an error's captured call stack, whose Go-stack

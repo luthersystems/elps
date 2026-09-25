@@ -1,10 +1,12 @@
 # /add-linter-check — New Lint Analyzer Skill
 
-Adds a new static analysis check to the ELPS linter. This is a prescriptive 3-file-touch workflow.
+Adds a new static analysis check to the ELPS linter (`lint/`, run by `elps lint`, the LSP, and CI). This is a prescriptive workflow touching three Go files plus `docs/lint-checks.md`.
+
+For Go-side invariants over elps's own source, use `/elpsvet` instead.
 
 ## Trigger
 
-Use when asked to add a new lint check, analyzer, or static analysis rule.
+Use when asked to add a new lint check or analyzer for ELPS source, when a new builtin/op/macro has structural requirements (see `/implement`), or when a behavior change needs a static migration diagnostic.
 
 ## Workflow
 
@@ -55,7 +57,9 @@ var AnalyzerMyCheck = &Analyzer{
 - `pass.Report(diag)` — Report a diagnostic
 - `pass.Reportf(source, format, args...)` — Printf-style diagnostic
 
-**For context-sensitive checks** (e.g., checking nesting), write a custom recursive walker:
+**For checks that need scope/symbol resolution**, set `Semantic: true` on the Analyzer and read `pass.Semantics` (nil-check it and return early; tests use `lintCheckSemantic`).
+
+**For context-sensitive checks** (e.g., checking nesting), write a custom recursive walker with depth/context tracking — `walkRethrowContext` in `lint/analyzers.go` is the reference example:
 
 ```go
 Run: func(pass *Pass) error {
@@ -115,7 +119,7 @@ func TestMyCheck_Nolint(t *testing.T) {
 }
 ```
 
-**Update `TestDefaultAnalyzers`** — increment the expected analyzer count.
+**Update `TestDefaultAnalyzers`** — increment the expected count in `assert.Len` and add the name to the expected name list.
 
 **Test helpers available:**
 - `lintCheck(t, analyzer, source) []Diagnostic` — Run single analyzer on source
@@ -123,15 +127,24 @@ func TestMyCheck_Nolint(t *testing.T) {
 - `assertNoDiags(t, diags)` — Assert no diagnostics
 - `assertDiagOnLine(t, diags, line, substr)` — Assert diagnostic on specific line
 
-### 5. Verify
+### 5. Document it: `docs/lint-checks.md`
 
-Run the verification pipeline:
+Add a `### \`my-check\`` section under "Checks" with what it flags, a bad and
+a good example, and how to suppress it. The LSP links every diagnostic to
+`docs/lint-checks.md#<check-name>` (`lsp/diagnostics.go`), so a missing section
+is a dead link in editors.
+
+### 6. Verify
 
 ```bash
 go test ./lint/...          # Linter tests pass
-make test                   # Full test suite passes
-./elps lint ./...           # Linter runs on codebase without false positives
+go build -o elps . && ./elps lint --workspace=. --exclude 'grammar' --include '_examples' ./...   # as CI runs it
 ```
+
+Then the full `/verify` pipeline. A new check — or a fix that stops an
+existing analyzer skipping nodes — often surfaces true positives in the repo's
+own `.lisp` files (e.g. `lisp/lisplib/libjson/*_test.lisp`). Fix those in the
+same PR; do not suppress them.
 
 ## False Positive Mitigations
 
@@ -148,5 +161,6 @@ Common patterns that cause false positives:
 - [ ] Registered in `DefaultAnalyzers()` in `lint/lint.go`
 - [ ] Positive, negative, and nolint tests in `lint/lint_test.go`
 - [ ] `TestDefaultAnalyzers` count updated
-- [ ] No false positives on existing codebase (`./elps lint ./...`)
+- [ ] Section added to `docs/lint-checks.md`
+- [ ] No false positives on existing codebase (CI's `elps lint` command above)
 - [ ] `make test` passes

@@ -33,7 +33,7 @@ package lisp
 //     not a copy) with its own semantics to settle.  Callers who need an
 //     independent object must rebuild it through its constructor.
 //     TestCopySharedClosureKeepsTheOriginalsBindings pins the behaviour and
-//     docs/func.md warns lisp authors about it.
+//     docs/lang.md ("What `copy` does not do") warns lisp authors about it.
 //
 //   - LNative: an opaque Go value the kernel cannot clone.  Sharing it is
 //     the same guarantee the rest of the language already gives it.

@@ -11,8 +11,10 @@ Use when asked to pick up, work on, or implement a GitHub issue. Provide the iss
 ### 1. Fetch Issue Details
 
 ```bash
-gh issue view <N>
+gh issue view <N> --comments
 ```
+
+Without `gh` (some agent sandboxes), use the GitHub MCP `issue_read` tool.
 
 Read the full issue including title, body, labels, and any discussion comments.
 
@@ -20,15 +22,17 @@ Read the full issue including title, body, labels, and any discussion comments.
 
 Determine the type to guide implementation:
 
-| Type | Branch Prefix | Primary Skill |
-|------|--------------|---------------|
-| Bug report | `fix/` | `/implement` (bug-fix type) |
-| Feature request | `feature/` | `/implement` (appropriate type) |
-| Enhancement | `feature/` | `/implement` (appropriate type) |
-| New lint check | `feature/` | `/add-linter-check` |
-| New stdlib package | `feature/` | `/add-stdlib-package` |
-| Documentation | `docs/` | `/implement` (docs type) |
-| Performance | `perf/` | `/benchmark` + `/implement` |
+| Type | Primary Skill |
+|------|---------------|
+| Bug report | `/implement` (bug-fix type) |
+| Feature request | `/implement` (appropriate type) |
+| Enhancement | `/implement` (appropriate type) |
+| New lint check | `/add-linter-check` |
+| New stdlib package | `/add-stdlib-package` |
+| Documentation | `/implement` (docs type) |
+| Performance | `/benchmark` + `/implement` |
+| Fuzz crasher / fuzz target | `/fuzz` + `/implement` |
+| elpsvet finding / Go invariant | `/elpsvet` + `/implement` |
 
 ### 3. Create Branch
 
@@ -63,7 +67,7 @@ For bug fixes, always:
 
 ### 6. Verify
 
-Run the full `/verify` pipeline (all 6 steps).
+Run the full `/verify` pipeline.
 
 ### 7. Create PR
 

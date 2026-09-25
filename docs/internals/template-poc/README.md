@@ -1,6 +1,6 @@
 # VM template design experiments
 
-The production design and migration contract are in [Immutable VM templates](../fork.md).
+The production design and migration contract are in [Immutable VM templates](../../templates.md).
 This directory retains public, synthetic experiment artifacts; it is not a
 second supported implementation or an alternative embedding API.
 

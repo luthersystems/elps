@@ -23,7 +23,7 @@ import (
 // classified, and classifying it means deciding what a fork should do with it.
 var forkRuntimeFieldPolicy = map[string]string{
 	// Shared with the template: process-wide or read-only state that a fork
-	// is meant to reuse.  Each of these is also a row in docs/fork.md's
+	// is meant to reuse.  Each of these is also a row in docs/templates.md's
 	// shared/copied table.
 	"Stderr":    "shared",
 	"Reader":    "shared",

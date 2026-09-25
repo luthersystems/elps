@@ -17,7 +17,9 @@
 
 Full-featured VS Code extension for [ELPS](https://github.com/luthersystems/elps), an embedded Lisp interpreter implemented in Go. Provides syntax highlighting, language server integration, and debugging.
 
-The extension includes the `elps` binary for supported platforms (macOS, Linux, Windows on x64 and arm64). **No separate installation required** — just install the extension and it works.
+Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=LutherSystems.elps-lang) (extension ID `LutherSystems.elps-lang`), or build it from source (see [Development](#development)).
+
+The extension includes the `elps` binary for supported platforms (macOS, Linux, Windows on x64 and arm64). **No separate installation required** — just install the extension and it works. It starts the language server (`elps lsp`) itself and launches the debugger as `elps debug --stdio <program>`, so no LSP client or settings are needed.
 
 To use a custom build instead, set `elps.path` in VS Code settings to point to your binary:
 
@@ -121,8 +123,12 @@ Create a `.vscode/launch.json` (or use the auto-generated snippet from `Cmd+Shif
 |-----------|------|---------|-------------|
 | `program` | string | `${file}` | Path to the `.lisp` file to debug |
 | `stopOnEntry` | boolean | `true` | Pause before the first expression |
-| `rootDir` | string | `${workspaceFolder}` | Source root for file resolution |
+| `rootDir` | string | (unset) | Source root for file resolution; passed as `--root-dir` only when set |
 | `elpsPath` | string | `""` | Override `elps.path` setting for this session |
+| `skipBuiltins` | boolean | `true` | Auto step-over builtins on untargeted step-in (passed to the adapter) |
+| `sourceRoot` | string | `""` | Absolute path prefix for resolving relative source paths (passed to the adapter) |
+
+`program` must lie under the source root. When `rootDir` is set, the extension passes it as `elps debug --root-dir`, which confines source loads to that directory; when it is unset, the root is the debug adapter's working directory. Set `"rootDir": "${workspaceFolder}"` to pin it.
 
 ### Debug Attach Attributes
 

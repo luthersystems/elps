@@ -64,77 +64,16 @@ When `WithEnv` or `WithRegistry` is provided, the LSP server:
 
 ## Editor Setup
 
-### VS Code
+Any LSP client can use the server: configure it to run `elps lsp --stdio`
+(or `elps lsp`, since stdio is the default) for `*.lisp` files. An embedder
+substitutes its own binary, e.g. `myapp lsp --stdio`.
 
-Install a generic LSP client extension such as
-[vscode-languageclient](https://github.com/AnttiPessa/vscode-generic-lsp) or
-configure the built-in LSP support.
-
-Add to `.vscode/settings.json`:
-
-```json
-{
-  "elps.lsp.path": "elps",
-  "elps.lsp.args": ["lsp", "--stdio"]
-}
-```
-
-Or with a generic LSP extension, configure the server command:
-
-```json
-{
-  "genericLSP.serverCommand": "elps",
-  "genericLSP.serverArgs": ["lsp", "--stdio"],
-  "genericLSP.languageId": "elps",
-  "genericLSP.fileExtensions": [".lisp"]
-}
-```
-
-### Neovim (nvim-lspconfig)
-
-```lua
-local lspconfig = require('lspconfig')
-local configs = require('lspconfig.configs')
-
-configs.elps = {
-  default_config = {
-    cmd = { 'elps', 'lsp', '--stdio' },
-    filetypes = { 'lisp' },
-    root_dir = lspconfig.util.root_pattern('.git'),
-    settings = {},
-  },
-}
-
-lspconfig.elps.setup({})
-```
-
-### Helix
-
-Add to `~/.config/helix/languages.toml`:
-
-```toml
-[[language]]
-name = "elps"
-scope = "source.lisp"
-file-types = ["lisp"]
-language-servers = ["elps-lsp"]
-
-[language-server.elps-lsp]
-command = "elps"
-args = ["lsp", "--stdio"]
-```
-
-### Emacs (lsp-mode)
-
-```elisp
-(with-eval-after-load 'lsp-mode
-  (add-to-list 'lsp-language-id-configuration '(lisp-mode . "elps"))
-  (lsp-register-client
-   (make-lsp-client
-    :new-connection (lsp-stdio-connection '("elps" "lsp" "--stdio"))
-    :activation-fn (lsp-activate-on "elps")
-    :server-id 'elps-lsp)))
-```
+Step-by-step setup for VS Code, Neovim, Emacs, Helix and JetBrains IDEs is
+in `editors/<editor>/README.md` in the ELPS repository
+(https://github.com/luthersystems/elps/tree/main/editors). The VS Code
+extension starts the server itself and needs no configuration. Setup for the
+Claude Code LSP plugin is in `docs/editors.md`
+(https://github.com/luthersystems/elps/blob/main/docs/editors.md).
 
 ## Features in Detail
 

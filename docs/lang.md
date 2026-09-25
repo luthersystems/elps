@@ -615,8 +615,8 @@ initializer recursive; use `labels` for local recursive functions.
 The default `elps lint` check `let-recursion` warns about recognizable
 self-references in initializer-created closures. Use `--workspace` to resolve
 outer functions from other files and `--fail-on=warning` to enforce migration
-in CI. Dynamic code and opaque macros limit static detection; see
-[the check's coverage](lint-checks.md#let-recursion).
+in CI. Dynamic code and opaque macros limit static detection; see the
+`let-recursion` section of `docs/lint-checks.md` in the repository.
 
 ```lisp
 (let ((variable1 result1)
@@ -1031,6 +1031,49 @@ empty literal-derived input — there is nothing in it to modify — and hand
 back fresh storage.  `(stable-sort < (rest xs))` therefore behaves the same
 however short `xs` is.
 
+#### What `copy` does not do
+
+**It does not copy functions, so it does not copy an object's methods.** A
+lambda captures *bindings*, not values, so a lambda carried into the copy keeps
+reading and writing the containers its defining scope holds. Copying a
+map-of-lambdas "object" produces a copy whose methods operate on the original:
+
+```lisp
+(defun make-obj ()
+  (let ([state (vector 0)])
+    (sorted-map "bump"  (lambda () (append! state 1))
+                "state" state)))
+
+(set 'm (make-obj))
+(set 'c (copy m))
+((get c "bump"))        ; the COPY's method...
+(get c "state")         ; => (vector 0)    ...did not touch the copy
+(get m "state")         ; => (vector 0 1)  ...it mutated the original
+```
+
+To get an independent object, call its constructor again (`(make-obj)`); there
+is no primitive that copies a captured environment.
+
+**It does not preserve backing-array sharing.** The alias between a list and
+its `cdr`, `rest` or `(slice 'list ...)` view does not survive a copy; the two
+land on separate backing arrays:
+
+```lisp
+(set 'l2 (list 9 3 1 2))
+(set 'c (copy (list l2 (cdr l2))))
+(stable-sort < (nth c 1)) ; => '(1 2 3)     in the copy they are independent
+(nth c 0)                 ; => '(9 3 1 2)   the head does NOT see it
+```
+
+That is the safe direction, but code must not rely on such an alias surviving
+`copy`.
+
+There is deliberately no `sealed?` predicate to pair with `copy`. Whether a
+value came from program text is not the same question as whether you own it:
+an unsealed value can still be aliased by another binding, a container, or a
+closure. Code that intends to mutate data it did not construct takes a `copy`
+unconditionally.
+
 #### The predicate must be pure
 
 `stable-sort` and `insert-sorted` call their predicate an unspecified number
@@ -1263,6 +1306,15 @@ associates the type symbol with user data which can be any value.
 (sorted-map? r)    ; evaluates to false
 (tagged-value? r)  ; evaluates to true
 (user-data r)      ; evaluates to (sorted-map :height 100 :width 50)
+```
+
+When `type?` is given a symbol rather than the descriptor, a user-defined type
+must be named with its package qualifier; an unqualified symbol only matches
+built-in types:
+
+```lisp
+(type? 'user:rect r)  ; true
+(type? 'rect r)       ; false -- user types must be package-qualified
 ```
 
 The core language only provides low-level functionality for defining and
@@ -1887,25 +1939,12 @@ Pass trailing strings to `in-package` after the package name:
   "Utility functions for string and list manipulation.")
 ```
 
-### Documenting Go builtins
-
-Go-implemented builtins provide documentation through their definition.
-Use `libutil.FunctionDoc` (for library packages) or the `langBuiltin`
-struct (for core builtins) and pass a docstring as the last argument:
-
-```go
-// Library package function
-libutil.FunctionDoc("my-fn", lisp.Formals("x", "y"), myFnImpl,
-    `Computes something useful from x and y.`)
-
-// Core builtin registration
-RegisterDefaultBuiltin("my-builtin",
-    lisp.Formals("arg"), myBuiltinImpl)
-```
+### Missing documentation
 
 All builtins, macros, and exported symbols are required to have
 documentation. The `elps doc -m` command checks for missing docstrings
-and is typically run in CI.
+and is typically run in CI. Builtins implemented in Go carry their docstring
+in their Go definition; see the embedding guide (`docs/embed.md` in the repository).
 
 ### Viewing documentation
 
@@ -1994,10 +2033,9 @@ use `to-string` or string functions on it just like an interpreter error:
 ; returns "unexpected end of JSON input"
 ```
 
-For Go embedders, `GoError` still returns an `*ErrorVal`; `errors.Unwrap`,
-`errors.Is` and `errors.As` can recover the original Go error. `rethrow`
-preserves that error and its original stack. Host errors implementing
-`NativeCloner` retain their usual copy behavior.
+`rethrow` preserves such an error and its original stack. How these errors
+look from Go (`GoError`, `errors.As`, `ErrorCondition`) is described in
+the embedding guide (`docs/embed.md` in the repository).
 
 If copying the condition data for a handler fails — the data nests past the
 value-depth limit, or the allocation budget is exhausted — the handler is not
@@ -2005,15 +2043,6 @@ called and the copier's own error propagates instead, prefixed with `handler
 data cannot be copied`. It keeps that error's condition name and its Go error,
 so an outer `handler-bind` can match it by name and `errors.As` still reaches
 `lisp.ValueDepthError`.
-
-Passing an `*ErrorVal` back into `Error` or `ErrorCondition` returns that
-same value, condition and stack intact, so a handler can hand back exactly
-what it was given. Passing a Go error that merely *wraps* an `*ErrorVal`
-(`fmt.Errorf` with `%w`) is a request to reclassify: the result carries the
-condition you asked for and the wrapper's text as its message, and
-`errors.As` still reaches the inner value. The one exception is a wrapped
-`internal-panic`, which keeps its identity so the marker of a host fault
-survives a host wrapper.
 
 Source errors from `load-string` and `load-file` retain the parser's condition
 name, message and source location, including when loading through Go APIs or
@@ -2260,10 +2289,6 @@ code try to use handler-bind.
 If Go code called during evaluation — a builtin or special operator supplied
 by the application embedding the interpreter — panics, the interpreter
 recovers the panic and returns an error with the condition `internal-panic`.
-This also applies to direct Go calls through `FunCall`, `FunCallContext`,
-`EvalSExpr`, `MacroCall`, `SpecialOpCall` and `New`, and to source reader,
-input stream and library callbacks used by the `Load*` methods. Debugger and
-profiler callback panics are recovered at these evaluation/call boundaries.
 
 That condition is deliberately **not** treated as an ordinary error.  A panic
 means the host's Go code hit a bug (a nil dereference, an out-of-range index,
@@ -2282,8 +2307,7 @@ on top of it.  So:
 The carve-out keys off a Go stack snapshot the interpreter attaches when it
 recovers the panic — not off the condition name — so `(error 'internal-panic
 "...")` written in lisp is an ordinary, containable condition.  Only a
-genuine recovered panic escapes.  Embedders testing for one should use
-`lisp.IsInternalPanic(v)` rather than comparing the condition name.
+genuine recovered panic escapes.
 
 A handler that genuinely wants to intercept host panics must name the
 condition explicitly:
@@ -2294,24 +2318,10 @@ condition explicitly:
     (risky-builtin))
 ```
 
-The resulting error also carries the Go stack captured at the panic site, so
-an embedder can identify the offending Go function.
-
-Recovery does not invoke debugger error hooks: the debugger may itself have
-failed while holding a lock. Ordinary errors still notify the debugger.
-Panic diagnostics preserve primitive values and Go runtime fault messages;
-other payloads are described by type without calling application
-`String`, `Error` or `Format` methods, which could re-enter the failed object.
-
-Optional cache hooks have a different fallback: a panic in `ReaderIdentity`,
-`LoadCache.Load` or `LoadCache.Store` disables that operation and the source
-is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
-a panicking diagnostic writer is not retried. Nested loads from these hooks
-bypass identity and cache hooks on the same runtime.
-
-In `elpscheck` builds, detected ownership, sealed-program and singleton
-corruption deliberately remain hard Go panics so recovery cannot hide a
-failed invariant. These developer checks are distinct from language errors.
+The error also carries the Go stack captured at the panic site. Which Go
+entry points and callbacks are recovered this way, how a host detects a
+genuine panic, and how `elpscheck` builds differ are described in
+the embedding guide (`docs/embed.md` in the repository).
 
 ## Execution Limits
 
@@ -2326,6 +2336,12 @@ None of them bound *total* memory: `Runtime.MaxAlloc` caps the sizes of data
 containers constructed by builtin operations, not the sum across calls, so a loop that allocates many
 smaller values is bounded only by whatever stops the loop.  A host that must
 bound total memory has to do it outside the interpreter.
+
+This section describes the limits as a Lisp program experiences them: what
+each one bounds, its default, and the condition it raises. How a Go host
+configures them (the `lisp.With*` options, `Runtime` fields and the `*Context`
+evaluation methods) is described in the "Execution Limits" section of
+the embedding guide (`docs/embed.md` in the repository).
 
 ### Command-Line Limits and Signals
 
@@ -2345,9 +2361,6 @@ if evaluation or cleanup cannot finish (status 130 for SIGINT, 143 for
 SIGTERM). Cancellation is cooperative: native code must observe the context
 to return promptly. Output already written to stdout/stderr is retained.
 
-Embedded REPL callers can pass `repl.WithContext(ctx)` to bind evaluation
-and input waits to a context, without installing process signal handlers.
-Cancellation closes a pending REPL input wait and stops the session.
 The separate `elps debug` runner does not use these flags or signal handling.
 
 ### Rendering Limits
@@ -2384,14 +2397,7 @@ data a program builds, and a small cap chosen for data must not blank the
 sentence that explains why something failed. Values rendered for the program
 itself keep `MaxAlloc` exactly. The marker is never printed in part; a cap too
 small to hold it prints nothing. Error
-condition data remains available unchanged to handlers. Go's `LVal.String`
-uses the default cap without an evaluation context; `LEnv.Render` uses the
-environment's cap and context. Errors retain the output cap captured when they
-were created, but no context: an error outlives the request that produced it,
-so cancellation comes from the context the caller hands a reader such as
-`ErrorMessageContext` or `WriteTraceContext`. A context that is already dead
-bounds nothing and is ignored, so a diagnostic logged after its request ended
-still renders in full under the byte cap.
+condition data remains available unchanged to handlers.
 
 `to-string` accepts only scalar strings, symbols, bytes, and numbers; it never
 walks a container graph. Existing strings and symbols reuse their storage;
@@ -2468,14 +2474,8 @@ succeed even when the input is larger than the cap.
 
 ### Context Cancellation
 
-Pass a Go `context.Context` to any of the `*Context` methods on `LEnv`:
-
-```go
-ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-defer cancel()
-
-result := env.EvalContext(ctx, expr)
-```
+A host can bind an evaluation to a Go context, and `elps run --timeout` does
+so with a deadline.
 
 If the context is cancelled or its deadline expires during evaluation, a
 `context-cancelled` condition is raised. The cancelled context also prevents
@@ -2486,17 +2486,10 @@ the context or reserve time for recovery code.
 Cancellation is checked again before entering a function, macro or special
 operator, including native callbacks. If evaluating the function position
 or an argument cancels the context, the pending body does not run. This check
-does not charge an additional evaluation step. A direct Go `FunCallContext`
-likewise rejects an already cancelled context before invoking a native body.
+does not charge an additional evaluation step.
 Cancellation first observed at the call boundary reports the caller's source
 location. If first observed on entry to an interpreted body, it reports the
 function's definition location.
-
-Native callbacks temporarily expose the active context through their
-environment so nested evaluations inherit it. The previous context is
-restored after the callback and any terminal expression, including ordinary
-errors and recovered host panics. Finishing a request must not install its
-cancelled context on an environment that previously had none.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.
@@ -2518,26 +2511,9 @@ cancellation before running. This includes native callbacks that do not
 evaluate any Lisp; expressions in a Lisp callback's body consume their own
 steps as usual.
 
-```go
-env := lisp.NewEnv(nil)
-lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
-```
-
-The counter is reset each time an exported entry point (`Eval`,
-`EvalContext`, `EvalSExpr`, `FunCall`, `FunCallContext`, `SpecialOpCall`,
-`MacroCall`, or any `Load*`) is entered from outside an evaluation.  Nested evaluation — a
-builtin calling back into `Eval`, a tail-call loop, the forms evaluated by a
-single `Load` — shares the enclosing budget and does not refill it.  Without
-that reset, `WithMaxSteps(n)` would be a *lifetime* quota: once a long-lived
-runtime had executed `n` steps in total, every later evaluation would fail
-however small it was.
-
 When the limit is reached, a `step-limit-exceeded` condition is raised.
 An error handler or cleanup form shares that exhausted budget and cannot
 continue evaluating Lisp until the host starts a new top-level evaluation.
-Use `Runtime.Steps()` to read the current evaluation's usage,
-`Runtime.TotalSteps()` for the lifetime total, and `Runtime.ResetSteps()`
-to reset the current counter explicitly.
 
 A step limit also bounds loops which neither recurse nor tail-call; stack
 limits cannot see such loops. Cancellation is checked at their evaluation
@@ -2552,9 +2528,9 @@ requirement is "give up after N seconds".
 
 When a macro expands into another macro call, ELPS limits the successive
 expansions. This applies during ordinary evaluation and to `macroexpand`.
-`WithMaxMacroExpansionDepth(n)` selects the limit; a nonpositive value uses
-the default of 1,000. A self-expanding or mutually expanding macro eventually
-returns an ordinary `macro expansion depth exceeded` error.
+The default limit is 1,000 successive expansions. A self-expanding or
+mutually expanding macro eventually returns an ordinary `macro expansion depth
+exceeded` error.
 
 `macroexpand-1` performs at most one outer expansion. `macroexpand` continues
 while the outer result is another macro call; it does not recursively expand
@@ -2581,9 +2557,7 @@ Go goroutine stack, which aborts the whole process with a stack overflow that
 no `handler-bind` can catch.  It is bounded by default
 (`DefaultMaxPhysicalStackHeight`, 25000) at roughly an order of magnitude
 below the measured crash threshold, and exceeding it produces an ordinary,
-catchable ELPS error.  Override with
-`lisp.WithMaximumPhysicalStackHeight(n)`; 0 disables the check, which is not
-recommended.
+catchable ELPS error.
 
 It bounds *frames*, not evaluation depth — see below.
 
@@ -2597,25 +2571,15 @@ a 3M-deep value raises an ordinary error containing
 Copies and conversions return no partial result. Existing cycle handling still
 applies; a long cycle may reach the depth limit before its back edge is discovered.
 
-`lisp.WithMaxValueDepth(n)` sets the runtime limit to any value **at least 1024**.
-Both lowering and raising the default are supported because these traversals
-are iterative. Invalid options return an error. Copying (including condition
-data), equality, JSON dumping, quasiquote, macro stamping
-and template admission honor the runtime setting. Templates retain it in their
-VMs. Depth counts traversed value edges, including internal array storage and
+Depth counts traversed value edges, including internal array storage and
 captured environments where visited, rather than printed delimiters alone.
-APIs without a runtime, including `lisp.GoValue`, use the default limit.
-`GoValue` returns an `*lisp.ErrorVal` implementing Go's `error` interface on
-excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
-JSON serializer conversion methods use the same convention.
+A host can change the limit.
 
 `format-string` does not check the value nesting depth: like `debug-print` and
 every other render path, it truncates at the separate fixed 1024 levels and
 writes `#<depth-limit>` for what lies below. Formatting a 100k-deep value and a
 3M-deep value both succeed with the same bounded text. Printing a value is
-never a depth error; the byte and work budgets still apply.
-Sealing and source-location assignment use explicit stacks throughout; these
-metadata-only APIs cannot return an error and finish the graph. Reader admission
+never a depth error; the byte and work budgets still apply. Reader admission
 and JSON parsing retain their existing input-depth limits. Copying elpspath
 subtrees uses the default value limit; recursive path composition retains its
 separate limit of 1024 iterator steps or copying-chain steps.
@@ -2655,15 +2619,11 @@ raises a catchable `eval-nesting-exceeded` condition:
     (nest 800000))
 ```
 
-Override with `lisp.WithMaxEvalNesting(n)`; a negative value disables the
-check, which re-exposes the host process to an unrecoverable stack overflow.
-
 **Tail-call iterations** count turns per **contiguous tail-call sequence**
 at a single stack frame. The counter resets when that call returns; a new
 call starts a fresh sequence, and nested calls have their own counters.
 The default (`DefaultMaxTailIterations`, 1,000,000) bounds a runaway
-sequence running in constant stack space. Override with
-`lisp.WithMaxTailIterations(n)`; 0 disables the check.
+sequence running in constant stack space.
 
 Repeated calls that each return within that limit can still perform
 unbounded aggregate work. **MaxSteps is the total-work bound** across such
@@ -2690,8 +2650,7 @@ of a tail loop adds the length of the elided terminal chain, which is 2 for a
 trivial body and more when the body nests terminal forms more deeply.  The
 same numeric bound therefore permits a different number of iterations
 depending on the shape of the loop.  It is **disabled by default**
-(`DefaultMaxLogicalStackHeight`, 0).  Callers who specifically want it can
-opt in with `lisp.WithMaximumLogicalStackHeight(n)`.
+(`DefaultMaxLogicalStackHeight`, 0); a host can opt in.
 
 **Sleep length** is the one limit whose unit is wall clock rather than work.
 Every limit above counts something the interpreter *does* — steps, frames,
@@ -2812,83 +2771,9 @@ as the stack unwinds, so cleanup work on an error path adds to what the
 protected form already spent rather than drawing from the same allowance. Only
 `WithMaxSteps` bounds the whole evaluation monotonically.
 
-### Available Context Methods
-
-| Method | Purpose |
-|--------|---------|
-| `EvalContext` | Evaluate an expression |
-| `LoadContext` | Load from an `io.Reader` |
-| `LoadFileContext` | Load a source file |
-| `LoadStringContext` | Load from a string |
-| `LoadLocationContext` | Load with explicit name/location |
-| `FunCallContext` | Invoke a function |
-
-Each method threads the context through the internal evaluation chain.
-The older non-context methods (`Eval`, `Load`, etc.) continue to work
-but are deprecated.  Builtins can access the current context via
-`env.Context()`.
-
 ## Source minification
 
-`elps minify file.lisp --map symbols.json` shortens identifiers using deterministic,
-scope-aware renaming. Symbols quoted anywhere in the input files are excluded
-from renaming across all scopes and packages. This includes quoted lists and
-quasiquote templates, so quoted function designators such as
-`(map 'list 'twice '(1 2 3))` retain the function's name. Qualified quoted names
-also protect the corresponding bare name.
-
-Quoted names are never shortened, even with `--rename-exports`. This conservative
-rule can increase output size. The symbol map records the names in `excluded`,
-with `original` and `reason: "quoted-reference"`; the existing assignment maps
-contain only renamed symbols.
-
-Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
-`macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
-binding name, including lexical locals, across all input files**, even with `--rename-exports`.
-The rule also covers `symbol` and `intern` when supplied by a host, and
-`lisp:`-qualified spellings. References passed as function values or appearing in
-quoted templates also trigger it conservatively. No bindings are renamed in such
-a program. The CLI prints one warning naming the first dynamic-evaluation site,
-and the symbol map records preserved bindings under `excluded` with
-`reason: "dynamic-evaluation"`, taking precedence over `"quoted-reference"`.
-This keeps runtime-generated names and code working, but produces larger output
-and disables all identifier compression in programs using dynamic evaluation.
-
-Package-level bindings are renamed only when package flow and exported names can
-be proven statically: every `export` argument must be a reader-quoted symbol,
-a literal string, or a reader-quoted list (possibly nested) of those, and every
-`in-package` / `use-package` form must be at the top level of a file with literal
-package names. A variable or expression passed to `export`, a computed package
-name, or a package switch/import nested inside any form (including `progn`,
-`let`, `when`, functions, and macros) preserves every package-level binding name
-across all input files,
-even with `--rename-exports`. Lexical locals can still shorten only when dynamic
-evaluation is absent. Package flow and dynamic evaluation are tracked independently.
-The symbol map records `unproven-package-flow` for the package fallback, taking
-precedence over `quoted-reference`; one warning names the first offending form.
-If dynamic evaluation is also present, its no-renaming rule, exclusion reason,
-and warning take precedence regardless of source order.
-Literal export names remain preserved even with `--rename-exports`.
-
-Proof also requires directly evaluated package forms. Any `export`, `in-package`,
-or `use-package` inside `defmacro`, `macrolet`, or a quasiquote template triggers
-the package fallback, even if its arguments look literal. This includes quoted
-macro bodies and `unquote` forms: generated code may export different names.
-Macros without these package forms still allow renaming.
-
-Reader quoting in directly evaluated `(export 'foo)` or `(export '(a b))` supplies
-proof because it cannot be shadowed. Calls to `quote` or `lisp:quote` do not:
-unqualified `quote` can be shadowed. Qualified `lisp:quote` resolves in the named
-package and cannot be lexically shadowed; the standard runtime seals that package
-against Lisp writes. An embedder can nevertheless register a different `lisp`
-package before sealing, so the minifier cannot assume the standard runtime.
-Spelling an export as
-`(export (quote foo))` keeps all package-level names across the input files,
-even when `quote` is not shadowed. Use `(export 'foo)` to retain compression of
-private names. The repository's 83 source exports already use the reader-quote
-idiom, so the common case is unaffected.
-
-`defun`, `defmacro`, `set` with a quoted symbol, and `export` affect package-level
-bindings at any nesting depth. For example, `(let ((k 1)) (defun helper (x) (+ x k)))`
-creates a package-level `helper` that captures the lexical value of `k`. Minifying
-this definition also renames its calls outside the `let` consistently.
+`elps minify file.lisp --map symbols.json` shortens identifiers with
+deterministic, scope-aware renaming and records the renames in a JSON symbol
+map. For its flags and the rules that decide which names are kept, see
+`elps minify --help` and `docs/minify.md` in the repository.

@@ -57,7 +57,7 @@ Report the results with focus on:
 - **Allocations**: `allocs/op` — lower is better
 - **Statistical significance**: benchstat shows `~` for no significant change, `+`/`-` for changes with confidence intervals
 
-**Regression threshold**: Flag any benchmark that regresses by more than 5% with statistical significance.
+**Regression threshold**: CI's gate fails a statistically significant bad-direction move of 15% or more on timing and 5% or more on allocations (see "CI Integration" below). Report any significant regression, and investigate those at or above the gate before pushing.
 
 ### 7. Report
 
@@ -163,5 +163,5 @@ The shape it exists for: an arm measuring itself at ±71% against the other arm'
 - [ ] Same benchmark flags used for before/after
 - [ ] `benchstat` comparison run
 - [ ] Results reported with clear formatting
-- [ ] Regressions >5% flagged and investigated
+- [ ] Significant regressions reported; any at or above the CI gate (15% timing / 5% allocs) investigated or waived
 - [ ] Temp files cleaned up when done

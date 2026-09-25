@@ -35,7 +35,7 @@ The REPL pauses before the first expression. Type `help` for available commands.
 
 ### VS Code
 
-1. Install the ELPS debug extension (see [Editor Setup](#editor-setup)).
+1. Install the ELPS extension (`LutherSystems.elps-lang`; see [Editor Setup](#editor-setup)).
 2. Create `.vscode/launch.json`:
 
 ```json
@@ -86,231 +86,19 @@ elps debug --repl myfile.lisp              # Interactive CLI REPL
 
 ## Editor Setup
 
-### VS Code
+Any DAP client can use the debugger in one of two ways:
 
-Install the extension from `editors/vscode/`:
+- **Launch**: spawn `elps debug --stdio [--stop-on-entry] file.lisp` as the
+  debug adapter. The file to debug is a command-line argument; the adapter
+  does not read it from the launch request's `program` field.
+- **Attach**: start `elps debug [--stop-on-entry] file.lisp` (TCP, port 4711
+  by default) and point the client at `localhost:4711`.
 
-```bash
-# Option 1: Symlink
-ln -s "$PWD/editors/vscode" ~/.vscode/extensions/elps-debug
-
-# Option 2: Package and install
-cd editors/vscode
-npx @vscode/vsce package
-code --install-extension elps-debug-0.1.0.vsix
-```
-
-**Launch configuration** (`.vscode/launch.json`):
-
-```json
-{
-  "version": "0.2.0",
-  "configurations": [
-    {
-      "type": "elps",
-      "request": "launch",
-      "name": "Debug ELPS",
-      "program": "${file}",
-      "stopOnEntry": true
-    }
-  ]
-}
-```
-
-**Attach configuration** (connect to a running DAP server):
-
-```json
-{
-  "type": "elps",
-  "request": "attach",
-  "name": "Attach to ELPS",
-  "host": "localhost",
-  "port": 4711
-}
-```
-
-| Attribute      | Type    | Default              | Description                                  |
-|----------------|---------|----------------------|----------------------------------------------|
-| `program`      | string  | `${file}`            | Path to the `.lisp` file to debug            |
-| `stopOnEntry`  | boolean | `true`               | Pause before the first expression            |
-| `rootDir`      | string  | `${workspaceFolder}` | Source root for file resolution              |
-| `elpsPath`     | string  | `"elps"`             | Path to the `elps` binary                    |
-| `skipBuiltins` | boolean | `true`               | Auto step-over builtins on untargeted step-in |
-
-### Neovim
-
-Requires [nvim-dap](https://github.com/mfussenegger/nvim-dap).
-
-**Launch mode** (spawns `elps` as a child process):
-
-```lua
-local dap = require('dap')
-
-dap.adapters.elps = {
-  type = 'executable',
-  command = 'elps',
-  args = { 'debug', '--stdio' },
-}
-
-dap.configurations.lisp = {
-  {
-    type = 'elps',
-    request = 'launch',
-    name = 'Debug ELPS',
-    program = '${file}',
-    stopOnEntry = true,
-  },
-}
-```
-
-**Attach mode** (connect to a running DAP server):
-
-```lua
-dap.adapters.elps_attach = {
-  type = 'server',
-  host = '127.0.0.1',
-  port = 4711,
-}
-
-dap.configurations.lisp = {
-  {
-    type = 'elps_attach',
-    request = 'attach',
-    name = 'Attach to ELPS',
-  },
-}
-```
-
-**File type detection** (add to your Neovim config):
-
-```lua
-vim.filetype.add({
-  extension = {
-    lisp = 'lisp',
-    elps = 'lisp',
-  },
-})
-```
-
-### Helix
-
-Requires Helix 24.03+ with DAP support.
-
-Add to `.helix/languages.toml` or `~/.config/helix/languages.toml`:
-
-```toml
-[language-server.elps-dap]
-command = "elps"
-args = ["debug", "--stdio"]
-
-[[language]]
-name = "lisp"
-file-types = ["lisp", "elps"]
-debugger = { command = "elps", args = ["debug", "--stdio"], name = "elps" }
-
-[language.debugger.templates]
-name = "launch"
-request = "launch"
-completion = [{ name = "program", completion = "filename" }]
-
-[[language.debugger.templates.args]]
-program = "{0}"
-stopOnEntry = true
-```
-
-**Key bindings** (Helix defaults):
-
-| Binding     | Action            |
-|-------------|-------------------|
-| `<space>gb` | Toggle breakpoint |
-| `<space>gc` | Continue          |
-| `<space>gn` | Step over         |
-| `<space>gi` | Step in           |
-| `<space>go` | Step out          |
-
-Note: Helix does not natively support TCP attach. Use the launch configuration, or use Neovim/VS Code for attach workflows.
-
-### Emacs
-
-Requires [dap-mode](https://emacs-lsp.github.io/dap-mode/).
-
-```elisp
-(require 'dap-mode)
-
-;; Register the ELPS debug adapter.
-(dap-register-debug-provider
- "elps"
- (lambda (conf)
-   (plist-put conf :dap-server-path '("elps" "debug" "--stdio"))
-   conf))
-
-;; Launch configuration.
-(dap-register-debug-template
- "ELPS: Debug File"
- (list :type "elps"
-       :request "launch"
-       :name "Debug ELPS"
-       :program "${file}"
-       :stopOnEntry t))
-
-;; Attach configuration (connect to running DAP server).
-(dap-register-debug-template
- "ELPS: Attach"
- (list :type "elps"
-       :request "attach"
-       :name "Attach to ELPS"
-       :host "localhost"
-       :port 4711))
-```
-
-For attach mode, register a TCP-based debug provider:
-
-```elisp
-(dap-register-debug-provider
- "elps-attach"
- (lambda (conf)
-   (let ((host (or (plist-get conf :host) "localhost"))
-         (port (or (plist-get conf :port) 4711)))
-     (plist-put conf :dap-server-host host)
-     (plist-put conf :dap-server-port port)
-     conf)))
-```
-
-**Key commands:**
-
-| Command                     | Action                              |
-|-----------------------------|-------------------------------------|
-| `M-x dap-debug`            | Select and start a debug session    |
-| `M-x dap-breakpoint-toggle`| Toggle breakpoint on current line   |
-| `M-x dap-continue`         | Continue execution                  |
-| `M-x dap-next`             | Step over                           |
-| `M-x dap-step-in`          | Step into                           |
-| `M-x dap-step-out`         | Step out                            |
-| `M-x dap-eval`             | Evaluate expression in debug console|
-
-### JetBrains IDEs
-
-Requires the [LSP4IJ](https://plugins.jetbrains.com/plugin/23257-lsp4ij) plugin.
-
-1. Install **LSP4IJ** from the JetBrains Marketplace.
-2. Go to **Settings > Languages & Frameworks > LSP4IJ > DAP**.
-3. Add a new DAP server:
-
-| Field      | Value                  |
-|------------|------------------------|
-| Name       | ELPS Debug             |
-| Command    | `elps debug --stdio`   |
-| File types | `*.lisp`, `*.elps`     |
-
-**Launch configuration:**
-
-1. **Run > Edit Configurations > + > DAP**
-2. Set DAP Server to "ELPS Debug", Request to "launch", Program to `$FilePath$`, Stop on Entry to true.
-
-**Attach configuration:**
-
-1. **Run > Edit Configurations > + > DAP**
-2. Set DAP Server to "ELPS Debug", Request to "attach", Host to "localhost", Port to 4711.
+Step-by-step setup for VS Code, Neovim, Emacs, Helix and JetBrains IDEs is
+in `editors/<editor>/README.md` in the ELPS repository
+(https://github.com/luthersystems/elps/tree/main/editors). The VS Code
+extension is on the Visual Studio Marketplace as `LutherSystems.elps-lang`
+and launches the debugger itself.
 
 ## Launch Configuration Reference
 
@@ -320,7 +108,7 @@ All DAP clients (VS Code, Neovim, Helix, Emacs, JetBrains) send the same launch/
 
 | Field          | Type    | Default | Description                                                    |
 |----------------|---------|---------|----------------------------------------------------------------|
-| `program`      | string  | —       | Path to the `.lisp` file to debug (required)                   |
+| `program`      | string  | —       | Path to the `.lisp` file to debug (required by editor clients) |
 | `stopOnEntry`  | boolean | `false` | Pause before the first expression                              |
 | `sourceRoot`   | string  | `""`    | Absolute path prefix for resolving relative source file paths  |
 | `skipBuiltins` | boolean | `true`  | Auto step-over builtins on untargeted step-in                  |
@@ -333,6 +121,11 @@ All DAP clients (VS Code, Neovim, Helix, Emacs, JetBrains) send the same launch/
 | `port` | number | `4711`        | Port of the running DAP server    |
 
 Attach requests also accept `stopOnEntry`, `sourceRoot`, and `skipBuiltins`.
+
+The adapter itself does not read `program`: `elps debug` takes the file as a
+command-line argument, so a client must put it on the adapter's command line
+(the VS Code extension does this from `program`). An embedder's adapter loads
+whatever its host program chooses.
 
 ### Field Details
 
@@ -692,10 +485,6 @@ if elps_port then
   })
 end
 ```
-
-### Architecture Deep-Dive
-
-See [docs/plans/debugger-design.md](plans/debugger-design.md) for the full architecture, concurrency model, and design decisions.
 
 ## Tips and Troubleshooting
 

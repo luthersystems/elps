@@ -44,7 +44,7 @@ type Runner struct {
 	// NewEnvFn, when non-nil, replaces the environment construction NewEnv
 	// performs by default (fresh runtime + InitializeUserEnv + LoaderFn).
 	// It exists so an embedder harness can serve each test a fork of a
-	// preloaded template environment (lisp.Template.NewVM; see docs/fork.md)
+	// preloaded template environment (lisp.Template.NewVM; see docs/templates.md)
 	// instead of paying a full load per test file.  The returned
 	// environment's Runtime.Stderr must be an *elpstest.Logger for the
 	// test's output to be captured (fork with
