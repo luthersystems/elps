@@ -28,7 +28,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc(`String manipulation: case conversion, splitting, joining,
-		repetition, and trimming.`)
+		repetition, trimming, and prefix, suffix and substring tests.`)
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}
@@ -67,6 +67,27 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("trim-right", lisp.Formals("str", "cutset"), builtinTrimRight,
 		`Returns str with all trailing characters found in cutset removed.
 		The cutset is a string of individual characters to trim.`),
+	libutil.FunctionDoc("has-prefix?", lisp.Formals("str", "prefix"), builtinHasPrefix,
+		`Returns true if str begins with prefix. An empty prefix matches every
+		string. Comparison is by bytes, which for valid UTF-8 gives the same
+		result as comparing runes; no Unicode normalization is applied.`),
+	libutil.FunctionDoc("has-suffix?", lisp.Formals("str", "suffix"), builtinHasSuffix,
+		`Returns true if str ends with suffix. An empty suffix matches every
+		string. Comparison is by bytes, which for valid UTF-8 gives the same
+		result as comparing runes; no Unicode normalization is applied.`),
+	libutil.FunctionDoc("contains?", lisp.Formals("str", "substr"), builtinContains,
+		`Returns true if substr occurs anywhere in str. An empty substr is
+		contained in every string. Comparison is by bytes, which for valid
+		UTF-8 gives the same result as comparing runes; no Unicode
+		normalization is applied.`),
+	libutil.FunctionDoc("trim-prefix", lisp.Formals("str", "prefix"), builtinTrimPrefix,
+		`Returns str with one leading occurrence of prefix removed. If str does
+		not begin with prefix, str is returned unchanged. Unlike trim-left,
+		prefix is matched as a whole string, not as a set of characters.`),
+	libutil.FunctionDoc("trim-suffix", lisp.Formals("str", "suffix"), builtinTrimSuffix,
+		`Returns str with one trailing occurrence of suffix removed. If str does
+		not end with suffix, str is returned unchanged. Unlike trim-right,
+		suffix is matched as a whole string, not as a set of characters.`),
 }
 
 func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -261,4 +282,57 @@ func builtinTrimRight(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("second argument is not a string: %v", cutset.Type)
 	}
 	return lisp.String(strings.TrimRight(str.Str, cutset.Str))
+}
+
+// stringPair returns the two string arguments of a (str, other) builtin, or
+// the same argument-type error the other two-argument builtins report.
+func stringPair(env *lisp.LEnv, args *lisp.LVal) (str, other string, lerr *lisp.LVal) {
+	a, b := args.Cells[0], args.Cells[1]
+	if a.Type != lisp.LString {
+		return "", "", env.Errorf("first argument is not a string: %v", a.Type)
+	}
+	if b.Type != lisp.LString {
+		return "", "", env.Errorf("second argument is not a string: %v", b.Type)
+	}
+	return a.Str, b.Str, nil
+}
+
+func builtinHasPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str, prefix, lerr := stringPair(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.Bool(strings.HasPrefix(str, prefix))
+}
+
+func builtinHasSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str, suffix, lerr := stringPair(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.Bool(strings.HasSuffix(str, suffix))
+}
+
+func builtinContains(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str, substr, lerr := stringPair(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.Bool(strings.Contains(str, substr))
+}
+
+func builtinTrimPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str, prefix, lerr := stringPair(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.String(strings.TrimPrefix(str, prefix))
+}
+
+func builtinTrimSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	str, suffix, lerr := stringPair(env, args)
+	if lerr != nil {
+		return lerr
+	}
+	return lisp.String(strings.TrimSuffix(str, suffix))
 }
