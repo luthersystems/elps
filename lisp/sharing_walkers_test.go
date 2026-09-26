@@ -69,8 +69,7 @@ func TestSharingBombEveryWalker(t *testing.T) {
 			}
 		}},
 		{name: "GoValue", run: func(v *LVal) { _ = GoValue(v) }},
-		{name: "package admission (AddPackage)", run: func(v *LVal) { _ = admitSymbolValue(v, MaxValueDepth) },
-			skip: "Go API: classifies as a tree; bounded by claude/fix-sharing-bomb-admit"},
+		{name: "package admission (AddPackage)", run: func(v *LVal) { _ = admitSymbolValue(v, MaxValueDepth) }},
 	}
 	for _, w := range walkers {
 		t.Run(w.name, func(t *testing.T) {
