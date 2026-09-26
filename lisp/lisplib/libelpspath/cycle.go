@@ -108,6 +108,21 @@ type cycleState struct {
 	// walk's root and the current frame.
 	path map[*lisp.LVal]struct{}
 
+	// work, valid and copies bound a walk over a value with nested sharing
+	// -- (set! x (list x x)) repeated D times has 2^D paths but D distinct
+	// containers -- by the rule lisp/sharing.go describes for the kernel's
+	// walkers.  work counts the containers the walk has finished (the
+	// validator) or entered (the copy), plus the cells they hold.  Once it
+	// passes sharedWalkBudget, the validator records in valid each
+	// container it finished without error, and the copy records in copies
+	// each container it finished, with the copy it built and its height; a
+	// container reached again is answered from there instead of being walked
+	// again.  A tree never reaches a container twice, so for a tree they
+	// change nothing but the memory the maps take.
+	valid  map[*lisp.LVal]struct{}
+	copies map[*lisp.LVal]copyMemo
+	work   int
+
 	// limit is the value-walk depth bound for this walk, taken from the
 	// runtime the operation is running under (Runtime.ValueDepthLimit).  It
 	// lives on the shared state rather than in the by-value guard because it
@@ -117,6 +132,33 @@ type cycleState struct {
 	// which is the same answer Runtime.ValueDepthLimit gives for a nil
 	// runtime.
 	limit int
+}
+
+// sharedWalkBudget is lisp's budget of the same name (lisp/sharing.go): the
+// work after which a walk begins to memoise, by identity, the containers it
+// finishes.
+const sharedWalkBudget = 4096
+
+// copyMemo is one container's entry in cycleState.copies: its copy, and the
+// number of container levels the copy walked below it, so that a memo hit at
+// depth d fails the value depth limit exactly where re-copying the container
+// would: when d+height reaches the limit.
+type copyMemo struct {
+	cp     *lisp.LVal
+	height int
+}
+
+// noteValid records, once the walk is past its budget, that in and
+// everything under it passed validation.  width is the number of values in
+// holds.
+func (st *cycleState) noteValid(in *lisp.LVal, width int) {
+	st.work += 1 + width
+	if st.valid == nil && st.work > sharedWalkBudget {
+		st.valid = make(map[*lisp.LVal]struct{})
+	}
+	if st.valid != nil {
+		st.valid[in] = struct{}{}
+	}
 }
 
 // cycleGuard bounds a recursive walk over an LVal graph.

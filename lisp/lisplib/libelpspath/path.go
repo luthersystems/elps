@@ -130,6 +130,7 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 		v, cp         *lisp.LVal
 		cells, copied []*lisp.LVal
 		index         int
+		height        int // container levels copied below v so far
 	}
 	// Keep one continuation per ancestor, not per sibling. Frames contain
 	// values rather than addresses of local result slots or finish closures.
@@ -139,12 +140,26 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 walk:
 	for {
 		var out *lisp.LVal
+		// outHeight is out's copyMemo.height when out is the copy of a
+		// container, and -1 for a leaf.
+		outHeight := -1
 		switch v.Type {
 		case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
 			depth := g.depth + len(pending)
+			if m, ok := g.state.copies[v]; ok {
+				// Copied already, reached again through sharing: the copy
+				// shares it too, as lisp's copy does.  Re-copying would
+				// reach depth+m.height, so fail exactly where it would.
+				if limit := g.valueDepthLimit(); depth+m.height >= limit {
+					return nil, lisp.ValueDepthError(limit)
+				}
+				out, outHeight = m.cp, m.height
+				break
+			}
 			if limit := g.valueDepthLimit(); depth >= limit {
 				return nil, lisp.ValueDepthError(limit)
 			}
+			outHeight = 0
 			next, cyclic := (cycleGuard{state: g.state, depth: depth}).descend(v)
 			if cyclic {
 				return nil, errCyclicValue
@@ -193,6 +208,10 @@ walk:
 			if out != nil {
 				break
 			}
+			g.state.work += 1 + len(f.cells)
+			if g.state.copies == nil && g.state.work > sharedWalkBudget {
+				g.state.copies = make(map[*lisp.LVal]copyMemo)
+			}
 			if len(f.cells) > 0 {
 				pending = append(pending, f)
 				v = f.cells[0]
@@ -211,6 +230,9 @@ walk:
 		}
 		for len(pending) > 0 {
 			f := &pending[len(pending)-1]
+			if outHeight >= f.height {
+				f.height = outHeight + 1
+			}
 			if f.v.Type == lisp.LSortMap {
 				if err := lisp.GoError(f.cp.Map().Set(f.cells[f.index].Cells[0], out)); err != nil {
 					return nil, err
@@ -227,6 +249,10 @@ walk:
 				continue walk
 			}
 			out = sameQuoting(f.v, f.cp)
+			outHeight = f.height
+			if g.state.copies != nil {
+				g.state.copies[f.v] = copyMemo{cp: out, height: outHeight}
+			}
 			if g.depth+len(pending) >= cycleGuardDepth {
 				g.ascend(f.v)
 			}
