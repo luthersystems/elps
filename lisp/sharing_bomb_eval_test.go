@@ -258,3 +258,68 @@ func TestSharingBombQuasiquoteChargesQuotedUnquote(t *testing.T) {
 		t.Fatalf("got %v, want the step limit", rc)
 	}
 }
+
+// A fresh quote wrapper per occurrence around the same impure list -- which
+// is what (quasiquote '(unquote big)) builds on every call -- must not
+// escape the duplicated-rebuild charge: it is keyed on the list itself.
+func TestSharingQuasiquoteFreshWrappersAroundImpureList(t *testing.T) {
+	setup := `(set 'big (cons (car '((unquote 1))) (make-sequence 0 100000)))
+(set 'plain (map 'list (lambda (i) big) (make-sequence 0 50)))
+(set 'wrapped (map 'list (lambda (i) (quasiquote '(unquote big))) (make-sequence 0 50)))
+()`
+	for _, probe := range []string{`(eval (list QQ plain))`, `(eval (list QQ wrapped))`} {
+		env := sharingBombEnv(t, 1)
+		lisp.WithMaxSteps(1_000_000)(env)
+		if rc := env.LoadString("setup.lisp", setup); rc.Type == lisp.LError {
+			t.Fatalf("setup: %v", rc)
+		}
+		var rc *lisp.LVal
+		testdeadline.Watch(probe, 20*time.Second, 1<<30, func() { rc = env.LoadString("probe.lisp", probe) })
+		if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
+			t.Fatalf("%s: got %v, want the step limit", probe, rc)
+		}
+	}
+}
+
+// The prefixes of one quote chain, each reached as its own node, share
+// every wrapper below them: unwrapping them all is quadratic in the chain,
+// and past the allowance the re-unwrapped wrappers are charged, so the step
+// budget bounds it.
+func TestSharingQuasiquoteQuoteChainPrefixes(t *testing.T) {
+	for name, leaf := range map[string]string{"pure leaf": `'a`, "list": `(list 'a 'b)`, "unquote": `(car '((unquote 1)))`} {
+		t.Run(name, func(t *testing.T) {
+			setup := `(set 'w ` + leaf + `)
+(set 'ws (map 'list (lambda (i) (set! w (quasiquote '(unquote w))) w) (make-sequence 0 20000)))
+()`
+			rc := runSharingBombStepsOnly(t, setup, `(eval (list QQ ws))`)
+			if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
+				t.Fatalf("got %v, want the step limit", rc)
+			}
+		})
+	}
+}
+
+// A PURE list behind a fresh wrapper per occurrence shares one rebuild: the
+// core memo is keyed on the list, and only the quoting is new.
+func TestSharingQuasiquoteFreshWrappersAroundPureList(t *testing.T) {
+	setup := `(set 'big (make-sequence 0 10000))
+(set 'wrapped (map 'list (lambda (i) (quasiquote '(unquote big))) (make-sequence 0 50)))
+()`
+	rc := runSharingBombStepsOnly(t, setup, `(eval (list QQ wrapped))`)
+	for rc.Type == lisp.LQuote {
+		rc = rc.Cells[0]
+	}
+	if rc.Type != lisp.LSExpr || len(rc.Cells) != 50 {
+		t.Fatalf("got %v", rc.Type)
+	}
+	inner := func(v *lisp.LVal) *lisp.LVal {
+		for v.Type == lisp.LQuote {
+			v = v.Cells[0]
+		}
+		return v
+	}
+	first, last := inner(rc.Cells[1]), inner(rc.Cells[49])
+	if len(first.Cells) != 10000 || &first.Cells[0] != &last.Cells[0] {
+		t.Fatal("the pure list was rebuilt per occurrence")
+	}
+}
