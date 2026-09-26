@@ -1458,7 +1458,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 // comparisons (~1-2ns) and returns nil immediately.
 func (env *LEnv) checkLimits(ctx context.Context) *LVal {
 	r := env.Runtime
-	if ctx == nil && r.maxSteps == 0 {
+	if ctx == nil && r.maxSteps == 0 && r.stepBudget == 0 {
 		return nil
 	}
 	return env.checkLimitsSlow(ctx)
@@ -1487,6 +1487,10 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 	if r.stepLimitExceeded() {
 		return env.ErrorConditionf(CondStepLimitExceeded,
 			"step limit exceeded (%d steps)", r.maxSteps)
+	}
+	if r.stepBudgetExceeded() {
+		return env.ErrorConditionf(CondStepBudgetExceeded,
+			"step budget exceeded (%d steps)", r.stepBudget)
 	}
 	if ctx != nil {
 		if err := ctx.Err(); err != nil {
@@ -1563,7 +1567,7 @@ func (env *LEnv) ChargeSteps(n int64) *LVal {
 	}
 	r := env.Runtime
 	ctx := env.evalCtx
-	if ctx == nil && r.maxSteps == 0 {
+	if ctx == nil && r.maxSteps == 0 && r.stepBudget == 0 {
 		return Nil()
 	}
 	r.addStepsToCurrent(n)

@@ -22,6 +22,12 @@ const (
 	CondContextCancelled  = "context-cancelled"
 	CondStepLimitExceeded = "step-limit-exceeded"
 
+	// CondStepBudgetExceeded reports that the shared step budget installed
+	// by Runtime.SetStepBudget (or VMWithStepBudget), which spans top-level
+	// evaluations, is exhausted.  It is distinct from step-limit-exceeded,
+	// the per-evaluation WithMaxSteps limit.
+	CondStepBudgetExceeded = "step-budget-exceeded"
+
 	// CondEvalNestingExceeded reports that the evaluator recursed into
 	// itself more deeply than Runtime.MaxEvalNesting allows.  It is the
 	// recoverable substitute for a Go stack overflow, which is a
