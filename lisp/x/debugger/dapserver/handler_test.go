@@ -5934,6 +5934,69 @@ func TestDAPServer_SetVariableLocal(t *testing.T) {
 	s.disconnect()
 }
 
+// A Locals edit must not reach a package through a qualified name: the
+// trusted LEnv.Update resolves pkg:x in pkg, past the lisp seal, so the
+// handler refuses such a name in local scope before evaluating the value.
+func TestDAPServer_SetVariableLocalRejectsQualifiedName(t *testing.T) {
+	t.Parallel()
+	s := setupDAPSession(t, debugger.WithStopOnEntry(true))
+	s.send(&dap.SetBreakpointsRequest{
+		Request: dap.Request{
+			ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+			Command:         "setBreakpoints",
+		},
+		Arguments: dap.SetBreakpointsArguments{
+			Source:      dap.Source{Path: "test"},
+			Breakpoints: []dap.SourceBreakpoint{{Line: 2}},
+		},
+	})
+	s.read() // SetBreakpointsResponse
+	s.configDone()
+
+	env := newDAPTestEnv(t, s.engine)
+	resultCh := make(chan *lisp.LVal, 1)
+	go func() {
+		resultCh <- env.LoadString("test", "(defun add (a b)\n  (+ a b))\n(add 10 20)\n(lisp:car '(7))")
+	}()
+	s.waitStopped()
+	s.continueExec()
+	s.waitStopped("engine did not pause at breakpoint")
+
+	stResp := s.stackTrace()
+	require.NotEmpty(t, stResp.Body.StackFrames)
+	localRef := s.localScopeRef(stResp.Body.StackFrames[0].Id)
+
+	for _, name := range []string{"lisp:car", "user:a"} {
+		s.send(&dap.SetVariableRequest{
+			Request: dap.Request{
+				ProtocolMessage: dap.ProtocolMessage{Seq: s.nextSeq(), Type: "request"},
+				Command:         "setVariable",
+			},
+			Arguments: dap.SetVariableArguments{
+				VariablesReference: localRef,
+				Name:               name,
+				Value:              "1",
+			},
+		})
+		msg := s.read()
+		errResp, ok := msg.(*dap.ErrorResponse)
+		require.True(t, ok, "%s: expected ErrorResponse, got %T", name, msg)
+		assert.False(t, errResp.Success)
+		assert.Contains(t, errResp.Message, "cannot set package-qualified name in local scope")
+	}
+
+	s.continueExec()
+	select {
+	case res := <-resultCh:
+		// lisp:car is intact.
+		require.NotEqual(t, lisp.LError, res.Type, "got %v", res)
+		assert.Equal(t, "7", res.String())
+	case <-time.After(debugEventBackstop):
+		t.Fatal("timeout")
+	}
+	s.disconnect()
+}
+
 func TestDAPServer_SetVariablePackage(t *testing.T) {
 	t.Parallel()
 	s := setupDAPSession(t, debugger.WithStopOnEntry(true))

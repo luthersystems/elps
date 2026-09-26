@@ -461,8 +461,9 @@ func (pkg *Package) appendExternal(name string) {
 }
 
 // checkLispPackageBinding checks a Lisp assignment's destination without
-// allocating on the ordinary user-package path. Qualified set! needs this
-// check too, even though Update otherwise searches literal lexical keys.
+// allocating on the ordinary user-package path. A qualified name is checked
+// against the package it names; set (PutGlobalFromLisp) and qualified set!
+// (updateQualified) both call it before resolving that package.
 func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 	pkg := env.Runtime.Package
 	if ns, local, qualified := strings.Cut(name, ":"); qualified {
