@@ -2125,7 +2125,6 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	defer func() { env.loc = loc }()
 
 	cells := s.Cells
-	newCells := make([]*LVal, 1, len(s.Cells))
 	if env.Runtime.Stack.Top() != nil {
 		// Avoid tail recursion during argument evaluation by temporarily
 		// resetting Terminal.  We don't want to push anything on the stack
@@ -2150,7 +2149,10 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
 	}
 
-	newCells[0] = f
+	// The call value is allocated only once the function position has
+	// evaluated to a function, so an error there allocates nothing for it.
+	call, newCells := newSExprCap(len(s.Cells))
+	newCells = append(newCells, f)
 	if f.IsSpecialFun() {
 		// Arguments to a macro are not evaluated but they aren't quoted
 		// either.  This behavior is what allows ``unquote'' to properly
@@ -2164,7 +2166,8 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		// the value returned by (if 1 '(1) '(2)), it merely evaluates the
 		// expression and produces '(1).
 		newCells = append(newCells, cells...)
-		return SExpr(newCells)
+		call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
+		return call
 	}
 	// Evaluate arguments before invoking f.
 	for _, expr := range cells {
@@ -2179,7 +2182,8 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 
 		newCells = append(newCells, v)
 	}
-	return SExpr(newCells)
+	call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
+	return call
 }
 
 // call invokes LFun fun with the list args.  In general it is not safe to call

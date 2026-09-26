@@ -643,6 +643,48 @@ func SExpr(cells []*LVal) *LVal {
 	}
 }
 
+// newSExprCap returns a fresh, unquoted s-expression header and an empty
+// cells slice of capacity n for the caller to fill and then store into the
+// header's Cells.  For the short lists that dominate evaluation (a call form
+// and its evaluated arguments) the header and the backing array are one
+// allocation rather than two, the same co-allocation Terminal uses for its
+// marker.  The returned slice's capacity is exactly n, so the array slots
+// beyond it stay nil and unreachable, and an append past n copies exactly as
+// it would from make([]*LVal, 0, n).
+//
+// The header and the cells share one lifetime: anything that retains the
+// cells keeps the header's storage alive too.  The case that matters is a
+// lambda's &rest list, which aliases the call's cells: a program that stores
+// its &rest lists retains one LVal header (112 bytes) per stored list beyond
+// what it did with two allocations -- measured at 377 rather than 257 bytes
+// per retained two-element list.  That is accepted deliberately.  Copying the
+// cells when binding &rest would free it, but would add an allocation to every
+// variadic lambda call to save memory only for the calls that keep their list.
+func newSExprCap(n int) (*LVal, []*LVal) {
+	switch {
+	case n <= 2:
+		x := &struct {
+			c [2]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	case n <= 4:
+		x := &struct {
+			c [4]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	case n <= 8:
+		x := &struct {
+			c [8]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	default:
+		return &LVal{Type: LSExpr}, make([]*LVal, 0, n)
+	}
+}
+
 // QExpr returns an LVal representing an Q-expression, a quoted expression, a
 // list.  Provided cells are used as backing storage for the returned list and
 // are not copied.

@@ -76,11 +76,52 @@ func TestEmptyScopeAllocations(t *testing.T) {
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 7},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 6},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
 			if hotpathValue.Type != LInt || hotpathValue.Int != 42 {
+				t.Fatalf("unexpected result: %v", hotpathValue)
+			}
+			if got != tc.want {
+				t.Errorf("allocated %v times per call, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCallFormAllocations pins the call value evalSExprCells builds for a
+// builtin call: its header and its cells (the function plus its arguments)
+// are one allocation (newSExprCap) up to eight cells, and two past that, as
+// every call form was before (5 allocations in all, for every row).  The
+// other three are the builtin's argument binding and its bookkeeping, which
+// newSExprCap does not touch.
+func TestCallFormAllocations(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	x := Symbol("call-form-x")
+	if got := env.PutGlobal(x, Int(1)); got.Type == LError {
+		t.Fatal(got)
+	}
+	form := func(nargs int) *LVal {
+		cells := []*LVal{Symbol("max")}
+		for range nargs {
+			cells = append(cells, x)
+		}
+		return SExpr(cells)
+	}
+	for _, tc := range []struct {
+		name  string
+		nargs int
+		want  float64
+	}{
+		{"2-cells", 1, 4},
+		{"8-cells", 7, 4},
+		{"9-cells-not-coallocated", 8, 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := form(tc.nargs)
+			got := testing.AllocsPerRun(200, func() { hotpathValue = env.Eval(call) })
+			if hotpathValue.Type != LInt || hotpathValue.Int != 1 {
 				t.Fatalf("unexpected result: %v", hotpathValue)
 			}
 			if got != tc.want {
