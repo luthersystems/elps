@@ -3,6 +3,7 @@
 package token
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -63,9 +64,42 @@ const DefaultBufSize = 128 << 10
 
 // NewScanner initializes and returns a new Scanner reading through a
 // DefaultBufSize sliding window.
+//
+// When r is a *strings.Reader or *bytes.Reader holding fewer than
+// DefaultBufSize unread bytes, the window is sized to hold all of them plus
+// one byte instead.  The initial fill then drains r and observes io.EOF through
+// the ordinary read loop, exactly as a DefaultBufSize window would, so
+// scanning is unchanged -- no token can overrun a window that holds the
+// complete source -- but a short source (a LoadString of one transaction, a
+// library file) no longer allocates and zeroes the full 128KiB window.  The
+// spare byte is what lets the fill see io.EOF: a window of exactly Len() bytes
+// fills without reading EOF, and a token spanning the whole source would then
+// report "token exceeds maximum allowable size", because extend cannot slide a
+// token that starts at offset 0.
 func NewScanner(file string, r io.Reader) *Scanner {
-	buf := make([]byte, DefaultBufSize)
-	return newScannerBuf(file, r, buf)
+	size := DefaultBufSize
+	if n, ok := knownRemaining(r); ok && n < DefaultBufSize {
+		size = max(n+1, minKnownLenBufSize)
+	}
+	return newScannerBuf(file, r, make([]byte, size))
+}
+
+// minKnownLenBufSize keeps a window NewScanner sizes for a short reader
+// comfortably above utf8.UTFMax, the slack checkExtend reserves at the
+// window's edge.
+const minKnownLenBufSize = 64
+
+// knownRemaining returns the number of bytes r will yield before io.EOF, when
+// r is one of the standard library's in-memory readers.  An arbitrary Len
+// method promises nothing, so only these two types qualify.
+func knownRemaining(r io.Reader) (int, bool) {
+	switch r := r.(type) {
+	case *strings.Reader:
+		return r.Len(), true
+	case *bytes.Reader:
+		return r.Len(), true
+	}
+	return 0, false
 }
 
 // NewScannerString initializes and returns a new Scanner reading src, sizing
