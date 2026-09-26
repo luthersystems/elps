@@ -53,8 +53,8 @@ var langSpecialOps = []*langBuiltin{
 		serves as a documentation string.`},
 	{"expr", Formals("pattern"), opExpr,
 		`Creates an anonymous function from a template using positional
-		placeholders: %% for a single argument, %%1 %%2 etc. for numbered
-		arguments, %%&rest for variadic arguments. Returns a lambda
+		placeholders: % for a single argument, %1 %2 etc. for numbered
+		arguments, %&rest for variadic arguments. Returns a lambda
 		whose formals are derived from the placeholders.`},
 	{"thread-first", Formals("value", VarArgSymbol, "exprs"), opThreadFirst,
 		`Threads a value through a series of function calls by inserting
@@ -512,9 +512,6 @@ func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err
 			if numStr == VarArgSymbol {
 				vargs = true
 				continue
-			}
-			if strings.HasPrefix(numStr, MetaArgPrefix) {
-				return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol: %v", expr.Str)
 			}
 			num, err := parseExprArgIndex(numStr)
 			if err != nil {
