@@ -5,6 +5,7 @@ package libelpspath_test
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -177,6 +178,35 @@ func TestSharingBombElpspathOperationSharesMemo(t *testing.T) {
 			}
 			if rc.Type != lisp.LInt || int64(rc.Int) != want {
 				t.Fatalf("%s: got %v, want %d", name, rc, want)
+			}
+		})
+	}
+}
+
+// Iterator steps through every level of the bomb enumerate its 2^40 paths:
+// the output of ? and ?set really is that large, and ?del! on a shared item
+// is not idempotent, so no memo applies.  The iterator work budget
+// (budget.go, issue #722) charges the work past its allowance in steps, and
+// the step budget stops every iterator builtin.  iter_budget_test.go has
+// the per-builtin regressions.
+func TestSharingBombElpspathIterators(t *testing.T) {
+	stars := strings.Repeat(" '*", sharingBombDepth)
+	for _, name := range []string{"?", "?set", "?del", "?nil", "?set!", "?del!", "?nil!"} {
+		tail := ` "k"`
+		if name == "?set" || name == "?set!" {
+			tail = ` "k" 2`
+		}
+		src := fmt.Sprintf(`(elpspath:%s doc "big"%s%s)`, name, stars, tail)
+		t.Run(name, func(t *testing.T) {
+			env := sharingBombDoc(t)
+			var rc *lisp.LVal
+			testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+				ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(10*time.Second))
+				defer cancel()
+				rc = env.LoadStringContext(ctx, "probe.lisp", src)
+			})
+			if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
+				t.Fatalf("%s: got %v, want the step-limit-exceeded condition", name, rc)
 			}
 		})
 	}

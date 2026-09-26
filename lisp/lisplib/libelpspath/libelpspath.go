@@ -45,6 +45,15 @@ environments remain opaque and shared; they are not walked.
 An iterator retains its per-element error handling: reads substitute nil
 for a failed element path, and writes leave that element unchanged.
 
+Iterators count their work: one unit per element visited, plus the
+containers copied or shifted under them. Past 2^20 units in one call,
+each further unit is charged as one evaluation step, and the call checks
+the evaluation's deadline as it goes. Running out of steps or time stops
+the whole call with the evaluator's own condition (step-limit-exceeded,
+step-budget-exceeded or context-cancelled); a mutating form keeps the
+changes it already made. Calls below the allowance cost the steps they
+always did.
+
 For ?set! and ?set, the last argument is the new value; all preceding
 arguments are path steps.
 

@@ -224,6 +224,10 @@ walk:
 			if op.copies == nil && op.work > sharedWalkBudget {
 				op.copies = make(map[*lisp.LVal]copyMemo)
 			}
+			// Under an iterator, the copy is iterator work (budget.go).
+			if err := op.charge(1 + len(f.cells)); err != nil {
+				return nil, err
+			}
 			if len(f.cells) > 0 {
 				pending = append(pending, f)
 				v = f.cells[0]
@@ -333,6 +337,11 @@ func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, err
 	}
 	entries := sortedMapEntries(m0)
 	if err := lisp.GoError(entries); err != nil {
+		return nil, err
+	}
+	// Under an iterator, the map and the entries copied are iterator work
+	// (budget.go), counted as copyContainer counts a container.
+	if err := g.state.copyOp().charge(1 + len(entries.Cells)); err != nil {
 		return nil, err
 	}
 	// Sized for every entry: the copy holds all of them, or all but the
@@ -449,6 +458,11 @@ func copyListGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 //
 // from == to skips nothing and is the plain deep copy.
 func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int, op *copyOp) (*lisp.LVal, error) {
+	// Under an iterator, the sequence and the cells copied are iterator
+	// work (budget.go), counted as copyContainer counts a container.
+	if err := op.charge(1 + len(cells)); err != nil {
+		return nil, err
+	}
 	out := make([]*lisp.LVal, len(cells))
 	var st cycleState
 	g := newCycleGuardOp(&st, op)
@@ -958,9 +972,14 @@ func prependLeafPath(err error, prefix []Path) error {
 
 // Get an LVal at the end of a path chain.
 func (s *chainPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.getOp(in, nil)
+}
+
+// getOp is Get as part of the operation op (see getPath).
+func (s *chainPath) getOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	var err error
 	for i, path := range s.paths {
-		in, err = path.Get(in)
+		in, err = getPath(path, in, op)
 		if err != nil {
 			return nil, prependLeafPath(err, s.paths[:i])
 		}
@@ -969,6 +988,11 @@ func (s *chainPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
+	return s.setMutateOp(in, newIn, nil)
+}
+
+// setMutateOp is SetMutate as part of the operation op (see getPath).
+func (s *chainPath) setMutateOp(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if len(s.paths) == 0 {
 		// we have to be careful here because we cannot mutate a container from
 		// one type to another (e.g., a sorted-map to an list), since LVals
@@ -983,9 +1007,9 @@ func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	curIn := in
 	for i, path := range s.paths {
 		if i == (len(s.paths) - 1) {
-			curIn, err = path.SetMutate(curIn, newIn)
+			curIn, err = setMutatePath(path, curIn, newIn, op)
 		} else {
-			curIn, err = path.Get(curIn)
+			curIn, err = getPath(path, curIn, op)
 		}
 		if err != nil {
 			return nil, prependLeafPath(err, s.paths[:i])
@@ -1025,13 +1049,18 @@ func (s *chainPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 }
 
 func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.deleteMutateOp(in, nil)
+}
+
+// deleteMutateOp is DeleteMutate as part of the operation op (see getPath).
+func (s *chainPath) deleteMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	var err error
 	curIn := in
 	for i, path := range s.paths {
 		if i == (len(s.paths) - 1) {
-			curIn, err = path.DeleteMutate(curIn)
+			curIn, err = deleteMutatePath(path, curIn, op)
 		} else {
-			curIn, err = path.Get(curIn)
+			curIn, err = getPath(path, curIn, op)
 		}
 		if err != nil {
 			return nil, prependLeafPath(err, s.paths[:i])
@@ -1081,6 +1110,11 @@ func (s *chainPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 }
 
 func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.nilMutateOp(in, nil)
+}
+
+// nilMutateOp is NilMutate as part of the operation op (see getPath).
+func (s *chainPath) nilMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if len(s.paths) == 0 {
 		// we have to be careful here because we cannot mutate a container from
 		// one type to another (e.g., a sorted-map to an list), since LVals
@@ -1095,9 +1129,9 @@ func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	curIn := in
 	for i, path := range s.paths {
 		if i == (len(s.paths) - 1) {
-			curIn, err = path.NilMutate(curIn)
+			curIn, err = nilMutatePath(path, curIn, op)
 		} else {
-			curIn, err = path.Get(curIn)
+			curIn, err = getPath(path, curIn, op)
 		}
 		if err != nil {
 			return nil, prependLeafPath(err, s.paths[:i])
@@ -1601,6 +1635,11 @@ func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 	if err != nil {
 		return nil, err
 	}
+	// Under an iterator, the cells spliced in are iterator work too
+	// (budget.go); copySeqOffPath charged the ones copied.
+	if err := op.chargeWidth(newIn); err != nil {
+		return nil, err
+	}
 	return s.setMutate(cp, newIn)
 }
 
@@ -1802,6 +1841,26 @@ func isChainToIter(path Path) bool {
 // Get is called to iterate on elements of an array and get a chain on
 // each element.
 func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.getOp(in, nil)
+}
+
+// getOp is Get as part of the operation op, which counts the iterator's work
+// (budget.go).  Every iterator method below brackets its loop the same way,
+// and charges one unit per element before running the rest of the path on
+// it.
+//
+// IMPORTANT: an element's error is that element's failure -- nil for a
+// read, the element unchanged for a write -- EXCEPT when the operation has
+// been stopped (op.stopped): the stop ends the whole operation, and
+// swallowing it here would let the walk run on unmetered.
+func (s *iterPath) getOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.get(in, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) get(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1811,8 +1870,14 @@ func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 	// may add more, in which case this is a floor.
 	results := make([]*lisp.LVal, 0, len(horizon))
 	for _, item := range horizon {
-		in, err := s.path.Get(item)
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
+		in, err := getPath(s.path, item, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where query fails,
 			// and return nil. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
@@ -1822,6 +1887,9 @@ func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 			// collapse results generated by a nested iterator
 			childIns, err := toCells(in)
 			if err != nil {
+				return nil, err
+			}
+			if err := op.charge(len(childIns)); err != nil {
 				return nil, err
 			}
 			results = append(results, childIns...)
@@ -1842,13 +1910,31 @@ func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 // SetMutate mutates an array by setting each item using a path. If an
 // error occurs while setting an item then that item is skipped.
 func (s *iterPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
+	return s.setMutateOp(in, newIn, nil)
+}
+
+// setMutateOp is SetMutate as part of the operation op; see getOp.
+func (s *iterPath) setMutateOp(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.setMutate(in, newIn, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) setMutate(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	for _, item := range horizon {
-		_, err := s.path.SetMutate(item, newIn)
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
+		_, err := setMutatePath(s.path, item, newIn, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where set fails,
 			// and return nil. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
@@ -1866,14 +1952,27 @@ func (s *iterPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.set(in, newIn, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) set(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		in, err := setPath(s.path, item, newIn, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where set fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
@@ -1895,13 +1994,31 @@ func (s *iterPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lis
 }
 
 func (s *iterPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.deleteMutateOp(in, nil)
+}
+
+// deleteMutateOp is DeleteMutate as part of the operation op; see getOp.
+func (s *iterPath) deleteMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.deleteMutate(in, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) deleteMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	for _, item := range horizon {
-		_, err := s.path.DeleteMutate(item)
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
+		_, err := deleteMutatePath(s.path, item, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where delete fails,
 			// This is similar, but not the same as `jq` semantics which will
 			// return an error in some cases.
@@ -1917,14 +2034,27 @@ func (s *iterPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.delete(in, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) delete(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		in, err := deletePath(s.path, item, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where del fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
@@ -1946,13 +2076,31 @@ func (s *iterPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) 
 }
 
 func (s *iterPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
+	return s.nilMutateOp(in, nil)
+}
+
+// nilMutateOp is NilMutate as part of the operation op; see getOp.
+func (s *iterPath) nilMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.nilMutate(in, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) nilMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	for _, item := range horizon {
-		_, err := s.path.NilMutate(item)
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
+		_, err := nilMutatePath(s.path, item, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where nil fails,
 			// and do not nil the item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
@@ -1968,14 +2116,27 @@ func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	op.enterIter()
+	out, err := s.null(in, op)
+	op.leaveIter()
+	return out, err
+}
+
+func (s *iterPath) null(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		in, err := nilPath(s.path, item, op)
 		if err != nil {
+			if op.stopped() {
+				return nil, err
+			}
 			// IMPORTANT: when iterating we ignore paths where nil fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.

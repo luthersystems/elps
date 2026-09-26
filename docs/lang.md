@@ -1338,6 +1338,20 @@ check. Opaque leaf internals are not walked.
 An iterator keeps its per-element error handling: a failed read contributes
 `()` and a failed write leaves that element unchanged.
 
+An iterator does its work inside one call, so one call can visit far more
+elements than the program built: a vector holding the same vector twice,
+nested 30 deep, has 2^30 paths through it, and 30 `'*` steps visit every one
+of them. Iterators therefore count their work -- one unit per element they
+visit, plus the containers they copy or shift. Past about a million units in
+one call (2^20), each further unit is charged as one evaluation step, so a
+`WithMaxSteps` or step budget stops the call with the usual
+`step-limit-exceeded` or `step-budget-exceeded` condition. The call also
+checks the evaluation's deadline as it goes, and stops with
+`context-cancelled` once it has passed. Neither stop is an element failure:
+it ends the whole call, and a mutating form keeps the changes it already
+made. A call below the allowance -- every ordinary query -- costs exactly the
+steps it always did.
+
 See `elps doc elpspath` for the package reference
 and `parse-path`, which converts a jq-style selector string to path arguments.
 
