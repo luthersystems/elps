@@ -93,9 +93,9 @@ func TestEmptyScopeAllocations(t *testing.T) {
 // TestCallFormAllocations pins the call value evalSExprCells builds for a
 // builtin call: its header and its cells (the function plus its arguments)
 // are one allocation (newSExprCap) up to eight cells, and two past that, as
-// every call form was before.  The remaining four allocations are the
-// builtin's argument binding and its bookkeeping, which newSExprCap does not
-// touch.
+// every call form was before (5 allocations in all, for every row).  The
+// other three are the builtin's argument binding and its bookkeeping, which
+// newSExprCap does not touch.
 func TestCallFormAllocations(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	x := Symbol("call-form-x")

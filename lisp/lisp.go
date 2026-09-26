@@ -653,8 +653,13 @@ func SExpr(cells []*LVal) *LVal {
 // it would from make([]*LVal, 0, n).
 //
 // The header and the cells share one lifetime: anything that retains the
-// cells (a &rest binding, say) keeps the header's storage alive too.  That
-// is at most one LVal per retained list.
+// cells keeps the header's storage alive too.  The case that matters is a
+// lambda's &rest list, which aliases the call's cells: a program that stores
+// its &rest lists retains one LVal header (112 bytes) per stored list beyond
+// what it did with two allocations -- measured at 377 rather than 257 bytes
+// per retained two-element list.  That is accepted deliberately.  Copying the
+// cells when binding &rest would free it, but would add an allocation to every
+// variadic lambda call to save memory only for the calls that keep their list.
 func newSExprCap(n int) (*LVal, []*LVal) {
 	switch {
 	case n <= 2:

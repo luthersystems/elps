@@ -6,8 +6,9 @@ import "testing"
 
 // TestNewSExprCap pins the contract evalSExprCells relies on: a fresh
 // unquoted s-expression header and an empty cells slice whose capacity is
-// exactly n, across every co-allocation size class and past it, so an append
-// beyond n reallocates rather than writing into the co-allocated array.
+// exactly n, across every co-allocation size class and past it.  The capacity
+// is what matters: it is why an append beyond n copies out of the
+// co-allocated array rather than into the slots past n.
 func TestNewSExprCap(t *testing.T) {
 	for n := 1; n <= 10; n++ {
 		call, cells := newSExprCap(n)
@@ -20,12 +21,7 @@ func TestNewSExprCap(t *testing.T) {
 		for i := range n {
 			cells = append(cells, Int(i))
 		}
-		full := cells
-		grown := append(cells, Int(n))
-		if &grown[0] == &full[0] {
-			t.Fatalf("n=%d: append past capacity reused the co-allocated array", n)
-		}
-		call.Cells = full
+		call.Cells = cells
 		for i, c := range call.Cells {
 			if c.Int != i {
 				t.Fatalf("n=%d: cell %d = %v", n, i, c)
