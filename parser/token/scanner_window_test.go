@@ -5,9 +5,12 @@ package token
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
+
+	"github.com/luthersystems/elps/internal/fuzzseed"
 )
 
 // scanWhole scans src as one token, rune by rune, and returns the token text
@@ -75,5 +78,72 @@ func TestNewScannerKnownLengthPartiallyRead(t *testing.T) {
 	text, err := scanWhole(NewScanner("t", r))
 	if text != "(a b)" || !errors.Is(err, io.EOF) {
 		t.Fatalf("scanned %q, %v; want %q, EOF", text, err, "(a b)")
+	}
+}
+
+// scanTrace drives s rune by rune, emitting a token at every space or newline
+// and a ScanLine at every ';', and records every token, location and error.
+func scanTrace(s *Scanner) []string {
+	var out []string
+	for {
+		c, ok := s.Peek()
+		if !ok {
+			err := s.ScanRune()
+			out = append(out, fmt.Sprintf("end %q %v eof=%t", s.Text(), err, s.EOF()))
+			return out
+		}
+		switch c {
+		case ';':
+			text, err := s.ScanLine()
+			out = append(out, fmt.Sprintf("line %q %v %+v", text, err, *s.LocStart()))
+			s.Ignore()
+		case ' ', '\n':
+			if err := s.ScanRune(); err != nil {
+				return append(out, fmt.Sprintf("err %v", err))
+			}
+			tok := s.EmitToken(SYMBOL)
+			out = append(out, fmt.Sprintf("tok %q %+v", tok.Text, *tok.Source))
+		default:
+			if err := s.ScanRune(); err != nil {
+				return append(out, fmt.Sprintf("err %q %v %+v", s.Text(), err, *s.Loc()))
+			}
+		}
+	}
+}
+
+// TestNewScannerKnownLengthMatchesDefaultWindow is the differential form of
+// the invariant NewScanner's sizing rests on: fill reslices the window to the
+// bytes read, so right after construction an in-memory reader's scanner holds
+// the same bytes and the same read error as a DefaultBufSize window's, and
+// only the window's capacity differs.  Every fuzz seed must then scan to the
+// same trace through both.
+func TestNewScannerKnownLengthMatchesDefaultWindow(t *testing.T) {
+	for i, src := range fuzzseed.All() {
+		opaque := NewScanner("t", struct{ io.Reader }{bytes.NewReader(src)})
+		for name, r := range map[string]io.Reader{
+			"strings": strings.NewReader(string(src)),
+			"bytes":   bytes.NewReader(src),
+		} {
+			s := NewScanner("t", r)
+			if !bytes.Equal(s.buf, opaque.buf) || !errors.Is(s.readErr, opaque.readErr) {
+				t.Fatalf("seed %d/%s: window holds %d bytes (err %v), default window %d (err %v)",
+					i, name, len(s.buf), s.readErr, len(opaque.buf), opaque.readErr)
+			}
+		}
+		want := scanTrace(NewScanner("t", struct{ io.Reader }{bytes.NewReader(src)}))
+		for name, s := range map[string]*Scanner{
+			"strings": NewScanner("t", strings.NewReader(string(src))),
+			"bytes":   NewScanner("t", bytes.NewReader(src)),
+		} {
+			got := scanTrace(s)
+			if len(got) != len(want) {
+				t.Fatalf("seed %d/%s: %d trace entries, want %d", i, name, len(got), len(want))
+			}
+			for j := range got {
+				if got[j] != want[j] {
+					t.Fatalf("seed %d/%s: entry %d\n got %s\nwant %s", i, name, j, got[j], want[j])
+				}
+			}
+		}
 	}
 }

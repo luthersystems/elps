@@ -68,10 +68,15 @@ const DefaultBufSize = 128 << 10
 // When r is a *strings.Reader or *bytes.Reader holding fewer than
 // DefaultBufSize unread bytes, the window is sized to hold all of them plus
 // one byte instead.  The initial fill then drains r and observes io.EOF through
-// the ordinary read loop, exactly as a DefaultBufSize window would, so
-// scanning is unchanged -- no token can overrun a window that holds the
-// complete source -- but a short source (a LoadString of one transaction, a
-// library file) no longer allocates and zeroes the full 128KiB window.  The
+// the ordinary read loop, exactly as a DefaultBufSize window would, so a short
+// source (a LoadString of one transaction, a library file) no longer allocates
+// and zeroes the full 128KiB window.
+//
+// Scanning is unchanged because fill reslices the window to the bytes it
+// read: after construction both windows have the same len(s.buf), contents and
+// readErr, and only their capacity differs.  That is the invariant to keep --
+// nothing in the scanner may read cap(s.buf) -- and
+// TestNewScannerKnownLengthMatchesDefaultWindow pins it.  The
 // spare byte is what lets the fill see io.EOF: a window of exactly Len() bytes
 // fills without reading EOF, and a token spanning the whole source would then
 // report "token exceeds maximum allowable size", because extend cannot slide a
