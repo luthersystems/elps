@@ -5,6 +5,7 @@ package libschema
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strings"
 	"sync/atomic"
@@ -97,7 +98,7 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetSymbolDoc("error", "Type name for error values.")
 	env.SetSymbolDoc("sorted-map", "Type name for sorted-map (associative array) values.")
 	env.SetSymbolDoc("array", "Type name for array values.")
-	env.SetSymbolDoc("bool", "Type name for boolean values (true or false).")
+	env.SetSymbolDoc("bool", "Type name for boolean values: the symbols true and false, not the strings \"true\" and \"false\".")
 	env.SetSymbolDoc("tagged-value", "Type name for user-defined tagged values (created with deftype/new).")
 	env.SetSymbolDoc("any", "Type name matching any value type (no type constraint).")
 	return lisp.Nil()
@@ -124,22 +125,30 @@ var builtins = []*libutil.Builtin{
 		Example: (s:in "red" "green" "blue").`),
 	libutil.FunctionDoc("gt", lisp.Formals("allowed-value"), builtinGreaterThan,
 		`Returns a constraint that checks if the input is strictly
-		greater than allowed-value. Works with numeric types.`),
+		greater than allowed-value. Works with numeric types. NaN never
+		satisfies a numeric constraint, and a NaN allowed-value is an
+		error.`),
 	libutil.FunctionDoc("gte", lisp.Formals("allowed-value"), builtinGreaterThanOrEqual,
 		`Returns a constraint that checks if the input is greater than
-		or equal to allowed-value. Works with numeric types.`),
+		or equal to allowed-value. Works with numeric types. NaN never
+		satisfies a numeric constraint, and a NaN allowed-value is an
+		error.`),
 	libutil.FunctionDoc("lt", lisp.Formals("allowed-value"), builtinLessThan,
 		`Returns a constraint that checks if the input is strictly less
-		than allowed-value. Works with numeric types.`),
+		than allowed-value. Works with numeric types. NaN never
+		satisfies a numeric constraint, and a NaN allowed-value is an
+		error.`),
 	libutil.FunctionDoc("lte", lisp.Formals("allowed-value"), builtinLessThanOrEqual,
 		`Returns a constraint that checks if the input is less than or
-		equal to allowed-value. Works with numeric types.`),
+		equal to allowed-value. Works with numeric types. NaN never
+		satisfies a numeric constraint, and a NaN allowed-value is an
+		error.`),
 	libutil.FunctionDoc("positive", lisp.Formals(), builtinPositive,
 		`Returns a constraint that checks if the input is strictly
-		greater than zero.`),
+		greater than zero. NaN is neither positive nor negative.`),
 	libutil.FunctionDoc("negative", lisp.Formals(), builtinNegative,
 		`Returns a constraint that checks if the input is strictly
-		less than zero.`),
+		less than zero. NaN is neither positive nor negative.`),
 	libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
 		`Validates input against a type validator function (created by
 		deftype or make-validator). Returns nil on success or an error
@@ -190,14 +199,16 @@ var builtins = []*libutil.Builtin{
 		constraint passes.`),
 	libutil.FunctionDoc("is-true", lisp.Formals(), builtinIsTrue,
 		`Returns a constraint that checks if the input is the boolean
-		true symbol.`),
+		true symbol. The string "true" does not qualify.`),
 	libutil.FunctionDoc("is-false", lisp.Formals(), builtinIsFalse,
 		`Returns a constraint that checks if the input is the boolean
-		false symbol.`),
+		false symbol. The string "false" does not qualify.`),
 	libutil.FunctionDoc("is-truthy", lisp.Formals(), builtinIsTruthy,
 		`Returns a constraint that checks if the input is truthy.
 		Truthy values include: true, non-empty strings (not "false"),
-		non-empty arrays/maps/bytes, and positive numbers.`),
+		non-empty arrays/maps/bytes, and positive numbers. A map is
+		non-empty when it has an entry, and an array when it has an
+		element (a zero-dimensional array has one).`),
 	libutil.FunctionDoc("is-falsy", lisp.Formals(), builtinIsFalsy,
 		`Returns a constraint that checks if the input is falsy (the
 		logical negation of is-truthy).`),
@@ -637,7 +648,9 @@ func NewValidatorEnv(env *lisp.LEnv, formals *lisp.LVal, fn lisp.LBuiltin) *lisp
 func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(env, lisp.Formals("input"), lisp.QExpr(constraints), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
-		if input.Str != lisp.TrueSymbol && input.Str != lisp.FalseSymbol {
+		// A boolean is the SYMBOL true or false.  The type check matters: a
+		// string "true" carries the same Str, and used to pass.
+		if input.Type != lisp.LSymbol || (input.Str != lisp.TrueSymbol && input.Str != lisp.FalseSymbol) {
 			return lisp.ErrorConditionf(WrongType, "Input was not a boolean for type %s", name)
 		}
 		return applyConstraint(env, builtinCheckAny(env, captures.Cells), input)
@@ -836,17 +849,58 @@ func builtinLenLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lenConstraint(env, args, func(length, comparison int) bool { return length > comparison })
 }
 
+// numericBound returns the bound of a numeric comparison constraint.  NaN is
+// refused when the constraint is built: every comparison with NaN is false,
+// and the checks below fail only when a comparison is true, so (s:gt NaN)
+// used to accept every input.
+func numericBound(env *lisp.LEnv, v *lisp.LVal) (float64, *lisp.LVal) {
+	f, ok := lisp.GoFloat64(v)
+	if !ok {
+		return 0, env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", v)
+	}
+	if math.IsNaN(f) {
+		return 0, env.ErrorConditionf(FailedConstraint, "You cannot compare a number to NaN")
+	}
+	return f, nil
+}
+
+// numericInput returns the value a numeric constraint compares.  NaN is
+// refused for the same reason numericBound refuses it: it is ordered neither
+// above nor below anything, so it used to satisfy s:positive and s:negative
+// at once.
+func numericInput(input *lisp.LVal) (float64, *lisp.LVal) {
+	f, ok := lisp.GoFloat64(input)
+	if !ok {
+		return 0, lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+	}
+	if math.IsNaN(f) {
+		return 0, lisp.ErrorConditionf(FailedConstraint, "Value NaN cannot be compared")
+	}
+	return f, nil
+}
+
+// arrayHasElements reports whether an array holds at least one element: every
+// dimension is non-zero.  A zero-dimensional array holds exactly one.
+func arrayHasElements(v *lisp.LVal) bool {
+	for _, dim := range v.Cells[0].Cells {
+		if dim.Int <= 0 {
+			return false
+		}
+	}
+	return true
+}
+
 // Checks value is greater than specified value
 func builtinGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoFloat64(args.Cells[0])
-	if !ok {
-		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	comparison, lerr := numericBound(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if comparison >= compareTo {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value was less than the allowed value")
@@ -857,15 +911,15 @@ func builtinGreaterThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // Checks value is greater or equal than specified value
 func builtinGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoFloat64(args.Cells[0])
-	if !ok {
-		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	comparison, lerr := numericBound(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if comparison > compareTo {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value %v was less than the allowed value %v", compareTo, comparison)
@@ -876,15 +930,15 @@ func builtinGreaterThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // Checks value is less than specified value
 func builtinLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoFloat64(args.Cells[0])
-	if !ok {
-		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	comparison, lerr := numericBound(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if comparison <= compareTo {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value was greater than the allowed value")
@@ -895,15 +949,15 @@ func builtinLessThan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // Checks value is less than or equal specified value
 func builtinLessThanOrEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	comparison, ok := lisp.GoFloat64(args.Cells[0])
-	if !ok {
-		return env.ErrorConditionf(FailedConstraint, "You cannot compare %v to a number", args.Cells[0])
+	comparison, lerr := numericBound(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if comparison < compareTo {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value was greater than the allowed value")
@@ -951,9 +1005,9 @@ func builtinArrayOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func builtinPositive(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if compareTo <= 0 {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value was not positive")
@@ -966,9 +1020,9 @@ func builtinPositive(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinNegative(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		compareTo, ok := lisp.GoFloat64(input)
-		if !ok {
-			return lisp.ErrorConditionf(FailedConstraint, "Value cannot be compared")
+		compareTo, lerr := numericInput(input)
+		if lerr != nil {
+			return lerr
 		}
 		if compareTo >= 0 {
 			return lisp.ErrorConditionf(FailedConstraint, "Supplied value was not negative")
@@ -1249,7 +1303,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Str != lisp.FalseSymbol {
+		if input.Type != lisp.LSymbol || input.Str != lisp.FalseSymbol {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not false", input)
 		}
 		return lisp.Nil()
@@ -1260,7 +1314,7 @@ func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTrue(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Str != lisp.TrueSymbol {
+		if input.Type != lisp.LSymbol || input.Str != lisp.TrueSymbol {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not true", input)
 		}
 		return lisp.Nil()
@@ -1283,16 +1337,18 @@ func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTruthy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Str == lisp.TrueSymbol {
+		if input.Type == lisp.LSymbol && input.Str == lisp.TrueSymbol {
 			return lisp.Nil()
 		}
 		switch input.Type {
 		case lisp.LArray:
-			if input.Cells[0].Cells[0].Int > 0 {
+			if arrayHasElements(input) {
 				return lisp.Nil()
 			}
 		case lisp.LSortMap, lisp.LBytes:
-			if len(input.Cells) > 0 {
+			// A map's entries live in Map() and bytes in Bytes(), not in
+			// Cells, so Len is the only correct measure.
+			if input.Len() > 0 {
 				return lisp.Nil()
 			}
 		case lisp.LString:

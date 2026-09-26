@@ -43,7 +43,9 @@
 (test "deftype-bool"
   (s:deftype "mybool" s:bool (s:is-true))
   (assert-nil (s:validate mybool true))
-  (assert-nil (s:validate mybool "true"))
+  ; A boolean is the symbol, not a string that spells it.
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mybool "true")))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate mybool "error")))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
