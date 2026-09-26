@@ -25,7 +25,7 @@ func TestTemplateRejectsInconsistentRegistryRoots(t *testing.T) {
 			original := source.Runtime.Registry.Package("user")
 			opaque := new(int)
 			*opaque = 7
-			source.scope = map[string]*LVal{"opaque": Native(opaque)}
+			source.scope = scopeOf(map[string]*LVal{"opaque": Native(opaque)})
 			tc.change(source)
 			current := source.Runtime.Package
 			calls := 0

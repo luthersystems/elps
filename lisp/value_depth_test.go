@@ -80,14 +80,14 @@ func TestValueWalkDepth(t *testing.T) {
 				v.SealAST()
 			}
 			env := NewEnv(nil)
-			env.scope = map[string]*LVal{"deep": v}
+			env.scope = scopeOf(map[string]*LVal{"deep": v})
 			var tmpl *Template
 			tmpl, err = NewTemplate(env)
 			if err == nil {
 				var vm *LEnv
 				vm, err = tmpl.NewVM()
 				if err == nil {
-					got = vm.scope["deep"]
+					got = vm.scope.val("deep")
 				}
 			}
 		case "GoValue":
@@ -226,7 +226,7 @@ func TestValueDepthConfiguration(t *testing.T) {
 	if got := vm.Runtime.ValueDepthLimit(); got != 1024 {
 		t.Fatalf("template lost option: %d", got)
 	}
-	source.scope = map[string]*LVal{"deep": depthTestValue(1100)}
+	source.scope = scopeOf(map[string]*LVal{"deep": depthTestValue(1100)})
 	if _, err := NewTemplate(source); err == nil || !strings.Contains(err.Error(), "maximum: 1024") {
 		t.Fatalf("publication ignored option: %v", err)
 	}

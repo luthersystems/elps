@@ -1,0 +1,97 @@
+// Copyright © 2026 The ELPS authors
+
+package lisp
+
+import (
+	"fmt"
+	"strconv"
+	"testing"
+)
+
+// TestScopeTableMapSemantics drives a scopeTable and a map through the same
+// puts, updates and lookups on both sides of scopeIndexThreshold, so a table
+// with and without its name index behaves exactly like the map it replaced.
+func TestScopeTableMapSemantics(t *testing.T) {
+	for _, n := range []int{0, 1, 4, scopeIndexThreshold, scopeIndexThreshold + 1, 3 * scopeIndexThreshold} {
+		t.Run(strconv.Itoa(n), func(t *testing.T) {
+			var tbl scopeTable
+			oracle := map[string]*LVal{}
+			name := func(i int) string { return fmt.Sprintf("v%d", i) }
+			check := func(stage string) {
+				t.Helper()
+				if tbl.len() != len(oracle) {
+					t.Fatalf("%s: len %d, want %d", stage, tbl.len(), len(oracle))
+				}
+				for i := range n + 2 {
+					got, ok := tbl.get(name(i))
+					want, wok := oracle[name(i)]
+					if ok != wok || got != want {
+						t.Fatalf("%s: get(%s) = %v %t, want %v %t", stage, name(i), got, ok, want, wok)
+					}
+				}
+				if (tbl.index != nil) != (tbl.len() > scopeIndexThreshold) {
+					t.Fatalf("%s: index present %t with %d bindings", stage, tbl.index != nil, tbl.len())
+				}
+			}
+			check("empty")
+			for i := range n {
+				v := Int(i)
+				tbl.put(name(i), v, 0)
+				oracle[name(i)] = v
+			}
+			check("put")
+			// Re-putting overwrites in place, as a map assignment would.
+			for i := 0; i < n; i += 2 {
+				v := Int(-i)
+				tbl.put(name(i), v, 0)
+				oracle[name(i)] = v
+			}
+			check("overwrite")
+			for i := 1; i < n+2; i += 2 {
+				v := Int(100 + i)
+				_, bound := oracle[name(i)]
+				if got := tbl.update(name(i), v); got != bound {
+					t.Fatalf("update(%s) = %t, want %t", name(i), got, bound)
+				}
+				if bound {
+					oracle[name(i)] = v
+				}
+			}
+			check("update")
+			seen := map[string]bool{}
+			for _, b := range tbl.all() {
+				if seen[b.name] {
+					t.Fatalf("duplicate binding %s", b.name)
+				}
+				seen[b.name] = true
+			}
+		})
+	}
+}
+
+// TestAllocEnvScopeCapacity pins that a co-allocated scope has capacity
+// exactly n and that a scope outgrowing it keeps every binding.
+func TestAllocEnvScopeCapacity(t *testing.T) {
+	for n := range 7 {
+		env := allocEnvScope(n)
+		env.scopeHint = n
+		switch {
+		case n == 0 || n > 4:
+			if env.scope.bindings != nil {
+				t.Fatalf("n=%d: scope preallocated", n)
+			}
+		case cap(env.scope.bindings) != n || len(env.scope.bindings) != 0:
+			t.Fatalf("n=%d: len %d cap %d", n, len(env.scope.bindings), cap(env.scope.bindings))
+		}
+		for i := range n + 3 {
+			if rc := env.Put(Symbol(fmt.Sprintf("s%d", i)), Int(i)); rc.Type == LError {
+				t.Fatal(rc)
+			}
+		}
+		for i := range n + 3 {
+			if got, ok := env.scope.get(fmt.Sprintf("s%d", i)); !ok || got.Int != i {
+				t.Fatalf("n=%d: s%d = %v", n, i, got)
+			}
+		}
+	}
+}

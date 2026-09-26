@@ -142,7 +142,7 @@ func TestLazyScopePresizing(t *testing.T) {
 		return testing.AllocsPerRun(200, func() {
 			child := newEnvN(env, len(keys))
 			if eager {
-				child.scope = make(map[string]*LVal, len(keys))
+				child.scope = newScopeTable(len(keys))
 			}
 			for _, key := range keys {
 				hotpathValue = child.Put(key, value)

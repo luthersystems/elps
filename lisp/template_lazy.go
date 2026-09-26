@@ -214,9 +214,9 @@ func (l *lazyInstance) fillEnv(i int) {
 	e := l.envs[i]
 	e.parent = l.env(te.parent)
 	if len(te.bindings) > 0 {
-		e.scope = make(map[string]*LVal, len(te.bindings))
+		e.scope = newScopeTable(len(te.bindings))
 		for _, b := range te.bindings {
-			e.scope[b.name] = l.allocRef(b.value)
+			e.scope.put(b.name, l.allocRef(b.value), 0)
 		}
 	}
 }
