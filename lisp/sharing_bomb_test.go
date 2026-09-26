@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"math/bits"
 	"strconv"
 	"testing"
 	"time"
@@ -411,7 +412,9 @@ func TestGoValueKeepsSharing(t *testing.T) {
 	var got any
 	v := bomb(40, Int(1))
 	testdeadline.Watch("GoValue over a 40-level sharing bomb", 20*time.Second, 1<<30, func() { got = GoValue(v) })
-	for i := range 40 - 13 {
+	// The bottom levels -- about log2(sharedWalkBudget) of them -- are
+	// converted before the memo switches on and may be unshared.
+	for i := range 40 - bits.Len(sharedWalkBudget) {
 		s, ok := got.([]any)
 		if !ok || len(s) != 2 {
 			t.Fatalf("level %d: got %T", i, got)

@@ -33,6 +33,18 @@ func Not(v *LVal) bool {
 // returned BY REFERENCE: the payload is the embedder's own, so GoValue hands
 // back what the caller already owns.
 //
+// SHARING.  The result MAY share containers where v shared them: a list or
+// map reached along several paths of v can come back as one []any or
+// map[any]any appearing at each of those places, rather than one copy per
+// path.  That is how a value with nested sharing -- (set! x (list x x))
+// repeated D times, 2^D paths -- converts in time and memory linear in its
+// distinct containers (see lisp/sharing.go); whether a given shared
+// container is shared in the result depends on how much of the value was
+// converted before it.  A value without sharing converts to distinct Go
+// containers throughout.  Treat a result as read-only, or deep-copy it
+// before writing to it.  GoValueWithRuntime, GoSlice, GoMap and their Of
+// forms follow the same rule.
+//
 // Excessive nesting returns an ordinary *ErrorVal implementing error, using
 // MaxValueDepth. No partial converted container is returned. Cycles discovered
 // within the cap retain the historical return of the original *LVal.
@@ -227,7 +239,10 @@ walk:
 					// the snapshot is free (TestGoValueContainerAllocations
 					// pins that).  The copier and the detacher agree:
 					// a walk converts the children a container held when
-					// the walker entered it.
+					// the walker entered it.  Once the sharing memo is on,
+					// a container reached again reuses the conversion of
+					// what it held when the walk FIRST finished it, even if
+					// a hook has written to its cells since.
 					f.values = make([]any, len(f.children))
 					for i, child := range f.children {
 						f.values[i] = child
