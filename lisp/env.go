@@ -180,11 +180,7 @@ func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
 		if env == nil {
 			return
 		}
-		for _, b := range env.scope.bindings {
-			if !yield(b.name, b.val) {
-				return
-			}
-		}
+		env.scope.each(yield)
 	}
 }
 

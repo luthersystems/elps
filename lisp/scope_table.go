@@ -9,72 +9,108 @@ type scopeBinding struct {
 }
 
 // scopeTable is an LEnv's lexical scope.  Almost every scope is small -- a
-// function call's formals, a let's bindings -- so bindings live in a slice
-// searched linearly, which costs one allocation where a map costs two (its
-// header and its first group) and beats hashing for a handful of short names.
-// A scope that grows past scopeIndexThreshold also keeps a name index so a
-// large scope (an embedder's root env, a wide let) stays O(1).
+// function call's formals, a let's bindings -- so a small scope's bindings
+// live in a slice searched linearly.  That costs one allocation where a map
+// costs two (its header and its first group), beats hashing for a handful of
+// short names, and lets allocEnvScope co-allocate the storage with the LEnv.
+//
+// A large scope is a map[string]*LVal, exactly the representation every scope
+// had before: one sized for more than scopeMapThreshold bindings from the
+// start (a wide let, a template's instantiated root) is a map from its first
+// binding, and a slice-backed scope that grows past scopeMapThreshold moves
+// its bindings into one.  Large scopes therefore cost what they always did,
+// and lookups in them stay O(1).  At most one of m and bindings is in use.
 //
 // The zero scopeTable is an empty scope that has allocated nothing.
 type scopeTable struct {
-	index    map[string]int // nil until len(bindings) > scopeIndexThreshold
-	bindings []scopeBinding
+	m        map[string]*LVal // large scopes; nil while the scope is slice-backed
+	bindings []scopeBinding   // small scopes, in insertion order
 }
 
-// scopeIndexThreshold is the binding count past which a scopeTable keeps a
-// name index.  Below it a linear scan over short names is cheaper than a hash.
-const scopeIndexThreshold = 16
+// scopeMapThreshold is the binding count past which a scope is a map.  Up to
+// it a linear scan over short names is cheaper than a hash.
+const scopeMapThreshold = 16
 
 // newScopeTable returns an empty scope with room for n bindings.
 func newScopeTable(n int) scopeTable {
+	if n > scopeMapThreshold {
+		return scopeTable{m: make(map[string]*LVal, n)}
+	}
 	return scopeTable{bindings: make([]scopeBinding, 0, n)}
 }
 
-func (t *scopeTable) len() int { return len(t.bindings) }
+// allocated reports whether the scope has storage (lazy scopes allocate on
+// the first successful put).
+func (t *scopeTable) allocated() bool { return t.m != nil || t.bindings != nil }
 
-// all returns the bindings in insertion order.  The slice aliases the table:
-// callers must not retain it across a put.
-func (t *scopeTable) all() []scopeBinding { return t.bindings }
+func (t *scopeTable) len() int {
+	if t.m != nil {
+		return len(t.m)
+	}
+	return len(t.bindings)
+}
 
-func (t *scopeTable) find(name string) int {
-	if t.index != nil {
-		if i, ok := t.index[name]; ok {
-			return i
+// each calls yield for every binding until it returns false: in insertion
+// order for a slice-backed scope, in map order for a large one.
+func (t *scopeTable) each(yield func(name string, v *LVal) bool) {
+	if t.m != nil {
+		for k, v := range t.m {
+			if !yield(k, v) {
+				return
+			}
 		}
-		return -1
+		return
 	}
-	for i := range t.bindings {
-		if t.bindings[i].name == name {
-			return i
+	for _, b := range t.bindings {
+		if !yield(b.name, b.val) {
+			return
 		}
 	}
-	return -1
 }
 
 // get returns the value bound to name in this scope alone.
 func (t *scopeTable) get(name string) (*LVal, bool) {
-	if i := t.find(name); i >= 0 {
-		return t.bindings[i].val, true
+	if t.m != nil {
+		v, ok := t.m[name]
+		return v, ok
+	}
+	for i := range t.bindings {
+		if t.bindings[i].name == name {
+			return t.bindings[i].val, true
+		}
 	}
 	return nil, false
 }
 
 // update overwrites an existing binding, reporting whether name was bound.
 func (t *scopeTable) update(name string, v *LVal) bool {
-	if i := t.find(name); i >= 0 {
-		t.bindings[i].val = v
-		return true
+	if t.m != nil {
+		if _, ok := t.m[name]; ok {
+			t.m[name] = v
+			return true
+		}
+		return false
+	}
+	for i := range t.bindings {
+		if t.bindings[i].name == name {
+			t.bindings[i].val = v
+			return true
+		}
 	}
 	return false
 }
 
 // put binds name to v, overwriting an existing binding in place (as a map
-// assignment would), and allocating the table with capacity hint on first
-// use.
+// assignment would), and allocating the scope on first use with room for
+// hint bindings.
 func (t *scopeTable) put(name string, v *LVal, hint int) {
-	if t.bindings == nil {
-		t.bindings = make([]scopeBinding, 0, max(hint, 1))
-	} else if t.update(name, v) {
+	switch {
+	case t.m != nil:
+		t.m[name] = v
+		return
+	case t.bindings == nil:
+		*t = newScopeTable(max(hint, 1))
+	case t.update(name, v):
 		return
 	}
 	t.appendNew(name, v)
@@ -84,22 +120,26 @@ func (t *scopeTable) put(name string, v *LVal, hint int) {
 // skipping put's duplicate check -- template instantiation, whose plan
 // descriptors come from one scope and so are already unique.
 //
-// When the append outgrows the array (the co-allocated one included) the old
-// array is left as it was rather than cleared, so it may keep up to its
-// capacity of superseded values reachable for the environment's lifetime.
-// That is bounded, reachable only through the Go API (a Lisp scope never
-// outgrows the capacity its binding form sized it with), and clearing it
-// would hand zeroed bindings to a Bindings iteration that is still ranging
-// over the old array.
+// A slice-backed scope growing past scopeMapThreshold moves into a map.  The
+// array it leaves (the co-allocated one included) is not cleared, so it may
+// keep up to its capacity of superseded values reachable for the
+// environment's lifetime.  That is bounded, reachable only through the Go API
+// (a Lisp scope never outgrows the capacity its binding form sized it with),
+// and clearing it would hand zeroed bindings to a Bindings iteration that is
+// still ranging over the old array.
 func (t *scopeTable) appendNew(name string, v *LVal) {
-	t.bindings = append(t.bindings, scopeBinding{name: name, val: v})
-	if t.index != nil {
-		t.index[name] = len(t.bindings) - 1
-	} else if len(t.bindings) > scopeIndexThreshold {
-		t.index = make(map[string]int, cap(t.bindings))
-		for i, b := range t.bindings {
-			t.index[b.name] = i
+	switch {
+	case t.m != nil:
+		t.m[name] = v
+	case len(t.bindings) == scopeMapThreshold:
+		m := make(map[string]*LVal, 2*scopeMapThreshold)
+		for _, b := range t.bindings {
+			m[b.name] = b.val
 		}
+		m[name] = v
+		*t = scopeTable{m: m}
+	default:
+		t.bindings = append(t.bindings, scopeBinding{name: name, val: v})
 	}
 }
 

@@ -267,9 +267,10 @@ func (c *templateCompiler) bindings(values map[string]*LVal) []templateBinding {
 // order however the source scope was populated.
 func (c *templateCompiler) scopeBindings(values scopeTable) []templateBinding {
 	out := make([]templateBinding, 0, values.len())
-	for _, b := range values.all() {
-		out = append(out, templateBinding{name: b.name, value: c.ref(b.val)})
-	}
+	values.each(func(name string, v *LVal) bool {
+		out = append(out, templateBinding{name: name, value: c.ref(v)})
+		return true
+	})
 	sortTemplateBindings(out)
 	return out
 }

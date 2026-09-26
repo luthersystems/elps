@@ -395,9 +395,10 @@ func setTemplateFrameEntries(f *templateFrame, values map[string]*LVal) {
 // setTemplateFrameScope snapshots a lexical scope's bindings.
 func setTemplateFrameScope(f *templateFrame, scope scopeTable) {
 	entries := f.allocEntries(scope.len())
-	for _, b := range scope.all() {
-		entries = append(entries, templateMapEntry{key: b.name, v: b.val})
-	}
+	scope.each(func(name string, v *LVal) bool {
+		entries = append(entries, templateMapEntry{key: name, v: v})
+		return true
+	})
 	f.commitEntries(entries)
 }
 

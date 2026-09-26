@@ -9,10 +9,11 @@ import (
 )
 
 // TestScopeTableMapSemantics drives a scopeTable and a map through the same
-// puts, updates and lookups on both sides of scopeIndexThreshold, so a table
-// with and without its name index behaves exactly like the map it replaced.
+// puts, updates and lookups on both sides of scopeMapThreshold, so a table
+// in either representation, and one that moved from the slice to the map,
+// behaves exactly like the map it replaced.
 func TestScopeTableMapSemantics(t *testing.T) {
-	for _, n := range []int{0, 1, 4, scopeIndexThreshold, scopeIndexThreshold + 1, 3 * scopeIndexThreshold} {
+	for _, n := range []int{0, 1, 4, scopeMapThreshold, scopeMapThreshold + 1, 3 * scopeMapThreshold} {
 		t.Run(strconv.Itoa(n), func(t *testing.T) {
 			var tbl scopeTable
 			oracle := map[string]*LVal{}
@@ -29,8 +30,8 @@ func TestScopeTableMapSemantics(t *testing.T) {
 						t.Fatalf("%s: get(%s) = %v %t, want %v %t", stage, name(i), got, ok, want, wok)
 					}
 				}
-				if (tbl.index != nil) != (tbl.len() > scopeIndexThreshold) {
-					t.Fatalf("%s: index present %t with %d bindings", stage, tbl.index != nil, tbl.len())
+				if (tbl.m != nil) != (tbl.len() > scopeMapThreshold) || (tbl.m != nil && tbl.bindings != nil) {
+					t.Fatalf("%s: map %t slice %t with %d bindings", stage, tbl.m != nil, tbl.bindings != nil, tbl.len())
 				}
 			}
 			check("empty")
@@ -59,11 +60,15 @@ func TestScopeTableMapSemantics(t *testing.T) {
 			}
 			check("update")
 			seen := map[string]bool{}
-			for _, b := range tbl.all() {
-				if seen[b.name] {
-					t.Fatalf("duplicate binding %s", b.name)
+			tbl.each(func(name string, v *LVal) bool {
+				if seen[name] || oracle[name] != v {
+					t.Fatalf("each: %s duplicate %t or wrong value", name, seen[name])
 				}
-				seen[b.name] = true
+				seen[name] = true
+				return true
+			})
+			if len(seen) != len(oracle) {
+				t.Fatalf("each yielded %d bindings, want %d", len(seen), len(oracle))
 			}
 		})
 	}
@@ -98,18 +103,18 @@ func TestAllocEnvScopeCapacity(t *testing.T) {
 
 // TestScopeTableAppendNew pins that the instantiation path, which appends
 // unique names without put's duplicate check, builds the same table put does
-// on both sides of scopeIndexThreshold.
+// on both sides of scopeMapThreshold, starting from a slice-sized table.
 func TestScopeTableAppendNew(t *testing.T) {
-	for _, n := range []int{1, scopeIndexThreshold, scopeIndexThreshold + 1, 40} {
+	for _, n := range []int{1, scopeMapThreshold, scopeMapThreshold + 1, 40} {
 		var viaPut scopeTable
-		viaAppend := newScopeTable(n)
+		viaAppend := newScopeTable(min(n, scopeMapThreshold))
 		for i := range n {
 			name, v := fmt.Sprintf("v%02d", i), Int(i)
-			viaPut.put(name, v, n)
+			viaPut.put(name, v, 1)
 			viaAppend.appendNew(name, v)
 		}
-		if viaAppend.len() != viaPut.len() || (viaAppend.index != nil) != (viaPut.index != nil) {
-			t.Fatalf("n=%d: len %d/%d index %t/%t", n, viaAppend.len(), viaPut.len(), viaAppend.index != nil, viaPut.index != nil)
+		if viaAppend.len() != viaPut.len() || (viaAppend.m != nil) != (viaPut.m != nil) {
+			t.Fatalf("n=%d: len %d/%d map %t/%t", n, viaAppend.len(), viaPut.len(), viaAppend.m != nil, viaPut.m != nil)
 		}
 		for i := range n + 1 {
 			name := fmt.Sprintf("v%02d", i)
@@ -119,5 +124,19 @@ func TestScopeTableAppendNew(t *testing.T) {
 				t.Fatalf("n=%d: get(%s) = %v %t, put-built %v %t", n, name, a, aok, p, pok)
 			}
 		}
+	}
+}
+
+// TestScopeTableLargeHintIsMap pins that a scope sized past scopeMapThreshold
+// from the start (a wide let) is the map it always was, with no slice.
+func TestScopeTableLargeHintIsMap(t *testing.T) {
+	var tbl scopeTable
+	tbl.put("a", Int(1), scopeMapThreshold+1)
+	if tbl.m == nil || tbl.bindings != nil {
+		t.Fatalf("map %t slice %t", tbl.m != nil, tbl.bindings != nil)
+	}
+	small := newScopeTable(scopeMapThreshold)
+	if small.m != nil || cap(small.bindings) != scopeMapThreshold {
+		t.Fatalf("threshold-sized scope: map %t cap %d", small.m != nil, cap(small.bindings))
 	}
 }

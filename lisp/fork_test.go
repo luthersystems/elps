@@ -337,8 +337,14 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 		a.t.Errorf("%s: scope size differs: %d vs %d", path, n.scope.len(), o.scope.len())
 		return
 	}
-	for _, b := range o.scope.all() {
-		k, ov := b.name, b.val
+	type binding struct {
+		k  string
+		ov *LVal
+	}
+	var obs []binding
+	o.scope.each(func(k string, v *LVal) bool { obs = append(obs, binding{k, v}); return true })
+	for _, b := range obs {
+		k, ov := b.k, b.ov
 		nv, ok := n.scope.get(k)
 		if !ok {
 			a.t.Errorf("%s: scope key %q missing in fork", path, k)
