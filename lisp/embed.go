@@ -93,7 +93,8 @@ func convertValue(v *LVal, limit int) (any, bool) {
 }
 
 // conversionFrame holds output under construction, not a memo of source
-// identities. Repeated subtrees are independently converted as before.
+// identities.  height is the number of levels the walk has gone below v so
+// far, for the sharing memo below.
 type conversionFrame struct {
 	v        *LVal
 	mapping  map[any]any
@@ -101,22 +102,53 @@ type conversionFrame struct {
 	children []*LVal
 	values   []any
 	index    int
+	height   int
 	invalid  bool
 }
 
+// conversionMemo is one container's entry in convertContainer's sharing
+// memo: its conversion, and the levels the conversion walked below it, so
+// that a hit at depth d fails the depth limit exactly where re-converting
+// would -- when d+height reaches it.
+type conversionMemo struct {
+	out    any
+	height int
+}
+
+// convertContainer converts v and everything under it.
+//
+// SHARING (lisp/sharing.go).  A value built as (set! x (list x x)) D times
+// has D containers and 2^D paths, and converting it as a tree built 2^D Go
+// containers.  The walk counts its work -- containers plus the children
+// they hold -- and past sharedWalkBudget it memoises each container it
+// finishes, by identity, and hands back the same conversion when the
+// container is reached again: the Go value then shares what the LVal
+// shared.  A tree never reaches a container twice, so its conversion is
+// unchanged, down to every slice and map being distinct.
 func convertContainer(v *LVal, limit int) (any, bool) {
 	// One reusable continuation per ancestor, never one per sibling.
 	pending := make([]conversionFrame, 0, 16)
 	var path map[*LVal]bool
+	var memo map[*LVal]conversionMemo
+	work := 0
 walk:
 	for {
 		if len(pending) >= limit {
 			return (*ErrorVal)(Error(ValueDepthError(limit))), true
 		}
 		var out any
+		// outHeight is the levels converted below out's source: 0 for a
+		// leaf or an empty container.
+		outHeight := 0
 		f := conversionFrame{v: v}
 		container := true
-		if !v.IsNil() {
+		if m, ok := memo[v]; ok {
+			// Converted already, reached again through sharing.
+			if len(pending)+m.height >= limit {
+				return (*ErrorVal)(Error(ValueDepthError(limit))), true
+			}
+			out, outHeight = m.out, m.height
+		} else if !v.IsNil() {
 			switch v.Type {
 			case LQuote:
 				f.children = v.Cells[:1]
@@ -163,6 +195,10 @@ walk:
 				out = conversionLeaf(v)
 			}
 			if container {
+				work += 1 + len(f.children)
+				if memo == nil && work > sharedWalkBudget {
+					memo = make(map[*LVal]conversionMemo)
+				}
 				if len(pending) >= 64 {
 					if path == nil {
 						path = make(map[*LVal]bool)
@@ -220,6 +256,9 @@ walk:
 		}
 		for len(pending) > 0 {
 			f := &pending[len(pending)-1]
+			if outHeight >= f.height {
+				f.height = outHeight + 1
+			}
 			switch {
 			case f.mapping != nil:
 				f.kv[f.index%2] = out
@@ -253,6 +292,10 @@ walk:
 					continue walk
 				}
 				out = f.values
+			}
+			outHeight = f.height
+			if memo != nil {
+				memo[f.v] = conversionMemo{out: out, height: outHeight}
 			}
 			delete(path, f.v)
 			*f = conversionFrame{}

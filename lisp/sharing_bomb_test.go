@@ -403,3 +403,61 @@ func TestEqualWithEnvPollsDifferentlySharedValues(t *testing.T) {
 		}
 	}
 }
+
+// GoValue memoises past the budget too: a shared container converts once,
+// and the Go value shares the conversion where the LVal shared the
+// container.
+func TestGoValueKeepsSharing(t *testing.T) {
+	var got any
+	v := bomb(40, Int(1))
+	testdeadline.Watch("GoValue over a 40-level sharing bomb", 20*time.Second, 1<<30, func() { got = GoValue(v) })
+	for i := range 40 - 13 {
+		s, ok := got.([]any)
+		if !ok || len(s) != 2 {
+			t.Fatalf("level %d: got %T", i, got)
+		}
+		a, b := s[0].([]any), s[1].([]any)
+		if &a[0] != &b[0] {
+			t.Fatalf("level %d: the conversion unshared the value", i)
+		}
+		got = s[0]
+	}
+}
+
+// A GoValue memo hit fails the value depth limit exactly where
+// re-converting would; the oracle is the same value as a tree.
+func TestGoValueMemoHitHonoursValueDepthLimit(t *testing.T) {
+	rt := StandardRuntime()
+	rt.MaxValueDepth = 1024
+	for _, quoted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quoted=%v", quoted), func(t *testing.T) {
+			checkMemoDepthLimit(t, quoted, func(v *LVal) *LVal {
+				if err, ok := GoValueWithRuntime(rt, v).(error); ok {
+					return Error(err)
+				}
+				return Nil()
+			}, nil)
+		})
+	}
+}
+
+// A tree larger than the budget converts exactly as before: every Go
+// container distinct.
+func TestGoValueLargeTreeUnshared(t *testing.T) {
+	cells := make([]*LVal, 3*sharedWalkBudget)
+	for i := range cells {
+		cells[i] = SExpr([]*LVal{Int(i)})
+	}
+	got, ok := GoValue(SExpr(cells)).([]any)
+	if !ok || len(got) != len(cells) {
+		t.Fatalf("got %T", got)
+	}
+	seen := map[*any]bool{}
+	for i, c := range got {
+		s := c.([]any)
+		if seen[&s[0]] || s[0] != i {
+			t.Fatalf("element %d shared or wrong: %v", i, s)
+		}
+		seen[&s[0]] = true
+	}
+}
