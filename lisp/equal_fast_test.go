@@ -21,7 +21,7 @@ func TestEqualShallowHandoffSiblings(t *testing.T) {
 		}
 	}
 	// Neither object identity nor the handoff may hide a non-reflexive leaf.
-	for _, leaf := range []*LVal{Float(math.NaN()), Bytes(nil), Native(7), {Type: LQuote, Cells: []*LVal{Int(7)}}} {
+	for _, leaf := range []*LVal{Float(math.NaN()), Native(7)} {
 		v := SExpr([]*LVal{nestList(128, Int(7)), leaf})
 		if leaf.Equal(leaf) != Bool(false) || v.Equal(v) != Bool(false) {
 			t.Fatalf("unsupported or NaN leaf compared equal: %s", leaf.Type)
@@ -43,6 +43,38 @@ func TestEqualRuntimeDepthBoundary(t *testing.T) {
 			var depthErr ValueDepthError
 			if !errors.As(GoError(got), &depthErr) || depthErr != 1024 {
 				t.Fatalf("expected typed depth error, got %v", got)
+			}
+		}
+	}
+}
+
+// Bytes and reader quotes compare by content in both walkers: the shallow
+// pass near the root, and the iterative walker it hands off to below
+// cycleGuardDepth.
+func TestEqualBytesAndQuoteBothWalkers(t *testing.T) {
+	// Quote twice: the first layer is the quoted flag, the second an LQuote.
+	quote := func(v *LVal) *LVal { return Quote(Quote(v)) }
+	for _, depth := range []int{0, cycleGuardDepth - 1, cycleGuardDepth, cycleGuardDepth + 1, 128} {
+		for _, tc := range []struct {
+			name      string
+			a, b      *LVal
+			wantEqual bool
+		}{
+			{"same bytes", Bytes([]byte("ab")), Bytes([]byte("ab")), true},
+			{"nil and empty bytes", Bytes(nil), Bytes([]byte{}), true},
+			{"different bytes", Bytes([]byte("ab")), Bytes([]byte("ac")), false},
+			{"same quote", quote(Int(7)), quote(Int(7)), true},
+			{"different quote", quote(Int(7)), quote(Int(8)), false},
+			{"quote depth differs", quote(Int(7)), quote(quote(Int(7))), false},
+			{"quoted bytes", quote(Bytes([]byte("x"))), quote(Bytes([]byte("x"))), true},
+		} {
+			left := SExpr([]*LVal{nestList(depth, tc.a), String("tail")})
+			right := SExpr([]*LVal{nestList(depth, tc.b), String("tail")})
+			if got := left.Equal(right); got != Bool(tc.wantEqual) {
+				t.Errorf("depth %d, %s: got %v, want %v", depth, tc.name, got, tc.wantEqual)
+			}
+			if got := left.Equal(left); got != Bool(true) {
+				t.Errorf("depth %d, %s: value not equal to itself: %v", depth, tc.name, got)
 			}
 		}
 	}

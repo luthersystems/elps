@@ -248,7 +248,11 @@ explicit `quote` form is a list:
 (type ''a)                  ; 'quote
 (type '(quote a))           ; 'list
 (equal? ''a '(quote a))     ; false
+(equal? ''a ''a)            ; true
 ```
+
+`equal?` compares a reader quote by the value it quotes, and a bytes value by
+its content: `(equal? (to-bytes "ab") (to-bytes "ab"))` is true.
 
 A macro receives unevaluated forms. A macro that inspects `(car form)` to
 recognize `(quote x)` must also handle the reader-quote representation of
