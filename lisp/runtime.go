@@ -59,6 +59,8 @@ type Runtime struct {
 	maxSteps               int64         // Per-evaluation step limit (0 = unlimited).
 	steps                  int64         // Steps consumed by the current top-level evaluation.
 	totalSteps             int64         // Steps consumed by all completed top-level evaluations.
+	stepBudget             int64         // Shared step budget spanning top-level evaluations (0 = unlimited); see SetStepBudget.
+	stepBudgetUsed         int64         // Steps charged against stepBudget since it was last set or reset.
 	numenv                 atomicCounter
 	numsym                 atomicCounter
 	closures               atomicCounter // Closures created so far; let* reads it to learn whether an initializer could have captured its scope.
@@ -66,6 +68,7 @@ type Runtime struct {
 	LegacyKeywordFormals   bool          // Accept keyword parameter names with v1.61 semantics; see WithLegacyKeywordFormals.
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	stepsOverflowed        bool          // steps saturated: the true count exceeds math.MaxInt64, so it exceeds any budget.
+	stepBudgetOverflowed   bool          // stepBudgetUsed saturated; it exceeds any budget.
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -184,6 +187,14 @@ func (r *Runtime) ResetSteps() {
 // stepsOverflowed records that the true count is larger, so a budget of
 // exactly math.MaxInt64 is still reported as exceeded.
 func (r *Runtime) addStepsToCurrent(n int64) {
+	if r.stepBudget > 0 {
+		if n > math.MaxInt64-r.stepBudgetUsed {
+			r.stepBudgetUsed = math.MaxInt64
+			r.stepBudgetOverflowed = true
+		} else {
+			r.stepBudgetUsed += n
+		}
+	}
 	if n > math.MaxInt64-r.steps {
 		r.steps = math.MaxInt64
 		r.stepsOverflowed = true
@@ -196,6 +207,52 @@ func (r *Runtime) addStepsToCurrent(n int64) {
 // steps than its budget allows.
 func (r *Runtime) stepLimitExceeded() bool {
 	return r.maxSteps > 0 && (r.steps > r.maxSteps || r.stepsOverflowed)
+}
+
+// SetStepBudget installs a step budget shared by every top-level evaluation
+// on this Runtime until it is changed or cleared, and resets its usage to
+// zero.  Unlike WithMaxSteps, which bounds each top-level evaluation (Eval,
+// EvalContext, Load, ...) separately and refills on the next one, the shared
+// budget does not refill between evaluations: a host that runs several
+// top-level evaluations for one unit of work (a transaction, a batch of
+// requests) bounds their total.  n <= 0 clears the budget (unlimited, the
+// default).
+//
+// Steps are counted exactly as for WithMaxSteps -- the evaluator's own steps
+// plus every LEnv.ChargeSteps charge -- so the count for a given program is
+// deterministic and identical on a cold environment and on a VM from
+// Template.NewVM.  When the budget is exceeded the evaluation fails with the
+// CondStepBudgetExceeded condition, and every later step or charge fails the
+// same way until the budget is reset or changed.  When both limits are set
+// and one step exceeds both, CondStepLimitExceeded is reported.
+//
+// The budget is per Runtime and is not published by NewTemplate; give a VM
+// its own with VMWithStepBudget or by calling SetStepBudget on its Runtime.
+func (r *Runtime) SetStepBudget(n int64) {
+	if n < 0 {
+		n = 0
+	}
+	r.stepBudget = n
+	r.ResetStepBudget()
+}
+
+// ResetStepBudget zeroes the usage of the shared step budget, leaving the
+// budget itself in place.  It does not affect Steps or TotalSteps.
+func (r *Runtime) ResetStepBudget() {
+	r.stepBudgetUsed = 0
+	r.stepBudgetOverflowed = false
+}
+
+// StepBudget returns the shared step budget (0 = unlimited) and the steps
+// charged against it since it was last set or reset.  Usage saturates at
+// math.MaxInt64.
+func (r *Runtime) StepBudget() (budget, used int64) {
+	return r.stepBudget, r.stepBudgetUsed
+}
+
+// stepBudgetExceeded reports whether the shared step budget is exhausted.
+func (r *Runtime) stepBudgetExceeded() bool {
+	return r.stepBudget > 0 && (r.stepBudgetUsed > r.stepBudget || r.stepBudgetOverflowed)
 }
 
 // addSteps adds two non-negative step counts, saturating at math.MaxInt64.

@@ -392,10 +392,14 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 		}
 		opt(&config)
 	}
+	var env *LEnv
 	if p.eager {
-		return p.instantiateEager(config), nil
+		env = p.instantiateEager(config)
+	} else {
+		env = p.instantiateLazy(config)
 	}
-	return p.instantiateLazy(config), nil
+	env.Runtime.SetStepBudget(config.stepBudget)
+	return env, nil
 }
 
 // templateHotSet records, across every VM of one template, which plan values

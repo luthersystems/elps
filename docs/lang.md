@@ -2621,6 +2621,13 @@ work, several steps per call; its overrun raises the same
 here that measures elapsed time**, and it is what you want if the real
 requirement is "give up after N seconds".
 
+A host may also install a **shared step budget** that spans several top-level
+evaluations (for example every request of one transaction). Steps are counted
+exactly as above, the budget does not refill between evaluations, and
+exhausting it raises a distinct `step-budget-exceeded` condition. When a step
+exceeds both the per-evaluation limit and the shared budget,
+`step-limit-exceeded` is reported.
+
 ### Macro Expansion Limits
 
 When a macro expands into another macro call, ELPS limits the successive

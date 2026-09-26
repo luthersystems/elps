@@ -27,7 +27,7 @@ func TestRepoOnlyValueAPIsStayInternal(t *testing.T) {
 		{
 			dir:     ".",
 			private: []string{"CapturedBuiltin", "NewCapturedBuiltin", "JSONMap", "TemplateImmutable", "ForkOption", "ForkWithContext", "ForkWithStderr"},
-			public:  []string{"Template", "TemplateOption", "NewTemplate", "TemplateWithBuiltinPolicy", "TemplateWithNativePolicy", "VMOption", "VMWithContext", "VMWithStderr"},
+			public:  []string{"Template", "TemplateOption", "NewTemplate", "TemplateWithBuiltinPolicy", "TemplateWithNativePolicy", "VMOption", "VMWithContext", "VMWithStderr", "VMWithStepBudget"},
 		},
 		{dir: "lisplib/libjson", private: []string{"SortedMap"}, public: []string{"Serializer"}},
 		{dir: "lisplib", public: []string{"LoadLibrary", "LoadRuntimeLibrary", "NewDocEnv"}},

@@ -542,6 +542,14 @@ APIs without a runtime, including `lisp.GoValue`, use the default limit.
 excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
 JSON serializer conversion methods use the same convention.
 
+`GoValue`, `GoSlice`, `GoMap` and their `WithRuntime`/`Of` forms may return
+results that share Go containers where the lisp value shared them: a list or
+map reached along several paths can appear as one `[]any` or `map[any]any` in
+each place. This keeps a value with nested sharing, such as one built by
+`(set! x (list x x))` repeated many times, linear to convert rather than
+exponential. Treat converted results as read-only, or deep-copy them before
+mutating.
+
 Sealing and source-location assignment use explicit stacks throughout; these
 metadata-only APIs cannot return an error and finish the graph.
 
@@ -654,6 +662,30 @@ The charge lands on the current top-level evaluation and follows the reset
 rules above. It is per-`Runtime` state: a VM created from a `Template`
 charges only its own budget, and, like evaluation itself, `ChargeSteps` must
 only be called from the goroutine evaluating on that runtime.
+
+### Shared step budgets
+
+`WithMaxSteps` refills at every top-level evaluation. A host that runs several
+top-level evaluations for one unit of work (a transaction, a JSON-RPC batch)
+bounds their total with a shared budget instead:
+
+```go
+env.Runtime.SetStepBudget(1_000_000) // n <= 0 clears it (unlimited, the default)
+env.LoadString("a", srcA)            // both draw from the same budget
+env.LoadString("b", srcB)
+budget, used := env.Runtime.StepBudget()
+env.Runtime.ResetStepBudget()        // zero the usage, keep the budget
+
+vm, err := tmpl.NewVM(lisp.VMWithStepBudget(1_000_000))
+```
+
+It counts the same steps as `WithMaxSteps`, including every `ChargeSteps`
+charge, so a program's usage is deterministic and identical on a cold
+environment and a template VM. Exhaustion raises `CondStepBudgetExceeded`
+(`step-budget-exceeded`), and every later step or charge fails the same way
+until the budget is reset or changed. If one step exceeds both limits,
+`step-limit-exceeded` wins. `NewTemplate` never publishes a source runtime's
+budget; each VM gets its own.
 
 ### Rendering from Go
 
