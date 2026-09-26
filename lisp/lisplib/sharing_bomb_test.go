@@ -15,7 +15,8 @@ import (
 // the Go-level half is lisp's TestSharingBombEveryWalker).  x and y are
 // distinct 40-level sharing chains -- 40 steps and 40 two-cell lists each,
 // 2^40 paths -- and every row is an operation a program can apply to one.
-// Each must come back under a 100ms deadline and a step budget: with an
+// Each must come back under a 1s deadline (scaled under -race; the unfixed
+// walks take hours) and a step budget: with an
 // answer, or with an ordinary error such as an allocation cap, but never by
 // walking every path inside one step.
 func TestSharingBombLibraries(t *testing.T) {
@@ -52,7 +53,7 @@ func TestSharingBombLibraries(t *testing.T) {
 			}
 			var rc *lisp.LVal
 			testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
-				ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+				ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(time.Second))
 				defer cancel()
 				rc = env.LoadStringContext(ctx, "probe.lisp", src)
 			})
