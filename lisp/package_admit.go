@@ -213,6 +213,29 @@ func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable boo
 		v     *LVal
 		g     cycleGuard
 		leave bool
+		// close marks the end of a container the sharing memo is timing.
+		close bool
+	}
+	// openNode is a container whose height the memo will record: the depth
+	// it was entered at and the deepest depth reached under it so far.
+	type openNode struct {
+		v              *LVal
+		depth, deepest int
+	}
+	// SHARING (lisp/sharing.go).  A value built as (set! x (list x x)) D
+	// times has D containers and 2^D paths.  The walk counts its work, and
+	// past sharedWalkBudget it records each container it finishes with its
+	// height, and skips a container reached again: sealed and sealable are
+	// conjunctions over the nodes, which a second visit cannot change, and
+	// a hit fails the depth limit exactly where re-walking would.  A tree
+	// never reaches a container twice, so its answer is unchanged.
+	var memo map[*LVal]int
+	var open []openNode
+	work := 0
+	deepest := func(d int) {
+		if n := len(open); n > 0 && d > open[n-1].deepest {
+			open[n-1].deepest = d
+		}
 	}
 	pending := []frame{{v: v, g: g}}
 	sealed, sealable = true, true
@@ -223,6 +246,13 @@ func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable boo
 			f.g.ascend(f.v)
 			continue
 		}
+		if f.close {
+			o := open[len(open)-1]
+			open = open[:len(open)-1]
+			memo[o.v] = o.deepest - o.depth
+			deepest(o.deepest)
+			continue
+		}
 		if f.v == nil || !sealableNodeType(f.v.Type) {
 			return false, false
 		}
@@ -230,6 +260,16 @@ func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable boo
 			g.state.tooDeep = true
 			return false, false
 		}
+		if h, ok := memo[f.v]; ok {
+			// Classified already, reached again through sharing.
+			if f.g.depth+h >= limit {
+				g.state.tooDeep = true
+				return false, false
+			}
+			deepest(f.g.depth + h)
+			continue
+		}
+		deepest(f.g.depth)
 		next, cyclic := f.g.descend(f.v)
 		if cyclic {
 			return false, false
@@ -237,6 +277,16 @@ func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable boo
 		sealed = sealed && f.v.IsSealed()
 		if next.tracking() {
 			pending = append(pending, frame{v: f.v, g: next, leave: true})
+		}
+		if len(f.v.Cells) > 0 {
+			work += 1 + len(f.v.Cells)
+			if memo == nil && work > sharedWalkBudget {
+				memo = make(map[*LVal]int)
+			}
+			if memo != nil {
+				open = append(open, openNode{v: f.v, depth: f.g.depth, deepest: f.g.depth})
+				pending = append(pending, frame{v: f.v, close: true})
+			}
 		}
 		for i := len(f.v.Cells) - 1; i >= 0; i-- {
 			pending = append(pending, frame{v: f.v.Cells[i], g: next})

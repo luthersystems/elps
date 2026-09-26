@@ -464,3 +464,37 @@ func TestGoValueLargeTreeUnshared(t *testing.T) {
 		seen[&s[0]] = true
 	}
 }
+
+// Package admission's classification memoises past the budget: a memo hit
+// fails the depth limit exactly where re-walking would (the oracle is the
+// same value as a tree), and a shared value classifies as it would unshared.
+func TestAdmitMemoHitHonoursValueDepthLimit(t *testing.T) {
+	for _, quoted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quoted=%v", quoted), func(t *testing.T) {
+			checkMemoDepthLimit(t, quoted, func(v *LVal) *LVal {
+				if got := admitSymbolValue(v, 1024); got.Type == LError {
+					return got
+				}
+				return Nil()
+			}, nil)
+		})
+	}
+}
+
+func TestAdmitClassifiesSharedValueAsUnshared(t *testing.T) {
+	for _, sealedLeaf := range []bool{false, true} {
+		leaf := SExpr([]*LVal{Int(1)})
+		if sealedLeaf {
+			leaf.SealAST()
+		}
+		shared := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), bomb(40, leaf)})
+		var st cycleState
+		var sealed, sealable bool
+		testdeadline.Watch("classify a 40-level sharing bomb", 20*time.Second, 1<<30, func() {
+			sealed, sealable = classifySymbolValue(shared, cycleGuard{state: &st}, MaxValueDepth)
+		})
+		if sealed || !sealable || st.tooDeep {
+			t.Fatalf("sealedLeaf=%v: sealed=%v sealable=%v tooDeep=%v, want an unsealed sealable value", sealedLeaf, sealed, sealable, st.tooDeep)
+		}
+	}
+}
