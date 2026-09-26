@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -51,23 +52,76 @@ func countContainers(v *LVal) (distinct, paths int) {
 	return distinct, paths
 }
 
+// chainQuoted is chain with quote wrappers mixed in: every third level also
+// carries the quoted flag, and every fifth is additionally wrapped in an
+// LQuote node, so the quasiquote walker's quote-edge arithmetic is on the
+// shared path, down to the leaf.
+func chainQuoted(n int, leaf *LVal) *LVal {
+	leaf = Quote(Quote(leaf)) // a wrapped leaf at the bottom of the path
+	for i := range n {
+		leaf = SExpr([]*LVal{leaf})
+		switch {
+		case i%5 == 2:
+			leaf = Quote(Quote(leaf))
+		case i%3 == 1:
+			leaf = Quote(leaf)
+		}
+	}
+	return leaf
+}
+
 // sharedDepthCase builds (list filler x (chain k x)), where x is a 500-level
 // chain, first reached one level down and then again k+1 levels down.  When
 // shared is false the second x is a distinct copy, so the value is a tree
 // and no walk can take a memo hit on it.  With the filler first, a memoising
 // walk has switched its memo on before it reaches either x.
-func sharedDepthCase(k int, shared bool) *LVal {
-	x := chain(500, Int(7))
+func sharedDepthCase(k int, shared, quoted bool) *LVal {
+	mk := chain
+	if quoted {
+		mk = chainQuoted
+	}
+	x := mk(500, Int(7))
 	second := x
 	if !shared {
-		second = chain(500, Int(7))
+		second = mk(500, Int(7))
 	}
-	return SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), x, chain(k, second)})
+	return SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), x, mk(k, second)})
 }
 
-// A memo hit answers a shared container without walking it, so it must fail
-// exactly where re-walking it would: at the value depth limit.  The oracle is
-// the same value built as a tree, which the memo can never hit.
+// checkMemoDepthLimit is the oracle for a memo hit and the value depth
+// limit: a memo hit answers a shared container without walking it, so it
+// must fail exactly where re-walking it would.  It finds the smallest k at
+// which run fails on the TREE (the value built with a distinct second x,
+// which no memo can hit), then requires the DAG to agree -- same error text,
+// or both succeed -- at every k around it.  check inspects a DAG result
+// that succeeded.
+func checkMemoDepthLimit(t *testing.T, quoted bool, run func(*LVal) *LVal, check func(k int, dag *LVal)) {
+	t.Helper()
+	fails := func(k int) bool { return run(sharedDepthCase(k, false, quoted)).Type == LError }
+	lo, hi := 0, 1100
+	if fails(lo) || !fails(hi) {
+		t.Fatalf("the range [%d, %d] does not straddle the depth limit", lo, hi)
+	}
+	for hi-lo > 1 {
+		if mid := (lo + hi) / 2; fails(mid) {
+			hi = mid
+		} else {
+			lo = mid
+		}
+	}
+	for k := hi - 4; k <= hi+4; k++ {
+		tree := run(sharedDepthCase(k, false, quoted))
+		dag := run(sharedDepthCase(k, true, quoted))
+		treeErr, dagErr := tree.Type == LError, dag.Type == LError
+		if treeErr != dagErr || (treeErr && tree.Str != dag.Str) {
+			t.Fatalf("k=%d (tree fails from %d): tree %v, shared %v", k, hi, tree, dag)
+		}
+		if !dagErr && check != nil {
+			check(k, dag)
+		}
+	}
+}
+
 func TestSharingMemoHitHonoursValueDepthLimit(t *testing.T) {
 	const limit = 1024
 	type walker struct {
@@ -87,24 +141,12 @@ func TestSharingMemoHitHonoursValueDepthLimit(t *testing.T) {
 		}},
 	}
 	for _, w := range walkers {
-		t.Run(w.name, func(t *testing.T) {
-			flips := 0
-			var prev bool
-			for k := 500; k <= 540; k++ {
-				tree := w.run(sharedDepthCase(k, false))
-				dag := w.run(sharedDepthCase(k, true))
-				treeErr, dagErr := tree.Type == LError, dag.Type == LError
-				if treeErr != dagErr {
-					t.Fatalf("k=%d: tree walk error=%v (%v), shared walk error=%v (%v)", k, treeErr, tree, dagErr, dag)
-				}
-				if treeErr && tree.Str != dag.Str {
-					t.Fatalf("k=%d: tree error %q, shared error %q", k, tree.Str, dag.Str)
-				}
-				if k > 500 && treeErr != prev {
-					flips++
-				}
-				prev = treeErr
-				if !dagErr {
+		for _, quoted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/quoted=%v", w.name, quoted), func(t *testing.T) {
+				checkMemoDepthLimit(t, quoted, w.run, func(k int, dag *LVal) {
+					if quoted {
+						return // the wrappers make the path irregular; the error check above is the point
+					}
 					// The shared x is walked once: its counterpart is the
 					// same node in both places.
 					second := dag.Cells[2]
@@ -114,12 +156,9 @@ func TestSharingMemoHitHonoursValueDepthLimit(t *testing.T) {
 					if dag.Cells[1] != second {
 						t.Fatalf("k=%d: the shared chain was rebuilt per path", k)
 					}
-				}
-			}
-			if flips != 1 {
-				t.Fatalf("the depth limit flipped %d times over the range, want once: the range does not straddle it", flips)
-			}
-		})
+				})
+			})
+		}
 	}
 }
 

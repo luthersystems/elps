@@ -36,14 +36,15 @@ package lisp
 // same result, the same errors, the same evaluation steps.  On a DAG larger
 // than the budget, a memo hit returns the one result built for the shared
 // container, so the output SHARES that subtree where the tree walk would
-// have built one copy per path.  That is a deliberate behaviour change and
-// only reachable by inputs that previously did pathological work: the
-// output now has the same sharing as the input instead of exponentially
-// many copies of it.  (Under a debugger, the stamper's per-node expansion
-// IDs follow: a shared container gets one ID, not one per path.)  Work a
-// memo cannot remove -- quasiquote re-evaluating an unquote under a shared
-// list -- is charged in evaluation steps past the budget instead; see
-// findAndUnquote.
+// have built one copy per path: the output has the same sharing as the
+// input.  That is a deliberate behaviour change, and a narrow one: results
+// are equal? to what the tree walk built, the value depth limit fails where
+// it did, and steps are unchanged.  What can see it is identity -- a Go
+// embedder comparing pointers, or a debugger, whose per-node expansion IDs
+// follow the sharing (a shared container gets one ID, not one per path).
+// Work a memo cannot remove -- quasiquote re-evaluating an unquote under a
+// shared list -- is charged in evaluation steps, but only once the
+// DUPLICATED work passes its own allowance; see findAndUnquote.
 //
 // sharedWalkBudget is chosen well above the size of any expansion or
 // template a program writes by hand, so the memo stays off -- and allocates

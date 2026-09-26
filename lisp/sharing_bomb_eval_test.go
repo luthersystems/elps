@@ -134,7 +134,9 @@ n`)
 }
 
 // The same bomb with an unquote under it is bounded by the step budget: each
-// occurrence is an evaluation, and the budget stops it.
+// occurrence is an evaluation, and the budget stops it.  Not a regression
+// test -- main stops here too -- but a pin on the semantics: a shared
+// unquote is still evaluated, and charged, once per occurrence.
 func TestSharingBombQuasiquoteWithUnquoteHitsStepBudget(t *testing.T) {
 	env := sharingBombEnv(t, 1)
 	lisp.WithMaxSteps(100_000)(env) // enough to show the budget stops it; cheap under -race
@@ -191,5 +193,35 @@ func TestSharingBombWidePureList(t *testing.T) {
 		if rc := runSharingBombStepsOnly(t, setup, probe); rc.Type == lisp.LError {
 			t.Fatalf("%s: %v", probe, rc)
 		}
+	}
+}
+
+// A template that merely repeats a form -- a macro-writing macro putting one
+// argument form into an inner quasiquote three times -- is not a sharing
+// bomb, and must cost exactly the steps it costs as a tree, even with an
+// unquote in the repeated form and the walk past the budget.  Only
+// DUPLICATED rebuild work beyond its own allowance is ever charged.
+func TestSharingQuasiquoteRepeatedFormKeepsStepCount(t *testing.T) {
+	steps := func(shared bool) int64 {
+		env := sharingBombEnv(t, 1)
+		setup := `(set 'form (cons (car '((unquote 1))) (make-sequence 0 3000)))
+(set 'tpl (list form form form))
+(set 'tree (list (copy form) (copy form) (copy form)))
+()`
+		if rc := env.LoadString("setup.lisp", setup); rc.Type == lisp.LError {
+			t.Fatalf("setup: %v", rc)
+		}
+		probe := `(eval (list QQ tree))`
+		if shared {
+			probe = `(eval (list QQ tpl))`
+		}
+		before := env.Runtime.TotalSteps()
+		if rc := env.LoadString("probe.lisp", probe); rc.Type == lisp.LError {
+			t.Fatalf("%s: %v", probe, rc)
+		}
+		return env.Runtime.TotalSteps() - before
+	}
+	if tree, dag := steps(false), steps(true); tree != dag {
+		t.Fatalf("a form repeated three times costs %d steps; as a tree, %d", dag, tree)
 	}
 }

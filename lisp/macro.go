@@ -564,8 +564,8 @@ type macroStamper struct {
 	// copy BEFORE its cells are walked, so the walk's second arrival at it
 	// -- through the cycle -- lands on the copy.
 	//
-	// On the ordinary walk it is nil until the walk has entered
-	// sharedWalkBudget containers (lisp/sharing.go).  From then on every
+	// On the ordinary walk it is nil until the walk has done
+	// sharedWalkBudget work, counted in visits below (lisp/sharing.go).  From then on every
 	// container the walk FINISHES maps to its result -- the node itself when
 	// nothing under it changed -- and the container's height, so a
 	// container reached again through sharing (a DAG, not a cycle) is
@@ -878,15 +878,20 @@ type quasiquoteMemo struct {
 // is the one piece of work the unquotes' own steps do not pay for: a list of
 // width k holding one unquote, shared along 2^D paths, costs one step per
 // occurrence but k cells of work and allocation.  So past the budget the
-// walk records the impure lists it finishes, and charges a revisit of one
-// its width in evaluation steps (LEnv.ChargeSteps, which also observes the
-// context).  It also polls the context as it goes.
+// walk records the impure lists it finishes and totals the cells it
+// rebuilds on re-entering one.  That DUPLICATED work is free up to
+// sharedWalkBudget cells -- so a template that merely repeats a form a few
+// times keeps its exact step count -- and beyond it is charged one step
+// per cell (LEnv.ChargeSteps, which also observes the context).
 //
 // A tree never revisits a list: its result, errors and step count are
 // exactly the tree walk's.  A DAG past the budget gets one shared result per
-// shared pure list where the tree walk built one copy per path, and pays
-// steps for re-entering a shared impure list -- behaviour that only an input
-// which previously did unbounded unmetered work can observe.
+// shared pure list where the tree walk built one copy per path; lists are
+// values nothing in the language mutates in place through quasiquote's
+// output, so only a debugger's expansion IDs or a Go embedder comparing
+// pointers can see that.  Steps change only for a DAG that re-enters more
+// than sharedWalkBudget cells of shared impure lists in one quasiquote --
+// work the tree walk did without charging for it at all.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	type frame struct {
 		v, orig                             *LVal
@@ -909,10 +914,11 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	stack := buf[:0]
 	valueDepth := depth
 	// memo is nil until the walk has done sharedWalkBudget work; impure
-	// records the impure lists finished since then.
+	// records the impure lists finished since then, and rebuilt the cells
+	// re-entering them has cost.
 	var memo map[*LVal]quasiquoteMemo
 	var impure map[*LVal]struct{}
-	work := 0
+	work, rebuilt := 0, 0
 	for {
 		var (
 			result, list        *LVal
@@ -942,13 +948,14 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				}
 				if memo != nil {
 					if _, again := impure[v]; again {
-						// A shared impure list, rebuilt once more.
-						if lerr := env.ChargeSteps(int64(len(list.Cells))); lerr.Type == LError {
-							return lerr
-						}
-					} else if work%sharedWalkBudget < 1+len(list.Cells) {
-						if err := env.Context().Err(); err != nil {
-							return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+						// A shared impure list, rebuilt once more: charge the
+						// part of the duplicated work past the allowance.
+						before := rebuilt
+						rebuilt += len(list.Cells)
+						if charge := rebuilt - max(before, sharedWalkBudget); charge > 0 {
+							if lerr := env.ChargeSteps(int64(charge)); lerr.Type == LError {
+								return lerr
+							}
 						}
 					}
 				}
