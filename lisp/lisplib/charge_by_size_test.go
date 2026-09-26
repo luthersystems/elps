@@ -99,7 +99,7 @@ func BenchmarkStdlibSizeCharge(b *testing.B) {
 		require.NoError(b, err)
 		b.Run(fmt.Sprintf("bytes=%d", n), func(b *testing.B) {
 			b.ReportAllocs()
-			for i := 0; i < b.N; i++ {
+			for range b.N {
 				for _, e := range prog {
 					if rc := env.Eval(e); rc.Type == lisp.LError {
 						b.Fatal(rc)
