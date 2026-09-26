@@ -30,7 +30,10 @@ package lisp
 // container they finish, by identity, and a container reached again is
 // answered from the memo instead of being walked again.  The walk is then
 // linear in the number of DISTINCT containers (and their cells), which is
-// what the program paid to build.
+// what the program paid to build -- with one exception: quasiquote's quote
+// wrapper chains that share a suffix are re-walked rather than memoised,
+// and that duplicated work is charged in evaluation steps instead (see
+// findAndUnquote).
 //
 // On a tree the memo is never hit, so it changes nothing observable: the
 // same result, the same errors, the same evaluation steps.  On a DAG larger
