@@ -153,7 +153,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 		c.plan.packages = append(c.plan.packages, c.packageDescriptor(pkg, inventory.config.frozen[name]))
 	}
 	for index, env := range inventory.envQueue {
-		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.bindings(env.scope), scopeHint: env.scopeHint}
+		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.scopeBindings(env.scope), scopeHint: env.scopeHint}
 	}
 	for index, source := range inventory.valueQueue {
 		value, err := c.value(source)
@@ -258,6 +258,19 @@ func (c *templateCompiler) bindings(values map[string]*LVal) []templateBinding {
 	for name, value := range values {
 		out = append(out, templateBinding{name: name, value: c.ref(value)})
 	}
+	sortTemplateBindings(out)
+	return out
+}
+
+// scopeBindings is bindings for a lexical scope.  The descriptors are sorted
+// by name like every other, so each instance builds its scopes in the same
+// order however the source scope was populated.
+func (c *templateCompiler) scopeBindings(values scopeTable) []templateBinding {
+	out := make([]templateBinding, 0, values.len())
+	values.each(func(name string, v *LVal) bool {
+		out = append(out, templateBinding{name: name, value: c.ref(v)})
+		return true
+	})
 	sortTemplateBindings(out)
 	return out
 }
@@ -506,10 +519,10 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 		instance.envs[index].parent = instance.env(env.parent)
 		instance.envs[index].scopeHint = env.scopeHint
 		if len(env.bindings) > 0 {
-			instance.envs[index].scope = make(map[string]*LVal, len(env.bindings))
+			instance.envs[index].scope = newScopeTable(len(env.bindings))
 		}
 		for _, binding := range env.bindings {
-			instance.envs[index].scope[binding.name] = instance.ref(binding.value)
+			instance.envs[index].scope.appendNew(binding.name, instance.ref(binding.value))
 		}
 	}
 	for index, function := range p.functions {

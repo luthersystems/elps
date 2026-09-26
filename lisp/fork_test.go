@@ -333,12 +333,19 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 	if n.Runtime == o.Runtime {
 		a.t.Errorf("%s: fork env shares the template Runtime", path)
 	}
-	if len(n.scope) != len(o.scope) {
-		a.t.Errorf("%s: scope size differs: %d vs %d", path, len(n.scope), len(o.scope))
+	if n.scope.len() != o.scope.len() {
+		a.t.Errorf("%s: scope size differs: %d vs %d", path, n.scope.len(), o.scope.len())
 		return
 	}
-	for k, ov := range o.scope {
-		nv, ok := n.scope[k]
+	type binding struct {
+		k  string
+		ov *LVal
+	}
+	var obs []binding
+	o.scope.each(func(k string, v *LVal) bool { obs = append(obs, binding{k, v}); return true })
+	for _, b := range obs {
+		k, ov := b.k, b.ov
+		nv, ok := n.scope.get(k)
 		if !ok {
 			a.t.Errorf("%s: scope key %q missing in fork", path, k)
 			return

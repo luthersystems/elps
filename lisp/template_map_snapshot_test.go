@@ -42,7 +42,7 @@ func TestTemplateAdmissionSnapshotsMapEntries(t *testing.T) {
 				m = SortedMapFromData(NewMapData(raw))
 				del = func() { delete(raw, "z-rejected") }
 			}
-			env.scope = map[string]*LVal{"m": m}
+			env.scope = scopeOf(map[string]*LVal{"m": m})
 
 			calls := 0
 			policy := func(payload any) bool {

@@ -138,15 +138,17 @@ func InitializeTypedef(env *LEnv) *LVal {
 // live name lookup is Package.funNames, reached through GetFunName.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
-// scan extent stops at 48 bytes. Keep scalars (ID and scopeHint) trailing.
+// scan extent stops at 56 bytes, at the scope's bindings pointer. Keep scope
+// last among them (its length and capacity are scalars) and the other
+// scalars (ID and scopeHint) trailing.
 type LEnv struct {
 	loc       *token.Location
-	scope     map[string]*LVal // nil until the first successful Put; reads treat nil as empty
 	parent    *LEnv
 	Runtime   *Runtime
 	evalCtx   context.Context // transient: set by call() at builtin boundary
+	scope     scopeTable      // empty (allocates nothing) until the first successful Put
 	ID        uint
-	scopeHint int // initial capacity to use when scope is first allocated
+	scopeHint int // bindings to make room for when the scope is first allocated
 }
 
 // Parent returns env's lexically enclosing environment, or nil when env is a
@@ -164,13 +166,16 @@ func (env *LEnv) Parent() *LEnv {
 
 // Bindings iterates the symbol bindings in env's immediate scope; parent
 // scopes are not included (walk Parent for those).  Iteration order is
-// unspecified, like Go map order.
+// unspecified.
 //
-// Bindings is the read half of the scope map, which went unexported in issue
-// #382: enumerating an environment is a legitimate need (the debugger's
+// Bindings is the read half of the scope table, which went unexported (as a
+// map) in issue #382: enumerating an environment is a legitimate need (the debugger's
 // variable panes), while the write that came free with an exported map —
 // rebinding a symbol in an environment the writer does not own — is not.
 // Use Put or PutGlobal to bind.
+//
+// Binding into env while iterating (Put inside the loop) is unspecified: the
+// loop may or may not see the new binding or an updated value.
 //
 // Bindings is nil-receiver safe: a nil LEnv yields nothing.
 func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
@@ -178,11 +183,7 @@ func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
 		if env == nil {
 			return
 		}
-		for k, v := range env.scope {
-			if !yield(k, v) {
-				return
-			}
-		}
+		env.scope.each(yield)
 	}
 }
 
@@ -193,7 +194,7 @@ func (env *LEnv) NumBindings() int {
 	if env == nil {
 		return 0
 	}
-	return len(env.scope)
+	return env.scope.len()
 }
 
 // Source returns a copy of the location the evaluator is currently stamping
@@ -243,10 +244,10 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv whose scope map is allocated on the first
-// successful Put, pre-sized to hold n bindings. Callers that know the number
-// of bindings up front (let, let*, dotimes, etc.) can avoid map growth by
-// passing the exact count.
+// newEnvN creates a child LEnv whose scope is pre-sized to hold n bindings:
+// allocated together with the LEnv for n <= 4, otherwise on the first
+// successful Put. Callers that know the number of bindings up front (let,
+// let*, dotimes, etc.) avoid any growth by passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location
@@ -258,15 +259,13 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	} else {
 		runtime = StandardRuntime()
 	}
-	env := &LEnv{
-		ID:        runtime.GenEnvID(),
-		loc:       loc,
-		scopeHint: n,
-		parent:    parent,
-		Runtime:   runtime,
-		evalCtx:   evalCtx,
-	}
-	//elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
+	env := allocEnvScope(n)
+	env.ID = runtime.GenEnvID()
+	env.loc = loc //elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
+	env.scopeHint = n
+	env.parent = parent
+	env.Runtime = runtime
+	env.evalCtx = evalCtx
 	return env
 }
 
@@ -571,8 +570,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 
 func (env *LEnv) getSimple(k *LVal) *LVal {
 	for {
-		v, ok := env.scope[k.Str]
-		if ok {
+		if v, ok := env.scope.get(k.Str); ok {
 			return v
 		}
 		if env.parent != nil {
@@ -660,10 +658,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	if env.scope == nil {
-		env.scope = make(map[string]*LVal, env.scopeHint)
-	}
-	env.scope[k.Str] = v
+	env.scope.put(k.Str, v, env.scopeHint)
 	return Nil()
 }
 
@@ -702,9 +697,7 @@ func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
 // the seal, as the registration APIs do.
 func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 	for {
-		_, ok := env.scope[k.Str]
-		if ok {
-			env.scope[k.Str] = v
+		if env.scope.update(k.Str, v) {
 			return Nil()
 		}
 		if env.parent == nil {
@@ -2336,12 +2329,13 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	// because eval reads env.loc before it rebinds it -- see funData.loc.
 	var funenv *LEnv
 	if fenv := fun.funEnv(); fenv != nil {
-		cp := *fenv
-		cp.parent = fenv
-		cp.loc = fun.funData().loc
-		cp.scope = nil
-		cp.scopeHint = formals.Len()
-		funenv = &cp
+		funenv = allocEnvScope(formals.Len())
+		scope := funenv.scope
+		*funenv = *fenv
+		funenv.parent = fenv
+		funenv.loc = fun.funData().loc //elps:aliases the definition-site location snapshot, frozen before evaluation reached Lambda, exactly as the shallow copy this replaced did
+		funenv.scope = scope
+		funenv.scopeHint = formals.Len()
 	}
 	putArg := func(k, v *LVal) *LVal {
 		return funenv.Put(k, v)
