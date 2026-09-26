@@ -423,10 +423,12 @@ var (
 			`Returns true if expr is a bytes value, false otherwise.`},
 		{"equal?", Formals("a", "b"), builtinEqual,
 			`Returns true if a and b are structurally equal, performing deep
-			comparison across all value types. Sorted-map keys compare by
-			name, matching how get and key? identify them, so a map keyed
-			by 'a is equal? to a map keyed by "a". Raises an ordinary depth
-			error if comparison exceeds the configured value depth (default 1000000).`},
+			comparison across all value types. Bytes values compare by
+			content, and a reader quote (''a) by its quoted value.
+			Sorted-map keys compare by name, matching how get and key?
+			identify them, so a map keyed by 'a is equal? to a map keyed by
+			"a". Raises an ordinary depth error if comparison exceeds the
+			configured value depth (default 1000000).`},
 		{"all?", Formals("predicate", "seq"), builtinAllP,
 			`Returns true if predicate returns truthy for every element in
 			seq. Returns true for an empty sequence. Short-circuits on the

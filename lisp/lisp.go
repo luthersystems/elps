@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"strconv"
@@ -1593,6 +1594,8 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 	switch v.Type {
 	case LString, LSymbol:
 		return Bool(v.Str == other.Str)
+	case LBytes:
+		return Bool(bytes.Equal(v.Bytes(), other.Bytes()))
 	case LSExpr, LArray:
 		if len(v.Cells) != len(other.Cells) {
 			return Bool(false)
@@ -1610,6 +1613,13 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 		if v.Str != other.Str {
 			return Bool(false)
 		}
+		if depth >= cycleGuardDepth {
+			return nil
+		}
+		return v.Cells[0].equalShallow(other.Cells[0], depth+1)
+	case LQuote:
+		// A reader quote beyond the first layer (''a): equal when the
+		// quoted values are, like a tagged value's payload.
 		if depth >= cycleGuardDepth {
 			return nil
 		}
@@ -1685,6 +1695,10 @@ walk:
 			if a.Str != b.Str {
 				return Bool(false), false
 			}
+		} else if a.Type == LBytes {
+			if !bytes.Equal(a.Bytes(), b.Bytes()) {
+				return Bool(false), false
+			}
 		} else {
 			var f frame
 			switch a.Type {
@@ -1697,6 +1711,8 @@ walk:
 				if a.Str != b.Str {
 					return Bool(false), false
 				}
+				f.ac, f.bc = a.Cells[:1], b.Cells[:1]
+			case LQuote:
 				f.ac, f.bc = a.Cells[:1], b.Cells[:1]
 			case LSortMap:
 				if a.Map().Len() != b.Map().Len() {
