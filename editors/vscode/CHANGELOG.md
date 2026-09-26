@@ -22,6 +22,10 @@ jumps from 0.2.0 to 1.50.0.
   package-qualified symbols (`(set! pkg:x v)`); several error messages and
   docstrings are corrected.
 - New embedder API: a shared step budget across top-level evaluations.
+- Step accounting: JSON load/dump, base64, string split/join/repeat/case/trim
+  and regexp compile/match now charge one evaluation step per complete KiB
+  they process. Step counts change only for programs handling values of
+  1 KiB or more.
 - Debugger: editing a package-qualified name in the Locals scope is refused.
 
 ## 1.62.1
