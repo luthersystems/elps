@@ -48,14 +48,14 @@ func sharingBombDoc(t *testing.T) *lisp.LEnv {
 	return env
 }
 
-// runBomb evaluates src under a 100ms deadline and the step budget, behind a
-// watchdog that ends the test binary if it does not come back or allocates
+// runBomb evaluates src under a 1s deadline (scaled for the race detector;
+// the unfixed walks take hours) and the step budget, behind a watchdog that ends the test binary if it does not come back or allocates
 // without bound.
 func runBomb(t *testing.T, env *lisp.LEnv, src string) *lisp.LVal {
 	t.Helper()
 	var rc *lisp.LVal
 	testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(time.Second))
 		defer cancel()
 		rc = env.LoadStringContext(ctx, "probe.lisp", src)
 	})
