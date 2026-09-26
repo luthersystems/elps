@@ -19,6 +19,13 @@ import (
 // and at this depth never comes back.  Each row runs behind a watchdog that
 // ends the test binary rather than hang or exhaust the host.
 //
+// Scope: walkers over program-built VALUES.  Walkers that only ever see
+// reader output -- firstUnsealed (program.go) and the sealed-AST
+// fingerprint, whose budget is enforced at load-cache admission -- are out
+// of scope, since a parse tree cannot share a node.  Two value walkers
+// outside lisp/ are tracked separately in issue #723: libjson's deprecated
+// Serializer.GoValue family and the DAP server's expression walks.
+//
 // A new deep walker belongs in this table.  The per-walker regressions --
 // sharing preserved in the output, depth limits exact, trees unchanged --
 // live in sharing_bomb_test.go and sharing_bomb_eval_test.go.
