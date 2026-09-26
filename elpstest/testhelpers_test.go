@@ -74,3 +74,49 @@ func TestTestHelpersNotLoadedOutsideTests(t *testing.T) {
 	v := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("double"), lisp.Int(2)}))
 	assert.Equal(t, lisp.LError, v.Type, "double must be unbound without the test runner")
 }
+
+// Regression: an embedder whose SetupFn leaves the env in a non-user package
+// must keep that package for the test file even when helpers exist, and a
+// helper's own in-package must not leak into the test file.
+func TestTestHelpersKeepSetupPackage(t *testing.T) {
+	r := &Runner{
+		SetupFn: func(env *lisp.LEnv) *lisp.LVal {
+			if v := env.LoadString("setup", "(in-package 'foo) (set 'mark 42)"); v.Type == lisp.LError {
+				return v
+			}
+			return env.InPackage(lisp.String("foo"))
+		},
+	}
+	r.RunTestFile(t, filepath.Join(helperData, "setuppkg", "t_test.lisp"))
+}
+
+func TestTestHelpersInPackageRestored(t *testing.T) {
+	(&Runner{}).RunTestFile(t, filepath.Join(helperData, "userpkg", "t_test.lisp"))
+}
+
+func TestTestHelpersNewEnvFnRunner(t *testing.T) {
+	calls := 0
+	r := &Runner{
+		NewEnvFn: func(t testing.TB) (*lisp.LEnv, error) {
+			calls++
+			return (&Runner{}).NewEnv(t)
+		},
+	}
+	r.RunTestFile(t, filepath.Join(helperData, "shared", "a_test.lisp"))
+	assert.Positive(t, calls)
+}
+
+func TestTestHelperFilesSkipsDirsAndEmptyPrefix(t *testing.T) {
+	dir := t.TempDir()
+	write := func(name string) {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte("()"), 0o600))
+	}
+	write("_testhelpers.lisp")
+	write("ok_testhelpers.lisp")
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "real"), 0o700))
+	require.NoError(t, os.Mkdir(filepath.Join(dir, "d_testhelpers.lisp"), 0o700))
+	require.NoError(t, os.Symlink(filepath.Join(dir, "real"), filepath.Join(dir, "link_testhelpers.lisp")))
+	files, err := TestHelperFiles(dir)
+	require.NoError(t, err)
+	assert.Equal(t, []string{filepath.Join(dir, "ok_testhelpers.lisp")}, files)
+}

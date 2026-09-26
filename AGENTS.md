@@ -170,8 +170,9 @@ expected-output}`. Native fuzz targets live in `fuzz_test.go` files; see the
 `fuzz` skill before touching them.
 
 Shared Lisp test helpers: every `*_testhelpers.lisp` next to a `*_test.lisp`
-is loaded (sorted by name) into each test env after `LoaderFn`/`SetupFn` and
-before the test file; other runners reuse the rule via
+is loaded (sorted by name) into each fresh test env immediately before the test
+file (after `SetupFn` when running tests/benchmarks; discovery skips
+`SetupFn`), and the package in effect before each helper is restored after it; other runners reuse the rule via
 `elpstest.TestHelperFiles` / `elpstest.LoadTestHelpers`. Helpers never match
 `*_test.lisp` and are never part of a production load.
 

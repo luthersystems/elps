@@ -2414,11 +2414,16 @@ package (`test`, `test-let`, `assert=`, `assert-equal`, ...). The Go runner
 ### Shared test helpers
 
 Helpers shared by several test files go in files named `*_testhelpers.lisp`
-in the same directory. Before every test file in that directory, the runner
-loads each helper file into the test's environment, in sorted file-name order,
-after the runner's loader and setup and before the test file. The runner
-switches back to the `user` package after each helper, so a helper may use
-`in-package` freely.
+in the same directory (the prefix must be non-empty: a file named exactly
+`_testhelpers.lisp` is ignored, as are directories). The runner loads every
+helper file, in sorted file-name order, into each environment it builds for a
+test file, immediately before loading the test file. Every test gets a fresh
+environment, so helpers load once per test environment: after the runner's
+loader and setup when running a test or benchmark, and after the loader alone
+in the discovery pass that lists a file's tests (that pass does not run
+setup). The package in effect before each helper is restored after it, so a
+helper may use `in-package` without changing the package the test file loads
+in.
 
 ```lisp
 ; common_testhelpers.lisp
