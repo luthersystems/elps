@@ -57,16 +57,19 @@ func sharingBombEnv(t *testing.T, depth int) *lisp.LEnv {
 	return env
 }
 
-// runSharingBomb evaluates src against a D=40 sharing bomb under a 100ms
-// deadline and a 1M step budget, and returns its result.  The watchdog ends
-// the test binary if the evaluation does not come back, or allocates without
-// bound, since neither can be interrupted from outside.
+// runSharingBomb evaluates src against a D=40 sharing bomb under a 1s
+// deadline (scaled for the race detector) and a 1M step budget, and returns
+// its result.  The unfixed walks take hours, so the deadline only has to be
+// far below that; it must not be tight, because a walker that polls the
+// context (equal?) reports context-cancelled if a slow run reaches it.  The
+// watchdog ends the test binary if the evaluation does not come back, or
+// allocates without bound, since neither can be interrupted from outside.
 func runSharingBomb(t *testing.T, src string) *lisp.LVal {
 	t.Helper()
 	env := sharingBombEnv(t, sharingBombDepth)
 	var rc *lisp.LVal
 	testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(time.Second))
 		defer cancel()
 		rc = env.LoadStringContext(ctx, "probe.lisp", src)
 	})
