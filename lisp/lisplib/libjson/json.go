@@ -282,7 +282,7 @@ func (s *Serializer) jsonDecodeOpts(b []byte, dst any, opts LoadOpts) error {
 	if !opts.ExactIntegers {
 		return s.jsonDecode(b, dst, false)
 	}
-	return decodeExactNumbers(b, dst)
+	return decodeNumbers(b, dst)
 }
 
 func (s *Serializer) jsonDecode(b []byte, dst any, stringNums bool) error {
@@ -301,18 +301,11 @@ func jsonDecode(b []byte, dst any, stringNums bool) error {
 	if !stringNums {
 		return json.Unmarshal(b, dst)
 	}
-	d := json.NewDecoder(bytes.NewReader(b))
-	d.UseNumber()
-	err := d.Decode(dst)
-	rest := failUnmarshal()
-	if d.Decode(&rest) != io.EOF {
-		return errors.New("not a valid json object")
-	}
-	return err
+	return decodeNumbers(b, dst)
 }
 
-// syntaxError is a malformed-document error raised by the exact-integer decode
-// path.
+// syntaxError is a malformed-document error raised by the decode paths that
+// keep numbers as text (:string-numbers and :exact-integers).
 //
 // json.Unmarshal reports an empty document and trailing content after a
 // complete value as *json.SyntaxError, which LoadWith turns into the catchable
@@ -327,9 +320,15 @@ type syntaxError string
 
 func (e syntaxError) Error() string { return string(e) }
 
-// decodeExactNumbers decodes b with numbers left as their literal text, so
-// loadNumber can decide per value whether it is an integer or a float.
-func decodeExactNumbers(b []byte, dst any) error {
+// decodeNumbers decodes b with numbers left as their literal text -- so
+// loadNumber can decide per value whether it is an integer or a float, and
+// :string-numbers can keep it as a string -- and reports malformed input as a
+// syntax error, which LoadWith raises as json:syntax-error just as it does for
+// json.Unmarshal's.  :string-numbers and :exact-integers share it so the two
+// cannot drift: the string-numbers path used to ignore the first Decode error
+// and let its trailing-data probe turn every syntax error into the generic
+// "not a valid json object", and an empty document into a bare "EOF".
+func decodeNumbers(b []byte, dst any) error {
 	d := json.NewDecoder(bytes.NewReader(b))
 	d.UseNumber()
 	if err := d.Decode(dst); err != nil {
