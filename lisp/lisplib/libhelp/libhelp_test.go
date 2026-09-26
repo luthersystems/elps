@@ -729,3 +729,40 @@ func TestQuerySymbol_Variable(t *testing.T) {
 	assert.NotEmpty(t, sd.Doc)
 	assert.Nil(t, sd.Formals, "variables should not have formals")
 }
+
+// help-package-symbols formatted the name LVal with %q, so the quote leaked
+// into the message (no package: "'nosuch"), unlike help-package.  It also
+// re-evaluated its already-evaluated optional argument, which ran the value as
+// code and reset the error location to <native code>.
+func TestHelpPackageSymbolsUnknownPackage(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	var stderr bytes.Buffer
+	env.Runtime.Stderr = &stderr
+	require.NoError(t, lisp.GoError(lisp.InitializeUserEnv(env)))
+	require.NoError(t, lisp.GoError(lisplib.LoadLibrary(env)))
+	require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
+
+	want := lisp.GoError(env.LoadString("test", `(help:help-package 'nosuch)`)).Error()
+	assert.Contains(t, want, `no package: "nosuch"`)
+	for _, src := range []string{`(help:help-package-symbols 'nosuch)`, `(help:help-package-symbols 'nosuch true)`} {
+		got := env.LoadString("test", src)
+		require.Equal(t, lisp.LError, got.Type, src)
+		msg := lisp.GoError(got).Error()
+		assert.Contains(t, msg, `no package: "nosuch"`, src)
+		assert.Contains(t, msg, "test:1:1", "%s: error location lost", src)
+	}
+
+	// The optional argument is used as passed, not evaluated again: a quoted
+	// list is simply true, where it used to be run as the call (not code).
+	require.NoError(t, lisp.GoError(env.LoadString("test", `(set 'help-symbols-private 1)`)))
+	stderr.Reset()
+	res := env.LoadString("test", `(help:help-package-symbols 'user '(not code))`)
+	require.NotEqual(t, lisp.LError, res.Type, "%v", res)
+	assert.Contains(t, stderr.String(), "help-symbols-private")
+	// Without it, unexported symbols stay hidden.
+	stderr.Reset()
+	res = env.LoadString("test", `(help:help-package-symbols 'user)`)
+	require.NotEqual(t, lisp.LError, res.Type, "%v", res)
+	assert.NotContains(t, stderr.String(), "help-symbols-private")
+}

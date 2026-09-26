@@ -43,9 +43,9 @@ func TestTemplateCompilerRejectsMissingAdmittedIdentity(t *testing.T) {
 				}
 			case "closure-env":
 				missingEnv = NewEnv(env)
-				missingEnv.scope = map[string]*LVal{"leaf": leaf}
+				missingEnv.scope = scopeOf(map[string]*LVal{"leaf": leaf})
 				subject = missingEnv.Lambda(Formals(), []*LVal{Symbol("leaf")})
-				missingEnv.scope["self"] = subject
+				missingEnv.scope.put("self", subject, 0)
 			}
 			env.Runtime.Package.symbols["subject"] = subject
 			original := *leaf
@@ -141,9 +141,9 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	source := templateOwnershipEnv()
 	lexical := NewEnv(source)
 	leaf := Int(17)
-	lexical.scope = map[string]*LVal{"leaf": leaf}
+	lexical.scope = scopeOf(map[string]*LVal{"leaf": leaf})
 	closure := lexical.Lambda(Formals(), []*LVal{Symbol("leaf")})
-	lexical.scope["self"] = closure
+	lexical.scope.put("self", closure, 0)
 	captures := QExpr([]*LVal{leaf, closure, nil})
 	callback := newCapturedBuiltin(capturedBuiltin{
 		Package: "user", FID: "cycle", Formals: Formals(), Captures: captures,
@@ -154,7 +154,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	literal.SealAST()
 	source.Runtime.Package.symbols["callback"] = callback
 	source.Runtime.Package.symbols["literal"] = literal
-	source.scope = map[string]*LVal{"leaf": leaf}
+	source.scope = scopeOf(map[string]*LVal{"leaf": leaf})
 	inventory := newTemplateInventory(templateConfig{})
 	if err := inventory.scan(source); err != nil {
 		t.Fatal(err)
@@ -183,12 +183,12 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 		}
 		fn := vm.Runtime.Package.symbolTable()["callback"]
 		got := vm.FunCall(fn, Nil())
-		if got.Type != LSExpr || len(got.Cells) != 3 || got.Cells[0] != vm.scope["leaf"] || got.Cells[0].Int != 17 || got.Cells[2] != fn {
+		if got.Type != LSExpr || len(got.Cells) != 3 || got.Cells[0] != vm.scope.val("leaf") || got.Cells[0].Int != 17 || got.Cells[2] != fn {
 			t.Fatalf("explicit capture cycle or snapshot changed: %v", got.Type)
 		}
 		copyClosure := got.Cells[1]
 		copyEnv := copyClosure.Native.(*funData).env
-		if copyEnv == lexical || copyEnv.parent != vm || copyEnv.scope["self"] != copyClosure || copyEnv.scope["leaf"] != got.Cells[0] {
+		if copyEnv == lexical || copyEnv.parent != vm || copyEnv.scope.val("self") != copyClosure || copyEnv.scope.val("leaf") != got.Cells[0] {
 			t.Fatal("lexical environment cycle or aliases changed")
 		}
 		if vm.Runtime.Package.symbolTable()["literal"] != literal {

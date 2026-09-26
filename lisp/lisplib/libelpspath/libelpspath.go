@@ -303,6 +303,12 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	default:
 		return fmt.Errorf("invalid container type: %v", in.Type)
 	}
+	if _, ok := g.state.valid[in]; ok {
+		// Already validated, reached again through sharing: a container
+		// that passed once passes again, and one that finished cannot be
+		// on a cycle, or its walk would not have finished.
+		return nil
+	}
 	g, cyclic := g.descend(in)
 	if cyclic {
 		return errCyclicValue
@@ -311,7 +317,23 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	if g.tracking() {
 		g.ascend(in)
 	}
+	if err == nil {
+		g.state.noteValid(in, containerWidth(in))
+	}
 	return err
+}
+
+// containerWidth is the number of values a validated container holds, for
+// the sharing budget.
+func containerWidth(in *lisp.LVal) int {
+	switch in.Type {
+	case lisp.LSortMap:
+		return 2 * in.Map().Len()
+	case lisp.LArray:
+		return len(in.Cells[1].Cells)
+	default:
+		return len(in.Cells)
+	}
 }
 
 // okSimpleContainerContents checks the values a container reaches.  It is
@@ -372,6 +394,10 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 }
 
 // okSimpleType validates the container graph, accepting arbitrary opaque leaves.
+// It is linear in the DISTINCT containers of a value with nested sharing: past
+// sharedWalkBudget work it skips a container it has already validated (see
+// cycleState.valid), so a document holding a D-level sharing chain costs D,
+// not 2^D, on every elpspath call.
 // Every document builtin retains this guard: copying supports lists, maps,
 // one-dimensional arrays, and tagged/quote wrappers. These walks reject cycles.
 // Opaque leaf storage (bytes, native payloads, function bodies/environments)

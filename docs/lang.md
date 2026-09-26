@@ -536,7 +536,13 @@ recursively expand macros when the result of the argument macro form is itself
 a macro form.
 
 The `gensym` builtin is used to generate a new symbol, which is most often used
-with macros to avoid avoid naming collisions.
+with macros to avoid naming collisions. The symbol is named `gen` followed by
+at least eight digits taken from a counter that belongs to the runtime, so
+names are unique within a runtime and a fresh runtime running the same program
+generates the same names every time (templates rely on this; a VM made from a
+template continues the template's counter rather than restarting it). It is an ordinary symbol, not an
+uninterned one: `(gensym)` can be `equal?` to a symbol a program spells the
+same way, so do not name your own variables `genNNNNNNNN`.
 
 ### Quasiquote traversal
 
@@ -1544,7 +1550,8 @@ elps> (handler-bind ([json:integer-range-error (lambda (c &rest args) (list c ar
 ```
 
 Malformed input is still catchable as `json:syntax-error` under the option, so
-an existing `handler-bind` does not quietly stop firing.
+an existing `handler-bind` does not quietly stop firing.  The same holds under
+`:string-numbers` and `json:use-string-numbers`.
 
 #### Numbers with a fraction or an exponent are unchanged
 
@@ -2539,6 +2546,17 @@ counts decoded bytes, excluding padding and ignored CR/LF in the input.
 input string storage. These cases do not allocate a repeated buffer and can
 succeed even when the input is larger than the cap.
 
+`json:dump-string`, `json:dump-bytes` and `json:dump-message` check the bytes
+of the JSON document they build, after escaping and Base64 encoding, and
+signal the same allocation error as `format-string` when it would exceed the
+cap. A value that appears several times is serialized once per appearance, so
+a list holding many references to one value counts each copy; this is what
+bounds a document built by repeated doubling. The check runs before each
+value, so the encoder stops within one value of the cap; that value's own
+output (a string whose characters escape to `\u003c`-style sequences can grow
+sixfold) may pass the cap briefly before the error is raised. The Go function
+`libjson.Dump` has no runtime and is not capped.
+
 ### Context Cancellation
 
 A host can bind an evaluation to a Go context, and `elps run --timeout` does
@@ -2564,7 +2582,9 @@ that blocks for a long time inside a single step can outlive the deadline.
 context as well as on its timer, so it wakes on cancellation and never sleeps
 past the deadline, raising `context-cancelled` instead of returning nil when
 it is cut short.  With no context configured, `time:sleep` sleeps for the
-full duration it was given, however long that is.
+full duration it was given, however long that is.  The `json:dump-*`
+functions also poll the context while they serialize a value, so a large
+document cannot outlive the deadline either.
 
 ### Step Limits
 

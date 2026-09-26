@@ -112,8 +112,12 @@ var (
 			cannot rebind lisp package binding: name. Unqualified builtin
 			shadowing in your own package remains legal.`},
 		{"gensym", Formals(), builtinGensym,
-			`Returns a new unique, uninterned symbol. Useful in macros to
-			avoid variable name collisions.`},
+			`Returns a new symbol named genNNNNNNNN, unique within the
+			runtime: each call takes the next number from a per-runtime
+			counter. Useful in macros to avoid variable name collisions.
+			The result is an ordinary symbol, not an uninterned one, so it
+			is equal? to a symbol spelled the same way; do not give your
+			own variables names of that form.`},
 		{"identity", Formals("value"), builtinIdentity,
 			`Returns its argument unchanged.`},
 		{"macroexpand", Formals("quoted-form"), builtinMacroExpand,
@@ -152,8 +156,8 @@ var (
 			`Evaluates expr in the current environment and returns the result.
 			Quoted values are unquoted one level before evaluation.`},
 		{"error", Formals("condition", VarArgSymbol, "args"), builtinError,
-			`Signals an error with the given condition name (a symbol or
-			string) and optional data arguments. The condition can be caught
+			`Signals an error with the given condition name (a symbol) and
+			optional data arguments. The condition can be caught
 			by handler-bind. Rendering error data and stack-trace messages honours
 			the runtime output/work limit and cancellation, using #<truncated>
 			on exhaustion without changing the condition data.`},
@@ -3021,7 +3025,7 @@ func builtinIsBytes(env *LEnv, args *LVal) *LVal {
 
 func builtinEqual(env *LEnv, args *LVal) *LVal {
 	a, b := args.Cells[0], args.Cells[1]
-	return a.EqualWithRuntime(b, env.Runtime)
+	return a.EqualWithEnv(b, env)
 }
 
 func builtinAllP(env *LEnv, args *LVal) *LVal {

@@ -145,6 +145,11 @@ func TestSpecialOp(t *testing.T) {
 			// lambda whose printed form is far too large for a table row, so
 			// it is asserted in TestExprFormalsBoundIsInclusive instead.
 			{`#^(list %1025)`, `test:1:1: lisp:expr: invalid expr argument symbol %1025: argument index 1025 exceeds the maximum of 1024`, ""},
+			// An unknown %&name names itself in both forms.  The list form
+			// used to format the enclosing list's (empty) Str instead.
+			{`#^%&foo`, `test:1:1: lisp:expr: invalid expr argument symbol %&foo: not an argument index: &foo`, ""},
+			{`#^(list %&foo)`, `test:1:1: lisp:expr: invalid expr argument symbol %&foo: not an argument index: &foo`, ""},
+			{`#^(list %1 %&optional-typo)`, `test:1:1: lisp:expr: invalid expr argument symbol %&optional-typo: not an argument index: &optional-typo`, ""},
 			// Ordinary arities keep working.  A nine-argument lambda is the
 			// case a Runtime.MaxAlloc-based guard breaks at a MaxAlloc that is
 			// entirely reasonable for the byte buffers MaxAlloc otherwise

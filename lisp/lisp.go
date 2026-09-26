@@ -643,6 +643,48 @@ func SExpr(cells []*LVal) *LVal {
 	}
 }
 
+// newSExprCap returns a fresh, unquoted s-expression header and an empty
+// cells slice of capacity n for the caller to fill and then store into the
+// header's Cells.  For the short lists that dominate evaluation (a call form
+// and its evaluated arguments) the header and the backing array are one
+// allocation rather than two, the same co-allocation Terminal uses for its
+// marker.  The returned slice's capacity is exactly n, so the array slots
+// beyond it stay nil and unreachable, and an append past n copies exactly as
+// it would from make([]*LVal, 0, n).
+//
+// The header and the cells share one lifetime: anything that retains the
+// cells keeps the header's storage alive too.  The case that matters is a
+// lambda's &rest list, which aliases the call's cells: a program that stores
+// its &rest lists retains one LVal header (112 bytes) per stored list beyond
+// what it did with two allocations -- measured at 377 rather than 257 bytes
+// per retained two-element list.  That is accepted deliberately.  Copying the
+// cells when binding &rest would free it, but would add an allocation to every
+// variadic lambda call to save memory only for the calls that keep their list.
+func newSExprCap(n int) (*LVal, []*LVal) {
+	switch {
+	case n <= 2:
+		x := &struct {
+			c [2]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	case n <= 4:
+		x := &struct {
+			c [4]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	case n <= 8:
+		x := &struct {
+			c [8]*LVal
+			v LVal
+		}{v: LVal{Type: LSExpr}}
+		return &x.v, x.c[:0:n]
+	default:
+		return &LVal{Type: LSExpr}, make([]*LVal, 0, n)
+	}
+}
+
 // QExpr returns an LVal representing an Q-expression, a quoted expression, a
 // list.  Provided cells are used as backing storage for the returned list and
 // are not copied.
@@ -1567,21 +1609,70 @@ func (v *LVal) Equal(other *LVal) *LVal { return v.EqualWithRuntime(other, nil) 
 // Deep comparisons use an explicit stack, so limits above MaxValueDepth are safe.
 // A nil runtime is MaxValueDepth, which is what Equal passes.
 func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
-	if result := v.equalShallow(other, 0); result != nil {
+	budget := equalShallowBudget
+	if result := v.equalShallow(other, 0, &budget); result != nil {
 		return result
 	}
-	result, repeated := v.equalIter(other, rt.ValueDepthLimit(), false)
+	return v.equalDeep(other, rt, nil)
+}
+
+// EqualWithEnv is EqualWithRuntime for a caller holding an environment --
+// the equal? builtin, and any native builtin comparing values a program
+// supplied: env supplies the runtime and the context a long comparison
+// polls (see equalIter).  Polling never changes a result a comparison
+// reaches; it only stops one whose deadline has already passed.
+//
+// A nil env is EqualWithRuntime with a nil runtime.
+func (v *LVal) EqualWithEnv(other *LVal, env *LEnv) *LVal {
+	if env == nil {
+		return v.EqualWithRuntime(other, nil)
+	}
+	budget := equalShallowBudget
+	if result := v.equalShallow(other, 0, &budget); result != nil {
+		return result
+	}
+	return v.equalDeep(other, env.Runtime, env)
+}
+
+// equalShallowBudget is the work -- one per container entered plus one per
+// cell it holds -- after which equalShallow gives up and hands the
+// comparison to equalIter, whose memo bounds a value with nested sharing
+// (lisp/sharing.go).  It is larger than sharedWalkBudget because giving up
+// costs a restart: the recursive pass is the fast path for every ordinary
+// value, and this keeps values of up to about a million units of work on it
+// -- a list of 250k two-element lists, say -- while capping what a sharing
+// bomb can spend here at a few milliseconds.  A larger value pays the
+// restart and runs on the iterative pass (BenchmarkEqualLarge measures both
+// sides of the boundary).
+const equalShallowBudget = 1 << 20
+
+// equalDeep is the iterative comparison, run when equalShallow gives up.
+//
+// SHARING.  Both passes count their work: the containers they enter and
+// the cells those hold, so a wide value shared along many paths cannot
+// spend budget x width before a bound applies.  The shallow pass gives up
+// past equalShallowBudget, and the iterative pass memoises finished pairs
+// past sharedWalkBudget (see equalIter).  Without that, two values with
+// nested sharing -- (set! x (list x x)) repeated D times -- were compared
+// path by path, 2^D pairs inside one step (lisp/sharing.go).  A tree never
+// reaches a pair twice, so its result is the one the unmemoised walk
+// returns.
+func (v *LVal) equalDeep(other *LVal, rt *Runtime, env *LEnv) *LVal {
+	result, repeated := v.equalIter(other, rt.ValueDepthLimit(), false, env)
 	if repeated {
-		result, _ = v.equalIter(other, rt.ValueDepthLimit(), true)
+		result, _ = v.equalIter(other, rt.ValueDepthLimit(), true, env)
 	}
 	return result
 }
 
 // equalShallow compares ordinary values without traversal scratch or cycle
 // state. Like the JSON encoder's shallow pass, recursion stops at a fixed
-// small depth, below every supported runtime limit. A nil result abandons
-// the entire pass immediately and restarts in the iterative walker.
-func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
+// small depth, below every supported runtime limit, and once it has spent
+// *budget work (one per container entered plus one per cell or map entry
+// half it holds), so a value with nested sharing cannot make it
+// unroll every path (lisp/sharing.go). A nil result abandons the entire pass
+// immediately and restarts in the iterative walker.
+func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 	if v.Type != other.Type {
 		if v.IsNumeric() && other.IsNumeric() {
 			return v.equalNum(other)
@@ -1600,11 +1691,12 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 		if len(v.Cells) != len(other.Cells) {
 			return Bool(false)
 		}
-		if depth >= cycleGuardDepth {
+		if depth >= cycleGuardDepth || *budget <= 0 {
 			return nil
 		}
+		*budget -= 1 + len(v.Cells)
 		for i, child := range v.Cells {
-			if result := child.equalShallow(other.Cells[i], depth+1); result != Bool(true) {
+			if result := child.equalShallow(other.Cells[i], depth+1, budget); result != Bool(true) {
 				return result
 			}
 		}
@@ -1613,24 +1705,27 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 		if v.Str != other.Str {
 			return Bool(false)
 		}
-		if depth >= cycleGuardDepth {
+		if depth >= cycleGuardDepth || *budget <= 0 {
 			return nil
 		}
-		return v.Cells[0].equalShallow(other.Cells[0], depth+1)
+		*budget--
+		return v.Cells[0].equalShallow(other.Cells[0], depth+1, budget)
 	case LQuote:
 		// A reader quote beyond the first layer (''a): equal when the
 		// quoted values are, like a tagged value's payload.
-		if depth >= cycleGuardDepth {
+		if depth >= cycleGuardDepth || *budget <= 0 {
 			return nil
 		}
-		return v.Cells[0].equalShallow(other.Cells[0], depth+1)
+		*budget--
+		return v.Cells[0].equalShallow(other.Cells[0], depth+1, budget)
 	case LSortMap:
 		if v.Map().Len() != other.Map().Len() {
 			return Bool(false)
 		}
-		if depth >= cycleGuardDepth {
+		if depth >= cycleGuardDepth || *budget <= 0 {
 			return nil
 		}
+		*budget -= 1 + 2*v.Map().Len()
 		ae, be := sortedMapEntries(v.Map()), sortedMapEntries(other.Map())
 		if ae.Type == LError {
 			return ae
@@ -1647,10 +1742,10 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 				if a.Str != b.Str {
 					return Bool(false)
 				}
-			} else if result := a.equalShallow(b, depth+1); result != Bool(true) {
+			} else if result := a.equalShallow(b, depth+1, budget); result != Bool(true) {
 				return result
 			}
-			if result := pair.Cells[1].equalShallow(be.Cells[i].Cells[1], depth+1); result != Bool(true) {
+			if result := pair.Cells[1].equalShallow(be.Cells[i].Cells[1], depth+1, budget); result != Bool(true) {
 				return result
 			}
 		}
@@ -1663,22 +1758,68 @@ func (v *LVal) equalShallow(other *LVal, depth int) *LVal {
 // A repeated pair restarts the entire comparison with memoization from the
 // root. Merely skipping it would still unroll branching cycles exponentially
 // in the shallow frames that precede lazy cycle tracking.
-func (v *LVal) equalIter(other *LVal, limit int, strict bool) (*LVal, bool) {
+//
+// SHARING.  Cycle tracking starts only below cycleGuardDepth, so a value
+// that shares subtrees above that depth -- (set! x (list x x)) repeated D
+// times, D < 64 -- used to be compared path by path: 2^D pairs.  Sharing
+// below that depth already ends in seen and the strict restart, which is
+// linear.  A walk that has done sharedWalkBudget work (pairs of containers
+// entered plus the cells they hold) therefore memoises, in done, each pair
+// it FINISHES whose own walk cost at least equalMemoGrain and stayed above
+// cycleGuardDepth, with the height of containers it descended below it, and
+// answers a pair found there -- when its re-walk would also stay above that
+// depth -- without walking it again.  That is sound: a finished pair
+// compared equal, or the walk would have ended, and a walk that stays above
+// cycleGuardDepth touches neither seen nor the value depth limit, so its
+// result does not depend on where the pair is reached.  Everything deeper is
+// left to seen and the strict restart exactly as before, so every result,
+// error included, is the unmemoised walk's.  A pair too cheap to record
+// costs less than equalMemoGrain each time it is reached, so the walk above
+// cycleGuardDepth is linear in the distinct pairs it records times that
+// grain.  Recording only the costly pairs is what keeps a large TREE, which
+// never reaches a pair twice, from paying a map insert per container.
+//
+// What is NOT bounded here is two values shared DIFFERENTLY: their distinct
+// pairs can number |a|x|b|, quadratic in what the program built (not
+// exponential), and the pair tables (done, seen) are Go memory outside
+// MaxAlloc.  With env, the walk polls env's context every sharedWalkBudget
+// work, in both modes, so a deadline still stops it.
+func (v *LVal) equalIter(other *LVal, limit int, strict bool, env *LEnv) (*LVal, bool) {
 	type frame struct {
 		ac, bc  []*LVal
 		index   int
 		entries bool
+	}
+	// memoFrame is what done needs of a frame: the pair it compares, the
+	// walk's work when it was entered, and the container levels found below
+	// it so far.  Only a frame above cycleGuardDepth can be recorded, so
+	// these live in a fixed array indexed by depth rather than in every
+	// frame, and a deep walk's frames stay the size they were.
+	type memoFrame struct {
+		a, b          *LVal
+		start, height int
 	}
 	// Reuse one by-value cursor per ancestor. Leaves never create or clear
 	// a frame, and wide containers do not increase traversal scratch space.
 	// The first 16 frames live on the Go stack; append spills past that.
 	var buf [16]frame
 	stack := buf[:0]
+	var memoBuf [cycleGuardDepth]memoFrame
+	memoFrames := memoBuf[:]
 	var seen map[valuePair]bool
+	// done is the sharing memo; it is nil until work passes
+	// sharedWalkBudget, and never used in strict mode, whose seen already
+	// records every pair.
+	var done map[valuePair]int
+	work := 0
+	// h is the height of the element just compared, for its parent frame:
+	// -1 for a leaf, or for a container not walked.
+	var h int
 	a, b := v, other
 	key := false
 walk:
 	for {
+		h = -1
 		if key && isStringLike(a) && isStringLike(b) {
 			if a.Str != b.Str {
 				return Bool(false), false
@@ -1701,12 +1842,14 @@ walk:
 			}
 		} else {
 			var f frame
+			width := 1 // the cells a pair of containers holds, for the budget
 			switch a.Type {
 			case LSExpr, LArray:
 				if len(a.Cells) != len(b.Cells) {
 					return Bool(false), false
 				}
 				f.ac, f.bc = a.Cells, b.Cells
+				width = len(a.Cells)
 			case LTaggedVal:
 				if a.Str != b.Str {
 					return Bool(false), false
@@ -1718,6 +1861,7 @@ walk:
 				if a.Map().Len() != b.Map().Len() {
 					return Bool(false), false
 				}
+				width = 2 * a.Map().Len()
 			default:
 				return Bool(false), false
 			}
@@ -1736,7 +1880,32 @@ walk:
 				}
 				seen[pair] = true
 			}
+			if !repeated && len(done) > 0 {
+				// Reached again through sharing: equal.  Only a pair whose
+				// re-walk would stay above cycleGuardDepth is answered here
+				// -- a deeper re-walk would reach seen, and possibly the
+				// strict restart, and the memo must not change what those
+				// decide.  The value depth limit, at least 1024, is out of
+				// reach of a walk that shallow.
+				if height, ok := done[valuePair{a, b}]; ok && len(stack)+height < cycleGuardDepth {
+					repeated, h = true, height
+				}
+			}
 			if !repeated {
+				work += 1 + width
+				if work > sharedWalkBudget {
+					if done == nil && !strict {
+						done = make(map[valuePair]int)
+					}
+					// Polled in strict mode too: two differently shared
+					// values that also share below cycleGuardDepth end up
+					// here, with |a|x|b| distinct pairs in seen.
+					if env != nil && work/sharedWalkBudget != (work-1-width)/sharedWalkBudget {
+						if err := env.Context().Err(); err != nil {
+							return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err), false
+						}
+					}
+				}
 				if a.Type == LSortMap {
 					ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
 					if ae.Type == LError {
@@ -1751,12 +1920,21 @@ walk:
 					f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
 				}
 				if len(f.ac) > 0 {
+					if d := len(stack); d < len(memoFrames) {
+						memoFrames[d] = memoFrame{a: a, b: b, start: work}
+					}
 					stack = append(stack, f)
+				} else {
+					h = 0
 				}
 			}
 		}
 		for len(stack) > 0 {
 			f := &stack[len(stack)-1]
+			d := len(stack) - 1
+			if d < len(memoFrames) && h >= memoFrames[d].height {
+				memoFrames[d].height = h + 1
+			}
 			n := len(f.ac)
 			if f.entries {
 				n *= 2
@@ -1772,12 +1950,28 @@ walk:
 				f.index++
 				continue walk
 			}
+			if d >= len(memoFrames) {
+				// Nothing at or above this depth can be recorded; report a
+				// height that keeps every ancestor from being recorded too.
+				h = cycleGuardDepth
+			} else {
+				m := &memoFrames[d]
+				h = m.height
+				if done != nil && work-m.start >= equalMemoGrain && d+h < cycleGuardDepth {
+					done[valuePair{m.a, m.b}] = h
+				}
+				*m = memoFrame{}
+			}
 			*f = frame{}
 			stack = stack[:len(stack)-1]
 		}
 		return Bool(true), false
 	}
 }
+
+// equalMemoGrain is the least work a finished pair's walk must have cost for
+// equalIter's sharing memo to record it.  See equalIter.
+const equalMemoGrain = 64
 
 // isStringLike reports whether v is one of the name-carrying key types the
 // stock sortedmap accepts.

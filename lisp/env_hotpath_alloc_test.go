@@ -69,18 +69,63 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	let := SExpr([]*LVal{Symbol("let"), Nil(), value})
 	// Before lazy scopes these allocated 3 and 8 objects respectively.  The
 	// lambda call fell from 2 to 1 when bind stopped wrapping the body in a
-	// fresh list header on every call; the one left is the call env.
+	// fresh list header on every call; the one left is the call env.  The
+	// empty let fell by one more when bind stopped wrapping a Go special
+	// operator's &rest arguments in a transient list (let's formals are
+	// (bindings &rest expr)).
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 7},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
 			if hotpathValue.Type != LInt || hotpathValue.Int != 42 {
+				t.Fatalf("unexpected result: %v", hotpathValue)
+			}
+			if got != tc.want {
+				t.Errorf("allocated %v times per call, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// TestCallFormAllocations pins the call value evalSExprCells builds for a
+// builtin call: its header and its cells (the function plus its arguments)
+// are one allocation (newSExprCap) up to eight cells, and two past that, as
+// every call form was before (5 allocations in all, for every row, before
+// the native binder fast path removed one more).  The other two are the
+// builtin's argument binding and its bookkeeping, which newSExprCap does not
+// touch.
+func TestCallFormAllocations(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	x := Symbol("call-form-x")
+	if got := env.PutGlobal(x, Int(1)); got.Type == LError {
+		t.Fatal(got)
+	}
+	form := func(nargs int) *LVal {
+		cells := []*LVal{Symbol("max")}
+		for range nargs {
+			cells = append(cells, x)
+		}
+		return SExpr(cells)
+	}
+	for _, tc := range []struct {
+		name  string
+		nargs int
+		want  float64
+	}{
+		{"2-cells", 1, 3},
+		{"8-cells", 7, 3},
+		{"9-cells-not-coallocated", 8, 4},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			call := form(tc.nargs)
+			got := testing.AllocsPerRun(200, func() { hotpathValue = env.Eval(call) })
+			if hotpathValue.Type != LInt || hotpathValue.Int != 1 {
 				t.Fatalf("unexpected result: %v", hotpathValue)
 			}
 			if got != tc.want {
@@ -101,7 +146,7 @@ func TestLazyScopePresizing(t *testing.T) {
 		return testing.AllocsPerRun(200, func() {
 			child := newEnvN(env, len(keys))
 			if eager {
-				child.scope = make(map[string]*LVal, len(keys))
+				child.scope = newScopeTable(len(keys))
 			}
 			for _, key := range keys {
 				hotpathValue = child.Put(key, value)
@@ -110,5 +155,27 @@ func TestLazyScopePresizing(t *testing.T) {
 	}
 	if lazy, eager := measure(false), measure(true); lazy != eager {
 		t.Errorf("lazy scope allocated %v times, eager presized scope allocated %v", lazy, eager)
+	}
+}
+
+// TestUnsizedScopeAllocations pins the Go-API shape an embedder uses -- Put
+// into an unsized NewEnv scope -- against what the map-backed scope cost:
+// 8 names were the LEnv, a map header and one group (3 allocations); a
+// slice-backed unsized scope is the LEnv and one 8-slot slice.
+func TestUnsizedScopeAllocations(t *testing.T) {
+	parent := initSafetyTestEnv(t)
+	keys := make([]*LVal, unsizedScopeCap)
+	for i := range keys {
+		keys[i] = Symbol(string(rune('a' + i)))
+	}
+	value := Int(42)
+	got := testing.AllocsPerRun(200, func() {
+		env := NewEnv(parent)
+		for _, k := range keys {
+			hotpathValue = env.Put(k, value)
+		}
+	})
+	if got != 2 {
+		t.Errorf("filling an unsized scope with %d names allocated %v times, want 2", len(keys), got)
 	}
 }

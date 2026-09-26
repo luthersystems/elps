@@ -211,6 +211,9 @@ func BuiltinTimeEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
 	}
+	if b.Type != lisp.LNative {
+		return env.Errorf("argument is not a time: %v", b.Type)
+	}
 	t1, ok := borrowTime(a)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", a)
@@ -227,6 +230,9 @@ func BuiltinTimeLT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
 	}
+	if b.Type != lisp.LNative {
+		return env.Errorf("argument is not a time: %v", b.Type)
+	}
 	t1, ok := borrowTime(a)
 	if !ok {
 		return env.Errorf("argument is not a time: %v", a)
@@ -242,6 +248,9 @@ func BuiltinTimeGT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	a, b := args.Cells[0], args.Cells[1]
 	if a.Type != lisp.LNative {
 		return env.Errorf("argument is not a time: %v", a.Type)
+	}
+	if b.Type != lisp.LNative {
+		return env.Errorf("argument is not a time: %v", b.Type)
 	}
 	t1, ok := borrowTime(a)
 	if !ok {
@@ -268,7 +277,7 @@ func BuiltinTimeAdd(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	d, ok := ld.Native.(time.Duration)
 	if !ok {
-		return env.Errorf("argument is not a time: %v", ld)
+		return env.Errorf("argument is not a duration: %v", ld)
 	}
 	return Time(t.Add(d))
 }

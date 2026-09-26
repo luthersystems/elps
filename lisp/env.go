@@ -138,15 +138,17 @@ func InitializeTypedef(env *LEnv) *LVal {
 // live name lookup is Package.funNames, reached through GetFunName.
 //
 // Field order is layout-sensitive: the pointer-bearing fields lead so the GC
-// scan extent stops at 48 bytes. Keep scalars (ID and scopeHint) trailing.
+// scan extent stops at 56 bytes, at the scope's bindings pointer. Keep scope
+// last among them (its length and capacity are scalars) and the other
+// scalars (ID and scopeHint) trailing.
 type LEnv struct {
 	loc       *token.Location
-	scope     map[string]*LVal // nil until the first successful Put; reads treat nil as empty
 	parent    *LEnv
 	Runtime   *Runtime
 	evalCtx   context.Context // transient: set by call() at builtin boundary
+	scope     scopeTable      // empty (allocates nothing) until the first successful Put
 	ID        uint
-	scopeHint int // initial capacity to use when scope is first allocated
+	scopeHint int // bindings to make room for when the scope is first allocated
 }
 
 // Parent returns env's lexically enclosing environment, or nil when env is a
@@ -164,13 +166,16 @@ func (env *LEnv) Parent() *LEnv {
 
 // Bindings iterates the symbol bindings in env's immediate scope; parent
 // scopes are not included (walk Parent for those).  Iteration order is
-// unspecified, like Go map order.
+// unspecified.
 //
-// Bindings is the read half of the scope map, which went unexported in issue
-// #382: enumerating an environment is a legitimate need (the debugger's
+// Bindings is the read half of the scope table, which went unexported (as a
+// map) in issue #382: enumerating an environment is a legitimate need (the debugger's
 // variable panes), while the write that came free with an exported map —
 // rebinding a symbol in an environment the writer does not own — is not.
 // Use Put or PutGlobal to bind.
+//
+// Binding into env while iterating (Put inside the loop) is unspecified: the
+// loop may or may not see the new binding or an updated value.
 //
 // Bindings is nil-receiver safe: a nil LEnv yields nothing.
 func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
@@ -178,11 +183,7 @@ func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
 		if env == nil {
 			return
 		}
-		for k, v := range env.scope {
-			if !yield(k, v) {
-				return
-			}
-		}
+		env.scope.each(yield)
 	}
 }
 
@@ -193,7 +194,7 @@ func (env *LEnv) NumBindings() int {
 	if env == nil {
 		return 0
 	}
-	return len(env.scope)
+	return env.scope.len()
 }
 
 // Source returns a copy of the location the evaluator is currently stamping
@@ -243,10 +244,10 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv whose scope map is allocated on the first
-// successful Put, pre-sized to hold n bindings. Callers that know the number
-// of bindings up front (let, let*, dotimes, etc.) can avoid map growth by
-// passing the exact count.
+// newEnvN creates a child LEnv whose scope is pre-sized to hold n bindings:
+// allocated together with the LEnv for n <= 4, otherwise on the first
+// successful Put. Callers that know the number of bindings up front (let,
+// let*, dotimes, etc.) avoid any growth by passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location
@@ -258,15 +259,13 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	} else {
 		runtime = StandardRuntime()
 	}
-	env := &LEnv{
-		ID:        runtime.GenEnvID(),
-		loc:       loc,
-		scopeHint: n,
-		parent:    parent,
-		Runtime:   runtime,
-		evalCtx:   evalCtx,
-	}
-	//elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
+	env := allocEnvScope(n)
+	env.ID = runtime.GenEnvID()
+	env.loc = loc //elps:aliases the child env's Loc register deliberately aliases the parent's current location: LEnv is runtime-internal state, both registers are rebound on every eval step, and no consumer-facing value is built from this pointer
+	env.scopeHint = n
+	env.parent = parent
+	env.Runtime = runtime
+	env.evalCtx = evalCtx
 	return env
 }
 
@@ -571,8 +570,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 
 func (env *LEnv) getSimple(k *LVal) *LVal {
 	for {
-		v, ok := env.scope[k.Str]
-		if ok {
+		if v, ok := env.scope.get(k.Str); ok {
 			return v
 		}
 		if env.parent != nil {
@@ -660,10 +658,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
 		return env.Errorf("cannot rebind constant: %v", k.Str)
 	}
-	if env.scope == nil {
-		env.scope = make(map[string]*LVal, env.scopeHint)
-	}
-	env.scope[k.Str] = v
+	env.scope.put(k.Str, v, env.scopeHint)
 	return Nil()
 }
 
@@ -702,9 +697,7 @@ func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
 // the seal, as the registration APIs do.
 func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 	for {
-		_, ok := env.scope[k.Str]
-		if ok {
-			env.scope[k.Str] = v
+		if env.scope.update(k.Str, v) {
 			return Nil()
 		}
 		if env.parent == nil {
@@ -2129,7 +2122,6 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	defer func() { env.loc = loc }()
 
 	cells := s.Cells
-	newCells := make([]*LVal, 1, len(s.Cells))
 	if env.Runtime.Stack.Top() != nil {
 		// Avoid tail recursion during argument evaluation by temporarily
 		// resetting Terminal.  We don't want to push anything on the stack
@@ -2154,7 +2146,10 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		log.Panicf("tail-recursion optimization attempted during argument evaluation: %v", f.Cells)
 	}
 
-	newCells[0] = f
+	// The call value is allocated only once the function position has
+	// evaluated to a function, so an error there allocates nothing for it.
+	call, newCells := newSExprCap(len(s.Cells))
+	newCells = append(newCells, f)
 	if f.IsSpecialFun() {
 		// Arguments to a macro are not evaluated but they aren't quoted
 		// either.  This behavior is what allows ``unquote'' to properly
@@ -2168,7 +2163,8 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		// the value returned by (if 1 '(1) '(2)), it merely evaluates the
 		// expression and produces '(1).
 		newCells = append(newCells, cells...)
-		return SExpr(newCells)
+		call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
+		return call
 	}
 	// Evaluate arguments before invoking f.
 	for _, expr := range cells {
@@ -2183,7 +2179,8 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 
 		newCells = append(newCells, v)
 	}
-	return SExpr(newCells)
+	call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
+	return call
 }
 
 // call invokes LFun fun with the list args.  In general it is not safe to call
@@ -2320,6 +2317,25 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	//     (template_plan.go) rebuild an existing function value and carry its
 	//     already-validated formals through unchanged; detach refuses LFun
 	//     outright.
+	// The formals are read before funEnv so that a malformed function value
+	// (no formals cell, or no function data) fails exactly as it does in
+	// bindGeneral, which reads them first.
+	formals := fun.Cells[0].Cells
+	if fun.funEnv() == nil {
+		if list := bindNativePositional(formals, args.Cells); list != nil {
+			return env, list
+		}
+	}
+	return env.bindGeneral(fun, args)
+}
+
+// bindGeneral is bind for every call bindNativePositional does not take:
+// any function with a captured environment, and a host function whose
+// formals or argument count fall outside the fast path.  It handles every
+// formal shape and reports every binding error.  It has the same results
+// and contract as bind, and is also what bind's fast path is tested
+// against.
+func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 	argsp := argParser{args: args.Cells}
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
@@ -2336,12 +2352,13 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	// because eval reads env.loc before it rebinds it -- see funData.loc.
 	var funenv *LEnv
 	if fenv := fun.funEnv(); fenv != nil {
-		cp := *fenv
-		cp.parent = fenv
-		cp.loc = fun.funData().loc
-		cp.scope = nil
-		cp.scopeHint = formals.Len()
-		funenv = &cp
+		funenv = allocEnvScope(formals.Len())
+		scope := funenv.scope
+		*funenv = *fenv
+		funenv.parent = fenv
+		funenv.loc = fun.funData().loc //elps:aliases the definition-site location snapshot, frozen before evaluation reached Lambda, exactly as the shallow copy this replaced did
+		funenv.scope = scope
+		funenv.scopeHint = formals.Len()
 	}
 	putArg := func(k, v *LVal) *LVal {
 		return funenv.Put(k, v)
@@ -2395,6 +2412,55 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		return env, QExpr(builtinArgs)
 	}
 	return funenv, nil //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
+}
+
+// bindNativePositional is bind's fast path for a function with no captured
+// environment (a builtin, special operator or macro implemented in Go) whose
+// formals are only required names, optionally followed by a final
+// `&rest name`, called with an argument count those formals accept.  It
+// returns the argument list bind's general path would build for that call,
+// or nil when the call is not of that shape; the caller then takes the
+// general path, which owns every other formal shape and every error message.
+//
+// For these shapes the general path appends each argument once, in order,
+// to a fresh slice of capacity max(len(args), len(formals)), and wraps the
+// arguments a `&rest` formal collects in a transient list only to unwrap
+// them again.  This builds the same slice directly: same contents, same
+// length, same capacity, still a copy the builtin owns and may retain or
+// mutate without touching the caller's argument list.  It skips the
+// transient list (one LVal per `&rest` call) and the per-formal dispatch.
+//
+// A formal is a control symbol exactly when bindFormalNext would treat it
+// as one (a MetaArgPrefix prefix); anything unusual about one, `&optional`,
+// `&key`, a misplaced `&rest` or an unknown control symbol, falls back.  An
+// arity mismatch falls back too, so its error keeps the general path's text.
+// Steps are not involved: binding charges none on either path.
+func bindNativePositional(formals, args []*LVal) *LVal {
+	nreq := len(formals)
+	rest := false
+	for i, formal := range formals {
+		if formal == nil {
+			// A hand-built formals list with a nil entry: leave it to the
+			// general binder, which reads formals one at a time and may
+			// report an arity error before it reaches the nil.
+			return nil
+		}
+		if !strings.HasPrefix(formal.Str, MetaArgPrefix) {
+			continue
+		}
+		if formal.Str != VarArgSymbol || i+2 != len(formals) || strings.HasPrefix(formals[i+1].Str, MetaArgPrefix) {
+			return nil
+		}
+		nreq, rest = i, true
+		break
+	}
+	narg := len(args)
+	if narg < nreq || (!rest && narg != nreq) {
+		return nil
+	}
+	cells := make([]*LVal, narg, max(narg, len(formals)))
+	copy(cells, args)
+	return QExpr(cells)
 }
 
 type bindfunc func(k, v *LVal) *LVal

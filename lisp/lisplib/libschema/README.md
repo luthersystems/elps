@@ -156,7 +156,7 @@ The following inbuilt types are available within the library:
 |`s:bytes`|binary array (ie golang `[]byte`)|
 |`s:any`|any ELPS value|
 |`s:array`|array|
-|`s:bool`|boolean|
+|`s:bool`|boolean (the symbols `true` and `false`; the strings `"true"` and `"false"` are rejected)|
 |`s:tagged-value`|tagged-value|
 |`s:error`|ELPS error|
 |`s:fun`|A function|
@@ -210,6 +210,10 @@ Requires the value to match the supplied pattern. Any regular expression that ca
 
 * `(s:positive)`
   Requires the value to be greater than zero.
+
+  NaN satisfies none of the numeric constraints (`s:gt`, `s:gte`, `s:lt`, `s:lte`, `s:positive`,
+  `s:negative`), and a NaN bound such as `(s:gt (/ 0.0 0.0))` is an error when the constraint is
+  built.
   
 
 * `(s:negative)`
@@ -244,16 +248,16 @@ Requires the value to match the supplied pattern. Any regular expression that ca
   
 
 * `(s:is-true)`
-  Require the value to be `true`
+  Require the value to be the symbol `true` (not the string `"true"`)
 
 
 * `(s:is-false)`
-  Require the value to be `false`
+  Require the value to be the symbol `false` (not the string `"false"`)
 
 
 * `(s:is-truthy)`
-  Require the value to be equivalent to `true`. Strings must be non-empty and not equal to `"false"`, arrays must be non-
-  empty etc.
+  Require the value to be equivalent to `true`. Strings must be non-empty and not equal to `"false"`, arrays, maps and
+  bytes must be non-empty, numbers must be positive.
 
 
 * `(s:is-falsy)`

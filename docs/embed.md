@@ -542,6 +542,14 @@ APIs without a runtime, including `lisp.GoValue`, use the default limit.
 excessive depth; `GoSlice` and `GoMap` return `(nil, false)`. The deprecated
 JSON serializer conversion methods use the same convention.
 
+`GoValue`, `GoSlice`, `GoMap` and their `WithRuntime`/`Of` forms may return
+results that share Go containers where the lisp value shared them: a list or
+map reached along several paths can appear as one `[]any` or `map[any]any` in
+each place. This keeps a value with nested sharing, such as one built by
+`(set! x (list x x))` repeated many times, linear to convert rather than
+exponential. Treat converted results as read-only, or deep-copy them before
+mutating.
+
 Sealing and source-location assignment use explicit stacks throughout; these
 metadata-only APIs cannot return an error and finish the graph.
 

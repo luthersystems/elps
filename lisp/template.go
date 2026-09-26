@@ -392,6 +392,16 @@ func setTemplateFrameEntries(f *templateFrame, values map[string]*LVal) {
 	f.commitEntries(entries)
 }
 
+// setTemplateFrameScope snapshots a lexical scope's bindings.
+func setTemplateFrameScope(f *templateFrame, scope scopeTable) {
+	entries := f.allocEntries(scope.len())
+	scope.each(func(name string, v *LVal) bool {
+		entries = append(entries, templateMapEntry{key: name, v: v})
+		return true
+	})
+	f.commitEntries(entries)
+}
+
 func (f *templateFrame) empty() bool {
 	return !f.visitCapture && f.shared == nil && !f.visitEnv && f.nkeys == 0 && len(f.cells) == 0
 }
@@ -547,7 +557,7 @@ func (s *templateInventory) envNode(env *LEnv) error {
 	s.envs[env] = len(s.envQueue) + 1
 	s.envQueue = append(s.envQueue, env)
 	s.next = templateFrame{scope: env, env: env.parent, visitEnv: true}
-	setTemplateFrameEntries(&s.next, env.scope)
+	setTemplateFrameScope(&s.next, env.scope)
 	return nil
 }
 

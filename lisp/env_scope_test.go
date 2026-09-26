@@ -15,7 +15,7 @@ func TestLazyScopeBindings(t *testing.T) {
 	require.NotEqual(t, LError, parent.Put(x, Int(1)).Type)
 	require.NotEqual(t, LError, parent.PutGlobal(Symbol("global"), Int(9)).Type)
 	child := newEnvN(parent, 32)
-	require.Nil(t, child.scope)
+	require.False(t, child.scope.allocated())
 	assert.Equal(t, 32, child.scopeHint)
 	assert.Zero(t, child.NumBindings())
 	for range child.Bindings() {
@@ -27,19 +27,19 @@ func TestLazyScopeBindings(t *testing.T) {
 	require.NotEqual(t, LError, child.Update(Symbol("global"), Int(10)).Type)
 	assert.Equal(t, 2, parent.Get(x).Int)
 	assert.Equal(t, 10, parent.GetGlobal(Symbol("global")).Int)
-	assert.Nil(t, child.scope, "reading or updating an ancestor must not allocate")
+	assert.False(t, child.scope.allocated(), "reading or updating an ancestor must not allocate")
 
 	// An eagerly allocated empty map is the oracle for validation and errors.
 	eager := NewEnv(parent)
-	eager.scope = make(map[string]*LVal)
+	eager.scope = newScopeTable(0)
 	for _, key := range []*LVal{Int(1), Symbol(":key"), Symbol(TrueSymbol), Symbol(FalseSymbol)} {
 		assert.Equal(t, eager.Put(key, Int(0)).String(), child.Put(key, Int(0)).String())
-		assert.Nil(t, child.scope, "failed Put must not allocate")
+		assert.False(t, child.scope.allocated(), "failed Put must not allocate")
 	}
 	missing := Symbol("missing")
 	assert.Equal(t, eager.Get(missing).String(), child.Get(missing).String())
 	assert.Equal(t, eager.Update(missing, Int(0)).String(), child.Update(missing, Int(0)).String())
-	assert.Nil(t, child.scope)
+	assert.False(t, child.scope.allocated())
 
 	// Capture before the map exists: later Put and Update must stay visible,
 	// including through Copy, which shares the captured environment.
@@ -47,12 +47,12 @@ func TestLazyScopeBindings(t *testing.T) {
 	copied := closure.Copy()
 	require.Equal(t, LFun, copied.Type)
 	require.NotEqual(t, LError, child.Put(x, Int(3)).Type)
-	require.NotNil(t, child.scope)
+	require.True(t, child.scope.allocated())
 	assert.Equal(t, 1, child.NumBindings())
 	assert.Equal(t, 2, parent.Get(x).Int)
 	grandchild := NewEnv(child)
 	require.NotEqual(t, LError, grandchild.Update(x, Int(4)).Type)
-	assert.Nil(t, grandchild.scope)
+	assert.False(t, grandchild.scope.allocated())
 	for _, fun := range []*LVal{closure, copied} {
 		got := parent.FunCall(fun, Nil())
 		require.Equal(t, LInt, got.Type, "%v", got)
@@ -86,7 +86,7 @@ func TestLazyCallScope(t *testing.T) {
 			assert.Same(t, env, call.parent)
 			assert.Equal(t, tc.formals.Len(), call.scopeHint)
 			if tc.name == "empty" {
-				assert.Nil(t, call.scope)
+				assert.False(t, call.scope.allocated())
 			} else {
 				assert.Equal(t, 1, call.NumBindings())
 			}
@@ -112,7 +112,7 @@ func TestLazyTemplateScopes(t *testing.T) {
 		for range 2 {
 			vm, err := tmpl.NewVM()
 			require.NoError(t, err)
-			assert.Nil(t, vm.scope)
+			assert.False(t, vm.scope.allocated())
 			cloned := vm.GetGlobal(Symbol("closure"))
 			require.Equal(t, LFun, cloned.Type)
 			captured := cloned.funEnv()
@@ -122,7 +122,7 @@ func TestLazyTemplateScopes(t *testing.T) {
 			if populated {
 				assert.Equal(t, 1, captured.Get(key).Int)
 			} else {
-				assert.Nil(t, captured.scope)
+				assert.False(t, captured.scope.allocated())
 			}
 			require.NotEqual(t, LError, captured.Put(key, Int(2)).Type)
 			got := vm.FunCall(cloned, Nil())
@@ -132,8 +132,8 @@ func TestLazyTemplateScopes(t *testing.T) {
 		if populated {
 			assert.Equal(t, 1, child.Get(x).Int)
 		} else {
-			assert.Nil(t, child.scope)
+			assert.False(t, child.scope.allocated())
 		}
 	}
-	assert.Nil(t, NewEnvRuntime(nil).scope)
+	assert.False(t, NewEnvRuntime(nil).scope.allocated())
 }
