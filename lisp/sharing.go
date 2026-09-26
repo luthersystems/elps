@@ -39,7 +39,8 @@ package lisp
 // have built one copy per path: the output has the same sharing as the
 // input.  That is a deliberate behaviour change, and a narrow one: results
 // are equal? to what the tree walk built, the value depth limit fails where
-// it did, and steps are unchanged.  What can see it is identity -- a Go
+// it did, and steps are unchanged except for the duplicated-rebuild charge
+// below.  What can see it is identity -- a Go
 // embedder comparing pointers, or a debugger, whose per-node expansion IDs
 // follow the sharing (a shared container gets one ID, not one per path).
 // Work a memo cannot remove -- quasiquote re-evaluating an unquote under a

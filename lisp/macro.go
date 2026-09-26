@@ -845,6 +845,18 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 	return unquoteNone, nil
 }
 
+// quasiquoteRebuildAllowance is how much duplicated work -- quote wrappers
+// unwrapped and cells rebuilt on re-entering a shared impure node -- one
+// quasiquote may do before it is charged in steps (see findAndUnquote).  A
+// million units is far past what a template that merely repeats forms does
+// (a thousand-cell form repeated a thousand times), so such a template keeps
+// its exact step count; and it bounds the uncharged work, and the
+// allocation that comes with it (an unquote's value is re-quoted once per
+// wrapper), to the order of what one builtin step may already do.  It is
+// not tied to MaxAlloc, which counts elements of one allocation and which an
+// embedder may raise freely.
+const quasiquoteRebuildAllowance = 1 << 20
+
 // quasiquoteMemo is one pure container's entry in findAndUnquote's
 // sharing memo (see there).
 type quasiquoteMemo struct {
@@ -874,24 +886,28 @@ type quasiquoteMemo struct {
 // limits, which the entry records), while a list holding an unquote must
 // evaluate it once per occurrence, as it always has.
 //
-// An IMPURE list reached again is therefore rebuilt again, and that rebuild
-// is the one piece of work the unquotes' own steps do not pay for: a list of
-// width k holding one unquote, shared along 2^D paths, costs one step per
-// occurrence but k cells of work and allocation.  So past the budget the
-// walk records the impure lists it finishes and totals the cells it
-// rebuilds on re-entering one.  That DUPLICATED work is free up to
-// sharedWalkBudget cells -- so a template that merely repeats a form a few
-// times keeps its exact step count -- and beyond it is charged one step
-// per cell (LEnv.ChargeSteps, which also observes the context).
+// Work counts quote wrappers as well as lists and cells: prepareUnquote
+// unwraps a node's LQuote chain on every visit, and a program can build an
+// L-deep chain in L steps.  A pure leaf behind quote wrappers is memoised
+// like a pure list, keyed on its outermost wrapper.
+//
+// An IMPURE node reached again -- a list holding an unquote, or an unquote
+// behind quote wrappers -- is therefore unwrapped and rebuilt again, and
+// that is the one piece of work the unquotes' own steps do not pay for: a
+// list of width k holding one unquote, shared along 2^D paths, costs one
+// step per occurrence but k cells of work and allocation.  So past the
+// budget the walk records the impure nodes it finishes and totals the work
+// (wrappers and cells) of re-entering one.  That DUPLICATED work is free up
+// to quasiquoteRebuildAllowance units, and beyond it is charged one step per
+// unit (LEnv.ChargeSteps, which also observes the context).
 //
 // A tree never revisits a list: its result, errors and step count are
 // exactly the tree walk's.  A DAG past the budget gets one shared result per
-// shared pure list where the tree walk built one copy per path; lists are
-// values nothing in the language mutates in place through quasiquote's
-// output, so only a debugger's expansion IDs or a Go embedder comparing
-// pointers can see that.  Steps change only for a DAG that re-enters more
-// than sharedWalkBudget cells of shared impure lists in one quasiquote --
-// work the tree walk did without charging for it at all.
+// shared pure list where the tree walk built one copy per path; only a Go
+// embedder comparing pointers can see that.  Steps change only once the
+// work of re-entering shared impure nodes in one quasiquote passes the
+// allowance above -- work the tree walk did without charging for it at
+// all.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	type frame struct {
 		v, orig                             *LVal
@@ -937,28 +953,44 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		if !memoised {
 			result, list, quotes, quoteEdges, evaluated = prepareUnquote(env, v, depth, valueDepth)
 			need = quoteEdges
-		}
-		if list != nil {
-			f := frame{v: list, orig: v, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes, quoteEdges: quoteEdges, need: quoteEdges}
-			if len(list.Cells) > 0 {
-				work += 1 + len(list.Cells)
-				if memo == nil && work > sharedWalkBudget {
-					memo = make(map[*LVal]quasiquoteMemo)
-					impure = make(map[*LVal]struct{})
-				}
-				if memo != nil {
+			// cost is the work this visit did: the quote wrappers it
+			// unwrapped, and a list's cells.
+			cost := quoteEdges
+			if list != nil && len(list.Cells) > 0 {
+				cost += 1 + len(list.Cells)
+			}
+			work += cost
+			if memo == nil && work > sharedWalkBudget {
+				memo = make(map[*LVal]quasiquoteMemo)
+				impure = make(map[*LVal]struct{})
+			}
+			if memo != nil && (list != nil || result.Type != LError) {
+				switch {
+				case list == nil && !evaluated && quoteEdges > 0:
+					// A leaf behind quote wrappers: pure, and as costly to
+					// reach again as its wrappers are deep.
+					memo[v] = quasiquoteMemo{result: result, need: quoteEdges, allocLimit: env.Runtime.MaxAllocBytes(), depthLimit: env.Runtime.ValueDepthLimit()}
+				case list != nil || (evaluated && quoteEdges > 0):
 					if _, again := impure[v]; again {
-						// A shared impure list, rebuilt once more: charge the
-						// part of the duplicated work past the allowance.
+						// A shared impure node, unwrapped and rebuilt once
+						// more: charge the duplicated work past the
+						// allowance.
 						before := rebuilt
-						rebuilt += len(list.Cells)
-						if charge := rebuilt - max(before, sharedWalkBudget); charge > 0 {
+						rebuilt += cost
+						if charge := rebuilt - max(before, quasiquoteRebuildAllowance); charge > 0 {
 							if lerr := env.ChargeSteps(int64(charge)); lerr.Type == LError {
 								return lerr
 							}
 						}
+					} else if evaluated {
+						impure[v] = struct{}{}
 					}
 				}
+			}
+		}
+		if list != nil {
+			f := frame{v: list, orig: v, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes, quoteEdges: quoteEdges, need: quoteEdges}
+			if len(list.Cells) > 0 {
 				stack = append(stack, f)
 				v = list.Cells[0]
 				depth++
@@ -966,6 +998,10 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				continue
 			}
 			result = finishUnquote(list, f.cells, quotes, false, 0)
+			if memo != nil && quoteEdges > 0 {
+				// An empty list behind quote wrappers: pure, like a leaf.
+				memo[v] = quasiquoteMemo{result: result, need: quoteEdges, allocLimit: env.Runtime.MaxAllocBytes(), depthLimit: env.Runtime.ValueDepthLimit()}
+			}
 		}
 		// Read the allocation cap once per unquote step rather than once per
 		// frame the loop below unwinds.  The boundary is that loop: it only
@@ -1023,9 +1059,9 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 }
 
 // prepareUnquote examines one node of a quasiquote template.  evaluated
-// reports that result is the value of an unquoted expression.
-// For a leaf returned unchanged, quoteEdges is the number of quote wrappers
-// the depth check walked through.
+// reports that result is the value of an unquoted expression.  quoteEdges
+// is the number of quote wrappers the depth check walked through, except on
+// an error.
 func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int, evaluated bool) {
 	// Read the depth limit once per call.  The boundary is this function:
 	// the quote-unwrapping loop below runs no user code (getUnquoteType is a
@@ -1075,11 +1111,11 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, li
 			env.loc = v.source
 			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0, false
 		}
-		return doUnquoteSpliced(env, expr), nil, 0, 0, true
+		return doUnquoteSpliced(env, expr), nil, 0, quoteEdges, true
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, 0, true
+		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, quoteEdges, true
 	}
 	return nil, v, quoteLevel, quoteEdges, false
 }

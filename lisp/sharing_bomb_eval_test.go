@@ -225,3 +225,36 @@ func TestSharingQuasiquoteRepeatedFormKeepsStepCount(t *testing.T) {
 		t.Fatalf("a form repeated three times costs %d steps; as a tree, %d", dag, tree)
 	}
 }
+
+// quoteChain is setup building w, a leaf behind 50k quote wrappers -- 50k
+// steps -- which quasiquote unwraps on every visit.
+const quoteChain = `(set 'w 'a) (dotimes (i 50000) (set! w (quasiquote '(unquote w))))`
+
+// Quote wrappers count as work and a wrapped leaf is memoised, so a shared
+// quote chain is unwrapped once, not once per path.
+func TestSharingBombQuasiquoteQuoteChain(t *testing.T) {
+	for name, probe := range map[string]string{
+		// 2^40 paths to one wrapped leaf.
+		"bomb": `(set 'x w) (dotimes (i 40) (set! x (list x x))) (eval (list QQ x))`,
+		// No bomb at all: 20000 references to one wrapped leaf.
+		"flat": `(eval (list QQ (map 'list (lambda (i) w) (make-sequence 0 20000))))`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if rc := runSharingBombStepsOnly(t, quoteChain+" ()", probe); rc.Type == lisp.LError {
+				t.Fatalf("%s: %v", probe, rc)
+			}
+		})
+	}
+}
+
+// An UNQUOTE behind the quote chain is evaluated once per occurrence, one
+// step each, but unwrapped each time too: past the allowance, re-entering it
+// is charged, so the step budget bounds it.
+func TestSharingBombQuasiquoteChargesQuotedUnquote(t *testing.T) {
+	setup := `(set 'w (car '((unquote 1)))) (dotimes (i 50000) (set! w (quasiquote '(unquote w))))
+(set 'x w) (dotimes (i 40) (set! x (list x x))) ()`
+	rc := runSharingBombStepsOnly(t, setup, `(eval (list QQ x))`)
+	if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
+		t.Fatalf("got %v, want the step limit", rc)
+	}
+}
