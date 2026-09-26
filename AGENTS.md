@@ -169,6 +169,12 @@ Go unit tests (`testify/assert`), lisp test files run through
 expected-output}`. Native fuzz targets live in `fuzz_test.go` files; see the
 `fuzz` skill before touching them.
 
+Shared Lisp test helpers: every `*_testhelpers.lisp` next to a `*_test.lisp`
+is loaded (sorted by name) into each test env after `LoaderFn`/`SetupFn` and
+before the test file; other runners reuse the rule via
+`elpstest.TestHelperFiles` / `elpstest.LoadTestHelpers`. Helpers never match
+`*_test.lisp` and are never part of a production load.
+
 ### Workflows (see skills)
 
 - New builtin / special op / macro, and **static migration diagnostics** for
