@@ -52,3 +52,11 @@ package lisp
 // nothing -- on the hot paths, and well below the point where the tree walk
 // costs anything measurable.  Nothing depends on the exact number.
 const sharedWalkBudget = 4096
+
+// sharedMemoGrain is the least work a finished container's own walk must
+// have cost for a memoising walker to record it.  A container too cheap to
+// record costs less than the grain each time it is reached again, so the
+// walk stays linear in the containers it does record (times the grain),
+// while a large TREE -- which never reaches a container twice -- does not
+// pay a map insert for every small container in it.
+const sharedMemoGrain = 64
