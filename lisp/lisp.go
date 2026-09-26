@@ -1621,7 +1621,12 @@ func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
 // supplied: env supplies the runtime and the context a long comparison
 // polls (see equalIter).  Polling never changes a result a comparison
 // reaches; it only stops one whose deadline has already passed.
+//
+// A nil env is EqualWithRuntime with a nil runtime.
 func (v *LVal) EqualWithEnv(other *LVal, env *LEnv) *LVal {
+	if env == nil {
+		return v.EqualWithRuntime(other, nil)
+	}
 	budget := equalShallowBudget
 	if result := v.equalShallow(other, 0, &budget); result != nil {
 		return result
@@ -1629,14 +1634,16 @@ func (v *LVal) EqualWithEnv(other *LVal, env *LEnv) *LVal {
 	return v.equalDeep(other, env.Runtime, env)
 }
 
-// equalShallowBudget is the work -- containers entered plus the cells they
-// hold -- after which equalShallow gives up and hands the comparison to
-// equalIter, whose memo bounds a value with nested sharing
+// equalShallowBudget is the work -- one per container entered plus one per
+// cell it holds -- after which equalShallow gives up and hands the
+// comparison to equalIter, whose memo bounds a value with nested sharing
 // (lisp/sharing.go).  It is larger than sharedWalkBudget because giving up
 // costs a restart: the recursive pass is the fast path for every ordinary
-// value, and this keeps values of up to a million cells on it -- about what
-// one builtin step may already allocate -- while capping what a sharing bomb
-// can spend here at a few milliseconds.
+// value, and this keeps values of up to about a million units of work on it
+// -- a list of 250k two-element lists, say -- while capping what a sharing
+// bomb can spend here at a few milliseconds.  A larger value pays the
+// restart and runs on the iterative pass (BenchmarkEqualLarge measures both
+// sides of the boundary).
 const equalShallowBudget = 1 << 20
 
 // equalDeep is the iterative comparison, run when equalShallow gives up.
@@ -1774,8 +1781,9 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 //
 // What is NOT bounded here is two values shared DIFFERENTLY: their distinct
 // pairs can number |a|x|b|, quadratic in what the program built (not
-// exponential).  With env, the walk polls env's context every
-// sharedWalkBudget work, so a deadline still stops it.
+// exponential), and the pair tables (done, seen) are Go memory outside
+// MaxAlloc.  With env, the walk polls env's context every sharedWalkBudget
+// work, in both modes, so a deadline still stops it.
 func (v *LVal) equalIter(other *LVal, limit int, strict bool, env *LEnv) (*LVal, bool) {
 	type frame struct {
 		ac, bc  []*LVal
@@ -1885,10 +1893,13 @@ walk:
 			}
 			if !repeated {
 				work += 1 + width
-				if work > sharedWalkBudget && !strict {
-					if done == nil {
+				if work > sharedWalkBudget {
+					if done == nil && !strict {
 						done = make(map[valuePair]int)
 					}
+					// Polled in strict mode too: two differently shared
+					// values that also share below cycleGuardDepth end up
+					// here, with |a|x|b| distinct pairs in seen.
 					if env != nil && work/sharedWalkBudget != (work-1-width)/sharedWalkBudget {
 						if err := env.Context().Err(); err != nil {
 							return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err), false

@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"context"
 	"fmt"
 	"math"
 	"strconv"
@@ -304,7 +305,8 @@ func TestEqualMemoLeavesDeepSharingToStrictRestart(t *testing.T) {
 		t.Fatalf("%v, want true", got)
 	}
 	// A pair the memo records near the root, reached again right at the
-	// depth limit: the re-walk fails there, so the memo must not answer it.  The oracle is the same value with a distinct second copy.
+	// depth limit: the re-walk fails there, so the memo must not answer it.
+	// The oracle is the same value with a distinct second copy.
 	wide := func() *LVal {
 		cells := make([]*LVal, 2*equalMemoGrain)
 		for i := range cells {
@@ -369,3 +371,35 @@ func TestEqualMemoDepthBoundaryMatchesMain(t *testing.T) {
 	}
 }
 
+// Two values shared DIFFERENTLY can have |a|x|b| distinct pairs, which no
+// memo removes.  EqualWithEnv polls the context as it goes -- in the strict
+// restart too, which sharing below cycleGuardDepth sends it to -- so a
+// deadline still stops it.
+func TestEqualWithEnvPollsDifferentlySharedValues(t *testing.T) {
+	build := func(n, m, depth int) *LVal {
+		level := make([]*LVal, n)
+		for j := range level {
+			level[j] = Int(1)
+		}
+		for range depth {
+			next := make([]*LVal, n)
+			for j := range next {
+				next[j] = SExpr([]*LVal{level[(j*m)%n], level[(j*m+1)%n]})
+			}
+			level = next
+		}
+		return SExpr(level)
+	}
+	for _, depth := range []int{40, 100} {
+		a, b := build(200, 2, depth), build(200, 3, depth)
+		env := NewEnv(nil)
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		env.evalCtx = ctx
+		var got *LVal
+		testdeadline.Watch("differently shared equal? under a deadline", 20*time.Second, 1<<30, func() { got = a.EqualWithEnv(b, env) })
+		cancel()
+		if got.Type != LError || got.Str != CondContextCancelled {
+			t.Fatalf("depth %d: got %v, want the context to stop it", depth, got)
+		}
+	}
+}

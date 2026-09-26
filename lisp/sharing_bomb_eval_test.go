@@ -373,4 +373,3 @@ func TestSharingBombEqualWideListIterative(t *testing.T) {
 		t.Fatalf("got %v, want true", rc)
 	}
 }
-

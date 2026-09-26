@@ -32,6 +32,9 @@ func BenchmarkEqualLarge(b *testing.B) {
 		mk   func() *lisp.LVal
 	}{
 		{"flat70k", func() *lisp.LVal { return flat(70_000 / 3) }},
+		// 600k cells stays under equalShallowBudget; 1M cells does not,
+		// and pays the shallow pass's restart.
+		{"flat600k", func() *lisp.LVal { return flat(600_000 / 3) }},
 		{"flat1M", func() *lisp.LVal { return flat(1_000_000 / 3) }},
 		{"chain2000", func() *lisp.LVal { return deep(2000) }},
 	} {
