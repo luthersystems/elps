@@ -13,9 +13,10 @@ import (
 type VMOption func(*vmConfig)
 
 type vmConfig struct {
-	ctx     context.Context
-	stderr  io.Writer
-	prewarm bool
+	ctx        context.Context
+	stderr     io.Writer
+	stepBudget int64
+	prewarm    bool
 }
 
 // VMWithPrewarm builds, during NewVM, every template value that any earlier
@@ -33,6 +34,15 @@ func VMWithPrewarm() VMOption {
 // never inherited. Per-call LEnv context methods remain available afterwards.
 func VMWithContext(ctx context.Context) VMOption {
 	return func(c *vmConfig) { c.ctx = ctx }
+}
+
+// VMWithStepBudget installs a shared step budget of n steps on the new VM's
+// Runtime, as Runtime.SetStepBudget does: every top-level evaluation on the
+// VM draws from it, and exhausting it raises CondStepBudgetExceeded. A
+// template never carries a budget from its source runtime. n <= 0 leaves the
+// VM unlimited.
+func VMWithStepBudget(n int64) VMOption {
+	return func(c *vmConfig) { c.stepBudget = n }
 }
 
 // VMWithStderr overrides the new VM's diagnostic writer. Without an override,
