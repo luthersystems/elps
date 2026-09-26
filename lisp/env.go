@@ -663,9 +663,12 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 }
 
 // Update updates the binding of k to v within the scope of env.  Update can
-// update either lexical or global bindings.  If k is not bound by env, an
-// enclosing LEnv, or the current package an error condition is signaled.
-// This is a trusted Go API; Lisp-facing writers must use UpdateFromLisp.
+// update either lexical or global bindings.  An unqualified k is resolved in
+// env, an enclosing LEnv, then the current package; a package-qualified k
+// (pkg:name) is resolved in package pkg only, bypassing lexical bindings.  If
+// k is not bound there an error condition is signaled.  This is a trusted Go
+// API that, like PutGlobal, bypasses the core package seal -- including for a
+// qualified lisp:name; Lisp-facing writers must use UpdateFromLisp.
 func (env *LEnv) Update(k, v *LVal) *LVal {
 	if k.Type != LSymbol && k.Type != LQSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
@@ -737,6 +740,9 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 // it does not consult pkg's export list: qualified access reaches every
 // symbol of a package (docs/lang.md, "Packages").
 func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
+	// A package binding is a durable write, as in PutGlobal (no-op outside
+	// elpscheck builds).
+	checkOwnership(env.Runtime, v)
 	if fromLisp {
 		// Same check, in the same order, as PutGlobalFromLisp.
 		if err := env.checkLispPackageBinding(k.Str); err != nil {

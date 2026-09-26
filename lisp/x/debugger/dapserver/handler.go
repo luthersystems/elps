@@ -748,6 +748,18 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 	name := req.Arguments.Name
 	valueExpr := req.Arguments.Value
 
+	// A Locals edit writes a lexical binding and nothing else.  LEnv.Update
+	// sends a package-qualified name (pkg:x) straight to that package, past
+	// the lisp seal (it is a trusted Go API), so a client-supplied qualified
+	// name must not reach it from here.  Refuse before evaluating the value
+	// so a rejected request has no side effects.
+	if ref >= scopeLocalBase && ref < scopePackageBase && strings.IndexByte(name, ':') > 0 {
+		resp.Success = false
+		resp.Message = "cannot set package-qualified name in local scope: " + name
+		h.send(resp)
+		return
+	}
+
 	// Parse and evaluate the new value expression.
 	result := h.engine.EvalSingleInContext(env, valueExpr)
 	if result != nil && result.Type == lisp.LError {

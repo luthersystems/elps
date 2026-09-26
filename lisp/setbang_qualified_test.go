@@ -83,6 +83,10 @@ func TestSetBangQualifiedErrors(t *testing.T) {
 		{`(set! lisp:nosuch 1)`, "cannot rebind lisp package binding: nosuch"},
 		// Constants, qualified or not.
 		{`(set! user:true 1)`, "cannot rebind constant: true"},
+		// A local declared with a qualified spelling is never the target of a
+		// qualified set!, just as it is never the value of a qualified read.
+		{`((lambda (user:q) (set! user:q 5)) 3)`, "symbol not bound: user:q"},
+		{`(let ((lisp:car 5)) (set! lisp:car 6))`, "cannot rebind lisp package binding: car"},
 		// Keywords are not qualified names; their set! error is unchanged.
 		{`(set! :kw 1)`, "symbol not bound: :kw"},
 	} {
@@ -94,6 +98,12 @@ func TestSetBangQualifiedErrors(t *testing.T) {
 			assert.False(t, lisp.IsInternalPanic(res))
 		})
 	}
+	// The trusted Go Update resolves a qualified key in its package too.
+	env0 := setBangQualifiedEnv(t)
+	require.NotEqual(t, lisp.LError, env0.LoadString("setup", `(set 'y 1)`).Type)
+	require.NotEqual(t, lisp.LError, env0.Update(lisp.Symbol("user:y"), lisp.Int(5)).Type)
+	assert.Equal(t, "5", env0.LoadString("test", `y`).String())
+
 	// The failed writes left the sealed binding intact.
 	env := setBangQualifiedEnv(t)
 	res := env.LoadString("test", `(progn (set! lisp:car 1) (car '(7)))`)
