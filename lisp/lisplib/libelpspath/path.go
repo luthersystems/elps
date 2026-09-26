@@ -13,15 +13,17 @@ import (
 const maxPathSteps = 1024
 
 // limitedPath is the same three COPYING operations as Path's Set, Delete and
-// Nil, taking the value-walk depth bound the caller is running under.
+// Nil, taking the operation's copy state (copyOp): the value-walk depth bound
+// the caller is running under, and the copy memo every walk of the operation
+// shares.
 //
 // It exists because the limit belongs to the CALL and not to the path: a step
 // is built once per operation but is only a few words wide, and storing one
 // int in each of them grew every step by a size class -- 8 to 16 bytes for an
 // index, 16 to 24 for a key -- which a selector of four hundred keys pays four
-// hundred times before a document is touched. The limit now travels down the
-// walk as an argument, which is where the rest of the traversal state already
-// lives, and the steps are the shape they were.
+// hundred times before a document is touched. The limit -- now inside the
+// copyOp -- travels down the walk as an argument, which is where the rest of
+// the traversal state already lives, and the steps are the shape they were.
 //
 // Every step this package builds implements it. A Path from somewhere else
 // does not, so setPath/deletePath/nilPath fall back to its exported method and
@@ -32,8 +34,9 @@ type limitedPath interface {
 	nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 }
 
-// setPath is p.Set bounded by limit. Zero, and a limit below the floor
-// WithMaxValueDepth accepts, mean lisp.MaxValueDepth.
+// setPath is p.Set as part of the operation op: bounded by op's limit and
+// sharing its copy memo.  A nil op is the default limit with a memo per walk
+// (see newCopyOp for the limit's floor).
 func setPath(p Path, in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
 		return lp.setLimited(in, newIn, op)
@@ -41,7 +44,7 @@ func setPath(p Path, in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, e
 	return p.Set(in, newIn)
 }
 
-// deletePath is p.Delete bounded by limit.
+// deletePath is p.Delete as part of the operation op; see setPath.
 func deletePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
 		return lp.deleteLimited(in, op)
@@ -49,7 +52,7 @@ func deletePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	return p.Delete(in)
 }
 
-// nilPath is p.Nil bounded by limit.
+// nilPath is p.Nil as part of the operation op; see setPath.
 func nilPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
 		return lp.nilLimited(in, op)

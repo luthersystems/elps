@@ -10,7 +10,7 @@ import (
 )
 
 // Go-side properties of the elpspath sharing memos (cycleState.valid and
-// cycleState.copies).  The lisp-level regressions are in
+// copyOp.copies).  The lisp-level regressions are in
 // sharing_bomb_test.go.
 
 func memoChain(n int, leaf *lisp.LVal) *lisp.LVal {
