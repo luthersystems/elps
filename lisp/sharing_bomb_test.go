@@ -498,3 +498,24 @@ func TestAdmitClassifiesSharedValueAsUnshared(t *testing.T) {
 		}
 	}
 }
+
+// The other answer through memo hits: a shared value sealed throughout is
+// classified sealed, and admission shares it by reference rather than
+// copying it.
+func TestAdmitSealedSharedValueByReference(t *testing.T) {
+	v := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), bomb(40, SExpr([]*LVal{Int(1)}))})
+	v.SealAST()
+	var st cycleState
+	var sealed, sealable bool
+	var admitted *LVal
+	testdeadline.Watch("admit a sealed 40-level sharing bomb", 20*time.Second, 1<<30, func() {
+		sealed, sealable = classifySymbolValue(v, cycleGuard{state: &st}, MaxValueDepth)
+		admitted = admitSymbolValue(v, MaxValueDepth)
+	})
+	if !sealed || !sealable || st.tooDeep {
+		t.Fatalf("sealed=%v sealable=%v tooDeep=%v, want a sealed value", sealed, sealable, st.tooDeep)
+	}
+	if admitted != v {
+		t.Fatal("a value sealed throughout was copied rather than admitted by reference")
+	}
+}

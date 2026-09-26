@@ -225,7 +225,11 @@ func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable boo
 	// SHARING (lisp/sharing.go).  A value built as (set! x (list x x)) D
 	// times has D containers and 2^D paths.  The walk counts its work, and
 	// past sharedWalkBudget it records each container it finishes with its
-	// height, and skips a container reached again: sealed and sealable are
+	// height, and skips a container reached again.  That is sound because a
+	// recorded container's walk COMPLETED: every early return below (a
+	// node that cannot be sealed, the depth limit, a cycle) exits the whole
+	// walk, so the recorded subgraph is acyclic and sealable throughout,
+	// and skipping it cannot hide one of them.  sealed and sealable are
 	// conjunctions over the nodes, which a second visit cannot change, and
 	// a hit fails the depth limit exactly where re-walking would.  A tree
 	// never reaches a container twice, so its answer is unchanged.
