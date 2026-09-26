@@ -428,7 +428,8 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 		// once and memoises its copies, so a back-edge lands on the copy
 		// and the returned tree contains itself exactly where the
 		// expansion did.
-		s.copies = make(map[*LVal]*LVal)
+		s.copies = make(map[*LVal]stampMemo)
+		s.visits = 0
 		s.nextID = s.firstID
 		got, fail = s.syntax(v, strictCycleGuard())
 		if fail != nil {
@@ -556,11 +557,24 @@ type macroStamper struct {
 	callSite *token.Location
 	ctx      *macroExpansionContext
 	rt       *Runtime
-	// copies memoises the strict rerun over a cyclic expansion: a nested
-	// node maps to its copy BEFORE its cells are walked, so the walk's
-	// second arrival at it -- through the cycle -- lands on the copy.  It
-	// is nil on the ordinary walk, which never revisits a node.
-	copies map[*LVal]*LVal
+	// copies memoises containers by identity, in one of two modes told
+	// apart by the guard's strict flag.
+	//
+	// In the strict rerun over a cyclic expansion, a nested node maps to its
+	// copy BEFORE its cells are walked, so the walk's second arrival at it
+	// -- through the cycle -- lands on the copy.
+	//
+	// On the ordinary walk it is nil until the walk has entered
+	// sharedWalkBudget containers (lisp/sharing.go).  From then on every
+	// container the walk FINISHES maps to its result -- the node itself when
+	// nothing under it changed -- and the container's height, so a
+	// container reached again through sharing (a DAG, not a cycle) is
+	// answered from the memo rather than walked once per path.  A tree
+	// never hits it, so its result is exactly the tree walk's.
+	copies map[*LVal]stampMemo
+	// visits counts the containers the ordinary walk has entered, until
+	// the memo above switches on.
+	visits int
 	// nextID is the expansion-ID counter for the walk in progress, seeded
 	// from and committed back to Runtime.macroExpSeq (commitIDs) only for
 	// the walk whose result is kept.  An abandoned walk over a cyclic
@@ -570,6 +584,18 @@ type macroStamper struct {
 	// seed, so an abandoned walk can be rewound and a walk that minted
 	// nothing can leave the Runtime untouched.
 	nextID, firstID int64
+}
+
+// stampMemo is one container's entry in macroStamper.copies.
+type stampMemo struct {
+	// cp is the container's stamped counterpart.
+	cp *LVal
+	// height is the number of container levels the walk descended below
+	// the container: 0 when none of its cells is a walked container.  A
+	// memo hit at depth d must fail exactly where re-walking the subtree
+	// would, which is when d+height reaches the value depth limit.  Unused
+	// by the strict (cyclic) mode.
+	height int
 }
 
 // commitIDs publishes the IDs the kept walk minted to the Runtime.  A walk
@@ -658,9 +684,10 @@ func (s *macroStamper) syntax(v *LVal, g cycleGuard) (*LVal, *LVal) {
 
 func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) (*LVal, *LVal) {
 	type frame struct {
-		v, cp *LVal
-		cells []*LVal
-		i     int
+		v, cp  *LVal
+		cells  []*LVal
+		i      int
+		height int // container levels below v found so far
 	}
 	var buf [16]frame // stack-resident until a stamp walks deeper than 16
 	stack := buf[:0]
@@ -676,6 +703,11 @@ func (s *macroStamper) syntaxContainer(v *LVal, g cycleGuard) (*LVal, *LVal) {
 walk:
 	for {
 		var result *LVal
+		// height is result's stampMemo.height when result is the
+		// counterpart of a container the walk descended into (or answered
+		// from the memo), and -1 for anything the walk did not descend
+		// into: a leaf, a value, a singleton, a sealed subtree.
+		height := -1
 		switch {
 		case v == nil || isSingleton(v) || v.sealed:
 			result = v
@@ -684,11 +716,23 @@ walk:
 		case g.abandoned():
 			return v, nil
 		default:
-			if cp, ok := s.copies[v]; ok {
-				result = cp
+			depth := g.depth + len(stack)
+			if m, ok := s.copies[v]; ok {
+				if g.strict {
+					result = m.cp
+					break
+				}
+				// A finished container reached again through sharing.
+				// Re-walking it would visit containers down to
+				// depth+m.height and fail at the first one past the
+				// limit; nothing else about the walk depends on where
+				// the container is reached.
+				if depth+m.height >= depthLimit {
+					return nil, Error(ValueDepthError(depthLimit))
+				}
+				result, height = m.cp, m.height
 				break
 			}
-			depth := g.depth + len(stack)
 			if depth >= depthLimit {
 				return nil, Error(ValueDepthError(depthLimit))
 			}
@@ -700,7 +744,7 @@ walk:
 			if needsStamp(v) {
 				f.cp = s.stampedCopy(v)
 			}
-			if s.copies != nil {
+			if g.strict && s.copies != nil {
 				if f.cp == nil {
 					cp := new(LVal)
 					*cp = *v
@@ -708,7 +752,15 @@ walk:
 				}
 				f.cells = make([]*LVal, len(v.Cells))
 				f.cp.Cells = f.cells //elps:mutates private header allocated above or by stampedCopy before publication
-				s.copies[v] = f.cp
+				s.copies[v] = stampMemo{cp: f.cp}
+			} else if s.copies == nil {
+				s.visits++
+				if s.visits > sharedWalkBudget {
+					// Large enough to be a sharing bomb rather than an
+					// expansion anyone wrote (lisp/sharing.go): memoise
+					// every container finished from here on.
+					s.copies = make(map[*LVal]stampMemo)
+				}
 			}
 			stack = append(stack, f)
 			v = v.Cells[0]
@@ -716,6 +768,9 @@ walk:
 		}
 		for len(stack) > 0 {
 			f := &stack[len(stack)-1]
+			if height >= f.height {
+				f.height = height + 1
+			}
 			if f.cells != nil {
 				f.cells[f.i] = result
 			} else if result != f.v.Cells[f.i] {
@@ -743,6 +798,10 @@ walk:
 					cp.Cells = f.cells
 				} //elps:mutates private copy-on-write macro header allocated above or by stampedCopy
 				result = cp
+			}
+			height = f.height
+			if !g.strict && s.copies != nil {
+				s.copies[f.v] = stampMemo{cp: result, height: height}
 			}
 			*f = frame{}
 			stack = stack[:len(stack)-1]
@@ -784,12 +843,51 @@ func getUnquoteType(v *LVal) (unquoteType, error) {
 	return unquoteNone, nil
 }
 
+// quasiquoteMemo is one pure container's entry in findAndUnquote's
+// sharing memo (see there).
+type quasiquoteMemo struct {
+	// result is what the walk built for the container.
+	result *LVal
+	// need is how far below the container's own value depth the walk
+	// checked the value depth limit: a hit at value depth d fails exactly
+	// where re-walking would, when d+need reaches the limit.
+	need int
+	// allocLimit and depthLimit are the limits the entry was built under.
+	// An unquoted expression elsewhere in the template may change them,
+	// and an entry built under other limits is not reused.
+	allocLimit, depthLimit int
+}
+
+// findAndUnquote rebuilds the quasiquote template v, evaluating its unquoted
+// expressions.
+//
+// SHARING.  A template is a graph, and one built at runtime -- (eval (list
+// 'quasiquote x)), or a Go macro's output -- can share a subtree between
+// many parents; the D-level chain (set! x (list x x)) has 2^D paths.  The
+// walk counts the lists it enters and, past sharedWalkBudget
+// (lisp/sharing.go), memoises every PURE list it finishes -- one with no
+// unquote anywhere below it -- by identity, so a pure subtree reached again
+// is not rebuilt once per path.  Only pure lists: the result of a pure list
+// is a function of the list alone (and of the two limits, which the entry
+// records), while a list holding an unquote must evaluate it once per
+// occurrence, as it always has, and each of those evaluations is charged as
+// evaluation steps.  A tree never hits the memo, so its result, errors and
+// step count are exactly the tree walk's; a DAG past the budget gets one
+// shared result per shared pure list where the tree walk built one copy per
+// path.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	type frame struct {
-		v                                   *LVal
+		v, orig                             *LVal
 		cells                               []*LVal
 		depth, valueDepth, quotes, i, total int
-		splices                             bool
+		// quoteEdges is the number of quote wrappers between orig and v;
+		// need is how far below orig's value depth the walk has checked
+		// the limit so far (see quasiquoteMemo.need).
+		quoteEdges, need int
+		splices          bool
+		// impure reports that an unquote was evaluated below v, so its
+		// result may not be memoised.
+		impure bool
 	}
 	// The cursor stack lives on the Go stack for the depths a real template
 	// reaches; append spills to the heap only past that.  Growing a nil
@@ -798,11 +896,35 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	var buf [8]frame
 	stack := buf[:0]
 	valueDepth := depth
+	// memo is nil until the walk has entered sharedWalkBudget lists.
+	var memo map[*LVal]quasiquoteMemo
+	lists := 0
 	for {
-		result, list, quotes, quoteEdges := prepareUnquote(env, v, depth, valueDepth)
+		var (
+			result, list        *LVal
+			quotes, quoteEdges  int
+			evaluated, memoised bool
+			need                int
+		)
+		if memo != nil {
+			if e, ok := memo[v]; ok && e.allocLimit == env.Runtime.MaxAllocBytes() && e.depthLimit == env.Runtime.ValueDepthLimit() {
+				if valueDepth+e.need >= e.depthLimit {
+					return env.Error(ValueDepthError(e.depthLimit))
+				}
+				result, need, memoised = e.result, e.need, true
+			}
+		}
+		if !memoised {
+			result, list, quotes, quoteEdges, evaluated = prepareUnquote(env, v, depth, valueDepth)
+			need = quoteEdges
+		}
 		if list != nil {
-			f := frame{v: list, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes}
+			f := frame{v: list, orig: v, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes, quoteEdges: quoteEdges, need: quoteEdges}
 			if len(list.Cells) > 0 {
+				lists++
+				if memo == nil && lists > sharedWalkBudget {
+					memo = make(map[*LVal]quasiquoteMemo)
+				}
 				stack = append(stack, f)
 				v = list.Cells[0]
 				depth++
@@ -826,6 +948,10 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 			}
 			f := &stack[len(stack)-1]
 			f.cells[f.i] = result
+			f.impure = f.impure || evaluated
+			if n := f.quoteEdges + 1 + need; n > f.need {
+				f.need = n
+			}
 			added := 1
 			if result.spliced {
 				if result.Type != LSExpr {
@@ -849,12 +975,20 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				break
 			}
 			result = finishUnquote(f.v, f.cells, f.quotes, f.splices, f.total)
+			evaluated, need = f.impure, f.need
+			if memo != nil && !f.impure {
+				memo[f.orig] = quasiquoteMemo{result: result, need: need, allocLimit: allocLimit, depthLimit: env.Runtime.ValueDepthLimit()}
+			}
 			stack = stack[:len(stack)-1]
 		}
 	}
 }
 
-func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int) {
+// prepareUnquote examines one node of a quasiquote template.  evaluated
+// reports that result is the value of an unquoted expression.
+// For a leaf returned unchanged, quoteEdges is the number of quote wrappers
+// the depth check walked through.
+func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, list *LVal, quotes, quoteEdges int, evaluated bool) {
 	// Read the depth limit once per call.  The boundary is this function:
 	// the quote-unwrapping loop below runs no user code (getUnquoteType is a
 	// pure shape test), and the only evaluation this function reaches --
@@ -865,7 +999,7 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, li
 	// the next element.
 	depthLimit := env.Runtime.ValueDepthLimit()
 	if valueDepth >= depthLimit {
-		return env.Error(ValueDepthError(depthLimit)), nil, 0, 0
+		return env.Error(ValueDepthError(depthLimit)), nil, 0, 0, false
 	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
@@ -879,7 +1013,7 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, li
 	for inner.Type == LQuote {
 		quoteEdges++
 		if valueDepth+quoteEdges >= depthLimit {
-			return env.Error(ValueDepthError(depthLimit)), nil, 0, 0
+			return env.Error(ValueDepthError(depthLimit)), nil, 0, 0, false
 		}
 		quoteLevel += 1
 		inner = inner.Cells[0]
@@ -887,29 +1021,29 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int) (result *LVal, li
 	if inner.Type != LSExpr {
 		// back out of the entire quote chain and return v to leave the value
 		// unchanged in the quasiquote.
-		return v, nil, 0, 0
+		return v, nil, 0, quoteEdges, false
 	}
 	v = inner
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
 		env.loc = v.source
-		return env.Error(err), nil, 0, 0
+		return env.Error(err), nil, 0, 0, false
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
 			env.loc = v.source
-			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0
+			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0, false
 		}
-		return doUnquoteSpliced(env, expr), nil, 0, 0
+		return doUnquoteSpliced(env, expr), nil, 0, 0, true
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, 0
+		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, 0, true
 	}
-	return nil, v, quoteLevel, quoteEdges
+	return nil, v, quoteLevel, quoteEdges, false
 }
 
 func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
