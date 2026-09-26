@@ -2313,6 +2313,25 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	//     (template_plan.go) rebuild an existing function value and carry its
 	//     already-validated formals through unchanged; detach refuses LFun
 	//     outright.
+	// The formals are read before funEnv so that a malformed function value
+	// (no formals cell, or no function data) fails exactly as it does in
+	// bindGeneral, which reads them first.
+	formals := fun.Cells[0].Cells
+	if fun.funEnv() == nil {
+		if list := bindNativePositional(formals, args.Cells); list != nil {
+			return env, list
+		}
+	}
+	return env.bindGeneral(fun, args)
+}
+
+// bindGeneral is bind for every call bindNativePositional does not take:
+// any function with a captured environment, and a host function whose
+// formals or argument count fall outside the fast path.  It handles every
+// formal shape and reports every binding error.  It has the same results
+// and contract as bind, and is also what bind's fast path is tested
+// against.
+func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 	argsp := argParser{args: args.Cells}
 	formals := argParser{args: fun.Cells[0].Cells}
 	narg := len(args.Cells)
@@ -2389,6 +2408,49 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 		return env, QExpr(builtinArgs)
 	}
 	return funenv, nil //elps:aliases the call env's loc register deliberately aliases the function's definition-site location, which was frozen before evaluation reached Lambda, and its evalCtx register aliases the captured env's current context: LEnv is runtime-internal state and no consumer-facing value is built from either pointer
+}
+
+// bindNativePositional is bind's fast path for a function with no captured
+// environment (a builtin, special operator or macro implemented in Go) whose
+// formals are only required names, optionally followed by a final
+// `&rest name`, called with an argument count those formals accept.  It
+// returns the argument list bind's general path would build for that call,
+// or nil when the call is not of that shape; the caller then takes the
+// general path, which owns every other formal shape and every error message.
+//
+// For these shapes the general path appends each argument once, in order,
+// to a fresh slice of capacity max(len(args), len(formals)), and wraps the
+// arguments a `&rest` formal collects in a transient list only to unwrap
+// them again.  This builds the same slice directly: same contents, same
+// length, same capacity, still a copy the builtin owns and may retain or
+// mutate without touching the caller's argument list.  It skips the
+// transient list (one LVal per `&rest` call) and the per-formal dispatch.
+//
+// A formal is a control symbol exactly when bindFormalNext would treat it
+// as one (a MetaArgPrefix prefix); anything unusual about one, `&optional`,
+// `&key`, a misplaced `&rest` or an unknown control symbol, falls back.  An
+// arity mismatch falls back too, so its error keeps the general path's text.
+// Steps are not involved: binding charges none on either path.
+func bindNativePositional(formals, args []*LVal) *LVal {
+	nreq := len(formals)
+	rest := false
+	for i, formal := range formals {
+		if !strings.HasPrefix(formal.Str, MetaArgPrefix) {
+			continue
+		}
+		if formal.Str != VarArgSymbol || i+2 != len(formals) || strings.HasPrefix(formals[i+1].Str, MetaArgPrefix) {
+			return nil
+		}
+		nreq, rest = i, true
+		break
+	}
+	narg := len(args)
+	if narg < nreq || (!rest && narg != nreq) {
+		return nil
+	}
+	cells := make([]*LVal, narg, max(narg, len(formals)))
+	copy(cells, args)
+	return QExpr(cells)
 }
 
 type bindfunc func(k, v *LVal) *LVal

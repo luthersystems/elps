@@ -69,7 +69,10 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	let := SExpr([]*LVal{Symbol("let"), Nil(), value})
 	// Before lazy scopes these allocated 3 and 8 objects respectively.  The
 	// lambda call fell from 2 to 1 when bind stopped wrapping the body in a
-	// fresh list header on every call; the one left is the call env.
+	// fresh list header on every call; the one left is the call env.  The
+	// empty let fell from 7 to 6 when bind stopped wrapping a Go special
+	// operator's &rest arguments in a transient list (let's formals are
+	// (bindings &rest expr)).
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
