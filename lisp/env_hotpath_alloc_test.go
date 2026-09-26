@@ -70,7 +70,7 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	// Before lazy scopes these allocated 3 and 8 objects respectively.  The
 	// lambda call fell from 2 to 1 when bind stopped wrapping the body in a
 	// fresh list header on every call; the one left is the call env.  The
-	// empty let fell from 7 to 6 when bind stopped wrapping a Go special
+	// empty let fell by one more when bind stopped wrapping a Go special
 	// operator's &rest arguments in a transient list (let's formals are
 	// (bindings &rest expr)).
 	for _, tc := range []struct {
@@ -79,7 +79,7 @@ func TestEmptyScopeAllocations(t *testing.T) {
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 6},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 5},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
@@ -96,9 +96,10 @@ func TestEmptyScopeAllocations(t *testing.T) {
 // TestCallFormAllocations pins the call value evalSExprCells builds for a
 // builtin call: its header and its cells (the function plus its arguments)
 // are one allocation (newSExprCap) up to eight cells, and two past that, as
-// every call form was before (5 allocations in all, for every row).  The
-// other three are the builtin's argument binding and its bookkeeping, which
-// newSExprCap does not touch.
+// every call form was before (5 allocations in all, for every row, before
+// the native binder fast path removed one more).  The other two are the
+// builtin's argument binding and its bookkeeping, which newSExprCap does not
+// touch.
 func TestCallFormAllocations(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	x := Symbol("call-form-x")
@@ -117,9 +118,9 @@ func TestCallFormAllocations(t *testing.T) {
 		nargs int
 		want  float64
 	}{
-		{"2-cells", 1, 4},
-		{"8-cells", 7, 4},
-		{"9-cells-not-coallocated", 8, 5},
+		{"2-cells", 1, 3},
+		{"8-cells", 7, 3},
+		{"9-cells-not-coallocated", 8, 4},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := form(tc.nargs)
