@@ -695,7 +695,19 @@ func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
 // namespace even when the name shadows a core symbol.  fromLisp says whether
 // the name came from Lisp source; a trusted Go caller (Update) writes through
 // the seal, as the registration APIs do.
+//
+// A package-qualified name (pkg:name) bypasses the lexical chain, exactly as
+// reading it does (see docs/lang.md#scope): a local declared with a qualified
+// spelling is kept only for compatibility and is never visible through that
+// name, so set! must not silently write it either.  The qualified branch
+// mirrors PutGlobal -- same seal check, same package resolution, same errors
+// -- and differs only in refusing to create a binding.  Keywords (a leading
+// colon) are not qualified names and keep the lexical path, which the legacy
+// keyword-formals mode relies on (issue #686).
 func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
+	if i := strings.IndexByte(k.Str, ':'); i > 0 {
+		return env.updateQualified(k, v, fromLisp)
+	}
 	for {
 		if env.scope.update(k.Str, v) {
 			return Nil()
@@ -717,6 +729,48 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 		}
 		env = env.parent
 	}
+}
+
+// updateQualified is update's branch for a pkg:name key.  It resolves pkg in
+// the registry the way GetGlobal and PutGlobal do and rebinds name there,
+// without consulting the lexical chain or the current package.  Like set,
+// it does not consult pkg's export list: qualified access reaches every
+// symbol of a package (docs/lang.md, "Packages").
+func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
+	if fromLisp {
+		// Same check, in the same order, as PutGlobalFromLisp.
+		if err := env.checkLispPackageBinding(k.Str); err != nil {
+			return err
+		}
+	}
+	ns, name, n := splitSymbolParts(k.Str)
+	if k.Type != LSymbol || n > 2 {
+		// Keep SplitSymbol's error construction and association unchanged.
+		pieces := SplitSymbol(k)
+		if err := env.ErrorAssociate(pieces); err != nil {
+			return err
+		}
+		return pieces
+	}
+	pkg := env.Runtime.Registry.packages[ns]
+	if pkg == nil {
+		return env.Errorf("unknown package: %q", ns)
+	}
+	if name != TrueSymbol && name != FalseSymbol {
+		// Package.Update would name only the local half; report the name
+		// as written.
+		if _, ok := pkg.Symbol(name); !ok {
+			return env.Errorf("symbol not bound: %v (set! only mutates existing bindings; use set to create new ones)", k)
+		}
+	}
+	lerr := pkg.Update(Symbol(name), v)
+	if lerr.Type == LError {
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
+		return lerr
+	}
+	return Nil()
 }
 
 // GetGlobal takes LSymbol k and returns the value it is bound to in the

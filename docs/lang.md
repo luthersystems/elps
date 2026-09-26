@@ -866,13 +866,16 @@ bindings.
 Keywords cannot be local binding names. Package-qualified references such as
 `user:x` always look in that package, bypassing lexical scopes. A local
 declaration spelled `user:x` is still accepted for compatibility, but does
-not shadow the package binding and cannot be read through `user:x`. Use
-unqualified names for local variables and parameters:
+not shadow the package binding and cannot be read through `user:x`. Writes
+follow the same rule: `(set! user:x v)` always rebinds `x` in package `user`,
+never a local binding. Use unqualified names for local variables and
+parameters:
 
 ```lisp
 (set 'x 10)
 (let ((user:x 99)) user:x)  ; 10: qualified lookup reads the package
 (let ((x 99)) x)           ; 99: unqualified lookup reads the local binding
+(let ((x 99)) (set! user:x 11) x)  ; 99: the package's x is now 11
 ```
 
 ```lisp
@@ -1796,7 +1799,12 @@ of whether it was exported.
 
 NOTE:  Qualified access (`pkg:sym`) works for all symbols in a package, not
 just exported ones.  Exports only control what `use-package` imports into the
-caller's namespace — they do not restrict visibility.
+caller's namespace — they do not restrict visibility.  This holds for writes
+too: `(set 'pkg:sym v)` binds and `(set! pkg:sym v)` rebinds `sym` in `pkg`
+whether or not it is exported, subject to the [`lisp` package seal](#packages).
+`set!` still requires an existing binding, and an unknown `pkg` is an error.
+Because imports copy bindings, rebinding `pkg:sym` does not change a copy
+already imported into another package.
 
 NOTE:  Both halves of a qualified symbol must be [identifiers](#symbols).
 Qualified access is another way to spell a name, not a way to introduce one
