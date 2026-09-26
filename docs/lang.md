@@ -536,7 +536,13 @@ recursively expand macros when the result of the argument macro form is itself
 a macro form.
 
 The `gensym` builtin is used to generate a new symbol, which is most often used
-with macros to avoid avoid naming collisions.
+with macros to avoid naming collisions. The symbol is named `gen` followed by
+at least eight digits taken from a counter that belongs to the runtime, so
+names are unique within a runtime and a fresh runtime running the same program
+generates the same names every time (templates rely on this; a VM made from a
+template continues the template's counter rather than restarting it). It is an ordinary symbol, not an
+uninterned one: `(gensym)` can be `equal?` to a symbol a program spells the
+same way, so do not name your own variables `genNNNNNNNN`.
 
 ### Quasiquote traversal
 

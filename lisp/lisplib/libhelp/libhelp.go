@@ -433,13 +433,12 @@ func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if name.Type != lisp.LSymbol {
 		return env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
 	}
-	printAll := env.Eval(args.KeyArg(1))
-	if printAll.Type == lisp.LError {
-		return printAll
-	}
+	// A builtin's arguments arrive evaluated; evaluating this one again ran
+	// the value as code and lost the caller's error location.
+	printAll := args.KeyArg(1)
 	pkg := env.Runtime.Registry.Package(name.Str)
 	if pkg == nil {
-		return env.Errorf("no package: %q", name)
+		return env.Errorf("no package: %q", name.Str)
 	}
 	if lisp.True(printAll) {
 		for _, sym := range pkg.SymbolNames() {
