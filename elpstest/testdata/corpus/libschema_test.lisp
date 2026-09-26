@@ -1,0 +1,262 @@
+(use-package 'testing)
+
+(test "deftype-string"
+  (s:deftype "mystring" s:string)
+  (set 'x "hello")
+  (assert-nil (s:validate mystring x))
+  (set 'y 9.0)
+  (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+    (assert-equal (s:validate mystring y) "ERROR"))
+  (s:deftype "myconditionalstring" s:string (s:in "x" "y" "z"))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myconditionalstring y)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myconditionalstring x)))
+  (assert-nil (s:validate mystring "x"))
+  (assert-nil (s:validate mystring "y"))
+  )
+
+(test "deftype-regexp"
+  (s:deftype "mystring" s:string (s:regexp "^Hello"))
+  (assert-nil (s:validate mystring "Hello mum"))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mystring "goodbye mum")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mystring "well hello there")))
+  (s:deftype "isodate" s:string (s:regexp "^([1-9][0-9]{3})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])?$"))
+  (assert-nil (s:validate isodate "2020-04-31"))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate isodate "3/4/21")))
+  (assert-equal  "ERROR" (handler-bind (('bad-arguments (lambda (&rest _e) "ERROR")))
+                           (s:deftype "x" s:string (s:regexp "*"))))
+  )
+
+(test "deftype-int"
+  (s:deftype "myint" s:int)
+  (assert-nil (s:validate myint 4))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 91.3)))
+  )
+
+(test "deftype-bool"
+  (s:deftype "mybool" s:bool (s:is-true))
+  (assert-nil (s:validate mybool true))
+  (assert-nil (s:validate mybool "true"))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mybool "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mybool 'false)))
+  )
+
+(test "deftype-bool-false"
+  (s:deftype "myboolf" s:bool (s:is-false))
+  (assert-nil (s:validate myboolf 'false))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myboolf "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myboolf 'true)))
+  )
+
+(test "deftype-any-truthy"
+  (s:deftype "myboolty" s:any (s:is-truthy))
+  (assert-nil (s:validate myboolty true))
+  (assert-nil (s:validate myboolty 'true))
+  (assert-nil (s:validate myboolty "true"))
+  (assert-nil (s:validate myboolty "hello"))
+  (assert-nil (s:validate myboolty 100))
+  (assert-nil (s:validate myboolty 91.3))
+  (assert-nil (s:validate myboolty (vector 3 4 5)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myboolty 'false)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myboolty 0)))
+  )
+
+(test "deftype-any-falsy"
+  (s:deftype "mybooltf" s:any (s:is-falsy))
+  (assert-nil (s:validate mybooltf false))
+  (assert-nil (s:validate mybooltf "false"))
+  (assert-nil (s:validate mybooltf ""))
+  (assert-nil (s:validate mybooltf 0))
+  (assert-nil (s:validate mybooltf -91.3))
+  (assert-nil (s:validate mybooltf (vector)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mybooltf 'true)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mybooltf 11)))
+  )
+
+(test "deftype-float"
+  (s:deftype "myflt" s:float)
+  (assert-nil (s:validate myflt 4.3))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myflt "error")))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myflt 91)))
+  )
+
+(test "deftype-number"
+  (s:deftype "mynum" s:number)
+  (assert-nil (s:validate mynum 4.3))
+  (assert-nil (s:validate mynum 4))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mynum "error")))
+  )
+
+(test "deftype-int-positive"
+  (s:deftype "myint" s:int (s:positive))
+  (assert-nil (s:validate myint 4))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint -5)))
+  )
+
+(test "deftype-int-negative"
+  (s:deftype "myint" s:int (s:negative))
+  (assert-nil (s:validate myint -5))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 5)))
+  )
+
+(test "deftype-int-constrained"
+  (s:deftype "myint" s:int (s:gt 4) (s:lte 91))
+  (assert-nil (s:validate myint 5))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 93)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 4)))
+  )
+
+(test "deftype-int-constrained2"
+  (s:deftype "myint" s:int (s:gte 4) (s:lt 91))
+  (assert-nil (s:validate myint 5))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 91)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 3)))
+  )
+
+(test "deftype-int-constrained3"
+  (s:deftype "myint" s:int (s:in 6 7 11))
+  (assert-nil (s:validate myint 6))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myint "error")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint 8)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myint -6)))
+  )
+
+(test "deftype-array"
+  (s:deftype "my4thingarray" s:array (s:len 4))
+  (s:deftype "my4to6thingarray" s:array (s:lengte 4) (s:lenlt 7))
+  (s:deftype "mystringarray" s:array (s:of s:string))
+  (s:deftype "mystringorfunctionarray" s:array (s:of s:string s:fun))
+  (s:deftype "myint" s:int (s:gt 11))
+  (s:deftype "myfancyarray" s:array (s:of 'myint))
+  (assert-nil (s:validate my4thingarray (vector 1 2 3 4)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate my4thingarray (vector 1 2 3 4 5))))
+  (assert-nil (s:validate my4to6thingarray (vector 1 2 3 4 5)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate my4thingarray (vector 1 2 3 4 5 6 7))))
+  (assert-nil (s:validate mystringarray (vector "a" "b" "c")))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mystringarray (vector 1 2 3 4 5 6 7))))
+  (assert-nil (s:validate mystringorfunctionarray (vector "a" "b" "c" assert-nil)))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mystringorfunctionarray (vector 1 2 3 4 5 6 7))))
+  (assert-nil (s:validate myfancyarray (vector 13 87 2222)))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate myfancyarray (vector 13 87 9))))
+  )
+
+(test "deftype-map"
+  (s:deftype "mymap" s:sorted-map (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string))
+  (s:deftype "mymapdone" s:sorted-map (s:no-other-keys (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string)))
+  (s:deftype "myint" s:int (s:gt 4))
+  (s:deftype "mycomplicatedmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" 'myint) (s:has-key "innermap" 'mymap))
+  (s:deftype "myconditionalmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" s:int) (s:has-key "writer" s:bool) (s:when "name" (s:in "Reuben" "Sam") "writer" (s:is-true)))
+  (assert-nil (s:validate mymap (sorted-map 'name "Oliver")))
+  (assert-nil (s:validate mymap (sorted-map 'name "Oliver" 'middle-name "Wendell")))
+  (assert-nil (s:validate mymap (sorted-map 'name "Oliver" 'middle-name "Wendell" 'last-name "Holmes")))
+  (assert-nil (s:validate mymapdone (sorted-map 'name "Oliver")))
+  (assert-nil (s:validate mymapdone (sorted-map 'name "Oliver" 'middle-name "Wendell")))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate mymapdone (sorted-map 'name "Oliver" 'middle-name "Wendell" 'last-name "Holmes"))))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mymap (sorted-map 'name "Oliver" 'middle-name 74))))
+  (assert-nil (s:validate mycomplicatedmap (sorted-map 'name "Oliver" 'id 6 'innermap (sorted-map 'name "Oliver" 'middle-name "Wendell"))))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mycomplicatedmap (sorted-map 'name "Oliver" 'id 6 'innermap "hello"))))
+  (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                           (s:validate mycomplicatedmap (sorted-map 'name "Oliver" 'id 3 'innermap (sorted-map 'name "Oliver" 'middle-name "Wendell")))))
+  (assert-nil (s:validate myconditionalmap (sorted-map 'name "Reuben" 'id 5 'writer true)))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate myconditionalmap (sorted-map 'name "Reuben" 'id 5 'writer false))))
+  )
+
+(test "not"
+  (s:deftype "not-test" s:string (s:not (s:in "a" "b" "c")))
+  (assert-nil (s:validate not-test "x"))
+  (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                           (s:validate not-test "a")))
+  )
+
+(test "lisp-deftype"
+  (deftype mystring (s) (to-string s))
+  (set 'v (s:make-validator mystring s:string (s:in "a" "b" "c")))
+  (assert-nil (s:validate v (new mystring "c")))
+  (assert-equal "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
+                          (s:validate v (new mystring "x"))))
+  (assert-nil (s:validate v (new mystring "c")))
+  (deftype mynil ())
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate v (new mynil))))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate v "a"))))
+
+; Issue #325.  s:may-have-key looked its key up as a symbol while s:has-key
+; looked the same key up as a string.  lisp.Map is an interface: the built-in
+; sorted-map keys on the string value either way, so the asymmetry is
+; invisible here, but the map json:load-string returns rejects a non-string
+; key outright -- so may-have-key never found anything and silently passed
+; whatever it was given.  The key type is now string everywhere.
+(test "may-have-key-key-type"
+  (s:deftype "optstr" s:sorted-map (s:may-have-key "a" s:string))
+
+  ; string-keyed literal map
+  (assert-nil (s:validate optstr (sorted-map "a" "str")))
+  (assert-nil (s:validate optstr (sorted-map "z" 0)))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (sorted-map "a" 1))))
+
+  ; symbol-keyed literal map -- a string lookup must still match it
+  (assert-nil (s:validate optstr (sorted-map 'a "str")))
+  (assert-nil (s:validate optstr (sorted-map 'z 0)))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (sorted-map 'a 1))))
+
+  ; json-decoded map -- the case that silently passed before the fix
+  (assert-nil (s:validate optstr (json:load-string "{\"a\": \"str\"}")))
+  (assert-nil (s:validate optstr (json:load-string "{\"z\": 0}")))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate optstr (json:load-string "{\"a\": 1}"))))
+
+  ; s:has-key must give the same verdict whenever the key is present
+  (s:deftype "reqstr" s:sorted-map (s:has-key "a" s:string))
+  (assert-nil (s:validate reqstr (sorted-map "a" "str")))
+  (assert-nil (s:validate reqstr (sorted-map 'a "str")))
+  (assert-nil (s:validate reqstr (json:load-string "{\"a\": \"str\"}")))
+  (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
+                          (s:validate reqstr (json:load-string "{\"a\": 1}"))))
+  )
