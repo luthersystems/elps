@@ -52,6 +52,9 @@ func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if v.Type != lisp.LString && v.Type != lisp.LBytes {
 		return env.Errorf("argument is not a string: %v", v.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, v.Len()); lerr != nil {
+		return lerr
+	}
 	groups := v.Len() / 3
 	if v.Len()%3 != 0 {
 		groups++
@@ -72,6 +75,11 @@ func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	v := args.Cells[0]
+	if v.Type == lisp.LString || v.Type == lisp.LBytes {
+		if lerr := libutil.ChargeKiB(env, v.Len()); lerr != nil {
+			return lerr
+		}
+	}
 	switch v.Type {
 	case lisp.LString:
 		size := decodedOutputLen(v.Str)

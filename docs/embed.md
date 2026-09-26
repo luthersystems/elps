@@ -663,6 +663,40 @@ rules above. It is per-`Runtime` state: a VM created from a `Template`
 charges only its own budget, and, like evaluation itself, `ChargeSteps` must
 only be called from the goroutine evaluating on that runtime.
 
+The standard library charges this way for work proportional to value size.
+`json` (`load-string`, `load-bytes`, `load-message`, `dump-string`,
+`dump-bytes`, `dump-message`, `message-bytes`), `base64` (`encode`,
+`decode`), `string` (`split`, `join`, `repeat`, `lowercase`, `uppercase`,
+`trim`, `trim-left`, `trim-right`, `trim-space`, `contains?`) and `regexp`
+(`regexp-compile`, `regexp-match?`, and a string pattern compiled on demand)
+charge one step per complete KiB of the input they scan, or of the output
+they build (`join`, `repeat`, and the JSON encoders, which charge after
+encoding). Values under 1 KiB add nothing, so step counts change only for
+programs that handle larger values. The charge depends only on the values'
+sizes, so it is deterministic.
+
+Limits and choices worth knowing:
+
+- **JSON dumps are charged after encoding.** The encoded size is not known
+  until the walk finishes, so a budget cannot stop a huge dump part way. The
+  value's size is still bounded by the steps that built it and by
+  `WithMaxAlloc`, and the charge makes the dump fail the evaluation right
+  after. The charge is deterministic because the encoded bytes are a function
+  of the value alone: sorted-map entries are emitted in key order, native Go
+  values go through `encoding/json` (which sorts Go map keys), and floats are
+  formatted by `strconv.AppendFloat` with shortest round-trip precision. The
+  one exception is a sorted-map backed by an embedder's own `Map`
+  implementation, which is emitted in the order that implementation returns.
+- **`regexp-match?` charges the input text only.** Go's RE2 engine matches in
+  time linear in the input for a compiled program. The pattern is charged
+  when it is compiled from a string, by `regexp-compile` or by a
+  string-pattern argument compiled on demand, and a precompiled regexp is not
+  charged again.
+- **Rounding.** The stdlib charges complete KiB, floor(n/1024), because the
+  call's own evaluation step covers the first KiB. An embedder's builtins may
+  round differently. For example, luthersystems/substrate's storage builtins
+  charge every started KiB, ceil(n/1024).
+
 ### Shared step budgets
 
 `WithMaxSteps` refills at every top-level evaluation. A host that runs several
