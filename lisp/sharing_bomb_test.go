@@ -4,7 +4,11 @@ package lisp
 
 import (
 	"fmt"
+	"math"
 	"testing"
+	"time"
+
+	"github.com/luthersystems/elps/internal/testdeadline"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -192,6 +196,101 @@ func TestSharingMemoLeavesLargeTreesUnshared(t *testing.T) {
 			if inD != outD || inP != outP || outD != outP {
 				t.Fatalf("input %d distinct/%d paths, output %d distinct/%d paths", inD, inP, outD, outP)
 			}
+		})
+	}
+}
+
+// bomb returns a depth-level sharing chain over leaf.
+func bomb(depth int, leaf *LVal) *LVal {
+	for range depth {
+		leaf = SExpr([]*LVal{leaf, leaf})
+	}
+	return leaf
+}
+
+// NaN is not equal to itself, and a memoised pair must not change that: the
+// memo records pairs of CONTAINERS as they are entered, so a leaf pair is
+// always compared, even when both sides are the same node.
+func TestEqualPairMemoKeepsNaNUnequal(t *testing.T) {
+	nan := Float(math.NaN())
+	v := bomb(40, nan)
+	if got := v.Equal(v); got.Type == LError || True(got) {
+		t.Fatalf("a value holding NaN compared equal to itself: %v", got)
+	}
+	// Past the budget, with the NaN at the far end of a wide filler.
+	w := SExpr([]*LVal{fillerTree(3 * sharedWalkBudget), bomb(40, Int(1)), nan})
+	if got := w.Equal(w); got.Type == LError || True(got) {
+		t.Fatalf("NaN after the memo switched on compared equal: %v", got)
+	}
+}
+
+// Trees larger than the budget take the memo's path through both passes
+// and must answer exactly as before: equal, and unequal at the last leaf,
+// with string and symbol map keys compared by name.
+func TestEqualLargeTreesUnchanged(t *testing.T) {
+	build := func(last int) *LVal {
+		cells := make([]*LVal, 3*sharedWalkBudget)
+		for i := range cells {
+			m := SortedMap()
+			m.MapSetLVal(String("k"), SExpr([]*LVal{Int(i)}))
+			cells[i] = SExpr([]*LVal{Int(i), m})
+		}
+		cells[len(cells)-1] = SExpr([]*LVal{Int(last)})
+		return SExpr(cells)
+	}
+	symKeyed := func(last int) *LVal {
+		v := build(last)
+		for _, c := range v.Cells[:len(v.Cells)-1] {
+			m := SortedMap()
+			m.MapSetLVal(Symbol("k"), c.Cells[1].MapGet(String("k")))
+			c.Cells[1] = m
+		}
+		return v
+	}
+	if got := build(1).Equal(build(1)); !True(got) {
+		t.Fatalf("equal trees: %v", got)
+	}
+	if got := build(1).Equal(symKeyed(1)); !True(got) {
+		t.Fatalf("string- and symbol-keyed trees: %v", got)
+	}
+	if got := build(1).Equal(build(2)); got.Type == LError || True(got) {
+		t.Fatalf("trees differing at the last leaf: %v", got)
+	}
+}
+
+// Past the budget, a pair repeated through sharing is skipped, so a DAG
+// compares in time linear in its distinct pairs.  The step budget is not
+// involved: equal? is one step.
+func TestEqualSharedValuesAreLinear(t *testing.T) {
+	a, b := bomb(60, Int(1)), bomb(60, Int(1))
+	var got *LVal
+	testdeadline.Watch("equal? over two 60-level sharing chains", 20*time.Second, 1<<30, func() {
+		got = a.Equal(b)
+	})
+	if !True(got) {
+		t.Fatalf("got %v", got)
+	}
+}
+
+// equal?'s pair memo answers a repeated pair without walking it, so it must
+// fail the value depth limit exactly where the re-walk would.  Both sides
+// share their x, so the second (x, x) pair is a memo hit; the oracle is the
+// same comparison over two trees.
+func TestEqualMemoHitHonoursValueDepthLimit(t *testing.T) {
+	rt := StandardRuntime()
+	rt.MaxValueDepth = 1024
+	for _, quoted := range []bool{false, true} {
+		t.Run(fmt.Sprintf("quoted=%v", quoted), func(t *testing.T) {
+			// run compares v with an identically built, separately
+			// allocated value: the shape of v, found from its cells.
+			run := func(v *LVal) *LVal {
+				return v.EqualWithRuntime(v.Copy(), rt)
+			}
+			checkMemoDepthLimit(t, quoted, run, func(k int, dag *LVal) {
+				if !True(dag) {
+					t.Fatalf("k=%d: equal values compared unequal: %v", k, dag)
+				}
+			})
 		})
 	}
 }

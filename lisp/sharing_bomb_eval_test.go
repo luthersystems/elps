@@ -323,3 +323,41 @@ func TestSharingQuasiquoteFreshWrappersAroundPureList(t *testing.T) {
 		t.Fatal("the pure list was rebuilt per occurrence")
 	}
 }
+
+func TestSharingBombEqual(t *testing.T) {
+	if rc := runSharingBomb(t, `(equal? x y)`); rc.Type != lisp.LSymbol || rc.Str != lisp.TrueSymbol {
+		t.Fatalf("(equal? x y) = %v, want true", rc)
+	}
+}
+
+// A difference at the very bottom of a shared value is still found: the
+// memo only skips pairs already entered, and the first entry of every pair
+// is checked.
+func TestSharingBombEqualFindsDeepDifference(t *testing.T) {
+	src := fmt.Sprintf(`(set 'z 2) (dotimes (i %d) (set! z (list z z))) (equal? x z)`, sharingBombDepth)
+	if rc := runSharingBomb(t, src); rc.Type != lisp.LSymbol || rc.Str != lisp.FalseSymbol {
+		t.Fatalf("(equal? x z) = %v, want false", rc)
+	}
+}
+
+// Two values shared DIFFERENTLY: x doubles one node per level, w alternates
+// between two distinct nodes, so the pairs the walk meets are not all
+// identical to earlier ones.  Still bounded.
+func TestSharingBombEqualDifferentSharing(t *testing.T) {
+	src := fmt.Sprintf(`(set 'w1 1) (set 'w2 1)
+(dotimes (i %d) (set 'n1 (list w1 w2)) (set 'n2 (list w2 w1)) (set! w1 n1) (set! w2 n2))
+(equal? x w1)`, sharingBombDepth)
+	if rc := runSharingBomb(t, src); rc.Type != lisp.LSymbol || rc.Str != lisp.TrueSymbol {
+		t.Fatalf("(equal? x w1) = %v, want true", rc)
+	}
+}
+
+// A wide list shared along many paths: the budget counts cells, so the pair
+// memo switches on after a few revisits of the wide pair, not thousands.
+func TestSharingBombEqualWideList(t *testing.T) {
+	setup := `(set 'w (make-sequence 0 100000)) (set 'v (make-sequence 0 100000))
+(dotimes (i 40) (set! w (list w w)) (set! v (list v v))) ()`
+	if rc := runSharingBombStepsOnly(t, setup, `(equal? w v)`); rc.Type != lisp.LSymbol || rc.Str != lisp.TrueSymbol {
+		t.Fatalf("(equal? w v) = %v, want true", rc)
+	}
+}
