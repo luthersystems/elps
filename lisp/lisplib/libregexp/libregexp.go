@@ -100,6 +100,9 @@ func BuiltinCompile(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if patt.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", patt.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, len(patt.Str)); lerr != nil {
+		return lerr
+	}
 	re, err := regexp.Compile(patt.Str)
 	if err != nil {
 		return invalidPatternError(env, err)
@@ -124,8 +127,14 @@ func BuiltinIsMatch(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	switch text.Type {
 	case lisp.LString:
+		if lerr := libutil.ChargeKiB(env, len(text.Str)); lerr != nil {
+			return lerr
+		}
 		return lisp.Bool(re.MatchString(text.Str))
 	case lisp.LBytes:
+		if lerr := libutil.ChargeKiB(env, len(text.Bytes())); lerr != nil {
+			return lerr
+		}
 		return lisp.Bool(re.Match(text.Bytes()))
 	default:
 		return env.Errorf("argument is not a string or bytes: %v", text.Type)
@@ -137,6 +146,9 @@ func BuiltinIsMatch(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // The returned pointer must never escape through a public API or be mutated.
 func getRegexp(env *lisp.LEnv, v *lisp.LVal) (re *regexp.Regexp, lerr *lisp.LVal) {
 	if v.Type == lisp.LString {
+		if lerr := libutil.ChargeKiB(env, len(v.Str)); lerr != nil {
+			return nil, lerr
+		}
 		re, err := regexp.Compile(v.Str)
 		if err != nil {
 			return nil, invalidPatternError(env, err)

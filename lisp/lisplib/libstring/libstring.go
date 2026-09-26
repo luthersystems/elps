@@ -95,6 +95,9 @@ func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if str.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", str.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
+	}
 	return convertCase(env, str.Str, unicode.ToLower)
 }
 
@@ -102,6 +105,9 @@ func builtinUpper(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	str := args.Cells[0]
 	if str.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", str.Type)
+	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
 	}
 	return convertCase(env, str.Str, unicode.ToUpper)
 }
@@ -148,6 +154,9 @@ func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	if sep.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", sep.Type)
+	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
 	}
 	var count int
 	if sep.Str == "" {
@@ -201,6 +210,9 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 		size += len(sep.Str) * (len(list.Cells) - 1)
 	}
+	if lerr := libutil.ChargeKiB(env, size); lerr != nil {
+		return lerr
+	}
 	var buf strings.Builder
 	buf.Grow(size)
 	for i, cell := range list.Cells {
@@ -237,6 +249,9 @@ func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if n.Int > maxAlloc/len(str.Str) {
 		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
+	if lerr := libutil.ChargeKiB(env, n.Int*len(str.Str)); lerr != nil {
+		return lerr
+	}
 	return lisp.String(strings.Repeat(str.Str, n.Int))
 }
 
@@ -244,6 +259,9 @@ func builtinTrimSpace(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	str := args.Cells[0]
 	if str.Type != lisp.LString {
 		return env.Errorf("first argument is not a string: %v", str.Type)
+	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
 	}
 	return lisp.String(strings.TrimSpace(str.Str))
 }
@@ -257,6 +275,9 @@ func builtinTrim(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if cutset.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", cutset.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
+	}
 	return lisp.String(strings.Trim(str.Str, cutset.Str))
 }
 
@@ -269,6 +290,9 @@ func builtinTrimLeft(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if cutset.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", cutset.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
+	}
 	return lisp.String(strings.TrimLeft(str.Str, cutset.Str))
 }
 
@@ -280,6 +304,9 @@ func builtinTrimRight(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	if cutset.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", cutset.Type)
+	}
+	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+		return lerr
 	}
 	return lisp.String(strings.TrimRight(str.Str, cutset.Str))
 }
@@ -316,6 +343,9 @@ func builtinHasSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func builtinContains(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	str, substr, lerr := stringPair(env, args)
 	if lerr != nil {
+		return lerr
+	}
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
 	return lisp.Bool(strings.Contains(str, substr))

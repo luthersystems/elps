@@ -655,6 +655,18 @@ rules above. It is per-`Runtime` state: a VM created from a `Template`
 charges only its own budget, and, like evaluation itself, `ChargeSteps` must
 only be called from the goroutine evaluating on that runtime.
 
+The standard library charges this way for work proportional to value size.
+`json` (`load-string`, `load-bytes`, `load-message`, `dump-string`,
+`dump-bytes`, `dump-message`, `message-bytes`), `base64` (`encode`,
+`decode`), `string` (`split`, `join`, `repeat`, `lowercase`, `uppercase`,
+`trim`, `trim-left`, `trim-right`, `trim-space`, `contains?`) and `regexp`
+(`regexp-compile`, `regexp-match?`, and a string pattern compiled on demand)
+charge one step per complete KiB of the input they scan, or of the output
+they build (`join`, `repeat`, and the JSON encoders, which charge after
+encoding). Values under 1 KiB add nothing, so step counts change only for
+programs that handle larger values. The charge depends only on the values'
+sizes, so it is deterministic.
+
 ### Shared step budgets
 
 `WithMaxSteps` refills at every top-level evaluation. A host that runs several

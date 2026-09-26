@@ -682,6 +682,9 @@ func (s *Serializer) MessageBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.
 	if !ok {
 		return errNotAMessage(env)
 	}
+	if lerr := libutil.ChargeKiB(env, len(msg)); lerr != nil {
+		return lerr
+	}
 	return lisp.Bytes([]byte(msg))
 }
 
@@ -734,6 +737,12 @@ func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool,
 	if err != nil {
 		return nil, false, env.Error(err)
 	}
+	// Charged on the encoded size, after encoding: the value's size is not
+	// known before the walk, and the output length is a function of the value
+	// alone, so the charge is deterministic.
+	if lerr := libutil.ChargeKiB(env, len(b)); lerr != nil {
+		return nil, false, lerr
+	}
 	return b, loadable, nil
 }
 
@@ -760,6 +769,9 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 	if js.Type != lisp.LBytes {
 		return env.Errorf("argument is not bytes: %v", js.Type)
 	}
+	if lerr := libutil.ChargeKiB(env, len(js.Bytes())); lerr != nil {
+		return lerr
+	}
 	return s.attachStack(env, s.LoadWith(js.Bytes(), s.loadOpts(env, stringNums, exactInts)))
 }
 
@@ -778,6 +790,9 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 	if err != nil {
 		return env.Error(err)
 	}
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
+		return lerr
+	}
 	return lisp.String(str)
 }
 
@@ -788,6 +803,9 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 	}
 	if js.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", js.Type)
+	}
+	if lerr := libutil.ChargeKiB(env, len(js.Str)); lerr != nil {
+		return lerr
 	}
 	return s.attachStack(env, s.LoadWith([]byte(js.Str), s.loadOpts(env, stringNums, exactInts)))
 }
