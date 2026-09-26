@@ -2435,6 +2435,12 @@ func bindNativePositional(formals, args []*LVal) *LVal {
 	nreq := len(formals)
 	rest := false
 	for i, formal := range formals {
+		if formal == nil {
+			// A hand-built formals list with a nil entry: leave it to the
+			// general binder, which reads formals one at a time and may
+			// report an arity error before it reaches the nil.
+			return nil
+		}
 		if !strings.HasPrefix(formal.Str, MetaArgPrefix) {
 			continue
 		}

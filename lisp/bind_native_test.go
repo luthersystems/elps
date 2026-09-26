@@ -199,6 +199,31 @@ func TestBindLambdaUnaffected(t *testing.T) {
 	}
 }
 
+// TestBindNilFormalAfterRequiredFailsLikeGeneral pins that a nil formal
+// after a required name defers to the general binder, which reports the
+// arity error for too few arguments before it ever reads the nil formal.
+func TestBindNilFormalAfterRequiredFailsLikeGeneral(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	builtin := func(env *LEnv, args *LVal) *LVal { return Nil() }
+	try := func(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) (msg string) {
+		defer func() {
+			if r := recover(); r != nil {
+				msg = "panic: " + fmt.Sprint(r)
+			}
+		}()
+		_, list := bind(fun, args)
+		return describeBind(list)
+	}
+	for _, args := range []*LVal{QExpr(nil), QExpr([]*LVal{Int(1)})} {
+		fun := Fun("nil-formal", QExpr([]*LVal{Symbol("a"), nil}), builtin)
+		got := try(env.bind, fun, args)
+		want := try(env.bindGeneral, fun, args)
+		if got != want {
+			t.Errorf("%d args: bind: %s\ngeneral: %s", len(args.Cells), got, want)
+		}
+	}
+}
+
 // TestBindMalformedFunctionFailsLikeGeneral checks that bind reads a function
 // value in the same order as the general binder, so a malformed value an
 // embedder builds by hand (no formals cell, no function data) fails with the
