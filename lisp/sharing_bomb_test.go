@@ -5,6 +5,7 @@ package lisp
 import (
 	"fmt"
 	"math"
+	"strconv"
 	"testing"
 	"time"
 
@@ -228,9 +229,14 @@ func TestEqualPairMemoKeepsNaNUnequal(t *testing.T) {
 // and must answer exactly as before: equal, and unequal at the last leaf,
 // with string and symbol map keys compared by name.
 func TestEqualLargeTreesUnchanged(t *testing.T) {
+	// Past equalShallowBudget, so the iterative pass and its memo run too.
 	build := func(last int) *LVal {
-		cells := make([]*LVal, 3*sharedWalkBudget)
+		cells := make([]*LVal, equalShallowBudget/2)
 		for i := range cells {
+			if i%64 != 0 {
+				cells[i] = SExpr([]*LVal{Int(i)})
+				continue
+			}
 			m := SortedMap()
 			m.MapSetLVal(String("k"), SExpr([]*LVal{Int(i)}))
 			cells[i] = SExpr([]*LVal{Int(i), m})
@@ -241,6 +247,9 @@ func TestEqualLargeTreesUnchanged(t *testing.T) {
 	symKeyed := func(last int) *LVal {
 		v := build(last)
 		for _, c := range v.Cells[:len(v.Cells)-1] {
+			if len(c.Cells) < 2 {
+				continue
+			}
 			m := SortedMap()
 			m.MapSetLVal(Symbol("k"), c.Cells[1].MapGet(String("k")))
 			c.Cells[1] = m
@@ -272,25 +281,91 @@ func TestEqualSharedValuesAreLinear(t *testing.T) {
 	}
 }
 
-// equal?'s pair memo answers a repeated pair without walking it, so it must
-// fail the value depth limit exactly where the re-walk would.  Both sides
-// share their x, so the second (x, x) pair is a memo hit; the oracle is the
-// same comparison over two trees.
-func TestEqualMemoHitHonoursValueDepthLimit(t *testing.T) {
+// equal?'s pair memo answers only pairs whose walk stays above
+// cycleGuardDepth.  Deeper sharing is left to the depth-tracked seen set and
+// the strict restart, exactly as before, so a value that shares a pair both
+// shallow and deep past the value depth limit compares as it always did:
+// the restart skips the repeated pair and never reaches the limit.  These
+// results are origin/main's.
+func TestEqualMemoLeavesDeepSharingToStrictRestart(t *testing.T) {
 	rt := StandardRuntime()
 	rt.MaxValueDepth = 1024
-	for _, quoted := range []bool{false, true} {
-		t.Run(fmt.Sprintf("quoted=%v", quoted), func(t *testing.T) {
-			// run compares v with an identically built, separately
-			// allocated value: the shape of v, found from its cells.
-			run := func(v *LVal) *LVal {
-				return v.EqualWithRuntime(v.Copy(), rt)
+	for _, k := range []int{400, 523, 524, 530, 600} {
+		for _, quoted := range []bool{false, true} {
+			v := sharedDepthCase(k, true, quoted)
+			if got := v.EqualWithRuntime(v.Copy(), rt); !True(got) {
+				t.Fatalf("k=%d quoted=%v: %v, want true", k, quoted, got)
 			}
-			checkMemoDepthLimit(t, quoted, run, func(k int, dag *LVal) {
-				if !True(dag) {
-					t.Fatalf("k=%d: equal values compared unequal: %v", k, dag)
-				}
-			})
-		})
+		}
+	}
+	p := chain(1000, Int(7))
+	v := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), p, chain(60, p)})
+	if got := v.EqualWithRuntime(v.Copy(), rt); !True(got) {
+		t.Fatalf("%v, want true", got)
+	}
+	// A pair the memo records near the root, reached again right at the
+	// depth limit: the re-walk fails there, so the memo must not answer it.  The oracle is the same value with a distinct second copy.
+	wide := func() *LVal {
+		cells := make([]*LVal, 2*equalMemoGrain)
+		for i := range cells {
+			cells[i] = Int(i)
+		}
+		return SExpr([]*LVal{SExpr(cells)}) // height 1: its re-walk goes one level deeper
+	}
+	for k := 1018; k <= 1026; k++ {
+		q := wide()
+		dag := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), q, chain(k, q)})
+		tree := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), wide(), chain(k, wide())})
+		d, tr := dag.EqualWithRuntime(dag.Copy(), rt), tree.EqualWithRuntime(tree.Copy(), rt)
+		if d.Type != tr.Type || d.String() != tr.String() {
+			t.Fatalf("k=%d: shared %v, tree %v", k, d, tr)
+		}
 	}
 }
+
+// A sharing bomb is linear wherever it sits: above cycleGuardDepth the memo
+// answers repeats, below it the strict restart does.
+func TestEqualSharingBombAtAnyDepth(t *testing.T) {
+	for _, at := range []int{0, 10, 30, 50, 63, 64, 70, 200} {
+		a := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), chain(at, bomb(40, Int(1)))})
+		b := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), chain(at, bomb(40, Int(1)))})
+		var got *LVal
+		testdeadline.Watch("equal? over a bomb at depth "+strconv.Itoa(at), 20*time.Second, 1<<30, func() { got = a.Equal(b) })
+		if !True(got) {
+			t.Fatalf("at=%d: %v", at, got)
+		}
+	}
+}
+
+// The memo's cycleGuardDepth boundary, pinned to origin/main.  A pair p of
+// height h is finished near the root, reached again with its top at depth
+// dp, and a third time with its bottom exactly at the value depth limit.  On
+// main, the second visit records p's pairs in seen when any of them lies at
+// or below cycleGuardDepth (dp+h >= 65, given the filler's level), the third
+// visit repeats one, and the strict restart skips it: true.  Otherwise the
+// third visit walks p and fails the limit.  The memo must answer the second
+// visit only where main's re-walk would have recorded nothing, which is
+// what makes every row here identical to main -- and why heights must be
+// exact.
+func TestEqualMemoDepthBoundaryMatchesMain(t *testing.T) {
+	rt := StandardRuntime()
+	rt.MaxValueDepth = 1024
+	wide := func() *LVal {
+		cells := make([]*LVal, 2*equalMemoGrain)
+		for i := range cells {
+			cells[i] = Int(i)
+		}
+		return SExpr(cells)
+	}
+	for _, h := range []int{3, 5} {
+		for dp := 54; dp <= 66; dp++ {
+			p := chain(h, wide())
+			v := SExpr([]*LVal{fillerTree(sharedWalkBudget + 10), p, chain(dp-1, p), chain(1023-h, p)})
+			got := v.EqualWithRuntime(v.Copy(), rt)
+			if wantErr := dp+h <= 64; (got.Type == LError) != wantErr || (!wantErr && !True(got)) {
+				t.Fatalf("h=%d dp=%d: got %v, want error=%v (origin/main)", h, dp, got, wantErr)
+			}
+		}
+	}
+}
+

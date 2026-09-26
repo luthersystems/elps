@@ -1616,11 +1616,12 @@ func (v *LVal) EqualWithRuntime(other *LVal, rt *Runtime) *LVal {
 	return v.equalDeep(other, rt, nil)
 }
 
-// equalWithEnv is EqualWithRuntime for a caller holding an environment, the
-// equal? builtin: env supplies the runtime and the context a long
-// comparison polls (see equalIter).  Polling never changes a result a
-// comparison reaches; it only stops one whose deadline has already passed.
-func (v *LVal) equalWithEnv(other *LVal, env *LEnv) *LVal {
+// EqualWithEnv is EqualWithRuntime for a caller holding an environment --
+// the equal? builtin, and any native builtin comparing values a program
+// supplied: env supplies the runtime and the context a long comparison
+// polls (see equalIter).  Polling never changes a result a comparison
+// reaches; it only stops one whose deadline has already passed.
+func (v *LVal) EqualWithEnv(other *LVal, env *LEnv) *LVal {
 	budget := equalShallowBudget
 	if result := v.equalShallow(other, 0, &budget); result != nil {
 		return result
@@ -1633,9 +1634,10 @@ func (v *LVal) equalWithEnv(other *LVal, env *LEnv) *LVal {
 // equalIter, whose memo bounds a value with nested sharing
 // (lisp/sharing.go).  It is larger than sharedWalkBudget because giving up
 // costs a restart: the recursive pass is the fast path for every ordinary
-// value, and this keeps values of tens of thousands of cells on it, while
-// capping what a sharing bomb can spend here at well under a millisecond.
-const equalShallowBudget = 16 * sharedWalkBudget
+// value, and this keeps values of up to a million cells on it -- about what
+// one builtin step may already allocate -- while capping what a sharing bomb
+// can spend here at a few milliseconds.
+const equalShallowBudget = 1 << 20
 
 // equalDeep is the iterative comparison, run when equalShallow gives up.
 //
@@ -1752,37 +1754,50 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 //
 // SHARING.  Cycle tracking starts only below cycleGuardDepth, so a value
 // that shares subtrees above that depth -- (set! x (list x x)) repeated D
-// times, D < 64 -- used to be compared path by path: 2^D pairs.  A walk that
-// has done sharedWalkBudget work (pairs of containers entered plus the cells
-// they hold) therefore memoises, in done, each pair it FINISHES whose own
-// walk cost at least equalMemoGrain, with the height of containers the walk
-// descended below it.  A pair found there is not walked again.  That is
-// sound: a finished pair compared equal, or the walk would have ended, and a
-// pair's result does not depend on where it is reached -- except for the
-// value depth limit, which a hit enforces exactly as the re-walk would, from
-// the recorded height.  A pair too cheap to record costs less than
-// equalMemoGrain each time it is reached, so the walk is linear in the
-// distinct pairs it records times that grain.  Recording only the costly
-// pairs is what keeps a large TREE, which never reaches a pair twice, from
-// paying a map insert per container.  Cycles are left to the existing
-// machinery above, unchanged.  With env, the walk also polls env's context
-// every sharedWalkBudget work as a backstop: two differently shared values
-// can still have |a|x|b| distinct pairs.
+// times, D < 64 -- used to be compared path by path: 2^D pairs.  Sharing
+// below that depth already ends in seen and the strict restart, which is
+// linear.  A walk that has done sharedWalkBudget work (pairs of containers
+// entered plus the cells they hold) therefore memoises, in done, each pair
+// it FINISHES whose own walk cost at least equalMemoGrain and stayed above
+// cycleGuardDepth, with the height of containers it descended below it, and
+// answers a pair found there -- when its re-walk would also stay above that
+// depth -- without walking it again.  That is sound: a finished pair
+// compared equal, or the walk would have ended, and a walk that stays above
+// cycleGuardDepth touches neither seen nor the value depth limit, so its
+// result does not depend on where the pair is reached.  Everything deeper is
+// left to seen and the strict restart exactly as before, so every result,
+// error included, is the unmemoised walk's.  A pair too cheap to record
+// costs less than equalMemoGrain each time it is reached, so the walk above
+// cycleGuardDepth is linear in the distinct pairs it records times that
+// grain.  Recording only the costly pairs is what keeps a large TREE, which
+// never reaches a pair twice, from paying a map insert per container.
+//
+// What is NOT bounded here is two values shared DIFFERENTLY: their distinct
+// pairs can number |a|x|b|, quadratic in what the program built (not
+// exponential).  With env, the walk polls env's context every
+// sharedWalkBudget work, so a deadline still stops it.
 func (v *LVal) equalIter(other *LVal, limit int, strict bool, env *LEnv) (*LVal, bool) {
 	type frame struct {
-		// a and b are the pair this frame compares, start the walk's work
-		// when it was entered, and height the container levels found below
-		// it so far -- what done records when the frame finishes.
-		a, b                 *LVal
-		ac, bc               []*LVal
-		index, start, height int
-		entries              bool
+		ac, bc  []*LVal
+		index   int
+		entries bool
+	}
+	// memoFrame is what done needs of a frame: the pair it compares, the
+	// walk's work when it was entered, and the container levels found below
+	// it so far.  Only a frame above cycleGuardDepth can be recorded, so
+	// these live in a fixed array indexed by depth rather than in every
+	// frame, and a deep walk's frames stay the size they were.
+	type memoFrame struct {
+		a, b          *LVal
+		start, height int
 	}
 	// Reuse one by-value cursor per ancestor. Leaves never create or clear
 	// a frame, and wide containers do not increase traversal scratch space.
 	// The first 16 frames live on the Go stack; append spills past that.
 	var buf [16]frame
 	stack := buf[:0]
+	var memoBuf [cycleGuardDepth]memoFrame
+	memoFrames := memoBuf[:]
 	var seen map[valuePair]bool
 	// done is the sharing memo; it is nil until work passes
 	// sharedWalkBudget, and never used in strict mode, whose seen already
@@ -1818,7 +1833,7 @@ walk:
 				return Bool(false), false
 			}
 		} else {
-			f := frame{a: a, b: b}
+			var f frame
 			width := 1 // the cells a pair of containers holds, for the budget
 			switch a.Type {
 			case LSExpr, LArray:
@@ -1858,12 +1873,13 @@ walk:
 				seen[pair] = true
 			}
 			if !repeated && len(done) > 0 {
-				if height, ok := done[valuePair{a, b}]; ok {
-					// Reached again through sharing: equal, unless the
-					// re-walk would have gone past the depth limit.
-					if len(stack)+height >= limit {
-						return Error(ValueDepthError(limit)), false
-					}
+				// Reached again through sharing: equal.  Only a pair whose
+				// re-walk would stay above cycleGuardDepth is answered here
+				// -- a deeper re-walk would reach seen, and possibly the
+				// strict restart, and the memo must not change what those
+				// decide.  The value depth limit, at least 1024, is out of
+				// reach of a walk that shallow.
+				if height, ok := done[valuePair{a, b}]; ok && len(stack)+height < cycleGuardDepth {
 					repeated, h = true, height
 				}
 			}
@@ -1893,7 +1909,9 @@ walk:
 					f.ac, f.bc, f.entries = ae.Cells, be.Cells, true
 				}
 				if len(f.ac) > 0 {
-					f.start = work
+					if d := len(stack); d < len(memoFrames) {
+						memoFrames[d] = memoFrame{a: a, b: b, start: work}
+					}
 					stack = append(stack, f)
 				} else {
 					h = 0
@@ -1902,8 +1920,9 @@ walk:
 		}
 		for len(stack) > 0 {
 			f := &stack[len(stack)-1]
-			if h >= f.height {
-				f.height = h + 1
+			d := len(stack) - 1
+			if d < len(memoFrames) && h >= memoFrames[d].height {
+				memoFrames[d].height = h + 1
 			}
 			n := len(f.ac)
 			if f.entries {
@@ -1920,9 +1939,17 @@ walk:
 				f.index++
 				continue walk
 			}
-			h = f.height
-			if done != nil && work-f.start >= equalMemoGrain {
-				done[valuePair{f.a, f.b}] = h
+			if d >= len(memoFrames) {
+				// Nothing at or above this depth can be recorded; report a
+				// height that keeps every ancestor from being recorded too.
+				h = cycleGuardDepth
+			} else {
+				m := &memoFrames[d]
+				h = m.height
+				if done != nil && work-m.start >= equalMemoGrain && d+h < cycleGuardDepth {
+					done[valuePair{m.a, m.b}] = h
+				}
+				*m = memoFrame{}
 			}
 			*f = frame{}
 			stack = stack[:len(stack)-1]

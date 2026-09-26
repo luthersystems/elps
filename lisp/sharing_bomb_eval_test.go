@@ -361,3 +361,16 @@ func TestSharingBombEqualWideList(t *testing.T) {
 		t.Fatalf("(equal? w v) = %v, want true", rc)
 	}
 }
+
+// The same wide bomb next to a value deeper than cycleGuardDepth, which
+// sends the whole comparison to the iterative pass: its budget counts cells
+// too.
+func TestSharingBombEqualWideListIterative(t *testing.T) {
+	setup := `(set 'w (make-sequence 0 1000000)) (set 'v (make-sequence 0 1000000))
+(dotimes (i 40) (set! w (list w w)) (set! v (list v v)))
+(set 'deep 1) (dotimes (i 70) (set! deep (list deep))) ()`
+	if rc := runSharingBombStepsOnly(t, setup, `(equal? (list deep w) (list deep v))`); rc.Type != lisp.LSymbol || rc.Str != lisp.TrueSymbol {
+		t.Fatalf("got %v, want true", rc)
+	}
+}
+

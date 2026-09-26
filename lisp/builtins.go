@@ -3025,7 +3025,7 @@ func builtinIsBytes(env *LEnv, args *LVal) *LVal {
 
 func builtinEqual(env *LEnv, args *LVal) *LVal {
 	a, b := args.Cells[0], args.Cells[1]
-	return a.equalWithEnv(b, env)
+	return a.EqualWithEnv(b, env)
 }
 
 func builtinAllP(env *LEnv, args *LVal) *LVal {
