@@ -137,6 +137,7 @@ n`)
 // occurrence is an evaluation, and the budget stops it.
 func TestSharingBombQuasiquoteWithUnquoteHitsStepBudget(t *testing.T) {
 	env := sharingBombEnv(t, 1)
+	lisp.WithMaxSteps(100_000)(env) // enough to show the budget stops it; cheap under -race
 	src := `
 (set 'u (car '((unquote 1))))
 (set 'x (list u 1))
@@ -148,5 +149,47 @@ func TestSharingBombQuasiquoteWithUnquoteHitsStepBudget(t *testing.T) {
 	})
 	if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
 		t.Fatalf("got %v, want the step limit", rc)
+	}
+}
+
+// runSharingBombStepsOnly loads setup, then evaluates probe under the step
+// budget alone -- no deadline -- which is the configuration a sharing bomb
+// used to bypass outright.
+func runSharingBombStepsOnly(t *testing.T, setup, probe string) *lisp.LVal {
+	t.Helper()
+	env := sharingBombEnv(t, 1)
+	if rc := env.LoadString("setup.lisp", setup); rc.Type == lisp.LError {
+		t.Fatalf("setup: %v", rc)
+	}
+	var rc *lisp.LVal
+	testdeadline.Watch(probe, 20*time.Second, 1<<30, func() {
+		rc = env.LoadString("probe.lisp", probe)
+	})
+	return rc
+}
+
+// A WIDE shared list holding an unquote: every occurrence evaluates the
+// unquote (one step) but also rebuilds all of the list's cells.  Past the
+// budget a re-entered impure list is charged its width, so the step budget
+// bounds the rebuilding too.
+func TestSharingBombQuasiquoteChargesSharedImpureRebuilds(t *testing.T) {
+	rc := runSharingBombStepsOnly(t, `
+(set 'n (cons (car '((unquote 1))) (make-sequence 0 10000)))
+(set 'x n)
+(dotimes (i 40) (set! x (list x x)))
+()`, `(eval (list QQ x))`)
+	if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
+		t.Fatalf("got %v, want the step limit", rc)
+	}
+}
+
+// A wide PURE list shared along many paths: the budget counts cells, so the
+// memo switches on after a few revisits rather than after thousands.
+func TestSharingBombWidePureList(t *testing.T) {
+	setup := `(set 'w (make-sequence 0 100000)) (dotimes (i 40) (set! w (list w w))) (defmacro embed-w () (list Q w)) ()`
+	for _, probe := range []string{`(eval (list QQ w))`, `(embed-w)`} {
+		if rc := runSharingBombStepsOnly(t, setup, probe); rc.Type == lisp.LError {
+			t.Fatalf("%s: %v", probe, rc)
+		}
 	}
 }

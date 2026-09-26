@@ -572,8 +572,10 @@ type macroStamper struct {
 	// answered from the memo rather than walked once per path.  A tree
 	// never hits it, so its result is exactly the tree walk's.
 	copies map[*LVal]stampMemo
-	// visits counts the containers the ordinary walk has entered, until
-	// the memo above switches on.
+	// visits counts the work the ordinary walk has done -- one per
+	// container entered plus one per cell it holds -- until the memo above
+	// switches on.  Cells, not just containers: a wide container revisited
+	// through sharing costs its width every time.
 	visits int
 	// nextID is the expansion-ID counter for the walk in progress, seeded
 	// from and committed back to Runtime.macroExpSeq (commitIDs) only for
@@ -754,7 +756,7 @@ walk:
 				f.cp.Cells = f.cells //elps:mutates private header allocated above or by stampedCopy before publication
 				s.copies[v] = stampMemo{cp: f.cp}
 			} else if s.copies == nil {
-				s.visits++
+				s.visits += 1 + len(v.Cells)
 				if s.visits > sharedWalkBudget {
 					// Large enough to be a sharing bomb rather than an
 					// expansion anyone wrote (lisp/sharing.go): memoise
@@ -864,17 +866,27 @@ type quasiquoteMemo struct {
 // SHARING.  A template is a graph, and one built at runtime -- (eval (list
 // 'quasiquote x)), or a Go macro's output -- can share a subtree between
 // many parents; the D-level chain (set! x (list x x)) has 2^D paths.  The
-// walk counts the lists it enters and, past sharedWalkBudget
-// (lisp/sharing.go), memoises every PURE list it finishes -- one with no
-// unquote anywhere below it -- by identity, so a pure subtree reached again
-// is not rebuilt once per path.  Only pure lists: the result of a pure list
-// is a function of the list alone (and of the two limits, which the entry
-// records), while a list holding an unquote must evaluate it once per
-// occurrence, as it always has, and each of those evaluations is charged as
-// evaluation steps.  A tree never hits the memo, so its result, errors and
-// step count are exactly the tree walk's; a DAG past the budget gets one
-// shared result per shared pure list where the tree walk built one copy per
-// path.
+// walk counts its work (lists entered and the cells they hold) and, past
+// sharedWalkBudget (lisp/sharing.go), memoises every PURE list it finishes
+// -- one with no unquote anywhere below it -- by identity, so a pure
+// subtree reached again is not rebuilt once per path.  Only pure lists: the
+// result of a pure list is a function of the list alone (and of the two
+// limits, which the entry records), while a list holding an unquote must
+// evaluate it once per occurrence, as it always has.
+//
+// An IMPURE list reached again is therefore rebuilt again, and that rebuild
+// is the one piece of work the unquotes' own steps do not pay for: a list of
+// width k holding one unquote, shared along 2^D paths, costs one step per
+// occurrence but k cells of work and allocation.  So past the budget the
+// walk records the impure lists it finishes, and charges a revisit of one
+// its width in evaluation steps (LEnv.ChargeSteps, which also observes the
+// context).  It also polls the context as it goes.
+//
+// A tree never revisits a list: its result, errors and step count are
+// exactly the tree walk's.  A DAG past the budget gets one shared result per
+// shared pure list where the tree walk built one copy per path, and pays
+// steps for re-entering a shared impure list -- behaviour that only an input
+// which previously did unbounded unmetered work can observe.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	type frame struct {
 		v, orig                             *LVal
@@ -896,9 +908,11 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	var buf [8]frame
 	stack := buf[:0]
 	valueDepth := depth
-	// memo is nil until the walk has entered sharedWalkBudget lists.
+	// memo is nil until the walk has done sharedWalkBudget work; impure
+	// records the impure lists finished since then.
 	var memo map[*LVal]quasiquoteMemo
-	lists := 0
+	var impure map[*LVal]struct{}
+	work := 0
 	for {
 		var (
 			result, list        *LVal
@@ -921,9 +935,22 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		if list != nil {
 			f := frame{v: list, orig: v, cells: make([]*LVal, len(list.Cells)), depth: depth, valueDepth: valueDepth + quoteEdges, quotes: quotes, quoteEdges: quoteEdges, need: quoteEdges}
 			if len(list.Cells) > 0 {
-				lists++
-				if memo == nil && lists > sharedWalkBudget {
+				work += 1 + len(list.Cells)
+				if memo == nil && work > sharedWalkBudget {
 					memo = make(map[*LVal]quasiquoteMemo)
+					impure = make(map[*LVal]struct{})
+				}
+				if memo != nil {
+					if _, again := impure[v]; again {
+						// A shared impure list, rebuilt once more.
+						if lerr := env.ChargeSteps(int64(len(list.Cells))); lerr.Type == LError {
+							return lerr
+						}
+					} else if work%sharedWalkBudget < 1+len(list.Cells) {
+						if err := env.Context().Err(); err != nil {
+							return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+						}
+					}
 				}
 				stack = append(stack, f)
 				v = list.Cells[0]
@@ -976,8 +1003,12 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 			}
 			result = finishUnquote(f.v, f.cells, f.quotes, f.splices, f.total)
 			evaluated, need = f.impure, f.need
-			if memo != nil && !f.impure {
-				memo[f.orig] = quasiquoteMemo{result: result, need: need, allocLimit: allocLimit, depthLimit: env.Runtime.ValueDepthLimit()}
+			if memo != nil {
+				if f.impure {
+					impure[f.orig] = struct{}{}
+				} else {
+					memo[f.orig] = quasiquoteMemo{result: result, need: need, allocLimit: allocLimit, depthLimit: env.Runtime.ValueDepthLimit()}
+				}
 			}
 			stack = stack[:len(stack)-1]
 		}

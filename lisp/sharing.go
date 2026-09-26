@@ -22,12 +22,15 @@ package lisp
 //
 // The walkers fixed against this class keep their original tree walk -- so
 // every ordinary value takes exactly the path, the allocations and the
-// result it always did -- and count the containers they visit.  Past
-// sharedWalkBudget containers they begin to memoise each container they
-// finish, by identity, and a container reached again is answered from the
-// memo instead of being walked again.  The walk is then linear in the number
-// of DISTINCT containers (and their cells), which is what the program paid
-// to build.
+// result it always did -- and count the work they do: one per container
+// entered plus one per cell it holds.  Cells count because a wide container
+// reached again costs its width every time; counting containers alone would
+// let (list w w ...) over a million-cell w do budget x million work before
+// the memo switched on.  Past sharedWalkBudget they begin to memoise each
+// container they finish, by identity, and a container reached again is
+// answered from the memo instead of being walked again.  The walk is then
+// linear in the number of DISTINCT containers (and their cells), which is
+// what the program paid to build.
 //
 // On a tree the memo is never hit, so it changes nothing observable: the
 // same result, the same errors, the same evaluation steps.  On a DAG larger
@@ -36,7 +39,11 @@ package lisp
 // have built one copy per path.  That is a deliberate behaviour change and
 // only reachable by inputs that previously did pathological work: the
 // output now has the same sharing as the input instead of exponentially
-// many copies of it.
+// many copies of it.  (Under a debugger, the stamper's per-node expansion
+// IDs follow: a shared container gets one ID, not one per path.)  Work a
+// memo cannot remove -- quasiquote re-evaluating an unquote under a shared
+// list -- is charged in evaluation steps past the budget instead; see
+// findAndUnquote.
 //
 // sharedWalkBudget is chosen well above the size of any expansion or
 // template a program writes by hand, so the memo stays off -- and allocates
