@@ -521,7 +521,7 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 			instance.envs[index].scope = newScopeTable(len(env.bindings))
 		}
 		for _, binding := range env.bindings {
-			instance.envs[index].scope.put(binding.name, instance.ref(binding.value), 0)
+			instance.envs[index].scope.appendNew(binding.name, instance.ref(binding.value))
 		}
 	}
 	for index, function := range p.functions {

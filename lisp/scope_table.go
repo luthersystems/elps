@@ -77,11 +77,26 @@ func (t *scopeTable) put(name string, v *LVal, hint int) {
 	} else if t.update(name, v) {
 		return
 	}
+	t.appendNew(name, v)
+}
+
+// appendNew adds a binding for a name the caller knows is not bound in t,
+// skipping put's duplicate check -- template instantiation, whose plan
+// descriptors come from one scope and so are already unique.
+//
+// When the append outgrows the array (the co-allocated one included) the old
+// array is left as it was rather than cleared, so it may keep up to its
+// capacity of superseded values reachable for the environment's lifetime.
+// That is bounded, reachable only through the Go API (a Lisp scope never
+// outgrows the capacity its binding form sized it with), and clearing it
+// would hand zeroed bindings to a Bindings iteration that is still ranging
+// over the old array.
+func (t *scopeTable) appendNew(name string, v *LVal) {
 	t.bindings = append(t.bindings, scopeBinding{name: name, val: v})
 	if t.index != nil {
 		t.index[name] = len(t.bindings) - 1
 	} else if len(t.bindings) > scopeIndexThreshold {
-		t.index = make(map[string]int, len(t.bindings)*2)
+		t.index = make(map[string]int, cap(t.bindings))
 		for i, b := range t.bindings {
 			t.index[b.name] = i
 		}

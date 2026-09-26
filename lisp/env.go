@@ -166,10 +166,10 @@ func (env *LEnv) Parent() *LEnv {
 
 // Bindings iterates the symbol bindings in env's immediate scope; parent
 // scopes are not included (walk Parent for those).  Iteration order is
-// unspecified, like Go map order.
+// unspecified.
 //
-// Bindings is the read half of the scope map, which went unexported in issue
-// #382: enumerating an environment is a legitimate need (the debugger's
+// Bindings is the read half of the scope table, which went unexported (as a
+// map) in issue #382: enumerating an environment is a legitimate need (the debugger's
 // variable panes), while the write that came free with an exported map —
 // rebinding a symbol in an environment the writer does not own — is not.
 // Use Put or PutGlobal to bind.

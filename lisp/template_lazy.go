@@ -216,7 +216,7 @@ func (l *lazyInstance) fillEnv(i int) {
 	if len(te.bindings) > 0 {
 		e.scope = newScopeTable(len(te.bindings))
 		for _, b := range te.bindings {
-			e.scope.put(b.name, l.allocRef(b.value), 0)
+			e.scope.appendNew(b.name, l.allocRef(b.value))
 		}
 	}
 }

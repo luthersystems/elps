@@ -95,3 +95,29 @@ func TestAllocEnvScopeCapacity(t *testing.T) {
 		}
 	}
 }
+
+// TestScopeTableAppendNew pins that the instantiation path, which appends
+// unique names without put's duplicate check, builds the same table put does
+// on both sides of scopeIndexThreshold.
+func TestScopeTableAppendNew(t *testing.T) {
+	for _, n := range []int{1, scopeIndexThreshold, scopeIndexThreshold + 1, 40} {
+		var viaPut scopeTable
+		viaAppend := newScopeTable(n)
+		for i := range n {
+			name, v := fmt.Sprintf("v%02d", i), Int(i)
+			viaPut.put(name, v, n)
+			viaAppend.appendNew(name, v)
+		}
+		if viaAppend.len() != viaPut.len() || (viaAppend.index != nil) != (viaPut.index != nil) {
+			t.Fatalf("n=%d: len %d/%d index %t/%t", n, viaAppend.len(), viaPut.len(), viaAppend.index != nil, viaPut.index != nil)
+		}
+		for i := range n + 1 {
+			name := fmt.Sprintf("v%02d", i)
+			a, aok := viaAppend.get(name)
+			p, pok := viaPut.get(name)
+			if a != p || aok != pok {
+				t.Fatalf("n=%d: get(%s) = %v %t, put-built %v %t", n, name, a, aok, p, pok)
+			}
+		}
+	}
+}
