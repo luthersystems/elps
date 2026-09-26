@@ -1544,7 +1544,8 @@ elps> (handler-bind ([json:integer-range-error (lambda (c &rest args) (list c ar
 ```
 
 Malformed input is still catchable as `json:syntax-error` under the option, so
-an existing `handler-bind` does not quietly stop firing.
+an existing `handler-bind` does not quietly stop firing.  The same holds under
+`:string-numbers` and `json:use-string-numbers`.
 
 #### Numbers with a fraction or an exponent are unchanged
 

@@ -453,6 +453,44 @@ func TestLoadExactSyntaxErrors(t *testing.T) {
 	}
 }
 
+// TestLoadStringNumbersSyntaxErrors is TestLoadExactSyntaxErrors for
+// :string-numbers, which also decodes through a streaming decoder.  It used to
+// ignore the decoder's first error, so malformed input surfaced as the generic
+// "not a valid json object" (or "EOF" for an empty document) and a
+// (handler-bind ((json:syntax-error ...))) stopped firing when the mode was on.
+func TestLoadStringNumbersSyntaxErrors(t *testing.T) {
+	for _, text := range []string{
+		"", " ", "[1,]", `{"a":1,}`, "tru", "{false:true}", "nulll", "1 2", "[1,2", `{"a":`, "[,]", "\x00", "1]",
+	} {
+		t.Run(fmt.Sprintf("%q", text), func(t *testing.T) {
+			// The default path's answer is the reference.
+			d := libjson.Load([]byte(text), false)
+			require.Equal(t, lisp.LError, d.Type)
+			require.Equal(t, "json:syntax-error", d.Str, "default path: %v", d)
+
+			for _, opts := range []libjson.LoadOpts{
+				{StringNumbers: true},
+				{StringNumbers: true, ExactIntegers: true},
+			} {
+				v := libjson.LoadWith([]byte(text), opts)
+				require.Equal(t, lisp.LError, v.Type, "got %s", v.String())
+				assert.Equal(t, "json:syntax-error", v.Str,
+					"%+v: malformed input must stay catchable as json:syntax-error: %v", opts, v)
+			}
+		})
+	}
+	// Well-formed documents with surrounding whitespace still load, whole.
+	for text, want := range map[string]string{
+		" 1 ":        `"1"`,
+		"[1, 2]\n":   `(vector "1" "2")`,
+		`{"a": "b"}`: `(sorted-map "a" "b")`,
+	} {
+		v := libjson.LoadWith([]byte(text), libjson.LoadOpts{StringNumbers: true})
+		require.NotEqual(t, lisp.LError, v.Type, "%q: %v", text, v)
+		assert.Equal(t, want, v.String(), "%q", text)
+	}
+}
+
 // TestLoadExactFloatOverflow keeps the one non-integer failure aligned with
 // the default path, which also refuses a number that overflows a float64.
 func TestLoadExactFloatOverflow(t *testing.T) {
