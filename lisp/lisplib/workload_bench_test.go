@@ -205,15 +205,30 @@ func BenchmarkWorkload(b *testing.B) {
 		tx := `(app:handle "{\"op\":\"put\",\"key\":\"alpha\",\"value\":{\"x\":[1,2,3],\"y\":\"hello\"}}")
 (app:handle "{\"op\":\"put\",\"key\":\"beta\",\"value\":42}")
 (app:handle "{\"op\":\"get\",\"key\":\"alpha\"}")`
-		b.ReportAllocs()
-		for b.Loop() {
+		// Every VM must answer the transaction identically: the handler's
+		// state map is per VM, so a write leaking across forks shows up here
+		// as a changed count rather than only as a changed number.
+		run := func() string {
 			vm, err := tmpl.NewVM()
 			if err != nil {
 				b.Fatal(err)
 			}
-			if rc := vm.LoadString("tx.lisp", tx); rc.Type == lisp.LError {
+			rc := vm.LoadString("tx.lisp", tx)
+			if rc.Type == lisp.LError {
 				b.Fatal(rc)
 			}
+			return rc.String()
+		}
+		want := run()
+		b.ReportAllocs()
+		for b.Loop() {
+			if got := run(); got != want {
+				b.Fatalf("transaction returned %s, want %s", got, want)
+			}
+		}
+		// Template-loaded ASTs are shared by every VM the template mints.
+		if err := lisp.VerifySealedASTs(); err != nil {
+			b.Fatalf("sealed AST verification failed after benchmark: %v", err)
 		}
 	})
 }

@@ -12,20 +12,27 @@ import (
 	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
 )
 
-// BenchmarkCorpus runs whole lisp test files per iteration -- a Runner
-// environment, loading the file, and every test in it -- which is the shape of
-// an elps project's own test run.  The files are chosen because their tests
-// share one environment; files that need a fresh environment per test (e.g.
-// libjson_test.lisp) do not fit this loop, and when_family_test.lisp is left
-// out because one pass takes seconds.
+// BenchmarkCorpus runs whole lisp test files per iteration -- building a
+// Runner environment (included deliberately: about 2k of each row's allocs,
+// measured on its own by BenchmarkEnvConstructionFull), loading the file, and
+// running every test in it -- which is the shape of an elps project's own test
+// run.  The files are chosen because their tests share one environment; files
+// that need a fresh environment per test (e.g. libjson_test.lisp) do not fit
+// this loop, and when_family_test.lisp is left out because one pass takes
+// seconds.
+//
+// The files are frozen copies under testdata/corpus, not the live stdlib test
+// files: the benchmark gate compares allocs/op at a 5% threshold, and adding a
+// test case to a live file would move its row past that without any change to
+// the evaluator.  Refresh the copies deliberately, in a PR of their own.
 func BenchmarkCorpus(b *testing.B) {
 	files := []string{
-		"../lisp/lisplib/libstring/libstring_test.lisp",
-		"../lisp/lisplib/libelpspath/libelpspath_test.lisp",
-		"../lisp/lisplib/libschema/libschema_test.lisp",
+		"testdata/corpus/libstring_test.lisp",
+		"testdata/corpus/libelpspath_test.lisp",
+		"testdata/corpus/libschema_test.lisp",
 	}
 	for _, f := range files {
-		src, err := os.ReadFile(f) //#nosec G304 -- fixed in-repo test fixture paths
+		src, err := os.ReadFile(f) //#nosec G304 -- fixed benchmark corpus paths
 		if err != nil {
 			b.Fatal(err)
 		}
