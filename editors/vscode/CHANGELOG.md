@@ -4,6 +4,26 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.70.0
+
+- Faster interpreter in the bundled `elps` binary: whole-program benchmarks
+  run about 20% faster with about 26% fewer bytes allocated. Parsing short
+  sources no longer allocates a 128 KiB buffer, call forms and small scopes
+  take fewer allocations, and builtins bind their arguments on a fast path.
+  Results, errors and step counts are unchanged.
+- Values with nested sharing (built by repeatedly doing
+  `(set! x (list x x))`) can no longer make macro expansion, `quasiquote`,
+  `equal?`, elpspath, Go conversion or package registration run for hours
+  or exhaust memory in a single step.
+- Fixes: `equal?` compares bytes and reader quotes by value; `json:dump-*`
+  respects the allocation limit and cancellation; `json:syntax-error` is
+  raised under `:string-numbers`; schema validation rejects string booleans
+  and NaN and treats non-empty maps and bytes as truthy; `set!` assigns
+  package-qualified symbols (`(set! pkg:x v)`); several error messages and
+  docstrings are corrected.
+- New embedder API: a shared step budget across top-level evaluations.
+- Debugger: editing a package-qualified name in the Locals scope is refused.
+
 ## 1.62.1
 
 - Formal argument lists are validated once, where a function is defined or
