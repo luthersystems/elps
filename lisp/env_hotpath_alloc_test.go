@@ -153,3 +153,25 @@ func TestLazyScopePresizing(t *testing.T) {
 		t.Errorf("lazy scope allocated %v times, eager presized scope allocated %v", lazy, eager)
 	}
 }
+
+// TestUnsizedScopeAllocations pins the Go-API shape an embedder uses -- Put
+// into an unsized NewEnv scope -- against what the map-backed scope cost:
+// 8 names were the LEnv, a map header and one group (3 allocations); a
+// slice-backed unsized scope is the LEnv and one 8-slot slice.
+func TestUnsizedScopeAllocations(t *testing.T) {
+	parent := initSafetyTestEnv(t)
+	keys := make([]*LVal, unsizedScopeCap)
+	for i := range keys {
+		keys[i] = Symbol(string(rune('a' + i)))
+	}
+	value := Int(42)
+	got := testing.AllocsPerRun(200, func() {
+		env := NewEnv(parent)
+		for _, k := range keys {
+			hotpathValue = env.Put(k, value)
+		}
+	})
+	if got != 2 {
+		t.Errorf("filling an unsized scope with %d names allocated %v times, want 2", len(keys), got)
+	}
+}

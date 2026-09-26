@@ -148,7 +148,7 @@ type LEnv struct {
 	evalCtx   context.Context // transient: set by call() at builtin boundary
 	scope     scopeTable      // empty (allocates nothing) until the first successful Put
 	ID        uint
-	scopeHint int // initial capacity to use when scope is first allocated
+	scopeHint int // bindings to make room for when the scope is first allocated
 }
 
 // Parent returns env's lexically enclosing environment, or nil when env is a
@@ -173,6 +173,9 @@ func (env *LEnv) Parent() *LEnv {
 // variable panes), while the write that came free with an exported map —
 // rebinding a symbol in an environment the writer does not own — is not.
 // Use Put or PutGlobal to bind.
+//
+// Binding into env while iterating (Put inside the loop) is unspecified: the
+// loop may or may not see the new binding or an updated value.
 //
 // Bindings is nil-receiver safe: a nil LEnv yields nothing.
 func (env *LEnv) Bindings() iter.Seq2[string, *LVal] {
@@ -241,10 +244,10 @@ func NewEnv(parent *LEnv) *LEnv {
 	return newEnvN(parent, 0)
 }
 
-// newEnvN creates a child LEnv whose scope map is allocated on the first
-// successful Put, pre-sized to hold n bindings. Callers that know the number
-// of bindings up front (let, let*, dotimes, etc.) can avoid map growth by
-// passing the exact count.
+// newEnvN creates a child LEnv whose scope is pre-sized to hold n bindings:
+// allocated together with the LEnv for n <= 4, otherwise on the first
+// successful Put. Callers that know the number of bindings up front (let,
+// let*, dotimes, etc.) avoid any growth by passing the exact count.
 func newEnvN(parent *LEnv, n int) *LEnv {
 	var runtime *Runtime
 	var loc *token.Location

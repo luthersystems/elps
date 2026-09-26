@@ -28,8 +28,14 @@ type scopeTable struct {
 }
 
 // scopeMapThreshold is the binding count past which a scope is a map.  Up to
-// it a linear scan over short names is cheaper than a hash.
+// it the slice saves the map's allocations; lookups are a linear scan, which
+// beats hashing for a few short names, though a put-heavy fill of 8-16 names
+// runs somewhat slower than a map's (put checks for a duplicate).  The
+// evaluator workloads are allocation-bound, so the trade favors the slice.
 const scopeMapThreshold = 16
+
+// unsizedScopeCap is the room an unsized scope gets on its first put.
+const unsizedScopeCap = 8
 
 // newScopeTable returns an empty scope with room for n bindings.
 func newScopeTable(n int) scopeTable {
@@ -39,8 +45,9 @@ func newScopeTable(n int) scopeTable {
 	return scopeTable{bindings: make([]scopeBinding, 0, n)}
 }
 
-// allocated reports whether the scope has storage (lazy scopes allocate on
-// the first successful put).
+// allocated reports whether the scope has storage.  A lazy scope has none
+// until its first successful put; one co-allocated by allocEnvScope has it
+// from the start.
 func (t *scopeTable) allocated() bool { return t.m != nil || t.bindings != nil }
 
 func (t *scopeTable) len() int {
@@ -102,14 +109,19 @@ func (t *scopeTable) update(name string, v *LVal) bool {
 
 // put binds name to v, overwriting an existing binding in place (as a map
 // assignment would), and allocating the scope on first use with room for
-// hint bindings.
+// hint bindings.  An unsized scope (hint 0: NewEnv, an embedder's root) gets
+// room for unsizedScopeCap, so a Go caller filling one with Puts does not
+// grow the slice 1, 2, 4, 8.
 func (t *scopeTable) put(name string, v *LVal, hint int) {
 	switch {
 	case t.m != nil:
 		t.m[name] = v
 		return
 	case t.bindings == nil:
-		*t = newScopeTable(max(hint, 1))
+		if hint <= 0 {
+			hint = unsizedScopeCap
+		}
+		*t = newScopeTable(hint)
 	case t.update(name, v):
 		return
 	}
@@ -150,9 +162,9 @@ func (t *scopeTable) appendNew(name string, v *LVal) {
 // every other register.  For n == 0 or n > 4 the scope is left for put to
 // allocate on demand with the scopeHint the caller sets.
 //
-// The bindings slice has capacity exactly n, so a scope that outgrows its
-// formals (a define inside a let, say) appends into a fresh array rather
-// than past the co-allocated one.  The array shares the LEnv's lifetime,
+// The bindings slice has capacity exactly n, so a scope that outgrows it
+// (only possible through the Go API: every Lisp binding form sizes its scope
+// exactly) appends into a fresh array rather than past the co-allocated one.  The array shares the LEnv's lifetime,
 // which it did in effect before: the scope map lived exactly as long as its
 // environment.
 func allocEnvScope(n int) *LEnv {
