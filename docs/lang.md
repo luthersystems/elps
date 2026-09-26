@@ -2405,6 +2405,41 @@ entry points and callbacks are recovered this way, how a host detects a
 genuine panic, and how `elpscheck` builds differ are described in
 the embedding guide (`docs/embed.md` in the repository).
 
+## Testing
+
+Test files are named `*_test.lisp` and register tests with the `testing`
+package (`test`, `test-let`, `assert=`, `assert-equal`, ...). The Go runner
+`elpstest.Runner` runs each registered test in a fresh environment.
+
+### Shared test helpers
+
+Helpers shared by several test files go in files named `*_testhelpers.lisp`
+in the same directory (the prefix must be non-empty: a file named exactly
+`_testhelpers.lisp` is ignored, as are directories). The runner loads every
+helper file, in sorted file-name order, into each environment it builds for a
+test file, immediately before loading the test file. Every test gets a fresh
+environment, so helpers load once per test environment: after the runner's
+loader and setup when running a test or benchmark, and after the loader alone
+in the discovery pass that lists a file's tests (that pass does not run
+setup). The package in effect before each helper is restored after it, so a
+helper may use `in-package` without changing the package the test file loads
+in.
+
+```lisp
+; common_testhelpers.lisp
+(defun double (x) (* 2 x))
+
+; math_test.lisp
+(use-package 'testing)
+(test "double" (assert= 4 (double 2)))
+```
+
+If a helper file fails to load, every test in the directory fails and the
+error names the helper's path. Helper files do not match `*_test.lisp`, so
+test discovery skips them, and ordinary (production) loads never include them.
+Go runners other than `elpstest.Runner` can apply the same rule with
+`elpstest.TestHelperFiles(dir)` and `elpstest.LoadTestHelpers(env, testPath)`.
+
 ## Execution Limits
 
 ELPS bounds evaluation with **context cancellation**, **step limits**,
