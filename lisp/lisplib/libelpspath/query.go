@@ -316,7 +316,7 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := setPath(path, val, newVal, env.Runtime.ValueDepthLimit())
+	data, err := setPath(path, val, newVal, newCopyOp(env.Runtime.ValueDepthLimit()))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -358,7 +358,7 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := deletePath(path, val, env.Runtime.ValueDepthLimit())
+	data, err := deletePath(path, val, newCopyOp(env.Runtime.ValueDepthLimit()))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -400,7 +400,7 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := nilPath(path, val, env.Runtime.ValueDepthLimit())
+	data, err := nilPath(path, val, newCopyOp(env.Runtime.ValueDepthLimit()))
 	if err != nil {
 		return env.Error(err)
 	}
