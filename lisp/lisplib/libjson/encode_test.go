@@ -472,6 +472,7 @@ func TestEncoderFieldsAreAccountedForInGetEncoder(t *testing.T) {
 		"stringNums",  // reset in getEncoder
 		"nestedDeep",  // reset in getEncoder
 		"wroteNative", // reset in getEncoder
+		"visits",      // reset in getEncoder
 	}
 
 	typ := reflect.TypeOf(encoder{})

@@ -2,6 +2,7 @@ package libjson
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -63,6 +64,13 @@ type encoder struct {
 	// once, by loadableBytes, after the document is finished.
 	nestedDeep  bool
 	wroteNative bool
+
+	// visits counts the values encoded so far in this document, so the
+	// context is polled every encodeContextInterval values rather than at
+	// every one.  A uint32 sits in the tail padding after the flags above, so
+	// it costs no size class (TestEncoderFitsItsSizeClass); wrapping is
+	// harmless because only its residue is read.
+	visits uint32
 }
 
 // loadableBytes reports whether this package can vouch, without reading them
@@ -164,8 +172,96 @@ var errDeepValue = errors.New("value nests past the encoder's guard depth")
 type encodeGuard struct {
 	path map[*lisp.LVal]struct{}
 
+	// budget bounds the output the document may produce and the context
+	// that may cancel it.  It is copied down the walk with the depth rather
+	// than stored on the encoder -- see TestEncoderFitsItsSizeClass.
+	budget encodeBudget
+
 	depth int
 	limit int
+}
+
+// encodeBudget is what a json:dump-* call may spend on one document.
+//
+// maxBytes is the runtime's allocation cap (Runtime.MaxAllocBytes), which
+// every other builtin that builds a buffer from a value already honours.
+// Without it the encoder was the one place a program could build an unbounded
+// string: a list can hold many references to one value, so a DAG made in n
+// doubling steps renders as 2^n copies, and 34 steps is ~100 GB.  Because
+// every value encoded writes at least one byte, bounding the bytes also
+// bounds the work.  Zero means unlimited, which is what the Go-level Dump
+// keeps: it has no runtime to read a cap from.
+//
+// ctx is the evaluation context, polled every encodeContextInterval values
+// so a --timeout or a cancelled request stops an encode that is still under
+// the byte cap.  Nil means never cancelled.  It is only polled when maxBytes
+// is set, which the builtins always do.
+type encodeBudget struct {
+	ctx      context.Context
+	maxBytes int
+}
+
+// encodeContextInterval is how many values are encoded between polls of the
+// context.  A poll is cheap but not free, and a thousand values is well below
+// a millisecond of work.
+const encodeContextInterval = 1024
+
+// encodeSizeError reports a document that would exceed the allocation cap.
+// The builtins turn it into the same "allocation size exceeds maximum (N)"
+// error format-string raises.
+type encodeSizeError int
+
+func (e encodeSizeError) Error() string {
+	return fmt.Sprintf("allocation size exceeds maximum (%d)", int(e))
+}
+
+// encodeCancelledError reports that the evaluation context was cancelled
+// while a document was being encoded.  The builtins raise it as the
+// context-cancelled condition, as the evaluator does.
+type encodeCancelledError struct{ err error }
+
+func (e encodeCancelledError) Error() string { return "context cancelled: " + e.err.Error() }
+
+func (e encodeCancelledError) Unwrap() error { return e.err }
+
+// charge and chargeSlow account for one value about to be encoded: they
+// refuse once the output has passed the byte cap, and poll the context every
+// encodeContextInterval values.  It is called before every value in both
+// passes, so the output passes the cap by at most one value before the
+// encode stops.  String and bytes values also check their minimum size up
+// front (reserve), so the overshoot of one value is bounded by what escaping
+// adds to it: up to 6x for a string of control or HTML characters.
+//
+// charge sits on the per-value hot path, so it is split: this half is small
+// enough to inline and only reports whether chargeSlow has anything to check.
+// A zero budget (the Go-level Dump) costs one comparison.
+func (enc *encoder) charge(b encodeBudget) bool {
+	if b.maxBytes == 0 {
+		return false
+	}
+	enc.visits++
+	return len(enc.buf.Bytes()) > b.maxBytes || enc.visits%encodeContextInterval == 0
+}
+
+func (enc *encoder) chargeSlow(b encodeBudget) error {
+	if b.ctx != nil {
+		if err := b.ctx.Err(); err != nil {
+			return encodeCancelledError{err}
+		}
+	}
+	if b.maxBytes > 0 && enc.buf.Len() > b.maxBytes {
+		return encodeSizeError(b.maxBytes)
+	}
+	return nil
+}
+
+// reserve refuses a leaf that will write at least n more bytes than the cap
+// allows, before it writes them.
+func (enc *encoder) reserve(b encodeBudget, n int) error {
+	if b.maxBytes > 0 && n > b.maxBytes-enc.buf.Len() {
+		return encodeSizeError(b.maxBytes)
+	}
+	return nil
 }
 
 // enter descends into v.  It reports errCyclicValue if v is already on the
@@ -236,6 +332,7 @@ func getEncoder(stringNums bool) *encoder {
 	enc.stringNums = stringNums
 	enc.nestedDeep = false
 	enc.wroteNative = false
+	enc.visits = 0
 	return enc
 }
 
@@ -292,25 +389,40 @@ func (g encodeGuard) depthLimit() int {
 	return lisp.MaxValueDepth
 }
 
-func (enc *encoder) encode(v *lisp.LVal) error { return enc.encodeLimit(v, lisp.MaxValueDepth) }
+func (enc *encoder) encode(v *lisp.LVal) error {
+	return enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{})
+}
 
-func (enc *encoder) encodeLimit(v *lisp.LVal, limit int) error {
+func (enc *encoder) encodeLimit(v *lisp.LVal, limit int, budget encodeBudget) error {
 	mark := enc.buf.Len()
-	err := enc.encodeValue(v, encodeGuard{limit: limit})
-	if !errors.Is(err, errDeepValue) {
+	err := enc.encodeValue(v, encodeGuard{limit: limit, budget: budget})
+	if errors.Is(err, errDeepValue) {
+		// The counting pass abandoned the document partway through, so its
+		// output is a fragment.  Drop it and start the value over.
+		enc.nestedDeep = true
+		enc.buf.Truncate(mark)
+		err = enc.encodeDeepValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit, budget: budget})
+	}
+	if err != nil {
 		return err
 	}
-	// The counting pass abandoned the document partway through, so its output
-	// is a fragment.  Drop it and start the value over.
-	enc.nestedDeep = true
-	enc.buf.Truncate(mark)
-	return enc.encodeDeepValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit})
+	// The last value written is checked here: charge only sees the output
+	// before each value.
+	if budget.maxBytes > 0 && enc.buf.Len() > budget.maxBytes {
+		return encodeSizeError(budget.maxBytes)
+	}
+	return nil
 }
 
 // encodeValue handles the shallow counting pass. Recursion stops before
 // encodeGuardDepth, so ordinary documents need neither an explicit frame stack
 // nor cycle-map operations. encodeLimit restarts deeper values in encodeDeepValue.
 func (enc *encoder) encodeValue(v *lisp.LVal, g encodeGuard) error {
+	if enc.charge(g.budget) {
+		if err := enc.chargeSlow(g.budget); err != nil {
+			return err
+		}
+	}
 	if v.IsNil() {
 		enc.buf.WriteString("null")
 		return nil
@@ -336,8 +448,8 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 	// width, even for shallow documents that never need cycle tracking.
 	type frame struct {
 		v     *lisp.LVal
-		g     encodeGuard
 		cells []*lisp.LVal
+		g     encodeGuard
 		token byte
 		first bool
 	}
@@ -345,6 +457,11 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 	pending := append(local[:0], frame{v: v, g: g})
 	for len(pending) > 0 {
 		f := &pending[len(pending)-1]
+		if enc.charge(f.g.budget) {
+			if err := enc.chargeSlow(f.g.budget); err != nil {
+				return err
+			}
+		}
 		if f.token != 0 {
 			if len(f.cells) == 0 {
 				if f.token != ' ' { // Quotes, tags and scalar arrays have no delimiter.
@@ -806,7 +923,12 @@ func appendJSONFloat(b []byte, x float64) []byte {
 	return b
 }
 
-func (enc *encoder) encodeLBytes(v *lisp.LVal, _ encodeGuard) (err error) {
+func (enc *encoder) encodeLBytes(v *lisp.LVal, g encodeGuard) (err error) {
+	if b := v.Bytes(); b != nil {
+		if err := enc.reserve(g.budget, enc64.EncodedLen(len(b))+2); err != nil {
+			return err
+		}
+	}
 	return enc.encodeBytes(v.Bytes())
 }
 
@@ -857,7 +979,11 @@ func (enc *encoder) encodeLSymbol(v *lisp.LVal, _ encodeGuard) (err error) {
 	return enc.encodeString(v.Str)
 }
 
-func (enc *encoder) encodeLString(v *lisp.LVal, _ encodeGuard) error {
+func (enc *encoder) encodeLString(v *lisp.LVal, g encodeGuard) error {
+	// Escaping only grows a string, so len+2 quotes is a lower bound.
+	if err := enc.reserve(g.budget, len(v.Str)+2); err != nil {
+		return err
+	}
 	return enc.encodeString(v.Str)
 }
 

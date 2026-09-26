@@ -82,7 +82,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			whether numbers are serialized as JSON strings (default:
 			serializer setting).
 			Raises an ordinary depth error beyond 1000000 value levels
-			(or the configured WithMaxValueDepth setting).`),
+			(or the configured WithMaxValueDepth setting), and an allocation
+			error if the document would exceed the allocation cap.`),
 		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadMessageBuiltin,
 			`Parses a native JSON message object (one produced by
 			dump-message, or a json.RawMessage supplied by an embedder)
@@ -100,7 +101,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			:string-numbers keyword controls whether numbers are serialized
 			as strings.
 			Raises an ordinary depth error beyond 1000000 value levels
-			(or the configured WithMaxValueDepth setting).`),
+			(or the configured WithMaxValueDepth setting), and an allocation
+			error if the document would exceed the allocation cap.`),
 		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
@@ -118,7 +120,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			for interchange. The :string-numbers keyword controls whether
 			numbers are serialized as strings.
 			Raises an ordinary depth error beyond 1000000 value levels
-			(or the configured WithMaxValueDepth setting).`),
+			(or the configured WithMaxValueDepth setting), and an allocation
+			error if the document would exceed the allocation cap.`),
 		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
 			accepts a string argument. Decoded maps accept symbol keys by
@@ -153,6 +156,11 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 }
 
 // Dump serializes the structure of v as a JSON formatted byte slice.
+//
+// Dump has no runtime, so unlike the json:dump-* builtins it is bounded by
+// neither Runtime.MaxAlloc nor an evaluation context.  An embedder serializing
+// values a lisp program controls should call a json:dump-* builtin instead
+// (see docs/lang.md, "Allocation Limits").
 func Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 	return DefaultSerializer().Dump(v, stringNums)
 }
@@ -563,12 +571,12 @@ func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
 func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable bool, err error) {
-	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth)
+	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{})
 }
 
-func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int) (b []byte, loadable bool, err error) {
+func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) (b []byte, loadable bool, err error) {
 	enc := getEncoder(stringNums)
-	if err := enc.encodeLimit(v, limit); err != nil {
+	if err := enc.encodeLimit(v, limit, budget); err != nil {
 		putEncoder(enc)
 		return nil, false, err
 	}
@@ -604,13 +612,13 @@ func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int) (b []by
 // caller asked for.  Measured on Package/dump-github, which is 1000
 // `json:dump-string` calls: 51.0 MiB/op -> 36.3 MiB/op.
 func (s *Serializer) dumpString(v *lisp.LVal, stringNums bool) (string, error) {
-	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth)
+	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{})
 }
 
-func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int) (string, error) {
+func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) (string, error) {
 	enc := getEncoder(stringNums)
 	defer putEncoder(enc)
-	if err := enc.encodeLimit(v, limit); err != nil {
+	if err := enc.encodeLimit(v, limit, budget); err != nil {
 		return "", err
 	}
 	return string(enc.bytes()), nil
@@ -730,11 +738,44 @@ func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool,
 			return nil, false, stringNums
 		}
 	}
-	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit())
+	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env))
 	if err != nil {
-		return nil, false, env.Error(err)
+		return nil, false, dumpError(env, err)
 	}
 	return b, loadable, nil
+}
+
+// envEncodeBudget is the output budget of a json:dump-* call: the runtime's
+// allocation cap and the evaluation context.
+func envEncodeBudget(env *lisp.LEnv) encodeBudget {
+	b := encodeBudget{maxBytes: env.Runtime.MaxAllocBytes()}
+	// A context that can never be cancelled -- env.Context() returns
+	// context.Background() when none is bound -- is not worth polling.
+	if ctx := env.Context(); ctx.Done() != nil {
+		b.ctx = ctx
+	}
+	return b
+}
+
+// dumpError converts an encoder error to the error a json:dump-* builtin
+// raises.  An exhausted budget reads exactly as it does from format-string,
+// and a cancelled context raises the evaluator's context-cancelled condition.
+func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
+	var size encodeSizeError
+	var cancelled encodeCancelledError
+	if errors.As(err, &size) || errors.As(err, &cancelled) {
+		// Cancellation wins when both apply, as it does for format-string.
+		if cerr := env.Context().Err(); cerr != nil {
+			return env.ErrorConditionf(lisp.CondContextCancelled, "context cancelled: %v", cerr)
+		}
+	}
+	if errors.As(err, &size) {
+		return env.Errorf("allocation size exceeds maximum (%d)", int(size))
+	}
+	if errors.As(err, &cancelled) {
+		return env.ErrorConditionf(lisp.CondContextCancelled, "context cancelled: %v", cancelled.err)
+	}
+	return env.Error(err)
 }
 
 func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -774,9 +815,9 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit())
+	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env))
 	if err != nil {
-		return env.Error(err)
+		return dumpError(env, err)
 	}
 	return lisp.String(str)
 }
