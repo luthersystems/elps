@@ -27,32 +27,32 @@ const maxPathSteps = 1024
 // does not, so setPath/deletePath/nilPath fall back to its exported method and
 // it copies at the default, which is the same answer it gave before.
 type limitedPath interface {
-	setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error)
-	deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error)
-	nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error)
+	setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error)
+	deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
+	nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 }
 
 // setPath is p.Set bounded by limit. Zero, and a limit below the floor
 // WithMaxValueDepth accepts, mean lisp.MaxValueDepth.
-func setPath(p Path, in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
+func setPath(p Path, in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
-		return lp.setLimited(in, newIn, limit)
+		return lp.setLimited(in, newIn, op)
 	}
 	return p.Set(in, newIn)
 }
 
 // deletePath is p.Delete bounded by limit.
-func deletePath(p Path, in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func deletePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
-		return lp.deleteLimited(in, limit)
+		return lp.deleteLimited(in, op)
 	}
 	return p.Delete(in)
 }
 
 // nilPath is p.Nil bounded by limit.
-func nilPath(p Path, in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func nilPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if lp, ok := p.(limitedPath); ok {
-		return lp.nilLimited(in, limit)
+		return lp.nilLimited(in, op)
 	}
 	return p.Nil(in)
 }
@@ -110,6 +110,13 @@ func copyLVal(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 	return copyGuarded(v, newCycleGuardLimit(&st, limit))
 }
 
+// copyLValOp is copyLVal as one walk of the operation op, sharing its memo;
+// a nil op is a walk of its own at the default limit.
+func copyLValOp(v *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	var st cycleState
+	return copyGuarded(v, newCycleGuardOp(&st, op))
+}
+
 // copyGuarded is copyLVal continuing a walk already in progress rather than
 // starting a fresh one. Every nested copy must pass g down; a fresh walk per
 // level resets the bound on every lap and it never fires.
@@ -137,6 +144,8 @@ func copyContainer(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 	// Shallow walks fit on the Go stack; deeper walks grow this slice without
 	// growing the Go call stack. The shared cycle state stays outside it.
 	pending := make([]frame, 0, 16)
+	// The operation's copy memo, or this walk's own (newCycleGuard).
+	op := g.state.copyOp()
 walk:
 	for {
 		var out *lisp.LVal
@@ -146,7 +155,7 @@ walk:
 		switch v.Type {
 		case lisp.LSortMap, lisp.LArray, lisp.LSExpr, lisp.LTaggedVal, lisp.LQuote:
 			depth := g.depth + len(pending)
-			if m, ok := g.state.copies[v]; ok {
+			if m, ok := op.copies[v]; ok {
 				// Copied already, reached again through sharing: the copy
 				// shares it too, as lisp's copy does.  Re-copying would
 				// reach depth+m.height, so fail exactly where it would.
@@ -208,9 +217,9 @@ walk:
 			if out != nil {
 				break
 			}
-			g.state.work += 1 + len(f.cells)
-			if g.state.copies == nil && g.state.work > sharedWalkBudget {
-				g.state.copies = make(map[*lisp.LVal]copyMemo)
+			op.work += 1 + len(f.cells)
+			if op.copies == nil && op.work > sharedWalkBudget {
+				op.copies = make(map[*lisp.LVal]copyMemo)
 			}
 			if len(f.cells) > 0 {
 				pending = append(pending, f)
@@ -250,8 +259,8 @@ walk:
 			}
 			out = sameQuoting(f.v, f.cp)
 			outHeight = f.height
-			if g.state.copies != nil {
-				g.state.copies[f.v] = copyMemo{cp: out, height: outHeight}
+			if op.copies != nil {
+				op.copies[f.v] = copyMemo{cp: out, height: outHeight}
 			}
 			if g.depth+len(pending) >= cycleGuardDepth {
 				g.ascend(f.v)
@@ -307,9 +316,9 @@ func copyMapGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 //
 // IMPORTANT: what is skipped is the entry the caller's SetMutate/DeleteMutate
 // will land on, not "the entry whose key string matches". See sameMapSlot.
-func copyMapOffPath(v *lisp.LVal, key *lisp.LVal, limit int) (*lisp.LVal, error) {
+func copyMapOffPath(v *lisp.LVal, key *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	var st cycleState
-	return copyMapExcept(v, key, newCycleGuardLimit(&st, limit))
+	return copyMapExcept(v, key, newCycleGuardOp(&st, op))
 }
 
 // copyMapExcept is the shared body: skip is the key to leave out, or nil to
@@ -436,10 +445,10 @@ func copyListGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 // either.
 //
 // from == to skips nothing and is the plain deep copy.
-func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to, limit int) (*lisp.LVal, error) {
+func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int, op *copyOp) (*lisp.LVal, error) {
 	out := make([]*lisp.LVal, len(cells))
 	var st cycleState
-	g := newCycleGuardLimit(&st, limit)
+	g := newCycleGuardOp(&st, op)
 	for i := range cells {
 		if i >= from && i < to {
 			out[i] = lisp.Nil()
@@ -681,8 +690,8 @@ func (s *rootPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
 	return s.path.Set(in, newIn)
 }
 
-func (s *rootPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return setPath(s.path, in, newIn, limit)
+func (s *rootPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return setPath(s.path, in, newIn, op)
 }
 
 // DeleteMutate is a root level proxy to an underlying path DeleteMutate.
@@ -695,8 +704,8 @@ func (s *rootPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.path.Delete(in)
 }
 
-func (s *rootPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return deletePath(s.path, in, limit)
+func (s *rootPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return deletePath(s.path, in, op)
 }
 
 // NilMutate is a root level proxy to an underlying path NilMutate.
@@ -709,8 +718,8 @@ func (s *rootPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
 	return s.path.Nil(in)
 }
 
-func (s *rootPath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return nilPath(s.path, in, limit)
+func (s *rootPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return nilPath(s.path, in, op)
 }
 
 // String is a root level proxy to an underlying path String. It prepends
@@ -982,7 +991,7 @@ func (s *chainPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	return in, nil
 }
 
-func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path, limit int) (*lisp.LVal, error) {
+func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path, op *copyOp) (*lisp.LVal, error) {
 	if len(paths) > maxPathSteps {
 		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
@@ -996,20 +1005,20 @@ func setChain(in *lisp.LVal, newIn *lisp.LVal, paths []Path, limit int) (*lisp.L
 		if err != nil {
 			return nil, err
 		}
-		newIn, err = setChain(childIn, newIn, paths[1:], limit)
+		newIn, err = setChain(childIn, newIn, paths[1:], op)
 		if err != nil {
 			return nil, prependLeafPath(err, paths[:1])
 		}
 	}
-	return setPath(head, in, newIn, limit)
+	return setPath(head, in, newIn, op)
 }
 
 func (s *chainPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
-	return setChain(in, newIn, s.paths, 0)
+	return setChain(in, newIn, s.paths, nil)
 }
 
-func (s *chainPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return setChain(in, newIn, s.paths, limit)
+func (s *chainPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return setChain(in, newIn, s.paths, op)
 }
 
 func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -1028,7 +1037,7 @@ func (s *chainPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	return in, nil
 }
 
-func deleteChain(in *lisp.LVal, paths []Path, limit int) (*lisp.LVal, error) {
+func deleteChain(in *lisp.LVal, paths []Path, op *copyOp) (*lisp.LVal, error) {
 	if len(paths) > maxPathSteps {
 		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
@@ -1051,21 +1060,21 @@ func deleteChain(in *lisp.LVal, paths []Path, limit int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		newIn, err := deleteChain(childIn, paths[1:], limit)
+		newIn, err := deleteChain(childIn, paths[1:], op)
 		if err != nil {
 			return nil, prependLeafPath(err, paths[:1])
 		}
-		return setPath(head, in, newIn, limit)
+		return setPath(head, in, newIn, op)
 	}
-	return deletePath(head, in, limit)
+	return deletePath(head, in, op)
 }
 
 func (s *chainPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
-	return deleteChain(in, s.paths, 0)
+	return deleteChain(in, s.paths, nil)
 }
 
-func (s *chainPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return deleteChain(in, s.paths, limit)
+func (s *chainPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return deleteChain(in, s.paths, op)
 }
 
 func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -1094,7 +1103,7 @@ func (s *chainPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 	return in, nil
 }
 
-func nullChain(in *lisp.LVal, paths []Path, limit int) (*lisp.LVal, error) {
+func nullChain(in *lisp.LVal, paths []Path, op *copyOp) (*lisp.LVal, error) {
 	if len(paths) > maxPathSteps {
 		return nil, lisp.ValueDepthError(maxPathSteps)
 	}
@@ -1107,21 +1116,21 @@ func nullChain(in *lisp.LVal, paths []Path, limit int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		newIn, err := nullChain(childIn, paths[1:], limit)
+		newIn, err := nullChain(childIn, paths[1:], op)
 		if err != nil {
 			return nil, prependLeafPath(err, paths[:1])
 		}
-		return setPath(head, in, newIn, limit)
+		return setPath(head, in, newIn, op)
 	}
-	return nilPath(head, in, limit)
+	return nilPath(head, in, op)
 }
 
 func (s *chainPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
-	return nullChain(in, s.paths, 0)
+	return nullChain(in, s.paths, nil)
 }
 
-func (s *chainPath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return nullChain(in, s.paths, limit)
+func (s *chainPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return nullChain(in, s.paths, op)
 }
 
 func (s *chainPath) String() string {
@@ -1179,10 +1188,10 @@ func (s *dotPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error)
 }
 
 func (s *dotPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, newIn, 0)
+	return s.setLimited(in, newIn, nil)
 }
 
-func (s *dotPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *dotPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if in.IsNil() {
 		return nil, errors.New("first argument is nil")
 	}
@@ -1192,7 +1201,7 @@ func (s *dotPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.
 		// has already rebuilt independently of in. Copying the source's
 		// subtree under the key first would build a value with exactly one
 		// use: being overwritten on the next line.
-		cp, err := copyMapOffPath(in, lisp.String(s.key), limit)
+		cp, err := copyMapOffPath(in, lisp.String(s.key), op)
 		if err != nil {
 			return nil, err
 		}
@@ -1219,10 +1228,10 @@ func (s *dotPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *dotPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.deleteLimited(in, 0)
+	return s.deleteLimited(in, nil)
 }
 
-func (s *dotPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *dotPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if in.IsNil() {
 		return nil, errors.New("first argument is nil")
 	}
@@ -1231,7 +1240,7 @@ func (s *dotPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
 		// The entry at this key is about to be removed, so it is copied out
 		// by being left out. DeleteMutate below is then a no-op on it, which
 		// is the same answer it gave for an absent key before.
-		cp, err := copyMapOffPath(in, lisp.String(s.key), limit)
+		cp, err := copyMapOffPath(in, lisp.String(s.key), op)
 		if err != nil {
 			return nil, err
 		}
@@ -1246,11 +1255,11 @@ func (s *dotPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *dotPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, lisp.Nil(), 0)
+	return s.setLimited(in, lisp.Nil(), nil)
 }
 
-func (s *dotPath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return s.setLimited(in, lisp.Nil(), limit)
+func (s *dotPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return s.setLimited(in, lisp.Nil(), op)
 }
 
 func (s *dotPath) String() string {
@@ -1326,10 +1335,10 @@ func (s *indexPath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 }
 
 func (s *indexPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, newIn, 0)
+	return s.setLimited(in, newIn, nil)
 }
 
-func (s *indexPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *indexPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1337,9 +1346,9 @@ func (s *indexPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lis
 	from, to := skipIndex(len(cells), s.index)
 	if from == to {
 		// A missed index changes nothing, including a list's quoting.
-		return copyLVal(in, limit)
+		return copyLValOp(in, op)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, limit)
+	cp, err := copySeqOffPath(in, cells, from, to, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1359,10 +1368,10 @@ func skipIndex(n, index int) (int, int) {
 }
 
 func (s *indexPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.deleteLimited(in, 0)
+	return s.deleteLimited(in, nil)
 }
 
-func (s *indexPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *indexPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1370,9 +1379,9 @@ func (s *indexPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) 
 	from, to := skipIndex(len(cells), s.index)
 	if from == to {
 		// A missed index changes nothing, including a list's quoting.
-		return copyLVal(in, limit)
+		return copyLValOp(in, op)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, limit)
+	cp, err := copySeqOffPath(in, cells, from, to, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1435,11 +1444,11 @@ func (s *indexPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *indexPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, lisp.Nil(), 0)
+	return s.setLimited(in, lisp.Nil(), nil)
 }
 
-func (s *indexPath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
-	return s.setLimited(in, lisp.Nil(), limit)
+func (s *indexPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	return s.setLimited(in, lisp.Nil(), op)
 }
 
 func (s *indexPath) String() string {
@@ -1571,10 +1580,10 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 }
 
 func (s *rangePath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, newIn, 0)
+	return s.setLimited(in, newIn, nil)
 }
 
-func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1585,7 +1594,7 @@ func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lis
 		return nil, err
 	}
 	// The range is about to be spliced out and replaced by newIn's cells.
-	cp, err := copySeqOffPath(in, cells, from, to, limit)
+	cp, err := copySeqOffPath(in, cells, from, to, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1633,10 +1642,10 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *rangePath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.deleteLimited(in, 0)
+	return s.deleteLimited(in, nil)
 }
 
-func (s *rangePath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *rangePath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1647,7 +1656,7 @@ func (s *rangePath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) 
 		return nil, err
 	}
 	// The range is about to be removed.
-	cp, err := copySeqOffPath(in, cells, from, to, limit)
+	cp, err := copySeqOffPath(in, cells, from, to, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1689,10 +1698,10 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.nilLimited(in, 0)
+	return s.nilLimited(in, nil)
 }
 
-func (s *rangePath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *rangePath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1704,7 +1713,7 @@ func (s *rangePath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
 	if err != nil {
 		from, to = 0, 0
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, limit)
+	cp, err := copySeqOffPath(in, cells, from, to, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1850,22 +1859,22 @@ func (s *iterPath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error
 // Set creates a new array by setting each item using a path. If an
 // error occurs while setting an item then that item is skipped.
 func (s *iterPath) Set(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
-	return s.setLimited(in, newIn, 0)
+	return s.setLimited(in, newIn, nil)
 }
 
-func (s *iterPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *iterPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
-		in, err := setPath(s.path, item, newIn, limit)
+		in, err := setPath(s.path, item, newIn, op)
 		if err != nil {
 			// IMPORTANT: when iterating we ignore paths where set fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item, limit)
+			in, err = copyLValOp(item, op)
 			if err != nil {
 				return nil, err
 			}
@@ -1901,22 +1910,22 @@ func (s *iterPath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) Delete(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.deleteLimited(in, 0)
+	return s.deleteLimited(in, nil)
 }
 
-func (s *iterPath) deleteLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *iterPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
-		in, err := deletePath(s.path, item, limit)
+		in, err := deletePath(s.path, item, op)
 		if err != nil {
 			// IMPORTANT: when iterating we ignore paths where del fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item, limit)
+			in, err = copyLValOp(item, op)
 			if err != nil {
 				return nil, err
 			}
@@ -1952,22 +1961,22 @@ func (s *iterPath) NilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
-	return s.nilLimited(in, 0)
+	return s.nilLimited(in, nil)
 }
 
-func (s *iterPath) nilLimited(in *lisp.LVal, limit int) (*lisp.LVal, error) {
+func (s *iterPath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
 	}
 	var results []*lisp.LVal
 	for _, item := range horizon {
-		in, err := nilPath(s.path, item, limit)
+		in, err := nilPath(s.path, item, op)
 		if err != nil {
 			// IMPORTANT: when iterating we ignore paths where nil fails,
 			// and return orig. item. This is similar, but not the same as `jq`
 			// semantics which will return an error in some cases.
-			in, err = copyLVal(item, limit)
+			in, err = copyLValOp(item, op)
 			if err != nil {
 				return nil, err
 			}

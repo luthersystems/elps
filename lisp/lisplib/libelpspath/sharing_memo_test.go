@@ -136,11 +136,11 @@ func TestMemosCountCells(t *testing.T) {
 		t.Fatalf("validator: %d work over 4 containers did not switch the memo on", st.work)
 	}
 
-	var cst cycleState
-	if _, err := copyGuarded(v, newCycleGuard(&cst)); err != nil {
+	op := newCopyOp(0)
+	if _, err := copyLValOp(v, op); err != nil {
 		t.Fatal(err)
 	}
-	if cst.copies == nil {
-		t.Fatalf("copy: %d work over 4 containers did not switch the memo on", cst.work)
+	if op.copies == nil {
+		t.Fatalf("copy: %d work over 4 containers did not switch the memo on", op.work)
 	}
 }

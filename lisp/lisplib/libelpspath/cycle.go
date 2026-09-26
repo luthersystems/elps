@@ -108,20 +108,23 @@ type cycleState struct {
 	// walk's root and the current frame.
 	path map[*lisp.LVal]struct{}
 
-	// work, valid and copies bound a walk over a value with nested sharing
+	// work and valid bound the validator over a value with nested sharing
 	// -- (set! x (list x x)) repeated D times has 2^D paths but D distinct
 	// containers -- by the rule lisp/sharing.go describes for the kernel's
-	// walkers.  work counts the containers the walk has finished (the
-	// validator) or entered (the copy), plus the cells they hold.  Once it
-	// passes sharedWalkBudget, the validator records in valid each
-	// container it finished without error, and the copy records in copies
-	// each container it finished, with the copy it built and its height; a
-	// container reached again is answered from there instead of being walked
-	// again.  A tree never reaches a container twice, so for a tree they
-	// change nothing but the memory the maps take.
-	valid  map[*lisp.LVal]struct{}
-	copies map[*lisp.LVal]copyMemo
-	work   int
+	// walkers.  work counts the containers the walk has finished, plus the
+	// cells they hold.  Once it passes sharedWalkBudget, the validator
+	// records in valid each container it finished without error, and a
+	// container reached again passes without being walked again.  A tree
+	// never reaches a container twice, so for a tree this changes nothing
+	// but the memory the map takes.
+	valid map[*lisp.LVal]struct{}
+	// op is the copy memo, shared by every copy walk of one operation (see
+	// copyOp); nil for a walk that does not copy.  ownOp is the memo of a
+	// copy walk that belongs to no operation, kept here rather than
+	// allocated so such a walk costs what it did.
+	op    *copyOp
+	ownOp copyOp
+	work  int
 
 	// limit is the value-walk depth bound for this walk, taken from the
 	// runtime the operation is running under (Runtime.ValueDepthLimit).  It
@@ -139,7 +142,33 @@ type cycleState struct {
 // finishes.
 const sharedWalkBudget = 4096
 
-// copyMemo is one container's entry in cycleState.copies: its copy, and the
+// copyOp is what one elpspath operation's copies share: the value depth
+// limit, and the sharing memo.  An operation copies in many walks -- one
+// per level of a chained path, one per element of an iterator -- and each
+// would otherwise copy up to sharedWalkBudget of a shared value as a tree
+// before its own memo switched on, so the memo belongs to the operation.
+// Reusing an entry across walks that start at different depths stays exact,
+// because the entry carries the copied container's height.
+//
+// work counts the containers the copies have entered, plus the cells they
+// hold.  Once it passes sharedWalkBudget, copies records each container a
+// copy finished, with the copy and its height, and a container reached
+// again -- by the same walk or a later one -- reuses that copy, as lisp's
+// copy does.  A tree never reaches a container twice.
+type copyOp struct {
+	copies map[*lisp.LVal]copyMemo
+	limit  int
+	work   int
+}
+
+// newCopyOp returns the copy state for one operation bounded by limit.
+// Zero, and a limit below the floor WithMaxValueDepth accepts, mean
+// lisp.MaxValueDepth.
+func newCopyOp(limit int) *copyOp {
+	return &copyOp{limit: limit}
+}
+
+// copyMemo is one container's entry in copyOp.copies: its copy, and the
 // number of container levels the copy walked below it, so that a memo hit at
 // depth d fails the value depth limit exactly where re-copying the container
 // would: when d+height reaches the limit.
@@ -204,10 +233,29 @@ func newCycleGuard(state *cycleState) cycleGuard {
 // floor WithMaxValueDepth accepts (and zero, the unset case) means the
 // default, so that a caller with no runtime in reach passes 0.
 func newCycleGuardLimit(state *cycleState, limit int) cycleGuard {
-	if limit >= 1024 {
+	state.ownOp.limit = limit
+	return newCycleGuardOp(state, nil)
+}
+
+// newCycleGuardOp is newCycleGuardLimit for a copy walk belonging to op,
+// which supplies the limit and the shared memo.  A nil op is a walk of its
+// own, with a private memo and the limit already in state.ownOp.
+func newCycleGuardOp(state *cycleState, op *copyOp) cycleGuard {
+	state.op = op
+	if limit := state.copyOp().limit; limit >= 1024 {
 		state.limit = limit
 	}
 	return cycleGuard{state: state}
+}
+
+// copyOp returns the copy memo this walk uses: its operation's, or its own.
+// The own memo is addressed here rather than stored in op, which would make
+// the state point into itself and move it off the caller's stack.
+func (st *cycleState) copyOp() *copyOp {
+	if st.op != nil {
+		return st.op
+	}
+	return &st.ownOp
 }
 
 // valueDepthLimit reports the depth bound the walk is running under.

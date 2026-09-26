@@ -142,3 +142,35 @@ func TestSharingBombElpspathWideList(t *testing.T) {
 		}
 	}
 }
+
+// One operation copies in many walks -- one per iterator element, one per
+// level of a chained path -- and they share one memo, so a shared value is
+// copied once per operation rather than up to the budget once per walk.
+func TestSharingBombElpspathOperationSharesMemo(t *testing.T) {
+	for name, src := range map[string]string{
+		// 4096 references to one bomb, each copied by the iterator.
+		"iterator": `(set 'y 1) (dotimes (i 40) (set! y (vector y y)))
+(set 'v (vector y)) (dotimes (i 12) (set! v (concat 'vector v v)))
+(elpspath:?set v '* "k" 1)`,
+		// The same, where the path succeeds on every element.
+		"iterator-maps": `(set 'm (sorted-map "a" x "b" x "k" 0))
+(set 'v (vector m)) (dotimes (i 12) (set! v (concat 'vector v v)))
+(elpspath:?set v '* "k" 1)`,
+		// A 300-step key path through nested maps, each holding the bomb as
+		// a sibling that every level's copy must copy.
+		"chain": `(set 'd (sorted-map "s" x))
+(dotimes (i 300) (set! d (sorted-map "n" d "s" x)))
+(apply elpspath:?set (concat 'list (list d) (map 'list (lambda (i) "n") (make-sequence 0 300)) (list 1)))`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			env := sharingBombDoc(t)
+			lisp.WithMaxAlloc(64 << 20)(env)
+			var rc *lisp.LVal
+			testdeadline.Watch(name, 20*time.Second, 1<<30, func() { rc = env.LoadString("probe.lisp", src) })
+			if lisp.IsInternalPanic(rc) {
+				t.Fatalf("%s: %v", name, rc)
+			}
+			t.Logf("%s -> %v", name, rc.Type)
+		})
+	}
+}
