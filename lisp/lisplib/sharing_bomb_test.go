@@ -29,6 +29,8 @@ func TestSharingBombLibraries(t *testing.T) {
 (set 'Q (car '(quote)))
 (set 'QQ (car '(quasiquote)))
 (defmacro embed () (list Q x))
+(set 'stars (map 'list (lambda (i) '*) (make-sequence 0 40)))
+(defun star-path (&rest tail) (concat 'list (list doc "big") stars tail))
 ()`
 	for _, src := range []string{
 		`(equal? x y)`,
@@ -44,6 +46,16 @@ func TestSharingBombLibraries(t *testing.T) {
 		`(elpspath:?set doc "a" 2)`,
 		`(elpspath:?del doc "a")`,
 		`(elpspath:?nil doc "a")`,
+		// Iterators through every level enumerate all 2^40 paths; the
+		// output really is that large, so no memo applies and the work is
+		// charged in steps past an allowance instead (issue #722).
+		`(apply elpspath:? (star-path))`,
+		`(apply elpspath:?set (star-path 2))`,
+		`(apply elpspath:?del (star-path))`,
+		`(apply elpspath:?nil (star-path))`,
+		`(apply elpspath:?set! (star-path 2))`,
+		`(apply elpspath:?del! (star-path 0))`,
+		`(apply elpspath:?nil! (star-path 0))`,
 		`(s:deftype "shared" "any" (s:in x)) (s:validate shared y)`,
 		`(sorted-map "k" x)`,
 		`(vector x x)`,

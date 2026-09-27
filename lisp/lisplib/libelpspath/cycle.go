@@ -155,10 +155,19 @@ const sharedWalkBudget = 4096
 // copy finished, with the copy and its height, and a container reached
 // again -- by the same walk or a later one -- reuses that copy, as lisp's
 // copy does.  A tree never reaches a container twice.
+//
+// The remaining fields are the operation's iterator work budget (budget.go):
+// the environment it charges and polls (nil for the exported Path API,
+// which counts nothing), the condition that stopped it, the work its
+// iterators have done, and how many iterators are running.
 type copyOp struct {
-	copies map[*lisp.LVal]copyMemo
-	limit  int
-	work   int
+	copies    map[*lisp.LVal]copyMemo
+	env       *lisp.LEnv
+	stop      *lisp.LVal
+	limit     int
+	work      int
+	iterWork  int
+	iterDepth int
 }
 
 // newCopyOp returns the copy state for one operation bounded by limit.
