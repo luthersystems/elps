@@ -861,10 +861,10 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 // sharing -- (set! x (list x x)) repeated D times, 2^D paths -- converts in
 // time and memory linear in its distinct containers (see lisp/sharing.go);
 // whether a given shared container is shared in the result depends on how
-// much of the value was converted before it.  A value without sharing
-// converts to distinct Go containers throughout.  Treat a result as
-// read-only, or deep-copy it before writing to it.  GoSlice and GoMap follow
-// the same rule.
+// much of the value was converted before it, and on its size.  A value
+// without sharing converts to distinct Go containers throughout.  Treat a
+// result as read-only, or deep-copy it before writing to it.  GoSlice and
+// GoMap follow the same rule.
 //
 // Deprecated:  GoValue is no longer used internally for serialization and
 // should be avoided. Excessive nesting (including cycles) returns an
@@ -884,6 +884,12 @@ func (s *Serializer) GoValue(v *lisp.LVal, stringNums bool) any {
 // finishes.
 const sharedWalkBudget = 4096
 
+// sharedMemoGrain is lisp's constant of the same name (lisp/sharing.go):
+// the least work a finished container's own walk must have cost for the
+// memo to record it, so that a large tree does not pay a map insert for
+// every small container in it.
+const sharedMemoGrain = 64
+
 // conversionMemo is one container's entry in convertValue's sharing memo:
 // its conversion, and the levels the conversion walked below it, so that a
 // hit at depth d fails the depth limit exactly where re-converting would --
@@ -899,24 +905,32 @@ type conversionMemo struct {
 // has D containers and 2^D paths, and converting it as a tree built 2^D Go
 // containers.  The walk counts its work -- containers plus the children
 // they hold -- and past sharedWalkBudget it memoises each container it
-// finishes, by identity, with its conversion and height, and hands back the
-// same conversion when the container is reached again: the Go value then
-// shares what the LVal shared, as lisp.GoValue's does.  A tree never
-// reaches a container twice, so its conversion is unchanged, down to every
-// slice and map being distinct.
+// finishes whose own walk cost at least sharedMemoGrain, by identity, with
+// its conversion and height, and hands back the same conversion when the
+// container is reached again: the Go value then shares what the LVal
+// shared, as lisp.GoValue's does.  A container too small to record is
+// converted again each time, at less than the grain.  A tree never reaches
+// a container twice, so its conversion is unchanged, down to every slice
+// and map being distinct.
 func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) {
 	type frame struct {
 		v      *lisp.LVal
 		dst    *any
 		finish func()
 		depth  int
-		// saved, in a leave frame, is deepest as it stood when the walk
-		// entered v, restored (as a maximum) when it leaves.
-		saved int
 		// leave marks the end of container v, pushed before its children
 		// so that it runs after every frame converting them.
 		leave bool
 	}
+	// entered is a container being converted, kept off frame so that the
+	// frames of a wide container's children stay small.  saved is deepest
+	// as it stood when the walk entered the container, restored (as a
+	// maximum) when it leaves; start is the work done before it, so work
+	// less start is what the container's own walk cost, for the grain.
+	type entered struct {
+		saved, start int
+	}
+	var open []entered
 	var out any
 	valid := true
 	pending := []frame{{v: root, dst: &out}}
@@ -945,10 +959,12 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			if f.depth >= 64 {
 				delete(path, f.v)
 			}
-			if memo != nil {
+			e := open[len(open)-1]
+			open = open[:len(open)-1]
+			if memo != nil && work-e.start >= sharedMemoGrain {
 				memo[f.v] = conversionMemo{out: *f.dst, height: deepest - f.depth}
 			}
-			deepest = max(deepest, f.saved)
+			deepest = max(deepest, e.saved)
 			continue
 		}
 		v := f.v
@@ -998,7 +1014,8 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			path[v] = true
 		}
 		// v is a container: time it, and count its work.
-		pending = append(pending, frame{v: v, dst: f.dst, depth: f.depth, saved: deepest, leave: true})
+		pending = append(pending, frame{v: v, dst: f.dst, depth: f.depth, leave: true})
+		open = append(open, entered{saved: deepest, start: work})
 		deepest = f.depth
 		if v.Type == lisp.LSortMap {
 			entries := v.MapEntries()

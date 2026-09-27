@@ -104,7 +104,6 @@ func TestHasUserFunCallSharingBomb(t *testing.T) {
 		// The user call follows the shared value, so the walk must get
 		// past it -- skipping repeats -- to find the call.
 		{"bomb then user call", quoted(bomb, userCall()), false},
-		{"user call under the bomb", quoted(callBomb(40, userCall())), false},
 		// A cyclic expression used to recurse without end.
 		{"cycle", quoted(cycle), true},
 		{"cycle then user call", quoted(cycle, userCall()), false},

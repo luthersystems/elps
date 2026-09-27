@@ -1355,8 +1355,11 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 	// prefix of the tree walk's, each with the occurrence index the tree
 	// walk gives it, rather than one target per path through a shared
 	// value.  Skipping only the repeated expression would keep walking, but
-	// would number every later target of the same function short of its
-	// true occurrence, and step-in would stop at the wrong call.
+	// would number every later target of the same function short of the
+	// index the tree walk gives it.  (That index counts calls in the walk's
+	// preorder, which is not always the order the engine enters them --
+	// arguments are entered before the call that holds them -- so it is
+	// the tree walk's numbering, not the engine's, that is preserved.)
 	var ew exprWalk
 	stopped := false
 	var walk func(v *lisp.LVal)

@@ -3,7 +3,6 @@
 package libjson
 
 import (
-	"fmt"
 	"math/bits"
 	"testing"
 	"time"
@@ -54,6 +53,15 @@ func TestSerializerGoValueKeepsSharing(t *testing.T) {
 		})
 		if !ok || len(slice) != 2 {
 			t.Fatalf("GoSlice: %v, %d", ok, len(slice))
+		}
+		var viaSlice any = slice
+		for i := range levels {
+			s := viaSlice.([]any)
+			a, b := s[0].([]any), s[1].([]any)
+			if &a[0] != &b[0] {
+				t.Fatalf("GoSlice level %d: the conversion unshared the value", i)
+			}
+			viaSlice = s[0]
 		}
 		for i := range levels {
 			s, ok := got.([]any)
@@ -148,20 +156,21 @@ func depthChain(n int, leaf *lisp.LVal, quoted bool) *lisp.LVal {
 	return leaf
 }
 
-// A memo hit fails the value depth limit exactly where re-converting would.
-// The value is (filler x (chain k x)): the filler pushes the walk past the
-// budget, x -- nearly lisp.MaxValueDepth deep -- is converted at depth 1,
-// and reached again at depth k+1.  The oracle is the same value with a
-// distinct second x, a tree, which fails exactly when k+1+height(x)
-// reaches the limit.  Each conversion walks a million levels, so only the
-// two k either side of the limit are run.
+// A memo hit fails the value depth limit exactly where re-converting would,
+// so the height it records must be exact.  Each value is
+// (filler first... (chain k again)): the filler pushes the walk past the
+// budget, the containers after it are converted and memoised, and again is
+// reached a second time at depth k+1.  A conversion walks a million levels,
+// so each case runs only the two k either side of its boundary, and the
+// oracle is the tree's: a value fails exactly when some path reaches
+// lisp.MaxValueDepth.  The first case checks that oracle against the same
+// value with a distinct copy in place of the second reference.
 func TestSerializerGoValueMemoHitHonoursValueDepthLimit(t *testing.T) {
 	if testing.Short() {
 		t.Skip("converts million-level values")
 	}
 	const margin = 600
 	height := lisp.MaxValueDepth - margin
-	boundary := lisp.MaxValueDepth - 1 - height // first failing k
 	filler := func() *lisp.LVal {
 		cells := make([]*lisp.LVal, sharedWalkBudget+10)
 		for i := range cells {
@@ -170,39 +179,74 @@ func TestSerializerGoValueMemoHitHonoursValueDepthLimit(t *testing.T) {
 		return lisp.SExpr(cells)
 	}()
 	s := DefaultSerializer()
-	for _, quoted := range []bool{false, true} {
-		t.Run(fmt.Sprintf("quoted=%v", quoted), func(t *testing.T) {
-			x := depthChain(height, lisp.Int(7), quoted)
-			other := depthChain(height, lisp.Int(7), quoted)
-			for k := boundary - 1; k <= boundary; k++ {
-				fails := func(second *lisp.LVal) (bool, any) {
-					got := s.GoValue(lisp.SExpr([]*lisp.LVal{filler, x, depthChain(k, second, false)}), false)
-					_, isErr := got.(error)
-					return isErr, got
+	// convert reports whether (filler first... (chain k again)) fails,
+	// and when it succeeds, requires again's conversion to be shared.
+	convert := func(t *testing.T, k int, again *lisp.LVal, first ...*lisp.LVal) bool {
+		t.Helper()
+		cells := append([]*lisp.LVal{filler}, first...)
+		cells = append(cells, depthChain(k, again, false))
+		got := s.GoValue(lisp.SExpr(cells), false)
+		if _, isErr := got.(error); isErr {
+			return true
+		}
+		top := got.([]any)
+		second := top[len(top)-1]
+		for range k {
+			second = second.([]any)[0]
+		}
+		for i, c := range first {
+			if c == again {
+				a, b := top[1+i].([]any), second.([]any)
+				if &a[0] != &b[0] {
+					t.Fatalf("k=%d: the shared container was converted per path", k)
 				}
-				treeErr, _ := fails(other)
-				dagErr, dag := fails(x)
-				if treeErr != (k >= boundary) {
-					t.Fatalf("k=%d: tree failed=%v, want failure from k=%d", k, treeErr, boundary)
-				}
-				if dagErr != treeErr {
-					t.Fatalf("k=%d: tree failed=%v, shared failed=%v", k, treeErr, dagErr)
-				}
-				if dagErr {
-					continue
-				}
-				// The shared x converted once: its conversion appears in
-				// both places.
-				top := dag.([]any)
-				second := top[2]
-				for range k {
-					second = second.([]any)[0]
-				}
-				first, again := top[1].([]any), second.([]any)
-				if &first[0] != &again[0] {
-					t.Fatalf("k=%d: the shared chain was converted per path", k)
-				}
+				return false
 			}
-		})
+		}
+		return false
 	}
+	// check requires the value to fail exactly from k = boundary.
+	check := func(t *testing.T, boundary int, again *lisp.LVal, first ...*lisp.LVal) {
+		t.Helper()
+		for k := boundary - 1; k <= boundary; k++ {
+			if failed := convert(t, k, again, first...); failed != (k >= boundary) {
+				t.Fatalf("k=%d: failed=%v, want failure from k=%d", k, failed, boundary)
+			}
+		}
+	}
+	// x's leaf is height levels below x: reached at depth k+1, the leaf is
+	// at k+1+height, which fails once it reaches the limit.
+	xBoundary := lisp.MaxValueDepth - 1 - height
+	t.Run("tree oracle", func(t *testing.T) {
+		x, other := depthChain(height, lisp.Int(7), false), depthChain(height, lisp.Int(7), false)
+		check(t, xBoundary, other, x)
+		check(t, xBoundary, x, x)
+	})
+	t.Run("quote wrappers", func(t *testing.T) {
+		x := depthChain(height, lisp.Int(7), true)
+		check(t, xBoundary, x, x)
+	})
+	t.Run("height through a hit", func(t *testing.T) {
+		// p's only deep child, x, is a memo hit when p is first converted,
+		// so p's recorded height comes from the hit: one more than x's.
+		x := depthChain(height, lisp.Int(7), false)
+		cells := []*lisp.LVal{x}
+		for i := range sharedMemoGrain {
+			cells = append(cells, lisp.Int(i))
+		}
+		p := lisp.SExpr(cells)
+		check(t, xBoundary-1, p, x, p)
+	})
+	t.Run("height after a deeper sibling", func(t *testing.T) {
+		// small is converted after the far deeper d: its recorded height
+		// is its own, not d's.  Its boundary is far beyond any k run here,
+		// so every conversion must succeed.
+		d := depthChain(height, lisp.Int(7), false)
+		small := depthChain(2*sharedMemoGrain, lisp.Int(7), false)
+		for _, k := range []int{xBoundary} {
+			if convert(t, k, small, d, small) {
+				t.Fatalf("k=%d: a shallow shared container failed the depth limit", k)
+			}
+		}
+	})
 }
