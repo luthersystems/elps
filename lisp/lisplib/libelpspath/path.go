@@ -61,6 +61,14 @@ func nilPath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 }
 
 // Path represents an operation on a path.
+//
+// A Path's methods have no environment, so they neither charge steps nor
+// poll a context for the work an iterator does (budget.go, issue #722): a
+// '* over a document that shares a subtree along many paths can do
+// exponential work inside one call.  An embedder that runs paths a program
+// supplied should go through the Builtin* functions with the program's
+// environment -- SelectorSteps converts a selector string to their
+// arguments -- rather than call these methods directly.
 type Path interface {
 	// Get evaluates a get path operation on an elps LVal.
 	Get(*lisp.LVal) (*lisp.LVal, error)
@@ -979,6 +987,12 @@ func (s *chainPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 func (s *chainPath) getOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	var err error
 	for i, path := range s.paths {
+		// Under an iterator, each step is a unit of work (budget.go): the
+		// chain after '* is walked once per element, and the chain's length
+		// is bounded only by the program's argument list.
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		in, err = getPath(path, in, op)
 		if err != nil {
 			return nil, prependLeafPath(err, s.paths[:i])
@@ -1006,6 +1020,10 @@ func (s *chainPath) setMutateOp(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*l
 	var err error
 	curIn := in
 	for i, path := range s.paths {
+		// One unit per step under an iterator; see getOp.
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		if i == (len(s.paths) - 1) {
 			curIn, err = setMutatePath(path, curIn, newIn, op)
 		} else {
@@ -1057,6 +1075,10 @@ func (s *chainPath) deleteMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error
 	var err error
 	curIn := in
 	for i, path := range s.paths {
+		// One unit per step under an iterator; see getOp.
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		if i == (len(s.paths) - 1) {
 			curIn, err = deleteMutatePath(path, curIn, op)
 		} else {
@@ -1128,6 +1150,10 @@ func (s *chainPath) nilMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	var err error
 	curIn := in
 	for i, path := range s.paths {
+		// One unit per step under an iterator; see getOp.
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
 		if i == (len(s.paths) - 1) {
 			curIn, err = nilMutatePath(path, curIn, op)
 		} else {

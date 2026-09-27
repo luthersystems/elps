@@ -1345,7 +1345,8 @@ An iterator does its work inside one call, so one call can visit far more
 elements than the program built: a vector holding the same vector twice,
 nested 30 deep, has 2^30 paths through it, and 30 `'*` steps visit every one
 of them. Iterators therefore count their work -- one unit per element they
-visit, plus the containers they copy or shift. Past about a million units in
+visit and per path step they take below it, plus the containers they copy or
+shift. Past about a million units in
 one call (2^20), each further unit is charged as one evaluation step, so a
 `WithMaxSteps` or step budget stops the call with the usual
 `step-limit-exceeded` or `step-budget-exceeded` condition. The call also

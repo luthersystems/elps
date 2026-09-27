@@ -343,3 +343,53 @@ func TestIterBudgetWideSharedVector(t *testing.T) {
 		})
 	}
 }
+
+// The chain after an iterator is walked once per element, and for the
+// operations that do not copy its length is bounded only by the argument
+// list: a long run of '(range 0) steps -- an O(1) view that succeeds on a
+// one-element vector at every step -- after one '* cost elements x steps
+// with no charge (found in review of #722).  Each step under an iterator is
+// a unit of work, so a deadline and a step budget stop it.
+func TestIterBudgetLongChainAfterIterator(t *testing.T) {
+	setup := func(n, tail int) string {
+		return fmt.Sprintf(`(set 'w (vector 1))
+(set 'v (map 'vector (lambda (i) w) (make-sequence 0 %d)))
+(set 'tail (map 'list (lambda (i) '(range 0)) (make-sequence 0 %d)))
+()`, n, tail)
+	}
+	calls := []string{
+		`(length (apply elpspath:? (concat 'list (list v '*) tail)))`,
+		`(apply elpspath:?set! (concat 'list (list v '*) tail (list (vector 1))))`,
+		`(apply elpspath:?del! (concat 'list (list v '*) tail))`,
+		`(apply elpspath:?nil! (concat 'list (list v '*) tail))`,
+	}
+	for _, src := range calls {
+		t.Run(src, func(t *testing.T) {
+			t.Run("step budget", func(t *testing.T) {
+				// 5000 x 2000 units: about nine million past the allowance.
+				env := iterEnv(t, 200_000, setup(5000, 2000))
+				var rc *lisp.LVal
+				testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+					rc = env.LoadString("probe.lisp", src)
+				})
+				requireCondition(t, rc, lisp.CondStepLimitExceeded)
+			})
+			t.Run("deadline", func(t *testing.T) {
+				env := iterEnv(t, 0, setup(5000, 200_000))
+				var rc *lisp.LVal
+				var elapsed time.Duration
+				testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+					ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(100*time.Millisecond))
+					defer cancel()
+					start := time.Now()
+					rc = env.LoadStringContext(ctx, "probe.lisp", src)
+					elapsed = time.Since(start)
+				})
+				requireCondition(t, rc, lisp.CondContextCancelled)
+				if limit := testdeadline.Scale(3 * time.Second); elapsed > limit {
+					t.Fatalf("the builtin ignored its deadline: returned after %v (limit %v)", elapsed, limit)
+				}
+			})
+		})
+	}
+}

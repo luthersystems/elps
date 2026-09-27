@@ -26,6 +26,13 @@ import (
 //
 //   - one unit per element an iterator visits, and one per result a nested
 //     iterator's results add to the flattened answer;
+//   - one unit per step of the chain an iterator runs on each element, for
+//     the operations that do not copy (?, ?set!, ?del!, ?nil!).  Their chain
+//     length is bounded only by the program's argument list, so a long run
+//     of cheap steps -- '(range 0) on a one-element vector succeeds at every
+//     step -- after one '* would otherwise cost elements x steps for free.
+//     The copying operations cap a chain at maxPathSteps, and each of their
+//     steps copies a container, which is counted below;
 //   - for copies made under an iterator, one unit per container copied and
 //     one per cell or map entry it holds -- the containers the path rebuilds
 //     (the off-path copy of each map or sequence on the path) and those
