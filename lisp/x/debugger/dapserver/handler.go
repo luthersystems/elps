@@ -1240,12 +1240,63 @@ func isBuiltinCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 	return !hasUserFunCall(env, expr)
 }
 
+// sharedWalkBudget is lisp's budget of the same name (lisp/sharing.go): the
+// work after which a walk begins to remember, by identity, the expressions
+// it has entered.
+const sharedWalkBudget = 4096
+
+// exprWalk is the sharing guard of the expression walks below
+// (lisp/sharing.go).  The paused expression can embed a program-built value
+// -- (eval (list 'length (list 'quote x))) -- and a value built as
+// (set! x (list x x)) D times has D containers and 2^D paths, so a walk
+// that treats it as a tree does 2^D work while the debugger holds the
+// program paused.  The walk counts its work -- one per expression entered
+// plus one per cell it holds -- and past sharedWalkBudget records each
+// expression it enters, by identity; enter reports an expression entered
+// again.  Below the budget nothing is recorded, so an expression that
+// shares a small subexpression -- a macro expansion that uses an argument
+// twice -- is walked exactly as a tree.  A tree never enters an expression
+// twice, so its walk is unchanged at any size.
+type exprWalk struct {
+	seen map[*lisp.LVal]struct{}
+	work int
+}
+
+// enter counts the work of entering expression v and reports whether the
+// walk entered it before, past the budget.
+func (w *exprWalk) enter(v *lisp.LVal) (again bool) {
+	if w.seen != nil {
+		if _, ok := w.seen[v]; ok {
+			return true
+		}
+	}
+	w.work += 1 + len(v.Cells)
+	if w.seen == nil && w.work > sharedWalkBudget {
+		w.seen = make(map[*lisp.LVal]struct{})
+	}
+	if w.seen != nil {
+		w.seen[v] = struct{}{}
+	}
+	return false
+}
+
 // hasUserFunCall recursively checks whether any sub-expression in expr
 // contains a call to a user-defined function.
+//
+// The answer is a disjunction over the sub-expressions, so skipping one the
+// walk entered before cannot change it: that expression's heads are checked
+// by its first visit, which either answered true -- ending the walk -- or is
+// still under way (a cycle) or found none (see exprWalk).
 func hasUserFunCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 	if expr == nil || expr.Type != lisp.LSExpr || expr.IsNil() {
 		return false
 	}
+	var w exprWalk
+	w.enter(expr)
+	return w.hasUserFunCall(env, expr)
+}
+
+func (w *exprWalk) hasUserFunCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 	for _, child := range expr.Cells[1:] {
 		if child == nil || child.Type != lisp.LSExpr || child.IsNil() {
 			continue
@@ -1259,7 +1310,10 @@ func hasUserFunCall(env *lisp.LEnv, expr *lisp.LVal) bool {
 				}
 			}
 		}
-		if hasUserFunCall(env, child) {
+		if w.enter(child) {
+			continue
+		}
+		if w.hasUserFunCall(env, child) {
 			return true
 		}
 	}
@@ -1295,9 +1349,23 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 	// Walk all child s-expressions of the paused expression. The paused
 	// expression itself is typically the outer call (e.g., (f (g x) (h y))),
 	// and its children include the nested calls.
+	//
+	// SHARING (see exprWalk).  Past the budget, the first expression the
+	// walk enters again ENDS the walk: the targets returned are then a
+	// prefix of the tree walk's, each with the occurrence index the tree
+	// walk gives it, rather than one target per path through a shared
+	// value.  Skipping only the repeated expression would keep walking, but
+	// would number every later target of the same function short of its
+	// true occurrence, and step-in would stop at the wrong call.
+	var ew exprWalk
+	stopped := false
 	var walk func(v *lisp.LVal)
 	walk = func(v *lisp.LVal) {
-		if v == nil || v.Type != lisp.LSExpr || v.IsNil() {
+		if stopped || v == nil || v.Type != lisp.LSExpr || v.IsNil() {
+			return
+		}
+		if ew.enter(v) {
+			stopped = true
 			return
 		}
 		head := v.Cells[0]
@@ -1344,6 +1412,7 @@ func (h *handler) collectStepInTargets(env *lisp.LEnv, expr *lisp.LVal) []dap.St
 	// Walk each child of the paused expression (skip the head — that's the
 	// outer call's function name, which we handle separately).
 	if expr.Type == lisp.LSExpr && !expr.IsNil() {
+		ew.enter(expr)
 		// Include the outer expression itself as a target if its head is
 		// a user-defined function.
 		head := expr.Cells[0]
