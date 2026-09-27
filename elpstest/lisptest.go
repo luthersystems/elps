@@ -1,5 +1,19 @@
 // Copyright © 2025 The ELPS authors
 
+// Package elpstest runs ELPS test and benchmark files as Go subtests.
+//
+// Shared test helpers: every file matching *_testhelpers.lisp in the same
+// directory as a test file is loaded, in sorted name order, into every
+// environment the Runner builds for that file, immediately before the test
+// file is loaded.  Each test (and benchmark) runs in a fresh environment, so
+// helpers load once per environment: after NewEnv (LoaderFn or NewEnvFn) and
+// SetupFn when running a test or benchmark, and after NewEnv alone in the
+// discovery pass that lists tests, which does not run SetupFn.  The package in
+// effect before each helper is restored after it.  A file named exactly
+// _testhelpers.lisp, or a directory, is not a helper.  The names do not match
+// *_test.lisp, so production loads and test discovery
+// never pick them up.  Other runners can apply the same rule through
+// TestHelperFiles.
 package elpstest
 
 import (
@@ -10,6 +24,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -33,6 +48,69 @@ func BenchmarkParse(path string, r func() lisp.Reader) func(*testing.B) {
 			}
 		}
 	}
+}
+
+// TestHelperSuffix is the file-name suffix of shared Lisp test helpers.
+const TestHelperSuffix = "_testhelpers.lisp"
+
+// TestHelperFiles returns the paths of the shared test helper files
+// (*_testhelpers.lisp) in dir, sorted by name.  A runner loads them, in the
+// returned order, into a test environment before loading any *_test.lisp
+// file from dir.  A helper file needs a non-empty prefix before the suffix
+// (a file named exactly "_testhelpers.lisp" is ignored), and directories,
+// including symlinks to directories, are skipped.  A missing directory yields
+// no helpers and no error.
+func TestHelperFiles(dir string) ([]string, error) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	var paths []string
+	for _, e := range entries {
+		name := e.Name()
+		// The prefix must be non-empty: a file named exactly
+		// "_testhelpers.lisp" is not a helper.
+		if len(name) <= len(TestHelperSuffix) || !strings.HasSuffix(name, TestHelperSuffix) {
+			continue
+		}
+		p := filepath.Join(dir, name)
+		// Stat follows symlinks, so a symlinked directory is skipped too.
+		fi, err := os.Stat(p)
+		if err != nil {
+			return nil, err
+		}
+		if fi.IsDir() {
+			continue
+		}
+		paths = append(paths, p)
+	}
+	sort.Strings(paths)
+	return paths, nil
+}
+
+// LoadTestHelpers loads the helper files TestHelperFiles finds next to
+// testPath into env.  Each helper is loaded with LEnv.Load, which restores
+// the package in effect before the helper once it finishes, so a helper may
+// use in-package without changing the package the test file loads in.  An
+// error names the helper file that failed.
+func LoadTestHelpers(env *lisp.LEnv, testPath string) error {
+	helpers, err := TestHelperFiles(filepath.Dir(testPath))
+	if err != nil {
+		return fmt.Errorf("listing test helpers for %s: %w", testPath, err)
+	}
+	for _, h := range helpers {
+		src, err := os.ReadFile(h) //#nosec G304
+		if err != nil {
+			return fmt.Errorf("test helper %s: %w", h, err)
+		}
+		if err := lisp.GoError(env.Load(filepath.Base(h), bytes.NewReader(src))); err != nil {
+			return fmt.Errorf("test helper %s: %w", h, err)
+		}
+	}
+	return nil
 }
 
 // Runner is a test runner.
@@ -160,6 +238,10 @@ func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *lib
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
+	if err := LoadTestHelpers(env, path); err != nil {
+		r.helperError(t, err)
+		t.FailNow()
+	}
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
 		r.LispError(t, err)
@@ -206,6 +288,10 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 
 	_ = r.Setup(env)
 
+	if err := LoadTestHelpers(env, path); err != nil {
+		r.helperError(t, err)
+		return
+	}
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
 		r.LispError(t, err)
@@ -297,6 +383,10 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	_ = r.Setup(env)
 
+	if err := LoadTestHelpers(env, path); err != nil {
+		r.helperError(b, err)
+		return
+	}
 	err = lisp.GoError(env.Load(filepath.Base(path), source))
 	if err != nil {
 		r.LispError(b, err)
@@ -366,6 +456,17 @@ func (r *Runner) RunBenchmarkFile(b *testing.B, path string) {
 			r.RunBenchmark(b, i, path, bytes.NewReader(source))
 		})
 	}
+}
+
+// helperError reports a LoadTestHelpers failure exactly once.  LispError
+// prints only the stack trace of a lisp error, so the wrapped message naming
+// the helper file is logged first in that case.
+func (r *Runner) helperError(t testing.TB, err error) {
+	var lerr *lisp.ErrorVal
+	if errors.As(err, &lerr) {
+		t.Log(err.Error())
+	}
+	r.LispError(t, err)
 }
 
 func (r *Runner) LispError(t testing.TB, err error) {
