@@ -547,8 +547,9 @@ results that share Go containers where the lisp value shared them: a list or
 map reached along several paths can appear as one `[]any` or `map[any]any` in
 each place. This keeps a value with nested sharing, such as one built by
 `(set! x (list x x))` repeated many times, linear to convert rather than
-exponential. Treat converted results as read-only, or deep-copy them before
-mutating.
+exponential. The deprecated JSON serializer's `GoValue`, `GoSlice` and `GoMap`
+follow the same rule, sharing `[]any` and `map[string]any` values the same
+way. Treat converted results as read-only, or deep-copy them before mutating.
 
 Sealing and source-location assignment use explicit stacks throughout; these
 metadata-only APIs cannot return an error and finish the graph.

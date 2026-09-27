@@ -9,10 +9,12 @@ import (
 
 	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 )
 
 // The Lisp-level half of the sharing-bomb regression net (lisp/sharing.go;
-// the Go-level half is lisp's TestSharingBombEveryWalker).  x and y are
+// the Go-level half is lisp's TestSharingBombEveryWalker, plus
+// TestSharingBombLibraryGoAPIs below for the libraries' Go APIs).  x and y are
 // distinct 40-level sharing chains -- 40 steps and 40 two-cell lists each,
 // 2^40 paths -- and every row is an operation a program can apply to one.
 // Each must come back under a 1s deadline (scaled under -race; the unfixed
@@ -61,6 +63,37 @@ func TestSharingBombLibraries(t *testing.T) {
 				t.Fatalf("internal panic: %v", rc)
 			}
 			t.Logf("%s -> %v", src, rc.Type)
+		})
+	}
+}
+
+// The Go-API rows of the net: library conversions an embedder calls on a
+// program's value, over the same 40-level sharing chain.  Each must come
+// back rather than walk every path.
+func TestSharingBombLibraryGoAPIs(t *testing.T) {
+	bombOf := func() *lisp.LVal {
+		v := lisp.Int(1)
+		for range 40 {
+			v = lisp.SExpr([]*lisp.LVal{v, v})
+		}
+		return v
+	}
+	s := libjson.DefaultSerializer()
+	for _, row := range []struct {
+		name string
+		run  func(v *lisp.LVal)
+	}{
+		{"json Serializer.GoValue", func(v *lisp.LVal) { _ = s.GoValue(v, false) }},
+		{"json Serializer.GoSlice", func(v *lisp.LVal) { _, _ = s.GoSlice(v, true) }},
+		{"json Serializer.GoMap", func(v *lisp.LVal) {
+			m := lisp.SortedMap()
+			m.Map().Set(lisp.String("bomb"), v)
+			_, _ = s.GoMap(m, false)
+		}},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			v := bombOf()
+			testdeadline.Watch(row.name+" over a 40-level sharing bomb", 20*time.Second, 1<<30, func() { row.run(v) })
 		})
 	}
 }
