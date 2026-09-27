@@ -28,7 +28,7 @@ fi
 
 **STOP** if on main/master. Create a feature branch before proceeding. Never push directly to the default branch.
 
-Run this guard before every commit, not just before pushing: `git checkout main && git pull` mid-session leaves you on main, and the next commit lands there (this has happened). `git branch --show-current` is cheap.
+Run this guard before every commit, not just before pushing: `git checkout main && git pull` mid-session leaves you on main, and the next commit lands there. `git branch --show-current` is cheap.
 
 ### 3. Fetch and Rebase
 

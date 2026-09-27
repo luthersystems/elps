@@ -96,6 +96,7 @@ func builtinMyFunc(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 - **The `//elpsvet:allow` on the `builtins` table is required**: `make elpsvet` flags any package-level var that keeps `*lisp.LVal` reachable. Keep the justification; see `/elpsvet`
 - **Native Go values** returned to lisp must be publishable by templates — a scalar or a struct value embedding `internal/templatepolicy.Marker` (see `libtime`, `libregexp`). `make elpsvet` reports anything else; see `/elpsvet`
 - **Allocation limits**: size-dependent results must check `env.Runtime.CheckAlloc` / `MaxAllocBytes()` before allocating (see `libbase64`)
+- **Step charges**: a builtin whose work grows with input or output size charges `libutil.ChargeKiB(env, n)` for the bytes it scans or builds and returns its error as is, so an enforced step budget bounds it (see `libstring`, `libjson`)
 
 ### 3. Register in the stdlib loader
 

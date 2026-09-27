@@ -43,39 +43,39 @@ type DescribeServerResponse struct {
 
 // FileQueryInput is common input for tools that query a position in a file.
 type FileQueryInput struct {
-	Path          string  `json:"path"`
-	Line          int     `json:"line"`
-	Character     int     `json:"character"`
-	Content       *string `json:"content,omitempty"`
-	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+	Path          string  `json:"path" jsonschema:"File path: a bare filename for a file in the workspace root, or an absolute path. Do not prefix the workspace directory name."`
+	Line          int     `json:"line" jsonschema:"0-based line number (LSP convention: editor line 1 is 0)."`
+	Character     int     `json:"character" jsonschema:"0-based character offset within the line."`
+	Content       *string `json:"content,omitempty" jsonschema:"Unsaved buffer content to analyze instead of the file on disk; path still supplies the workspace context."`
+	WorkspaceRoot *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
 }
 
 // DocumentQueryInput is input for tools that query an entire document.
 type DocumentQueryInput struct {
-	Path          string  `json:"path"`
-	Content       *string `json:"content,omitempty"`
-	WorkspaceRoot *string `json:"workspace_root,omitempty"`
-	Limit         int     `json:"limit,omitempty"`
-	Offset        int     `json:"offset,omitempty"`
+	Path          string  `json:"path" jsonschema:"File path: a bare filename for a file in the workspace root, or an absolute path. Do not prefix the workspace directory name."`
+	Content       *string `json:"content,omitempty" jsonschema:"Unsaved buffer content to analyze instead of the file on disk; path still supplies the workspace context."`
+	WorkspaceRoot *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum number of results; when results are trimmed the response sets truncated and a total count."`
+	Offset        int     `json:"offset,omitempty" jsonschema:"Number of results to skip, for pagination with limit."`
 }
 
 // WorkspaceSymbolsInput is input for the workspace_symbols tool.
 type WorkspaceSymbolsInput struct {
-	Query         string  `json:"query"`
-	WorkspaceRoot *string `json:"workspace_root,omitempty"`
-	Limit         int     `json:"limit,omitempty"`
-	Offset        int     `json:"offset,omitempty"`
+	Query         string  `json:"query" jsonschema:"Case-insensitive substring matched against symbol names and package-qualified names; empty matches every symbol."`
+	WorkspaceRoot *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	Limit         int     `json:"limit,omitempty" jsonschema:"Maximum number of results; when results are trimmed the response sets truncated and a total count."`
+	Offset        int     `json:"offset,omitempty" jsonschema:"Number of results to skip, for pagination with limit."`
 }
 
 // DiagnosticsInput is input for the diagnostics tool.
 type DiagnosticsInput struct {
-	Path             *string `json:"path,omitempty"`
-	Content          *string `json:"content,omitempty"`
-	WorkspaceRoot    *string `json:"workspace_root,omitempty"`
-	IncludeWorkspace bool    `json:"include_workspace,omitempty"`
-	MaxFiles         int     `json:"max_files,omitempty"`
-	Offset           int     `json:"offset,omitempty"`
-	Severity         *string `json:"severity,omitempty"`
+	Path             *string `json:"path,omitempty" jsonschema:"File to check; omit it and pass content to check a buffer, reported as <stdin>."`
+	Content          *string `json:"content,omitempty" jsonschema:"Source to check instead of the file on disk."`
+	WorkspaceRoot    *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	IncludeWorkspace bool    `json:"include_workspace,omitempty" jsonschema:"Load the other files of the workspace so symbols defined there resolve; without it they read as undefined."`
+	MaxFiles         int     `json:"max_files,omitempty" jsonschema:"Maximum number of files to report on."`
+	Offset           int     `json:"offset,omitempty" jsonschema:"Number of results to skip, for pagination with limit."`
+	Severity         *string `json:"severity,omitempty" jsonschema:"Only return diagnostics of this severity: error, warning or info. Any other value is an invalid_input error."`
 }
 
 // PerfToolConfig allows overriding performance analysis settings per-request.
@@ -91,12 +91,12 @@ type PerfToolConfig struct {
 
 // PerfSelectionInput is input for the perf_issues, call_graph, and hotspots tools.
 type PerfSelectionInput struct {
-	WorkspaceRoot *string         `json:"workspace_root,omitempty"`
-	Paths         []string        `json:"paths,omitempty"`
-	Rules         []string        `json:"rules,omitempty"`
-	IncludeTests  bool            `json:"include_tests,omitempty"`
-	Top           int             `json:"top,omitempty"`
-	Config        *PerfToolConfig `json:"config,omitempty"`
+	WorkspaceRoot *string         `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	Paths         []string        `json:"paths,omitempty" jsonschema:"Files or directories to analyze. The whole workspace is analyzed when empty, so pass paths to keep output small."`
+	Rules         []string        `json:"rules,omitempty" jsonschema:"Rule IDs to keep (PERF001 to PERF004, UNKNOWN001). Filters issues and solved functions on perf_issues; no effect on call_graph."`
+	IncludeTests  bool            `json:"include_tests,omitempty" jsonschema:"Include *_test.lisp files, which are excluded by default."`
+	Top           int             `json:"top,omitempty" jsonschema:"Keep only the N highest-cost entries. Required (greater than zero) for hotspots."`
+	Config        *PerfToolConfig `json:"config,omitempty" jsonschema:"Advanced cost-model overrides (function costs, thresholds, loop keywords). The defaults suit normal use."`
 }
 
 // HoverResponse is the result of a hover query.
@@ -120,14 +120,14 @@ type DefinitionResponse struct {
 
 // ReferencesInput is input for the references tool.
 type ReferencesInput struct {
-	Path               string  `json:"path"`
-	Line               int     `json:"line"`
-	Character          int     `json:"character"`
-	Content            *string `json:"content,omitempty"`
-	WorkspaceRoot      *string `json:"workspace_root,omitempty"`
-	IncludeDeclaration bool    `json:"include_declaration,omitempty"`
-	Limit              int     `json:"limit,omitempty"`
-	Offset             int     `json:"offset,omitempty"`
+	Path               string  `json:"path" jsonschema:"File path: a bare filename for a file in the workspace root, or an absolute path. Do not prefix the workspace directory name."`
+	Line               int     `json:"line" jsonschema:"0-based line number (LSP convention: editor line 1 is 0)."`
+	Character          int     `json:"character" jsonschema:"0-based character offset within the line."`
+	Content            *string `json:"content,omitempty" jsonschema:"Unsaved buffer content to analyze instead of the file on disk; path still supplies the workspace context."`
+	WorkspaceRoot      *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	IncludeDeclaration bool    `json:"include_declaration,omitempty" jsonschema:"Also return the declaration itself among the references."`
+	Limit              int     `json:"limit,omitempty" jsonschema:"Maximum number of results; when results are trimmed the response sets truncated and a total count."`
+	Offset             int     `json:"offset,omitempty" jsonschema:"Number of results to skip, for pagination with limit."`
 }
 
 // ReferencesResponse is the result of a find-references query.
@@ -281,11 +281,11 @@ type HelpResponse struct {
 
 // FormatInput is input for the format tool.
 type FormatInput struct {
-	Path          string  `json:"path,omitempty"`
-	Content       *string `json:"content,omitempty"`
-	IndentSize    int     `json:"indent_size,omitempty"`
-	CheckOnly     bool    `json:"check_only,omitempty"`
-	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+	Path          string  `json:"path,omitempty" jsonschema:"File to format; or pass content instead."`
+	Content       *string `json:"content,omitempty" jsonschema:"Source to format instead of a file."`
+	IndentSize    int     `json:"indent_size,omitempty" jsonschema:"Indentation width in spaces; the formatter default when unset or 0."`
+	CheckOnly     bool    `json:"check_only,omitempty" jsonschema:"Only report whether formatting would change the source; the formatted text is not returned."`
+	WorkspaceRoot *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
 }
 
 // FormatResponse is the result of the format tool.
@@ -297,13 +297,13 @@ type FormatResponse struct {
 
 // LintInput is input for the lint tool.
 type LintInput struct {
-	Path          string   `json:"path,omitempty"`
-	Content       *string  `json:"content,omitempty"`
-	WorkspaceRoot *string  `json:"workspace_root,omitempty"`
-	Checks        []string `json:"checks,omitempty"`
-	Severity      *string  `json:"severity,omitempty"`
-	Limit         int      `json:"limit,omitempty"`
-	Offset        int      `json:"offset,omitempty"`
+	Path          string   `json:"path,omitempty" jsonschema:"File to lint; or pass content instead."`
+	Content       *string  `json:"content,omitempty" jsonschema:"Source to lint instead of the file on disk."`
+	WorkspaceRoot *string  `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
+	Checks        []string `json:"checks,omitempty" jsonschema:"Analyzer names to run (the help tool lists them); every analyzer when empty. An unknown name is an invalid_input error."`
+	Severity      *string  `json:"severity,omitempty" jsonschema:"Only return diagnostics of this severity: error, warning or info. Any other value is an invalid_input error."`
+	Limit         int      `json:"limit,omitempty" jsonschema:"Maximum number of results; when results are trimmed the response sets truncated and a total count."`
+	Offset        int      `json:"offset,omitempty" jsonschema:"Number of results to skip, for pagination with limit."`
 }
 
 // LintResponse is the result of the lint tool.
@@ -316,9 +316,9 @@ type LintResponse struct {
 
 // DocInput is input for the doc tool.
 type DocInput struct {
-	Query   string   `json:"query,omitempty"`
-	Queries []string `json:"queries,omitempty"`
-	Package bool     `json:"package,omitempty"`
+	Query   string   `json:"query,omitempty" jsonschema:"Name to look up: a function, macro, operator or package, optionally qualified (math:sin)."`
+	Queries []string `json:"queries,omitempty" jsonschema:"Several names to look up in one call; each gets its own result."`
+	Package bool     `json:"package,omitempty" jsonschema:"Treat the query as a package name and list its symbols."`
 }
 
 // DocResult is the result of a single doc lookup in batch mode.
@@ -362,9 +362,9 @@ type DocPackage struct {
 
 // TestInput is input for the test tool.
 type TestInput struct {
-	Path          string  `json:"path"`
-	Content       *string `json:"content,omitempty"`
-	WorkspaceRoot *string `json:"workspace_root,omitempty"`
+	Path          string  `json:"path" jsonschema:"Test file to run (a *_test.lisp file); or pass content instead."`
+	Content       *string `json:"content,omitempty" jsonschema:"Test source to run instead of the file on disk."`
+	WorkspaceRoot *string `json:"workspace_root,omitempty" jsonschema:"Workspace root for this call; defaults to the server startup root. A new root triggers a fresh directory scan."`
 }
 
 // TestResult describes a single test outcome.
@@ -386,8 +386,8 @@ type TestResponse struct {
 
 // EvalInput is input for the eval tool.
 type EvalInput struct {
-	Expression  string   `json:"expression,omitempty"`
-	Expressions []string `json:"expressions,omitempty"`
+	Expression  string   `json:"expression,omitempty" jsonschema:"ELPS source to evaluate; may contain several forms, and the value of the last one is returned. Set this or expressions."`
+	Expressions []string `json:"expressions,omitempty" jsonschema:"several independent sources, each evaluated in its own fresh environment with its own result. Set this or expression."`
 }
 
 // EvalResult is the result of evaluating a single expression.

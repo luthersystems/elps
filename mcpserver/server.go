@@ -341,8 +341,8 @@ func (s *Server) registerCoreTools() {
 	s.registerTool("test", "Run ELPS test files and return structured pass/fail results. Tests are defined with (test \"name\" ...) forms. Returns per-test results with error messages for failures.")
 	mcp.AddTool(s.server, &mcp.Tool{Name: "test", Description: "Run ELPS test files and return structured pass/fail results. Tests are defined with (test \"name\" ...) forms. Returns per-test results with error messages for failures."}, s.service.testTool)
 
-	s.registerTool("eval", "Evaluate ELPS expressions and return the result. Useful for quick one-off evaluation, testing snippets, or exploring the language. Returns the value of the last expression.")
-	mcp.AddTool(s.server, &mcp.Tool{Name: "eval", Description: "Evaluate ELPS expressions and return the result. Useful for quick one-off evaluation, testing snippets, or exploring the language. Returns the value of the last expression."}, s.service.evalTool)
+	s.registerTool("eval", "Evaluate ELPS source and return the value of its last form. Each call, and each item of expressions, runs in a fresh environment with the standard library loaded, so no definitions or state carry over between items or calls; put related forms in one expression string. Use it for quick one-off evaluation, testing snippets, or exploring the language; use the test tool to run test files. Output is truncated to the server's rendering budget (#<truncated>).")
+	mcp.AddTool(s.server, &mcp.Tool{Name: "eval", Description: "Evaluate ELPS source and return the value of its last form. Each call, and each item of expressions, runs in a fresh environment with the standard library loaded, so no definitions or state carry over between items or calls; put related forms in one expression string. Use it for quick one-off evaluation, testing snippets, or exploring the language; use the test tool to run test files. Output is truncated to the server's rendering budget (#<truncated>)."}, s.service.evalTool)
 }
 
 func clonePerfConfig(cfg *perf.Config) *perf.Config {

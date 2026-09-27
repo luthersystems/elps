@@ -84,7 +84,10 @@ gh workflow run release-tag.yml -f version=vX.Y.Z -f dry_run=true
 ```
 
 Without `gh` (agent sandboxes), use the Actions dispatch API / MCP
-`actions_run_trigger` on `release-tag.yml` with input `version: vX.Y.Z`.
+`actions_run_trigger` on `release-tag.yml` with input `version: vX.Y.Z`. A 403
+"Resource not accessible by integration" means the session's GitHub App cannot
+dispatch workflows: stop, and give the user the exact `gh workflow run` command
+to run instead.
 
 `dry_run: true` prints the validation result and the generated notes
 without creating anything — use it if there is any doubt about the version

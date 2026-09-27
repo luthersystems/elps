@@ -79,8 +79,8 @@ If it says the plugin is missing, or Codex is not logged in, do the set-up in
   `.claude/worktrees/<name>` on a branch `codex/<name>`.
 - Codex **can change files** by default. Add `--read-only` when you want a
   diagnosis or a review with no edits.
-- Add `--background` for long work, then collect it:
-  `node "$CLAUDE_PLUGIN_ROOT/scripts/codex-companion.mjs" status --all`
+- Add `--background` for long work. The run directory it prints holds
+  `exit-status` and `final-message.txt`; collect them as in "The loop, as run".
 
 Other options: `--dir <path>`, `--model <name|spark>`,
 `--effort none|minimal|low|medium|high|xhigh`, `--resume`.
@@ -154,9 +154,8 @@ text**, or read its diff before you keep the work. The ones a brief must cite:
 - Never delete the `//nolint:gosec` directive on the last `return` of
   `parser/token/token.go`'s `Type.String`. It is load-bearing under CI's
   golangci-lint; a local lint run reporting it as unused is version skew, not
-  a finding. (The sibling directive on the preceding `return` was genuinely
-  dead under the v2.13 pin and was removed there — settle such a question
-  against CI's version, not against whatever is on PATH.)
+  a finding. Settle any `//nolint` question against CI's pinned version, not
+  against whatever is on PATH.
 - Commit messages are plain sentences saying what changes and why.
 
 Codex writes files but it does not commit. Committing and pushing stays a

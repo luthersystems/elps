@@ -33,7 +33,7 @@ Determine the change type to know which files to touch:
 
 ### 2. Read Before Writing
 
-**Always read the files you plan to modify before making changes.** Understand existing patterns:
+Where to find the existing patterns for each kind of change:
 
 - For builtins: read nearby entries in `langBuiltins` (`lisp/builtins.go`) and their `builtinXxx` functions
 - For ops: read `langSpecialOps` in `lisp/op.go` for the `opXxx` naming convention
@@ -119,19 +119,11 @@ Create a branch before starting work:
 - Refactors: `refactor/<short-description>`
 - Issue-driven: `issue-<N>/<short-description>`
 
+Never commit or push to `main`; the `/pr` skill has the guard.
+
 ### 6. Verify
 
 After implementation, run the full verification pipeline. See `/verify` skill.
-
-## Anti-Patterns
-
-- **Never use Go's `error` interface** for ELPS errors — always return `*LVal` with `LError` type
-- **Never omit docstrings** — CI will catch it
-- **Never use `set!` for first bindings** — it errors on unbound symbols
-- **Never use backtick quasiquote** in test inputs — ELPS has no reader syntax for it
-- **Never modify files without reading them first** — understand existing patterns
-- **Never skip tests** — write them before or alongside implementation
-- **Never commit or push to main** — always use a feature branch (the `/pr` skill has the guard)
 
 ## Checklist
 

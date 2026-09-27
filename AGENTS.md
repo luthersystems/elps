@@ -55,11 +55,9 @@ both versions). Trust CI over a local run.
 The trap: the `//nolint:gosec` on the last `return` of
 `parser/token/token.go`'s `Type.String` is **load-bearing** under CI's
 golangci-lint, but an older gosec does not flag that index, so `nolintlint`
-calls it unused locally. Deleting it turns CI red. The skew also runs the other
-way — a sibling directive on the constant-index `typeStrings[INVALID]` return
-really was dead under the v2.13 pin and was removed. Keep or drop a `//nolint`
-on the evidence of CI's pinned version (is `main` green without it?), never on
-a local run.
+calls it unused locally. Deleting it turns CI red. The skew runs in both
+directions, so keep or drop a `//nolint` on the evidence of CI's pinned version
+(is `main` green without it?), never on a local run.
 
 ## Architecture
 
@@ -201,14 +199,13 @@ read the matching skill file and follow its workflow.**
 | `fuzz/SKILL.md` | Run fuzzing, add a fuzz target, triage a crasher in `testdata/fuzz/` |
 | `verify/SKILL.md` | CI gate — the same checks `.github/workflows/elps.yml` runs |
 | `pr/SKILL.md` | Ship — branch guard, verify, push, create PR |
-| `pickup-issue/SKILL.md` | Full lifecycle — issue to branch to implementation to PR |
 | `benchmark/SKILL.md` | Performance — before/after benchstat comparison and the CI bench gate |
 | `audit/SKILL.md` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
 | `release/SKILL.md` | Create a tagged GitHub release via the release pipeline |
 | `codex-delegate/SKILL.md` | Hand a bounded coding unit to Codex in a worktree; verify on host |
 
-Skills chain: e.g. `pickup-issue` uses `implement` for the change, `verify`
-before committing, and `pr` to ship.
+Skills chain: e.g. `implement` for the change, `verify` before committing,
+and `pr` to ship.
 
 ## GitHub Tooling
 
