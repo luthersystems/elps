@@ -258,11 +258,17 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.Get(val)
-	if err != nil {
-		return env.Error(err)
+	if !hasIterStep(steps) {
+		data, err := path.Get(val)
+		if err != nil {
+			return env.Error(err)
+		}
+		return data
 	}
-	return data
+	// An iterator's work is counted and paid for (budget.go).
+	op := newQueryOp(env)
+	data, err := getPath(path, val, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQuerySetMutate implements (elpspath:?set! val &rest steps-and-value).
@@ -287,11 +293,16 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.SetMutate(val, newVal)
-	if err != nil {
-		return env.Error(err)
+	if !hasIterStep(steps) {
+		data, err := path.SetMutate(val, newVal)
+		if err != nil {
+			return env.Error(err)
+		}
+		return data
 	}
-	return data
+	op := newQueryOp(env)
+	data, err := setMutatePath(path, val, newVal, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQuerySet implements (elpspath:?set val &rest steps-and-value).
@@ -316,11 +327,9 @@ func BuiltinQuerySet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := setPath(path, val, newVal, newCopyOp(env.Runtime.ValueDepthLimit()))
-	if err != nil {
-		return env.Error(err)
-	}
-	return data
+	op := newQueryOp(env)
+	data, err := setPath(path, val, newVal, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQueryDeleteMutate implements (elpspath:?del! val &rest steps).
@@ -337,11 +346,16 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.DeleteMutate(val)
-	if err != nil {
-		return env.Error(err)
+	if !hasIterStep(steps) {
+		data, err := path.DeleteMutate(val)
+		if err != nil {
+			return env.Error(err)
+		}
+		return data
 	}
-	return data
+	op := newQueryOp(env)
+	data, err := deleteMutatePath(path, val, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQueryDelete implements (elpspath:?del val &rest steps).
@@ -358,11 +372,9 @@ func BuiltinQueryDelete(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := deletePath(path, val, newCopyOp(env.Runtime.ValueDepthLimit()))
-	if err != nil {
-		return env.Error(err)
-	}
-	return data
+	op := newQueryOp(env)
+	data, err := deletePath(path, val, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQueryNilMutate implements (elpspath:?nil! val &rest steps).
@@ -379,11 +391,16 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := path.NilMutate(val)
-	if err != nil {
-		return env.Error(err)
+	if !hasIterStep(steps) {
+		data, err := path.NilMutate(val)
+		if err != nil {
+			return env.Error(err)
+		}
+		return data
 	}
-	return data
+	op := newQueryOp(env)
+	data, err := nilMutatePath(path, val, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinQueryNil implements (elpspath:?nil val &rest steps).
@@ -400,11 +417,9 @@ func BuiltinQueryNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	data, err := nilPath(path, val, newCopyOp(env.Runtime.ValueDepthLimit()))
-	if err != nil {
-		return env.Error(err)
-	}
-	return data
+	op := newQueryOp(env)
+	data, err := nilPath(path, val, op)
+	return opResult(env, op, data, err)
 }
 
 // BuiltinParsePath implements (elpspath:parse-path selector).

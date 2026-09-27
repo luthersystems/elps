@@ -25,7 +25,10 @@ import (
 // of scope, since a parse tree cannot share a node.  Value walkers outside
 // lisp/ have their own rows: libjson's deprecated Serializer.GoValue family
 // in lisplib's TestSharingBombLibraryGoAPIs, and the DAP server's step-in
-// expression walks in dapserver's sharing_bomb_test.go.
+// expression walks in dapserver's sharing_bomb_test.go.  A walk whose output
+// really is one value per path -- elpspath's '* iterators -- cannot be made
+// linear; it is charged in steps past an allowance instead (issue #722;
+// libelpspath's iter_budget_test.go and lisplib's TestSharingBombLibraries).
 //
 // A new deep walker belongs in this table.  The per-walker regressions --
 // sharing preserved in the output, depth limits exact, trees unchanged --
