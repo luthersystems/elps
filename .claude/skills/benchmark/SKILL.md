@@ -16,40 +16,39 @@ go test -list 'Benchmark' ./... 2>/dev/null | grep -E '^Benchmark'
 
 This lists all available benchmark functions across the codebase.
 
-### 2. Run Baseline (Before Changes)
+For an interpreter change, start with the whole-program benchmarks:
+`BenchmarkWorkload` (`lisp/lisplib/workload_bench_test.go`: json, sortedmap,
+string, recursion, template) and `BenchmarkCorpus` (`elpstest/`). A gain
+claimed for a change should show there; micro-benchmarks explain it.
 
-Stash or switch to the base branch to measure the baseline:
+### 2. Measure base and head interleaved
 
-```bash
-git stash  # or: git checkout main
-go test -bench=. -benchmem -count=5 -timeout=300s ./... | tee /tmp/bench-before.txt
-git stash pop  # or: git checkout <feature-branch>
-```
-
-If targeting specific packages:
-```bash
-go test -bench=. -benchmem -count=5 ./lisp/... | tee /tmp/bench-before.txt
-```
-
-### 3. Make Changes
-
-Implement the optimization or code change.
-
-### 4. Run After
+Build one test binary per arm and alternate them, so machine noise lands on
+both arms alike:
 
 ```bash
-go test -bench=. -benchmem -count=5 -timeout=300s ./... | tee /tmp/bench-after.txt
+git worktree add /tmp/elps-base origin/main
+(cd /tmp/elps-base && go test -c -o /tmp/base.test ./lisp/lisplib/)
+go test -c -o /tmp/head.test ./lisp/lisplib/
+cd lisp/lisplib
+for i in $(seq 10); do
+  /tmp/base.test -test.run='^$' -test.bench='^BenchmarkWorkload' -test.benchmem >> /tmp/bench-before.txt
+  /tmp/head.test -test.run='^$' -test.bench='^BenchmarkWorkload' -test.benchmem >> /tmp/bench-after.txt
+done
 ```
 
-Use the same flags and packages as the baseline run for a fair comparison.
+Swap the package and `-test.bench` pattern for a package-specific benchmark.
+On a shared or loaded machine, `allocs/op` and `B/op` are deterministic and
+are the primary evidence; treat `sec/op` as indicative, and run
+`make bench-burnin` first.
 
-### 5. Compare with benchstat
+### 3. Compare with benchstat
 
 ```bash
 benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt
 ```
 
-### 6. Interpret Results
+### 4. Interpret Results
 
 Report the results with focus on:
 - **Time**: `sec/op` — lower is better
@@ -59,7 +58,7 @@ Report the results with focus on:
 
 **Regression threshold**: CI's gate fails a statistically significant bad-direction move of 15% or more on timing and 5% or more on allocations (see "CI Integration" below). Report any significant regression, and investigate those at or above the gate before pushing.
 
-### 7. Report
+### 5. Report
 
 Format results as a clear summary:
 
@@ -74,23 +73,12 @@ Format results as a clear summary:
 No regressions detected. Memory allocations reduced by 12%.
 ```
 
-## Package-Specific Benchmarking
-
-For changes scoped to a single package:
-```bash
-go test -bench=. -benchmem -count=5 ./parser/rdparser/... | tee /tmp/bench-before.txt
-# ... make changes ...
-go test -bench=. -benchmem -count=5 ./parser/rdparser/... | tee /tmp/bench-after.txt
-benchstat base=/tmp/bench-before.txt pr=/tmp/bench-after.txt
-```
-
 ## CI Integration
 
 The repo has a benchmark CI workflow (`.github/workflows/benchmark.yml`) that automatically runs benchstat comparisons on PRs. It posts results as a PR comment.
 
 The comparison is adjudicated by `cmd/benchgate` (a Go tool built on
-`golang.org/x/perf/benchfmt` + `benchmath`; it replaced the old
-`scripts/benchstat-gate.sh` in issue #538, and substrate runs the same binary),
+`golang.org/x/perf/benchfmt` + `benchmath`; substrate runs the same binary),
 which fails the PR on a significant bad-direction move at or above the threshold
 for that metric class (15% for timing, 5% for allocations — set in
 `benchmark.yml`).
@@ -159,8 +147,8 @@ The shape it exists for: an arm measuring itself at ±71% against the other arm'
 
 ## Checklist
 
-- [ ] Baseline benchmarks captured before changes
-- [ ] Same benchmark flags used for before/after
+- [ ] Base and head measured interleaved, with the same flags
+- [ ] Whole-program benchmarks (`BenchmarkWorkload`) checked for an interpreter change
 - [ ] `benchstat` comparison run
 - [ ] Results reported with clear formatting
 - [ ] Significant regressions reported; any at or above the CI gate (15% timing / 5% allocs) investigated or waived

@@ -1,6 +1,6 @@
 # /audit — Codebase Audit Skill
 
-Performs a systematic, multi-category audit of the ELPS codebase. Modeled on the approach used in PR #74 (25-commit multi-category audit).
+Performs a systematic, multi-category audit of the ELPS codebase.
 
 ## Trigger
 
@@ -22,23 +22,17 @@ Work through categories systematically. For each finding: understand it, fix it,
 #### Category 1: Bugs
 
 Scan for:
-- Dead code and unreachable branches
-- Copy-paste errors (duplicate logic with wrong variables)
-- Off-by-one errors in loops and slices
-- Nil dereference paths (unchecked `*LVal` returns)
-- Race conditions in concurrent code
-- Error values silently ignored (returned `*LVal` with `LError` type not checked)
+- Returned `*LVal` errors (`LError`) not checked and propagated
+- Walkers that treat values as trees: nested sharing (`(set! x (list x x))`) makes them exponential (`lisp/sharing.go` has the budget and memo pattern)
+- Builtins whose work grows with value size but charge no steps or skip `CheckAlloc`
 
 Where to look: `lisp/`, `parser/`, `formatter/`, `lint/`
 
 #### Category 2: Security
 
 Scan for:
-- Input validation gaps (especially in file I/O operations)
-- Path traversal / symlink following (check `os.Open`, `os.ReadFile`, `filepath.Walk`)
-- Permission checks on file operations
-- Integer overflow in numeric operations
-- Unsafe type assertions without checking
+- File access in builtins and the CLI: path traversal and symlink following (`os.Open`, `os.ReadFile`, `filepath.Walk`)
+- Limits a program can bypass: the step budget, `MaxAlloc`, and context cancellation
 
 Run: `make static-checks` (gosec is enabled in `.golangci.yml`), `make elpsvet` (shared-state and native-payload invariants; `/elpsvet`), and a `make fuzz` pass over the packages in scope (`/fuzz`)
 
@@ -46,25 +40,16 @@ Where to look: `lisp/lisplib/`, `cmd/`, `repl/`
 
 #### Category 3: Performance
 
-Scan for:
-- Unnecessary allocations in hot paths (eval loop, parser)
-- Copies where pointers would suffice
-- Maps that could be pre-sized with `make(map, n)`
-- Repeated computation that could be cached (singleton pattern)
-- String concatenation in loops (use `strings.Builder`)
-
-Run benchmarks before/after: Follow `/benchmark` skill workflow.
+Scan the eval loop and parser for allocations per call. Measure on the
+whole-program benchmarks (`BenchmarkWorkload`) before and after, per the
+`/benchmark` skill.
 
 Where to look: `lisp/env.go` (eval loop), `lisp/builtins.go`, `parser/rdparser/`
 
 #### Category 4: Tests
 
-Scan for:
-- Coverage gaps: functions or branches without test coverage
-- Missing edge cases: empty inputs, nil values, max values, error paths
-- Error path coverage: ensure error branches are tested
-- Test isolation: tests depending on shared mutable state
-- Flaky tests: time-dependent or order-dependent tests
+Scan for coverage gaps in error paths, and for tests that depend on shared
+state or wall-clock time.
 
 Run: `go test -cover ./...` and examine coverage percentages.
 
@@ -82,12 +67,9 @@ Where to look: `docs/lang.md`, `docs/lint-checks.md`, builtin/op/macro definitio
 
 #### Category 6: Code Quality
 
-Scan for:
-- golangci-lint findings: `make static-checks` (mind the version-skew note in `AGENTS.md` before removing a `//nolint`)
-- Inconsistent patterns (e.g., some builtins check errors, others don't)
-- Dead imports
-- TODO/FIXME/HACK comments that should be resolved
-- Inconsistent naming conventions
+Run `make static-checks` (mind the version-skew note in `AGENTS.md` before
+removing a `//nolint`), and look for builtins that handle errors differently
+from their neighbours.
 
 Where to look: Entire codebase
 

@@ -151,9 +151,9 @@ marker. Every package gets a plan base under a lazy plan; `unfrozenBase` keeps
   the sweeps that force first (`materializeSymbols`, `forceAll`), and writers
   or key/length-only readers. `TestLazyTableAllowlist` pins the list, and a new
   direct reader fails until it's audited.
-- A VM is single-goroutine because reads now write; checked builds panic on an
-  overlapping fill (`lazyGuard`).
-- `TemplateWithEagerInstantiation` restores the old eager build.
+- A VM is single-goroutine because a read can fill (write) a lazy slot;
+  checked builds panic on an overlapping fill (`lazyGuard`).
+- `TemplateWithEagerInstantiation` builds every value at `NewVM` instead.
   `VMWithPrewarm` builds, at `NewVM`, every value an earlier VM of the template
   used (a per-template atomic hot set), for hosts that mint VMs off the request
   path.
