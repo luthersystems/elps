@@ -786,21 +786,23 @@ func buildArityTable() map[string]aritySpec {
 	return table
 }
 
-// AnalyzerRethrowContext warns when `rethrow` is used outside of a
-// `handler-bind` form. At runtime, rethrow can only be called from within a
-// handler-bind handler; calling it elsewhere always produces an error.
+// AnalyzerRethrowContext warns when `rethrow` or `error-stack` is used
+// outside of a `handler-bind` form. At runtime, both read the error a
+// handler-bind handler is handling and can only be called from within one;
+// calling them elsewhere always produces an error.
 var AnalyzerRethrowContext = &Analyzer{
 	Name:     "rethrow-context",
 	Severity: SeverityError,
-	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace. Calling it outside any handler-bind always produces an error at runtime.",
+	Doc:      "Warn when `rethrow` or `error-stack` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
 		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
 			src := SourceOf(sexpr)
+			name := HeadSymbol(sexpr)
 			pass.Report(Diagnostic{
-				Message: "rethrow used outside handler-bind",
+				Message: name + " used outside handler-bind",
 				Pos:     posFromSource(astutil.SourceLoc(src)),
 				EndPos:  endPosFromNode(src),
-				Notes:   []string{"rethrow can only be called from within a handler-bind handler"},
+				Notes:   []string{name + " can only be called from within a handler-bind handler"},
 			})
 		})
 		return nil
@@ -808,8 +810,8 @@ var AnalyzerRethrowContext = &Analyzer{
 }
 
 // walkRethrowContext recursively walks the AST, tracking how many
-// handler-bind forms are in scope. When it finds a (rethrow) call with
-// handlerDepth == 0, it calls report.
+// handler-bind forms are in scope. When it finds a (rethrow) or
+// (error-stack) call with handlerDepth == 0, it calls report.
 func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
 	for _, expr := range exprs {
 		walkRethrowNode(expr, handlerDepth, report)
@@ -829,7 +831,7 @@ func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal))
 
 	head := HeadSymbol(node)
 
-	if head == "rethrow" && handlerDepth == 0 {
+	if (head == "rethrow" || head == "error-stack") && handlerDepth == 0 {
 		report(node)
 		return
 	}

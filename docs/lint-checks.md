@@ -296,10 +296,11 @@ branch matches. While sometimes intentional, this is often an oversight.
 
 ### `rethrow-context`
 
-**Flags `(rethrow)` calls outside a `handler-bind` handler.**
+**Flags `(rethrow)` and `(error-stack)` calls outside a `handler-bind` handler.**
 
-`rethrow` re-signals the currently active error and only works inside a
-`handler-bind` handler. Using it outside causes a runtime error.
+`rethrow` re-signals the currently active error, and `error-stack` returns
+its call stack; both only work inside a `handler-bind` handler. Using either
+outside causes a runtime error.
 
 ```lisp
 ;; BAD — not inside handler-bind

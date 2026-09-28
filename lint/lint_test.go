@@ -889,6 +889,35 @@ func TestRethrowContext_Negative_InHandlerBindBody(t *testing.T) {
 	assertNoDiags(t, diags)
 }
 
+// error-stack, like rethrow, reads the error a handler-bind handler is
+// handling and raises outside one.
+func TestRethrowContext_ErrorStack(t *testing.T) {
+	t.Run("top level", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerRethrowContext, `(error-stack)`)
+		require.Len(t, diags, 1)
+		assertDiagOnLine(t, diags, 1, "error-stack used outside handler-bind")
+		assert.Contains(t, diags[0].Notes[0], "error-stack can only be called")
+	})
+	t.Run("in defun", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerRethrowContext, "(defun f ()\n  (length (error-stack)))")
+		require.Len(t, diags, 1)
+		assertDiagOnLine(t, diags, 2, "error-stack used outside handler-bind")
+	})
+	t.Run("in handler", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerRethrowContext,
+			`(handler-bind ((condition (lambda (c &rest _) (error-stack)))) (error 'boom "x"))`)
+		assertNoDiags(t, diags)
+	})
+	t.Run("quoted", func(t *testing.T) {
+		assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext, `'(error-stack)`))
+	})
+	t.Run("rethrow message unchanged", func(t *testing.T) {
+		diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
+		require.Len(t, diags, 1)
+		assert.Equal(t, "rethrow used outside handler-bind", diags[0].Message)
+	})
+}
+
 func TestRethrowContext_Positive_HasNotes(t *testing.T) {
 	diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
 	require.Len(t, diags, 1)
