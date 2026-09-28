@@ -174,7 +174,7 @@ var (
 			(the package-qualified function name) and, when the frame has a
 			source location, "file", "line" and "column" of the call that
 			entered it. Can only be called from within a handler-bind
-			handler.`},
+			handler. Charges one evaluation step per started 64 frames.`},
 		{"car", Formals("lis"), builtinCAR,
 			`Returns the first element of a list, or nil if empty.`},
 		{"cdr", Formals("lis"), builtinCDR,
@@ -1114,6 +1114,11 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 	stack, _ := cond.Native.(*CallStack)
 	if stack == nil {
 		return Nil()
+	}
+	// One step per started 64 frames: the result is a map per frame, so its
+	// cost grows with the stack's depth rather than with the call count.
+	if lerr := env.ChargeSteps(int64((len(stack.Frames) + 63) / 64)); lerr.Type == LError {
+		return lerr
 	}
 	frames := make([]*LVal, 0, len(stack.Frames))
 	for i := len(stack.Frames) - 1; i >= 0; i-- {
