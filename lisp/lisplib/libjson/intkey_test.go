@@ -3,7 +3,6 @@
 package libjson_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -63,7 +62,7 @@ func TestDumpIntKeyCollision(t *testing.T) {
 			require.Equal(t, lisp.LError, got.Type, "%v", got)
 			require.False(t, lisp.IsInternalPanic(got), "%v", got)
 			msg := env.Render(got)
-			assert.True(t, strings.Contains(msg, "collides with string key"), msg)
+			assert.Contains(t, msg, "collides with string key")
 		})
 	}
 }
