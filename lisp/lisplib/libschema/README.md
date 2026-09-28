@@ -50,7 +50,7 @@ This type will require that the supplied value is a string. Not very useful in i
 ```
 Or, more usefully, if we want to define an enum, we can specify a list of permitted values like this
 ```lisp
-(s:deftype "title" s:string (s:in ("Mr","Mrs","Miss","Ms","Mx","Dr","Prof")))
+(s:deftype "title" s:string (s:in "Mr" "Mrs" "Miss" "Ms" "Mx" "Dr" "Prof"))
 ```
 
 If working with tagged-values (user-defined types created with the core
@@ -61,7 +61,7 @@ can be passed to `s:validate`.
 
 ```
 (deftype abc (s) (to-string s))
-(set 'abc-validator (s:make-validator abc s:string (s:in '("a" "b" "c")))
+(set 'abc-validator (s:make-validator abc s:string (s:in "a" "b" "c"))
 ```
 
 When `s:make-validator` is passed the typedef `abc` it automatically creates a
@@ -103,7 +103,7 @@ set, it must also contain a string. If we wish to constrain the keys that can be
 definitions in a call to `s:no-more-keys` like this:
 ```lisp
 (s:deftype "mymap" s:sorted-map 
-    (s:no-more-keys 
+    (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string) 
         (s:may-have-key "middle-name" s:string)
@@ -115,7 +115,7 @@ Now, if we tried to validate a map with the key `random-wrong-data` set, we woul
 We can also use our title enum from before so that if a title is set, it must be from the options we specified:
 ```lisp
 (s:deftype "mymap" s:sorted-map 
-    (s:no-more-keys 
+    (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string) 
         (s:may-have-key "middle-name" s:string)
@@ -130,15 +130,15 @@ if someone under 18 is marked as an adult like this:
 ```lisp
 (s:deftype "age-type" s:int (s:positive))
 (s:deftype "mymap" s:sorted-map 
-    (s:no-more-keys 
+    (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string)
-        (s:has-key "age" 'age-type)
+        (s:has-key "age" age-type)
         (s:has-key "is-adult" s:bool) 
         (s:may-have-key "middle-name" s:string)
-        (s:may-have-key "title" 'title)
+        (s:may-have-key "title" title)
     )
-    (s:when "age" (s:lt 18) "is-adult" s:false)
+    (s:when "age" (s:lt 18) "is-adult" (s:is-false))
 )
 ```
 You'll find a lot more examples in the [`libschema_test.lisp`](./libschema_test.lisp) file in this directory and a reference of all the available 
@@ -238,7 +238,7 @@ Requires the value to match the supplied pattern. Any regular expression that ca
   of a literal `sorted-map` too, so nothing is lost.
   
 
-* `(s:no-more-keys field-constraint[ field-constraint2 field-constraintN])`
+* `(s:no-other-keys field-constraint[ field-constraint2 field-constraintN])`
   Require that a map has no keys other than those set in the contained field constraints.
   
 
@@ -266,6 +266,11 @@ Requires the value to match the supplied pattern. Any regular expression that ca
 ### Gotchas
 
 * Type names are only symbols after they're defined. They're strings when you call `deftype`.
+* Constraints are ordinary, evaluated arguments. Write `(s:gt 1)` and refer to a defined type by its bare symbol
+  (`(s:has-key "age" age-type)`); do not quote either. Before
+  [#737](https://github.com/luthersystems/elps/issues/737) libschema evaluated a quoted form such as `'(s:gt 1)`, or looked
+  up a quoted symbol such as `'age-type`, a second time and accepted it. Now any argument that is not a schema constraint
+  is refused with `bad-arguments` when the validator is built.
 * Subsidiary conditions must be defined inside their own sexpr. It's `(s:not (s:in "x" "y"))` so `(s:not s:is-true)`
   isn't going to work.
 * Handling validation failure smoothly is best achieved by wrapping in `handler-bind` and looking for the error values

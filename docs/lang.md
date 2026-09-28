@@ -1925,6 +1925,22 @@ field names return ordinary errors as well. These checks depend on the host's
 runtime payload; static Lisp analysis cannot determine whether an embedded
 pointer is nil.
 
+The `s` package (libschema) builds validators. Its arguments are evaluated
+like any function's, so constraints are written unquoted and a defined type is
+referenced by its bare symbol:
+
+```lisp
+(s:deftype "small" s:int (s:gt 1) (s:lte 9))
+(s:deftype "rec" s:sorted-map (s:has-key "n" small))
+(s:validate rec (sorted-map "n" 5)) ; ()
+```
+
+A quoted constraint such as `'(s:gt 1)` or `'small` is data, not a
+constraint, and is refused with `bad-arguments` when the validator is built.
+(Before elps#737 libschema evaluated such arguments a second time and
+accepted them.) See `lisp/lisplib/libschema/README.md` for the full list of
+types and constraints.
+
 ### User packages
 
 For packages outside of the standard library it in recommended that names use a
