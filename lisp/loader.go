@@ -725,7 +725,7 @@ func (w *loaderWalk) check(v *LVal, depth int) (loaderNodeInfo, error) {
 		// expression, so a cached loader would hand the same backing store to
 		// each caller.
 		return loaderNodeInfo{}, fmt.Errorf("cannot cache reference type expression: %v", v.Type)
-	case LInvalid, LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LFun,
+	case LInvalid, LInt, LFloat, LError, LSymbol, LSExpr, LFun,
 		LQuote, LString, LTaggedVal,
 		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		// Value types are safe to cache; composite ones (LSExpr, LQuote,

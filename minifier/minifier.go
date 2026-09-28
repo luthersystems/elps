@@ -902,7 +902,7 @@ func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
 		for _, child := range node.Cells {
 			recordQualifiedReferences(child, refs)
 		}
-	case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LQSymbol,
+	case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError,
 		lisp.LFun, lisp.LQuote, lisp.LString, lisp.LBytes, lisp.LSortMap,
 		lisp.LArray, lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal,
 		lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:

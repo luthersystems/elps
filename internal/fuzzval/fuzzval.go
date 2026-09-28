@@ -177,7 +177,7 @@ const (
 	kindFloat
 	kindString
 	kindSymbol
-	kindQSymbol
+	kindQuotedSymbol
 	kindBytes
 	kindError
 	kindQuote
@@ -248,7 +248,8 @@ func (g *Gen) value(depth int) *lisp.LVal {
 // Locations come from a fixed process-wide pool rather than being allocated
 // per node, for two reasons.
 //
-//   - Reproducibility.  LVal.String() used to render an LQSymbol with %#v,
+//   - Reproducibility.  LVal.String() used to render an LQSymbol (a type
+//     since removed, #732) with %#v,
 //     which prints the Source POINTER, so a freshly allocated Location per
 //     node made the rendering of a generated value depend on the allocator and
 //     TestGeneratorIsDeterministic -- the property every saved crasher rests
@@ -315,8 +316,10 @@ func (g *Gen) construct(kind, depth int) *lisp.LVal {
 		return lisp.String(g.pickString())
 	case kindSymbol:
 		return lisp.Symbol(g.pickSymbol())
-	case kindQSymbol:
-		return lisp.QSymbol(g.pickSymbol())
+	case kindQuotedSymbol:
+		// Formerly the LQSymbol type, removed in #732.  The kind keeps its
+		// slot so saved corpora decode to the same shapes.
+		return lisp.Quote(lisp.Symbol(g.pickSymbol()))
 	case kindBytes:
 		return lisp.Bytes(g.Bytes(g.Intn(maxSeqLen + 1)))
 	case kindError:

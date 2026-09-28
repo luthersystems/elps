@@ -200,7 +200,6 @@ func TestEveryValueTypeNeverPanics(t *testing.T) {
 		"float":     func() *lisp.LVal { return lisp.Float(1.5) },
 		"error":     func() *lisp.LVal { return lisp.Errorf("boom") },
 		"symbol":    func() *lisp.LVal { return lisp.Symbol("s") },
-		"qsymbol":   func() *lisp.LVal { v := lisp.Symbol("s"); v.Type = lisp.LQSymbol; return v },
 		"sexpr":     func() *lisp.LVal { return lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}) },
 		"sexpr-nil": func() *lisp.LVal { return lisp.Nil() },
 		"quote":     func() *lisp.LVal { return lisp.Quote(lisp.Int(1)) },

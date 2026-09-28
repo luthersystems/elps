@@ -110,7 +110,7 @@ func TestFormatValue(t *testing.T) {
 		{"native int", lisp.Native(42), "<native int>", ""},
 		{"array", lisp.Array(nil, []*lisp.LVal{lisp.Int(1), lisp.Int(2)}), "<array len=2>", ""},
 		{"sorted-map", lisp.SortedMap(), "<sorted-map len=0>", ""},
-		{"qsymbol", lisp.QSymbol("pkg:sym"), "'pkg:sym", ""},
+		{"qsymbol", lisp.Quote(lisp.Symbol("pkg:sym")), "'pkg:sym", ""},
 		{"bytes", lisp.Bytes([]byte{0x01, 0x02}), "<bytes len=2>", ""},
 		{"sexpr list", lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}), "(1 2 3)", ""},
 		{"sexpr quoted", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}), "[1 2 3]", ""},

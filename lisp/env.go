@@ -525,8 +525,7 @@ func (env *LEnv) GetFunGlobal(fun *LVal) *LVal {
 }
 
 func (env *LEnv) get(k *LVal) *LVal {
-	// LQSymbols are allowed...
-	if k.Type != LSymbol && k.Type != LQSymbol {
+	if k.Type != LSymbol {
 		return Nil()
 	}
 	// Return pre-allocated singletons for true/false instead of
@@ -647,7 +646,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 	// value are adopted/asserted here.
 	checkOwnership(env.Runtime, k)
 	checkOwnership(env.Runtime, v)
-	if k.Type != LSymbol && k.Type != LQSymbol {
+	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
 	// WithLegacyKeywordFormals (issue #686) restores v1.61's lexical keyword
@@ -670,7 +669,7 @@ func (env *LEnv) Put(k, v *LVal) *LVal {
 // API that, like PutGlobal, bypasses the core package seal -- including for a
 // qualified lisp:name; Lisp-facing writers must use UpdateFromLisp.
 func (env *LEnv) Update(k, v *LVal) *LVal {
-	if k.Type != LSymbol && k.Type != LQSymbol {
+	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
@@ -682,7 +681,7 @@ func (env *LEnv) Update(k, v *LVal) *LVal {
 // UpdateFromLisp updates an existing binding with the core package seal
 // enforced. Use this for assignments with names controlled by Lisp code.
 func (env *LEnv) UpdateFromLisp(k, v *LVal) *LVal {
-	if k.Type != LSymbol && k.Type != LQSymbol {
+	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
 	if k.Str == TrueSymbol || k.Str == FalseSymbol {
@@ -815,7 +814,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 // with the core package seal enforced. Builtins accepting Lisp-controlled
 // binding names must use this instead of the trusted Go registration API.
 func (env *LEnv) PutGlobalFromLisp(k, v *LVal) *LVal {
-	if k.Type != LSymbol && k.Type != LQSymbol {
+	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
 	if err := env.checkLispPackageBinding(k.Str); err != nil {

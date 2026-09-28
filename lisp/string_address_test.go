@@ -21,7 +21,6 @@ var lvalSamples = map[lisp.LType]func() *lisp.LVal{
 	lisp.LFloat:   func() *lisp.LVal { return lisp.Float(1.5) },
 	lisp.LError:   func() *lisp.LVal { return lisp.Errorf("boom %d", 1) },
 	lisp.LSymbol:  func() *lisp.LVal { return lisp.Symbol("foo") },
-	lisp.LQSymbol: func() *lisp.LVal { return lisp.QSymbol("pkg:sym") },
 	lisp.LSExpr:   func() *lisp.LVal { return lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Symbol("a")}) },
 	lisp.LFun: func() *lisp.LVal {
 		return lisp.Fun("f", lisp.Formals("x"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -55,8 +54,8 @@ var lvalSamples = map[lisp.LType]func() *lisp.LVal{
 // ELPS runs on a ledger where every peer must produce byte-identical output,
 // so a rendering that embeds a pointer is nondeterministic across peers BY
 // CONSTRUCTION -- the same value renders differently in two processes, and a
-// copy renders differently from its source in one.  That is what an LQSymbol
-// did: it had no arm in str/strNested and fell through to a default that
+// copy renders differently from its source in one.  That is what the former LQSymbol type
+// (removed in #732) did: it had no arm in str/strNested and fell through to a default that
 // printed %#v of the LVal, which prints LVal.source, a *token.Location.
 //
 // The loop walks every LType from the source (LType(0) up to the LTypeMax
@@ -101,13 +100,14 @@ func TestStringNoAddressForEveryLType(t *testing.T) {
 	}
 }
 
-// TestQSymbolString pins the rendering an LQSymbol got in issue #606: the
+// TestQuotedSymbolString pins the rendering of a quoted symbol, which the
+// removed LQSymbol type (#732) also rendered after issue #606: the
 // quoted symbol name, the same text a quoted LSymbol renders, and the same
 // text the debugger's inspector has always shown for one.
-func TestQSymbolString(t *testing.T) {
+func TestQuotedSymbolString(t *testing.T) {
 	loc := &token.Location{File: "test.lisp", Line: 1, Col: 1}
 	qsym := func() *lisp.LVal {
-		v := lisp.QSymbol("pkg:sym")
+		v := lisp.Quote(lisp.Symbol("pkg:sym"))
 		v.SetSource(loc)
 		return v
 	}

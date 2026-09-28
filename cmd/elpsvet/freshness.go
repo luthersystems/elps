@@ -61,7 +61,7 @@ var freshnessAnalyzer = &analysis.Analyzer{
 var freshConstructors = map[string]bool{
 	// Exported constructors (lisp/lisp.go).
 	"Int": true, "Float": true, "String": true, "Bytes": true,
-	"Symbol": true, "QSymbol": true, "Native": true, "Value": true,
+	"Symbol": true, "Native": true, "Value": true,
 	"SExpr": true, "QExpr": true, "Vector": true, "MakeVector": true,
 	"Array": true, "SortedMap": true, "SortedMapFromData": true,
 	"FunRef": true, "Fun": true, "FunInPackage": true,

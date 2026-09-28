@@ -146,12 +146,11 @@ func Bool(b bool) *LVal {
 
 func Nil() *LVal { return singletonNil }
 
-func Int(x int) *LVal        { return &LVal{Int: x} }
-func Float(x float64) *LVal  { return &LVal{Float: x} }
-func String(s string) *LVal  { return &LVal{Str: s} }
-func Symbol(s string) *LVal  { return &LVal{Str: s} }
-func QSymbol(s string) *LVal { return &LVal{Str: s} }
-func Bytes(b []byte) *LVal   { return &LVal{Native: &b} }
+func Int(x int) *LVal       { return &LVal{Int: x} }
+func Float(x float64) *LVal { return &LVal{Float: x} }
+func String(s string) *LVal { return &LVal{Str: s} }
+func Symbol(s string) *LVal { return &LVal{Str: s} }
+func Bytes(b []byte) *LVal  { return &LVal{Native: &b} }
 
 func Native(v interface{}) *LVal { return &LVal{Native: v} }
 

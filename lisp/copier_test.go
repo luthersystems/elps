@@ -584,12 +584,12 @@ func (m *copierFailingRanger) RangeStringKeys(fn func(key string, val *lisp.LVal
 // well formed, the second carries an unhashable key, so MapData.Set rejects
 // it.  Partial traversal, on the arm that has no ranger.
 //
-// The unhashable key is an LQSymbol spelling the second key's name, not (as
+// The unhashable key is a tagged value spelling the second key's name, not (as
 // it once was) an LInt.  The arm sorts its entries by (Str, Type) before
 // copying any of them, and every key kind but LString and LSymbol carries an
 // empty Str -- so an LInt key sorts to the FRONT and the copy fails before a
 // single value has been copied, quietly turning this fixture into a
-// duplicate of the ranger's.  An LQSymbol carries its name in Str, so it
+// duplicate of the ranger's.  A tagged value carries its type name in Str, so it
 // sorts where its name puts it and the failure stays where the fixture wants
 // it: after the first entry has been copied and stored.
 type copierFailingEntries struct{ *copierStringMap }
@@ -603,7 +603,7 @@ func (m *copierFailingEntries) Entries(buf []*lisp.LVal) *lisp.LVal {
 		return lisp.Errorf("buffer has insufficient length")
 	}
 	buf[0] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[0]), m.m[keys[0]]})
-	buf[1] = lisp.QExpr([]*lisp.LVal{lisp.QSymbol(keys[1]), m.m[keys[1]]})
+	buf[1] = lisp.QExpr([]*lisp.LVal{{Type: lisp.LTaggedVal, Str: keys[1], Cells: []*lisp.LVal{lisp.Nil()}}, m.m[keys[1]]})
 	for i := 2; i < len(keys); i++ {
 		buf[i] = lisp.QExpr([]*lisp.LVal{lisp.String(keys[i]), m.m[keys[i]]})
 	}

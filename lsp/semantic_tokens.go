@@ -169,7 +169,7 @@ func collectSemanticTokens(
 		}
 		return
 
-	case lisp.LInvalid, lisp.LError, lisp.LQSymbol, lisp.LFun, lisp.LQuote,
+	case lisp.LInvalid, lisp.LError, lisp.LFun, lisp.LQuote,
 		lisp.LBytes, lisp.LSortMap, lisp.LArray, lisp.LNative,
 		lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
 		lisp.LMarkMacExpand, lisp.LTypeMax:

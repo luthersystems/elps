@@ -248,7 +248,7 @@ func mutateDeep(v *lisp.LVal) {
 		n.Int++
 		n.Float += 1.5
 		switch n.Type {
-		case lisp.LString, lisp.LSymbol, lisp.LQSymbol:
+		case lisp.LString, lisp.LSymbol:
 			n.Str += "-mutated"
 		case lisp.LBytes:
 			if n.Native != nil {

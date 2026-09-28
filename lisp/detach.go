@@ -274,7 +274,7 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 		// Not values an application can hold; refuse loudly instead of
 		// guessing at a copy.
 		return nil, &detachError{msg: fmt.Sprintf("internal %v value cannot be detached", v.Type)}
-	case LInt, LFloat, LError, LSymbol, LQSymbol, LSExpr, LQuote,
+	case LInt, LFloat, LError, LSymbol, LSExpr, LQuote,
 		LBytes, LSortMap, LArray, LTaggedVal:
 		// Detachable; handled below.
 	}
