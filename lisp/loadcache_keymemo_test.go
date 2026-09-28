@@ -4,8 +4,10 @@ package lisp
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -31,7 +33,7 @@ func TestLoadCacheKeyMemoSameLengthDifferentContent(t *testing.T) {
 	resetLoadCacheKeyMemo()
 	a := []byte("(set 'x 1)")
 	b := []byte("(set 'x 2)")
-	require.Equal(t, len(a), len(b))
+	require.Len(t, b, len(a))
 	ka := memoLoadCacheKey("f.lisp", "f.lisp", "rid", false, a)
 	a[len(a)-2] = '2' // caller mutates its slice after the load
 	kb := memoLoadCacheKey("f.lisp", "f.lisp", "rid", false, b)
@@ -103,4 +105,57 @@ func TestReadCachedReusesDigestAcrossEnvs(t *testing.T) {
 	assert.Equal(t, int64(2), loadCacheKeyDigests.Load()-before)
 	assert.Equal(t, "(set 'x 2)", b[0].Cells[1].Str)
 	assert.Equal(t, []string{"(set 'x 1)", "(set 'x 2)"}, parsed)
+}
+
+// Many empty sources under distinct names are still bounded: every entry is
+// charged its overhead, so the memo resets instead of growing without limit.
+func TestLoadCacheKeyMemoBoundsEntryCount(t *testing.T) {
+	resetLoadCacheKeyMemo()
+	t.Cleanup(resetLoadCacheKeyMemo)
+	// A long reader identity keeps the entry count (and test time) small;
+	// the identity strings are charged like the source copy.
+	rid := strings.Repeat("r", 4096)
+	maxEntries := loadCacheKeyMemoMaxBytes / (len(rid) + loadCacheKeyMemoEntryOverhead)
+	for i := range maxEntries + 10 {
+		name := fmt.Sprintf("f%d.lisp", i)
+		memoLoadCacheKey(name, name, rid, true, nil)
+		if i%1024 != 0 && i < maxEntries {
+			continue
+		}
+		entries, charged := loadCacheKeyMemoUsage()
+		require.LessOrEqual(t, charged, loadCacheKeyMemoMaxBytes)
+		require.LessOrEqual(t, entries, maxEntries)
+	}
+	// Re-storing one identity replaces, never double-charges, its entry.
+	resetLoadCacheKeyMemo()
+	memoLoadCacheKey("a", "a", "rid", true, []byte("x"))
+	_, c1 := loadCacheKeyMemoUsage()
+	memoLoadCacheKey("a", "a", "rid", true, []byte("y"))
+	e2, c2 := loadCacheKeyMemoUsage()
+	assert.Equal(t, 1, e2)
+	assert.Equal(t, c1, c2)
+}
+
+// Parallel runtimes hitting the memo concurrently (run under -race): every
+// returned key equals the un-memoised key for its input.
+func TestLoadCacheKeyMemoConcurrent(t *testing.T) {
+	resetLoadCacheKeyMemo()
+	t.Cleanup(resetLoadCacheKeyMemo)
+	var wg sync.WaitGroup
+	for g := range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := range 200 {
+				src := []byte(fmt.Sprintf("(set 'x %d)", (g+i)%3))
+				name := fmt.Sprintf("f%d.lisp", i%2)
+				want := loadCacheKey(name, name, "rid", false, src)
+				if got := memoLoadCacheKey(name, name, "rid", false, src); got != want {
+					t.Errorf("key mismatch for %q", src)
+					return
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

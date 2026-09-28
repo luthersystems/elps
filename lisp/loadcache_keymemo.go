@@ -41,6 +41,10 @@ import (
 const (
 	loadCacheKeyMemoMaxSource = 8 << 20
 	loadCacheKeyMemoMaxBytes  = 64 << 20
+	// loadCacheKeyMemoEntryOverhead is charged per entry on top of its
+	// strings and source copy, so many tiny (or empty) sources under
+	// distinct names cannot grow the map without bound.
+	loadCacheKeyMemoEntryOverhead = 128
 )
 
 type loadCacheKeyMemoID struct {
@@ -49,8 +53,9 @@ type loadCacheKeyMemoID struct {
 }
 
 type loadCacheKeyMemoEntry struct {
-	key string
-	src []byte // private copy; never aliased to a caller's slice
+	key  string
+	src  []byte // private copy; never aliased to a caller's slice
+	cost int    // bytes charged against loadCacheKeyMemoMaxBytes
 }
 
 var (
@@ -84,15 +89,25 @@ func memoLoadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string
 	loadCacheKeyMemoMu.Lock()
 	defer loadCacheKeyMemoMu.Unlock()
 	if old, ok := loadCacheKeyMemoMap[id]; ok {
-		loadCacheKeyMemoBytes -= len(old.src)
+		loadCacheKeyMemoBytes -= old.cost
+		delete(loadCacheKeyMemoMap, id)
 	}
-	if loadCacheKeyMemoMap == nil || loadCacheKeyMemoBytes+len(cp) > loadCacheKeyMemoMaxBytes {
+	cost := len(cp) + len(key) + len(name) + len(loc) + len(readerID) + loadCacheKeyMemoEntryOverhead
+	if loadCacheKeyMemoMap == nil || loadCacheKeyMemoBytes+cost > loadCacheKeyMemoMaxBytes {
 		loadCacheKeyMemoMap = make(map[loadCacheKeyMemoID]loadCacheKeyMemoEntry)
 		loadCacheKeyMemoBytes = 0
 	}
-	loadCacheKeyMemoMap[id] = loadCacheKeyMemoEntry{key: key, src: cp}
-	loadCacheKeyMemoBytes += len(cp)
+	loadCacheKeyMemoMap[id] = loadCacheKeyMemoEntry{key: key, src: cp, cost: cost}
+	loadCacheKeyMemoBytes += cost
 	return key
+}
+
+// loadCacheKeyMemoUsage reports the retained entry count and charged bytes
+// (tests).
+func loadCacheKeyMemoUsage() (entries, charged int) {
+	loadCacheKeyMemoMu.Lock()
+	defer loadCacheKeyMemoMu.Unlock()
+	return len(loadCacheKeyMemoMap), loadCacheKeyMemoBytes
 }
 
 // resetLoadCacheKeyMemo empties the memo (tests).
