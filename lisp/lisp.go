@@ -1964,20 +1964,29 @@ func isMapKey(v *LVal) bool {
 }
 
 // mapKeysCollide reports whether the stock sortedmap would store keys a and
-// b (a may be nil) under one entry, with the key's description for an error
-// message: two string-like keys collide on equal spelling, two ints on equal
-// value, and an int never collides with a string-like key.
-func mapKeysCollide(a, b *LVal) (bool, string) {
+// b (a may be nil) under one entry: two string-like keys collide on equal
+// spelling, two ints on equal value, and an int never collides with a
+// string-like key.  It allocates nothing; mapKeyDesc describes a key for the
+// error message once a collision is found.
+func mapKeysCollide(a, b *LVal) bool {
 	switch {
 	case a == nil:
-		return false, ""
+		return false
 	case a.Type == LInt && b.Type == LInt:
-		return a.Int == b.Int, strconv.Itoa(b.Int)
+		return a.Int == b.Int
 	case isStringLike(a) && isStringLike(b):
-		return a.Str == b.Str, strconv.Quote(b.Str)
+		return a.Str == b.Str
 	default:
-		return false, ""
+		return false
 	}
+}
+
+// mapKeyDesc spells a map key for an error message.
+func mapKeyDesc(k *LVal) string {
+	if k.Type == LInt {
+		return strconv.Itoa(k.Int)
+	}
+	return strconv.Quote(k.Str)
 }
 
 func (v *LVal) EqualNum(other *LVal) *LVal {

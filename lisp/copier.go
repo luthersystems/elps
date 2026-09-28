@@ -796,9 +796,9 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		if !isMapKey(key) {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %v", Errorf("unhashable type: %s", key.Type)))
 		}
-		if collide, desc := mapKeysCollide(prev, key); collide {
+		if mapKeysCollide(prev, key) {
 			return c.failMap(md, fmt.Errorf("failed to copy map: entries collide on key %s (%s and %s):"+
-				" the destination map cannot hold them apart", desc, prev.Type, key.Type))
+				" the destination map cannot hold them apart", mapKeyDesc(key), prev.Type, key.Type))
 		}
 		prev = key
 	}
