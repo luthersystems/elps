@@ -269,8 +269,8 @@ Requires the value to match the supplied pattern. Any regular expression that ca
 * Constraints are ordinary, evaluated arguments. Write `(s:gt 1)` and refer to a defined type by its bare symbol
   (`(s:has-key "age" age-type)`); do not quote either. Before
   [#737](https://github.com/luthersystems/elps/issues/737) libschema evaluated a quoted form such as `'(s:gt 1)`, or looked
-  up a quoted symbol such as `'age-type`, a second time and accepted it. Now any argument that is not a schema constraint
-  is refused with `bad-arguments` when the validator is built.
+  up a quoted symbol such as `'age-type`, a second time and accepted it. Now any constraint argument that is not a schema
+  constraint (type names such as `s:string` in their usual positions aside) is refused with `bad-arguments` when the validator is built.
 * Subsidiary conditions must be defined inside their own sexpr. It's `(s:not (s:in "x" "y"))` so `(s:not s:is-true)`
   isn't going to work.
 * Handling validation failure smoothly is best achieved by wrapping in `handler-bind` and looking for the error values

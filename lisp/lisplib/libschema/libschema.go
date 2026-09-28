@@ -312,22 +312,12 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
-// finds the correct validation handler for the type
-func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.LVal) *lisp.LVal {
-	// Every constraint is an argument function application has already
-	// evaluated, so it must already BE a validator.  Refusing anything else
-	// here, at construction time, keeps a quoted form such as '(s:gt 1) from
-	// being mistaken for a constraint and reported only when a value is
-	// validated (#737).
-	lType, _ := lisp.GoString(in)
-	checked := constraints
-	if lType == TaggedVal && len(checked) > 0 && checked[0].Type == lisp.LString {
-		// The first "constraint" of a tagged-value validator is the inner
-		// type name when it is a string; builtinCheckTaggedVal
-		// resolves it through getHandler.
-		checked = checked[1:]
-	}
-	for _, c := range checked {
+// checkConstraints refuses, at construction time, any constraint that is not
+// a validator.  Constraints are arguments function application has already
+// evaluated, so a quoted form such as '(s:gt 1) or a quoted type symbol is
+// data, and is reported here rather than when a value is validated (#737).
+func checkConstraints(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
+	for _, c := range constraints {
 		if c.Type == lisp.LError {
 			return c
 		}
@@ -335,6 +325,19 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 			return env.ErrorConditionf(BadArgs,
 				"Bad constraint: %s is not a schema constraint (%v). Constraints are evaluated arguments built by the s package (s:int, s:has-key, s:gt, ...); do not quote them.",
 				c.Type.String(), c)
+		}
+	}
+	return nil
+}
+
+// finds the correct validation handler for the type
+func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.LVal) *lisp.LVal {
+	lType, _ := lisp.GoString(in)
+	// A tagged-value validator's leading type names are not constraints;
+	// builtinCheckTaggedVal peels them off and checks what remains.
+	if lType != TaggedVal {
+		if err := checkConstraints(env, constraints); err != nil {
+			return err
 		}
 	}
 	var res *lisp.LVal
@@ -377,7 +380,12 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 					"Bad input type: an ordinary function is not usable as a constraint (%v). Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator.",
 					in)
 			}
-			return in
+			if len(constraints) == 0 {
+				return in
+			}
+			// A validator used as the type keeps its extra constraints;
+			// they used to be dropped without a word.
+			return builtinCheckAny(env, append([]*lisp.LVal{in}, constraints...))
 		}
 		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
 	}
@@ -679,6 +687,9 @@ func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *li
 func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	var rest *lisp.LVal
 	if len(constraints) == 0 || constraints[0].Type != lisp.LString {
+		if err := checkConstraints(env, constraints); err != nil {
+			return err
+		}
 		rest = builtinCheckAny(env, constraints)
 	} else {
 		subtype := constraints[0]
