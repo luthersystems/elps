@@ -3192,8 +3192,9 @@ func builtinStringGT(env *LEnv, args *LVal) *LVal {
 	return Bool(a.Str > b.Str)
 }
 
-// BUG:  Symbol equality is not well defined and so this function's
-// implemantion may need to change in an incompatible way.
+// builtinSymbolEq compares two symbols by their literal names.  Package
+// qualification is not resolved, so lisp:set and set are distinct symbols
+// here.  Existing programs depend on this, so it must not change.
 func builtinSymbolEq(env *LEnv, args *LVal) *LVal {
 	a, b := args.Cells[0], args.Cells[1]
 	if a.Type != LSymbol {

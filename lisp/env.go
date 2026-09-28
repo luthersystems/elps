@@ -2299,7 +2299,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// With formal arguments bound, we can switch into the function's package
 	// namespace for the duration of the call.
 	//
-	// BUG:  This package-swap should occur for builtins as well but there is a
+	// BUG(#736): This package-swap should occur for builtins as well but there is a
 	// bootstrapping problem, where ``set'' (as well as defun/defmacro) needs
 	// to modify the *package* namespace and not the "lisp" namespace.  Dynamic
 	// variables may be required in order to work through this completely.

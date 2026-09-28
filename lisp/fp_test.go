@@ -13,10 +13,9 @@ func TestFP(t *testing.T) {
 		{"curry", elpstest.TestSequence{
 			{"(defun f (a b) (+ a b))", "()", ""},
 			{"((curry-function 'f 1) 2)", "3", ""},
-			// BUG:  This error message has to be tested with defun and can't
-			// be tested in an earlier test (say eval_test.go) because the
-			// function id used in the error messages of anonymous functions
-			// is not deterministic.
+			// NOTE: This uses defun because an anonymous function's name in
+			// error messages (_funN) comes from a per-runtime counter, so it
+			// depends on how many lambdas were created earlier in the run.
 			{"(f 1 2 3)", "test:1:1: f: invalid number of arguments: 3", ""},
 		}},
 		{"map-reduce", elpstest.TestSequence{
