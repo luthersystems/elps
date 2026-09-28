@@ -64,15 +64,28 @@ type templateKeyType struct {
 type templateMapBacking struct {
 	entries []templateBinding
 	// ints are a stock map's int-keyed entries, sorted by key (#733).  They
-	// are never left pending by a lazy instance: see sortedmap.im.
+	// are never left pending by a lazy instance: see keyTables.ints.
 	ints    []templateIntBinding
 	types   []templateKeyType
 	json    bool
 	indexed bool // some entry is a per-VM value (index != 0)
 }
 type templateMapIdentity struct {
-	values, types, ints uintptr
-	json                bool
+	values, types uintptr
+	json          bool
+}
+
+// keyTables returns fresh side tables sized for the backing's symbol-key
+// types and int entries; a table the source never allocated stays nil.
+func (b *templateMapBacking) keyTables() *keyTables {
+	kt := &keyTables{}
+	if len(b.types) != 0 {
+		kt.types = make(typemap, len(b.types))
+	}
+	if len(b.ints) != 0 {
+		kt.ints = make(map[int]*LVal, len(b.ints))
+	}
+	return kt
 }
 
 // templateIntBinding is one int-keyed entry of a stock sorted map.
@@ -422,7 +435,7 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 	var backing templateMapBacking
 	switch sourceMap := source.mapBacking.(type) {
 	case sortedmap:
-		id = templateMapIdentity{values: reflect.ValueOf(sourceMap.m).Pointer(), types: reflect.ValueOf(sourceMap.tm).Pointer(), ints: reflect.ValueOf(sourceMap.im).Pointer()}
+		id = templateMapIdentity{values: reflect.ValueOf(sourceMap.m).Pointer(), types: reflect.ValueOf(sourceMap.kt).Pointer()}
 		if existing := c.mapBackings[id]; existing != 0 {
 			c.plan.maps[index].backing = existing
 			return index, nil
@@ -432,14 +445,14 @@ func (c *templateCompiler) mapData(source *MapData) (int, error) {
 		for _, entry := range backing.entries {
 			backing.indexed = backing.indexed || entry.value.index != 0
 		}
-		if len(sourceMap.im) != 0 {
-			backing.ints = make([]templateIntBinding, 0, len(sourceMap.im))
-			for _, key := range sortedIntKeys(sourceMap.im) {
-				backing.ints = append(backing.ints, templateIntBinding{key: key, value: c.ref(sourceMap.im[key])})
+		if im := sourceMap.ints(); len(im) != 0 {
+			backing.ints = make([]templateIntBinding, 0, len(im))
+			for _, key := range sortedIntKeys(im) {
+				backing.ints = append(backing.ints, templateIntBinding{key: key, value: c.ref(im[key])})
 			}
 		}
-		backing.types = make([]templateKeyType, 0, len(sourceMap.tm))
-		for key, kind := range sourceMap.tm {
+		backing.types = make([]templateKeyType, 0, len(sourceMap.typemap()))
+		for key, kind := range sourceMap.typemap() {
 			backing.types = append(backing.types, templateKeyType{key: key, kind: kind})
 		}
 		slices.SortFunc(backing.types, func(a, b templateKeyType) int { return cmp.Compare(a.key, b.key) })
@@ -560,19 +573,16 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 				m[entry.name] = instance.ref(entry.value)
 			}
 		} else {
-			m := sortedmap{m: make(map[string]*LVal, len(backing.entries)), tm: make(typemap, len(backing.types))}
-			if len(backing.ints) != 0 {
-				m.im = make(map[int]*LVal, len(backing.ints))
-			}
+			m := sortedmap{m: make(map[string]*LVal, len(backing.entries)), kt: backing.keyTables()}
 			mapBackings[index] = m
 			for _, kind := range backing.types {
-				m.tm[kind.key] = kind.kind
+				m.kt.types[kind.key] = kind.kind
 			}
 			for _, entry := range backing.entries {
 				m.m[entry.name] = instance.ref(entry.value)
 			}
 			for _, entry := range backing.ints {
-				m.im[entry.key] = instance.ref(entry.value)
+				m.kt.ints[entry.key] = instance.ref(entry.value)
 			}
 		}
 	}

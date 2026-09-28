@@ -899,9 +899,13 @@ func TestRethrowContext_ErrorStack(t *testing.T) {
 		assert.Contains(t, diags[0].Notes[0], "error-stack can only be called")
 	})
 	t.Run("in defun", func(t *testing.T) {
-		diags := lintCheck(t, AnalyzerRethrowContext, "(defun f ()\n  (length (error-stack)))")
-		require.Len(t, diags, 1)
-		assertDiagOnLine(t, diags, 2, "error-stack used outside handler-bind")
+		// A helper a handler calls: only known at run time, so not reported.
+		assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext,
+			"(defun frames () (length (error-stack)))\n(defun on-err (c &rest _) (frames))\n(handler-bind ((condition on-err)) (error 'boom \"x\"))"))
+		assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext, "(set 'f (lambda () (error-stack)))"))
+	})
+	t.Run("rethrow in defun still reported", func(t *testing.T) {
+		require.Len(t, lintCheck(t, AnalyzerRethrowContext, "(defun f () (rethrow))"), 1)
 	})
 	t.Run("in handler", func(t *testing.T) {
 		diags := lintCheck(t, AnalyzerRethrowContext,

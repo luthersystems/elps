@@ -300,7 +300,9 @@ branch matches. While sometimes intentional, this is often an oversight.
 
 `rethrow` re-signals the currently active error, and `error-stack` returns
 its call stack; both only work inside a `handler-bind` handler. Using either
-outside causes a runtime error.
+outside causes a runtime error. An `(error-stack)` inside a function body
+(`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
+that function; `rethrow` is reported there as before.
 
 ```lisp
 ;; BAD — not inside handler-bind

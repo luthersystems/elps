@@ -224,11 +224,13 @@ var (
 		{"assoc", Formals("map", "key", "value"), builtinAssoc,
 			`Returns a new sorted-map with key set to value, without
 			modifying the original. If map is nil, creates a new map.
-			Keys must be strings or symbols. Keys with the same name are
-			interchangeable; last write wins for key spelling and value.`},
+			Keys must be ints, strings or symbols. A string and a symbol
+			with the same name are interchangeable, and last write wins for
+			key spelling and value; an int is never the same key as a
+			string or symbol.`},
 		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate,
 			`Sets key to value in map, mutating it in place, and returns the
-			modified map. Keys must be strings or symbols. Last write wins
+			modified map. Keys must be ints, strings or symbols. Last write wins
 			for key spelling and value; JSON-decoded maps always retain
 			string keys, using a symbol's name when supplied.`},
 		{"dissoc", Formals("map", "key"), builtinDissoc,

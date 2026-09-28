@@ -1301,7 +1301,9 @@ The `elpspath` package reads and updates nested sorted maps, lists and vectors.
 Each path step is an argument: a string selects a map key, an integer selects
 an element, `'*` visits every element, and `'(range from to)` selects a slice
 with an exclusive end. Omit `to` to select through the end. Negative indexes
-count backward from the end (`-1` is the last element).
+count backward from the end (`-1` is the last element). Because an integer step
+always indexes a sequence, a path cannot select a map entry that has an int
+key; read such an entry with `get`.
 
 ```lisp
 (set 'order (sorted-map "lines" (vector "a" "b") "id" 7))

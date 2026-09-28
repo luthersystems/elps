@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -251,5 +252,60 @@ func TestIntKeyEmbedderMapWalkers(t *testing.T) {
 	bad := SortedMapFromData(NewMapData(&reverseIntMap{keys: []*LVal{Float(1)}}))
 	if got := bad.Copy(); got.Type != LError || !strings.Contains(got.String(), "unhashable type: float") {
 		t.Errorf("float key: %v", got)
+	}
+}
+
+// TestIntKeyAliasedBacking pins that two MapData sharing one stock backing
+// (a copied wrapper, the shape TestTemplatePlanStockMapBackingAliases pins
+// for templates) keep sharing it across the first int key: the int table
+// lives behind a pointer both hold, so an int written through one is read
+// through the other, in the source and in a template VM.
+func TestIntKeyAliasedBacking(t *testing.T) {
+	check := func(t *testing.T, a, b *LVal) {
+		t.Helper()
+		if rc := a.Map().Set(Int(1), String("one")); rc.Type == LError {
+			t.Fatal(rc)
+		}
+		if got, ok := b.Map().Get(Int(1)); !ok || got.Str != "one" {
+			t.Fatalf("int entry written through a not visible through b: %v %v", got, ok)
+		}
+		if rc := b.Map().Set(Int(2), String("two")); rc.Type == LError {
+			t.Fatal(rc)
+		}
+		if got, ok := a.Map().Get(Int(2)); !ok || got.Str != "two" || a.Map().Len() != 3 {
+			t.Fatalf("int entry written through b not visible through a: %v %v", got, ok)
+		}
+	}
+	newPair := func() (*LVal, *LVal) {
+		a := SortedMap()
+		a.MapSetString("s", Int(0))
+		cw := *a.Map()
+		return a, SortedMapFromData(&cw)
+	}
+	t.Run("source", func(t *testing.T) {
+		a, b := newPair()
+		check(t, a, b)
+	})
+	for _, lazy := range []bool{false, true} {
+		t.Run("template lazy="+strconv.FormatBool(lazy), func(t *testing.T) {
+			source := templateOwnershipEnv()
+			a, b := newPair()
+			source.Runtime.Package.symbols["a"] = a
+			source.Runtime.Package.symbols["b"] = b
+			var opts []TemplateOption
+			if !lazy {
+				opts = append(opts, TemplateWithEagerInstantiation())
+			}
+			tmpl, err := NewTemplate(source, opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			vm, err := tmpl.NewVM()
+			if err != nil {
+				t.Fatal(err)
+			}
+			syms := vm.Runtime.Package.symbolTable()
+			check(t, syms["a"], syms["b"])
+		})
 	}
 }

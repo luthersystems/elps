@@ -373,6 +373,20 @@ string spelling the same digits (`lisp.Int(1)` and `lisp.String("1")` are two
 keys), and int keys sort before string and symbol keys, in numeric order.
 `GoMap` converts an int key to a Go `int`.
 
+**Compatibility note for embedders (int keys, #733).** Three behaviours Go
+code can observe changed when int keys were added:
+
+- `MapSetLVal(lisp.Int(n), v)` on a stock map used to return an
+  `unhashable type` error; it now stores the entry.
+- `Keys()`, `Entries()`, `MapKeys()` and `MapEntries()` of a stock map can now
+  return `LInt` keys (first, in numeric order). Code that assumed every key is
+  an `LString` or `LSymbol` and read `key.Str` must handle `LInt`.
+- `json:dump` of a map whose keys include an int -- a stock map or your own
+  `Map` implementation -- used to fail with an invalid key type error; it now
+  writes the int as its decimal string (`{"7":...}`), and fails only when that
+  spelling is also one of the map's string keys. `json:load` still produces
+  string keys only, so such a map does not round-trip to int keys.
+
 Use `l.MapSetString(k,v)` (string key) or `l.MapSetLVal(k,v)` (LVal key) to
 set keys on the map, which returns the mutated map. `v` must be an LVal.
 

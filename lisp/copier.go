@@ -627,11 +627,11 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// nothing, with the nil Map preserved.
 		return nm, nil
 	case sortedmap:
-		if len(m0.im) != 0 {
+		if len(m0.ints()) != 0 {
 			// A map holding int keys takes the generic Entries arm below:
-			// Entries yields them in the documented order and MapData.Set
-			// installs the copy's int table.  Only maps that hold int keys
-			// pay for that; every other map keeps this fast path.
+			// Entries yields them in the documented order, so a hook
+			// runs in that order too.  Only maps that hold int keys pay
+			// for that; every other map keeps this fast path.
 			break
 		}
 		m0.forceAll()
@@ -688,8 +688,8 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			}
 			c.next = copyFrame{keys: keys, values: values, mapping: sm.m}
 		}
-		for k, t := range m0.tm {
-			sm.tm[k] = t
+		for k, t := range m0.typemap() {
+			sm.kt.types[k] = t
 		}
 		nm.mapBacking = sm
 		return nm, nil

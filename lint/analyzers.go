@@ -786,14 +786,16 @@ func buildArityTable() map[string]aritySpec {
 	return table
 }
 
-// AnalyzerRethrowContext warns when `rethrow` or `error-stack` is used
-// outside of a `handler-bind` form. At runtime, both read the error a
+// AnalyzerRethrowContext warns when `rethrow` is used outside of a
+// `handler-bind` form, and when `error-stack` is used outside both a
+// `handler-bind` form and any function body (a function may be called from
+// a handler). At runtime, both read the error a
 // handler-bind handler is handling and can only be called from within one;
 // calling them elsewhere always produces an error.
 var AnalyzerRethrowContext = &Analyzer{
 	Name:     "rethrow-context",
 	Severity: SeverityError,
-	Doc:      "Warn when `rethrow` or `error-stack` is used outside a `handler-bind` form.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
+	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
 		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
 			src := SourceOf(sexpr)
@@ -814,24 +816,33 @@ var AnalyzerRethrowContext = &Analyzer{
 // (error-stack) call with handlerDepth == 0, it calls report.
 func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
 	for _, expr := range exprs {
-		walkRethrowNode(expr, handlerDepth, report)
+		walkRethrowNode(expr, handlerDepth, false, report)
 	}
 }
 
-func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
+// rethrowFunctionForms are the forms whose body may run later, from inside a
+// handler that calls the function.  error-stack in such a body is not
+// reported: a logging helper a handler calls is the common way to use it,
+// and whether it runs under a handler is only known at run time.  rethrow
+// keeps its historical, stricter rule.
+var rethrowFunctionForms = map[string]bool{
+	"defun": true, "lambda": true, "defmacro": true, "flet": true, "labels": true,
+}
+
+func walkRethrowNode(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
 	if node == nil {
 		return
 	}
 	if node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
 		for _, child := range node.Cells {
-			walkRethrowNode(child, handlerDepth, report)
+			walkRethrowNode(child, handlerDepth, inFunction, report)
 		}
 		return
 	}
 
 	head := HeadSymbol(node)
 
-	if (head == "rethrow" || head == "error-stack") && handlerDepth == 0 {
+	if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
 		report(node)
 		return
 	}
@@ -839,13 +850,14 @@ func walkRethrowNode(node *lisp.LVal, handlerDepth int, report func(*lisp.LVal))
 	if head == "handler-bind" {
 		// Walk the bindings (first arg) and body forms with incremented depth.
 		for _, child := range node.Cells[1:] {
-			walkRethrowNode(child, handlerDepth+1, report)
+			walkRethrowNode(child, handlerDepth+1, inFunction, report)
 		}
 		return
 	}
 
+	inFunction = inFunction || rethrowFunctionForms[head]
 	for _, child := range node.Cells {
-		walkRethrowNode(child, handlerDepth, report)
+		walkRethrowNode(child, handlerDepth, inFunction, report)
 	}
 }
 

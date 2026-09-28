@@ -400,13 +400,14 @@ func setTemplateFrameEntries(f *templateFrame, values map[string]*LVal) {
 // is its decimal spelling; it is only ever used to label a path.
 func setTemplateFrameSortedMap(f *templateFrame, sm sortedmap) {
 	sm.forceAll()
-	if len(sm.im) == 0 {
+	im := sm.ints()
+	if len(im) == 0 {
 		setTemplateFrameEntries(f, sm.m)
 		return
 	}
-	entries := f.allocEntries(len(sm.im) + len(sm.m))
-	for _, k := range sortedIntKeys(sm.im) {
-		entries = append(entries, templateMapEntry{key: strconv.Itoa(k), v: sm.im[k]})
+	entries := f.allocEntries(len(im) + len(sm.m))
+	for _, k := range sortedIntKeys(im) {
+		entries = append(entries, templateMapEntry{key: strconv.Itoa(k), v: im[k]})
 	}
 	ni := len(entries)
 	for key, v := range sm.m {

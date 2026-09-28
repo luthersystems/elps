@@ -101,23 +101,9 @@ func (md *MapData) Get(key *LVal) (*LVal, bool) {
 // Set associates key with val.  A map with no backing has nowhere to put it,
 // and reporting that is the only honest answer: silently dropping the write
 // would let a program believe an entry exists.
-//
-// The first int key written to a stock map installs the map's int table
-// here: sortedmap is held by value, so its own Set cannot.  The replacement
-// backing shares every table with the old one and adds im, so nothing that
-// the old backing held is lost and every *LVal holding md sees the new
-// table.  A stock backing is never shared between two MapData values (every
-// constructor and copier builds its own), which is what makes swapping it
-// in place safe.
 func (md *MapData) Set(key, val *LVal) *LVal {
 	if md == nil || md.mapBacking == nil {
 		return Errorf("sorted-map has no backing implementation")
-	}
-	if key.Type == LInt {
-		if sm, ok := md.mapBacking.(sortedmap); ok && sm.im == nil {
-			sm.im = make(map[int]*LVal)
-			md.mapBacking = sm
-		}
 	}
 	return md.mapBacking.Set(key, val)
 }
@@ -162,43 +148,59 @@ const (
 // interface before hashing; a string key hashes and compares directly.
 type typemap map[string]keytype
 
+// keyTables holds a sortedmap's two lazily allocated side tables behind one
+// pointer.  sortedmap is a value type: a table it allocates on first use
+// must live behind a pointer every copy of the value shares, or two MapData
+// holding one backing (a copied wrapper, which templates reproduce: see
+// TestTemplatePlanStockMapBackingAliases) would each install their own and
+// stop seeing each other's entries (TestIntKeyAliasedBacking).  The struct
+// replaces the eagerly made key-type map that sortedmap used to carry, so a
+// map allocates the same number of objects at construction as before.
+type keyTables struct {
+	// types records which string-like keys were last written as symbols.
+	// It is nil until the first symbol key.
+	types typemap
+	// ints holds the int-keyed entries (issue #733).  It is nil until the
+	// map's first int key, so a map that never holds one does no extra
+	// work on any path (every loop over it is a range over a nil map).  An
+	// int entry is never lazyPending: the template plans materialize
+	// int-keyed values eagerly.
+	ints map[int]*LVal
+}
+
 type sortedmap struct {
 	m  map[string]*LVal
-	tm typemap
+	kt *keyTables
 	// lz is non-nil for a map a lazy template plan built: entries holding
 	// lazyPending are materialized on first read (see template_lazy.go).
 	lz *lazySorted
-	// im holds the int-keyed entries (issue #733).  It is nil until the
-	// map's first int key, so a map that never holds one costs exactly
-	// what it did before int keys existed: no allocation, no extra work on
-	// any path (every loop over im is a range over a nil map).  sortedmap is
-	// a value type, so its Set cannot install im; MapData.Set does, by
-	// replacing its backing with a copy that carries the new table (see
-	// MapData.Set).  An int entry is never lazyPending: the template plans
-	// materialize int-keyed values eagerly.
-	im map[int]*LVal
 }
 
 func newmap() sortedmap {
 	return sortedmap{
 		m:  make(map[string]*LVal),
-		tm: make(typemap),
+		kt: &keyTables{},
 	}
 }
 
 // newmapSized is newmap with the entry table sized for n keys of either
-// type.  The key-type map stays at its zero size, as newmap leaves it: Set
-// writes it only for symbol keys, which are the rare case, and a map that
-// holds none never touches it.
+// type.  The key-type map stays unallocated, as newmap leaves it: Set
+// allocates it only for the first symbol key, which is the rare case, and a
+// map that holds none never touches it.
 func newmapSized(n int) sortedmap {
 	return sortedmap{
 		m:  make(map[string]*LVal, n),
-		tm: make(typemap),
+		kt: &keyTables{},
 	}
 }
 
 func (m sortedmap) typemap() typemap {
-	return m.tm
+	return m.kt.types
+}
+
+// ints returns the int-keyed entries (nil when the map never held one).
+func (m sortedmap) ints() map[int]*LVal {
+	return m.kt.ints
 }
 
 func (m sortedmap) keytype(k string) keytype {
@@ -206,7 +208,10 @@ func (m sortedmap) keytype(k string) keytype {
 }
 
 func (m sortedmap) puttype(k string, t keytype) {
-	m.typemap()[k] = t
+	if m.kt.types == nil {
+		m.kt.types = make(typemap)
+	}
+	m.kt.types[k] = t
 }
 
 func (m sortedmap) deltype(k string) {
@@ -220,12 +225,21 @@ func (m sortedmap) deltype(k string) {
 // cost every copy the high-water-mark table
 // (TestForkSortedMapClonePrunedMapIsRightSized).
 func (m sortedmap) emptyLike() sortedmap {
-	cp := sortedmap{
+	return sortedmap{
 		m:  make(map[string]*LVal, len(m.m)),
-		tm: make(typemap, len(m.tm)),
+		kt: m.kt.emptyLike(),
 	}
-	if m.im != nil {
-		cp.im = make(map[int]*LVal, len(m.im))
+}
+
+// emptyLike returns fresh side tables sized for a copy of kt; a table kt
+// never allocated stays nil in the copy too.
+func (kt *keyTables) emptyLike() *keyTables {
+	cp := &keyTables{}
+	if kt.types != nil {
+		cp.types = make(typemap, len(kt.types))
+	}
+	if kt.ints != nil {
+		cp.ints = make(map[int]*LVal, len(kt.ints))
 	}
 	return cp
 }
@@ -253,19 +267,19 @@ func (m sortedmap) copyInto(cp sortedmap, val func(*LVal) *LVal) {
 		for k, v := range m.m {
 			cp.m[k] = v
 		}
-		for k, v := range m.im {
-			cp.im[k] = v
+		for k, v := range m.ints() {
+			cp.kt.ints[k] = v
 		}
 	} else {
 		for k, v := range m.m {
 			cp.m[k] = val(v)
 		}
-		for k, v := range m.im {
-			cp.im[k] = val(v)
+		for k, v := range m.ints() {
+			cp.kt.ints[k] = val(v)
 		}
 	}
-	for k, t := range m.tm {
-		cp.tm[k] = t
+	for k, t := range m.typemap() {
+		cp.kt.types[k] = t
 	}
 }
 
@@ -300,14 +314,14 @@ type StringKeyRanger interface {
 }
 
 // emptyForStringKeys returns an empty stock sortedmap sized for n string
-// keys.  Set with an LString key writes no key type, so tm stays at its
-// zero size, as newmap leaves it.
+// keys.  Set with an LString key writes no key type, so the key-type table
+// stays unallocated, as newmap leaves it.
 func emptyForStringKeys(n int) sortedmap {
 	return newmapSized(n)
 }
 
 func (m sortedmap) Len() int {
-	return len(m.m) + len(m.im)
+	return len(m.m) + len(m.ints())
 }
 
 func (m sortedmap) Get(key *LVal) (*LVal, bool) {
@@ -325,7 +339,7 @@ func (m sortedmap) Get(key *LVal) (*LVal, bool) {
 		}
 		return Nil(), false
 	case LInt:
-		if v, ok := m.im[key.Int]; ok {
+		if v, ok := m.ints()[key.Int]; ok {
 			return v, true
 		}
 		return Nil(), false
@@ -342,7 +356,7 @@ func (m sortedmap) Del(key *LVal) *LVal {
 		m.deltype(key.Str)
 		return Nil()
 	case LInt:
-		delete(m.im, key.Int)
+		delete(m.kt.ints, key.Int)
 		return Nil()
 	default:
 		return Errorf("unhashable type: %s", key.Type)
@@ -362,12 +376,10 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 		m.puttype(key.Str, symbolkey)
 		return Nil()
 	case LInt:
-		if m.im == nil {
-			// Only reachable by calling Set on a bare sortedmap rather
-			// than through its MapData, which installs the table first.
-			return Errorf("sorted-map: int key written without an int table")
+		if m.kt.ints == nil {
+			m.kt.ints = make(map[int]*LVal)
 		}
-		m.im[key.Int] = val
+		m.kt.ints[key.Int] = val
 		return Nil()
 	default:
 		return Errorf("unhashable type: %s", key.Type)
@@ -398,7 +410,7 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 // the sorted-map builtins) drops the entries as a unit.
 func (m sortedmap) Entries(buf []*LVal) *LVal {
 	m.forceAll()
-	if len(m.im) != 0 {
+	if len(m.ints()) != 0 {
 		return m.entriesWithInts(buf)
 	}
 	n := len(m.m)
@@ -446,7 +458,7 @@ func (m sortedmap) Entries(buf []*LVal) *LVal {
 // an unquoted LString (carved from one batch array), a symbol key is
 // Quote(Symbol(k)).  The list and every key are fresh per call.
 func (m sortedmap) Keys() *LVal {
-	if len(m.im) != 0 {
+	if len(m.ints()) != 0 {
 		return m.keysWithInts()
 	}
 	n := len(m.m)
@@ -478,7 +490,8 @@ func (m sortedmap) Keys() *LVal {
 // spelling.  Kept apart so the string-only path above is untouched.
 func (m sortedmap) entriesWithInts(buf []*LVal) *LVal {
 	m.forceAll()
-	ni, n := len(m.im), len(m.im)+len(m.m)
+	im := m.ints()
+	ni, n := len(im), len(im)+len(m.m)
 	if len(buf) < n {
 		return Errorf("buffer has insufficient length")
 	}
@@ -486,7 +499,7 @@ func (m sortedmap) entriesWithInts(buf []*LVal) *LVal {
 	slots := make([]*LVal, 2*n)
 	keys := make([]LVal, n)
 	i := 0
-	for k, v := range m.im {
+	for k, v := range im {
 		keys[i] = LVal{Type: LInt, Int: k}
 		cells := slots[2*i : 2*i+2 : 2*i+2]
 		cells[0], cells[1] = &keys[i], v
@@ -515,11 +528,12 @@ func (m sortedmap) entriesWithInts(buf []*LVal) *LVal {
 // keysWithInts is Keys for a map holding at least one int key, in the order
 // entriesWithInts uses.
 func (m sortedmap) keysWithInts() *LVal {
-	ni, n := len(m.im), len(m.im)+len(m.m)
+	im := m.ints()
+	ni, n := len(im), len(im)+len(m.m)
 	cells := make([]*LVal, n)
 	keys := make([]LVal, n)
 	i := 0
-	for k := range m.im {
+	for k := range im {
 		keys[i] = LVal{Type: LInt, Int: k}
 		cells[i] = &keys[i]
 		i++
@@ -655,7 +669,7 @@ func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
 	base := len(dst)
 	switch b := md.mapBacking.(type) {
 	case sortedmap:
-		if len(b.im) != 0 {
+		if len(b.ints()) != 0 {
 			return dst, false
 		}
 		b.forceAll()
