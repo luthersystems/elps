@@ -406,6 +406,7 @@ func readerIdentity(r Reader) (string, bool) {
 // cost is one pass over a source file per load — nanoseconds per kilobyte,
 // against the milliseconds of parsing it replaces.
 func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
+	loadCacheKeyDigests.Add(1)
 	h := sha256.New()
 	var n [8]byte
 	write := func(b []byte) {
@@ -526,7 +527,7 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	if err != nil {
 		return nil, err
 	}
-	key := loadCacheKey(name, loc, readerID, byLoc, src)
+	key := memoLoadCacheKey(name, loc, readerID, byLoc, src)
 	if entry, ok := env.cacheLoad(cache, key); ok && entry != nil && entry.key == key {
 		// Checked builds re-verify the entry against the fingerprint taken at
 		// ADMISSION, not against a per-root seal-time record: the entry
