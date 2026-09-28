@@ -1001,7 +1001,6 @@ func builtinToBytes(env *LEnv, args *LVal) *LVal {
 		}
 		return Bytes([]byte(val.Str))
 	}
-	// TODO:  Allow sequences of integers to be turned into bytes?
 	return env.Errorf("cannot convert type to bytes: %v", val.Type)
 }
 

@@ -336,7 +336,6 @@ func BuiltinDurationSeconds(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !ok {
 		return env.Errorf("argument is not a duration: %v", lt)
 	}
-	// TODO:  Check for overflow and use a method less prone to overflow.
 	return lisp.Float(float64(d) / float64(time.Second))
 }
 
@@ -351,7 +350,6 @@ func BuiltinDurationMS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !ok {
 		return env.Errorf("argument is not a duration: %v", lt)
 	}
-	// TODO:  Check for overflow and use a method less prone to overflow.
 	return lisp.Float(float64(d) / float64(time.Millisecond))
 }
 

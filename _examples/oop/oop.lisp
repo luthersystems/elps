@@ -196,7 +196,6 @@
          (error 'type-error (format-string "first argument is not an int: {}" (type n))))
         ((not (int? d))
          (error 'type-error (format-string "second argument is not an int: {}" (type d)))))
-  ;; TODO:  Reduce by common factors
   (new struct
        :numer n
        :denom d))

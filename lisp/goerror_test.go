@@ -11,7 +11,18 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-// TODO:  Add a test for env.Errorf.
+func TestEnvErrorf(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	if err := lisp.GoError(lisp.InitializeUserEnv(env)); err != nil {
+		t.Fatal(err)
+	}
+	lerr := env.Errorf("bad value: %d", 42)
+	assert.Equal(t, lisp.LError, lerr.Type)
+	err := lisp.GoError(lerr)
+	if assert.Error(t, err) {
+		assert.Contains(t, err.Error(), "bad value: 42")
+	}
+}
 
 func TestGoError(t *testing.T) {
 	testerr := errors.New("test error message")
