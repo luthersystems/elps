@@ -365,10 +365,13 @@ if lisp.True(ok) {  // equivalent to !ok.IsNil()
 
 ### Maps
 
-Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Numeric
-keys are not supported. Symbol keys are coerced to string to avoid programming
-errors causing symbol and string keys with equal string values from existing in
-the same map.
+Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Keys may be
+ints, strings or symbols; floats are not supported. Symbol keys are coerced to
+string to avoid programming errors causing symbol and string keys with equal
+string values from existing in the same map. An int key is distinct from the
+string spelling the same digits (`lisp.Int(1)` and `lisp.String("1")` are two
+keys), and int keys sort before string and symbol keys, in numeric order.
+`GoMap` converts an int key to a Go `int`.
 
 Use `l.MapSetString(k,v)` (string key) or `l.MapSetLVal(k,v)` (LVal key) to
 set keys on the map, which returns the mutated map. `v` must be an LVal.
