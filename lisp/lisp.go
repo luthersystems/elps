@@ -29,9 +29,8 @@ const (
 	// cell's Native field for host diagnostics.
 	//
 	// In addition, LError values store a copy of the function call stack at
-	// the time of their creation in the LVal.Native field.
-	//
-	// TODO(#734): Make the stack inspectable from a condition handler.
+	// the time of their creation in the LVal.Native field.  A handler-bind
+	// handler reads it with the error-stack builtin (#734).
 	LError
 	// LSymbol values store a string representation of the symbol in the
 	// LVal.Str field.

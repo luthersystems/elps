@@ -2268,6 +2268,28 @@ error handling:
 ; Evaluates to '('recovered 'my-error)
 ```
 
+### Inspecting an Error's Call Stack
+
+Every error records the call stack at the point it was raised. Inside a
+`handler-bind` handler, `error-stack` returns that stack as a list of
+sorted-maps, innermost frame first. Each map has the key `"function"` (the
+package-qualified name) and, when the frame has a source location, `"file"`,
+`"line"` and `"column"` of the call that entered the function:
+
+```lisp
+(defun inner (x) (error 'boom x))
+(defun outer (x) (+ 1 (inner x)))
+
+(handler-bind ((condition (lambda (c &rest _)
+                            (map 'list (lambda (f) (get f "function"))
+                                 (error-stack)))))
+  (outer 3))
+; returns '("lisp:error" "user:inner" "user:outer" "lisp:handler-bind")
+```
+
+Frames removed by tail-call optimization are not in the list. Like
+`rethrow`, `error-stack` signals an error when called outside a handler.
+
 ### Guaranteed Cleanup (`with-cleanup`)
 
 `handler-bind`, `rethrow` and `ignore-errors` all *catch*.  None of them can
