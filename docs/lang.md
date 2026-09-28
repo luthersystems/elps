@@ -2318,8 +2318,14 @@ package-qualified name) and, when the frame has a source location, `"file"`,
 ; returns '("lisp:error" "user:inner" "user:outer" "lisp:handler-bind")
 ```
 
+The `"file"` value is the source name the library reported when the file was
+loaded, not a host path: for the built-in libraries it is the bare file name
+(`"main.lisp"`, not `"/srv/app/main.lisp"`), and an embedder's own library
+decides it (see "Source names in error stacks" in docs/embed.md).
+
 Frames removed by tail-call optimization are not in the list. Like
 `rethrow`, `error-stack` signals an error when called outside a handler.
+`error-stack` charges one evaluation step per started 64 frames.
 
 ### Guaranteed Cleanup (`with-cleanup`)
 

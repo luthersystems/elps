@@ -173,7 +173,9 @@ var (
 			innermost frame first. Each map has the string key "function"
 			(the package-qualified function name) and, when the frame has a
 			source location, "file", "line" and "column" of the call that
-			entered it. Can only be called from within a handler-bind
+			entered it; "file" is the source name the library reported (a
+			bare file name for the built-in libraries), not a host path.
+			Can only be called from within a handler-bind
 			handler. Charges one evaluation step per started 64 frames.`},
 		{"car", Formals("lis"), builtinCAR,
 			`Returns the first element of a list, or nil if empty.`},

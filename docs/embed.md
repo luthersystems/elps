@@ -510,6 +510,20 @@ is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
 a panicking diagnostic writer is not retried. Nested loads from these hooks
 bypass identity and cache hooks on the same runtime.
 
+### Source names in error stacks
+
+The `"file"` key of each frame `error-stack` returns, like the file in a
+rendered stack trace, is the `name` your `SourceLibrary.LoadSource` returned
+for that file -- not a host path. `RelativeFileSystemLibrary` and the other
+built-in libraries return the bare file name (`filepath.Base`).
+
+A custom `SourceLibrary` should return names that do not depend on the host:
+no absolute paths, home directories, temporary directories or machine names.
+Lisp code can read these names through `error-stack` and fold them into
+results, so where several peers must compute identical results from the same
+program (a replicated ledger, for example), a name that differs between
+machines makes their results differ.
+
 In `elpscheck` builds, detected ownership, sealed-program and singleton
 corruption deliberately remain hard Go panics so recovery cannot hide a
 failed invariant. These developer checks are distinct from language errors.
