@@ -165,12 +165,17 @@ func (g *Guard) walk(v *lisp.LVal, path string, seen map[*lisp.LVal]bool) {
 			return
 		}
 		for _, k := range keys.Cells {
-			g.walk(k, path+".key("+k.Str+")", seen)
+			// An int key (#733) has no Str; name it by its digits.
+			name := k.Str
+			if k.Type == lisp.LInt {
+				name = strconv.Itoa(k.Int)
+			}
+			g.walk(k, path+".key("+name+")", seen)
 			val, ok := m.Get(k)
 			if !ok || val == nil {
 				continue
 			}
-			g.walk(val, path+"["+k.Str+"]", seen)
+			g.walk(val, path+"["+name+"]", seen)
 		}
 	}
 }

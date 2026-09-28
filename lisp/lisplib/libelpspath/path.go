@@ -383,7 +383,9 @@ func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, err
 // copy is being built into.
 //
 // The copy is always built into a lisp.SortedMap, whose backing keys strings
-// and symbols alike by their text and refuses everything else. Skipping an
+// and symbols alike by their text, keys ints by value in a table of their own
+// (an int never shares an entry with a string, #733), and refuses everything
+// else. Skipping an
 // entry because its key "looks equal" by some other rule would drop a
 // sibling from the copy, so this mirrors that backing exactly, and
 // TestMapSlotRuleMatchesTheMap pins the two together: a key type the backing
@@ -391,6 +393,9 @@ func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, err
 // below that reports it, which is what this function did before it was a
 // function.
 func sameMapSlot(a, b *lisp.LVal) bool {
+	if a.Type == lisp.LInt || b.Type == lisp.LInt {
+		return a.Type == b.Type && a.Int == b.Int
+	}
 	return hashableMapKey(a) && hashableMapKey(b) && a.Str == b.Str
 }
 

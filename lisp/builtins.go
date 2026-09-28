@@ -251,10 +251,12 @@ var (
 			including in JSON-decoded maps.`},
 		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap,
 			`Creates a new sorted-map from alternating key-value pairs. For
-			example, (sorted-map :a 1 :b 2). Keys are maintained in sorted
-			order and must be strings or symbols; other types are unhashable.
-			Keys with the same name are interchangeable; last write wins
-			for key spelling and value.`},
+			example, (sorted-map :a 1 :b 2). Keys must be integers, strings
+			or symbols; other types are unhashable. Integer keys come first,
+			in numeric order, then string and symbol keys in sorted order.
+			An integer key is distinct from the string or symbol spelling
+			the same digits. String and symbol keys with the same name are
+			interchangeable; last write wins for key spelling and value.`},
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},

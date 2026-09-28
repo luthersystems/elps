@@ -10,15 +10,23 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// The Map contract allows integer keys. Only the stock copy destination
-// rejects them; alternating Entries must not choose a value hook to run first.
-type copierRotatingIntMap struct {
+// The Map contract allows keys of any type. The stock copy destination takes
+// int, string and symbol keys (#733) and rejects the rest; alternating
+// Entries must not choose a value hook to run first.
+type copierRotatingMap struct {
 	*intKeyedMap
 	calls int
+	// float offers the keys as floats, which no stock map accepts.
+	float bool
 }
 
-func (m *copierRotatingIntMap) Entries(buf []*lisp.LVal) *lisp.LVal {
+func (m *copierRotatingMap) Entries(buf []*lisp.LVal) *lisp.LVal {
 	n := m.intKeyedMap.Entries(buf)
+	if m.float {
+		for _, pair := range buf[:n.Int] {
+			pair.Cells[0] = lisp.Float(float64(pair.Cells[0].Int))
+		}
+	}
 	m.calls++
 	if m.calls%2 == 0 {
 		slices.Reverse(buf[:n.Int])
@@ -50,9 +58,9 @@ func TestCopyRejectsUnsupportedKeysBeforeCloningValues(t *testing.T) {
 			value := func(id int) *lisp.LVal {
 				return lisp.Native(copierObservedCloner{id, func(id int) { calls = append(calls, id) }})
 			}
-			m := &copierRotatingIntMap{intKeyedMap: &intKeyedMap{m: map[int]*lisp.LVal{
+			m := &copierRotatingMap{intKeyedMap: &intKeyedMap{m: map[int]*lisp.LVal{
 				1: value(1), 2: value(2),
-			}}}
+			}}, float: true}
 			src := lisp.SortedMapFromData(lisp.NewMapData(m))
 			if wrapped {
 				// The outer copy must fail too, without visiting its next value.
@@ -60,8 +68,8 @@ func TestCopyRejectsUnsupportedKeysBeforeCloningValues(t *testing.T) {
 			}
 			first, second := src.Copy(), src.Copy()
 			for _, got := range []*lisp.LVal{first, second} {
-				if got.Type != lisp.LError || !strings.Contains(got.String(), "unhashable type: int") {
-					t.Fatalf("Copy = %v, want unsupported integer-key error", got)
+				if got.Type != lisp.LError || !strings.Contains(got.String(), "unhashable type: float") {
+					t.Fatalf("Copy = %v, want unsupported float-key error", got)
 				}
 			}
 			if first.String() != second.String() {
@@ -74,6 +82,34 @@ func TestCopyRejectsUnsupportedKeysBeforeCloningValues(t *testing.T) {
 				t.Errorf("rejected entries invoked clone hooks: %v", calls)
 			}
 		})
+	}
+}
+
+// Int keys are supported (#733): an embedder map holding them copies into
+// the stock map, and the clone hooks run in key order whatever order its
+// Entries yields.
+func TestCopyIntKeyedCustomMapClonesInKeyOrder(t *testing.T) {
+	t.Parallel()
+	var calls []int
+	value := func(id int) *lisp.LVal {
+		return lisp.Native(copierObservedCloner{id, func(id int) { calls = append(calls, id) }})
+	}
+	m := &copierRotatingMap{intKeyedMap: &intKeyedMap{m: map[int]*lisp.LVal{
+		1: value(1), 2: value(2), -5: value(3),
+	}}}
+	src := lisp.SortedMapFromData(lisp.NewMapData(m))
+	first, second := src.Copy(), src.Copy()
+	for _, got := range []*lisp.LVal{first, second} {
+		if got.Type != lisp.LSortMap {
+			t.Fatalf("Copy = %v, want a sorted-map", got)
+		}
+		keys := got.Map().Keys()
+		if s := keys.String(); s != "'(-5 1 2)" {
+			t.Errorf("copied keys = %s", s)
+		}
+	}
+	if !slices.Equal(calls, []int{3, 1, 2, 3, 1, 2}) {
+		t.Errorf("clone hook order = %v, want key order on both copies", calls)
 	}
 }
 

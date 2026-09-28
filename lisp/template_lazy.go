@@ -265,6 +265,11 @@ func (l *lazyInstance) mapBacking(i int) Map {
 		m = make(jsonMap, len(backing.entries))
 	} else {
 		sm := sortedmap{m: make(map[string]*LVal, len(backing.entries)), tm: make(typemap, len(backing.types))}
+		if len(backing.ints) != 0 {
+			// Allocated here, not in fillBacking: the backing is a value
+			// and this copy is the one every MapData over it holds.
+			sm.im = make(map[int]*LVal, len(backing.ints))
+		}
 		if backing.indexed {
 			sm.lz = &lazySorted{}
 		}
@@ -290,6 +295,11 @@ func (l *lazyInstance) fillBacking(i int) {
 	sm := l.mapBackings[i].(sortedmap)
 	for _, kind := range backing.types {
 		sm.tm[kind.key] = kind.kind
+	}
+	// Int-keyed entries are filled eagerly, as JSON maps are: the lazy
+	// resolver (lazySorted) is keyed by string.
+	for _, entry := range backing.ints {
+		sm.im[entry.key] = l.allocRef(entry.value)
 	}
 	pending := 0
 	for _, entry := range backing.entries {

@@ -1201,10 +1201,10 @@ held, so the traversal goes on walking exactly the sequence it was handed.
 
 A sorted map is a mapping between keys and values which ensures that key
 traversal is always done in sorted, increasing order.  Sorted maps can contain
-only string or symbol keys (including keywords); other types, such as integers,
-produce an "unhashable type" error. Looking up values by key can be done
-with either a string or a symbol, regardless which type was used to insert/set
-the value originally.
+integer, string and symbol keys (including keywords); other types, such as
+floats, produce an "unhashable type" error. Looking up values by a string or
+symbol key can be done with either a string or a symbol, regardless which type
+was used to insert/set the value originally.
 
 ```lisp
 (let ((m (sorted-map 'alice 0 'bob 1 'carol 2)))
@@ -1262,6 +1262,37 @@ and dump string keys, including after symbol writes with `assoc!`.
 (keys (sorted-map "alice" 0))                          ; evaluates to '("alice")
 (keys (assoc (sorted-map 'alice 0) "alice" 1))          ; evaluates to '("alice")
 (keys (assoc (sorted-map "alice" 0) 'alice 1))          ; evaluates to '('alice)
+```
+
+#### Integer keys
+
+An integer key is its own key: the integer `1` is **not** the same key as the
+string `"1"` (or a symbol spelled `1`), and nothing is converted between them.
+Floats are not accepted as keys.
+
+Every integer key sorts before every string and symbol key, in numeric order;
+the string and symbol keys then follow in their usual order. `keys`, printing,
+`json:dump` and every other traversal use this order.
+
+```lisp
+(sorted-map "b" 1 10 2 -3 3 'a 4)     ; evaluates to (sorted-map -3 3 10 2 'a 4 "b" 1)
+(get (sorted-map 1 "int") "1")        ; evaluates to ()
+(get (sorted-map "1" "str") 1)        ; evaluates to ()
+(keys (sorted-map "1" "str" 1 "int")) ; evaluates to '(1 "1")
+(json:dump-string (sorted-map 10 "a" 2 "b" "c" 3))
+                                      ; evaluates to "{\"2\":\"b\",\"10\":\"a\",\"c\":3}"
+```
+
+`json:dump` writes an integer key as its decimal string. A map in which an
+integer key and a string or symbol key would produce the same JSON member name,
+such as `(sorted-map 1 "int" "1" "str")`, cannot be dumped and signals an error
+rather than writing a duplicate member. JSON object keys are always strings, so
+`json:load` never produces an integer key. A map decoded by `json:load` keeps
+its string-only key policy for in-place `assoc!`; `copy` and `assoc` return an
+ordinary sorted map, which accepts integer keys.
+
+```lisp
+(equal? (sorted-map 1 0) (sorted-map "1" 0))           ; evaluates to false
 ```
 
 ### Paths through nested data (`elpspath`)

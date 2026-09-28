@@ -38,7 +38,9 @@ func oracleMapBackingIDs(data *lisp.MapData) []nativePayloadIdentity {
 		return nil
 	}
 	var ids []nativePayloadIdentity
-	for _, name := range []string{"m", "tm"} {
+	// im holds the int-keyed entries (#733); it is nil until a map's first
+	// int key, and owned storage like m once it exists.
+	for _, name := range []string{"m", "tm", "im"} {
 		field := backing.FieldByName(name)
 		if field.Kind() != reflect.Map {
 			panic("fork oracle: stock map layout changed")

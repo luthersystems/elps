@@ -150,9 +150,12 @@ func EvalTerminating() map[string]string {
 		"map-over-sequence": `(map 'list (lambda (x) (* x x)) (make-sequence 0 100))`,
 		"foldl-bounded":     `(foldl + 0 (make-sequence 0 1000))`,
 		"sorted-map":        `(let ([m (sorted-map 'a 1 'b 2)]) (get m 'a))`,
-		"string-ops":        `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
-		"handler-bind":      `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
-		"ignore-errors":     `(ignore-errors (error 'boom "x"))`,
+		// Int keys (#733): distinct from the string spelling the same
+		// digits, ordered first, written by json:dump as strings.
+		"sorted-map-int-keys": `(let ([m (assoc (sorted-map 2 'b "1" "s" 'a 3) 1 (vector 1))]) (list (keys m) (get m 1) (get m "1") (copy m) (dissoc m 2) (json:dump-string (dissoc m "1"))))`,
+		"string-ops":          `(string:join (map 'list to-string (make-sequence 0 10)) ",")`,
+		"handler-bind":        `(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))`,
+		"ignore-errors":       `(ignore-errors (error 'boom "x"))`,
 		// with-cleanup runs cleanup on both exit paths.  The erroring shapes
 		// are wrapped so they belong here rather than in EvalErroring: what
 		// is under test is that the operator TERMINATES with the cleanup
@@ -375,6 +378,7 @@ func EvalAdversarial() []string {
 		// LVal.Map:
 		"(get 0 'a)", "(assoc 0 'a 1)", "(assoc! 0 'a 1)", "(keys 0)",
 		"(dissoc 0 'a)", "(key? 0 'a)", "(sorted-map 0 1)",
+		"(json:dump-string (sorted-map 1 1 \"1\" 2))", "(sorted-map 1.5 1)",
 		"(elpspath:? 0 \"a\")", "(elpspath:?set 0 \"a\" 1)",
 		// LVal.FunData, reached by anything that takes a function argument:
 		"(map 'list 0 '(1))", "(foldl 0 0 '(1))", "(sort 0 '(1))",

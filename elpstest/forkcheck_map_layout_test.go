@@ -21,7 +21,7 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 	}
 	stock := lisp.SortedMap().Map()
 	backing := reflect.ValueOf(stock).Elem().FieldByIndex(field.Index).Elem()
-	if backing.Kind() != reflect.Struct || backing.Type().Name() != "sortedmap" || backing.Type().PkgPath() != "github.com/luthersystems/elps/lisp" || backing.NumField() != 3 {
+	if backing.Kind() != reflect.Struct || backing.Type().Name() != "sortedmap" || backing.Type().PkgPath() != "github.com/luthersystems/elps/lisp" || backing.NumField() != 4 {
 		t.Fatalf("stock map layout changed: update the independent oracle map census: %s", backing.Type())
 	}
 	for _, name := range []string{"m", "tm"} {
@@ -29,6 +29,9 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 		if !ok || field.Type.Kind() != reflect.Map || field.Type.Key().Kind() != reflect.String {
 			t.Fatalf("stock map field %q changed: update the independent oracle map census", name)
 		}
+	}
+	if im, ok := backing.Type().FieldByName("im"); !ok || im.Type.Kind() != reflect.Map || im.Type.Key().Kind() != reflect.Int {
+		t.Fatal("stock map field im changed: update the independent oracle map census")
 	}
 	if lz, ok := backing.Type().FieldByName("lz"); !ok || lz.Type.Kind() != reflect.Pointer {
 		t.Fatal("stock map field lz changed: update the independent oracle map census")
@@ -39,6 +42,11 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 		want int
 	}{
 		{"stock", func() *lisp.MapData { return lisp.SortedMap().Map() }, 2},
+		{"stock-int-keys", func() *lisp.MapData {
+			m := lisp.SortedMap().Map()
+			m.Set(lisp.Int(1), lisp.Int(1))
+			return m
+		}, 3},
 		{"json", func() *lisp.MapData { return oracleJSONValue(make(map[string]any)).Map() }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

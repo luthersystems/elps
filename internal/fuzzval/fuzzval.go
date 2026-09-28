@@ -504,10 +504,11 @@ func (g *Gen) arrayND(depth int) *lisp.LVal {
 	return arr
 }
 
-// sortMap builds a sorted-map.  Keys are strings and symbols in a mix,
-// because sortedmap.Set accepts both and stores them under a keytype
-// discriminator -- code that reads back a key and assumes LString is wrong,
-// and only a symbol-keyed map exposes it.
+// sortMap builds a sorted-map.  Keys are strings, symbols and ints in a
+// mix, because sortedmap.Set accepts all three -- strings and symbols under
+// a keytype discriminator, ints in a table of their own (#733) -- and code
+// that reads back a key and assumes LString is wrong; only a map holding the
+// other kinds exposes it.
 func (g *Gen) sortMap(depth int) *lisp.LVal {
 	m := lisp.SortedMap()
 	n := g.Intn(maxSeqLen)
@@ -516,10 +517,13 @@ func (g *Gen) sortMap(depth int) *lisp.LVal {
 			break
 		}
 		var key *lisp.LVal
-		if g.Byte()&1 == 0 {
+		switch g.Byte() % 3 {
+		case 0:
 			key = lisp.String(g.pickString())
-		} else {
+		case 1:
 			key = lisp.Symbol(g.pickSymbol())
+		default:
+			key = lisp.Int(g.pickInt())
 		}
 		if lerr := m.Map().Set(key, g.value(depth+1)); lerr.Type == lisp.LError {
 			continue
