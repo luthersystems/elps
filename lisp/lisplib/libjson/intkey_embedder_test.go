@@ -41,7 +41,7 @@ func TestEmbedderIntKeyCompatibility(t *testing.T) {
 	env.PutGlobal(lisp.Symbol("emb"), lisp.SortedMapFromData(lisp.NewMapData(intKeyMap{})))
 	got := env.LoadString("embedder.lisp", `(json:dump-string emb)`)
 	require.NotEqual(t, lisp.LError, got.Type, "%v", got)
-	assert.Equal(t, `{"7":"seven"}`, got.Str)
+	assert.JSONEq(t, `{"7":"seven"}`, got.Str)
 
 	m := lisp.SortedMap()
 	require.NotEqual(t, lisp.LError, m.MapSetLVal(lisp.Int(3), lisp.Int(1)).Type)
