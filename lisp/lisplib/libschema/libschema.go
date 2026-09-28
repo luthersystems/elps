@@ -312,9 +312,34 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
+// checkConstraints refuses, at construction time, any constraint that is not
+// a validator.  Constraints are arguments function application has already
+// evaluated, so a quoted form such as '(s:gt 1) or a quoted type symbol is
+// data, and is reported here rather than when a value is validated (#737).
+func checkConstraints(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
+	for _, c := range constraints {
+		if c.Type == lisp.LError {
+			return c
+		}
+		if !isValidator(c) {
+			return env.ErrorConditionf(BadArgs,
+				"Bad constraint: %s is not a schema constraint (%v). Constraints are evaluated arguments built by the s package (s:int, s:has-key, s:gt, ...); do not quote them.",
+				c.Type.String(), c)
+		}
+	}
+	return nil
+}
+
 // finds the correct validation handler for the type
 func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.LVal) *lisp.LVal {
 	lType, _ := lisp.GoString(in)
+	// A tagged-value validator's leading type names are not constraints;
+	// builtinCheckTaggedVal peels them off and checks what remains.
+	if lType != TaggedVal {
+		if err := checkConstraints(env, constraints); err != nil {
+			return err
+		}
+	}
 	var res *lisp.LVal
 	switch lType {
 	case String:
@@ -338,14 +363,10 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 	case Any:
 		res = builtinCheckAny(env, constraints)
 	default:
-		// BUG(#737): It is not correct to evaluate `in` here, it has already been
-		// evaluated as part of the function application process.
-		if in.Type == lisp.LSExpr {
-			in = env.Eval(in)
-		}
-		if in.Type == lisp.LSymbol {
-			in = env.Get(in)
-		}
+		// `in` is an ordinary argument that function application has already
+		// evaluated.  It is never evaluated or looked up again here (#737): a
+		// quoted form such as '(s:gt 1), or a quoted symbol naming a
+		// validator, is data and is refused below like any other non-validator.
 		if in.Type == lisp.LFun {
 			// The choke point. Every composite constraint (s:has-key,
 			// s:may-have-key, s:of, s:no-other-keys, s:when) and both
@@ -359,7 +380,12 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 					"Bad input type: an ordinary function is not usable as a constraint (%v). Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator.",
 					in)
 			}
-			return in
+			if len(constraints) == 0 {
+				return in
+			}
+			// A validator used as the type keeps its extra constraints;
+			// they used to be dropped without a word.
+			return builtinCheckAny(env, append([]*lisp.LVal{in}, constraints...))
 		}
 		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
 	}
@@ -661,6 +687,9 @@ func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *li
 func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	var rest *lisp.LVal
 	if len(constraints) == 0 || constraints[0].Type != lisp.LString {
+		if err := checkConstraints(env, constraints); err != nil {
+			return err
+		}
 		rest = builtinCheckAny(env, constraints)
 	} else {
 		subtype := constraints[0]
