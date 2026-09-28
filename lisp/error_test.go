@@ -405,3 +405,30 @@ func TestRethrowPreservesStackTrace(t *testing.T) {
 	assert.Contains(t, trace, "failing-fn", "stack trace should reference the original function")
 	assert.Contains(t, trace, "test-error", "error should preserve the condition type")
 }
+
+// TestErrorStack covers #734: a handler can read the frames of the error it
+// is handling, innermost first, as sorted-maps.
+func TestErrorStack(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"nested-call", elpstest.TestSequence{
+			{`(defun inner (x) (error 'boom x))`, `()`, ""},
+			{`(defun outer (x) (+ 1 (inner x)))`, `()`, ""},
+			{`(handler-bind ((condition (lambda (c &rest _)
+						(map 'list (lambda (f) (get f "function")) (error-stack)))))
+				(outer 3))`,
+				`'("lisp:error" "user:inner" "user:outer" "lisp:handler-bind")`, ""},
+			{`(handler-bind ((condition (lambda (c &rest _)
+						(let ([f (nth (error-stack) 1)])
+							(list (get f "file") (get f "line") (get f "column"))))))
+				(outer 3))`,
+				`'("test" 1 23)`, ""},
+		}},
+		{"outside-handler", elpstest.TestSequence{
+			{`(error-stack)`, "test:1:1: lisp:error-stack: not inside a handler-bind handler", ""},
+		}},
+		{"arity", elpstest.TestSequence{
+			{`(error-stack 1)`, "test:1:1: lisp:error-stack: invalid number of arguments: 1", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}

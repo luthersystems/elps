@@ -125,7 +125,6 @@ func TestEncode_stringNumbers(t *testing.T) { testEncode_stringNumbers(t) }
 var unencodableTypes = map[lisp.LType]string{
 	lisp.LInvalid:       "not a real type",
 	lisp.LError:         "errors are a control-flow value, not data",
-	lisp.LQSymbol:       "legacy type with no JSON meaning",
 	lisp.LFun:           "functions have no serialized form",
 	lisp.LMarkTerminal:  "interpreter-internal marker",
 	lisp.LMarkTailRec:   "interpreter-internal marker",

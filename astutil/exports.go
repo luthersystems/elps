@@ -42,7 +42,7 @@ func ExportNames(args []*lisp.LVal) []string {
 			} else if head := HeadSymbol(node); (head == "quote" || head == "lisp:quote") && len(node.Cells) == 2 {
 				collect(node.Cells[1], true)
 			}
-		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LQSymbol,
+		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError,
 			lisp.LFun, lisp.LQuote, lisp.LBytes, lisp.LSortMap, lisp.LArray,
 			lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
 			lisp.LMarkMacExpand, lisp.LTypeMax:

@@ -339,6 +339,16 @@ using the `QExpr()` function.
 return QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Float(3.0)})
 ```
 
+A quoted symbol (`'sym`) is an `LSymbol` whose quoted flag is set: build one
+with `lisp.Quote(lisp.Symbol("sym"))` and test for one with
+`v.Type == lisp.LSymbol && v.IsQuoted()`.
+
+**API change (#732).** The `lisp.LQSymbol` type tag and the `lisp.QSymbol`
+constructor are removed. Nothing in the interpreter produced an `LQSymbol`;
+replace `lisp.QSymbol(s)` with `lisp.Quote(lisp.Symbol(s))` (it renders the
+same, `'s`) and drop `lisp.LQSymbol` from `switch` statements. Every `LType`
+declared after it is one lower numerically, so do not persist `LType` numbers.
+
 ### Boolean values
 
 The only false value in the elps language is nil `()`, an empty expression.  An

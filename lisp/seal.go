@@ -135,7 +135,7 @@ func (v *LVal) SealAST() {
 // was missed.
 func sealableNodeType(t LType) bool {
 	switch t {
-	case LSExpr, LQuote, LSymbol, LQSymbol, LString, LInt, LFloat:
+	case LSExpr, LQuote, LSymbol, LString, LInt, LFloat:
 		return true
 	default:
 		return false

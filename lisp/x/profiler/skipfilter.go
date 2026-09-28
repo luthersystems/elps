@@ -12,7 +12,7 @@ func defaultSkipFilter(fun *lisp.LVal) bool {
 	switch fun.Type {
 	case lisp.LFun, lisp.LSymbol, lisp.LSExpr:
 		return false
-	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LQSymbol, lisp.LSortMap:
+	case lisp.LInt, lisp.LString, lisp.LFloat, lisp.LBytes, lisp.LError, lisp.LArray, lisp.LQuote, lisp.LNative, lisp.LSortMap:
 		return true
 	default:
 		return true

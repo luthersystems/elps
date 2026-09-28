@@ -205,7 +205,7 @@ func (v *LVal) boundedWithBudget(limit int, budget *renderBudget) (string, bool)
 		return "", false
 	}
 	switch v.Type {
-	case LInt, LFloat, LSymbol, LQSymbol:
+	case LInt, LFloat, LSymbol:
 		return v.boundedString(limit)
 	default:
 		return v.boundedRender(limit, budget, false)
@@ -236,12 +236,9 @@ func (v *LVal) boundedString(limit int) (string, bool) {
 			return fmt.Sprintf("%q", v.Str), true
 		}
 		return v.boundedNestedString(limit)
-	case LSymbol, LQSymbol:
+	case LSymbol:
 		quotes := 0
 		if v.quoted {
-			quotes++
-		}
-		if v.Type == LQSymbol {
 			quotes++
 		}
 		if quotes > limit || len(v.Str) > limit-quotes {
@@ -559,15 +556,12 @@ func (r *valueRenderer) value(v *LVal, onTheRecord bool, g cycleGuard) {
 		}
 		r.text(">")
 		return
-	case LSymbol, LQSymbol:
+	case LSymbol:
 		if v.quoted {
 			quote = "'"
 		}
 		if quote != "" {
 			r.text(quote)
-		}
-		if v.Type == LQSymbol {
-			r.text("'")
 		}
 		r.text(v.Str)
 		return

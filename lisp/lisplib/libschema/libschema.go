@@ -798,7 +798,7 @@ func constraintLen(input *lisp.LVal) (int, bool) {
 	case lisp.LArray:
 		return input.Len(), true
 	case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
-		lisp.LQSymbol, lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LSortMap,
+		lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LSortMap,
 		lisp.LNative, lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
 		lisp.LMarkMacExpand, lisp.LTypeMax:
 		return 0, false
@@ -1363,7 +1363,7 @@ func builtinIsTruthy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 			if input.Float > 0.0 {
 				return lisp.Nil()
 			}
-		case lisp.LInvalid, lisp.LError, lisp.LSymbol, lisp.LQSymbol,
+		case lisp.LInvalid, lisp.LError, lisp.LSymbol,
 			lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LNative, lisp.LTaggedVal,
 			lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
 			lisp.LTypeMax:

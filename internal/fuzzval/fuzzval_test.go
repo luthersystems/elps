@@ -73,7 +73,7 @@ func TestGeneratorCoversEveryLType(t *testing.T) {
 		}
 	}
 	want := []lisp.LType{
-		lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol, lisp.LQSymbol,
+		lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol,
 		lisp.LBytes, lisp.LError, lisp.LSExpr, lisp.LArray, lisp.LSortMap,
 		lisp.LTaggedVal, lisp.LNative, lisp.LFun, lisp.LQuote,
 	}
@@ -328,7 +328,7 @@ func TestKindSeedsCoverEveryKind(t *testing.T) {
 		seen[fuzzval.New(seed, env).Value().Type] = true
 	}
 	want := []lisp.LType{
-		lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol, lisp.LQSymbol,
+		lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol,
 		lisp.LBytes, lisp.LError, lisp.LSExpr, lisp.LArray, lisp.LSortMap,
 		lisp.LTaggedVal, lisp.LNative, lisp.LFun, lisp.LQuote,
 	}

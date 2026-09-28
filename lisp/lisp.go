@@ -29,14 +29,12 @@ const (
 	// cell's Native field for host diagnostics.
 	//
 	// In addition, LError values store a copy of the function call stack at
-	// the time of their creation in the LVal.Native field.
-	//
-	// TODO(#734): Make the stack inspectable from a condition handler.
+	// the time of their creation in the LVal.Native field.  A handler-bind
+	// handler reads it with the error-stack builtin (#734).
 	LError
 	// LSymbol values store a string representation of the symbol in the
 	// LVal.Str field.
 	LSymbol
-	LQSymbol // TODO(#732): Remove this type; ~30 sites special-case it.
 	// LSExpr values are "list" values in lisp and store their values in
 	// LVal.Cells.
 	LSExpr
@@ -110,7 +108,6 @@ var lvalTypeStrings = []string{
 	LFloat:         "float",
 	LError:         "error",
 	LSymbol:        "symbol",
-	LQSymbol:       "qsymbol",
 	LSExpr:         "list",
 	LFun:           "function",
 	LQuote:         "quote",
@@ -471,7 +468,7 @@ func setSynthesizedSource(loc *token.Location, nodes ...*LVal) {
 // IsQuoted reports whether v carries a single level of quoting — the flag
 // behind the LQuote wrapper and the ['(...)/[...]] display forms.  The
 // underlying field is unexported (issue #382): quoting is established at
-// construction time (Quote, Splice, QExpr, QSymbol, the parser) and removed
+// construction time (Quote, Splice, QExpr, the parser) and removed
 // only by the evaluator's own unquote step, so external packages get a read
 // but never a write — an in-place external write to the flag on a shared
 // value was exactly the #333/#334 singleton corruption.
@@ -592,14 +589,6 @@ func SplitSymbol(sym *LVal) *LVal {
 func Symbol(s string) *LVal {
 	return &LVal{
 		Type: LSymbol,
-		Str:  s,
-	}
-}
-
-// QSymbol returns an LVal representing the quoted symbol
-func QSymbol(s string) *LVal {
-	return &LVal{
-		Type: LQSymbol,
 		Str:  s,
 	}
 }

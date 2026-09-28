@@ -282,9 +282,7 @@ func SourceOf(v *lisp.LVal) *lisp.LVal {
 // (quote name)), or "" for anything else.
 func quotedSymbolName(v *lisp.LVal) string {
 	switch {
-	case (v.Type == lisp.LSymbol || v.Type == lisp.LQSymbol) && v.IsQuoted():
-		return v.Str
-	case v.Type == lisp.LQSymbol:
+	case v.Type == lisp.LSymbol && v.IsQuoted():
 		return v.Str
 	case v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
 		v.Cells[0].Str == "quote" && v.Cells[1].Type == lisp.LSymbol:

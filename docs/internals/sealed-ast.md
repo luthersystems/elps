@@ -71,7 +71,7 @@ mcpserver, analysis) and `Parse()` finishes constructing their `Meta` after
 the seal point (see the 8d18071 entry above).
 
 `SealAST` walks `Cells` and marks only parser-producible node types
-(`LSExpr`, `LQuote`, `LSymbol`, `LQSymbol`, `LString`, `LInt`, `LFloat`);
+(`LSExpr`, `LQuote`, `LSymbol`, `LString`, `LInt`, `LFloat`);
 runtime-only types (functions, arrays, maps, bytes, natives) stop the walk —
 freezing storage the evaluator legitimately mutates would be wrong. The
 Nil/true/false singletons are **born sealed** (elps#376): the flag is set in

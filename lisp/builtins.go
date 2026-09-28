@@ -167,6 +167,14 @@ var (
 			within a handler-bind handler. Use this instead of (apply error
 			condition args) when you want to perform side effects (such as
 			logging) but still propagate the original error unchanged.`},
+		{"error-stack", Formals(), builtinErrorStack,
+			`Returns the call stack recorded when the error being handled by
+			handler-bind was raised, as a list of sorted-maps ordered
+			innermost frame first. Each map has the string key "function"
+			(the package-qualified function name) and, when the frame has a
+			source location, "file", "line" and "column" of the call that
+			entered it. Can only be called from within a handler-bind
+			handler.`},
 		{"car", Formals("lis"), builtinCAR,
 			`Returns the first element of a list, or nil if empty.`},
 		{"cdr", Formals("lis"), builtinCDR,
@@ -1094,6 +1102,33 @@ func builtinRethrow(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("rethrow: not inside a handler-bind handler")
 	}
 	return cond
+}
+
+func builtinErrorStack(env *LEnv, args *LVal) *LVal {
+	cond := env.Runtime.CurrentCondition()
+	if cond == nil {
+		return env.Errorf("not inside a handler-bind handler")
+	}
+	stack, _ := cond.Native.(*CallStack)
+	if stack == nil {
+		return Nil()
+	}
+	frames := make([]*LVal, 0, len(stack.Frames))
+	for i := len(stack.Frames) - 1; i >= 0; i-- {
+		f := &stack.Frames[i]
+		m := SortedMap()
+		data := m.Map()
+		data.Set(String("function"), String(f.QualifiedFunName()))
+		if f.Source != nil && f.Source.Line > 0 {
+			data.Set(String("file"), String(f.Source.File))
+			data.Set(String("line"), Int(f.Source.Line))
+			if f.Source.Col > 0 {
+				data.Set(String("column"), Int(f.Source.Col))
+			}
+		}
+		frames = append(frames, m)
+	}
+	return QExpr(frames)
 }
 
 func builtinCAR(env *LEnv, args *LVal) *LVal {

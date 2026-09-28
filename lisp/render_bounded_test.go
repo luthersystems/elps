@@ -38,7 +38,7 @@ func TestBoundedStringScalarBoundaries(t *testing.T) {
 	for _, v := range []*LVal{
 		Int(0), Int(-1), Int(math.MaxInt), Int(math.MinInt),
 		Float(math.SmallestNonzeroFloat64), Float(math.Inf(1)), Float(math.Inf(-1)), Float(math.NaN()),
-		Symbol(""), Symbol(strings.Repeat("s", 128)), QSymbol("receipt"), Quote(QSymbol("receipt")),
+		Symbol(""), Symbol(strings.Repeat("s", 128)), Quote(Symbol("receipt")), Quote(Quote(Symbol("receipt"))),
 	} {
 		t.Run(v.String(), func(t *testing.T) {
 			want := v.String()
@@ -77,11 +77,11 @@ func TestBoundedStringMatchesRendering(t *testing.T) {
 	m := SortedMap()
 	require.True(t, m.Map().Set(Symbol("key"), Int(7)).IsNil())
 	values := []*LVal{
-		{}, Int(-17), Float(2.5), Symbol("a"), QSymbol("a"), Nil(),
+		{}, Int(-17), Float(2.5), Symbol("a"), Quote(Symbol("a")), Nil(),
 		String("x\n\t\x00\"\\ café 💡\u2028"), String("\xff\xfe\xc3\x00"),
 		Quote(String("quoted")), Quote(Quote(String("twice"))),
 		Bytes(nil), Bytes([]byte{0, 1, 127, 128, 255}),
-		Quote(Symbol("a")), Quote(Quote(Symbol("a"))), Quote(QSymbol("a")),
+		Quote(Symbol("a")), Quote(Quote(Symbol("a"))),
 		SExpr([]*LVal{Int(1), String("x")}), QExpr([]*LVal{Int(1), String("x")}),
 		m, Vector([]*LVal{Int(1), Int(2)}), Vector(nil),
 		Array(QExpr([]*LVal{Int(2), Int(1)}), []*LVal{Int(1), Int(2)}),
