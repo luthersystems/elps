@@ -266,7 +266,7 @@ func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return res
 	}
 	if res != nil {
-		// BUG:  A regular function should not bind globals in this way
+		// BUG(#736): A regular function should not bind globals in this way
 		// because functions aren't supposed to operate in the caller's lexical
 		// environment, but builtins don't get a lexical environment currently.
 		res = env.PutGlobalFromLisp(lisp.Symbol(lname.Str), res)
@@ -338,7 +338,7 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 	case Any:
 		res = builtinCheckAny(env, constraints)
 	default:
-		// BUG:  It is not correct to evaluate `in` here, it has already been
+		// BUG(#737): It is not correct to evaluate `in` here, it has already been
 		// evaluated as part of the function application process.
 		if in.Type == lisp.LSExpr {
 			in = env.Eval(in)

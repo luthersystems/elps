@@ -11,8 +11,8 @@
 ;  Don't blow the dispatch table away if we reload the file
 (set 'dispatch-table (or (ignore-errors dispatch-table) (sorted-map)))
 
-; BUG:  Function dispatch-put is not intended to handle differing type-arity
-; among implementations for an op.
+; NOTE: dispatch-put is deliberately simple for this example: it assumes every
+; implementation of an op takes the same number of operand types.
 (defun dispatch-put (op-symbol operand-types operator)
   (let ([op-table (or (get dispatch-table op-symbol) (sorted-map))])
     (assoc! dispatch-table op-symbol op-table)
@@ -31,8 +31,8 @@
       (dig op-table operand-types operator)
       ())))
 
-; BUG:  Function dispatch-get is not intended to handle differing type-arity
-; among implementations for an op.
+; NOTE: dispatch-get is deliberately simple for this example: it assumes every
+; implementation of an op takes the same number of operand types.
 (defun dispatch-get (op-symbol operand-types)
   (let ([op-table (get dispatch-table op-symbol)])
     (labels ([dig (table operand-types) ; nolint:shadowing
