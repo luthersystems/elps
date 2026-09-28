@@ -40,7 +40,7 @@ import (
 
 const (
 	loadCacheKeyMemoMaxSource = 8 << 20
-	loadCacheKeyMemoMaxBytes  = 64 << 20
+	loadCacheKeyMemoMaxBytes  = 16 << 20
 	// loadCacheKeyMemoEntryOverhead is charged per entry on top of its
 	// strings and source copy, so many tiny (or empty) sources under
 	// distinct names cannot grow the map without bound.

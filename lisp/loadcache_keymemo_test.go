@@ -159,3 +159,41 @@ func TestLoadCacheKeyMemoConcurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Sources over loadCacheKeyMemoMaxSource are hashed every time and never
+// retained.
+func TestLoadCacheKeyMemoSkipsOversizedSource(t *testing.T) {
+	resetLoadCacheKeyMemo()
+	t.Cleanup(resetLoadCacheKeyMemo)
+	big := make([]byte, loadCacheKeyMemoMaxSource+1)
+	before := loadCacheKeyDigests.Load()
+	k1 := memoLoadCacheKey("big", "big", "rid", true, big)
+	k2 := memoLoadCacheKey("big", "big", "rid", true, big)
+	assert.Equal(t, k1, k2)
+	assert.Equal(t, int64(2), loadCacheKeyDigests.Load()-before, "oversized source must not be memoised")
+	entries, charged := loadCacheKeyMemoUsage()
+	assert.Equal(t, 0, entries)
+	assert.Equal(t, 0, charged)
+	// Exactly at the limit is memoised.
+	atLimit := make([]byte, loadCacheKeyMemoMaxSource)
+	memoLoadCacheKey("edge", "edge", "rid", true, atLimit)
+	entries, _ = loadCacheKeyMemoUsage()
+	assert.Equal(t, 1, entries)
+}
+
+// Retained source bytes never exceed loadCacheKeyMemoMaxBytes: an insert
+// that would pass it clears the memo first.
+func TestLoadCacheKeyMemoTotalCapClears(t *testing.T) {
+	resetLoadCacheKeyMemo()
+	t.Cleanup(resetLoadCacheKeyMemo)
+	src := make([]byte, loadCacheKeyMemoMaxSource)
+	perEntry := loadCacheKeyMemoMaxBytes / loadCacheKeyMemoMaxSource // entries that fit, minus overhead
+	for i := range perEntry + 2 {
+		name := fmt.Sprintf("s%d", i)
+		memoLoadCacheKey(name, name, "rid", true, src)
+		entries, charged := loadCacheKeyMemoUsage()
+		require.LessOrEqual(t, charged, loadCacheKeyMemoMaxBytes)
+		require.GreaterOrEqual(t, entries, 1)
+		require.Less(t, entries, perEntry+1)
+	}
+}
