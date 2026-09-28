@@ -157,9 +157,6 @@ analysis is applied to a tail-recursive function call there is a chain of stack
 frames, all in their terminal state, which are canditates for stack frame
 ellision.
 
-**TODO:  Add a figure that demonstrates a chain of terminal stack frames that
-indicates possible TRO.**
-
 **NOTE:** Authors don't have access to a proof for this because I built this on
 first principles.  Furthermore, there is no proof that false positives are
 impossible.  But it is believed that such proofs are possible to construct
@@ -182,9 +179,6 @@ given constraints and other restrictions in the problem space discussed in
 
 (print-list '(123))
 ```
-
-**TODO: Illustrate the transition to from non-terminal to terminal for the
-top-level call in the above example and discuss how it is ok to resolve**
 
 ### Macros
 

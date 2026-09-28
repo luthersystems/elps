@@ -2428,7 +2428,7 @@ func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 	}
 	var builtinArgs []*LVal
 	if funenv == nil {
-		// FIXME?: Builtins don't have lexical envs.  We just store the args in
+		// NOTE: Builtins don't have lexical envs.  We just store the args in
 		// the cells for builtin functions.  A side effect of this is that
 		// bindFormalNext is required to make put() calls in the order args are
 		// defined.
@@ -2673,6 +2673,5 @@ func (p *argParser) Rest() []*LVal {
 }
 
 func isKeyword(sym string) bool {
-	// TODO:  Fix this terrible test.
 	return strings.HasPrefix(sym, ":")
 }

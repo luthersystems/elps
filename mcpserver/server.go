@@ -244,7 +244,7 @@ func (s *Server) registerTool(name, description string) {
 // add tools directly to the mcp.Server without going through registerTool,
 // so the only way to capture the full tool list is to read it back.
 //
-// TODO: simplify if the MCP go-sdk adds a server-side ListRegisteredTools API.
+// NOTE: this can be simplified if the MCP go-sdk adds a server-side ListRegisteredTools API.
 func (s *Server) syncToolDescriptors() error {
 	ctx := context.Background()
 	serverTransport, clientTransport := mcp.NewInMemoryTransports()

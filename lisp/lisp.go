@@ -16,13 +16,6 @@ import (
 // LType is the type of an LVal
 type LType uint
 
-// TODO(elps2): Consider turning the following types into tagged-values:
-//	LBytes
-//	LSortMap
-//	LArray
-// Maybe allow for "tagged native values" that use LVal.Native to store the
-// tagged data as an alternative to LVal.Cells[0].
-
 // Possible LValType values
 const (
 	// LInvalid (0) is not a valid lisp type.
@@ -38,13 +31,12 @@ const (
 	// In addition, LError values store a copy of the function call stack at
 	// the time of their creation in the LVal.Native field.
 	//
-	// TODO:  Make the stack a first class type (or some composite type) so
-	// that it could be inspected during a condition handler.
+	// TODO(#734): Make the stack inspectable from a condition handler.
 	LError
 	// LSymbol values store a string representation of the symbol in the
 	// LVal.Str field.
 	LSymbol
-	LQSymbol // TODO:  Remove this... I can't believe it actually has usages
+	LQSymbol // TODO(#732): Remove this type; ~30 sites special-case it.
 	// LSExpr values are "list" values in lisp and store their values in
 	// LVal.Cells.
 	LSExpr
@@ -83,8 +75,7 @@ const (
 	LBytes
 	// LSortMap value uses the LVal.Map field to store a map.
 	//
-	// TODO:  Use a tree-based map (that is potentially stored in Cells).  A
-	// tree based map would be capable of supporting integer keys.
+	// TODO(#733): Support integer keys (e.g. with a tree-based map).
 	LSortMap
 	// LArray values use the LVal.Cells slice to store the following items:
 	//		[0] a list containing dimension cardinalities in index 0
@@ -353,8 +344,6 @@ type LVal struct {
 	// template may share their backing when all entries are sealed code,
 	// even though the function header and lexical scope remain per VM.
 	//
-	// TODO: Consider making Cells' type []LVal instead of []*LVal to reduce
-	// the burden on the allocator/gc.
 	Cells []*LVal
 
 	// Type is the native type for a value in lisp.

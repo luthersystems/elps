@@ -283,8 +283,27 @@ Use go package github.com/luthersystems/elps/elpstest and the lisp package
 `testing` to write tests for custom packages.  See the standard library's tests
 for examples of how to use these packages together.
 
-`elpstest` piggybacks on the Go `testing` standard library.
-TODO -- example
+`elpstest` piggybacks on the Go `testing` standard library: each lisp `test`
+form in a file becomes a Go subtest.
+
+```go
+func TestMyPackage(t *testing.T) {
+	r := &elpstest.Runner{
+		// Load your package into each fresh test env (optional).
+		LoaderFn: mypackage.LoadPackage,
+	}
+	defer r.Close()
+	r.RunTestFile(t, "mypackage_test.lisp")
+}
+```
+
+```lisp
+; mypackage_test.lisp
+(use-package 'testing)
+
+(test "adds numbers"
+  (assert= 3 (+ 1 2)))
+```
 
 ## Working with lisp types
 
