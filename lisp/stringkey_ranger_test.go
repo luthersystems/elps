@@ -71,8 +71,8 @@ func TestCopyMapDataTakesStringKeyRangerPath(t *testing.T) {
 	if !ok {
 		t.Fatalf("copy is backed by %T, want the stock sortedmap", md.mapBacking)
 	}
-	if len(sm.tm) != 0 {
-		t.Errorf("copy has key types %v, want none", sm.tm)
+	if len(sm.kt.types) != 0 {
+		t.Errorf("copy has key types %v, want none", sm.kt.types)
 	}
 	if md.Len() != 2 {
 		t.Fatalf("copy has %d entries, want 2", md.Len())

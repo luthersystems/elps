@@ -34,8 +34,8 @@ func TestMapInsertRejectsBadKeysIdenticallyUnderTheAllocationProbe(t *testing.T)
 		name string
 		expr string
 	}{
-		{"assoc", `(assoc m 5 1)`},
-		{"assoc!", `(assoc! m 5 1)`},
+		{"assoc", `(assoc m 5.5 1)`},
+		{"assoc!", `(assoc! m 5.5 1)`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			// The first limit is small enough that the probe runs; the
@@ -54,8 +54,8 @@ func TestMapInsertRejectsBadKeysIdenticallyUnderTheAllocationProbe(t *testing.T)
 
 				got := env.LoadString("map-insert-probe.lisp", tc.expr)
 				require.False(t, lisp.IsInternalPanic(got), "%v", got)
-				require.Equal(t, lisp.LError, got.Type, "an int is not a hashable key: %v", got)
-				assert.Contains(t, diagnosticText(got), "unhashable type: int")
+				require.Equal(t, lisp.LError, got.Type, "a float is not a hashable key: %v", got)
+				assert.Contains(t, diagnosticText(got), "unhashable type: float")
 				messages = append(messages, diagnosticText(got))
 			}
 			assert.Equal(t, messages[1], messages[0],

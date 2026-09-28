@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/templatepolicy"
@@ -392,6 +393,34 @@ func setTemplateFrameEntries(f *templateFrame, values map[string]*LVal) {
 	f.commitEntries(entries)
 }
 
+// setTemplateFrameSortedMap snapshots a stock sorted map's entries.  Int
+// keys (#733) come first, in numeric order, then the string-keyed entries in
+// the order commitEntries gives them, so policy callbacks still run in an
+// order that depends only on the map's contents.  An int entry's key string
+// is its decimal spelling; it is only ever used to label a path.
+func setTemplateFrameSortedMap(f *templateFrame, sm sortedmap) {
+	sm.forceAll()
+	im := sm.ints()
+	if len(im) == 0 {
+		setTemplateFrameEntries(f, sm.m)
+		return
+	}
+	entries := f.allocEntries(len(im) + len(sm.m))
+	for _, k := range sortedIntKeys(im) {
+		entries = append(entries, templateMapEntry{key: strconv.Itoa(k), v: im[k]})
+	}
+	ni := len(entries)
+	for key, v := range sm.m {
+		entries = append(entries, templateMapEntry{key: key, v: v})
+	}
+	slices.SortFunc(entries[ni:], func(a, b templateMapEntry) int {
+		return strings.Compare(a.key, b.key)
+	})
+	if f.entries != nil {
+		f.entries = entries
+	}
+}
+
 // setTemplateFrameScope snapshots a lexical scope's bindings.
 func setTemplateFrameScope(f *templateFrame, scope scopeTable) {
 	entries := f.allocEntries(scope.len())
@@ -764,7 +793,7 @@ func (s *templateInventory) mapData(data *MapData) error {
 		// Republishing a lazily instantiated VM: materialize pending entries
 		// before the direct table read.
 		backing.forceAll()
-		setTemplateFrameEntries(&s.next, backing.m)
+		setTemplateFrameSortedMap(&s.next, backing)
 	case jsonMap:
 		if backing == nil {
 			return errors.New("nil JSON map is not writable")

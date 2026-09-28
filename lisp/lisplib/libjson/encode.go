@@ -530,6 +530,9 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			if entries.Type == lisp.LError {
 				return lisp.GoError(entries)
 			}
+			if err := checkIntKeyCollisions(entries.Cells); err != nil {
+				return err
+			}
 			enc.buf.WriteByte('{')
 			f.cells = entries.Cells
 			f.token = '}'
@@ -603,12 +606,16 @@ func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
 	return nil
 }
 
-// encodeSortMapEntries encodes a map whose backing is an embedder's own Map
-// implementation, through the generic pair list.
+// encodeSortMapEntries encodes a map through the generic pair list: a map
+// whose backing is an embedder's own Map implementation, or a stock map that
+// holds an int key (which AppendSortedPairs declines).
 func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) (err error) {
 	ents := v.MapEntries()
 	if ents.Type == lisp.LError {
 		return lisp.GoError(ents)
+	}
+	if err := checkIntKeyCollisions(ents.Cells); err != nil {
+		return err
 	}
 	enc.buf.WriteByte('{')
 	for i := range ents.Cells {
@@ -629,11 +636,50 @@ func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) (err error
 	return nil
 }
 
+// encodeMapKey writes one object member name.  A JSON name is a string, so
+// an int key (#733) is written as its decimal spelling; checkIntKeyCollisions
+// has already refused a map where that spelling is also a string key.
 func (enc *encoder) encodeMapKey(v *lisp.LVal) error {
-	if v.Type != lisp.LString && v.Type != lisp.LSymbol {
+	switch v.Type {
+	case lisp.LString, lisp.LSymbol:
+		return enc.encodeString(v.Str)
+	case lisp.LInt:
+		return enc.encodeString(strconv.Itoa(v.Int))
+	default:
 		return invalidKeyTypeError(v.Type)
 	}
-	return enc.encodeString(v.Str)
+}
+
+// checkIntKeyCollisions refuses a map an int key of which spells the same
+// member name as one of its string or symbol keys: the int 1 and the string
+// "1" are distinct keys in a sorted-map but would both be written as the
+// member "1", and a JSON object with a duplicate name loses one of them on
+// decode.  A map without int keys costs one type check per entry.
+func checkIntKeyCollisions(entries []*lisp.LVal) error {
+	hasInt := false
+	for _, e := range entries {
+		if e.Cells[0].Type == lisp.LInt {
+			hasInt = true
+			break
+		}
+	}
+	if !hasInt {
+		return nil
+	}
+	names := make(map[string]bool, len(entries))
+	for _, e := range entries {
+		if k := e.Cells[0]; k.Type == lisp.LString || k.Type == lisp.LSymbol {
+			names[k.Str] = true
+		}
+	}
+	for _, e := range entries {
+		if k := e.Cells[0]; k.Type == lisp.LInt {
+			if name := strconv.Itoa(k.Int); names[name] {
+				return fmt.Errorf("map int key %d collides with string key %q", k.Int, name)
+			}
+		}
+	}
+	return nil
 }
 
 type invalidKeyTypeError lisp.LType

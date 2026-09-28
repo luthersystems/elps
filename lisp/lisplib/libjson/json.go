@@ -1025,14 +1025,24 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			count(2 * len(entries.Cells))
 			m := make(map[string]any, len(entries.Cells))
 			*f.dst = m
+			intKeysOK := checkIntKeyCollisions(entries.Cells) == nil
 			for i := len(entries.Cells) - 1; i >= 0; i-- {
 				pair := entries.Cells[i]
 				if len(pair.Cells) != 2 {
 					return nil, false
 				}
 				kv := make([]any, 2)
+				intKey := pair.Cells[0].Type == lisp.LInt
 				pending = append(pending, frame{finish: func() {
-					if k, ok := kv[0].(string); ok {
+					k, ok := kv[0].(string)
+					if intKey {
+						// An int key (#733) becomes its decimal spelling, as
+						// json:dump writes it; the map is refused as json:dump
+						// refuses it when that spelling is also a string key.
+						k = strconv.Itoa(pair.Cells[0].Int)
+						ok = intKeysOK
+					}
+					if ok {
 						m[k] = kv[1]
 					} else {
 						*f.dst = map[string]any(nil)

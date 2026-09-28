@@ -38,13 +38,30 @@ func oracleMapBackingIDs(data *lisp.MapData) []nativePayloadIdentity {
 		return nil
 	}
 	var ids []nativePayloadIdentity
-	for _, name := range []string{"m", "tm"} {
-		field := backing.FieldByName(name)
-		if field.Kind() != reflect.Map {
-			panic("fork oracle: stock map layout changed")
-		}
-		if !field.IsNil() {
-			ids = append(ids, nativePayloadIdentity{reflect.Map, field.Pointer()})
+	m := backing.FieldByName("m")
+	if m.Kind() != reflect.Map {
+		panic("fork oracle: stock map layout changed")
+	}
+	if !m.IsNil() {
+		ids = append(ids, nativePayloadIdentity{reflect.Map, m.Pointer()})
+	}
+	// kt points at the side tables every copy of the backing shares: the
+	// key-type map and the int-keyed entries (#733), each nil until first
+	// needed and owned storage like m once it exists.
+	kt := backing.FieldByName("kt")
+	if kt.Kind() != reflect.Pointer || kt.Type().Elem().Kind() != reflect.Struct {
+		panic("fork oracle: stock map layout changed")
+	}
+	if !kt.IsNil() {
+		ids = append(ids, nativePayloadIdentity{reflect.Pointer, kt.Pointer()})
+		for _, name := range []string{"types", "ints"} {
+			field := kt.Elem().FieldByName(name)
+			if field.Kind() != reflect.Map {
+				panic("fork oracle: stock map layout changed")
+			}
+			if !field.IsNil() {
+				ids = append(ids, nativePayloadIdentity{reflect.Map, field.Pointer()})
+			}
 		}
 	}
 	// lz, a lazily instantiated map's link to its VM's lazy instance, is

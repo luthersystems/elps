@@ -1957,6 +1957,38 @@ func isStringLike(v *LVal) bool {
 	return v.Type == LString || v.Type == LSymbol
 }
 
+// isMapKey reports whether v is a key type the stock sortedmap accepts: an
+// int, a string or a symbol.
+func isMapKey(v *LVal) bool {
+	return v.Type == LInt || isStringLike(v)
+}
+
+// mapKeysCollide reports whether the stock sortedmap would store keys a and
+// b (a may be nil) under one entry: two string-like keys collide on equal
+// spelling, two ints on equal value, and an int never collides with a
+// string-like key.  It allocates nothing; mapKeyDesc describes a key for the
+// error message once a collision is found.
+func mapKeysCollide(a, b *LVal) bool {
+	switch {
+	case a == nil:
+		return false
+	case a.Type == LInt && b.Type == LInt:
+		return a.Int == b.Int
+	case isStringLike(a) && isStringLike(b):
+		return a.Str == b.Str
+	default:
+		return false
+	}
+}
+
+// mapKeyDesc spells a map key for an error message.
+func mapKeyDesc(k *LVal) string {
+	if k.Type == LInt {
+		return strconv.Itoa(k.Int)
+	}
+	return strconv.Quote(k.Str)
+}
+
 func (v *LVal) EqualNum(other *LVal) *LVal {
 	if !v.IsNumeric() {
 		return Errorf("receiver is not a number: %v", v.Type)

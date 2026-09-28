@@ -24,10 +24,17 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 	if backing.Kind() != reflect.Struct || backing.Type().Name() != "sortedmap" || backing.Type().PkgPath() != "github.com/luthersystems/elps/lisp" || backing.NumField() != 3 {
 		t.Fatalf("stock map layout changed: update the independent oracle map census: %s", backing.Type())
 	}
-	for _, name := range []string{"m", "tm"} {
-		field, ok := backing.Type().FieldByName(name)
-		if !ok || field.Type.Kind() != reflect.Map || field.Type.Key().Kind() != reflect.String {
-			t.Fatalf("stock map field %q changed: update the independent oracle map census", name)
+	if m, ok := backing.Type().FieldByName("m"); !ok || m.Type.Kind() != reflect.Map || m.Type.Key().Kind() != reflect.String {
+		t.Fatal("stock map field m changed: update the independent oracle map census")
+	}
+	kt, ok := backing.Type().FieldByName("kt")
+	if !ok || kt.Type.Kind() != reflect.Pointer || kt.Type.Elem().Kind() != reflect.Struct || kt.Type.Elem().NumField() != 2 {
+		t.Fatal("stock map field kt changed: update the independent oracle map census")
+	}
+	for name, key := range map[string]reflect.Kind{"types": reflect.String, "ints": reflect.Int} {
+		field, ok := kt.Type.Elem().FieldByName(name)
+		if !ok || field.Type.Kind() != reflect.Map || field.Type.Key().Kind() != key {
+			t.Fatalf("stock map side table %q changed: update the independent oracle map census", name)
 		}
 	}
 	if lz, ok := backing.Type().FieldByName("lz"); !ok || lz.Type.Kind() != reflect.Pointer {
@@ -39,6 +46,16 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 		want int
 	}{
 		{"stock", func() *lisp.MapData { return lisp.SortedMap().Map() }, 2},
+		{"stock-symbol-keys", func() *lisp.MapData {
+			m := lisp.SortedMap().Map()
+			m.Set(lisp.Symbol("a"), lisp.Int(1))
+			return m
+		}, 3},
+		{"stock-int-keys", func() *lisp.MapData {
+			m := lisp.SortedMap().Map()
+			m.Set(lisp.Int(1), lisp.Int(1))
+			return m
+		}, 3},
 		{"json", func() *lisp.MapData { return oracleJSONValue(make(map[string]any)).Map() }, 1},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

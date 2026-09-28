@@ -173,8 +173,10 @@ var (
 			innermost frame first. Each map has the string key "function"
 			(the package-qualified function name) and, when the frame has a
 			source location, "file", "line" and "column" of the call that
-			entered it. Can only be called from within a handler-bind
-			handler.`},
+			entered it; "file" is the source name the library reported (a
+			bare file name for the built-in libraries), not a host path.
+			Can only be called from within a handler-bind
+			handler. Charges one evaluation step per started 64 frames.`},
 		{"car", Formals("lis"), builtinCAR,
 			`Returns the first element of a list, or nil if empty.`},
 		{"cdr", Formals("lis"), builtinCDR,
@@ -222,11 +224,13 @@ var (
 		{"assoc", Formals("map", "key", "value"), builtinAssoc,
 			`Returns a new sorted-map with key set to value, without
 			modifying the original. If map is nil, creates a new map.
-			Keys must be strings or symbols. Keys with the same name are
-			interchangeable; last write wins for key spelling and value.`},
+			Keys must be ints, strings or symbols. A string and a symbol
+			with the same name are interchangeable, and last write wins for
+			key spelling and value; an int is never the same key as a
+			string or symbol.`},
 		{"assoc!", Formals("map", "key", "value"), builtinAssocMutate,
 			`Sets key to value in map, mutating it in place, and returns the
-			modified map. Keys must be strings or symbols. Last write wins
+			modified map. Keys must be ints, strings or symbols. Last write wins
 			for key spelling and value; JSON-decoded maps always retain
 			string keys, using a symbol's name when supplied.`},
 		{"dissoc", Formals("map", "key"), builtinDissoc,
@@ -251,10 +255,12 @@ var (
 			including in JSON-decoded maps.`},
 		{"sorted-map", Formals(VarArgSymbol, "args"), builtinSortedMap,
 			`Creates a new sorted-map from alternating key-value pairs. For
-			example, (sorted-map :a 1 :b 2). Keys are maintained in sorted
-			order and must be strings or symbols; other types are unhashable.
-			Keys with the same name are interchangeable; last write wins
-			for key spelling and value.`},
+			example, (sorted-map :a 1 :b 2). Keys must be integers, strings
+			or symbols; other types are unhashable. Integer keys come first,
+			in numeric order, then string and symbol keys in sorted order.
+			An integer key is distinct from the string or symbol spelling
+			the same digits. String and symbol keys with the same name are
+			interchangeable; last write wins for key spelling and value.`},
 		{"concat", Formals("type-specifier", VarArgSymbol, "args"), builtinConcat,
 			`Concatenates sequences into one of the specified type. Accepts
 			'list, 'vector, 'string, or 'bytes as type-specifier.`},
@@ -1112,6 +1118,11 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 	stack, _ := cond.Native.(*CallStack)
 	if stack == nil {
 		return Nil()
+	}
+	// One step per started 64 frames: the result is a map per frame, so its
+	// cost grows with the stack's depth rather than with the call count.
+	if lerr := env.ChargeSteps(int64((len(stack.Frames) + 63) / 64)); lerr.Type == LError {
+		return lerr
 	}
 	frames := make([]*LVal, 0, len(stack.Frames))
 	for i := len(stack.Frames) - 1; i >= 0; i-- {

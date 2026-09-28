@@ -365,10 +365,27 @@ if lisp.True(ok) {  // equivalent to !ok.IsNil()
 
 ### Maps
 
-Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Numeric
-keys are not supported. Symbol keys are coerced to string to avoid programming
-errors causing symbol and string keys with equal string values from existing in
-the same map.
+Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Keys may be
+ints, strings or symbols; floats are not supported. Symbol keys are coerced to
+string to avoid programming errors causing symbol and string keys with equal
+string values from existing in the same map. An int key is distinct from the
+string spelling the same digits (`lisp.Int(1)` and `lisp.String("1")` are two
+keys), and int keys sort before string and symbol keys, in numeric order.
+`GoMap` converts an int key to a Go `int`.
+
+**Compatibility note for embedders (int keys, #733).** Three behaviours Go
+code can observe changed when int keys were added:
+
+- `MapSetLVal(lisp.Int(n), v)` on a stock map used to return an
+  `unhashable type` error; it now stores the entry.
+- `Keys()`, `Entries()`, `MapKeys()` and `MapEntries()` of a stock map can now
+  return `LInt` keys (first, in numeric order). Code that assumed every key is
+  an `LString` or `LSymbol` and read `key.Str` must handle `LInt`.
+- `json:dump` of a map whose keys include an int -- a stock map or your own
+  `Map` implementation -- used to fail with an invalid key type error; it now
+  writes the int as its decimal string (`{"7":...}`), and fails only when that
+  spelling is also one of the map's string keys. `json:load` still produces
+  string keys only, so such a map does not round-trip to int keys.
 
 Use `l.MapSetString(k,v)` (string key) or `l.MapSetLVal(k,v)` (LVal key) to
 set keys on the map, which returns the mutated map. `v` must be an LVal.
@@ -509,6 +526,20 @@ Optional cache hooks have a different fallback: a panic in `ReaderIdentity`,
 is parsed or evaluated without it. Diagnostics to `Stderr` are best effort;
 a panicking diagnostic writer is not retried. Nested loads from these hooks
 bypass identity and cache hooks on the same runtime.
+
+### Source names in error stacks
+
+The `"file"` key of each frame `error-stack` returns, like the file in a
+rendered stack trace, is the `name` your `SourceLibrary.LoadSource` returned
+for that file -- not a host path. `RelativeFileSystemLibrary` and the other
+built-in libraries return the bare file name (`filepath.Base`).
+
+A custom `SourceLibrary` should return names that do not depend on the host:
+no absolute paths, home directories, temporary directories or machine names.
+Lisp code can read these names through `error-stack` and fold them into
+results, so where several peers must compute identical results from the same
+program (a replicated ledger, for example), a name that differs between
+machines makes their results differ.
 
 In `elpscheck` builds, detected ownership, sealed-program and singleton
 corruption deliberately remain hard Go panics so recovery cannot hide a

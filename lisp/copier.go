@@ -627,6 +627,13 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 		// nothing, with the nil Map preserved.
 		return nm, nil
 	case sortedmap:
+		if len(m0.ints()) != 0 {
+			// A map holding int keys takes the generic Entries arm below:
+			// Entries yields them in the documented order, so a hook
+			// runs in that order too.  Only maps that hold int keys pay
+			// for that; every other map keeps this fast path.
+			break
+		}
 		m0.forceAll()
 		// By loop rather than m0.clone(c.copy): a method value capturing c
 		// would send the copier to the heap on every Copy call.
@@ -681,8 +688,8 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 			}
 			c.next = copyFrame{keys: keys, values: values, mapping: sm.m}
 		}
-		for k, t := range m0.tm {
-			sm.tm[k] = t
+		for k, t := range m0.typemap() {
+			sm.kt.types[k] = t
 		}
 		nm.mapBacking = sm
 		return nm, nil
@@ -773,23 +780,25 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	// the guarantee costs a comparison per entry instead of a second walk of
 	// the same pointer chain.
 	//
-	// Only a pair of string-like keys is judged.  Any other key kind is
-	// unrepresentable outright, whatever it sits next to, and is rejected
-	// with Set's message ("unhashable type"); an LInt and an LFloat both
-	// carry Str "" and would otherwise be reported as sharing a key that
-	// neither of them has.
+	// Only a pair of string-like keys, or a pair of int keys, is judged.
+	// Any other key kind is unrepresentable outright, whatever it sits next
+	// to, and is rejected with Set's message ("unhashable type"); an LFloat
+	// carries Str "" and would otherwise be reported as sharing a key that
+	// it does not have.  Int keys sort ahead of every string-like key, so an
+	// int is only ever adjacent to another int or to the first string-like
+	// key, which it cannot collide with.
 	var prev *LVal
 	for _, pair := range entries.Cells {
 		key := pair.Cells[0]
 		// Validate before copying the value: Go evaluates c.copy before Set
 		// can reject its key. Unsupported keys may tie under (Str, Type),
 		// so invoking their hooks would expose the host's Entries order (#643).
-		if !isStringLike(key) {
+		if !isMapKey(key) {
 			return c.failMap(md, fmt.Errorf("failed to copy map: %v", Errorf("unhashable type: %s", key.Type)))
 		}
-		if prev != nil && prev.Str == key.Str {
-			return c.failMap(md, fmt.Errorf("failed to copy map: entries collide on key %q (%s and %s):"+
-				" the destination map cannot hold them apart", key.Str, prev.Type, key.Type))
+		if mapKeysCollide(prev, key) {
+			return c.failMap(md, fmt.Errorf("failed to copy map: entries collide on key %s (%s and %s):"+
+				" the destination map cannot hold them apart", mapKeyDesc(key), prev.Type, key.Type))
 		}
 		prev = key
 	}

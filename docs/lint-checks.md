@@ -296,10 +296,13 @@ branch matches. While sometimes intentional, this is often an oversight.
 
 ### `rethrow-context`
 
-**Flags `(rethrow)` calls outside a `handler-bind` handler.**
+**Flags `(rethrow)` and `(error-stack)` calls outside a `handler-bind` handler.**
 
-`rethrow` re-signals the currently active error and only works inside a
-`handler-bind` handler. Using it outside causes a runtime error.
+`rethrow` re-signals the currently active error, and `error-stack` returns
+its call stack; both only work inside a `handler-bind` handler. Using either
+outside causes a runtime error. An `(error-stack)` inside a function body
+(`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
+that function; `rethrow` is reported there as before.
 
 ```lisp
 ;; BAD — not inside handler-bind
