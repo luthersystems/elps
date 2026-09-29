@@ -134,38 +134,23 @@ func builtinAbs(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 }
 
-func builtinCeil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x := args.Cells[0]
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
+var builtinCeil = lisp.Func1(numberArg, func(env *lisp.LEnv, x *lisp.LVal) *lisp.LVal {
 	if x.Type == lisp.LInt {
 		return x
 	}
 	return lisp.Float(math.Ceil(x.Float))
-}
+})
 
-func builtinFloor(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x := args.Cells[0]
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
+var builtinFloor = lisp.Func1(numberArg, func(env *lisp.LEnv, x *lisp.LVal) *lisp.LVal {
 	if x.Type == lisp.LInt {
 		return x
 	}
 	return lisp.Float(math.Floor(x.Float))
-}
+})
 
-func builtinLog(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	b, x := args.Cells[0], args.Cells[1]
-	if !b.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", b.Type)
-	}
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
+var builtinLog = lisp.Func2(numberArg, numberArg, func(env *lisp.LEnv, b, x *lisp.LVal) *lisp.LVal {
 	return lisp.Float(math.Log(toFloat(x)) / math.Log(toFloat(b)))
-}
+})
 
 var builtinSqrt = realFunc(math.Sqrt).builtin
 
@@ -195,22 +180,12 @@ var builtinTanh = realFunc(math.Tanh).builtin
 
 // builtinAtan does not have the same signature as other trigonometric
 // functions and must be implemented specially.
-func builtinAtan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x, q := args.ReqArg(env, 0), args.KeyArg(1)
-	if x.Type == lisp.LError {
-		return x
-	}
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
+var builtinAtan = lisp.Func2(numberArg, optNumber("second argument"), func(env *lisp.LEnv, x, q *lisp.LVal) *lisp.LVal {
 	if q.IsNil() {
 		return lisp.Float(math.Atan(toFloat(x)))
 	}
-	if !q.IsNumeric() {
-		return env.Errorf("second argument is not a number: %v", q.Type)
-	}
 	return lisp.Float(math.Atan2(toFloat(x), toFloat(q)))
-}
+})
 
 var builtinAtanh = realFunc(math.Atanh).builtin
 
@@ -219,12 +194,34 @@ var builtinAtanh = realFunc(math.Atanh).builtin
 type realFunc func(float64) float64
 
 func (fn realFunc) builtin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x := args.Cells[0]
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
+	a := lisp.ReadArgs(env, args)
+	x := numberArg(&a, 0)
+	if lerr := a.Err(); lerr.Type == lisp.LError {
+		return lerr
 	}
-	y := fn(toFloat(x))
-	return lisp.Float(y)
+	return lisp.Float(fn(toFloat(x)))
+}
+
+// numberArg is number("argument"), built once.
+var numberArg = number("argument")
+
+// number decodes a required int or float argument; anything else is "<what>
+// is not a number: <type>".
+func number(what string) lisp.ArgDecoder[*lisp.LVal] {
+	return func(a *lisp.ArgReader, i int) *lisp.LVal {
+		v := a.Value(i)
+		a.Check(v.IsNumeric(), "%s is not a number: %v", what, v.Type)
+		return v
+	}
+}
+
+// optNumber is number for an &optional argument, which may be nil.
+func optNumber(what string) lisp.ArgDecoder[*lisp.LVal] {
+	return func(a *lisp.ArgReader, i int) *lisp.LVal {
+		v := a.Opt(i)
+		a.Check(v.IsNil() || v.IsNumeric(), "%s is not a number: %v", what, v.Type)
+		return v
+	}
 }
 
 func toFloat(x *lisp.LVal) float64 {
