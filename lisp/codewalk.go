@@ -1065,28 +1065,44 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 	return w.Walk(form)
 }
 
-// resolveSpecialOp reports the builtin form head denotes in env.
+// resolveSpecialOp reports the form head is bound to in env, by what the
+// binding is rather than how head is spelled.  The builtin special
+// operators and definition macros are recognized by the identity their
+// registration gave them (FID and package), so an alias or a qualified
+// spelling resolves the same way.  Any other special operator -- one an
+// embedder registered, in any package -- is reported under its
+// package-qualified name, which has no shape, so the walker treats its
+// form as opaque.
 func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
 	v := env.Get(head)
-	if v.Type != LFun || v.Builtin() == nil || v.Package() != env.Runtime.Registry.Lang {
+	if v.Type != LFun || v.Builtin() == nil {
 		return "", false
 	}
-	// Get names the value after the symbol it was looked up by, so a
-	// qualified lookup reports "lisp:if".
-	name := v.Str
-	if rest, ok := strings.CutPrefix(name, env.Runtime.Registry.Lang+":"); ok {
-		name = rest
-	}
+	lang := v.Package() == env.Runtime.Registry.Lang
 	switch v.FunType {
 	case LFunSpecialOp:
-		return name, true
+		name := registeredName(v.FID(), "<special-op ``")
+		if lang && specialFormShape(name) != shapeUnknown {
+			return name, true
+		}
+		return v.Package() + ":" + name, true // no shape: opaque
 	case LFunMacro:
-		if specialFormShape(name) == shapeDefun {
+		if name := registeredName(v.FID(), "<builtin-macro ``"); lang && specialFormShape(name) == shapeDefun {
 			return name, true
 		}
 	default:
 	}
 	return "", false
+}
+
+// registeredName extracts NAME from a registration FID "<kind ``NAME''>".
+func registeredName(fid, prefix string) string {
+	name, ok := strings.CutPrefix(fid, prefix)
+	if !ok {
+		return ""
+	}
+	name, _ = strings.CutSuffix(name, "''>")
+	return name
 }
 
 // expandOnce expands form once if its head is a macro in env.

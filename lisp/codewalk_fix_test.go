@@ -84,3 +84,32 @@ func TestMacroExpandAllExprKeepsArity(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+type hostOp struct{}
+
+func (hostOp) Name() string                               { return "hop" }
+func (hostOp) Formals() *lisp.LVal                        { return lisp.Formals(lisp.VarArgSymbol, "args") }
+func (hostOp) Eval(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal { return lisp.Nil() }
+
+// A special operator a host package registers has no known shape: the
+// walker must not treat its arguments as code, whatever it is named.
+func TestMacroExpandAllHostSpecialOp(t *testing.T) {
+	env := newCowTestEnv(t)
+	evalOK := func(src string) *lisp.LVal {
+		t.Helper()
+		var r *lisp.LVal
+		for _, e := range parseCached(t, src) {
+			r = env.Eval(e)
+			require.NotEqual(t, lisp.LError, r.Type, "%v", r)
+		}
+		return r
+	}
+	evalOK(`(defmacro m (x) (quasiquote (list (unquote x))))`)
+	env.Runtime.Registry.DefinePackage("host")
+	require.NotEqual(t, lisp.LError, env.InPackage(lisp.Symbol("host")).Type)
+	env.AddSpecialOps(true, hostOp{})
+	require.NotEqual(t, lisp.LError, env.InPackage(lisp.Symbol(lisp.DefaultUserPackage)).Type)
+	evalOK(`(use-package 'host)`)
+	assert.Equal(t, "'(hop (m 1))", evalOK(`(macroexpand-all '(hop (m 1)))`).String())
+	assert.Equal(t, "'(host:hop (m 1))", evalOK(`(macroexpand-all '(host:hop (m 1)))`).String())
+}
