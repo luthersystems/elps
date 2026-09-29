@@ -211,42 +211,19 @@ func macroCurryFun(env *LEnv, args *LVal) *LVal {
 	})
 }
 
+// Keep the quoted root of the original QExpr expansion, including its printed
+// macroexpand-1 representation (TestGetDefaultFormTemplateParity).
+var getDefaultForm = MustFormTemplate(`
+'(lisp:let ((,map-sym ,map) (,key-sym ,key))
+   (lisp:if (lisp:if (lisp:nil? ,map-sym)
+                       lisp:false
+                       (lisp:key? ,map-sym ,key-sym))
+            (lisp:get ,map-sym ,key-sym)
+            ,default))`, "map-sym", "key-sym", "map", "key", "default")
+
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
-	mapExpr, keyExpr, defExpr := args.Cells[0], args.Cells[1], args.Cells[2]
 	mapSym, keySym := env.GenSym(), env.GenSym()
-	let := QExpr([]*LVal{
-		Symbol("lisp:let"),
-		SExpr([]*LVal{
-			SExpr([]*LVal{
-				mapSym,
-				mapExpr,
-			}),
-			SExpr([]*LVal{
-				keySym,
-				keyExpr,
-			}),
-		}),
-		SExpr([]*LVal{
-			Symbol("lisp:if"),
-			SExpr([]*LVal{
-				Symbol("lisp:if"),
-				SExpr([]*LVal{Symbol("lisp:nil?"), mapSym}),
-				Symbol("lisp:false"),
-				SExpr([]*LVal{
-					Symbol("lisp:key?"),
-					mapSym,
-					keySym,
-				}),
-			}),
-			SExpr([]*LVal{
-				Symbol("lisp:get"),
-				mapSym,
-				keySym,
-			}),
-			defExpr,
-		}),
-	})
-	return let
+	return getDefaultForm.Expand(mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2])
 }
 
 func macroDeftype(env *LEnv, args *LVal) *LVal {

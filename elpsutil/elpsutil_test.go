@@ -442,3 +442,44 @@ func TestFunctionDoc_ReachesRegisteredValue(t *testing.T) {
 	_, deprecated = lisp.DeprecationNotice(byName["join-paths"].DocString)
 	assert.False(t, deprecated, "an undocumented builtin must not read as deprecated")
 }
+
+// Exercise both registration paths and the embedding guide's template: body
+// forms must remain unevaluated until the expansion runs in the caller.
+func TestMacroRegistration(t *testing.T) {
+	const docs = "Evaluates body only when condition is falsey."
+	tmpl := lisp.MustFormTemplate(`(lisp:if ,condition () (lisp:progn ,@body))`, "condition", "body")
+	for _, throughPackage := range []bool{false, true} {
+		name := "AddMacros"
+		if throughPackage {
+			name = "PackageMacros"
+		}
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			env := newTestEnv(t)
+			macro := elpsutil.Macro("unless", lisp.Formals("condition", lisp.VarArgSymbol, "body"),
+				func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+					return tmpl.Expand(args.Cells[0], lisp.SExpr(args.Cells[1:]))
+				}, docs)
+			if throughPackage {
+				require.NoError(t, lisp.GoError(elpsutil.Load(env, elpsutil.PackageLoader(&testPackage{
+					name: "macros", macros: []lisp.LBuiltinDef{macro},
+				}))))
+			} else {
+				require.NoError(t, lisp.GoError(env.DefinePackage(lisp.Symbol("macros"))))
+				require.NoError(t, lisp.GoError(env.InPackage(lisp.Symbol("macros"))))
+				env.AddMacros(true, macro)
+				require.NoError(t, lisp.GoError(env.InPackage(lisp.Symbol(lisp.DefaultUserPackage))))
+			}
+			registered := env.Runtime.Registry.Package("macros").Get(lisp.Symbol("unless"))
+			require.True(t, registered.IsMacro())
+			assert.Equal(t, docs, registered.Docstring())
+			got := env.LoadString("unless.lisp", `
+(let ((condition false) (value 0))
+  (macros:unless condition (set! value (+ value 1)) (set! value (+ value 2)))
+  (macros:unless true (error 'unexpected-body))
+  (list value (macros:unless false)))`)
+			require.NoError(t, lisp.GoError(got))
+			assert.Equal(t, `'(3 ())`, got.String())
+		})
+	}
+}
