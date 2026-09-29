@@ -156,3 +156,57 @@ func TestGeneratedDefinitionsRespectFileDefinitions(t *testing.T) {
 	assert.Empty(t, result.GeneratedDefinitions())
 	assert.Zero(t, expander.calls["constant"])
 }
+
+// TestGeneratedDefinitionSourceIsTheCallSite pins that a generated variable
+// is located at its name in the macro call, not in the macro's template, so
+// go-to-definition and rename land in the analyzed file.
+func TestGeneratedDefinitionSourceIsTheCallSite(t *testing.T) {
+	t.Parallel()
+	result, _ := analyzeGenerated(t, "(defun plain () 1)\n(defcounter hits hits-value bump-hits)\n")
+	for _, name := range []string{"hits", "hits-value"} {
+		sym := findSymbol(result, name)
+		require.NotNil(t, sym, name)
+		require.NotNil(t, sym.Source, name)
+		assert.Equal(t, "test.lisp", sym.Source.File, name)
+		assert.Equal(t, 2, sym.Source.Line, name)
+	}
+	assert.Equal(t, 13, findSymbol(result, "hits").Source.Col)
+}
+
+// counterFile is the docs/embed.md example: the macro and its use in one file.
+const counterFile = `(defmacro defcounter (name getter bumper)
+  (quasiquote
+    (progn
+      (set (quote (unquote name)) 0)
+      (defun (unquote getter) () (unquote name))
+      (defun (unquote bumper) () (set! (unquote name) (+ 1 (unquote name)))))))
+
+(defcounter hits hits-value bump-hits)
+`
+
+// TestGeneratedDefinitionsDocExample follows docs/embed.md: the expander
+// knows the file's macro only after LoadWorkspaceMacros.
+func TestGeneratedDefinitionsDocExample(t *testing.T) {
+	t.Parallel()
+	expander := &EnvMacroExpander{Env: newTestEnv(t)}
+	require.Empty(t, expander.LoadWorkspaceMacros(parsePreamble(t, counterFile)))
+	result := parseAndAnalyzeWithConfig(t, counterFile, &Config{MacroExpander: expander})
+	var names []string
+	for _, def := range result.GeneratedDefinitions() {
+		names = append(names, def.Name)
+		assert.Equal(t, "defcounter", def.GeneratedBy.Macro)
+	}
+	assert.ElementsMatch(t, []string{"hits", "hits-value", "bump-hits"}, names)
+}
+
+// TestGeneratedDefinitionsFallbackWithoutLoadedMacro pins the documented
+// fallback: an expander whose env lacks the macro expands nothing, and no
+// definition claims to be generated.
+func TestGeneratedDefinitionsFallbackWithoutLoadedMacro(t *testing.T) {
+	t.Parallel()
+	result := parseAndAnalyzeWithConfig(t, counterFile, &Config{MacroExpander: &EnvMacroExpander{Env: newTestEnv(t)}})
+	assert.Empty(t, result.GeneratedDefinitions())
+	for _, sym := range result.Symbols {
+		assert.Nil(t, sym.GeneratedBy, sym.Name)
+	}
+}

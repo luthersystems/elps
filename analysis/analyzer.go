@@ -7,6 +7,7 @@ import (
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // maxMacroExpansionDepth caps recursive macro expansion in the analyzer
@@ -203,7 +204,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:    name,
 		Package: pkg,
 		Kind:    SymVariable,
-		Source:  astutil.SymbolLoc(expr.Cells[1]),
+		Source:  setTargetLoc(expr.Cells[1]),
 		Node:    extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
@@ -357,6 +358,19 @@ func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
 		}
 	}
 	return nil
+}
+
+// setTargetLoc is the location of the symbol a set target names: the inner
+// symbol of (quote name), which for a macro-generated set is the name as
+// written in the macro call rather than the quote list from the macro's
+// template. It falls back to arg's own location.
+func setTargetLoc(arg *lisp.LVal) *token.Location {
+	if node := extractSetSymbolNode(arg); node != nil {
+		if loc := astutil.SymbolLoc(node); loc != nil {
+			return loc
+		}
+	}
+	return astutil.SymbolLoc(arg)
 }
 
 // extractSetSymbolName is extractSetSymbolNode's name, or "" when the first
@@ -1027,7 +1041,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			existing.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: existing,
-				Source: astutil.SymbolLoc(node.Cells[1]),
+				Source: setTargetLoc(node.Cells[1]),
 				Node:   extractSetSymbolNode(node.Cells[1]),
 			})
 			return
@@ -1037,7 +1051,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: currentPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
+			Source:  setTargetLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		a.root.Define(sym)
@@ -1052,7 +1066,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: defPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
+			Source:  setTargetLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		scope.Define(sym)

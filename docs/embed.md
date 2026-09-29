@@ -1181,10 +1181,12 @@ will report false positives for embedder-provided bindings.
 
 A macro that expands into definitions (`defun`, `defmacro`, `set`,
 `deftype`) is invisible to name-based analysis: the analyzer sees the call,
-not the names it creates. Give `analysis.Config` a `MacroExpander` (for
-example `&analysis.EnvMacroExpander{Env: env}` over an environment where the
-macros are defined; `LintFiles` builds one from `LintConfig.Env`) and the
-analyzer expands macro calls and analyzes the expanded code:
+not the names it creates. Give `analysis.Config` a `MacroExpander` and the
+analyzer expands macro calls and analyzes the expanded code. The usual
+expander is `&analysis.EnvMacroExpander{Env: env}`, which expands only macros
+already defined in `env`: load the workspace's macros into it first with
+`expander.LoadWorkspaceMacros(forms)`. `LintFiles` does both itself when
+given `LintConfig.Env`.
 
 - Top-level macro calls are expanded before the deep walk, so a generated name
   resolves even where it is used before the call, like an ordinary `defun`.
@@ -1210,8 +1212,12 @@ analyzer expands macro calls and analyzes the expanded code:
 ```
 
 ```go
+// forms is the parsed source of counters.lisp. Loading it defines
+// defcounter in env, so the expander can expand the call below it.
+expander := &analysis.EnvMacroExpander{Env: env}
+expander.LoadWorkspaceMacros(forms) // returns one error per form that failed
 lib := analysis.AnalyzeFile(src, "counters.lisp", &analysis.Config{
-    MacroExpander: &analysis.EnvMacroExpander{Env: env},
+    MacroExpander: expander,
 })
 facts := lib.GeneratedDefinitions() // hits, hits-value, bump-hits; GeneratedBy.Macro == "defcounter"
 other := analysis.AnalyzeFile(otherSrc, "report.lisp", &analysis.Config{ExtraGlobals: facts})
@@ -1219,7 +1225,10 @@ other := analysis.AnalyzeFile(otherSrc, "report.lisp", &analysis.Config{ExtraGlo
 
 With an expander, a call whose head starts with `def` is analyzed through its
 expansion instead of the name-based guess; `Config.DefForms` entries still
-take priority. Each call site is expanded at most once per analysis.
+take priority. When expansion fails (the macro is not loaded in the env, or
+it signals), the analyzer falls back to that name-based guess, and a name it
+guesses has `GeneratedBy` nil. Each call site is expanded at most once per
+analysis.
 
 ### Documenting Go builtins
 
