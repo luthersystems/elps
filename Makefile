@@ -361,6 +361,9 @@ release-notes:
 		git log --oneline $(LATEST_TAG)..HEAD; \
 	fi
 	@echo ""
+	@echo "--- Waived API breaks since $(LATEST_TAG) (scripts/api-breaks.txt; list each in the notes) ---"
+	@bash scripts/api-breaks-since.sh $(LATEST_TAG)
+	@echo ""
 	@echo "--- Merged PRs since $(LATEST_TAG) ---"
 	@if [ "$(LATEST_TAG)" = "none" ]; then \
 		gh pr list --state merged --limit 50 --json number,title,mergedAt --template \
