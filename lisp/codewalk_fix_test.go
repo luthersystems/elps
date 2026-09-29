@@ -113,3 +113,27 @@ func TestMacroExpandAllHostSpecialOp(t *testing.T) {
 	assert.Equal(t, "'(hop (m 1))", evalOK(`(macroexpand-all '(hop (m 1)))`).String())
 	assert.Equal(t, "'(host:hop (m 1))", evalOK(`(macroexpand-all '(host:hop (m 1)))`).String())
 }
+
+// A qualified symbol resolves in its package, never in a lexical scope, as
+// LEnv.Get resolves it: a local binding spelled the same way does not
+// shadow it.
+func TestCodeWalkerQualifiedHeadIgnoresLocals(t *testing.T) {
+	form := parseCached(t, `(let ((user:m 1)) (user:m 2))`)[0]
+	var bound []bool
+	w := &lisp.CodeWalker{
+		Expand1: func(f *lisp.LVal) (*lisp.LVal, bool) {
+			if f.Cells[0].Str != "user:m" {
+				return nil, false
+			}
+			return lisp.SExpr([]*lisp.LVal{lisp.Symbol("list"), f.Cells[1]}), true
+		},
+		Visit: func(n *lisp.WalkNode) bool {
+			if n.Event == lisp.WalkRef && n.Node.Str == "user:m" {
+				bound = append(bound, n.Bound)
+			}
+			return true
+		},
+	}
+	assert.Equal(t, "(let ((user:m 1)) (list 2))", w.Walk(form).String())
+	assert.Empty(t, bound)
+}

@@ -371,6 +371,11 @@ func (w *CodeWalker) bind(name *LVal, mac localMacroExpander) {
 // lookup reports whether name is lexically bound, whether by a macrolet,
 // and the local macro's expander.
 func (w *CodeWalker) lookup(name string) (bound, macro bool, mac localMacroExpander) {
+	// As in LEnv.Get, a qualified symbol or keyword resolves in a package
+	// (or to itself), never in a lexical scope.
+	if strings.IndexByte(name, ':') >= 0 {
+		return false, false, nil
+	}
 	for i := len(w.scopes) - 1; i >= 0; i-- {
 		if m, ok := w.scopes[i].names[name]; ok {
 			return true, w.scopes[i].macros, m
