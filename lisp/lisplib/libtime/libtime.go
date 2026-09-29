@@ -154,6 +154,45 @@ var builtins = []*libutil.Builtin{
 		raises context-cancelled instead of returning nil.`),
 }
 
+const (
+	notTime     = "argument is not a time: %v"
+	notDuration = "argument is not a duration: %v"
+)
+
+// timeArgs returns a builtin's first n (1 or 2) arguments as times.  Every
+// argument's type is checked before any is unwrapped, the order the checks
+// have always run in, so a failure names the argument, and has the text, it
+// always did: "argument is not a time: <type>" for a value that is not
+// native, "argument is not a time: <value>" for a native that is not a time.
+func timeArgs(env *lisp.LEnv, args *lisp.LVal, n int) (t [2]time.Time, lerr *lisp.LVal) {
+	a := lisp.ReadArgs(env, args)
+	var vs [2]*lisp.LVal
+	for i := range n {
+		vs[i] = a.Typed(i, lisp.LNative, notTime)
+	}
+	for i := range n {
+		var ok bool
+		t[i], ok = borrowTime(vs[i])
+		a.Check(ok, notTime, vs[i])
+	}
+	return t, a.Err()
+}
+
+// durationArg returns a builtin's first argument as a duration, with
+// timeArgs's two messages for a duration.
+func durationArg(env *lisp.LEnv, args *lisp.LVal) (time.Duration, *lisp.LVal) {
+	a := lisp.ReadArgs(env, args)
+	d := durationOf(&a, a.Typed(0, lisp.LNative, notDuration))
+	return d, a.Err()
+}
+
+// durationOf unwraps the native v, which a has type-checked, as a duration.
+func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
+	d, ok := v.Native.(time.Duration)
+	a.Check(ok, notDuration, v)
+	return d
+}
+
 func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return Time(time.Now().UTC())
 }
@@ -183,134 +222,72 @@ func BuiltinParseRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func BuiltinFormatRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt.Type)
+	t, lerr := timeArgs(env, args, 1)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	t, ok := borrowTime(lt)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt)
-	}
-	return lisp.String(t.Format(time.RFC3339))
+	return lisp.String(t[0].Format(time.RFC3339))
 }
 
 func BuiltinFormatRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt.Type)
+	t, lerr := timeArgs(env, args, 1)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	t, ok := borrowTime(lt)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt)
-	}
-	return lisp.String(t.Format(time.RFC3339Nano))
+	return lisp.String(t[0].Format(time.RFC3339Nano))
 }
 
 func BuiltinTimeEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if a.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", a.Type)
+	t, lerr := timeArgs(env, args, 2)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	if b.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", b.Type)
-	}
-	t1, ok := borrowTime(a)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", a)
-	}
-	t2, ok := borrowTime(b)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", b)
-	}
-	return lisp.Bool(t1.Equal(t2))
+	return lisp.Bool(t[0].Equal(t[1]))
 }
 
 func BuiltinTimeLT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if a.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", a.Type)
+	t, lerr := timeArgs(env, args, 2)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	if b.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", b.Type)
-	}
-	t1, ok := borrowTime(a)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", a)
-	}
-	t2, ok := borrowTime(b)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", b)
-	}
-	return lisp.Bool(t2.After(t1))
+	return lisp.Bool(t[1].After(t[0]))
 }
 
 func BuiltinTimeGT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if a.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", a.Type)
+	t, lerr := timeArgs(env, args, 2)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	if b.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", b.Type)
-	}
-	t1, ok := borrowTime(a)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", a)
-	}
-	t2, ok := borrowTime(b)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", b)
-	}
-	return lisp.Bool(t1.After(t2))
+	return lisp.Bool(t[0].After(t[1]))
 }
 
 func BuiltinTimeAdd(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt, ld := args.Cells[0], args.Cells[1]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt.Type)
-	}
-	if ld.Type != lisp.LNative {
-		return env.Errorf("argument is not a duration: %v", ld.Type)
-	}
+	a := lisp.ReadArgs(env, args)
+	lt := a.Typed(0, lisp.LNative, notTime)
+	ld := a.Typed(1, lisp.LNative, notDuration)
 	t, ok := borrowTime(lt)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt)
-	}
-	d, ok := ld.Native.(time.Duration)
-	if !ok {
-		return env.Errorf("argument is not a duration: %v", ld)
+	a.Check(ok, notTime, lt)
+	d := durationOf(&a, ld)
+	if lerr := a.Err(); lerr.Type == lisp.LError {
+		return lerr
 	}
 	return Time(t.Add(d))
 }
 
 func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt1, lt2 := args.Cells[0], args.Cells[1]
-	if lt1.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt1.Type)
+	t, lerr := timeArgs(env, args, 2)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	if lt2.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt2.Type)
-	}
-	t1, ok := borrowTime(lt1)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt1)
-	}
-	t2, ok := borrowTime(lt2)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt2)
-	}
-	return Duration(t2.Sub(t1))
+	return Duration(t[1].Sub(t[0]))
 }
 
 func BuiltinElapsed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt1 := args.Cells[0]
-	if lt1.Type != lisp.LNative {
-		return env.Errorf("argument is not a time: %v", lt1.Type)
+	t, lerr := timeArgs(env, args, 1)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	t1, ok := borrowTime(lt1)
-	if !ok {
-		return env.Errorf("argument is not a time: %v", lt1)
-	}
-	return Duration(time.Since(t1))
+	return Duration(time.Since(t[0]))
 }
 
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -328,13 +305,9 @@ func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BulitinDurationSecods returns a float equal to the the number of seconds in
 // the given duration.
 func BuiltinDurationSeconds(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a duration: %v", lt.Type)
-	}
-	d, ok := lt.Native.(time.Duration)
-	if !ok {
-		return env.Errorf("argument is not a duration: %v", lt)
+	d, lerr := durationArg(env, args)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
 	return lisp.Float(float64(d) / float64(time.Second))
 }
@@ -342,13 +315,9 @@ func BuiltinDurationSeconds(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BuiltinDuriationNS returns a float equal to the the number of nanoseconds in
 // the given duration.
 func BuiltinDurationMS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a duration: %v", lt.Type)
-	}
-	d, ok := lt.Native.(time.Duration)
-	if !ok {
-		return env.Errorf("argument is not a duration: %v", lt)
+	d, lerr := durationArg(env, args)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
 	return lisp.Float(float64(d) / float64(time.Millisecond))
 }
@@ -356,13 +325,9 @@ func BuiltinDurationMS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // BulitinDuriationNS returns an integer equal to the the number of nanoseconds
 // in the given duration.
 func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt := args.Cells[0]
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a duration: %v", lt.Type)
-	}
-	d, ok := lt.Native.(time.Duration)
-	if !ok {
-		return env.Errorf("argument is not a duration: %v", lt)
+	d, lerr := durationArg(env, args)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
 	if int64(int(d)) != int64(d) {
 		return env.Errorf("duration is too large")
@@ -376,18 +341,11 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // wakes early if the context is cancelled, and never sleeps past the
 // context's deadline.  See sleepContext for the full rationale.
 func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lt, lmax := args.ReqArg(env, 0), args.KeyArg(1)
-	if lt.Type == lisp.LError {
-		return lt
+	d, lerr := durationArg(env, args)
+	if lerr.Type == lisp.LError {
+		return lerr
 	}
-	if lt.Type != lisp.LNative {
-		return env.Errorf("argument is not a duration: %v", lt.Type)
-	}
-	d, ok := lt.Native.(time.Duration)
-	if !ok {
-		return env.Errorf("argument is not a duration: %v", lt)
-	}
-	limit, lerr := sleepCap(env, lmax)
+	limit, lerr := sleepCap(env, args.KeyArg(1))
 	if lerr != nil {
 		return lerr
 	}
