@@ -514,6 +514,10 @@ The rules are exact, so step counts stay deterministic:
   and every existing program count exactly the steps they counted before
   (`TestKeywordStepsGolden` pins them against the counts measured before the
   feature existed).
+- `FreeKeywords(def)` returns a wrapper, not `def`: a type assertion to your
+  definition's concrete type fails on it, and reflection that walks
+  definitions sees one more level (the wrapped definition is an embedded
+  field). `Name`, `Formals`, `Eval` and `Docstring` forward to `def`.
 - Wrapping an **existing** builtin with `FreeKeywords` changes the step count
   of every program that calls it with keywords. For a host that meters steps,
   that is a coordinated upgrade like any other step change. A new builtin can

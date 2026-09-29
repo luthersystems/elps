@@ -2,6 +2,10 @@ package elpsutil
 
 import "github.com/luthersystems/elps/lisp"
 
+// inPackageBuiltin is resolved once; a BuiltinRef is a table position and
+// keeps no LVal reachable.
+var inPackageBuiltin = lisp.BuiltinFunc("in-package")
+
 // ExtendPackage makes the package named name env's current package, exactly
 // as the Lisp form (in-package 'name) does: the package is created if it does
 // not exist, and a package this call creates uses the language package (when
@@ -20,7 +24,7 @@ func ExtendPackage(env *lisp.LEnv, name string) *lisp.LVal {
 	if _, cerr := currentPackageName(env); cerr != nil {
 		return cerr
 	}
-	v := env.CallBuiltin(lisp.BuiltinFunc("in-package"), lisp.Symbol(name))
+	v := env.CallBuiltin(inPackageBuiltin, lisp.Symbol(name))
 	if v.Type == lisp.LError {
 		return v
 	}

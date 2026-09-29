@@ -38,6 +38,12 @@ package lisp
 // changes the step count of every program calling it with keywords, so for a
 // metered embedder it is a coordinated upgrade, like any step change; a NEW
 // builtin can adopt it freely.
+//
+// The returned definition wraps def: its dynamic type is not def's, so a type
+// assertion to def's concrete type fails on it, and reflection-based tooling
+// that walks definitions sees one more level (the wrapped def is its
+// embedded LBuiltinDef field).  Name, Formals, Eval and Docstring forward to
+// def.
 func FreeKeywords(def LBuiltinDef) LBuiltinDef {
 	return freeKeywordsDef{def}
 }
