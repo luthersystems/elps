@@ -201,6 +201,14 @@ type funData struct {
 	// nobody reads until a stack is rendered, at the price of two map
 	// lookups per call.
 	name string
+
+	// freeKeys is non-zero only for a builtin registered through
+	// FreeKeywords (luthersystems/elps#745): one more than the number of its
+	// required formals, which is where its &key section starts.  In a direct
+	// call form, a keyword literal at a key-name position of that section is
+	// passed as itself instead of evaluated, and so charges no step.  Zero
+	// for every other function, so nothing else changes.
+	freeKeys int
 }
 
 // macroExpansionContext is shared by all nodes in a single macro expansion.

@@ -31,7 +31,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"env":     "remapped: environment index", "captures": "remapped: values index and immutable code",
 			"loc": "shared-immutable: compiler-owned definition location snapshot (#624)",
 			"fid": "scalar: function identifier", "pkg": "scalar: package name",
-			"name": "scalar: most recently bound display name memo",
+			"name":     "scalar: most recently bound display name memo",
+			"freeKeys": "scalar: free-keyword key-section start, copied with the header (#745; TestFreeKeywordsTemplateParity)",
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",

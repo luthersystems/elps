@@ -52,6 +52,9 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		if message := formalSymbolsMessage(def.Formals(), false); message != "" {
 			return env.Errorf("builtin %s cannot be registered: %s", name, message)
 		}
+		if _, msg := freeKeysOf(def); msg != "" {
+			return env.Errorf("%s", msg)
+		}
 		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError {
 			if !opts.Shadow {
 				return env.Errorf("symbol already defined: %s", name)
@@ -66,6 +69,9 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		name := f.Name()
 		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
 			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
+		if freeKeys, _ := freeKeysOf(f); freeKeys != 0 {
+			v.funData().freeKeys = freeKeys
+		}
 		pkg.putName(name, v)
 		if opts.Export {
 			pkg.appendExternal(name)

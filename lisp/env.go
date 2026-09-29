@@ -1315,8 +1315,16 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		// One read of Formals(); see AddMacros.
 		funFormals := f.Formals()
 		checkRegistrationFormals("builtin", name, funFormals)
+		freeKeys, msg := freeKeysOf(f)
+		if msg != "" {
+			// NOT LISP-REACHABLE (#367): registration is Go API.
+			panic(msg)
+		}
 		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
 			registrationFormals(&formals, funFormals), f.Eval, builtinDocstring(f))
+		if freeKeys != 0 {
+			v.funData().freeKeys = freeKeys
+		}
 		pkg.putName(name, v)
 		if external {
 			pkg.appendExternal(name)
@@ -2233,7 +2241,14 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		return call
 	}
 	// Evaluate arguments before invoking f.
-	for _, expr := range cells {
+	for i, expr := range cells {
+		if expr.Type == LSymbol && freeKeywordLiteral(f, expr, i) {
+			// A builtin registered through FreeKeywords: this keyword
+			// literal names a key, and evaluating it would only return it
+			// (see eval's keyword arm) at the cost of a step.
+			newCells = append(newCells, expr)
+			continue
+		}
 		v := env.eval(ctx, expr)
 		if v.Type == LError {
 			return v
