@@ -42,24 +42,23 @@ func (d *testBuiltinDef) Eval(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { retu
 
 func TestChargeHelpersArithmetic(t *testing.T) {
 	cases := []struct {
-		n                         int
-		complete, started, record int64
+		n               int
+		started, record int64
 	}{
-		{-5000, 0, 0, 1},
-		{-1, 0, 0, 1},
-		{0, 0, 0, 1},
-		{1, 0, 1, 1},
-		{1023, 0, 1, 1},
-		{1024, 1, 1, 1},
-		{1025, 1, 2, 2},
-		{2047, 1, 2, 2},
-		{2048, 2, 2, 2},
-		{2049, 2, 3, 3},
-		{10 << 20, 10 << 10, 10 << 10, 10 << 10},
+		{-5000, 0, 1},
+		{-1, 0, 1},
+		{0, 0, 1},
+		{1, 1, 1},
+		{1023, 1, 1},
+		{1024, 1, 1},
+		{1025, 2, 2},
+		{2047, 2, 2},
+		{2048, 2, 2},
+		{2049, 3, 3},
+		{10 << 20, 10 << 10, 10 << 10},
 	}
 	env := newLimitTestEnv(t)
 	helperBuiltin(env, "nop", func(*lisp.LEnv, int) *lisp.LVal { return nil })
-	helperBuiltin(env, "complete", lisp.ChargeCompleteKiB)
 	helperBuiltin(env, "started", lisp.ChargeStartedKiB)
 	helperBuiltin(env, "record", lisp.ChargeRecord)
 	for _, tc := range cases {
@@ -68,7 +67,7 @@ func TestChargeHelpersArithmetic(t *testing.T) {
 		for _, c := range []struct {
 			f    string
 			want int64
-		}{{"complete", tc.complete}, {"started", tc.started}, {"record", tc.record}} {
+		}{{"started", tc.started}, {"record", tc.record}} {
 			v, got := stepsOf(t, env, src(c.f))
 			require.Equal(t, lisp.LSymbol, v.Type, "%s: %v", src(c.f), v)
 			assert.Equal(t, c.want, got-base, "%s", src(c.f))
@@ -89,18 +88,8 @@ func TestChargeHelpersMatchLegacyFormulas(t *testing.T) {
 		}
 		return nil
 	})
-	helperBuiltin(env, "complete", lisp.ChargeCompleteKiB)
-	helperBuiltin(env, "legacy-complete", func(env *lisp.LEnv, n int) *lisp.LVal {
-		if n < 1024 {
-			return nil
-		}
-		if v := env.ChargeSteps(int64(n >> 10)); v.Type == lisp.LError {
-			return v
-		}
-		return nil
-	})
 	for n := 0; n < 5000; n += 7 {
-		for _, pair := range [][2]string{{"started", "legacy-started"}, {"complete", "legacy-complete"}} {
+		for _, pair := range [][2]string{{"started", "legacy-started"}} {
 			_, a := stepsOf(t, env, "("+pair[0]+" "+itoa(n)+")")
 			_, b := stepsOf(t, env, "("+pair[1]+" "+itoa(n)+")")
 			require.Equal(t, b, a, "%s vs %s at n=%d", pair[0], pair[1], n)
@@ -153,10 +142,10 @@ func TestChargeHelpersEnforceBudget(t *testing.T) {
 	assert.Equal(t, lisp.CondStepLimitExceeded, v.Str)
 }
 
-func TestChargeCompleteKiBSmallIsFree(t *testing.T) {
+func TestChargeHelpersNoAlloc(t *testing.T) {
 	env := newLimitTestEnv(t)
 	allocs := testing.AllocsPerRun(100, func() {
-		if lisp.ChargeCompleteKiB(env, 100).Type == lisp.LError || env.CheckContext().Type == lisp.LError {
+		if lisp.ChargeStartedKiB(env, 100).Type == lisp.LError || env.CheckContext().Type == lisp.LError {
 			t.Fatal("unexpected error")
 		}
 	})

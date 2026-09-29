@@ -13,7 +13,11 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
-var parityAdd = lisp.BuiltinFunc("+")
+var (
+	parityAdd   = lisp.BuiltinFunc("+")
+	parityGet   = lisp.BuiltinFunc("get")
+	parityAssoc = lisp.BuiltinFunc("assoc!")
+)
 
 // nativeRunner registers (native-add3 a b c) and (native-bump m k) in the
 // user package, built with the given step charges.
@@ -40,7 +44,19 @@ func nativeRunner(add3Steps, bumpSteps int64, wrongBump bool) *elpstest.Runner {
 				if wrongBump {
 					n = lisp.Int(2)
 				}
-				return env.MapIncr(args.Cells[0], args.Cells[1], n)
+				m, k := args.Cells[0], args.Cells[1]
+				cur := env.CallBuiltin(parityGet, m, k)
+				if cur.Type == lisp.LError {
+					return cur
+				}
+				if cur.IsNil() {
+					cur = lisp.Int(0)
+				}
+				sum := env.CallBuiltin(parityAdd, cur, n)
+				if sum.Type == lisp.LError {
+					return sum
+				}
+				return env.CallBuiltin(parityAssoc, m, k, sum)
 			}))
 	}}
 }

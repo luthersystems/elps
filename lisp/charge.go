@@ -6,29 +6,16 @@ package lisp
 //
 // Every helper here returns Nil() to continue, or the LError the builtin must
 // return as is -- the convention of LEnv.ChargeSteps, so a result is checked
-// with `lerr.Type == LError` and never dereferences Go nil.  None of them charges anything beyond what its name says, so
-// replacing a hand-written ChargeSteps call with one of them changes no step
-// count.  Two size conventions exist on purpose and have two names:
+// with `lerr.Type == LError` and never dereferences Go nil.  None of them
+// charges anything beyond what its name says, so replacing a hand-written
+// ChargeSteps call with one of them changes no step count.
 //
-//   - ChargeCompleteKiB charges floor(n/1024): the convention of elps's own
-//     stdlib (json, base64, string, regexp), where the call's own step covers
-//     the first KiB and a value under 1 KiB costs nothing extra.
-//   - ChargeStartedKiB charges ceil(n/1024): the convention of substrate's
-//     storage builtins, where any non-empty value costs at least one step.
-//
-// ChargeRecord is ChargeStartedKiB with a floor of one step, for per-record
-// work (a range fold's reducer call) that costs a step even when empty.
-
-// ChargeCompleteKiB charges env one step per complete KiB (1024 bytes) of n
-// bytes of native work: floor(n/1024).  n below 1024 costs nothing and does
-// not call into the evaluator.  The charge depends only on n, so compute n
-// from argument or result values, never from caches or timing.
-func ChargeCompleteKiB(env *LEnv, n int) *LVal {
-	if n < 1024 {
-		return Nil()
-	}
-	return env.ChargeSteps(int64(n >> 10))
-}
+// ChargeStartedKiB charges ceil(n/1024), the convention of substrate's
+// storage builtins, where any non-empty value costs at least one step.  (elps's
+// own stdlib charges floor(n/1024) through an internal helper; which
+// convention a builtin uses is observable in its step counts.)  ChargeRecord
+// is ChargeStartedKiB with a floor of one step, for per-record work (a range
+// fold's reducer call) that costs a step even when empty.
 
 // ChargeStartedKiB charges env one step per started KiB of n bytes of native
 // work: ceil(n/1024).  0 bytes cost nothing, 1..1024 cost one step, 1025 cost

@@ -456,13 +456,9 @@ sorted-map in its documented order (int keys by value, then string and symbol
 keys by spelling). Keys arrive by value, and for the interpreter's own map
 backings it allocates nothing in the steady state, unlike `MapKeys` and
 `MapEntries`, which build lists. `k.LVal()` returns the key as `MapKeys` would.
-`lisp.SortedMapFromPairs(env, k1, v1, ...)` is `(sorted-map k1 v1 ...)`, and
-`env.MapIncr(m, k, n)` is
-`(assoc! m k (+ (let ([x (get m k)]) (if (nil? x) 0 x)) n))`. Both run those
-builtins themselves, so their errors and guards are the Lisp forms'.
 
 **Steps and cancellation.** See "Charging steps from a Go builtin" below:
-`env.Step()`, `lisp.ChargeCompleteKiB`, `lisp.ChargeStartedKiB`,
+`env.Step()`, `lisp.ChargeStartedKiB`,
 `lisp.ChargeRecord` and `env.CheckContext()`.
 
 **Keyword arguments that cost no steps: `lisp.FreeKeywords`.** Every argument
@@ -1015,19 +1011,20 @@ Limits and choices worth knowing:
 
 Helpers for the common charges return `lisp.Nil()` to continue, or the
 `LError` to return unchanged, as `ChargeSteps` does; check a result with
-`lerr.Type == lisp.LError`. For n steps at once, call `env.ChargeSteps(n)`. They charge exactly what their names say, so replacing a
-hand-written `ChargeSteps` call with one changes no count:
+`lerr.Type == lisp.LError`. For n steps at once, call `env.ChargeSteps(n)`.
+They charge exactly what their names say, so replacing a hand-written
+`ChargeSteps` call with one changes no count:
 
 | Helper | Charge | Use |
 |--------|--------|-----|
 | `env.Step()` | 1 | once per element of a native loop that replaces a Lisp loop |
-| `lisp.ChargeCompleteKiB(env, n)` | floor(n/1024) | the elps stdlib convention (values under 1 KiB are free) |
 | `lisp.ChargeStartedKiB(env, n)` | ceil(n/1024) | every started KiB (substrate's storage convention) |
 | `lisp.ChargeRecord(env, n)` | max(1, ceil(n/1024)) | per record handed to a reducer, empty records included |
 | `env.CheckContext()` | 0 | the evaluator's `context-cancelled` check, between charges |
 
-Floor and ceil have different names on purpose: which convention a builtin
-uses is observable in its step counts.
+There is no public floor(n/1024) helper: the stdlib's is internal. Which
+convention a builtin uses is observable in its step counts, so keep the one
+the code you replace used.
 
 ### Shared step budgets
 

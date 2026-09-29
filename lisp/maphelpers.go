@@ -126,39 +126,3 @@ func compareMapRangeEntries(a, b mapRangeEntry) int {
 	}
 	return cmp.Compare(a.key.Type, b.key.Type)
 }
-
-// SortedMapFromPairs builds a sorted-map from alternating keys and values, as
-// (sorted-map k1 v1 k2 v2 ...) does, with that builtin's errors and guards:
-// an odd count fails with "uneven number of arguments: <n>", a key the map
-// cannot hold fails as the builtin fails, and each new key is checked against
-// the runtime's MaxAlloc (luthersystems/elps#745).  It charges no step and
-// never writes kv.
-func SortedMapFromPairs(env *LEnv, kv ...*LVal) *LVal {
-	return builtinSortedMap(env, QExpr(kv))
-}
-
-// MapIncr adds n to the number stored under key k of the sorted-map m, a
-// missing or nil entry counting as 0, and returns m.  It is
-//
-//	(assoc! m k (+ (let ([x (get m k)]) (if (nil? x) 0 x)) n))
-//
-// run through the same language builtins in the same order (get, then +, then
-// assoc!), so every failure -- m not a map, m nil, a non-number entry or n,
-// an unhashable key, a sealed or read-only m, the MaxAlloc guard on a new
-// key -- raises exactly what that Lisp raises, with the builtins' own
-// messages (luthersystems/elps#745).  It charges no step; a native replacing
-// a Lisp definition charges the definition's steps itself.
-func (env *LEnv) MapIncr(m, k, n *LVal) *LVal {
-	cur := builtinGet(env, QExpr([]*LVal{m, k}))
-	if cur.Type == LError {
-		return cur
-	}
-	if cur.IsNil() {
-		cur = Int(0)
-	}
-	sum := builtinAdd(env, QExpr([]*LVal{cur, n}))
-	if sum.Type == LError {
-		return sum
-	}
-	return builtinAssocMutate(env, QExpr([]*LVal{m, k, sum}))
-}
