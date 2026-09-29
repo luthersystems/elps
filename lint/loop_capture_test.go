@@ -54,22 +54,6 @@ func TestLoopVariableCapture_Nolint(t *testing.T) {
 		"(set 'fs (vector))\n(dotimes (i 3) (append! fs (lambda () i))) ; nolint:loop-variable-capture\n"))
 }
 
-// With a macro expander the check sees a dotimes, or a stored closure, that
-// a user macro produces.
-func TestLoopVariableCapture_ThroughMacros(t *testing.T) {
-	env := newRethrowEnv(t, `
-(defmacro repeat (var n &rest body) (quasiquote (dotimes ((unquote var) (unquote n)) (unquote-splicing body))))
-(defmacro remember (x) (quasiquote (append! fs (lambda () (unquote x)))))
-`)
-	l := &Linter{Analyzers: []*Analyzer{AnalyzerLoopVariableCapture}}
-	diags, err := l.LintFileWithAnalysis([]byte("(repeat i 3\n  (remember i))"), "test.lisp",
-		&analysis.Config{MacroExpander: &analysis.EnvMacroExpander{Env: env}})
-	require.NoError(t, err)
-	require.Len(t, diags, 1)
-	assert.Equal(t, 2, diags[0].Pos.Line)
-	// Without the expander neither form is visible.
-	assertNoDiags(t, lintCheck(t, AnalyzerLoopVariableCapture, "(repeat i 3\n  (remember i))"))
-}
 
 // A closure in the dotimes result form runs after the loop, once: it sees
 // the final value on purpose.  Only the body is checked.
@@ -82,4 +66,28 @@ func TestLoopVariableCapture_ResultFormNotReported(t *testing.T) {
 func TestLoopVariableCapture_ShadowedStoringCall(t *testing.T) {
 	assertNoDiags(t, lintCheck(t, AnalyzerLoopVariableCapture,
 		`(flet ((list (f) (funcall f))) (dotimes (i 3) (list (lambda () i))))`))
+}
+
+// A symbol in a quasiquote template is data, not a capture.
+func TestLoopVariableCapture_TemplateIsNotCapture(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerLoopVariableCapture,
+		`(dotimes (i 3) (set 'f (lambda () (quasiquote (i)))))`))
+	require.Len(t, lintCheck(t, AnalyzerLoopVariableCapture,
+		`(dotimes (i 3) (set 'f (lambda () (quasiquote ((unquote i))))))`), 1)
+}
+
+// A deftype in the loop body does not hide the loop variable.
+func TestLoopVariableCapture_DeftypeInBody(t *testing.T) {
+	require.Len(t, lintCheck(t, AnalyzerLoopVariableCapture,
+		`(dotimes (i 3) (deftype pt (x) x) (set 'f (lambda () i)))`), 1)
+}
+
+// With workspace config, custom definition forms keep their meaning: the
+// check reuses the file's analysis rather than re-analyzing without it.
+func TestLoopVariableCapture_UsesFileAnalysis(t *testing.T) {
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerLoopVariableCapture}}
+	cfg := &analysis.Config{DefForms: []analysis.DefFormSpec{{Head: "defthing", FormalsIndex: 2, BindsName: true, NameIndex: 1}}}
+	diags, err := l.LintFileWithAnalysis([]byte("(dotimes (i 3)\n  (defthing t1 (i) (set 'f (lambda () i))))"), "test.lisp", cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags) // defthing's parameter i shadows the loop variable
 }

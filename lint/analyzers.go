@@ -2999,18 +2999,15 @@ var AnalyzerLoopVariableCapture = &Analyzer{
 		if !mentionsSymbol(pass.Exprs, "dotimes") && (pass.Semantics == nil || pass.Semantics.MacroExpander == nil) {
 			return nil // no loop in the file, and no macro can make one
 		}
-		// Resolve the file's fully expanded forms (shared with the other
-		// walker-based checks), so the tree this check reads -- a
-		// closure's parent call, the loop body -- is the tree the
-		// resolver saw, macro output included.
-		var code []*lisp.LVal
-		for _, ef := range pass.expandedExprs() {
-			code = append(code, ef.code)
+		// Reuse the file's analysis (its workspace config, custom
+		// definition forms and macro expansion); without one, analyze
+		// the file alone.  A closure a macro synthesizes is resolved
+		// but has no place in the source tree, so it is not checked.
+		sem := pass.Semantics
+		if sem == nil {
+			sem = analysis.Analyze(pass.Exprs, nil)
 		}
-		if !mentionsSymbol(code, "dotimes") {
-			return nil
-		}
-		reportLoopCaptures(pass, analysis.Analyze(code, nil))
+		reportLoopCaptures(pass, sem)
 		return nil
 	},
 }
@@ -3036,10 +3033,13 @@ func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
 }
 
 func checkLoop(pass *Pass, sem *analysis.Result, loop *analysis.Scope, refAt map[*lisp.LVal]*analysis.Reference, passFile string) {
-	var loopVar *analysis.Symbol
-	for _, sym := range loop.Symbols {
-		loopVar = sym
+	// The loop variable is the first name of the control list; other
+	// names defined in the loop scope (a deftype in the body) are not it.
+	ctrl := loop.Node.Cells[1]
+	if ctrl.Type != lisp.LSExpr || len(ctrl.Cells) == 0 || ctrl.Cells[0].Type != lisp.LSymbol {
+		return
 	}
+	loopVar := loop.Symbols[ctrl.Cells[0].Str]
 	if loopVar == nil {
 		return
 	}
@@ -3106,6 +3106,8 @@ func storedClosure(fn *lisp.LVal, parent map[*lisp.LVal]*lisp.LVal, refAt map[*l
 
 // firstCapture returns the first reference inside fn that resolves to v.
 func firstCapture(fn *lisp.LVal, v *analysis.Symbol, refAt map[*lisp.LVal]*analysis.Reference) *analysis.Reference {
+	// A symbol in a quasiquote template is data; only its holes are code.
+	roles := astutil.ClassifyNodes(fn)
 	var found *analysis.Reference
 	seen := make(map[*lisp.LVal]bool)
 	var walk func(n *lisp.LVal)
@@ -3114,7 +3116,7 @@ func firstCapture(fn *lisp.LVal, v *analysis.Symbol, refAt map[*lisp.LVal]*analy
 			return
 		}
 		seen[n] = true
-		if r := refAt[n]; r != nil && r.Symbol == v {
+		if r := refAt[n]; r != nil && r.Symbol == v && roles.Role(n) != astutil.RoleData {
 			found = r
 			return
 		}
