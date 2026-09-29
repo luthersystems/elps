@@ -12,10 +12,29 @@ package lisp
 // replaces a Lisp definition calling get, + or assoc! must raise exactly what
 // the Lisp raised (luthersystems/elps#745).  The zero BuiltinRef is invalid.
 //
-// A BuiltinRef holds no *LVal of its own beyond the builtin's sealed formals,
-// so a package-level BuiltinRef shares nothing mutable between runtimes.
+// A BuiltinRef is only a position in the builtin tables, which are
+// append-only, so it keeps no *LVal reachable: a package-level BuiltinRef
+// shares nothing between runtimes and passes elpsvet's elpsownership rule.
 type BuiltinRef struct {
-	def *langBuiltin
+	table uint8 // builtinTableNone (zero value), builtinTableLang or builtinTableUser
+	idx   int
+}
+
+const (
+	builtinTableNone uint8 = iota
+	builtinTableLang
+	builtinTableUser
+)
+
+// def returns the definition b names, or nil for the zero BuiltinRef.
+func (b BuiltinRef) def() *langBuiltin {
+	switch b.table {
+	case builtinTableLang:
+		return langBuiltins[b.idx]
+	case builtinTableUser:
+		return userBuiltins[b.idx]
+	}
+	return nil
 }
 
 // BuiltinFunc resolves the default builtin named name.  It panics when no
@@ -27,11 +46,14 @@ type BuiltinRef struct {
 // Resolution is a linear scan, done once per handle; the handle itself is
 // what makes each call cheap.
 func BuiltinFunc(name string) BuiltinRef {
-	for _, table := range [][]*langBuiltin{langBuiltins, userBuiltins} {
-		for _, def := range table {
-			if def.name == name {
-				return BuiltinRef{def}
-			}
+	for i, def := range langBuiltins {
+		if def.name == name {
+			return BuiltinRef{table: builtinTableLang, idx: i}
+		}
+	}
+	for i, def := range userBuiltins {
+		if def.name == name {
+			return BuiltinRef{table: builtinTableUser, idx: i}
 		}
 	}
 	panic("lisp.BuiltinFunc: no default builtin named " + name)
@@ -39,10 +61,11 @@ func BuiltinFunc(name string) BuiltinRef {
 
 // Name returns the builtin's name, or "" for the zero BuiltinRef.
 func (b BuiltinRef) Name() string {
-	if b.def == nil {
+	def := b.def()
+	if def == nil {
 		return ""
 	}
-	return b.def.name
+	return def.name
 }
 
 // CallBuiltin calls the builtin b with already-evaluated args, as the
@@ -66,15 +89,16 @@ func (b BuiltinRef) Name() string {
 // replaces.  It does not recover panics; call it from a builtin, which the
 // evaluator already guards.
 func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
-	if b.def == nil {
+	def := b.def()
+	if def == nil {
 		return env.Errorf("CallBuiltin: zero BuiltinRef")
 	}
 	if lerr := env.CheckContext(); lerr != nil {
 		return lerr
 	}
-	list := bindNativePositional(b.def.formals.Cells, args)
+	list := bindNativePositional(def.formals.Cells, args)
 	if list == nil {
-		fun := FunInPackage(env.Runtime.Registry.Lang, b.def.name, b.def.formals, b.def.fun)
+		fun := FunInPackage(env.Runtime.Registry.Lang, def.name, def.formals, def.fun)
 		_, list = env.bindGeneral(fun, QExpr(args))
 		if list.Type == LError {
 			return list
@@ -91,9 +115,9 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 		top.Terminal = false
 		defer func() { top.Terminal = terminal }()
 	}
-	val := b.def.fun(env, list)
+	val := def.fun(env, list)
 	if val == nil {
-		return env.Errorf("internal error: builtin %s returned nil", b.def.name)
+		return env.Errorf("internal error: builtin %s returned nil", def.name)
 	}
 	if val.Type == LMarkTailRec {
 		// The callee matched a terminal chain through the frame funcall or
