@@ -158,8 +158,8 @@ func (op *copyOp) chargeIter(n int) error {
 		return nil
 	}
 	if op.iterWork/iterPollGrain != before/iterPollGrain {
-		if err := env.Context().Err(); err != nil {
-			op.stop = env.ErrorConditionf(lisp.CondContextCancelled, "context cancelled: %v", err)
+		if lerr := env.CheckContext(); lerr != nil {
+			op.stop = lerr
 			return errIterStopped
 		}
 	}

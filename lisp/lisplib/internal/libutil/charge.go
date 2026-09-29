@@ -22,12 +22,8 @@ import "github.com/luthersystems/elps/lisp"
 // ChargeKiB returns nil to continue, or the LError from lisp.LEnv.ChargeSteps
 // (step limit exceeded or context cancelled), which the builtin must return
 // as is.  With no step limit and no context it never fails.
+//
+// It is lisp.ChargeCompleteKiB, kept for the stdlib's existing call sites.
 func ChargeKiB(env *lisp.LEnv, n int) *lisp.LVal {
-	if n < 1024 {
-		return nil
-	}
-	if lerr := env.ChargeSteps(int64(n >> 10)); lerr.Type == lisp.LError {
-		return lerr
-	}
-	return nil
+	return lisp.ChargeCompleteKiB(env, n)
 }

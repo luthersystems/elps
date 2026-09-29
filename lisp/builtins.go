@@ -3599,8 +3599,8 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 // after a limit that was never reached. A nil budget means the caller already
 // knows the byte cap is what stopped it.
 func (env *LEnv) renderError(budget *renderBudget) *LVal {
-	if env.evalCtx != nil && env.evalCtx.Err() != nil {
-		return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", env.evalCtx.Err())
+	if lerr := env.CheckContext(); lerr != nil {
+		return lerr
 	}
 	if budget != nil && budget.remaining <= 0 {
 		return env.Errorf("value rendering exceeded the maximum traversal budget")

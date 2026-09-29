@@ -1,0 +1,82 @@
+// Copyright © 2026 The ELPS authors
+
+package lisp
+
+// Step and context helpers for Go builtins (luthersystems/elps#745).
+//
+// Every helper here returns nil to continue, or the LError the builtin must
+// return as is.  None of them charges anything beyond what its name says, so
+// replacing a hand-written ChargeSteps call with one of them changes no step
+// count.  Two size conventions exist on purpose and have two names:
+//
+//   - ChargeCompleteKiB charges floor(n/1024): the convention of elps's own
+//     stdlib (json, base64, string, regexp), where the call's own step covers
+//     the first KiB and a value under 1 KiB costs nothing extra.
+//   - ChargeStartedKiB charges ceil(n/1024): the convention of substrate's
+//     storage builtins, where any non-empty value costs at least one step.
+//
+// ChargeRecord is ChargeStartedKiB with a floor of one step, for per-record
+// work (a range fold's reducer call) that costs a step even when empty.
+
+// ChargeCompleteKiB charges env one step per complete KiB (1024 bytes) of n
+// bytes of native work: floor(n/1024).  n below 1024 costs nothing and does
+// not call into the evaluator.  The charge depends only on n, so compute n
+// from argument or result values, never from caches or timing.
+func ChargeCompleteKiB(env *LEnv, n int) *LVal {
+	if n < 1024 {
+		return nil
+	}
+	return chargeResult(env.ChargeSteps(int64(n >> 10)))
+}
+
+// ChargeStartedKiB charges env one step per started KiB of n bytes of native
+// work: ceil(n/1024).  0 bytes cost nothing, 1..1024 cost one step, 1025 cost
+// two.
+func ChargeStartedKiB(env *LEnv, n int) *LVal {
+	if n <= 0 {
+		return nil
+	}
+	return chargeResult(env.ChargeSteps(int64(startedKiB(n))))
+}
+
+// ChargeRecord charges env for one record of n value bytes:
+// max(1, ceil(n/1024)).  A record of up to 1 KiB, empty included, costs
+// exactly one step; a larger one costs what ChargeStartedKiB(n) does.
+func ChargeRecord(env *LEnv, n int) *LVal {
+	return chargeResult(env.ChargeSteps(int64(max(1, startedKiB(n)))))
+}
+
+func startedKiB(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (n-1)/1024 + 1 // (n+1023)/1024 without overflow near MaxInt
+}
+
+// Step charges env one evaluation step, the per-element charge of a native
+// loop that replaces a Lisp loop.  Like LEnv.ChargeSteps it also reports a
+// done context, so a long native loop stays interruptible.
+func (env *LEnv) Step() *LVal {
+	return chargeResult(env.ChargeSteps(1))
+}
+
+// CheckContext returns the standard context-cancelled condition
+// (CondContextCancelled, "context cancelled: <cause>") when the evaluation's
+// context is done, and nil otherwise.  It charges no step.  It is the check
+// the evaluator makes at every call boundary, for a builtin that does
+// expensive work between charges.
+func (env *LEnv) CheckContext() *LVal {
+	if ctx := env.evalCtx; ctx != nil {
+		if err := ctx.Err(); err != nil {
+			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
+		}
+	}
+	return nil
+}
+
+func chargeResult(v *LVal) *LVal {
+	if v.Type == LError {
+		return v
+	}
+	return nil
+}
