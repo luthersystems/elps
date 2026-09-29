@@ -35,6 +35,9 @@ func TestGate(t *testing.T) {
 		{"overrides-ok.txt", 0, []string{"3 breaking change(s), 3 waived, 0 unwaived"}},
 		{"overrides-expired.txt", 1, []string{"EXPIRED 2000-01-01", "1 unwaived"}},
 		{"overrides-bad.txt", 2, []string{"OVERRIDE-BAD", "not a YYYY-MM-DD date"}},
+		// Two entries for one break would make the verdict depend on which
+		// one the matcher meets first; refuse the file instead.
+		{"overrides-dup.txt", 2, []string{"OVERRIDE-BAD", ":5", "duplicate override for lisp|time:sleep", "first at line 3"}},
 	} {
 		rc, out := judge(t, tc.overrides)
 		if rc != tc.rc {

@@ -25,6 +25,8 @@
 # release: release notes list every entry added since the last tag
 # (`make release-notes`, and the release workflow).  Set the expiry just after
 # the next expected release, and delete entries after that release ships.
+# An override that expires between the PR going green and its merge turns the
+# post-merge push run on main red, so leave margin past the merge date.
 #
 # FORMAT
 # ------

@@ -82,9 +82,12 @@ func issuesOK(s string) bool {
 // scripts/benchstat-waivers.txt: five |-separated fields
 // (surface | symbol | expires | issue | reason), a YYYY-MM-DD expiry, a
 // parseable tracking reference and a reason of at least 10 characters.
+// A second entry for the same surface|symbol is malformed: which expiry and
+// reason applied would otherwise depend on match order.
 func parseOverrides(source, content, today string) ([]*override, []string) {
 	var out []*override
 	var bad []string
+	seen := map[string]int{}
 	for i, raw := range strings.Split(content, "\n") {
 		lineno := i + 1
 		l := strings.TrimSuffix(raw, "\r")
@@ -129,6 +132,12 @@ func parseOverrides(source, content, today string) ([]*override, []string) {
 		if !ok {
 			continue
 		}
+		key := f[0] + "|" + f[1]
+		if first, dup := seen[key]; dup {
+			report(fmt.Sprintf("duplicate override for %s (first at line %d); keep one entry per break", key, first))
+			continue
+		}
+		seen[key] = lineno
 		out = append(out, &override{
 			surface: f[0], symbol: f[1], expires: f[2], issue: f[3], reason: f[4],
 			line: lineno, expired: today > f[2],

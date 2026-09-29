@@ -247,9 +247,14 @@ jobs:
   # the Go API of a non-internal package (apidiff) or the Lisp public surface
   # (`elps doc --json -l`: packages, exports, kind, formals) against the base.
   # An intended break needs a reviewed line in scripts/api-breaks.txt; the job
-  # log prints the exact line. The checkout is the PR merge commit, so HEAD^1
-  # is the base branch tip and fetch-depth 2 is all the history it needs; on a
-  # push to main HEAD^1 is the previous main.
+  # log prints the exact line. On a PR the checkout is the merge commit, so
+  # HEAD^1 is the base branch tip and fetch-depth 2 is all the history it
+  # needs. On a push the base is github.event.before, the tip main had before
+  # the push: a push can carry several commits (or a merge whose first parent
+  # is a side branch), and HEAD^1 would judge only the last one. Push runs take
+  # full history so the merge base with `before` is reachable. An all-zero
+  # `before` (a branch created by the push) has no previous tip, so it falls
+  # back to HEAD^1.
   api-break:
     name: API break gate
     # ARM for the reason spelled out on lint-and-test above.
@@ -261,7 +266,7 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
-          fetch-depth: 2
+          fetch-depth: ${{ github.event_name == 'push' && 0 || 2 }}
           persist-credentials: false
 
       - name: Set up Go
@@ -271,7 +276,16 @@ jobs:
           cache: true
 
       - name: Go API and Lisp surface vs base
-        run: bash scripts/api-break-gate.sh HEAD^1
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+        run: |
+          base=HEAD^1
+          if [ "$EVENT_NAME" = push ] && [ -n "$BEFORE" ] \
+            && [ "$BEFORE" != 0000000000000000000000000000000000000000 ]; then
+            base="$BEFORE"
+          fi
+          bash scripts/api-break-gate.sh "$base"
 
   # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.
   #
