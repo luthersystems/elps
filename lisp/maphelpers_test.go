@@ -60,7 +60,9 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 	fn := func(_ lisp.MapKey, v *lisp.LVal) bool { sum += v.Int; return true }
 	env.MapRange(m, fn) // warm the pool
 	allocs := testing.AllocsPerRun(100, func() { env.MapRange(m, fn) })
-	assert.Zero(t, allocs)
+	if !raceEnabled { // the race detector makes sync.Pool drop buffers
+		assert.Zero(t, allocs)
+	}
 	// MapEntries, for comparison, allocates per call.
 	assert.NotZero(t, testing.AllocsPerRun(100, func() { _ = m.MapEntries() }))
 }
