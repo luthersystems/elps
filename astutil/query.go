@@ -162,20 +162,21 @@ func FindCalls(form *lisp.LVal, names ...string) []CallSite {
 	for _, n := range names {
 		want[n] = true
 	}
-	// parent links each node to the list holding it (first path wins for
-	// shared nodes, which the walker visits once).
-	parent := make(map[*lisp.LVal]*lisp.LVal)
+	// parents links each node to every list holding it: a node shared by
+	// two places has two parents, and a call in it one site per place.
+	parents := make(map[*lisp.LVal][]*lisp.LVal)
+	linked := make(map[*lisp.LVal]bool)
 	var link func(v *lisp.LVal)
 	link = func(v *lisp.LVal) {
+		if linked[v] {
+			return
+		}
+		linked[v] = true
 		for _, c := range v.Cells {
-			if c == nil {
-				continue
+			if c != nil && c != form {
+				parents[c] = append(parents[c], v)
+				link(c)
 			}
-			if _, ok := parent[c]; ok || c == form {
-				continue
-			}
-			parent[c] = v
-			link(c)
 		}
 	}
 	if form != nil {
@@ -211,22 +212,56 @@ func FindCalls(form *lisp.LVal, names ...string) []CallSite {
 	})
 	sites := make([]CallSite, 0, len(calls))
 	for _, c := range calls {
-		var encl []Enclosure
-		for a := parent[c.form]; a != nil; a = parent[a] {
-			// Innermost first; reversed below.  A lambda form is both a
-			// special form and the owner of a function body: the body
-			// Enclosure is the inner of the two.
-			if op, ok := functions[a]; ok {
-				encl = append(encl, Enclosure{Form: a, Op: op, Function: true})
+		for _, path := range pathsToRoot(c.form, parents) {
+			var encl []Enclosure
+			// path runs outward from the call; a lambda form is both a
+			// special form and the owner of a function body, the body
+			// being the inner of the two.
+			for _, a := range path {
+				if op, ok := functions[a]; ok {
+					encl = append(encl, Enclosure{Form: a, Op: op, Function: true})
+				}
+				if op, ok := ops[a]; ok {
+					encl = append(encl, Enclosure{Form: a, Op: op})
+				}
 			}
-			if op, ok := ops[a]; ok {
-				encl = append(encl, Enclosure{Form: a, Op: op})
+			for i, j := 0, len(encl)-1; i < j; i, j = i+1, j-1 {
+				encl[i], encl[j] = encl[j], encl[i]
 			}
+			sites = append(sites, CallSite{Form: c.form, Name: c.name, Enclosing: encl})
 		}
-		for i, j := 0, len(encl)-1; i < j; i, j = i+1, j-1 {
-			encl[i], encl[j] = encl[j], encl[i]
-		}
-		sites = append(sites, CallSite{Form: c.form, Name: c.name, Enclosing: encl})
 	}
 	return sites
+}
+
+// maxCallPaths bounds how many places one shared call node is reported at;
+// code that shares structure exponentially would otherwise have
+// exponentially many paths.
+const maxCallPaths = 64
+
+// pathsToRoot returns the ancestor chains of n, innermost first, one per
+// place n occurs.
+func pathsToRoot(n *lisp.LVal, parents map[*lisp.LVal][]*lisp.LVal) [][]*lisp.LVal {
+	var out [][]*lisp.LVal
+	var up func(v *lisp.LVal, path []*lisp.LVal, seen map[*lisp.LVal]bool)
+	up = func(v *lisp.LVal, path []*lisp.LVal, seen map[*lisp.LVal]bool) {
+		if len(out) >= maxCallPaths {
+			return
+		}
+		ps := parents[v]
+		if len(ps) == 0 {
+			out = append(out, append([]*lisp.LVal(nil), path...))
+			return
+		}
+		for _, p := range ps {
+			if seen[p] {
+				continue // a cycle
+			}
+			seen[p] = true
+			up(p, append(path, p), seen)
+			delete(seen, p)
+		}
+	}
+	up(n, nil, map[*lisp.LVal]bool{})
+	return out
 }

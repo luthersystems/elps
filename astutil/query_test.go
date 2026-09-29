@@ -109,3 +109,23 @@ func TestFindCallsStructuralAncestry(t *testing.T) {
 		}
 	}
 }
+
+// A node shared by two places is reported once per place, each with its
+// own enclosures.
+func TestFindCallsSharedNodePerOccurrence(t *testing.T) {
+	c := parseOne(t, `(emit 1)`)
+	hb := parseOne(t, `(handler-bind ((condition h)) x)`)
+	hb.Cells[2] = c
+	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn"), hb, c})
+	sites := FindCalls(form, "emit")
+	require.Len(t, sites, 2)
+	inHandler := 0
+	for _, s := range sites {
+		for _, e := range s.Enclosing {
+			if e.Op == "handler-bind" {
+				inHandler++
+			}
+		}
+	}
+	assert.Equal(t, 1, inHandler)
+}
