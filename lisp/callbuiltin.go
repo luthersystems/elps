@@ -80,9 +80,30 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 			return list
 		}
 	}
+	// CallBuiltin pushes no frame, so the top frame is the calling
+	// builtin's.  funcall and apply mark the top frame terminal before their
+	// FunCall, assuming it is their own; here that would leave the caller's
+	// frame terminal and let tail-recursion optimization unwind through Go.
+	// Keep the caller's frame non-terminal while b runs and restore it after.
+	top := env.Runtime.Stack.Top()
+	if top != nil {
+		terminal := top.Terminal
+		top.Terminal = false
+		defer func() { top.Terminal = terminal }()
+	}
 	val := b.def.fun(env, list)
 	if val == nil {
 		return env.Errorf("internal error: builtin %s returned nil", b.def.name)
+	}
+	if val.Type == LMarkTailRec {
+		// The callee matched a terminal chain through the frame funcall or
+		// apply marked.  Go frames cannot be unwound, so make the call
+		// plainly, as a non-tail call from Lisp would.
+		if top != nil {
+			top.Terminal = false
+		}
+		fun, fargs := extractMarkTailRec(val)
+		return env.funCall(env.evalCtx, fun, fargs)
 	}
 	if val.Type == LMarkTerminal {
 		termEnv := val.Native.(*LEnv)
