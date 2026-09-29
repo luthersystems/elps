@@ -70,3 +70,18 @@ func TestLoopVariableCapture_ThroughMacros(t *testing.T) {
 	// Without the expander neither form is visible.
 	assertNoDiags(t, lintCheck(t, AnalyzerLoopVariableCapture, "(repeat i 3\n  (remember i))"))
 }
+
+// builtin-arity asks the code walker which lists are code: a call-shaped
+// list inside quoted data is not a call.
+func TestBuiltinArity_SkipsQuotedData(t *testing.T) {
+	for _, src := range []string{
+		`(set 'a (quote (car)))`,
+		`(set 'b '((car) 1))`,
+		`(set 'c '(x (cdr)))`,
+	} {
+		assertNoDiags(t, lintCheck(t, AnalyzerBuiltinArity, src))
+	}
+	// Code still is.
+	require.Len(t, lintCheck(t, AnalyzerBuiltinArity, `(list (car))`), 1)
+	require.Len(t, lintCheck(t, AnalyzerBuiltinArity, `(let ([x (car)]) x)`), 1)
+}

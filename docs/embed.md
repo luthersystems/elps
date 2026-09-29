@@ -1224,7 +1224,37 @@ for _, l := range astutil.LiveAcross(code, func(v *lisp.LVal) bool {
 }
 ```
 
-The `loop-variable-capture` lint check is built on `Scope.Captured`.
+`astutil.FreeVarsIn(form, locals)` is `FreeVars` restricted to the given
+enclosing local names: what a closure over `form` captures, or what code
+moved out of its context would need passed in.
+
+Two queries answer "where is this node?":
+
+- `astutil.ClassifyNodes(form)` assigns every node a `Role`: `RoleCode`,
+  `RoleBinding`, `RoleDefine`, `RoleSet`, `RoleData` or `RoleSyntax`. The
+  reader turns `[x (f)]` in a `let` and `'(x (f))` into the same kind of value.
+  `Role` tells them apart: the first is syntax holding a binding and code, the
+  second is data.
+- `astutil.FindCalls(form, names...)` returns each call to one of `names` in
+  code position, skipping local functions that shadow those names. Each result
+  lists the special forms and function bodies around the call, outermost
+  first, as `Enclosure`s. A macro that must reject a call inside a `lambda`,
+  handler or `quasiquote` can inspect them. `astutil.ContainsCall` is the
+  yes/no form.
+
+```go
+for _, site := range astutil.FindCalls(code, "yield") {
+    for _, e := range site.Enclosing {
+        if e.Function {
+            return fmt.Errorf("yield inside a %s body", e.Op)
+        }
+    }
+}
+```
+
+In the tree itself, `loop-variable-capture` is built on `Scope.Captured`,
+`rethrow-context` on `FindCalls`, `builtin-arity` on `ClassifyNodes`, and the
+LSP's captured-variable hover on `lambda` on `FreeVarsIn`.
 
 ### Documenting Go builtins
 

@@ -35,6 +35,9 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	if sym != nil {
 		content := buildHoverContent(sym)
 		if content != "" {
+			if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+				content += "\n\n" + captures
+			}
 			return hoverWithContent(content, hoverRange(sym, ref)), nil
 		}
 	}
@@ -49,6 +52,9 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	// Fallback: check builtins, special ops, macros, and use-package imports
 	// in the registry's package exports.
 	if content := s.registryHover(word, doc.ast, line+1); content != "" {
+		if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+			content += "\n\n" + captures
+		}
 		return hoverWithContent(content, wordRange), nil
 	}
 
@@ -258,4 +264,69 @@ func symbolKindLabel(kind analysis.SymbolKind) string {
 	default:
 		return "symbol"
 	}
+}
+
+// lambdaCapturesHover describes, for a cursor on the head of a lambda form,
+// which local variables of the enclosing code the closure captures: the
+// locals in scope around the lambda (from the document's analysis) that
+// astutil.FreeVarsIn finds used freely inside it.  It returns "" when the
+// cursor is not on a lambda head.  line and col are 0-based, col in bytes.
+func lambdaCapturesHover(doc *Document, line, col int) string {
+	doc.mu.Lock()
+	ast, res := doc.ast, doc.analysis
+	doc.mu.Unlock()
+	if res == nil {
+		return ""
+	}
+	elpsLine, elpsCol := line+1, col+1
+	form := lambdaHeadAt(ast, elpsLine, elpsCol)
+	if form == nil {
+		return ""
+	}
+	var locals []string
+	for sc := analysis.ScopeAtPosition(res.RootScope, elpsLine, elpsCol); sc != nil; sc = sc.Parent {
+		if sc.Node == form || sc.Kind == analysis.ScopeGlobal {
+			continue
+		}
+		for name := range sc.Symbols {
+			locals = append(locals, name)
+		}
+	}
+	captured := astutil.FreeVarsIn(form, locals)
+	if len(captured) == 0 {
+		return "Captures no local variables."
+	}
+	quoted := make([]string, len(captured))
+	for i, v := range captured {
+		quoted[i] = "`" + v.Str + "`"
+	}
+	return "**Captures:** " + strings.Join(quoted, ", ")
+}
+
+// lambdaHeadAt returns the lambda form whose head symbol is at the 1-based
+// line and byte column, or nil.
+func lambdaHeadAt(ast []*lisp.LVal, line, col int) *lisp.LVal {
+	var found *lisp.LVal
+	var visit func(v *lisp.LVal)
+	visit = func(v *lisp.LVal) {
+		if found != nil || v == nil || v.Type != lisp.LSExpr {
+			return
+		}
+		if len(v.Cells) > 0 && !v.IsQuoted() {
+			head := v.Cells[0]
+			if head.Type == lisp.LSymbol && (head.Str == "lambda" || head.Str == "lisp:lambda") {
+				if loc, ok := head.Source(); ok && loc.Line == line && locContainsCol(&loc, head.Str, col) {
+					found = v
+					return
+				}
+			}
+		}
+		for _, c := range v.Cells {
+			visit(c)
+		}
+	}
+	for _, e := range ast {
+		visit(e)
+	}
+	return found
 }

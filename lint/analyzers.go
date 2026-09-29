@@ -553,43 +553,56 @@ var AnalyzerBuiltinArity = &Analyzer{
 		// Collect AST nodes where arity checking should be skipped.
 		skipNodes := aritySkipNodes(pass.Exprs)
 
-		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if skipNodes[sexpr] {
-				return
-			}
-			head := HeadSymbol(sexpr)
-			if head == "" {
-				return
-			}
-			if userDefs[head] {
-				return
-			}
-			spec, ok := builtinArityTable[head]
-			if !ok {
-				return
-			}
-			argc := ArgCount(sexpr)
-			helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
-			headNode := sexpr.Cells[0]
-			if argc < spec.min {
-				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
-					Pos:     posFromSource(astutil.SourceLoc(headNode)),
-					EndPos:  endPosFromNode(headNode),
-					Notes:   []string{helpNote},
-				})
-			}
-			if spec.max >= 0 && argc > spec.max {
-				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
-					Pos:     posFromSource(astutil.SourceLoc(headNode)),
-					EndPos:  endPosFromNode(headNode),
-					Notes:   []string{helpNote},
-				})
-			}
-		})
+		// The code walker knows which lists are code: a call-shaped list
+		// inside quoted data, or a structural list such as a dotimes
+		// control list, is not a call.
+		for _, expr := range pass.Exprs {
+			roles := astutil.ClassifyNodes(expr)
+			checkBuiltinArity(pass, expr, roles, skipNodes, userDefs)
+		}
 		return nil
 	},
+}
+
+func checkBuiltinArity(pass *Pass, expr *lisp.LVal, roles *astutil.Roles, skipNodes map[*lisp.LVal]bool, userDefs map[string]bool) {
+	WalkSExprs([]*lisp.LVal{expr}, func(sexpr *lisp.LVal, depth int) {
+		if skipNodes[sexpr] {
+			return
+		}
+		if r := roles.Role(sexpr); r == astutil.RoleData || r == astutil.RoleSyntax {
+			return
+		}
+		head := HeadSymbol(sexpr)
+		if head == "" {
+			return
+		}
+		if userDefs[head] {
+			return
+		}
+		spec, ok := builtinArityTable[head]
+		if !ok {
+			return
+		}
+		argc := ArgCount(sexpr)
+		helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
+		headNode := sexpr.Cells[0]
+		if argc < spec.min {
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
+				Pos:     posFromSource(astutil.SourceLoc(headNode)),
+				EndPos:  endPosFromNode(headNode),
+				Notes:   []string{helpNote},
+			})
+		}
+		if spec.max >= 0 && argc > spec.max {
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
+				Pos:     posFromSource(astutil.SourceLoc(headNode)),
+				EndPos:  endPosFromNode(headNode),
+				Notes:   []string{helpNote},
+			})
+		}
+	})
 }
 
 // bindingForms are the special operators whose first argument is a list of
@@ -812,10 +825,10 @@ var AnalyzerRethrowContext = &Analyzer{
 	},
 }
 
-// walkRethrowContext walks each top-level form as code with the shared code
-// walker (astutil.ExpandAll), tracking the handler-bind forms and function
-// bodies that enclose each call.  When it finds a (rethrow) or
-// (error-stack) call outside every handler-bind, it calls report.
+// walkRethrowContext expands each top-level form (astutil.ExpandAll) and
+// asks astutil.FindCalls for every (rethrow) and (error-stack) call with the
+// handler-bind forms and function bodies around it.  For a call outside
+// every handler-bind, it calls report.
 //
 // The code walker knows each special form's shape, so quoted data is not
 // searched, and a local function or variable named rethrow is not the
@@ -857,99 +870,53 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 		}
 		report(form)
 	}
-	type frame struct {
-		depth   int
-		handler bool // a handler-bind form, else a function body
-		macro   bool // a defmacro body
-	}
 	for _, expr := range pass.Exprs {
 		if HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
 			if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {
 				pkg = name
 			}
 		}
-		// stack holds the enclosing handler-bind forms and function
-		// bodies with the depth each was entered at; an event at that
-		// depth or shallower has left it.
-		var stack []frame
-		pop := func(depth int) {
-			for len(stack) > 0 && stack[len(stack)-1].depth >= depth {
-				stack = stack[:len(stack)-1]
-			}
-		}
-		context := func() (inHandler, inFunction, inMacro bool) {
-			for _, f := range stack {
+		code := astutil.ExpandAll(expr, exp, pkg, nil)
+		for _, site := range astutil.FindCalls(code, "rethrow", "error-stack") {
+			name := strings.TrimPrefix(site.Name, lisp.DefaultLangPackage+":")
+			inHandler, inFunction := false, false
+			for _, e := range site.Enclosing {
 				switch {
-				case f.handler:
-					inHandler = true
-				case f.macro:
-					inMacro, inFunction = true, true
-				default:
+				case e.Function:
 					inFunction = true
+				case e.Op == "handler-bind":
+					inHandler = true
 				}
 			}
-			return
-		}
-		scanTemplate := func(tmpl *lisp.LVal) {
-			inHandler, _, _ := context()
-			if inHandler {
-				return
-			}
-			walkRethrowTemplate(tmpl, 0, true, reportOnce)
-		}
-		var form *lisp.LVal // the call whose head is being checked
-		astutil.ExpandAll(expr, exp, pkg, func(n *lisp.WalkNode) bool {
-			switch n.Event {
-			case lisp.WalkEnter:
-				// A scope's contents are deeper than its Enter event.
-				pop(n.Depth + 1)
-				if n.Function {
-					stack = append(stack, frame{depth: n.Depth, macro: n.Op == "defmacro"})
-				}
-				return true
-			case lisp.WalkLeave:
-				pop(n.Depth)
-				return true
-			case lisp.WalkForm:
-				pop(n.Depth)
-				form = n.Node
-				switch n.Op {
-				case "handler-bind":
-					stack = append(stack, frame{depth: n.Depth, handler: true})
-				case "quasiquote": // quote's datum arrives as WalkData
-					if _, _, inMacro := context(); inMacro {
-						for _, c := range n.Node.Cells[1:] {
-							scanTemplate(c)
-						}
-					}
-				}
-				return true
-			case lisp.WalkData:
-				pop(n.Depth)
-				if _, _, inMacro := context(); inMacro {
-					scanTemplate(n.Node)
-				}
-				return true
-			case lisp.WalkRef:
-				pop(n.Depth)
-			default:
-				pop(n.Depth)
-				return true
-			}
-			if !n.Head || n.Bound || form == nil {
-				return true
-			}
-			name := strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")
-			if name != "rethrow" && name != "error-stack" {
-				return true
-			}
-			inHandler, inFunction, _ := context()
 			if inHandler || (name == "error-stack" && inFunction) {
-				return true
+				continue
 			}
-			reportOnce(form)
+			reportOnce(site.Form)
+		}
+		astutil.WalkCode(code, func(n *lisp.WalkNode) bool {
+			if n.Event == lisp.WalkForm && n.Op == "defmacro" && len(n.Node.Cells) > 3 {
+				for _, body := range n.Node.Cells[3:] {
+					scanMacroTemplates(body, reportOnce)
+				}
+			}
 			return true
 		})
+	}
+}
+
+// scanMacroTemplates finds the quoted and quasiquoted templates in a macro
+// body and searches each as code.
+func scanMacroTemplates(v *lisp.LVal, report func(*lisp.LVal)) {
+	if v == nil || (v.Type != lisp.LSExpr && v.Type != lisp.LQuote) {
+		return
+	}
+	head := strings.TrimPrefix(HeadSymbol(v), lisp.DefaultLangPackage+":")
+	if v.IsQuoted() || v.Type == lisp.LQuote || head == "quote" || head == "quasiquote" {
+		walkRethrowTemplate(v, 0, true, report)
+		return
+	}
+	for _, c := range v.Cells {
+		scanMacroTemplates(c, report)
 	}
 }
 
