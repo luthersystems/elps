@@ -733,7 +733,7 @@ func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) ([]Diagnostic, map
 		// Check if this specific analyzer is suppressed
 		suppressed := false
 		for _, name := range strings.Split(info.directive, ",") {
-			if strings.TrimSpace(name) == d.Analyzer {
+			if directiveSuppresses(strings.TrimSpace(name), d.Analyzer) {
 				suppressed = true
 				break
 			}
@@ -745,6 +745,29 @@ func filterSuppressed(diags []Diagnostic, exprs []*lisp.LVal) ([]Diagnostic, map
 		}
 	}
 	return filtered, nolintLines
+}
+
+// nolintFamilies maps a directive name to the other analyzers it also
+// suppresses.  shadowing is the family name for hiding a name: its own
+// local-binding diagnostics and builtin-shadowing's top-level ones, so one
+// "; nolint:shadowing" silences either (issue #736).  The narrower name
+// still works on its own.
+var nolintFamilies = map[string][]string{
+	"shadowing": {"builtin-shadowing"},
+}
+
+// directiveSuppresses reports whether a nolint directive naming name
+// suppresses a diagnostic from analyzer.
+func directiveSuppresses(name, analyzer string) bool {
+	if name == analyzer {
+		return true
+	}
+	for _, member := range nolintFamilies[name] {
+		if member == analyzer {
+			return true
+		}
+	}
+	return false
 }
 
 // walkForNolint finds ;nolint comments and maps them to line numbers.

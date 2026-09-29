@@ -44,6 +44,10 @@ To suppress all checks on a line:
 (set x 42) ; nolint
 ```
 
+`shadowing` is also a family name: `; nolint:shadowing` suppresses both
+[`shadowing`](#shadowing) (local bindings) and
+[`builtin-shadowing`](#builtin-shadowing) (top-level bindings).
+
 ## Checks
 
 ### `set-usage`
@@ -545,13 +549,20 @@ with `_` to silence the warning, or `export` them.
 
 ### `shadowing`
 
-**Reports local bindings that shadow an outer binding.**
+**Reports bindings that shadow another binding.**
 (Severity: **warning** when the shadowed name is callable, **info** otherwise)
 
-Requires semantic analysis. Flags parameters, `let` bindings, and local
-functions (via `labels`/`flet`) that reuse a name from an enclosing scope
-or the global scope. Top-level `defun` redefinitions are excluded (they
-are intentional overrides, not shadowing).
+Shadowing has two halves:
+
+- **Local bindings** (this check). Requires semantic analysis. Flags
+  parameters, `let` bindings, and local functions (via `labels`/`flet`)
+  that reuse a name from an enclosing scope or the global scope.
+- **Top-level bindings** ([`builtin-shadowing`](#builtin-shadowing), which
+  runs without semantic analysis too). A top-level `defun`, `defmacro`,
+  `set` or `set!` that shadows a core `lisp` name is a **warning**, the same
+  severity as a local binding that hides a callable.
+
+`; nolint:shadowing` suppresses either half.
 
 Severity follows what is hidden. Shadowing a **builtin, special operator,
 macro or function** is a warning: while that binding is in scope, a call to
@@ -565,8 +576,12 @@ variable or parameter — is info.
 ;; INFO — local x shadows the parameter x
 (defun foo (x) (let ((x 2)) (+ x 1)))
 
-;; OK — top-level defun overriding a builtin is not flagged
+;; WARNING (builtin-shadowing) — a top-level defun hides lisp:map for the
+;; rest of this package
 (defun map (f l) (cons (f (car l)) ()))
+
+;; OK — a deliberate override, suppressed
+(defun map (f l) (cons (f (car l)) ())) ; nolint:shadowing
 
 ;; OK — a parameter shadowing a builtin or special-op is idiomatic in
 ;; formals; the builtins themselves use names like car, map and expr
@@ -597,6 +612,35 @@ callable, because refinement is only coherent for a value:
 
 Quoted occurrences do not count as a reference — `(let ([keys 'keys]) ...)`
 rebinds `keys` to a symbol, which narrows nothing, so it is still reported.
+
+### `builtin-shadowing`
+
+**Warns when a top-level binding shadows a core `lisp` name.**
+(Severity: **warning**)
+
+Builtins, special operators and macros are ordinary symbols, and shadowing
+one in your own package is legal, but every later call to that name in the
+package then means your binding. This check flags a top-level `defun`,
+`defmacro`, `set` or `set!` whose name is exported by `lisp`, in any package
+(a package created by `in-package` imports `lisp`). That includes the names
+that became core in elps#736: `help`, `test`, `benchmark`, `test-let`,
+`test-let*` and `benchmark-simple`.
+
+```lisp
+;; WARNING — test is core (lisp:test); this hides it in the package
+(defun test (x) (* 2 x))
+
+;; GOOD — rename it
+(defun double (x) (* 2 x))
+
+;; OK — deliberately shadowed; call the core form as lisp:test
+(defun test (x) (* 2 x)) ; nolint:shadowing
+```
+
+It is the top-level half of [`shadowing`](#shadowing): suppress it with
+`; nolint:builtin-shadowing` or `; nolint:shadowing`. Dynamic names
+(`(set name ...)`) and macro-generated definitions are not checked, and a
+write into `lisp` itself is `lisp-package-seal`'s error instead.
 
 ### `user-arity`
 

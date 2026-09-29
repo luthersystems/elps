@@ -2510,7 +2510,9 @@ var AnalyzerLispPackageSeal = &Analyzer{
 }
 
 // AnalyzerBuiltinShadowing warns about legal package-level Lisp-1 shadowing.
-// Local bindings remain the responsibility of AnalyzerShadowing.
+// Local bindings remain the responsibility of AnalyzerShadowing; together
+// they are the shadowing family, and "; nolint:shadowing" suppresses both
+// (nolintFamilies in lint.go).
 var AnalyzerBuiltinShadowing = &Analyzer{
 	Name:     "builtin-shadowing",
 	Severity: SeverityWarning,
@@ -2518,6 +2520,7 @@ var AnalyzerBuiltinShadowing = &Analyzer{
 		"Builtin, special operator, and macro names are ordinary symbols. " +
 		"Shadowing is legal in user packages, but changes later calls in that " +
 		"package. Rename the binding or call the core value with lisp: qualification. " +
+		"Suppress with ; nolint:builtin-shadowing or ; nolint:shadowing. " +
 		"Dynamic names and macro-generated definitions are not checked.",
 	Run: func(pass *Pass) error { return checkLispBindings(pass, false) },
 }
