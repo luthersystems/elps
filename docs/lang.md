@@ -1754,7 +1754,7 @@ including on error. A function return is not a general restoration boundary.
 The core `lisp` package is sealed against binding changes from Lisp code once
 `InitializeUserEnv` finishes registering the language, before application
 configuration runs. The seal remains in effect after `LoadLibrary` and in
-VMs instantiated from a template. `set`, `set!`, `defun`, `defmacro`, and `s:deftype`
+VMs instantiated from a template. `set`, `set!`, `defun`, and `defmacro`
 cannot write a `lisp:`-qualified name, or an unqualified name while the current
 package is `lisp`. For example, `(set 'lisp:if 1)` raises the ordinary error
 `cannot rebind lisp package binding: if` at the assignment, leaving later
@@ -1958,20 +1958,24 @@ field names return ordinary errors as well. These checks depend on the host's
 runtime payload; static Lisp analysis cannot determine whether an embedded
 pointer is nil.
 
-The `s` package (libschema) builds validators. Its arguments are evaluated
-like any function's, so constraints are written unquoted and a defined type is
-referenced by its bare symbol:
+The `s` package (libschema) builds validators with `s:make-validator`, which
+returns the validator without binding it anywhere; bind it yourself with the
+core `set`. Its arguments are evaluated like any function's, so constraints
+are written unquoted and a defined type is referenced by its bare symbol:
 
 ```lisp
-(s:deftype "small" s:int (s:gt 1) (s:lte 9))
-(s:deftype "rec" s:sorted-map (s:has-key "n" small))
+(set 'small (s:make-validator "small" s:int (s:gt 1) (s:lte 9)))
+(set 'rec (s:make-validator "rec" s:sorted-map (s:has-key "n" small)))
 (s:validate rec (sorted-map "n" 5)) ; ()
 ```
 
 A quoted constraint such as `'(s:gt 1)` or `'small` is data, not a
 constraint, and is refused with `bad-arguments` when the validator is built.
 (Before elps#737 libschema evaluated such arguments a second time and
-accepted them.) See `lisp/lisplib/libschema/README.md` for the full list of
+accepted them.) libschema previously also offered `s:deftype`, which bound
+its validator as a global under the caller's own name; it was removed
+(elps#736), since a prefixed library builtin must never write into the
+caller's package. See `lisp/lisplib/libschema/README.md` for the full list of
 types and constraints.
 
 ### User packages
