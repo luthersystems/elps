@@ -24,6 +24,10 @@ func (b *packageBase) publish() {
 // Hash writes cannot fail; their results are deliberately ignored.
 func (b *packageBase) fingerprint() [sha256.Size]byte {
 	h := sha256.New()
+	_, _ = fmt.Fprintf(h, "bindings:%d pending:%d\n", len(b.bindings), b.pending)
+	for _, binding := range b.bindings {
+		_, _ = fmt.Fprintf(h, "%q:%d:%p\n", binding.name, binding.value.index, binding.value.shared)
+	}
 	_, _ = fmt.Fprintf(h, "index:%d\n", b.index.Len())
 	for key, value := range b.index.All() {
 		_, _ = fmt.Fprintf(h, "%q:%d\n", key, value)

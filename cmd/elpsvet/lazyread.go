@@ -12,7 +12,7 @@ import (
 // lazyReadAnalyzer confines direct access to the tables a lazy template VM
 // fills on demand: Package.symbols, Package.baseValues and sortedmap.m. Under
 // lazy instantiation (lisp/template_lazy.go) an unmaterialized package slot
-// is nil in baseValues, and an unmaterialized thawed binding or sorted-map
+// has nil slot storage or a nil entry in baseValues, and a thawed binding or sorted-map
 // entry holds the lazyPending marker. A direct read that bypasses the filling
 // accessor -- Package.baseValue, Package.symbol, sortedmap.entry, or one of
 // the materializeSymbols/forceAll sweeps -- returns nil or leaks the marker
@@ -42,6 +42,8 @@ var lazyReadAnalyzer = &analysis.Analyzer{
 var lazyTableFunctions = map[string]string{
 	// The accessors that fill placeholders, and their sweeps.
 	"Package.baseValue":          "the filling accessor for base slots: a nil slot of a lazy package is materialized here",
+	"Package.slotValue":          "raw slot read for filling accessors and thaw/putSlot only; reads shared descriptors until private storage exists, preserving nil for pending bindings",
+	"Package.ensureBaseValues":   "initializes private storage from shared descriptors; indexed bindings stay nil for the filling accessors, and the storage never escapes this package",
 	"Package.symbol":             "the filling accessor for thawed bindings: replaces a lazyPending entry before returning it",
 	"Package.lookupRaw":          "returns a materialized binding or lazyPending, never nil for an unmaterialized slot; its callers (lookup, get) send lazyPending to lookupFill",
 	"Package.fillSymbol":         "the out-of-line fill behind Package.symbol: materializes one lazyPending binding",

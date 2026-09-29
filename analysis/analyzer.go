@@ -7,6 +7,7 @@ import (
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // maxMacroExpansionDepth caps recursive macro expansion in the analyzer
@@ -21,6 +22,14 @@ type analyzer struct {
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
 	expansionDepth   int // current macro expansion nesting depth
+	// expansions caches MacroExpander results per call node (nil = not
+	// expandable) so prescan and the deep walk share one expansion.
+	expansions map[*lisp.LVal]*lisp.LVal
+	// origin is the outermost macro call whose expansion is being analyzed.
+	origin *MacroOrigin
+	// fileNonMacros names the functions and variables the analyzed source
+	// defines at package level; expand never offers them to the expander.
+	fileNonMacros map[string]bool
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -38,34 +47,22 @@ func (a *analyzer) defaultPackage() string {
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	exprs = astutil.PackageForms(exprs)
+	// With a MacroExpander, top-level macro calls are replaced by the package
+	// forms of their expansion, so generated definitions are forward
+	// referenceable too. generatedBy maps those forms to their macro call.
+	generatedBy := map[*lisp.LVal]*lisp.LVal{}
+	exprs = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		head := astutil.HeadSymbol(expr)
-		switch head {
-		case "defun":
-			a.prescanDefun(expr, scope, SymFunction, currentPkg)
-		case "defmacro":
-			a.prescanDefun(expr, scope, SymMacro, currentPkg)
-		case "deftype":
-			a.prescanDeftype(expr, scope, currentPkg)
-		case "set":
-			a.prescanSet(expr, scope, currentPkg)
-		case "use-package":
-			a.prescanUsePackage(expr, scope, currentPkg)
-		case "in-package":
-			if astutil.ArgCount(expr) >= 1 {
-				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
-					currentPkg = pkgName
-				}
-			}
-			a.prescanInPackage(expr, scope)
-		default:
-			a.prescanCustomDef(expr, scope, currentPkg)
+		if call := generatedBy[expr]; call != nil {
+			a.withOrigin(call, currentPkg, func() { a.prescanForm(expr, scope, &currentPkg) })
+			continue
 		}
+		a.prescanForm(expr, scope, &currentPkg)
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
 	currentPkg = a.defaultPackage()
@@ -107,6 +104,32 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 				a.importPackageSymbols(scope, importPkg, pkg)
 			}
 		}
+	}
+}
+
+// prescanForm registers the definition one package form makes, advancing
+// *currentPkg past an in-package.
+func (a *analyzer) prescanForm(expr *lisp.LVal, scope *Scope, currentPkg *string) {
+	switch astutil.HeadSymbol(expr) {
+	case "defun":
+		a.prescanDefun(expr, scope, SymFunction, *currentPkg)
+	case "defmacro":
+		a.prescanDefun(expr, scope, SymMacro, *currentPkg)
+	case "deftype":
+		a.prescanDeftype(expr, scope, *currentPkg)
+	case "set":
+		a.prescanSet(expr, scope, *currentPkg)
+	case "use-package":
+		a.prescanUsePackage(expr, scope, *currentPkg)
+	case "in-package":
+		if astutil.ArgCount(expr) >= 1 {
+			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+				*currentPkg = pkgName
+			}
+		}
+		a.prescanInPackage(expr, scope)
+	default:
+		a.prescanCustomDef(expr, scope, *currentPkg)
 	}
 }
 
@@ -181,7 +204,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:    name,
 		Package: pkg,
 		Kind:    SymVariable,
-		Source:  astutil.SymbolLoc(expr.Cells[1]),
+		Source:  setTargetLoc(expr.Cells[1]),
 		Node:    extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
@@ -318,11 +341,36 @@ var extractPackageName = astutil.PackageNameArg
 // quote into the symbol, so the branch only ever matched a quoted LIST, and
 // the definition it invented carried the LIST's span as the location of the
 // name -- textDocumentRename then replaced '(a b) wholesale, dropping b.
+//
+// The long spelling (set (quote name) ...) -- an unquoted two-cell list headed
+// by quote -- names the inner symbol. Source rarely writes it, but macro
+// expansions do: (quote (unquote name)) inside a quasiquote template expands
+// to exactly that list.
 func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg
 	}
+	if arg.Type == lisp.LSExpr && !arg.IsQuoted() && len(arg.Cells) == 2 {
+		if head := astutil.HeadSymbol(arg); head == "quote" || head == "lisp:quote" {
+			if name := arg.Cells[1]; name.Type == lisp.LSymbol && !name.IsQuoted() {
+				return name
+			}
+		}
+	}
 	return nil
+}
+
+// setTargetLoc is the location of the symbol a set target names: the inner
+// symbol of (quote name), which for a macro-generated set is the name as
+// written in the macro call rather than the quote list from the macro's
+// template. It falls back to arg's own location.
+func setTargetLoc(arg *lisp.LVal) *token.Location {
+	if node := extractSetSymbolNode(arg); node != nil {
+		if loc := astutil.SymbolLoc(node); loc != nil {
+			return loc
+		}
+	}
+	return astutil.SymbolLoc(arg)
 }
 
 // extractSetSymbolName is extractSetSymbolNode's name, or "" when the first
@@ -423,6 +471,14 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 		if strings.HasSuffix(head, ":deftype") && astutil.ArgCount(node) >= 1 &&
 			node.Cells[1].Type == lisp.LString {
 			a.analyzeStringDeftype(node, scope, currentPkg)
+		} else if _, ok := customDefLikeMatch(node, a.cfg); ok {
+			a.analyzeDefLike(node, scope, currentPkg)
+		} else if a.expand(node, scope, currentPkg) != nil {
+			// A MacroExpander knows what a def-prefixed macro really
+			// defines; the name heuristic below is only a fallback.
+			// analyzeCall records the call-site reference, then analyzes
+			// the (cached) expansion.
+			a.analyzeCall(node, scope, currentPkg)
 		} else if _, ok := defLikeMatch(node, a.cfg); ok {
 			a.analyzeDefLike(node, scope, currentPkg)
 		} else {
@@ -985,7 +1041,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			existing.References++
 			a.result.References = append(a.result.References, &Reference{
 				Symbol: existing,
-				Source: astutil.SymbolLoc(node.Cells[1]),
+				Source: setTargetLoc(node.Cells[1]),
 				Node:   extractSetSymbolNode(node.Cells[1]),
 			})
 			return
@@ -995,7 +1051,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: currentPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
+			Source:  setTargetLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		a.root.Define(sym)
@@ -1010,7 +1066,7 @@ func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) 
 			Name:    name,
 			Package: defPkg,
 			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
+			Source:  setTargetLoc(node.Cells[1]),
 			Node:    extractSetSymbolNode(node.Cells[1]),
 		}
 		scope.Define(sym)
@@ -1282,16 +1338,8 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 		// runtime env but not in the analyzed source, e.g. cross-file macros
 		// or macros from the embedder's registry).
 		// Depth-limited to prevent stack overflow on self-expanding macros.
-		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) &&
-			a.expansionDepth < maxMacroExpansionDepth {
-			if expanded := a.cfg.MacroExpander.ExpandMacro(node, currentPkg); expanded != nil {
-				a.insideMacroCall++
-				a.expansionDepth++
-				a.analyzeExpr(expanded, scope, currentPkg)
-				a.expansionDepth--
-				a.insideMacroCall--
-				return
-			}
+		if a.analyzeExpansion(node, scope, currentPkg) {
+			return
 		}
 
 		if isMacro {
@@ -1303,6 +1351,24 @@ func (a *analyzer) analyzeCall(node *lisp.LVal, scope *Scope, currentPkg string)
 	for _, child := range node.Cells {
 		a.analyzeExpr(child, scope, currentPkg)
 	}
+}
+
+// analyzeExpansion analyzes node's macro expansion in its place, recording
+// node as the origin of the definitions the expansion makes. It reports
+// false, doing nothing, when node does not expand.
+func (a *analyzer) analyzeExpansion(node *lisp.LVal, scope *Scope, currentPkg string) bool {
+	expanded := a.expand(node, scope, currentPkg)
+	if expanded == nil {
+		return false
+	}
+	a.withOrigin(node, currentPkg, func() {
+		a.insideMacroCall++
+		a.expansionDepth++
+		a.analyzeExpr(expanded, scope, currentPkg)
+		a.expansionDepth--
+		a.insideMacroCall--
+	})
+	return true
 }
 
 // isUserMacro returns true if the symbol is a user-defined macro (not a

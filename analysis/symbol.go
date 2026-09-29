@@ -63,6 +63,10 @@ type Symbol struct {
 	References int
 	Exported   bool
 	External   bool // true for workspace-scanned or package-imported symbols
+	// GeneratedBy is set on a package-level definition that a macro call
+	// produced (Config.MacroExpander), or that was supplied through
+	// Config.ExtraGlobals with it set. Nil for ordinary definitions.
+	GeneratedBy *MacroOrigin
 }
 
 // Signature describes the parameter signature of a callable symbol.

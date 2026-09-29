@@ -16,8 +16,9 @@ import (
 // conservatively (flow-insensitively), including aliases passed to sort/slices.
 // It does not follow aliases through helper calls or aggregate containers,
 // indirect calls, reflection or unsafe.
-// Read-only base types prevent raw backing aliases; elpscheck additionally
-// detects changes to published tables at the next integrity check.
+// Read-only table types prevent raw table-backing aliases. Binding descriptors
+// are kernel-owned slices protected like every other packageBase field;
+// elpscheck additionally detects changes at the next integrity check.
 var frozenPackageAnalyzer = &analysis.Analyzer{
 	Name: "elpsfrozenpackage",
 	Doc:  "confine Package table and packageBase writes to guarded methods and unpublished constructors",
@@ -32,7 +33,8 @@ var packageWriteFunctions = map[string]string{
 	"Package.Export":                     "passes ensureWritable (which thaws a frozen package) before appending exports",
 	"Package.Exports":                    "passes ensureWritable (which thaws a frozen package) before merging and sorting exports",
 	"Package.exportSorted":               "passes ensureWritable (which thaws a frozen package) before inserting a sorted export",
-	"Package.putSlot":                    "rebinds an existing frozen name in this VM's own baseValues slot and slotFunNames overlay; shared base tables are never written",
+	"Package.putSlot":                    "calls ensureBaseValues before rebinding an existing frozen name in this VM's own slot and slotFunNames overlay; shared descriptors and tables are never written",
+	"Package.ensureBaseValues":           "allocates private slot storage and copies shared references from immutable descriptors on the first fill or write; never lends or writes the descriptor backing",
 	"Package.thaw":                       "the only builder of private tables from a frozen base; reached only through ensureWritable",
 	"NewPackage":                         "constructs an unpublished unfrozen package",
 	"Package.reserve":                    "replaces the empty tables of a package that has no binding, no base and no lazy plan with presized empty ones; frozen and lazy packages are left untouched",
@@ -40,7 +42,7 @@ var packageWriteFunctions = map[string]string{
 	"templatePlan.instantiateEager":      "constructs private VM packages before registry publication",
 	"templatePlan.instantiateLazy":       "constructs private VM package shells before registry publication",
 	"Package.fillSymbol":                 "replaces a lazyPending binding with its materialized value (the out-of-line half of Package.symbol); the binding is unchanged from the program's view",
-	"Package.fillBaseValue":              "fills this VM's own nil baseValues slot (the out-of-line half of Package.baseValue); shared base tables are never written",
+	"Package.fillBaseValue":              "calls ensureBaseValues before filling this VM's own nil slot (the out-of-line half of Package.baseValue); shared descriptors and tables are never written",
 	"templateCompiler.packageDescriptor": "constructs a fresh base before template publication",
 	"packageBase.publish":                "records the checked-build fingerprint before publication",
 }
