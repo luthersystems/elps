@@ -177,6 +177,7 @@ static-checks: check-golangci-version check-golangci-config
 # issue #680 -- a template shares the builtin's function value too). Package
 # table writes must go through the frozen-package gate (elpsfrozenpackage),
 # and lazily filled tables are read only through their accessors (elpslazyread).
+# No library builtin depends on which package is current (elpsownpkg, #736).
 # The package list is ./..., so there is no hand-scoped
 # list for native construction sites to drift out of.
 #

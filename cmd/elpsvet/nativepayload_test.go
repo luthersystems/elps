@@ -374,9 +374,10 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // or one added and never wired -- leaves a green gate checking less than the
 // Makefile comment, the workflow comment and the elpsvet skill
 // (.claude/skills/elpsvet/SKILL.md) all claim it does.
-// The payload rule is fourth, builtin-state fifth, frozen-package sixth, and lazy-read seventh.
+// The payload rule is fourth, builtin-state fifth, frozen-package sixth,
+// lazy-read seventh, and own-package (elpsvet/ownpkg, importable) eighth.
 func TestRegisteredAnalyzers(t *testing.T) {
-	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread"}
+	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread", "elpsownpkg"}
 	got := make([]string, 0, len(analyzers))
 	for _, a := range analyzers {
 		got = append(got, a.Name)
