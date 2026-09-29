@@ -604,7 +604,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 	case kindLambda:
 		if len(cells) > 1 {
 			enter(v, false)
-			w.formals(cells[1], op, d)
+			b.set(1, w.formals(cells[1], op, d))
 			w.forms(b, 2, depth)
 			leave(v)
 		}
@@ -618,7 +618,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 		}
 		if len(cells) > 2 {
 			enter(v, false)
-			w.formals(cells[2], op, d)
+			b.set(2, w.formals(cells[2], op, d))
 			w.forms(b, 3, depth)
 			leave(v)
 		}
@@ -633,7 +633,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 		if len(cells) > 2 {
 			w.data(cells[1], d)
 			enter(v, false)
-			w.formals(cells[2], op, d)
+			b.set(2, w.formals(cells[2], op, d))
 			w.forms(b, 3, depth)
 			leave(v)
 		} else {
@@ -757,20 +757,29 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 }
 
 // formals binds the names in a lambda list.  Markers are skipped.
-func (w *CodeWalker) formals(formals *LVal, op string, depth int) {
+func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 	if formals == nil || formals.Type != LSExpr {
-		return
+		return formals
 	}
-	for _, f := range formals.Cells {
-		if f.Type != LSymbol {
-			continue
+	fb := newRebuild(formals)
+	for i, f := range formals.Cells {
+		switch {
+		case f.Type == LSymbol:
+			switch f.Str {
+			case OptArgSymbol, VarArgSymbol, KeyArgSymbol:
+				continue
+			}
+			w.emitBind(f, op, depth, nil)
+		case f.Type == LSExpr && len(f.Cells) > 0 && f.Cells[0].Type == LSymbol:
+			// (name default): the default is code, evaluated in the
+			// scope of the parameters before it; then name is bound.
+			pb := newRebuild(f)
+			w.forms(pb, 1, depth)
+			fb.set(i, pb.done())
+			w.emitBind(f.Cells[0], op, depth, nil)
 		}
-		switch f.Str {
-		case OptArgSymbol, VarArgSymbol, KeyArgSymbol:
-			continue
-		}
-		w.emitBind(f, op, depth, nil)
 	}
+	return fb.done()
 }
 
 // pairs walks a list of binding pairs, calling fn with each well-formed
@@ -854,7 +863,7 @@ func (w *CodeWalker) flet(list, form *LVal, op string, kind formKind, depth int,
 		}
 		w.push(false)
 		w.visit(WalkNode{Event: WalkEnter, Node: bind, Op: op, Depth: depth + 1, Function: true})
-		w.formals(bind.Cells[1], op, depth+2)
+		pb.set(1, w.formals(bind.Cells[1], op, depth+2))
 		w.forms(pb, 2, depth+1)
 		w.visit(WalkNode{Event: WalkLeave, Node: bind, Op: op, Depth: depth + 1, Function: true})
 		w.pop()

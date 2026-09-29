@@ -156,3 +156,19 @@ func TestCodeWalkerExpansionLimitCountsExpansions(t *testing.T) {
 	next["f"] = "g"
 	assert.Equal(t, lisp.LError, w.Walk(parseCached(t, `(a)`)[0]).Type)
 }
+
+// Default forms of &optional and &key parameters are code, evaluated in the
+// scope of the parameters before them.
+func TestMacroExpandAllFormalDefaults(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"formal defaults", elpstest.TestSequence{
+			{`(defmacro m (x) (quasiquote (list (unquote x))))`, "()", ""},
+			{`(macroexpand-all '(lambda (&optional (a (m 1))) a))`, "'(lambda (&optional (a (list 1))) a)", ""},
+			{`(macroexpand-all '(lambda (&key (a (m 1))) a))`, "'(lambda (&key (a (list 1))) a)", ""},
+			{`(macroexpand-all '(defun f (x &optional (a (m x))) a))`, "'(defun f (x &optional (a (list x))) a)", ""},
+			// A later default sees the earlier parameter, which shadows m.
+			{`(macroexpand-all '(lambda (m &optional (a (m 1))) a))`, "'(lambda (m &optional (a (m 1))) a)", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
