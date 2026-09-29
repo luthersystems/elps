@@ -77,8 +77,9 @@ If it says the plugin is missing, or Codex is not logged in, do the set-up in
 
 - `--worktree <name>` makes (or re-uses) a git worktree in
   `.claude/worktrees/<name>` on a branch `codex/<name>`.
-- Codex **can change files** by default. Add `--read-only` when you want a
-  diagnosis or a review with no edits.
+- Codex **can change files** by default. Do not use `--read-only` for a
+  review or diagnosis: its sandbox cannot run tests or even write `/tmp`. See
+  "Reviews" below.
 - Add `--background` for long work. The run directory it prints holds
   `exit-status` and `final-message.txt`; collect them as in "The loop, as run".
 
@@ -92,8 +93,8 @@ Other options: `--dir <path>`, `--model <name|spark>`,
    a feature branch, cut it by hand
    (`git worktree add .claude/worktrees/<name> -b codex/<name> <branch>`) and
    pass `--dir`.
-2. **Launch in the background.** `run --dir <worktree> --background --effort high
-   "$(cat brief.md)"` returns a job id and the run directory at once.
+2. **Launch in the background.** `run --dir <worktree> --background
+   --model gpt-6.1-sol --effort xhigh "$(cat brief.md)"` returns a job id and the run directory at once.
 3. **Watch, don't poll by hand.** A `Monitor` loop reads the newest
    `.codex-delegate/runs/run.*/exit-status` per worktree and emits a line only on
    change.
@@ -105,6 +106,61 @@ Other options: `--dir <path>`, `--model <name|spark>`,
    plain sentence saying what changes and why, never a model identifier.
 6. **Sweep** the moment the round is accepted: `sweep <name>`, then delete
    `codex/<name>` and `/tmp/elps-<name>-go-cache`.
+
+## Models
+
+- Default: `--model gpt-6.1-sol --effort xhigh`.
+- Hard work (deep diagnosis, a subtle interpreter change): `--model gpt-6-astra
+  --effort high`.
+- Never a `max` or `ultra` tier.
+
+## Reviews
+
+A review runs in **normal write mode**, in its own worktree cut from the PR
+branch, with its own Go cache:
+
+```bash
+git worktree add .claude/worktrees/<name> -b codex/<name> origin/<pr-branch>
+./scripts/codex-delegate.sh run --dir .claude/worktrees/<name> --background \
+  --model gpt-6.1-sol --effort xhigh "$(cat brief.md)"
+# brief says: export GOCACHE=/tmp/elps-<name>-go-cache before any go command
+```
+
+Not `--read-only`: that sandbox cannot run tests or write `/tmp`, so the review
+can only read. The brief says "do not edit files" if edits are unwanted; verify
+its findings on the host. Do not build a custom write-limited sandbox either —
+the permission system blocks it; stay on the standard wrapper path.
+
+## The brief
+
+Keep it self-contained. A short template:
+
+```text
+Read AGENTS.md first, then .claude/skills/<skill>/SKILL.md, and follow them.
+Before any go command: export GOCACHE=/tmp/elps-<name>-go-cache
+
+FAILURE (verbatim): <test name / CI lines / gate output>
+Start reading at: <file>:<line>
+
+The fix must: <rule it satisfies>
+The fix must NOT: <what is off limits, e.g. touch other packages, drop a nolint>
+
+Verify with exactly: go test ./<pkg>/... ; make static-checks ; make elpsvet
+If the sandbox cannot run a command, say which and why. Never claim green.
+Do not commit; leave the changes in the worktree.
+
+Report: root cause; files changed; each command with its verbatim output;
+anything you are unsure of.
+```
+
+## Continuing a thread
+
+`run --dir <worktree> --resume "<follow-up>"` continues the last Codex thread
+for that workspace: answer a question a unit stopped on, hand back a review
+finding, or hand back host results the sandbox could not produce. If it fails
+with "Task ... is still running" (the plugin's registry kept a unit killed
+earlier), launch a fresh run with the same brief plus the follow-up; the
+worktree already holds the code.
 
 ## Send several at the same time
 
@@ -129,9 +185,25 @@ go test ./lisp/...   # the interpreter core alone, for a narrow unit
 
 ## Rules this container taught us
 
-- **Watch the disk.** Each worktree costs disk. The script refuses to start
-  below 8 GB free. Keep heavy work to about 3 at a time. If subagents stop
-  reporting back, look at the disk first.
+- **Check before a wave.** `uptime` and `df -h /`; `ps aux | grep
+  app-server-broker` shows units already running (other sessions count). Keep
+  heavy units to about 3 at a time; more drives load high enough that
+  everything slows or times out.
+- **Watch the disk.** The script refuses to start below 8 GB free. A unit that
+  vanishes or a subagent that stops reporting is almost always disk. Clear, in
+  order: `.codex-delegate/swept/` archives of accepted work,
+  `/tmp/*-go-cache` of finished units, `/tmp/codex-*-cache` directories
+  untouched for 30+ minutes, then `go clean -cache`. Never delete a live
+  unit's cache or worktree.
+- **Stale brokers.** When no wrapper run is active for that workspace, stop its
+  `app-server-broker.mjs` process and remove `/tmp/codex-companion/<name>-*`
+  and `/tmp/cxc-*` for it before relaunching. Prefer `sweep`, which does this
+  under the lock.
+- **Never `git stash` in any worktree.** The stash list is shared by every
+  worktree of the repo; a pop in one can apply another checkout's stash.
+- **One Codex unit per PR or item.** Do not fold unrelated items into a unit.
+- **A unit's green is a claim until the host re-runs it.** The sandbox has no
+  sockets, a read-only git index, and needs its own `GOCACHE`.
 - **Sweep when an agent retires.** `./scripts/codex-delegate.sh sweep <name>`,
   or `sweep` alone for all of them. Do this as each agent finishes, not later.
 - **"Broker is busy" is not an error.** It is a start-up race. The script
