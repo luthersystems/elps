@@ -697,6 +697,64 @@ if s != "hello" {
 These functions for converting types to native values are experimental in
 nature and their semantics could change.
 
+### Canonical encoding
+
+`lisp.EncodeCanonical` and `lisp.DecodeCanonical` are the Go side of the
+`serialize` and `deserialize` builtins.  Equal values always encode to the
+same bytes, so a host can hash them, use them as a key, or store them and
+read them back in another process or release.
+
+```go
+v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a"), lisp.Symbol(":k")})
+b, err := lisp.EncodeCanonical(v)
+if err != nil {
+    return err // a function, error, native or cyclic value
+}
+sum := sha256.Sum256(b) // a content hash of the value
+
+back, err := lisp.DecodeCanonical(b)
+if err != nil {
+    return err // bytes EncodeCanonical could not have produced
+}
+```
+
+`DecodeCanonical` is safe on untrusted input: it never panics, accepts only
+canonical bytes, and stops at the limits set by `WithCodecMaxDepth`,
+`WithCodecMaxBytes` and `WithCodecMaxValues` (defaults
+`DefaultCodecMaxDepth`, `DefaultCodecMaxBytes`, `DefaultCodecMaxValues`).
+Every value it returns is freshly allocated, so the caller owns it and may
+mutate it.
+
+Native values are rejected unless the host registers a `NativeCodec` for
+them.  The codec's `Name` is written into the bytes, so it must never
+change once data has been stored:
+
+```go
+type rgb struct{ R, G, B byte }
+
+colorCodec := lisp.NativeCodec{
+    Name: "example:rgb",
+    Encode: func(x any) ([]byte, bool, error) {
+        c, ok := x.(rgb)
+        if !ok {
+            return nil, false, nil // not ours; try the next codec
+        }
+        return []byte{c.R, c.G, c.B}, true, nil
+    },
+    Decode: func(b []byte) (any, error) {
+        if len(b) != 3 {
+            return nil, errors.New("rgb: want 3 bytes")
+        }
+        return rgb{b[0], b[1], b[2]}, nil
+    },
+}
+b, err := lisp.EncodeCanonical(lisp.Native(rgb{255, 128, 0}), lisp.WithNativeCodec(colorCodec))
+```
+
+The Lisp `serialize` and `deserialize` builtins register no native codecs.
+The byte format is described in
+[internals/canonical-codec.md](internals/canonical-codec.md).
+
 ## Operating on Go types
 
 To pass a native Go value to lisp code wrap it in a call to `lisp.Native()` so

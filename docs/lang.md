@@ -1695,6 +1695,73 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 9007199254740993
 ```
 
+### Serializing values (`serialize`, `deserialize`)
+
+`serialize` turns a value into bytes and `deserialize` turns those bytes
+back into an equal value.  The encoding is *canonical*: equal data always
+produces the same bytes, whatever order a map's entries were added in and
+whichever cells happen to be shared, on every machine and in every process.
+That makes the bytes suitable as a cache or memoization key, as the input to
+a content hash, as a deterministic test fixture, and for passing a value to
+another process.
+
+```lisp
+elps> (serialize '(1 "a" :k))
+#<bytes 1 8 3 1 2 4 1 97 7 1 107>
+elps> (deserialize (serialize (vector 1.5 (sorted-map "b" 2 :a 1))))
+(vector 1.5 (sorted-map ':a 1 "b" 2))
+elps> (equal? (serialize (sorted-map "x" 1 "y" 2))
+              (serialize (sorted-map "y" 2 "x" 1)))
+true
+```
+
+A memoized function can key its cache on the serialized arguments, so two
+equal argument lists hit the same entry even when they are different
+objects:
+
+```lisp
+(set 'cache (sorted-map))
+(defun area (shape)
+  (let* ((k (to-string (serialize shape)))
+         (hit (get cache k)))
+    (or hit
+        (let ((a (* (get shape "w") (get shape "h"))))
+          (assoc! cache k a)
+          a))))
+(area (sorted-map "w" 3 "h" 4))   ; computes 12
+(area (sorted-map "h" 4 "w" 3))   ; same key, served from the cache
+```
+
+What can be serialized: ints, floats, strings, bytes, symbols, keywords,
+lists, arrays of any rank, sorted-maps and tagged values (see
+[User-Defined Types](#user-defined-types)).  `true` and `false` are symbols
+and round-trip as such.  Functions, errors and native Go values raise an
+error, as does a value that contains itself.
+
+Details that are part of the format:
+
+- **Floats** keep their exact bits, including `-0.0`.  Every NaN is written
+  as the same NaN.
+- **Lists** come back as data lists, the value `list` returns.  Whether a
+  list was quoted is not data and is not recorded.
+- **Shared structure** is written out in full at every place it occurs, and
+  `deserialize` never returns two references to one cell: every value it
+  returns is new and shares nothing, so mutating it cannot affect anything
+  else.
+- **Tagged values** keep their type name and data.  `deserialize` does not
+  run the type's constructor.
+- **Limits**: `deserialize` accepts only bytes `serialize` could have
+  produced and raises an error on anything else, including extra trailing
+  bytes.  Nesting deeper than 1024 levels, more than 2^20 values, or an
+  encoding larger than 16 MiB (or the runtime's allocation limit, if lower)
+  raises an error.
+- **Steps**: `serialize` costs one step per started KiB of output and
+  `deserialize` one per started KiB of input.
+
+The format begins with a version byte and is frozen: bytes written today
+decode the same way in every later release.  The byte layout is described in
+[docs/internals/canonical-codec.md](internals/canonical-codec.md).
+
 ## Packages
 
 Packages allow namespace isolation for components of a code base as its
