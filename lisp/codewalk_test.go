@@ -225,3 +225,148 @@ func TestCodeWalkerOpaqueSpecialOp(t *testing.T) {
 	}
 	assert.Same(t, form, w.Walk(form))
 }
+
+// Source analysis preserves the tooling's historical interpretation, including
+// interleaved let declarations, flet's outer closure scope and template refs.
+func TestCodeWalkerSourceAnalysis(t *testing.T) {
+	tests := []struct {
+		source string
+		events []string
+	}{
+		{`(let ((x first) (y second)) (+ x y))`, []string{"enter:let", "outer", "ref:first", "inner", "bind:x=first", "outer", "ref:second", "inner", "bind:y=second", "ref:+", "ref:x", "ref:y", "end:", "leave:let", "end:let"}},
+		{`(flet ((f (x) (f x))) (f 1))`, []string{"enter:flet", "bind:f", "outer-function", "bind:x", "ref:f", "ref:x", "end:", "leave:flet", "ref:f", "end:", "leave:flet", "end:flet"}},
+		{`(quasiquote [known (unquote missing extra) '(unquote held)])`, []string{"template:known", "ref:missing", "ref:extra", "template:unquote", "template:held", "end:quasiquote"}},
+		{`(macrolet ((m (x) omitted)) (m unknown))`, []string{"enter:macrolet", "bind:m", "ref:m", "ref:unknown", "end:", "leave:macrolet", "end:macrolet"}},
+		{`(cond (true yes) [no ignored] malformed (else final))`, []string{"ref:yes", "ref:final", "end:cond"}},
+		{`(test-let "t" ((x 1)) x)`, []string{"enter:test-let", "outer", "inner", "bind:x", "ref:x", "leave:test-let", "end:test-let"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			form := parseCached(t, tt.source)[0]
+			before := fingerprintAST([]*lisp.LVal{form})
+			var got []string
+			w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+				switch n.Event {
+				case lisp.WalkEnter:
+					if n.Outer {
+						if n.Function {
+							got = append(got, "outer-function")
+						} else {
+							got = append(got, "outer")
+						}
+					} else {
+						got = append(got, "enter:"+n.Op)
+					}
+				case lisp.WalkLeave:
+					if n.Node == nil {
+						got = append(got, "inner")
+					} else {
+						got = append(got, "leave:"+n.Op)
+					}
+				case lisp.WalkBind:
+					s := "bind:" + n.Node.Str
+					if n.Init != nil {
+						s += "=" + n.Init.String()
+					}
+					got = append(got, s)
+				case lisp.WalkRef:
+					got = append(got, "ref:"+n.Node.Str)
+				case lisp.WalkData:
+					if n.Template && n.Node.Type == lisp.LSymbol && !n.Node.IsQuoted() {
+						got = append(got, "template:"+n.Node.Str)
+					}
+				case lisp.WalkEnd:
+					got = append(got, "end:"+n.Op)
+				case lisp.WalkForm, lisp.WalkSet, lisp.WalkDefine, lisp.WalkLiteral:
+				}
+				return true
+			}}
+			require.Same(t, form, w.Walk(form))
+			require.Equal(t, tt.events, got)
+			require.Equal(t, before, fingerprintAST([]*lisp.LVal{form}))
+		})
+	}
+}
+
+func TestCodeWalkerCustomBinding(t *testing.T) {
+	form := parseCached(t, `(custom name meta (x) (+ x missing))`)[0]
+	var refs []string
+	var definitions []*lisp.WalkNode
+	w := &lisp.CodeWalker{SourceAnalysis: true,
+		BindingForm: func(v *lisp.LVal) *lisp.CodeBinding {
+			if v.Cells[0].Str == "custom" {
+				return &lisp.CodeBinding{NameIndex: 1, FormalsIndex: 3}
+			}
+			return nil
+		},
+		Visit: func(n *lisp.WalkNode) bool {
+			if n.Event == lisp.WalkDefine {
+				cp := *n
+				definitions = append(definitions, &cp)
+			}
+			if n.Event == lisp.WalkRef {
+				refs = append(refs, n.Node.Str)
+			}
+			return true
+		},
+	}
+	require.Same(t, form, w.Walk(form))
+	require.Equal(t, []string{"custom", "meta", "+", "x", "missing"}, refs)
+	require.Len(t, definitions, 1)
+	require.Same(t, form, definitions[0].Owner)
+	require.Same(t, form.Cells[3], definitions[0].Formals)
+}
+
+func TestCodeWalkerSourceVisitsSharedCodePerOccurrence(t *testing.T) {
+	shared := parseCached(t, `(f x)`)[0]
+	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn"), shared, shared})
+	refs := 0
+	w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+		if n.Event == lisp.WalkRef {
+			refs++
+		}
+		return true
+	}}
+	w.Walk(form)
+	require.Equal(t, 5, refs) // progn plus f/x at each occurrence
+}
+
+func TestCodeWalkerSourceDefinitionMetadata(t *testing.T) {
+	for _, op := range []string{"defun", "defmacro", "deftype"} {
+		t.Run(op, func(t *testing.T) {
+			form := parseCached(t, "("+op+" name (x) x)")[0]
+			var definition *lisp.WalkNode
+			w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+				if n.Event == lisp.WalkDefine {
+					cp := *n
+					definition = &cp
+				}
+				return true
+			}}
+			require.Same(t, form, w.Walk(form))
+			require.NotNil(t, definition)
+			require.Same(t, form, definition.Owner)
+			require.Same(t, form.Cells[1], definition.Node)
+			require.Same(t, form.Cells[2], definition.Formals)
+			require.Equal(t, op, definition.Op)
+		})
+	}
+}
+
+// Adding source syntax for ordinary macros must not suppress their runtime
+// expansion through the default classifier.
+func TestCodeWalkerExpandsSourceOnlyForms(t *testing.T) {
+	for _, op := range []string{"deftype", "test-let", "test-let*"} {
+		t.Run(op, func(t *testing.T) {
+			form := parseCached(t, "("+op+" name () body)")[0]
+			calls := 0
+			w := &lisp.CodeWalker{Expand1: func(v *lisp.LVal) (*lisp.LVal, bool) {
+				calls++
+				require.Same(t, form, v)
+				return lisp.Int(7), true
+			}}
+			require.Equal(t, lisp.Int(7), w.Walk(form))
+			require.Equal(t, 1, calls)
+		})
+	}
+}

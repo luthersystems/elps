@@ -38,12 +38,12 @@ func kindConsts(t *testing.T) (map[string]bool, *ast.File) {
 
 // TestEverySpecialOpHasAKind fails when a special operator is added to
 // lisp/op.go without a formKind, or a formKind no longer names one: the
-// special operators (plus defun and defmacro) and the formKind constants
-// must correspond one to one.  Add a kind constant and a formKinds entry,
-// then handle the kind in every formKind switch (the exhaustive linter
-// lists them).
+// special operators (plus the source definition/testing macros) and the
+// formKind constants must correspond one to one. Add a kind constant and
+// a formKinds entry, then handle the kind in every formKind switch (the
+// exhaustive linter lists them).
 func TestEverySpecialOpHasAKind(t *testing.T) {
-	names := []string{"defun", "defmacro"}
+	names := []string{"defun", "defmacro", "deftype", "test-let", "test-let*"}
 	for _, op := range append(append([]*langBuiltin{}, langSpecialOps...), userSpecialOps...) {
 		names = append(names, op.Name())
 	}
@@ -99,18 +99,19 @@ func TestFormKindSwitchesHaveNoDefault(t *testing.T) {
 // without deciding how the code walker treats it.  Most macros expand to
 // ordinary source and need nothing.  A macro whose expansion embeds a value
 // that is not source (defun and defmacro embed a compiled function) must be
-// given a kind instead, so walkers keep it as written.
+// given a kind instead, so walkers keep it as written. Source-only forms
+// have kinds for analysis, but runtime walks still expand them normally.
 func TestEveryCoreMacroReviewedForWalking(t *testing.T) {
 	reviewed := map[string]formKind{
 		"defmacro":         kindDefmacro,
 		"defun":            kindDefun,
-		"deftype":          kindNone,
+		"deftype":          kindDeftype,
 		"curry-function":   kindNone,
 		"get-default":      kindNone,
 		"trace":            kindNone,
 		"defconst":         kindNone,
-		"test-let":         kindNone,
-		"test-let*":        kindNone,
+		"test-let":         kindTestLet,
+		"test-let*":        kindTestLetSeq,
 		"benchmark-simple": kindNone,
 	}
 	var names []string

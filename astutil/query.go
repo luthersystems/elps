@@ -91,7 +91,7 @@ func ClassifyNodes(form *lisp.LVal) *Roles {
 			r.m[n.Node] = roleCode
 		case lisp.WalkData:
 			mark(n.Node, RoleData)
-		case lisp.WalkEnter, lisp.WalkLeave:
+		case lisp.WalkEnter, lisp.WalkLeave, lisp.WalkEnd:
 		}
 		return true
 	})
@@ -205,7 +205,7 @@ func FindCalls(form *lisp.LVal, names ...string) []CallSite {
 				want[strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")] {
 				calls = append(calls, call{form: current, name: n.Node.Str})
 			}
-		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave:
+		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave, lisp.WalkEnd:
 		}
 		return true
 	})
