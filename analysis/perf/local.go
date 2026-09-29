@@ -197,13 +197,13 @@ func isCallable(name string) bool {
 		"in-package", "use-package", "export",
 		"dotimes",
 		"thread-first", "thread-last",
-		"assert", "qualified-symbol",
+		"assert", "qualified-symbol", "help",
 		"function", "expr",
 		// macros
 		"defun", "defmacro", "deftype", "defconst",
 		"curry-function", "get-default", "trace",
 		// testing forms (not real calls)
-		"test", "test-let":
+		"test", "test-let", "test-let*", "benchmark", "benchmark-simple":
 		return false
 	}
 	return true

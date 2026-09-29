@@ -91,8 +91,8 @@
   "dotimes" "assert"
   "thread-first" "thread-last"
   "quasiquote" "unquote" "unquote-splicing"
-  "function" "expr" "qualified-symbol"
-  "test" "test-let"))
+  "function" "expr" "qualified-symbol" "help"
+  "test" "test-let" "benchmark"))
 
 ; --- Built-in function calls ---
 ; First symbol in a list that is a known builtin gets @function.builtin

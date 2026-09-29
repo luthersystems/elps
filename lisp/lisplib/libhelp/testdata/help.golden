@@ -1,0 +1,81 @@
+;; (HELP documented-var)
+int documented-var 42
+  The answer to everything.
+=> ()
+;; (HELP plain-var)
+string plain-var "hello"
+=> ()
+;; (HELP map)
+function (map type-specifier fn seq)
+  Returns a sequence containing values returned by applying unary
+  function fn to elements of seq in order. The type-specifier
+  ('list or 'vector) determines the return type. fn may be a function
+  value or a quoted symbol resolved in the global package environment.
+=> ()
+;; (HELP lisp:map)
+function (lisp:map type-specifier fn seq)
+  Returns a sequence containing values returned by applying unary
+  function fn to elements of seq in order. The type-specifier
+  ('list or 'vector) determines the return type. fn may be a function
+  value or a quoted symbol resolved in the global package environment.
+=> ()
+;; (HELP my-fn)
+function (my-fn a &optional b &rest c)
+  Adds things up.
+  
+  Longer description that goes on for a while so that the word wrapping at
+  seventy two columns is exercised properly here.
+=> ()
+;; (HELP 'my-fn)
+function (my-fn a &optional b &rest c)
+  Adds things up.
+  
+  Longer description that goes on for a while so that the word wrapping at
+  seventy two columns is exercised properly here.
+=> ()
+;; (HELP my-mac)
+macro (my-mac x)
+  A macro.
+=> ()
+;; (HELP defun)
+macro (defun name formals &rest expr)
+  Defines a named function in the current package.
+  Malformed lambda lists and duplicate parameter names are errors at
+  creation; see lambda for parameter-list and duplicate keyword rules.
+  The lisp package is sealed after initialization; defining a name there
+  signals:
+  cannot rebind lisp package binding: name. Unqualified builtin
+  shadowing in your own package remains legal.
+=> ()
+;; (HELP let)
+operator (let bindings &rest expr)
+  Creates local variable bindings evaluated in parallel. All value
+  expressions are evaluated in the enclosing scope before any
+  bindings are established. The first argument is a list of
+  [symbol value] pairs. Duplicate names are legal (the last binding wins),
+  but lint warns; use let* for sequential rebinding. Returns the last body
+  value.
+=> ()
+;; (HELP undoc)
+function (undoc x)
+=> ()
+;; (HELP other:secret)
+int other:secret 7
+  Other's secret.
+=> ()
+;; (HELP math:pi)
+float math:pi 3.141592653589793
+  The ratio of a circle's circumference to its diameter (3.14159...).
+=> ()
+;; (let ([local-x 3]) (HELP local-x))
+int local-x 3
+=> ()
+;; (HELP nosuch)
+ERROR: test:1:1: lisp:help: unbound symbol: nosuch
+;; (HELP string:join)
+function (string:join list sep)
+  Concatenates a list of strings with sep inserted between each
+  element. All items must be strings; output must fit the byte limit.
+=> ()
+;; (HELP "str")
+ERROR: test:1:1: lisp:help: argument is not a symbol: 'string

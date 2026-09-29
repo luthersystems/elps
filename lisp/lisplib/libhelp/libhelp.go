@@ -8,10 +8,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/helpdoc"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
-	"github.com/muesli/reflow/indent"
-	"github.com/muesli/reflow/wordwrap"
 )
 
 // DefaultPackageName is the package name used by LoadPackage.
@@ -243,17 +242,7 @@ func queryPackageSymbols(pkg *lisp.Package) []SymbolDoc {
 
 // cleanDocRaw dedents a docstring without word-wrapping.
 // JSON consumers get clean text they can format themselves.
-func cleanDocRaw(doc string) string {
-	if doc == "" {
-		return ""
-	}
-	if doc[0] == '\n' {
-		doc = doc[1:]
-	}
-	doc = dedentDoc(doc)
-	doc = strings.TrimSpace(doc)
-	return doc
-}
+func cleanDocRaw(doc string) string { return helpdoc.CleanDocRaw(doc) }
 
 // MissingDoc describes a symbol with no documentation.
 type MissingDoc struct {
@@ -363,37 +352,42 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		return e
 	}
 	env.SetPackageDoc("Interactive documentation: inspect functions, variables, and package exports.")
-	for _, op := range ops {
-		env.AddSpecialOps(true, op)
+	for _, fn := range builtins {
+		env.AddBuiltins(true, fn)
 	}
 	return lisp.Nil()
 }
 
-//elpsvet:allow package op table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddSpecialOps)
-var ops = []*libutil.Builtin{
-	libutil.FunctionDoc("help", lisp.Formals("var-name"), opHelp,
-		`
-		Prints documentation for the given variable name.  Functions have their
-		signature and any docstring rendered.  Other variables have their types
-		and current values printed.
-		`),
-	libutil.FunctionDoc("help-package", lisp.Formals("pkg-name"), opHelpPackage,
+// builtins are the help package's registry functions.  They look packages up
+// by name in the registry, so they never depend on which package is current.
+//
+// Documenting a single name is core lisp:help (issue #736), not a function
+// here: a name resolves in the package of the code doing the lookup, and
+// these functions run in package help.  The three below were special
+// operators until #736 and are ordinary functions now, so no package other
+// than lisp defines a special operator.  Their documented spelling quotes the
+// package name, (help-package 'math), which reads the same either way.
+//
+//elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
+var builtins = []*libutil.Builtin{
+	libutil.FunctionDoc("help-package", lisp.Formals("pkg-name"), builtinHelpPackage,
 		`
 		Prints documentation for exported symbols in the specified package.
+		pkg-name is a symbol, e.g. (help-package 'math).
 		`),
-	libutil.FunctionDoc("help-package-symbols", lisp.Formals("pkg-name", lisp.OptArgSymbol, "all"), opPackageSymbols,
+	libutil.FunctionDoc("help-package-symbols", lisp.Formals("pkg-name", lisp.OptArgSymbol, "all"), builtinPackageSymbols,
 		`
 		Prints symbols defined in the specified package.  If a second argument
 		is given which evaluates as true then unexported symbols in the package
 		will also be printed.
 		`),
-	libutil.FunctionDoc("help-packages", lisp.Formals(), opHelpPackages,
+	libutil.FunctionDoc("help-packages", lisp.Formals(), builtinHelpPackages,
 		`
 		Lists all packages loaded in the runtime with their descriptions.
 		`),
 }
 
-func opHelpPackages(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+func builtinHelpPackages(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	err := RenderPackageList(env.Runtime.Stderr, env)
 	if err != nil {
 		return env.Error(err)
@@ -401,44 +395,40 @@ func opHelpPackages(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Nil()
 }
 
-func opHelp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.Cells[0]
+// packageNameArg is the package name a help function was given, a symbol:
+// the documented (help-package 'math).
+func packageNameArg(env *lisp.LEnv, name *lisp.LVal) (string, *lisp.LVal) {
 	if name.Type != lisp.LSymbol {
-		return env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
+		return "", env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
 	}
-	err := RenderVar(env.Runtime.Stderr, env, name.Str)
+	return name.Str, nil
+}
+
+func builtinHelpPackage(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	name, lerr := packageNameArg(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
+	}
+	err := RenderPkgExported(env.Runtime.Stderr, env, name)
 	if err != nil {
 		return env.Error(err)
 	}
 	return lisp.Nil()
 }
 
-func opHelpPackage(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.Cells[0]
-	if name.Type != lisp.LSymbol {
-		return env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
+func builtinPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	arg := args.ReqArg(env, 0)
+	if arg.Type == lisp.LError {
+		return arg
 	}
-	err := RenderPkgExported(env.Runtime.Stderr, env, name.Str)
-	if err != nil {
-		return env.Error(err)
+	name, lerr := packageNameArg(env, arg)
+	if lerr != nil {
+		return lerr
 	}
-	return lisp.Nil()
-}
-
-func opPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.ReqArg(env, 0)
-	if name.Type == lisp.LError {
-		return name
-	}
-	if name.Type != lisp.LSymbol {
-		return env.Errorf("argument is not a symbol: %v", lisp.GetType(name))
-	}
-	// A builtin's arguments arrive evaluated; evaluating this one again ran
-	// the value as code and lost the caller's error location.
 	printAll := args.KeyArg(1)
-	pkg := env.Runtime.Registry.Package(name.Str)
+	pkg := env.Runtime.Registry.Package(name)
 	if pkg == nil {
-		return env.Errorf("no package: %q", name.Str)
+		return env.Errorf("no package: %q", name)
 	}
 	if lisp.True(printAll) {
 		for _, sym := range pkg.SymbolNames() {
@@ -566,89 +556,15 @@ func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
 }
 
 func renderVal(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, doc string) error {
-	_, err := fmt.Fprintf(w, "%v %s %v\n", lisp.GetType(v).Str, sym, env.Render(v))
-	if err != nil {
-		return err
-	}
-	if doc != "" {
-		cleaned := cleanDocstring(doc)
-		_, err = fmt.Fprintln(w, cleaned)
-	}
-	return err
+	return helpdoc.WriteVal(w, lisp.GetType(v).Str, sym, env.Render(v), doc)
 }
 
 func renderFun(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, symbolDoc string) error {
-	_, err := fmt.Fprintf(w, "%s ", v.FunType)
-	if err != nil {
-		return fmt.Errorf("rendering function type: %w", err)
-	}
 	args := v.Cells[0]
 	siglist := lisp.SExpr(make([]*lisp.LVal, 1+args.Len()))
 	siglist.Cells[0] = lisp.Symbol(sym)
 	copy(siglist.Cells[1:], args.Cells)
-	_, err = fmt.Fprintln(w, env.Render(siglist))
-	if err != nil {
-		return fmt.Errorf("rendering signature: %w", err)
-	}
-	doc := cleanDocstring(v.Docstring())
-	if doc == "" {
-		doc = cleanDocstring(symbolDoc)
-	}
-	if doc != "" {
-		_, err = fmt.Fprintln(w, doc)
-		return err
-	}
-	return nil
+	return helpdoc.WriteFun(w, v.FunType.String(), env.Render(siglist), v.Docstring(), symbolDoc)
 }
 
-func cleanDocstring(doc string) string {
-	if doc == "" {
-		return ""
-	}
-	if doc[0] == '\n' {
-		doc = doc[1:]
-	}
-	doc = indent.String(wordwrap.String(dedentDoc(doc), 72), 2)
-	doc = strings.TrimSuffix(doc, "\n")
-	return doc
-}
-
-// dedentDoc removes common leading whitespace from all non-empty lines.
-// It handles Go raw string literals where the first line may have less
-// indentation than continuation lines (which inherit the source code's
-// tab indentation). Tabs are normalized to spaces before processing.
-func dedentDoc(s string) string {
-	s = strings.ReplaceAll(s, "\t", "    ")
-	lines := strings.Split(s, "\n")
-
-	// Find minimum leading spaces across non-empty lines, skipping
-	// the first line (which in raw strings often has no indentation).
-	minWS := -1
-	start := 0
-	if len(lines) > 1 {
-		start = 1
-	}
-	for _, line := range lines[start:] {
-		trimmed := strings.TrimLeft(line, " ")
-		if trimmed == "" {
-			continue
-		}
-		ws := len(line) - len(trimmed)
-		if minWS < 0 || ws < minWS {
-			minWS = ws
-		}
-	}
-	if minWS <= 0 {
-		return strings.TrimLeft(lines[0], " ") + "\n" + strings.Join(lines[1:], "\n")
-	}
-
-	lines[0] = strings.TrimLeft(lines[0], " ")
-	for i := 1; i < len(lines); i++ {
-		if strings.TrimSpace(lines[i]) == "" {
-			lines[i] = ""
-		} else if len(lines[i]) >= minWS {
-			lines[i] = lines[i][minWS:]
-		}
-	}
-	return strings.Join(lines, "\n")
-}
+func cleanDocstring(doc string) string { return helpdoc.CleanDocstring(doc) }

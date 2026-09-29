@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs six go/analysis rules: no
+// Command elpsvet runs eight go/analysis rules: no
 // package-level variable may keep a *lisp.LVal reachable (elpsownership,
 // below), no function may write a lisp.LVal field on a value it did not
 // construct (elpsfreshness, freshness.go), no function may store a
@@ -9,7 +9,11 @@
 // template could not publish safely (elpsnativepayload, nativepayload.go),
 // and no registered builtin may write its receiver, captured variables or
 // package-level state (elpsbuiltinstate, builtinstate.go). Package table writes
-// must pass the frozen-package gate (elpsfrozenpackage, frozenpackage.go).
+// must pass the frozen-package gate (elpsfrozenpackage, frozenpackage.go),
+// lazily filled tables are read only through their accessors (elpslazyread,
+// lazyread.go), and no library builtin may depend on which package is current
+// (elpsownpkg, issue #736, in the importable package elpsvet/ownpkg so other
+// modules' vet tools can run it too).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -52,6 +56,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/elpsvet/ownpkg"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/multichecker"
 )
@@ -76,6 +81,7 @@ var analyzers = []*analysis.Analyzer{
 	builtinStateAnalyzer,
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
+	ownpkg.Analyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }

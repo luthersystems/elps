@@ -76,7 +76,10 @@ directions, so keep or drop a `//nolint` on the evidence of CI's pinned version
   `minify`, `analyze`, `debug`, `mcp`.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,
   freshness, escape, native payload, builtin shared state, frozen packages,
-  lazy reads). See the `elpsvet` skill.
+  lazy reads, own package). See the `elpsvet` skill.
+- **`elpsvet/ownpkg/`** — The importable `elpsownpkg` analyzer: a library
+  builtin runs in its own package (#736), so it must not evaluate code, build
+  lambdas, read `Runtime.Package` or resolve a symbol it was handed.
 - **`repl/`** — Interactive REPL using readline.
 - **`elpstest/`** — Test framework (`Runner`, `TestSuite`) for executing lisp
   test files as Go subtests.

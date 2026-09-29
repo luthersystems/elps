@@ -1988,6 +1988,84 @@ URL format for organizational clarity and to avoid package name collisions.
 (use-package 'example.com/faster-json/utils)
 ```
 
+### Where a name resolves
+
+**A name resolves in the package of the code doing the lookup.**
+
+- **Core `lisp` acts in your package.** Its builtins, macros and special
+  operators — `set`, `defun`, `lambda`, `funcall`, `apply`, `map`, `eval`,
+  `in-package`, `help`, `test`, … — are the language, so they bind and look
+  up names in the package that is current where you call them.
+- **A prefixed library runs in its own package**, as if the same code were
+  Lisp written in that package. That holds for a library function
+  written in Lisp and, since elps#736, for one written in Go (`string:`,
+  `json:`, `s:`, an embedder's packages): while it runs, its own package is
+  current, and yours is restored when it returns, fails or panics.
+
+```lisp
+(in-package 'app)
+(defun shout () "SHOUT")
+(set 'greeting "hi")                          ; core set binds app:greeting
+(funcall 'shout)                              ; core funcall finds app's shout
+(map 'list 'string:uppercase '("a" "b"))      ; '("A" "B")
+```
+
+A quoted name you pass *into* a library is resolved by the library, in the
+library's package — the same as any other name its code looks up:
+
+```lisp
+(in-package 'lib)
+(lisp:defun call-it (f) (lisp:funcall f))
+(lisp:export 'call-it)
+
+(in-package 'app)
+(lib:call-it shout)            ; "SHOUT": the function value, resolved here
+(lib:call-it (function shout)) ; "SHOUT": the same, spelled #'shout
+(lib:call-it 'shout)           ; error: unbound symbol: 'shout (looked up in lib)
+```
+
+**Pass function values, not quoted names.** A function value is resolved in
+your package before the call, so it means the same thing wherever the library
+calls it. A Go library that needs one of your names takes a value, or is a
+macro whose expansion uses core forms (a macro's expansion is evaluated where
+you wrote it).
+
+#### How ELPS differs from other Lisps
+
+| Language | What a symbol is | When and where a name is resolved |
+|----------|------------------|-----------------------------------|
+| Common Lisp | Interned at read time into a package; it carries its package and compares by identity (`shop::get` ≠ `utils::get` unless inherited) | At read time; `*package*` matters only for reading and interning |
+| Clojure | A name; definitions live in namespaces | At compile time, through the namespace; `*ns*` is used only by `eval` and the reader |
+| Scheme (R7RS) | A name | Lexically, by library scope |
+| **ELPS** | **Its name**: compared by name across packages | **At run time**, in the package of the code doing the lookup |
+
+The consequences in practice:
+
+- **`'get` equals `'get` across packages**, so symbols work as message tags
+  and map keys between packages:
+
+  ```lisp
+  (in-package 'a) (set 'tag 'get)
+  (in-package 'b) (equal? a:tag 'get)   ; true
+  ```
+
+- **A quoted name passed into a library resolves in the library**, as above.
+  Pass the function value instead.
+- **`defun` is `set` plus a `lambda`.** `(defun f (x) x)` binds `f` in the
+  current package like `(set 'f (lambda (x) x))`, and the function records
+  that package, so its body resolves names there wherever it is called from.
+- **Library definers do not write into your package.** They return a value
+  and you bind it with core `set`: `s:make-validator` plus `set` replaced
+  `s:deftype`, which used to bind a global under your name.
+
+  ```lisp
+  (set 'small (s:make-validator "small" s:int (s:gt 1)))
+  ```
+
+- **`help` and `test` are core for the same reason.** `(help my-fn)`
+  documents the `my-fn` your code sees, and a `test` body is written in your
+  package like a `defun` body (see [Testing](#testing)).
+
 ## Documentation
 
 ELPS has built-in support for attaching documentation to functions, macros,
@@ -2106,13 +2184,20 @@ elps doc --guide          # Print this language reference
 elps doc -m               # Check for missing documentation
 ```
 
-From the REPL or within lisp code, use the `help` package:
+From the REPL or within lisp code, use core `help` for a single name and the
+`help` package's registry functions for packages:
 
 ```lisp
-(help 'map)               ; Show docs for a symbol
-(help-package 'math)      ; Show all exports in a package
-(help-packages)           ; List all loaded packages
+(help map)                     ; Show docs for a symbol (the name is not evaluated)
+(help my-fn)                   ; Any name your code sees: yours, imported, or local
+(help-package 'math)           ; Show all exports in a package
+(help-packages)                ; List all loaded packages
 ```
+
+`help` is core (`lisp:help`, elps#736), so it resolves the name where you call
+it, like `set` or `function`; it used to be `help:help`. `help-package`,
+`help-package-symbols` and `help-packages` look packages up by name and stay
+in package `help` (the REPL imports it; elsewhere write `help:help-package`).
 
 ### Errors
 
@@ -2503,9 +2588,31 @@ the embedding guide (`docs/embed.md` in the repository).
 
 ## Testing
 
-Test files are named `*_test.lisp` and register tests with the `testing`
-package (`test`, `test-let`, `assert=`, `assert-equal`, ...). The Go runner
-`elpstest.Runner` runs each registered test in a fresh environment.
+Test files are named `*_test.lisp`. The Go runner `elpstest.Runner` runs
+each registered test in a fresh environment.
+
+The forms that define tests — `test`, `test-let`, `test-let*`, `benchmark`
+and `benchmark-simple` — are core (`lisp:test`, …, elps#736). A test body is
+code written in your package, like a `defun` body, so it sees your package's
+names without qualification. The assertions (`assert=`, `assert-equal`,
+`assert-nil`, …) stay in package `testing`: qualify them, or
+`(use-package 'testing)` for the short names.
+
+```lisp
+(in-package 'my-app)
+(defun add (a b) (+ a b))
+(test "adds" (testing:assert= 2 (add 1 1)))
+```
+
+`(use-package 'testing)` and `testing:test` keep working: package `testing`
+re-exports the core forms as the same functions.
+
+Tests can only be defined while tests are running. The test harness installs
+a test suite (the `testing` package, which `elps run`, the REPL and the test
+runners load); where there is none — an embedding that does not load
+`testing`, such as a production environment — evaluating a test form signals
+`no test suite: test can only be used while running tests`. The forms cost
+nothing to code that never evaluates one.
 
 ### Shared test helpers
 

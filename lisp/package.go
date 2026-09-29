@@ -455,6 +455,19 @@ func (pkg *Package) symbolDocTable() map[string]string {
 	return pkg.base.symbolDocs.Copy()
 }
 
+// reserve sizes a fresh package's tables for n bindings, so a bulk
+// registration or import fills them without growing them step by step: each
+// growth allocates a larger table and discards the old one.  It leaves any
+// package that already has a binding, a base or a lazy plan untouched, so it
+// never changes what a package holds -- only how much room it starts with.
+func (pkg *Package) reserve(n int) {
+	if pkg.base != nil || pkg.lazy != nil || len(pkg.symbols) != 0 || len(pkg.funNames) != 0 {
+		return
+	}
+	pkg.symbols = make(map[string]*LVal, n)
+	pkg.funNames = make(map[string]string, n)
+}
+
 // appendExternal appends one name to the export list.
 func (pkg *Package) appendExternal(name string) {
 	pkg.Export(name)

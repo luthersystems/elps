@@ -31,6 +31,10 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Package.Doc = `The core ELPS language package. Provides fundamental data types,
 		control flow, function and macro definition, package management,
 		error handling, collections, I/O, and the type system.`
+	// Room for every default definition and the typedef, so registration
+	// does not grow lisp's tables one doubling at a time.
+	env.Runtime.Package.reserve(len(langMacros) + len(userMacros) + len(langSpecialOps) +
+		len(userSpecialOps) + len(langBuiltins) + len(userBuiltins) + 1)
 	env.AddMacros(true)
 	env.AddSpecialOps(true)
 	env.AddBuiltins(true)
@@ -312,6 +316,9 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
 	dst := env.Runtime.Package
+	// A fresh package importing a whole package (every in-package package
+	// imports lisp) gets its tables sized once instead of grown.
+	dst.reserve(pkg.NumExternals())
 	for sym := range pkg.externalNames() {
 		if sym == TrueSymbol || sym == FalseSymbol {
 			// Exporting a boolean constant was always a no-op: pkg.Get
@@ -2271,38 +2278,37 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// NOTE:  The book's suggestion of chaining env here seems like dynamic
 	// scoping.
 
-	fn := fun.Builtin()
+	var fn LBuiltin
+	fd := fun.funData()
+	if fd != nil {
+		fn = fd.builtin
+	}
 	if fn != nil {
-		// Bridge ctx onto env so builtins that call env.Eval() pick it up.
-		// Save and restore to prevent stale ctx from leaking after the
-		// builtin returns.
-		prev := env.evalCtx
-		env.evalCtx = ctx
-		defer func() { env.evalCtx = prev }()
-		val := fn(env, list)
-		if val == nil {
-			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
-		}
-		if val.Type == LMarkTerminal {
-			env.Runtime.Stack.Top().Terminal = true
-			termEnv := val.Native.(*LEnv)
-			if termEnv != env {
-				prevTerm := termEnv.evalCtx
-				defer func() { termEnv.evalCtx = prevTerm }()
-			}
-			termEnv.evalCtx = ctx
-			return termEnv.eval(ctx, val.Cells[0])
-		}
-		return val
+		return env.callBuiltin(ctx, fun, fd, fn, list)
 	}
 
 	// With formal arguments bound, we can switch into the function's package
 	// namespace for the duration of the call.
 	//
-	// BUG(#736): This package-swap should occur for builtins as well but there is a
-	// bootstrapping problem, where ``set'' (as well as defun/defmacro) needs
-	// to modify the *package* namespace and not the "lisp" namespace.  Dynamic
-	// variables may be required in order to work through this completely.
+	// NOTE(#736): a name resolves in the package of the code doing the
+	// lookup, whether that code is Lisp or Go.  A Lisp function runs in the
+	// package it was defined in (this swap).  A Go builtin or Go macro
+	// registered in any package other than lisp runs in its own package too
+	// (the swap in the builtin branch above), and the caller's package is
+	// restored on return, on error, on panic and before a terminal
+	// expression is evaluated, so a library builtin cannot change the
+	// caller's package or resolve a global name in it.  Only the package
+	// switches: a builtin still receives the caller's env, so a lexical
+	// lookup (env.Get of a let-bound name) still sees the caller's lexical
+	// scope, and an expression it hands back with env.Terminal is evaluated
+	// in the caller, after the switch is undone, like a macro expansion
+	// (elpsownpkg reports both).  Core lisp -- its builtins, macros and every
+	// special operator -- is the language and acts in the caller's package:
+	// that is what lets set, defun, defmacro, in-package, funcall with a
+	// quoted name and the rest bind and resolve where the caller is.  There
+	// are no exceptions.  A library that needs the caller's names takes
+	// values (function values, qualified symbols), or is a macro whose
+	// expansion uses core forms.  See "Packages" in docs/lang.md.
 	outer := env.Runtime.Package
 	pkg := fun.Package()
 	if outer.Name != pkg {
@@ -2334,6 +2340,61 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	return fenv.eval(ctx, body[len(body)-1])
 }
 
+// callBuiltin is call's native branch: it invokes fn, fun's Go
+// implementation, with the bound argument list.  It is a function of its own
+// so that its few defers are open-coded; in call, whose many returns rule
+// that out, every builtin call paid for a heap-style defer record.
+func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, fd *funData, fn LBuiltin, list *LVal) *LVal {
+	// Bridge ctx onto env so builtins that call env.Eval() pick it up.
+	// Save and restore to prevent stale ctx from leaking after the
+	// builtin returns.
+	prev := env.evalCtx
+	env.evalCtx = ctx
+	// A library builtin runs in its own package, like a Lisp function
+	// defined there (see the NOTE on the swap in call).  The cheap tests
+	// come first: a call from the library's own code is already in its
+	// package, and core lisp never switches.  The package is looked up by
+	// name on every call, never cached: forks and templates replace
+	// registry entries.
+	outer := env.Runtime.Package
+	var switched bool
+	if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
+		fun.FunType != LFunSpecialOp {
+		if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
+			env.Runtime.Package = inner
+			switched = true
+		}
+	}
+	// The deferred restore covers a panic out of the builtin; the explicit
+	// one below covers every return, before a terminal expression is
+	// evaluated in the caller's environment.
+	defer func() {
+		env.evalCtx = prev
+		if switched {
+			env.Runtime.Package = outer
+		}
+	}()
+	val := fn(env, list)
+	if switched {
+		env.Runtime.Package = outer
+		switched = false
+	}
+	if val == nil {
+		return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
+	}
+	if val.Type == LMarkTerminal {
+		env.Runtime.Stack.Top().Terminal = true
+		termEnv := val.Native.(*LEnv)
+		if termEnv != env {
+			prevTerm := termEnv.evalCtx
+			defer func() { termEnv.evalCtx = prevTerm }()
+		}
+		termEnv.evalCtx = ctx
+		return termEnv.eval(ctx, val.Cells[0])
+	}
+	return val
+}
+
 // If fun is a builtin bind returns an LEnv for executing fun and a list of
 // arguments.  If fun is a lambda bind returns a non-nil lexical environment
 // and a nil list: the caller reads the body from fun.Cells[1:] itself, so a
@@ -2354,7 +2415,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	//     a lisp program can define is covered: lambda and the short lambda
 	//     form, defun, labels and flet (op.go), defmacro and macrolet
 	//     (macro.go), the partial-application helpers (builtins.go), and
-	//     testing:test / testing:benchmark (libtesting).  Lambda is also the
+	//     test and benchmark (testdefs.go).  Lambda is also the
 	//     ONLY constructor that stores an environment into a function value,
 	//     so it is the only one whose formals are ever Put into a scope.
 	//   - AddBuiltins, AddSpecialOps and AddMacros validate each definition's
