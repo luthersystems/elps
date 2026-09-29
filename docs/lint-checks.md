@@ -315,8 +315,10 @@ variable named `rethrow` is not the builtin, and the body of a `flet` or
 semantic analysis runs with a macro expander (`--workspace` with an
 environment, the LSP, `elps mcp`), each form is fully expanded first, so a
 user macro that expands to `handler-bind` counts as one, however deeply it is
-nested. A call a macro synthesizes has no location in the file being linted
-and is reported when the macro's own file is linted.
+nested. A call a macro synthesizes is not reported at the call site;
+instead the quoted and quasiquoted templates inside a `defmacro` body are
+searched as code, so a macro that emits a bare `(rethrow)` is reported at its
+template.
 
 ```lisp
 ;; BAD — not inside handler-bind

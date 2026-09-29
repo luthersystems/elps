@@ -3,6 +3,7 @@
 package lint
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
@@ -80,6 +81,40 @@ func TestRethrowContext_SeesThroughMacros(t *testing.T) {
 	// and is not reported against it; one written here is.
 	assertNoDiags(t, run(`(rethrow-now)`))
 	diags := run("(progn\n  (rethrow))")
+	require.Len(t, diags, 1)
+	assert.Equal(t, 2, diags[0].Pos.Line)
+}
+
+// A macro whose template emits a bare rethrow is reported at the template,
+// once, whether or not an expander is configured; error-stack in a template
+// keeps the defmacro function-body exemption.
+func TestRethrowContext_MacroTemplates(t *testing.T) {
+	src := "(defmacro rethrow-now ()\n  (quote (rethrow)))\n(defmacro rq () (quasiquote (progn (rethrow))))\n(defmacro es () (quote (error-stack)))\n(defmacro ok () (quasiquote (handler-bind ((condition (lambda (c &rest a) (rethrow)))) 1)))\n(rethrow-now)\n(rethrow-now)"
+	diags := lintCheck(t, AnalyzerRethrowContext, src)
+	require.Len(t, diags, 2)
+	assert.Equal(t, 2, diags[0].Pos.Line)
+	assert.Equal(t, 3, diags[1].Pos.Line)
+
+	env := newRethrowEnv(t, strings.Join(strings.Split(src, "\n")[:5], "\n"))
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRethrowContext}}
+	got, err := l.LintFileWithAnalysis([]byte(src), "test.lisp",
+		&analysis.Config{MacroExpander: &analysis.EnvMacroExpander{Env: env}})
+	require.NoError(t, err)
+	require.Len(t, got, 2, "%v", got)
+}
+
+// The test runner, not a handler, calls a test body.
+func TestRethrowContext_TestBodyIsNotAHandlerFunction(t *testing.T) {
+	require.Len(t, lintCheck(t, AnalyzerRethrowContext, `(test "x" (error-stack))`), 1)
+}
+
+// A macro that never finishes expanding does not hide the rest of the form.
+func TestRethrowContext_NonTerminatingMacroKeepsWalking(t *testing.T) {
+	env := newRethrowEnv(t, `(defmacro loop-forever () '(loop-forever))`)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRethrowContext}}
+	diags, err := l.LintFileWithAnalysis([]byte("(progn (loop-forever)\n  (rethrow))"), "test.lisp",
+		&analysis.Config{MacroExpander: &analysis.EnvMacroExpander{Env: env}})
+	require.NoError(t, err)
 	require.Len(t, diags, 1)
 	assert.Equal(t, 2, diags[0].Pos.Line)
 }

@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"math"
 	"strconv"
 	"strings"
 )
@@ -217,6 +218,11 @@ type WalkNode struct {
 	// Op is the builtin form name for WalkForm, WalkEnter, WalkLeave and
 	// WalkBind ("lambda", "let", ...), "" for a function call.
 	Op string
+	// Depth is the nesting depth, 0 for the walked form.  Everything
+	// inside a form is deeper than the form, and everything inside a scope
+	// deeper than its WalkEnter, so a visitor can keep its own context
+	// stack by popping entries at least as deep as each new event.
+	Depth int
 	// Shape is the shape of Op.
 	Shape FormShape
 	// Opaque marks a WalkForm the walker does not descend into: a special
@@ -231,21 +237,17 @@ type WalkNode struct {
 	// of code enclosing it.
 	Bound bool
 	// Function marks a WalkEnter/WalkLeave pair around a function body:
-	// lambda, defun, defmacro, one flet/labels/macrolet binding, expr, and
-	// the bodies test and benchmark wrap in a function.  The body of a
-	// let, flet or dotimes is a scope but not a function.
+	// lambda, defun, defmacro, one flet/labels/macrolet binding, and expr.
+	// The body of a let, flet, dotimes, test or benchmark is a scope but
+	// not a function.
 	Function bool
-	// Depth is the nesting depth, 0 for the walked form.  Everything
-	// inside a form is deeper than the form, and everything inside a scope
-	// deeper than its WalkEnter, so a visitor can keep its own context
-	// stack by popping entries at least as deep as each new event.
-	Depth int
 	// Event is the kind of event.
 	Event WalkEvent
 }
 
 // CodeVisitor receives the events of a code walk.  For WalkForm, returning
 // false skips the form's arguments; the return value is otherwise ignored.
+// The *WalkNode is reused for the next event: copy it to keep it.
 type CodeVisitor func(n *WalkNode) bool
 
 // LocalMacroExpander expands a call to one macro bound by macrolet.
@@ -284,14 +286,22 @@ type CodeWalker struct {
 	// Visit receives the walk's events.  It may be nil.
 	Visit CodeVisitor
 
+	err     *LVal
+	scopes  []walkScope
+	scratch WalkNode
+
 	// MaxDepth bounds form nesting (default DefaultMaxEvalNesting) and
 	// MaxExpansions the macro expansions of one form's head (default
 	// DefaultMaxMacroExpansionDepth).
 	MaxDepth      int
 	MaxExpansions int
 
-	scopes []walkScope
-	err    *LVal
+	// KeepGoing makes failures local: a macro call whose expansion fails
+	// or does not terminate is walked unexpanded as a function call, and
+	// a form nested past MaxDepth is reported as opaque, instead of
+	// stopping the walk.  Tools that must see all of a file (lint) set
+	// it; macroexpand-all does not.
+	KeepGoing bool
 }
 
 type walkScope struct {
@@ -315,7 +325,9 @@ func (w *CodeWalker) visit(n WalkNode) bool {
 	if w.Visit == nil {
 		return true
 	}
-	return w.Visit(&n)
+	// One node per walker, so an event does not allocate.
+	w.scratch = n
+	return w.Visit(&w.scratch)
 }
 
 func (w *CodeWalker) fail(err *LVal) *LVal {
@@ -391,6 +403,10 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		return v
 	}
 	if depth > w.maxDepth() {
+		if w.KeepGoing {
+			w.visit(WalkNode{Event: WalkForm, Node: v, Opaque: true, Depth: depth})
+			return v
+		}
 		return w.fail(Errorf("code nesting depth exceeds maximum: %d", w.maxDepth()))
 	}
 	switch {
@@ -409,12 +425,15 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		return v
 	}
 
-	// A compound form.  Expand its head until it is no longer a macro.
+	// A compound form.  Expand its head until it is no longer a macro,
+	// classifying it on the way: op is the special form it names, if any.
+	op, isOp := "", false
 	for n := 0; ; n++ {
 		head := v.Cells[0]
 		if head.Type != LSymbol || head.quoted {
 			break
 		}
+		var exp *LVal
 		if bound, macro, mac := w.lookup(head.Str); bound {
 			if !macro {
 				break
@@ -424,40 +443,29 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 				return v
 			}
 			if n >= w.maxExpansions() {
-				return w.fail(Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
+				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
 			}
-			exp := mac(v)
-			if exp == nil {
+			if exp = mac(v); exp == nil {
 				w.visit(WalkNode{Event: WalkForm, Node: v, Opaque: true, Depth: depth})
 				return v
 			}
-			if exp.Type == LError {
-				return w.fail(exp)
+		} else {
+			if op, isOp = w.specialOp(head); isOp || w.Expand1 == nil {
+				break
 			}
-			if exp.Type != LSExpr || exp.quoted || len(exp.Cells) == 0 {
-				return w.form(exp, depth)
+			if n >= w.maxExpansions() {
+				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
 			}
-			v = exp
-			continue
-		}
-		if _, ok := w.specialOp(head); ok {
-			break
-		}
-		if w.Expand1 == nil {
-			break
-		}
-		if n >= w.maxExpansions() {
-			return w.fail(Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
-		}
-		exp, ok := w.Expand1(v)
-		if !ok {
-			break
-		}
-		if exp == nil {
-			exp = Nil()
+			var ok bool
+			if exp, ok = w.Expand1(v); !ok {
+				break
+			}
+			if exp == nil {
+				exp = Nil()
+			}
 		}
 		if exp.Type == LError {
-			return w.fail(exp)
+			return w.expansionFailed(v, depth, exp)
 		}
 		if exp.Type != LSExpr || exp.quoted || len(exp.Cells) == 0 {
 			return w.form(exp, depth)
@@ -465,13 +473,6 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		v = exp
 	}
 
-	head := v.Cells[0]
-	op, isOp := "", false
-	if head.Type == LSymbol && !head.quoted {
-		if bound, _, _ := w.lookup(head.Str); !bound {
-			op, isOp = w.specialOp(head)
-		}
-	}
 	if !isOp {
 		if !w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth}) {
 			return v
@@ -487,6 +488,18 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		return v
 	}
 	return w.special(v, op, shape, depth)
+}
+
+// expansionFailed stops the walk with err, or, with KeepGoing, walks v
+// unexpanded as a function call.
+func (w *CodeWalker) expansionFailed(v *LVal, depth int, err *LVal) *LVal {
+	if !w.KeepGoing {
+		return w.fail(err)
+	}
+	if !w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth}) {
+		return v
+	}
+	return w.call(v, depth)
 }
 
 func (w *CodeWalker) specialOp(head *LVal) (string, bool) {
@@ -526,14 +539,16 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	b := newRebuild(v)
 	cells := v.Cells
 	d := depth + 1
-	// Every scope special() opens itself is a function body; let, flet
-	// and friends open their body scopes in let and flet.
+	// The scopes special() opens are function bodies except dotimes,
+	// test and benchmark (whose bodies the test runner calls, never a
+	// handler).  let, flet and friends open their scopes in let and flet.
+	fn := shape == ShapeLambda || shape == ShapeDefun || shape == ShapeExpr
 	enter := func(node *LVal, macros bool) {
 		w.push(macros)
-		w.visit(WalkNode{Event: WalkEnter, Node: node, Op: op, Shape: shape, Depth: depth, Function: shape != ShapeDotimes})
+		w.visit(WalkNode{Event: WalkEnter, Node: node, Op: op, Shape: shape, Depth: depth, Function: fn})
 	}
 	leave := func(node *LVal) {
-		w.visit(WalkNode{Event: WalkLeave, Node: node, Op: op, Shape: shape, Depth: depth, Function: shape != ShapeDotimes})
+		w.visit(WalkNode{Event: WalkLeave, Node: node, Op: op, Shape: shape, Depth: depth, Function: fn})
 		w.pop()
 	}
 	switch shape {
@@ -549,7 +564,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 		}
 	case ShapeQuasiquote:
 		for i := 1; i < len(cells); i++ {
-			b.set(i, w.template(cells[i], 1, d))
+			b.set(i, w.template(cells[i], d))
 		}
 	case ShapeFunction:
 		for _, c := range cells[1:] {
@@ -707,6 +722,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 				b.set(i, w.form(step, d))
 			}
 		}
+	default: // ShapeUnknown forms are opaque and never reach here
 	}
 	return b.done()
 }
@@ -847,46 +863,33 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape FormShape, depth in
 	return out
 }
 
-// template walks a quasiquote template at nesting level lvl.  Only the
-// holes at level 1 are code.
-func (w *CodeWalker) template(v *LVal, lvl int, depth int) *LVal {
+// template walks a quasiquote template.  As at run time (docs/lang.md,
+// "Quasiquote traversal"), every bare unquote and unquote-splicing in the
+// template is a hole evaluated by this quasiquote: nested quasiquote,
+// quote and reader quotes do not delay them, and lisp:unquote is data.
+func (w *CodeWalker) template(v *LVal, depth int) *LVal {
 	if w.err != nil || v == nil {
 		return v
 	}
 	if depth > w.maxDepth() {
+		if w.KeepGoing {
+			return v
+		}
 		return w.fail(Errorf("code nesting depth exceeds maximum: %d", w.maxDepth()))
 	}
-	if v.Type != LSExpr || len(v.Cells) == 0 {
+	if (v.Type != LSExpr && v.Type != LQuote) || len(v.Cells) == 0 {
 		return v
 	}
-	if v.Cells[0].Type == LSymbol && len(v.Cells) == 2 {
-		switch stripLang(v.Cells[0].Str) {
-		case "unquote", "unquote-splicing":
-			b := newRebuild(v)
-			if lvl == 1 {
-				b.set(1, w.form(v.Cells[1], depth+1))
-			} else {
-				b.set(1, w.template(v.Cells[1], lvl-1, depth+1))
-			}
-			return b.done()
-		case "quasiquote":
-			b := newRebuild(v)
-			b.set(1, w.template(v.Cells[1], lvl+1, depth+1))
-			return b.done()
-		}
-	}
 	b := newRebuild(v)
+	if h := v.Cells[0]; v.Type == LSExpr && h.Type == LSymbol && len(v.Cells) == 2 &&
+		(h.Str == "unquote" || h.Str == "unquote-splicing") {
+		b.set(1, w.form(v.Cells[1], depth+1))
+		return b.done()
+	}
 	for i, c := range v.Cells {
-		b.set(i, w.template(c, lvl, depth+1))
+		b.set(i, w.template(c, depth+1))
 	}
 	return b.done()
-}
-
-func stripLang(name string) string {
-	if rest, ok := strings.CutPrefix(name, DefaultLangPackage+":"); ok {
-		return rest
-	}
-	return name
 }
 
 // exprFormalNames returns the formals (expr pattern) binds, as opExpr
@@ -940,7 +943,9 @@ func (b *rebuild) set(i int, v *LVal) {
 }
 
 // done returns the original list when nothing changed, or a fresh, unsealed
-// list with the original's type, quoting and source location.
+// list with the original's type, quoting and (a copy of its) source
+// location.  Formatting metadata and debugger expansion records are not
+// carried over: a rebuilt list is code, not a formatted source node.
 func (b *rebuild) done() *LVal {
 	if b.cells == nil {
 		return b.orig
@@ -970,11 +975,15 @@ func (b *rebuild) done() *LVal {
 // form is not modified: see CodeWalker for what the result shares with it.
 // A failed expansion returns the LError.
 func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
+	maxDepth := env.Runtime.MaxEvalNestingDepth()
+	if maxDepth == 0 { // the embedder disabled the nesting limit
+		maxDepth = math.MaxInt
+	}
 	w := &CodeWalker{
 		SpecialOp:        env.resolveSpecialOp,
 		Expand1:          env.expandOnce,
 		DefineLocalMacro: env.defineLocalMacro,
-		MaxDepth:         env.Runtime.MaxEvalNestingDepth(),
+		MaxDepth:         maxDepth,
 		MaxExpansions:    env.Runtime.MaxMacroExpansions(),
 	}
 	return w.Walk(form)
@@ -999,6 +1008,7 @@ func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
 		if SpecialFormShape(name) == ShapeDefun {
 			return name, true
 		}
+	default:
 	}
 	return "", false
 }
