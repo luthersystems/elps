@@ -277,11 +277,73 @@ a transparent optimization:
 Programs embedding elps can write functions in Go which can be loaded into
 packages, bound under a given symbol.
 
+### Go functions run in their own package
+
+**Breaking change (elps#736).** A Go builtin or Go macro registered in any
+package other than `lisp` now runs with **its own package current**, exactly
+like a Lisp function defined in that package. Before, it ran in whatever
+package its caller had current. The caller's package is restored when the
+builtin returns, fails, panics, or hands back a terminal expression, so a
+library builtin can neither see nor change the caller's package. Core `lisp`
+builtins, macros and all special operators are unchanged: they are the
+language and act in the caller's package. There are no exceptions.
+
+The rule is the one ELPS applies to every name: **a name resolves in the
+package of the code doing the lookup** (see "Where a name resolves" in
+`docs/lang.md`). ELPS symbols are plain names resolved at run time, unlike
+Common Lisp's interned, package-carrying symbols or Clojure's compile-time
+namespace resolution, so where the lookup happens decides what a name means.
+
+What this means for a builtin you write:
+
+- **Anything it resolves by name resolves in its own package.** `env.Get`,
+  `env.GetFun`, `env.GetFunGlobal`, `env.PutGlobal`, `env.Eval*`,
+  `env.Load*` and `env.Lambda` all act in the builtin's package, not the
+  caller's. A package created with `DefinePackage` or `elpsutil.PackageLoader`
+  does not import `lisp`, so an unqualified `set` or `+` evaluated there is
+  unbound: qualify it (`lisp:set`).
+- **Take values, not names.** Accept a function value rather than a quoted
+  symbol; the caller evaluates it in its own package. `env.FunCall` on a
+  caller's function is fine — that function runs in its own package.
+- **To bind or evaluate in the caller, write a Go macro.** The macro runs in
+  its own package, but its expansion is evaluated where the caller wrote it,
+  so an expansion built from qualified core forms (`lisp:set`, `lisp:lambda`)
+  acts in the caller's package.
+- **Name a fixed package explicitly.** A builtin that must work in some
+  package (a loader that starts in `user`, say) switches to it by name with
+  `env.InPackage` and restores it itself.
+- **Calling another builtin's Go code directly** (`LBuiltinDef.Eval`, or a
+  builtin value's `Builtin()`) bypasses the switch; it runs in whatever
+  package is current at that point.
+- **Special operators are syntax.** They receive the caller's unevaluated
+  forms and lexical environment and never switch. Define them only in `lisp`;
+  a library should use a function or a macro. elps itself defines none
+  outside `lisp` (`TestNoLibrarySpecialOps`).
+
+What moved as a result: `help` is core (`lisp:help`; the `help` package keeps
+`help-package`, `help-package-symbols` and `help-packages`, now ordinary
+functions), and `test`, `benchmark`, `test-let`, `test-let*` and
+`benchmark-simple` are core forms that raise `no test suite` where the
+`testing` package is not loaded. Package `testing` re-exports them, so
+`(use-package 'testing)` and `testing:test` keep working.
+`libtesting.TestSuite.Ops` is deprecated (it returns lisp's definitions), and
+`Ops`/`Macros` now return `[]lisp.LBuiltinDef`.
+
+**Enforcement.** The `elpsownpkg` analyzer (package
+`github.com/luthersystems/elps/elpsvet/ownpkg`, importable into your own
+`go/analysis` multichecker) reports package-sensitive operations inside a
+library builtin: `Eval*`, `Load*`, `Lambda`, `InPackage`, reads of
+`Runtime.Package`, and symbol lookups that are not literal qualified names.
+Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package
 `testing` to write tests for custom packages.  See the standard library's tests
-for examples of how to use these packages together.
+for examples of how to use these packages together.  The test definition
+forms (`test`, `test-let`, `benchmark`, ...) are core `lisp` forms; they
+register into the suite the `testing` package installs, which `elpstest`
+loads for you.
 
 `elpstest` piggybacks on the Go `testing` standard library: each lisp `test`
 form in a file becomes a Go subtest.
