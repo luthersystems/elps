@@ -304,3 +304,36 @@ func TestCanonicalTypeFaithful(t *testing.T) {
 		assert.NotEqual(t, ea, eb, "%s and %s must encode differently", tc.a, tc.b)
 	}
 }
+
+// WithCodecCharge is called as the output grows, one unit per started KiB,
+// and the units add up to ceil(len/1024) exactly -- the same total as a
+// single ChargeStartedKiB after the fact.  An error from it stops the
+// encode at once.
+func TestCanonicalChargeDuringEncode(t *testing.T) {
+	cells := make([]*lisp.LVal, 100)
+	for i := range cells {
+		cells[i] = lisp.String(strings.Repeat("x", 100))
+	}
+	v := lisp.QExpr(cells)
+	calls, total := 0, 0
+	b, err := lisp.EncodeCanonical(v, lisp.WithCodecCharge(func(kib int) error {
+		calls++
+		total += kib
+		return nil
+	}))
+	require.NoError(t, err)
+	assert.Equal(t, (len(b)+1023)/1024, total)
+	assert.Greater(t, calls, 5, "charges must arrive as the output grows")
+
+	stop := assert.AnError
+	seen := 0
+	_, err = lisp.EncodeCanonical(v, lisp.WithCodecCharge(func(kib int) error {
+		seen += kib
+		if seen >= 2 {
+			return stop
+		}
+		return nil
+	}))
+	require.ErrorIs(t, err, stop)
+	assert.Equal(t, 2, seen)
+}

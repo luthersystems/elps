@@ -6,6 +6,8 @@
 package libcodec
 
 import (
+	"errors"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
@@ -64,7 +66,7 @@ step per started KiB of input, charged before decoding.`),
 }
 
 // options bounds a call by the runtime's per-operation allocation cap as
-// well as the codec's default limits, and charges steps as output grows.
+// well as the codec's default limits.
 func options(env *lisp.LEnv) []lisp.CodecOption {
 	limit := env.Runtime.MaxAllocBytes()
 	return []lisp.CodecOption{
@@ -74,15 +76,27 @@ func options(env *lisp.LEnv) []lisp.CodecOption {
 }
 
 func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	b, err := lisp.EncodeCanonical(args.Cells[0], options(env)...)
+	// Steps are charged as the output grows, one per started KiB, so a
+	// step budget or a cancelled context stops a large encode part way.
+	var lerr *lisp.LVal
+	charge := lisp.WithCodecCharge(func(kib int) error {
+		if r := env.ChargeSteps(int64(kib)); r.Type == lisp.LError {
+			lerr = r
+			return errCharge
+		}
+		return nil
+	})
+	b, err := lisp.EncodeCanonical(args.Cells[0], append(options(env), charge)...)
+	if lerr != nil {
+		return lerr
+	}
 	if err != nil {
 		return env.Errorf("%v", err)
 	}
-	if lerr := lisp.ChargeStartedKiB(env, len(b)); lerr.Type == lisp.LError {
-		return lerr
-	}
 	return lisp.Bytes(b)
 }
+
+var errCharge = errors.New("step charge failed")
 
 func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	in := args.Cells[0]

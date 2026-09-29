@@ -116,7 +116,17 @@ value-only encoding.
 
 ## Step charges
 
-`codec:encode` charges `ChargeStartedKiB(len(output))` after encoding;
-`codec:decode` charges `ChargeStartedKiB(len(input))` before decoding.  Both
-depend only on the bytes, so every peer charges the same.  The work an
-encode does before its charge is bounded by the byte limit.
+`codec:encode` charges one step per started KiB of output as the output
+grows, through `WithCodecCharge`: whenever the output starts a new KiB the
+encoder reports it, so a step budget or cancelled context stops a large
+encode part way instead of after the whole value is built.  The units add
+up to `ceil(len(output)/1024)`, the same as one `ChargeStartedKiB` after the
+fact.  `codec:decode` charges `ChargeStartedKiB(len(input))` before
+decoding.  Both depend only on the bytes, so every peer charges the same.
+
+## Not checked
+
+- A decoded tagged value is not checked against the types the program has
+  defined with `deftype`, and its constructor is not run: the bytes may name
+  any type.
+- Lists always decode quoted.

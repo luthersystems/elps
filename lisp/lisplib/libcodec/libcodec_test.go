@@ -102,3 +102,17 @@ func TestCodecNotInCorePackage(t *testing.T) {
 		assert.Equal(t, lisp.LError, v.Type, "lisp:%s should not exist", name)
 	}
 }
+
+// A step budget stops codec:encode with the budget's own condition while
+// it encodes, not a generic codec error after the whole value is built.
+func TestCodecEncodeStopsAtStepBudget(t *testing.T) {
+	env := newLimitTestEnv(t)
+	require.NoError(t, lisp.GoError(env.LoadString("setup",
+		`(set 's (string:join (map 'list (lambda (i) "x") (make-sequence 0 1000)) ""))
+		 (set 'v (map 'list (lambda (i) s) (make-sequence 0 200)))`)))
+	env.Runtime.SetStepBudget(50)
+	got := env.LoadStringContext(context.Background(), "t", `(codec:encode v)`)
+	require.Equal(t, lisp.LError, got.Type, "%v", got)
+	assert.Contains(t, got.String(), "step")
+	assert.NotContains(t, got.String(), "canonical codec")
+}

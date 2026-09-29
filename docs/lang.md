@@ -1746,7 +1746,8 @@ Details that are part of the format:
 
 - **Floats** keep their exact bits, including `-0.0`.  Every NaN is written
   as the same NaN.
-- **Lists** come back as data lists, the value `list` returns.  Whether a
+- **Lists** always come back quoted, as the data lists `list` returns, even
+  if the encoded list was an unquoted form.  Whether a
   list was quoted is not data and is not recorded.
 - **Shared structure** is written out in full at every place it occurs, and
   `codec:decode` never returns two references to one cell: every value it
@@ -1761,8 +1762,10 @@ Details that are part of the format:
   bytes.  Nesting deeper than 1024 levels, more than 2^20 values, or an
   encoding larger than 16 MiB (or the runtime's allocation limit, if lower)
   raises an error.
-- **Steps**: `codec:encode` costs one step per started KiB of output and
-  `codec:decode` one per started KiB of input.
+- **Steps**: `codec:encode` costs one step per started KiB of output,
+  charged as the output grows, so a step budget or a cancelled context stops
+  a large encode part way; `codec:decode` costs one step per started KiB of
+  input, charged before it decodes.
 
 The format begins with a version byte and is frozen: bytes written today
 decode the same way in every later release.  The byte layout is described in

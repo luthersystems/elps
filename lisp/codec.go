@@ -73,6 +73,7 @@ type NativeCodec struct {
 type CodecOption func(*codecConfig)
 
 type codecConfig struct {
+	charge    func(kib int) error
 	natives   []NativeCodec
 	maxDepth  int
 	maxBytes  int
@@ -89,6 +90,18 @@ func WithCodecMaxBytes(n int) CodecOption { return func(c *codecConfig) { c.maxB
 // WithCodecMaxValues limits the number of values written or read, counting
 // every element, key and nested value (default DefaultCodecMaxValues).
 func WithCodecMaxValues(n int) CodecOption { return func(c *codecConfig) { c.maxValues = n } }
+
+// WithCodecCharge makes EncodeCanonical call charge as its output grows,
+// with the number of KiB newly started since the last call, so a caller can
+// meter the work (a step budget, a context) while it happens rather than
+// after.  The units add up to ceil(n/1024) for n output bytes, the same as
+// lisp.ChargeStartedKiB(env, n), and depend only on the output, so the
+// charge is deterministic.  A non-nil error stops the encode, and
+// EncodeCanonical returns it wrapped.  DecodeCanonical ignores it: a decode
+// can charge for its whole input before starting.
+func WithCodecCharge(charge func(kib int) error) CodecOption {
+	return func(c *codecConfig) { c.charge = charge }
+}
 
 // WithNativeCodec registers a codec for native values.  Codecs are tried in
 // the order given; on decode the name selects the codec.
@@ -129,19 +142,33 @@ func EncodeCanonical(v *LVal, opts ...CodecOption) ([]byte, error) {
 	if err := e.value(v, 0); err != nil {
 		return nil, err
 	}
+	if err := e.grow(); err != nil { // charge the last started KiB
+		return nil, err
+	}
 	return e.buf, nil
 }
 
 type canonEncoder struct {
 	cfg    *codecConfig
 	path   map[*LVal]struct{} // containers on the current path, for cycles
-	buf    []byte
-	values int
+	buf     []byte
+	values  int
+	charged int // KiB already reported to cfg.charge
 }
 
+// grow checks the byte limit and reports newly started KiB to cfg.charge.
 func (e *canonEncoder) grow() error {
 	if len(e.buf) > e.cfg.maxBytes {
 		return fmt.Errorf("%w: encoding exceeds %d bytes", errCodecLimit, e.cfg.maxBytes)
+	}
+	if e.cfg.charge != nil {
+		if want := startedKiB(len(e.buf)); want > e.charged {
+			n := want - e.charged
+			e.charged = want
+			if err := e.cfg.charge(n); err != nil {
+				return fmt.Errorf("canonical codec: %w", err)
+			}
+		}
 	}
 	return nil
 }
