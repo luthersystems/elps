@@ -109,7 +109,7 @@ func TestBuiltinGolden(t *testing.T) {
 	const path = "testdata/builtin_golden.txt"
 	got := renderBuiltinGolden(t)
 	if *updateBuiltinGolden {
-		require.NoError(t, os.WriteFile(path, []byte(got), 0o644))
+		require.NoError(t, os.WriteFile(path, []byte(got), 0o600))
 		return
 	}
 	want, err := os.ReadFile(path)
