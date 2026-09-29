@@ -130,6 +130,17 @@ func TestMacroExpandAll(t *testing.T) {
 			row{`(macroexpand-all '(lisp:when (m 1) (m 2)))`, `'(lisp:when (list 1) (list 2))`, ""},
 			row{`(macroexpand-all '(ignore-errors (assert (m 1))))`, `'(ignore-errors (assert (list 1)))`, ""},
 		)},
+		{"bracket syntax", seq(
+			// [...] reads as a quoted list; where a form reads it as
+			// structure, it is structure, not data.
+			row{`(macroexpand-all '(let ([a (m 1)]) (m a)))`, `'(let ('(a (list 1))) (list a))`, ""},
+			row{`(macroexpand-all '(cond [(m 1) (m 2)]))`, `'(cond '((list 1) (list 2)))`, ""},
+			row{`(macroexpand-all '(dotimes [i (m 3)] (m i)))`, `'(dotimes '(i (list 3)) (list i))`, ""},
+			row{`(macroexpand-all '(with-cleanup [(m 1)] (m 2)))`, `'(with-cleanup '((list 1)) (list 2))`, ""},
+			row{`(macroexpand-all '(flet ([f (x) (m x)]) (f 1)))`, `'(flet ('(f (x) (list x))) (f 1))`, ""},
+			row{`(macroexpand-all '(handler-bind ([condition (lambda (c &rest a) (m c))]) 1))`,
+				`'(handler-bind ('(condition (lambda (c &rest a) (list c)))) 1)`, ""},
+		)},
 		{"expansion is equivalent", seq(
 			row{`(eval (macroexpand-all '(let ((a 2)) (twice (m a)))))`, `'(2)`, ""},
 		)},
