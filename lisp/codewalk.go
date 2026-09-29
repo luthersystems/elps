@@ -250,6 +250,8 @@ type CodeWalker struct {
 
 	err     *LVal
 	scopes  []walkScope
+	memo    map[walkMemoKey]*LVal
+	step    func() *LVal // charges one step; nil: free
 	scratch WalkNode
 
 	// MaxDepth bounds form nesting (default DefaultMaxEvalNesting) and
@@ -264,11 +266,39 @@ type CodeWalker struct {
 	// stopping the walk.  Tools that must see all of a file (lint) set
 	// it; macroexpand-all does not.
 	KeepGoing bool
+
+	nextScope int
 }
 
 type walkScope struct {
 	names  map[string]localMacroExpander
+	id     int
 	macros bool
+}
+
+// walkMemoKey identifies one walk of a shared node: the same node in the
+// same scope (and the same mode, code or quasiquote template) walks to the
+// same result.
+type walkMemoKey struct {
+	node     *LVal
+	scope    int
+	template bool
+}
+
+func (w *CodeWalker) scopeID() int {
+	if len(w.scopes) == 0 {
+		return 0
+	}
+	return w.scopes[len(w.scopes)-1].id
+}
+
+// charge accounts for walking one list, through the step hook
+// MacroExpandAll installs.
+func (w *CodeWalker) charge() *LVal {
+	if w.step == nil {
+		return nil
+	}
+	return w.step()
 }
 
 // Walk walks form as code and returns it with every macro call expanded.
@@ -276,6 +306,8 @@ type walkScope struct {
 func (w *CodeWalker) Walk(form *LVal) *LVal {
 	w.scopes = w.scopes[:0]
 	w.err = nil
+	w.memo = nil
+	w.nextScope = 0
 	out := w.form(form, 0)
 	if w.err != nil {
 		return w.err
@@ -314,7 +346,8 @@ func (w *CodeWalker) maxExpansions() int {
 }
 
 func (w *CodeWalker) push(macros bool) {
-	w.scopes = append(w.scopes, walkScope{macros: macros})
+	w.nextScope++
+	w.scopes = append(w.scopes, walkScope{macros: macros, id: w.nextScope})
 }
 
 func (w *CodeWalker) pop() {
@@ -387,6 +420,27 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		return v
 	}
 
+	// Code built by macros can share structure (a DAG).  A node reached
+	// twice in one scope walks to the same result, so it is walked once;
+	// otherwise shared structure costs a walk per path, exponential in
+	// the depth of sharing.
+	key := walkMemoKey{node: v, scope: w.scopeID()}
+	if r, ok := w.memo[key]; ok {
+		return r
+	}
+	if lerr := w.charge(); lerr != nil {
+		return w.fail(lerr)
+	}
+	r := w.compound(v, depth)
+	if w.memo == nil {
+		w.memo = make(map[walkMemoKey]*LVal)
+	}
+	w.memo[key] = r
+	return r
+}
+
+// compound walks a non-empty, unquoted list in code position.
+func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 	// A compound form.  Expand its head until it is no longer a macro,
 	// classifying it on the way: op is the special form it names, if any.
 	op, isOp := "", false
@@ -841,6 +895,22 @@ func (w *CodeWalker) template(v *LVal, depth int) *LVal {
 	if (v.Type != LSExpr && v.Type != LQuote) || len(v.Cells) == 0 {
 		return v
 	}
+	key := walkMemoKey{node: v, scope: w.scopeID(), template: true}
+	if r, ok := w.memo[key]; ok {
+		return r
+	}
+	if lerr := w.charge(); lerr != nil {
+		return w.fail(lerr)
+	}
+	r := w.templateList(v, depth)
+	if w.memo == nil {
+		w.memo = make(map[walkMemoKey]*LVal)
+	}
+	w.memo[key] = r
+	return r
+}
+
+func (w *CodeWalker) templateList(v *LVal, depth int) *LVal {
 	b := newRebuild(v)
 	if h := v.Cells[0]; v.Type == LSExpr && h.Type == LSymbol && len(v.Cells) == 2 &&
 		(h.Str == "unquote" || h.Str == "unquote-splicing") {
@@ -946,6 +1016,7 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 		defineLocalMacro: env.defineLocalMacro,
 		MaxDepth:         maxDepth,
 		MaxExpansions:    env.Runtime.MaxMacroExpansions(),
+		step:             func() *LVal { return env.checkLimits(env.evalCtx) },
 	}
 	return w.Walk(form)
 }
