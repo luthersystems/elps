@@ -153,8 +153,8 @@ func EncodeCanonical(v *LVal, opts ...CodecOption) ([]byte, error) {
 }
 
 type canonEncoder struct {
-	cfg    *codecConfig
-	path   map[*LVal]struct{} // containers on the current path, for cycles
+	cfg     *codecConfig
+	path    map[*LVal]struct{} // containers on the current path, for cycles
 	buf     []byte
 	values  int
 	charged int // KiB already reported to cfg.charge

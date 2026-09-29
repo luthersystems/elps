@@ -105,6 +105,18 @@ value-only encoding.
   elements arrive.  Without that, a chain of nested lists each claiming
   "as many elements as bytes remain" made a 4 MB input allocate gigabytes
   (`TestCanonicalDecodeNoAllocAmplification`).
+- The bound is per value, not per input byte.  Each decoded value (every
+  element, key, array dimension and nested value, which is also what the
+  value limit counts) costs at most about 260 bytes of Go heap: an `LVal`
+  header plus its share of the containing slices, the worst being an empty
+  array (header, dimension list, element list, dimension).  Dense valid
+  input spends one to three bytes per value, so decode allocation can reach
+  roughly 50-175 times the input size: measured 78x for a list of empty
+  lists or of small ints, 172x for a list of empty arrays, 55x for tagged
+  values and 46x for an int-keyed map (`TestCanonicalDecodeAllocDenseValid`,
+  which asserts under 200x).  With the default limit of 2^20 values one
+  decode allocates at most a few hundred MiB; `WithCodecMaxValues` (and, for
+  `codec:decode`, `MaxAlloc`) lowers that.
 - Depth, total value count and byte size are limited
   (`DefaultCodecMaxDepth` 1024, `DefaultCodecMaxValues` 2^20,
   `DefaultCodecMaxBytes` 16 MiB); the builtins also cap bytes and values at the
