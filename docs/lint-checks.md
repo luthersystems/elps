@@ -334,6 +334,35 @@ template.
   (error 'test "data"))
 ```
 
+### `loop-variable-capture`
+
+**Warns when a closure stored from a `dotimes` body captures the loop
+variable.** (Severity: **warning**)
+
+`dotimes` reuses one binding for every turn, so a closure that captures the
+loop variable and outlives its turn sees the variable's final value, not the
+value of the turn that created it (see "dotimes and captured loop variables"
+in the language reference).
+
+```lisp
+;; BAD — every closure returns 3
+(dotimes (i 3) (append! fs (lambda () i)))
+
+;; GOOD — a fresh binding per turn
+(dotimes (i 3) (let ((i i)) (append! fs (lambda () i))))
+```
+
+The check runs on fully expanded code, with the macro expander when semantic
+analysis has one, and reads the analysis package's scope resolution to decide
+what a closure captures, so a parameter or inner `let` that shadows the
+variable is not reported. Only the loop body is checked; the result form runs
+once, after the loop. A closure counts as stored only when it is the
+direct argument, not shadowed by a local function, of `set`, `set!`, `append!`, `append`, `assoc!`, `assoc`,
+`cons`, `list`, `vector`, `concat`, `sorted-map`, `insert-index` or
+`insert-sorted`; one passed to `map` or called on the spot runs during its
+turn and is not reported. A closure stored some other way (returned from a
+helper, passed to a user function that stores it) is not seen.
+
 ### `test-outside-test-file`
 
 **Reports tests registered outside a `_test.lisp` file.**

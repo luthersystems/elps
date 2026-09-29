@@ -2968,3 +2968,183 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		return nil
 	},
 }
+
+// storingCalls are the calls whose function argument outlives the loop
+// turn: the value is bound, stored in a container, or returned inside one.
+var storingCalls = map[string]bool{
+	"set": true, "set!": true, "append!": true, "append": true, "assoc!": true,
+	"assoc": true, "cons": true, "list": true, "vector": true, "concat": true,
+	"sorted-map": true, "insert-index": true, "insert-sorted": true,
+}
+
+// AnalyzerLoopVariableCapture warns when a closure created in a dotimes
+// body captures the loop variable and is stored.  dotimes reuses one
+// binding for every turn (docs/lang.md, "dotimes and captured loop
+// variables"), so every stored closure sees the variable's final value.
+//
+// It reads the analysis package's scope resolution (the same resolver the
+// LSP and the semantic checks use, with the macro expander when there is
+// one): a reference inside the closure that resolves to the dotimes
+// variable is a capture, so a closure whose own parameter or an inner let
+// shadows the variable is not reported.  A closure only counts as stored
+// when it is the direct argument of a storing call (set, set!, append!,
+// assoc!, cons, list, ...) that no local function shadows; one passed to
+// map or called on the spot runs during the turn and is fine.  Only the
+// loop body is checked: the result form runs once, after the loop.
+var AnalyzerLoopVariableCapture = &Analyzer{
+	Name:     "loop-variable-capture",
+	Severity: SeverityWarning,
+	Doc:      "Warn when a closure stored from a dotimes body captures the loop variable.\n\ndotimes reuses one binding for every turn, so each stored closure sees the variable's final value, not the value of the turn that created it. Bind a fresh copy inside the body: (let ((i i)) (lambda () i)).",
+	Run: func(pass *Pass) error {
+		if !mentionsSymbol(pass.Exprs, "dotimes") && (pass.Semantics == nil || pass.Semantics.MacroExpander == nil) {
+			return nil // no loop in the file, and no macro can make one
+		}
+		// Resolve the file's fully expanded forms (shared with the other
+		// walker-based checks), so the tree this check reads -- a
+		// closure's parent call, the loop body -- is the tree the
+		// resolver saw, macro output included.
+		var code []*lisp.LVal
+		for _, ef := range pass.expandedExprs() {
+			code = append(code, ef.code)
+		}
+		if !mentionsSymbol(code, "dotimes") {
+			return nil
+		}
+		reportLoopCaptures(pass, analysis.Analyze(code, nil))
+		return nil
+	},
+}
+
+func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
+	passFile := analysis.NormalizePath(pass.Filename)
+	refAt := make(map[*lisp.LVal]*analysis.Reference, len(sem.References))
+	for _, r := range sem.References {
+		if r.Node != nil {
+			refAt[r.Node] = r
+		}
+	}
+	var visit func(s *analysis.Scope)
+	visit = func(s *analysis.Scope) {
+		if s.Kind == analysis.ScopeDotimes && s.Node != nil && len(s.Node.Cells) > 2 {
+			checkLoop(pass, sem, s, refAt, passFile)
+		}
+		for _, c := range s.Children {
+			visit(c)
+		}
+	}
+	visit(sem.RootScope)
+}
+
+func checkLoop(pass *Pass, sem *analysis.Result, loop *analysis.Scope, refAt map[*lisp.LVal]*analysis.Reference, passFile string) {
+	var loopVar *analysis.Symbol
+	for _, sym := range loop.Symbols {
+		loopVar = sym
+	}
+	if loopVar == nil {
+		return
+	}
+	// parent maps each node of the loop body to the list holding it.
+	parent := make(map[*lisp.LVal]*lisp.LVal)
+	inBody := make(map[*lisp.LVal]bool)
+	var link func(v *lisp.LVal)
+	link = func(v *lisp.LVal) {
+		if inBody[v] {
+			return
+		}
+		inBody[v] = true
+		for _, c := range v.Cells {
+			if c != nil && !inBody[c] {
+				parent[c] = v
+				link(c)
+			}
+		}
+	}
+	for _, body := range loop.Node.Cells[2:] {
+		link(body)
+	}
+	var visit func(s *analysis.Scope)
+	visit = func(s *analysis.Scope) {
+		for _, c := range s.Children {
+			if c.Kind == analysis.ScopeLambda && inBody[c.Node] && storedClosure(c.Node, parent, refAt) {
+				if r := firstCapture(c.Node, loopVar, refAt); r != nil {
+					if src, ok := r.Node.Source(); ok && analysis.NormalizePath(src.File) == passFile {
+						pass.Report(Diagnostic{
+							Message: "closure captures dotimes variable " + loopVar.Name + ", which the loop reuses",
+							Pos:     posFromSource(astutil.SourceLoc(r.Node)),
+							EndPos:  endPosFromNode(r.Node),
+							Notes: []string{
+								"every stored closure sees the variable's final value, not this turn's",
+								"bind a fresh copy inside the body: (let ((" + loopVar.Name + " " + loopVar.Name + ")) ...)",
+							},
+						})
+					}
+				}
+				continue // one report per closure; nested closures are inside it
+			}
+			visit(c)
+		}
+	}
+	visit(loop)
+}
+
+// storedClosure reports whether the lambda (or expr) form fn is the direct
+// argument of a storing call whose head is not a local binding.
+func storedClosure(fn *lisp.LVal, parent map[*lisp.LVal]*lisp.LVal, refAt map[*lisp.LVal]*analysis.Reference) bool {
+	call := parent[fn]
+	if call == nil || len(call.Cells) == 0 || call.Cells[0] == fn || call.IsQuoted() {
+		return false
+	}
+	head := call.Cells[0]
+	if !storingCalls[strings.TrimPrefix(HeadSymbol(call), lisp.DefaultLangPackage+":")] {
+		return false
+	}
+	if r := refAt[head]; r != nil && r.Symbol != nil && r.Symbol.Scope != nil && r.Symbol.Scope.Kind != analysis.ScopeGlobal {
+		return false // a local function shadows the builtin
+	}
+	return true
+}
+
+// firstCapture returns the first reference inside fn that resolves to v.
+func firstCapture(fn *lisp.LVal, v *analysis.Symbol, refAt map[*lisp.LVal]*analysis.Reference) *analysis.Reference {
+	var found *analysis.Reference
+	seen := make(map[*lisp.LVal]bool)
+	var walk func(n *lisp.LVal)
+	walk = func(n *lisp.LVal) {
+		if found != nil || n == nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		if r := refAt[n]; r != nil && r.Symbol == v {
+			found = r
+			return
+		}
+		for _, c := range n.Cells {
+			walk(c)
+		}
+	}
+	walk(fn)
+	return found
+}
+
+// mentionsSymbol reports whether any symbol in exprs is spelled name, bare
+// or lisp-qualified.
+func mentionsSymbol(exprs []*lisp.LVal, name string) bool {
+	found := false
+	var walk func(v *lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if found || v == nil {
+			return
+		}
+		if v.Type == lisp.LSymbol {
+			found = strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":") == name
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c)
+		}
+	}
+	for _, e := range exprs {
+		walk(e)
+	}
+	return found
+}
