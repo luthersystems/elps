@@ -832,16 +832,6 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 	if !mentionsRethrowContext(pass.Exprs) {
 		return
 	}
-	var exp astutil.MacroExpander
-	pkg := lisp.DefaultUserPackage
-	if pass.Semantics != nil {
-		if pass.Semantics.MacroExpander != nil {
-			exp = pass.Semantics.MacroExpander
-		}
-		if pass.Semantics.DefaultPackage != "" {
-			pkg = pass.Semantics.DefaultPackage
-		}
-	}
 	passFile := analysis.NormalizePath(pass.Filename)
 	reported := make(map[int]bool)
 	reportOnce := func(form *lisp.LVal) {
@@ -862,12 +852,7 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 		handler bool // a handler-bind form, else a function body
 		macro   bool // a defmacro body
 	}
-	for _, expr := range pass.Exprs {
-		if HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
-			if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {
-				pkg = name
-			}
-		}
+	for _, ef := range pass.expandedExprs() {
 		// stack holds the enclosing handler-bind forms and function
 		// bodies with the depth each was entered at; an event at that
 		// depth or shallower has left it.
@@ -898,7 +883,7 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 			walkRethrowTemplate(tmpl, 0, true, reportOnce)
 		}
 		var form *lisp.LVal // the call whose head is being checked
-		astutil.ExpandAll(expr, exp, pkg, func(n *lisp.WalkNode) bool {
+		astutil.ExpandAll(ef.code, nil, ef.pkg, func(n *lisp.WalkNode) bool {
 			switch n.Event {
 			case lisp.WalkEnter:
 				// A scope's contents are deeper than its Enter event.
