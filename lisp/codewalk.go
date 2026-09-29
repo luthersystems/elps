@@ -629,7 +629,9 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	case ShapeCond:
 		for i := 1; i < len(cells); i++ {
 			clause := cells[i]
-			if clause.Type != LSExpr || clause.quoted || len(clause.Cells) == 0 {
+			// A clause is structure even when written [test body...],
+			// which reads as a quoted list: opCond reads its cells.
+			if clause.Type != LSExpr || len(clause.Cells) == 0 {
 				b.set(i, w.form(clause, d))
 				continue
 			}
@@ -645,7 +647,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	case ShapeDotimes:
 		if len(cells) > 1 {
 			ctrl := cells[1]
-			if ctrl.Type != LSExpr || ctrl.quoted {
+			if ctrl.Type != LSExpr {
 				w.data(ctrl, d)
 				w.forms(b, 2, depth)
 				break
@@ -679,7 +681,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	case ShapeWithCleanup:
 		if len(cells) > 1 {
 			cl := cells[1]
-			if cl.Type == LSExpr && !cl.quoted {
+			if cl.Type == LSExpr {
 				cb := newRebuild(cl)
 				w.forms(cb, 0, d)
 				b.set(1, cb.done())
