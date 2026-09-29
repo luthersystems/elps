@@ -13,7 +13,8 @@ import (
 )
 
 // These goldens were recorded before macroGetDefault used FormTemplate. Keep
-// the result, evaluation cost and printed expansion unchanged by that port.
+// the result and evaluation cost unchanged. The GenSyms port changes only
+// temporary names in the printed expansion.
 func TestGetDefaultFormTemplateParity(t *testing.T) {
 	for _, tt := range []struct {
 		name, program, result string
@@ -26,7 +27,7 @@ func TestGetDefaultFormTemplateParity(t *testing.T) {
 		{"nested default", `(get-default (sorted-map) "k" (get-default () "inner" 42))`, `42`, 33},
 		{"default side effects", `(let ((calls 0)) (list (get-default (sorted-map) "k" (progn (set! calls (+ calls 1)) 42)) calls))`, `'(42 1)`, 33},
 		{"unused default", `(let ((calls 0)) (list (get-default (sorted-map "k" 7) "k" (progn (set! calls (+ calls 1)) 42)) calls))`, `'(7 0)`, 30},
-		{"macroexpand", `(macroexpand-1 '(get-default m k d))`, `'(lisp:let ((gen00000001 m) (gen00000002 k)) (lisp:if (lisp:if (lisp:nil? gen00000001) lisp:false (lisp:key? gen00000001 gen00000002)) (lisp:get gen00000001 gen00000002) d))`, 3},
+		{"macroexpand", `(macroexpand-1 '(get-default m k d))`, `'(lisp:let ((map@1@1 m) (key@1@2 k)) (lisp:if (lisp:if (lisp:nil? map@1@1) lisp:false (lisp:key? map@1@1 key@1@2)) (lisp:get map@1@1 key@1@2) d))`, 3},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			env := lisp.NewEnv(nil)

@@ -528,6 +528,8 @@ func (r *Runtime) closuresCreated() uint64 {
 	return atomic.LoadUint64((*uint64)(&r.closures))
 }
 
+// GenSym returns the next genNNNNNNNN name from this runtime's counter.
+// Go macros should use NewGenSyms for deterministic temporary bindings.
 func (r *Runtime) GenSym() string {
 	// "gen" plus at least eight decimal digits, zero-padded, as
 	// fmt.Sprintf("gen%08d") produced; one allocation, the final string.

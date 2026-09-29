@@ -222,7 +222,8 @@ var getDefaultForm = MustFormTemplate(`
             ,default))`, "map-sym", "key-sym", "map", "key", "default")
 
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
-	mapSym, keySym := env.GenSym(), env.GenSym()
+	g := NewGenSyms(args)
+	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
 	return getDefaultForm.Expand(mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2])
 }
 
