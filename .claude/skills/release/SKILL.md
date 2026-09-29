@@ -62,7 +62,14 @@ gh run list --branch main --limit 3   # or the Actions API if gh is absent
 ```
 
 `make release-notes` previews the same information locally (latest tag, CI
-status, commits since the tag) when `gh` is available.
+status, commits since the tag, and the waived API breaks) when `gh` is
+available.
+
+**Waived API breaks.** `bash scripts/api-breaks-since.sh <lasttag>` prints
+every `scripts/api-breaks.txt` entry added since the last stable tag -- the
+breaking changes the API break gate (#761) let through. The release workflow
+lists each under "Breaking changes" in the notes; check they are there on a
+`dry_run`. After the release ships, delete those entries (a follow-up PR).
 
 ### 3. Update the VS Code extension changelog (if applicable)
 
