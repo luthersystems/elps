@@ -61,6 +61,7 @@ func TestWalkCode(t *testing.T) {
 			binds = append(binds, n.Node.Str)
 		case lisp.WalkDefine:
 			defs = append(defs, n.Node.Str)
+		default:
 		}
 		return true
 	})

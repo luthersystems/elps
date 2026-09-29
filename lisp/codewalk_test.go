@@ -81,8 +81,16 @@ func TestMacroExpandAll(t *testing.T) {
 			row{`(macroexpand-all '(list '(m 1)))`, `'(list '(m 1))`, ""},
 			row{`(macroexpand-all '(quasiquote ((m 1) (unquote (m 2)) (unquote-splicing (m 3)))))`,
 				`'(quasiquote ((m 1) (unquote (list 2)) (unquote-splicing (list 3))))`, ""},
+			// Nested quasiquote and quote do not delay unquote in ELPS.
 			row{`(macroexpand-all '(quasiquote (a (quasiquote (b (unquote (m 1)))))))`,
-				`'(quasiquote (a (quasiquote (b (unquote (m 1))))))`, ""},
+				`'(quasiquote (a (quasiquote (b (unquote (list 1))))))`, ""},
+			row{`(macroexpand-all '(quasiquote (a '(unquote (m 1)))))`,
+				`'(quasiquote (a '(unquote (list 1))))`, ""},
+			// lisp:unquote is data inside a template.
+			row{`(macroexpand-all '(quasiquote (a (lisp:unquote (m 1)))))`,
+				`'(quasiquote (a (lisp:unquote (m 1))))`, ""},
+			row{`(equal? (eval (macroexpand-all '(quasiquote (a (quasiquote (unquote (m 1)))))))
+			             (quasiquote (a (quasiquote (unquote (m 1))))))`, "true", ""},
 			row{`(macroexpand-all '(help m))`, `'(help m)`, ""},
 			row{`(macroexpand-all '(qualified-symbol m))`, `'(qualified-symbol m)`, ""},
 		)},
@@ -226,6 +234,7 @@ func TestCodeWalkerEvents(t *testing.T) {
 			got = append(got, "enter:"+n.Op)
 		case lisp.WalkLeave:
 			got = append(got, "leave:"+n.Op)
+		default:
 		}
 		return true
 	}}
