@@ -517,6 +517,38 @@ The rules are exact, so step counts stay deterministic:
   that is a coordinated upgrade like any other step change. A new builtin can
   adopt it freely.
 
+### Inspecting local variables
+
+`env.Locals()` returns the local variables visible from an environment,
+sorted by name, as `[]lisp.Binding{Name, Value}`. A Go builtin's `env` has
+the caller's lexical scopes as parents, so inside a builtin it reports the
+variables in scope at the call site: function parameters, `let` bindings and
+`flet`/`labels` local functions (the function is the value) of every
+enclosing scope, the innermost binding winning when a name
+is shadowed. Package globals are not included (read them with `env.Get`).
+The debugger's variables pane uses the same walk.
+
+```go
+// (trace-locals) prints the caller's local variables to the runtime's Stderr.
+func builtinTraceLocals(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	for _, b := range env.Locals() {
+		fmt.Fprintf(env.Runtime.Stderr, "%s = %v\n", b.Name, b.Value)
+	}
+	return lisp.Nil()
+}
+```
+
+```lisp
+(defun area (width height)
+  (let ((result (* width height)))
+    (trace-locals)   ; prints height = 3, result = 6, width = 2
+    result))
+(area 2 3)
+```
+
+The values are the live bound values, not copies: never mutate them, and
+`Copy` any value kept after the builtin returns.
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package
