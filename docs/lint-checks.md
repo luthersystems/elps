@@ -308,6 +308,16 @@ outside causes a runtime error. An `(error-stack)` inside a function body
 (`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
 that function; `rethrow` is reported there as before.
 
+The check walks code with the shared code walker (`astutil.ExpandAll`), so
+quoted data and quasiquote templates are not searched, a local function or
+variable named `rethrow` is not the builtin, and the body of a `flet` or
+`labels` form (unlike its function bodies) is not a function body. When
+semantic analysis runs with a macro expander (`--workspace` with an
+environment, the LSP, `elps mcp`), each form is fully expanded first, so a
+user macro that expands to `handler-bind` counts as one, however deeply it is
+nested. A call a macro synthesizes has no location in the file being linted
+and is reported when the macro's own file is linted.
+
 ```lisp
 ;; BAD — not inside handler-bind
 (defun my-handler (c &rest args)

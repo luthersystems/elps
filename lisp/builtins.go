@@ -128,6 +128,17 @@ var (
 			`Performs a single macro expansion step on quoted-form and returns
 			the result. Useful for debugging macro expansion. Recursive
 			value walks exceeding 1000000 levels raise an ordinary depth error.`},
+		{"macroexpand-all", Formals("quoted-form"), builtinMacroExpandAll,
+			`Expands every macro call in quoted-form, not just the head: the
+			head is expanded until it is no longer a macro, then each nested
+			form in code position is expanded the same way. Knows the binding
+			shape of every special form, so a local variable or function that
+			shadows a macro name is left alone, macrolet macros are expanded,
+			and quoted data (quote, the non-unquoted parts of quasiquote,
+			condition types) is never entered. defun and defmacro are kept as
+			written with their bodies expanded. The input is not modified.
+			Nesting deeper than the evaluator's nesting limit, or a head that
+			keeps expanding past the macro expansion limit, is an error.`},
 		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
 			`Calls fun with the given args and returns the result. fun may be
 			a function value or a quoted symbol resolved in the global package

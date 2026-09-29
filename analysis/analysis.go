@@ -96,6 +96,12 @@ type Result struct {
 	// Copied from Config. Used by lint analyzers to check whether a symbol
 	// is referenced from other workspace files (e.g. unused-function check).
 	WorkspaceRefs map[string][]FileReference
+
+	// MacroExpander and DefaultPackage are copied from Config, so lint
+	// analyzers that walk fully expanded code (astutil.ExpandAll) expand
+	// with the same expander, in the same package, as the analysis did.
+	MacroExpander  MacroExpander
+	DefaultPackage string
 }
 
 // Analyze performs semantic analysis on a set of parsed expressions.
@@ -128,8 +134,14 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	a := &analyzer{
-		root:             root,
-		result:           &Result{RootScope: root, ExtraGlobals: cfg.ExtraGlobals, WorkspaceRefs: cfg.WorkspaceRefs},
+		root: root,
+		result: &Result{
+			RootScope:      root,
+			ExtraGlobals:   cfg.ExtraGlobals,
+			WorkspaceRefs:  cfg.WorkspaceRefs,
+			MacroExpander:  cfg.MacroExpander,
+			DefaultPackage: cfg.DefaultPackage,
+		},
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
 	}
