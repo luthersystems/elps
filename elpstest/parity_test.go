@@ -140,3 +140,48 @@ func TestParityCheckReportsDisagreements(t *testing.T) {
 	assert.Len(t, diffs, 1)
 	assert.Contains(t, strings.Join(diffs, ""), `error[boom] "different"`)
 }
+
+// Go-valued arguments, per-case setup and an expected step delta: a native
+// that deliberately charges k steps more than the Lisp passes with StepDelta
+// k and fails without it; Go-built values reach both
+// sides (a map built in Go); each case's Setup runs after the check's.
+func TestParityCheckCasesAndStepDelta(t *testing.T) {
+	base := func(extra int64) elpstest.ParityCheck {
+		return elpstest.ParityCheck{
+			Runner: nativeRunner(0, extra, false), Legacy: parityLegacy,
+			LegacyFn: "bump", NativeFn: "native-bump",
+			Setup:   `(set 'm (sorted-map "a" 1))`,
+			Observe: `m`,
+		}
+	}
+	n := matchingCharge(t, func(n int64) elpstest.ParityCheck {
+		c := base(n)
+		c.Cases = [][]string{{"m", `"a"`}}
+		return c
+	})
+
+	c := base(n + 2)
+	c.Extra = []elpstest.ParityCase{
+		{Args: []string{"m", `"a"`}, StepDelta: 2},
+		{Setup: `(set 'm (sorted-map "z" 5))`, Args: []string{"m", `"z"`}, StepDelta: 2},
+		{GoArgs: func(env *lisp.LEnv) []*lisp.LVal {
+			gm := lisp.SortedMap()
+			gm.Map().Set(lisp.String("a"), lisp.Int(1))
+			return []*lisp.LVal{gm, lisp.String("a")}
+		}, StepDelta: 2},
+	}
+	assert.Empty(t, c.Diff(t))
+
+	// Without the delta every case reports its steps.
+	for i := range c.Extra {
+		c.Extra[i].StepDelta = 0
+	}
+	diffs := c.Diff(t)
+	assert.Len(t, diffs, 3, strings.Join(diffs, "\n"))
+
+	// StepDeltaFn covers Cases and Gen.
+	c = base(n + 1)
+	c.Cases = [][]string{{"m", `"a"`}, {"m", `"b"`}}
+	c.StepDelta = func([]string) int64 { return 1 }
+	assert.Empty(t, c.Diff(t))
+}

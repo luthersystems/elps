@@ -577,6 +577,14 @@ fail (or succeed) alike; step counts are not compared then, because a native
 that charges in bulk overshoots the budget where the Lisp stopped one step
 past it. `Diff` returns the differences without failing the test.
 
+`Extra` takes `elpstest.ParityCase` values for what source text cannot say:
+`GoArgs` builds Go-valued arguments per side (a map with a custom backing,
+say), `Setup` runs after the check's own, and `StepDelta` is the step
+difference a native is meant to have (negative when it charges less). For
+`Cases` and `Gen`, `StepDelta func(args []string) int64` does the same, so a
+native with an intended difference keeps its step check instead of setting
+`IgnoreSteps`.
+
 ## Working with lisp types
 
 All lisp values are represented in Go as the LVal type.  The lisp type of a
