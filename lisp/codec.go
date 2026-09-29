@@ -425,6 +425,31 @@ type canonDecoder struct {
 	buf    []byte
 	pos    int
 	values int
+	// pending counts elements containers have declared but the decoder
+	// has not read yet.  values+pending never exceeds maxValues, so a
+	// chain of containers each declaring a large count fails at once
+	// instead of committing memory for elements the input never holds.
+	pending int
+}
+
+// preallocCap bounds the capacity reserved from a declared count; past it
+// a container grows as its elements actually arrive, so allocation tracks
+// input consumed rather than input claimed.
+const preallocCap = 64
+
+// declare reserves n pending elements against the value limit.
+func (d *canonDecoder) declare(n int) error {
+	if n > d.cfg.maxValues-d.values-d.pending {
+		return fmt.Errorf("%w: more than %d values", errCodecLimit, d.cfg.maxValues)
+	}
+	d.pending += n
+	return nil
+}
+
+// child reads one declared element.
+func (d *canonDecoder) child(depth int) (*LVal, error) {
+	d.pending--
+	return d.value(depth + 1)
 }
 
 var errTruncated = errors.New("canonical codec: truncated input")
@@ -594,13 +619,16 @@ func (d *canonDecoder) value(depth int) (*LVal, error) {
 }
 
 func (d *canonDecoder) list(n, depth int) ([]*LVal, error) {
-	cells := make([]*LVal, n)
-	for i := range cells {
-		c, err := d.value(depth + 1)
+	if err := d.declare(n); err != nil {
+		return nil, err
+	}
+	cells := make([]*LVal, 0, min(n, preallocCap))
+	for range n {
+		c, err := d.child(depth)
 		if err != nil {
 			return nil, err
 		}
-		cells[i] = c
+		cells = append(cells, c)
 	}
 	return cells, nil
 }
@@ -610,12 +638,12 @@ func (d *canonDecoder) array(depth int) (*LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	dims := make([]*LVal, rank)
+	dims := make([]*LVal, 0, min(rank, preallocCap))
 	// total is the element count, capped at remaining()+1: past that the
 	// input cannot hold the elements, whatever the exact product is.
 	total, capped := 1, d.remaining()+1
 	zero := false
-	for i := range dims {
+	for range rank {
 		u, err := d.uvarint()
 		if err != nil {
 			return nil, err
@@ -624,7 +652,7 @@ func (d *canonDecoder) array(depth int) (*LVal, error) {
 			return nil, errors.New("canonical codec: array dimension overflows int")
 		}
 		n := int(u)
-		dims[i] = Int(n)
+		dims = append(dims, Int(n))
 		switch {
 		case n == 0:
 			zero = true
@@ -652,10 +680,13 @@ func (d *canonDecoder) sortedMap(depth int) (*LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	m := SortedMapSized(n)
+	if err := d.declare(2 * n); err != nil {
+		return nil, err
+	}
+	m := SortedMapSized(min(n, preallocCap))
 	var prev *LVal
 	for range n {
-		k, err := d.value(depth + 1)
+		k, err := d.child(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -668,7 +699,7 @@ func (d *canonDecoder) sortedMap(depth int) (*LVal, error) {
 			return nil, errors.New("canonical codec: map keys out of order or duplicated")
 		}
 		prev = k
-		val, err := d.value(depth + 1)
+		val, err := d.child(depth)
 		if err != nil {
 			return nil, err
 		}
@@ -704,7 +735,11 @@ func (d *canonDecoder) native() (*LVal, error) {
 // codecEnvOptions bounds a Lisp serialize/deserialize by the runtime's
 // per-operation allocation cap as well as the codec's default byte limit.
 func codecEnvOptions(env *LEnv) []CodecOption {
-	return []CodecOption{WithCodecMaxBytes(min(DefaultCodecMaxBytes, env.Runtime.MaxAllocBytes()))}
+	limit := env.Runtime.MaxAllocBytes()
+	return []CodecOption{
+		WithCodecMaxBytes(min(DefaultCodecMaxBytes, limit)),
+		WithCodecMaxValues(min(DefaultCodecMaxValues, limit)),
+	}
 }
 
 func builtinSerialize(env *LEnv, args *LVal) *LVal {

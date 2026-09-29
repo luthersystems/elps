@@ -91,14 +91,17 @@ value-only encoding.
 
 ## Safety
 
-- The decoder never panics on malformed input.  Every length and count is
-  checked against the remaining input before anything is allocated for it
-  (every element needs at least one byte), so a few bytes cannot request a
-  large allocation.  An array's element count is computed with saturation
-  and checked the same way.
+- The decoder never panics on malformed input, and its allocation tracks
+  the input it has consumed, not the counts the input claims.  A declared
+  count must fit in the remaining input, is reserved against the value
+  limit together with every count still pending in enclosing containers,
+  and reserves at most 64 slots up front; a container grows only as its
+  elements arrive.  Without that, a chain of nested lists each claiming
+  "as many elements as bytes remain" made a 4 MB input allocate gigabytes
+  (`TestCanonicalDecodeNoAllocAmplification`).
 - Depth, total value count and byte size are limited
   (`DefaultCodecMaxDepth` 1024, `DefaultCodecMaxValues` 2^20,
-  `DefaultCodecMaxBytes` 16 MiB); the builtins also cap bytes at the
+  `DefaultCodecMaxBytes` 16 MiB); the builtins also cap bytes and values at the
   runtime's `MaxAlloc`.
 - Ints are 64-bit in the format.  A platform whose `int` is 32 bits
   rejects an int or array dimension that does not fit, rather than
