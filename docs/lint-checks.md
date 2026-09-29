@@ -240,6 +240,10 @@ all builtins (`car`, `cdr`, `cons`, `=`, `not`, etc.), special operators
 (gensym)
 ```
 
+A call-shaped list that the code walker classifies as quoted data or as
+structure (`(quote (car))`, `'((car) 1)`, a `dotimes` control list) is not a
+call and is not checked.
+
 **Note:** User-defined functions that shadow builtin names are automatically
 detected and excluded from arity checking. This covers `defun`/`defmacro`
 names as well as names bound locally by `let`, `let*`, `flet`, `labels` and
