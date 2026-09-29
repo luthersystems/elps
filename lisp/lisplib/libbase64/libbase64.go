@@ -47,16 +47,14 @@ var builtins = []*libutil.Builtin{
 		padding and ignored CR/LF characters do not count toward it.`),
 }
 
-func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	v := args.Cells[0]
-	if v.Type != lisp.LString && v.Type != lisp.LBytes {
-		return env.Errorf("argument is not a string: %v", v.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, v.Len()); lerr != nil {
+// builtinEncode and builtinDecode take a string or bytes; anything else is
+// "argument is not a string: <type>".
+var builtinEncode = lisp.Func1(lisp.BytesArg("argument is not a string: %v"), func(env *lisp.LEnv, src []byte) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(src)); lerr != nil {
 		return lerr
 	}
-	groups := v.Len() / 3
-	if v.Len()%3 != 0 {
+	groups := len(src) / 3
+	if len(src)%3 != 0 {
 		groups++
 	}
 	// Check before multiplying: EncodedLen itself can overflow for an
@@ -65,48 +63,25 @@ func builtinEncode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Errorf("base64 encoding would exceed maximum allocation size (%d bytes)", env.Runtime.MaxAllocBytes())
 	}
 	b := make([]byte, groups*4)
-	if v.Type == lisp.LString {
-		base64.StdEncoding.Encode(b, []byte(v.Str))
-	} else {
-		base64.StdEncoding.Encode(b, v.Bytes())
-	}
+	base64.StdEncoding.Encode(b, src)
 	return lisp.Bytes(b)
-}
+})
 
-func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	v := args.Cells[0]
-	if v.Type == lisp.LString || v.Type == lisp.LBytes {
-		if lerr := libutil.ChargeKiB(env, v.Len()); lerr != nil {
-			return lerr
-		}
+var builtinDecode = lisp.Func1(lisp.BytesArg("argument is not a string: %v"), func(env *lisp.LEnv, src []byte) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(src)); lerr != nil {
+		return lerr
 	}
-	switch v.Type {
-	case lisp.LString:
-		size := decodedOutputLen(v.Str)
-		if msg := env.Runtime.CheckAlloc(size); msg != "" {
-			return env.Errorf("%s", msg)
-		}
-		b := make([]byte, size)
-		n, err := base64.StdEncoding.Decode(b, []byte(v.Str))
-		if err != nil {
-			return env.Error(err)
-		}
-		return lisp.Bytes(b[:n])
-	case lisp.LBytes:
-		size := decodedOutputLen(v.Bytes())
-		if msg := env.Runtime.CheckAlloc(size); msg != "" {
-			return env.Errorf("%s", msg)
-		}
-		b := make([]byte, size)
-		n, err := base64.StdEncoding.Decode(b, v.Bytes())
-		if err != nil {
-			return env.Error(err)
-		}
-		return lisp.Bytes(b[:n])
-	default:
-		return env.Errorf("argument is not a string: %v", v.Type)
+	size := decodedOutputLen(src)
+	if msg := env.Runtime.CheckAlloc(size); msg != "" {
+		return env.Errorf("%s", msg)
 	}
-}
+	b := make([]byte, size)
+	n, err := base64.StdEncoding.Decode(b, src)
+	if err != nil {
+		return env.Error(err)
+	}
+	return lisp.Bytes(b[:n])
+})
 
 // decodedOutputLen is exact for valid standard base64, including ignored
 // newlines and padding. For malformed input it still bounds what Decode can
