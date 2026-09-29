@@ -60,7 +60,7 @@ var lazyTableFunctions = map[string]string{
 	"sortedmap.entriesWithInts":          "calls forceAll before reading the table",
 	"setTemplateFrameSortedMap":          "calls forceAll before snapshotting the table",
 	"LVal.AppendSortedPairs":             "calls forceAll before reading the table",
-	"LVal.MapRange":                      "calls forceAll before reading the table",
+	"LVal.mapRange":                      "calls forceAll before reading the table",
 	"copier.mapData":                     "calls forceAll on the sorted-map arm before reading the table",
 	"templateInventory.mapData":          "calls forceAll before snapshotting a sorted map for republication",
 	"templateCompiler.mapData":           "calls forceAll before reading the table",

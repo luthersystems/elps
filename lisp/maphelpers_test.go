@@ -11,12 +11,14 @@ import (
 )
 
 // rangeRender renders MapRange's walk the way MapEntries renders.
-func rangeRender(m *lisp.LVal) string {
+func rangeRender(env *lisp.LEnv, m *lisp.LVal) string {
 	var cells []*lisp.LVal
-	m.MapRange(func(k lisp.MapKey, v *lisp.LVal) bool {
+	if lerr := env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
 		cells = append(cells, lisp.QExpr([]*lisp.LVal{k.LVal(), v}))
 		return true
-	})
+	}); lerr.Type == lisp.LError {
+		return lerr.String()
+	}
 	return lisp.QExpr(cells).String()
 }
 
@@ -30,7 +32,7 @@ func TestMapRangeMatchesMapEntries(t *testing.T) {
 	} {
 		m := env.LoadString("test", src)
 		require.Equal(t, lisp.LSortMap, m.Type, src)
-		assert.Equal(t, m.MapEntries().String(), rangeRender(m), src)
+		assert.Equal(t, m.MapEntries().String(), rangeRender(env, m), src)
 	}
 }
 
@@ -39,7 +41,7 @@ func TestMapRangeCustomBacking(t *testing.T) {
 	env := newLimitTestEnv(t)
 	src := env.LoadString("test", `(sorted-map "b" 2 1 "one" 'a 1)`)
 	custom := lisp.SortedMapFromData(lisp.NewMapData(wrappedMap{src.Map()}))
-	assert.Equal(t, src.MapEntries().String(), rangeRender(custom))
+	assert.Equal(t, src.MapEntries().String(), rangeRender(env, custom))
 }
 
 type wrappedMap struct{ lisp.Map }
@@ -48,7 +50,7 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 	env := newLimitTestEnv(t)
 	m := env.LoadString("test", `(sorted-map "a" 1 "b" 2 "c" 3 4 4)`)
 	var seen []string
-	m.MapRange(func(k lisp.MapKey, _ *lisp.LVal) bool {
+	env.MapRange(m, func(k lisp.MapKey, _ *lisp.LVal) bool {
 		seen = append(seen, k.LVal().String())
 		return len(seen) < 2
 	})
@@ -56,8 +58,8 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 
 	sum := 0
 	fn := func(_ lisp.MapKey, v *lisp.LVal) bool { sum += v.Int; return true }
-	m.MapRange(fn) // warm the pool
-	allocs := testing.AllocsPerRun(100, func() { m.MapRange(fn) })
+	env.MapRange(m, fn) // warm the pool
+	allocs := testing.AllocsPerRun(100, func() { env.MapRange(m, fn) })
 	assert.Zero(t, allocs)
 	// MapEntries, for comparison, allocates per call.
 	assert.NotZero(t, testing.AllocsPerRun(100, func() { _ = m.MapEntries() }))
@@ -67,12 +69,32 @@ func TestMapRangeReentrant(t *testing.T) {
 	env := newLimitTestEnv(t)
 	m := env.LoadString("test", `(sorted-map "a" (sorted-map "x" 1) "b" (sorted-map "y" 2))`)
 	var out []string
-	m.MapRange(func(k lisp.MapKey, v *lisp.LVal) bool {
-		v.MapRange(func(k2 lisp.MapKey, _ *lisp.LVal) bool {
+	env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
+		env.MapRange(v, func(k2 lisp.MapKey, _ *lisp.LVal) bool {
 			out = append(out, k.Str+k2.Str)
 			return true
 		})
 		return true
 	})
 	assert.Equal(t, []string{"ax", "by"}, out)
+}
+
+// MapRange on a value keys would refuse raises keys' own error -- not a map,
+// or a map larger than MaxAlloc -- instead of panicking, and calls fn for
+// nothing.
+func TestMapRangeErrorsMatchKeys(t *testing.T) {
+	env := newLimitTestEnv(t)
+	require.NotEqual(t, lisp.LError, env.LoadString("test", `(set 'big (sorted-map 1 1 2 2 3 3))`).Type)
+	require.True(t, lisp.WithMaxAlloc(2)(env).IsNil())
+	for _, src := range []string{`3`, `()`, `"s"`, `big`} {
+		v := env.LoadString("test", src)
+		require.NotEqual(t, lisp.LError, v.Type, src)
+		want := env.LoadString("test", "(keys "+src+")")
+		require.Equal(t, lisp.LError, want.Type, src)
+		called := false
+		got := env.MapRange(v, func(lisp.MapKey, *lisp.LVal) bool { called = true; return true })
+		require.Equal(t, lisp.LError, got.Type, src)
+		assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage(), src)
+		assert.False(t, called, src)
+	}
 }

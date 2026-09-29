@@ -451,15 +451,18 @@ arguments, or with `&rest`, use `ArgReader` directly: Go has no variadic type
 parameters, which is where generics stop. `string:split` and `string:repeat`
 are written this way.
 
-**Maps.** `v.MapRange(func(k lisp.MapKey, val *lisp.LVal) bool)` walks a
+**Maps.** `env.MapRange(m, func(k lisp.MapKey, val *lisp.LVal) bool)` walks a
 sorted-map in its documented order (int keys by value, then string and symbol
 keys by spelling). Keys arrive by value, and for the interpreter's own map
 backings it allocates nothing in the steady state, unlike `MapKeys` and
 `MapEntries`, which build lists. `k.LVal()` returns the key as `MapKeys` would.
+Where `(keys m)` would fail (m not a map, or larger than `MaxAlloc`),
+`MapRange` returns that error with the same message and calls `fn` for
+nothing. It charges no step and makes no context check.
 
 **Steps and cancellation.** See "Charging steps from a Go builtin" below:
-`env.Step()`, `lisp.ChargeStartedKiB`,
-`lisp.ChargeRecord` and `env.CheckContext()`.
+`env.Step()`, `lisp.ChargeStartedKiB`, `lisp.ChargeRecord` and
+`env.CheckContext()`.
 
 **Keyword arguments that cost no steps: `lisp.FreeKeywords`.** Every argument
 of a call form is evaluated, and evaluating the keyword literal `:k` (which

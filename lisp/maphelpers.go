@@ -40,11 +40,16 @@ type mapRangeEntry struct {
 // outlives the call that sorted it and nothing is shared between runtimes.
 var mapRangePool = sync.Pool{New: func() any { return new([]mapRangeEntry) }}
 
-// MapRange calls fn for each entry of the sorted-map v in the map's
+// MapRange calls fn for each entry of the sorted-map m in the map's
 // documented order -- int keys first by value, then string and symbol keys by
 // spelling, the order MapKeys and MapEntries use -- until fn returns false
 // (luthersystems/elps#745).  Keys arrive by value (MapKey) and values are the
 // map's own, as MapEntries hands them out.
+//
+// When (keys m) would fail, MapRange returns that error, with keys' own
+// message, and calls fn for nothing: m not a sorted-map ("first argument is
+// not a map: <type>") or m larger than the runtime's MaxAlloc.  Otherwise it
+// returns Nil(), or the error a custom backing's Entries method raises.
 //
 // For the interpreter's own map backings MapRange allocates nothing in the
 // steady state: it orders the entries in a recycled buffer rather than
@@ -53,13 +58,23 @@ var mapRangePool = sync.Pool{New: func() any { return new([]mapRangeEntry) }}
 //
 // The entries are captured before the first call to fn, so fn may read the
 // map but must not rely on seeing its own writes to it.  MapRange charges no
-// evaluation step; a builtin iterating a large map charges what its Lisp
-// counterpart did (LEnv.Step per element, for example).  It panics if v is
-// not a sorted-map, like MapKeys.
-func (v *LVal) MapRange(fn func(key MapKey, val *LVal) bool) {
+// evaluation step and makes no context check; a builtin iterating a large map
+// charges what its Lisp counterpart did (LEnv.Step per element, for example).
+func (env *LEnv) MapRange(m *LVal, fn func(key MapKey, val *LVal) bool) *LVal {
+	if m.Type != LSortMap {
+		return env.Errorf("first argument is not a map: %s", m.Type)
+	}
+	if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
+		return env.Errorf("%s", msg)
+	}
+	return m.mapRange(fn)
+}
+
+// mapRange is MapRange's walk over a sorted-map v.
+func (v *LVal) mapRange(fn func(key MapKey, val *LVal) bool) *LVal {
 	md := v.Map()
 	if md == nil || md.mapBacking == nil {
-		return
+		return Nil()
 	}
 	bufp := mapRangePool.Get().(*[]mapRangeEntry)
 	buf := (*bufp)[:0]
@@ -89,7 +104,7 @@ func (v *LVal) MapRange(fn func(key MapKey, val *LVal) bool) {
 		n := md.Len()
 		entries := make([]*LVal, n)
 		if r := md.Entries(entries); r.Type == LError {
-			return
+			return r
 		}
 		for _, e := range entries[:n] {
 			if e == nil || len(e.Cells) < 2 {
@@ -106,9 +121,10 @@ func (v *LVal) MapRange(fn func(key MapKey, val *LVal) bool) {
 	slices.SortFunc(buf, compareMapRangeEntries)
 	for i := range buf {
 		if !fn(buf[i].key, buf[i].val) {
-			return
+			break
 		}
 	}
+	return Nil()
 }
 
 func compareMapRangeEntries(a, b mapRangeEntry) int {
