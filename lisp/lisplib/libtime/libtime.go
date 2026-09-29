@@ -444,8 +444,8 @@ func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 		time.Sleep(d)
 		return lisp.Nil()
 	}
-	if err := ctx.Err(); err != nil {
-		return errContextCancelled(env, err)
+	if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+		return lerr
 	}
 	// FAIL FAST rather than sleeping out a doomed wait.  When the deadline is
 	// nearer than d the sleep provably cannot complete: the outcome is already
@@ -471,8 +471,8 @@ func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 	case <-timer.C:
 	case <-done:
 	}
-	if err := ctx.Err(); err != nil {
-		return errContextCancelled(env, err)
+	if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+		return lerr
 	}
 	return lisp.Nil()
 }

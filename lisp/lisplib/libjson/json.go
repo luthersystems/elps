@@ -773,8 +773,8 @@ func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
 	var cancelled encodeCancelledError
 	if errors.As(err, &size) || errors.As(err, &cancelled) {
 		// Cancellation wins when both apply, as it does for format-string.
-		if cerr := env.Context().Err(); cerr != nil {
-			return env.ErrorConditionf(lisp.CondContextCancelled, "context cancelled: %v", cerr)
+		if cerr := env.CheckContext(); cerr.Type == lisp.LError {
+			return cerr
 		}
 	}
 	if errors.As(err, &size) {
