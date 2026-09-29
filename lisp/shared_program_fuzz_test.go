@@ -53,8 +53,8 @@ import (
 // # Why a differential target needs a determinism control
 //
 // A differential assertion is only sound over DETERMINISTIC programs, and
-// the mutator writes whatever it likes: `(time:utc-now)` and friends
-// legitimately differ between two runs of the same source.  Declaring those
+// the mutator writes whatever it likes: a host clock such as
+// `(fuzz-clock-ns)` legitimately differ between two runs of the same source.  Declaring those
 // crashers would drown the real signal, and pattern-matching the source for
 // "nondeterministic builtins" is a blocklist that goes stale the day one is
 // added.
@@ -539,7 +539,7 @@ func TestSharedProgramSeedsAgreeWithSharedParse(t *testing.T) {
 // TestSharedDivergenceGate pins both directions of the gate that decides
 // whether a divergence is reported.
 //
-// The determinism control is what stops this target reporting `(time:utc-now)`
+// The determinism control is what stops this target reporting a clock read such as `(fuzz-clock-ns)`
 // as AST corruption, and a control stuck at "never report" would be
 // indistinguishable from no target at all on a green board.  Asserting the
 // gate directly makes both failure modes visible to `go test`, with no
@@ -571,14 +571,14 @@ func TestSharedDivergenceGate(t *testing.T) {
 // control's red-proof: the control must actually be able to SEE
 // nondeterminism, not merely be wired into the gate.
 //
-// The probe reads the wall clock at nanosecond precision and renders it as
-// a string, so two runs separated by an environment construction differ
+// The probe reads the fuzz environment's host-style wall clock at
+// nanosecond precision, so two runs separated by an environment construction differ
 // unless the clock did not advance at all.  Retried a few times so a
 // coarse-grained clock on some runner is reported as a skip rather than as
 // a failure nobody can act on.
 func TestSharedProgramNondeterminismIsDetected(t *testing.T) {
 	t.Parallel()
-	const src = `(time:format-rfc3339-nano (time:utc-now))`
+	const src = `(` + fuzzClockName + `)`
 	for range 5 {
 		a, ok := runProgramFresh(t, []byte(src), 2)
 		if !ok {
