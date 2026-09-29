@@ -2284,54 +2284,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		fn = fd.builtin
 	}
 	if fn != nil {
-		// Bridge ctx onto env so builtins that call env.Eval() pick it up.
-		// Save and restore to prevent stale ctx from leaking after the
-		// builtin returns.
-		prev := env.evalCtx
-		env.evalCtx = ctx
-		// A library builtin runs in its own package, exactly like a Lisp
-		// function defined there (see the NOTE on the swap below).  The
-		// cheap tests come first: a call from the library's own code is
-		// already in its package, and core lisp never switches.  The package
-		// is looked up by name on every call, never cached: forks and
-		// templates replace registry entries.
-		outer := env.Runtime.Package
-		var switched bool
-		if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
-			fun.FunType != LFunSpecialOp {
-			if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
-				env.Runtime.Package = inner
-				switched = true
-			}
-		}
-		// The deferred restore covers a panic out of the builtin; the
-		// explicit one below covers every return, before a terminal
-		// expression is evaluated in the caller's environment.
-		defer func() {
-			env.evalCtx = prev
-			if switched {
-				env.Runtime.Package = outer
-			}
-		}()
-		val := fn(env, list)
-		if switched {
-			env.Runtime.Package = outer
-			switched = false
-		}
-		if val == nil {
-			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
-		}
-		if val.Type == LMarkTerminal {
-			env.Runtime.Stack.Top().Terminal = true
-			termEnv := val.Native.(*LEnv)
-			if termEnv != env {
-				prevTerm := termEnv.evalCtx
-				defer func() { termEnv.evalCtx = prevTerm }()
-			}
-			termEnv.evalCtx = ctx
-			return termEnv.eval(ctx, val.Cells[0])
-		}
-		return val
+		return env.callBuiltin(ctx, fun, fd, fn, list)
 	}
 
 	// With formal arguments bound, we can switch into the function's package
@@ -2385,6 +2338,61 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		env.Runtime.Stack.Top().Terminal = true
 	}
 	return fenv.eval(ctx, body[len(body)-1])
+}
+
+// callBuiltin is call's native branch: it invokes fn, fun's Go
+// implementation, with the bound argument list.  It is a function of its own
+// so that its few defers are open-coded; in call, whose many returns rule
+// that out, every builtin call paid for a heap-style defer record.
+func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, fd *funData, fn LBuiltin, list *LVal) *LVal {
+	// Bridge ctx onto env so builtins that call env.Eval() pick it up.
+	// Save and restore to prevent stale ctx from leaking after the
+	// builtin returns.
+	prev := env.evalCtx
+	env.evalCtx = ctx
+	// A library builtin runs in its own package, like a Lisp function
+	// defined there (see the NOTE on the swap in call).  The cheap tests
+	// come first: a call from the library's own code is already in its
+	// package, and core lisp never switches.  The package is looked up by
+	// name on every call, never cached: forks and templates replace
+	// registry entries.
+	outer := env.Runtime.Package
+	var switched bool
+	if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
+		fun.FunType != LFunSpecialOp {
+		if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
+			env.Runtime.Package = inner
+			switched = true
+		}
+	}
+	// The deferred restore covers a panic out of the builtin; the explicit
+	// one below covers every return, before a terminal expression is
+	// evaluated in the caller's environment.
+	defer func() {
+		env.evalCtx = prev
+		if switched {
+			env.Runtime.Package = outer
+		}
+	}()
+	val := fn(env, list)
+	if switched {
+		env.Runtime.Package = outer
+		switched = false
+	}
+	if val == nil {
+		return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
+	}
+	if val.Type == LMarkTerminal {
+		env.Runtime.Stack.Top().Terminal = true
+		termEnv := val.Native.(*LEnv)
+		if termEnv != env {
+			prevTerm := termEnv.evalCtx
+			defer func() { termEnv.evalCtx = prevTerm }()
+		}
+		termEnv.evalCtx = ctx
+		return termEnv.eval(ctx, val.Cells[0])
+	}
+	return val
 }
 
 // If fun is a builtin bind returns an LEnv for executing fun and a list of
