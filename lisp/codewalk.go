@@ -212,8 +212,9 @@ type WalkNode struct {
 // The *WalkNode is reused for the next event: copy it to keep it.
 type CodeVisitor func(n *WalkNode) bool
 
-// localMacroExpander expands a call to one macro bound by macrolet.
-type localMacroExpander func(form *LVal) *LVal
+// localMacroExpander is the compiled macro a macrolet binding defines,
+// expanded through the walker's environment.
+type localMacroExpander = *LVal
 
 // CodeWalker walks ELPS code, expanding macros and reporting what each part
 // of every form is.  The walk understands every builtin special form's
@@ -239,11 +240,10 @@ type CodeWalker struct {
 	// visits.
 	Expand1 func(form *LVal) (expansion *LVal, ok bool)
 
-	// defineLocalMacro builds the expander for one macrolet binding
-	// (name formals body...).  Nil, or a nil result, leaves calls to the
-	// local macro unexpanded and reports them as opaque forms.  An LError
-	// result stops the walk.
-	defineLocalMacro func(binding *LVal) (localMacroExpander, *LVal)
+	// env, when set (MacroExpandAll), compiles macrolet bindings so calls
+	// to local macros are expanded.  Without it they are left unexpanded
+	// and their arguments are not walked.
+	env *LEnv
 
 	// Visit receives the walk's events.  It may be nil.
 	Visit CodeVisitor
@@ -461,7 +461,7 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 			if n >= w.maxExpansions() {
 				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
 			}
-			if exp = mac(v); exp == nil {
+			if exp, _ = w.env.callMacro(mac, v); exp == nil {
 				w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth})
 				return v
 			}
@@ -847,19 +847,28 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape formShape, depth in
 		w.pop()
 	}
 	bindNames := func() {
-		for _, bind := range list.Cells {
+		// Local macros are compiled before any is bound: they do not see
+		// each other.
+		macs := make([]localMacroExpander, len(list.Cells))
+		if shape == shapeMacrolet && w.env != nil && w.err == nil {
+			menv := w.macroEnv()
+			for i, bind := range list.Cells {
+				if bind.Type == LSExpr && len(bind.Cells) >= 2 && bind.Cells[0].Type == LSymbol {
+					fn := NewEnv(menv).Lambda(bind.Cells[1], bind.Cells[2:])
+					if fn.Type == LError {
+						w.fail(fn)
+						return
+					}
+					fn.FunType = LFunMacro //elps:mutates evaluate as a macro: fn is the closure Lambda freshly allocated above
+					macs[i] = fn
+				}
+			}
+		}
+		for i, bind := range list.Cells {
 			if bind.Type != LSExpr || len(bind.Cells) == 0 {
 				continue
 			}
-			var mac localMacroExpander
-			if shape == shapeMacrolet && w.defineLocalMacro != nil && w.err == nil {
-				m, lerr := w.defineLocalMacro(bind)
-				if lerr != nil && lerr.Type == LError {
-					w.fail(lerr)
-				}
-				mac = m
-			}
-			w.emitBind(bind.Cells[0], op, depth+1, mac)
+			w.emitBind(bind.Cells[0], op, depth+1, macs[i])
 		}
 	}
 	var out *LVal
@@ -1011,12 +1020,12 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 		maxDepth = math.MaxInt
 	}
 	w := &CodeWalker{
-		SpecialOp:        env.resolveSpecialOp,
-		Expand1:          env.expandOnce,
-		defineLocalMacro: env.defineLocalMacro,
-		MaxDepth:         maxDepth,
-		MaxExpansions:    env.Runtime.MaxMacroExpansions(),
-		step:             func() *LVal { return env.checkLimits(env.evalCtx) },
+		SpecialOp:     env.resolveSpecialOp,
+		Expand1:       env.expandOnce,
+		env:           env,
+		MaxDepth:      maxDepth,
+		MaxExpansions: env.Runtime.MaxMacroExpansions(),
+		step:          func() *LVal { return env.checkLimits(env.evalCtx) },
 	}
 	return w.Walk(form)
 }
@@ -1071,21 +1080,29 @@ func (env *LEnv) callMacro(mac, form *LVal) (*LVal, bool) {
 	return mark.Cells[0], true
 }
 
-// defineLocalMacro builds one macrolet binding's macro as opMacrolet does.
-func (env *LEnv) defineLocalMacro(bind *LVal) (localMacroExpander, *LVal) {
-	if len(bind.Cells) < 2 || bind.Cells[0].Type != LSymbol {
-		return nil, nil
+// macroEnv returns the environment a macrolet binding is compiled in: the
+// walker's environment with the lexical scope around the macrolet.  At run
+// time macrolet builds its macros in the live lexical environment, so a
+// macro body may call an enclosing local macro, which works here too, or
+// read a local variable, whose value only exists at run time: each local
+// name is bound to an error saying so, rather than letting the lookup
+// fall through to a global of the same name.
+func (w *CodeWalker) macroEnv() *LEnv {
+	menv := w.env
+	for _, sc := range w.scopes {
+		if len(sc.names) == 0 {
+			continue
+		}
+		menv = NewEnv(menv)
+		for name, mac := range sc.names {
+			v := mac
+			if v == nil {
+				v = w.env.Errorf("macroexpand-all: %s is a local variable, whose value exists only at run time; a macrolet expander cannot read it ahead of time", name)
+			}
+			menv.Put(Symbol(name), v)
+		}
 	}
-	fenv := NewEnv(env)
-	mac := fenv.Lambda(bind.Cells[1], bind.Cells[2:])
-	if mac.Type == LError {
-		return nil, mac
-	}
-	mac.FunType = LFunMacro //elps:mutates evaluate as a macro: mac is the closure fenv.Lambda freshly allocated above
-	return func(form *LVal) *LVal {
-		exp, _ := env.callMacro(mac, form)
-		return exp
-	}, nil
+	return menv
 }
 
 func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {

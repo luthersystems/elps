@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/elpstest"
+
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -45,4 +47,24 @@ func TestMacroExpandAllChargesSteps(t *testing.T) {
 	r := env.Eval(parseCached(t, "(macroexpand-all big)")[0])
 	require.Equal(t, lisp.LError, r.Type)
 	assert.Contains(t, r.String(), "step")
+}
+
+func TestMacroExpandAllMacroletScope(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"macrolet lexical scope", elpstest.TestSequence{
+			{`(set 'x 99)`, "99", ""},
+			// At run time m sees the local x (1).  Expanding ahead of time
+			// cannot know it, and must not substitute the global 99.
+			{`(let ((x 1)) (macrolet ((m () x)) (m)))`, "1", ""},
+			{`(ignore-errors (macroexpand-all '(let ((x 1)) (macrolet ((m () x)) (m)))))`, "()", ""},
+			// A local macro may use an enclosing one.
+			{`(macroexpand-all '(macrolet ((a () 1)) (macrolet ((b () (a))) (b))))`,
+				`'(macrolet ((a () 1)) (macrolet ((b () 1)) 1))`, ""},
+			// Siblings do not see each other: b's (a) is the global call.
+			{`(defmacro a () 7)`, "()", ""},
+			{`(macroexpand-all '(macrolet ((a () 1) (b () (a))) (b)))`,
+				`'(macrolet ((a () 1) (b () 7)) 7)`, ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
 }
