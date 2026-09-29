@@ -474,12 +474,15 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 			if op, isOp = w.specialOp(head); isOp || w.Expand1 == nil {
 				break
 			}
-			if n >= w.maxExpansions() {
-				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
-			}
+			// Only Expand1 knows whether the head is a macro, so the
+			// limit is checked once it has expanded: a chain of exactly
+			// MaxExpansions expansions ending in a function call is fine.
 			var ok bool
 			if exp, ok = w.Expand1(v); !ok {
 				break
+			}
+			if n >= w.maxExpansions() {
+				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
 			}
 			if exp == nil {
 				exp = Nil()

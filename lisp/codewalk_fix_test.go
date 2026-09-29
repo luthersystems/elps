@@ -137,3 +137,22 @@ func TestCodeWalkerQualifiedHeadIgnoresLocals(t *testing.T) {
 	assert.Equal(t, "(let ((user:m 1)) (list 2))", w.Walk(form).String())
 	assert.Empty(t, bound)
 }
+
+// The expansion limit counts expansions: a head that expands exactly
+// MaxExpansions times and ends in a function call is fine.
+func TestCodeWalkerExpansionLimitCountsExpansions(t *testing.T) {
+	next := map[string]string{"a": "b", "b": "f"}
+	w := &lisp.CodeWalker{
+		MaxExpansions: 2,
+		Expand1: func(f *lisp.LVal) (*lisp.LVal, bool) {
+			n, ok := next[f.Cells[0].Str]
+			if !ok {
+				return nil, false
+			}
+			return lisp.SExpr([]*lisp.LVal{lisp.Symbol(n)}), true
+		},
+	}
+	assert.Equal(t, "(f)", w.Walk(parseCached(t, `(a)`)[0]).String())
+	next["f"] = "g"
+	assert.Equal(t, lisp.LError, w.Walk(parseCached(t, `(a)`)[0]).Type)
+}
