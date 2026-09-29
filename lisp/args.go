@@ -12,14 +12,15 @@ package lisp
 //
 // The first failure is recorded and every later read returns a zero value
 // without checking, so a builtin reads all its arguments and then checks Err
-// once.  That is equivalent to returning at the first failed check, provided
+// once.  Err follows the helpers' convention: Nil() when every read
+// succeeded, so `lerr.Type == lisp.LError` is the check.  That is equivalent to returning at the first failed check, provided
 // the reads come in the order the checks did: decoding has no side effects
 // and charges no steps.
 //
 //	a := lisp.ReadArgs(env, args)
 //	source := a.String(0, "first argument")
 //	name := a.OptString(1, "name", "")
-//	if lerr := a.Err(); lerr != nil {
+//	if lerr := a.Err(); lerr.Type == lisp.LError {
 //		return lerr
 //	}
 //
@@ -36,8 +37,11 @@ func ReadArgs(env *LEnv, args *LVal) ArgReader {
 	return ArgReader{env: env, args: args}
 }
 
-// Err returns the first failure, or nil.
+// Err returns the first failure, or Nil() when there was none.
 func (a *ArgReader) Err() *LVal {
+	if a.err == nil {
+		return Nil()
+	}
 	return a.err
 }
 

@@ -4,8 +4,9 @@ package lisp
 
 // Step and context helpers for Go builtins (luthersystems/elps#745).
 //
-// Every helper here returns nil to continue, or the LError the builtin must
-// return as is.  None of them charges anything beyond what its name says, so
+// Every helper here returns Nil() to continue, or the LError the builtin must
+// return as is -- the convention of LEnv.ChargeSteps, so a result is checked
+// with `lerr.Type == LError` and never dereferences Go nil.  None of them charges anything beyond what its name says, so
 // replacing a hand-written ChargeSteps call with one of them changes no step
 // count.  Two size conventions exist on purpose and have two names:
 //
@@ -24,9 +25,9 @@ package lisp
 // from argument or result values, never from caches or timing.
 func ChargeCompleteKiB(env *LEnv, n int) *LVal {
 	if n < 1024 {
-		return nil
+		return Nil()
 	}
-	return chargeResult(env.ChargeSteps(int64(n >> 10)))
+	return env.ChargeSteps(int64(n >> 10))
 }
 
 // ChargeStartedKiB charges env one step per started KiB of n bytes of native
@@ -34,16 +35,16 @@ func ChargeCompleteKiB(env *LEnv, n int) *LVal {
 // two.
 func ChargeStartedKiB(env *LEnv, n int) *LVal {
 	if n <= 0 {
-		return nil
+		return Nil()
 	}
-	return chargeResult(env.ChargeSteps(int64(startedKiB(n))))
+	return env.ChargeSteps(int64(startedKiB(n)))
 }
 
 // ChargeRecord charges env for one record of n value bytes:
 // max(1, ceil(n/1024)).  A record of up to 1 KiB, empty included, costs
 // exactly one step; a larger one costs what ChargeStartedKiB(n) does.
 func ChargeRecord(env *LEnv, n int) *LVal {
-	return chargeResult(env.ChargeSteps(int64(max(1, startedKiB(n)))))
+	return env.ChargeSteps(int64(max(1, startedKiB(n))))
 }
 
 func startedKiB(n int) int {
@@ -57,12 +58,12 @@ func startedKiB(n int) int {
 // loop that replaces a Lisp loop.  Like LEnv.ChargeSteps it also reports a
 // done context, so a long native loop stays interruptible.
 func (env *LEnv) Step() *LVal {
-	return chargeResult(env.ChargeSteps(1))
+	return env.ChargeSteps(1)
 }
 
 // CheckContext returns the standard context-cancelled condition
 // (CondContextCancelled, "context cancelled: <cause>") when the evaluation's
-// context is done, and nil otherwise.  It charges no step.  It is the check
+// context is done, and Nil() otherwise.  It charges no step.  It is the check
 // the evaluator makes at every call boundary, for a builtin that does
 // expensive work between charges.
 func (env *LEnv) CheckContext() *LVal {
@@ -71,12 +72,6 @@ func (env *LEnv) CheckContext() *LVal {
 			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
 		}
 	}
-	return nil
+	return Nil()
 }
 
-func chargeResult(v *LVal) *LVal {
-	if v.Type == LError {
-		return v
-	}
-	return nil
-}

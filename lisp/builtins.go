@@ -582,7 +582,7 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 	a := ReadArgs(env, args)
 	source := a.Typed(0, LString, "first argument is not a string: %v")
 	_name := a.OptString(1, "name", "")
-	if lerr := a.Err(); lerr != nil {
+	if lerr := a.Err(); lerr.Type == LError {
 		return lerr
 	}
 	if _name == "" {
@@ -3594,7 +3594,7 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 // after a limit that was never reached. A nil budget means the caller already
 // knows the byte cap is what stopped it.
 func (env *LEnv) renderError(budget *renderBudget) *LVal {
-	if lerr := env.CheckContext(); lerr != nil {
+	if lerr := env.CheckContext(); lerr.Type == LError {
 		return lerr
 	}
 	if budget != nil && budget.remaining <= 0 {

@@ -23,7 +23,7 @@ func stepsOf(t *testing.T, env *lisp.LEnv, src string) (*lisp.LVal, int64) {
 func helperBuiltin(env *lisp.LEnv, name string, f func(env *lisp.LEnv, n int) *lisp.LVal) {
 	env.AddBuiltins(false, &testBuiltinDef{name: name, formals: lisp.Formals("n"),
 		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			if lerr := f(env, args.Cells[0].Int); lerr != nil {
+			if lerr := f(env, args.Cells[0].Int); lerr != nil && lerr.Type == lisp.LError {
 				return lerr
 			}
 			return lisp.Symbol("ok")
@@ -113,7 +113,7 @@ func TestStepAndCheckContext(t *testing.T) {
 	helperBuiltin(env, "nop", func(*lisp.LEnv, int) *lisp.LVal { return nil })
 	helperBuiltin(env, "steps", func(env *lisp.LEnv, n int) *lisp.LVal {
 		for range n {
-			if lerr := env.Step(); lerr != nil {
+			if lerr := env.Step(); lerr.Type == lisp.LError {
 				return lerr
 			}
 		}
@@ -140,9 +140,9 @@ func TestStepAndCheckContext(t *testing.T) {
 
 	// Without a context or a limit, nothing is counted and nothing fails.
 	plain := newLimitTestEnv(t)
-	assert.Nil(t, plain.Step())
-	assert.Nil(t, plain.CheckContext())
-	assert.Nil(t, lisp.ChargeStartedKiB(plain, 1<<20))
+	assert.True(t, plain.Step().IsNil())
+	assert.True(t, plain.CheckContext().IsNil())
+	assert.True(t, lisp.ChargeStartedKiB(plain, 1<<20).IsNil())
 }
 
 func TestChargeHelpersEnforceBudget(t *testing.T) {
@@ -156,7 +156,7 @@ func TestChargeHelpersEnforceBudget(t *testing.T) {
 func TestChargeCompleteKiBSmallIsFree(t *testing.T) {
 	env := newLimitTestEnv(t)
 	allocs := testing.AllocsPerRun(100, func() {
-		if lisp.ChargeCompleteKiB(env, 100) != nil || env.CheckContext() != nil {
+		if lisp.ChargeCompleteKiB(env, 100).Type == lisp.LError || env.CheckContext().Type == lisp.LError {
 			t.Fatal("unexpected error")
 		}
 	})
@@ -165,4 +165,26 @@ func TestChargeCompleteKiBSmallIsFree(t *testing.T) {
 
 func itoa(n int) string {
 	return lisp.Int(n).String()
+}
+
+// Every #745 helper that only reports success or failure follows one
+// convention, the one LEnv.ChargeSteps and package loaders already use:
+// lisp.Nil() to continue, or the LError to return.  So `lerr.Type ==
+// lisp.LError` is always safe on a result and never dereferences Go nil.
+func TestStatusHelpersReturnNilValue(t *testing.T) {
+	env := newLimitTestEnv(t, lisp.WithMaxSteps(1<<40))
+	a := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
+	a.Int(0, "first argument")
+	for name, v := range map[string]*lisp.LVal{
+		"Step":             env.Step(),
+		"CheckContext":     env.CheckContext(),
+		"ChargeStartedKiB": lisp.ChargeStartedKiB(env, 5000),
+		"ChargeRecord":     lisp.ChargeRecord(env, 0),
+		"ArgReader.Err":    a.Err(),
+		"BindBuiltins":     env.BindBuiltins(lisp.BindOpts{}, constBuiltin("status-helper", 1)),
+	} {
+		require.NotNil(t, v, name)
+		assert.NotEqual(t, lisp.LError, v.Type, name)
+		assert.True(t, v.IsNil(), name)
+	}
 }

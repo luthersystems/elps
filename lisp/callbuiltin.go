@@ -109,7 +109,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	if def == nil {
 		return env.Errorf("CallBuiltin: zero BuiltinRef")
 	}
-	if lerr := env.CheckContext(); lerr != nil {
+	if lerr := env.CheckContext(); lerr.Type == LError {
 		return lerr
 	}
 	var list *LVal

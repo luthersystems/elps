@@ -357,6 +357,14 @@ endorsing peers, for one) needs every machine to produce the same bytes. The
 helpers below make that the easy path (luthersystems/elps#745). None of them
 charges a step, so adopting one changes no step count.
 
+One return convention runs through them. A helper that only reports success
+or failure (`BindBuiltins`, `ExtendPackage`, `ArgReader.Err`, the step and
+context helpers) returns `lisp.Nil()` on success and the `LError` otherwise,
+like `ChargeSteps` and package loaders, so `lerr.Type == lisp.LError` is
+always the check and a loader can return the result directly. A helper that
+computes something (`CallBuiltin`, `CallGlobal`) returns the value or the
+`LError`.
+
 **Calling a language builtin: `lisp.BuiltinFunc` and `LEnv.CallBuiltin`.**
 Reuse a builtin for its exact errors and guards (sealed maps, `MaxAlloc`,
 typed keys) rather than copying its checks. Resolve the handle once, at
@@ -416,7 +424,7 @@ a := lisp.ReadArgs(env, args)
 key := a.String(0, "first argument")
 m := a.Typed(1, lisp.LSortMap, "second argument is not a map: %s")
 limit := a.OptInt(2, "limit", 100) // &optional or &key; nil means the default
-if lerr := a.Err(); lerr != nil {
+if lerr := a.Err(); lerr.Type == lisp.LError {
 	return lerr
 }
 ```
@@ -1005,8 +1013,9 @@ Limits and choices worth knowing:
   round differently. For example, luthersystems/substrate's storage builtins
   charge every started KiB, ceil(n/1024).
 
-Helpers for the common charges return `nil` to continue, or the `LError` to
-return unchanged. They charge exactly what their names say, so replacing a
+Helpers for the common charges return `lisp.Nil()` to continue, or the
+`LError` to return unchanged, as `ChargeSteps` does; check a result with
+`lerr.Type == lisp.LError`. For n steps at once, call `env.ChargeSteps(n)`. They charge exactly what their names say, so replacing a
 hand-written `ChargeSteps` call with one changes no count:
 
 | Helper | Charge | Use |

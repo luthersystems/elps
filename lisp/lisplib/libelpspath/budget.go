@@ -158,7 +158,7 @@ func (op *copyOp) chargeIter(n int) error {
 		return nil
 	}
 	if op.iterWork/iterPollGrain != before/iterPollGrain {
-		if lerr := env.CheckContext(); lerr != nil {
+		if lerr := env.CheckContext(); lerr.Type == lisp.LError {
 			op.stop = lerr
 			return errIterStopped
 		}

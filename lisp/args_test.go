@@ -47,7 +47,7 @@ func withReader(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	n := a.Int(2, "third argument")
 	nm := a.OptString(3, "name", "default")
 	c := a.OptInt(4, "count", 10)
-	if lerr := a.Err(); lerr != nil {
+	if lerr := a.Err(); lerr.Type == lisp.LError {
 		return lerr
 	}
 	return lisp.QExpr([]*lisp.LVal{lisp.String(s), lisp.Int(m.Len()), lisp.Int(n), lisp.String(nm), lisp.Int(c)})
@@ -89,9 +89,9 @@ func TestArgReaderTypedAndMissing(t *testing.T) {
 	env := newLimitTestEnv(t)
 	a := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
 	assert.Equal(t, lisp.LInt, a.Typed(0, lisp.LInt, "x %s").Type)
-	assert.Nil(t, a.Err())
+	assert.True(t, a.Err().IsNil())
 	a.Value(1)
-	require.NotNil(t, a.Err())
+	require.Equal(t, lisp.LError, a.Err().Type)
 	assert.Equal(t, lisp.CondMissingArgument, a.Err().Str)
 	first := a.Err()
 	a.String(0, "later")
@@ -114,7 +114,7 @@ func TestArgReaderNoAllocOnSuccess(t *testing.T) {
 		_ = a.String(0, "first argument")
 		_ = a.Int(1, "second argument")
 		_ = a.OptString(2, "name", "d")
-		if a.Err() != nil {
+		if a.Err().Type == lisp.LError {
 			t.Fatal("unexpected error")
 		}
 	})
