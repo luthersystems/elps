@@ -1189,6 +1189,25 @@ result still point into the original file. A special operator an embedder
 registers has no known shape, and the walker treats a form headed by one as
 opaque: its arguments are neither walked nor expanded.
 
+### Asking where a node is
+
+Two queries in `astutil` are built on the same walker:
+
+- `astutil.ClassifyNodes(form)` gives each node a `Role`. `RoleData` means
+  quoted data, including anything inside it. `RoleSyntax` means structure a
+  form reads but does not evaluate. The reader turns `[x (f)]` in a `let` and
+  `'(x (f))` into the same kind of value; `Role` tells them apart.
+- `astutil.FindCalls(form, names...)` returns each call to one of `names` in
+  code position, skipping local functions that shadow those names. Each
+  result lists the special forms and function bodies on the call's path, as
+  `Enclosure`s. A macro that must reject a call inside a `lambda`, handler or
+  `quasiquote` can inspect them.
+
+Scope questions (what a name refers to, what a closure captures) go to the
+`analysis` package. Its resolver walks code with `lisp.CodeWalker` too, so
+the repository has one walker that knows special-form syntax and one scope
+resolver.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.
