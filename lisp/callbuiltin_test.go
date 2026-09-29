@@ -156,3 +156,20 @@ func TestCallBuiltinTailPositionNoMarker(t *testing.T) {
 		assert.Equal(t, tc.want, v.String(), tc.src)
 	}
 }
+
+// A call whose args match the builtin's required formals exactly costs what
+// the hand-written b.Eval(env, QExpr([]*lisp.LVal{m, k})) it replaces did:
+// the variadic slice and the list header.  Binding copies nothing more.
+// The caller's slice is still never written (TestCallBuiltinDoesNotWriteArgs).
+func TestCallBuiltinExactArityAllocs(t *testing.T) {
+	env := newLimitTestEnv(t)
+	m := env.LoadString("test", `(sorted-map "a" 1)`)
+	require.Equal(t, lisp.LSortMap, m.Type)
+	k := lisp.String("a")
+	allocs := testing.AllocsPerRun(100, func() {
+		if v := env.CallBuiltin(refGet, m, k); v.Type != lisp.LInt {
+			t.Fatalf("get returned %v", v)
+		}
+	})
+	assert.LessOrEqual(t, allocs, 2.0)
+}

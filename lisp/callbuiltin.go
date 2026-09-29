@@ -2,6 +2,8 @@
 
 package lisp
 
+import "strings"
+
 // BuiltinRef is a resolved handle on one of the builtins DefaultBuiltins
 // returns (the language package's builtins plus any RegisterDefaultBuiltin
 // registration made before it was resolved).  Resolve one with BuiltinFunc and
@@ -18,6 +20,20 @@ package lisp
 type BuiltinRef struct {
 	table uint8 // builtinTableNone (zero value), builtinTableLang or builtinTableUser
 	idx   int
+	// nreq is the number of formals when all are required, else -1: a call
+	// with exactly nreq args needs no binding.
+	nreq int
+}
+
+// requiredOnly returns len(formals) when every formal is a plain required
+// name, else -1.
+func requiredOnly(formals *LVal) int {
+	for _, f := range formals.Cells {
+		if f == nil || f.Type != LSymbol || strings.HasPrefix(f.Str, MetaArgPrefix) {
+			return -1
+		}
+	}
+	return len(formals.Cells)
 }
 
 const (
@@ -48,12 +64,12 @@ func (b BuiltinRef) def() *langBuiltin {
 func BuiltinFunc(name string) BuiltinRef {
 	for i, def := range langBuiltins {
 		if def.name == name {
-			return BuiltinRef{table: builtinTableLang, idx: i}
+			return BuiltinRef{table: builtinTableLang, idx: i, nreq: requiredOnly(def.formals)}
 		}
 	}
 	for i, def := range userBuiltins {
 		if def.name == name {
-			return BuiltinRef{table: builtinTableUser, idx: i}
+			return BuiltinRef{table: builtinTableUser, idx: i, nreq: requiredOnly(def.formals)}
 		}
 	}
 	panic("lisp.BuiltinFunc: no default builtin named " + name)
@@ -96,7 +112,15 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr != nil {
 		return lerr
 	}
-	list := bindNativePositional(def.formals.Cells, args)
+	var list *LVal
+	if len(args) == b.nreq {
+		// Exactly the required formals and nothing else: the argument list
+		// is args itself, capped so an append cannot write past it.  No
+		// language builtin writes its argument cells.
+		list = QExpr(args[:len(args):len(args)])
+	} else {
+		list = bindNativePositional(def.formals.Cells, args)
+	}
 	if list == nil {
 		fun := FunInPackage(env.Runtime.Registry.Lang, def.name, def.formals, def.fun)
 		_, list = env.bindGeneral(fun, QExpr(args))
