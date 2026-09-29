@@ -12,7 +12,7 @@ import (
 )
 
 func TestFrozenPackageBaseFingerprint(t *testing.T) {
-	for _, field := range []string{"index", "funNames", "symbolDocs", "externals"} {
+	for _, field := range []string{"index", "funNames", "symbolDocs", "externals", "bindings", "pending"} {
 		for _, viaVM := range []bool{false, true} {
 			t.Run(field+map[bool]string{false: "/helper", true: "/NewVM"}[viaVM], func(t *testing.T) {
 				source := templateOwnershipEnv()
@@ -41,6 +41,10 @@ func TestFrozenPackageBaseFingerprint(t *testing.T) {
 					base.symbolDocs = packagetable.NewMap(map[string]string{"value": "corrupt"})
 				case "externals":
 					base.externals = packagetable.NewStrings([]string{"value", "z"})
+				case "bindings":
+					base.bindings[0].value.shared = Int(2)
+				case "pending":
+					base.pending++
 				}
 				defer func() {
 					msg, _ := recover().(string)
