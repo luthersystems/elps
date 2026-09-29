@@ -243,6 +243,36 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+  # API BREAK GATE (#761). Fails when this PR removes or incompatibly changes
+  # the Go API of a non-internal package (apidiff) or the Lisp public surface
+  # (`elps doc --json -l`: packages, exports, kind, formals) against the base.
+  # An intended break needs a reviewed line in scripts/api-breaks.txt; the job
+  # log prints the exact line. The checkout is the PR merge commit, so HEAD^1
+  # is the base branch tip and fetch-depth 2 is all the history it needs; on a
+  # push to main HEAD^1 is the previous main.
+  api-break:
+    name: API break gate
+    # ARM for the reason spelled out on lint-and-test above.
+    runs-on: ubuntu-24.04-arm
+    # 15 minutes against two elps builds and two apidiff passes (~1-2 min).
+    timeout-minutes: 15
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version: "1.26.8"
+          cache: true
+
+      - name: Go API and Lisp surface vs base
+        run: bash scripts/api-break-gate.sh HEAD^1
+
   # THE ONE CHECK TO REQUIRE FOR THIS WORKFLOW.
   #
   # Branch protection matches a required status check by NAME, so requiring the
@@ -270,7 +300,7 @@ jobs:
     # 5 minutes against an observed 2s. This job's name is the one in
     # branch protection; wedged here means the PR is blocked with no red.
     timeout-minutes: 5
-    needs: [changes, confidentiality, lint-and-test, build-windows]
+    needs: [changes, confidentiality, lint-and-test, build-windows, api-break]
     if: always()
     steps:
       # NOTE: this checkout is NEW, and is the one structural cost of moving
