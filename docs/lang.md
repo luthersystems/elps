@@ -2586,6 +2586,58 @@ entry points and callbacks are recovered this way, how a host detects a
 genuine panic, and how `elpscheck` builds differ are described in
 the embedding guide (`docs/embed.md` in the repository).
 
+### The Condition-System Contract
+
+Macros that expand into `handler-bind` or `with-cleanup`, and hosts that embed
+elps, can rely on the following guarantees. They are pinned by spec tests
+(`lisp/condition_contract_test.go`), so changing any of them is a language
+change.
+
+1. **A handler's value is the form's value.** When a body form signals, the
+   rest of the body is abandoned and the matching handler's return value
+   becomes the value of the `handler-bind` form. With no error, the last body
+   value is returned.
+2. **Matching order.** Inner `handler-bind` forms are searched before outer
+   ones. Within one form, bindings are tried in the order written and the
+   first match wins, so put `condition` last.
+3. **Handler arguments.** A handler receives the condition symbol followed by
+   copies of the values passed to `error`. `error` evaluates its arguments
+   like any function; the handler receives the resulting values and does not
+   evaluate them again. Mutating those copies
+   never changes the error, so `rethrow` always re-raises the original data.
+4. **Handler errors escape.** An error raised by a handler is not caught by the
+   same `handler-bind`, only by an enclosing one.
+5. **Custom conditions carry data.** Any symbol names a condition, and any
+   value can be its payload. A structured payload (a sorted map, a list)
+   reaches the handler intact, and an uncaught condition reaches the host with
+   its name as the error's condition and its data as the error's cells.
+6. **`ignore-errors` returns `()`** on any ordinary error, the last value
+   otherwise, and `()` with no body. A caught error and a body that returned
+   `()` look the same.
+7. **`with-cleanup` never catches.** It returns the body value, runs its
+   cleanup forms after the body (innermost `with-cleanup` first, before any
+   enclosing handler), and lets the error keep propagating. A signalling
+   cleanup form replaces an ordinary error.
+8. **`internal-panic` is never swallowed by accident.** The catch-all
+   `condition` does not match it, `ignore-errors` does not suppress it, and
+   `with-cleanup` never masks it. Only a handler that names `internal-panic`
+   explicitly intercepts it. A condition forged with
+   `(error 'internal-panic ...)` is ordinary.
+9. **Deterministic.** Signalling and handling a condition gives the same value
+   and the same step count in every fresh environment.
+
+A macro can rely on these rules. For example, this one substitutes a default value for any ordinary error:
+
+```lisp
+(defmacro with-default (default &rest body)
+  (quasiquote
+    (handler-bind ((condition (lambda (&rest _) (unquote default))))
+      (unquote-splicing body))))
+
+(with-default 0 (parse-count "twelve"))
+; returns 0 for any ordinary error, but an internal-panic still propagates
+```
+
 ## Testing
 
 Test files are named `*_test.lisp`. The Go runner `elpstest.Runner` runs
