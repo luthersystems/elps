@@ -3012,3 +3012,152 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		return nil
 	},
 }
+
+// storingCalls are the calls whose function argument outlives the loop
+// turn: the value is bound, stored in a container, or returned inside one.
+var storingCalls = map[string]bool{
+	"set": true, "set!": true, "append!": true, "append": true, "assoc!": true,
+	"assoc": true, "cons": true, "list": true, "vector": true, "concat": true,
+	"sorted-map": true, "insert-index": true, "insert-sorted": true,
+}
+
+// AnalyzerLoopVariableCapture warns when a closure created in a dotimes
+// body captures the loop variable and is stored.  dotimes reuses one
+// binding for every turn (docs/lang.md, "dotimes and captured loop
+// variables"), so every stored closure sees the variable's final value.
+//
+// It runs on fully expanded code (astutil.ExpandAll, with the semantic
+// analysis macro expander when there is one) and uses the free-variable
+// analysis in astutil (Scope.Captured) to decide what a closure captures,
+// so a closure whose own parameter or an inner let shadows the variable is
+// not reported.  A closure only counts as stored when it is the direct
+// argument of a storing call (set, set!, append!, assoc!, cons, list, ...);
+// one passed to map or called on the spot runs during the turn and is fine.
+var AnalyzerLoopVariableCapture = &Analyzer{
+	Name:     "loop-variable-capture",
+	Severity: SeverityWarning,
+	Doc:      "Warn when a closure stored from a dotimes body captures the loop variable.\n\ndotimes reuses one binding for every turn, so each stored closure sees the variable's final value, not the value of the turn that created it. Bind a fresh copy inside the body: (let ((i i)) (lambda () i)).",
+	Run: func(pass *Pass) error {
+		var exp astutil.MacroExpander
+		pkg := lisp.DefaultUserPackage
+		if pass.Semantics != nil {
+			if pass.Semantics.MacroExpander != nil {
+				exp = pass.Semantics.MacroExpander
+			}
+			if pass.Semantics.DefaultPackage != "" {
+				pkg = pass.Semantics.DefaultPackage
+			}
+		}
+		passFile := analysis.NormalizePath(pass.Filename)
+		for _, expr := range pass.Exprs {
+			if HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
+				if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {
+					pkg = name
+				}
+			}
+			if !mentionsSymbol(expr, "dotimes") && exp == nil {
+				continue
+			}
+			code := astutil.ExpandAll(expr, exp, pkg, nil)
+			reportLoopCaptures(pass, code, passFile)
+		}
+		return nil
+	},
+}
+
+func reportLoopCaptures(pass *Pass, code *lisp.LVal, passFile string) {
+	sc := astutil.AnalyzeScopes(code)
+	var loops []*astutil.Scope
+	var find func(s *astutil.Scope)
+	find = func(s *astutil.Scope) {
+		if s.Op == "dotimes" && len(s.Bindings) > 0 {
+			loops = append(loops, s)
+		}
+		for _, c := range s.Children {
+			find(c)
+		}
+	}
+	find(sc.Root)
+	if len(loops) == 0 {
+		return
+	}
+	parents := storedClosures(code)
+	for _, loop := range loops {
+		v := loop.Bindings[0]
+		var visit func(s *astutil.Scope)
+		visit = func(s *astutil.Scope) {
+			for _, c := range s.Children {
+				if c.Function && parents[c.Node] {
+					for _, r := range c.Free() {
+						if r.Binding != v {
+							continue
+						}
+						src, ok := r.Node.Source()
+						if !ok || analysis.NormalizePath(src.File) != passFile {
+							continue
+						}
+						pass.Report(Diagnostic{
+							Message: "closure captures dotimes variable " + v.Name.Str + ", which the loop reuses",
+							Pos:     posFromSource(astutil.SourceLoc(r.Node)),
+							EndPos:  endPosFromNode(r.Node),
+							Notes: []string{
+								"every stored closure sees the variable's final value, not this turn's",
+								"bind a fresh copy inside the body: (let ((" + v.Name.Str + " " + v.Name.Str + ")) ...)",
+							},
+						})
+						break
+					}
+					continue // one report per closure; nested closures are inside it
+				}
+				visit(c)
+			}
+		}
+		visit(loop)
+	}
+}
+
+// storedClosures returns the lambda and expr forms in code that are the
+// direct argument of a storing call.
+func storedClosures(code *lisp.LVal) map[*lisp.LVal]bool {
+	stored := make(map[*lisp.LVal]bool)
+	type frame struct {
+		depth int
+		node  *lisp.LVal
+	}
+	var stack []frame
+	astutil.WalkCode(code, func(n *lisp.WalkNode) bool {
+		if n.Event != lisp.WalkForm {
+			return true
+		}
+		for len(stack) > 0 && stack[len(stack)-1].depth >= n.Depth {
+			stack = stack[:len(stack)-1]
+		}
+		if (n.Op == "lambda" || n.Op == "expr") && len(stack) > 0 {
+			parent := stack[len(stack)-1]
+			head := strings.TrimPrefix(HeadSymbol(parent.node), lisp.DefaultLangPackage+":")
+			if parent.depth == n.Depth-1 && storingCalls[head] {
+				stored[n.Node] = true
+			}
+		}
+		stack = append(stack, frame{depth: n.Depth, node: n.Node})
+		return true
+	})
+	return stored
+}
+
+// mentionsSymbol reports whether any symbol in v is spelled name, bare or
+// lisp-qualified.
+func mentionsSymbol(v *lisp.LVal, name string) bool {
+	if v == nil {
+		return false
+	}
+	if v.Type == lisp.LSymbol {
+		return strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":") == name
+	}
+	for _, c := range v.Cells {
+		if mentionsSymbol(c, name) {
+			return true
+		}
+	}
+	return false
+}

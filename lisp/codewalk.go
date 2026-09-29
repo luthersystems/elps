@@ -286,6 +286,12 @@ type CodeWalker struct {
 	// Visit receives the walk's events.  It may be nil.
 	Visit CodeVisitor
 
+	// Replace, when set, is called after Visit for every WalkRef, WalkSet
+	// and WalkBind event.  A non-nil result takes the symbol's place in
+	// the returned tree (a rename); the input is still not written.  The
+	// names expr binds are synthesized, so replacing them changes nothing.
+	Replace func(n *WalkNode) *LVal
+
 	err     *LVal
 	scopes  []walkScope
 	scratch WalkNode
@@ -389,12 +395,24 @@ func (w *CodeWalker) isBound(sym *LVal) bool {
 	return bound
 }
 
-func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac LocalMacroExpander) {
+func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac LocalMacroExpander) *LVal {
 	if name == nil || name.Type != LSymbol {
-		return
+		return name
 	}
 	w.bind(name, mac)
-	w.visit(WalkNode{Event: WalkBind, Node: name, Op: op, Shape: SpecialFormShape(op), Depth: depth})
+	return w.emit(WalkNode{Event: WalkBind, Node: name, Op: op, Shape: SpecialFormShape(op), Depth: depth})
+}
+
+// emit visits a WalkRef, WalkSet or WalkBind event and returns the node to
+// put in its place: Replace's result, or the node itself.
+func (w *CodeWalker) emit(n WalkNode) *LVal {
+	w.visit(n)
+	if w.Replace != nil {
+		if r := w.Replace(&n); r != nil {
+			return r
+		}
+	}
+	return n.Node
 }
 
 // form walks one value in code position.
@@ -417,7 +435,7 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 		if isKeyword(v.Str) {
 			w.visit(WalkNode{Event: WalkLiteral, Node: v, Depth: depth})
 		} else {
-			w.visit(WalkNode{Event: WalkRef, Node: v, Depth: depth, Bound: w.isBound(v)})
+			return w.emit(WalkNode{Event: WalkRef, Node: v, Depth: depth, Bound: w.isBound(v)})
 		}
 		return v
 	case v.Type != LSExpr || len(v.Cells) == 0:
@@ -514,7 +532,7 @@ func (w *CodeWalker) call(v *LVal, depth int) *LVal {
 	b := newRebuild(v)
 	head := v.Cells[0]
 	if head.Type == LSymbol && !head.quoted && !isKeyword(head.Str) {
-		w.visit(WalkNode{Event: WalkRef, Node: head, Head: true, Depth: depth + 1, Bound: w.isBound(head)})
+		b.set(0, w.emit(WalkNode{Event: WalkRef, Node: head, Head: true, Depth: depth + 1, Bound: w.isBound(head)}))
 	} else {
 		b.set(0, w.form(head, depth+1))
 	}
@@ -567,9 +585,9 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 			b.set(i, w.template(cells[i], d))
 		}
 	case ShapeFunction:
-		for _, c := range cells[1:] {
-			if c.Type == LSymbol {
-				w.visit(WalkNode{Event: WalkRef, Node: c, Depth: d, Bound: w.isBound(c)})
+		for i := 1; i < len(cells); i++ {
+			if c := cells[i]; c.Type == LSymbol {
+				b.set(i, w.emit(WalkNode{Event: WalkRef, Node: c, Depth: d, Bound: w.isBound(c)}))
 			} else {
 				w.data(c, d)
 			}
@@ -577,7 +595,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	case ShapeSetBang:
 		if len(cells) > 1 {
 			if cells[1].Type == LSymbol {
-				w.visit(WalkNode{Event: WalkSet, Node: cells[1], Depth: d, Bound: w.isBound(cells[1])})
+				b.set(1, w.emit(WalkNode{Event: WalkSet, Node: cells[1], Depth: d, Bound: w.isBound(cells[1])}))
 			} else {
 				w.data(cells[1], d)
 			}
@@ -586,7 +604,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	case ShapeLambda:
 		if len(cells) > 1 {
 			enter(v, false)
-			w.formals(cells[1], op, d)
+			b.set(1, w.formals(cells[1], op, d))
 			w.forms(b, 2, depth)
 			leave(v)
 		}
@@ -600,7 +618,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 		}
 		if len(cells) > 2 {
 			enter(v, false)
-			w.formals(cells[2], op, d)
+			b.set(2, w.formals(cells[2], op, d))
 			w.forms(b, 3, depth)
 			leave(v)
 		}
@@ -615,7 +633,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 		if len(cells) > 2 {
 			w.data(cells[1], d)
 			enter(v, false)
-			w.formals(cells[2], op, d)
+			b.set(2, w.formals(cells[2], op, d))
 			w.forms(b, 3, depth)
 			leave(v)
 		} else {
@@ -673,7 +691,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 			}
 			enter(v, false)
 			if len(ctrl.Cells) > 0 {
-				w.emitBind(ctrl.Cells[0], op, d+1, nil)
+				cb.set(0, w.emitBind(ctrl.Cells[0], op, d+1, nil))
 			}
 			w.forms(b, 2, depth)
 			if len(ctrl.Cells) > 2 {
@@ -727,12 +745,14 @@ func (w *CodeWalker) special(v *LVal, op string, shape FormShape, depth int) *LV
 	return b.done()
 }
 
-// formals binds the names in a lambda list.  Markers are skipped.
-func (w *CodeWalker) formals(formals *LVal, op string, depth int) {
+// formals binds the names in a lambda list and returns it with any names
+// Replace substituted.  Markers are skipped.
+func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 	if formals == nil || formals.Type != LSExpr {
-		return
+		return formals
 	}
-	for _, f := range formals.Cells {
+	fb := newRebuild(formals)
+	for i, f := range formals.Cells {
 		if f.Type != LSymbol {
 			continue
 		}
@@ -740,8 +760,47 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) {
 		case OptArgSymbol, VarArgSymbol, KeyArgSymbol:
 			continue
 		}
-		w.emitBind(f, op, depth, nil)
+		fb.set(i, w.emitBind(f, op, depth, nil))
 	}
+	return fb.done()
+}
+
+// pairList holds the rebuilds of a binding list and of each well-formed
+// (list) binding in it, so a form can walk the bindings in more than one
+// pass (inits, then names) and still return one rebuilt list.
+type pairList struct {
+	lb  *rebuild
+	pbs []*rebuild // nil for a binding that is not a list
+}
+
+func (w *CodeWalker) newPairList(list *LVal, depth int) *pairList {
+	pl := &pairList{lb: newRebuild(list), pbs: make([]*rebuild, len(list.Cells))}
+	for i, pair := range list.Cells {
+		if pair.Type == LSExpr {
+			pl.pbs[i] = newRebuild(pair)
+		} else {
+			w.data(pair, depth+1)
+		}
+	}
+	return pl
+}
+
+// each calls fn for each well-formed binding in order.
+func (pl *pairList) each(fn func(pb *rebuild, pair *LVal)) {
+	for _, pb := range pl.pbs {
+		if pb != nil {
+			fn(pb, pb.orig)
+		}
+	}
+}
+
+func (pl *pairList) done() *LVal {
+	for i, pb := range pl.pbs {
+		if pb != nil {
+			pl.lb.set(i, pb.done())
+		}
+	}
+	return pl.lb.done()
 }
 
 // pairs walks a list of binding pairs, calling fn with each well-formed
@@ -751,21 +810,14 @@ func (w *CodeWalker) pairs(list *LVal, depth int, fn func(pb *rebuild, pair *LVa
 		w.data(list, depth)
 		return list
 	}
-	lb := newRebuild(list)
-	for i, pair := range list.Cells {
-		if pair.Type != LSExpr {
-			w.data(pair, depth+1)
-			continue
-		}
-		pb := newRebuild(pair)
-		fn(pb, pair)
-		lb.set(i, pb.done())
-	}
-	return lb.done()
+	pl := w.newPairList(list, depth)
+	pl.each(fn)
+	return pl.done()
 }
 
 // let walks a let or let* binding list and then the body.
 func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body func()) *LVal {
+	sh := SpecialFormShape(op)
 	if list == nil || list.Type != LSExpr {
 		w.data(list, depth)
 		w.push(false)
@@ -773,32 +825,29 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 		w.pop()
 		return list
 	}
-	var out *LVal
-	if seq {
-		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Shape: SpecialFormShape(op), Depth: depth - 1})
-		out = w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
-			w.forms(pb, 1, depth+1)
-			if len(pair.Cells) > 0 {
-				w.emitBind(pair.Cells[0], op, depth+2, nil)
-			}
-		})
-	} else {
-		out = w.pairs(list, depth, func(pb *rebuild, _ *LVal) {
-			w.forms(pb, 1, depth+1)
-		})
-		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Shape: SpecialFormShape(op), Depth: depth - 1})
-		for _, pair := range list.Cells {
-			if pair.Type == LSExpr && len(pair.Cells) > 0 {
-				w.emitBind(pair.Cells[0], op, depth+2, nil)
-			}
+	pl := w.newPairList(list, depth)
+	bindName := func(pb *rebuild, pair *LVal) {
+		if len(pair.Cells) > 0 {
+			pb.set(0, w.emitBind(pair.Cells[0], op, depth+2, nil))
 		}
 	}
+	if seq {
+		w.push(false)
+		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Shape: sh, Depth: depth - 1})
+		pl.each(func(pb *rebuild, pair *LVal) {
+			w.forms(pb, 1, depth+1)
+			bindName(pb, pair)
+		})
+	} else {
+		pl.each(func(pb *rebuild, _ *LVal) { w.forms(pb, 1, depth+1) })
+		w.push(false)
+		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Shape: sh, Depth: depth - 1})
+		pl.each(bindName)
+	}
 	body()
-	w.visit(WalkNode{Event: WalkLeave, Node: form, Op: op, Shape: SpecialFormShape(op), Depth: depth - 1})
+	w.visit(WalkNode{Event: WalkLeave, Node: form, Op: op, Shape: sh, Depth: depth - 1})
 	w.pop()
-	return out
+	return pl.done()
 }
 
 // flet walks a flet, labels or macrolet binding list and then the body.
@@ -819,6 +868,7 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape FormShape, depth in
 		leave()
 		return list
 	}
+	pl := w.newPairList(list, depth)
 	// One function binding: (name formals body...).
 	fn := func(pb *rebuild, bind *LVal) {
 		if len(bind.Cells) < 2 {
@@ -826,41 +876,38 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape FormShape, depth in
 		}
 		w.push(false)
 		w.visit(WalkNode{Event: WalkEnter, Node: bind, Op: op, Shape: sh, Depth: depth + 1, Function: true})
-		w.formals(bind.Cells[1], op, depth+2)
+		pb.set(1, w.formals(bind.Cells[1], op, depth+2))
 		w.forms(pb, 2, depth+1)
 		w.visit(WalkNode{Event: WalkLeave, Node: bind, Op: op, Shape: sh, Depth: depth + 1, Function: true})
 		w.pop()
 	}
-	bindNames := func() {
-		for _, bind := range list.Cells {
-			if bind.Type != LSExpr || len(bind.Cells) == 0 {
-				continue
-			}
-			var mac LocalMacroExpander
-			if shape == ShapeMacrolet && w.DefineLocalMacro != nil && w.err == nil {
-				m, lerr := w.DefineLocalMacro(bind)
-				if lerr != nil && lerr.Type == LError {
-					w.fail(lerr)
-				}
-				mac = m
-			}
-			w.emitBind(bind.Cells[0], op, depth+1, mac)
+	bindName := func(pb *rebuild, bind *LVal) {
+		if len(bind.Cells) == 0 {
+			return
 		}
+		var mac LocalMacroExpander
+		if shape == ShapeMacrolet && w.DefineLocalMacro != nil && w.err == nil {
+			m, lerr := w.DefineLocalMacro(bind)
+			if lerr != nil && lerr.Type == LError {
+				w.fail(lerr)
+			}
+			mac = m
+		}
+		pb.set(0, w.emitBind(bind.Cells[0], op, depth+1, mac))
 	}
-	var out *LVal
 	switch shape {
 	case ShapeLabels:
 		enter(false)
-		bindNames()
-		out = w.pairs(list, depth, fn)
+		pl.each(bindName)
+		pl.each(fn)
 	default:
-		out = w.pairs(list, depth, fn)
+		pl.each(fn)
 		enter(shape == ShapeMacrolet)
-		bindNames()
+		pl.each(bindName)
 	}
 	body()
 	leave()
-	return out
+	return pl.done()
 }
 
 // template walks a quasiquote template.  As at run time (docs/lang.md,

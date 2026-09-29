@@ -1190,6 +1190,42 @@ reports a builtin form's shape. A special operator an embedder registers has
 no shape, and the walker treats a form headed by one as opaque: its arguments
 are neither walked nor expanded.
 
+### Free variables, scopes and liveness
+
+`astutil.AnalyzeScopes(form)` resolves every reference in a form, which
+should already be expanded (pass it the result of `astutil.ExpandAll` or
+`MacroExpandAll`), to the binding it denotes:
+
+- `astutil.FreeVars(form)` lists the symbols the form uses but does not bind,
+  once each, in order of first use. ELPS is a Lisp-1, so called functions are
+  among them.
+- Each `astutil.Scope` has its `Bindings` and `Refs`. `Scope.Free()` gives the
+  references that leave the scope, and `Scope.Captured()` the enclosing
+  bindings a closure over the scope captures. `Binding.Used()` reports whether
+  a binding is ever read.
+- `astutil.LiveAcross(body, point)` gives, for each form `point` selects, the
+  bindings in scope there whose values may be read after it. That is the state
+  a program suspended at the point must keep. Loops, `dotimes` counters and
+  closures created before the point are treated conservatively.
+- `(*Scopes).Rename(form, names)` renames bindings and all their references
+  without touching the input. It refuses, with an error, a renaming that would
+  change what any reference denotes. `(*Scopes).FreshNames(form, prefix)`
+  builds a renaming that makes every local distinct.
+
+```go
+// Which locals must survive a call to (checkpoint)?
+code := astutil.ExpandAll(form, expander, "user", nil)
+for _, l := range astutil.LiveAcross(code, func(v *lisp.LVal) bool {
+    return astutil.HeadSymbol(v) == "checkpoint"
+}) {
+    for _, b := range l.Live {
+        fmt.Println(b.Name.Str)
+    }
+}
+```
+
+The `loop-variable-capture` lint check is built on `Scope.Captured`.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.

@@ -856,6 +856,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerQuoteCall,
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
+		AnalyzerLoopVariableCapture,
 		AnalyzerTestOutsideTestFile,
 		AnalyzerComparatorMutation,
 		AnalyzerIterationMutation,
