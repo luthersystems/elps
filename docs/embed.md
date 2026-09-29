@@ -277,6 +277,16 @@ a transparent optimization:
 Programs embedding elps can write functions in Go which can be loaded into
 packages, bound under a given symbol.
 
+Go builtins do not get the package swap that a Lisp function call gets: a
+builtin runs with `*package*` set to whatever was current in the calling
+code, not to the builtin's own home package (see "Symbols, packages, and the
+caller" in `docs/lang.md`). This is why `set`, `defun`, `defmacro`, and
+`s:deftype` bind into the *caller's* package. A consequence for embedders: a
+builtin that needs to resolve a symbol against its own package — rather than
+whatever package happened to be current when a user called it — must look
+the symbol up by its fully qualified name (`"pkgname:symbol"`), not by the
+bare, unqualified name.
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package

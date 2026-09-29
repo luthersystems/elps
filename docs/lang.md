@@ -1984,6 +1984,61 @@ URL format for organizational clarity and to avoid package name collisions.
 (use-package 'example.com/faster-json/utils)
 ```
 
+### Symbols, packages, and the caller
+
+A few rules together explain how a symbol resolves when it crosses a package
+boundary:
+
+- **A symbol is its name.** Two symbols with the same name are the same
+  symbol for comparison purposes, regardless of which package's code produced
+  them or which package happens to be current when they are compared.
+- **Lookup happens at run time, in the current package.** An unqualified
+  symbol is not resolved when it is written or read; it is resolved against
+  `*package*` at the moment something looks it up (a variable reference, a
+  function call, `set`, `defun`).
+- **Calling a Lisp function makes the function's package current.** When ELPS
+  evaluates a call to a function defined with `defun`, it switches
+  `*package*` to that function's package for the duration of the call, then
+  restores the caller's package on return. This is why a function's body can
+  refer to its own package's private symbols unqualified, no matter who calls
+  it.
+- **Go builtins run in the caller's package.** Builtins (`set`, `defun`,
+  `defmacro`, `s:deftype`, and every other function implemented in Go) do
+  **not** get this package swap. `*package*` stays whatever it was in the
+  calling code, so a builtin that binds a name — `set`, `defun`, `defmacro`,
+  `s:deftype` — binds it into the *caller's* package, not into `lisp` or the
+  builtin's own home package. This is deliberate: it is what lets ordinary
+  user code call `set`/`defun`/`defmacro` and have the binding land in the
+  package the user is writing, rather than in `lisp`.
+
+One consequence is worth calling out explicitly, because it can look like a
+bug the first time it is seen: **a quoted symbol passed into another
+package's function resolves in that function's (Lisp) package, not in the
+caller's.** For example:
+
+```lisp
+(in-package 'liba)
+(defun helper () "liba's helper")
+(export 'helper)
+(defun call-by-sym (sym) (funcall sym))
+(export 'call-by-sym)
+```
+
+Calling `(liba:call-by-sym 'helper)` from another package returns liba's
+`helper`, not any `helper` defined in the caller's own package — because by
+the time `call-by-sym`'s body runs, the package swap described above has
+already made `liba` current. `funcall` (a builtin) inherits that current
+package from its caller's code and resolves the bare symbol `'helper` there.
+This is correct today's-semantics behavior, not a bug: the quoted symbol is
+only a name, and which package resolves that name depends on which package is
+current when the lookup happens — the callee's package, once a Lisp function
+call has switched into it.
+
+When this ambiguity matters, **pass the function value itself instead of its
+quoted name** — `(liba:call-by-sym helper)`, or `(liba:call-by-sym
+(function helper))` — so the callee dispatches on the value already resolved
+in the caller's own package, rather than re-resolving a bare name in its own.
+
 ## Documentation
 
 ELPS has built-in support for attaching documentation to functions, macros,

@@ -2299,10 +2299,14 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// With formal arguments bound, we can switch into the function's package
 	// namespace for the duration of the call.
 	//
-	// BUG(#736): This package-swap should occur for builtins as well but there is a
-	// bootstrapping problem, where ``set'' (as well as defun/defmacro) needs
-	// to modify the *package* namespace and not the "lisp" namespace.  Dynamic
-	// variables may be required in order to work through this completely.
+	// NOTE: This package-swap intentionally does not occur for builtins.
+	// Builtins run with *package* left as whatever was current in the
+	// calling code, which is what lets ``set'' (as well as defun/defmacro)
+	// bind into the *caller's* package rather than the "lisp" namespace.
+	// A builtin that must resolve a symbol against its own home package
+	// (rather than the caller's) needs to look it up by qualified name.
+	// See "Symbols, packages, and the caller" in docs/lang.md and the
+	// builtins note in docs/embed.md.
 	outer := env.Runtime.Package
 	pkg := fun.Package()
 	if outer.Name != pkg {

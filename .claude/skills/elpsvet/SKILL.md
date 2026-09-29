@@ -16,7 +16,7 @@ Use when:
 - you touch `Package` tables, `packageBase`, `sortedmap.m`, or the lazy template path (`lisp/template_lazy.go`);
 - you change an analyzer rule, a tier, or an allowlist.
 
-## The seven rules
+## The eight rules
 
 | Analyzer | File | Flags | Suppression marker |
 |----------|------|-------|--------------------|
@@ -27,6 +27,7 @@ Use when:
 | `elpsbuiltinstate` | `builtinstate.go` | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
 | `elpsfrozenpackage` | `frozenpackage.go` | a write to `Package` tables or a `packageBase` field outside the audited write paths | allowlist row in `packageWriteFunctions` (no marker) |
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
+| `elpscallerpackage` | `callerpackage.go` | a builtin resolving a hardcoded, unqualified symbol literal (`lisp.Symbol("name")`, no `:`) through `env.Get`/`GetGlobal`/`GetFunGlobal`/`PutGlobal`/`PutGlobalFromLisp` — a builtin runs in its caller's package, not its own (#736) | `//elpsvet:allow-callerpkg <≥3-word reason>` |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `nativepayload.go`'s header is the authority on the payload

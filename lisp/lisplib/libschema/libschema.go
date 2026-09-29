@@ -266,9 +266,12 @@ func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return res
 	}
 	if res != nil {
-		// BUG(#736): A regular function should not bind globals in this way
-		// because functions aren't supposed to operate in the caller's lexical
-		// environment, but builtins don't get a lexical environment currently.
+		// NOTE: s:deftype is a builtin, so it runs with *package* left as
+		// whatever was current in the caller's code (builtins are not
+		// package-swapped into their own home package). Binding here with
+		// PutGlobalFromLisp deliberately lands the new type in the
+		// *caller's* package, matching how set/defun/defmacro behave from a
+		// builtin. See "Symbols, packages, and the caller" in docs/lang.md.
 		res = env.PutGlobalFromLisp(lisp.Symbol(lname.Str), res)
 		if res != nil && res.Type == lisp.LError {
 			return res
