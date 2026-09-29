@@ -77,4 +77,6 @@ func good(u unrelated, s sortedmap, p *Package) {
 
 // Allowlisted accessors.
 func (pkg *Package) baseValue(i int) *LVal { return pkg.baseValues[i] }
+func (pkg *Package) slotValue(i int) *LVal { return pkg.baseValues[i] }
+func (pkg *Package) ensureBaseValues()    { pkg.baseValues = make([]*LVal, 1) }
 func (m sortedmap) entry(k string) *LVal   { return m.m[k] }
