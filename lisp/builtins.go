@@ -579,19 +579,14 @@ func DefaultBuiltins() []LBuiltinDef {
 }
 
 func builtinLoadString(env *LEnv, args *LVal) *LVal {
-	source, name := args.ReqArg(env, 0), args.KeyArg(1)
-	if source.Type == LError {
-		return source
+	a := ReadArgs(env, args)
+	source := a.Typed(0, LString, "first argument is not a string: %v")
+	_name := a.OptString(1, "name", "")
+	if lerr := a.Err(); lerr != nil {
+		return lerr
 	}
-	if source.Type != LString {
-		return env.Errorf("first argument is not a string: %v", source.Type)
-	}
-	if !name.IsNil() && name.Type != LString {
-		return env.Errorf("name is not a string: %v", name.Type)
-	}
-	_name := "load-string"
-	if name.Str != "" {
-		_name = name.Str
+	if _name == "" {
+		_name = "load-string"
 	}
 
 	// Load the source in the root environment so the loaded code does not
