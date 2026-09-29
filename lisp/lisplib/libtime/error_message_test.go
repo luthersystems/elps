@@ -30,16 +30,16 @@ func timeTestEnv(t *testing.T) *lisp.LEnv {
 func TestTimeArgumentErrorsNameTheRightType(t *testing.T) {
 	env := timeTestEnv(t)
 	for _, tc := range []struct{ src, want string }{
-		{`(time:time-add (time:utc-now) (time:utc-now))`, "argument is not a duration: #<native value: libtime.ownedTime>"},
-		{`(time:time-add (time:utc-now) 5)`, "argument is not a duration: int"},
-		{`(time:time-add 5 (time:time-from (time:utc-now) (time:utc-now)))`, "argument is not a time: int"},
-		{`(time:time= (time:utc-now) 5)`, "argument is not a time: int"},
-		{`(time:time< (time:utc-now) "x")`, "argument is not a time: string"},
-		{`(time:time> (time:utc-now) '(1))`, "argument is not a time: list"},
-		{`(time:time= 5 (time:utc-now))`, "argument is not a time: int"},
+		{`(time:time-add (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T10:30:00Z"))`, "argument is not a duration: #<native value: libtime.ownedTime>"},
+		{`(time:time-add (time:parse-rfc3339 "2023-01-15T10:30:00Z") 5)`, "argument is not a duration: int"},
+		{`(time:time-add 5 (time:time-from (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T10:30:00Z")))`, "argument is not a time: int"},
+		{`(time:time= (time:parse-rfc3339 "2023-01-15T10:30:00Z") 5)`, "argument is not a time: int"},
+		{`(time:time< (time:parse-rfc3339 "2023-01-15T10:30:00Z") "x")`, "argument is not a time: string"},
+		{`(time:time> (time:parse-rfc3339 "2023-01-15T10:30:00Z") '(1))`, "argument is not a time: list"},
+		{`(time:time= 5 (time:parse-rfc3339 "2023-01-15T10:30:00Z"))`, "argument is not a time: int"},
 		// A native that is not a time is named by value, as for the first
 		// argument.
-		{`(time:time< (time:utc-now) (time:time-from (time:utc-now) (time:utc-now)))`, "argument is not a time: #<native value: time.Duration>"},
+		{`(time:time< (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:time-from (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T10:30:00Z")))`, "argument is not a time: #<native value: time.Duration>"},
 	} {
 		t.Run(tc.src, func(t *testing.T) {
 			res := env.LoadString("test", tc.src)

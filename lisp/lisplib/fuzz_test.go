@@ -488,7 +488,8 @@ func genArgs(gen *fuzzval.Gen, fun *lisp.LVal) []*lisp.LVal {
 // the gate.
 func skipCallable(name string) bool {
 	switch name {
-	// time:sleep was excluded here until issue #314 was fixed: it blocked for
+	// time:sleep is no longer registered (#757); libtime tests cover
+	// libtime.BuiltinSleep directly.  It was excluded here until issue #314 was fixed: it blocked for
 	// a caller-supplied duration inside a single evaluation step and no
 	// budget in the interpreter could bound it.  It now selects on the
 	// evaluation context and caps its wait at the context deadline, so
