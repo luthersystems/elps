@@ -145,8 +145,10 @@ var (
 			`Converts value to a bytes value. Accepts strings (encoded as
 			UTF-8) and bytes (returned as-is).`},
 		{"serialize", Formals("value"), builtinSerialize,
-			`Returns the canonical encoding of value as bytes. Equal data
-			always gives identical bytes, so the result can be hashed,
+			`Returns the canonical encoding of value as bytes. Values of
+			the same types and structure always give identical bytes
+			(equal? is coarser: 1 and 1.0 encode differently), so the
+			result can be hashed,
 			used as a key or stored and read back with deserialize.
 			Accepts ints, floats, strings, bytes, symbols, keywords,
 			lists, arrays, sorted-maps and tagged values; functions,

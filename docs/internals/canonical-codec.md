@@ -1,8 +1,13 @@
 # Canonical value codec
 
 `lisp.EncodeCanonical` / `lisp.DecodeCanonical` (and the `serialize` /
-`deserialize` builtins) write a value as bytes that depend only on the value
-(luthersystems/elps#747, item 3).  Bytes it produces may be stored durably,
+`deserialize` builtins) write a value as bytes that depend only on its types
+and structure (luthersystems/elps#747, item 3).  The encoding is
+type-faithful and so finer than `equal?`: `1` and `1.0`, or a string and a
+symbol map key of one spelling, are `equal?` but encode differently
+(`TestCanonicalTypeFaithful`).  Collapsing them would lose the type on the
+way back, so the guarantee is stated as "same types and structure, same
+bytes", not "equal?, same bytes".  Bytes it produces may be stored durably,
 for example on a ledger, so **format version 1 is frozen**: any change to the
 bytes of an existing value is a new version byte, never an edit.
 `TestCanonicalGolden` (`lisp/codec_test.go`) pins every tag and fails on any
@@ -71,8 +76,7 @@ keyword, int) is kept.
 
 **Shared substructure and cycles: written in full, cycles rejected.**  The
 alternative, back-references, would make the bytes depend on which cells are
-shared: `(let ((x '(1))) (list x x))` and `(list '(1) '(1))` are equal and
-must encode identically for the bytes to serve as a hash or key.  Most elps
+shared: `(let ((x '(1))) (list x x))` and `(list '(1) '(1))` have the same types and structure, so they must encode identically for the bytes to serve as a hash or key.  Most elps
 values are handled with value semantics, and the decoder's output must be
 fresh anyway (below), so preserving identity has no user.  The cost is that
 a small DAG can expand exponentially; the value-count and byte limits stop

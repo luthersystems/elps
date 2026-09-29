@@ -1698,9 +1698,12 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 ### Serializing values (`serialize`, `deserialize`)
 
 `serialize` turns a value into bytes and `deserialize` turns those bytes
-back into an equal value.  The encoding is *canonical*: equal data always
-produces the same bytes, whatever order a map's entries were added in and
-whichever cells happen to be shared, on every machine and in every process.
+back into the same value.  The encoding is *canonical*: values of the same
+types and structure always produce the same bytes, whatever order a map's
+entries were added in and whichever cells happen to be shared, on every
+machine and in every process.  It is type-faithful, so it is finer than
+`equal?`: `1` and `1.0` are `equal?` but encode differently, and so do
+`(sorted-map "a" 1)` and `(sorted-map 'a 1)`, whose keys differ in type.
 That makes the bytes suitable as a cache or memoization key, as the input to
 a content hash, as a deterministic test fixture, and for passing a value to
 another process.
@@ -1716,8 +1719,8 @@ true
 ```
 
 A memoized function can key its cache on the serialized arguments, so two
-equal argument lists hit the same entry even when they are different
-objects:
+argument lists of the same types and structure hit the same entry even when
+they are different objects:
 
 ```lisp
 (set 'cache (sorted-map))

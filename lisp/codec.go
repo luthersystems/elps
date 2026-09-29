@@ -4,9 +4,12 @@ package lisp
 
 // Canonical value codec (luthersystems/elps#747, item 3).
 //
-// EncodeCanonical writes a value as bytes that depend only on the value:
-// equal data always gives identical bytes, on every platform and in every
-// process, so the bytes can serve as a content hash input, a cache key or a
+// EncodeCanonical writes a value as bytes that depend only on its types and
+// structure: values of the same types and structure give identical bytes, on
+// every platform and in every process, whatever order a map was built in and
+// whichever cells are shared.  equal? is coarser -- it equates 1 and 1.0, and
+// a string and a symbol map key of one spelling -- and the encoding keeps
+// those apart, so equal? values can encode differently.  So the bytes can serve as a content hash input, a cache key or a
 // durable record.  DecodeCanonical accepts exactly the bytes EncodeCanonical
 // produces and nothing else.  The format is frozen at version 1; see
 // docs/internals/canonical-codec.md for the byte layout and the reasons

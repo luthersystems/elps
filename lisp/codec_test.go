@@ -283,3 +283,24 @@ func TestCanonicalEmptyArrayHugeDims(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, b, again)
 }
+
+// TestCanonicalTypeFaithful pins the guarantee: the same types and
+// structure give the same bytes.  equal? is coarser -- it equates a string
+// and a symbol map key of one spelling, and an int and a float of one
+// value -- and the encoding deliberately keeps those types apart.
+func TestCanonicalTypeFaithful(t *testing.T) {
+	env := testEnv(t)
+	for _, tc := range []struct{ a, b string }{
+		{`(sorted-map "a" 1)`, `(sorted-map 'a 1)`},
+		{`1`, `1.0`},
+	} {
+		a, b := env.LoadString("a", tc.a), env.LoadString("b", tc.b)
+		eq := env.LoadString("eq", "(equal? "+tc.a+" "+tc.b+")")
+		assert.Equal(t, "true", eq.String(), "%s vs %s", tc.a, tc.b)
+		ea, err := lisp.EncodeCanonical(a)
+		require.NoError(t, err)
+		eb, err := lisp.EncodeCanonical(b)
+		require.NoError(t, err)
+		assert.NotEqual(t, ea, eb, "%s and %s must encode differently", tc.a, tc.b)
+	}
+}

@@ -700,8 +700,9 @@ nature and their semantics could change.
 ### Canonical encoding
 
 `lisp.EncodeCanonical` and `lisp.DecodeCanonical` are the Go side of the
-`serialize` and `deserialize` builtins.  Equal values always encode to the
-same bytes, so a host can hash them, use them as a key, or store them and
+`serialize` and `deserialize` builtins.  Values of the same types and
+structure always encode to the same bytes (the encoding is finer than
+`equal?`, which equates `1` and `1.0`), so a host can hash them, use them as a key, or store them and
 read them back in another process or release.
 
 ```go
