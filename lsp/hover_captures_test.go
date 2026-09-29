@@ -53,3 +53,13 @@ func TestHoverLambdaCapturesLexicalContext(t *testing.T) {
 	assert.NotContains(t, got, "`b`")
 	assert.NotContains(t, got, "`c`")
 }
+
+// A symbol in a quasiquote template is data, not a capture.
+func TestHoverLambdaCapturesSkipsTemplates(t *testing.T) {
+	s := testServer()
+	openDoc(s, "file:///test.lisp", `(let ((a 1) (b 2))
+  (lambda () (quasiquote (a (unquote b)))))`)
+	got := hoverAt(t, s, 1, 3)
+	assert.Contains(t, got, "**Captures:** `b`")
+	assert.NotContains(t, got, "`a`")
+}

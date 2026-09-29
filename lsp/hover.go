@@ -302,11 +302,13 @@ func lambdaCapturesHover(doc *Document, line, col int) string {
 		}
 	}
 	mark(form)
+	// A symbol in a quasiquote template is data; only its holes are code.
+	roles := astutil.ClassifyNodes(form)
 	var names []string
 	seen := make(map[string]bool)
 	for _, ref := range res.References {
 		sym := ref.Symbol
-		if ref.Node == nil || !inside[ref.Node] || sym == nil || sym.Scope == nil ||
+		if ref.Node == nil || !inside[ref.Node] || roles.Role(ref.Node) == astutil.RoleData || sym == nil || sym.Scope == nil ||
 			sym.Scope.Kind == analysis.ScopeGlobal || seen[sym.Name] || !strictlyEncloses(sym.Scope, scope) {
 			continue
 		}
