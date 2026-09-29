@@ -1916,9 +1916,17 @@ json, stream encodings, math, etc.  These packages generally have simple, short
 names.
 
 ```lisp
-(set 'now (time:utc-now))
-(debug-print (time:format-rfc3339 now))
+(set 'start (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
+(debug-print (time:format-rfc3339 (time:time-add start (time:parse-duration "1h"))))
 ```
+
+The standard library is deterministic: no builtin reads the wall clock or
+waits on a timer, so the same program gives the same result on every run.
+`time:utc-now`, `time:time-elapsed` and `time:sleep` were removed for that
+reason.  A host that needs the current time or a sleep registers its own
+builtin (for example a transaction timestamp) and Lisp code measures with
+`time:time-from`.  `libtime.BuiltinSleep` remains exported for hosts that
+register a sleep themselves.
 
 The `string` package follows the names of Go's `strings` package. Besides
 case conversion, `split`, `join`, `repeat` and the cutset trims (`trim`,
@@ -2876,11 +2884,11 @@ function's definition location.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.
-`time:sleep` is the exception that is checked explicitly: it waits on the
-context as well as on its timer, so it wakes on cancellation and never sleeps
-past the deadline, raising `context-cancelled` instead of returning nil when
-it is cut short.  With no context configured, `time:sleep` sleeps for the
-full duration it was given, however long that is.  The `json:dump-*`
+A host sleep built on `libtime.BuiltinSleep` is the exception that is checked
+explicitly: it waits on the context as well as on its timer, so it wakes on
+cancellation and never sleeps past the deadline, raising `context-cancelled`
+instead of returning nil when it is cut short.  With no context configured it
+sleeps for the full duration it was given, up to the sleep length limit.  The `json:dump-*`
 functions also poll the context while they serialize a value, so a large
 document cannot outlive the deadline either.
 
@@ -3049,11 +3057,14 @@ depending on the shape of the loop.  It is **disabled by default**
 **Sleep length** is the one limit whose unit is wall clock rather than work.
 Every limit above counts something the interpreter *does* — steps, frames,
 turns, bytes, nesting — and a sleeping goroutine does none of them, so
-`time:sleep` was bounded by none of them at once and
+a sleep was bounded by none of them at once and
 `"9223372036854775807ns"` blocked for roughly 292 years.
 
 A single sleep is capped at one hour (`lisp.DefaultMaxSleep`).  Over that
-raises `sleep-limit-exceeded` **immediately**, without sleeping:
+raises `sleep-limit-exceeded` **immediately**, without sleeping.  The standard
+library no longer registers a sleep (see Standard library); these limits
+apply to a host that registers `libtime.BuiltinSleep`, shown here as
+`time:sleep`:
 
 ```lisp
 (time:sleep (time:parse-duration "2h"))
