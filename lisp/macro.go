@@ -179,7 +179,7 @@ func macroDefun(env *LEnv, args *LVal) *LVal {
 func macroDefconst(env *LEnv, args *LVal) *LVal {
 	sym, value, docstrings := args.Cells[0], args.Cells[1], args.Cells[2:]
 	if sym.Type != LSymbol {
-		return env.Errorf("first argument is not a symbol: %s", sym.Type)
+		return env.ErrorfAt(sym, "first argument is not a symbol: %s", sym.Type)
 	}
 	// Build: (progn (set 'name value docstrings...) (export 'name) nil)
 	setCells := []*LVal{Symbol("lisp:set"), Quote(sym), value}
@@ -258,10 +258,10 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 	formals := args.Cells[1]
 	exprs := SExpr(args.Cells[2:])
 	if name.Type != LSymbol {
-		return env.Errorf("first argument is not a symbol: %v", GetType(name))
+		return env.ErrorfAt(name, "first argument is not a symbol: %v", GetType(name))
 	}
 	if formals.Type != LSExpr {
-		return env.Errorf("second argument is not a list: %v", GetType(formals))
+		return env.ErrorfAt(formals, "second argument is not a list: %v", GetType(formals))
 	}
 	fqname := env.GenSym()
 	lambda := SExpr([]*LVal{
