@@ -395,6 +395,31 @@ up by the macro. Qualify generated core names (`lisp:if`, `lisp:progn`), and
 use `env.GenSym()` for temporary bindings to avoid capturing the caller's
 names.
 
+Use `env.ErrorfAt(form, format, values...)` for argument validation so an
+error points at the offending form. For example, this macro binds a name to
+a pair of values:
+
+```go
+var definePairForm = lisp.MustFormTemplate(
+    `(lisp:set ',name (lisp:list ,left ,right))`, "name", "left", "right")
+
+func macroDefinePair(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    name := args.Cells[0]
+    if name.Type != lisp.LSymbol {
+        return env.ErrorfAt(name, "first argument is not a symbol: %s", name.Type)
+    }
+    return definePairForm.Expand(name, args.Cells[1], args.Cells[2])
+}
+```
+
+Register it with formals `lisp.Formals("name", "left", "right")`. In a call
+such as `(define-pair` followed by `  42 1 2)` on the next line, the error
+reports line 2, column 3, where `42` starts. `ErrorfAt` copies the form's
+location; nil forms and forms without a valid source position fall back to
+the evaluator's current location, as `Errorf` does. The captured call stack
+still describes the macro call, and debugger error notifications see the
+error with its chosen location.
+
 ### Toolkit for replacing Lisp with Go builtins
 
 A Go builtin that replaces a Lisp definition must behave exactly as the Lisp
