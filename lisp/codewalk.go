@@ -708,6 +708,17 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			}
 			w.forms(b, 1, depth)
 			leave(v)
+			// expr infers its parameters from the placeholders its
+			// pattern uses, so expanding a macro in the pattern could
+			// change the function's arity.  An expanded pattern is
+			// lowered to a lambda with the originally inferred formals.
+			if out := b.done(); out != v && len(cells) == 2 {
+				if formals := exprLambdaList(cells[1]); formals != nil {
+					lowered := SExpr([]*LVal{Symbol(DefaultLangPackage + ":lambda"), formals, out.Cells[1]})
+					lowered.source = copyLocation(v.source)
+					return lowered
+				}
+			}
 		}
 	case shapeWithCleanup:
 		if len(cells) > 1 {
@@ -957,6 +968,30 @@ func exprFormalNames(pattern *LVal) []*LVal {
 		names = append(names, Symbol("%"+VarArgSymbol))
 	}
 	return names
+}
+
+// exprLambdaList returns the lambda list (expr pattern) builds, markers
+// included, as opExpr builds it, or nil when opExpr would reject pattern.
+func exprLambdaList(pattern *LVal) *LVal {
+	n, short, nopt, vargs, err := countExprArgs(pattern)
+	if err != nil || n > MaxExprFormals {
+		return nil
+	}
+	var cells []*LVal
+	if short {
+		cells = append(cells, Symbol("%"))
+	} else {
+		for i := 1; i <= n; i++ {
+			cells = append(cells, Symbol("%"+strconv.Itoa(i)))
+		}
+	}
+	if nopt > 0 {
+		cells = append(cells, Symbol(OptArgSymbol), Symbol("%"+OptArgSymbol))
+	}
+	if vargs {
+		cells = append(cells, Symbol(VarArgSymbol), Symbol("%"+VarArgSymbol))
+	}
+	return SExpr(cells)
 }
 
 // rebuild collects the walked children of one list, allocating a fresh

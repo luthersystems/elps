@@ -68,3 +68,19 @@ func TestMacroExpandAllMacroletScope(t *testing.T) {
 	}
 	elpstest.RunTestSuite(t, tests)
 }
+
+// Expanding a macro inside an expr pattern must not change the arity expr
+// inferred from it.
+func TestMacroExpandAllExprKeepsArity(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"expr arity", elpstest.TestSequence{
+			{`(defmacro first-of (a b) (quasiquote (list (unquote a))))`, "()", ""},
+			{`(funcall (expr (first-of %1 %2)) 1 2)`, "'(1)", ""},
+			{`(macroexpand-all '(expr (first-of %1 %2)))`, "'(lisp:lambda (%1 %2) (list %1))", ""},
+			{`(funcall (eval (macroexpand-all '(expr (first-of %1 %2)))) 1 2)`, "'(1)", ""},
+			// Unchanged patterns stay expr.
+			{`(macroexpand-all '(expr (+ % 1)))`, "'(expr (+ % 1))", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}

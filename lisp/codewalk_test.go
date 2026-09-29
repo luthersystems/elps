@@ -61,7 +61,7 @@ func TestMacroExpandAll(t *testing.T) {
 			row{`(macroexpand-all '(flet ((f (x) (m x))) (f (m 1))))`, `'(flet ((f (x) (list x))) (f (list 1)))`, ""},
 			row{`(macroexpand-all '(labels ((f (x) (m x))) (f (m 1))))`, `'(labels ((f (x) (list x))) (f (list 1)))`, ""},
 			row{`(macroexpand-all '(dotimes (i (m 3) (m i)) (m i)))`, `'(dotimes (i (list 3) (list i)) (list i))`, ""},
-			row{`(macroexpand-all '(expr (m %)))`, `'(expr (list %))`, ""},
+			row{`(macroexpand-all '(expr (m %)))`, `'(lisp:lambda (%) (list %))`, ""},
 			row{`(macroexpand-all '(test "t" (m 1)))`, `'(test "t" (list 1))`, ""},
 			row{`(macroexpand-all '(benchmark "b" (n) (m n)))`, `'(benchmark "b" (n) (list n))`, ""},
 		)},
