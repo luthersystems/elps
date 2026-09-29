@@ -429,7 +429,23 @@ if lerr := a.Err(); lerr.Type == lisp.LError {
 }
 ```
 
-It does not allocate unless a check fails.
+It does not allocate unless a check fails. Beyond `String`, `Int`, `Map`,
+`Typed` and the `Opt*` reads, `Stringf` and `Intf` take a whole message
+format, `StringOrSymbol` accepts a string or a symbol, `Bytes` a bytes value
+or a string, `OneOf` any of several types, and `ReqKey` fails with your own
+message when a `&key` argument is missing. For a check that is not a type
+test, `a.Check(ok, format, args...)` records a failure (and reports whether
+the reader is still clean), and `a.Fail(lerr)` records an error you built;
+both keep the first failure, so a decoder of your own is ordinary Go:
+
+```go
+func dateArg(a *lisp.ArgReader, i int) cctime.Date {
+	s := a.Stringf(i, "argument is not a date: %v")
+	d, err := cctime.Parse(s)
+	a.Check(err == nil, "invalid date: %q", s)
+	return d
+}
+```
 
 **Typed builtins: `lisp.Func1` … `lisp.Func4`.** For a builtin of up to four
 arguments, list one decoder per formal, in order, and write the body against
@@ -444,9 +460,11 @@ var builtinRepeat = lisp.Func2(
 	func(env *lisp.LEnv, s string, n *lisp.LVal) *lisp.LVal { /* ... */ })
 ```
 
-Decoders: `ValueArg`, `TypedArg`, `StringArg`, `IntArg`, `MapArg`, and for
-`&optional`/`&key` positions `OptArg`, `OptStringArg`, `OptIntArg` (the
-evaluator passes one cell per formal, so a key is just a position). Beyond four
+Decoders: `ValueArg`, `TypedArg`, `StringArg`, `StringArgf`, `IntArg`,
+`IntArgf`, `MapArg`, `StringOrSymbolArg`, `BytesArg`, `OneOfArg`, and for
+`&optional`/`&key` positions `OptArg`, `OptStringArg`, `OptIntArg` and
+`ReqKeyArg` (the evaluator passes one cell per formal, so a key is just a
+position). A function like `dateArg` above is an `ArgDecoder` too. Beyond four
 arguments, or with `&rest`, use `ArgReader` directly: Go has no variadic type
 parameters, which is where generics stop. `string:split` and `string:repeat`
 are written this way.

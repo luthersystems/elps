@@ -31,7 +31,8 @@ package lisp
 // ArgDecoder decodes argument i of a builtin's argument list as a T,
 // recording a failure in the ArgReader.  Construct decoders once, at package
 // initialization, with the functions below; they capture only their message
-// text and default.
+// text and default.  A decoder of your own is any function of this type; use
+// ArgReader.Check or ArgReader.Fail to record its failure.
 type ArgDecoder[T any] func(a *ArgReader, i int) T
 
 // ValueArg decodes a required argument unchecked.
@@ -73,6 +74,43 @@ func OptStringArg(what, def string) ArgDecoder[string] {
 // OptIntArg decodes an &optional or &key integer, def when nil.
 func OptIntArg(what string, def int) ArgDecoder[int] {
 	return func(a *ArgReader, i int) int { return a.OptInt(i, what, def) }
+}
+
+// StringArgf decodes a required string; otherwise the failure is
+// env.Errorf(format, actualType), as ArgReader.Stringf.
+func StringArgf(format string) ArgDecoder[string] {
+	return func(a *ArgReader, i int) string { return a.Stringf(i, format) }
+}
+
+// IntArgf decodes a required integer; otherwise the failure is
+// env.Errorf(format, actualType), as ArgReader.Intf.
+func IntArgf(format string) ArgDecoder[int] {
+	return func(a *ArgReader, i int) int { return a.Intf(i, format) }
+}
+
+// StringOrSymbolArg decodes a required string or symbol as its text, as
+// ArgReader.StringOrSymbol.
+func StringOrSymbolArg(format string) ArgDecoder[string] {
+	return func(a *ArgReader, i int) string { return a.StringOrSymbol(i, format) }
+}
+
+// BytesArg decodes a required bytes or string argument as bytes, as
+// ArgReader.Bytes.
+func BytesArg(format string) ArgDecoder[[]byte] {
+	return func(a *ArgReader, i int) []byte { return a.Bytes(i, format) }
+}
+
+// OneOfArg decodes a required argument whose type is one of types, as
+// ArgReader.OneOf.
+func OneOfArg(format string, types ...LType) ArgDecoder[*LVal] {
+	types = append([]LType(nil), types...)
+	return func(a *ArgReader, i int) *LVal { return a.OneOf(i, format, types...) }
+}
+
+// ReqKeyArg decodes a &key argument that must be supplied, as
+// ArgReader.ReqKey.
+func ReqKeyArg(missing string) ArgDecoder[*LVal] {
+	return func(a *ArgReader, i int) *LVal { return a.ReqKey(i, missing) }
 }
 
 // Func1 returns an LBuiltin that decodes one argument and calls f.

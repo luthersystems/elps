@@ -90,3 +90,20 @@ func TestFuncNNoAlloc(t *testing.T) {
 		}
 	}))
 }
+
+func TestFuncNExtendedDecoders(t *testing.T) {
+	env := newLimitTestEnv(t)
+	fn := lisp.Func4(lisp.StringOrSymbolArg("a: %v"), lisp.BytesArg("b: %v"),
+		lisp.OneOfArg("c: %v", lisp.LInt, lisp.LFloat), lisp.ReqKeyArg("d is required"),
+		func(_ *lisp.LEnv, a string, b []byte, c, d *lisp.LVal) *lisp.LVal {
+			return lisp.String(a + string(b) + c.String() + d.String())
+		})
+	ok := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Symbol("x"), lisp.String("y"), lisp.Float(1.5), lisp.Int(2)}))
+	assert.Equal(t, `"xy1.52"`, ok.String())
+	bad := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Symbol("x"), lisp.String("y"), lisp.Float(1.5), lisp.Nil()}))
+	require.Equal(t, lisp.LError, bad.Type)
+	assert.Equal(t, "d is required", (*lisp.ErrorVal)(bad).ErrorMessage())
+	g := lisp.Func2(lisp.StringArgf("s: %v"), lisp.IntArgf("n: %v"), func(_ *lisp.LEnv, s string, n int) *lisp.LVal { return lisp.Int(n) })
+	bad = g(env, lisp.QExpr([]*lisp.LVal{lisp.String("s"), lisp.String("x")}))
+	assert.Equal(t, "n: string", (*lisp.ErrorVal)(bad).ErrorMessage())
+}

@@ -162,3 +162,96 @@ func (a *ArgReader) OptInt(i int, what string, def int) int {
 	}
 	return v.Int
 }
+
+// Fail records lerr as the reader's failure unless an earlier read already
+// failed: the first failure wins.  It is the hook for a custom decoder (an
+// ArgDecoder of your own) whose check is not a type test.  A non-error lerr
+// is ignored.
+func (a *ArgReader) Fail(lerr *LVal) {
+	if a.err == nil && lerr != nil && lerr.Type == LError {
+		a.err = lerr
+	}
+}
+
+// Check records env.Errorf(format, args...) when ok is false and no earlier
+// read failed.  It reports whether the reader is still free of failures, so a
+// custom decoder can stop at the first problem:
+//
+//	v := a.Value(i)
+//	if !a.Check(v.Type == lisp.LString, "argument is not a date: %v", v.Type) {
+//		return date{}
+//	}
+func (a *ArgReader) Check(ok bool, format string, args ...any) bool {
+	if a.err != nil {
+		return false
+	}
+	if !ok {
+		a.err = a.env.Errorf(format, args...)
+		return false
+	}
+	return true
+}
+
+// Stringf returns required argument i, which must be a string; otherwise it
+// records env.Errorf(format, actualType).  Use it where the message is not
+// "<what> is not a string: <type>".
+func (a *ArgReader) Stringf(i int, format string) string {
+	return a.Typed(i, LString, format).Str
+}
+
+// Intf returns required argument i, which must be an integer; otherwise it
+// records env.Errorf(format, actualType).
+func (a *ArgReader) Intf(i int, format string) int {
+	return a.Typed(i, LInt, format).Int
+}
+
+// StringOrSymbol returns required argument i's text when it is a string or a
+// symbol; otherwise it records env.Errorf(format, actualType).
+func (a *ArgReader) StringOrSymbol(i int, format string) string {
+	return a.OneOf(i, format, LString, LSymbol).Str
+}
+
+// Bytes returns required argument i as bytes when it is bytes or a string;
+// otherwise it records env.Errorf(format, actualType).  For a bytes argument
+// it returns the value's own slice, which the builtin must not modify; for a
+// string it returns a fresh copy.
+func (a *ArgReader) Bytes(i int, format string) []byte {
+	v := a.OneOf(i, format, LBytes, LString)
+	if v.Type == LBytes {
+		return v.Bytes()
+	}
+	if v.Type == LString {
+		return []byte(v.Str)
+	}
+	return nil
+}
+
+// OneOf returns required argument i when its type is one of types; otherwise
+// it records env.Errorf(format, actualType).
+func (a *ArgReader) OneOf(i int, format string, types ...LType) *LVal {
+	v := a.Value(i)
+	if a.err != nil {
+		return v
+	}
+	for _, t := range types {
+		if v.Type == t {
+			return v
+		}
+	}
+	a.err = a.env.Errorf(format, v.Type)
+	return Nil()
+}
+
+// ReqKey returns &key (or &optional) argument i, recording missing as the
+// failure's message, verbatim, when the argument was not supplied (is nil).
+func (a *ArgReader) ReqKey(i int, missing string) *LVal {
+	v := a.Opt(i)
+	if a.err != nil {
+		return v
+	}
+	if v.IsNil() {
+		a.err = a.env.Errorf("%s", missing)
+		return Nil()
+	}
+	return v
+}

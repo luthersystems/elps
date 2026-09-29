@@ -140,3 +140,72 @@ func TestLoadStringArgumentErrors(t *testing.T) {
 		assert.Equal(t, want, (*lisp.ErrorVal)(v).ErrorMessage(), src)
 	}
 }
+
+func argErr(a *lisp.ArgReader) string {
+	lerr := a.Err()
+	if lerr.Type != lisp.LError {
+		return ""
+	}
+	return (*lisp.ErrorVal)(lerr).ErrorMessage()
+}
+
+// The extension points: Check and Fail let an embedder write its own
+// decoders with the first-failure-wins rule; StringOrSymbol, Bytes, OneOf,
+// Stringf, Intf and ReqKey cover the shapes hand-written builtins check.
+func TestArgReaderExtensions(t *testing.T) {
+	env := newLimitTestEnv(t)
+	args := func(vs ...*lisp.LVal) *lisp.LVal { return lisp.QExpr(vs) }
+	bs := env.LoadString("test", `(to-bytes "hi")`)
+	require.Equal(t, lisp.LBytes, bs.Type)
+
+	a := lisp.ReadArgs(env, args(lisp.String("s"), lisp.Symbol("sym"), bs, lisp.Int(4), lisp.Nil(), lisp.String("k")))
+	assert.Equal(t, "s", a.StringOrSymbol(0, "bad %v"))
+	assert.Equal(t, "sym", a.StringOrSymbol(1, "bad %v"))
+	assert.Equal(t, []byte("hi"), a.Bytes(2, "bad %v"))
+	assert.Equal(t, []byte("s"), a.Bytes(0, "bad %v"))
+	assert.Equal(t, lisp.LInt, a.OneOf(3, "bad %v", lisp.LString, lisp.LInt).Type)
+	assert.Equal(t, "s", a.Stringf(0, "argument is not a date: %v"))
+	assert.Equal(t, 4, a.Intf(3, "count is not an int: %v"))
+	assert.Equal(t, "k", a.ReqKey(5, "key k is required").Str)
+	assert.True(t, a.Check(true, "unused %d", 1))
+	assert.Empty(t, argErr(&a))
+
+	for _, tc := range []struct {
+		read func(a *lisp.ArgReader)
+		want string
+	}{
+		{func(a *lisp.ArgReader) { a.StringOrSymbol(0, "collection is not a string: %v") }, "collection is not a string: int"},
+		{func(a *lisp.ArgReader) { a.Bytes(0, "data is not bytes: %v") }, "data is not bytes: int"},
+		{func(a *lisp.ArgReader) { a.OneOf(0, "want string or map: %v", lisp.LString, lisp.LSortMap) }, "want string or map: int"},
+		{func(a *lisp.ArgReader) { a.Stringf(0, "argument is not a date: %v") }, "argument is not a date: int"},
+		{func(a *lisp.ArgReader) { a.Intf(1, "count is not an int: %v") }, "count is not an int: list"},
+		{func(a *lisp.ArgReader) { a.ReqKey(1, "key 100% is required") }, "key 100% is required"},
+		{func(a *lisp.ArgReader) { a.Check(false, "custom %d", 7) }, "custom 7"},
+		{func(a *lisp.ArgReader) { a.Fail(env.Errorf("mine")) }, "mine"},
+		// The first failure wins over a later Check or Fail.
+		{func(a *lisp.ArgReader) {
+			a.Stringf(0, "first: %v")
+			assert.False(t, a.Check(false, "second"))
+			a.Fail(env.Errorf("third"))
+		}, "first: int"},
+	} {
+		r := lisp.ReadArgs(env, args(lisp.Int(1), lisp.Nil()))
+		tc.read(&r)
+		assert.Equal(t, tc.want, argErr(&r))
+	}
+}
+
+// A custom decoder built on Check composes with FuncN.
+func TestCustomDecoder(t *testing.T) {
+	env := newLimitTestEnv(t)
+	even := func(a *lisp.ArgReader, i int) int {
+		n := a.Intf(i, "argument is not an int: %v")
+		a.Check(n%2 == 0, "argument is odd: %d", n)
+		return n
+	}
+	fn := lisp.Func1(even, func(_ *lisp.LEnv, n int) *lisp.LVal { return lisp.Int(n / 2) })
+	assert.Equal(t, 2, fn(env, lisp.QExpr([]*lisp.LVal{lisp.Int(4)})).Int)
+	v := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Int(3)}))
+	require.Equal(t, lisp.LError, v.Type)
+	assert.Equal(t, "argument is odd: 3", (*lisp.ErrorVal)(v).ErrorMessage())
+}
