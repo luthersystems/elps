@@ -8,124 +8,119 @@ import (
 	"strings"
 )
 
-// formShape describes which parts of a special form are evaluated code,
-// which are binding names, and which are unevaluated data.  Code walkers
-// (CodeWalker, macroexpand-all, the astutil helpers built on them) use it to
-// descend into exactly the parts of a form that are code.
+// formKind is one builtin special form: each special operator in
+// langSpecialOps, plus the two builtin definition macros (defun, defmacro)
+// whose expansion embeds a function value rather than source, so walkers
+// keep them as written.  kindNone is a form the walker does not know (an
+// embedder's special operator): it is opaque, and none of its arguments are
+// walked.
 //
-// Every special operator in DefaultSpecialOps has a shape
-// (TestEverySpecialOpHasAShape fails for a new operator without one).  A
-// special operator an embedder registers has no shape; a walker treats a
-// form headed by one as opaque and descends into none of its arguments.
-type formShape uint8
+// Every switch over a formKind lists every kind and has no default arm, so
+// the exhaustive linter reports a switch that misses a newly added kind
+// (TestFormKindSwitchesHaveNoDefault enforces the no-default rule, which
+// .golangci.yml's default-signifies-exhaustive would otherwise let hide a
+// gap), and TestEverySpecialOpHasAKind fails until a new special operator
+// gets a kind.
+type formKind uint8
 
-// The shapes of the builtin special forms.
+// The builtin special forms.
 const (
-	// shapeUnknown is the zero value: the walker does not know the form's
-	// syntax and treats it as opaque.
-	shapeUnknown formShape = iota
-	// shapeForms: every argument is an evaluated form (progn, if, and, or,
-	// when, unless, while, default, assert, ignore-errors).
-	shapeForms
-	// shapeQuote: (quote datum).  The datum is data.
-	shapeQuote
-	// shapeQuasiquote: (quasiquote template).  The template is data except
-	// for its unquote and unquote-splicing holes, which are code.
-	shapeQuasiquote
-	// shapeLambda: (lambda formals body...).
-	shapeLambda
-	// shapeDefun: (defun name formals body...) and defmacro.  These are
-	// macros, but their expansion embeds a function value rather than
-	// source, so walkers keep them as written and walk the body.
-	shapeDefun
-	// shapeLet: (let ((name init)...) body...).  Inits see the outer scope.
-	shapeLet
-	// shapeLetSeq: (let* ((name init)...) body...).  Each init sees the
-	// names bound before it.
-	shapeLetSeq
-	// shapeFlet: (flet ((name formals body...)...) body...).  Function
-	// bodies see the outer scope.
-	shapeFlet
-	// shapeLabels: (labels ((name formals body...)...) body...).  Function
-	// bodies see every name the form binds.
-	shapeLabels
-	// shapeMacrolet: (macrolet ((name formals body...)...) body...).
-	shapeMacrolet
-	// shapeHandlerBind: (handler-bind ((condition-type handler)...) body...).
-	// Condition types are data; handlers and body are code.
-	shapeHandlerBind
-	// shapeCond: (cond (test body...)...).
-	shapeCond
-	// shapeDotimes: (dotimes (name count [result]) body...).  count sees
-	// the outer scope; result and body see name.
-	shapeDotimes
-	// shapeSetBang: (set! name expr).  name is assigned, expr is code.
-	shapeSetBang
-	// shapeFunction: (function name).  name is a reference, not a call.
-	shapeFunction
-	// shapeExpr: (expr pattern).  pattern is the body of a function whose
-	// formals are the %-placeholders it uses.
-	shapeExpr
-	// shapeWithCleanup: (with-cleanup (cleanup-form...) body...).
-	shapeWithCleanup
-	// shapeThread: (thread-first value step...) and thread-last.  Each step
-	// is a function call missing one argument; step heads must be regular
-	// functions and are never macro-expanded.
-	shapeThread
-	// shapeTest: (test name body...).  name is data.
-	shapeTest
-	// shapeBenchmark: (benchmark name (count) body...).  name is data and
-	// count is bound in body.
-	shapeBenchmark
-	// shapeData: every argument is unevaluated data (help,
-	// qualified-symbol).
-	shapeData
+	kindNone            formKind = iota
+	kindFunction                 // function
+	kindSetBang                  // set!
+	kindAssert                   // assert
+	kindQuote                    // quote
+	kindQuasiquote               // quasiquote
+	kindLambda                   // lambda
+	kindExpr                     // expr
+	kindThreadFirst              // thread-first
+	kindThreadLast               // thread-last
+	kindDotimes                  // dotimes
+	kindLabels                   // labels
+	kindMacrolet                 // macrolet
+	kindFlet                     // flet
+	kindLetSeq                   // let*
+	kindLet                      // let
+	kindProgn                    // progn
+	kindHandlerBind              // handler-bind
+	kindIgnoreErrors             // ignore-errors
+	kindWithCleanup              // with-cleanup
+	kindCond                     // cond
+	kindIf                       // if
+	kindWhen                     // when
+	kindUnless                   // unless
+	kindDefault                  // default
+	kindWhile                    // while
+	kindOr                       // or
+	kindAnd                      // and
+	kindHelp                     // help
+	kindTest                     // test
+	kindBenchmark                // benchmark
+	kindQualifiedSymbol          // qualified-symbol
+	kindDefun                    // defun
+	kindDefmacro                 // defmacro
 )
 
-// specialFormShapes maps the name of each builtin special operator (and the
-// two builtin definition macros walkers keep as written) to its shape.
-var specialFormShapes = map[string]formShape{
-	"function":         shapeFunction,
-	"set!":             shapeSetBang,
-	"assert":           shapeForms,
-	"quote":            shapeQuote,
-	"quasiquote":       shapeQuasiquote,
-	"lambda":           shapeLambda,
-	"expr":             shapeExpr,
-	"thread-first":     shapeThread,
-	"thread-last":      shapeThread,
-	"dotimes":          shapeDotimes,
-	"labels":           shapeLabels,
-	"macrolet":         shapeMacrolet,
-	"flet":             shapeFlet,
-	"let*":             shapeLetSeq,
-	"let":              shapeLet,
-	"progn":            shapeForms,
-	"handler-bind":     shapeHandlerBind,
-	"ignore-errors":    shapeForms,
-	"with-cleanup":     shapeWithCleanup,
-	"cond":             shapeCond,
-	"if":               shapeForms,
-	"when":             shapeForms,
-	"unless":           shapeForms,
-	"default":          shapeForms,
-	"while":            shapeForms,
-	"or":               shapeForms,
-	"and":              shapeForms,
-	"help":             shapeData,
-	"test":             shapeTest,
-	"benchmark":        shapeBenchmark,
-	"qualified-symbol": shapeData,
-
-	// Builtin macros whose expansion is not source.
-	"defun":    shapeDefun,
-	"defmacro": shapeDefun,
+// formKinds maps each builtin special form's name to its kind.
+var formKinds = map[string]formKind{
+	"function":         kindFunction,
+	"set!":             kindSetBang,
+	"assert":           kindAssert,
+	"quote":            kindQuote,
+	"quasiquote":       kindQuasiquote,
+	"lambda":           kindLambda,
+	"expr":             kindExpr,
+	"thread-first":     kindThreadFirst,
+	"thread-last":      kindThreadLast,
+	"dotimes":          kindDotimes,
+	"labels":           kindLabels,
+	"macrolet":         kindMacrolet,
+	"flet":             kindFlet,
+	"let*":             kindLetSeq,
+	"let":              kindLet,
+	"progn":            kindProgn,
+	"handler-bind":     kindHandlerBind,
+	"ignore-errors":    kindIgnoreErrors,
+	"with-cleanup":     kindWithCleanup,
+	"cond":             kindCond,
+	"if":               kindIf,
+	"when":             kindWhen,
+	"unless":           kindUnless,
+	"default":          kindDefault,
+	"while":            kindWhile,
+	"or":               kindOr,
+	"and":              kindAnd,
+	"help":             kindHelp,
+	"test":             kindTest,
+	"benchmark":        kindBenchmark,
+	"qualified-symbol": kindQualifiedSymbol,
+	"defun":            kindDefun,
+	"defmacro":         kindDefmacro,
 }
 
-// specialFormShape returns the shape of the builtin special operator (or
-// builtin definition macro) named name, unqualified, or shapeUnknown.
-func specialFormShape(name string) formShape {
-	return specialFormShapes[name]
+// specialFormKind returns the kind of the builtin special form named name,
+// unqualified, or kindNone.
+func specialFormKind(name string) formKind {
+	return formKinds[name]
+}
+
+// opensFunction reports whether the scope a form of kind k opens is a
+// function body -- code that may run later, from wherever the function is
+// called.  The body of a let, flet, dotimes, test or benchmark is a scope
+// but not a function (test and benchmark bodies are run by the test runner,
+// never by a handler).
+func (k formKind) opensFunction() bool {
+	switch k {
+	case kindLambda, kindExpr, kindDefun, kindDefmacro:
+		return true
+	case kindNone, kindFunction, kindSetBang, kindAssert, kindQuote, kindQuasiquote,
+		kindThreadFirst, kindThreadLast, kindDotimes, kindLabels, kindMacrolet, kindFlet,
+		kindLetSeq, kindLet, kindProgn, kindHandlerBind, kindIgnoreErrors, kindWithCleanup,
+		kindCond, kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd,
+		kindHelp, kindTest, kindBenchmark, kindQualifiedSymbol:
+		return false
+	}
+	return false
 }
 
 // defaultSpecialOpName is the static classifier CodeWalker uses when no
@@ -143,7 +138,7 @@ func defaultSpecialOpName(head *LVal) (string, bool) {
 	} else if strings.Contains(name, ":") {
 		return "", false
 	}
-	if _, ok := specialFormShapes[name]; ok {
+	if _, ok := formKinds[name]; ok {
 		return name, true
 	}
 	return "", false
@@ -503,15 +498,15 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 		}
 		return w.call(v, depth)
 	}
-	shape := specialFormShape(op)
-	if shape == shapeUnknown {
+	kind := specialFormKind(op)
+	if kind == kindNone {
 		w.visit(WalkNode{Event: WalkForm, Node: v, Op: op, Depth: depth})
 		return v
 	}
 	if !w.visit(WalkNode{Event: WalkForm, Node: v, Op: op, Depth: depth}) {
 		return v
 	}
-	return w.special(v, op, shape, depth)
+	return w.special(v, op, kind, depth)
 }
 
 // expansionFailed stops the walk with err, or, with KeepGoing, walks v
@@ -559,14 +554,12 @@ func (w *CodeWalker) data(v *LVal, depth int) {
 	}
 }
 
-func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LVal {
+func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal {
 	b := newRebuild(v)
 	cells := v.Cells
 	d := depth + 1
-	// The scopes special() opens are function bodies except dotimes,
-	// test and benchmark (whose bodies the test runner calls, never a
-	// handler).  let, flet and friends open their scopes in let and flet.
-	fn := shape == shapeLambda || shape == shapeDefun || shape == shapeExpr
+	// let, flet and friends open their scopes in let and flet.
+	fn := kind.opensFunction()
 	enter := func(node *LVal, macros bool) {
 		w.push(macros)
 		w.visit(WalkNode{Event: WalkEnter, Node: node, Op: op, Depth: depth, Function: fn})
@@ -575,22 +568,23 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 		w.visit(WalkNode{Event: WalkLeave, Node: node, Op: op, Depth: depth, Function: fn})
 		w.pop()
 	}
-	switch shape {
-	case shapeForms:
+	switch kind {
+	case kindAssert, kindProgn, kindIgnoreErrors, kindIf, kindWhen, kindUnless,
+		kindDefault, kindWhile, kindOr, kindAnd:
 		w.forms(b, 1, depth)
-	case shapeData:
+	case kindHelp, kindQualifiedSymbol:
 		for _, c := range cells[1:] {
 			w.data(c, d)
 		}
-	case shapeQuote:
+	case kindQuote:
 		for _, c := range cells[1:] {
 			w.data(c, d)
 		}
-	case shapeQuasiquote:
+	case kindQuasiquote:
 		for i := 1; i < len(cells); i++ {
 			b.set(i, w.template(cells[i], d))
 		}
-	case shapeFunction:
+	case kindFunction:
 		for _, c := range cells[1:] {
 			if c.Type == LSymbol {
 				w.visit(WalkNode{Event: WalkRef, Node: c, Depth: d, Bound: w.isBound(c)})
@@ -598,7 +592,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 				w.data(c, d)
 			}
 		}
-	case shapeSetBang:
+	case kindSetBang:
 		if len(cells) > 1 {
 			if cells[1].Type == LSymbol {
 				w.visit(WalkNode{Event: WalkSet, Node: cells[1], Depth: d, Bound: w.isBound(cells[1])})
@@ -607,14 +601,14 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			}
 			w.forms(b, 2, depth)
 		}
-	case shapeLambda:
+	case kindLambda:
 		if len(cells) > 1 {
 			enter(v, false)
 			w.formals(cells[1], op, d)
 			w.forms(b, 2, depth)
 			leave(v)
 		}
-	case shapeDefun:
+	case kindDefun, kindDefmacro:
 		if len(cells) > 1 {
 			if cells[1].Type == LSymbol {
 				w.visit(WalkNode{Event: WalkDefine, Node: cells[1], Op: op, Depth: d})
@@ -628,14 +622,14 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			w.forms(b, 3, depth)
 			leave(v)
 		}
-	case shapeTest:
+	case kindTest:
 		if len(cells) > 1 {
 			w.data(cells[1], d)
 			enter(v, false)
 			w.forms(b, 2, depth)
 			leave(v)
 		}
-	case shapeBenchmark:
+	case kindBenchmark:
 		if len(cells) > 2 {
 			w.data(cells[1], d)
 			enter(v, false)
@@ -647,15 +641,15 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 				w.data(c, d)
 			}
 		}
-	case shapeLet, shapeLetSeq:
+	case kindLet, kindLetSeq:
 		if len(cells) > 1 {
-			b.set(1, w.let(cells[1], v, op, shape == shapeLetSeq, d, func() { w.forms(b, 2, depth) }))
+			b.set(1, w.let(cells[1], v, op, kind == kindLetSeq, d, func() { w.forms(b, 2, depth) }))
 		}
-	case shapeFlet, shapeLabels, shapeMacrolet:
+	case kindFlet, kindLabels, kindMacrolet:
 		if len(cells) > 1 {
-			b.set(1, w.flet(cells[1], v, op, shape, d, func() { w.forms(b, 2, depth) }))
+			b.set(1, w.flet(cells[1], v, op, kind, d, func() { w.forms(b, 2, depth) }))
 		}
-	case shapeHandlerBind:
+	case kindHandlerBind:
 		if len(cells) > 1 {
 			b.set(1, w.pairs(cells[1], d, func(pb *rebuild, pair *LVal) {
 				if len(pair.Cells) > 0 {
@@ -665,7 +659,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			}))
 			w.forms(b, 2, depth)
 		}
-	case shapeCond:
+	case kindCond:
 		for i := 1; i < len(cells); i++ {
 			clause := cells[i]
 			// A clause is structure even when written [test body...],
@@ -683,7 +677,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			w.forms(cb, 1, d)
 			b.set(i, cb.done())
 		}
-	case shapeDotimes:
+	case kindDotimes:
 		if len(cells) > 1 {
 			ctrl := cells[1]
 			if ctrl.Type != LSExpr {
@@ -708,7 +702,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			leave(v)
 			b.set(1, cb.done())
 		}
-	case shapeExpr:
+	case kindExpr:
 		if len(cells) > 1 {
 			enter(v, false)
 			for _, name := range exprFormalNames(cells[1]) {
@@ -728,7 +722,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 				}
 			}
 		}
-	case shapeWithCleanup:
+	case kindWithCleanup:
 		if len(cells) > 1 {
 			cl := cells[1]
 			if cl.Type == LSExpr {
@@ -740,7 +734,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 			}
 			w.forms(b, 2, depth)
 		}
-	case shapeThread:
+	case kindThreadFirst, kindThreadLast:
 		if len(cells) > 1 {
 			b.set(1, w.form(cells[1], d))
 		}
@@ -757,7 +751,7 @@ func (w *CodeWalker) special(v *LVal, op string, shape formShape, depth int) *LV
 				b.set(i, w.form(step, d))
 			}
 		}
-	default: // shapeUnknown forms are opaque and never reach here
+	case kindNone: // opaque forms never reach here
 	}
 	return b.done()
 }
@@ -837,7 +831,7 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 }
 
 // flet walks a flet, labels or macrolet binding list and then the body.
-func (w *CodeWalker) flet(list, form *LVal, op string, shape formShape, depth int, body func()) *LVal {
+func (w *CodeWalker) flet(list, form *LVal, op string, kind formKind, depth int, body func()) *LVal {
 	enter := func(macros bool) {
 		w.push(macros)
 		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
@@ -848,7 +842,7 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape formShape, depth in
 	}
 	if list == nil || list.Type != LSExpr {
 		w.data(list, depth)
-		enter(shape == shapeMacrolet)
+		enter(kind == kindMacrolet)
 		body()
 		leave()
 		return list
@@ -869,7 +863,7 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape formShape, depth in
 		// Local macros are compiled before any is bound: they do not see
 		// each other.
 		macs := make([]localMacroExpander, len(list.Cells))
-		if shape == shapeMacrolet && w.env != nil && w.err == nil {
+		if kind == kindMacrolet && w.env != nil && w.err == nil {
 			menv := w.macroEnv()
 			for i, bind := range list.Cells {
 				if bind.Type == LSExpr && len(bind.Cells) >= 2 && bind.Cells[0].Type == LSymbol {
@@ -891,14 +885,13 @@ func (w *CodeWalker) flet(list, form *LVal, op string, shape formShape, depth in
 		}
 	}
 	var out *LVal
-	switch shape {
-	case shapeLabels:
+	if kind == kindLabels {
 		enter(false)
 		bindNames()
 		out = w.pairs(list, depth, fn)
-	default:
+	} else {
 		out = w.pairs(list, depth, fn)
-		enter(shape == shapeMacrolet)
+		enter(kind == kindMacrolet)
 		bindNames()
 	}
 	body()
@@ -1079,7 +1072,7 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 // registration gave them (FID and package), so an alias or a qualified
 // spelling resolves the same way.  Any other special operator -- one an
 // embedder registered, in any package -- is reported under its
-// package-qualified name, which has no shape, so the walker treats its
+// package-qualified name, which has no kind, so the walker treats its
 // form as opaque.
 func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
 	v := env.Get(head)
@@ -1090,12 +1083,12 @@ func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
 	switch v.FunType {
 	case LFunSpecialOp:
 		name := registeredName(v.FID(), "<special-op ``")
-		if lang && specialFormShape(name) != shapeUnknown {
+		if lang && specialFormKind(name) != kindNone {
 			return name, true
 		}
-		return v.Package() + ":" + name, true // no shape: opaque
+		return v.Package() + ":" + name, true // no kind: opaque
 	case LFunMacro:
-		if name := registeredName(v.FID(), "<builtin-macro ``"); lang && specialFormShape(name) == shapeDefun {
+		if name := registeredName(v.FID(), "<builtin-macro ``"); lang && (specialFormKind(name) == kindDefun || specialFormKind(name) == kindDefmacro) {
 			return name, true
 		}
 	default:
@@ -1103,7 +1096,7 @@ func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
 	return "", false
 }
 
-// registeredName extracts NAME from a registration FID "<kind ``NAME''>".
+// registeredName extracts NAME from a registration FID "<kind “NAME”>".
 func registeredName(fid, prefix string) string {
 	name, ok := strings.CutPrefix(fid, prefix)
 	if !ok {
