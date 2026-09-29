@@ -50,7 +50,7 @@ func TestCanonicalDecodeNoAllocAmplification(t *testing.T) {
 			// One array claiming a rank of nearly the whole input, each
 			// dimension a one-byte uvarint 1.
 			b := []byte{lisp.CanonicalVersion, 0x09}
-			b = binary.AppendUvarint(b, uint64((1<<20)-16)) //nolint:gosec // G115: positive constant
+			b = binary.AppendUvarint(b, uint64((1<<20)-16))
 			for len(b) < 1<<20 {
 				b = append(b, 0x01)
 			}
@@ -104,10 +104,10 @@ const codecAllocCeiling = 200
 func TestCanonicalDecodeAllocDenseValid(t *testing.T) {
 	intKeyMap := []byte{lisp.CanonicalVersion, 0x0a}
 	n := 100000
-	intKeyMap = binary.AppendUvarint(intKeyMap, uint64(n)) //nolint:gosec // G115: positive test size
+	intKeyMap = binary.AppendUvarint(intKeyMap, uint64(n))
 	for i := range n {
 		intKeyMap = append(intKeyMap, 0x01)
-		intKeyMap = binary.AppendUvarint(intKeyMap, uint64(2*i)) //nolint:gosec // G115: zigzag of a non-negative int
+		intKeyMap = binary.AppendUvarint(intKeyMap, uint64(2*i))
 		intKeyMap = append(intKeyMap, 0x08, 0x00)
 	}
 	for _, tc := range []struct {
