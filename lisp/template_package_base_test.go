@@ -12,13 +12,16 @@ import (
 )
 
 type packageBaseSnapshot struct {
+	bindings             []templateBinding
 	index                map[string]int
 	funNames, symbolDocs map[string]string
 	externals            []string
+	pending              int
 }
 
 func clonePackageBase(b *packageBase) packageBaseSnapshot {
 	return packageBaseSnapshot{
+		bindings: slices.Clone(b.bindings), pending: b.pending,
 		index: b.index.Copy(), funNames: b.funNames.Copy(),
 		symbolDocs: b.symbolDocs.Copy(), externals: b.externals.Copy(),
 	}

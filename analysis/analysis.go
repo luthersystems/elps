@@ -54,6 +54,12 @@ type Config struct {
 	// When set, the analyzer expands macro calls and analyzes the expanded
 	// code, resolving symbols introduced by the macro (e.g. lambda params).
 	// If expansion fails, the analyzer falls back to opaque macro handling.
+	//
+	// Top-level macro calls are expanded during prescan too, so definitions
+	// a macro generates are forward-referenceable, and each such definition
+	// records its macro call in Symbol.GeneratedBy (see
+	// Result.GeneratedDefinitions). With an expander, a def-prefixed call is
+	// expanded rather than guessed at by name; DefForms still take priority.
 	MacroExpander MacroExpander
 
 	// Filename is the source file being analyzed.
@@ -77,6 +83,9 @@ type ExternalSymbol struct {
 	Signature *Signature
 	Source    *token.Location
 	DocString string
+	// GeneratedBy records the macro call that produced this definition,
+	// when it came from Result.GeneratedDefinitions. Nil otherwise.
+	GeneratedBy *MacroOrigin
 }
 
 // Result holds the output of semantic analysis.
@@ -119,6 +128,8 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 			DocString: ext.DocString,
 			Exported:  true,
 			External:  true,
+
+			GeneratedBy: ext.GeneratedBy,
 		}
 		if ext.Package != "" {
 			root.DefineQualifiedOnly(sym)
