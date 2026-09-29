@@ -44,11 +44,106 @@ func lazyFixture(t *testing.T, opts ...TemplateOption) *Template {
 
 func lazyInstanceOf(vm *LEnv) *lazyInstance {
 	for _, pkg := range vm.Runtime.Registry.packages {
-		if pkg.lazy != nil {
+		if pkg.lazy.inst != nil {
 			return pkg.lazy.inst
 		}
 	}
 	return nil
+}
+
+// TestTemplateLazySlotStorage exercises the initial descriptor reads and both
+// ways to leave that state: filling/writing a slot, or thawing straight to a
+// symbol table. Shared-only packages never need a lazy-instance link.
+func TestTemplateLazySlotStorage(t *testing.T) {
+	for _, frozen := range []bool{false, true} {
+		for _, pending := range []bool{false, true} {
+			for _, action := range []string{"fill", "overwrite", "shared-write", "thaw"} {
+				t.Run("frozen="+strconv.FormatBool(frozen)+"/pending="+strconv.FormatBool(pending)+"/"+action, func(t *testing.T) {
+					source := templateOwnershipEnv()
+					pkg := source.Runtime.Package
+					pkg.Put(Symbol("shared"), Nil())
+					// A nil binding must not be mistaken for a pending value.
+					pkg.symbols["nil"] = nil
+					if pending {
+						pkg.Put(Symbol("private"), QExpr([]*LVal{Int(7)}))
+					}
+					var opts []TemplateOption
+					if frozen {
+						opts = append(opts, TemplateWithFrozenPackages("user"))
+					}
+					tmpl, err := NewTemplate(source, opts...)
+					if err != nil {
+						t.Fatal(err)
+					}
+					vm, err := tmpl.NewVM()
+					if err != nil {
+						t.Fatal(err)
+					}
+					pkg = vm.Runtime.Package
+					if pkg.baseValues != nil || (pkg.lazy.inst != nil) != pending || pkg.Frozen() != frozen {
+						t.Fatal("fresh package has unexpected storage, lazy link or frozen state")
+					}
+					if v, ok := pkg.Symbol("shared"); !ok || v != Nil() {
+						t.Fatalf("shared binding = %v, %v", v, ok)
+					}
+					if v, ok := pkg.Symbol("nil"); !ok || v != nil {
+						t.Fatalf("nil binding = %v, %v", v, ok)
+					}
+					if pkg.baseValues != nil {
+						t.Fatal("shared/nil read allocated private slot storage")
+					}
+					switch action {
+					case "fill":
+						if pending {
+							if v, _ := pkg.Symbol("private"); v.Cells[0].Int != 7 {
+								t.Fatalf("private binding = %v", v)
+							}
+						}
+					case "overwrite":
+						if pending {
+							pkg.Put(Symbol("private"), Int(9))
+						}
+					case "shared-write":
+						pkg.Put(Symbol("shared"), Int(9))
+					case "thaw":
+						pkg.Export("shared")
+						if pkg.baseValues != nil || pkg.base != nil {
+							t.Fatal("thaw allocated unnecessary slot storage or retained the base")
+						}
+					}
+					if action != "shared-write" {
+						if v, _ := pkg.Symbol("shared"); v != Nil() {
+							t.Fatal("privatization lost a shared binding")
+						}
+					}
+					if pending && (action == "fill" || action == "overwrite") && pkg.lazy != (lazyPackage{}) {
+						t.Fatal("settled embedded lazy state retained a VM or base")
+					}
+					if v, ok := pkg.Symbol("nil"); !ok || v != nil {
+						t.Fatal("privatization lost a nil binding")
+					}
+					// A second VM still reads the original immutable descriptors.
+					other, err := tmpl.NewVM()
+					if err != nil {
+						t.Fatal(err)
+					}
+					if v, _ := other.Runtime.Package.Symbol("shared"); v != Nil() {
+						t.Fatal("slot write changed the template or another VM")
+					}
+					if pending {
+						if v, _ := other.Runtime.Package.Symbol("private"); v.Cells[0].Int != 7 {
+							t.Fatal("fill/write changed another VM's pending binding")
+						}
+					}
+					pkg.symbolTable() // settles bindings carried across a thaw
+					if pkg.lazy != (lazyPackage{}) {
+						t.Fatal("fully materialized package retained its embedded lazy state")
+					}
+					checkPackageBases(tmpl.plan.packages)
+				})
+			}
+		}
+	}
 }
 
 func TestTemplateLazyIdentityAndSharing(t *testing.T) {
@@ -123,7 +218,7 @@ func TestTemplateLazyMaterializesOnlyWhatIsReached(t *testing.T) {
 		t.Fatalf("one slot materialized %d of %d values", inst.count, total)
 	}
 	lib.symbolTable()
-	if lib.lazy != nil {
+	if lib.lazy.inst != nil {
 		t.Fatal("a fully materialized package kept its lazy link")
 	}
 	eager, err := lazyFixture(t, TemplateWithEagerInstantiation()).NewVM()
@@ -163,7 +258,7 @@ func TestTemplateLazyThawKeepsPendingBindings(t *testing.T) {
 			t.Fatalf("%s leaked the pending marker", name)
 		}
 	}
-	if lib.lazy != nil {
+	if lib.lazy.inst != nil {
 		t.Fatal("thawed package kept its lazy link after materializing everything")
 	}
 }
@@ -236,7 +331,7 @@ func TestTemplateLazySlotWrite(t *testing.T) {
 		if inst.count != before {
 			t.Fatalf("%s: slot write materialized %d values", name, inst.count-before)
 		}
-		if pkg.lazy != nil && pkg.lazy.pending != pending-1 {
+		if pkg.lazy.inst != nil && pkg.lazy.pending != pending-1 {
 			t.Fatalf("%s: pending %d, want %d", name, pkg.lazy.pending, pending-1)
 		}
 		if v, _ := pkg.Symbol(sym); v.Int != -5 {

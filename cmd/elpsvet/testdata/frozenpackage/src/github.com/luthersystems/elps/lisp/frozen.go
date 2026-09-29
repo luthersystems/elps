@@ -16,6 +16,8 @@ type Package struct {
 }
 
 type packageBase struct {
+	bindings             []int
+	pending              int
 	index                map[string]int
 	funNames, symbolDocs map[string]string
 	externals            []string
@@ -50,13 +52,17 @@ func bad(p *Package, b *packageBase, e embedded) {
 	b.funNames = nil                                              // want "package table write outside the write gate"
 	b.symbolDocs = nil                                            // want "package table write outside the write gate"
 	b.fingerprint = 0                                             // want "package table write outside the write gate"
-	_ = &b.index                                                  // want "package table write outside the write gate"
-	p.base = nil                                                  // want "package table write outside the write gate"
-	p.baseValues[0] = 1                                           // want "package table write outside the write gate"
-	p.slotFunNames["f"] = "x"                                     // want "package table write outside the write gate"
-	*p = Package{}                                                // want "package table write outside the write gate"
-	*b = packageBase{}                                            // want "package table write outside the write gate"
-	e.externals = nil                                             // want "package table write outside the write gate"
+	b.bindings[0] = 0                                             // want "package table write outside the write gate"
+	b.pending = 0                                                 // want "package table write outside the write gate"
+	bindings := b.bindings
+	bindings[0] = 0           // want "package table write outside the write gate"
+	_ = &b.index              // want "package table write outside the write gate"
+	p.base = nil              // want "package table write outside the write gate"
+	p.baseValues[0] = 1       // want "package table write outside the write gate"
+	p.slotFunNames["f"] = "x" // want "package table write outside the write gate"
+	*p = Package{}            // want "package table write outside the write gate"
+	*b = packageBase{}        // want "package table write outside the write gate"
+	e.externals = nil         // want "package table write outside the write gate"
 	m := p.symbols
 	m["x"] = 3     // want "package table write outside the write gate"
 	delete(m, "x") // want "package table write outside the write gate"
@@ -100,6 +106,7 @@ func (templatePlan) instantiateEager(p *Package) { p.symbols = nil }
 func (templatePlan) instantiateLazy(p *Package)  { p.symbols = nil }
 func (p *Package) fillSymbol()                   { p.symbols["x"] = 1 }
 func (p *Package) fillBaseValue()                { p.baseValues[0] = 1 }
+func (p *Package) ensureBaseValues()             { p.baseValues = make([]int, 1) }
 
 type templateCompiler struct{}
 
