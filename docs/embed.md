@@ -347,6 +347,176 @@ library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
 
+### Toolkit for replacing Lisp with Go builtins
+
+A Go builtin that replaces a Lisp definition must behave exactly as the Lisp
+did: same results, same error conditions and messages, same writes and, for a
+host that meters steps, the same step count. Error text and steps are program
+output: a host that runs the same program on several machines (substrate's
+endorsing peers, for one) needs every machine to produce the same bytes. The
+helpers below make that the easy path (luthersystems/elps#745). None of them
+charges a step, so adopting one changes no step count.
+
+One return convention runs through them. A helper that only reports success
+or failure (`BindBuiltins`, `ExtendPackage`, `ArgReader.Err`, the step and
+context helpers) returns `lisp.Nil()` on success and the `LError` otherwise,
+like `ChargeSteps` and package loaders, so `lerr.Type == lisp.LError` is
+always the check and a loader can return the result directly. A helper that
+computes something (`CallBuiltin`, `CallGlobal`) returns the value or the
+`LError`.
+
+**Calling a language builtin: `lisp.BuiltinFunc` and `LEnv.CallBuiltin`.**
+Reuse a builtin for its exact errors and guards (sealed maps, `MaxAlloc`,
+typed keys) rather than copying its checks. Resolve the handle once, at
+package initialization, where a misspelled name panics at start-up:
+
+```go
+var builtinAssocMut = lisp.BuiltinFunc("assoc!")
+
+func builtinRemember(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return env.CallBuiltin(builtinAssocMut, args.Cells[0], lisp.String("seen"), lisp.True())
+}
+```
+
+`CallBuiltin` binds the arguments against the builtin's formals as a Lisp call
+does (arity and keyword errors included; the caller's slice is never
+written), checks the context like the evaluator's call boundary, evaluates a
+terminal expression the builtin returns (`funcall`, `apply`), and pushes no
+frame, so an error is attributed to your builtin.
+
+**Calling a Lisp function: `LEnv.CallGlobal`.** For a callee that exists
+only in Lisp, `env.CallGlobal("utils:set-exception-business", args...)`
+resolves the (qualified) name at call time, as a Lisp call site would, and
+calls it. The callee costs what its body evaluates; a Lisp call form would
+also charge the form and each argument expression.
+
+**Registering: `elpsutil.ExtendPackage` and `LEnv.BindBuiltins`.**
+`ExtendPackage(env, name)` enters a package with `in-package` semantics: it
+creates the package if needed, and a package it creates uses the language
+package. `BindBuiltins(lisp.BindOpts{Export: true, Shadow: true}, defs...)`
+then binds the builtins. `Shadow` lets a native rebind a name the package
+imports, as the `defun` it replaces did (a native `statedb:get` shadowing
+`lisp:get`); `AddBuiltins` refuses such a name by panicking. `BindBuiltins`
+checks every definition before binding any and returns an error rather than
+panicking.
+
+```go
+func LoadPackage(env *lisp.LEnv) *lisp.LVal {
+	if lerr := elpsutil.ExtendPackage(env, "statedb"); lerr.Type == lisp.LError {
+		return lerr
+	}
+	return env.BindBuiltins(lisp.BindOpts{Export: true, Shadow: true}, builtins...)
+}
+```
+
+`elpsutil.PackageLoader` packages do not use the language package; keep them
+as they are unless `in-package` semantics are what the package had.
+
+**Decoding arguments: `lisp.ReadArgs`.** An `ArgReader` decodes the
+argument list into Go values with the usual `"<what> is not a string: <type>"`
+messages. You pass the subject exactly as your hand-written `Errorf` spelled
+it, or a whole format to `Typed`, so the text stays byte-identical. The first
+failure wins, so check `Err` once at the end, reading arguments in the order
+the checks ran:
+
+```go
+a := lisp.ReadArgs(env, args)
+key := a.String(0, "first argument")
+m := a.Typed(1, lisp.LSortMap, "second argument is not a map: %s")
+limit := a.OptInt(2, "limit", 100) // &optional or &key; nil means the default
+if lerr := a.Err(); lerr.Type == lisp.LError {
+	return lerr
+}
+```
+
+It does not allocate unless a check fails. The reads are `Value`, `String`,
+`Typed`, `Opt`, `OptString` and `OptInt`. For a check that is not a type
+test, `a.Check(ok, format, args...)` records a failure (and reports whether
+the reader is still clean) and keeps the first failure, so a decoder of your
+own is ordinary Go:
+
+```go
+func dateArg(a *lisp.ArgReader, i int) cctime.Date {
+	s := a.Typed(i, lisp.LString, "argument is not a date: %v").Str
+	d, err := cctime.Parse(s)
+	a.Check(err == nil, "invalid date: %q", s)
+	return d
+}
+```
+
+**Typed builtins: `lisp.Func1` and `lisp.Func2`.** For a builtin of one or two
+arguments, list one decoder per formal, in order, and write the body against
+Go types. The decoders are the `ArgReader` reads above, so the check order and
+the messages are fixed at compile time and match the hand-written checks.
+Generics do this with no reflection and no allocation:
+
+```go
+var builtinRepeat = lisp.Func2(
+	lisp.StringArg("first argument"),                              // "first argument is not a string: <type>"
+	lisp.TypedArg(lisp.LInt, "second argument is not an int: %v"), // any other wording, verbatim
+	func(env *lisp.LEnv, s string, n *lisp.LVal) *lisp.LVal { /* ... */ })
+```
+
+Decoders: `ValueArg`, `TypedArg` and `StringArg`. A function like `dateArg`
+above is an `ArgDecoder` too. Beyond two arguments, or with `&rest`, use
+`ArgReader` directly: Go has no variadic type parameters, which is where
+generics stop. `string:split` and `string:repeat`
+are written this way.
+
+**Maps.** `env.MapRange(m, func(k lisp.MapKey, val *lisp.LVal) bool)` walks a
+sorted-map in its documented order (int keys by value, then string and symbol
+keys by spelling). Keys arrive by value, and for the interpreter's own map
+backings it allocates nothing in the steady state, unlike `MapKeys` and
+`MapEntries`, which build lists.
+Where `(keys m)` would fail (m not a map, or larger than `MaxAlloc`),
+`MapRange` returns that error with the same message and calls `fn` for
+nothing. It charges no step and makes no context check.
+
+**Steps and cancellation.** See "Charging steps from a Go builtin" below:
+`env.Step()`, `lisp.ChargeStartedKiB`, `lisp.ChargeRecord` and
+`env.CheckContext()`.
+
+**Keyword arguments that cost no steps: `lisp.FreeKeywords`.** Every argument
+of a call form is evaluated, and evaluating the keyword literal `:k` (which
+only returns `:k`) is one step. So `(f x :a 1 :b 2)` costs two steps more than
+a positional `(f x 1 2)`, which has pushed embedders into adding positional
+twins of keyword builtins. Register a new builtin as
+`lisp.FreeKeywords(def)` and the evaluator passes a keyword literal written
+at one of its key-name positions as itself, unevaluated and uncharged. The
+builtin receives the same value it would have received, so only the step
+count changes:
+
+```go
+env.AddBuiltins(true, lisp.FreeKeywords(elpsutil.FunctionDoc("open",
+	lisp.Formals("name", lisp.KeyArgSymbol, "order", "cache"), builtinOpen, "...")))
+// (open "t" :order 32 :cache 8) costs what (open "t" 32 8) would.
+```
+
+The rules are exact, so step counts stay deterministic:
+
+- Only bare, unquoted keyword literals (`:k`) in a direct call form, at
+  argument index r, r+2, ..., where r is the number of required formals, are
+  skipped. Values, keywords in required positions, a variable holding a
+  keyword, `':k`, and every argument of a call through `funcall` or `apply`
+  are evaluated and charged as always.
+- The flag lives on the function value, so every binding and copy of it, and
+  every template VM (lazy, eager, prewarmed), counts identically.
+- The formals must be required names, then `&key` and at least one key: no
+  `&optional` or `&rest`. `AddBuiltins` panics and `BindBuiltins` returns an
+  error otherwise.
+- Nothing else changes. A builtin without `FreeKeywords`, any Lisp function,
+  and every existing program count exactly the steps they counted before
+  (`TestKeywordStepsGolden` pins them against the counts measured before the
+  feature existed).
+- `FreeKeywords(def)` returns a wrapper, not `def`: a type assertion to your
+  definition's concrete type fails on it, and reflection that walks
+  definitions sees one more level (the wrapped definition is an embedded
+  field). `Name`, `Formals`, `Eval` and `Docstring` forward to `def`.
+- Wrapping an **existing** builtin with `FreeKeywords` changes the step count
+  of every program that calls it with keywords. For a host that meters steps,
+  that is a coordinated upgrade like any other step change. A new builtin can
+  adopt it freely.
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package
@@ -377,6 +547,41 @@ func TestMyPackage(t *testing.T) {
 (test "adds numbers"
   (assert= 3 (+ 1 2)))
 ```
+
+### Parity tests for a Lisp-to-Go migration
+
+`elpstest.ParityCheck` runs a native and the verbatim Lisp definition it
+replaces, each in a fresh environment, over fixed and seeded generated
+argument lists. It reports every difference in the result, the error
+condition and message, the step count, and the writes (an `Observe`
+expression evaluated after the call):
+
+```go
+elpstest.ParityCheck{
+	Runner:   &elpstest.Runner{LoaderFn: loadWithNatives}, // registers cc:incr-key
+	Legacy:   `(defun incr-key (m k n) (assoc! m k (+ (let ([x (get m k)]) (if (nil? x) 0 x)) n)))`,
+	LegacyFn: "incr-key",
+	NativeFn: "cc:incr-key",
+	Setup:    `(set 'm (sorted-map "a" 1))`,
+	Observe:  `m`,
+	Cases:    [][]string{{"m", `"a"`, "1"}, {"m", `"b"`, "2.5"}, {"3", `"a"`, "1"}},
+	Gen:      genIncrArgs, N: 200, Seed: 1,
+}.Run(t)
+```
+
+Arguments are Lisp source evaluated on each side, so each side gets its own
+fresh values. With `StepBudget` set, both sides run under that budget and must
+fail (or succeed) alike; step counts are not compared then, because a native
+that charges in bulk overshoots the budget where the Lisp stopped one step
+past it. `Diff` returns the differences without failing the test.
+
+`Extra` takes `elpstest.ParityCase` values for what source text cannot say:
+`GoArgs` builds Go-valued arguments per side (a map with a custom backing,
+say), `Setup` runs after the check's own, and `StepDelta` is the step
+difference a native is meant to have (negative when it charges less). For
+`Cases` and `Gen`, `StepDelta func(args []string) int64` does the same, so a
+native with an intended difference keeps its step check instead of setting
+`IgnoreSteps`.
 
 ## Working with lisp types
 
@@ -830,6 +1035,23 @@ Limits and choices worth knowing:
   call's own evaluation step covers the first KiB. An embedder's builtins may
   round differently. For example, luthersystems/substrate's storage builtins
   charge every started KiB, ceil(n/1024).
+
+Helpers for the common charges return `lisp.Nil()` to continue, or the
+`LError` to return unchanged, as `ChargeSteps` does; check a result with
+`lerr.Type == lisp.LError`. For n steps at once, call `env.ChargeSteps(n)`.
+They charge exactly what their names say, so replacing a hand-written
+`ChargeSteps` call with one changes no count:
+
+| Helper | Charge | Use |
+|--------|--------|-----|
+| `env.Step()` | 1 | once per element of a native loop that replaces a Lisp loop |
+| `lisp.ChargeStartedKiB(env, n)` | ceil(n/1024) | every started KiB (substrate's storage convention) |
+| `lisp.ChargeRecord(env, n)` | max(1, ceil(n/1024)) | per record handed to a reducer, empty records included |
+| `env.CheckContext()` | 0 | the evaluator's `context-cancelled` check, between charges |
+
+There is no public floor(n/1024) helper: the stdlib's is internal. Which
+convention a builtin uses is observable in its step counts, so keep the one
+the code you replace used.
 
 ### Shared step budgets
 

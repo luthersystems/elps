@@ -40,6 +40,20 @@ func builtinQualified(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return env.Get(lisp.Symbol("json:null"))
 }
 
+// CallGlobal resolves its name like env.Get: only a literal qualified name
+// is independent of the current package.
+func builtinCallGlobalUnqualified(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return env.CallGlobal("helper", args) // want `calls env.CallGlobal on a name that is not a literal qualified name`
+}
+
+func builtinCallGlobalComputed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return env.CallGlobal(args.Str) // want `calls env.CallGlobal on a name that is not a literal qualified name`
+}
+
+func builtinCallGlobalQualified(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return env.CallGlobal("utils:helper", args)
+}
+
 // Calling back a function value is fine: it runs in its own package.
 func builtinCallback(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return env.FunCall(args, lisp.Nil())

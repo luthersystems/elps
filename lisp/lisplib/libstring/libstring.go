@@ -90,27 +90,19 @@ var builtins = []*libutil.Builtin{
 		suffix is matched as a whole string, not as a set of characters.`),
 }
 
-func builtinLower(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	if str.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", str.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+var builtinLower = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, str string) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
-	return convertCase(env, str.Str, unicode.ToLower)
-}
+	return convertCase(env, str, unicode.ToLower)
+})
 
-func builtinUpper(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	if str.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", str.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+var builtinUpper = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, str string) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
-	return convertCase(env, str.Str, unicode.ToUpper)
-}
+	return convertCase(env, str, unicode.ToUpper)
+})
 
 // convertCase measures Unicode's mapped byte length before allocating. Input
 // length is insufficient: mappings can grow or shrink, and invalid UTF-8 is
@@ -147,22 +139,20 @@ func convertCase(env *lisp.LEnv, s string, mapping func(rune) rune) *lisp.LVal {
 	return lisp.String(out.String())
 }
 
-func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, sep := args.Cells[0], args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if sep.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", sep.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+// builtinSplit checks its arguments through typed decoders, with the
+// messages it always had: "first argument is not a string: <type>", then
+// "second argument is not a string: <type>".
+var builtinSplit = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), split)
+
+func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
 	var count int
-	if sep.Str == "" {
-		count = utf8.RuneCountInString(str.Str)
+	if sep == "" {
+		count = utf8.RuneCountInString(str)
 	} else {
-		count = strings.Count(str.Str, sep.Str)
+		count = strings.Count(str, sep)
 		// The extra final piece must fit before incrementing, including
 		// when the configured cap is the largest representable int.
 		if count >= env.Runtime.MaxAllocBytes() {
@@ -173,7 +163,7 @@ func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if msg := env.Runtime.CheckAlloc(count); msg != "" {
 		return env.Errorf("%s", msg)
 	}
-	slice := strings.Split(str.Str, sep.Str)
+	slice := strings.Split(str, sep)
 	cells := make([]*lisp.LVal, len(slice))
 	for i, s := range slice {
 		cells[i] = lisp.String(s)
@@ -181,14 +171,12 @@ func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.QExpr(cells)
 }
 
-func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	list, sep := args.Cells[0], args.Cells[1]
-	if list.Type != lisp.LSExpr {
-		return env.Errorf("first argument is not a list: %v", list.Type)
-	}
-	if sep.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", sep.Type)
-	}
+var builtinJoin = lisp.Func2(
+	lisp.TypedArg(lisp.LSExpr, "first argument is not a list: %v"),
+	lisp.StringArg("second argument"),
+	join)
+
+func join(env *lisp.LEnv, list *lisp.LVal, sep string) *lisp.LVal {
 	// Validate every element before sizing so invalid-input errors retain
 	// their precedence over allocation errors.
 	for _, cell := range list.Cells {
@@ -205,10 +193,10 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		size += len(cell.Str)
 	}
 	if len(list.Cells) > 1 {
-		if len(sep.Str) > (limit-size)/(len(list.Cells)-1) {
+		if len(sep) > (limit-size)/(len(list.Cells)-1) {
 			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
 		}
-		size += len(sep.Str) * (len(list.Cells) - 1)
+		size += len(sep) * (len(list.Cells) - 1)
 	}
 	if lerr := libutil.ChargeKiB(env, size); lerr != nil {
 		return lerr
@@ -218,151 +206,90 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	for i, cell := range list.Cells {
 		buf.WriteString(cell.Str)
 		if i < len(list.Cells)-1 {
-			buf.WriteString(sep.Str)
+			buf.WriteString(sep)
 		}
 	}
 	return lisp.String(buf.String())
 }
 
-func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	n := args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if n.Type != lisp.LInt {
-		return env.Errorf("second argument is not an int: %v", n.Type)
-	}
+// builtinRepeat checks its arguments through typed decoders, with the
+// messages it always had ("second argument is not an int", not "integer").
+var builtinRepeat = lisp.Func2(
+	lisp.StringArg("first argument"),
+	lisp.TypedArg(lisp.LInt, "second argument is not an int: %v"),
+	repeat)
+
+func repeat(env *lisp.LEnv, str string, n *lisp.LVal) *lisp.LVal {
 	if n.Int < 0 {
 		return env.Errorf("count is negative: %v", n.Int)
 	}
-	if n.Int == 0 || str.Str == "" {
+	if n.Int == 0 || str == "" {
 		return lisp.String("")
 	}
 	if n.Int == 1 {
 		// Reuse the immutable Go string without retaining the input LVal's
 		// quoting state: repeat always produces an ordinary string value.
-		return lisp.String(str.Str)
+		return lisp.String(str)
 	}
 	maxAlloc := env.Runtime.MaxAllocBytes()
 	// The source is nonempty; division checks the product without overflow.
-	if n.Int > maxAlloc/len(str.Str) {
+	if n.Int > maxAlloc/len(str) {
 		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
-	if lerr := libutil.ChargeKiB(env, n.Int*len(str.Str)); lerr != nil {
+	if lerr := libutil.ChargeKiB(env, n.Int*len(str)); lerr != nil {
 		return lerr
 	}
-	return lisp.String(strings.Repeat(str.Str, n.Int))
+	return lisp.String(strings.Repeat(str, n.Int))
 }
 
-func builtinTrimSpace(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+var builtinTrimSpace = lisp.Func1(lisp.StringArg("first argument"), func(env *lisp.LEnv, str string) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
-	return lisp.String(strings.TrimSpace(str.Str))
+	return lisp.String(strings.TrimSpace(str))
+})
+
+var (
+	builtinTrim      = stringPair(trimFunc(strings.Trim))
+	builtinTrimLeft  = stringPair(trimFunc(strings.TrimLeft))
+	builtinTrimRight = stringPair(trimFunc(strings.TrimRight))
+)
+
+// trimFunc is a trim builtin over a cutset, charged for the string's size.
+func trimFunc(trim func(s, cutset string) string) func(env *lisp.LEnv, str, cutset string) *lisp.LVal {
+	return func(env *lisp.LEnv, str, cutset string) *lisp.LVal {
+		if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
+			return lerr
+		}
+		return lisp.String(trim(str, cutset))
+	}
 }
 
-func builtinTrim(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	cutset := args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if cutset.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", cutset.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
-		return lerr
-	}
-	return lisp.String(strings.Trim(str.Str, cutset.Str))
+// stringPair is a (str, other) builtin taking two strings, reporting "first
+// argument is not a string: <type>" or "second argument ...".
+func stringPair(f func(env *lisp.LEnv, str, other string) *lisp.LVal) lisp.LBuiltin {
+	return lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), f)
 }
 
-func builtinTrimLeft(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	cutset := args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if cutset.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", cutset.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
-		return lerr
-	}
-	return lisp.String(strings.TrimLeft(str.Str, cutset.Str))
-}
-
-func builtinTrimRight(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	cutset := args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if cutset.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", cutset.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
-		return lerr
-	}
-	return lisp.String(strings.TrimRight(str.Str, cutset.Str))
-}
-
-// stringPair returns the two string arguments of a (str, other) builtin, or
-// the same argument-type error the other two-argument builtins report.
-func stringPair(env *lisp.LEnv, args *lisp.LVal) (str, other string, lerr *lisp.LVal) {
-	a, b := args.Cells[0], args.Cells[1]
-	if a.Type != lisp.LString {
-		return "", "", env.Errorf("first argument is not a string: %v", a.Type)
-	}
-	if b.Type != lisp.LString {
-		return "", "", env.Errorf("second argument is not a string: %v", b.Type)
-	}
-	return a.Str, b.Str, nil
-}
-
-func builtinHasPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, prefix, lerr := stringPair(env, args)
-	if lerr != nil {
-		return lerr
-	}
+var builtinHasPrefix = stringPair(func(env *lisp.LEnv, str, prefix string) *lisp.LVal {
 	return lisp.Bool(strings.HasPrefix(str, prefix))
-}
+})
 
-func builtinHasSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, suffix, lerr := stringPair(env, args)
-	if lerr != nil {
-		return lerr
-	}
+var builtinHasSuffix = stringPair(func(env *lisp.LEnv, str, suffix string) *lisp.LVal {
 	return lisp.Bool(strings.HasSuffix(str, suffix))
-}
+})
 
-func builtinContains(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, substr, lerr := stringPair(env, args)
-	if lerr != nil {
-		return lerr
-	}
+var builtinContains = stringPair(func(env *lisp.LEnv, str, substr string) *lisp.LVal {
 	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
 	return lisp.Bool(strings.Contains(str, substr))
-}
+})
 
-func builtinTrimPrefix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, prefix, lerr := stringPair(env, args)
-	if lerr != nil {
-		return lerr
-	}
+var builtinTrimPrefix = stringPair(func(env *lisp.LEnv, str, prefix string) *lisp.LVal {
 	return lisp.String(strings.TrimPrefix(str, prefix))
-}
+})
 
-func builtinTrimSuffix(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, suffix, lerr := stringPair(env, args)
-	if lerr != nil {
-		return lerr
-	}
+var builtinTrimSuffix = stringPair(func(env *lisp.LEnv, str, suffix string) *lisp.LVal {
 	return lisp.String(strings.TrimSuffix(str, suffix))
-}
+})

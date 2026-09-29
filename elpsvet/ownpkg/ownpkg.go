@@ -40,7 +40,8 @@
 //     SetPackageDoc, SetSymbolDoc, AddBuiltins, AddMacros, AddSpecialOps;
 //   - resolving or binding a symbol: Get, GetGlobal, GetFun, GetFunGlobal,
 //     Put, PutGlobal, PutGlobalFromLisp, Update -- unless the symbol is a
-//     literal qualified name, lisp.Symbol("pkg:name"), or a keyword.  A
+//     literal qualified name, lisp.Symbol("pkg:name"), or a keyword -- and
+//     CallGlobal, unless its name is a literal "pkg:name" string.  A
 //     symbol that arrives as an argument is exactly the hazard: a quoted
 //     name the caller passed resolves in the library, not in the caller.
 //
@@ -123,6 +124,23 @@ var symbolMethods = map[string]bool{
 	"PutGlobal":         true,
 	"PutGlobalFromLisp": true,
 	"Update":            true,
+}
+
+// nameMethods are the *lisp.LEnv methods whose first argument is a symbol
+// NAME, a string, resolved in the current package unless it is qualified.
+var nameMethods = map[string]bool{
+	"CallGlobal": true,
+}
+
+// qualifiedString reports whether expr is a string literal naming a
+// qualified symbol ("pkg:name") or a keyword.
+func qualifiedString(expr ast.Expr) bool {
+	lit, ok := ast.Unparen(expr).(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return false
+	}
+	value, err := strconv.Unquote(lit.Value)
+	return err == nil && strings.Contains(value, ":")
 }
 
 // Justified reports whether a comment's text is a suppression carrying a
@@ -289,6 +307,11 @@ func (r *runState) checkCall(call *ast.CallExpr, root string, rootAllowed bool) 
 				r.report(sel.Sel.Pos(), rootAllowed, "%s calls env.%s, which evaluates code in the current package", root, name)
 			case callMethods[name] != "":
 				r.report(sel.Sel.Pos(), rootAllowed, "%s calls env.%s, which %s", root, name, callMethods[name])
+			case nameMethods[name]:
+				if len(call.Args) > 0 && !qualifiedString(call.Args[0]) {
+					r.report(sel.Sel.Pos(), rootAllowed,
+						"%s calls env.%s on a name that is not a literal qualified name, so it resolves in the current package", root, name)
+				}
 			case symbolMethods[name]:
 				if len(call.Args) > 0 && !r.qualifiedLiteral(call.Args[0]) {
 					r.report(sel.Sel.Pos(), rootAllowed,
