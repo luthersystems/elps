@@ -265,15 +265,26 @@ func (e *canonEncoder) array(v *LVal, depth int) error {
 		return errors.New("canonical codec: malformed array")
 	}
 	dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
-	total := 1
+	// A zero dimension makes the array empty however large the others are
+	// (Array accepts that), so the product is checked for overflow only
+	// when no dimension is zero.
+	zero := false
 	for _, d := range dims {
 		if d == nil || d.Type != LInt || d.Int < 0 {
 			return errors.New("canonical codec: malformed array dimensions")
 		}
-		if d.Int != 0 && total > math.MaxInt/d.Int {
-			return errors.New("canonical codec: malformed array dimensions")
+		zero = zero || d.Int == 0
+	}
+	total := 1
+	if zero {
+		total = 0
+	} else {
+		for _, d := range dims {
+			if total > math.MaxInt/d.Int {
+				return errors.New("canonical codec: malformed array dimensions")
+			}
+			total *= d.Int
 		}
-		total *= d.Int
 	}
 	if total != len(cells) {
 		return errors.New("canonical codec: array contents do not match its dimensions")

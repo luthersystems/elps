@@ -269,3 +269,17 @@ func TestCanonicalLimits(t *testing.T) {
 	_, err = lisp.EncodeCanonical(vec(lisp.Int(1), lisp.Int(2), lisp.Int(3)), lisp.WithCodecMaxValues(3))
 	require.Error(t, err)
 }
+
+// An array with a zero dimension is empty however large its other
+// dimensions are; it must encode and round-trip (found by fuzzing).
+func TestCanonicalEmptyArrayHugeDims(t *testing.T) {
+	v := lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(1 << 40), lisp.Int(1 << 40), lisp.Int(0)}), nil)
+	require.Equal(t, lisp.LArray, v.Type, "%v", v)
+	b, err := lisp.EncodeCanonical(v)
+	require.NoError(t, err)
+	got, err := lisp.DecodeCanonical(b)
+	require.NoError(t, err)
+	again, err := lisp.EncodeCanonical(got)
+	require.NoError(t, err)
+	assert.Equal(t, b, again)
+}
