@@ -282,7 +282,7 @@ var specialOps = map[string]bool{
 	"funcall": true, "apply": true,
 	"debug-print":  true,
 	"assert-equal": true, "assert-nil": true, "assert-not-nil": true,
-	"test": true, "test-let": true,
+	"test": true, "test-let": true, "test-let*": true, "benchmark": true, "benchmark-simple": true,
 	"thread-first": true, "thread-last": true,
 	"function": true, "expr": true, "qualified-symbol": true, "help": true,
 	"macrolet": true, "assert": true,

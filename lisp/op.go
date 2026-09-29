@@ -203,6 +203,21 @@ var langSpecialOps = []*langBuiltin{
 		qualified name.  Functions have their signature and any docstring
 		rendered.  Other variables have their types and current values
 		printed.  The name is not evaluated.`},
+	{"test", Formals("name", VarArgSymbol, "exprs"), opTest,
+		`Defines a named test case. name must be a string. The body
+		expressions are wrapped in a lambda, written in the current package
+		like a defun body, and registered with the test suite for later
+		execution. Use the testing package's assert macros inside the body
+		to check conditions. Tests can only be defined while running tests:
+		outside a test runner there is no test suite and test signals an
+		error.`},
+	{"benchmark", Formals("name", "args", VarArgSymbol, "exprs"), opBenchmark,
+		`Defines a named benchmark. name must be a string. args is a
+		list containing a single symbol that receives the iteration
+		count. The body should use dotimes or similar to run the
+		benchmarked code count times. Prefer benchmark-simple for
+		simple cases. Like test, benchmark is only available while running
+		tests.`},
 	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol,
 		`Returns a quoted package-qualified symbol. If the symbol is
 		already qualified (contains a colon), returns it as-is. Otherwise
@@ -239,8 +254,9 @@ func DefaultSpecialOps() []LBuiltinDef {
 // instead of colliding with it (RegisterDefaultSpecialOp, and AddBuiltins,
 // AddMacros or AddSpecialOps into package lisp), so an embedding that
 // defined its own when before lisp had one keeps initializing unchanged.
-// help joined lisp from package help in issue #736.
-var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true, "help": true}
+// help, test and benchmark joined lisp from packages help and testing in
+// issue #736.
+var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true, "help": true, "test": true, "benchmark": true}
 
 func userSpecialOpNamed(name string) bool {
 	for _, op := range userSpecialOps {
@@ -255,8 +271,11 @@ func userSpecialOpNamed(name string) bool {
 // host registration, is lisp's own late special operator, which that
 // registration may replace (see lateSpecialOps).
 func replaceableLateOp(pkg *Package, name string, exist *LVal) bool {
-	return pkg.Name == DefaultLangPackage && lateSpecialOps[name] &&
-		exist.Type == LFun && exist.FunType == LFunSpecialOp && exist.Package() == DefaultLangPackage
+	if pkg.Name != DefaultLangPackage || exist.Type != LFun || exist.Package() != DefaultLangPackage {
+		return false
+	}
+	return (lateSpecialOps[name] && exist.FunType == LFunSpecialOp) ||
+		(lateMacros[name] && exist.FunType == LFunMacro)
 }
 
 func opFunction(env *LEnv, args *LVal) *LVal {

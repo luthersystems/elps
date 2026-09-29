@@ -15,6 +15,14 @@ const DefaultPackageName = "testing"
 
 const DefaultSuiteSymbol = "test-suite"
 
+// CoreForms are the test definition forms.  They are core lisp forms (issue
+// #736): a test body is code written in the caller's package, like a defun
+// body, so the forms that wrap one in a lambda belong to package lisp, where
+// they act in the caller's package.  LoadPackage re-exports each under
+// package testing as the very same function value, so (use-package 'testing)
+// and testing:test keep working and mean exactly lisp:test.
+var CoreForms = []string{"test", "benchmark", "test-let", "test-let*", "benchmark-simple"}
+
 // LoadPackage adds the testing package to env
 func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	prevPkg := env.Runtime.Package.Name
@@ -33,13 +41,80 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	suite := NewTestSuite()
 	//elpsvet:allow-native the per-VM test registry: publication rejects this mutable suite outright (TestSuite's doc; TestLoadLibraryTestingRegistryRejectsTemplate in lisp/lisplib/lisplib_test.go asserts the error), which is why LoadRuntimeLibrary omits this package and each VM loads its own
 	env.PutGlobal(lisp.Symbol(DefaultSuiteSymbol), lisp.Native(suite))
-	for _, fn := range suite.Ops() {
-		env.AddSpecialOps(true, fn)
+	if e := reexportCoreForms(env); !e.IsNil() {
+		return e
 	}
-	for _, fn := range suite.Macros() {
+	for _, fn := range assertMacros(suite) {
 		env.AddMacros(true, fn)
 	}
 	return lisp.Nil()
+}
+
+// reexportCoreForms binds each of CoreForms in the current package (testing)
+// to lisp's own function value and exports it.  The value keeps package lisp,
+// so testing:test is not a special operator defined outside lisp; it is
+// lisp:test under a second name.  A lisp package that lacks a form (an
+// embedding that assembled lisp by hand) gets lisp's default definition
+// registered here instead, which behaves the same.
+func reexportCoreForms(env *lisp.LEnv) *lisp.LVal {
+	lang := env.Runtime.Registry.Package(env.Runtime.Registry.Lang)
+	for _, form := range CoreForms {
+		if lang != nil {
+			if v := lang.Get(lisp.Symbol(form)); v.Type == lisp.LFun {
+				if e := env.PutGlobal(lisp.Symbol(form), v); e.Type == lisp.LError {
+					return e
+				}
+				env.Runtime.Package.Exports(form)
+				continue
+			}
+		}
+		def := coreDef(form)
+		if def == nil {
+			return env.Errorf("lisp defines no %s form", form)
+		}
+		if isCoreSpecialOp(form) {
+			env.AddSpecialOps(true, def)
+		} else {
+			env.AddMacros(true, def)
+		}
+	}
+	return lisp.Nil()
+}
+
+// coreDef returns lisp's default definition of a test form, or nil.
+func coreDef(name string) lisp.LBuiltinDef {
+	for _, def := range lisp.DefaultSpecialOps() {
+		if def.Name() == name {
+			return def
+		}
+	}
+	for _, def := range lisp.DefaultMacros() {
+		if def.Name() == name {
+			return def
+		}
+	}
+	return nil
+}
+
+func isCoreSpecialOp(name string) bool {
+	for _, def := range lisp.DefaultSpecialOps() {
+		if def.Name() == name {
+			return true
+		}
+	}
+	return false
+}
+
+// coreDefs returns lisp's default definitions of names, in order, skipping
+// any lisp does not define.
+func coreDefs(names ...string) []lisp.LBuiltinDef {
+	defs := make([]lisp.LBuiltinDef, 0, len(names))
+	for _, name := range names {
+		if def := coreDef(name); def != nil {
+			defs = append(defs, def)
+		}
+	}
+	return defs
 }
 
 // TestSuite is an ordered set of named tests.
@@ -167,20 +242,37 @@ func (s *TestSuite) Benchmark(i int) *Test {
 	return s.benchmarks[s.border[i]]
 }
 
-func (s *TestSuite) Macros() []*libutil.Builtin {
+// DefineTest registers fun, a function of no arguments, as the test named
+// name.  It is how lisp:test registers into the suite installed as
+// testing:test-suite.
+func (s *TestSuite) DefineTest(name string, fun *lisp.LVal) error {
+	return s.Add(&Test{Name: name, Fun: fun})
+}
+
+// DefineBenchmark registers fun, a function of one argument (the iteration
+// count), as the benchmark named name.  It is how lisp:benchmark registers
+// into the suite installed as testing:test-suite.
+func (s *TestSuite) DefineBenchmark(name string, fun *lisp.LVal) error {
+	return s.AddBenchmark(&Test{Name: name, Fun: fun})
+}
+
+// Macros returns the testing package's macros for an embedder that assembles
+// the package by hand: lisp's test-let, test-let* and benchmark-simple
+// (see CoreForms), then the assert macros.  Register them with AddMacros
+// next to the suite binding and Ops.  LoadPackage itself re-exports lisp's
+// forms by value rather than registering them anew.
+func (s *TestSuite) Macros() []lisp.LBuiltinDef {
+	defs := coreDefs("test-let", "test-let*", "benchmark-simple")
+	for _, fn := range assertMacros(s) {
+		defs = append(defs, fn)
+	}
+	return defs
+}
+
+// assertMacros are the macros package testing defines itself.  They only
+// build forms: their expansions are evaluated in the caller's package.
+func assertMacros(s *TestSuite) []*libutil.Builtin {
 	return []*libutil.Builtin{
-		libutil.FunctionDoc("test-let", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLet,
-			`Defines a named test with local let bindings. Expands to
-			(test name (let (bindings) exprs...)). The bindings use
-			parallel binding (let) semantics.`),
-		libutil.FunctionDoc("test-let*", lisp.Formals("name", "bindings", lisp.VarArgSymbol, "exprs"), s.MacroTestLetSeq,
-			`Defines a named test with local let* bindings. Like test-let
-			but uses sequential binding (let*) semantics, so later
-			bindings can reference earlier ones.`),
-		libutil.FunctionDoc("benchmark-simple", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.MacroBenchmarkSimple,
-			`Defines a simple benchmark that runs exprs repeatedly.
-			Expands to (benchmark name (count) (dotimes (_ count) exprs...)).
-			The iteration count is provided by the benchmark harness.`),
 		libutil.FunctionDoc("assert=", lisp.Formals("expect", "num"), s.MacroAssertNumEq,
 			`Asserts that two expressions evaluate to numerically equal
 			values. Both expect and num must evaluate to numbers (int or
@@ -205,49 +297,52 @@ func (s *TestSuite) Macros() []*libutil.Builtin {
 	}
 }
 
-// Ops returns registration operations that resolve testing:test-suite in the
-// calling environment. Embedders must install that binding as well as the ops;
-// the receiver is never used as a fallback registry.
-func (s *TestSuite) Ops() []*libutil.Builtin {
-	return []*libutil.Builtin{
-		libutil.FunctionDoc("test", lisp.Formals("name", lisp.VarArgSymbol, "exprs"), s.OpTest,
-			`Defines a named test case. name must be a string. The body
-			expressions are wrapped in a lambda and registered with the
-			test suite for later execution. Use assert macros inside
-			the body to check conditions.`),
-		libutil.FunctionDoc("benchmark", lisp.Formals("name", "args", lisp.VarArgSymbol, "exprs"), s.OpBenchmark,
-			`Defines a named benchmark. name must be a string. args is a
-			list containing a single symbol that receives the iteration
-			count. The body should use dotimes or similar to run the
-			benchmarked code count times. Prefer benchmark-simple for
-			simple cases.`),
-	}
+// Ops returns lisp's test and benchmark special operators, for an embedder
+// that assembles the testing package by hand.  They resolve
+// testing:test-suite in the calling environment; embedders must install that
+// binding as well as the ops.
+//
+// Deprecated: test and benchmark are core lisp forms since issue #736, and
+// every environment with package lisp already has them.  Hand assembly needs
+// only the suite binding and the assert macros; LoadPackage re-exports
+// lisp's forms under package testing instead of registering these.
+func (s *TestSuite) Ops() []lisp.LBuiltinDef {
+	return coreDefs("test", "benchmark")
 }
 
+// MacroTestLet expands test-let.
+//
+// Deprecated: test-let is lisp's since issue #736.
 func (s *TestSuite) MacroTestLet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return s.macroTestLet(env, args, "let")
+	return coreDef("test-let").Eval(env, args)
 }
 
+// MacroTestLetSeq expands test-let*.
+//
+// Deprecated: test-let* is lisp's since issue #736.
 func (s *TestSuite) MacroTestLetSeq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return s.macroTestLet(env, args, "let*")
+	return coreDef("test-let*").Eval(env, args)
 }
 
+// MacroBenchmarkSimple expands benchmark-simple.
+//
+// Deprecated: benchmark-simple is lisp's since issue #736.
 func (s *TestSuite) MacroBenchmarkSimple(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.Cells[0]
-	exprs := args.Cells[1:]
+	return coreDef("benchmark-simple").Eval(env, args)
+}
 
-	countsym := env.GenSym()
-	body := list(
-		lisp.Symbol("lisp:dotimes"),
-		list(lisp.Symbol("_"), countsym),
-	)
-	body.Cells = append(body.Cells, exprs...) //elps:mutates body is freshly built by list() above; the helper hides its freshness from the intraprocedural rule
-	return list(
-		lisp.Symbol("benchmark"),
-		name,
-		list(countsym),
-		body,
-	)
+// OpTest is lisp:test.
+//
+// Deprecated: test is lisp's since issue #736.
+func (s *TestSuite) OpTest(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return coreDef("test").Eval(env, args)
+}
+
+// OpBenchmark is lisp:benchmark.
+//
+// Deprecated: benchmark is lisp's since issue #736.
+func (s *TestSuite) OpBenchmark(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return coreDef("benchmark").Eval(env, args)
 }
 
 func (s *TestSuite) MacroAssertStringEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -392,94 +487,6 @@ func (s *TestSuite) MacroAssertNot(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			exprSym,
 		),
 	)
-}
-
-func (s *TestSuite) macroTestLet(env *lisp.LEnv, args *lisp.LVal, let string) *lisp.LVal {
-	name, binds, exprs := args.Cells[0], args.Cells[1], args.Cells[2:]
-	_, _, _ = name, binds, exprs
-	if name.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", name.Type)
-	}
-	if binds.Type != lisp.LSExpr {
-		return env.Errorf("second argument is not a list: %v", binds.Type)
-	}
-	for _, v := range binds.Cells {
-		if v.Type != lisp.LSExpr {
-			return env.Errorf("second argument is not a list of pairs: %v", v.Type)
-		}
-		if v.Len() != 2 {
-			return env.Errorf("second argument is not a list of pairs: length %d", v.Len())
-		}
-	}
-	letCells := make([]*lisp.LVal, 0, 2+len(exprs))
-	letCells = append(letCells, lisp.Symbol(env.Runtime.Registry.Lang+":"+let), binds)
-	letCells = append(letCells, exprs...)
-	letExpr := lisp.SExpr(letCells)
-	return lisp.SExpr([]*lisp.LVal{
-		lisp.Symbol(DefaultPackageName + ":test"),
-		name,
-		letExpr,
-	})
-}
-
-func (s *TestSuite) OpTest(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name, exprs := args.Cells[0], args.Cells[1:]
-	if name.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", name.Type)
-	}
-	// Register into the suite the CALLING environment holds, not the one
-	// captured in this method value. The lambda below closes
-	// over env, so the two have to agree or the fork files its own test,
-	// closed over its own environment, in the template's registry.
-	suite := EnvTestSuite(env)
-	if suite == nil {
-		return env.Errorf("testing:test-suite is not installed in the calling VM")
-	}
-	fun := env.Lambda(lisp.Nil(), exprs)
-	test := &Test{
-		Name: name.Str,
-		Fun:  fun,
-	}
-	err := suite.Add(test)
-	if err != nil {
-		return env.Error(err)
-	}
-	return lisp.Nil()
-}
-
-func (s *TestSuite) OpBenchmark(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name := args.Cells[0]
-	bargs := args.Cells[1]
-	exprs := args.Cells[2:]
-	if name.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", name.Type)
-	}
-	if bargs.Type != lisp.LSExpr {
-		return env.Errorf("second argument is not a list: %v", bargs.Type)
-	}
-	for _, barg := range bargs.Cells {
-		if barg.Type != lisp.LSymbol {
-			return env.Errorf("second argument is not a list of symbols: %v", barg.Type)
-		}
-	}
-	if bargs.Len() != 1 {
-		return env.Errorf("benchmark doesn't take one argument: %v", bargs.Len())
-	}
-	// See OpTest: the benchmark belongs to the calling environment's suite.
-	suite := EnvTestSuite(env)
-	if suite == nil {
-		return env.Errorf("testing:test-suite is not installed in the calling VM")
-	}
-	fun := env.Lambda(bargs, exprs)
-	test := &Test{
-		Name: name.Str,
-		Fun:  fun,
-	}
-	err := suite.AddBenchmark(test)
-	if err != nil {
-		return env.Error(err)
-	}
-	return lisp.Nil()
 }
 
 type Test struct {

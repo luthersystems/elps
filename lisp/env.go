@@ -2354,7 +2354,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	//     a lisp program can define is covered: lambda and the short lambda
 	//     form, defun, labels and flet (op.go), defmacro and macrolet
 	//     (macro.go), the partial-application helpers (builtins.go), and
-	//     testing:test / testing:benchmark (libtesting).  Lambda is also the
+	//     test and benchmark (testdefs.go).  Lambda is also the
 	//     ONLY constructor that stores an environment into a function value,
 	//     so it is the only one whose formals are ever Put into a scope.
 	//   - AddBuiltins, AddSpecialOps and AddMacros validate each definition's

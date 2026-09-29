@@ -82,6 +82,18 @@ var langMacros = []*langBuiltin{
 		set the documentation (concatenated; empty strings produce
 		paragraph breaks). Equivalent to (set 'name value docs...)
 		followed by (export 'name).`},
+	{"test-let", Formals("name", "bindings", VarArgSymbol, "exprs"), macroTestLet,
+		`Defines a named test with local let bindings. Expands to
+		(test name (let (bindings) exprs...)). The bindings use
+		parallel binding (let) semantics.`},
+	{"test-let*", Formals("name", "bindings", VarArgSymbol, "exprs"), macroTestLetSeq,
+		`Defines a named test with local let* bindings. Like test-let
+		but uses sequential binding (let*) semantics, so later
+		bindings can reference earlier ones.`},
+	{"benchmark-simple", Formals("name", VarArgSymbol, "exprs"), macroBenchmarkSimple,
+		`Defines a simple benchmark that runs exprs repeatedly.
+		Expands to (benchmark name (count) (dotimes (_ count) exprs...)).
+		The iteration count is provided by the benchmark harness.`},
 }
 
 // RegisterDefaultMacro adds the given function to the list returned by
@@ -93,15 +105,35 @@ func RegisterDefaultMacro(name string, formals *LVal, fn LBuiltin) {
 // DefaultMacros returns the default set of LBuiltinDef added to LEnv objects
 // when LEnv.AddMacros is called without arguments.
 func DefaultMacros() []LBuiltinDef {
-	ops := make([]LBuiltinDef, len(langMacros)+len(userMacros))
+	ops := make([]LBuiltinDef, 0, len(langMacros)+len(userMacros))
 	for i := range langMacros {
-		ops[i] = langMacros[i]
+		// A host that registered its own macro under a name lisp gained
+		// later keeps it; see lateMacros.
+		if lateMacros[langMacros[i].Name()] && userMacroNamed(langMacros[i].Name()) {
+			continue
+		}
+		ops = append(ops, langMacros[i])
 	}
-	offset := len(langMacros)
 	for i := range userMacros {
-		ops[offset+i] = userMacros[i]
+		ops = append(ops, userMacros[i])
 	}
 	return ops
+}
+
+// lateMacros names the macros added to package lisp after hosts had long been
+// free to register their own under the same names: the test definition forms,
+// which moved into lisp from package testing (issue #736).  They follow
+// lateSpecialOps' rule: a host registration under one of these names replaces
+// lisp's macro instead of colliding with it.
+var lateMacros = map[string]bool{"test-let": true, "test-let*": true, "benchmark-simple": true}
+
+func userMacroNamed(name string) bool {
+	for _, m := range userMacros {
+		if m.Name() == name {
+			return true
+		}
+	}
+	return false
 }
 
 func macroDefmacro(env *LEnv, args *LVal) *LVal {

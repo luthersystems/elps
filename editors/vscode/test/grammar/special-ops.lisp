@@ -77,3 +77,7 @@
 (test-let ((x 1))
 ;^^^^^^^^ keyword.control.elps
   (assert= x 1))
+
+(benchmark "my benchmark" (n)
+;^^^^^^^^^ keyword.control.elps
+  (dotimes (i n) (+ 1 1)))
