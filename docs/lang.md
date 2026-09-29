@@ -2601,7 +2601,9 @@ change.
    ones. Within one form, bindings are tried in the order written and the
    first match wins, so put `condition` last.
 3. **Handler arguments.** A handler receives the condition symbol followed by
-   copies of the `error` data arguments, unevaluated. Mutating those copies
+   copies of the values passed to `error`. `error` evaluates its arguments
+   like any function; the handler receives the resulting values and does not
+   evaluate them again. Mutating those copies
    never changes the error, so `rethrow` always re-raises the original data.
 4. **Handler errors escape.** An error raised by a handler is not caught by the
    same `handler-bind`, only by an enclosing one.
