@@ -1,0 +1,5 @@
+[{"name":"time","symbols":[
+ {"name":"now","kind":"function","formals":{"required":[]}},
+ {"name":"sleep","kind":"function","formals":{"required":["d"]}},
+ {"name":"parse","kind":"function","formals":{"required":["s"],"optional":["layout"]}}]},
+ {"name":"gone","symbols":[]}]

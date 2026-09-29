@@ -1,0 +1,50 @@
+# Reviewed overrides for the API break gate (scripts/api-break-gate.sh,
+# cmd/apibreak, issue #761).
+#
+# WHAT THIS IS FOR
+# ----------------
+# The gate fails a PR that removes or incompatibly changes elps's public API
+# against the PR's base: the Go API of every non-internal package (apidiff),
+# and the Lisp surface `elps doc --json -l` reports (packages, exported
+# symbols, their kind and formals).  Additions never fail.  Substrate is the
+# consumer; an unreviewed break surfaces only at its next elps bump.
+#
+# When a break is INTENDED, it is recorded here, one line per break, and
+# justified in the PR description.  The gate prints the exact line to add.
+# Same rules as scripts/benchstat-waivers.txt:
+#
+#   * Every entry names a tracking issue, an expiry and a reason, and the gate
+#     REFUSES TO RUN (exit 2) on any malformed entry.  A malformed file is
+#     never read as an empty one.
+#   * Past its expiry an entry STOPS WAIVING, so a break still in flight has
+#     to be re-decided rather than inherited.
+#   * A waived break is still reported (WAIVED) in the job log.
+#
+# LIFETIME: once the PR merges, base equals head and the entry matches nothing
+# (reported `override-unmatched`, not a failure).  Keep it until the next
+# release: release notes list every entry added since the last tag
+# (`make release-notes`, and the release workflow).  Set the expiry just after
+# the next expected release, and delete entries after that release ships.
+#
+# FORMAT
+# ------
+# One override per line, five `|`-separated fields.  Blank lines and lines
+# whose first non-blank character is `#` are comments.
+#
+#   surface | symbol | expires | issue | reason
+#
+#   surface  `go` or `lisp`.
+#   symbol   EXACTLY the key the gate printed: `lisp.QSymbol`,
+#            `lisp.(*LEnv).Foo` (go; package path relative to the module), or
+#            `time:sleep` / `time:*` for a removed package (lisp).
+#   expires  YYYY-MM-DD.
+#   issue    One or more tracking references, space separated: `elps#412`,
+#            `#412`, `luthersystems/substrate#392` or a GitHub issue/PR URL.
+#            Name the consumer migration (for substrate, the PR that adopts
+#            the break) here or in the reason.
+#   reason   Free text (no `|`), at least 10 characters: why the break is
+#            intended and how consumers migrate.
+#
+# ---------------------------------------------------------------------------
+# surface | symbol | expires | issue | reason
+# ---------------------------------------------------------------------------
