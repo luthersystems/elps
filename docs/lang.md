@@ -535,6 +535,45 @@ The macroexpand-1 function is just like macroexpand except it will not
 recursively expand macros when the result of the argument macro form is itself
 a macro form.
 
+`macroexpand` only expands the head of a form. `macroexpand-all` expands every
+macro call in the form, the way the evaluator would meet them: the head until
+it is no longer a macro, then each nested form in code position.
+
+```lisp
+(defmacro swap! (a b)
+  (let ((tmp (gensym)))
+    (quasiquote (let (((unquote tmp) (unquote a)))
+                  (set! (unquote a) (unquote b))
+                  (set! (unquote b) (unquote tmp))))))
+(defmacro unless-nil (x &rest body)
+  (quasiquote (if (nil? (unquote x)) () (progn (unquote-splicing body)))))
+
+(macroexpand '(unless-nil p (swap! a b)))
+; '(if (nil? p) () (progn (swap! a b)))           -- inner call untouched
+(macroexpand-all '(unless-nil p (swap! a b)))
+; '(if (nil? p) () (progn (let ((gen00000001 a)) (set! a b) (set! b gen00000001))))
+```
+
+`macroexpand-all` knows the syntax of every special form, so it only expands
+code:
+
+- Quoted data is never entered: `(quote (swap! a b))`, `'(swap! a b)`,
+  condition types in `handler-bind`, and the parts of a `quasiquote` template
+  outside `unquote` / `unquote-splicing`.
+- A local binding of a macro's name hides the macro in its scope, exactly as
+  at run time: `(flet ((swap! (x y) (list y x))) (swap! 1 2))` is a function
+  call and stays one. The same holds for `let`, `let*`, `labels`, `lambda`
+  parameters and `dotimes` variables.
+- `macrolet` macros are expanded inside their body. They are built as
+  `macrolet` builds them, so a local macro whose expansion reads a runtime
+  local variable cannot be expanded ahead of time and signals an error.
+- `defun` and `defmacro` are kept as written with their bodies expanded;
+  their own expansion embeds a compiled function rather than source.
+
+The input form is never modified. The result evaluates to the same value as
+the input. Like `macroexpand`, it runs macros (which may call `gensym`), so it
+is meant for load time, tooling and debugging, not for hot paths.
+
 The `gensym` builtin is used to generate a new symbol, which is most often used
 with macros to avoid naming collisions. The symbol is named `gen` followed by
 at least eight digits taken from a counter that belongs to the runtime, so
@@ -2876,7 +2915,9 @@ exceeded` error.
 
 `macroexpand-1` performs at most one outer expansion. `macroexpand` continues
 while the outer result is another macro call; it does not recursively expand
-every nested subexpression. Each actual expansion in its loop consumes one
+every nested subexpression. `macroexpand-all` does; the successive-expansion
+limit applies to each form's head chain, and its nesting is bounded by the
+evaluator's nesting limit. Each actual expansion in its loop consumes one
 step, including a Go-defined macro whose body does not call the evaluator.
 A non-macro input adds no expansion step; `macroexpand-1` and direct Go
 `MacroCall` retain their ordinary one-call accounting.

@@ -798,7 +798,7 @@ var AnalyzerRethrowContext = &Analyzer{
 	Severity: SeverityError,
 	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
-		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
+		walkRethrowContext(pass, func(sexpr *lisp.LVal) {
 			src := SourceOf(sexpr)
 			name := HeadSymbol(sexpr)
 			pass.Report(Diagnostic{
@@ -812,53 +812,103 @@ var AnalyzerRethrowContext = &Analyzer{
 	},
 }
 
-// walkRethrowContext recursively walks the AST, tracking how many
-// handler-bind forms are in scope. When it finds a (rethrow) or
-// (error-stack) call with handlerDepth == 0, it calls report.
-func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
-	for _, expr := range exprs {
-		walkRethrowNode(expr, handlerDepth, false, report)
-	}
-}
-
-// rethrowFunctionForms are the forms whose body may run later, from inside a
-// handler that calls the function.  error-stack in such a body is not
-// reported: a logging helper a handler calls is the common way to use it,
-// and whether it runs under a handler is only known at run time.  rethrow
-// keeps its historical, stricter rule.
-var rethrowFunctionForms = map[string]bool{
-	"defun": true, "lambda": true, "defmacro": true, "flet": true, "labels": true,
-}
-
-func walkRethrowNode(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
-	if node == nil {
-		return
-	}
-	if node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
-		for _, child := range node.Cells {
-			walkRethrowNode(child, handlerDepth, inFunction, report)
+// walkRethrowContext walks each top-level form as code with the shared code
+// walker (astutil.ExpandAll), tracking how many handler-bind forms and
+// function bodies enclose each call.  When it finds a (rethrow) or
+// (error-stack) call outside every handler-bind, it calls report.
+//
+// The code walker knows each special form's shape, so quoted data and
+// quasiquote templates are not searched, and a local function or variable
+// named rethrow is not the builtin.  When semantic analysis ran with a macro
+// expander, the whole form is expanded first, including macros nested in
+// the arguments of other calls, so a user macro that expands to handler-bind
+// is a handler-bind.  Calls a macro synthesizes carry no location in this
+// file and are not reported against it; they are reported when the macro's
+// own file is linted.
+func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
+	var exp astutil.MacroExpander
+	pkg := lisp.DefaultUserPackage
+	if pass.Semantics != nil {
+		if pass.Semantics.MacroExpander != nil {
+			exp = pass.Semantics.MacroExpander
 		}
-		return
-	}
-
-	head := HeadSymbol(node)
-
-	if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
-		report(node)
-		return
-	}
-
-	if head == "handler-bind" {
-		// Walk the bindings (first arg) and body forms with incremented depth.
-		for _, child := range node.Cells[1:] {
-			walkRethrowNode(child, handlerDepth+1, inFunction, report)
+		if pass.Semantics.DefaultPackage != "" {
+			pkg = pass.Semantics.DefaultPackage
 		}
-		return
 	}
-
-	inFunction = inFunction || rethrowFunctionForms[head]
-	for _, child := range node.Cells {
-		walkRethrowNode(child, handlerDepth, inFunction, report)
+	passFile := analysis.NormalizePath(pass.Filename)
+	for _, expr := range pass.Exprs {
+		if HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
+			if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {
+				pkg = name
+			}
+		}
+		// context is a stack of the enclosing handler-bind forms (true)
+		// and function bodies (false), each with the depth it was entered
+		// at; an event at that depth or shallower has left it.
+		type frame struct {
+			depth   int
+			handler bool
+		}
+		var stack []frame
+		pop := func(depth int) {
+			for len(stack) > 0 && stack[len(stack)-1].depth >= depth {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		var form *lisp.LVal // the call whose head is being reported
+		astutil.ExpandAll(expr, exp, pkg, func(n *lisp.WalkNode) bool {
+			switch n.Event {
+			case lisp.WalkEnter:
+				// A scope's contents are deeper than its Enter event.
+				pop(n.Depth + 1)
+				if n.Function {
+					stack = append(stack, frame{depth: n.Depth})
+				}
+				return true
+			case lisp.WalkLeave:
+				pop(n.Depth)
+				return true
+			case lisp.WalkForm:
+				pop(n.Depth)
+				form = n.Node
+				if n.Op == "handler-bind" {
+					stack = append(stack, frame{depth: n.Depth, handler: true})
+				}
+				return true
+			case lisp.WalkRef:
+				pop(n.Depth)
+			default:
+				pop(n.Depth)
+				return true
+			}
+			if !n.Head || n.Bound || form == nil {
+				return true
+			}
+			name := strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")
+			if name != "rethrow" && name != "error-stack" {
+				return true
+			}
+			inHandler, inFunction := false, false
+			for _, f := range stack {
+				if f.handler {
+					inHandler = true
+				} else {
+					inFunction = true
+				}
+			}
+			if inHandler || (name == "error-stack" && inFunction) {
+				return true
+			}
+			// Only calls written in this file: a call a macro synthesized
+			// has no location, or one in the macro's own file.
+			src, ok := form.Source()
+			if !ok || analysis.NormalizePath(src.File) != passFile {
+				return true
+			}
+			report(form)
+			return true
+		})
 	}
 }
 
