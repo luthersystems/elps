@@ -353,7 +353,7 @@ in the language reference).
 ```
 
 The check runs on fully expanded code, with the macro expander when semantic
-analysis has one, and uses free-variable analysis (`astutil.Scope.Captured`)
+analysis has one, and uses free-variable analysis (`astutil.Scope.Free`)
 to decide what a closure captures, so a parameter or inner `let` that shadows
 the variable is not reported. A closure counts as stored only when it is the
 direct argument of `set`, `set!`, `append!`, `append`, `assoc!`, `assoc`,

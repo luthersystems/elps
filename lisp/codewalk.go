@@ -241,6 +241,10 @@ type WalkNode struct {
 	// The body of a let, flet, dotimes, test or benchmark is a scope but
 	// not a function.
 	Function bool
+	// Keyword marks a WalkBind of a parameter after &key: its name is
+	// also the keyword callers pass, so renaming it changes the
+	// function's interface.
+	Keyword bool
 	// Event is the kind of event.
 	Event WalkEvent
 }
@@ -308,6 +312,8 @@ type CodeWalker struct {
 	// stopping the walk.  Tools that must see all of a file (lint) set
 	// it; macroexpand-all does not.
 	KeepGoing bool
+
+	keyword bool // the formal being bound follows &key
 }
 
 type walkScope struct {
@@ -400,7 +406,7 @@ func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac LocalMacroEx
 		return name
 	}
 	w.bind(name, mac)
-	return w.emit(WalkNode{Event: WalkBind, Node: name, Op: op, Shape: SpecialFormShape(op), Depth: depth})
+	return w.emit(WalkNode{Event: WalkBind, Node: name, Op: op, Shape: SpecialFormShape(op), Depth: depth, Keyword: w.keyword})
 }
 
 // emit visits a WalkRef, WalkSet or WalkBind event and returns the node to
@@ -408,7 +414,8 @@ func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac LocalMacroEx
 func (w *CodeWalker) emit(n WalkNode) *LVal {
 	w.visit(n)
 	if w.Replace != nil {
-		if r := w.Replace(&n); r != nil {
+		w.scratch = n // no per-event allocation
+		if r := w.Replace(&w.scratch); r != nil {
 			return r
 		}
 	}
@@ -752,15 +759,22 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 		return formals
 	}
 	fb := newRebuild(formals)
+	key := false
 	for i, f := range formals.Cells {
 		if f.Type != LSymbol {
 			continue
 		}
 		switch f.Str {
-		case OptArgSymbol, VarArgSymbol, KeyArgSymbol:
+		case KeyArgSymbol:
+			key = true
+			continue
+		case OptArgSymbol, VarArgSymbol:
+			key = false
 			continue
 		}
+		w.keyword = key
 		fb.set(i, w.emitBind(f, op, depth, nil))
+		w.keyword = false
 	}
 	return fb.done()
 }

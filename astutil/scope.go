@@ -46,6 +46,11 @@ type Binding struct {
 	// Synthetic marks a binding with no binding occurrence in the source
 	// (expr placeholders); it cannot be renamed.
 	Synthetic bool
+	// Op is the form that binds it ("let", "lambda", "macrolet", ...).
+	Op string
+	// Keyword marks a parameter after &key, whose name callers pass as a
+	// keyword; renaming it would change the function's interface.
+	Keyword bool
 
 	index int // event index of the binding
 }
@@ -91,6 +96,7 @@ func AnalyzeScopes(form *lisp.LVal) *Scopes {
 	sc := &Scopes{Root: &Scope{}}
 	stack := []*Scope{sc.Root}
 	type formMark struct {
+		op    string
 		node  *lisp.LVal
 		index int
 		depth int
@@ -121,7 +127,7 @@ func AnalyzeScopes(form *lisp.LVal) *Scopes {
 			}
 			stack = stack[:len(stack)-1]
 		case lisp.WalkBind:
-			b := &Binding{Name: n.Node, Scope: top, index: i}
+			b := &Binding{Name: n.Node, Scope: top, Op: n.Op, Keyword: n.Keyword, index: i}
 			_, hasSource := n.Node.Source()
 			b.Synthetic = n.Op == "expr" && !hasSource
 			top.Bindings = append(top.Bindings, b)
@@ -135,7 +141,7 @@ func AnalyzeScopes(form *lisp.LVal) *Scopes {
 			top.Refs = append(top.Refs, r)
 			sc.Refs = append(sc.Refs, r)
 		case lisp.WalkForm:
-			forms = append(forms, formMark{node: n.Node, index: i, depth: n.Depth, scope: top})
+			forms = append(forms, formMark{node: n.Node, op: n.Op, index: i, depth: n.Depth, scope: top})
 		default:
 		}
 		return true
@@ -153,7 +159,7 @@ func AnalyzeScopes(form *lisp.LVal) *Scopes {
 			}
 		}
 		sc.points = append(sc.points, pointEvent{node: f.node, start: f.index, end: end, scope: f.scope})
-		if HeadSymbol(f.node) == "while" || HeadSymbol(f.node) == "lisp:while" {
+		if f.op == "while" {
 			sc.loops = append(sc.loops, loop{start: f.index, end: end})
 		}
 	}
@@ -341,7 +347,15 @@ func (sc *Scopes) liveAfter(b *Binding, p pointEvent) bool {
 	return false
 }
 
-// FreshNames maps every renamable binding in the analyzed form to a name
+// renamable reports whether Rename can rename b: not an expr placeholder
+// (no source occurrence), not an &key parameter (its name is the keyword
+// callers pass) and not a macrolet name (calls to local macros are opaque
+// to an unexpanded walk, so their uses cannot be found).
+func (b *Binding) renamable() bool {
+	return !b.Synthetic && !b.Keyword && b.Op != "macrolet"
+}
+
+// FreshNames maps every renamable binding (see Rename) in the analyzed form to a name
 // made of prefix and a counter (prefix1, prefix2, ...) that occurs nowhere
 // in form, for a hygienic Rename that makes every local distinct.
 func (sc *Scopes) FreshNames(form *lisp.LVal, prefix string) map[*Binding]string {
@@ -362,7 +376,7 @@ func (sc *Scopes) FreshNames(form *lisp.LVal, prefix string) map[*Binding]string
 	out := make(map[*Binding]string)
 	n := 0
 	for _, b := range sc.Bindings {
-		if b.Synthetic {
+		if !b.renamable() {
 			continue
 		}
 		for {
@@ -383,13 +397,13 @@ func (sc *Scopes) FreshNames(form *lisp.LVal, prefix string) map[*Binding]string
 // the form denotes -- a renamed binding capturing another reference, or
 // another binding capturing a renamed reference -- Rename returns an error
 // and no form.  form is not modified; renamed symbols keep their source
-// locations.  A synthesized binding (an expr placeholder) cannot be
-// renamed.
+// locations.  An expr placeholder, an &key parameter or a macrolet name
+// cannot be renamed.
 func (sc *Scopes) Rename(form *lisp.LVal, names map[*Binding]string) (*lisp.LVal, error) {
 	byIndex := make(map[int]string)
 	for b, name := range names {
-		if b.Synthetic {
-			return nil, fmt.Errorf("cannot rename %s: it is bound implicitly by expr", b.Name.Str)
+		if !b.renamable() {
+			return nil, fmt.Errorf("cannot rename %s: an expr placeholder, &key parameter or macrolet name", b.Name.Str)
 		}
 		byIndex[b.index] = name
 		for _, r := range b.Refs {

@@ -78,3 +78,29 @@ func TestFindCalls(t *testing.T) {
 	assert.False(t, ContainsCall(form, "absent"))
 	assert.False(t, ContainsCall(parseOne(t, `'(emit 1)`), "emit"))
 }
+
+// Structure inside an unquote hole is syntax, not template data.
+func TestNodeRolesInsideHole(t *testing.T) {
+	form := parseOne(t, `(quasiquote (a (unquote (let ((x (car))) (lambda (y) x)))))`)
+	r := ClassifyNodes(form)
+	let := form.Cells[1].Cells[1].Cells[1]
+	assert.Equal(t, RoleCode, r.Role(let))
+	assert.Equal(t, RoleSyntax, r.Role(let.Cells[1]), "binding list")
+	assert.Equal(t, RoleSyntax, r.Role(let.Cells[2].Cells[1]), "lambda formals")
+	assert.Equal(t, RoleData, r.Role(form.Cells[1].Cells[0]))
+}
+
+// &key parameters and macrolet names are not renamed.
+func TestRenameSkipsInterfaceNames(t *testing.T) {
+	form := parseOne(t, `(defun f (x &key a) (macrolet ((m () 1)) (+ x a (m))))`)
+	sc := AnalyzeScopes(form)
+	out, err := sc.Rename(form, sc.FreshNames(form, "v"))
+	require.NoError(t, err)
+	assert.Equal(t, `(defun f (v1 &key a) (macrolet ((m () 1)) (+ v1 a (m))))`, out.String())
+	for _, b := range sc.Bindings {
+		if b.Name.Str == "a" {
+			_, err := sc.Rename(form, map[*Binding]string{b: "z"})
+			require.Error(t, err)
+		}
+	}
+}

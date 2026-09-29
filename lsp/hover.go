@@ -272,6 +272,9 @@ func symbolKindLabel(kind analysis.SymbolKind) string {
 // astutil.FreeVarsIn finds used freely inside it.  It returns "" when the
 // cursor is not on a lambda head.  line and col are 0-based, col in bytes.
 func lambdaCapturesHover(doc *Document, line, col int) string {
+	if w := wordAtPosition(doc.Content, line, col); w != "lambda" && w != "lisp:lambda" {
+		return ""
+	}
 	doc.mu.Lock()
 	ast, res := doc.ast, doc.analysis
 	doc.mu.Unlock()

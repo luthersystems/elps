@@ -22,7 +22,7 @@ func TestSemanticTokensFull(t *testing.T) {
 		require.NotNil(t, result)
 		// Single token: deltaLine=0, deltaChar=0, length=2, type=number(9), mods=0
 		require.Len(t, result.Data, 5)
-		assert.Equal(t, protocol.UInteger(2), result.Data[2])           // length of "42"
+		assert.Equal(t, protocol.UInteger(2), result.Data[2]) // length of "42"
 		assert.Equal(t, protocol.UInteger(semTokenNumber), result.Data[3])
 	})
 
@@ -34,7 +34,7 @@ func TestSemanticTokensFull(t *testing.T) {
 		require.NoError(t, err)
 		require.NotNil(t, result)
 		require.Len(t, result.Data, 5)
-		assert.Equal(t, protocol.UInteger(7), result.Data[2])            // length of `"hello"` (including quotes)
+		assert.Equal(t, protocol.UInteger(7), result.Data[2]) // length of `"hello"` (including quotes)
 		assert.Equal(t, protocol.UInteger(semTokenString), result.Data[3])
 	})
 

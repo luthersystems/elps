@@ -894,30 +894,40 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 			reportOnce(site.Form)
 		}
 		astutil.WalkCode(code, func(n *lisp.WalkNode) bool {
-			if n.Event == lisp.WalkForm && n.Op == "defmacro" && len(n.Node.Cells) > 3 {
-				for _, body := range n.Node.Cells[3:] {
-					scanMacroTemplates(body, reportOnce)
-				}
+			if n.Event == lisp.WalkForm && n.Op == "defmacro" {
+				scanMacroTemplates(n.Node, reportOnce)
+				return false // scanMacroTemplates walks it
 			}
 			return true
 		})
 	}
 }
 
-// scanMacroTemplates finds the quoted and quasiquoted templates in a macro
-// body and searches each as code.
-func scanMacroTemplates(v *lisp.LVal, report func(*lisp.LVal)) {
-	if v == nil || (v.Type != lisp.LSExpr && v.Type != lisp.LQuote) {
-		return
-	}
-	head := strings.TrimPrefix(HeadSymbol(v), lisp.DefaultLangPackage+":")
-	if v.IsQuoted() || v.Type == lisp.LQuote || head == "quote" || head == "quasiquote" {
-		walkRethrowTemplate(v, 0, true, report)
-		return
-	}
-	for _, c := range v.Cells {
-		scanMacroTemplates(c, report)
-	}
+// scanMacroTemplates walks a defmacro form as code and searches each
+// quoted datum and quasiquote template in it as code, since a template is
+// code once the macro expands.  A template inside a handler-bind in the
+// macro body is left alone, as are binding lists, which read as quoted
+// lists but are structure.
+func scanMacroTemplates(macro *lisp.LVal, report func(*lisp.LVal)) {
+	var handlers []int // depths of enclosing handler-bind forms
+	astutil.WalkCode(macro, func(n *lisp.WalkNode) bool {
+		for len(handlers) > 0 && handlers[len(handlers)-1] >= n.Depth &&
+			n.Event != lisp.WalkEnter && n.Event != lisp.WalkLeave {
+			handlers = handlers[:len(handlers)-1]
+		}
+		switch {
+		case n.Event == lisp.WalkForm && n.Op == "handler-bind":
+			handlers = append(handlers, n.Depth)
+		case len(handlers) > 0:
+		case n.Event == lisp.WalkData:
+			walkRethrowTemplate(n.Node, 0, true, report)
+		case n.Event == lisp.WalkForm && n.Op == "quasiquote":
+			for _, c := range n.Node.Cells[1:] {
+				walkRethrowTemplate(c, 0, true, report)
+			}
+		}
+		return true
+	})
 }
 
 // mentionsRethrowContext reports whether any symbol in exprs is spelled
@@ -2995,7 +3005,7 @@ var storingCalls = map[string]bool{
 //
 // It runs on fully expanded code (astutil.ExpandAll, with the semantic
 // analysis macro expander when there is one) and uses the free-variable
-// analysis in astutil (Scope.Captured) to decide what a closure captures,
+// analysis in astutil (Scope.Free) to decide what a closure captures,
 // so a closure whose own parameter or an inner let shadows the variable is
 // not reported.  A closure only counts as stored when it is the direct
 // argument of a storing call (set, set!, append!, assoc!, cons, list, ...);
@@ -3026,6 +3036,9 @@ var AnalyzerLoopVariableCapture = &Analyzer{
 				continue
 			}
 			code := astutil.ExpandAll(expr, exp, pkg, nil)
+			if !mentionsSymbol(code, "dotimes") {
+				continue
+			}
 			reportLoopCaptures(pass, code, passFile)
 		}
 		return nil
@@ -3092,17 +3105,23 @@ func storedClosures(code *lisp.LVal) map[*lisp.LVal]bool {
 		node  *lisp.LVal
 	}
 	var stack []frame
+	boundHead := make(map[*lisp.LVal]bool) // calls whose head is a local
+	var current *lisp.LVal
 	astutil.WalkCode(code, func(n *lisp.WalkNode) bool {
+		if n.Event == lisp.WalkRef && n.Head && n.Bound && current != nil {
+			boundHead[current] = true
+		}
 		if n.Event != lisp.WalkForm {
 			return true
 		}
+		current = n.Node
 		for len(stack) > 0 && stack[len(stack)-1].depth >= n.Depth {
 			stack = stack[:len(stack)-1]
 		}
 		if (n.Op == "lambda" || n.Op == "expr") && len(stack) > 0 {
 			parent := stack[len(stack)-1]
 			head := strings.TrimPrefix(HeadSymbol(parent.node), lisp.DefaultLangPackage+":")
-			if parent.depth == n.Depth-1 && storingCalls[head] {
+			if parent.depth == n.Depth-1 && storingCalls[head] && !boundHead[parent.node] {
 				stored[n.Node] = true
 			}
 		}

@@ -85,3 +85,15 @@ func TestBuiltinArity_SkipsQuotedData(t *testing.T) {
 	require.Len(t, lintCheck(t, AnalyzerBuiltinArity, `(list (car))`), 1)
 	require.Len(t, lintCheck(t, AnalyzerBuiltinArity, `(let ([x (car)]) x)`), 1)
 }
+
+func TestReviewRegressions(t *testing.T) {
+	// A local function named list does not store the closure.
+	assertNoDiags(t, lintCheck(t, AnalyzerLoopVariableCapture,
+		`(flet ((list (f) (funcall f))) (dotimes (i 3) (list (lambda () i))))`))
+	// Templates inside a handler in a macro body, and bracketed bindings,
+	// are not reported.
+	assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext,
+		`(defmacro m () (handler-bind ((condition (lambda (c) (let ([v (rethrow)]) v)))) 1))`))
+	assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext,
+		`(defmacro m () (handler-bind ((condition (lambda (c) (quasiquote (rethrow))))) 1))`))
+}

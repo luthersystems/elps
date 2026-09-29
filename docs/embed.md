@@ -1252,7 +1252,7 @@ for _, site := range astutil.FindCalls(code, "yield") {
 }
 ```
 
-In the tree itself, `loop-variable-capture` is built on `Scope.Captured`,
+In the tree itself, `loop-variable-capture` is built on `Scope.Free`,
 `rethrow-context` on `FindCalls`, `builtin-arity` on `ClassifyNodes`, and the
 LSP's captured-variable hover on `lambda` on `FreeVarsIn`.
 

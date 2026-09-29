@@ -84,6 +84,23 @@ func ClassifyNodes(form *lisp.LVal) *Roles {
 		}
 		mark(v)
 	}
+	var holes []*lisp.LVal
+	var markTemplate func(v *lisp.LVal)
+	markTemplate = func(v *lisp.LVal) {
+		if v == nil {
+			return
+		}
+		r.m[v] = RoleData
+		if v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+			(v.Cells[0].Str == "unquote" || v.Cells[0].Str == "unquote-splicing") {
+			r.m[v.Cells[0]] = RoleData
+			holes = append(holes, v.Cells[1])
+			return
+		}
+		for _, c := range v.Cells {
+			markTemplate(c)
+		}
+	}
 	opaque := map[*lisp.LVal]bool{}
 	WalkCode(form, func(n *lisp.WalkNode) bool {
 		switch n.Event {
@@ -92,10 +109,10 @@ func ClassifyNodes(form *lisp.LVal) *Roles {
 			case n.Opaque:
 				opaque[n.Node] = true
 			case n.Op == "quasiquote":
-				// The whole template is data; the walk reaches the holes
-				// next and marks their code.
+				// The template is data except for its holes, which the
+				// walk reaches next; the syntax pass starts again at each.
 				for _, c := range n.Node.Cells[1:] {
-					markAll(c, RoleData)
+					markTemplate(c)
 				}
 			}
 			r.m[n.Node] = RoleCode
@@ -131,6 +148,9 @@ func ClassifyNodes(form *lisp.LVal) *Roles {
 		}
 	}
 	syntax(form)
+	for _, h := range holes {
+		syntax(h)
+	}
 	return r
 }
 
