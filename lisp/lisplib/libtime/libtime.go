@@ -112,7 +112,8 @@ var builtins = []*libutil.Builtin{
 		be a native duration value (from parse-duration or time-from).`),
 	libutil.FunctionDoc("time-elapsed", lisp.Formals("start"), BuiltinElapsed,
 		`Returns the duration elapsed since start as a native duration
-		value. Equivalent to (time-from start (utc-now)). The argument
+		value. Equivalent to (time-from start (utc-now)), so it reads the
+		runtime's clock like utc-now. The argument
 		must be a native time value.`),
 	libutil.FunctionDoc("time-from", lisp.Formals("start", "end"), BuiltinDurationBetween,
 		`Returns the duration between start and end as a native duration
@@ -288,7 +289,7 @@ func BuiltinElapsed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr.Type == lisp.LError {
 		return lerr
 	}
-	return Duration(time.Since(t[0]))
+	return Duration(env.Runtime.Now().Sub(t[0]))
 }
 
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

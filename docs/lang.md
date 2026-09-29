@@ -2697,9 +2697,9 @@ Go runners other than `elpstest.Runner` can apply the same rule with
 
 ### Deterministic time and randomness
 
-`time:utc-now` reads the runtime's clock, and builtins an embedding
-application provides for random values or identifiers can read the runtime's
-entropy source. Both default to the real clock and a cryptographic random
+`time:utc-now` and `time:time-elapsed` read the runtime's clock. elps ships no
+random-value builtins, but host builtins may read the runtime's entropy
+source (an embedder's UUID generator, say). Both default to the real clock and a cryptographic random
 source. A Go test runner can make them
 reproducible (see "Deterministic clocks and random values" in
 docs/embed.md): with `elpstest.Runner`'s `Determinism` set, every test starts

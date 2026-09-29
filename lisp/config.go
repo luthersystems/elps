@@ -67,7 +67,8 @@ func WithMaxEvalNesting(n int) Config {
 // (Runtime.Clock), read by Runtime.Now and so by time:utc-now. A nil clock
 // restores time.Now. Use it to make time-dependent code deterministic, for
 // example with elpstest.StepClock in tests. A Template does not carry the
-// clock to its VMs; pass VMWithClock to each.
+// clock to its VMs (a clock set on a template's source environment is
+// dropped); pass VMWithClock to each.
 func WithClock(clock func() time.Time) Config {
 	return func(env *LEnv) *LVal {
 		env.Runtime.Clock = clock

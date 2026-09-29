@@ -553,8 +553,9 @@ func TestMyPackage(t *testing.T) {
 `Runtime.Now()` and `Runtime.Random()` are the runtime's clock and source of
 random bytes. They default to `time.Now` and `crypto/rand.Reader`, and a host
 replaces them with `lisp.WithClock` / `lisp.WithEntropy` (or the
-`Runtime.Clock` / `Runtime.Entropy` fields). `time:utc-now` reads `Now`. A Go
-builtin that returns the time, a random number or a random identifier should
+`Runtime.Clock` / `Runtime.Entropy` fields). `time:utc-now` and
+`time:time-elapsed` read `Now`. elps itself ships no builtin that reads
+`Random`; the hook exists for host builtins. A Go builtin that returns the time, a random number or a random identifier should
 read these instead of calling `time.Now` or `crypto/rand` directly, so tests
 can fix its output:
 
@@ -589,7 +590,9 @@ seeded stream is SHA-256 in counter mode, so it is the same on every platform an
 it is predictable by design and must never back real identifiers.
 
 A template does not pass its clock or entropy source to the VMs it creates:
-a stateful reader shared by several VMs would be shared mutable state. Pass
+a stateful reader shared by several VMs would be shared mutable state. A clock
+installed with `WithClock` on the environment a template is built from is
+therefore silently absent from every VM. Pass
 `lisp.VMWithClock` / `lisp.VMWithEntropy` to each `Template.NewVM` instead.
 When the runner's `NewEnvFn` returns a fork, `Determinism` is applied to it.
 
