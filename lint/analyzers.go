@@ -2861,3 +2861,93 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		return nil
 	},
 }
+
+// removedBuiltins maps each standard-library builtin elps has removed to the
+// migration advice reported for it.  Add a row when a stdlib export is
+// removed, so a program that still names it gets a pointed diagnostic rather
+// than only a runtime unbound-symbol error.
+var removedBuiltins = map[string]string{
+	"time:utc-now": "removed because the standard library does not read the wall clock (elps#757); " +
+		"use a timestamp the host supplies (substrate: cc:now or utils:now)",
+	"time:time-elapsed": "removed because it read the wall clock (elps#757); " +
+		"compute (time:time-from start end) with a host-supplied end time",
+	"time:sleep": "removed because its timing is non-deterministic (elps#757); " +
+		"a host that needs a sleep registers libtime.BuiltinSleep in its own package",
+}
+
+// AnalyzerRemovedBuiltin reports references to standard-library builtins
+// that elps has removed (removedBuiltins), naming the replacement.
+//
+// It is structural: a qualified reference (time:utc-now) is reported wherever
+// it appears outside a quasiquote template, quoted or not, and an unqualified
+// one is reported in call position when the file contains a top-level
+// (use-package 'time) or (in-package 'time), unless the file defines that
+// name itself.  It cannot see a name built at runtime, produced by a macro,
+// inside a quasiquote template, or imported into a package by another file.
+var AnalyzerRemovedBuiltin = &Analyzer{
+	Name:     "removed-builtin",
+	Severity: SeverityWarning,
+	Doc:      "Report references to standard-library builtins that elps has removed, naming the replacement.\n\nCovers time:utc-now, time:time-elapsed and time:sleep (elps#757). Qualified references are reported anywhere outside a quasiquote template; unqualified calls are reported when the file uses or is in the time package and does not define the name itself. Names built at runtime or produced by macros are not seen.",
+	Run: func(pass *Pass) error {
+		// Packages whose removed names this file can reach unqualified.
+		unqualified := map[string]bool{}
+		for _, top := range pass.Exprs {
+			head := HeadSymbol(top)
+			if (head == "use-package" || head == "in-package" ||
+				head == "lisp:use-package" || head == "lisp:in-package") && ArgCount(top) >= 1 {
+				if name := astutilQuotedName(top.Cells[1]); name != "" {
+					unqualified[name] = true
+				}
+			}
+		}
+		defined := UserDefined(pass.Exprs)
+		Walk(pass.Exprs, func(node, parent *lisp.LVal, depth int) {
+			if node == nil || node.Type != lisp.LSymbol {
+				return
+			}
+			name := node.Str
+			if _, ok := removedBuiltins[name]; !ok {
+				if len(unqualified) == 0 || defined[name] || parent == nil ||
+					parent.Type != lisp.LSExpr || len(parent.Cells) == 0 || parent.Cells[0] != node {
+					return
+				}
+				found := false
+				for pkg := range unqualified {
+					if _, ok := removedBuiltins[pkg+":"+name]; ok {
+						name, found = pkg+":"+name, true
+						break
+					}
+				}
+				if !found {
+					return
+				}
+			}
+			src := SourceOf(node)
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("'%s' is %s", name, removedBuiltins[name]),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
+				EndPos:  endPosFromNode(src),
+			})
+		})
+		return nil
+	},
+}
+
+// astutilQuotedName returns the package name a use-package/in-package
+// argument spells: a quoted symbol, a bare symbol or a string.
+func astutilQuotedName(v *lisp.LVal) string {
+	if v == nil {
+		return ""
+	}
+	switch v.Type {
+	case lisp.LSymbol, lisp.LString:
+		return v.Str
+	case lisp.LSExpr:
+		if len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+			(v.Cells[0].Str == "quote" || v.Cells[0].Str == "lisp:quote") &&
+			v.Cells[1].Type == lisp.LSymbol {
+			return v.Cells[1].Str
+		}
+	}
+	return ""
+}

@@ -2135,7 +2135,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 29)
+	assert.Len(t, analyzers, 30)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2157,6 +2157,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"lisp-package-seal",
 		"package-builtins",
 		"quote-call",
+		"removed-builtin",
 		"rethrow-context",
 		"set-usage",
 		"shadowing",
@@ -2627,6 +2628,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 		"deprecated":           SeverityWarning,
+		"removed-builtin":      SeverityWarning,
 		// Warning, not info: unlike unnecessary-progn neither shape is a
 		// style preference -- one guarantees nothing, the other silently
 		// drops the cleanup entirely.
@@ -5244,4 +5246,44 @@ func TestLambdaListKeywordFormalHint(t *testing.T) {
 			assertNoDiags(t, lintCheck(t, AnalyzerLambdaList, tc.source+" ; nolint:lambda-list"))
 		})
 	}
+}
+
+// elps#757 removed time:utc-now, time:time-elapsed and time:sleep; a
+// program still naming them gets a migration diagnostic.
+func TestRemovedBuiltin_Positive(t *testing.T) {
+	for _, tc := range []struct{ name, src, want string }{
+		{"qualified call", `(defun f () (time:utc-now))`, "'time:utc-now' is removed"},
+		{"elapsed", `(time:time-elapsed start)`, "'time:time-elapsed' is removed"},
+		{"sleep", `(time:sleep (time:parse-duration "1s"))`, "'time:sleep' is removed"},
+		{"function value", `(map 'list time:utc-now '())`, "'time:utc-now' is removed"},
+		{"quoted", `(funcall 'time:sleep d)`, "'time:sleep' is removed"},
+		{"use-package unqualified", "(use-package 'time)\n(utc-now)", "'time:utc-now' is removed"},
+		{"in-package unqualified", "(in-package 'time)\n(sleep d)", "'time:sleep' is removed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diags := lintCheck(t, AnalyzerRemovedBuiltin, tc.src)
+			assert.Len(t, diags, 1)
+			assertHasDiag(t, diags, tc.want)
+		})
+	}
+}
+
+func TestRemovedBuiltin_Negative(t *testing.T) {
+	for _, tc := range []struct{ name, src string }{
+		{"surviving time builtin", `(time:time-from a b)`},
+		{"unqualified without use-package", `(utc-now)`},
+		{"other package", `(cc:now)`},
+		{"user redefinition", "(use-package 'time)\n(defun sleep (d) d)\n(sleep 1)"},
+		{"unqualified data", "(use-package 'time)\n(list 'utc-now)"},
+		{"string", `"time:utc-now"`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			assertNoDiags(t, lintCheck(t, AnalyzerRemovedBuiltin, tc.src))
+		})
+	}
+}
+
+func TestRemovedBuiltin_Nolint(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerRemovedBuiltin,
+		`(time:utc-now) ; nolint:removed-builtin`))
 }

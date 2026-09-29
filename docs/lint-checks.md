@@ -684,6 +684,29 @@ Functions with `&rest` are variadic (no maximum). Threading macro children
 (add 1 2 3)    ; too many
 ```
 
+### `removed-builtin`
+
+**Reports references to standard-library builtins that elps has removed.**
+
+Structural, so it needs no workspace.  elps#757 removed `time:utc-now`,
+`time:time-elapsed` and `time:sleep` because the standard library must be
+deterministic; the diagnostic names the replacement.  A qualified reference is
+reported anywhere outside a quasiquote template, quoted or not.  An unqualified
+call is reported when the file has a top-level `(use-package 'time)` or
+`(in-package 'time)` and does not define that name itself.
+
+```lisp
+;; WARNING — 'time:utc-now' is removed ...; use a timestamp the host supplies
+(time:utc-now)
+
+;; OK — measure between two known times
+(time:time-from start end)
+```
+
+Limits: it cannot see a name built at runtime, produced by a macro, inside a
+quasiquote template, or imported by another file.  A host that registers its
+own `time:sleep` can suppress the diagnostic with `; nolint:removed-builtin`.
+
 ### `deprecated`
 
 **Reports uses of symbols marked deprecated by their docstring.**
