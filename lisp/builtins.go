@@ -602,19 +602,14 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinLoadBytes(env *LEnv, args *LVal) *LVal {
-	source, name := args.ReqArg(env, 0), args.KeyArg(1)
-	if source.Type == LError {
-		return source
+	a := ReadArgs(env, args)
+	source := a.Typed(0, LBytes, "first argument is not bytes: %v")
+	_name := a.OptString(1, "name", "")
+	if lerr := a.Err(); lerr.Type == LError {
+		return lerr
 	}
-	if source.Type != LBytes {
-		return env.Errorf("first argument is not bytes: %v", source.Type)
-	}
-	if !name.IsNil() && name.Type != LString {
-		return env.Errorf("name is not a string: %v", name.Type)
-	}
-	_name := "load-bytes"
-	if name.Str != "" {
-		_name = name.Str
+	if _name == "" {
+		_name = "load-bytes"
 	}
 
 	// Load the source in the root environment so the loaded code does not
