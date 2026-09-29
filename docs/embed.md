@@ -1165,7 +1165,7 @@ import (
 
 // Collect the global functions a form calls, ignoring local functions.
 calls := map[string]bool{}
-astutil.WalkCode(form, func(n *lisp.WalkNode) bool {
+astutil.ExpandAll(form, nil, "user", func(n *lisp.WalkNode) bool {
     if n.Event == lisp.WalkRef && n.Head && !n.Bound {
         calls[n.Node.Str] = true
     }
@@ -1173,22 +1173,21 @@ astutil.WalkCode(form, func(n *lisp.WalkNode) bool {
 })
 ```
 
-Three entry points share one walker:
+Two entry points share one walker:
 
-- `astutil.WalkCode(form, visit)` walks without expanding.
 - `astutil.ExpandAll(form, expander, pkg, visit)` expands every macro call an
   `astutil.MacroExpander` can expand (an `*analysis.EnvMacroExpander` is one),
-  then visits the expanded code. Local macros are reported as opaque forms.
+  then visits the expanded code (with a nil expander it only walks). Calls
+  to local macros are not entered.
 - `(*lisp.LEnv).MacroExpandAll(form)` resolves heads in a live environment and
   expands `macrolet` macros too. It is what `macroexpand-all` calls.
 
 None of them writes to the input. A list on the path to an expansion is
 rebuilt as a fresh, unsealed list carrying the original's source location;
 every untouched subtree is returned as the same node, so positions in the
-result still point into the original file. `lisp.SpecialFormShape(name)`
-reports a builtin form's shape. A special operator an embedder registers has
-no shape, and the walker treats a form headed by one as opaque: its arguments
-are neither walked nor expanded.
+result still point into the original file. A special operator an embedder
+registers has no known shape, and the walker treats a form headed by one as
+opaque: its arguments are neither walked nor expanded.
 
 ### Documenting Go builtins
 

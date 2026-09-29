@@ -12,17 +12,6 @@ type MacroExpander interface {
 	ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal
 }
 
-// WalkCode walks form as ELPS code without expanding anything, calling
-// visit for every event (see lisp.WalkEvent).  Unlike Walk, it knows which
-// parts of each special form are code, bindings or data: it reports the
-// names each binding form introduces, opens and closes their scopes, and
-// never descends into quoted data.  Heads are classified statically by
-// lisp.DefaultSpecialOpName.
-func WalkCode(form *lisp.LVal, visit lisp.CodeVisitor) {
-	w := &lisp.CodeWalker{Visit: visit, KeepGoing: true}
-	w.Walk(form)
-}
-
 // ExpandAll returns form with every macro call exp can expand replaced by
 // its full expansion, in code position only, calling visit (which may be
 // nil) for every event of the expanded code.  pkg is the package form is

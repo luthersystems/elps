@@ -49,23 +49,3 @@ func TestExpandAll(t *testing.T) {
 	// Without an expander, nothing changes.
 	assert.Same(t, form, ExpandAll(form, nil, "user", nil))
 }
-
-func TestWalkCode(t *testing.T) {
-	form := parseOne(t, `(defun f (a &rest b) (g a (quasiquote (h (unquote b) c))))`)
-	var refs, binds, defs []string
-	WalkCode(form, func(n *lisp.WalkNode) bool {
-		switch n.Event {
-		case lisp.WalkRef:
-			refs = append(refs, n.Node.Str)
-		case lisp.WalkBind:
-			binds = append(binds, n.Node.Str)
-		case lisp.WalkDefine:
-			defs = append(defs, n.Node.Str)
-		default:
-		}
-		return true
-	})
-	assert.Equal(t, []string{"f"}, defs)
-	assert.Equal(t, []string{"a", "b"}, binds)
-	assert.Equal(t, []string{"g", "a", "b"}, refs)
-}

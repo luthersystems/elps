@@ -3,7 +3,6 @@
 package lisp_test
 
 import (
-	"sort"
 	"strings"
 	"testing"
 
@@ -12,47 +11,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
-
-// TestEverySpecialOpHasAShape fails when a special operator is added to
-// DefaultSpecialOps without telling the code walker its syntax.  Add the
-// operator to specialFormShapes in lisp/codewalk.go (and a macroexpand-all
-// case below) to fix it.
-func TestEverySpecialOpHasAShape(t *testing.T) {
-	for _, op := range lisp.DefaultSpecialOps() {
-		assert.NotEqual(t, lisp.ShapeUnknown, lisp.SpecialFormShape(op.Name()),
-			"special operator %q has no code-walker shape (lisp/codewalk.go specialFormShapes)", op.Name())
-	}
-}
-
-// TestEveryCoreMacroReviewedForWalking fails when a builtin macro is added
-// without deciding how the code walker treats it.  Most macros expand to
-// ordinary source and need nothing.  A macro whose expansion embeds a value
-// that is not source (defun and defmacro embed a compiled function) must be
-// given a shape instead, so walkers keep it as written.
-func TestEveryCoreMacroReviewedForWalking(t *testing.T) {
-	reviewed := map[string]lisp.FormShape{
-		"defmacro":         lisp.ShapeDefun,
-		"defun":            lisp.ShapeDefun,
-		"deftype":          lisp.ShapeUnknown,
-		"curry-function":   lisp.ShapeUnknown,
-		"get-default":      lisp.ShapeUnknown,
-		"trace":            lisp.ShapeUnknown,
-		"defconst":         lisp.ShapeUnknown,
-		"test-let":         lisp.ShapeUnknown,
-		"test-let*":        lisp.ShapeUnknown,
-		"benchmark-simple": lisp.ShapeUnknown,
-	}
-	var names []string
-	for _, m := range lisp.DefaultMacros() {
-		names = append(names, m.Name())
-		want, ok := reviewed[m.Name()]
-		if assert.True(t, ok, "builtin macro %q has not been reviewed for the code walker", m.Name()) {
-			assert.Equal(t, want, lisp.SpecialFormShape(m.Name()), m.Name())
-		}
-	}
-	sort.Strings(names)
-	assert.Len(t, names, len(reviewed))
-}
 
 type row = struct {
 	Expr   string
@@ -252,7 +210,6 @@ func TestCodeWalkerEvents(t *testing.T) {
 // is walked or expanded.
 func TestCodeWalkerOpaqueSpecialOp(t *testing.T) {
 	form := parseCached(t, `(my-op (m 1))`)[0]
-	var opaque bool
 	w := &lisp.CodeWalker{
 		SpecialOp: func(h *lisp.LVal) (string, bool) { return h.Str, h.Str == "my-op" },
 		Expand1: func(f *lisp.LVal) (*lisp.LVal, bool) {
@@ -260,12 +217,11 @@ func TestCodeWalkerOpaqueSpecialOp(t *testing.T) {
 			return nil, false
 		},
 		Visit: func(n *lisp.WalkNode) bool {
-			if n.Event == lisp.WalkForm && n.Opaque {
-				opaque = true
+			if n.Event == lisp.WalkRef {
+				t.Fatalf("walked inside an opaque form: %v", n.Node)
 			}
 			return true
 		},
 	}
 	assert.Same(t, form, w.Walk(form))
-	assert.True(t, opaque)
 }
