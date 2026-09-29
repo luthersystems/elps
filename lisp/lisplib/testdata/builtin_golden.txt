@@ -1,11 +1,11 @@
 (string:lowercase 1)
-	=> error error in string:lowercase: argument is not a string: int
+	=> error error in string:lowercase: argument is not a string: int @golden
 	steps 3
 (string:lowercase "AbC")
 	=> "abc"
 	steps 3
 (string:uppercase 'a)
-	=> error error in string:uppercase: argument is not a string: symbol
+	=> error error in string:uppercase: argument is not a string: symbol @golden
 	steps 3
 (string:uppercase "aBc")
 	=> "ABC"
@@ -14,7 +14,7 @@
 	=> "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa...(5002 bytes)
 	steps 14
 (string:trim-space 1)
-	=> error error in string:trim-space: first argument is not a string: int
+	=> error error in string:trim-space: first argument is not a string: int @golden
 	steps 3
 (string:trim-space "  a  ")
 	=> "a"
@@ -23,10 +23,10 @@
 	=> ""
 	steps 14
 (string:trim 1 2)
-	=> error error in string:trim: first argument is not a string: int
+	=> error error in string:trim: first argument is not a string: int @golden
 	steps 4
 (string:trim "a" 2)
-	=> error error in string:trim: second argument is not a string: int
+	=> error error in string:trim: second argument is not a string: int @golden
 	steps 4
 (string:trim "xax" "x")
 	=> "a"
@@ -35,46 +35,46 @@
 	=> ""
 	steps 11
 (string:trim-left 1 2)
-	=> error error in string:trim-left: first argument is not a string: int
+	=> error error in string:trim-left: first argument is not a string: int @golden
 	steps 4
 (string:trim-left "a" 2)
-	=> error error in string:trim-left: second argument is not a string: int
+	=> error error in string:trim-left: second argument is not a string: int @golden
 	steps 4
 (string:trim-left "xax" "x")
 	=> "ax"
 	steps 4
 (string:trim-right 1 2)
-	=> error error in string:trim-right: first argument is not a string: int
+	=> error error in string:trim-right: first argument is not a string: int @golden
 	steps 4
 (string:trim-right "a" 2)
-	=> error error in string:trim-right: second argument is not a string: int
+	=> error error in string:trim-right: second argument is not a string: int @golden
 	steps 4
 (string:trim-right "xax" "x")
 	=> "xa"
 	steps 4
 (string:has-prefix? 1 2)
-	=> error error in string:has-prefix?: first argument is not a string: int
+	=> error error in string:has-prefix?: first argument is not a string: int @golden
 	steps 4
 (string:has-prefix? "ab" 2)
-	=> error error in string:has-prefix?: second argument is not a string: int
+	=> error error in string:has-prefix?: second argument is not a string: int @golden
 	steps 4
 (string:has-prefix? "ab" "a")
 	=> true
 	steps 4
 (string:has-suffix? 1 2)
-	=> error error in string:has-suffix?: first argument is not a string: int
+	=> error error in string:has-suffix?: first argument is not a string: int @golden
 	steps 4
 (string:has-suffix? "ab" 2)
-	=> error error in string:has-suffix?: second argument is not a string: int
+	=> error error in string:has-suffix?: second argument is not a string: int @golden
 	steps 4
 (string:has-suffix? "ab" "b")
 	=> true
 	steps 4
 (string:contains? 1 2)
-	=> error error in string:contains?: first argument is not a string: int
+	=> error error in string:contains?: first argument is not a string: int @golden
 	steps 4
 (string:contains? "ab" 2)
-	=> error error in string:contains?: second argument is not a string: int
+	=> error error in string:contains?: second argument is not a string: int @golden
 	steps 4
 (string:contains? "ab" "b")
 	=> true
@@ -83,181 +83,181 @@
 	=> false
 	steps 11
 (string:trim-prefix 1 2)
-	=> error error in string:trim-prefix: first argument is not a string: int
+	=> error error in string:trim-prefix: first argument is not a string: int @golden
 	steps 4
 (string:trim-prefix "ab" 2)
-	=> error error in string:trim-prefix: second argument is not a string: int
+	=> error error in string:trim-prefix: second argument is not a string: int @golden
 	steps 4
 (string:trim-prefix "ab" "a")
 	=> "b"
 	steps 4
 (string:trim-suffix 1 2)
-	=> error error in string:trim-suffix: first argument is not a string: int
+	=> error error in string:trim-suffix: first argument is not a string: int @golden
 	steps 4
 (string:trim-suffix "ab" 2)
-	=> error error in string:trim-suffix: second argument is not a string: int
+	=> error error in string:trim-suffix: second argument is not a string: int @golden
 	steps 4
 (string:trim-suffix "ab" "b")
 	=> "a"
 	steps 4
 (string:join 1 2)
-	=> error error in string:join: first argument is not a list: int
+	=> error error in string:join: first argument is not a list: int @golden
 	steps 4
 (string:join '("a") 2)
-	=> error error in string:join: second argument is not a string: int
+	=> error error in string:join: second argument is not a string: int @golden
 	steps 4
 (string:join '("a" 1) ",")
-	=> error error in string:join: first argument is not a list of strings: int
+	=> error error in string:join: first argument is not a list of strings: int @golden
 	steps 4
 (string:join '("a" "b") ",")
 	=> "a,b"
 	steps 4
 (string:join (vector "a") ",")
-	=> error error in string:join: first argument is not a list: array
+	=> error error in string:join: first argument is not a list: array @golden
 	steps 6
 (time:parse-rfc3339 1)
-	=> error error in time:parse-rfc3339: argument is not a string: int
+	=> error error in time:parse-rfc3339: argument is not a string: int @golden
 	steps 3
 (time:parse-rfc3339 "x")
-	=> error error in time:parse-rfc3339: parsing time "x" as "2006-01-02T15:04:05Z07:00": cannot parse "x" as "2006"
+	=> error error in time:parse-rfc3339: parsing time "x" as "2006-01-02T15:04:05Z07:00": cannot parse "x" as "2006" @golden
 	steps 3
 (time:format-rfc3339 (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
 	=> "2023-01-15T10:30:00Z"
 	steps 5
 (time:parse-rfc3339-nano 1)
-	=> error error in time:parse-rfc3339-nano: argument is not a string: int
+	=> error error in time:parse-rfc3339-nano: argument is not a string: int @golden
 	steps 3
 (time:format-rfc3339-nano (time:parse-rfc3339-nano "2023-01-15T10:30:00.123456789Z"))
 	=> "2023-01-15T10:30:00.123456789Z"
 	steps 5
 (time:format-rfc3339 1)
-	=> error error in time:format-rfc3339: argument is not a time: int
+	=> error error in time:format-rfc3339: argument is not a time: int @golden
 	steps 3
 (time:format-rfc3339 (time:parse-duration "1s"))
-	=> error error in time:format-rfc3339: argument is not a time: #<native value: time.Duration>
+	=> error error in time:format-rfc3339: argument is not a time: #<native value: time.Duration> @golden
 	steps 5
 (time:format-rfc3339-nano 1)
-	=> error error in time:format-rfc3339-nano: argument is not a time: int
+	=> error error in time:format-rfc3339-nano: argument is not a time: int @golden
 	steps 3
 (time:format-rfc3339-nano (time:parse-duration "1s"))
-	=> error error in time:format-rfc3339-nano: argument is not a time: #<native value: time.Duration>
+	=> error error in time:format-rfc3339-nano: argument is not a time: #<native value: time.Duration> @golden
 	steps 5
 (time:time= 1 2)
-	=> error error in time:time=: argument is not a time: int
+	=> error error in time:time=: argument is not a time: int @golden
 	steps 4
 (time:time= (time:parse-duration "1s") 2)
-	=> error error in time:time=: argument is not a time: int
+	=> error error in time:time=: argument is not a time: int @golden
 	steps 6
 (time:time= (time:parse-duration "1s") (time:parse-duration "1s"))
-	=> error error in time:time=: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time=: argument is not a time: #<native value: time.Duration> @golden
 	steps 8
 (time:time= (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-duration "1s"))
-	=> error error in time:time=: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time=: argument is not a time: #<native value: time.Duration> @golden
 	steps 8
 (time:time= (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
 	=> true
 	steps 8
 (time:time< 1 2)
-	=> error error in time:time<: argument is not a time: int
+	=> error error in time:time<: argument is not a time: int @golden
 	steps 4
 (time:time< (time:parse-duration "1s") 2)
-	=> error error in time:time<: argument is not a time: int
+	=> error error in time:time<: argument is not a time: int @golden
 	steps 6
 (time:time< (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2024-01-15T10:30:00Z"))
 	=> true
 	steps 8
 (time:time> 1 2)
-	=> error error in time:time>: argument is not a time: int
+	=> error error in time:time>: argument is not a time: int @golden
 	steps 4
 (time:time> (time:parse-duration "1s") (time:parse-duration "1s"))
-	=> error error in time:time>: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time>: argument is not a time: #<native value: time.Duration> @golden
 	steps 8
 (time:time> (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2024-01-15T10:30:00Z"))
 	=> false
 	steps 8
 (time:time-add 1 2)
-	=> error error in time:time-add: argument is not a time: int
+	=> error error in time:time-add: argument is not a time: int @golden
 	steps 4
 (time:time-add (time:parse-duration "1s") 2)
-	=> error error in time:time-add: argument is not a duration: int
+	=> error error in time:time-add: argument is not a duration: int @golden
 	steps 6
 (time:time-add (time:parse-duration "1s") (time:parse-duration "1s"))
-	=> error error in time:time-add: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time-add: argument is not a time: #<native value: time.Duration> @golden
 	steps 8
 (time:time-add (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:time-add: argument is not a duration: #<native value: libtime.ownedTime>
+	=> error error in time:time-add: argument is not a duration: #<native value: libtime.ownedTime> @golden
 	steps 8
 (time:format-rfc3339 (time:time-add (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-duration "1h")))
 	=> "2023-01-15T11:30:00Z"
 	steps 10
 (time:time-elapsed 1)
-	=> error error in time:time-elapsed: argument is not a time: int
+	=> error error in time:time-elapsed: argument is not a time: int @golden
 	steps 3
 (time:time-elapsed (time:parse-duration "1s"))
-	=> error error in time:time-elapsed: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time-elapsed: argument is not a time: #<native value: time.Duration> @golden
 	steps 5
 (time:time-from 1 2)
-	=> error error in time:time-from: argument is not a time: int
+	=> error error in time:time-from: argument is not a time: int @golden
 	steps 4
 (time:time-from (time:parse-duration "1s") 2)
-	=> error error in time:time-from: argument is not a time: int
+	=> error error in time:time-from: argument is not a time: int @golden
 	steps 6
 (time:time-from (time:parse-duration "1s") (time:parse-duration "1s"))
-	=> error error in time:time-from: argument is not a time: #<native value: time.Duration>
+	=> error error in time:time-from: argument is not a time: #<native value: time.Duration> @golden
 	steps 8
 (time:duration-s (time:time-from (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-rfc3339 "2023-01-15T11:30:00Z")))
 	=> 3600
 	steps 10
 (time:parse-duration 1)
-	=> error error in time:parse-duration: argument is not a string: int
+	=> error error in time:parse-duration: argument is not a string: int @golden
 	steps 3
 (time:parse-duration "x")
-	=> error error in time:parse-duration: time: invalid duration "x"
+	=> error error in time:parse-duration: time: invalid duration "x" @golden
 	steps 3
 (time:duration-s 1)
-	=> error error in time:duration-s: argument is not a duration: int
+	=> error error in time:duration-s: argument is not a duration: int @golden
 	steps 3
 (time:duration-s (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:duration-s: argument is not a duration: #<native value: libtime.ownedTime>
+	=> error error in time:duration-s: argument is not a duration: #<native value: libtime.ownedTime> @golden
 	steps 5
 (time:duration-s (time:parse-duration "1500ms"))
 	=> 1.5
 	steps 5
 (time:duration-ms 1)
-	=> error error in time:duration-ms: argument is not a duration: int
+	=> error error in time:duration-ms: argument is not a duration: int @golden
 	steps 3
 (time:duration-ms (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:duration-ms: argument is not a duration: #<native value: libtime.ownedTime>
+	=> error error in time:duration-ms: argument is not a duration: #<native value: libtime.ownedTime> @golden
 	steps 5
 (time:duration-ms (time:parse-duration "1500ms"))
 	=> 1500
 	steps 5
 (time:duration-ns 1)
-	=> error error in time:duration-ns: argument is not a duration: int
+	=> error error in time:duration-ns: argument is not a duration: int @golden
 	steps 3
 (time:duration-ns (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:duration-ns: argument is not a duration: #<native value: libtime.ownedTime>
+	=> error error in time:duration-ns: argument is not a duration: #<native value: libtime.ownedTime> @golden
 	steps 5
 (time:duration-ns (time:parse-duration "1500ms"))
 	=> 1500000000
 	steps 5
 (time:sleep 1)
-	=> error error in time:sleep: argument is not a duration: int
+	=> error error in time:sleep: argument is not a duration: int @golden
 	steps 3
 (time:sleep (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:sleep: argument is not a duration: #<native value: libtime.ownedTime>
+	=> error error in time:sleep: argument is not a duration: #<native value: libtime.ownedTime> @golden
 	steps 5
 (time:sleep (time:parse-duration "0s") :max 1)
-	=> error error in time:sleep: max is not a duration: int
+	=> error error in time:sleep: max is not a duration: int @golden
 	steps 7
 (time:sleep (time:parse-duration "2h"))
-	=> error sleep-limit-exceeded in time:sleep: sleep of 2h0m0s exceeds the maximum 1h0m0s (pass :max to allow a longer sleep, subject to any host ceiling)
+	=> error sleep-limit-exceeded in time:sleep: sleep of 2h0m0s exceeds the maximum 1h0m0s (pass :max to allow a longer sleep, subject to any host ceiling) @golden
 	steps 5
 (time:sleep (time:parse-duration "0s"))
 	=> ()
 	steps 5
 (base64:encode 1)
-	=> error error in base64:encode: argument is not a string: int
+	=> error error in base64:encode: argument is not a string: int @golden
 	steps 3
 (base64:encode "hello")
 	=> #<bytes 97 71 86 115 98 71 56 61>
@@ -269,7 +269,7 @@
 	=> #<bytes 89 87 70 104 89 87 70 104 89 87 70 104 89 87 70 104 89 87 70 104 89 87 7...(13008 bytes)
 	steps 10
 (base64:decode 1)
-	=> error error in base64:decode: argument is not a string: int
+	=> error error in base64:decode: argument is not a string: int @golden
 	steps 3
 (to-string (base64:decode "aGVsbG8="))
 	=> "hello"
@@ -278,37 +278,64 @@
 	=> "hello"
 	steps 7
 (base64:decode "!!")
-	=> error error in base64:decode: illegal base64 data at input byte 0
+	=> error error in base64:decode: illegal base64 data at input byte 0 @golden
 	steps 3
 (base64:decode (to-bytes "!!"))
-	=> error error in base64:decode: illegal base64 data at input byte 0
+	=> error error in base64:decode: illegal base64 data at input byte 0 @golden
 	steps 5
 (base64:decode (string:repeat "QUFB" 1000))
 	=> #<bytes 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 65 ...(9008 bytes)
 	steps 12
 (regexp:compile 1)
-	=> error error in : unbound symbol: compile
+	=> error error in : unbound symbol: compile @golden
 	steps 2
 (regexp:compile "(")
-	=> error error in : unbound symbol: compile
+	=> error error in : unbound symbol: compile @golden
 	steps 2
 (regexp:pattern (regexp:compile "a+"))
-	=> error error in : unbound symbol: pattern
+	=> error error in : unbound symbol: pattern @golden
 	steps 2
 (regexp:compile (string:repeat "a" 3000))
-	=> error error in : unbound symbol: compile
+	=> error error in : unbound symbol: compile @golden
 	steps 2
 (json:load-string 1)
-	=> error error in json:load-string: argument is not a string: int
+	=> error error in json:load-string: argument is not a string: int @golden
 	steps 3
 (json:load-string "{\"a\": 1}")
 	=> (sorted-map "a" 1)
 	steps 3
 (json:load-string "[1")
-	=> error json:syntax-error in json:load-string: unexpected end of JSON input
+	=> error json:syntax-error in json:load-string: unexpected end of JSON input @golden
 	steps 3
+(load-bytes 1)
+	=> error error in lisp:load-bytes: first argument is not bytes: int @golden
+	steps 3
+(load-bytes "(+ 1 2)")
+	=> error error in lisp:load-bytes: first argument is not bytes: string @golden
+	steps 3
+(load-bytes (to-bytes "(+ 1 2)"))
+	=> 3
+	steps 9
+(load-bytes (to-bytes "(+ 1 2)") :name 2)
+	=> error error in lisp:load-bytes: name is not a string: int @golden
+	steps 7
+(load-bytes (to-bytes "(+ 1 2)") :name "n")
+	=> 3
+	steps 11
+(load-bytes (to-bytes "(+ 1 2)") :name "")
+	=> 3
+	steps 11
+(load-bytes (to-bytes "(error 'x \"y\")") :name "named")
+	=> error x in lisp:error: y @named
+	steps 11
+(load-bytes (to-bytes "(error 'x \"y\")") :name "")
+	=> error x in lisp:error: y @load-bytes
+	steps 11
+(load-bytes (to-bytes "(error 'x \"y\")"))
+	=> error x in lisp:error: y @load-bytes
+	steps 9
 (math:ceil "a")
-	=> error error in math:ceil: argument is not a number: string
+	=> error error in math:ceil: argument is not a number: string @golden
 	steps 3
 (math:ceil 1.5)
 	=> 2
@@ -317,7 +344,7 @@
 	=> 2
 	steps 3
 (math:floor "a")
-	=> error error in math:floor: argument is not a number: string
+	=> error error in math:floor: argument is not a number: string @golden
 	steps 3
 (math:floor 1.5)
 	=> 1
@@ -326,25 +353,25 @@
 	=> 2
 	steps 3
 (math:log "a" 2)
-	=> error error in math:log: argument is not a number: string
+	=> error error in math:log: argument is not a number: string @golden
 	steps 4
 (math:log 2 "a")
-	=> error error in math:log: argument is not a number: string
+	=> error error in math:log: argument is not a number: string @golden
 	steps 4
 (math:log 2 8)
 	=> 3
 	steps 4
 (math:sqrt "a")
-	=> error error in math:sqrt: argument is not a number: string
+	=> error error in math:sqrt: argument is not a number: string @golden
 	steps 3
 (math:sqrt 4)
 	=> 2
 	steps 3
 (math:atan "a")
-	=> error error in math:atan: argument is not a number: string
+	=> error error in math:atan: argument is not a number: string @golden
 	steps 3
 (math:atan 1 "a")
-	=> error error in math:atan: second argument is not a number: string
+	=> error error in math:atan: second argument is not a number: string @golden
 	steps 4
 (math:atan 1)
 	=> 0.7853981633974483

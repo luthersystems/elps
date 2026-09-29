@@ -67,6 +67,10 @@ var builtinGoldenCases = []string{
 	`(regexp:compile 1)`, `(regexp:compile "(")`, `(regexp:pattern (regexp:compile "a+"))`, `(regexp:compile (string:repeat "a" 3000))`,
 	// json
 	`(json:load-string 1)`, `(json:load-string "{\"a\": 1}")`, `(json:load-string "[1")`,
+	// lisp
+	`(load-bytes 1)`, `(load-bytes "(+ 1 2)")`, `(load-bytes (to-bytes "(+ 1 2)"))`, `(load-bytes (to-bytes "(+ 1 2)") :name 2)`,
+	`(load-bytes (to-bytes "(+ 1 2)") :name "n")`, `(load-bytes (to-bytes "(+ 1 2)") :name "")`, `(load-bytes (to-bytes "(error 'x \"y\")") :name "named")`,
+	`(load-bytes (to-bytes "(error 'x \"y\")") :name "")`, `(load-bytes (to-bytes "(error 'x \"y\")"))`,
 	// math
 	`(math:ceil "a")`, `(math:ceil 1.5)`, `(math:ceil 2)`, `(math:floor "a")`, `(math:floor 1.5)`, `(math:floor 2)`,
 	`(math:log "a" 2)`, `(math:log 2 "a")`, `(math:log 2 8)`, `(math:sqrt "a")`, `(math:sqrt 4)`,
@@ -87,6 +91,9 @@ func renderBuiltinGolden(t *testing.T) string {
 		if v.Type == lisp.LError {
 			ev := (*lisp.ErrorVal)(v)
 			out = fmt.Sprintf("error %s in %s: %s", ev.Condition(), ev.FunName(), ev.ErrorMessage())
+			if loc, ok := ev.Source(); ok {
+				out += " @" + loc.File
+			}
 		} else {
 			out = v.String()
 			if len(out) > 80 {
