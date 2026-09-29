@@ -96,3 +96,26 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	}
 	return val
 }
+
+// CallGlobal calls the function bound to the global symbol named sym -- a
+// qualified name such as "utils:set-exception-business" is the usual form --
+// with already-evaluated args, resolving the binding at call time exactly as
+// a Lisp call site naming sym would, in the current package.  It is for a Go
+// builtin whose callee exists only in Lisp; to call a language builtin, use
+// CallBuiltin, and call Go implementations directly.
+//
+// CallGlobal charges no evaluation step of its own: the callee costs what its
+// body evaluates (a Lisp call form would add a step for the form and one per
+// argument expression).  sym is a string, not a symbol LVal, so a caller
+// keeps no package-level LVal.  A special operator or macro is refused with
+// "not a regular function".
+func (env *LEnv) CallGlobal(sym string, args ...*LVal) *LVal {
+	fn := env.GetFunGlobal(Symbol(sym))
+	if fn.Type == LError {
+		return fn
+	}
+	if fn.IsSpecialFun() {
+		return env.Errorf("not a regular function: %v", fn.FunType)
+	}
+	return env.FunCallContext(env.Context(), fn, SExpr(args))
+}
