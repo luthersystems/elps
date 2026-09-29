@@ -197,7 +197,7 @@ func isCallable(name string) bool {
 		"in-package", "use-package", "export",
 		"dotimes",
 		"thread-first", "thread-last",
-		"assert", "qualified-symbol",
+		"assert", "qualified-symbol", "help",
 		"function", "expr",
 		// macros
 		"defun", "defmacro", "deftype", "defconst",

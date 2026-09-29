@@ -197,6 +197,12 @@ var langSpecialOps = []*langBuiltin{
 		right and returns the first falsey value. If all arguments are
 		truthy, returns the last value. Returns true with no arguments.
 		The final argument preserves tail position if it is reached.`},
+	{"help", Formals("var-name"), opHelp,
+		`Prints documentation for the given variable name, as the calling
+		code sees it: a lexical binding, a name in the current package, or a
+		qualified name.  Functions have their signature and any docstring
+		rendered.  Other variables have their types and current values
+		printed.  The name is not evaluated.`},
 	{"qualified-symbol", Formals("symbol"), opQualifiedSymbol,
 		`Returns a quoted package-qualified symbol. If the symbol is
 		already qualified (contains a colon), returns it as-is. Otherwise
@@ -233,7 +239,8 @@ func DefaultSpecialOps() []LBuiltinDef {
 // instead of colliding with it (RegisterDefaultSpecialOp, and AddBuiltins,
 // AddMacros or AddSpecialOps into package lisp), so an embedding that
 // defined its own when before lisp had one keeps initializing unchanged.
-var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true}
+// help joined lisp from package help in issue #736.
+var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true, "help": true}
 
 func userSpecialOpNamed(name string) bool {
 	for _, op := range userSpecialOps {

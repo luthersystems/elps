@@ -91,7 +91,7 @@
   "dotimes" "assert"
   "thread-first" "thread-last"
   "quasiquote" "unquote" "unquote-splicing"
-  "function" "expr" "qualified-symbol"
+  "function" "expr" "qualified-symbol" "help"
   "test" "test-let"))
 
 ; --- Built-in function calls ---

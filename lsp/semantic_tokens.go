@@ -284,7 +284,7 @@ var specialOps = map[string]bool{
 	"assert-equal": true, "assert-nil": true, "assert-not-nil": true,
 	"test": true, "test-let": true,
 	"thread-first": true, "thread-last": true,
-	"function": true, "expr": true, "qualified-symbol": true,
+	"function": true, "expr": true, "qualified-symbol": true, "help": true,
 	"macrolet": true, "assert": true,
 }
 

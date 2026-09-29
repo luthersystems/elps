@@ -58,6 +58,9 @@
 (qualified-symbol my-sym)
 ;^^^^^^^^^^^^^^^^ keyword.control.elps
 
+(help my-sym)
+;^^^^ keyword.control.elps
+
 (quasiquote (a b c))
 ;^^^^^^^^^^ keyword.control.elps
 
