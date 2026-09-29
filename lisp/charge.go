@@ -61,4 +61,3 @@ func (env *LEnv) CheckContext() *LVal {
 	}
 	return Nil()
 }
-
