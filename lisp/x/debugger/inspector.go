@@ -35,11 +35,9 @@ type FormatterFunc func(v any) string
 func (f FormatterFunc) FormatValue(v any) string     { return f(v) }
 func (f FormatterFunc) Children(v any) []NativeChild { return nil }
 
-// ScopeBinding represents a single variable binding in a scope.
-type ScopeBinding struct {
-	Name  string
-	Value *lisp.LVal
-}
+// ScopeBinding represents a single variable binding in a scope. It is the
+// same type as lisp.Binding, which LEnv.Locals returns.
+type ScopeBinding = lisp.Binding
 
 // InspectLocals returns the local variable bindings from the given
 // environment's immediate scope (not parent scopes). Bindings are
@@ -83,38 +81,13 @@ func InspectScope(env *lisp.LEnv) []ScopeBinding {
 	return bindings
 }
 
-// InspectFunctionLocals returns all bindings visible from the given
-// environment up through parent scopes, stopping at the root env
-// (Parent==nil) which contains builtins. In ELPS, package symbols live
-// in Runtime.Package, not in the env chain, so walking up to (but not
-// including) the root env collects exactly the function-local bindings.
+// InspectFunctionLocals returns the function-local bindings visible from
+// env, sorted by name, stopping at the root env (which holds builtins). It is
+// LEnv.Locals, the documented API; see its doc comment for the contract.
 // This gives users the local variables they expect to see in a debugger,
 // even when paused inside a sub-expression like (if ...).
 func InspectFunctionLocals(env *lisp.LEnv) []ScopeBinding {
-	if env == nil {
-		return nil
-	}
-	seen := make(map[string]bool)
-	var bindings []ScopeBinding
-	current := env
-	for current != nil {
-		// Stop at the root env (builtins). Package symbols are in
-		// Runtime.Package.Symbols, not in env.Scope.
-		if current.Parent() == nil {
-			break
-		}
-		for name, val := range current.Bindings() {
-			if !seen[name] {
-				seen[name] = true
-				bindings = append(bindings, ScopeBinding{Name: name, Value: val})
-			}
-		}
-		current = current.Parent()
-	}
-	sort.Slice(bindings, func(i, j int) bool {
-		return bindings[i].Name < bindings[j].Name
-	})
-	return bindings
+	return env.Locals()
 }
 
 // InspectMacroExpansion returns scope bindings representing the macro
