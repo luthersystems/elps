@@ -86,12 +86,14 @@ func TestConditionContractHandlerBind(t *testing.T) {
 			   (handler-bind ((boom (lambda (&rest _) 'inner)))
 			     (error 'boom)))`, `'inner`)
 	})
-	t.Run("handler receives the condition symbol and unevaluated data", func(t *testing.T) {
+	t.Run("handler receives the condition symbol and the evaluated data", func(t *testing.T) {
 		env := contractEnv(t)
+		// error evaluates its arguments like any function; the handler then
+		// receives those values as-is, without evaluating them again.
 		requireContractValue(t, env,
 			`(handler-bind ((condition (lambda (c &rest data) (list c data))))
-			   (error 'boom 'unbound-symbol '(not-a-call 1) 3))`,
-			`'('boom '('unbound-symbol '(not-a-call 1) 3))`)
+			   (error 'boom (+ 1 2) 'unbound-symbol '(not-a-call 1)))`,
+			`'('boom '(3 'unbound-symbol '(not-a-call 1)))`)
 	})
 	t.Run("error raised by a handler escapes its own handler-bind", func(t *testing.T) {
 		env := contractEnv(t)
