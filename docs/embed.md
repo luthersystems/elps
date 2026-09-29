@@ -1177,6 +1177,59 @@ diags, err := l.LintFiles(&lint.LintConfig{
 Without the `Registry` field, the linter only knows about stdlib symbols and
 will report false positives for embedder-provided bindings.
 
+#### Macro-generated definitions
+
+A macro that expands into definitions (`defun`, `defmacro`, `set`,
+`deftype`) is invisible to name-based analysis: the analyzer sees the call,
+not the names it creates. Give `analysis.Config` a `MacroExpander` and the
+analyzer expands macro calls and analyzes the expanded code. The usual
+expander is `&analysis.EnvMacroExpander{Env: env}`, which expands only macros
+already defined in `env`: load the workspace's macros into it first with
+`expander.LoadWorkspaceMacros(forms)`. `LintFiles` does both itself when
+given `LintConfig.Env`.
+
+- Top-level macro calls are expanded before the deep walk, so a generated name
+  resolves even where it is used before the call, like an ordinary `defun`.
+- Each generated package-level definition records the call that produced it in
+  `Symbol.GeneratedBy` (`*analysis.MacroOrigin`: the macro's name, the package
+  it was expanded in and the call site). Nested macros record the outermost
+  call, the one written in the source.
+- `Result.GeneratedDefinitions()` returns those definitions as
+  `[]analysis.ExternalSymbol` with `GeneratedBy` set. They are plain data, so
+  an embedder can index them and pass them as `Config.ExtraGlobals` when
+  analyzing other files, much as `go/analysis` passes facts between packages.
+
+```lisp
+; counters.lisp
+(defmacro defcounter (name getter bumper)
+  (quasiquote
+    (progn
+      (set (quote (unquote name)) 0)
+      (defun (unquote getter) () (unquote name))
+      (defun (unquote bumper) () (set! (unquote name) (+ 1 (unquote name)))))))
+
+(defcounter hits hits-value bump-hits)
+```
+
+```go
+// forms is the parsed source of counters.lisp. Loading it defines
+// defcounter in env, so the expander can expand the call below it.
+expander := &analysis.EnvMacroExpander{Env: env}
+expander.LoadWorkspaceMacros(forms) // returns one error per form that failed
+lib := analysis.AnalyzeFile(src, "counters.lisp", &analysis.Config{
+    MacroExpander: expander,
+})
+facts := lib.GeneratedDefinitions() // hits, hits-value, bump-hits; GeneratedBy.Macro == "defcounter"
+other := analysis.AnalyzeFile(otherSrc, "report.lisp", &analysis.Config{ExtraGlobals: facts})
+```
+
+With an expander, a call whose head starts with `def` is analyzed through its
+expansion instead of the name-based guess; `Config.DefForms` entries still
+take priority. When expansion fails (the macro is not loaded in the env, or
+it signals), the analyzer falls back to that name-based guess, and a name it
+guesses has `GeneratedBy` nil. Each call site is expanded at most once per
+analysis.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.
