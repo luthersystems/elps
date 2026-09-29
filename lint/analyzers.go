@@ -2939,15 +2939,13 @@ func astutilQuotedName(v *lisp.LVal) string {
 	if v == nil {
 		return ""
 	}
-	switch v.Type {
-	case lisp.LSymbol, lisp.LString:
+	if v.Type == lisp.LSymbol || v.Type == lisp.LString {
 		return v.Str
-	case lisp.LSExpr:
-		if len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
-			(v.Cells[0].Str == "quote" || v.Cells[0].Str == "lisp:quote") &&
-			v.Cells[1].Type == lisp.LSymbol {
-			return v.Cells[1].Str
-		}
+	}
+	if v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+		(v.Cells[0].Str == "quote" || v.Cells[0].Str == "lisp:quote") &&
+		v.Cells[1].Type == lisp.LSymbol {
+		return v.Cells[1].Str
 	}
 	return ""
 }
