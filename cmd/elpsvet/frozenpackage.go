@@ -35,6 +35,7 @@ var packageWriteFunctions = map[string]string{
 	"Package.putSlot":                    "rebinds an existing frozen name in this VM's own baseValues slot and slotFunNames overlay; shared base tables are never written",
 	"Package.thaw":                       "the only builder of private tables from a frozen base; reached only through ensureWritable",
 	"NewPackage":                         "constructs an unpublished unfrozen package",
+	"Package.reserve":                    "replaces the empty tables of a package that has no binding, no base and no lazy plan with presized empty ones; frozen and lazy packages are left untouched",
 	"admitPackage":                       "constructs an unpublished unfrozen admission snapshot",
 	"templatePlan.instantiateEager":      "constructs private VM packages before registry publication",
 	"templatePlan.instantiateLazy":       "constructs private VM package shells before registry publication",

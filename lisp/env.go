@@ -31,6 +31,10 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Package.Doc = `The core ELPS language package. Provides fundamental data types,
 		control flow, function and macro definition, package management,
 		error handling, collections, I/O, and the type system.`
+	// Room for every default definition and the typedef, so registration
+	// does not grow lisp's tables one doubling at a time.
+	env.Runtime.Package.reserve(len(langMacros) + len(userMacros) + len(langSpecialOps) +
+		len(userSpecialOps) + len(langBuiltins) + len(userBuiltins) + 1)
 	env.AddMacros(true)
 	env.AddSpecialOps(true)
 	env.AddBuiltins(true)
@@ -312,6 +316,9 @@ func (env *LEnv) UsePackage(name *LVal) *LVal {
 		return env.Errorf("unknown package: %v", name.Str)
 	}
 	dst := env.Runtime.Package
+	// A fresh package importing a whole package (every in-package package
+	// imports lisp) gets its tables sized once instead of grown.
+	dst.reserve(pkg.NumExternals())
 	for sym := range pkg.externalNames() {
 		if sym == TrueSymbol || sym == FalseSymbol {
 			// Exporting a boolean constant was always a no-op: pkg.Get

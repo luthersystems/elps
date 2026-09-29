@@ -51,6 +51,7 @@ var lazyTableFunctions = map[string]string{
 	"sortedmap.entry":            "the filling accessor for sorted-map entries: replaces a lazyPending entry before returning it",
 	"sortedmap.forceAll":         "the forcing sweep over sorted-map entries; each pending entry goes through sortedmap.entry",
 	"sortedmap.discardPending":   "compares an entry against lazyPending to keep the pending count exact before a write or delete",
+	"Package.reserve":            "reads only the length of the table, and only in a package with no lazy plan, to confirm it is empty before presizing it",
 	// Readers that force first.
 	"Package.symbolTable":                "calls materializeSymbols before cloning, and reads base slots through baseValue",
 	"Package.thaw":                       "copies materialized slots and carries unmaterialized ones across as lazyPending, never reading their value",
