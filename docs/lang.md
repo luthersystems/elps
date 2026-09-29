@@ -1996,8 +1996,8 @@ URL format for organizational clarity and to avoid package name collisions.
   operators — `set`, `defun`, `lambda`, `funcall`, `apply`, `map`, `eval`,
   `in-package`, `help`, `test`, … — are the language, so they bind and look
   up names in the package that is current where you call them.
-- **A prefixed library runs in its own package**, exactly as if the same code
-  were Lisp written in that package. That holds for a library function
+- **A prefixed library runs in its own package**, as if the same code were
+  Lisp written in that package. That holds for a library function
   written in Lisp and, since elps#736, for one written in Go (`string:`,
   `json:`, `s:`, an embedder's packages): while it runs, its own package is
   current, and yours is restored when it returns, fails or panics.

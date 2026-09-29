@@ -18,6 +18,10 @@ func builtinInPackage(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return env.InPackage(args) // want `calls env.InPackage, which changes the current package`
 }
 
+func builtinTerminal(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return env.Terminal(args) // want `calls env.Terminal, which hands back an expression the caller evaluates in the caller's package`
+}
+
 func builtinPackageRead(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Symbol(env.Runtime.Package.Name) // want `builtinPackageRead reads Runtime.Package`
 }

@@ -109,7 +109,7 @@ func DefaultMacros() []LBuiltinDef {
 	for i := range langMacros {
 		// A host that registered its own macro under a name lisp gained
 		// later keeps it; see lateMacros.
-		if lateMacros[langMacros[i].Name()] && userMacroNamed(langMacros[i].Name()) {
+		if lateMacros[langMacros[i].Name()] && hostRegistered(langMacros[i].Name()) {
 			continue
 		}
 		ops = append(ops, langMacros[i])
@@ -126,15 +126,6 @@ func DefaultMacros() []LBuiltinDef {
 // lateSpecialOps' rule: a host registration under one of these names replaces
 // lisp's macro instead of colliding with it.
 var lateMacros = map[string]bool{"test-let": true, "test-let*": true, "benchmark-simple": true}
-
-func userMacroNamed(name string) bool {
-	for _, m := range userMacros {
-		if m.Name() == name {
-			return true
-		}
-	}
-	return false
-}
 
 func macroDefmacro(env *LEnv, args *LVal) *LVal {
 	sym, formals, body := args.Cells[0], args.Cells[1], args.Cells[2:]

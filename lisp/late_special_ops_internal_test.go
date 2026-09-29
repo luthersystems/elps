@@ -62,3 +62,50 @@ func TestLateSpecialOpAddIntoLispReplaces(t *testing.T) {
 		}
 	}
 }
+
+// TestLateNamesHostRegistrationAnyKind pins the #736 late names against
+// every host registration kind: a host that registered help, test,
+// benchmark, test-let, test-let* or benchmark-simple -- as a special
+// operator, a macro or a builtin -- keeps initializing, and its definition
+// wins.  InitializeUserEnv adds macros, then special operators, then
+// builtins, so a host macro named like a lisp operator used to collide.
+func TestLateNamesHostRegistrationAnyKind(t *testing.T) {
+	names := []string{"help", "test", "benchmark", "test-let", "test-let*", "benchmark-simple", "when"}
+	kinds := []struct {
+		name  string
+		table *[]*langBuiltin
+		ret   func() *LVal
+	}{
+		{"special-op", &userSpecialOps, func() *LVal { return String("host") }},
+		{"macro", &userMacros, func() *LVal { return Quote(String("host")) }},
+		{"builtin", &userBuiltins, func() *LVal { return String("host") }},
+	}
+	for _, kind := range kinds {
+		for _, name := range names {
+			t.Run(kind.name+"/"+name, func(t *testing.T) {
+				saved := *kind.table
+				defer func() { *kind.table = saved }()
+				ret := kind.ret
+				*kind.table = append(saved[:len(saved):len(saved)],
+					&langBuiltin{name, Formals(VarArgSymbol, "args"), func(*LEnv, *LVal) *LVal { return ret() }, "host " + name})
+				env := NewEnv(nil)
+				var rc *LVal
+				func() {
+					defer func() {
+						if r := recover(); r != nil {
+							t.Fatalf("InitializeUserEnv panicked: %v", r)
+						}
+					}()
+					rc = InitializeUserEnv(env)
+				}()
+				if rc.Type == LError {
+					t.Fatal(rc)
+				}
+				got := env.Eval(SExpr([]*LVal{Symbol(name), String("x")}))
+				if got.Type != LString || got.Str != "host" {
+					t.Fatalf("host %s %s not installed: %v", kind.name, name, got)
+				}
+			})
+		}
+	}
+}

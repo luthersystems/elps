@@ -2336,8 +2336,13 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// registered in any package other than lisp runs in its own package too
 	// (the swap in the builtin branch above), and the caller's package is
 	// restored on return, on error, on panic and before a terminal
-	// expression is evaluated, so a library builtin can never change or see
-	// the caller's package.  Core lisp -- its builtins, macros and every
+	// expression is evaluated, so a library builtin cannot change the
+	// caller's package or resolve a global name in it.  Only the package
+	// switches: a builtin still receives the caller's env, so a lexical
+	// lookup (env.Get of a let-bound name) still sees the caller's lexical
+	// scope, and an expression it hands back with env.Terminal is evaluated
+	// in the caller, after the switch is undone, like a macro expansion
+	// (elpsownpkg reports both).  Core lisp -- its builtins, macros and every
 	// special operator -- is the language and acts in the caller's package:
 	// that is what lets set, defun, defmacro, in-package, funcall with a
 	// quoted name and the rest bind and resolve where the caller is.  There

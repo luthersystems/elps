@@ -237,7 +237,7 @@ func DefaultSpecialOps() []LBuiltinDef {
 	for i := range langSpecialOps {
 		// A host that registered its own operator under a name lisp gained
 		// later keeps it; see lateSpecialOps.
-		if lateSpecialOps[langSpecialOps[i].Name()] && userSpecialOpNamed(langSpecialOps[i].Name()) {
+		if lateSpecialOps[langSpecialOps[i].Name()] && hostRegistered(langSpecialOps[i].Name()) {
 			continue
 		}
 		ops = append(ops, langSpecialOps[i])
@@ -258,10 +258,17 @@ func DefaultSpecialOps() []LBuiltinDef {
 // issue #736.
 var lateSpecialOps = map[string]bool{"when": true, "unless": true, "while": true, "default": true, "help": true, "test": true, "benchmark": true}
 
-func userSpecialOpNamed(name string) bool {
-	for _, op := range userSpecialOps {
-		if op.Name() == name {
-			return true
+// hostRegistered reports whether a host registered name through
+// RegisterDefaultSpecialOp, RegisterDefaultMacro or RegisterDefaultBuiltin.
+// Any kind counts: InitializeUserEnv adds macros, then special operators,
+// then builtins, so a host's macro named like one of lisp's late operators
+// would otherwise collide with it.
+func hostRegistered(name string) bool {
+	for _, table := range [][]*langBuiltin{userSpecialOps, userMacros, userBuiltins} {
+		for _, def := range table {
+			if def.Name() == name {
+				return true
+			}
 		}
 	}
 	return false
@@ -274,8 +281,7 @@ func replaceableLateOp(pkg *Package, name string, exist *LVal) bool {
 	if pkg.Name != DefaultLangPackage || exist.Type != LFun || exist.Package() != DefaultLangPackage {
 		return false
 	}
-	return (lateSpecialOps[name] && exist.FunType == LFunSpecialOp) ||
-		(lateMacros[name] && exist.FunType == LFunMacro)
+	return lateSpecialOps[name] || lateMacros[name]
 }
 
 func opFunction(env *LEnv, args *LVal) *LVal {

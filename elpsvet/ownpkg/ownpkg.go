@@ -7,7 +7,7 @@
 // the lookup.  Core lisp (package github.com/luthersystems/elps/lisp) acts in
 // the caller's package: set, defun, in-package, funcall with a quoted name and
 // the rest are the language.  Every other Go builtin or Go macro runs in its
-// OWN package while it runs, exactly like a Lisp function defined there
+// OWN package while it runs, like a Lisp function defined there
 // (lisp/env.go, the builtin branch of LEnv.call).  So inside a library
 // builtin, env.Runtime.Package is the library's package, which a library
 // package usually defines without importing lisp.  An operation that depends
@@ -31,7 +31,11 @@
 //
 //   - evaluating or loading code: Eval*, Load*, MacroCall, SpecialOpCall;
 //   - building a closure: Lambda, which stamps the current package into the
-//     function it returns;
+//     function it returns (and closes over the caller's lexical scope,
+//     which a builtin still receives: only the package switches);
+//   - handing back an expression: Terminal, which the caller evaluates in
+//     the caller's package after the switch is undone, like a macro
+//     expansion;
 //   - changing or writing the current package: InPackage, UsePackage,
 //     SetPackageDoc, SetSymbolDoc, AddBuiltins, AddMacros, AddSpecialOps;
 //   - resolving or binding a symbol: Get, GetGlobal, GetFun, GetFunGlobal,
@@ -96,6 +100,7 @@ var Analyzer = &analysis.Analyzer{
 // callMethods are the *lisp.LEnv methods reported whatever their arguments.
 var callMethods = map[string]string{
 	"Lambda":        "builds a closure stamped with the current package",
+	"Terminal":      "hands back an expression the caller evaluates in the caller's package",
 	"InPackage":     "changes the current package",
 	"UsePackage":    "imports into the current package",
 	"SetPackageDoc": "writes the current package",

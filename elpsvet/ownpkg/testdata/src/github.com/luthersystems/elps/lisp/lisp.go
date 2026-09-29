@@ -22,6 +22,7 @@ func (env *LEnv) Get(k *LVal) *LVal                     { return k }
 func (env *LEnv) GetFun(k *LVal) *LVal                  { return k }
 func (env *LEnv) PutGlobal(k, v *LVal) *LVal            { return v }
 func (env *LEnv) FunCall(f, args *LVal) *LVal           { return f }
+func (env *LEnv) Terminal(expr *LVal) *LVal             { return expr }
 func (env *LEnv) Errorf(format string, a ...any) *LVal  { return nil }
 
 // Core builtins act in the caller's package: nothing here is reported.

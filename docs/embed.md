@@ -280,13 +280,22 @@ packages, bound under a given symbol.
 ### Go functions run in their own package
 
 **Breaking change (elps#736).** A Go builtin or Go macro registered in any
-package other than `lisp` now runs with **its own package current**, exactly
-like a Lisp function defined in that package. Before, it ran in whatever
-package its caller had current. The caller's package is restored when the
-builtin returns, fails, panics, or hands back a terminal expression, so a
-library builtin can neither see nor change the caller's package. Core `lisp`
+package other than `lisp` now runs with **its own package current**, like a
+Lisp function defined in that package. Before, it ran in whatever package its
+caller had current. The caller's package is restored when the builtin returns,
+fails, panics, or hands back a terminal expression, so a library builtin
+cannot change the caller's package or resolve a global name in it. Core `lisp`
 builtins, macros and all special operators are unchanged: they are the
 language and act in the caller's package. There are no exceptions.
+
+Only the **package** switches. A builtin still receives the caller's `env`,
+so a lexical lookup still sees the caller's lexical scope: `env.Get` of a
+`let`-bound name the caller passed finds the caller's binding, while a
+global name resolves in the library's package — a mix no Lisp function can
+produce. Likewise an expression a builtin hands back with `env.Terminal` is
+evaluated in the caller, after the switch is undone, exactly like a macro
+expansion. Both are reported by `elpsownpkg` (below); avoid them in favour of
+values.
 
 The rule is the one ELPS applies to every name: **a name resolves in the
 package of the code doing the lookup** (see "Where a name resolves" in
@@ -296,10 +305,10 @@ namespace resolution, so where the lookup happens decides what a name means.
 
 What this means for a builtin you write:
 
-- **Anything it resolves by name resolves in its own package.** `env.Get`,
+- **Any global name it resolves resolves in its own package.** `env.Get`,
   `env.GetFun`, `env.GetFunGlobal`, `env.PutGlobal`, `env.Eval*`,
   `env.Load*` and `env.Lambda` all act in the builtin's package, not the
-  caller's. A package created with `DefinePackage` or `elpsutil.PackageLoader`
+  caller's (lexical names excepted, as above). A package created with `DefinePackage` or `elpsutil.PackageLoader`
   does not import `lisp`, so an unqualified `set` or `+` evaluated there is
   unbound: qualify it (`lisp:set`).
 - **Take values, not names.** Accept a function value rather than a quoted
@@ -320,9 +329,11 @@ What this means for a builtin you write:
   a library should use a function or a macro. elps itself defines none
   outside `lisp` (`TestNoLibrarySpecialOps`).
 
-What moved as a result: `help` is core (`lisp:help`; the `help` package keeps
-`help-package`, `help-package-symbols` and `help-packages`, now ordinary
-functions), and `test`, `benchmark`, `test-let`, `test-let*` and
+What moved as a result: `help` is core (`lisp:help`; `help:help` is gone, with
+no alias; the `help` package keeps `help-package`, `help-package-symbols` and
+`help-packages`, now ordinary functions, so their argument is evaluated: the
+documented `(help-package 'math)` is unchanged, but an unquoted
+`(help-package math)` now evaluates `math`), and `test`, `benchmark`, `test-let`, `test-let*` and
 `benchmark-simple` are core forms that raise `no test suite` where the
 `testing` package is not loaded. Package `testing` re-exports them, so
 `(use-package 'testing)` and `testing:test` keep working.
@@ -332,8 +343,8 @@ functions), and `test`, `benchmark`, `test-let`, `test-let*` and
 **Enforcement.** The `elpsownpkg` analyzer (package
 `github.com/luthersystems/elps/elpsvet/ownpkg`, importable into your own
 `go/analysis` multichecker) reports package-sensitive operations inside a
-library builtin: `Eval*`, `Load*`, `Lambda`, `InPackage`, reads of
-`Runtime.Package`, and symbol lookups that are not literal qualified names.
+library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
+of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
 
 ## Testing Functions
