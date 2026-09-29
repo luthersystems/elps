@@ -1,7 +1,7 @@
 # Canonical value codec
 
-`lisp.EncodeCanonical` / `lisp.DecodeCanonical` (and the `serialize` /
-`deserialize` builtins) write a value as bytes that depend only on its types
+`lisp.EncodeCanonical` / `lisp.DecodeCanonical` (and the `codec:encode` /
+`codec:decode` functions of the `codec` package) write a value as bytes that depend only on its types
 and structure (luthersystems/elps#747, item 3).  The encoding is
 type-faithful and so finer than `equal?`: `1` and `1.0`, or a string and a
 symbol map key of one spelling, are `equal?` but encode differently
@@ -116,7 +116,7 @@ value-only encoding.
 
 ## Step charges
 
-`serialize` charges `ChargeStartedKiB(len(output))` after encoding;
-`deserialize` charges `ChargeStartedKiB(len(input))` before decoding.  Both
+`codec:encode` charges `ChargeStartedKiB(len(output))` after encoding;
+`codec:decode` charges `ChargeStartedKiB(len(input))` before decoding.  Both
 depend only on the bytes, so every peer charges the same.  The work an
 encode does before its charge is bounded by the byte limit.

@@ -71,7 +71,7 @@ directions, so keep or drop a `//nolint` on the evidence of CI's pinned version
   pass `WithFormatPreserving()` for the tooling (formatter/LSP) variant.
 - **`lisp/lisplib/`** — Standard library loaded by `LoadLibrary()` (assembled
   in `internal/stdlib`): time, help, golang, math, string, base64, json,
-  regexp, testing, schema, elpspath.
+  regexp, testing, schema, elpspath, codec.
 - **`cmd/`** — Cobra CLI commands: `run`, `repl`, `doc`, `lint`, `fmt`, `lsp`,
   `minify`, `analyze`, `debug`, `mcp`.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,

@@ -144,23 +144,6 @@ var (
 		{"to-bytes", Formals("value"), builtinToBytes,
 			`Converts value to a bytes value. Accepts strings (encoded as
 			UTF-8) and bytes (returned as-is).`},
-		{"serialize", Formals("value"), builtinSerialize,
-			`Returns the canonical encoding of value as bytes. Values of
-			the same types and structure always give identical bytes
-			(equal? is coarser: 1 and 1.0 encode differently), so the
-			result can be hashed,
-			used as a key or stored and read back with deserialize.
-			Accepts ints, floats, strings, bytes, symbols, keywords,
-			lists, arrays, sorted-maps and tagged values; functions,
-			errors, native values and cyclic values raise an error.
-			Shared structure is written out in full at each occurrence.
-			Costs one step per started KiB of output.`},
-		{"deserialize", Formals("bytes"), builtinDeserialize,
-			`Returns the value encoded in bytes, which must be exactly what
-			serialize produced; anything else raises an error. The value
-			is newly allocated and shares nothing with any other value.
-			Lists come back as data lists, as list builds them. Costs one
-			step per started KiB of input.`},
 		{"to-int", Formals("value"), builtinToInt,
 			`Converts value to an integer. Accepts strings (parsed as
 			decimal), integers (returned as-is), and floats (truncated toward

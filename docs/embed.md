@@ -700,7 +700,7 @@ nature and their semantics could change.
 ### Canonical encoding
 
 `lisp.EncodeCanonical` and `lisp.DecodeCanonical` are the Go side of the
-`serialize` and `deserialize` builtins.  Values of the same types and
+`codec:encode` and `codec:decode` functions of the `codec` package.  Values of the same types and
 structure always encode to the same bytes (the encoding is finer than
 `equal?`, which equates `1` and `1.0`), so a host can hash them, use them as a key, or store them and
 read them back in another process or release.
@@ -752,7 +752,7 @@ colorCodec := lisp.NativeCodec{
 b, err := lisp.EncodeCanonical(lisp.Native(rgb{255, 128, 0}), lisp.WithNativeCodec(colorCodec))
 ```
 
-The Lisp `serialize` and `deserialize` builtins register no native codecs.
+The Lisp `codec` package registers no native codecs.
 The byte format is described in
 [internals/canonical-codec.md](internals/canonical-codec.md).
 

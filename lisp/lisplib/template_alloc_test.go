@@ -13,7 +13,7 @@ func TestTemplatePublicationAllocationBudget(t *testing.T) {
 	for _, tc := range []struct {
 		functions int
 		base      float64
-	}{{0, 520}, {250, 1779}} {
+	}{{0, 547}, {250, 1806}} {
 		t.Run(strconv.Itoa(tc.functions), func(t *testing.T) {
 			env := templatePlanBenchmarkFixture(t, tc.functions)
 			allocations := testing.AllocsPerRun(20, func() { snapshotFixture(t, env) })
@@ -24,7 +24,8 @@ func TestTemplatePublicationAllocationBudget(t *testing.T) {
 			// binding, and is paid once at publication; NewVM drops from
 			// thousands of allocations to tens. Traversal scratch must not
 			// add allocations per binding, builtin environment, or sealed
-			// scalar.
+			// scalar.  The codec package (#747) added 27 per publication, the
+			// flat per-package cost of one more stdlib package.
 			if allocations > tc.base*1.05 {
 				t.Fatalf("publication used %g allocations, want within 5%% of %g", allocations, tc.base)
 			}

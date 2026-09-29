@@ -7,6 +7,7 @@ package stdlib
 import (
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libbase64"
+	"github.com/luthersystems/elps/lisp/lisplib/libcodec"
 	"github.com/luthersystems/elps/lisp/lisplib/libelpspath"
 	"github.com/luthersystems/elps/lisp/lisplib/libgolang"
 	"github.com/luthersystems/elps/lisp/lisplib/libhelp"
@@ -45,6 +46,10 @@ func Load(env *lisp.LEnv, testing bool) *lisp.LVal {
 		return e
 	}
 	e = libbase64.LoadPackage(env)
+	if !e.IsNil() {
+		return e
+	}
+	e = libcodec.LoadPackage(env)
 	if !e.IsNil() {
 		return e
 	}

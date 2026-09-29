@@ -1695,10 +1695,11 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 9007199254740993
 ```
 
-### Serializing values (`serialize`, `deserialize`)
+### Canonical encoding (`codec`)
 
-`serialize` turns a value into bytes and `deserialize` turns those bytes
-back into the same value.  The encoding is *canonical*: values of the same
+The `codec` standard-library package turns a value into bytes with
+`codec:encode` and turns those bytes back into the same value with
+`codec:decode`.  The encoding is *canonical*: values of the same
 types and structure always produce the same bytes, whatever order a map's
 entries were added in and whichever cells happen to be shared, on every
 machine and in every process.  It is type-faithful, so it is finer than
@@ -1709,23 +1710,23 @@ a content hash, as a deterministic test fixture, and for passing a value to
 another process.
 
 ```lisp
-elps> (serialize '(1 "a" :k))
+elps> (codec:encode '(1 "a" :k))
 #<bytes 1 8 3 1 2 4 1 97 7 1 107>
-elps> (deserialize (serialize (vector 1.5 (sorted-map "b" 2 :a 1))))
+elps> (codec:decode (codec:encode (vector 1.5 (sorted-map "b" 2 :a 1))))
 (vector 1.5 (sorted-map ':a 1 "b" 2))
-elps> (equal? (serialize (sorted-map "x" 1 "y" 2))
-              (serialize (sorted-map "y" 2 "x" 1)))
+elps> (equal? (codec:encode (sorted-map "x" 1 "y" 2))
+              (codec:encode (sorted-map "y" 2 "x" 1)))
 true
 ```
 
-A memoized function can key its cache on the serialized arguments, so two
+A memoized function can key its cache on the encoded arguments, so two
 argument lists of the same types and structure hit the same entry even when
 they are different objects:
 
 ```lisp
 (set 'cache (sorted-map))
 (defun area (shape)
-  (let* ((k (to-string (serialize shape)))
+  (let* ((k (to-string (codec:encode shape)))
          (hit (get cache k)))
     (or hit
         (let ((a (* (get shape "w") (get shape "h"))))
@@ -1735,7 +1736,7 @@ they are different objects:
 (area (sorted-map "h" 4 "w" 3))   ; same key, served from the cache
 ```
 
-What can be serialized: ints, floats, strings, bytes, symbols, keywords,
+What can be encoded: ints, floats, strings, bytes, symbols, keywords,
 lists, arrays of any rank, sorted-maps and tagged values (see
 [User-Defined Types](#user-defined-types)).  `true` and `false` are symbols
 and round-trip as such.  Functions, errors and native Go values raise an
@@ -1748,18 +1749,20 @@ Details that are part of the format:
 - **Lists** come back as data lists, the value `list` returns.  Whether a
   list was quoted is not data and is not recorded.
 - **Shared structure** is written out in full at every place it occurs, and
-  `deserialize` never returns two references to one cell: every value it
+  `codec:decode` never returns two references to one cell: every value it
   returns is new and shares nothing, so mutating it cannot affect anything
   else.
-- **Tagged values** keep their type name and data.  `deserialize` does not
-  run the type's constructor.
-- **Limits**: `deserialize` accepts only bytes `serialize` could have
+- **Tagged values** keep their type name and data.  `codec:decode` does not
+  run the type's constructor, and does not check the value against any type
+  defined with `deftype`: the bytes may name a type this program never
+  defined.
+- **Limits**: `codec:decode` accepts only bytes `codec:encode` could have
   produced and raises an error on anything else, including extra trailing
   bytes.  Nesting deeper than 1024 levels, more than 2^20 values, or an
   encoding larger than 16 MiB (or the runtime's allocation limit, if lower)
   raises an error.
-- **Steps**: `serialize` costs one step per started KiB of output and
-  `deserialize` one per started KiB of input.
+- **Steps**: `codec:encode` costs one step per started KiB of output and
+  `codec:decode` one per started KiB of input.
 
 The format begins with a version byte and is frozen: bytes written today
 decode the same way in every later release.  The byte layout is described in
