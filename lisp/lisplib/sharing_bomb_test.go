@@ -56,7 +56,7 @@ func TestSharingBombLibraries(t *testing.T) {
 		`(apply elpspath:?set! (star-path 2))`,
 		`(apply elpspath:?del! (star-path 0))`,
 		`(apply elpspath:?nil! (star-path 0))`,
-		`(s:deftype "shared" "any" (s:in x)) (s:validate shared y)`,
+		`(set 'shared (s:make-validator "shared" "any" (s:in x))) (s:validate shared y)`,
 		`(sorted-map "k" x)`,
 		`(vector x x)`,
 	} {

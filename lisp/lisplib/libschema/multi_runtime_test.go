@@ -50,7 +50,7 @@ func evenValidator() *lisp.LVal {
 // function ID from GenSymbol, which incremented an unsynchronised
 // package-level int. Two runtimes evaluating schema code on two goroutines
 // therefore raced on that counter, with no Go embedder involvement required:
-// (s:deftype ...) alone is enough.
+// (s:make-validator ...) alone is enough.
 //
 // On main this failed under -race with, per goroutine pair:
 //
@@ -91,7 +91,7 @@ func TestValidatorConstructionIsRaceFree(t *testing.T) {
 				// s:int and s:gt each call newValidator, and deftype
 				// wraps them in another.
 				res := envs[i].LoadStringContext(context.Background(), "multiruntime",
-					`(s:deftype "T" s:int (s:gt 0)) (s:validate T 4)`)
+					`(set 'T (s:make-validator "T" s:int (s:gt 0))) (s:validate T 4)`)
 				if res.Type == lisp.LError {
 					t.Errorf("runtime %d: %v", i, res)
 					return
@@ -270,9 +270,9 @@ func TestSharedValidatorIsNotMutatedByEvaluation(t *testing.T) {
 		src   string
 		valid bool
 	}{
-		{`(s:deftype "T" s:int even?) (s:validate T 4)`, true},
-		{`(s:deftype "T" s:int even?) (s:validate T 5)`, false},
-		{`(s:deftype "T" s:sorted-map (s:has-key "a" even?)) (s:validate T (sorted-map "a" 2))`, true},
+		{`(set 'T (s:make-validator "T" s:int even?)) (s:validate T 4)`, true},
+		{`(set 'T (s:make-validator "T" s:int even?)) (s:validate T 5)`, false},
+		{`(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" even?))) (s:validate T (sorted-map "a" 2))`, true},
 	} {
 		// A FRESH runtime per case: this is the usage the issue reports,
 		// and the point is that the validator survives it unchanged.
@@ -328,7 +328,7 @@ func TestSharedValidatorConcurrentAcrossRuntimes(t *testing.T) {
 			defer wg.Done()
 			for range niter {
 				res := envs[i].LoadStringContext(context.Background(), "shared",
-					`(s:deftype "T" s:int even?) (s:validate T 4)`)
+					`(set 'T (s:make-validator "T" s:int even?)) (s:validate T 4)`)
 				if res.Type == lisp.LError {
 					t.Errorf("runtime %d: %v", i, res)
 					return

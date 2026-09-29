@@ -152,7 +152,7 @@ func TestKeyConstraintsAgreeAcrossMapImplementations(t *testing.T) {
 				if c.at != nil {
 					m = f.expr(*c.at)
 				}
-				src := `(s:deftype "T" s:sorted-map ` + c.def + `)
+				src := `(set 'T (s:make-validator "T" s:sorted-map ` + c.def + `))
 					(s:validate T ` + m + `)`
 				if got := validates(t, c.name, src); got != c.valid {
 					t.Fatalf("expected valid=%v, got %v\n--- source ---\n%s",
@@ -176,9 +176,9 @@ func TestMayHaveKeyAgreesWithHasKeyOnPresence(t *testing.T) {
 		for _, v := range []value{vString, vNumber, vBool, vMap} {
 			t.Run(f.name+"/"+v.name, func(t *testing.T) {
 				m := f.expr(v)
-				has := validates(t, "has", `(s:deftype "T" s:sorted-map (s:has-key "a" s:string))
+				has := validates(t, "has", `(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" s:string)))
 					(s:validate T `+m+`)`)
-				may := validates(t, "may", `(s:deftype "T" s:sorted-map (s:may-have-key "a" s:string))
+				may := validates(t, "may", `(set 'T (s:make-validator "T" s:sorted-map (s:may-have-key "a" s:string)))
 					(s:validate T `+m+`)`)
 				if has != may {
 					t.Fatalf("key is present, so s:has-key and s:may-have-key must agree: "+
@@ -230,19 +230,19 @@ func TestMayHaveKeyInversionSites(t *testing.T) {
 		// map itself.
 		{
 			"not/inner-passes-so-not-fails",
-			`(s:deftype "T" s:sorted-map (s:not (s:may-have-key "a" s:string)))
+			`(set 'T (s:make-validator "T" s:sorted-map (s:not (s:may-have-key "a" s:string))))
 			 (s:validate T (json:load-string "{\"a\": \"str\"}"))`,
 			false,
 		},
 		{
 			"not/inner-fails-so-not-passes",
-			`(s:deftype "T" s:sorted-map (s:not (s:may-have-key "a" s:string)))
+			`(set 'T (s:make-validator "T" s:sorted-map (s:not (s:may-have-key "a" s:string))))
 			 (s:validate T (json:load-string "{\"a\": 1}"))`,
 			true,
 		},
 		{
 			"not/key-absent-so-inner-passes-so-not-fails",
-			`(s:deftype "T" s:sorted-map (s:not (s:may-have-key "a" s:string)))
+			`(set 'T (s:make-validator "T" s:sorted-map (s:not (s:may-have-key "a" s:string))))
 			 (s:validate T (json:load-string "{\"z\": 0}"))`,
 			false,
 		},
@@ -251,13 +251,13 @@ func TestMayHaveKeyInversionSites(t *testing.T) {
 		// VALUE at the key, so the value has to be a map itself.
 		{
 			"when-guard/guard-satisfied-clause-runs-and-fails",
-			`(s:deftype "T" s:sorted-map (s:when "sub" (s:may-have-key "a" s:string) "n" (s:gt 100)))
+			`(set 'T (s:make-validator "T" s:sorted-map (s:when "sub" (s:may-have-key "a" s:string) "n" (s:gt 100))))
 			 (s:validate T (json:load-string "{\"sub\": {\"a\": \"str\"}, \"n\": 1}"))`,
 			false,
 		},
 		{
 			"when-guard/guard-unsatisfied-clause-skipped",
-			`(s:deftype "T" s:sorted-map (s:when "sub" (s:may-have-key "a" s:string) "n" (s:gt 100)))
+			`(set 'T (s:make-validator "T" s:sorted-map (s:when "sub" (s:may-have-key "a" s:string) "n" (s:gt 100))))
 			 (s:validate T (json:load-string "{\"sub\": {\"a\": 1}, \"n\": 1}"))`,
 			true,
 		},
@@ -312,7 +312,7 @@ func TestMayHaveKeyCannotSilentlyPassOnAnUnsearchableMap(t *testing.T) {
 		t.Fatalf("bind: %v", rc)
 	}
 	res := env.LoadStringContext(context.Background(), "hostile",
-		`(s:deftype "T" s:sorted-map (s:may-have-key "a" s:string)) (s:validate T hostile)`)
+		`(set 'T (s:make-validator "T" s:sorted-map (s:may-have-key "a" s:string))) (s:validate T hostile)`)
 	if lisp.IsInternalPanic(res) {
 		t.Fatalf("panicked instead of answering: %v", res)
 	}
@@ -330,7 +330,7 @@ func TestMayHaveKeyCannotSilentlyPassOnAnUnsearchableMap(t *testing.T) {
 		t.Fatalf("bind: %v", rc)
 	}
 	if res := env2.LoadStringContext(context.Background(), "hostile-has",
-		`(s:deftype "T" s:sorted-map (s:has-key "a" s:string)) (s:validate T hostile)`); res.Type != lisp.LError {
+		`(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" s:string))) (s:validate T hostile)`); res.Type != lisp.LError {
 		t.Fatalf("s:has-key unexpectedly passed on an unsearchable map: %v", res)
 	}
 }

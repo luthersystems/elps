@@ -97,12 +97,12 @@ func assertValidates(t *testing.T, env *lisp.LEnv, name, src string) {
 
 // TestForkPreservesValidatorCredential is the catch for issue #579.
 //
-// A validator minted on the template -- by s:deftype, and by
+// A validator minted on the template -- by s:make-validator directly, and by
 // s:make-validator wrapping an s: constructor -- must still be a validator in
 // a fork of that template, and a fork must still be able to mint its own.
 func TestForkPreservesValidatorCredential(t *testing.T) {
 	env := newSchemaForkEnv(t)
-	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)
+	mustLoad(t, env, "template.lisp", `(set 'T (s:make-validator "T" s:int))
 (set 'anon (s:make-validator "Anon" s:int (s:gt 1)))`)
 	// The template itself validates: this is the non-fork behaviour, and it
 	// must be unchanged by the fix.
@@ -115,7 +115,7 @@ func TestForkPreservesValidatorCredential(t *testing.T) {
 	// minted on the template, reached from the fork.
 	assertValidates(t, fork, "fork-anon.lisp", `(s:validate anon 3)`)
 	// A validator minted inside the fork, from the fork's own s: package.
-	assertValidates(t, fork, "fork-deftype.lisp", `(s:deftype "U" s:string) (s:validate U "x")`)
+	assertValidates(t, fork, "fork-deftype.lisp", `(set 'U (s:make-validator "U" s:string)) (s:validate U "x")`)
 	assertValidates(t, fork, "fork-anon-new.lisp", `(s:validate (s:make-validator "Fresh" s:string) "x")`)
 	// A failing validation must still FAIL as a constraint failure, not as a
 	// "not a constraint" credential error.  Pinning the POSITIVE text, not
@@ -142,7 +142,7 @@ func TestForkPreservesValidatorCredential(t *testing.T) {
 // only survived one construction would fail here.
 func TestForkOfForkPreservesValidatorCredential(t *testing.T) {
 	env := newSchemaForkEnv(t)
-	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)
+	mustLoad(t, env, "template.lisp", `(set 'T (s:make-validator "T" s:int))
 (set 'anon (s:make-validator "Anon" s:int))`)
 
 	fork := mustForkEnv(t, env)
@@ -162,7 +162,7 @@ func TestForkValidatorIsolation(t *testing.T) {
 	env := newSchemaForkEnv(t)
 	fork := mustForkEnv(t, env)
 
-	mustLoad(t, fork, "fork-only.lisp", `(s:deftype "ForkOnly" s:int)`)
+	mustLoad(t, fork, "fork-only.lisp", `(set 'ForkOnly (s:make-validator "ForkOnly" s:int))`)
 	assertValidates(t, fork, "fork-only-validate.lisp", `(s:validate ForkOnly 3)`)
 
 	// The error has to be an UNBOUND SYMBOL, not merely an error.  A
@@ -178,7 +178,7 @@ func TestForkValidatorIsolation(t *testing.T) {
 	}
 
 	// ... and the same in the other direction.
-	mustLoad(t, env, "template-only.lisp", `(s:deftype "TemplateOnly" s:int)`)
+	mustLoad(t, env, "template-only.lisp", `(set 'TemplateOnly (s:make-validator "TemplateOnly" s:int))`)
 	if res := fork.LoadString("fork-sees.lisp", `(s:validate TemplateOnly 3)`); res.Type != lisp.LError {
 		t.Fatalf("fork saw a template-only validator defined after the fork: %v", res)
 	} else if !strings.Contains(res.String(), "unbound symbol") {
@@ -203,7 +203,7 @@ func TestForkValidatorIsolation(t *testing.T) {
 // re-headered validator, so it inherited the revoked credential.
 func TestCopyOfForkedValidatorKeepsCredential(t *testing.T) {
 	env := newSchemaForkEnv(t)
-	mustLoad(t, env, "template.lisp", `(s:deftype "T" s:int)`)
+	mustLoad(t, env, "template.lisp", `(set 'T (s:make-validator "T" s:int))`)
 	// Control: unchanged behaviour on the template, passed before the fix.
 	assertValidates(t, env, "copy.lisp", `(s:validate (copy T) 3)`)
 

@@ -5,7 +5,6 @@ import (
 	"context"
 	"log"
 	"regexp"
-	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -20,21 +19,37 @@ func TestPackage(t *testing.T) {
 	r.RunTestFile(t, "libschema_test.lisp")
 }
 
-func TestDefTypeLispPackageSeal(t *testing.T) {
+// TestMakeValidatorNeverWritesCallerPackage pins #736's rule for libschema: a
+// prefixed library builtin must never write into the caller's package.
+// s:deftype used to violate it -- it bound its validator as a global under
+// the caller's own name, keyed off a string it never checked was already
+// bound (env.Get on an LString always returned nil, so its own "Symbol
+// already defined" guard never ran) -- and was removed for it. s:make-validator
+// is the replacement and the sole entry point today; it must merely return the
+// validator, leaving every binding decision (including a name that collides
+// with a sealed package member, like "lisp:if" below) to the caller's own
+// core `set`.
+func TestMakeValidatorNeverWritesCallerPackage(t *testing.T) {
 	for _, source := range []string{
-		`(s:deftype "lisp:if" s:int)`,
-		`(in-package 'lisp) (s:deftype "if" s:int)`,
-		`(set 'target "lisp:if") (s:deftype target s:int)`,
+		`(s:make-validator "lisp:if" s:int)`,
+		`(in-package 'lisp) (s:make-validator "if" s:int)`,
+		`(s:make-validator "untouched" s:int)`,
 	} {
 		t.Run(source, func(t *testing.T) {
 			env := newSchemaEnv(t)
-			got := env.LoadStringContext(context.Background(), "seal.lisp", source)
-			if got.Type != lisp.LError || !strings.Contains(got.String(), "cannot rebind lisp package binding: if") {
-				t.Errorf("expected seal error, got %v", got)
+			got := env.LoadStringContext(context.Background(), "no-write.lisp", source)
+			if got.Type == lisp.LError {
+				t.Fatalf("s:make-validator must not itself error: %v", got)
 			}
-			got = env.LoadStringContext(context.Background(), "next.lisp", `(in-package 'mypkg) (if true 'a 'b)`)
+			// Nothing was bound anywhere: core `if` still resolves to the
+			// sealed lisp package's own binding, and no global named
+			// "untouched" exists in any package make-validator touched.
+			got = env.LoadStringContext(context.Background(), "check.lisp", `(in-package 'user) (if true 'a 'b)`)
 			if got.String() != "'a" {
-				t.Errorf("later package core behavior: got %v, want 'a", got)
+				t.Errorf("core if must be untouched by make-validator: got %v, want 'a", got)
+			}
+			if fun := env.Get(lisp.Symbol("untouched")); !fun.IsNil() && fun.Type != lisp.LError {
+				t.Errorf("s:make-validator must not bind a global: found %v", fun)
 			}
 		})
 	}
@@ -57,35 +72,35 @@ func TestLenConstraintTypes(t *testing.T) {
 		valid bool
 	}{
 		// Measured types: the constraint really does check.
-		{"string len ok", `(s:deftype "T" s:string (s:len 3))`, `"abc"`, true},
-		{"string len wrong", `(s:deftype "T" s:string (s:len 3))`, `"abcd"`, false},
-		// "bytes" is not a deftype base type, so bytes reach the constraint
-		// through the "any" base.
-		{"bytes len ok", `(s:deftype "T" "any" (s:len 3))`, `(to-bytes "abc")`, true},
-		{"bytes len wrong", `(s:deftype "T" "any" (s:len 3))`, `(to-bytes "ab")`, false},
-		{"array len ok", `(s:deftype "T" s:array (s:len 3))`, `(vector 1 2 3)`, true},
-		{"array len wrong", `(s:deftype "T" s:array (s:len 3))`, `(vector 1 2)`, false},
-		{"lengt ok", `(s:deftype "T" s:string (s:lengt 2))`, `"abc"`, true},
-		{"lengt too short", `(s:deftype "T" s:string (s:lengt 3))`, `"abc"`, false},
-		{"lengte ok", `(s:deftype "T" s:string (s:lengte 3))`, `"abc"`, true},
-		{"lengte too short", `(s:deftype "T" s:string (s:lengte 4))`, `"abc"`, false},
-		{"lenlt ok", `(s:deftype "T" s:string (s:lenlt 4))`, `"abc"`, true},
-		{"lenlt too long", `(s:deftype "T" s:string (s:lenlt 3))`, `"abc"`, false},
-		{"lenlte ok", `(s:deftype "T" s:string (s:lenlte 3))`, `"abc"`, true},
-		{"lenlte too long", `(s:deftype "T" s:string (s:lenlte 2))`, `"abc"`, false},
+		{"string len ok", `(set 'T (s:make-validator "T" s:string (s:len 3)))`, `"abc"`, true},
+		{"string len wrong", `(set 'T (s:make-validator "T" s:string (s:len 3)))`, `"abcd"`, false},
+		// "bytes" is not a make-validator base type, so bytes reach the
+		// constraint through the "any" base.
+		{"bytes len ok", `(set 'T (s:make-validator "T" "any" (s:len 3)))`, `(to-bytes "abc")`, true},
+		{"bytes len wrong", `(set 'T (s:make-validator "T" "any" (s:len 3)))`, `(to-bytes "ab")`, false},
+		{"array len ok", `(set 'T (s:make-validator "T" s:array (s:len 3)))`, `(vector 1 2 3)`, true},
+		{"array len wrong", `(set 'T (s:make-validator "T" s:array (s:len 3)))`, `(vector 1 2)`, false},
+		{"lengt ok", `(set 'T (s:make-validator "T" s:string (s:lengt 2)))`, `"abc"`, true},
+		{"lengt too short", `(set 'T (s:make-validator "T" s:string (s:lengt 3)))`, `"abc"`, false},
+		{"lengte ok", `(set 'T (s:make-validator "T" s:string (s:lengte 3)))`, `"abc"`, true},
+		{"lengte too short", `(set 'T (s:make-validator "T" s:string (s:lengte 4)))`, `"abc"`, false},
+		{"lenlt ok", `(set 'T (s:make-validator "T" s:string (s:lenlt 4)))`, `"abc"`, true},
+		{"lenlt too long", `(set 'T (s:make-validator "T" s:string (s:lenlt 3)))`, `"abc"`, false},
+		{"lenlte ok", `(set 'T (s:make-validator "T" s:string (s:lenlte 3)))`, `"abc"`, true},
+		{"lenlte too long", `(set 'T (s:make-validator "T" s:string (s:lenlte 2)))`, `"abc"`, false},
 
 		// Unmeasured types: no length, so the constraint passes whatever the
 		// bound is. Locked in deliberately -- see constraintLen.
-		{"int has no length", `(s:deftype "T" s:int (s:len 3))`, `12345`, true},
-		{"float has no length", `(s:deftype "T" "float" (s:len 3))`, `1.5`, true},
-		{"sorted-map has no length", `(s:deftype "T" s:sorted-map (s:len 3))`, `(sorted-map "a" 1)`, true},
+		{"int has no length", `(set 'T (s:make-validator "T" s:int (s:len 3)))`, `12345`, true},
+		{"float has no length", `(set 'T (s:make-validator "T" "float" (s:len 3)))`, `1.5`, true},
+		{"sorted-map has no length", `(set 'T (s:make-validator "T" s:sorted-map (s:len 3)))`, `(sorted-map "a" 1)`, true},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			env := newSchemaEnv(t)
 			if rc := env.LoadStringContext(context.Background(), "len-def", c.def); rc.Type == lisp.LError {
-				t.Fatalf("deftype: %v", rc)
+				t.Fatalf("make-validator: %v", rc)
 			}
 			res := env.LoadStringContext(context.Background(), "len-validate",
 				"(s:validate T "+c.value+")")
@@ -141,8 +156,9 @@ func captureLog(t *testing.T) *bytes.Buffer {
 var bugGetFunNameRe = regexp.MustCompile(`BUG: GetFunName:`)
 
 // TestValidatorFunCallNoBugLog is the headline regression test for
-// issue #271. libschema's s:deftype binds the constructed validator
-// LFun as a global symbol (see builtinDefType). Resolving that symbol
+// issue #271. libschema's s:make-validator returns a constructed validator
+// LFun which the caller binds with core `set` (before #736, s:deftype bound
+// it as a global symbol itself; see git history). Resolving that symbol
 // and invoking it goes through env.funCall, which calls
 // env.GetFunName(fun) before dispatch. Pre-fix the validator had an
 // empty Package field, so GetFunName logged "BUG: ..." on every
@@ -155,32 +171,6 @@ var bugGetFunNameRe = regexp.MustCompile(`BUG: GetFunName:`)
 // the funCall -> GetFunName path under test — it does not depend on
 // libschema's internal argument-shape semantics.
 func TestValidatorFunCallNoBugLog(t *testing.T) {
-	t.Run("deftype path", func(t *testing.T) {
-		env := newSchemaEnv(t)
-
-		if rc := env.LoadStringContext(context.Background(), "regression-271-deftype",
-			`(s:deftype "Score" "int" (s:gte 0))`); rc.Type == lisp.LError {
-			t.Fatalf("s:deftype: %v", rc)
-		}
-
-		// env.Get returns the bound LFun without going through funCall.
-		fun := env.Get(lisp.Symbol("Score"))
-		if fun.Type != lisp.LFun {
-			t.Fatalf("Score did not resolve to an LFun: %v", fun.Type)
-		}
-		// Direct invariant check: the validator's Package must be
-		// non-empty regardless of any downstream funCall behavior.
-		if pkg := fun.Package(); pkg == "" {
-			t.Fatalf("validator LFun has empty Package — issue #271 regression")
-		}
-
-		buf := captureLog(t)
-		_ = env.FunCallContext(context.Background(), fun, lisp.QExpr([]*lisp.LVal{lisp.Int(5)}))
-		if got := buf.String(); bugGetFunNameRe.MatchString(got) {
-			t.Fatalf("unexpected BUG: GetFunName line during validator funCall:\n%s", got)
-		}
-	})
-
 	t.Run("make-validator path", func(t *testing.T) {
 		env := newSchemaEnv(t)
 

@@ -133,7 +133,7 @@ func TestTemplateColdParity(t *testing.T) {
 		{
 			name: "schema-capture-follows-global-map",
 			setup: `(set 'allowed (sorted-map "k" 1))
-(s:deftype "T" s:any (s:in allowed))`,
+(set 'T (s:make-validator "T" s:any (s:in allowed)))`,
 			observe: `(s:validate T allowed) (get allowed "k")`,
 			initial: lisp.Int(1),
 			steps:   []string{`(assoc! allowed "k" 2)`, `(assoc! allowed "k" 3)`},
@@ -277,7 +277,7 @@ func TestTemplateRejectsMutableViewsOfSharedCells(t *testing.T) {
 }
 
 func TestTemplateSchemaRejectionMatchesCold(t *testing.T) {
-	const setup = `(set 'allowed (sorted-map "k" 1)) (s:deftype "T" s:any (s:in allowed))`
+	const setup = `(set 'allowed (sorted-map "k" 1)) (set 'T (s:make-validator "T" s:any (s:in allowed)))`
 	tmpl := snapshotFixture(t, loadTemplateFixture(t, setup))
 	for _, env := range []*lisp.LEnv{loadTemplateFixture(t, setup), forkTemplateFixture(t, tmpl)} {
 		assertTemplateValue(t, env, `(assoc! allowed "k" 2) (s:validate T allowed)`, lisp.Nil())
@@ -359,7 +359,7 @@ func TestTemplateJSONBackingAliasesAcrossMapData(t *testing.T) {
 func TestTemplateConcurrentColdParity(t *testing.T) {
 	const setup = `(set 'state (sorted-map "n" 0))
 (set 'xs (list 3 1 2)) (set 'tail (cdr xs))
-(s:deftype "T" s:any (s:in state))
+(set 'T (s:make-validator "T" s:any (s:in state)))
 (defun advance (n)
   (assoc! state "n" (+ n (get state "n")))
   (stable-sort < xs) (s:validate T state)

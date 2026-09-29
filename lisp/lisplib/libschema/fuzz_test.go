@@ -26,8 +26,8 @@ const (
 // and validates a fuzzer-generated value against it.
 //
 // libschema gets its own target rather than riding on FuzzApplyStdlib because
-// its defects live in COMPOSITION, not in a single call. s:deftype takes a
-// base type plus a variadic list of constraints; s:has-key, s:of,
+// its defects live in COMPOSITION, not in a single call. s:make-validator
+// takes a base type plus a variadic list of constraints; s:has-key, s:of,
 // s:no-other-keys, s:not and s:when each take constraints of their own; and
 // the value in a constraint slot is invoked through a private calling
 // convention that no type check enforces. Applying s:has-key once with a
@@ -165,51 +165,51 @@ var schemaFragments = buildSchemaFragments()
 
 func buildSchemaFragments() []string {
 	base := []string{
-		`(s:deftype "T" s:int) (s:validate T subject)`,
-		`(s:deftype "T" s:string) (s:validate T subject)`,
-		`(s:deftype "T" "float") (s:validate T subject)`,
-		`(s:deftype "T" s:number) (s:validate T subject)`,
-		`(s:deftype "T" s:bool) (s:validate T subject)`,
-		`(s:deftype "T" s:array) (s:validate T subject)`,
-		`(s:deftype "T" s:sorted-map) (s:validate T subject)`,
-		`(s:deftype "T" s:fun) (s:validate T subject)`,
-		`(s:deftype "T" s:tagged-value) (s:validate T subject)`,
-		`(s:deftype "T" "any") (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:in subject subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:gt subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:gte subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:lt subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:lte subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:len subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:lengt subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:lenlte subject2)) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:positive) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:negative) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:is-true) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:is-false) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:is-truthy) (s:validate T subject)`,
-		`(s:deftype "T" "any" s:is-falsy) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:not s:positive)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:not FOREIGN)) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:regexp "a.*b")) (s:validate T subject)`,
-		`(s:deftype "T" s:array (s:of s:int)) (s:validate T subject)`,
-		`(s:deftype "T" s:array (s:of FOREIGN)) (s:validate T subject)`,
-		`(s:deftype "T" s:sorted-map (s:has-key "a" s:int)) (s:validate T subject)`,
-		`(s:deftype "T" s:sorted-map (s:has-key "a" FOREIGN)) (s:validate T subject)`,
-		`(s:deftype "T" s:sorted-map (s:may-have-key "a" s:string)) (s:validate T subject)`,
-		`(s:deftype "T" s:sorted-map (s:no-other-keys (s:has-key "a" s:int))) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:when "a" s:int "b" (s:gt 100))) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:when "a" FOREIGN "b" (s:gt 100))) (s:validate T subject)`,
-		`(s:deftype "T" "any" (s:when "a" s:int "b" FOREIGN)) (s:validate T subject)`,
-		`(s:deftype "T" FOREIGN) (s:validate T subject)`,
-		`(s:deftype "T" "any" FOREIGN) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:int)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:string)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "float")) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:number)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:bool)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:array)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:sorted-map)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:fun)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:tagged-value)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any")) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:in subject subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:gt subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:gte subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:lt subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:lte subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:len subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:lengt subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:lenlte subject2))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:positive)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:negative)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:is-true)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:is-false)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:is-truthy)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" s:is-falsy)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:not s:positive))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:not FOREIGN))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:regexp "a.*b"))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:array (s:of s:int))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:array (s:of FOREIGN))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" s:int))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" FOREIGN))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:sorted-map (s:may-have-key "a" s:string))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" s:sorted-map (s:no-other-keys (s:has-key "a" s:int)))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:when "a" s:int "b" (s:gt 100)))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:when "a" FOREIGN "b" (s:gt 100)))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" (s:when "a" s:int "b" FOREIGN))) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" FOREIGN)) (s:validate T subject)`,
+		`(set 'T (s:make-validator "T" "any" FOREIGN)) (s:validate T subject)`,
 		`(s:validate subject subject2)`,
 		`(s:validate (s:make-validator "T" s:int) subject)`,
 		`(s:validate (s:make-validator "T" "any" FOREIGN) subject)`,
 		// Nested composition: a validator used as a constraint on a
 		// tagged-value's user data.
 		`(deftype box (x) x)
-		 (s:deftype "T" s:tagged-value "any" (s:not s:negative))
+		 (set 'T (s:make-validator "T" s:tagged-value "any" (s:not s:negative)))
 		 (s:validate T subject)`,
 	}
 	foreigners := []string{"identity", "(lambda (x) x)", "subject", "subject2"}
