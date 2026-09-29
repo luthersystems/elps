@@ -2271,15 +2271,46 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// NOTE:  The book's suggestion of chaining env here seems like dynamic
 	// scoping.
 
-	fn := fun.Builtin()
+	var fn LBuiltin
+	fd := fun.funData()
+	if fd != nil {
+		fn = fd.builtin
+	}
 	if fn != nil {
 		// Bridge ctx onto env so builtins that call env.Eval() pick it up.
 		// Save and restore to prevent stale ctx from leaking after the
 		// builtin returns.
 		prev := env.evalCtx
 		env.evalCtx = ctx
-		defer func() { env.evalCtx = prev }()
+		// A library builtin runs in its own package, exactly like a Lisp
+		// function defined there (see the NOTE on the swap below).  The
+		// cheap tests come first: a call from the library's own code is
+		// already in its package, and core lisp never switches.  The package
+		// is looked up by name on every call, never cached: forks and
+		// templates replace registry entries.
+		outer := env.Runtime.Package
+		var switched bool
+		if pkg := fd.pkg; outer != nil && pkg != outer.Name && pkg != env.Runtime.Registry.Lang &&
+			fun.FunType != LFunSpecialOp {
+			if inner := env.Runtime.Registry.packages[pkg]; inner != nil {
+				env.Runtime.Package = inner
+				switched = true
+			}
+		}
+		// The deferred restore covers a panic out of the builtin; the
+		// explicit one below covers every return, before a terminal
+		// expression is evaluated in the caller's environment.
+		defer func() {
+			env.evalCtx = prev
+			if switched {
+				env.Runtime.Package = outer
+			}
+		}()
 		val := fn(env, list)
+		if switched {
+			env.Runtime.Package = outer
+			switched = false
+		}
 		if val == nil {
 			return env.Errorf("internal error: builtin %s returned nil", env.GetFunName(fun))
 		}
@@ -2299,10 +2330,20 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	// With formal arguments bound, we can switch into the function's package
 	// namespace for the duration of the call.
 	//
-	// BUG(#736): This package-swap should occur for builtins as well but there is a
-	// bootstrapping problem, where ``set'' (as well as defun/defmacro) needs
-	// to modify the *package* namespace and not the "lisp" namespace.  Dynamic
-	// variables may be required in order to work through this completely.
+	// NOTE(#736): a name resolves in the package of the code doing the
+	// lookup, whether that code is Lisp or Go.  A Lisp function runs in the
+	// package it was defined in (this swap).  A Go builtin or Go macro
+	// registered in any package other than lisp runs in its own package too
+	// (the swap in the builtin branch above), and the caller's package is
+	// restored on return, on error, on panic and before a terminal
+	// expression is evaluated, so a library builtin can never change or see
+	// the caller's package.  Core lisp -- its builtins, macros and every
+	// special operator -- is the language and acts in the caller's package:
+	// that is what lets set, defun, defmacro, in-package, funcall with a
+	// quoted name and the rest bind and resolve where the caller is.  There
+	// are no exceptions.  A library that needs the caller's names takes
+	// values (function values, qualified symbols), or is a macro whose
+	// expansion uses core forms.  See "Packages" in docs/lang.md.
 	outer := env.Runtime.Package
 	pkg := fun.Package()
 	if outer.Name != pkg {
