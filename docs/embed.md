@@ -1177,6 +1177,50 @@ diags, err := l.LintFiles(&lint.LintConfig{
 Without the `Registry` field, the linter only knows about stdlib symbols and
 will report false positives for embedder-provided bindings.
 
+#### Macro-generated definitions
+
+A macro that expands into definitions (`defun`, `defmacro`, `set`,
+`deftype`) is invisible to name-based analysis: the analyzer sees the call,
+not the names it creates. Give `analysis.Config` a `MacroExpander` (for
+example `&analysis.EnvMacroExpander{Env: env}` over an environment where the
+macros are defined; `LintFiles` builds one from `LintConfig.Env`) and the
+analyzer expands macro calls and analyzes the expanded code:
+
+- Top-level macro calls are expanded before the deep walk, so a generated name
+  resolves even where it is used before the call, like an ordinary `defun`.
+- Each generated package-level definition records the call that produced it in
+  `Symbol.GeneratedBy` (`*analysis.MacroOrigin`: the macro's name, the package
+  it was expanded in and the call site). Nested macros record the outermost
+  call, the one written in the source.
+- `Result.GeneratedDefinitions()` returns those definitions as
+  `[]analysis.ExternalSymbol` with `GeneratedBy` set. They are plain data, so
+  an embedder can index them and pass them as `Config.ExtraGlobals` when
+  analyzing other files, much as `go/analysis` passes facts between packages.
+
+```lisp
+; counters.lisp
+(defmacro defcounter (name getter bumper)
+  (quasiquote
+    (progn
+      (set (quote (unquote name)) 0)
+      (defun (unquote getter) () (unquote name))
+      (defun (unquote bumper) () (set! (unquote name) (+ 1 (unquote name)))))))
+
+(defcounter hits hits-value bump-hits)
+```
+
+```go
+lib := analysis.AnalyzeFile(src, "counters.lisp", &analysis.Config{
+    MacroExpander: &analysis.EnvMacroExpander{Env: env},
+})
+facts := lib.GeneratedDefinitions() // hits, hits-value, bump-hits; GeneratedBy.Macro == "defcounter"
+other := analysis.AnalyzeFile(otherSrc, "report.lisp", &analysis.Config{ExtraGlobals: facts})
+```
+
+With an expander, a call whose head starts with `def` is analyzed through its
+expansion instead of the name-based guess; `Config.DefForms` entries still
+take priority. Each call site is expanded at most once per analysis.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.
