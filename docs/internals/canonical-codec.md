@@ -100,6 +100,9 @@ value-only encoding.
   (`DefaultCodecMaxDepth` 1024, `DefaultCodecMaxValues` 2^20,
   `DefaultCodecMaxBytes` 16 MiB); the builtins also cap bytes at the
   runtime's `MaxAlloc`.
+- Ints are 64-bit in the format.  A platform whose `int` is 32 bits
+  rejects an int or array dimension that does not fit, rather than
+  truncating it.
 - Decoded values are fresh: strings and bytes are copied out of the input,
   and no two returned cells are the same object, so they follow elpsvet's
   ownership and freshness rules.

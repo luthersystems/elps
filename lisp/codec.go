@@ -515,7 +515,7 @@ func (d *canonDecoder) value(depth int) (*LVal, error) {
 		bits := binary.BigEndian.Uint32(d.buf[d.pos:])
 		d.pos += 4
 		f := math.Float32frombits(bits)
-		if f != f && bits != canonNaN {
+		if math.IsNaN(float64(f)) && bits != canonNaN {
 			return nil, errors.New("canonical codec: non-canonical NaN")
 		}
 		return Float(float64(f)), nil
