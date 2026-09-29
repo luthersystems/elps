@@ -317,7 +317,8 @@ What this means for a builtin you write:
 - **To bind or evaluate in the caller, write a Go macro.** The macro runs in
   its own package, but its expansion is evaluated where the caller wrote it,
   so an expansion built from qualified core forms (`lisp:set`, `lisp:lambda`)
-  acts in the caller's package.
+  acts in the caller's package. Use `lisp.FormTemplate` and `elpsutil.Macro`
+  as shown in [Writing a Go macro](#writing-a-go-macro).
 - **Name a fixed package explicitly.** A builtin that must work in some
   package (a loader that starts in `user`, say) switches to it by name with
   `env.InPackage` and restores it itself.
@@ -346,6 +347,53 @@ documented `(help-package 'math)` is unchanged, but an unquoted
 library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
+
+### Writing a Go macro
+
+A Go macro receives unevaluated forms and returns an expansion for the caller
+to evaluate. Build a `lisp.FormTemplate` once at package initialization, then
+substitute the argument forms on each call. For example, this `unless` macro
+runs its body only when the condition is falsey:
+
+```go
+var unlessForm = lisp.MustFormTemplate(
+    `(lisp:if ,condition () (lisp:progn ,@body))`, "condition", "body")
+
+func macroUnless(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    return unlessForm.Expand(args.Cells[0], lisp.SExpr(args.Cells[1:]))
+}
+```
+
+Register it in your package with `elpsutil.Macro`, which takes the same
+arguments as `elpsutil.FunctionDoc` and carries the docstring through
+registration. The definition belongs in `AddMacros` or your package's
+`Macros() []lisp.LBuiltinDef` method:
+
+```go
+// With your package current (for example, inside its PackageInit):
+env.AddMacros(true, elpsutil.Macro("unless",
+    lisp.Formals("condition", lisp.VarArgSymbol, "body"), macroUnless,
+    "Evaluates body only when condition is falsey."))
+```
+
+The small template syntax supports symbols, lists, `()` (nil), `'form`,
+`,name` substitution and `,@name` splicing. Parameter names declare argument
+order. Splicing inserts an **unquoted** list's cells (or nothing for nil);
+`lisp.SExpr(args.Cells[1:])` above wraps the unevaluated body for that purpose.
+Quotes use `lisp.Quote`, matching the source reader for both symbols and
+lists. Strings, numeric literals, comments, brackets and other reader syntax
+are unsupported; pass strings and numbers as arguments instead.
+`MustFormTemplate` panics on malformed templates, undeclared, duplicate or
+unused parameters; syntax errors identify the byte offset. `Expand` panics
+on an argument count mismatch or an invalid splice argument.
+
+Each expansion allocates fresh syntax, shares the inserted argument forms,
+and uses the immutable nil singleton for `()`. This follows the Go macro
+contract: the evaluator may attach source locations to new syntax in place.
+Reuse the template, never a previously returned expansion or a binding looked
+up by the macro. Qualify generated core names (`lisp:if`, `lisp:progn`), and
+use `env.GenSym()` for temporary bindings to avoid capturing the caller's
+names.
 
 ### Toolkit for replacing Lisp with Go builtins
 
@@ -1198,7 +1246,8 @@ it is undocumented; prefer the forms above.
 
 `libutil` is internal to the standard library; code outside this module uses
 `elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a
-builtin" below).
+builtin" below). For Go macros, use `elpsutil.Macro` and register through
+`AddMacros` or `PackageMacros` (see [Writing a Go macro](#writing-a-go-macro)).
 
 All builtins, macros, and exported symbols are required to have
 documentation. The `elps doc -m` command checks for missing docstrings
