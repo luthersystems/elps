@@ -423,6 +423,26 @@ if lerr := a.Err(); lerr != nil {
 
 It does not allocate unless a check fails.
 
+**Typed builtins: `lisp.Func1` … `lisp.Func4`.** For a builtin of up to four
+arguments, list one decoder per formal, in order, and write the body against
+Go types. The decoders are the `ArgReader` reads above, so the check order and
+the messages are fixed at compile time and match the hand-written checks.
+Generics do this with no reflection and no allocation:
+
+```go
+var builtinRepeat = lisp.Func2(
+	lisp.StringArg("first argument"),                              // "first argument is not a string: <type>"
+	lisp.TypedArg(lisp.LInt, "second argument is not an int: %v"), // any other wording, verbatim
+	func(env *lisp.LEnv, s string, n *lisp.LVal) *lisp.LVal { /* ... */ })
+```
+
+Decoders: `ValueArg`, `TypedArg`, `StringArg`, `IntArg`, `MapArg`, and for
+`&optional`/`&key` positions `OptArg`, `OptStringArg`, `OptIntArg` (the
+evaluator passes one cell per formal, so a key is just a position). Beyond four
+arguments, or with `&rest`, use `ArgReader` directly: Go has no variadic type
+parameters, which is where generics stop. `string:split` and `string:repeat`
+are written this way.
+
 **Maps.** `v.MapRange(func(k lisp.MapKey, val *lisp.LVal) bool)` walks a
 sorted-map in its documented order (int keys by value, then string and symbol
 keys by spelling). Keys arrive by value, and for the interpreter's own map

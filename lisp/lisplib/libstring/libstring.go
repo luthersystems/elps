@@ -147,22 +147,20 @@ func convertCase(env *lisp.LEnv, s string, mapping func(rune) rune) *lisp.LVal {
 	return lisp.String(out.String())
 }
 
-func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str, sep := args.Cells[0], args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if sep.Type != lisp.LString {
-		return env.Errorf("second argument is not a string: %v", sep.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str.Str)); lerr != nil {
+// builtinSplit checks its arguments through typed decoders, with the
+// messages it always had: "first argument is not a string: <type>", then
+// "second argument is not a string: <type>".
+var builtinSplit = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), split)
+
+func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
+	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
 	var count int
-	if sep.Str == "" {
-		count = utf8.RuneCountInString(str.Str)
+	if sep == "" {
+		count = utf8.RuneCountInString(str)
 	} else {
-		count = strings.Count(str.Str, sep.Str)
+		count = strings.Count(str, sep)
 		// The extra final piece must fit before incrementing, including
 		// when the configured cap is the largest representable int.
 		if count >= env.Runtime.MaxAllocBytes() {
@@ -173,7 +171,7 @@ func builtinSplit(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if msg := env.Runtime.CheckAlloc(count); msg != "" {
 		return env.Errorf("%s", msg)
 	}
-	slice := strings.Split(str.Str, sep.Str)
+	slice := strings.Split(str, sep)
 	cells := make([]*lisp.LVal, len(slice))
 	for i, s := range slice {
 		cells[i] = lisp.String(s)
@@ -224,35 +222,34 @@ func builtinJoin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.String(buf.String())
 }
 
-func builtinRepeat(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	str := args.Cells[0]
-	n := args.Cells[1]
-	if str.Type != lisp.LString {
-		return env.Errorf("first argument is not a string: %v", str.Type)
-	}
-	if n.Type != lisp.LInt {
-		return env.Errorf("second argument is not an int: %v", n.Type)
-	}
+// builtinRepeat checks its arguments through typed decoders, with the
+// messages it always had ("second argument is not an int", not "integer").
+var builtinRepeat = lisp.Func2(
+	lisp.StringArg("first argument"),
+	lisp.TypedArg(lisp.LInt, "second argument is not an int: %v"),
+	repeat)
+
+func repeat(env *lisp.LEnv, str string, n *lisp.LVal) *lisp.LVal {
 	if n.Int < 0 {
 		return env.Errorf("count is negative: %v", n.Int)
 	}
-	if n.Int == 0 || str.Str == "" {
+	if n.Int == 0 || str == "" {
 		return lisp.String("")
 	}
 	if n.Int == 1 {
 		// Reuse the immutable Go string without retaining the input LVal's
 		// quoting state: repeat always produces an ordinary string value.
-		return lisp.String(str.Str)
+		return lisp.String(str)
 	}
 	maxAlloc := env.Runtime.MaxAllocBytes()
 	// The source is nonempty; division checks the product without overflow.
-	if n.Int > maxAlloc/len(str.Str) {
+	if n.Int > maxAlloc/len(str) {
 		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
-	if lerr := libutil.ChargeKiB(env, n.Int*len(str.Str)); lerr != nil {
+	if lerr := libutil.ChargeKiB(env, n.Int*len(str)); lerr != nil {
 		return lerr
 	}
-	return lisp.String(strings.Repeat(str.Str, n.Int))
+	return lisp.String(strings.Repeat(str, n.Int))
 }
 
 func builtinTrimSpace(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
