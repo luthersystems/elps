@@ -34,12 +34,14 @@ shortest form; `len` and `count` are uvarints.
 | `0x06` | symbol | `len`, name (non-empty, never begins with `:`) |
 | `0x07` | keyword | `len`, name without the leading `:` |
 | `0x08` | list | `count`, values |
-| `0x09` | array | rank, rank dimensions (uvarints), values in row-major order |
+| `0x09` | array | rank (at most 255), rank dimensions (uvarints), values in row-major order |
 | `0x0a` | sorted-map | `count`, key/value pairs in key order |
 | `0x0b` | tagged value | `len`, type name (non-empty), value |
 | `0x0c` | native | `len`, codec name, `len`, codec data |
 
-Tag `0x00` and tags above `0x0c` are invalid in version 1.
+Tag `0x00` and tags above `0x0c` are invalid in version 1.  An array rank
+above 255 is invalid in version 1 and rejected by the encoder and the
+decoder alike; each dimension counts as a value against the value limit.
 
 ## Decisions
 

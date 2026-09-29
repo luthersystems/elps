@@ -46,6 +46,16 @@ func TestCanonicalDecodeNoAllocAmplification(t *testing.T) {
 			}
 			return b
 		}()},
+		{"array rank", func() []byte {
+			// One array claiming a rank of nearly the whole input, each
+			// dimension a one-byte uvarint 1.
+			b := []byte{lisp.CanonicalVersion, 0x09}
+			b = binary.AppendUvarint(b, uint64((1<<20)-16)) //nolint:gosec // G115: positive constant
+			for len(b) < 1<<20 {
+				b = append(b, 0x01)
+			}
+			return b
+		}()},
 		{"array dims", func() []byte {
 			b := []byte{lisp.CanonicalVersion}
 			for range 200 {

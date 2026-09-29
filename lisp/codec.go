@@ -44,6 +44,10 @@ const (
 	canonNative  byte = 0x0c // uvarint length, codec name, uvarint length, data
 )
 
+// canonMaxRank is the largest array rank format version 1 admits, on
+// encode and decode alike.  Frozen.
+const canonMaxRank = 255
+
 // canonNaN is the one NaN the format admits (binary32 quiet NaN).
 const canonNaN uint32 = 0x7fc00000
 
@@ -318,6 +322,9 @@ func (e *canonEncoder) array(v *LVal, depth int) error {
 	}
 	if total != len(cells) {
 		return errors.New("canonical codec: array contents do not match its dimensions")
+	}
+	if len(dims) > canonMaxRank {
+		return fmt.Errorf("canonical codec: array rank %d exceeds %d", len(dims), canonMaxRank)
 	}
 	if err := e.enter(v); err != nil {
 		return err
@@ -664,8 +671,17 @@ func (d *canonDecoder) list(n, depth int) ([]*LVal, error) {
 }
 
 func (d *canonDecoder) array(depth int) (*LVal, error) {
-	rank, err := d.count()
+	r, err := d.uvarint()
 	if err != nil {
+		return nil, err
+	}
+	if r > canonMaxRank {
+		return nil, fmt.Errorf("canonical codec: array rank %d exceeds %d", r, canonMaxRank)
+	}
+	rank := int(r)
+	// Each dimension becomes a value, so dimensions count against the
+	// value budget like elements do.
+	if err := d.declare(rank); err != nil {
 		return nil, err
 	}
 	dims := make([]*LVal, 0, min(rank, preallocCap))
@@ -674,6 +690,8 @@ func (d *canonDecoder) array(depth int) (*LVal, error) {
 	total, capped := 1, d.remaining()+1
 	zero := false
 	for range rank {
+		d.pending--
+		d.values++
 		u, err := d.uvarint()
 		if err != nil {
 			return nil, err

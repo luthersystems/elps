@@ -237,6 +237,7 @@ func TestCanonicalDecodeHostile(t *testing.T) {
 		{"array count mismatch truncated", "010901 05 0100", "truncated"},
 		{"native unknown", "010c0178 00", "native"},
 		{"tagged empty type", "010b00 0100", "tagged"},
+		{"array rank over 255", "010980 02" + strings.Repeat("01", 256) + "0100", "rank"},
 		{"deep nesting", "01" + strings.Repeat("0801", 5000) + "0800", "depth"},
 	}
 	for _, tt := range tests {
@@ -336,4 +337,22 @@ func TestCanonicalChargeDuringEncode(t *testing.T) {
 	}))
 	require.ErrorIs(t, err, stop)
 	assert.Equal(t, 2, seen)
+}
+
+// Array rank is at most 255 in format version 1, on both sides.
+func TestCanonicalArrayRankLimit(t *testing.T) {
+	dims := make([]*lisp.LVal, 256)
+	for i := range dims {
+		dims[i] = lisp.Int(1)
+	}
+	v := lisp.Array(lisp.QExpr(dims), nil)
+	require.Equal(t, lisp.LArray, v.Type, "%v", v)
+	_, err := lisp.EncodeCanonical(v)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "rank")
+	v = lisp.Array(lisp.QExpr(dims[:255]), nil)
+	b, err := lisp.EncodeCanonical(v)
+	require.NoError(t, err)
+	_, err = lisp.DecodeCanonical(b)
+	require.NoError(t, err)
 }
