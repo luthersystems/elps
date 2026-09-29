@@ -522,8 +522,9 @@ The rules are exact, so step counts stay deterministic:
 `env.Locals()` returns the local variables visible from an environment,
 sorted by name, as `[]lisp.Binding{Name, Value}`. A Go builtin's `env` has
 the caller's lexical scopes as parents, so inside a builtin it reports the
-variables in scope at the call site: function parameters and `let`/`flet`
-bindings of every enclosing scope, the innermost binding winning when a name
+variables in scope at the call site: function parameters, `let` bindings and
+`flet`/`labels` local functions (the function is the value) of every
+enclosing scope, the innermost binding winning when a name
 is shadowed. Package globals are not included (read them with `env.Get`).
 The debugger's variables pane uses the same walk.
 

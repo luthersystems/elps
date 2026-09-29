@@ -45,6 +45,8 @@ func TestLocals(t *testing.T) {
 			[]string{`x="inner"`}},
 		{"closures see their lexical scope", `(defun f (a) (flet ((g (b) (record-locals))) (g 2))) (f 1)`,
 			[]string{"a=1 b=2"}},
+		{"flet and labels function bindings are locals", `(defun f () (labels ((helper (n) n)) (record-locals))) (f)`,
+			[]string{"helper=(lambda (n) n)"}},
 		{"lambda passed to a higher-order function", `(map 'list (lambda (item) (record-locals)) '(5 6))`,
 			[]string{"item=5", "item=6"}},
 		{"rest and key parameters", `(defun f (&rest more) (record-locals)) (f 1 2)

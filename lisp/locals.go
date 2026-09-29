@@ -17,7 +17,9 @@ type Binding struct {
 // flet, labels and the like, in env or any enclosing
 // lexical scope up to (not including) the root environment. Package globals
 // (set at top level, defun, defmacro) are not locals: they live in the
-// package, not in the environment chain, and are read with Get. When an inner
+// package, not in the environment chain, and are read with Get. Local
+// functions bound by flet and labels are locals too: they appear under their
+// names with the function as the value. When an inner
 // scope shadows a name, only the innermost binding is reported.
 //
 // A Go builtin receives an environment whose parents are the caller's
