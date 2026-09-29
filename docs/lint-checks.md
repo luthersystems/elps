@@ -318,6 +318,32 @@ that function; `rethrow` is reported there as before.
   (error 'test "data"))
 ```
 
+### `test-outside-test-file`
+
+**Reports tests registered outside a `_test.lisp` file.**
+(Severity: **error**)
+
+`test`, `test-let`, `test-let*`, `benchmark` and `benchmark-simple` —
+unqualified, `lisp:` or `testing:` — register a test with the running test
+suite. Only test runners install one, and they load `*_test.lisp` files; a
+production load has no test suite, so a test form in any other file fails the
+load with `no test suite` (elps#736). A shared `*_testhelpers.lisp` file is
+reported too: it defines helpers for tests and should not register tests of
+its own.
+
+```lisp
+;; ERROR in main.lisp — move it to main_test.lisp
+(test "adds" (testing:assert= 2 (add 1 1)))
+
+;; GOOD — in main_test.lisp
+(test "adds" (testing:assert= 2 (add 1 1)))
+```
+
+A file that defines its own function or macro under one of these names is not
+checked for that name; quoted data and quasiquote templates are ignored, and
+input without a `.lisp` file name (stdin) is not checked. Suppress a
+deliberate case with `; nolint:test-outside-test-file`.
+
 ### `comparator-mutation`
 
 **Flags a mutating call inside a `stable-sort` or `insert-sorted` predicate.**

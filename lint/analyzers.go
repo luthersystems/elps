@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -2794,4 +2795,69 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 	for _, expr := range exprs {
 		walk(expr)
 	}
+}
+
+// testDefinitionForms are the core forms that register a test or benchmark
+// (elps#736), spelled as they may appear at a call head.
+var testDefinitionForms = map[string]bool{
+	"test": true, "test-let": true, "test-let*": true, "benchmark": true, "benchmark-simple": true,
+}
+
+// testDefinitionName returns the unqualified form name when head calls a test
+// definition form -- unqualified, lisp:-qualified or testing:-qualified -- or
+// "" otherwise.
+func testDefinitionName(head string) string {
+	name := head
+	if ns, local, qualified := strings.Cut(head, ":"); qualified {
+		if ns != lisp.DefaultLangPackage && ns != "testing" {
+			return ""
+		}
+		name = local
+	}
+	if testDefinitionForms[name] {
+		return name
+	}
+	return ""
+}
+
+// AnalyzerTestOutsideTestFile flags test registration in a file that is not a
+// test file.  Tests belong in *_test.lisp files, which only test runners load;
+// a production load has no test suite, so a test form there fails the load
+// with "no test suite" (elps#736).
+var AnalyzerTestOutsideTestFile = &Analyzer{
+	Name:     "test-outside-test-file",
+	Severity: SeverityError,
+	Doc: "Report test, test-let, test-let*, benchmark and benchmark-simple calls in a file whose name does not end in _test.lisp.\n\n" +
+		"Tests are registered only by *_test.lisp files, which test runners load. A production load has no " +
+		"test suite, so a test form there signals \"no test suite\". Shared *_testhelpers.lisp files define " +
+		"helpers and are reported too. A file that defines its own function or macro under one of these " +
+		"names is not checked for that name; forms inside quoted data and quasiquote templates are ignored. " +
+		"Input without a .lisp file name (stdin) is not checked.",
+	Run: func(pass *Pass) error {
+		base := filepath.Base(pass.Filename)
+		if !strings.HasSuffix(base, ".lisp") || strings.HasSuffix(base, "_test.lisp") {
+			return nil
+		}
+		helpers := strings.HasSuffix(base, "_testhelpers.lisp")
+		userDefs := UserDefined(pass.Exprs)
+		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
+			head := HeadSymbol(sexpr)
+			name := testDefinitionName(head)
+			if name == "" || userDefs[head] {
+				return
+			}
+			note := "move the test into a file named *_test.lisp; production loads have no test suite"
+			if helpers {
+				note = "a *_testhelpers.lisp file defines helpers for tests; register the test in a *_test.lisp file"
+			}
+			src := SourceOf(sexpr)
+			pass.Report(Diagnostic{
+				Message: head + " registers a test outside a _test.lisp file",
+				Pos:     posFromSource(astutil.SourceLoc(src)),
+				EndPos:  endPosFromNode(src),
+				Notes:   []string{note},
+			})
+		})
+		return nil
+	},
 }
