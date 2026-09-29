@@ -22,27 +22,35 @@ import (
 
 // TestRenameStringDeftypeNameExcludesStringDelimiters pins the LString half.
 //
-// (s:deftype "myint" ...) binds a global named by the STRING LITERAL, and
-// analyzeStringDeftype records the literal's node as the definition.  Its span
-// covers the quotes, so renaming myint to NEW produced
+// analyzeStringDeftype gives symbol-resolution and rename support to any
+// qualified call ending in ":deftype" whose first argument is a string
+// literal, on the general convention that such a call binds a global named
+// by the literal (elps#736 removed libschema's own s:deftype, the pattern's
+// original and, at the time, only real user, for violating a stricter rule
+// about library builtins writing into the caller's package -- the analysis
+// pattern itself stays, in case another library adopts the convention; this
+// test spells it "q:deftype" so it is not read as evidence s:deftype still
+// exists). analyzeStringDeftype records the literal's node as the
+// definition.  Its span used to cover the quotes, so renaming myint to NEW
+// produced
 //
-//	(s:deftype NEW s:int (s:positive))
+//	(q:deftype NEW s:int (s:positive))
 //
 // -- a bare symbol where the form requires a string, i.e. a program that no
 // longer parses the way its author wrote it, emitted silently.
 func TestRenameStringDeftypeNameExcludesStringDelimiters(t *testing.T) {
 	// Byte layout:
 	//
-	//	line 0: ( s : d e f t y p e _ " m y i n t " ...   " at 11, myint 12..16, " at 17
+	//	line 0: ( q : d e f t y p e _ " m y i n t " ...   " at 11, myint 12..16, " at 17
 	//	line 1: ( + _ m y i n t _ 1 )                     myint at 3..7
-	const content = "(s:deftype \"myint\" s:int (s:positive))\n(+ myint 1)\n"
+	const content = "(q:deftype \"myint\" s:int (s:positive))\n(+ myint 1)\n"
 	const uri = "file:///test/string-deftype.lisp"
 
 	want := []protocol.Range{
 		{Start: protocol.Position{Line: 0, Character: 12}, End: protocol.Position{Line: 0, Character: 17}},
 		{Start: protocol.Position{Line: 1, Character: 3}, End: protocol.Position{Line: 1, Character: 8}},
 	}
-	const wantText = "(s:deftype \"NEW\" s:int (s:positive))\n(+ NEW 1)\n"
+	const wantText = "(q:deftype \"NEW\" s:int (s:positive))\n(+ NEW 1)\n"
 
 	s := renameTestServer(encodingUTF8)
 	openDoc(s, uri, content)

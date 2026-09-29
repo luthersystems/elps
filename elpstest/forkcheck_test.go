@@ -235,14 +235,14 @@ func TestForkCheckPublishesBaseTemplateOnce(t *testing.T) {
 func TestForkCheck_SchemaValidatorCredential(t *testing.T) {
 	elpstest.RunForkCheck(t, elpstest.ForkCheck{
 		Program: `
-(s:deftype "T" s:int)
+(set 'T (s:make-validator "T" s:int))
 (set 'anon (s:make-validator "Anon" s:int (s:gt 1)))
 `,
 		Tx: []string{
 			`(s:validate T 3)`,
 			`(s:validate anon 3)`,
 			`(s:validate T "nope")`,
-			`(s:deftype "U" s:string) (s:validate U "x")`,
+			`(set 'U (s:make-validator "U" s:string)) (s:validate U "x")`,
 			`(s:validate (s:make-validator "Fresh" s:string) "x")`,
 		},
 	})

@@ -194,11 +194,14 @@ func SourceLoc(v *lisp.LVal) *token.Location {
 // for "'é".
 //
 // The second shape is a STRING LITERAL used as a name, which some def-like
-// forms take: (s:deftype "myint" ...) binds a global called myint, and the
-// node analysis records for it is the literal.  Its span covers the quotes, so
-// a rename built from it replaced them too and produced (s:deftype NEW ...) --
-// a bare symbol where the form requires a string.  Here the name is the
-// literal's INTERIOR, so both ends move in by one delimiter.
+// forms take: a qualified call ending in ":deftype" (e.g. libschema's
+// s:deftype, before elps#736 removed it for writing into the caller's
+// package) whose first argument is a string binds a global named by that
+// string, and the node analysis records for it is the literal.  Its span
+// covers the quotes, so a rename built from it replaced them too and
+// produced (x:deftype NEW ...) -- a bare symbol where the form requires a
+// string.  Here the name is the literal's INTERIOR, so both ends move in by
+// one delimiter.
 //
 // A string is only handled when its raw span is exactly the decoded value plus
 // two delimiter bytes on one line.  Anything else -- an escape, a raw-string

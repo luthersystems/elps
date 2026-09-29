@@ -9,22 +9,34 @@ The library is exported by default under the package name `s` and all functions 
 
 ### How do I use it?
 
-Types are defined using the `s:deftype` keyword and validations are performed by calling `s:validate` on a value.
+Validators are created by calling `s:make-validator`, which returns the
+validator without binding it anywhere; bind it to a name yourself with the
+core `set`. Validations are then performed by calling `s:validate` on a
+value.
+
+> `libschema` used to also offer `s:deftype`, which bound its validator as a
+> global under the caller's own name for you. It was removed
+> ([#736](https://github.com/luthersystems/elps/issues/736)): a prefixed
+> library builtin (`s:...`) must never write into the caller's package, only
+> the caller's own `set`/`set!`/`defun` may do that. `s:make-validator` plus
+> `set` is a two-line equivalent, e.g. `(s:deftype "title" s:string (s:in
+> "Mr" "Ms" "Dr"))` becomes `(set 'title (s:make-validator "title" s:string
+> (s:in "Mr" "Ms" "Dr")))`, as used throughout this document.
 
 #### Validating
 
 We can validate that a value meets the required type by calling `s:validate` on it with the required value:
 ```lisp
 (set 'x "hello")
-(s:deftype "mystring" s:string)
+(set 'mystring (s:make-validator "mystring" s:string))
 (assert-nil (s:validate mystring x))
 ```
 
 If the value does not have the required type, an error of type `"wrong-type"` will be returned. If a constraint (see below)
 fails, an error of type `"failed-constraint"` will be the result.
 
-If using `s:make-validator` to define a time then pass the validator it
-returned along with the value to be validated.
+A validator does not need a permanent binding at all -- `let` gives it a
+scoped, temporary one:
 
 ```lisp
 (set 'x "hello")
@@ -34,34 +46,34 @@ returned along with the value to be validated.
 
 #### Defining types
 
-To define a type, specify the name for your type, followed by a base type name (see below) and then, optionally, any
-constraints you wish to enforce.
+To define a type, call `s:make-validator` with a name for your type, a base
+type name (see below), and then, optionally, any constraints you wish to
+enforce; bind the result with `set` so you can refer to it later.
 
 At the simplest level this can be referencing an inbuilt type, for example
 
 ```lisp
-(s:deftype "mytype" s:string)
+(set 'mytype (s:make-validator "mytype" s:string))
 ```
 
 This type will require that the supplied value is a string. Not very useful in itself as this is the same as validating against 
 `s:string`. But let's say we want our string to have a length of at least eight characters. We can do
 ```lisp
-(s:deftype "mytype" s:string (s:lengt 8))
+(set 'mytype (s:make-validator "mytype" s:string (s:lengt 8)))
 ```
 Or, more usefully, if we want to define an enum, we can specify a list of permitted values like this
 ```lisp
-(s:deftype "title" s:string (s:in "Mr" "Mrs" "Miss" "Ms" "Mx" "Dr" "Prof"))
+(set 'title (s:make-validator "title" s:string (s:in "Mr" "Mrs" "Miss" "Ms" "Mx" "Dr" "Prof")))
 ```
 
-If working with tagged-values (user-defined types created with the core
-language `deftype` macro) then `s:deftype` often will not be usable because
-both deftype operations attempt to bind the same symbol.  Instead of using
-`s:deftype` in those situations`s:make-validator` will return a validator which
-can be passed to `s:validate`.
+`s:make-validator` also works directly with tagged-values (user-defined types
+created with the core language `deftype` macro): pass it the typedef itself
+in place of a name, and it builds a validator that checks the tagged value's
+user-data.
 
-```
+```lisp
 (deftype abc (s) (to-string s))
-(set 'abc-validator (s:make-validator abc s:string (s:in "a" "b" "c"))
+(set 'abc-validator (s:make-validator abc s:string (s:in "a" "b" "c")))
 ```
 
 When `s:make-validator` is passed the typedef `abc` it automatically creates a
@@ -69,10 +81,10 @@ tagged-value validator which validates the type's string contents.
 
 If the structure of a tagged-value is known but its exact type is not then the
 `s:tagged-value` type can be used when calling `s:make-validator` with a string
-type name.  This can work with `s:deftype` depending on the type name.
+type name instead of a typedef.
 
-```
-(s:deftype "abc-like" s:tagged-value s:string (s:in "a" "b" "c")) 
+```lisp
+(set 'abc-like (s:make-validator "abc-like" s:tagged-value s:string (s:in "a" "b" "c")))
 (deftype mystring (s) (to-string s))
 (s:validate abc-like (new mystring "b"))
 ```
@@ -92,44 +104,44 @@ So far only simple type constraints have been discussed.  Where this really
 comes into its own is when we start defining more complex types. We can specify
 the keys, and their types that a sorted map should have:
 ```lisp
-(s:deftype "mymap" s:sorted-map 
+(set 'mymap (s:make-validator "mymap" s:sorted-map 
     (s:has-key "first-name" s:string) 
     (s:has-key "surname" s:string) 
     (s:may-have-key "middle-name" s:string)
-)
+))
 ```
 We now have a map type that must have a string in the `first-name` and `surname` keys and, if the `middle-name` key is
 set, it must also contain a string. If we wish to constrain the keys that can be set to this list, we can wrap the key 
 definitions in a call to `s:no-more-keys` like this:
 ```lisp
-(s:deftype "mymap" s:sorted-map 
+(set 'mymap (s:make-validator "mymap" s:sorted-map 
     (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string) 
         (s:may-have-key "middle-name" s:string)
     )
-)
+))
 ```
 Now, if we tried to validate a map with the key `random-wrong-data` set, we would receive an error.
 
 We can also use our title enum from before so that if a title is set, it must be from the options we specified:
 ```lisp
-(s:deftype "mymap" s:sorted-map 
+(set 'mymap (s:make-validator "mymap" s:sorted-map 
     (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string) 
         (s:may-have-key "middle-name" s:string)
         (s:may-have-key "title" title)
     )
-)
+))
 ```
 
 We can also perform conditional validation. Let's say we wanted to check if someone is over 18 if they are marked as an
 adult (a silly example I know, but trying to keep it simple here). We can use the `s:when` predicate to return an error 
 if someone under 18 is marked as an adult like this:
 ```lisp
-(s:deftype "age-type" s:int (s:positive))
-(s:deftype "mymap" s:sorted-map 
+(set 'age-type (s:make-validator "age-type" s:int (s:positive)))
+(set 'mymap (s:make-validator "mymap" s:sorted-map 
     (s:no-other-keys 
         (s:has-key "first-name" s:string) 
         (s:has-key "surname" s:string)
@@ -139,7 +151,7 @@ if someone under 18 is marked as an adult like this:
         (s:may-have-key "title" title)
     )
     (s:when "age" (s:lt 18) "is-adult" (s:is-false))
-)
+))
 ```
 You'll find a lot more examples in the [`libschema_test.lisp`](./libschema_test.lisp) file in this directory and a reference of all the available 
 types and constraints below.
@@ -265,7 +277,9 @@ Requires the value to match the supplied pattern. Any regular expression that ca
   
 ### Gotchas
 
-* Type names are only symbols after they're defined. They're strings when you call `deftype`.
+* `name` is always a string when you call `s:make-validator` (or a typedef,
+  for a tagged-value); it only becomes a symbol once you bind the returned
+  validator to one with `set`.
 * Constraints are ordinary, evaluated arguments. Write `(s:gt 1)` and refer to a defined type by its bare symbol
   (`(s:has-key "age" age-type)`); do not quote either. Before
   [#737](https://github.com/luthersystems/elps/issues/737) libschema evaluated a quoted form such as `'(s:gt 1)`, or looked

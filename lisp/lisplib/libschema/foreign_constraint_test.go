@@ -47,25 +47,25 @@ func TestForeignFunctionInConstraintSlot(t *testing.T) {
 	}
 	cases := []struct{ name, src string }{
 		{"validate", `(s:validate FOREIGN 1)`},
-		{"deftype-constraint", `(s:deftype "T" s:int FOREIGN) (s:validate T 1)`},
-		{"deftype-type", `(s:deftype "T" FOREIGN) (s:validate T 1)`},
+		{"deftype-constraint", `(set 'T (s:make-validator "T" s:int FOREIGN)) (s:validate T 1)`},
+		{"deftype-type", `(set 'T (s:make-validator "T" FOREIGN)) (s:validate T 1)`},
 		{"make-validator", `(s:validate (s:make-validator "T" s:int FOREIGN) 1)`},
-		{"check-bool", `(s:deftype "T" s:bool FOREIGN) (s:validate T true)`},
-		{"check-fun", `(s:deftype "T" s:fun FOREIGN) (s:validate T identity)`},
-		{"check-string", `(s:deftype "T" s:string FOREIGN) (s:validate T "x")`},
-		{"check-float", `(s:deftype "T" "float" FOREIGN) (s:validate T 1.5)`},
-		{"check-number", `(s:deftype "T" s:number FOREIGN) (s:validate T 1)`},
-		{"check-array", `(s:deftype "T" s:array FOREIGN) (s:validate T (vector 1))`},
-		{"check-map", `(s:deftype "T" s:sorted-map FOREIGN) (s:validate T (sorted-map "a" 1))`},
-		{"check-any", `(s:deftype "T" "any" FOREIGN) (s:validate T 1)`},
-		{"check-tagged", `(s:deftype "T" s:tagged-value FOREIGN) (s:validate T 1)`},
-		{"has-key", `(s:deftype "T" s:sorted-map (s:has-key "a" FOREIGN)) (s:validate T (sorted-map "a" 1))`},
-		{"may-have-key", `(s:deftype "T" s:sorted-map (s:may-have-key "a" FOREIGN)) (s:validate T (sorted-map "a" 1))`},
-		{"of", `(s:deftype "T" s:array (s:of FOREIGN)) (s:validate T (vector 1))`},
-		{"no-other-keys", `(s:deftype "T" s:sorted-map (s:no-other-keys FOREIGN)) (s:validate T (sorted-map "a" 1))`},
-		{"not", `(s:deftype "T" s:int (s:not FOREIGN)) (s:validate T 1)`},
-		{"when-guard", `(s:deftype "T" s:sorted-map (s:when "a" FOREIGN "b" (s:gt 100))) (s:validate T (sorted-map "a" 1 "b" 1))`},
-		{"when-check", `(s:deftype "T" s:sorted-map (s:when "a" (s:gt 0) "b" FOREIGN)) (s:validate T (sorted-map "a" 1 "b" 1))`},
+		{"check-bool", `(set 'T (s:make-validator "T" s:bool FOREIGN)) (s:validate T true)`},
+		{"check-fun", `(set 'T (s:make-validator "T" s:fun FOREIGN)) (s:validate T identity)`},
+		{"check-string", `(set 'T (s:make-validator "T" s:string FOREIGN)) (s:validate T "x")`},
+		{"check-float", `(set 'T (s:make-validator "T" "float" FOREIGN)) (s:validate T 1.5)`},
+		{"check-number", `(set 'T (s:make-validator "T" s:number FOREIGN)) (s:validate T 1)`},
+		{"check-array", `(set 'T (s:make-validator "T" s:array FOREIGN)) (s:validate T (vector 1))`},
+		{"check-map", `(set 'T (s:make-validator "T" s:sorted-map FOREIGN)) (s:validate T (sorted-map "a" 1))`},
+		{"check-any", `(set 'T (s:make-validator "T" "any" FOREIGN)) (s:validate T 1)`},
+		{"check-tagged", `(set 'T (s:make-validator "T" s:tagged-value FOREIGN)) (s:validate T 1)`},
+		{"has-key", `(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" FOREIGN))) (s:validate T (sorted-map "a" 1))`},
+		{"may-have-key", `(set 'T (s:make-validator "T" s:sorted-map (s:may-have-key "a" FOREIGN))) (s:validate T (sorted-map "a" 1))`},
+		{"of", `(set 'T (s:make-validator "T" s:array (s:of FOREIGN))) (s:validate T (vector 1))`},
+		{"no-other-keys", `(set 'T (s:make-validator "T" s:sorted-map (s:no-other-keys FOREIGN))) (s:validate T (sorted-map "a" 1))`},
+		{"not", `(set 'T (s:make-validator "T" s:int (s:not FOREIGN))) (s:validate T 1)`},
+		{"when-guard", `(set 'T (s:make-validator "T" s:sorted-map (s:when "a" FOREIGN "b" (s:gt 100)))) (s:validate T (sorted-map "a" 1 "b" 1))`},
+		{"when-check", `(set 'T (s:make-validator "T" s:sorted-map (s:when "a" (s:gt 0) "b" FOREIGN))) (s:validate T (sorted-map "a" 1 "b" 1))`},
 	}
 	for _, c := range cases {
 		for kind, foreign := range foreigners {
@@ -103,8 +103,8 @@ func TestForeignFunctionInConstraintSlot(t *testing.T) {
 // The panic became a silent wrong answer in a validator. The guard is
 // therefore rejected at CONSTRUCTION, where no inversion can reach it.
 func TestWhenGuardRejectsForeignAtConstruction(t *testing.T) {
-	const src = `(s:deftype "M" s:sorted-map (s:has-key "a" s:int) (s:has-key "b" s:int)
-	                                (s:when "a" identity "b" (s:gt 100)))`
+	const src = `(set 'M (s:make-validator "M" s:sorted-map (s:has-key "a" s:int) (s:has-key "b" s:int)
+	                                (s:when "a" identity "b" (s:gt 100))))`
 	env := newSchemaEnv(t)
 	res := env.LoadStringContext(context.Background(), "when-guard", src)
 	if res.Type != lisp.LError {
@@ -138,19 +138,19 @@ func TestWhenSemanticsPreserved(t *testing.T) {
 	}{
 		{
 			"guard met, check fails",
-			`(s:deftype "M" s:sorted-map (s:when "a" (s:gt 0) "b" (s:gt 100)))
+			`(set 'M (s:make-validator "M" s:sorted-map (s:when "a" (s:gt 0) "b" (s:gt 100))))
 			 (s:validate M (sorted-map "a" 1 "b" 1))`,
 			false,
 		},
 		{
 			"guard met, check passes",
-			`(s:deftype "M" s:sorted-map (s:when "a" (s:gt 0) "b" (s:gt 100)))
+			`(set 'M (s:make-validator "M" s:sorted-map (s:when "a" (s:gt 0) "b" (s:gt 100))))
 			 (s:validate M (sorted-map "a" 1 "b" 101))`,
 			true,
 		},
 		{
 			"guard not met, check skipped",
-			`(s:deftype "M" s:sorted-map (s:when "a" (s:gt 5) "b" (s:gt 100)))
+			`(set 'M (s:make-validator "M" s:sorted-map (s:when "a" (s:gt 5) "b" (s:gt 100))))
 			 (s:validate M (sorted-map "a" 1 "b" 1))`,
 			true,
 		},
@@ -173,7 +173,7 @@ func TestWhenSemanticsPreserved(t *testing.T) {
 func TestWhenRejectsNonMapInput(t *testing.T) {
 	env := newSchemaEnv(t)
 	res := env.LoadStringContext(context.Background(), "when-nonmap",
-		`(s:deftype "T" "any" (s:when "a" s:int "b" s:int)) (s:validate T 1)`)
+		`(set 'T (s:make-validator "T" "any" (s:when "a" s:int "b" s:int))) (s:validate T 1)`)
 	if res.Type != lisp.LError {
 		t.Fatalf("expected a wrong-type error, got %v", res)
 	}
@@ -226,11 +226,11 @@ func TestNewValidatorIsAcceptedAsAConstraint(t *testing.T) {
 		src   string
 		valid bool
 	}{
-		{`(s:deftype "T" s:int even?) (s:validate T 4)`, true},
-		{`(s:deftype "T" s:int even?) (s:validate T 5)`, false},
-		{`(s:deftype "T" s:int (s:not even?)) (s:validate T 5)`, true},
-		{`(s:deftype "T" s:sorted-map (s:has-key "a" even?)) (s:validate T (sorted-map "a" 2))`, true},
-		{`(s:deftype "T" s:sorted-map (s:when "a" even? "b" (s:gt 100))) (s:validate T (sorted-map "a" 2 "b" 1))`, false},
+		{`(set 'T (s:make-validator "T" s:int even?)) (s:validate T 4)`, true},
+		{`(set 'T (s:make-validator "T" s:int even?)) (s:validate T 5)`, false},
+		{`(set 'T (s:make-validator "T" s:int (s:not even?))) (s:validate T 5)`, true},
+		{`(set 'T (s:make-validator "T" s:sorted-map (s:has-key "a" even?))) (s:validate T (sorted-map "a" 2))`, true},
+		{`(set 'T (s:make-validator "T" s:sorted-map (s:when "a" even? "b" (s:gt 100)))) (s:validate T (sorted-map "a" 2 "b" 1))`, false},
 	} {
 		e := newSchemaEnv(t)
 		if rc := e.PutGlobal(lisp.Symbol("even?"), newEven()); rc.Type == lisp.LError {

@@ -1,13 +1,20 @@
 (use-package 'testing)
 
-(test "deftype-string"
-  (s:deftype "mystring" s:string)
+; Several tests below reuse a generic name (myint, mystring, x) already bound
+; by an earlier, independent test. Each (test ...) body runs in its own
+; isolated environment at runtime, so this is not really a rebind -- but the
+; set-usage analyzer reads the file as one flat top-level sequence and cannot
+; see that isolation, so it reports a false "already bound" positive on the
+; later definitions. Tagged ; nolint:set-usage at each site below.
+
+(test "make-validator-string"
+  (set 'mystring (s:make-validator "mystring" s:string))
   (set 'x "hello")
   (assert-nil (s:validate mystring x))
   (set 'y 9.0)
   (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
     (assert-equal (s:validate mystring y) "ERROR"))
-  (s:deftype "myconditionalstring" s:string (s:in "x" "y" "z"))
+  (set 'myconditionalstring (s:make-validator "myconditionalstring" s:string (s:in "x" "y" "z")))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myconditionalstring y)))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
@@ -16,23 +23,23 @@
   (assert-nil (s:validate mystring "y"))
   )
 
-(test "deftype-regexp"
-  (s:deftype "mystring" s:string (s:regexp "^Hello"))
+(test "make-validator-regexp"
+  (set 'mystring (s:make-validator "mystring" s:string (s:regexp "^Hello"))) ; nolint:set-usage
   (assert-nil (s:validate mystring "Hello mum"))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
                            (s:validate mystring "goodbye mum")))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
                            (s:validate mystring "well hello there")))
-  (s:deftype "isodate" s:string (s:regexp "^([1-9][0-9]{3})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])?$"))
+  (set 'isodate (s:make-validator "isodate" s:string (s:regexp "^([1-9][0-9]{3})-(1[0-2]|0[1-9])-(3[01]|0[1-9]|[12][0-9])?$")))
   (assert-nil (s:validate isodate "2020-04-31"))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
                            (s:validate isodate "3/4/21")))
   (assert-equal  "ERROR" (handler-bind (('bad-arguments (lambda (&rest _e) "ERROR")))
-                           (s:deftype "x" s:string (s:regexp "*"))))
+                           (set 'x (s:make-validator "x" s:string (s:regexp "*"))))) ; nolint:set-usage
   )
 
-(test "deftype-int"
-  (s:deftype "myint" s:int)
+(test "make-validator-int"
+  (set 'myint (s:make-validator "myint" s:int))
   (assert-nil (s:validate myint 4))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -40,8 +47,8 @@
                            (s:validate myint 91.3)))
   )
 
-(test "deftype-bool"
-  (s:deftype "mybool" s:bool (s:is-true))
+(test "make-validator-bool"
+  (set 'mybool (s:make-validator "mybool" s:bool (s:is-true)))
   (assert-nil (s:validate mybool true))
   ; A boolean is the symbol, not a string that spells it.
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
@@ -52,8 +59,8 @@
                            (s:validate mybool 'false)))
   )
 
-(test "deftype-bool-false"
-  (s:deftype "myboolf" s:bool (s:is-false))
+(test "make-validator-bool-false"
+  (set 'myboolf (s:make-validator "myboolf" s:bool (s:is-false)))
   (assert-nil (s:validate myboolf 'false))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myboolf "error")))
@@ -61,8 +68,8 @@
                            (s:validate myboolf 'true)))
   )
 
-(test "deftype-any-truthy"
-  (s:deftype "myboolty" s:any (s:is-truthy))
+(test "make-validator-any-truthy"
+  (set 'myboolty (s:make-validator "myboolty" s:any (s:is-truthy)))
   (assert-nil (s:validate myboolty true))
   (assert-nil (s:validate myboolty 'true))
   (assert-nil (s:validate myboolty "true"))
@@ -76,8 +83,8 @@
                            (s:validate myboolty 0)))
   )
 
-(test "deftype-any-falsy"
-  (s:deftype "mybooltf" s:any (s:is-falsy))
+(test "make-validator-any-falsy"
+  (set 'mybooltf (s:make-validator "mybooltf" s:any (s:is-falsy)))
   (assert-nil (s:validate mybooltf false))
   (assert-nil (s:validate mybooltf "false"))
   (assert-nil (s:validate mybooltf ""))
@@ -90,8 +97,8 @@
                            (s:validate mybooltf 11)))
   )
 
-(test "deftype-float"
-  (s:deftype "myflt" s:float)
+(test "make-validator-float"
+  (set 'myflt (s:make-validator "myflt" s:float))
   (assert-nil (s:validate myflt 4.3))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myflt "error")))
@@ -99,16 +106,16 @@
                            (s:validate myflt 91)))
   )
 
-(test "deftype-number"
-  (s:deftype "mynum" s:number)
+(test "make-validator-number"
+  (set 'mynum (s:make-validator "mynum" s:number))
   (assert-nil (s:validate mynum 4.3))
   (assert-nil (s:validate mynum 4))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate mynum "error")))
   )
 
-(test "deftype-int-positive"
-  (s:deftype "myint" s:int (s:positive))
+(test "make-validator-int-positive"
+  (set 'myint (s:make-validator "myint" s:int (s:positive))) ; nolint:set-usage
   (assert-nil (s:validate myint 4))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -116,8 +123,8 @@
                            (s:validate myint -5)))
   )
 
-(test "deftype-int-negative"
-  (s:deftype "myint" s:int (s:negative))
+(test "make-validator-int-negative"
+  (set 'myint (s:make-validator "myint" s:int (s:negative))) ; nolint:set-usage
   (assert-nil (s:validate myint -5))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -125,8 +132,8 @@
                            (s:validate myint 5)))
   )
 
-(test "deftype-int-constrained"
-  (s:deftype "myint" s:int (s:gt 4) (s:lte 91))
+(test "make-validator-int-constrained"
+  (set 'myint (s:make-validator "myint" s:int (s:gt 4) (s:lte 91))) ; nolint:set-usage
   (assert-nil (s:validate myint 5))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -136,8 +143,8 @@
                            (s:validate myint 4)))
   )
 
-(test "deftype-int-constrained2"
-  (s:deftype "myint" s:int (s:gte 4) (s:lt 91))
+(test "make-validator-int-constrained2"
+  (set 'myint (s:make-validator "myint" s:int (s:gte 4) (s:lt 91))) ; nolint:set-usage
   (assert-nil (s:validate myint 5))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -147,8 +154,8 @@
                            (s:validate myint 3)))
   )
 
-(test "deftype-int-constrained3"
-  (s:deftype "myint" s:int (s:in 6 7 11))
+(test "make-validator-int-constrained3"
+  (set 'myint (s:make-validator "myint" s:int (s:in 6 7 11))) ; nolint:set-usage
   (assert-nil (s:validate myint 6))
   (assert-equal  "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                            (s:validate myint "error")))
@@ -158,13 +165,13 @@
                            (s:validate myint -6)))
   )
 
-(test "deftype-array"
-  (s:deftype "my4thingarray" s:array (s:len 4))
-  (s:deftype "my4to6thingarray" s:array (s:lengte 4) (s:lenlt 7))
-  (s:deftype "mystringarray" s:array (s:of s:string))
-  (s:deftype "mystringorfunctionarray" s:array (s:of s:string s:fun))
-  (s:deftype "myint" s:int (s:gt 11))
-  (s:deftype "myfancyarray" s:array (s:of myint))
+(test "make-validator-array"
+  (set 'my4thingarray (s:make-validator "my4thingarray" s:array (s:len 4)))
+  (set 'my4to6thingarray (s:make-validator "my4to6thingarray" s:array (s:lengte 4) (s:lenlt 7)))
+  (set 'mystringarray (s:make-validator "mystringarray" s:array (s:of s:string)))
+  (set 'mystringorfunctionarray (s:make-validator "mystringorfunctionarray" s:array (s:of s:string s:fun)))
+  (set 'myint (s:make-validator "myint" s:int (s:gt 11))) ; nolint:set-usage
+  (set 'myfancyarray (s:make-validator "myfancyarray" s:array (s:of myint)))
   (assert-nil (s:validate my4thingarray (vector 1 2 3 4)))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
                            (s:validate my4thingarray (vector 1 2 3 4 5))))
@@ -182,12 +189,12 @@
                            (s:validate myfancyarray (vector 13 87 9))))
   )
 
-(test "deftype-map"
-  (s:deftype "mymap" s:sorted-map (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string))
-  (s:deftype "mymapdone" s:sorted-map (s:no-other-keys (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string)))
-  (s:deftype "myint" s:int (s:gt 4))
-  (s:deftype "mycomplicatedmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" myint) (s:has-key "innermap" mymap))
-  (s:deftype "myconditionalmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" s:int) (s:has-key "writer" s:bool) (s:when "name" (s:in "Reuben" "Sam") "writer" (s:is-true)))
+(test "make-validator-map"
+  (set 'mymap (s:make-validator "mymap" s:sorted-map (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string)))
+  (set 'mymapdone (s:make-validator "mymapdone" s:sorted-map (s:no-other-keys (s:has-key "name" s:string) (s:may-have-key "middle-name" s:string))))
+  (set 'myint (s:make-validator "myint" s:int (s:gt 4))) ; nolint:set-usage
+  (set 'mycomplicatedmap (s:make-validator "mycomplicatedmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" myint) (s:has-key "innermap" mymap)))
+  (set 'myconditionalmap (s:make-validator "myconditionalmap" s:sorted-map (s:has-key "name" s:string) (s:has-key "id" s:int) (s:has-key "writer" s:bool) (s:when "name" (s:in "Reuben" "Sam") "writer" (s:is-true))))
   (assert-nil (s:validate mymap (sorted-map 'name "Oliver")))
   (assert-nil (s:validate mymap (sorted-map 'name "Oliver" 'middle-name "Wendell")))
   (assert-nil (s:validate mymap (sorted-map 'name "Oliver" 'middle-name "Wendell" 'last-name "Holmes")))
@@ -208,7 +215,7 @@
   )
 
 (test "not"
-  (s:deftype "not-test" s:string (s:not (s:in "a" "b" "c")))
+  (set 'not-test (s:make-validator "not-test" s:string (s:not (s:in "a" "b" "c"))))
   (assert-nil (s:validate not-test "x"))
   (assert-equal  "ERROR" (handler-bind (('failed-constraint (lambda (&rest _e) "ERROR")))
                            (s:validate not-test "a")))
@@ -234,7 +241,7 @@
 ; key outright -- so may-have-key never found anything and silently passed
 ; whatever it was given.  The key type is now string everywhere.
 (test "may-have-key-key-type"
-  (s:deftype "optstr" s:sorted-map (s:may-have-key "a" s:string))
+  (set 'optstr (s:make-validator "optstr" s:sorted-map (s:may-have-key "a" s:string)))
 
   ; string-keyed literal map
   (assert-nil (s:validate optstr (sorted-map "a" "str")))
@@ -255,10 +262,21 @@
                           (s:validate optstr (json:load-string "{\"a\": 1}"))))
 
   ; s:has-key must give the same verdict whenever the key is present
-  (s:deftype "reqstr" s:sorted-map (s:has-key "a" s:string))
+  (set 'reqstr (s:make-validator "reqstr" s:sorted-map (s:has-key "a" s:string)))
   (assert-nil (s:validate reqstr (sorted-map "a" "str")))
   (assert-nil (s:validate reqstr (sorted-map 'a "str")))
   (assert-nil (s:validate reqstr (json:load-string "{\"a\": \"str\"}")))
   (assert-equal "ERROR" (handler-bind (('wrong-type (lambda (&rest _e) "ERROR")))
                           (s:validate reqstr (json:load-string "{\"a\": 1}"))))
   )
+
+; #736: a prefixed library builtin must never write into the caller's
+; package, so s:deftype (which bound its validator as a global under the
+; caller's own name) was removed. Callers now bind the result of
+; s:make-validator themselves with core set -- see e.g.
+; make-validator-string above. s:deftype is simply gone; the symbol
+; resolves as unbound like any other typo.
+(test "deftype-removed"
+  (assert-equal (list 'error "unbound symbol: deftype")
+                (handler-bind (('error (lambda (&rest e) e)))
+                  (s:deftype "removed" s:string))))

@@ -19,12 +19,12 @@ import (
 func TestSchemaConstraintNotEvaluatedTwice(t *testing.T) {
 	env := newSchemaEnv(t)
 	for _, src := range []string{
-		`(s:deftype "T1" s:int '(s:gt 1))`,
+		`(set 'T1 (s:make-validator "T1" s:int '(s:gt 1)))`,
 		`(s:make-validator "T2" s:int '(s:gt 1))`,
 		`(s:make-validator "T3" s:sorted-map (s:has-key "k" '(s:gt 1)))`,
 		// Refused before #737 too (builtinIsNot checks); a regression guard.
 		`(s:make-validator "T4" s:any (s:not '(s:is-true)))`,
-		`(progn (s:deftype "T5" s:int) (s:make-validator "T6" s:sorted-map (s:has-key "k" 'T5)))`,
+		`(progn (set 'T5 (s:make-validator "T5" s:int)) (s:make-validator "T6" s:sorted-map (s:has-key "k" 'T5)))`,
 		`(s:make-validator "T7" s:int 's:int)`,
 	} {
 		res := env.LoadString("test", src)
@@ -32,7 +32,7 @@ func TestSchemaConstraintNotEvaluatedTwice(t *testing.T) {
 		assert.Equal(t, "bad-arguments", res.Str, "%s", src)
 	}
 	// Unquoted constraints, and validators bound to symbols, still work.
-	res := env.LoadString("test", `(progn (s:deftype "U1" s:int (s:gt 1))
+	res := env.LoadString("test", `(progn (set 'U1 (s:make-validator "U1" s:int (s:gt 1)))
 	                                     (s:validate U1 2))`)
 	assert.True(t, res.IsNil(), "%v", res)
 	res = env.LoadString("test", `(s:validate U1 0)`)
@@ -64,7 +64,7 @@ func TestSchemaNestedTaggedTypeNames(t *testing.T) {
 	env := newSchemaEnv(t)
 	for _, src := range []string{
 		`(progn (deftype outer (s) s) (s:validate (s:make-validator outer s:tagged-value "string" (s:in "a")) (new outer (new outer "a"))))`,
-		`(progn (s:deftype "w" s:tagged-value s:tagged-value s:string (s:in "a")) ())`,
+		`(progn (set 'w (s:make-validator "w" s:tagged-value s:tagged-value s:string (s:in "a"))) ())`,
 	} {
 		res := env.LoadString("test", src)
 		assert.True(t, res.IsNil(), "%s -> %v", src, res)
@@ -77,7 +77,7 @@ func TestSchemaNestedTaggedTypeNames(t *testing.T) {
 // used to be dropped silently.
 func TestSchemaValidatorTypeKeepsConstraints(t *testing.T) {
 	env := newSchemaEnv(t)
-	res := env.LoadString("test", `(progn (s:deftype "vi" s:int (s:gt 1)) (s:deftype "vy" vi (s:lt 3)) (s:validate vy 100))`)
+	res := env.LoadString("test", `(progn (set 'vi (s:make-validator "vi" s:int (s:gt 1))) (set 'vy (s:make-validator "vy" vi (s:lt 3))) (s:validate vy 100))`)
 	assert.Equal(t, "failed-constraint", res.Str, "%v", res)
 	assert.True(t, env.LoadString("test", `(s:validate vy 2)`).IsNil())
 	assert.Equal(t, "failed-constraint", env.LoadString("test", `(s:validate vy 0)`).Str)

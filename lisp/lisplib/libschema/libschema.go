@@ -106,19 +106,13 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("deftype", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinDefType,
-		`Defines a named schema type and binds it as a global symbol.
-		name is a string used as both the type name and symbol binding.
-		type is a type string ("string", "int", "float", "number",
-		"bool", "array", "sorted-map", "fun", "tagged-value", "any").
-		Additional constraint functions may be passed to further
-		restrict valid values. Use with s:validate to check values.`),
 	libutil.FunctionDoc("make-validator", lisp.Formals("name", "type", lisp.VarArgSymbol, "constraints"), builtinMakeValidator,
 		`Creates and returns a validator function without binding it.
-		Like deftype but returns the validator instead of creating a
-		global binding. name may be a string or a typedef (tagged
-		value). When name is a typedef, the type argument is treated
-		as a constraint on the user-data and "tagged-value" is implied.`),
+		name may be a string or a typedef (tagged value). When name is
+		a typedef, the type argument is treated as a constraint on the
+		user-data and "tagged-value" is implied. Bind the result with
+		core set to use it with s:validate, e.g. (set 'title
+		(s:make-validator "title" s:string (s:in "Mr" "Ms" "Dr"))).`),
 	libutil.FunctionDoc("in", lisp.Formals("&rest", "allowed-values"), builtinAllowedValues,
 		`Returns a constraint that checks if the input is equal to one
 		of the allowed values. Useful for creating enum-like types.
@@ -151,8 +145,8 @@ var builtins = []*libutil.Builtin{
 		less than zero. NaN is neither positive nor negative.`),
 	libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
 		`Validates input against a type validator function (created by
-		deftype or make-validator). Returns nil on success or an error
-		with a condition string describing the validation failure.`),
+		make-validator). Returns nil on success or an error with a
+		condition string describing the validation failure.`),
 	libutil.FunctionDoc("len", lisp.Formals("allowed-value"), builtinLen,
 		`Returns a constraint that checks if the length of the input
 		equals allowed-value. Works with strings, bytes, and arrays.`),
@@ -234,47 +228,6 @@ func builtinValidate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lisp.ErrorConditionf(BadArgs, "First argument is not a type")
 	}
 	return applyConstraint(env, val, input)
-}
-
-// This is the `s:deftype` keyword. It defines a type and associated
-// constraints.  s:deftype creates a symbol binding for the type validator
-// which can be used with s:validate.
-//
-// s:deftype cannot be used with the core language deftype macro because they
-// would bind different values to the same symbol.  s:make-validator should be
-// used with tagged-values instead.
-func builtinDefType(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	lname := args.Cells[0]
-	typeValidator := args.Cells[1]
-	constraints := args.Cells[2:]
-	if len(args.Cells) < 2 {
-		return lisp.ErrorConditionf(BadArgs, "Not enough arguments")
-	}
-	var name string
-	switch lname.Type {
-	case lisp.LString:
-		name = lname.Str
-	default:
-		return lisp.ErrorConditionf(BadArgs, "First argument must resolve to a string")
-	}
-	exists := env.Get(lname)
-	if !exists.IsNil() {
-		return env.ErrorConditionf(BadArgs, "Symbol %s is already defined", lname)
-	}
-	res := getHandler(env, typeValidator, name, constraints)
-	if res != nil && res.Type == lisp.LError {
-		return res
-	}
-	if res != nil {
-		// BUG(#736): A regular function should not bind globals in this way
-		// because functions aren't supposed to operate in the caller's lexical
-		// environment, but builtins don't get a lexical environment currently.
-		res = env.PutGlobalFromLisp(lisp.Symbol(lname.Str), res)
-		if res != nil && res.Type == lisp.LError {
-			return res
-		}
-	}
-	return lisp.Nil()
 }
 
 // This is the `s:make-validator` keyword.  It returns a reference to a
@@ -369,12 +322,12 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		// validator, is data and is refused below like any other non-validator.
 		if in.Type == lisp.LFun {
 			// The choke point. Every composite constraint (s:has-key,
-			// s:may-have-key, s:of, s:no-other-keys, s:when) and both
-			// entry points (s:deftype, s:make-validator) reach an
-			// already-constructed constraint through here, so refusing a
-			// foreign function HERE refuses it at construction time for all
-			// of them -- before any inverting caller (s:not, s:when) can
-			// misread the refusal as "the constraint failed".
+			// s:may-have-key, s:of, s:no-other-keys, s:when) and the
+			// entry point (s:make-validator) reach an already-constructed
+			// constraint through here, so refusing a foreign function HERE
+			// refuses it at construction time for all of them -- before
+			// any inverting caller (s:not, s:when) can misread the
+			// refusal as "the constraint failed".
 			if !isValidator(in) {
 				return env.ErrorConditionf(BadArgs,
 					"Bad input type: an ordinary function is not usable as a constraint (%v). Constraints must be built by the s package (s:int, s:has-key, s:gt, ...) or by libschema.NewValidator.",
@@ -397,8 +350,8 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 //
 // Every validator this package mints takes its FID from here: NewValidator
 // does, and so does every s: constructor reachable from ordinary ELPS source
-// -- s:int and s:gt each mint one, s:deftype mints another around them.  So
-// two runtimes evaluating schema code on two goroutines both land in
+// -- s:int and s:gt each mint one, and s:make-validator mints another around
+// them.  So two runtimes evaluating schema code on two goroutines both land in
 // GenSymbol, and while it was a plain int++ that was a data race with no Go
 // embedder involvement required.  substrate runs dozens of environments
 // evaluating concurrently, so that is the normal case, not an exotic one.
@@ -465,10 +418,11 @@ func runtimeSymbol(env *lisp.LEnv) string {
 // the marker cell's HEADER identity is what makes the credential survive
 // Template.NewVM (issue #579): NewVM shares this immutable native payload but
 // gives every forked value a fresh *LVal header, so a credential compared by
-// header identity is revoked in every fork.  (s:deftype "T" s:int) on the
-// template, (s:validate T 3) in the fork, and the fork raised "Value is not
-// a schema constraint". The zero-state payload value travels intact, and so
-// does its type. The template does not call native replacement or clone hooks.
+// header identity is revoked in every fork.  (set 'T (s:make-validator "T"
+// s:int)) on the template, (s:validate T 3) in the fork, and the fork
+// raised "Value is not a schema constraint". The zero-state payload value
+// travels intact, and so does its type. The template does not call native
+// replacement or clone hooks.
 type validatorTag struct{ templatepolicy.Marker }
 
 var _ templatepolicy.Immutable = validatorTag{}
@@ -1258,8 +1212,8 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // anything else: an error meaning "this is not a constraint", raised at
 // application time, would silently skip the WHOLE CLAUSE.
 //
-//	(s:deftype "M" s:sorted-map (s:has-key "a" s:int) (s:has-key "b" s:int)
-//	                            (s:when "a" identity "b" (s:gt 100)))
+//	(set 'M (s:make-validator "M" s:sorted-map (s:has-key "a" s:int) (s:has-key "b" s:int)
+//	                          (s:when "a" identity "b" (s:gt 100))))
 //	(s:validate M (sorted-map "a" 1 "b" 1))
 //
 // Before any of this work that expression raised [INTERNAL-PANIC] -- loud, and
@@ -1303,8 +1257,8 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return newCapturedValidator(env, lisp.Formals("input"), captures, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		// input.Map() panics ("not sorted-map: int") on anything else. s:when
 		// is reachable under s:any, where no earlier constraint has checked
-		// the type: (s:deftype "T" "any" (s:when "a" s:int "b" s:int)) then
-		// (s:validate T 1).
+		// the type: (set 'T (s:make-validator "T" "any" (s:when "a" s:int "b"
+		// s:int))) then (s:validate T 1).
 		if input.Type != lisp.LSortMap {
 			return lisp.ErrorConditionf(WrongType, "Input is not sorted map")
 		}
