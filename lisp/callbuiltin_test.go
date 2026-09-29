@@ -121,8 +121,7 @@ var refApply = lisp.BuiltinFunc("apply")
 func TestCallBuiltinTailPositionNoMarker(t *testing.T) {
 	env := newLimitTestEnv(t)
 	check := func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
-		switch v.Type {
-		case lisp.LError, lisp.LSymbol, lisp.LInt:
+		if v.Type == lisp.LError || v.Type == lisp.LSymbol || v.Type == lisp.LInt {
 			return v
 		}
 		return env.Errorf("CallBuiltin leaked a %v", v.Type)
