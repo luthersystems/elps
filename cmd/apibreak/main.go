@@ -181,7 +181,7 @@ type packageDoc struct {
 }
 
 func readLisp(path string) (map[string]map[string]symbolDoc, error) {
-	b, err := os.ReadFile(path) //nolint:gosec // path is a CLI argument
+	b, err := os.ReadFile(path) //#nosec G304 -- apibreak is a CLI given the dump paths to read
 	if err != nil {
 		return nil, err
 	}
@@ -302,7 +302,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		return fail("nothing to judge: pass -go-report and/or -lisp-base/-lisp-head")
 	}
 
-	content, err := os.ReadFile(*overridesPath)
+	content, err := os.ReadFile(*overridesPath) //#nosec G304 -- apibreak is a CLI given the override-file path to read
 	if err != nil {
 		return fail("%v", err)
 	}
@@ -314,7 +314,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 
 	var breaks []brk
 	if *goReport != "" {
-		f, err := os.Open(*goReport)
+		f, err := os.Open(*goReport) //#nosec G304 -- apibreak is a CLI given the apidiff report path to read
 		if err != nil {
 			return fail("%v", err)
 		}
