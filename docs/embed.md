@@ -392,8 +392,31 @@ and uses the immutable nil singleton for `()`. This follows the Go macro
 contract: the evaluator may attach source locations to new syntax in place.
 Reuse the template, never a previously returned expansion or a binding looked
 up by the macro. Qualify generated core names (`lisp:if`, `lisp:progn`), and
-use `env.GenSym()` for temporary bindings to avoid capturing the caller's
-names.
+use `lisp.NewGenSyms(args)` for temporary bindings. For example, `pair-once`
+evaluates a form once and returns its value twice:
+
+```go
+var pairOnceForm = lisp.MustFormTemplate(
+    `(lisp:let ((,value ,form)) (lisp:list ,value ,value))`, "value", "form")
+
+func macroPairOnce(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    syms := lisp.NewGenSyms(args)
+    return pairOnceForm.Expand(syms.Symbol("value"), args.Cells[0])
+}
+```
+
+Register it with `elpsutil.FunctionDoc`, formals `lisp.Formals("form")`, and a
+docstring. Create one generator per expansion and reuse each returned symbol
+where that binding is referenced. `Symbol(hint)` returns a fresh symbol on
+every call; hints must not contain `:`. Names such as `value@1@1` use a
+namespace the source reader cannot produce and depend only on argument forms
+and the order of `Symbol` calls. Generation is lazy, charges no steps, and
+allocates only the symbol and its name when the generator stays local.
+Keep its temporary bindings within the expansion: independent expansions
+may reuse names. The [design and limits](internals/gensym.md) explain why
+this prevents capture and why ordinary source nesting can reuse a level.
+The Lisp `gensym` builtin and `env.GenSym()` retain their history-dependent
+`genNNNNNNNN` names for compatibility.
 
 Use `env.ErrorfAt(form, format, values...)` for argument validation so an
 error points at the offending form. For example, this macro binds a name to
