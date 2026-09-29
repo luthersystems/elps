@@ -564,14 +564,21 @@ code:
   at run time: `(flet ((swap! (x y) (list y x))) (swap! 1 2))` is a function
   call and stays one. The same holds for `let`, `let*`, `labels`, `lambda`
   parameters and `dotimes` variables.
-- `macrolet` macros are expanded inside their body. They are built as
-  `macrolet` builds them, so a local macro whose expansion reads a runtime
-  local variable cannot be expanded ahead of time and signals an error.
+- `macrolet` macros are expanded inside their body, and may use enclosing
+  local macros. A local macro whose expander reads a local variable cannot
+  be expanded ahead of time, since the value only exists at run time: that
+  signals an error instead of reading a global of the same name.
+- An `expr` whose pattern changes is returned as a `lambda` with the
+  parameters `expr` inferred from the original pattern, so the function's
+  arity does not change.
+- Special operators a host package registers are left alone: their
+  arguments are neither walked nor expanded.
 - `defun` and `defmacro` are kept as written with their bodies expanded;
   their own expansion embeds a compiled function rather than source.
 
 The input form is never modified. The result evaluates to the same value as
-the input. Like `macroexpand`, it runs macros (which may call `gensym`), so it
+the input. Code that shares structure is walked once per shared node, and each
+list walked costs one step, so a step budget or deadline bounds the walk. Like `macroexpand`, it runs macros (which may call `gensym`), so it
 is meant for load time, tooling and debugging, not for hot paths.
 
 The `gensym` builtin is used to generate a new symbol, which is most often used
