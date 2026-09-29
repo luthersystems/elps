@@ -198,3 +198,52 @@ func TestFreeKeywordsFormalsShape(t *testing.T) {
 	env := freeKeywordEnv(t, true)
 	assert.Equal(t, "free", env.Get(lisp.Symbol("fk")).Docstring())
 }
+
+// Call forms that reach a builtin by other routes: a macro expansion, a form
+// built at run time with a keyword symbol made from a string, a tail call,
+// and forms nested in special operators.  Each shape costs the same for the
+// flagged builtin as for the unflagged one minus exactly the key-name
+// literals, and cold and template VMs agree.  For the unflagged builtin (the
+// only kind existing programs can have) nothing is saved.
+func TestFreeKeywordsOtherRoutes(t *testing.T) {
+	setup := `
+(defmacro call-with-key (f v) (list f 1 :a v))
+(defun tail-call (f) (if true (funcall f) ()))
+(defun tail-fk () (fk 1 :a 2))
+(defun tail-uk () (uk 1 :a 2))
+(defun run-built (f) (eval (list f 1 (to-symbol ":a") 2)))
+`
+	build := func() *lisp.LEnv {
+		env := freeKeywordEnv(t, false)
+		require.NotEqual(t, lisp.LError, env.LoadString("setup", setup).Type)
+		return env
+	}
+	cold := build()
+	tmpl, err := lisp.NewTemplate(build(), templateCorePolicy())
+	require.NoError(t, err)
+	vm, err := tmpl.NewVM()
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		free, plain string
+		saved       int64
+	}{
+		{`(call-with-key fk 2)`, `(call-with-key uk 2)`, 1},
+		// A symbol made at run time is a quoted value, not a literal: charged.
+		{`(run-built 'fk)`, `(run-built 'uk)`, 0},
+		{`(tail-fk)`, `(tail-uk)`, 1},
+		{`(tail-call tail-fk)`, `(tail-call tail-uk)`, 1},
+		{`(progn (fk 1 :a 2))`, `(progn (uk 1 :a 2))`, 1},
+		{`(if (fk 1 :b 2) (fk 1 :a 2) ())`, `(if (uk 1 :b 2) (uk 1 :a 2) ())`, 2},
+		{`(let ([x (fk 1 :a 2)]) x)`, `(let ([x (uk 1 :a 2)]) x)`, 1},
+		{`(if :a 1 2)`, `(if :a 1 2)`, 0},
+		{`(apply fk 1 '(:a 2))`, `(apply uk 1 '(:a 2))`, 0},
+	} {
+		f, u := measureSteps(cold, tc.free), measureSteps(cold, tc.plain)
+		assert.Equal(t, u-tc.saved, f, "%s vs %s", tc.free, tc.plain)
+		assert.Equal(t, f, measureSteps(vm, tc.free), "vm %s", tc.free)
+		assert.Equal(t, u, measureSteps(vm, tc.plain), "vm %s", tc.plain)
+		fv := cold.LoadString("t", tc.free)
+		uv := cold.LoadString("t", tc.plain)
+		assert.Equal(t, uv.String(), fv.String(), tc.free)
+	}
+}
