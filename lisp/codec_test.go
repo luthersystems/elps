@@ -20,7 +20,7 @@ func vec(cells ...*lisp.LVal) *lisp.LVal { return lisp.Vector(cells) }
 func smap(t *testing.T, kv ...*lisp.LVal) *lisp.LVal {
 	t.Helper()
 	m := lisp.SortedMap()
-	for i := 0; i < len(kv); i += 2 {
+	for i := 0; i+1 < len(kv); i += 2 {
 		require.NotEqual(t, lisp.LError, m.MapSetLVal(kv[i], kv[i+1]).Type)
 	}
 	return m

@@ -3,7 +3,6 @@
 package lisp_test
 
 import (
-	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
@@ -61,5 +60,5 @@ func TestSerializeHonorsMaxAlloc(t *testing.T) {
 	env := newLimitTestEnv(t, lisp.WithMaxAlloc(100))
 	v := env.LoadString("t", `(serialize (string:join (map 'list (lambda (i) "x") (make-sequence 0 99)) ""))`)
 	require.Equal(t, lisp.LError, v.Type)
-	assert.True(t, strings.Contains(v.String(), "limit exceeded"), v.String())
+	assert.Contains(t, v.String(), "limit exceeded")
 }

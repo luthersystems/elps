@@ -175,7 +175,7 @@ func (e *canonEncoder) value(v *LVal, depth int) error {
 	case LInt:
 		e.buf = append(e.buf, canonInt)
 		x := int64(v.Int)
-		e.uvarint(uint64(x<<1) ^ uint64(x>>63))
+		e.uvarint(uint64(x<<1) ^ uint64(x>>63)) //nolint:gosec // G115: zigzag encoding reinterprets the two's-complement bits by design
 		return e.grow()
 	case LFloat:
 		e.float(v.Float)
@@ -295,7 +295,7 @@ func (e *canonEncoder) array(v *LVal, depth int) error {
 	e.buf = append(e.buf, canonArray)
 	e.uvarint(uint64(len(dims)))
 	for _, d := range dims {
-		e.uvarint(uint64(d.Int))
+		e.uvarint(uint64(d.Int)) //nolint:gosec // G115: array() rejected negative dimensions above
 	}
 	for _, c := range cells {
 		if err := e.value(c, depth+1); err != nil {
@@ -469,10 +469,10 @@ func (d *canonDecoder) count() (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	if n > uint64(d.remaining()) {
+	if n > uint64(d.remaining()) { //nolint:gosec // G115: remaining() is a slice length difference, never negative
 		return 0, errTruncated
 	}
-	return int(n), nil
+	return int(n), nil //nolint:gosec // G115: n <= remaining(), an int, checked above
 }
 
 func (d *canonDecoder) bytesN() ([]byte, error) {
