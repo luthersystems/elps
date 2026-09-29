@@ -162,8 +162,8 @@ func itoa(n int) string {
 // lisp.LError` is always safe on a result and never dereferences Go nil.
 func TestStatusHelpersReturnNilValue(t *testing.T) {
 	env := newLimitTestEnv(t, lisp.WithMaxSteps(1<<40))
-	a := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
-	a.Int(0, "first argument")
+	a := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.String("x")}))
+	a.String(0, "first argument")
 	for name, v := range map[string]*lisp.LVal{
 		"Step":             env.Step(),
 		"CheckContext":     env.CheckContext(),

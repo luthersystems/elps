@@ -17,19 +17,6 @@ type MapKey struct {
 	Type LType
 }
 
-// LVal returns the key as a fresh LVal, the same value MapKeys would list for
-// it: an int, a string, or a quoted symbol.
-func (k MapKey) LVal() *LVal {
-	switch k.Type {
-	case LInt:
-		return Int(k.Int)
-	case LSymbol:
-		return Quote(Symbol(k.Str))
-	default:
-		return String(k.Str)
-	}
-}
-
 type mapRangeEntry struct {
 	val *LVal
 	key MapKey

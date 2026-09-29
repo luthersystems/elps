@@ -20,8 +20,6 @@ var (
 )
 
 func TestBuiltinFuncResolves(t *testing.T) {
-	assert.Equal(t, "get", refGet.Name())
-	assert.Empty(t, lisp.BuiltinRef{}.Name())
 	assert.PanicsWithValue(t, "lisp.BuiltinFunc: no default builtin named no-such-builtin", func() {
 		lisp.BuiltinFunc("no-such-builtin")
 	})

@@ -75,15 +75,6 @@ func BuiltinFunc(name string) BuiltinRef {
 	panic("lisp.BuiltinFunc: no default builtin named " + name)
 }
 
-// Name returns the builtin's name, or "" for the zero BuiltinRef.
-func (b BuiltinRef) Name() string {
-	def := b.def()
-	if def == nil {
-		return ""
-	}
-	return def.name
-}
-
 // CallBuiltin calls the builtin b with already-evaluated args, as the
 // evaluator does once a call form's arguments are evaluated, and returns its
 // result:

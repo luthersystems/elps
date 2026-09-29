@@ -10,11 +10,23 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
+// keyLVal is the key as MapKeys would list it.
+func keyLVal(k lisp.MapKey) *lisp.LVal {
+	switch k.Type {
+	case lisp.LInt:
+		return lisp.Int(k.Int)
+	case lisp.LSymbol:
+		return lisp.Quote(lisp.Symbol(k.Str))
+	default:
+		return lisp.String(k.Str)
+	}
+}
+
 // rangeRender renders MapRange's walk the way MapEntries renders.
 func rangeRender(env *lisp.LEnv, m *lisp.LVal) string {
 	var cells []*lisp.LVal
 	if lerr := env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
-		cells = append(cells, lisp.QExpr([]*lisp.LVal{k.LVal(), v}))
+		cells = append(cells, lisp.QExpr([]*lisp.LVal{keyLVal(k), v}))
 		return true
 	}); lerr.Type == lisp.LError {
 		return lerr.String()
@@ -51,7 +63,7 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 	m := env.LoadString("test", `(sorted-map "a" 1 "b" 2 "c" 3 4 4)`)
 	var seen []string
 	env.MapRange(m, func(k lisp.MapKey, _ *lisp.LVal) bool {
-		seen = append(seen, k.LVal().String())
+		seen = append(seen, keyLVal(k).String())
 		return len(seen) < 2
 	})
 	assert.Equal(t, []string{"4", `"a"`}, seen)

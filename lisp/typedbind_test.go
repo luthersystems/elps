@@ -10,31 +10,37 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// typedFour is handWritten's first three checks plus its name key, as a
-// Func4 builtin.
-var typedFour = lisp.Func4(
+// handWritten2 is handWritten's first two checks: a string and a map.
+func handWritten2(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	s, m := args.Cells[0], args.Cells[1]
+	if s.Type != lisp.LString {
+		return env.Errorf("first argument is not a string: %v", s.Type)
+	}
+	if m.Type != lisp.LSortMap {
+		return env.Errorf("second argument is not a map: %s", m.Type)
+	}
+	return lisp.QExpr([]*lisp.LVal{lisp.String(s.Str), lisp.Int(m.Len())})
+}
+
+var typedTwo = lisp.Func2(
 	lisp.StringArg("first argument"),
 	lisp.TypedArg(lisp.LSortMap, "second argument is not a map: %s"),
-	lisp.IntArg("third argument"),
-	lisp.OptStringArg("name", "default"),
-	func(_ *lisp.LEnv, s string, m *lisp.LVal, n int, name string) *lisp.LVal {
-		return lisp.QExpr([]*lisp.LVal{lisp.String(s), lisp.Int(m.Len()), lisp.Int(n), lisp.String(name), lisp.Int(10)})
+	func(_ *lisp.LEnv, s string, m *lisp.LVal) *lisp.LVal {
+		return lisp.QExpr([]*lisp.LVal{lisp.String(s), lisp.Int(m.Len())})
 	})
 
-func TestFuncNMatchesHandWritten(t *testing.T) {
+func TestFuncMatchesHandWritten(t *testing.T) {
 	env := newLimitTestEnv(t)
 	env.AddBuiltins(false,
-		&testBuiltinDef{name: "hand", formals: lisp.Formals("s", "m", "n", lisp.KeyArgSymbol, "name", "count"), fn: handWritten},
-		&testBuiltinDef{name: "typed", formals: lisp.Formals("s", "m", "n", lisp.KeyArgSymbol, "name"), fn: typedFour})
+		&testBuiltinDef{name: "hand", formals: lisp.Formals("s", "m"), fn: handWritten2},
+		&testBuiltinDef{name: "typed", formals: lisp.Formals("s", "m"), fn: typedTwo})
 	for _, al := range []string{
-		`"s" (sorted-map "a" 1) 3`,
-		`"s" (sorted-map) 3 :name "n"`,
-		`1 (sorted-map) 3`,
-		`"s" 2 3`,
-		`"s" () "3"`,
-		`"s" (sorted-map) "3"`,
-		`"s" (sorted-map) 3 :name 5`,
-		`1 2 3 :name 4`,
+		`"s" (sorted-map "a" 1)`,
+		`"s" (sorted-map)`,
+		`1 (sorted-map)`,
+		`"s" 2`,
+		`"s" ()`,
+		`1 2`,
 	} {
 		want, ws := stepsOf(t, env, "(hand "+al+")")
 		got, gs := stepsOf(t, env, "(typed "+al+")")
@@ -48,26 +54,22 @@ func TestFuncNMatchesHandWritten(t *testing.T) {
 	}
 }
 
-func TestFuncNSmallArities(t *testing.T) {
+func TestFuncSmallArities(t *testing.T) {
 	env := newLimitTestEnv(t)
-	one := lisp.Func1(lisp.IntArg("argument"), func(_ *lisp.LEnv, n int) *lisp.LVal { return lisp.Int(n + 1) })
-	two := lisp.Func2(lisp.ValueArg(), lisp.OptIntArg("step", 1), func(_ *lisp.LEnv, v *lisp.LVal, s int) *lisp.LVal {
-		return lisp.QExpr([]*lisp.LVal{v, lisp.Int(s)})
+	one := lisp.Func1(lisp.StringArg("argument"), func(_ *lisp.LEnv, s string) *lisp.LVal { return lisp.String(s + "!") })
+	two := lisp.Func2(lisp.ValueArg(), lisp.TypedArg(lisp.LInt, "step is not an integer: %v"), func(_ *lisp.LEnv, v, s *lisp.LVal) *lisp.LVal {
+		return lisp.QExpr([]*lisp.LVal{v, s})
 	})
-	three := lisp.Func3(lisp.MapArg("first argument"), lisp.OptArg(), lisp.StringArg("third argument"),
-		func(_ *lisp.LEnv, m, o *lisp.LVal, s string) *lisp.LVal { return lisp.String(s) })
 	for _, tc := range []struct {
 		fn   lisp.LBuiltin
 		args []*lisp.LVal
 		want string
 	}{
-		{one, []*lisp.LVal{lisp.Int(1)}, "2"},
-		{one, []*lisp.LVal{lisp.String("x")}, "argument is not an integer: string"},
-		{two, []*lisp.LVal{lisp.Int(1), lisp.Nil()}, "'(1 1)"},
+		{one, []*lisp.LVal{lisp.String("x")}, `"x!"`},
+		{one, []*lisp.LVal{lisp.Int(1)}, "argument is not a string: int"},
+		{two, []*lisp.LVal{lisp.Int(1), lisp.Int(2)}, "'(1 2)"},
 		{two, []*lisp.LVal{lisp.Int(1), lisp.Float(2)}, "step is not an integer: float"},
-		{three, []*lisp.LVal{lisp.SortedMap(), lisp.Nil(), lisp.String("s")}, `"s"`},
-		{three, []*lisp.LVal{lisp.Int(1), lisp.Nil(), lisp.Int(1)}, "first argument is not a map: int"},
-		{three, []*lisp.LVal{lisp.SortedMap(), lisp.Nil()}, "missing required argument 2: this builtin reads at least 3 argument(s) but was bound to formals declaring only 2"},
+		{two, []*lisp.LVal{lisp.Int(1)}, "missing required argument 1: this builtin reads at least 2 argument(s) but was bound to formals declaring only 1"},
 	} {
 		got := tc.fn(env, lisp.QExpr(tc.args))
 		if got.Type == lisp.LError {
@@ -78,32 +80,15 @@ func TestFuncNSmallArities(t *testing.T) {
 	}
 }
 
-func TestFuncNNoAlloc(t *testing.T) {
+func TestFuncNoAlloc(t *testing.T) {
 	env := newLimitTestEnv(t)
 	result := lisp.Int(0)
-	fn := lisp.Func2(lisp.StringArg("first argument"), lisp.OptIntArg("n", 3),
-		func(_ *lisp.LEnv, s string, n int) *lisp.LVal { return result })
+	fn := lisp.Func2(lisp.StringArg("first argument"), lisp.ValueArg(),
+		func(_ *lisp.LEnv, s string, _ *lisp.LVal) *lisp.LVal { return result })
 	args := lisp.QExpr([]*lisp.LVal{lisp.String("s"), lisp.Nil()})
 	assert.Zero(t, testing.AllocsPerRun(100, func() {
 		if fn(env, args) != result {
 			t.Fatal("unexpected result")
 		}
 	}))
-}
-
-func TestFuncNExtendedDecoders(t *testing.T) {
-	env := newLimitTestEnv(t)
-	fn := lisp.Func4(lisp.StringOrSymbolArg("a: %v"), lisp.BytesArg("b: %v"),
-		lisp.OneOfArg("c: %v", lisp.LInt, lisp.LFloat), lisp.ReqKeyArg("d is required"),
-		func(_ *lisp.LEnv, a string, b []byte, c, d *lisp.LVal) *lisp.LVal {
-			return lisp.String(a + string(b) + c.String() + d.String())
-		})
-	ok := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Symbol("x"), lisp.String("y"), lisp.Float(1.5), lisp.Int(2)}))
-	assert.Equal(t, `"xy1.52"`, ok.String())
-	bad := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Symbol("x"), lisp.String("y"), lisp.Float(1.5), lisp.Nil()}))
-	require.Equal(t, lisp.LError, bad.Type)
-	assert.Equal(t, "d is required", (*lisp.ErrorVal)(bad).ErrorMessage())
-	g := lisp.Func2(lisp.StringArgf("s: %v"), lisp.IntArgf("n: %v"), func(_ *lisp.LEnv, s string, n int) *lisp.LVal { return lisp.Int(n) })
-	bad = g(env, lisp.QExpr([]*lisp.LVal{lisp.String("s"), lisp.String("x")}))
-	assert.Equal(t, "n: string", (*lisp.ErrorVal)(bad).ErrorMessage())
 }

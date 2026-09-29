@@ -429,25 +429,22 @@ if lerr := a.Err(); lerr.Type == lisp.LError {
 }
 ```
 
-It does not allocate unless a check fails. Beyond `String`, `Int`, `Map`,
-`Typed` and the `Opt*` reads, `Stringf` and `Intf` take a whole message
-format, `StringOrSymbol` accepts a string or a symbol, `Bytes` a bytes value
-or a string, `OneOf` any of several types, and `ReqKey` fails with your own
-message when a `&key` argument is missing. For a check that is not a type
+It does not allocate unless a check fails. The reads are `Value`, `String`,
+`Typed`, `Opt`, `OptString` and `OptInt`. For a check that is not a type
 test, `a.Check(ok, format, args...)` records a failure (and reports whether
-the reader is still clean), and `a.Fail(lerr)` records an error you built;
-both keep the first failure, so a decoder of your own is ordinary Go:
+the reader is still clean) and keeps the first failure, so a decoder of your
+own is ordinary Go:
 
 ```go
 func dateArg(a *lisp.ArgReader, i int) cctime.Date {
-	s := a.Stringf(i, "argument is not a date: %v")
+	s := a.Typed(i, lisp.LString, "argument is not a date: %v").Str
 	d, err := cctime.Parse(s)
 	a.Check(err == nil, "invalid date: %q", s)
 	return d
 }
 ```
 
-**Typed builtins: `lisp.Func1` … `lisp.Func4`.** For a builtin of up to four
+**Typed builtins: `lisp.Func1` and `lisp.Func2`.** For a builtin of one or two
 arguments, list one decoder per formal, in order, and write the body against
 Go types. The decoders are the `ArgReader` reads above, so the check order and
 the messages are fixed at compile time and match the hand-written checks.
@@ -460,20 +457,17 @@ var builtinRepeat = lisp.Func2(
 	func(env *lisp.LEnv, s string, n *lisp.LVal) *lisp.LVal { /* ... */ })
 ```
 
-Decoders: `ValueArg`, `TypedArg`, `StringArg`, `StringArgf`, `IntArg`,
-`IntArgf`, `MapArg`, `StringOrSymbolArg`, `BytesArg`, `OneOfArg`, and for
-`&optional`/`&key` positions `OptArg`, `OptStringArg`, `OptIntArg` and
-`ReqKeyArg` (the evaluator passes one cell per formal, so a key is just a
-position). A function like `dateArg` above is an `ArgDecoder` too. Beyond four
-arguments, or with `&rest`, use `ArgReader` directly: Go has no variadic type
-parameters, which is where generics stop. `string:split` and `string:repeat`
+Decoders: `ValueArg`, `TypedArg` and `StringArg`. A function like `dateArg`
+above is an `ArgDecoder` too. Beyond two arguments, or with `&rest`, use
+`ArgReader` directly: Go has no variadic type parameters, which is where
+generics stop. `string:split` and `string:repeat`
 are written this way.
 
 **Maps.** `env.MapRange(m, func(k lisp.MapKey, val *lisp.LVal) bool)` walks a
 sorted-map in its documented order (int keys by value, then string and symbol
 keys by spelling). Keys arrive by value, and for the interpreter's own map
 backings it allocates nothing in the steady state, unlike `MapKeys` and
-`MapEntries`, which build lists. `k.LVal()` returns the key as `MapKeys` would.
+`MapEntries`, which build lists.
 Where `(keys m)` would fail (m not a map, or larger than `MaxAlloc`),
 `MapRange` returns that error with the same message and calls `fn` for
 nothing. It charges no step and makes no context check.

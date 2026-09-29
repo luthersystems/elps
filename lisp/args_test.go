@@ -43,14 +43,14 @@ func handWritten(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func withReader(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	a := lisp.ReadArgs(env, args)
 	s := a.String(0, "first argument")
-	m := a.Map(1, "second argument")
-	n := a.Int(2, "third argument")
+	m := a.Typed(1, lisp.LSortMap, "second argument is not a map: %v")
+	n := a.Typed(2, lisp.LInt, "third argument is not an integer: %v")
 	nm := a.OptString(3, "name", "default")
 	c := a.OptInt(4, "count", 10)
 	if lerr := a.Err(); lerr.Type == lisp.LError {
 		return lerr
 	}
-	return lisp.QExpr([]*lisp.LVal{lisp.String(s), lisp.Int(m.Len()), lisp.Int(n), lisp.String(nm), lisp.Int(c)})
+	return lisp.QExpr([]*lisp.LVal{lisp.String(s), lisp.Int(m.Len()), lisp.Int(n.Int), lisp.String(nm), lisp.Int(c)})
 }
 
 func TestArgReaderMatchesHandWritten(t *testing.T) {
@@ -101,8 +101,6 @@ func TestArgReaderTypedAndMissing(t *testing.T) {
 	b.String(0, "100% odd")
 	assert.Equal(t, "100% odd is not a string: int", (*lisp.ErrorVal)(b.Err()).ErrorMessage())
 	c := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
-	c.OptTyped(0, lisp.LString, "value is not a string: %s")
-	assert.Equal(t, "value is not a string: int", (*lisp.ErrorVal)(c.Err()).ErrorMessage())
 	assert.True(t, c.Opt(5).IsNil())
 }
 
@@ -112,7 +110,7 @@ func TestArgReaderNoAllocOnSuccess(t *testing.T) {
 	allocs := testing.AllocsPerRun(100, func() {
 		a := lisp.ReadArgs(env, args)
 		_ = a.String(0, "first argument")
-		_ = a.Int(1, "second argument")
+		_ = a.Typed(1, lisp.LInt, "second argument is not an integer: %v")
 		_ = a.OptString(2, "name", "d")
 		if a.Err().Type == lisp.LError {
 			t.Fatal("unexpected error")
@@ -149,57 +147,32 @@ func argErr(a *lisp.ArgReader) string {
 	return (*lisp.ErrorVal)(lerr).ErrorMessage()
 }
 
-// The extension points: Check and Fail let an embedder write its own
-// decoders with the first-failure-wins rule; StringOrSymbol, Bytes, OneOf,
-// Stringf, Intf and ReqKey cover the shapes hand-written builtins check.
+// The extension point: Check lets an embedder write its own decoders with
+// the first-failure-wins rule.
 func TestArgReaderExtensions(t *testing.T) {
 	env := newLimitTestEnv(t)
 	args := func(vs ...*lisp.LVal) *lisp.LVal { return lisp.QExpr(vs) }
-	bs := env.LoadString("test", `(to-bytes "hi")`)
-	require.Equal(t, lisp.LBytes, bs.Type)
 
-	a := lisp.ReadArgs(env, args(lisp.String("s"), lisp.Symbol("sym"), bs, lisp.Int(4), lisp.Nil(), lisp.String("k")))
-	assert.Equal(t, "s", a.StringOrSymbol(0, "bad %v"))
-	assert.Equal(t, "sym", a.StringOrSymbol(1, "bad %v"))
-	assert.Equal(t, []byte("hi"), a.Bytes(2, "bad %v"))
-	assert.Equal(t, []byte("s"), a.Bytes(0, "bad %v"))
-	assert.Equal(t, lisp.LInt, a.OneOf(3, "bad %v", lisp.LString, lisp.LInt).Type)
-	assert.Equal(t, "s", a.Stringf(0, "argument is not a date: %v"))
-	assert.Equal(t, 4, a.Intf(3, "count is not an int: %v"))
-	assert.Equal(t, "k", a.ReqKey(5, "key k is required").Str)
+	a := lisp.ReadArgs(env, args(lisp.String("s")))
 	assert.True(t, a.Check(true, "unused %d", 1))
 	assert.Empty(t, argErr(&a))
 
-	for _, tc := range []struct {
-		read func(a *lisp.ArgReader)
-		want string
-	}{
-		{func(a *lisp.ArgReader) { a.StringOrSymbol(0, "collection is not a string: %v") }, "collection is not a string: int"},
-		{func(a *lisp.ArgReader) { a.Bytes(0, "data is not bytes: %v") }, "data is not bytes: int"},
-		{func(a *lisp.ArgReader) { a.OneOf(0, "want string or map: %v", lisp.LString, lisp.LSortMap) }, "want string or map: int"},
-		{func(a *lisp.ArgReader) { a.Stringf(0, "argument is not a date: %v") }, "argument is not a date: int"},
-		{func(a *lisp.ArgReader) { a.Intf(1, "count is not an int: %v") }, "count is not an int: list"},
-		{func(a *lisp.ArgReader) { a.ReqKey(1, "key 100% is required") }, "key 100% is required"},
-		{func(a *lisp.ArgReader) { a.Check(false, "custom %d", 7) }, "custom 7"},
-		{func(a *lisp.ArgReader) { a.Fail(env.Errorf("mine")) }, "mine"},
-		// The first failure wins over a later Check or Fail.
-		{func(a *lisp.ArgReader) {
-			a.Stringf(0, "first: %v")
-			assert.False(t, a.Check(false, "second"))
-			a.Fail(env.Errorf("third"))
-		}, "first: int"},
-	} {
-		r := lisp.ReadArgs(env, args(lisp.Int(1), lisp.Nil()))
-		tc.read(&r)
-		assert.Equal(t, tc.want, argErr(&r))
-	}
+	r := lisp.ReadArgs(env, args(lisp.Int(1), lisp.Nil()))
+	assert.False(t, r.Check(false, "custom %d", 7))
+	assert.Equal(t, "custom 7", argErr(&r))
+
+	// The first failure wins over a later Check.
+	r = lisp.ReadArgs(env, args(lisp.Int(1), lisp.Nil()))
+	r.Typed(0, lisp.LString, "first: %v")
+	assert.False(t, r.Check(false, "second"))
+	assert.Equal(t, "first: int", argErr(&r))
 }
 
-// A custom decoder built on Check composes with FuncN.
+// A custom decoder built on Check composes with Func1.
 func TestCustomDecoder(t *testing.T) {
 	env := newLimitTestEnv(t)
 	even := func(a *lisp.ArgReader, i int) int {
-		n := a.Intf(i, "argument is not an int: %v")
+		n := a.Typed(i, lisp.LInt, "argument is not an int: %v").Int
 		a.Check(n%2 == 0, "argument is odd: %d", n)
 		return n
 	}
