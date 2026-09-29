@@ -213,7 +213,8 @@ func macroCurryFun(env *LEnv, args *LVal) *LVal {
 
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	mapExpr, keyExpr, defExpr := args.Cells[0], args.Cells[1], args.Cells[2]
-	mapSym, keySym := env.GenSym(), env.GenSym()
+	g := NewGenSyms(args)
+	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
 	let := QExpr([]*LVal{
 		Symbol("lisp:let"),
 		SExpr([]*LVal{

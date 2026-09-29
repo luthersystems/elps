@@ -273,6 +273,9 @@ func newEnvN(parent *LEnv, n int) *LEnv {
 	return env
 }
 
+// GenSym returns a runtime-counter symbol named genNNNNNNNN. Its name can
+// collide with user symbols and depends on runtime history. Go macros should
+// use NewGenSyms for deterministic temporary bindings in a reserved namespace.
 func (env *LEnv) GenSym() *LVal {
 	return Symbol(env.Runtime.GenSym())
 }
