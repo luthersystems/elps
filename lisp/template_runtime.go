@@ -15,6 +15,8 @@ type VMOption func(*vmConfig)
 type vmConfig struct {
 	ctx        context.Context
 	stderr     io.Writer
+	entropy    io.Reader
+	clock      func() time.Time
 	stepBudget int64
 	prewarm    bool
 }
@@ -43,6 +45,19 @@ func VMWithContext(ctx context.Context) VMOption {
 // VM unlimited.
 func VMWithStepBudget(n int64) VMOption {
 	return func(c *vmConfig) { c.stepBudget = n }
+}
+
+// VMWithClock installs clock as the new VM's Runtime.Clock (see WithClock).
+// A VM never inherits its template's clock.
+func VMWithClock(clock func() time.Time) VMOption {
+	return func(c *vmConfig) { c.clock = clock }
+}
+
+// VMWithEntropy installs r as the new VM's Runtime.Entropy (see WithEntropy).
+// A VM never inherits its template's entropy source, so two VMs share a reader
+// only when the host passes the same one to both.
+func VMWithEntropy(r io.Reader) VMOption {
+	return func(c *vmConfig) { c.entropy = r }
 }
 
 // VMWithStderr overrides the new VM's diagnostic writer. Without an override,
@@ -120,5 +135,7 @@ func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
 	if opts.stderr != nil {
 		rt.Stderr = opts.stderr
 	}
+	rt.Clock = opts.clock
+	rt.Entropy = opts.entropy
 	return rt
 }

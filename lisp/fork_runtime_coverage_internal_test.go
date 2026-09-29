@@ -52,7 +52,12 @@ var forkRuntimeFieldPolicy = map[string]string{
 	// Deliberately NOT carried: an observer the embedder attaches itself, or
 	// state about an evaluation/load in progress (the template is quiescent,
 	// so all of these are zero on it anyway).
-	"Profiler":        "not-carried",
+	"Profiler": "not-carried",
+	// Host-installed determinism hooks: a stateful entropy reader shared by
+	// VMs would be shared mutable state, so each VM gets its own through
+	// VMWithClock / VMWithEntropy.
+	"Clock":           "not-carried",
+	"Entropy":         "not-carried",
 	"Debugger":        "not-carried",
 	"conditionStack":  "not-carried",
 	"evalDepth":       "not-carried",

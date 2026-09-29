@@ -63,6 +63,31 @@ func WithMaxEvalNesting(n int) Config {
 	}
 }
 
+// WithClock returns a Config that installs clock as the runtime's wall clock
+// (Runtime.Clock), read by Runtime.Now and so by time:utc-now. A nil clock
+// restores time.Now. Use it to make time-dependent code deterministic, for
+// example with elpstest.StepClock in tests. A Template does not carry the
+// clock to its VMs; pass VMWithClock to each.
+func WithClock(clock func() time.Time) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.Clock = clock
+		return Nil()
+	}
+}
+
+// WithEntropy returns a Config that installs r as the runtime's source of
+// random bytes (Runtime.Entropy), read by Runtime.Random. A nil r restores
+// crypto/rand.Reader. Use it to make random identifiers deterministic, for
+// example with elpstest.SeededEntropy in tests. A Template does not carry
+// the reader to its VMs (a stateful reader shared between VMs would be shared
+// mutable state); pass VMWithEntropy to each.
+func WithEntropy(r io.Reader) Config {
+	return func(env *LEnv) *LVal {
+		env.Runtime.Entropy = r
+		return Nil()
+	}
+}
+
 // WithMaxSleep returns a Config that sets a HARD CEILING on how long a single
 // (time:sleep d) may block, in the host's hands rather than the program's.
 //

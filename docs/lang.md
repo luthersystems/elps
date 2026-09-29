@@ -2695,6 +2695,28 @@ test discovery skips them, and ordinary (production) loads never include them.
 Go runners other than `elpstest.Runner` can apply the same rule with
 `elpstest.TestHelperFiles(dir)` and `elpstest.LoadTestHelpers(env, testPath)`.
 
+### Deterministic time and randomness
+
+`time:utc-now` reads the runtime's clock, and builtins an embedding
+application provides for random values or identifiers can read the runtime's
+entropy source. Both default to the real clock and a cryptographic random
+source. A Go test runner can make them
+reproducible (see "Deterministic clocks and random values" in
+docs/embed.md): with `elpstest.Runner`'s `Determinism` set, every test starts
+from the same fixed time, the clock advances by a fixed step on each reading,
+and random bytes come from a seeded stream. A test can then compare times
+exactly:
+
+```lisp
+; with Determinism{Step: time.Second}: the clock starts at 2000-01-01T00:00:00Z
+(test "timestamps are reproducible"
+  (assert-string= "2000-01-01T00:00:00Z" (time:format-rfc3339 (time:utc-now)))
+  (assert-string= "2000-01-01T00:00:01Z" (time:format-rfc3339 (time:utc-now))))
+```
+
+Each test gets a fresh clock and a fresh stream, so the result does not depend
+on which tests ran before it.
+
 ## Execution Limits
 
 ELPS bounds evaluation with **context cancellation**, **step limits**,

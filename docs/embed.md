@@ -548,6 +548,51 @@ func TestMyPackage(t *testing.T) {
   (assert= 3 (+ 1 2)))
 ```
 
+### Deterministic clocks and random values
+
+`Runtime.Now()` and `Runtime.Random()` are the runtime's clock and source of
+random bytes. They default to `time.Now` and `crypto/rand.Reader`, and a host
+replaces them with `lisp.WithClock` / `lisp.WithEntropy` (or the
+`Runtime.Clock` / `Runtime.Entropy` fields). `time:utc-now` reads `Now`. A Go
+builtin that returns the time, a random number or a random identifier should
+read these instead of calling `time.Now` or `crypto/rand` directly, so tests
+can fix its output:
+
+```go
+// A version-4 UUID builtin that tests can seed.
+func builtinMakeID(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	var b [16]byte
+	if _, err := io.ReadFull(env.Runtime.Random(), b[:]); err != nil {
+		return env.Error(err)
+	}
+	b[6] = b[6]&0x0f | 0x40 // version 4
+	b[8] = b[8]&0x3f | 0x80 // RFC 4122 variant
+	return lisp.String(fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16]))
+}
+```
+
+`elpstest` supplies the deterministic versions:
+
+```go
+r := &elpstest.Runner{
+	LoaderFn: mypackage.LoadPackage,
+	// Every environment gets a fresh clock starting at elpstest.DefaultTestTime
+	// (2000-01-01T00:00:00Z) that advances one second per reading, and a fresh
+	// random stream seeded with 42. Both are installed before LoaderFn runs.
+	Determinism: &elpstest.Determinism{Step: time.Second, Seed: 42},
+}
+```
+
+`elpstest.StepClock(start, step)` and `elpstest.SeededEntropy(seed)` are the
+pieces on their own, for use with `lisp.WithClock` / `lisp.WithEntropy`. The
+seeded stream is SHA-256 in counter mode, so it is the same on every platform and Go release;
+it is predictable by design and must never back real identifiers.
+
+A template does not pass its clock or entropy source to the VMs it creates:
+a stateful reader shared by several VMs would be shared mutable state. Pass
+`lisp.VMWithClock` / `lisp.VMWithEntropy` to each `Template.NewVM` instead.
+When the runner's `NewEnvFn` returns a fork, `Determinism` is applied to it.
+
 ### Parity tests for a Lisp-to-Go migration
 
 `elpstest.ParityCheck` runs a native and the verbatim Lisp definition it

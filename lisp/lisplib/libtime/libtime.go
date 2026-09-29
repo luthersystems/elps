@@ -76,7 +76,8 @@ func GetDuration(v *lisp.LVal) (time.Duration, bool) {
 var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("utc-now", lisp.Formals(), BuiltinUTCNow,
 		`Returns the current time in UTC as a native time value. Takes no
-		arguments. Use format-rfc3339 or format-rfc3339-nano to convert
+		arguments. The time comes from the runtime's clock, which a host
+		or test harness may fix for deterministic results. Use format-rfc3339 or format-rfc3339-nano to convert
 		the result to a string.`),
 	libutil.FunctionDoc("parse-rfc3339", lisp.Formals("timestamp"), BuiltinParseRFC3339,
 		`Parses an RFC 3339 timestamp string (e.g. "2023-01-15T10:30:00Z")
@@ -194,7 +195,7 @@ func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
 }
 
 func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return Time(time.Now().UTC())
+	return Time(env.Runtime.Now().UTC())
 }
 
 func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {

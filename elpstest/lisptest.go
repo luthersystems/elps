@@ -141,6 +141,11 @@ type Runner struct {
 
 	// CloseFn cleans up any resources allocated by the runner.
 	CloseFn func()
+
+	// Determinism, when non-nil, gives every environment the runner builds a
+	// fresh deterministic clock and entropy source (see Determinism). It is
+	// applied before LoaderFn runs, or to the environment NewEnvFn returns.
+	Determinism *Determinism
 }
 
 // Load safely callss LoadFn.
@@ -200,6 +205,7 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 				"test output cannot be captured (fork with lisp.VMWithStderr(elpstest.NewLogger(t)))",
 				env.Runtime.Stderr)
 		}
+		r.Determinism.Apply(env)
 		return env, nil
 	}
 	logger := NewLogger(t)
@@ -210,6 +216,9 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 		Stderr:   logger,
 	}
 	env := lisp.NewEnvRuntime(runtime)
+	if r != nil {
+		r.Determinism.Apply(env)
+	}
 	err := lisp.GoError(lisp.InitializeUserEnv(env))
 	if err != nil {
 		return nil, fmt.Errorf("failed to initialize lisp environment: %w", err)

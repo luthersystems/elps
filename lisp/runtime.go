@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	cryptorand "crypto/rand"
 	"fmt"
 	"io"
 	"math"
@@ -34,14 +35,16 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 136 bytes. Add scalars below conditionStack.
+// extent stops at 160 bytes. Add scalars below conditionStack.
 type Runtime struct {
 	Stderr                 io.Writer
 	Reader                 Reader
 	Library                SourceLibrary
 	Profiler               Profiler
-	Debugger               Debugger  // nil = disabled (zero overhead on hot path)
-	LoadCache              LoadCache // nil = disabled (the load path is then byte-identical to having no hook); see lisp/loadcache.go
+	Debugger               Debugger         // nil = disabled (zero overhead on hot path)
+	LoadCache              LoadCache        // nil = disabled (the load path is then byte-identical to having no hook); see lisp/loadcache.go
+	Clock                  func() time.Time // Wall clock read by Now (nil = time.Now); see WithClock.
+	Entropy                io.Reader        // Random bytes read by Random (nil = crypto/rand.Reader); see WithEntropy.
 	Registry               *PackageRegistry
 	Package                *Package
 	Stack                  *CallStack
@@ -69,6 +72,30 @@ type Runtime struct {
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	stepsOverflowed        bool          // steps saturated: the true count exceeds math.MaxInt64, so it exceeds any budget.
 	stepBudgetOverflowed   bool          // stepBudgetUsed saturated; it exceeds any budget.
+}
+
+// Now returns the runtime's current wall-clock time: Clock() when the host
+// installed a clock (WithClock, VMWithClock, or elpstest's deterministic
+// runners), otherwise time.Now(). Builtins that read the time, such as
+// time:utc-now, call Now so a host or test can make them deterministic.
+func (r *Runtime) Now() time.Time {
+	if r != nil && r.Clock != nil {
+		return r.Clock()
+	}
+	return time.Now()
+}
+
+// Random returns the runtime's source of random bytes: Entropy when the host
+// installed one (WithEntropy, VMWithEntropy, or elpstest's deterministic
+// runners), otherwise crypto/rand.Reader. Builtins that generate random values
+// or identifiers (for example an embedder's UUID builtin) read from Random so
+// a test can seed them. Like the rest of Runtime it is not safe for concurrent
+// use unless the installed reader is.
+func (r *Runtime) Random() io.Reader {
+	if r != nil && r.Entropy != nil {
+		return r.Entropy
+	}
+	return cryptorand.Reader
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
