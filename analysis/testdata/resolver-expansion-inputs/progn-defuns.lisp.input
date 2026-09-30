@@ -1,0 +1,7 @@
+(defmacro defpair (first second)
+  (quasiquote
+    (progn
+      (defun (unquote first) (x) (+ x 1))
+      (progn (defun (unquote second) (y) ((unquote first) y))))))
+(defpair step twice)
+(twice 1)

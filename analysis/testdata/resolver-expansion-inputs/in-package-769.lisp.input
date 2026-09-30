@@ -1,0 +1,8 @@
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () (quasiquote (in-package 'q)))
+(enter-q)
+(qconst qa 1)
+qa

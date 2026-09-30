@@ -1,0 +1,231 @@
+input definitions.lisp sha256=fe2fc2530795d6c98f17fd83254a244ffd7744dee4ec4a59fef6056eec772071
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-92:2:61
+symbol :name parameter scope=1 source=20:1:21-24:1:25 node=symbol:"name" quoted=false@20:1:21-24:1:25 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=25:1:26-30:1:31 node=symbol:"value" quoted=false@25:1:26-30:1:31 init=- sig=- doc="" exported=false external=false refs=1
+symbol user:answer variable scope=0 source=103:3:11-109:3:17 node=symbol:"answer" quoted=false@103:3:11-109:3:17 init=- sig=- doc="" exported=true external=false refs=1 generated-by=constant package=user source=94:3:2-102:3:10
+symbol user:constant macro scope=0 source=10:1:11-18:1:19 node=symbol:"constant" quoted=false@10:1:11-18:1:19 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+map 1 name :name parameter scope=1 source=20:1:21-24:1:25 node=symbol:"name" quoted=false@20:1:21-24:1:25 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=25:1:26-30:1:31 node=symbol:"value" quoted=false@25:1:26-30:1:31 init=- sig=- doc="" exported=false external=false refs=1
+package 0 user:answer user:answer variable scope=0 source=103:3:11-109:3:17 node=symbol:"answer" quoted=false@103:3:11-109:3:17 init=- sig=- doc="" exported=true external=false refs=1 generated-by=constant package=user source=94:3:2-102:3:10
+package 0 user:constant user:constant macro scope=0 source=10:1:11-18:1:19 node=symbol:"constant" quoted=false@10:1:11-18:1:19 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+ref :set scope=0 source=47:2:16-50:2:19 node=symbol:"set" quoted=false@47:2:16-50:2:19
+ref :quote scope=0 source=52:2:21-57:2:26 node=symbol:"quote" quoted=false@52:2:21-57:2:26
+ref :name scope=1 source=67:2:36-71:2:40 node=symbol:"name" quoted=false@67:2:36-71:2:40
+ref :value scope=1 source=83:2:52-88:2:57 node=symbol:"value" quoted=false@83:2:52-88:2:57
+ref user:constant scope=0 source=94:3:2-102:3:10 node=symbol:"constant" quoted=false@94:3:2-102:3:10
+ref :export scope=0 source=115:4:2-121:4:8 node=symbol:"export" quoted=false@115:4:2-121:4:8
+ref user:answer scope=0 source=131:5:1-137:5:7 node=symbol:"answer" quoted=false@131:5:1-137:5:7
+input forward-references.lisp sha256=eb375c4c1ea663197d4a0e1c73d29623b71e56b1964b1b251912fe0e907487a1
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-232:6:80
+scope 2 function parent=0 node=list:"defun" quoted=false@233:7:1-263:7:31
+scope 3 function parent=0 node=list:"defun" quoted=false@110:5:7-152:5:49
+scope 4 function parent=0 node=list:"defun" quoted=false@159:6:7-229:6:77
+symbol :bumper parameter scope=1 source=34:1:35-40:1:41 node=symbol:"bumper" quoted=false@34:1:35-40:1:41 init=- sig=- doc="" exported=false external=false refs=1
+symbol :getter parameter scope=1 source=27:1:28-33:1:34 node=symbol:"getter" quoted=false@27:1:28-33:1:34 init=- sig=- doc="" exported=false external=false refs=1
+symbol :name parameter scope=1 source=22:1:23-26:1:27 node=symbol:"name" quoted=false@22:1:23-26:1:27 init=- sig=- doc="" exported=false external=false refs=4
+symbol user:bump-hits function scope=0 source=304:9:29-313:9:38 node=symbol:"bump-hits" quoted=false@304:9:29-313:9:38 init=- sig=[] doc="" exported=false external=false refs=1 generated-by=defcounter package=user source=277:9:2-287:9:12
+symbol user:defcounter macro scope=0 source=10:1:11-20:1:21 node=symbol:"defcounter" quoted=false@10:1:11-20:1:21 init=- sig=[{name required} {getter required} {bumper required}] doc="" exported=false external=false refs=1
+symbol user:hits variable scope=0 source=288:9:13-292:9:17 node=symbol:"hits" quoted=false@288:9:13-292:9:17 init=- sig=- doc="" exported=false external=false refs=3 generated-by=defcounter package=user source=277:9:2-287:9:12
+symbol user:hits-value function scope=0 source=293:9:18-303:9:28 node=symbol:"hits-value" quoted=false@293:9:18-303:9:28 init=- sig=[] doc="" exported=false external=false refs=1 generated-by=defcounter package=user source=277:9:2-287:9:12
+symbol user:report function scope=0 source=240:7:8-246:7:14 node=symbol:"report" quoted=false@240:7:8-246:7:14 init=- sig=[] doc="" exported=false external=false refs=0
+map 1 bumper :bumper parameter scope=1 source=34:1:35-40:1:41 node=symbol:"bumper" quoted=false@34:1:35-40:1:41 init=- sig=- doc="" exported=false external=false refs=1
+map 1 getter :getter parameter scope=1 source=27:1:28-33:1:34 node=symbol:"getter" quoted=false@27:1:28-33:1:34 init=- sig=- doc="" exported=false external=false refs=1
+map 1 name :name parameter scope=1 source=22:1:23-26:1:27 node=symbol:"name" quoted=false@22:1:23-26:1:27 init=- sig=- doc="" exported=false external=false refs=4
+package 0 user:bump-hits user:bump-hits function scope=0 source=304:9:29-313:9:38 node=symbol:"bump-hits" quoted=false@304:9:29-313:9:38 init=- sig=[] doc="" exported=false external=false refs=1 generated-by=defcounter package=user source=277:9:2-287:9:12
+package 0 user:defcounter user:defcounter macro scope=0 source=10:1:11-20:1:21 node=symbol:"defcounter" quoted=false@10:1:11-20:1:21 init=- sig=[{name required} {getter required} {bumper required}] doc="" exported=false external=false refs=1
+package 0 user:hits user:hits variable scope=0 source=288:9:13-292:9:17 node=symbol:"hits" quoted=false@288:9:13-292:9:17 init=- sig=- doc="" exported=false external=false refs=3 generated-by=defcounter package=user source=277:9:2-287:9:12
+package 0 user:hits-value user:hits-value function scope=0 source=293:9:18-303:9:28 node=symbol:"hits-value" quoted=false@293:9:18-303:9:28 init=- sig=[] doc="" exported=false external=false refs=1 generated-by=defcounter package=user source=277:9:2-287:9:12
+package 0 user:report user:report function scope=0 source=240:7:8-246:7:14 node=symbol:"report" quoted=false@240:7:8-246:7:14 init=- sig=[] doc="" exported=false external=false refs=0
+ref :progn scope=0 source=61:3:6-66:3:11 node=symbol:"progn" quoted=false@61:3:6-66:3:11
+ref :set scope=0 source=74:4:8-77:4:11 node=symbol:"set" quoted=false@74:4:8-77:4:11
+ref :quote scope=0 source=79:4:13-84:4:18 node=symbol:"quote" quoted=false@79:4:13-84:4:18
+ref :name scope=1 source=94:4:28-98:4:32 node=symbol:"name" quoted=false@94:4:28-98:4:32
+ref :defun scope=0 source=111:5:8-116:5:13 node=symbol:"defun" quoted=false@111:5:8-116:5:13
+ref :getter scope=1 source=126:5:23-132:5:29 node=symbol:"getter" quoted=false@126:5:23-132:5:29
+ref :name scope=1 source=146:5:43-150:5:47 node=symbol:"name" quoted=false@146:5:43-150:5:47
+ref :defun scope=0 source=160:6:8-165:6:13 node=symbol:"defun" quoted=false@160:6:8-165:6:13
+ref :bumper scope=1 source=175:6:23-181:6:29 node=symbol:"bumper" quoted=false@175:6:23-181:6:29
+ref :set! scope=0 source=187:6:35-191:6:39 node=symbol:"set!" quoted=false@187:6:35-191:6:39
+ref :name scope=1 source=201:6:49-205:6:53 node=symbol:"name" quoted=false@201:6:49-205:6:53
+ref :+ scope=0 source=208:6:56-209:6:57 node=symbol:"+" quoted=false@208:6:56-209:6:57
+ref :name scope=1 source=221:6:69-225:6:73 node=symbol:"name" quoted=false@221:6:69-225:6:73
+ref user:hits-value scope=0 source=251:7:19-261:7:29 node=symbol:"hits-value" quoted=false@251:7:19-261:7:29
+ref user:bump-hits scope=0 source=265:8:2-274:8:11 node=symbol:"bump-hits" quoted=false@265:8:2-274:8:11
+ref user:defcounter scope=0 source=277:9:2-287:9:12 node=symbol:"defcounter" quoted=false@277:9:2-287:9:12
+ref :progn scope=0 source=61:3:6-66:3:11 node=symbol:"progn" quoted=false@61:3:6-66:3:11
+ref user:hits scope=0 source=288:9:13-292:9:17 node=symbol:"hits" quoted=false@288:9:13-292:9:17
+ref user:hits scope=0 source=288:9:13-292:9:17 node=symbol:"hits" quoted=false@288:9:13-292:9:17
+ref :+ scope=0 source=208:6:56-209:6:57 node=symbol:"+" quoted=false@208:6:56-209:6:57
+ref user:hits scope=0 source=288:9:13-292:9:17 node=symbol:"hits" quoted=false@288:9:13-292:9:17
+input in-package-769.lisp sha256=9747eec704f917d7cd1bc101fddca041bda12cc2561610e8fdf7936e8e91bf81
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@16:2:1-106:3:61
+scope 2 function parent=0 node=list:"defmacro" quoted=false@126:5:1-176:5:51
+symbol :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+symbol q:qa variable scope=0 source=195:7:9-197:7:11 node=symbol:"qa" quoted=false@195:7:9-197:7:11 init=- sig=- doc="" exported=false external=false refs=1 generated-by=qconst package=q source=188:7:2-194:7:8
+symbol q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+symbol user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=1
+map 1 name :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+package 0 q:qa q:qa variable scope=0 source=195:7:9-197:7:11 node=symbol:"qa" quoted=false@195:7:9-197:7:11 init=- sig=- doc="" exported=false external=false refs=1 generated-by=qconst package=q source=188:7:2-194:7:8
+package 0 q:qconst q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+package 0 user:enter-q user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=1
+ref :set scope=0 source=61:3:16-64:3:19 node=symbol:"set" quoted=false@61:3:16-64:3:19
+ref :quote scope=0 source=66:3:21-71:3:26 node=symbol:"quote" quoted=false@66:3:21-71:3:26
+ref :name scope=1 source=81:3:36-85:3:40 node=symbol:"name" quoted=false@81:3:36-85:3:40
+ref :value scope=1 source=97:3:52-102:3:57 node=symbol:"value" quoted=false@97:3:52-102:3:57
+ref :in-package scope=0 source=160:5:35-170:5:45 node=symbol:"in-package" quoted=false@160:5:35-170:5:45
+ref user:enter-q scope=0 source=178:6:2-185:6:9 node=symbol:"enter-q" quoted=false@178:6:2-185:6:9
+ref q:qconst scope=0 source=188:7:2-194:7:8 node=symbol:"qconst" quoted=false@188:7:2-194:7:8
+ref q:qa scope=0 source=201:8:1-203:8:3 node=symbol:"qa" quoted=false@201:8:1-203:8:3
+input nested-in-package.lisp sha256=74f3e7f1ae610e3df1b96b747064058831f2103256df78b06a9a93196de3dab3
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@16:2:1-106:3:61
+scope 2 function parent=0 node=list:"defmacro" quoted=false@126:5:1-176:5:51
+scope 3 function parent=0 node=list:"defmacro" quoted=false@177:6:1-236:6:60
+scope 4 function parent=0 node=list:"defun" quoted=false@268:9:1-289:9:22
+symbol :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+symbol q:qa variable scope=0 source=262:8:9-264:8:11 node=symbol:"qa" quoted=false@262:8:9-264:8:11 init=- sig=- doc="" exported=false external=false refs=2 generated-by=qconst package=q source=255:8:2-261:8:8
+symbol q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+symbol q:read-qa function scope=0 source=275:9:8-282:9:15 node=symbol:"read-qa" quoted=false@275:9:8-282:9:15 init=- sig=[] doc="" exported=false external=false refs=0
+symbol user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=2
+symbol user:enter-q-nested macro scope=0 source=187:6:11-201:6:25 node=symbol:"enter-q-nested" quoted=false@187:6:11-201:6:25 init=- sig=[] doc="" exported=false external=false refs=1
+map 1 name :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+package 0 q:qa q:qa variable scope=0 source=262:8:9-264:8:11 node=symbol:"qa" quoted=false@262:8:9-264:8:11 init=- sig=- doc="" exported=false external=false refs=2 generated-by=qconst package=q source=255:8:2-261:8:8
+package 0 q:qconst q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+package 0 q:read-qa q:read-qa function scope=0 source=275:9:8-282:9:15 node=symbol:"read-qa" quoted=false@275:9:8-282:9:15 init=- sig=[] doc="" exported=false external=false refs=0
+package 0 user:enter-q user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=2
+package 0 user:enter-q-nested user:enter-q-nested macro scope=0 source=187:6:11-201:6:25 node=symbol:"enter-q-nested" quoted=false@187:6:11-201:6:25 init=- sig=[] doc="" exported=false external=false refs=1
+ref :set scope=0 source=61:3:16-64:3:19 node=symbol:"set" quoted=false@61:3:16-64:3:19
+ref :quote scope=0 source=66:3:21-71:3:26 node=symbol:"quote" quoted=false@66:3:21-71:3:26
+ref :name scope=1 source=81:3:36-85:3:40 node=symbol:"name" quoted=false@81:3:36-85:3:40
+ref :value scope=1 source=97:3:52-102:3:57 node=symbol:"value" quoted=false@97:3:52-102:3:57
+ref :in-package scope=0 source=160:5:35-170:5:45 node=symbol:"in-package" quoted=false@160:5:35-170:5:45
+ref :progn scope=0 source=218:6:42-223:6:47 node=symbol:"progn" quoted=false@218:6:42-223:6:47
+ref user:enter-q scope=0 source=225:6:49-232:6:56 node=symbol:"enter-q" quoted=false@225:6:49-232:6:56
+ref user:enter-q-nested scope=0 source=238:7:2-252:7:16 node=symbol:"enter-q-nested" quoted=false@238:7:2-252:7:16
+ref :progn scope=0 source=218:6:42-223:6:47 node=symbol:"progn" quoted=false@218:6:42-223:6:47
+ref user:enter-q scope=0 source=225:6:49-232:6:56 node=symbol:"enter-q" quoted=false@225:6:49-232:6:56
+ref q:qconst scope=0 source=255:8:2-261:8:8 node=symbol:"qconst" quoted=false@255:8:2-261:8:8
+ref q:qa scope=0 source=286:9:19-288:9:21 node=symbol:"qa" quoted=false@286:9:19-288:9:21
+ref q:qa scope=0 source=290:10:1-292:10:3 node=symbol:"qa" quoted=false@290:10:1-292:10:3
+input nested.lisp sha256=282210835fd9ec9e06a24f5f5fbb63149fe4afe69061759d651abcbeed1e4043
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-92:2:61
+scope 2 function parent=0 node=list:"defmacro" quoted=false@93:3:1-186:4:58
+scope 3 function parent=0 node=list:"defmacro" quoted=false@187:5:1-278:6:69
+symbol :name parameter scope=1 source=20:1:21-24:1:25 node=symbol:"name" quoted=false@20:1:21-24:1:25 init=- sig=- doc="" exported=false external=false refs=1
+symbol :name parameter scope=2 source=117:3:25-121:3:29 node=symbol:"name" quoted=false@117:3:25-121:3:29 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=25:1:26-30:1:31 node=symbol:"value" quoted=false@25:1:26-30:1:31 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=2 source=122:3:30-127:3:35 node=symbol:"value" quoted=false@122:3:30-127:3:35 init=- sig=- doc="" exported=false external=false refs=1
+symbol user:constant macro scope=0 source=10:1:11-18:1:19 node=symbol:"constant" quoted=false@10:1:11-18:1:19 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=3
+symbol user:constants macro scope=0 source=197:5:11-206:5:20 node=symbol:"constants" quoted=false@197:5:11-206:5:20 init=- sig=[] doc="" exported=false external=false refs=1
+symbol user:left variable scope=0 source=245:6:36-249:6:40 node=symbol:"left" quoted=false@245:6:36-249:6:40 init=- sig=- doc="" exported=false external=false refs=2 generated-by=constants package=user source=280:7:2-289:7:11
+symbol user:right variable scope=0 source=267:6:58-272:6:63 node=symbol:"right" quoted=false@267:6:58-272:6:63 init=- sig=- doc="" exported=false external=false refs=2 generated-by=constants package=user source=280:7:2-289:7:11
+symbol user:via-constant macro scope=0 source=103:3:11-115:3:23 node=symbol:"via-constant" quoted=false@103:3:11-115:3:23 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=4
+map 1 name :name parameter scope=1 source=20:1:21-24:1:25 node=symbol:"name" quoted=false@20:1:21-24:1:25 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=25:1:26-30:1:31 node=symbol:"value" quoted=false@25:1:26-30:1:31 init=- sig=- doc="" exported=false external=false refs=1
+map 2 name :name parameter scope=2 source=117:3:25-121:3:29 node=symbol:"name" quoted=false@117:3:25-121:3:29 init=- sig=- doc="" exported=false external=false refs=1
+map 2 value :value parameter scope=2 source=122:3:30-127:3:35 node=symbol:"value" quoted=false@122:3:30-127:3:35 init=- sig=- doc="" exported=false external=false refs=1
+package 0 user:constant user:constant macro scope=0 source=10:1:11-18:1:19 node=symbol:"constant" quoted=false@10:1:11-18:1:19 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=3
+package 0 user:constants user:constants macro scope=0 source=197:5:11-206:5:20 node=symbol:"constants" quoted=false@197:5:11-206:5:20 init=- sig=[] doc="" exported=false external=false refs=1
+package 0 user:left user:left variable scope=0 source=245:6:36-249:6:40 node=symbol:"left" quoted=false@245:6:36-249:6:40 init=- sig=- doc="" exported=false external=false refs=2 generated-by=constants package=user source=280:7:2-289:7:11
+package 0 user:right user:right variable scope=0 source=267:6:58-272:6:63 node=symbol:"right" quoted=false@267:6:58-272:6:63 init=- sig=- doc="" exported=false external=false refs=2 generated-by=constants package=user source=280:7:2-289:7:11
+package 0 user:via-constant user:via-constant macro scope=0 source=103:3:11-115:3:23 node=symbol:"via-constant" quoted=false@103:3:11-115:3:23 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=4
+ref :set scope=0 source=47:2:16-50:2:19 node=symbol:"set" quoted=false@47:2:16-50:2:19
+ref :quote scope=0 source=52:2:21-57:2:26 node=symbol:"quote" quoted=false@52:2:21-57:2:26
+ref :name scope=1 source=67:2:36-71:2:40 node=symbol:"name" quoted=false@67:2:36-71:2:40
+ref :value scope=1 source=83:2:52-88:2:57 node=symbol:"value" quoted=false@83:2:52-88:2:57
+ref user:constant scope=0 source=144:4:16-152:4:24 node=symbol:"constant" quoted=false@144:4:16-152:4:24
+ref :name scope=2 source=162:4:34-166:4:38 node=symbol:"name" quoted=false@162:4:34-166:4:38
+ref :value scope=2 source=177:4:49-182:4:54 node=symbol:"value" quoted=false@177:4:49-182:4:54
+ref :progn scope=0 source=225:6:16-230:6:21 node=symbol:"progn" quoted=false@225:6:16-230:6:21
+ref user:via-constant scope=0 source=232:6:23-244:6:35 node=symbol:"via-constant" quoted=false@232:6:23-244:6:35
+ref user:left scope=0 source=245:6:36-249:6:40 node=symbol:"left" quoted=false@245:6:36-249:6:40
+ref user:via-constant scope=0 source=254:6:45-266:6:57 node=symbol:"via-constant" quoted=false@254:6:45-266:6:57
+ref user:right scope=0 source=267:6:58-272:6:63 node=symbol:"right" quoted=false@267:6:58-272:6:63
+ref user:constants scope=0 source=280:7:2-289:7:11 node=symbol:"constants" quoted=false@280:7:2-289:7:11
+ref :progn scope=0 source=225:6:16-230:6:21 node=symbol:"progn" quoted=false@225:6:16-230:6:21
+ref user:via-constant scope=0 source=232:6:23-244:6:35 node=symbol:"via-constant" quoted=false@232:6:23-244:6:35
+ref user:constant scope=0 source=144:4:16-152:4:24 node=symbol:"constant" quoted=false@144:4:16-152:4:24
+ref user:via-constant scope=0 source=254:6:45-266:6:57 node=symbol:"via-constant" quoted=false@254:6:45-266:6:57
+ref user:constant scope=0 source=144:4:16-152:4:24 node=symbol:"constant" quoted=false@144:4:16-152:4:24
+ref :+ scope=0 source=292:8:2-293:8:3 node=symbol:"+" quoted=false@292:8:2-293:8:3
+ref user:left scope=0 source=294:8:4-298:8:8 node=symbol:"left" quoted=false@294:8:4-298:8:8
+ref user:right scope=0 source=299:8:9-304:8:14 node=symbol:"right" quoted=false@299:8:9-304:8:14
+input progn-defuns.lisp sha256=bfef281429b5fcd1ee2f71f8654b20d2b62ed8157f6fdabcefaab1b23f0f97c9
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-165:5:66
+scope 2 function parent=0 node=list:"defun" quoted=false@64:4:7-99:4:42
+scope 3 function parent=0 node=list:"defun" quoted=false@113:5:14-161:5:62
+symbol :first parameter scope=1 source=19:1:20-24:1:25 node=symbol:"first" quoted=false@19:1:20-24:1:25 init=- sig=- doc="" exported=false external=false refs=2
+symbol :second parameter scope=1 source=25:1:26-31:1:32 node=symbol:"second" quoted=false@25:1:26-31:1:32 init=- sig=- doc="" exported=false external=false refs=1
+symbol :x parameter scope=2 source=88:4:31-89:4:32 node=symbol:"x" quoted=false@88:4:31-89:4:32 init=- sig=- doc="" exported=false external=false refs=1
+symbol :y parameter scope=3 source=138:5:39-139:5:40 node=symbol:"y" quoted=false@138:5:39-139:5:40 init=- sig=- doc="" exported=false external=false refs=1
+symbol user:defpair macro scope=0 source=10:1:11-17:1:18 node=symbol:"defpair" quoted=false@10:1:11-17:1:18 init=- sig=[{first required} {second required}] doc="" exported=false external=false refs=1
+symbol user:step function scope=0 source=175:6:10-179:6:14 node=symbol:"step" quoted=false@175:6:10-179:6:14 init=- sig=[{x required}] doc="" exported=false external=false refs=1 generated-by=defpair package=user source=167:6:2-174:6:9
+symbol user:twice function scope=0 source=180:6:15-185:6:20 node=symbol:"twice" quoted=false@180:6:15-185:6:20 init=- sig=[{y required}] doc="" exported=false external=false refs=1 generated-by=defpair package=user source=167:6:2-174:6:9
+map 1 first :first parameter scope=1 source=19:1:20-24:1:25 node=symbol:"first" quoted=false@19:1:20-24:1:25 init=- sig=- doc="" exported=false external=false refs=2
+map 1 second :second parameter scope=1 source=25:1:26-31:1:32 node=symbol:"second" quoted=false@25:1:26-31:1:32 init=- sig=- doc="" exported=false external=false refs=1
+map 2 x :x parameter scope=2 source=88:4:31-89:4:32 node=symbol:"x" quoted=false@88:4:31-89:4:32 init=- sig=- doc="" exported=false external=false refs=1
+map 3 y :y parameter scope=3 source=138:5:39-139:5:40 node=symbol:"y" quoted=false@138:5:39-139:5:40 init=- sig=- doc="" exported=false external=false refs=1
+package 0 user:defpair user:defpair macro scope=0 source=10:1:11-17:1:18 node=symbol:"defpair" quoted=false@10:1:11-17:1:18 init=- sig=[{first required} {second required}] doc="" exported=false external=false refs=1
+package 0 user:step user:step function scope=0 source=175:6:10-179:6:14 node=symbol:"step" quoted=false@175:6:10-179:6:14 init=- sig=[{x required}] doc="" exported=false external=false refs=1 generated-by=defpair package=user source=167:6:2-174:6:9
+package 0 user:twice user:twice function scope=0 source=180:6:15-185:6:20 node=symbol:"twice" quoted=false@180:6:15-185:6:20 init=- sig=[{y required}] doc="" exported=false external=false refs=1 generated-by=defpair package=user source=167:6:2-174:6:9
+ref :progn scope=0 source=52:3:6-57:3:11 node=symbol:"progn" quoted=false@52:3:6-57:3:11
+ref :defun scope=0 source=65:4:8-70:4:13 node=symbol:"defun" quoted=false@65:4:8-70:4:13
+ref :first scope=1 source=80:4:23-85:4:28 node=symbol:"first" quoted=false@80:4:23-85:4:28
+ref :+ scope=0 source=92:4:35-93:4:36 node=symbol:"+" quoted=false@92:4:35-93:4:36
+ref :progn scope=0 source=107:5:8-112:5:13 node=symbol:"progn" quoted=false@107:5:8-112:5:13
+ref :defun scope=0 source=114:5:15-119:5:20 node=symbol:"defun" quoted=false@114:5:15-119:5:20
+ref :second scope=1 source=129:5:30-135:5:36 node=symbol:"second" quoted=false@129:5:30-135:5:36
+ref :first scope=1 source=151:5:52-156:5:57 node=symbol:"first" quoted=false@151:5:52-156:5:57
+ref user:defpair scope=0 source=167:6:2-174:6:9 node=symbol:"defpair" quoted=false@167:6:2-174:6:9
+ref :progn scope=0 source=52:3:6-57:3:11 node=symbol:"progn" quoted=false@52:3:6-57:3:11
+ref :+ scope=0 source=92:4:35-93:4:36 node=symbol:"+" quoted=false@92:4:35-93:4:36
+ref :x scope=2 source=94:4:37-95:4:38 node=symbol:"x" quoted=false@94:4:37-95:4:38
+ref :progn scope=0 source=107:5:8-112:5:13 node=symbol:"progn" quoted=false@107:5:8-112:5:13
+ref user:step scope=0 source=175:6:10-179:6:14 node=symbol:"step" quoted=false@175:6:10-179:6:14
+ref :y scope=3 source=158:5:59-159:5:60 node=symbol:"y" quoted=false@158:5:59-159:5:60
+ref user:twice scope=0 source=188:7:2-193:7:7 node=symbol:"twice" quoted=false@188:7:2-193:7:7
+input switch-and-define.lisp sha256=849bf601590534e391e157d782c71235a2f038ab35bdd5904d2458ab454b58ca
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@16:2:1-106:3:61
+scope 2 function parent=0 node=list:"defmacro" quoted=false@126:5:1-176:5:51
+scope 3 function parent=0 node=list:"defmacro" quoted=false@177:6:1-270:7:60
+scope 4 function parent=0 node=list:"defun" quoted=false@293:9:1-314:9:22
+symbol :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+symbol :name parameter scope=3 source=205:6:29-209:6:33 node=symbol:"name" quoted=false@205:6:29-209:6:33 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+symbol q:qa variable scope=0 source=289:8:19-291:8:21 node=symbol:"qa" quoted=false@289:8:19-291:8:21 init=- sig=- doc="" exported=false external=false refs=2 generated-by=enter-and-define package=user source=272:8:2-288:8:18
+symbol q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+symbol q:read-qa function scope=0 source=300:9:8-307:9:15 node=symbol:"read-qa" quoted=false@300:9:8-307:9:15 init=- sig=[] doc="" exported=false external=false refs=0
+symbol user:enter-and-define macro scope=0 source=187:6:11-203:6:27 node=symbol:"enter-and-define" quoted=false@187:6:11-203:6:27 init=- sig=[{name required}] doc="" exported=false external=false refs=1
+symbol user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=2
+map 1 name :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+map 3 name :name parameter scope=3 source=205:6:29-209:6:33 node=symbol:"name" quoted=false@205:6:29-209:6:33 init=- sig=- doc="" exported=false external=false refs=1
+package 0 q:qa q:qa variable scope=0 source=289:8:19-291:8:21 node=symbol:"qa" quoted=false@289:8:19-291:8:21 init=- sig=- doc="" exported=false external=false refs=2 generated-by=enter-and-define package=user source=272:8:2-288:8:18
+package 0 q:qconst q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+package 0 q:read-qa q:read-qa function scope=0 source=300:9:8-307:9:15 node=symbol:"read-qa" quoted=false@300:9:8-307:9:15 init=- sig=[] doc="" exported=false external=false refs=0
+package 0 user:enter-and-define user:enter-and-define macro scope=0 source=187:6:11-203:6:27 node=symbol:"enter-and-define" quoted=false@187:6:11-203:6:27 init=- sig=[{name required}] doc="" exported=false external=false refs=1
+package 0 user:enter-q user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=2
+ref :set scope=0 source=61:3:16-64:3:19 node=symbol:"set" quoted=false@61:3:16-64:3:19
+ref :quote scope=0 source=66:3:21-71:3:26 node=symbol:"quote" quoted=false@66:3:21-71:3:26
+ref :name scope=1 source=81:3:36-85:3:40 node=symbol:"name" quoted=false@81:3:36-85:3:40
+ref :value scope=1 source=97:3:52-102:3:57 node=symbol:"value" quoted=false@97:3:52-102:3:57
+ref :in-package scope=0 source=160:5:35-170:5:45 node=symbol:"in-package" quoted=false@160:5:35-170:5:45
+ref :progn scope=0 source=226:7:16-231:7:21 node=symbol:"progn" quoted=false@226:7:16-231:7:21
+ref user:enter-q scope=0 source=233:7:23-240:7:30 node=symbol:"enter-q" quoted=false@233:7:23-240:7:30
+ref :name scope=3 source=259:7:49-263:7:53 node=symbol:"name" quoted=false@259:7:49-263:7:53
+ref user:enter-and-define scope=0 source=272:8:2-288:8:18 node=symbol:"enter-and-define" quoted=false@272:8:2-288:8:18
+ref :progn scope=0 source=226:7:16-231:7:21 node=symbol:"progn" quoted=false@226:7:16-231:7:21
+ref user:enter-q scope=0 source=233:7:23-240:7:30 node=symbol:"enter-q" quoted=false@233:7:23-240:7:30
+ref q:qconst scope=0 source=243:7:33-249:7:39 node=symbol:"qconst" quoted=false@243:7:33-249:7:39
+ref q:qa scope=0 source=311:9:19-313:9:21 node=symbol:"qa" quoted=false@311:9:19-313:9:21
+ref q:qa scope=0 source=315:10:1-317:10:3 node=symbol:"qa" quoted=false@315:10:1-317:10:3
