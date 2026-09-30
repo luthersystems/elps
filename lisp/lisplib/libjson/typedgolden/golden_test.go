@@ -8,7 +8,6 @@
 package typedgolden_test
 
 import (
-	"bufio"
 	"flag"
 	"math"
 	"os"
@@ -155,22 +154,17 @@ func encodeCorpus(t *testing.T) []string {
 
 func readGolden(t *testing.T) map[string]string {
 	t.Helper()
-	fh, err := os.Open(goldenFile)
+	b, err := os.ReadFile(goldenFile)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer fh.Close()
 	golden := map[string]string{}
-	sc := bufio.NewScanner(fh)
-	for sc.Scan() {
-		name, doc, ok := strings.Cut(sc.Text(), "\t")
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		name, doc, ok := strings.Cut(line, "\t")
 		if !ok {
-			t.Fatalf("malformed golden line %q", sc.Text())
+			t.Fatalf("malformed golden line %q", line)
 		}
 		golden[name] = doc
-	}
-	if err := sc.Err(); err != nil {
-		t.Fatal(err)
 	}
 	return golden
 }
