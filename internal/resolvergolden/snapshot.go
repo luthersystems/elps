@@ -123,7 +123,22 @@ func SnapshotWithExpander(input Input, expander analysis.MacroExpander) string {
 		fmt.Fprintf(&out, "parse-error %s\n", err)
 		return out.String()
 	}
-	r := analysis.Analyze(exprs, &analysis.Config{Filename: input.Name, MacroExpander: expander})
+	cfg := &analysis.Config{Filename: input.Name, MacroExpander: expander}
+	if expander != nil {
+		// Collect source-declared exports without evaluating fixture calls.
+		// Generated use-package forms need the same export metadata a
+		// workspace supplies to the analyzer, independently of the env.
+		cfg.PackageExports = make(map[string][]analysis.ExternalSymbol)
+		for _, sym := range analysis.Analyze(exprs, nil).Symbols {
+			if sym.Exported {
+				cfg.PackageExports[sym.Package] = append(cfg.PackageExports[sym.Package], analysis.ExternalSymbol{
+					Name: sym.Name, Kind: sym.Kind, Package: sym.Package,
+					Source: sym.Source, Signature: sym.Signature, DocString: sym.DocString,
+				})
+			}
+		}
+	}
+	r := analysis.Analyze(exprs, cfg)
 	scopes := make(map[*analysis.Scope]int)
 	var visit func(*analysis.Scope)
 	visit = func(s *analysis.Scope) {

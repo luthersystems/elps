@@ -25,7 +25,7 @@ type analyzer struct {
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
 	expansionDepth   int // current macro expansion nesting depth
-	// expansions caches MacroExpander results per call node and package
+	// expansions caches MacroExpander results per call node, package and head
 	// (nil = not expandable) so prescan and the deep walk share one expansion.
 	expansions map[expansionKey]*lisp.LVal
 	// origin is the outermost macro call whose expansion is being analyzed.

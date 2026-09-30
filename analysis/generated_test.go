@@ -374,3 +374,27 @@ qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
 		assert.Equal(t, "q", sym.Package, name)
 	}
 }
+
+// A use-package produced by an expansion makes the used package's exported
+// macros expandable, and its names resolvable, in later forms.
+func TestGeneratedUsePackageReachesTheExpander(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(export 'qconst)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro import-q () '(progn (use-package 'q)))`)
+	exports := map[string][]ExternalSymbol{"q": {{Name: "qconst", Kind: SymMacro, Package: "q"}}}
+	result := parseAndAnalyzeWithConfig(t, `(import-q)
+(qconst qa 1)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}, PackageExports: exports})
+	assert.Empty(t, result.Unresolved)
+	qa := findSymbol(result, "qa")
+	require.NotNil(t, qa)
+	assert.Equal(t, "user", qa.Package)
+	require.NotNil(t, qa.GeneratedBy)
+	assert.Equal(t, "qconst", qa.GeneratedBy.Macro)
+}

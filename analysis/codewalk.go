@@ -318,6 +318,10 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
 		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
+		if a.cfg != nil && a.cfg.MacroExpander != nil {
+			sym = scope.LookupInPackage(node.Cells[0].Str, currentPkg)
+			isMacro = isExpansionMacro(sym)
+		}
 		if isMacro {
 			sym.References++
 			a.result.References = append(a.result.References, newReference(sym, node.Cells[0]))

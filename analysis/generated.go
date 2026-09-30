@@ -69,9 +69,9 @@ func isPackageFormHead(head string) bool {
 
 // expand returns the MacroExpander's expansion of node in pkg, or nil when
 // there is no expander, node's head is not a candidate macro (a builtin, a
-// non-macro definition, a non-symbol) or expansion fails. Each call site is
-// expanded at most once per package per analysis, so prescan and the deep
-// walk see the same expanded nodes in the same package.
+// non-macro definition, a non-symbol) or expansion fails. Each call site and
+// resolved head is expanded at most once per package per analysis, so prescan
+// and the deep walk share expansions in the same package and import context.
 func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal {
 	if a.cfg == nil || a.cfg.MacroExpander == nil || a.expansionDepth >= maxMacroExpansionDepth ||
 		node == nil || node.Type != lisp.LSExpr || node.IsQuoted() ||
@@ -81,15 +81,16 @@ func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal 
 	if a.fileNonMacros[node.Cells[0].Str] {
 		return nil
 	}
-	sym := scope.Lookup(node.Cells[0].Str)
-	if sym != nil && (sym.Kind != SymMacro || !isUserMacro(sym)) {
+	sym := scope.LookupInPackage(node.Cells[0].Str, pkg)
+	if sym != nil && !isExpansionMacro(sym) {
 		return nil
 	}
-	key := expansionKey{node: node, pkg: pkg}
+	call := importedMacroCall(node, sym, pkg)
+	key := expansionKey{node: node, pkg: pkg, head: call.Cells[0].Str}
 	if expanded, ok := a.expansions[key]; ok {
 		return expanded
 	}
-	expanded := a.cfg.MacroExpander.ExpandMacro(node, pkg)
+	expanded := a.cfg.MacroExpander.ExpandMacro(call, pkg)
 	if a.expansions == nil {
 		a.expansions = make(map[expansionKey]*lisp.LVal)
 	}
@@ -97,10 +98,12 @@ func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal 
 	return expanded
 }
 
-// expansionKey identifies a call in the package where it is expanded.
+// expansionKey identifies a call in the package where it is expanded. The
+// resolved head distinguishes imports introduced between shared occurrences.
 type expansionKey struct {
 	node *lisp.LVal
 	pkg  string
+	head string
 }
 
 // expansionPackageForms treats top-level progn bodies as top-level forms,
@@ -187,6 +190,11 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 			if name := extractPackageName(form.Cells[1]); name != "" {
 				pkg = name
 			}
+		}
+		if head == "use-package" {
+			// Later calls need these imports while expanding, before the
+			// definition-registration pass replays the package forms.
+			a.prescanUsePackage(form, scope, pkg)
 		}
 		var expanded *lisp.LVal
 		if head != "" && !isPackageFormHead(head) {
