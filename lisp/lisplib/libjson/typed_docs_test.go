@@ -285,7 +285,7 @@ func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		require.NoError(t, err, "%s", cmdLine)
-		assert.Equal(t, strings.Join(want, "\n"), strings.TrimRight(string(out), "\n"), "%s", cmdLine)
+		assert.Equal(t, strings.Join(want, "\n"), strings.TrimRight(strings.ReplaceAll(string(out), "\r\n", "\n"), "\n"), "%s", cmdLine)
 		n++
 	}
 	require.Positive(t, n, "empty jq block")
