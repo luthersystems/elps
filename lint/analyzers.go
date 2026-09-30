@@ -816,8 +816,17 @@ var AnalyzerRethrowContext = &Analyzer{
 	Severity: SeverityError,
 	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
-		walkRethrowContext(pass, func(sexpr *lisp.LVal) {
+		walkRethrowContext(pass, func(sexpr *lisp.LVal, incomplete bool) {
 			src := SourceOf(sexpr)
+			if incomplete {
+				pass.Report(Diagnostic{
+					Message: "too many rethrow or error-stack calls in this form to check",
+					Pos:     posFromSource(astutil.SourceLoc(src)),
+					EndPos:  endPosFromNode(src),
+					Notes:   []string{"the form shares or repeats calls past the checker's budget, so a call outside handler-bind cannot be ruled out; split the form"},
+				})
+				return
+			}
 			name := HeadSymbol(sexpr)
 			pass.Report(Diagnostic{
 				Message: name + " used outside handler-bind",
@@ -846,14 +855,17 @@ var AnalyzerRethrowContext = &Analyzer{
 // Instead, the quoted and quasiquoted templates inside a defmacro body are
 // searched syntactically, as templates are code once expanded, so a macro
 // that emits a bare (rethrow) is reported at its template.
-func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
+//
+// When FindCallSites runs out of budget for a form, the form itself is
+// reported: a dropped call may be outside every handler-bind.
+func walkRethrowContext(pass *Pass, report func(form *lisp.LVal, incomplete bool)) {
 	hasExpander := pass.Semantics != nil && pass.Semantics.MacroExpander != nil
 	if hasExpander && !mentionsRethrowContext(pass.Exprs) {
 		return
 	}
 	passFile := analysis.NormalizePath(pass.Filename)
 	reported := make(map[int]bool)
-	reportOnce := func(form *lisp.LVal) {
+	reportOnce := func(form *lisp.LVal, incomplete bool) {
 		src, ok := form.Source()
 		if !ok || analysis.NormalizePath(src.File) != passFile {
 			return
@@ -864,11 +876,11 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 			}
 			reported[src.Pos] = true
 		}
-		report(form)
+		report(form, incomplete)
 	}
 	macroScanner := lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
 		if n.Op == "defmacro" {
-			scanMacroTemplates(n.Node, reportOnce)
+			scanMacroTemplates(n.Node, func(f *lisp.LVal) { reportOnce(f, false) })
 			return false
 		}
 		return true
@@ -877,7 +889,12 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 		if !mentionsRethrowContext([]*lisp.LVal{code}) {
 			return
 		}
-		for _, site := range astutil.FindCalls(code, "rethrow", "error-stack") {
+		sites, complete := astutil.FindCallSites(code, "rethrow", "error-stack")
+		if !complete {
+			// Sites past the budget were dropped; one may be a violation.
+			reportOnce(code, true)
+		}
+		for _, site := range sites {
 			name := strings.TrimPrefix(site.Name, lisp.DefaultLangPackage+":")
 			inHandler, inFunction := false, false
 			for _, e := range site.Enclosing {
@@ -891,7 +908,7 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 			if inHandler || (name == "error-stack" && inFunction) {
 				continue
 			}
-			reportOnce(site.Form)
+			reportOnce(site.Form, false)
 		}
 		codewalk.Forms(&macroScanner, code)
 	}
