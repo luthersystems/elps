@@ -71,7 +71,7 @@ contain only renamed symbols.
 
 ### Dynamic evaluation
 
-Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`,
+Any call to `load-string`, `load-bytes`, `load-file`, `eval`, `macroexpand`, `macroexpand-all`,
 `macroexpand-1`, `gensym`, `type`, or `qualified-symbol` preserves **every
 binding name, including lexical locals, across all input files**, even with `--rename-exports`.
 The rule also covers `symbol` and `intern` when supplied by a host, and

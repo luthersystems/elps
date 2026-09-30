@@ -201,7 +201,7 @@ func TestMinifyDynamicEvaluationPreservesEveryBinding(t *testing.T) {
 	for _, trigger := range []string{
 		`(load-string "42")`, `(load-bytes (to-bytes "42"))`, `(load-file "code.lisp")`,
 		`(eval 42)`, `(symbol "helper")`, `(intern "helper")`, `(gensym)`, `(type 42)`,
-		`(macroexpand '(identity 42))`, `(macroexpand-1 '(identity 42))`, `(qualified-symbol helper)`,
+		`(macroexpand '(identity 42))`, `(macroexpand-1 '(identity 42))`, `(macroexpand-all '(identity 42))`, `(qualified-symbol helper)`,
 		`(lisp:load-string "42")`, `(let ((loader load-string)) (loader "42"))`,
 		`(funcall 'load-string "42")`, `(let ([value (load-string "42")]) value)`,
 	} {
