@@ -27,18 +27,22 @@ slower on anything but float-heavy payloads.
 
 ## Tags: Transit
 
-Tag spellings are those of [Transit](https://github.com/cognitect/transit-format)
-(JSON-Verbose mode for maps), rather than invented ones, so there is a
-published description and existing readers of the notation:
+Shared tags were checked against the [Transit 0.8 specification's scalar and
+composite type tables](https://github.com/cognitect/transit-format/blob/master/README.md#ground-and-extension-types)
+and [Special Characters rules](https://github.com/cognitect/transit-format/blob/master/README.md#special-characters).
+Each shared tag keeps its Transit meaning. Maps use JSON-Verbose object form;
+this canonical ELPS format is not a general Transit reader or writer.
 
 | elps value | Encoding | Transit rule |
 |---|---|---|
 | int, \|n\| < 2^53 | JSON integer text | integer: JSON number below 2^53 |
-| other int | `"~i<decimal>"` | integer: `~i` otherwise |
+| int value, \|n\| >= 2^53 | `"~n<decimal>"` | arbitrary-precision integer `n` |
+| int map key, any supported magnitude | `"~i<decimal>"` | signed 64-bit integer `i` |
 | finite float | number text, see below | floating point: JSON number |
 | NaN / +Inf / -Inf | `"~zNaN"` / `"~zINF"` / `"~z-INF"` | special numbers `z` |
 | string | JSON string; a leading `~`, `^` or `` ` `` is escaped with `~` | the escape rule |
 | symbol `true` / `false` | JSON `true` / `false` | boolean |
+| boolean map key | `"~?t"` / `"~?f"` | boolean `?` string form |
 | other symbol | `"~$name"` | symbol `$` |
 | keyword `:name` | `"~:name"` | keyword `:` |
 | bytes | `"~b<base64>"`, RFC 4648 standard alphabet, padded | bytes `b` |
@@ -51,6 +55,18 @@ published description and existing readers of the notation:
 
 Decisions and reasons:
 
+- **Large integer values select `n`, not `i`.** Transit defines `i` as a
+  signed 64-bit integer, not an arbitrary-precision integer; `n` carries the
+  latter meaning. ELPS selects `n` for values with magnitude >= 2^53, including
+  array dimensions, and keeps `i` for every integer map key. Decoding either
+  form still requires the integer to fit Go's platform-sized `int`; the wire
+  tag does not expand ELPS's integer range. The decoder rejects `i` in value
+  position, `n` values below the boundary, and `n` map keys as noncanonical.
+- **Other shared meanings match Transit.** `~:` is a keyword, `~$` a symbol,
+  `~b` RFC 4648 base64 bytes, and `~z` one of NaN or the signed infinities.
+  `~?t` / `~?f` are boolean keys; `~#list` is a list represented by its
+  elements. `~~` escapes a data string beginning with `~`; the same escape
+  rule covers leading `^` and backquote. None is repurposed for another type.
 - **Sequences are Transit-aligned.** Vectors (rank-1 arrays) use plain JSON
   arrays, and nonempty lists use Transit's `"~#list"` tag. A plain JSON array
   decodes as a vector, including `[]` as an empty vector. The old
@@ -73,8 +89,8 @@ Decisions and reasons:
   as an object when every key has a string form, and uses `["~#cmap",[k,v,...]]`
   only for composite keys. Every key an elps sorted map can hold (string,
   symbol, keyword, int) has one: the string itself, `~$`, `~:`, `~i` (Transit
-  writes an int key as `~i` at any magnitude), and `~?t`/`~?f` for the boolean
-  symbols. So `cmap` cannot arise and the decoder rejects it. Objects keep
+  writes a signed 64-bit int key as `~i` at any magnitude), and `~?t`/`~?f` for
+  the boolean symbols. So `cmap` cannot arise and the decoder rejects it. Objects keep
   CouchDB queries and `jq` paths natural (`."~$amount"`).
 - **Tagged values use one fixed tag.** `["~#tagged",[name,data]]` rather than
   Transit's `["~#name",data]`, so a user type named `vector` or `array` cannot
@@ -136,8 +152,8 @@ byte. What guarantees it:
   no Unicode normalization (`"é"` and `"e"` + U+0301 encode differently).
 - **32-bit platforms.** Where Go's `int` is 32 bits, an elps int cannot hold
   more than 32 bits, so every int it has encodes as elsewhere. Decoding an int
-  that needs 64 bits (as a number or `"~i..."`) is rejected with an error
-  ("does not fit in a 32-bit int"), never truncated.
+  that needs 64 bits (as a number, a `"~n..."` value or a `"~i..."` key) is
+  rejected with an error ("does not fit in a 32-bit int"), never truncated.
 - Nothing reads the clock, the environment or `GOOS`/`GOARCH`.
 
 `TestTypedGoldenCorpus` (`lisp/lisplib/libjson/typedgolden`, golden file

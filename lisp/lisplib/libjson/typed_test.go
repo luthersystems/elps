@@ -5,6 +5,7 @@ package libjson
 import (
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -55,10 +56,13 @@ func TestTypedGolden(t *testing.T) {
 		{"int zero", lisp.Int(0), `0`},
 		{"int negative", lisp.Int(-42), `-42`},
 		{"int 2^53-1", int64Value(1<<53 - 1), `9007199254740991`},
-		{"int 2^53", int64Value(1 << 53), `"~i9007199254740992"`},
-		{"int -(2^53)", int64Value(-(1 << 53)), `"~i-9007199254740992"`},
-		{"int max", int64Value(math.MaxInt64), `"~i9223372036854775807"`},
-		{"int min", int64Value(math.MinInt64), `"~i-9223372036854775808"`},
+		{"int -(2^53-1)", int64Value(-(1<<53 - 1)), `-9007199254740991`},
+		{"int 2^53", int64Value(1 << 53), `"~n9007199254740992"`},
+		{"int -(2^53)", int64Value(-(1 << 53)), `"~n-9007199254740992"`},
+		{"int 2^53+1", int64Value(1<<53 + 1), `"~n9007199254740993"`},
+		{"int -(2^53+1)", int64Value(-(1<<53 + 1)), `"~n-9007199254740993"`},
+		{"int max", int64Value(math.MaxInt64), `"~n9223372036854775807"`},
+		{"int min", int64Value(math.MinInt64), `"~n-9223372036854775808"`},
 		{"float 1.0", lisp.Float(1), `1.0`},
 		{"float 1.5", lisp.Float(1.5), `1.5`},
 		{"float 0.1", lisp.Float(0.1), `0.1`},
@@ -122,6 +126,73 @@ func TestTypedGolden(t *testing.T) {
 			again, err := DumpTyped(back)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(again))
+		})
+	}
+}
+
+// Large values use Transit's arbitrary-precision tag, while integer keys
+// retain its signed 64-bit integer tag at every magnitude.
+func TestTypedIntegerTags(t *testing.T) {
+	for _, digits := range []string{
+		"0", "-7", "2147483647", "-2147483648", "2147483648",
+		"9007199254740991", "-9007199254740991",
+		"9007199254740992", "-9007199254740992",
+		"9007199254740993", "-9007199254740993",
+		"9223372036854775807", "-9223372036854775808",
+	} {
+		t.Run(digits, func(t *testing.T) {
+			n, err := strconv.ParseInt(digits, 10, 64)
+			require.NoError(t, err)
+			want := digits
+			if n <= -(1<<53) || n >= 1<<53 {
+				want = `"~n` + digits + `"`
+			}
+			mapDoc := `{"~i` + digits + `":` + want + `}`
+			for _, doc := range []string{want, mapDoc} {
+				v, err := LoadTyped([]byte(doc))
+				if n < math.MinInt || n > math.MaxInt {
+					require.ErrorContains(t, err, "does not fit in a 32-bit int")
+					continue
+				}
+				require.NoError(t, err)
+				if doc == mapDoc {
+					require.Equal(t, lisp.LSortMap, v.Type)
+					entries := v.MapEntries()
+					require.Len(t, entries.Cells, 1)
+					key := entries.Cells[0].Cells[0]
+					assert.Equal(t, lisp.LInt, key.Type)
+					assert.Equal(t, n, int64(key.Int))
+					v = entries.Cells[0].Cells[1]
+				}
+				assert.Equal(t, lisp.LInt, v.Type)
+				assert.Equal(t, n, int64(v.Int))
+				b, err := DumpTyped(v)
+				require.NoError(t, err)
+				assert.Equal(t, want, string(b))
+				b, err = DumpTyped(tsmap(t, lisp.Int(int(n)), v))
+				require.NoError(t, err)
+				assert.Equal(t, mapDoc, string(b))
+			}
+		})
+	}
+}
+
+func TestTypedRejectsNonCanonicalIntegerTags(t *testing.T) {
+	for _, in := range []string{
+		`"~i9007199254740992"`, `"~i-9007199254740992"`,
+		`"~i9223372036854775807"`, `"~i-9223372036854775808"`,
+		`["~i9007199254740992"]`, `{"n":"~i9007199254740992"}`,
+		`"~n"`, `"~n0"`, `"~n-0"`, `"~n1"`, `"~n-1"`,
+		`"~n9007199254740991"`, `"~n-9007199254740991"`,
+		`"~n09007199254740992"`, `"~n-09007199254740992"`, `"~n+9007199254740992"`,
+		`"~n9007199254740992.0"`, `"~n9.007199254740992e+15"`, `"~n 9007199254740992"`,
+		`"~n9223372036854775808"`, `"~n-9223372036854775809"`,
+		`{"~n7":0}`, `{"~n9007199254740992":0}`, `{"~n-9007199254740992":0}`,
+		`["~#array",[[0,"~i9007199254740992"],[]]]`,
+	} {
+		t.Run(in, func(t *testing.T) {
+			_, err := LoadTyped([]byte(in))
+			require.Error(t, err)
 		})
 	}
 }
@@ -353,7 +424,7 @@ func TestTypedHugeEmptyArray(t *testing.T) {
 	again, err := DumpTyped(back)
 	require.NoError(t, err)
 	assert.Equal(t, b, again)
-	_, err = LoadTyped([]byte(`["~#array",[[9223372036854775807,9223372036854775807],[1]]]`))
+	_, err = LoadTyped([]byte(`["~#array",[["~n9223372036854775807","~n9223372036854775807"],[1]]]`))
 	require.Error(t, err)
 }
 

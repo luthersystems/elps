@@ -133,8 +133,9 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			`Returns object as typed JSON bytes: JSON that load-typed reads
 			back as exactly the same value. Plain values stay plain JSON;
 			only what plain JSON would lose gets a "~" tag: keywords "~:k",
-			symbols "~$s", bytes "~b...", lists ["~#list",[...]], big
-			ints, NaN/infinity. Sequences are Transit-aligned: vectors are
+			symbols "~$s", bytes "~b...", lists ["~#list",[...]], ints
+			with magnitude >= 2^53 as "~n...", NaN/infinity. Integer map
+			keys always use "~i...". Sequences are Transit-aligned: vectors are
 			plain JSON arrays, nonempty lists are tagged, and nil is null.
 			The same value always gives the same bytes (keys sorted, no
 			spaces), so 1 and 1.0 differ. Raises an error for
@@ -151,6 +152,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			`Reads typed JSON (bytes or a string) written by dump-typed and
 			returns the value, every type as it was dumped. Plain JSON arrays
 			decode as vectors, null as nil, and "~#list" tags as nonempty lists.
+			Large integer values require "~n..."; "~i..." is only for map keys.
 			Raises an error for anything dump-typed would not write, such as spaces,
 			unsorted keys, strings starting with an unescaped "~" or unknown
 			tags (including "~#vector") or tagged empty lists. The value is new

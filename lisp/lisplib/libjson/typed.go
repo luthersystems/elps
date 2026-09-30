@@ -38,7 +38,7 @@ const (
 
 // maxExactInt is the largest magnitude written as a JSON number: every int
 // of smaller magnitude is exactly a binary64, so any JSON reader keeps it.
-// Larger ints are written as "~i" strings, Transit's rule.
+// Larger int values use Transit's arbitrary-precision "~n" tag.
 const maxExactInt = 1<<53 - 1
 
 // exactInt reports whether x is written as a JSON number.  The comparison is
@@ -202,7 +202,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 	}
 	switch v.Type {
 	case lisp.LInt:
-		e.buf = appendTypedInt(e.buf, v.Int, false)
+		e.buf = appendTypedInt(e.buf, v.Int)
 	case lisp.LFloat:
 		e.buf = appendTypedFloat(e.buf, v.Float)
 	case lisp.LString:
@@ -314,12 +314,12 @@ func (e *typedEncoder) cells(cells []*lisp.LVal, depth int) error {
 }
 
 // appendTypedInt writes an int: a JSON number below 2^53 in magnitude, else
-// a "~i" string.  A map key is always a "~i" string (Transit's key rule).
-func appendTypedInt(b []byte, x int, key bool) []byte {
-	if !key && exactInt(int64(x)) {
+// a "~n" string. Map keys use the signed 64-bit "~i" tag in appendTypedKey.
+func appendTypedInt(b []byte, x int) []byte {
+	if exactInt(int64(x)) {
 		return strconv.AppendInt(b, int64(x), 10)
 	}
-	b = append(b, '"', '~', 'i')
+	b = append(b, '"', '~', 'n')
 	b = strconv.AppendInt(b, int64(x), 10)
 	return append(b, '"')
 }
@@ -424,7 +424,7 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 		if e.values > e.cfg.maxValues {
 			return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 		}
-		e.buf = appendTypedInt(e.buf, d.Int, false)
+		e.buf = appendTypedInt(e.buf, d.Int)
 	}
 	e.buf = append(e.buf, ']', ',')
 	if err := e.cells(cells, depth); err != nil {

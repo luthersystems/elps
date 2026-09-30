@@ -272,7 +272,7 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 			return nil, d.errorf("non-canonical base64")
 		}
 		return lisp.Bytes(out), nil
-	case 'i':
+	case 'n':
 		n, err := d.canonicalInt(body)
 		if err != nil {
 			return nil, err

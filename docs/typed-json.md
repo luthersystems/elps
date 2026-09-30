@@ -43,7 +43,7 @@ plain JSON cannot tell apart:
 | `~:` | keyword (else it would read as a string) | `:pending` | `"~:pending"` |
 | `~$` | symbol | `'approve` | `"~$approve"` |
 | `~b` | bytes, base64 | `(to-bytes "hi")` | `"~baGk="` |
-| `~i` | int of 2^53 or more in size (JSON readers round those) | `9007199254740993` | `"~i9007199254740993"` |
+| `~n` | int with magnitude >= 2^53, using Transit's arbitrary-precision tag | `9007199254740993` | `"~n9007199254740993"` |
 | `~z` | NaN or infinity (not JSON numbers) | `(/ 1.0 0.0)` | `"~zINF"` |
 | `~~` | a string that itself starts with `~` | `"~draft"` | `"~~draft"` |
 | `~#list` | nonempty list (a plain array is a vector) | `'(1 2)` | `["~#list",[1,2]]` |
@@ -54,6 +54,12 @@ In **map keys** the same prefixes mark the key's type: `"~$id"` is the symbol
 key `'id`, `"~:id"` the keyword `:id`, `"~i7"` the int `7`, `"~?t"` / `"~?f"`
 the symbols `true` / `false`. A key with no prefix is a string. A string value
 or key starting with `^` or `` ` `` also gets a `~` (Transit reserves them).
+
+Integer map keys always use `~i`, including large ones: Transit defines it as
+a signed 64-bit integer. Integer values with magnitude >= 2^53 use `~n`;
+smaller ones are JSON numbers. The decoder rejects `~i` values, `~n` values
+below that boundary and `~n` map keys. Despite the arbitrary-precision wire
+tag, decoded integers must fit the platform's Go `int`.
 
 Outside elps, a tagged value is just a string or a two-element array: nothing
 breaks, you see the tag.

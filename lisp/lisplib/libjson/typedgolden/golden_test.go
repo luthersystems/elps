@@ -62,6 +62,13 @@ func corpus() []struct {
 	v    *lisp.LVal
 } {
 	astral := string(rune(0x1F600))
+	var bigMap, bigArray *lisp.LVal
+	if n := big("9007199254740992"); n != nil {
+		bigMap = smap(n, n, big("-9007199254740992"), big("-9007199254740992"),
+			big("9223372036854775807"), big("9223372036854775807"),
+			big("-9223372036854775808"), big("-9223372036854775808"))
+		bigArray = lisp.Array(list(lisp.Int(0), n), nil)
+	}
 	return []struct {
 		name string
 		v    *lisp.LVal
@@ -72,8 +79,11 @@ func corpus() []struct {
 		{"int-min32", lisp.Int(math.MinInt32)},
 		{"int-2^31", big("2147483648")},
 		{"int-2^53-1", big("9007199254740991")},
+		{"int-neg-2^53+1", big("-9007199254740991")},
 		{"int-2^53", big("9007199254740992")},
 		{"int-neg-2^53", big("-9007199254740992")},
+		{"int-2^53+1", big("9007199254740993")},
+		{"int-neg-2^53-1", big("-9007199254740993")},
 		{"int-max64", big("9223372036854775807")},
 		{"int-min64", big("-9223372036854775808")},
 		{"float-zero", f(0)},
@@ -126,10 +136,12 @@ func corpus() []struct {
 		{"nested-sequences", lisp.Vector([]*lisp.LVal{list(lisp.Vector(ints(1, 2)), list()), lisp.Vector(nil)})},
 		{"array-2x3", lisp.Array(list(ints(2, 3)...), ints(1, 2, 3, 4, 5, 6))},
 		{"array-rank0", lisp.Array(list(), ints(7))},
+		{"array-zero-big-dim", bigArray},
 		{"tagged", &lisp.LVal{Type: lisp.LTaggedVal, Str: "user:point", Cells: []*lisp.LVal{list(ints(1, 2)...)}}},
 		{"map-mixed-keys", smap(s("b"), lisp.Int(1), sym("b"+"x"), lisp.Int(2), sym(":b"), lisp.Int(3),
 			lisp.Int(-5), lisp.Int(4), lisp.Int(10), lisp.Int(5), sym("true"), lisp.Int(6), sym("false"), lisp.Int(7),
 			s("~b"), lisp.Int(8), s("^b"), lisp.Int(9), s(""), lisp.Int(10), s("B"), lisp.Int(11))},
+		{"map-big-int-keys", bigMap},
 		{"map-utf16-order", smap(s("z"), lisp.Int(1), s(string(rune(0xe9))), lisp.Int(2), s(string(rune(0xe000))), lisp.Int(3),
 			s(string(rune(0xffff))), lisp.Int(4), s(astral), lisp.Int(5), s("a"), lisp.Int(6), s(string(rune(0x10000))), lisp.Int(7))},
 		{"map-nested", smap(sym("state"), smap(s("items"), list(smap(sym("sku"), s("A-1"), sym("qty"), lisp.Int(2))),

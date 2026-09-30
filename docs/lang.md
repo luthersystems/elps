@@ -1770,9 +1770,15 @@ cannot tell apart get a short tag, a string beginning with `~`:
 | `(to-bytes "hi")` | `"aGk="` | `"~baGk="` |
 | `"~x"` | `"~x"` | `"~~x"` |
 | `(/ 0.0 0.0)` | error | `"~zNaN"` |
-| `9007199254740993` | `9007199254740993` | `"~i9007199254740993"` |
+| `9007199254740993` | `9007199254740993` | `"~n9007199254740993"` |
 | `(sorted-map "a" 1)` | `{"a":1}` | `{"a":1}` |
 | `(sorted-map 'a 1)` | `{"a":1}` | `{"~$a":1}` |
+
+Integer values with magnitude >= 2^53 use Transit's arbitrary-precision `~n`
+tag; smaller ones are JSON numbers. Integer map keys always use Transit's
+signed 64-bit `~i` tag. The decoder rejects alternate spellings, including
+`~i` values and `~n` map keys, and integers that do not fit the platform's Go
+`int`.
 
 A whole record, both ways:
 
