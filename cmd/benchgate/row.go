@@ -75,15 +75,44 @@ type comparison struct {
 	rows    []row
 }
 
-// baseName strips the -<GOMAXPROCS> suffix `go test` appends to every
-// benchmark name (and omits entirely at GOMAXPROCS=1), so the suffix follows
-// the RUNNER, not the code. Waivers are written without it and rows are
-// stripped down to match; that is what keeps a waiver from silently unbinding
-// when `runs-on` changes.
-var gomaxprocsSuffix = regexp.MustCompile(`-[0-9]+$`)
+// procsRule knows which -<GOMAXPROCS> suffix `go test` appended to every
+// benchmark name, so the suffix follows the RUNNER, not the code. Waivers are
+// written without it and rows are stripped down to match; that is what keeps a
+// waiver from silently unbinding when `runs-on` changes.
+//
+// n is the GOMAXPROCS the arms ran at (-gomaxprocs / BENCH_GOMAXPROCS):
+//
+//	n == 0  unknown (legacy): any trailing -<digits> is taken as the suffix.
+//	        This is what every caller got before #767 and still gets when it
+//	        passes nothing (substrate runs at 4, where it is exact).
+//	n == 1  `go test` appends NOTHING, so a trailing -<digits> is part of the
+//	        benchmark's own name (libjson Package/get-nested-baseline-2) and
+//	        is never stripped.
+//	n >= 2  exactly "-<n>" is the suffix; any other trailing number is the
+//	        benchmark's own.
+type procsRule struct{ n int }
 
-func baseName(n string) string {
-	return gomaxprocsSuffix.ReplaceAllString(n, "")
+var anyProcsSuffix = regexp.MustCompile(`-[0-9]+$`)
+
+func (r procsRule) suffixed(name string) bool {
+	switch r.n {
+	case 0:
+		return anyProcsSuffix.MatchString(name)
+	case 1:
+		return false
+	default:
+		return strings.HasSuffix(name, "-"+strconv.Itoa(r.n))
+	}
+}
+
+func (r procsRule) strip(name string) string {
+	if !r.suffixed(name) {
+		return name
+	}
+	if r.n == 0 {
+		return anyProcsSuffix.ReplaceAllString(name, "")
+	}
+	return strings.TrimSuffix(name, "-"+strconv.Itoa(r.n))
 }
 
 // higherIsBetter reports whether a LARGER value of this metric is better

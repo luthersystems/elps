@@ -73,6 +73,10 @@ set -euo pipefail
 # own version of it, not by main's.
 PR_TREE="${GITHUB_WORKSPACE}/pr"
 GATE="${BENCHGATE:-${GITHUB_WORKSPACE}/bin/benchgate}"
+# Tell the gate which -<GOMAXPROCS> suffix the arms carry (#767). The workflow
+# pins GOMAXPROCS; at 1 `go test` appends no suffix, and without this the gate
+# would strip a benchmark's own trailing -N (Package/get-nested-baseline-2).
+export BENCH_GOMAXPROCS="${BENCH_GOMAXPROCS:-${GOMAXPROCS:-0}}"
 ARMS="${PR_TREE}/scripts/bench-arms-check.sh"
 # The gate's shipped waiver list. The Go binary has no built-in default --
 # elps and substrate keep theirs in different places, and a tool that guessed

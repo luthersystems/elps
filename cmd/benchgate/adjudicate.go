@@ -127,7 +127,7 @@ func adjudicate(c *comparison, p *policy) *verdict {
 			// what separates a waiver that is merely no longer needed (delete
 			// it) from one pointing at a benchmark that no longer exists.
 			v.tilde++
-			if w := ws.find(r.pkg, baseName(r.name), r.metric); w != nil {
+			if w := ws.find(r.pkg, ws.procs.strip(r.name), r.metric); w != nil {
 				w.seen = true
 			}
 			continue
@@ -137,7 +137,7 @@ func adjudicate(c *comparison, p *policy) *verdict {
 		v.compared++
 		// Looked up BEFORE the significance and threshold tests, for the same
 		// reason as the tilde case above.
-		w := ws.find(r.pkg, baseName(r.name), r.metric)
+		w := ws.find(r.pkg, ws.procs.strip(r.name), r.metric)
 		if w != nil {
 			w.seen = true
 		}
