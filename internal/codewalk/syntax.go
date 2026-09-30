@@ -67,6 +67,24 @@ func Operator(form *lisp.LVal) string {
 	return syntaxOp(form.Cells[0])
 }
 
+// IsOp reports whether form's head is the operator op, spelled bare or
+// lisp:-qualified. op must be one of the Op constants, which init checks
+// against CodeWalker's registry; this is the cheap test for hot walks that
+// only ask about one operator.
+func IsOp(form *lisp.LVal, op string) bool {
+	if form == nil || len(form.Cells) == 0 || form.Type != lisp.LSExpr {
+		return false
+	}
+	head := form.Cells[0]
+	if head.Type != lisp.LSymbol {
+		return false
+	}
+	s := head.Str
+	return s == op || (len(s) == len(langPrefix)+len(op) && s[len(langPrefix):] == op && s[:len(langPrefix)] == langPrefix && op != OpUnquote && op != OpUnquoteSplicing)
+}
+
+const langPrefix = lisp.DefaultLangPackage + ":"
+
 var syntaxOp func(*lisp.LVal) string
 
 func init() {
@@ -74,5 +92,12 @@ func init() {
 	syntaxOp, ok = hook.SyntaxOp.(func(*lisp.LVal) string)
 	if !ok {
 		panic("codewalk: lisp did not inject the syntax visitor")
+	}
+	for _, op := range []string{OpQuote, OpQuasiquote, OpLambda, OpExpr, OpDefun, OpDefmacro, OpDeftype,
+		OpLet, OpLetSeq, OpFlet, OpLabels, OpMacrolet, OpHandlerBind, OpCond, OpSetBang,
+		OpThreadFirst, OpThreadLast, OpUnquote, OpUnquoteSplicing} {
+		if syntaxOp(lisp.Symbol(op)) != op {
+			panic("codewalk: " + op + " is not a CodeWalker syntax operator")
+		}
 	}
 }

@@ -2466,7 +2466,7 @@ func walkEvaluatedSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal)) {
 		return true
 	}}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, w.code)
+		w.code(expr)
 	}
 }
 
@@ -2492,46 +2492,55 @@ func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 		return
 	}
 	w := evaluatedSyntax{fn: fn}
-	codewalk.Syntax(node, nil, 0, w.code)
+	w.code(node)
 }
 
 // evaluatedSyntax preserves this check's raw-structure policy: formals and
 // binding entries are inspected as before, and malformed template holes may
 // contain several operands. Ordinary evaluated-code walks omit that syntax.
-// Both visitors get operator classification from CodeWalker.
+// Operator spellings come from CodeWalker's registry through codewalk.IsOp.
 type evaluatedSyntax struct {
 	fn func(*lisp.LVal) bool
 }
 
-func (w *evaluatedSyntax) code(node, _ *lisp.LVal, op string, depth int) bool {
-	if node.IsQuoted() {
-		return false
+func (w *evaluatedSyntax) code(node *lisp.LVal) {
+	if node == nil || node.IsQuoted() {
+		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
-		switch op {
-		case codewalk.OpQuote:
-			return false
-		case codewalk.OpQuasiquote:
+		switch {
+		case codewalk.IsOp(node, codewalk.OpQuote):
+			return
+		case codewalk.IsOp(node, codewalk.OpQuasiquote):
 			for _, cell := range node.Cells[1:] {
-				codewalk.Syntax(cell, node, depth+1, w.template)
+				w.template(cell)
 			}
-			return false
+			return
 		}
-		return w.fn(node)
+		if !w.fn(node) {
+			return
+		}
 	}
-	return true
+	for _, cell := range node.Cells {
+		w.code(cell)
+	}
 }
 
 // template follows the interpreter's hole vocabulary through nested quotes
 // and quasiquotes, including reader-quoted lists. Qualified hole names are data.
-func (w *evaluatedSyntax) template(node, _ *lisp.LVal, op string, depth int) bool {
-	if op == codewalk.OpUnquote || op == codewalk.OpUnquoteSplicing {
-		for _, cell := range node.Cells[1:] {
-			codewalk.Syntax(cell, node, depth+1, w.code)
-		}
-		return false
+func (w *evaluatedSyntax) template(node *lisp.LVal) {
+	if node == nil {
+		return
 	}
-	return true
+	if codewalk.IsOp(node, codewalk.OpUnquote) || codewalk.IsOp(node, codewalk.OpUnquoteSplicing) {
+		for _, cell := range node.Cells[1:] {
+			w.code(cell)
+		}
+		return
+	}
+	for _, cell := range node.Cells {
+		w.template(cell)
+	}
 }
 
 // AnalyzerNames returns a sorted list of all default analyzer names.
