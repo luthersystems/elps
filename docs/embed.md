@@ -416,7 +416,10 @@ Keep its temporary bindings within the expansion: independent expansions
 may reuse names. The [design and limits](internals/gensym.md) explain why
 this prevents capture and why ordinary source nesting can reuse a level.
 The Lisp `gensym` builtin and `env.GenSym()` retain their history-dependent
-`genNNNNNNNN` names for compatibility.
+`genNNNNNNNN` names. A macro ported to `NewGenSyms` no longer advances that
+counter, so the numbers later `gensym` calls print change: `get-default`
+used to take two, and a `(gensym)` after it now prints a lower number than
+before.
 
 Use `env.ErrorfAt(form, format, values...)` for argument validation so an
 error points at the offending form. For example, this macro binds a name to

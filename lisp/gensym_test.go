@@ -59,6 +59,18 @@ func TestGetDefaultGenSymsDeterminism(t *testing.T) {
 	}
 }
 
+// get-default no longer draws from the runtime gensym counter, so gensym
+// numbering after it changed: this program printed gen00000004 before
+// get-default used NewGenSyms (it took gen00000002 and gen00000003) and
+// prints gen00000002 now.  Deliberate and visible in printed output, so
+// changing it again is a coordinated upgrade for embedders.
+func TestGetDefaultLeavesGenSymCounter(t *testing.T) {
+	env := newGenSymsEnv(t)
+	got := env.LoadString("numbering.lisp", `(gensym) (get-default (sorted-map) "a" 0) (gensym)`)
+	require.NoError(t, lisp.GoError(got))
+	assert.Equal(t, "gen00000002", got.String())
+}
+
 func TestGetDefaultGenSymsOldUserName(t *testing.T) {
 	env := newGenSymsEnv(t)
 	got := env.LoadString("collision.lisp", `(let ((gen00000001 42)) (get-default () "missing" gen00000001))`)
