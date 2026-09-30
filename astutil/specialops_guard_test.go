@@ -33,6 +33,7 @@ var specialOpAllowlist = map[string]string{
 	"analysis/expander.go:evalPreambleForm":                     "selects definitions safe to evaluate when loading a macro preamble",
 	"analysis/generated.go:analyzer.expandPackageForms":         "excludes file-defined non-macros and advances package context while expanding selected package forms",
 	"analysis/generated.go:isPackageFormHead":                   "keeps declarations and package control calls out of prescan macro expansion",
+	"elpsutil/template.go:templateCompiler.placeholderKind":     "reads (unquote name) and (unquote-splicing name) as template placeholder markers in a Go macro template; it never walks or evaluates code",
 	"analysis/perf/local.go:ScanFile":                           "existing performance analyzer declaration scan; migrate separately (#766)",
 	"analysis/perf/local.go:isCallable":                         "existing performance analyzer callable classification; migrate separately (#766)",
 	"analysis/perf/local.go:scanExpr":                           "existing performance analyzer syntax traversal; migrate separately (#766)",
