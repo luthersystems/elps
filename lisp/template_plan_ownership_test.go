@@ -25,8 +25,8 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 	pkg.Export("failure", "other")
 	source.Runtime.MaxAlloc = 17
 	source.Runtime.Stack.MaxHeightPhysical = 23
-	source.Runtime.numenv = 41
-	source.Runtime.numsym = 43
+	source.Runtime.numenv.Store(41)
+	source.Runtime.numsym.Store(43)
 	errValue := Errorf("saved failure")
 	pkg.symbols["failure"] = errValue
 	alias := Errorf("another failure")
@@ -42,8 +42,8 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 	pkg.externals[0] = "changed-export"
 	source.Runtime.MaxAlloc = 99
 	source.Runtime.Stack.MaxHeightPhysical = 101
-	source.Runtime.numenv = 103
-	source.Runtime.numsym = 107
+	source.Runtime.numenv.Store(103)
+	source.Runtime.numsym.Store(107)
 	errValue.Cells[0].Str = "changed source failure"
 	var siblings []*LEnv
 	for range 2 {
@@ -56,7 +56,7 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 		if got == pkg || vm.Runtime == source.Runtime || got.Doc != "original package" || got.SymbolDoc("failure") != "original symbol" || got.GetFunName("function-id") != "original-function" || !reflect.DeepEqual(got.Externals(), []string{"failure", "other"}) {
 			t.Fatalf("package metadata changed: %+v", got)
 		}
-		if vm.Runtime.MaxAlloc != 17 || vm.Runtime.Stack.MaxHeightPhysical != 23 || vm.Runtime.numenv != 41 || vm.Runtime.numsym != 43 {
+		if vm.Runtime.MaxAlloc != 17 || vm.Runtime.Stack.MaxHeightPhysical != 23 || vm.Runtime.numenv.Load() != 41 || vm.Runtime.numsym.Load() != 43 {
 			t.Fatal("runtime configuration or identifier counters changed")
 		}
 		recorded, other := got.symbolTable()["failure"], got.symbolTable()["alias"]

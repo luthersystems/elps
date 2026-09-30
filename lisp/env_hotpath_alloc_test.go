@@ -20,8 +20,8 @@ func TestEvaluatorHotPathAllocations(t *testing.T) {
 	qualified := QExpr([]*LVal{Quote(Symbol("user:allocation-value"))})
 	formals := Formals()
 	// fmt boxes counters above 255; keep the measurement beyond that range.
-	env.Runtime.numenv = 1000
-	env.Runtime.numsym = 1000
+	env.Runtime.numenv.Store(1000)
+	env.Runtime.numsym.Store(1000)
 	for _, tc := range []struct {
 		call func()
 		name string

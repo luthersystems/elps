@@ -69,8 +69,8 @@ type templateRuntime struct {
 	maxEvalNesting         int
 	maxSleep               time.Duration
 	maxSteps               int64
-	numenv                 atomicCounter
-	numsym                 atomicCounter
+	numenv                 uint64
+	numsym                 uint64
 	maxHeightLogical       int
 	maxHeightPhysical      int
 	maxTailIterations      int
@@ -82,7 +82,7 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 	c := templateRuntime{
 		reader: rt.Reader, library: rt.Library, loadCache: rt.LoadCache, stderr: rt.Stderr,
 		languagePackage: rt.Registry.Lang, maxAlloc: rt.MaxAlloc, maxMacroExpansionDepth: rt.MaxMacroExpansionDepth,
-		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv, numsym: rt.numsym,
+		maxValueDepth: rt.MaxValueDepth, maxEvalNesting: rt.MaxEvalNesting, maxSleep: rt.MaxSleep, maxSteps: rt.maxSteps, numenv: rt.numenv.Load(), numsym: rt.numsym.Load(),
 		maxHeightLogical: rt.Stack.MaxHeightLogical, maxHeightPhysical: rt.Stack.MaxHeightPhysical, maxTailIterations: rt.Stack.MaxTailIterations,
 		legacyKeywordFormals: rt.LegacyKeywordFormals,
 	}
@@ -105,9 +105,11 @@ func (c templateRuntime) newRuntime(opts vmConfig, packages int) *Runtime {
 		Stack:  &CallStack{MaxHeightLogical: c.maxHeightLogical, MaxHeightPhysical: c.maxHeightPhysical, MaxTailIterations: c.maxTailIterations},
 		Reader: c.reader, Library: c.library, LoadCache: c.loadCache,
 		MaxAlloc: c.maxAlloc, MaxMacroExpansionDepth: c.maxMacroExpansionDepth,
-		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
+		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps,
 		LegacyKeywordFormals: c.legacyKeywordFormals,
 	}
+	rt.numenv.Store(c.numenv)
+	rt.numsym.Store(c.numsym)
 	if c.settings != nil {
 		rt.settings = maps.Clone(c.settings)
 	}

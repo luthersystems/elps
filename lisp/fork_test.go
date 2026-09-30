@@ -119,16 +119,16 @@ func TestForkCounterContinuity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("fork: %v", err)
 	}
-	if got, want := uint64(env.Runtime.numenv), uint64(1); got < want {
+	if got, want := env.Runtime.numenv.Load(), uint64(1); got < want {
 		t.Fatalf("template env-ID counter is %d; continuity check would be vacuous", got)
 	}
-	if got, want := uint64(env.Runtime.numsym), uint64(1); got < want {
+	if got, want := env.Runtime.numsym.Load(), uint64(1); got < want {
 		t.Fatalf("template gensym counter is %d; continuity check would be vacuous", got)
 	}
-	if got, want := uint64(fork.Runtime.numenv), uint64(env.Runtime.numenv); got != want {
+	if got, want := fork.Runtime.numenv.Load(), env.Runtime.numenv.Load(); got != want {
 		t.Errorf("env-ID counter not continued: fork %d, template %d", got, want)
 	}
-	if got, want := uint64(fork.Runtime.numsym), uint64(env.Runtime.numsym); got != want {
+	if got, want := fork.Runtime.numsym.Load(), env.Runtime.numsym.Load(); got != want {
 		t.Errorf("gensym counter not continued: fork %d, template %d", got, want)
 	}
 	// The behavioral form of gensym continuity: a name the fork mints must

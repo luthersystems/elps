@@ -526,7 +526,7 @@ func (r *Runtime) GenEnvID() uint {
 // far. It only ever moves forward, so two reads that agree prove no closure
 // was created between them.
 func (r *Runtime) closuresCreated() uint64 {
-	return atomic.LoadUint64((*uint64)(&r.closures))
+	return r.closures.Load()
 }
 
 // GenSym returns the next genNNNNNNNN name from this runtime's counter.
@@ -595,11 +595,18 @@ func (r *Runtime) sourceContext() SourceContext {
 	}
 }
 
-type atomicCounter uint64
+// atomicCounter wraps atomic.Uint64, which the compiler keeps 64-bit
+// aligned on 32-bit platforms; a bare uint64 field used with
+// atomic.AddUint64 panics there when the field lands on a 4-byte boundary.
+type atomicCounter struct{ v atomic.Uint64 }
 
 func (c *atomicCounter) Add(n uint) uint {
-	return uint(atomic.AddUint64((*uint64)(c), uint64(n)))
+	return uint(c.v.Add(uint64(n)))
 }
+
+func (c *atomicCounter) Load() uint64 { return c.v.Load() }
+
+func (c *atomicCounter) Store(n uint64) { c.v.Store(n) }
 
 // Setting reports the value of a named per-VM library flag and whether it
 // has been set. Settings are interpreter state of this Runtime: a template
