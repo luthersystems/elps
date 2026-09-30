@@ -1,9 +1,8 @@
 // Copyright © 2026 The ELPS authors
 
-// Package typedgolden_test pins typed JSON output byte for byte across
-// machines. CI runs it on linux/arm64, windows/amd64 and windows/386,
-// and every run must produce exactly
-// testdata/golden.txt.
+// Package typedgolden_test pins canonical/typed JSON bytes and canonize
+// rejections across machines. CI runs it on linux/arm64, windows/amd64 and
+// windows/386. Changes/removals in testdata/*.txt need a golden API override.
 package typedgolden_test
 
 import (
@@ -16,9 +15,10 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
+	"github.com/luthersystems/elps/parser"
 )
 
-var update = flag.Bool("update", false, "rewrite testdata/golden.txt from the encoder")
+var update = flag.Bool("update", false, "rewrite frozen testdata/*.txt (changes/removals require an API override)")
 
 const goldenFile = "testdata/golden.txt"
 const canonicalGoldenFile = "testdata/canonical.txt"
@@ -153,6 +153,17 @@ func corpus() []struct {
 		{"tagged-name-escapes", &lisp.LVal{Type: lisp.LTaggedVal, Str: "user:<>&" + string(rune(0x2028)), Cells: []*lisp.LVal{lisp.Int(1)}}},
 		{"map-nested", smap(sym("state"), smap(s("items"), list(smap(sym("sku"), s("A-1"), sym("qty"), lisp.Int(2))),
 			s("total"), f(12.5)), sym("flags"), lisp.Vector([]*lisp.LVal{sym("true"), sym(":x")}))},
+		{"order-records", smap(s("orders"), lisp.Vector([]*lisp.LVal{
+			smap(s("id"), s("ord-7"), s("items"), lisp.Vector([]*lisp.LVal{
+				smap(s("sku"), s("A-1"), s("qty"), lisp.Int(2), s("price"), f(12.5)),
+				smap(s("sku"), s("B-2"), s("qty"), lisp.Int(1), s("price"), f(0.0375)),
+			}), s("customer"), smap(s("city"), s("東京"), s("note"), s("café 😀 <>&")),
+				s("total"), f(25.0375)),
+		}), s("meta"), smap(s("source"), s("web"), s("active"), sym("true")))},
+		{"nested-records", smap(s("records"), lisp.Vector([]*lisp.LVal{
+			smap(s("id"), lisp.Int(17), s("metrics"), smap(s("ratio"), f(0.125), s("delta"), f(-0.5)),
+				s("labels"), lisp.Vector([]*lisp.LVal{s("é😀"), s("<>&")}), s("details"), smap(s("enabled"), sym("false"), s("optional"), list())),
+		}), s("version"), lisp.Int(1))},
 	}
 }
 
@@ -184,6 +195,12 @@ func readGolden(t *testing.T, file string) map[string]string {
 		name, doc, ok := strings.Cut(line, "\t")
 		if !ok {
 			t.Fatalf("malformed golden line %q", line)
+		}
+		if name == "" || doc == "" {
+			t.Fatalf("empty golden name or bytes in %q", line)
+		}
+		if _, duplicate := golden[name]; duplicate {
+			t.Fatalf("duplicate golden entry %q", name)
 		}
 		golden[name] = doc
 	}
@@ -261,18 +278,54 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 		}
 	}
 	golden := readGolden(t, canonicalGoldenFile)
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	for _, result := range []*lisp.LVal{lisp.InitializeUserEnv(env), libjson.LoadPackage(env)} {
+		if err := lisp.GoError(result); err != nil {
+			t.Fatal(err)
+		}
+	}
 	checked := 0
 	for _, c := range corpus() {
 		want, ok := golden[c.name]
+		if c.v == nil {
+			if ok {
+				checked++
+				if _, err := loadTyped([]byte(want)); err == nil {
+					t.Errorf("%s: wide canonical integer decoded on 32 bits", c.name)
+				}
+			}
+			continue
+		}
+		canonical, err := libjson.Canonize(c.v)
+		if err != nil {
+			if ok {
+				t.Errorf("%s: frozen canonical entry now rejected: %v", c.name, err)
+			}
+			continue
+		}
 		if !ok {
+			t.Errorf("%s: successful canonical case missing from %s", c.name, canonicalGoldenFile)
 			continue
 		}
 		checked++
-		if c.v == nil {
-			if _, err := loadTyped([]byte(want)); err == nil {
-				t.Errorf("%s: wide canonical integer decoded on 32 bits", c.name)
+		if err := lisp.GoError(env.PutGlobal(sym("v"), c.v)); err != nil {
+			t.Fatal(err)
+		}
+		for _, source := range []string{
+			`(json:dump-string (json:canonize v))`,
+			`(json:dump-string (json:canonize v) :string-numbers false)`,
+			`(json:dump-string v :canonize true)`,
+			`(json:dump-string (json:canonize v) :typed true)`,
+			`(json:dump-string v :canonize true :typed true)`,
+		} {
+			got := env.LoadString("golden", source)
+			if got.Type != lisp.LString || got.Str != want {
+				t.Errorf("%s via %s: got %s, want %s", c.name, source, got, want)
 			}
-			continue
+		}
+		if got, err := libjson.Dump(canonical, false); err != nil || string(got) != want {
+			t.Errorf("%s: direct canonical dump %s (%v); want %s", c.name, got, err, want)
 		}
 		plain, err := libjson.DumpWith(c.v, libjson.DumpOpts{Canonize: true})
 		if err != nil {

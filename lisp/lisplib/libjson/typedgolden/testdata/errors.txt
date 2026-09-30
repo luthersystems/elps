@@ -1,0 +1,23 @@
+value-tilde	json:canonize: leading ~ string or key: "~text" at $
+symbol-tilde	json:canonize: leading ~ string or key: "~name" at $
+key-tilde	json:canonize: leading ~ string or key: "~key" at $["~key"]
+int-positive-overflow	json:canonize: int magnitude exceeds 2^53: 9007199254740993 at $
+int-negative-overflow	json:canonize: int magnitude exceeds 2^53: -9007199254740993 at $
+float-nan	json:canonize: nonfinite float: NaN at $
+float-inf	json:canonize: nonfinite float: +Inf at $
+float-neg-inf	json:canonize: nonfinite float: -Inf at $
+float-negative-zero	json:canonize: negative zero: -0 at $
+float-whole-out-of-range	json:canonize: whole-number float magnitude exceeds 2^53: 9007199254740994 at $
+value-invalid-utf8	json:canonize: invalid UTF-8 string or key: "\xff" at $
+key-invalid-utf8	json:canonize: invalid UTF-8 string or key: "\xff" at $["\xff"]
+value-surrogate	json:canonize: invalid UTF-8 string or key: "\xed\xa0\x80" at $
+key-surrogate	json:canonize: invalid UTF-8 string or key: "\xed\xa0\x80" at $["\xed\xa0\x80"]
+int-key	json:canonize: int map key: 9 at $[key 9]
+mixed-key-collision	json:canonize: map key collision after string conversion: "a" at $["a"]
+mixed-key-order	json:canonize: map key order would change dump bytes: "a" at $["a"]
+unsupported-key	json:canonize: unsupported map key: "float " at $[""]
+depth	json:canonize: nesting depth limit exceeded: array at $[0]
+cycle	json:canonize: cycle in value: array at $[0]
+unsupported	json:canonize: unsupported value: function at $
+limit-bytes	json:canonize: output exceeds 2 bytes: 2 bytes counted, 1 more requested at $
+limit-values	json:canonize: container width exceeds value/byte limit: 1 entries at $

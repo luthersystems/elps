@@ -1,0 +1,3 @@
+golden | canonical.txt:changed | 2000-01-01 | #751 | Intended byte format change; update stored hashes.
+golden | canonical.txt:removed | 2099-01-01 | #751 | Intended removal; replace the retired encoding.
+golden | deleted.txt:record | 2099-01-01 | #751 | Intended removal; replace the retired record.

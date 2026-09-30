@@ -181,11 +181,19 @@ remain the typed implementation API, and plain `Dump`/`Load` stay available.
 
 ## Hashing guidance
 
-If you hash an elps value or use it as a cache/state key, hash
-`(json:dump-string v :canonize true)`. Those bytes are frozen. For string-keyed
-data they equal plain dump, so existing hashes stay valid. Let a canonize error
-fail the operation. Don't hash `:typed` output of non-canonical values, printed
-forms, or anything that depends on `json:use-string-numbers`.
+Hashes, cache keys and state keys should be computed over canonical bytes:
+`(json:dump-string (json:canonize v))`, or `(json:dump-string v :canonize true)`.
+The canonical byte form is frozen: for a given canonical value, every future
+elps version produces the same bytes, on every platform. Changing it is a
+breaking change.
+
+The same guarantee applies to typed bytes from
+`(json:dump-string v :typed true)`: a given value produces the same bytes in
+every future elps version, on every platform. Changing those bytes is a
+breaking change. Typed bytes preserve numeric types; canonize selects the
+shared plain/typed representation used for hashes and keys. For string-keyed
+canonical data the bytes equal plain dump, so existing hashes stay valid.
+Let a canonize error fail the operation.
 
 This advice applies when canonize succeeds. Use an explicit
 `:string-numbers false` for numeric JSON, or an explicit `true` if your existing
@@ -194,6 +202,14 @@ that same explicit option. Canonical dumping itself ignores the package default.
 Do not fall back to another representation when canonize fails in a hash or key
 operation. Hash algorithms belong with the embedding application's crypto
 functions.
+
+The frozen corpus in `lisp/lisplib/libjson/typedgolden/testdata/` pins plain
+canonical dumps (both canonize and `:canonize true`), typed dumps, realistic
+nested records, UTF-8 key order, escapes, number edges and exact canonize
+rejections. CI checks it on Linux ARM64, Windows amd64 and Windows 386.
+The API break gate compares each `file:entry` with the PR base: changing or
+removing an entry needs a reviewed `golden` override in
+`scripts/api-breaks.txt`; adding an entry never fails.
 
 ## What stays plain
 

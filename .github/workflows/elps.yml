@@ -243,10 +243,10 @@ jobs:
       - name: Vet
         run: go vet ./...
 
-      # Typed JSON output must be byte-identical on every machine: the same
+      # Canonical and typed JSON must be byte-identical on every machine: the same
       # golden corpus the Linux job checks, on windows/amd64 and windows/386
       # (32-bit int). The full libjson suite also compiles on 386.
-      - name: Typed JSON golden corpus (amd64, 386)
+      - name: Canonical and typed JSON golden corpus (amd64, 386)
         run: |
           go test -count=1 ./lisp/lisplib/libjson/typedgolden/
           go env -w GOARCH=386
@@ -273,7 +273,8 @@ jobs:
 
   # API BREAK GATE (#761). Fails when this PR removes or incompatibly changes
   # the Go API of a non-internal package (apidiff) or the Lisp public surface
-  # (`elps doc --json -l`: packages, exports, kind, formals) against the base.
+  # (`elps doc --json -l`: packages, exports, kind, formals), or changes/removes
+  # frozen canonical/typed golden entries against the base.
   # An intended break needs a reviewed line in scripts/api-breaks.txt; the job
   # log prints the exact line. On a PR the checkout is the merge commit, so
   # HEAD^1 is the base branch tip and fetch-depth 2 is all the history it
@@ -303,7 +304,7 @@ jobs:
           go-version: "1.26.8"
           cache: true
 
-      - name: Go API and Lisp surface vs base
+      - name: Go API, Lisp surface and frozen golden bytes vs base
         env:
           EVENT_NAME: ${{ github.event_name }}
           BEFORE: ${{ github.event.before }}

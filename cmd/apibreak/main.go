@@ -2,7 +2,7 @@
 // whether every break it finds is covered by a reviewed entry in
 // scripts/api-breaks.txt (issue #761).
 //
-// It judges two surfaces, both computed by scripts/api-break-gate.sh from the
+// It judges three surfaces, computed by scripts/api-break-gate.sh from the
 // PR's base and head:
 //
 //   - go: the incompatible-change report of golang.org/x/exp/cmd/apidiff run
@@ -15,6 +15,11 @@
 //     ("pkg:sym"), a changed kind (function, macro, operator, variable) and a
 //     formals change that rejects a call the base accepted are breaks.
 //     Additions, renamed formals and docstrings are not.
+//
+//   - golden: frozen canonical/typed corpus directories, passed with
+//     -golden-base and -golden-head. Changed bytes or removed entries are
+//     breaks keyed "file:entry" (file relative to the corpus directory).
+//     Added files/entries and reordered corpus rows are compatible.
 //
 // Exit status: 0 no unwaived break, 1 at least one unwaived break, 2 the
 // input or the override file could not be interpreted. A malformed override
@@ -40,7 +45,7 @@ import (
 
 // A brk is one breaking change on one surface.
 type brk struct {
-	surface string // "go" or "lisp"
+	surface string // "go", "lisp" or "golden"
 	symbol  string
 	what    string
 }
@@ -106,8 +111,8 @@ func parseOverrides(source, content, today string) ([]*override, []string) {
 			f[j] = strings.Trim(f[j], " \t")
 		}
 		ok := true
-		if f[0] != "go" && f[0] != "lisp" {
-			report(fmt.Sprintf("surface %q must be go or lisp", f[0]))
+		if f[0] != "go" && f[0] != "lisp" && f[0] != "golden" {
+			report(fmt.Sprintf("surface %q must be go, lisp or golden", f[0]))
 			ok = false
 		}
 		if f[1] == "" || strings.ContainsAny(f[1], " \t") {
@@ -293,6 +298,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	goReport := fs.String("go-report", "", "apidiff -incompatible output")
 	lispBase := fs.String("lisp-base", "", "`elps doc --json -l` output from the base")
 	lispHead := fs.String("lisp-head", "", "`elps doc --json -l` output from the head")
+	goldenBase := fs.String("golden-base", "", "frozen golden corpus directory from the base")
+	goldenHead := fs.String("golden-head", "", "frozen golden corpus directory from the head")
 	today := fs.String("today", time.Now().UTC().Format(time.DateOnly), "date expiry is judged against (YYYY-MM-DD)")
 	if err := fs.Parse(args); err != nil {
 		return 2
@@ -307,8 +314,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if (*lispBase == "") != (*lispHead == "") {
 		return fail("-lisp-base and -lisp-head go together")
 	}
-	if *goReport == "" && *lispBase == "" {
-		return fail("nothing to judge: pass -go-report and/or -lisp-base/-lisp-head")
+	if (*goldenBase == "") != (*goldenHead == "") {
+		return fail("-golden-base and -golden-head go together")
+	}
+	if *goReport == "" && *lispBase == "" && *goldenBase == "" {
+		return fail("nothing to judge: pass -go-report, -lisp-base/-lisp-head or -golden-base/-golden-head")
 	}
 
 	content, err := os.ReadFile(*overridesPath) //#nosec G304 -- apibreak is a CLI given the override-file path to read
@@ -344,6 +354,17 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return fail("%v", err)
 		}
 		breaks = append(breaks, lispBreaks(b, h)...)
+	}
+	if *goldenBase != "" {
+		b, err := readGoldenCorpus(*goldenBase)
+		if err != nil {
+			return fail("%v", err)
+		}
+		h, err := readGoldenCorpus(*goldenHead)
+		if err != nil {
+			return fail("%v", err)
+		}
+		breaks = append(breaks, goldenBreaks(b, h)...)
 	}
 	sort.Slice(breaks, func(i, j int) bool {
 		if breaks[i].surface != breaks[j].surface {

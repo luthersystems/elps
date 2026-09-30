@@ -53,3 +53,5 @@ symbol-escapes	"x\u003c\u003e\u0026\u2028\u2029"
 keyword-escapes	":x\u003c\u003e\u0026\u2028\u2029"
 tagged-name-escapes	1
 map-nested	{"flags":[true,":x"],"state":{"items":[{"qty":2,"sku":"A-1"}],"total":12.5}}
+order-records	{"meta":{"active":true,"source":"web"},"orders":[{"customer":{"city":"東京","note":"café 😀 \u003c\u003e\u0026"},"id":"ord-7","items":[{"price":12.5,"qty":2,"sku":"A-1"},{"price":0.0375,"qty":1,"sku":"B-2"}],"total":25.0375}]}
+nested-records	{"records":[{"details":{"enabled":false,"optional":null},"id":17,"labels":["é😀","\u003c\u003e\u0026"],"metrics":{"delta":-0.5,"ratio":0.125}}],"version":1}

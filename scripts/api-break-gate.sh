@@ -7,10 +7,12 @@
 #
 #   bash scripts/api-break-gate.sh <base-ref>     (make api-break-gate BASE=origin/main)
 #
-# Two surfaces, both computed from a checkout of BASE (a temporary git
+# Three surfaces, computed from a checkout of BASE (a temporary git
 # worktree) and from this tree:
 #   go    apidiff -m, pinned below; internal packages are ignored by apidiff.
 #   lisp  `elps doc --json -l` from an elps binary built from each tree.
+#   golden  frozen canonical/typed bytes and canonize errors in testdata/*.txt;
+#           changed/removed entries require overrides; additions are compatible.
 #
 # Exit 0 = no unwaived break, 1 = unwaived break, 2 = could not run/judge.
 
@@ -24,6 +26,7 @@ set -euo pipefail
 # names.
 APIDIFF_VERSION="${APIDIFF_VERSION:-v0.0.0-20260908205506-85c1c2202aba}"
 MODULE=github.com/luthersystems/elps
+GOLDEN_DIR=lisp/lisplib/libjson/typedgolden/testdata
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 OVERRIDES="${APIBREAK_OVERRIDES:-${REPO_ROOT}/scripts/api-breaks.txt}"
@@ -72,6 +75,7 @@ trap - ERR
 set +e
 "${tmp}/bin/apibreak" -overrides "${OVERRIDES#"${REPO_ROOT}"/}" \
 	-go-report "${tmp}/go-report.txt" \
-	-lisp-base "${tmp}/lisp-base.json" -lisp-head "${tmp}/lisp-head.json"
+	-lisp-base "${tmp}/lisp-base.json" -lisp-head "${tmp}/lisp-head.json" \
+	-golden-base "${tmp}/base/${GOLDEN_DIR}" -golden-head "${REPO_ROOT}/${GOLDEN_DIR}"
 rc=$?
 exit "$rc"

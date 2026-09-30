@@ -213,13 +213,34 @@ byte. What guarantees it:
 - Nothing reads the clock, the environment or `GOOS`/`GOARCH`.
 
 `TestTypedGoldenCorpus` (`lisp/lisplib/libjson/typedgolden`, golden file
-`testdata/golden.txt`, checked out without newline conversion) pins about 60
+`testdata/golden.txt`, checked out without newline conversion) pins
 values byte for byte: maps with mixed key types and non-ASCII and astral keys
 in UTF-8 byte order, float edge cases (subnormals, the 1e21 and 1e-6 boundaries,
 -0.0, NaN, infinities), ints at 2^31, 2^53 and 2^63, escapes and
 unnormalized strings. CI runs it on linux/arm64 (with the rest of the suite),
 windows/amd64 and windows/386, with the typed and canonical tests also
 run with GOARCH=386.
+
+`TestCanonicalGoldenCorpus` pins every successful canonical image in
+`testdata/canonical.txt`, through plain `json:dump-string` of canonize,
+`:canonize true`, and both matching typed forms. The corpus includes realistic
+string-keyed orders and records with nested maps/vectors, floats, Unicode and
+`<>&` text. `TestCanonicalErrorGoldenCorpus` freezes exact rejection messages
+in `testdata/errors.txt`, including negative zero, invalid UTF-8/surrogates,
+integer/float range, nonfinite numbers, key collisions/order/type, cycles,
+depth, unsupported values and limits. UTF-8 versus UTF-16 key order is a
+successful case, not a rejection.
+
+For a given canonical value, every future elps version must emit the same
+plain canonical bytes on every platform; the same freeze applies to typed
+bytes for a given typed value. Changing either byte form is an API break.
+`scripts/api-break-gate.sh` passes the base/head corpus directories to
+`cmd/apibreak`, which compares every `.txt` entry literally. Changed bytes,
+removed entries and removed files require one reviewed `golden` override per
+`file:entry` in `scripts/api-breaks.txt`. Added entries never fail. A malformed
+or duplicate entry is an input error, never an empty surface. Regeneration
+with `go test ./lisp/lisplib/libjson/typedgolden -args -update` is convenient
+for additions; it does not waive changes to existing frozen entries.
 
 ## No version marker
 

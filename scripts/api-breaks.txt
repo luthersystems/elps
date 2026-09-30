@@ -6,8 +6,12 @@
 # The gate fails a PR that removes or incompatibly changes elps's public API
 # against the PR's base: the Go API of every non-internal package (apidiff),
 # and the Lisp surface `elps doc --json -l` reports (packages, exported
-# symbols, their kind and formals).  Additions never fail.  Substrate is the
-# consumer; an unreviewed break surfaces only at its next elps bump.
+# symbols, their kind and formals), and frozen canonical/typed golden bytes
+# and canonize errors in lisp/lisplib/libjson/typedgolden/testdata/*.txt.
+# Changed or removed golden entries fail, including entries in removed files;
+# adding files or entries never fails. Reordering corpus rows is compatible.
+# Golden entry bytes are compared literally, without parsing JSON: escapes,
+# whitespace, number spelling and object member order are part of the API.
 #
 # When a break is INTENDED, it is recorded here, one line per break, and
 # justified in the PR description.  The gate prints the exact line to add.
@@ -35,10 +39,14 @@
 #
 #   surface | symbol | expires | issue | reason
 #
-#   surface  `go` or `lisp`.
+#   surface  `go`, `lisp` or `golden`.
 #   symbol   EXACTLY the key the gate printed: `lisp.QSymbol`,
 #            `lisp.(*LEnv).Foo` (go; package path relative to the module), or
-#            `time:sleep` / `time:*` for a removed package (lisp).
+#            `time:sleep` / `time:*` for a removed package (lisp), or
+#            `canonical.txt:order-records` (golden; file path relative to
+#            typedgolden/testdata, with forward slashes, followed by :entry).
+#            Renaming a golden file or entry removes the old key and needs
+#            an override. Every changed/removed entry needs its own line.
 #   expires  YYYY-MM-DD.
 #   issue    One or more tracking references, space separated: `elps#412`,
 #            `#412`, `luthersystems/substrate#392` or a GitHub issue/PR URL.

@@ -5126,6 +5126,23 @@ elif command -v go >/dev/null 2>&1; then
 			apibreak_judge overrides-ok.txt
 		assert_exit 1 "api-break: an EXPIRED entry stops waiving" apibreak_judge overrides-expired.txt
 		assert_exit 2 "api-break: a malformed override file is an error, not empty" apibreak_judge overrides-bad.txt
+		apibreak_golden_judge() { # <override-file>
+			"${APIBREAK_TMP}/apibreak" -today 2026-09-29 -overrides "${APIBREAK_TD}/$1" \
+				-golden-base "${APIBREAK_TD}/golden-base" -golden-head "${APIBREAK_TD}/golden-head"
+		}
+		assert_exit 1 "api-break: changed/removed golden entries with no override FAIL" apibreak_golden_judge overrides-empty.txt
+		assert_contains "golden | canonical.txt:changed | " "api-break: exact golden override key is printed" \
+			apibreak_golden_judge overrides-empty.txt
+		assert_contains "golden deleted.txt:record: entry removed" "api-break: deleting a golden file FAILS" \
+			apibreak_golden_judge overrides-empty.txt
+		assert_exit 0 "api-break: reviewed golden overrides PASS" apibreak_golden_judge overrides-golden.txt
+		assert_exit 1 "api-break: expired golden override FAILS" apibreak_golden_judge overrides-golden-expired.txt
+		assert_exit 0 "api-break: adding a new golden corpus is compatible" \
+			"${APIBREAK_TMP}/apibreak" -overrides "${APIBREAK_TD}/overrides-empty.txt" \
+			-golden-base "${APIBREAK_TMP}/missing-base" -golden-head "${APIBREAK_TD}/golden-head"
+		assert_exit 1 "api-break: removing the entire golden corpus FAILS" \
+			"${APIBREAK_TMP}/apibreak" -overrides "${APIBREAK_TD}/overrides-empty.txt" \
+			-golden-base "${APIBREAK_TD}/golden-base" -golden-head "${APIBREAK_TMP}/missing-head"
 		# The shipped file must parse: an entry that does not validate would
 		# turn every PR's gate into exit 2.
 		assert_exit 0 "api-break: the shipped scripts/api-breaks.txt is well formed" \
@@ -5152,6 +5169,30 @@ if grep -Eq '^    needs: \[.*\bapi-break\b.*\]' "$ELPS_YML"; then
 	ok "api-break: a job in elps.yml needs api-break (the required aggregate)"
 else
 	bad "api-break: the required aggregate does not need api-break -- it is not a required check"
+fi
+
+if grep -q -- '-golden-base' "${SCRIPT_DIR}/api-break-gate.sh" \
+	&& grep -q -- '-golden-head' "${SCRIPT_DIR}/api-break-gate.sh" \
+	&& grep -q 'GOLDEN_DIR=lisp/lisplib/libjson/typedgolden/testdata' "${SCRIPT_DIR}/api-break-gate.sh"; then
+	ok "api-break: script compares the base/head frozen golden corpus"
+else
+	bad "api-break: script no longer supplies both frozen golden corpus directories"
+fi
+
+# Keep the byte freeze exercised on ARM64, Windows amd64 and Windows 386.
+GOLDEN_LINUX_JOB="$(sed -n '/^  lint-and-test:/,/^  build-windows:/p' "$ELPS_YML")"
+GOLDEN_WINDOWS_JOB="$(sed -n '/^  build-windows:/,/^  json-386:/p' "$ELPS_YML")"
+GOLDEN_386_JOB="$(sed -n '/^  json-386:/,/^  api-break:/p' "$ELPS_YML")"
+if grep -q 'runs-on: ubuntu-24.04-arm' <<<"$GOLDEN_LINUX_JOB" \
+	&& grep -q 'run: make test' <<<"$GOLDEN_LINUX_JOB" \
+	&& [ "$(grep -Fc 'go test -count=1 ./lisp/lisplib/libjson/typedgolden/' <<<"$GOLDEN_WINDOWS_JOB")" -eq 2 ] \
+	&& grep -q 'go env -w GOARCH=386' <<<"$GOLDEN_WINDOWS_JOB" \
+	&& grep -q "GOARCH: '386'" <<<"$GOLDEN_386_JOB" \
+	&& grep -q "go test -count=1 -run 'Canonize|Typed|Canonical' ./lisp/lisplib/libjson/..." <<<"$GOLDEN_386_JOB" \
+	&& grep -Eq '^    needs: \[.*\bjson-386\b.*\]' "$ELPS_YML"; then
+	ok "canonical/typed golden corpus runs on ARM64, Windows amd64 and required 386 jobs"
+else
+	bad "canonical/typed golden corpus lost cross-platform CI coverage"
 fi
 
 echo

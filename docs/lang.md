@@ -1768,6 +1768,15 @@ For `c = (json:canonize v)`, in explicit numeric JSON mode:
 
 Use `(json:dump-string (json:canonize payload))`, or the shorter
 `(json:dump-string payload :canonize true)`.
+Hashes, cache keys and state keys should be computed over canonical bytes:
+`(json:dump-string (json:canonize v))`. The canonical byte form is frozen:
+for a given canonical value, every future elps version produces the same
+bytes, on every platform. Changing it is a breaking change. The same freeze
+applies to typed bytes from `(json:dump-string v :typed true)`: a given value
+always produces the same bytes across versions and platforms, and changing
+them is a breaking change. CI pins both forms with cross-platform goldens;
+changes or removals need a reviewed `golden` API break override.
+
 Existing hashes and keys keep the same bytes on success. `:typed true` on
 any of dump-string, dump-bytes, dump-message or their matching load functions
 selects the typed encoder or decoder. Canonical and typed modes ignore
