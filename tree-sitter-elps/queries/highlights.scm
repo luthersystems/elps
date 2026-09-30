@@ -111,7 +111,7 @@
   "to-string" "to-bytes" "to-int" "to-float" "format-string"
   "string=" "string<" "string<=" "string>" "string>="
   "error" "rethrow"
-  "eval" "macroexpand" "macroexpand-1"
+  "eval" "macroexpand" "macroexpand-1" "macroexpand-all"
   "gensym" "identity"
   "vector" "make-sequence" "copy" "insert-index" "insert-sorted"
   "search-sorted" "stable-sort"

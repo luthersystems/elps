@@ -798,7 +798,7 @@ var AnalyzerRethrowContext = &Analyzer{
 	Severity: SeverityError,
 	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
-		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
+		walkRethrowContext(pass, func(sexpr *lisp.LVal) {
 			src := SourceOf(sexpr)
 			name := HeadSymbol(sexpr)
 			pass.Report(Diagnostic{
@@ -812,54 +812,190 @@ var AnalyzerRethrowContext = &Analyzer{
 	},
 }
 
-// walkRethrowContext recursively walks the AST, tracking how many
-// handler-bind forms are in scope. When it finds a (rethrow) or
-// (error-stack) call with handlerDepth == 0, it calls report.
-func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
-	for _, expr := range exprs {
-		walkRethrowNode(expr, handlerDepth, false, report)
+// walkRethrowContext walks each top-level form as code with the shared code
+// walker (astutil.ExpandAll), tracking the handler-bind forms and function
+// bodies that enclose each call.  When it finds a (rethrow) or
+// (error-stack) call outside every handler-bind, it calls report.
+//
+// The code walker knows each special form's shape, so quoted data is not
+// searched, and a local function or variable named rethrow is not the
+// builtin.  When semantic analysis ran with a macro expander, the whole
+// form is expanded first, including macros nested in the arguments of other
+// calls, so a user macro that expands to handler-bind is a handler-bind.
+//
+// A call a macro synthesizes has no location in this file, or one inside
+// the macro's template, and is not reported against the call site.
+// Instead, the quoted and quasiquoted templates inside a defmacro body are
+// searched syntactically, as templates are code once expanded, so a macro
+// that emits a bare (rethrow) is reported at its template.
+func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
+	if !mentionsRethrowContext(pass.Exprs) {
+		return
+	}
+	passFile := analysis.NormalizePath(pass.Filename)
+	reported := make(map[int]bool)
+	reportOnce := func(form *lisp.LVal) {
+		src, ok := form.Source()
+		if !ok || analysis.NormalizePath(src.File) != passFile {
+			return
+		}
+		if src.Pos >= 0 {
+			if reported[src.Pos] {
+				return
+			}
+			reported[src.Pos] = true
+		}
+		report(form)
+	}
+	type frame struct {
+		depth   int
+		handler bool // a handler-bind form, else a function body
+		macro   bool // a defmacro body
+	}
+	for _, ef := range pass.expandedExprs() {
+		// stack holds the enclosing handler-bind forms and function
+		// bodies with the depth each was entered at; an event at that
+		// depth or shallower has left it.
+		var stack []frame
+		pop := func(depth int) {
+			for len(stack) > 0 && stack[len(stack)-1].depth >= depth {
+				stack = stack[:len(stack)-1]
+			}
+		}
+		context := func() (inHandler, inFunction, inMacro bool) {
+			for _, f := range stack {
+				switch {
+				case f.handler:
+					inHandler = true
+				case f.macro:
+					inMacro, inFunction = true, true
+				default:
+					inFunction = true
+				}
+			}
+			return
+		}
+		scanTemplate := func(tmpl *lisp.LVal) {
+			inHandler, _, _ := context()
+			if inHandler {
+				return
+			}
+			walkRethrowTemplate(tmpl, 0, true, reportOnce)
+		}
+		var form *lisp.LVal // the call whose head is being checked
+		astutil.ExpandAll(ef.code, nil, ef.pkg, func(n *lisp.WalkNode) bool {
+			switch n.Event {
+			case lisp.WalkEnter:
+				// A scope's contents are deeper than its Enter event.
+				pop(n.Depth + 1)
+				if n.Function {
+					stack = append(stack, frame{depth: n.Depth, macro: n.Op == "defmacro"})
+				}
+				return true
+			case lisp.WalkLeave:
+				pop(n.Depth)
+				return true
+			case lisp.WalkForm:
+				pop(n.Depth)
+				form = n.Node
+				switch n.Op {
+				case "handler-bind":
+					stack = append(stack, frame{depth: n.Depth, handler: true})
+				case "quasiquote": // quote's datum arrives as WalkData
+					if _, _, inMacro := context(); inMacro {
+						for _, c := range n.Node.Cells[1:] {
+							scanTemplate(c)
+						}
+					}
+				}
+				return true
+			case lisp.WalkData:
+				pop(n.Depth)
+				if _, _, inMacro := context(); inMacro {
+					scanTemplate(n.Node)
+				}
+				return true
+			case lisp.WalkRef:
+				pop(n.Depth)
+			default:
+				pop(n.Depth)
+				return true
+			}
+			if !n.Head || n.Bound || form == nil {
+				return true
+			}
+			name := strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")
+			if name != "rethrow" && name != "error-stack" {
+				return true
+			}
+			inHandler, inFunction, _ := context()
+			if inHandler || (name == "error-stack" && inFunction) {
+				return true
+			}
+			reportOnce(form)
+			return true
+		})
+	}
+}
+
+// mentionsRethrowContext reports whether any symbol in exprs is spelled
+// rethrow or error-stack.  A file that never names either cannot contain a
+// call written in it, so the check skips expanding it.
+func mentionsRethrowContext(exprs []*lisp.LVal) bool {
+	found := false
+	var walk func(v *lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if found || v == nil {
+			return
+		}
+		if v.Type == lisp.LSymbol {
+			name := strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":")
+			found = name == "rethrow" || name == "error-stack"
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c)
+		}
+	}
+	for _, e := range exprs {
+		walk(e)
+	}
+	return found
+}
+
+// walkRethrowTemplate searches a macro template syntactically, the way the
+// check searched all code before it used the code walker: a template is
+// code once the macro expands.  handlerDepth counts the handler-bind forms
+// inside the template around node.
+func walkRethrowTemplate(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
+	if node == nil {
+		return
+	}
+	if (node.Type != lisp.LSExpr && node.Type != lisp.LQuote) || len(node.Cells) == 0 {
+		return
+	}
+	head := strings.TrimPrefix(HeadSymbol(node), lisp.DefaultLangPackage+":")
+	if node.Type == lisp.LSExpr && !node.IsQuoted() {
+		if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
+			report(node)
+			return
+		}
+		if head == "handler-bind" {
+			handlerDepth++
+		}
+		inFunction = inFunction || rethrowFunctionForms[head]
+	}
+	for _, child := range node.Cells {
+		walkRethrowTemplate(child, handlerDepth, inFunction, report)
 	}
 }
 
 // rethrowFunctionForms are the forms whose body may run later, from inside a
 // handler that calls the function.  error-stack in such a body is not
 // reported: a logging helper a handler calls is the common way to use it,
-// and whether it runs under a handler is only known at run time.  rethrow
-// keeps its historical, stricter rule.
+// and whether it runs under a handler is only known at run time.
 var rethrowFunctionForms = map[string]bool{
 	"defun": true, "lambda": true, "defmacro": true, "flet": true, "labels": true,
-}
-
-func walkRethrowNode(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
-	if node == nil {
-		return
-	}
-	if node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
-		for _, child := range node.Cells {
-			walkRethrowNode(child, handlerDepth, inFunction, report)
-		}
-		return
-	}
-
-	head := HeadSymbol(node)
-
-	if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
-		report(node)
-		return
-	}
-
-	if head == "handler-bind" {
-		// Walk the bindings (first arg) and body forms with incremented depth.
-		for _, child := range node.Cells[1:] {
-			walkRethrowNode(child, handlerDepth+1, inFunction, report)
-		}
-		return
-	}
-
-	inFunction = inFunction || rethrowFunctionForms[head]
-	for _, child := range node.Cells {
-		walkRethrowNode(child, handlerDepth, inFunction, report)
-	}
 }
 
 // implicitPrognForms lists forms whose body already supports multiple

@@ -117,6 +117,9 @@
 (macroexpand-1 form)
 ;^^^^^^^^^^^^^ support.function.elps
 
+(macroexpand-all form)
+;^^^^^^^^^^^^^^^ support.function.elps
+
 (gensym)
 ;^^^^^^ support.function.elps
 
