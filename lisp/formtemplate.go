@@ -7,6 +7,8 @@ import (
 	"strings"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // FormTemplate is a quasiquote-style form built once and expanded by Go macros.
@@ -64,10 +66,25 @@ func MustFormTemplate(src string, params ...string) *FormTemplate {
 // Expand panics if the argument count differs from the declared parameter count
 // or a spliced argument is not an unquoted list (Nil is accepted).
 func (t *FormTemplate) Expand(args ...*LVal) *LVal {
+	return t.ExpandAt(nil, args...)
+}
+
+// ExpandAt is Expand with at's source location on each template-created list,
+// symbol and quote header. Inserted arguments and spliced cells are unchanged;
+// empty lists still use the immutable Nil singleton. A quote of an argument
+// locates only the private header Quote would create, preserving its seal.
+// The expansion owns one location copy shared by all its new nodes, following
+// the source ownership rule; it never aliases at's stored location.
+// If at is nil or carries no source location, ExpandAt is identical to Expand.
+func (t *FormTemplate) ExpandAt(at *LVal, args ...*LVal) *LVal {
 	if len(args) != t.paramCount {
 		panic(fmt.Sprintf("lisp.FormTemplate.Expand: expected %d arguments, got %d", t.paramCount, len(args)))
 	}
-	return t.root.expand(args)
+	var loc *token.Location
+	if at != nil {
+		loc = copyLocation(at.source)
+	}
+	return t.root.expand(args, loc)
 }
 
 type formTemplateKind uint8
@@ -87,14 +104,23 @@ type formTemplateNode struct {
 	kind     formTemplateKind
 }
 
-func (n *formTemplateNode) expand(args []*LVal) *LVal {
+func (n *formTemplateNode) expand(args []*LVal, loc *token.Location) *LVal {
 	switch n.kind {
 	case formTemplateSymbol:
-		return Symbol(n.symbol)
+		v := Symbol(n.symbol)
+		v.source = loc
+		return v
 	case formTemplateArg:
 		return args[n.index]
 	case formTemplateQuote:
-		return Quote(n.children[0].expand(args))
+		v := Quote(n.children[0].expand(args, loc))
+		// Quote always allocates a private header, even over sealed Cells.
+		// Initialize only that new header; the argument and backing stay
+		// untouched. SetSource would skip it because it inherits the seal.
+		if loc != nil {
+			v.source = loc
+		}
+		return v
 	default:
 		// Lists expand below; splices are handled by their enclosing list.
 	}
@@ -118,10 +144,12 @@ func (n *formTemplateNode) expand(args []*LVal) *LVal {
 		if child.kind == formTemplateSplice {
 			cells = append(cells, args[child.index].Cells...)
 		} else {
-			cells = append(cells, child.expand(args))
+			cells = append(cells, child.expand(args, loc))
 		}
 	}
-	return SExpr(cells)
+	v := SExpr(cells)
+	v.source = loc
+	return v
 }
 
 type formTemplateReader struct {

@@ -174,6 +174,18 @@ func TestMacroArgumentErrorLocations(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+func TestGetDefaultWrapperErrorLocation(t *testing.T) {
+	// The map expression succeeds; the generated key? wrapper rejects its
+	// value. Attribute that runtime error to the map form, not get-default.
+	tests := elpstest.TestSuite{
+		{"map wrapper", elpstest.TestSequence{
+			{"(get-default\n  (+ 1 2)\n  \"key\"\n  42)",
+				"test:2:3: lisp:key?: first argument is not a map: int", ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
+
 func BenchmarkMacroDefun(b *testing.B) {
 	elpstest.RunBenchmark(b, `
 		(defun benchmark () (debug-print 1 2 3))

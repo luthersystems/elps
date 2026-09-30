@@ -224,7 +224,9 @@ var getDefaultForm = MustFormTemplate(`
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	g := NewGenSyms(args)
 	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
-	return getDefaultForm.Expand(mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2])
+	// Locate the wrappers at the map form: the generated key? call rejects
+	// non-map values, so its runtime error should point at the user's map.
+	return getDefaultForm.ExpandAt(args.Cells[0], mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2])
 }
 
 func macroDeftype(env *LEnv, args *LVal) *LVal {

@@ -431,7 +431,7 @@ func macroDefinePair(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
     if name.Type != lisp.LSymbol {
         return env.ErrorfAt(name, "first argument is not a symbol: %s", name.Type)
     }
-    return definePairForm.Expand(name, args.Cells[1], args.Cells[2])
+    return definePairForm.ExpandAt(name, name, args.Cells[1], args.Cells[2])
 }
 ```
 
@@ -442,6 +442,16 @@ location; nil forms and forms without a valid source position fall back to
 the evaluator's current location, as `Errorf` does. The captured call stack
 still describes the macro call, and debugger error notifications see the
 error with its chosen location.
+
+Use `FormTemplate.ExpandAt(wrappedForm, args...)` for errors raised later by
+generated wrappers. Above, `ExpandAt(name, ...)` locates the generated `set`
+at the user's name: `(define-pair` followed by `  true 1 2)` on the next line
+reports the constant-rebinding error at line 2, column 3. Each template-created
+list, symbol and quote header shares one copied location; inserted arguments
+and spliced cells retain their pointers and locations. Quoting an argument
+locates its new header while preserving the original argument and its seal.
+Empty template lists still use the immutable nil singleton. A nil form or a
+form without a source location makes `ExpandAt` identical to `Expand`.
 
 ### Toolkit for replacing Lisp with Go builtins
 

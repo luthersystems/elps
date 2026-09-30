@@ -8,6 +8,7 @@ import (
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -81,6 +82,104 @@ func TestFormTemplateSplice(t *testing.T) {
 		assert.Equal(t, `(lisp:list before after (7))`, tmpl.Expand(empty, a).String())
 		assert.True(t, lisp.MustFormTemplate(`(,@forms)`, "forms").Expand(empty).IsNil())
 	}
+}
+
+func TestFormTemplateExpandAt(t *testing.T) {
+	parsed, err := parser.NewReader().Read("template.lisp", strings.NewReader("(anchor)\n(arg child)\n(spliced (nested))"))
+	require.NoError(t, err)
+	require.Len(t, parsed, 3)
+	at, arg, rest := parsed[0], parsed[1], parsed[2]
+	bare := lisp.SExpr([]*lisp.LVal{lisp.Symbol("unlocated")})
+	before := lisp.SealedASTFingerprint(parsed)
+	inputs := make(map[*lisp.LVal]*token.Location)
+	var record func(*lisp.LVal)
+	record = func(v *lisp.LVal) {
+		inputs[v] = lisp.SourceRefForTest(v)
+		for _, child := range v.Cells {
+			record(child)
+		}
+	}
+	for _, v := range append(parsed, bare) {
+		record(v)
+	}
+
+	tmpl := lisp.MustFormTemplate(`(wrap ,arg ,bare ,@rest (inner 'symbol ''(nested)) '() () ',arg '',arg)`, "arg", "bare", "rest")
+	got := tmpl.ExpandAt(at, arg, bare, rest)
+	assert.Equal(t, tmpl.Expand(arg, bare, rest).String(), got.String())
+	assert.Same(t, arg, got.Cells[1])
+	assert.Same(t, bare, got.Cells[2])
+	assert.Same(t, rest.Cells[0], got.Cells[3])
+	assert.Same(t, rest.Cells[1], got.Cells[4])
+	assert.Same(t, lisp.Nil(), got.Cells[7], "empty template lists remain singletons")
+	assert.Same(t, arg, lisp.MustFormTemplate(`,arg`, "arg").ExpandAt(at, arg))
+	assert.Same(t, lisp.Nil(), lisp.MustFormTemplate(`()`).ExpandAt(at))
+	assert.Same(t, lisp.Nil(), lisp.MustFormTemplate(`(,@rest)`, "rest").ExpandAt(at, lisp.Nil()))
+
+	// Quoting an argument creates a private header over the same sealed
+	// cells. Locate that header while keeping the argument and seal intact.
+	quoted := got.Cells[8]
+	assert.NotSame(t, arg, quoted)
+	assert.True(t, quoted.IsQuoted())
+	assert.True(t, quoted.IsSealed())
+	assert.Same(t, arg.Cells[0], quoted.Cells[0])
+	assert.Same(t, arg.Cells[1], quoted.Cells[1])
+	assert.Equal(t, lisp.LQuote, got.Cells[9].Type)
+	assert.True(t, got.Cells[9].Cells[0].IsSealed())
+
+	want, ok := at.Source()
+	require.True(t, ok)
+	shared := lisp.SourceRefForTest(got)
+	require.NotNil(t, shared)
+	assert.NotSame(t, inputs[at], shared, "the expansion owns one location copy")
+	var check func(*lisp.LVal)
+	check = func(v *lisp.LVal) {
+		if _, inserted := inputs[v]; inserted || v == lisp.Nil() {
+			return
+		}
+		loc, ok := v.Source()
+		assert.True(t, ok, "template node %v must be located", v)
+		assert.Equal(t, want, loc)
+		assert.Same(t, shared, lisp.SourceRefForTest(v), "template nodes share one location")
+		for _, child := range v.Cells {
+			check(child)
+		}
+	}
+	check(got)
+	for v, source := range inputs {
+		assert.Same(t, source, lisp.SourceRefForTest(v), "inserted node's source changed: %v", v)
+	}
+	assert.False(t, arg.IsQuoted())
+	assert.Equal(t, before, lisp.SealedASTFingerprint(parsed))
+	second := tmpl.ExpandAt(at, arg, bare, rest)
+	assert.NotSame(t, shared, lisp.SourceRefForTest(second), "expansions own independent locations")
+}
+
+func TestFormTemplateExpandAtWithoutLocation(t *testing.T) {
+	arg := lisp.Symbol("arg")
+	arg.SetSource(&token.Location{File: "arg.lisp", Pos: 42, Line: 3, Col: 4})
+	rest := lisp.SExpr([]*lisp.LVal{arg})
+	for _, src := range []string{`(f ,arg ,@rest () '() ''symbol)`, `'(,arg ,@rest)`, `(',arg ,@rest)`} {
+		t.Run(src, func(t *testing.T) {
+			tmpl := lisp.MustFormTemplate(src, "arg", "rest")
+			want := tmpl.Expand(arg, rest)
+			assert.Equal(t, want, tmpl.ExpandAt(nil, arg, rest))
+			assert.Equal(t, want, tmpl.ExpandAt(lisp.Symbol("unlocated"), arg, rest))
+		})
+	}
+}
+
+func TestFormTemplateExpandAtAllocations(t *testing.T) {
+	tmpl := lisp.MustFormTemplate(`(f (g ,arg) 'symbol ''(nested ,arg) ,@rest)`, "arg", "rest")
+	arg, rest := lisp.Symbol("arg"), lisp.SExpr([]*lisp.LVal{lisp.Symbol("spliced")})
+	at, unlocated := lisp.Symbol("at"), lisp.Symbol("unlocated")
+	at.SetSource(&token.Location{File: "template.lisp", Pos: 1, Line: 1, Col: 2})
+	var got *lisp.LVal
+	base := testing.AllocsPerRun(100, func() { got = tmpl.Expand(arg, rest) })
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { got = tmpl.ExpandAt(nil, arg, rest) }))
+	assert.Equal(t, base, testing.AllocsPerRun(100, func() { got = tmpl.ExpandAt(unlocated, arg, rest) }))
+	assert.Equal(t, base+1, testing.AllocsPerRun(100, func() { got = tmpl.ExpandAt(at, arg, rest) }),
+		"locating an expansion allocates one location, with no extra nodes or walk")
+	require.NotNil(t, got)
 }
 
 func TestFormTemplateQuoteMatchesReader(t *testing.T) {
