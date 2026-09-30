@@ -41,6 +41,7 @@ type waiverSet struct {
 	source  string
 	waivers []*waiver
 	bad     []string
+	procs   procsRule
 }
 
 var (
@@ -76,8 +77,8 @@ func issuesOK(s string) bool {
 // parseWaivers reads a waiver file. today is the YYYY-MM-DD the expiry check
 // is made against; ISO dates compare correctly as strings, so there is no date
 // arithmetic and no dependency on how the platform parses dates.
-func parseWaivers(source, content, today string) *waiverSet {
-	ws := &waiverSet{source: source}
+func parseWaivers(source, content, today string, procs procsRule) *waiverSet {
+	ws := &waiverSet{source: source, procs: procs}
 	if source == "" {
 		ws.source = "<none>"
 	}
@@ -114,8 +115,8 @@ func parseWaivers(source, content, today string) *waiverSet {
 		case wf[1] == "":
 			report(lineno, "empty benchmark field; a waiver must name the benchmark it covers")
 			bad = true
-		case gomaxprocsSuffix.MatchString(wf[1]):
-			report(lineno, fmt.Sprintf("benchmark %s carries a -<GOMAXPROCS> suffix; write it as %s so the waiver does not unbind when the runner changes", wf[1], baseName(wf[1])))
+		case procs.suffixed(wf[1]):
+			report(lineno, fmt.Sprintf("benchmark %s carries a -<GOMAXPROCS> suffix; write it as %s so the waiver does not unbind when the runner changes", wf[1], procs.strip(wf[1])))
 			bad = true
 		}
 		if wf[2] == "" {

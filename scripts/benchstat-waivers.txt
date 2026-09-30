@@ -105,13 +105,7 @@
 # deleted once main's baseline included them and the gate reported every row
 # `waiver-unused` -- see elps#688's benchmark run.)
 
-# elps#736: a library builtin now runs in its own package, so every call of
-# one from another package looks its package up by name in the registry (the
-# lookup a cross-package Lisp call already pays; it is deliberately not cached,
-# because forks and templates replace registry entries).  These two rows call
-# s:gt and s:in -- constructors with a few-instruction Go body -- directly from
-# Go in a loop, so that one lookup is a large share of each call.  Measured on
-# CI's arm runner: +17.5% and +19.8% (+22-23% before callBuiltin open-coded the
-# builtin call's defers, which took the cost to within noise on amd64).
-github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-gt | sec/op | 25 | 2026-12-31 | elps#736 | per-call package switch for a cross-package library builtin; caching the resolved package is ruled out because forks replace registry entries
-github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-in | sec/op | 25 | 2026-12-31 | elps#736 | per-call package switch for a cross-package library builtin; caching the resolved package is ruled out because forks replace registry entries
+# (The two elps#736 SchemaCaptures/construct-gt and construct-in sec/op
+# waivers were deleted once main's baseline included the per-call package
+# switch and the gate reported both rows `waiver-unused` on every run -- see
+# elps#767.)

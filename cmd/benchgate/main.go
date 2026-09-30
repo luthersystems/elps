@@ -83,6 +83,11 @@ how both consuming repositories declare their policy):
                       regression, and a delta at or above the gate on such a
                       row exits 3 instead of 1.
                       (env BENCH_VARIANCE_CEILING_PCT, default 30)
+  -gomaxprocs N       GOMAXPROCS both arms ran at (env BENCH_GOMAXPROCS). 1:
+                      names carry no suffix, so a trailing -N is the
+                      benchmark's own and is kept. N>1: exactly -N is
+                      stripped. 0 (default): any trailing -<digits> is
+                      stripped, as before #767.
   -waivers PATH       reviewed waiver list (env BENCH_WAIVERS; empty = none).
                       Named explicitly, so a path that is not there is an
                       error rather than "no waivers configured".
@@ -132,7 +137,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	allocDef, allocStr, err2 := envDefaultFloat("BENCH_ALLOC_THRESHOLD_PCT", 5)
 	alphaDef, _, err3 := envDefaultFloat("BENCH_ALPHA", 0.05)
 	ceilDef, ceilStr, err4 := envDefaultFloat("BENCH_VARIANCE_CEILING_PCT", defaultVarianceCeiling)
-	for _, err := range []error{err1, err2, err3, err4} {
+	procsDef := 0
+	var err5 error
+	if v := os.Getenv("BENCH_GOMAXPROCS"); v != "" {
+		if procsDef, err5 = strconv.Atoi(v); err5 != nil || procsDef < 0 {
+			err5 = fmt.Errorf("BENCH_GOMAXPROCS=%q is not a non-negative integer", v)
+		}
+	}
+	for _, err := range []error{err1, err2, err3, err4, err5} {
 		if err != nil {
 			pf(stderr, "benchgate: %v.\n", err)
 			return 2
@@ -143,6 +155,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	allocThreshold := fs.Float64("alloc-threshold", allocDef, "allocation-metric regression gate, percent")
 	alpha := fs.Float64("alpha", alphaDef, "significance level")
 	varianceCeiling := fs.Float64("variance-ceiling", ceilDef, "per-row fitness ceiling on a timing row's own confidence interval, percent")
+	gomaxprocs := fs.Int("gomaxprocs", procsDef, "GOMAXPROCS the arms ran at: 1 means names carry no suffix, N>1 strips exactly -N, 0 (default) strips any trailing -<digits> as before")
 	base := fs.String("base", "", "base arm: raw `go test -bench` output")
 	head := fs.String("head", "", "head arm: raw `go test -bench` output")
 
@@ -171,6 +184,11 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.StringVar(&today, "today", today, "date waiver expiry is judged against, YYYY-MM-DD")
 
 	if err := fs.Parse(args); err != nil {
+		return 2
+	}
+
+	if *gomaxprocs < 0 {
+		pf(stderr, "benchgate: -gomaxprocs must be 0 (unknown) or the GOMAXPROCS the arms ran at (got %d).\n", *gomaxprocs)
 		return 2
 	}
 
@@ -219,7 +237,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if !waiverExplicit {
 		waiverPath = *waiverDefault
 	}
-	ws, rc := loadWaivers(waiverPath, waiverExplicit, today, stdout, stderr)
+	ws, rc := loadWaivers(waiverPath, waiverExplicit, today, procsRule{n: *gomaxprocs}, stdout, stderr)
 	if rc != 0 {
 		return rc
 	}
@@ -281,22 +299,22 @@ func run(args []string, stdout, stderr io.Writer) int {
 // at nothing is an error -- you asked for a specific file and it is not there.
 // The default file being absent is not: the gate still works, it just has no
 // waivers, which is the strict direction.
-func loadWaivers(path string, explicit bool, today string, stdout, stderr io.Writer) (*waiverSet, int) {
+func loadWaivers(path string, explicit bool, today string, procs procsRule, stdout, stderr io.Writer) (*waiverSet, int) {
 	if path == "" {
 		// No default is baked into the binary: the two consuming repositories
 		// keep their waiver lists in different places, and a tool that guessed
 		// one would silently adjudicate with the wrong list. Callers pass
 		// -waivers-default; nothing means no waivers.
-		return parseWaivers("", "", today), 0
+		return parseWaivers("", "", today, procs), 0
 	}
 	b, err := os.ReadFile(path) //#nosec G304 -- benchgate is a CLI given the waiver-list path to read
 	if err != nil {
 		if !explicit {
 			pf(stdout, "benchgate: no waiver file at %s; adjudicating with no waivers.\n", path)
-			return parseWaivers(path, "", today), 0
+			return parseWaivers(path, "", today, procs), 0
 		}
 		pf(stderr, "benchgate: -waivers/BENCH_WAIVERS points at a file that does not exist: %s\n", path)
 		return nil, 2
 	}
-	return parseWaivers(path, string(b), today), 0
+	return parseWaivers(path, string(b), today, procs), 0
 }
