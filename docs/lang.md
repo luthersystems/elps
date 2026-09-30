@@ -1749,8 +1749,10 @@ Plain JSON (`json:dump-bytes`) loses types: `5.0` comes back as `5`, `:kw`
 and `'sym` come back as strings, a list comes back as a vector.
 `json:dump-typed` writes JSON that reads back as exactly the value you wrote.
 
-Ordinary values stay ordinary JSON. Only the cases plain JSON cannot tell
-apart get a short tag, a string beginning with `~`:
+Ordinary values stay ordinary JSON. Sequences are Transit-aligned: vectors
+are JSON arrays, nonempty lists use Transit's `"~#list"` tag, and the empty
+list / nil is `null`, matching plain `json:dump`. Only the cases plain JSON
+cannot tell apart get a short tag, a string beginning with `~`:
 
 <!-- typedjson:table elps=1 plain=2 typed=3 -->
 | elps value | plain `json:dump-bytes` | typed `json:dump-typed` |
@@ -1761,8 +1763,10 @@ apart get a short tag, a string beginning with `~`:
 | `:kw` | `":kw"` | `"~:kw"` |
 | `'sym` | `"sym"` | `"~$sym"` |
 | `true` | `true` | `true` |
-| `'(1 2)` | `[1,2]` | `[1,2]` |
-| `(vector 1 2)` | `[1,2]` | `["~#vector",[1,2]]` |
+| `'(1 2)` | `[1,2]` | `["~#list",[1,2]]` |
+| `(vector 1 2)` | `[1,2]` | `[1,2]` |
+| `(vector)` | `[]` | `[]` |
+| `()` | `null` | `null` |
 | `(to-bytes "hi")` | `"aGk="` | `"~baGk="` |
 | `"~x"` | `"~x"` | `"~~x"` |
 | `(/ 0.0 0.0)` | error | `"~zNaN"` |
@@ -1781,7 +1785,7 @@ A whole record, both ways:
 Typed (first line) and plain (second line):
 
 ```json
-{"~$amount":125000,"~$id":"ord-7","~$meta":{"source":"web"},"~$rate":0.0375,"~$sig":"~baGk=","~$status":"~:pending","~$steps":["~:kyc","~:fund"]}
+{"~$amount":125000,"~$id":"ord-7","~$meta":{"source":"web"},"~$rate":0.0375,"~$sig":"~baGk=","~$status":"~:pending","~$steps":["~#list",["~:kyc","~:fund"]]}
 {"amount":125000,"id":"ord-7","meta":{"source":"web"},"rate":0.0375,"sig":"aGk=","status":":pending","steps":[":kyc",":fund"]}
 ```
 
@@ -1789,8 +1793,12 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 
 <!-- typedjson:eval -->
 ```lisp
-(json:load-typed "{\"~$status\":\"~:pending\",\"~$steps\":[\"~:kyc\",\"~:fund\"]}")
+(json:load-typed "{\"~$status\":\"~:pending\",\"~$steps\":[\"~#list\",[\"~:kyc\",\"~:fund\"]]}")
 ; => (sorted-map 'status :pending 'steps '(:kyc :fund))
+(type (json:load-typed "[1,2]"))
+; => 'array
+(json:load-typed "null")
+; => ()
 (float? (json:load-typed "5.0"))
 ; => true
 (json:load-typed "[1, 2]")

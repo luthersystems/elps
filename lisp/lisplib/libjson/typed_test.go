@@ -41,6 +41,12 @@ const bs = "\\"
 // documents (ledger state, content hashes) depend on it, so ANY change to an
 // expected value below is a format change, not an edit.
 func TestTypedGolden(t *testing.T) {
+	int64Value := func(n int64) *lisp.LVal {
+		if n < math.MinInt || n > math.MaxInt {
+			return nil
+		}
+		return lisp.Int(int(n))
+	}
 	tests := []struct {
 		name string
 		v    *lisp.LVal
@@ -48,11 +54,11 @@ func TestTypedGolden(t *testing.T) {
 	}{
 		{"int zero", lisp.Int(0), `0`},
 		{"int negative", lisp.Int(-42), `-42`},
-		{"int 2^53-1", lisp.Int(1<<53 - 1), `9007199254740991`},
-		{"int 2^53", lisp.Int(1 << 53), `"~i9007199254740992"`},
-		{"int -(2^53)", lisp.Int(-(1 << 53)), `"~i-9007199254740992"`},
-		{"int max", lisp.Int(math.MaxInt64), `"~i9223372036854775807"`},
-		{"int min", lisp.Int(math.MinInt64), `"~i-9223372036854775808"`},
+		{"int 2^53-1", int64Value(1<<53 - 1), `9007199254740991`},
+		{"int 2^53", int64Value(1 << 53), `"~i9007199254740992"`},
+		{"int -(2^53)", int64Value(-(1 << 53)), `"~i-9007199254740992"`},
+		{"int max", int64Value(math.MaxInt64), `"~i9223372036854775807"`},
+		{"int min", int64Value(math.MinInt64), `"~i-9223372036854775808"`},
 		{"float 1.0", lisp.Float(1), `1.0`},
 		{"float 1.5", lisp.Float(1.5), `1.5`},
 		{"float 0.1", lisp.Float(0.1), `0.1`},
@@ -83,11 +89,13 @@ func TestTypedGolden(t *testing.T) {
 		{"true", lisp.Symbol("true"), `true`},
 		{"false", lisp.Symbol("false"), `false`},
 		{"keyword", lisp.Symbol(":ab"), `"~:ab"`},
-		{"nil", lisp.Nil(), `[]`},
-		{"list", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a")}), `[1,"a"]`},
-		{"unquoted list", lisp.SExpr([]*lisp.LVal{lisp.Int(1)}), `[1]`},
-		{"vector", lisp.Vector(ints(1, 2)), `["~#vector",[1,2]]`},
-		{"empty vector", lisp.Vector(nil), `["~#vector",[]]`},
+		{"nil", lisp.Nil(), `null`},
+		{"empty quoted list", lisp.QExpr(nil), `null`},
+		{"empty unquoted list", lisp.SExpr(nil), `null`},
+		{"list", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a")}), `["~#list",[1,"a"]]`},
+		{"unquoted list", lisp.SExpr([]*lisp.LVal{lisp.Int(1)}), `["~#list",[1]]`},
+		{"vector", lisp.Vector(ints(1, 2)), `[1,2]`},
+		{"empty vector", lisp.Vector(nil), `[]`},
 		{"2x3 array", lisp.Array(lisp.QExpr(ints(2, 3)), ints(1, 2, 3, 4, 5, 6)), `["~#array",[[2,3],[1,2,3,4,5,6]]]`},
 		{"rank 0 array", lisp.Array(lisp.QExpr(nil), ints(7)), `["~#array",[[],[7]]]`},
 		{"string-keyed map", tsmap(t, lisp.String("b"), lisp.Int(2), lisp.String("a"), lisp.Int(1)), `{"a":1,"b":2}`},
@@ -95,12 +103,17 @@ func TestTypedGolden(t *testing.T) {
 			lisp.Symbol("s"), lisp.Float(1), lisp.Symbol("true"), lisp.Int(3), lisp.String("~t"), lisp.Int(4)),
 			`{"b":2,"~$s":1.0,"~:a":1,"~?t":3,"~i7":0,"~~t":4}`},
 		{"empty map", lisp.SortedMap(), `{}`},
-		{"tagged", ttagged("user:point", lisp.QExpr(ints(1, 2))), `["~#tagged",["user:point",[1,2]]]`},
+		{"tagged", ttagged("user:point", lisp.QExpr(ints(1, 2))), `["~#tagged",["user:point",["~#list",[1,2]]]]`},
 		{"nested", tsmap(t, lisp.String("xs"), lisp.Vector([]*lisp.LVal{tsmap(t, lisp.String("k"), lisp.Symbol(":v"))})),
-			`{"xs":["~#vector",[{"k":"~:v"}]]}`},
+			`{"xs":[{"k":"~:v"}]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.v == nil {
+				_, err := LoadTyped([]byte(tt.want))
+				require.Error(t, err, "an int that does not fit must be rejected")
+				return
+			}
 			b, err := DumpTyped(tt.v)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(b))
@@ -109,6 +122,60 @@ func TestTypedGolden(t *testing.T) {
 			again, err := DumpTyped(back)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(again))
+		})
+	}
+}
+
+func TestTypedSequenceDecode(t *testing.T) {
+	for _, tt := range []struct {
+		in   string
+		want *lisp.LVal
+	}{
+		{`null`, lisp.Nil()},
+		{`[]`, lisp.Vector(nil)},
+		{`[1,2]`, lisp.Vector(ints(1, 2))},
+		{`["~#list",[1,2]]`, lisp.QExpr(ints(1, 2))},
+		{`[null,[],["~#list",[1]]]`, lisp.Vector([]*lisp.LVal{lisp.Nil(), lisp.Vector(nil), lisp.QExpr(ints(1))})},
+		{`["~#list",[null,[],[1]]]`, lisp.QExpr([]*lisp.LVal{lisp.Nil(), lisp.Vector(nil), lisp.Vector(ints(1))})},
+		{`["~~#list",[1]]`, lisp.Vector([]*lisp.LVal{lisp.String("~#list"), lisp.Vector(ints(1))})},
+		{`["~~#vector",[]]`, lisp.Vector([]*lisp.LVal{lisp.String("~#vector"), lisp.Vector(nil)})},
+	} {
+		t.Run(tt.in, func(t *testing.T) {
+			v, err := LoadTyped([]byte(tt.in))
+			require.NoError(t, err)
+			assert.Equal(t, tt.want.Type, v.Type)
+			assert.Equal(t, tt.want.String(), v.String())
+			b, err := DumpTyped(v)
+			require.NoError(t, err)
+			assert.Equal(t, tt.in, string(b))
+		})
+	}
+}
+
+// Plain JSON canonization turns lists into vectors and null into nil. The
+// typed sequence encodings must preserve that plain JSON shape, including nil.
+// Integral numbers and reserved strings have separate typed spelling rules.
+func TestTypedCanonizedSequences(t *testing.T) {
+	for name, v := range map[string]*lisp.LVal{
+		"nil":          lisp.Nil(),
+		"empty list":   lisp.QExpr(nil),
+		"empty vector": lisp.Vector(nil),
+		"list": lisp.QExpr([]*lisp.LVal{
+			lisp.Float(1.5), lisp.Nil(), lisp.Vector(nil), lisp.Symbol("true"), lisp.String("text"),
+		}),
+		"nested": lisp.Vector([]*lisp.LVal{
+			lisp.QExpr([]*lisp.LVal{lisp.Nil(), lisp.Vector([]*lisp.LVal{lisp.String("text"), lisp.Symbol("false")})}),
+			tsmap(t, lisp.Symbol("items"), lisp.QExpr([]*lisp.LVal{lisp.Nil()})),
+		}),
+	} {
+		t.Run(name, func(t *testing.T) {
+			plain, err := Dump(v, false)
+			require.NoError(t, err)
+			canon := Load(plain, false)
+			require.NotEqual(t, lisp.LError, canon.Type)
+			typed, err := DumpTyped(canon)
+			require.NoError(t, err)
+			assert.Equal(t, string(plain), string(typed))
 		})
 	}
 }
@@ -135,6 +202,7 @@ func TestTypedTypeFaithful(t *testing.T) {
 	assert.NotEqual(t, enc(lisp.Int(1)), enc(lisp.Float(1)))
 	assert.NotEqual(t, enc(lisp.String("a")), enc(lisp.Symbol("a")))
 	assert.NotEqual(t, enc(lisp.QExpr(ints(1))), enc(lisp.Vector(ints(1))))
+	assert.NotEqual(t, enc(lisp.Nil()), enc(lisp.Vector(nil)))
 	assert.NotEqual(t, enc(tsmap(t, lisp.String("a"), lisp.Int(1))), enc(tsmap(t, lisp.Symbol("a"), lisp.Int(1))))
 	assert.NotEqual(t, enc(tsmap(t, lisp.String("1"), lisp.Int(1))), enc(tsmap(t, lisp.Int(1), lisp.Int(1))))
 }
@@ -181,7 +249,7 @@ func TestTypedSharedSubstructure(t *testing.T) {
 	shared := lisp.QExpr(ints(1, 2))
 	b, err := DumpTyped(lisp.Vector([]*lisp.LVal{shared, shared}))
 	require.NoError(t, err)
-	assert.Equal(t, `["~#vector",[[1,2],[1,2]]]`, string(b))
+	assert.Equal(t, `[["~#list",[1,2]],["~#list",[1,2]]]`, string(b))
 	// A small DAG that doubles at every level is stopped by the limits.
 	v := lisp.Int(0)
 	for range 40 {
@@ -193,12 +261,14 @@ func TestTypedSharedSubstructure(t *testing.T) {
 
 func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 	for _, in := range []string{
-		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `null`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
+		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `nul`, `null `, `nullnull`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
 		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740992`, `"~i5"`, `"~i05"`,
 		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"^a"`, "\"`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
 		`"a` + bs + `/"`, `"` + bs + `u0041"`, `"` + bs + `u000a"`, `"` + bs + `u001F"`, "\"\x01\"", `"` + bs + `x"`, "\"\xff\"",
 		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"^a":1}`,
-		`["~#vector",[1],2]`, `["~#vector",1]`, `["~#list",[1]]`, `["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,
+		`["~#vector",[1],2]`, `["~#vector",1]`, `["~#vector",[1]]`, `["~#vector",[]]`,
+		`["~#list",[]]`, `["~#list",1]`, `["~#list",null]`, `["~#list",[1],2]`, `["~#list",[1,]]`,
+		`["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,
 		`["~#array",[[2,2],[1,2,3]]]`, `["~#array",[[-1,0],[]]]`, `["~#array",[[1.0,1],[1]]]`, `["~#tagged",["",1]]`,
 		`["~#tagged",["t"]]`, `["~#tagged",["t",1,2]]`, `[1,]`, `{"a":1,}`, `[1`, `{"a"}`, `"abc`, `[]]`,
 	} {
@@ -216,6 +286,14 @@ func TestTypedDecodeFresh(t *testing.T) {
 	}
 	assert.Equal(t, []byte{1, 2, 3}, v.MapGet(lisp.String("a")).Bytes())
 	assert.Equal(t, "text", v.MapGet(lisp.String("b")).Str)
+	assert.Equal(t, lisp.LArray, v.MapGet(lisp.String("c")).Type)
+
+	nil1, err := LoadTyped([]byte(`null`))
+	require.NoError(t, err)
+	nil2, err := LoadTyped([]byte(`null`))
+	require.NoError(t, err)
+	assert.NotSame(t, lisp.Nil(), nil1)
+	assert.NotSame(t, nil1, nil2)
 }
 
 func TestTypedLimits(t *testing.T) {
@@ -249,6 +327,21 @@ func TestTypedLimits(t *testing.T) {
 	require.NoError(t, err)
 	_, err = LoadTyped(b, WithTypedMaxDepth(20))
 	require.NoError(t, err, "a value at the depth limit must round-trip")
+	// Tags do not add a logical container or values to the limits.
+	list := lisp.QExpr(ints(1, 2))
+	b, err = DumpTyped(list, WithTypedMaxDepth(1), WithTypedMaxValues(3))
+	require.NoError(t, err)
+	_, err = LoadTyped(b, WithTypedMaxDepth(1), WithTypedMaxValues(3))
+	require.NoError(t, err)
+	_, err = DumpTyped(list, WithTypedMaxValues(2))
+	require.ErrorIs(t, err, ErrTypedLimit)
+	_, err = LoadTyped(b, WithTypedMaxValues(2))
+	require.ErrorIs(t, err, ErrTypedLimit)
+	// Nil is a leaf and needs no container depth in either direction.
+	b, err = DumpTyped(lisp.Nil(), WithTypedMaxDepth(0), WithTypedMaxValues(1))
+	require.NoError(t, err)
+	_, err = LoadTyped(b, WithTypedMaxDepth(0), WithTypedMaxValues(1))
+	require.NoError(t, err)
 }
 
 func TestTypedHugeEmptyArray(t *testing.T) {

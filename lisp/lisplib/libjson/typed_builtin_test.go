@@ -33,8 +33,16 @@ func TestTypedBuiltins(t *testing.T) {
 	}{
 		{"dump", [][2]string{
 			{`(to-string (json:dump-typed 1))`, `"1"`},
-			{`(to-string (json:dump-typed '(a :b "c" 1.0)))`, `"[\"~$a\",\"~:b\",\"c\",1.0]"`},
-			{`(to-string (json:dump-typed (sorted-map 'amount 125000 "k" (vector true false))))`, `"{\"k\":[\"~#vector\",[true,false]],\"~$amount\":125000}"`},
+			{`(to-string (json:dump-typed '(a :b "c" 1.0)))`, `"[\"~#list\",[\"~$a\",\"~:b\",\"c\",1.0]]"`},
+			{`(to-string (json:dump-typed (sorted-map 'amount 125000 "k" (vector true false))))`, `"{\"k\":[true,false],\"~$amount\":125000}"`},
+			{`(to-string (json:dump-typed ()))`, `"null"`},
+			{`(to-string (json:dump-typed (vector)))`, `"[]"`},
+		}},
+		{"load sequences", [][2]string{
+			{`(json:load-typed "null")`, `()`},
+			{`(type (json:load-typed "[]"))`, `'array`},
+			{`(equal? (vector 1 2) (json:load-typed "[1,2]"))`, `true`},
+			{`(json:load-typed "[\"~#list\",[1,2]]")`, `'(1 2)`},
 		}},
 		{"round trip", [][2]string{
 			{`(json:load-typed (json:dump-typed '(1 2.5 "s" sym :kw (nested))))`, `'(1 2.5 "s" sym :kw '(nested))`},
@@ -57,6 +65,8 @@ func TestTypedBuiltins(t *testing.T) {
 			{`(json:dump-typed (lambda () 1))`, `test:1:1: json:dump-typed: typed json: cannot encode a function`},
 			{`(json:load-typed "{\"a\": 1}")`, `test:1:1: json:load-typed: typed json: offset 5: invalid value`},
 			{`(json:load-typed 1)`, `test:1:1: json:load-typed: argument is not bytes or a string: 'int`},
+			{`(json:load-typed "[\"~#vector\",[1,2]]")`, `test:1:1: json:load-typed: typed json: offset 1: unknown tag`},
+			{`(json:load-typed "[\"~#list\",[]]")`, `test:1:1: json:load-typed: typed json: offset 12: empty list must be null`},
 		}},
 	} {
 		t.Run(seq.name, func(t *testing.T) {

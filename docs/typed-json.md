@@ -17,11 +17,19 @@ Common values are ordinary JSON, so most documents read as-is:
 | `5.0` | `5.0` |
 | `true` | `true` |
 | `false` | `false` |
-| `'(1 "a")` | `[1,"a"]` |
-| `()` | `[]` |
+| `(vector 1 "a")` | `[1,"a"]` |
+| `(vector)` | `[]` |
+| `()` | `null` |
 | `(sorted-map "k" 1)` | `{"k":1}` |
 
 Floats always have a `.` or an exponent (`5.0`, `1e+21`); ints never do.
+
+Sequences are Transit-aligned: vectors are plain JSON arrays and nonempty
+lists use Transit's `"~#list"` tag. The empty list `()` is also nil and uses
+`null`, matching plain `json:dump`. Plain `json:load` can produce nil from
+JSON null, so its typed encoding must keep that plain spelling. `[]` decodes
+as an empty vector. A tagged empty list and the old `"~#vector"` tag are
+rejected, leaving one canonical encoding for each value.
 
 ## What gets a tag, and why
 
@@ -38,9 +46,9 @@ plain JSON cannot tell apart:
 | `~i` | int of 2^53 or more in size (JSON readers round those) | `9007199254740993` | `"~i9007199254740993"` |
 | `~z` | NaN or infinity (not JSON numbers) | `(/ 1.0 0.0)` | `"~zINF"` |
 | `~~` | a string that itself starts with `~` | `"~draft"` | `"~~draft"` |
-| `~#vector` | vector (a plain array is a list) | `(vector 1 2)` | `["~#vector",[1,2]]` |
+| `~#list` | nonempty list (a plain array is a vector) | `'(1 2)` | `["~#list",[1,2]]` |
 | `~#array` | array of rank 0 or 2+, as `[dims, cells]` | a 2x2 array of 0s (built from Go) | `["~#array",[[2,2],[0,0,0,0]]]` |
-| `~#tagged` | `deftype` value, as `[type, data]` | `(new point 1 2)` | `["~#tagged",["user:point",[1,2]]]` |
+| `~#tagged` | `deftype` value, as `[type, data]` | `(new point 1 2)` | `["~#tagged",["user:point",["~#list",[1,2]]]]` |
 
 In **map keys** the same prefixes mark the key's type: `"~$id"` is the symbol
 key `'id`, `"~:id"` the keyword `:id`, `"~i7"` the int `7`, `"~?t"` / `"~?f"`
@@ -69,7 +77,7 @@ The record from [lang.md](lang.md#typed-json-jsondump-typed-jsonload-typed):
 ```
 
 ```json
-{"~$amount":125000,"~$id":"ord-7","~$meta":{"source":"web"},"~$rate":0.0375,"~$sig":"~baGk=","~$status":"~:pending","~$steps":["~:kyc","~:fund"]}
+{"~$amount":125000,"~$id":"ord-7","~$meta":{"source":"web"},"~$rate":0.0375,"~$sig":"~baGk=","~$status":"~:pending","~$steps":["~#list",["~:kyc","~:fund"]]}
 {"amount":125000,"id":"ord-7","meta":{"source":"web"},"rate":0.0375,"sig":"aGk=","status":":pending","steps":[":kyc",":fund"]}
 ```
 
@@ -79,7 +87,7 @@ $ jq -c '."~$amount"' record.json
 125000
 $ jq -r '."~$status" | ltrimstr("~:")' record.json
 pending
-$ jq -c '."~$steps" | map(ltrimstr("~:"))' record.json
+$ jq -c '."~$steps"[1] | map(ltrimstr("~:"))' record.json
 ["kyc","fund"]
 $ jq -c 'with_entries(.key |= ltrimstr("~$")) | {id, amount}' record.json
 {"id":"ord-7","amount":125000}

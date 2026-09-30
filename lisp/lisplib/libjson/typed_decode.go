@@ -21,14 +21,14 @@ import (
 // duplicated, number text other than the canonical text of its value (1.50,
 // 1E5, -0, 01, an int written as a float or past 2^53 as a number), an
 // escape other than the minimal one, a string beginning with '^' or '`', an
-// unknown or misused tag, null, non-canonical base64, trailing bytes, and
-// input over any configured limit.  It never panics on malformed input.
+// unknown or misused tag, a tagged empty list, non-canonical base64, trailing
+// bytes, and input over any configured limit. It never panics on malformed input.
 //
 // Every value it returns is freshly allocated and shares no storage with b
-// or with any other value, so the caller owns it outright.  Lists come back
-// as data lists, as list builds them.  A tagged value comes back with its
-// type name and data, and is not checked against any type defined with
-// deftype.
+// or with any other value, so the caller owns it outright. Plain JSON arrays
+// come back as vectors, null as nil, and tagged lists as data lists, as list
+// builds them. A tagged value comes back with its type name and data, and is
+// not checked against any type defined with deftype.
 //
 // Memory is bounded by the input: every value costs at least one byte of
 // it, and nothing is reserved from a count the input declares.
@@ -109,6 +109,11 @@ func (d *typedDecoder) value(depth int) (*lisp.LVal, error) {
 		if bytes.HasPrefix(d.b[d.i:], []byte("false")) {
 			d.i += 5
 			return lisp.Symbol(lisp.FalseSymbol), nil
+		}
+	case c == 'n':
+		if bytes.HasPrefix(d.b[d.i:], []byte("null")) {
+			d.i += 4
+			return lisp.SExpr(nil), nil
 		}
 	case c == '[':
 		if depth >= d.cfg.maxDepth {
@@ -398,7 +403,7 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 	return lisp.Float(f), nil
 }
 
-// array reads a JSON array: a list, or a tagged composite whose first
+// array reads a JSON array: a vector, or a tagged composite whose first
 // element is a "~#" tag.
 func (d *typedDecoder) array(depth int) (*lisp.LVal, error) {
 	d.i++
@@ -409,7 +414,7 @@ func (d *typedDecoder) array(depth int) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return lisp.QExpr(cells), nil
+	return lisp.Vector(cells), nil
 }
 
 // elements reads values up to and including the closing ']' (the '[' has
@@ -444,7 +449,7 @@ func (d *typedDecoder) elements(depth int) ([]*lisp.LVal, error) {
 
 func (d *typedDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagVector, tagArray, tagTagged} {
+	for _, t := range [...]string{tagList, tagArray, tagTagged} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -459,12 +464,15 @@ func (d *typedDecoder) tagged(depth int) (*lisp.LVal, error) {
 	}
 	var v *lisp.LVal
 	switch tag {
-	case tagVector:
+	case tagList:
 		cells, err := d.elements(depth)
 		if err != nil {
 			return nil, err
 		}
-		v = lisp.Vector(cells)
+		if len(cells) == 0 {
+			return nil, d.errorf("empty list must be null")
+		}
+		v = lisp.QExpr(cells)
 	case tagTagged:
 		s, err := d.rawString()
 		if err != nil {

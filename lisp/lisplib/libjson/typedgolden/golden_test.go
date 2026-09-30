@@ -1,9 +1,8 @@
 // Copyright © 2026 The ELPS authors
 
 // Package typedgolden_test pins typed JSON output byte for byte across
-// machines.  It lives in its own directory so that it builds where the rest
-// of libjson's tests do not (GOARCH=386): CI runs it on linux/arm64,
-// windows/amd64 and windows/386, and every run must produce exactly
+// machines. CI runs it on linux/arm64, windows/amd64 and windows/386,
+// and every run must produce exactly
 // testdata/golden.txt.
 package typedgolden_test
 
@@ -120,8 +119,11 @@ func corpus() []struct {
 		{"bytes-1", lisp.Bytes([]byte{0xff})},
 		{"bytes-2", lisp.Bytes([]byte{0, 1})},
 		{"bytes-3", lisp.Bytes([]byte{0xfb, 0xef, 0xbe})},
+		{"nil", list()},
 		{"list", list(lisp.Int(1), s("a"), sym(":k"), list())},
 		{"vector", lisp.Vector([]*lisp.LVal{lisp.Int(1), f(1)})},
+		{"empty-vector", lisp.Vector(nil)},
+		{"nested-sequences", lisp.Vector([]*lisp.LVal{list(lisp.Vector(ints(1, 2)), list()), lisp.Vector(nil)})},
 		{"array-2x3", lisp.Array(list(ints(2, 3)...), ints(1, 2, 3, 4, 5, 6))},
 		{"array-rank0", lisp.Array(list(), ints(7))},
 		{"tagged", &lisp.LVal{Type: lisp.LTaggedVal, Str: "user:point", Cells: []*lisp.LVal{list(ints(1, 2)...)}}},

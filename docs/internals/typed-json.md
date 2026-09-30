@@ -2,7 +2,7 @@
 
 `json:dump-typed` / `libjson.DumpTyped` and `json:load-typed` /
 `libjson.LoadTyped` (luthersystems/elps#747). Code: `lisp/lisplib/libjson/typed.go`
-and `typed_decode.go`. `TestTypedGolden` pins every rule below byte for byte. For a reader's
+and `typed_decode.go`. The format is unreleased. `TestTypedGolden` pins every rule below byte for byte. For a reader's
 cheat sheet (every tag, jq, CouchDB) see [../typed-json.md](../typed-json.md).
 
 ## Goals
@@ -42,31 +42,26 @@ published description and existing readers of the notation:
 | other symbol | `"~$name"` | symbol `$` |
 | keyword `:name` | `"~:name"` | keyword `:` |
 | bytes | `"~b<base64>"`, RFC 4648 standard alphabet, padded | bytes `b` |
-| list (`()` included) | JSON array | **deviation**: Transit reads a JSON array as its array type |
-| vector (rank-1 array) | `["~#vector",[...]]` | **deviation**: extension tag, not in the Transit spec |
+| nonempty list | `["~#list",[...]]` | list tag `list` |
+| empty list / nil `()` | `null` | null |
+| vector (rank-1 array) | JSON array | array |
 | array of rank 0 or >= 2 | `["~#array",[[dims...],[cells...]]]`, row-major | extension tag |
 | sorted map | JSON object | map (JSON-Verbose) |
 | tagged value | `["~#tagged",["type-name",data]]` | extension tag |
 
 Decisions and reasons:
 
-- **The list is the plain JSON array; the vector is tagged.** Types that are
-  common get the plain spelling, so tags appear only on edge cases. Counted
-  in stored-value shapes (September 2026), lists dominate construction by
-  roughly 5 to 1 or more: substrate shirocore production sources build 137
-  lists (`(list` 74, quoted `'(` 63) against 13 `(vector`; substrate e2e
-  phyla 92 against 12; elps `_examples` 154 against 1; every payload of the
-  #751 codec comparison, defflow frames included, holds lists only. (Test
-  files, which build JSON fixtures with `vector`, and values read back with
-  plain `json:load-*`, which always yields vectors, go the other way; neither
-  is what typed JSON stores.) This departs from Transit, where a JSON array
-  is the array type and `list` is the extension, and Transit has no vector
-  tag, so `~#vector` is this format's own. A Transit reader sees an elps
-  list as an array (it keeps the order, loses nothing a non-elps reader can
-  use) and an elps vector as an unknown tagged value.
-- **`()` is `[]`, never `null`.** elps has no null distinct from the empty
-  list, so `null` would be a second spelling of one value. The decoder
-  rejects `null`.
+- **Sequences are Transit-aligned.** Vectors (rank-1 arrays) use plain JSON
+  arrays, and nonempty lists use Transit's `"~#list"` tag. A plain JSON array
+  decodes as a vector, including `[]` as an empty vector. The old
+  `"~#vector"` tag is rejected.
+- **`()` is `null`.** Plain `json:dump` writes the empty list / nil as `null`,
+  and plain `json:load` maps JSON null back to `()`. Consequently
+  `canonize(v) = (json:load (json:dump v))` can produce nil. Encoding nil as
+  `null` keeps the sequence and nil cases consistent with the later property
+  that `dump-typed(canonize(v))` equals a canonical plain dump of `v`.
+  `["~#list",[]]` is rejected as a second spelling of nil; `[]` belongs
+  exclusively to the empty vector.
 - **Nothing else can become plain.** Strings, ints, floats, booleans and
   string-keyed maps are already plain JSON. A symbol-keyed map cannot also be
   plain: `{"a":1}` has to mean one of the string key or the symbol key, and

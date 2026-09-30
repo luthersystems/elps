@@ -133,28 +133,31 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			`Returns object as typed JSON bytes: JSON that load-typed reads
 			back as exactly the same value. Plain values stay plain JSON;
 			only what plain JSON would lose gets a "~" tag: keywords "~:k",
-			symbols "~$s", bytes "~b...", vectors ["~#vector",[...]], big
-			ints, NaN/infinity. The same value always gives the same bytes (keys
-			sorted, no spaces), so 1 and 1.0 differ. Raises an error for
+			symbols "~$s", bytes "~b...", lists ["~#list",[...]], big
+			ints, NaN/infinity. Sequences are Transit-aligned: vectors are
+			plain JSON arrays, nonempty lists are tagged, and nil is null.
+			The same value always gives the same bytes (keys sorted, no
+			spaces), so 1 and 1.0 differ. Raises an error for
 			functions, native values, error values, nested quotes and
 			values that contain themselves.
 			Costs one step per KiB of output.
 
 			Example:
 			  (to-string (json:dump-typed (sorted-map 'id 7 'tags '(:a))))
-			  ; => "{\"~$id\":7,\"~$tags\":[\"~:a\"]}"
+			  ; => "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}"
 
 			See docs/typed-json.md for every tag.`),
 		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,
 			`Reads typed JSON (bytes or a string) written by dump-typed and
-			returns the value, every type as it was dumped. Raises an error
-			for anything dump-typed would not write, such as spaces,
+			returns the value, every type as it was dumped. Plain JSON arrays
+			decode as vectors, null as nil, and "~#list" tags as nonempty lists.
+			Raises an error for anything dump-typed would not write, such as spaces,
 			unsorted keys, strings starting with an unescaped "~" or unknown
-			tags. The value is new and shares
-			nothing. Costs one step per KiB of input.
+			tags (including "~#vector") or tagged empty lists. The value is new
+			and shares nothing. Costs one step per KiB of input.
 
 			Example:
-			  (json:load-typed "{\"~$id\":7,\"~$tags\":[\"~:a\"]}")
+			  (json:load-typed "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}")
 			  ; => (sorted-map 'id 7 'tags '(:a))`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
