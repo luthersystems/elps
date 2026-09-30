@@ -95,10 +95,10 @@ type procsRule struct{ n int }
 var anyProcsSuffix = regexp.MustCompile(`-[0-9]+$`)
 
 func (r procsRule) suffixed(name string) bool {
-	switch {
-	case r.n == 0:
+	switch r.n {
+	case 0:
 		return anyProcsSuffix.MatchString(name)
-	case r.n == 1:
+	case 1:
 		return false
 	default:
 		return strings.HasSuffix(name, "-"+strconv.Itoa(r.n))
