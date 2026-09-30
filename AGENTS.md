@@ -27,6 +27,7 @@ designed to be embedded within Go applications. Module:
 | `make static-checks` | golangci-lint with gosec, plus an `elpscheck`-tagged pass (warns if your version differs from CI's) |
 | `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make ci-gates-test` | Self-test for the CI gate scripts in `scripts/` |
+| `make api-break-gate` | API break gate vs `BASE` (default `origin/main`; CI runs it; see below) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
 | `./elps doc <query>` | Show function/package documentation |
@@ -58,6 +59,19 @@ golangci-lint, but an older gosec does not flag that index, so `nolintlint`
 calls it unused locally. Deleting it turns CI red. The skew runs in both
 directions, so keep or drop a `//nolint` on the evidence of CI's pinned version
 (is `main` green without it?), never on a local run.
+
+### API break gate
+
+CI's `api-break` job (`scripts/api-break-gate.sh`, `cmd/apibreak`) fails a PR
+that removes or incompatibly changes elps's public API against its base: the
+Go API of every non-internal package (`apidiff -m`, version pinned in the
+script) and the Lisp surface from `elps doc --json -l` (packages, exported
+symbols, kind, formals; a formals change fails only if it rejects a call the
+base accepted). Additions never fail. An intended break needs one reviewed
+line in `scripts/api-breaks.txt` -- `surface | symbol | expires | issue |
+reason`, validated like `scripts/benchstat-waivers.txt` -- which the gate
+prints ready to fill. Entries stay until the next release, whose notes list
+them (`scripts/api-breaks-since.sh`), then are deleted.
 
 ## Architecture
 

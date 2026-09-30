@@ -5004,6 +5004,62 @@ else
 fi
 
 echo
+echo "== api-break gate (#761) ================================================="
+
+# The gate fed a fixture base/head pair holding one removed Go export, one
+# removed Lisp export and one removed Lisp package (cmd/apibreak/testdata).
+# It must FAIL with no override, PASS when each removal has a reviewed entry,
+# FAIL again when an entry has expired, and REFUSE (exit 2) a malformed
+# override file rather than read it as empty.  Go-needing, so it follows the
+# same CI_GATES_SKIP_GO rule as the benchgate fixtures above.
+APIBREAK_TD="${REPO_ROOT}/cmd/apibreak/testdata"
+if [ "${CI_GATES_SKIP_GO:-0}" = "1" ]; then
+	echo "SKIP  api-break fixture assertions -- CI_GATES_SKIP_GO=1"
+elif command -v go >/dev/null 2>&1; then
+	APIBREAK_TMP="$(mktemp -d)"
+	if (cd "$REPO_ROOT" && go build -o "${APIBREAK_TMP}/apibreak" ./cmd/apibreak) >"${APIBREAK_TMP}/build.log" 2>&1; then
+		apibreak_judge() { # <override-file>
+			"${APIBREAK_TMP}/apibreak" -today 2026-09-29 -overrides "${APIBREAK_TD}/$1" \
+				-go-report "${APIBREAK_TD}/go-report.txt" \
+				-lisp-base "${APIBREAK_TD}/lisp-base.json" -lisp-head "${APIBREAK_TD}/lisp-head.json"
+		}
+		assert_exit 1 "api-break: removed exports with no override FAIL" apibreak_judge overrides-empty.txt
+		assert_contains "lisp | time:sleep | " "api-break: the gate prints the exact override line" \
+			apibreak_judge overrides-empty.txt
+		assert_exit 0 "api-break: the same removals with reviewed entries PASS" apibreak_judge overrides-ok.txt
+		assert_contains "WAIVED        lisp time:sleep" "api-break: a waived break is still reported" \
+			apibreak_judge overrides-ok.txt
+		assert_exit 1 "api-break: an EXPIRED entry stops waiving" apibreak_judge overrides-expired.txt
+		assert_exit 2 "api-break: a malformed override file is an error, not empty" apibreak_judge overrides-bad.txt
+		# The shipped file must parse: an entry that does not validate would
+		# turn every PR's gate into exit 2.
+		assert_exit 0 "api-break: the shipped scripts/api-breaks.txt is well formed" \
+			"${APIBREAK_TMP}/apibreak" -overrides "${SCRIPT_DIR}/api-breaks.txt" \
+			-go-report /dev/null
+	else
+		bad "cmd/apibreak does not build -- the API break gate is broken"
+		sed 's/^/        | /' "${APIBREAK_TMP}/build.log"
+	fi
+	rm -rf "$APIBREAK_TMP"
+else
+	bad "no Go toolchain and CI_GATES_SKIP_GO is unset -- the api-break fixture assertions cannot run"
+fi
+
+# Wiring: elps.yml must run the script (not an inline copy), and the required
+# aggregate must depend on the job, or the gate can go dead unnoticed.
+ELPS_YML="${REPO_ROOT}/.github/workflows/elps.yml"
+if grep -q 'bash scripts/api-break-gate.sh' "$ELPS_YML"; then
+	ok "api-break: elps.yml invokes scripts/api-break-gate.sh"
+else
+	bad "api-break: elps.yml no longer invokes scripts/api-break-gate.sh -- the gate is not running"
+fi
+if grep -Eq '^    needs: \[.*\bapi-break\b.*\]' "$ELPS_YML"; then
+	ok "api-break: a job in elps.yml needs api-break (the required aggregate)"
+else
+	bad "api-break: the required aggregate does not need api-break -- it is not a required check"
+fi
+
+echo
 echo "=========================================================================="
 echo "ci-gates-test: ${pass} passed, ${fail} failed"
 if [ "$fail" -gt 0 ]; then
