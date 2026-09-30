@@ -8,7 +8,6 @@
 package analysis
 
 import (
-	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -163,9 +162,9 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	// Phase 2: Deep recursive walk
 	currentPkg := a.defaultPackage()
 	for _, expr := range exprs {
-		a.analyzeExpr(expr, root, currentPkg)
+		currentPkg = a.analyzeExpr(expr, root, currentPkg)
 		if expr != nil && expr.Type == lisp.LSExpr && !expr.IsQuoted() && len(expr.Cells) > 0 &&
-			astutil.HeadSymbol(expr) == "in-package" && len(expr.Cells) > 1 {
+			a.packageFormHead(expr) == "in-package" && len(expr.Cells) > 1 {
 			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 				currentPkg = pkgName
 			}

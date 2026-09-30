@@ -1,7 +1,8 @@
 // Copyright © 2026 The ELPS authors
 
-// Package resolvergolden records resolver output for cross-version parity
-// tests. The generator is run against origin/main, never the new resolver.
+// Package resolvergolden records resolver output for parity tests. The
+// no-expander baseline is generated against origin/main; expander fixtures
+// have a separate baseline and regeneration workflow.
 package resolvergolden
 
 import (
@@ -108,6 +109,13 @@ func FixtureInputs(dir string) ([]Input, error) {
 // scope tree, including source spans. Only unordered maps and expr's inferred
 // parameter declarations are sorted; reference order remains part of parity.
 func Snapshot(input Input) string {
+	return SnapshotWithExpander(input, nil)
+}
+
+// SnapshotWithExpander records the same resolver output as Snapshot with
+// macro expansion enabled, plus the origins of generated definitions. The
+// caller must load the fixture's macros into the expander before calling it.
+func SnapshotWithExpander(input Input, expander analysis.MacroExpander) string {
 	var out strings.Builder
 	fmt.Fprintf(&out, "input %s sha256=%x\n", input.Name, sha256.Sum256(input.Source))
 	exprs, err := rdparser.New(token.NewScanner(input.Name, strings.NewReader(string(input.Source)))).ParseProgram()
@@ -115,7 +123,22 @@ func Snapshot(input Input) string {
 		fmt.Fprintf(&out, "parse-error %s\n", err)
 		return out.String()
 	}
-	r := analysis.Analyze(exprs, &analysis.Config{Filename: input.Name})
+	cfg := &analysis.Config{Filename: input.Name, MacroExpander: expander}
+	if expander != nil {
+		// Collect source-declared exports without evaluating fixture calls.
+		// Generated use-package forms need the same export metadata a
+		// workspace supplies to the analyzer, independently of the env.
+		cfg.PackageExports = make(map[string][]analysis.ExternalSymbol)
+		for _, sym := range analysis.Analyze(exprs, nil).Symbols {
+			if sym.Exported {
+				cfg.PackageExports[sym.Package] = append(cfg.PackageExports[sym.Package], analysis.ExternalSymbol{
+					Name: sym.Name, Kind: sym.Kind, Package: sym.Package,
+					Source: sym.Source, Signature: sym.Signature, DocString: sym.DocString,
+				})
+			}
+		}
+	}
+	r := analysis.Analyze(exprs, cfg)
 	scopes := make(map[*analysis.Scope]int)
 	var visit func(*analysis.Scope)
 	visit = func(s *analysis.Scope) {
@@ -136,7 +159,11 @@ func Snapshot(input Input) string {
 		if s.Signature != nil {
 			sig = fmt.Sprint(s.Signature.Params)
 		}
-		return fmt.Sprintf("%s:%s %s scope=%d source=%s node=%s init=%s sig=%s doc=%q exported=%t external=%t refs=%d", s.Package, s.Name, s.Kind, scopes[s.Scope], location(s.Source), node(s.Node), node(s.Init), sig, s.DocString, s.Exported, s.External, s.References)
+		text := fmt.Sprintf("%s:%s %s scope=%d source=%s node=%s init=%s sig=%s doc=%q exported=%t external=%t refs=%d", s.Package, s.Name, s.Kind, scopes[s.Scope], location(s.Source), node(s.Node), node(s.Init), sig, s.DocString, s.Exported, s.External, s.References)
+		if expander != nil && s.GeneratedBy != nil {
+			text += fmt.Sprintf(" generated-by=%s package=%s source=%s", s.GeneratedBy.Macro, s.GeneratedBy.Package, location(s.GeneratedBy.CallSite))
+		}
+		return text
 	}
 	var declarations []string
 	for _, s := range r.Symbols {

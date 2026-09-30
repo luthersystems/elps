@@ -1,0 +1,9 @@
+(defmacro defcounter (name getter bumper)
+  (quasiquote
+    (progn
+      (set (quote (unquote name)) 0)
+      (defun (unquote getter) () (unquote name))
+      (defun (unquote bumper) () (set! (unquote name) (+ 1 (unquote name)))))))
+(defun report () (hits-value))
+(bump-hits)
+(defcounter hits hits-value bump-hits)

@@ -91,6 +91,24 @@ headers() {
 #   BenchmarkEnvGet-2   	  138022	      8104 ns/op	    1808 B/op	      27 allocs/op
 # The iteration count in field 2 is what distinguishes a RESULT from the
 # "--- FAIL" / "ok  " / "PASS" lines and from a `-bench` listing.
+# procs_suffix NAMES: the -N every name in the file ends with, or nothing.
+procs_suffix() {
+	sed -n 's/.*-\([0-9][0-9]*\)$/\1/p' "$1" | sort -u >"$1.suf"
+	if [ "$(wc -l <"$1.suf" | tr -d ' ')" -eq 1 ] &&
+		[ "$(grep -c . "$1")" -eq "$(grep -c -- "-$(cat "$1.suf")\$" "$1")" ]; then
+		cat "$1.suf"
+	fi
+}
+
+# strip_suffix NAMES SUFFIX: drop exactly -SUFFIX, or nothing when it is empty.
+strip_suffix() {
+	if [ -n "$2" ]; then
+		sed "s/-$2\$//" "$1"
+	else
+		cat "$1"
+	fi
+}
+
 bench_names() {
 	awk '$1 ~ /^Benchmark/ && $2 ~ /^[0-9]+$/ { print $1 }' "$1"
 }
@@ -159,11 +177,16 @@ if [ "$npaired" -eq 0 ]; then
 	# specific hypothesis that only the GOMAXPROCS suffix differs -- that
 	# turns an inscrutable empty table into a one-line diagnosis with an
 	# obvious fix.
-	sed 's/-[0-9][0-9]*$//' "$tmp/base.names" | sort -u >"$tmp/base.stripped"
-	sed 's/-[0-9][0-9]*$//' "$tmp/pr.names" | sort -u >"$tmp/pr.stripped"
+	#
+	# A GOMAXPROCS suffix is one that EVERY name in the arm carries: `go test`
+	# appends the same -N to all of them, and at GOMAXPROCS=1 appends nothing.
+	# A trailing number only some names carry is part of those benchmarks' own
+	# names (libjson Package/get-nested-baseline-2) and is left alone (#767).
+	bsuf="$(procs_suffix "$tmp/base.names")"
+	psuf="$(procs_suffix "$tmp/pr.names")"
+	strip_suffix "$tmp/base.names" "$bsuf" | sort -u >"$tmp/base.stripped"
+	strip_suffix "$tmp/pr.names" "$psuf" | sort -u >"$tmp/pr.stripped"
 	if [ -n "$(comm -12 "$tmp/base.stripped" "$tmp/pr.stripped")" ]; then
-		bsuf="$(sed -n 's/.*-\([0-9][0-9]*\)$/\1/p' "$tmp/base.names" | sort -u | paste -sd, -)"
-		psuf="$(sed -n 's/.*-\([0-9][0-9]*\)$/\1/p' "$tmp/pr.names" | sort -u | paste -sd, -)"
 		problem "GOMAXPROCS suffix: base benchmarks end in -[${bsuf:-none}], PR benchmarks in -[${psuf:-none}]. \`go test\` appends GOMAXPROCS to every benchmark name, so these are DIFFERENT names and benchstat pairs none of them -- from a table that looks normal. The arms ran with different GOMAXPROCS (usually: different runner sizes). Pin GOMAXPROCS in the workflow so the suffix cannot move."
 	else
 		problem "benchmark names: the arms share NO benchmark names at all (base has ${nbase}, PR has ${npr}) and the difference is not just the GOMAXPROCS suffix. Nothing can be compared."
