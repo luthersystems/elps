@@ -126,7 +126,6 @@ func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
 }
 
 type typedEncoder struct {
-	cfg typedConfig
 	buf []byte
 	// path holds the containers on the current descent.  It is consulted
 	// only once the depth limit is passed, to say whether the value is
@@ -134,11 +133,10 @@ type typedEncoder struct {
 	path []*lisp.LVal
 	// kp, pairs and keys are scratch stacks shared by nested maps: a map
 	// uses the tail past the length it found and truncates back after.
-	kp    []lisp.MapKeyPair
-	pairs []typedPair
-	keys  []byte
-	// scratch backs number formatting.
-	scratch [64]byte
+	kp      []lisp.MapKeyPair
+	pairs   []typedPair
+	keys    []byte
+	cfg     typedConfig
 	values  int
 	charged int
 }
@@ -221,10 +219,10 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		e.buf = base64.StdEncoding.AppendEncode(e.buf, b)
 		e.buf = append(e.buf, '"')
 	case lisp.LSymbol:
-		switch {
-		case v.Str == "":
+		switch v.Str {
+		case "":
 			return errors.New("typed json: cannot encode an empty symbol")
-		case v.Str == lisp.TrueSymbol, v.Str == lisp.FalseSymbol:
+		case lisp.TrueSymbol, lisp.FalseSymbol:
 			e.buf = append(e.buf, v.Str...)
 		default:
 			e.buf = appendTypedSymbol(e.buf, v.Str)
@@ -448,8 +446,9 @@ func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) 
 		return append(append(b, '~', '$'), s...), nil
 	case lisp.LInt:
 		return strconv.AppendInt(append(b, '~', 'i'), int64(n), 10), nil
+	default:
+		return b, fmt.Errorf("typed json: cannot encode a %v map key", kind)
 	}
-	return b, fmt.Errorf("typed json: cannot encode a %v map key", kind)
 }
 
 // compareJCS orders member names as RFC 8785 section 3.2.3 does: by their

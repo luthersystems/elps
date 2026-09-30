@@ -229,7 +229,7 @@ func TestTypedLimits(t *testing.T) {
 	require.ErrorIs(t, err, ErrTypedLimit)
 	_, err = DumpTyped(lisp.Vector(ints(1, 2, 3, 4)), WithTypedMaxValues(4))
 	require.ErrorIs(t, err, ErrTypedLimit)
-	var v *lisp.LVal = lisp.Int(1)
+	v := lisp.Int(1)
 	for range 20 {
 		v = lisp.Vector([]*lisp.LVal{v})
 	}

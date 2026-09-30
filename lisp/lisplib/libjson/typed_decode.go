@@ -48,14 +48,14 @@ func LoadTyped(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
 }
 
 type typedDecoder struct {
-	cfg typedConfig
-	b   []byte
+	b []byte
 	// stack is scratch shared by every array being decoded: elements are
 	// pushed here and each array's cells are copied out at their exact
 	// length, so no slice is sized from anything but values already read.
 	stack  []*lisp.LVal
 	str    []byte // scratch for strings with escapes
 	b64    []byte // scratch for the base64 canonicality check
+	cfg    typedConfig
 	i      int
 	values int
 }

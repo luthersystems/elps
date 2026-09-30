@@ -3,6 +3,7 @@
 package libjson
 
 import (
+	"bytes"
 	"encoding/json"
 	"math"
 	"testing"
@@ -40,5 +41,7 @@ func TestPlainGoldenDocument(t *testing.T) {
 	m.MapSetLVal(lisp.String("e"), lisp.Symbol(":kw"))
 	got, err := Dump(m, false)
 	require.NoError(t, err)
-	require.Equal(t, `{"a":[1,0.1,1e-7,-0],"b\u003c":1e+21,"c":"AQID","d":true,"e":":kw"}`, string(got))
+	// Byte-exact, not JSONEq: the point is that the bytes do not change.
+	want := `{"a":[1,0.1,1e-7,-0],"b\u003c":1e+21,"c":"AQID","d":true,"e":":kw"}`
+	require.True(t, bytes.Equal([]byte(want), got), "got %s", got)
 }
