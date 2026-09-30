@@ -268,8 +268,11 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 		}
 		return lisp.Bytes(out), nil
 	case 'i':
-		n, ok := parseCanonicalInt(body)
-		if !ok || n >= -maxExactInt && n <= maxExactInt {
+		n, err := d.canonicalInt(body)
+		if err != nil {
+			return nil, err
+		}
+		if exactInt(int64(n)) {
 			return nil, d.errorf("non-canonical int")
 		}
 		return lisp.Int(n), nil
@@ -310,8 +313,26 @@ func parseCanonicalInt(b []byte) (int, bool) {
 	return int(n), bytes.Equal(strconv.AppendInt(tmp[:0], n, 10), b)
 }
 
+// maxFastDigits is the most digits smallCanonicalInt accumulates without
+// overflow: 15 digits stay below 2^53 in a 64-bit int, 9 below 2^31 in a
+// 32-bit one.
+const maxFastDigits = 9 + 6*(strconv.IntSize/64)
+
+// canonicalInt parses decimal text that must be exactly strconv.Itoa of an
+// int.  Where int is 32 bits, a canonical int that needs 64 is rejected with
+// an error, never truncated.
+func (d *typedDecoder) canonicalInt(b []byte) (int, error) {
+	if n, ok := parseCanonicalInt(b); ok {
+		return n, nil
+	}
+	if n, err := strconv.ParseInt(string(b), 10, 64); err == nil && strconv.FormatInt(n, 10) == string(b) {
+		return 0, d.errorf("integer %s does not fit in a %d-bit int", b, strconv.IntSize)
+	}
+	return 0, d.errorf("non-canonical number")
+}
+
 // smallCanonicalInt is the fast path of number for canonical int text of
-// at most 15 digits, which is always below 2^53: an optional '-', then "0"
+// at most maxFastDigits digits, which always fits and is below 2^53: an optional '-', then "0"
 // or a digit string without a leading zero, never "-0".  ok is false for
 // anything else, which the slow path then judges.
 func smallCanonicalInt(b []byte) (int, bool) {
@@ -319,7 +340,7 @@ func smallCanonicalInt(b []byte) (int, bool) {
 	if neg {
 		b = b[1:]
 	}
-	if len(b) == 0 || len(b) > 15 || (b[0] == '0' && (len(b) > 1 || neg)) {
+	if len(b) == 0 || len(b) > maxFastDigits || (b[0] == '0' && (len(b) > 1 || neg)) {
 		return 0, false
 	}
 	n := 0
@@ -357,8 +378,11 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 		if n, ok := smallCanonicalInt(text); ok {
 			return lisp.Int(n), nil
 		}
-		n, ok := parseCanonicalInt(text)
-		if !ok || n < -maxExactInt || n > maxExactInt {
+		n, err := d.canonicalInt(text)
+		if err != nil {
+			return nil, err
+		}
+		if !exactInt(int64(n)) {
 			return nil, d.errorf("non-canonical number")
 		}
 		return lisp.Int(n), nil
@@ -609,9 +633,11 @@ func (d *typedDecoder) key(s []byte) (*lisp.LVal, error) {
 			return lisp.Symbol(lisp.FalseSymbol), nil
 		}
 	case 'i':
-		if n, ok := parseCanonicalInt(body); ok {
-			return lisp.Int(n), nil
+		n, err := d.canonicalInt(body)
+		if err != nil {
+			return nil, err
 		}
+		return lisp.Int(n), nil
 	}
 	return nil, d.errorf("invalid tagged key")
 }

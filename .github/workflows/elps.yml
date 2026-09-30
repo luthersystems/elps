@@ -243,6 +243,16 @@ jobs:
       - name: Vet
         run: go vet ./...
 
+      # Typed JSON output must be byte-identical on every machine: the same
+      # golden corpus the Linux job checks, on windows/amd64 and windows/386
+      # (32-bit int). The package builds on 386; libjson's own tests do not.
+      - name: Typed JSON golden corpus (amd64, 386)
+        run: |
+          go test -count=1 ./lisp/lisplib/libjson/typedgolden/
+          go env -w GOARCH=386
+          go test -count=1 ./lisp/lisplib/libjson/typedgolden/
+          go env -u GOARCH
+
   # API BREAK GATE (#761). Fails when this PR removes or incompatibly changes
   # the Go API of a non-internal package (apidiff) or the Lisp public surface
   # (`elps doc --json -l`: packages, exports, kind, formals) against the base.

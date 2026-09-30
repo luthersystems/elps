@@ -50,6 +50,14 @@ or key starting with `^` or `` ` `` also gets a `~` (Transit reserves them).
 Outside elps, a tagged value is just a string or a two-element array: nothing
 breaks, you see the tag.
 
+## Same bytes everywhere
+
+One value always gives the same bytes, on any machine, OS or architecture:
+keys are sorted by the format's own rule (UTF-16 order, as RFC 8785), numbers
+have one spelling, and strings are not normalized. So a SHA-256 of the output
+identifies the value. A golden test pins this on Linux, Windows and 32-bit
+Windows.
+
 ## jq
 
 The record from [lang.md](lang.md#typed-json-jsondump-typed-jsonload-typed):

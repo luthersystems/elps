@@ -124,6 +124,35 @@ Decisions and reasons:
   int of 2^53 or more written as a number are all rejected.
 - **Base64** must re-encode to the same text (no stray pad bits).
 
+## Same bytes on every machine
+
+The encoding is a function of the value alone: no machine, OS, architecture,
+locale, time zone, environment variable or Go map iteration order changes a
+byte. What guarantees it:
+
+- **Member order** comes only from `compareJCS`, the codec's own UTF-16
+  comparison of the encoded key text. The map is read unsorted
+  (`AppendMapKeyPairs`) and sorted by the codec, so neither Go map iteration
+  nor the sorted-map implementation's order is ever visible.
+- **Numbers** are written with `strconv.AppendInt` / `strconv.AppendFloat`
+  (pure Go, locale-free, exact shortest round-trip), formatted by the RFC 8785
+  rules in `appendJSONFloat`. No `fmt`, no platform float formatting.
+- **Strings** are written byte for byte as stored, with the fixed escape set;
+  no Unicode normalization (`"é"` and `"e"` + U+0301 encode differently).
+- **32-bit platforms.** Where Go's `int` is 32 bits, an elps int cannot hold
+  more than 32 bits, so every int it has encodes as elsewhere. Decoding an int
+  that needs 64 bits (as a number or `"~i..."`) is rejected with an error
+  ("does not fit in a 32-bit int"), never truncated.
+- Nothing reads the clock, the environment or `GOOS`/`GOARCH`.
+
+`TestTypedGoldenCorpus` (`lisp/lisplib/libjson/typedgolden`, golden file
+`testdata/golden.txt`, checked out without newline conversion) pins about 60
+values byte for byte: maps with mixed key types and non-ASCII and astral keys
+in UTF-16 order, float edge cases (subnormals, the 1e21 and 1e-6 boundaries,
+-0.0, NaN, infinities), ints at 2^31, 2^53 and 2^63, escapes and
+unnormalized strings. CI runs it on linux/arm64 (with the rest of the suite),
+windows/amd64 and windows/386.
+
 ## No version marker
 
 The document is the value itself, with no `["~#elps1", value]` wrapper:

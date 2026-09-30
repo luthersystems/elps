@@ -41,6 +41,10 @@ const (
 // Larger ints are written as "~i" strings, Transit's rule.
 const maxExactInt = 1<<53 - 1
 
+// exactInt reports whether x is written as a JSON number.  The comparison is
+// on int64 so that it compiles, and means the same, where int is 32 bits.
+func exactInt(x int64) bool { return x >= -maxExactInt && x <= maxExactInt }
+
 // TypedOption configures DumpTyped and LoadTyped.
 type TypedOption func(*typedConfig)
 
@@ -307,7 +311,7 @@ func (e *typedEncoder) cells(cells []*lisp.LVal, depth int) error {
 // appendTypedInt writes an int: a JSON number below 2^53 in magnitude, else
 // a "~i" string.  A map key is always a "~i" string (Transit's key rule).
 func appendTypedInt(b []byte, x int, key bool) []byte {
-	if !key && x >= -maxExactInt && x <= maxExactInt {
+	if !key && exactInt(int64(x)) {
 		return strconv.AppendInt(b, int64(x), 10)
 	}
 	b = append(b, '"', '~', 'i')
