@@ -3,7 +3,6 @@
 package libjson_test
 
 import (
-	"errors"
 	"runtime"
 	"strings"
 	"testing"
@@ -72,7 +71,7 @@ func TestTypedBuiltinKeepsLimitError(t *testing.T) {
 	for name, b := range map[string]lisp.LBuiltin{"dump": libjson.DumpTypedBuiltin, "tag": libjson.TagBuiltin} {
 		out := b(env, lisp.SExpr([]*lisp.LVal{v}))
 		require.Equal(t, lisp.LError, out.Type, name)
-		require.True(t, errors.Is(lisp.GoError(out), libjson.ErrTypedLimit), "%s: %v", name, out)
+		require.ErrorIs(t, lisp.GoError(out), libjson.ErrTypedLimit, "%s: %v", name, out)
 	}
 }
 
