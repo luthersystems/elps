@@ -210,3 +210,23 @@ func TestGeneratedDefinitionsFallbackWithoutLoadedMacro(t *testing.T) {
 		assert.Nil(t, sym.GeneratedBy, sym.Name)
 	}
 }
+
+// An in-package produced by an expansion applies to the forms after it, and a
+// call site is expanded in the package current at that call (#769).
+func TestGeneratedInPackageCarriesOverAndKeysTheCache(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () (quasiquote (in-package 'q)))`)
+	result := parseAndAnalyzeWithConfig(t, `(enter-q)
+(qconst qa 1)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	assert.Empty(t, result.Unresolved, "qconst and qa must resolve in package q")
+	qa := findSymbol(result, "qa")
+	require.NotNil(t, qa)
+	assert.Equal(t, "q", qa.Package)
+}
