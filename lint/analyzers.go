@@ -232,25 +232,26 @@ type letRecursionBinding struct {
 }
 
 type letRecursionState struct {
-	pass          *Pass
-	unresolved    map[Position]string
-	shadowed      map[string]bool
-	pending       map[string][]letRecursionBinding
-	functionDepth int
+	pass       *Pass
+	unresolved map[Position]string
+	shadowed   map[string]bool
+	pending    map[string][]letRecursionBinding
 }
 
 // walk visits the source once, tracking which initializer encloses a closure.
 // Resolution is joined by source position: pass.Exprs and pass.Semantics can
 // be separate parses, so comparing their LVal pointers would miss every ref.
 func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
-	previous := s.functionDepth
-	s.functionDepth = depth
-	codewalk.Syntax(node, nil, 0, s.visitSyntax)
-	s.functionDepth = previous
+	if s.visit(node, depth) {
+		for _, child := range node.Cells {
+			s.walk(child, depth)
+		}
+	}
 }
 
-func (s *letRecursionState) visitSyntax(node, _ *lisp.LVal, op string, _ int) bool {
-	depth := s.functionDepth
+// visit handles node and reports whether walk should descend into all of its
+// children at the same function depth.
+func (s *letRecursionState) visit(node *lisp.LVal, depth int) bool {
 	if node == nil || node.IsQuoted() {
 		return false
 	}
@@ -283,7 +284,7 @@ func (s *letRecursionState) visitSyntax(node, _ *lisp.LVal, op string, _ int) bo
 		return false
 	}
 	spelling := HeadSymbol(node)
-	head := op
+	head := codewalk.Operator(node)
 	switch head {
 	case codewalk.OpQuote, codewalk.OpQuasiquote:
 		return false
@@ -2914,14 +2915,14 @@ var AnalyzerDuplicateKeyword = &Analyzer{
 // walkLambdaListCalls excludes data, formals and binding entries, including
 // qualified core forms. Initializers and function bodies remain executable.
 func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
-	var walk codewalk.SyntaxVisitor
-	walk = func(v, _ *lisp.LVal, op string, depth int) bool {
+	var walk func(*lisp.LVal)
+	walk = func(v *lisp.LVal) {
 		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
-			return false
+			return
 		}
-		head := op
+		head := codewalk.Operator(v)
 		if head == codewalk.OpQuote || head == codewalk.OpQuasiquote {
-			return false
+			return
 		}
 		visit(v)
 		start := 2
@@ -2940,7 +2941,7 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 						body = 2
 					}
 					for i := body; i < len(binding.Cells); i++ {
-						codewalk.Syntax(binding.Cells[i], binding, depth+2, walk)
+						walk(binding.Cells[i])
 					}
 				}
 			}
@@ -2948,21 +2949,20 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 			for _, clause := range v.Cells[1:] {
 				if clause.Type == lisp.LSExpr {
 					for _, expr := range clause.Cells {
-						codewalk.Syntax(expr, clause, depth+2, walk)
+						walk(expr)
 					}
 				}
 			}
-			return false
+			return
 		default:
-			return true
+			start = 0
 		}
 		for i := start; i < len(v.Cells); i++ {
-			codewalk.Syntax(v.Cells[i], v, depth+1, walk)
+			walk(v.Cells[i])
 		}
-		return false
 	}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, walk)
+		walk(expr)
 	}
 }
 
