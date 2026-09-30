@@ -3,7 +3,6 @@
 package libjson
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"math"
@@ -392,51 +391,6 @@ func taggedKeyText(k lisp.MapKeyPair) (string, error) {
 	return string(b), err
 }
 
-// tagKeyParts splits the tagged text of a string or symbol key into an
-// ASCII prefix and the key's own text, so a key is compared and written
-// without building its tagged string.
-func tagKeyParts(k lisp.MapKeyPair) (prefix, rest string) {
-	if k.Kind == lisp.LString {
-		if needsTilde(k.Key) {
-			return "~", k.Key
-		}
-		return "", k.Key
-	}
-	switch {
-	case k.Key == lisp.TrueSymbol:
-		return "~?t", ""
-	case k.Key == lisp.FalseSymbol:
-		return "~?f", ""
-	case k.Key[0] == ':':
-		return "~:", k.Key[1:]
-	}
-	return "~$", k.Key
-}
-
-// compareTagKeys orders two string or symbol keys by their tagged text.
-func compareTagKeys(a, b lisp.MapKeyPair) int {
-	ap, ar := tagKeyParts(a)
-	bp, br := tagKeyParts(b)
-	if ap == bp {
-		return strings.Compare(ar, br)
-	}
-	la, lb := len(ap)+len(ar), len(bp)+len(br)
-	for i := range min(la, lb) {
-		ca, cb := tagKeyByte(ap, ar, i), tagKeyByte(bp, br, i)
-		if ca != cb {
-			return cmp.Compare(ca, cb)
-		}
-	}
-	return cmp.Compare(la, lb)
-}
-
-func tagKeyByte(prefix, rest string, i int) byte {
-	if i < len(prefix) {
-		return prefix[i]
-	}
-	return rest[i-len(prefix)]
-}
-
 func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	kp := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
 	keys, ok := v.AppendMapKeyPairs((*kp)[:0])
@@ -460,88 +414,38 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			keys = append(keys, lisp.MapKeyPair{Kind: k.Type, Key: k.Str, Int: k.Int, Val: p.Cells[1]})
 		}
 	}
-	textKeys := true
-	for _, k := range keys {
-		switch k.Kind {
-		case lisp.LString:
-		case lisp.LSymbol:
-			if k.Key == "" {
-				return nil, errors.New("typed json: cannot encode an empty symbol")
-			}
-		default:
-			textKeys = false
+	sp := mapPairPool.Get().(*[]lisp.MapPair)
+	pairs := (*sp)[:0]
+	defer func() {
+		clear(pairs)
+		if cap(pairs) <= mapPairRetentionLimit {
+			*sp = pairs[:0]
+			mapPairPool.Put(sp)
 		}
-		if !textKeys {
+	}()
+	plainKeys := true
+	for _, k := range keys {
+		if k.Kind != lisp.LString || needsTilde(k.Key) {
+			plainKeys = false
 			break
 		}
 		if !utf8.ValidString(k.Key) {
 			return nil, errors.New("typed json: cannot encode a map key that is not valid UTF-8")
 		}
 	}
-	if !textKeys {
-		return w.intKeyObject(keys, depth)
+	if plainKeys {
+		pairs, ok = v.AppendSortedPairs(pairs)
 	}
-	slices.SortFunc(keys, compareTagKeys)
-	var out *lisp.LVal
-	if w.enc == nil {
-		out = lisp.SortedMap()
-	}
-	if err := w.write("{"); err != nil {
-		return nil, err
-	}
-	for i, k := range keys {
-		if i > 0 {
-			if compareTagKeys(keys[i-1], k) == 0 {
-				return nil, errors.New("typed json: map has two keys with one encoding")
-			}
-			if err := w.write(","); err != nil {
+	if !plainKeys || !ok {
+		for _, k := range keys {
+			text, err := taggedKeyText(k)
+			if err != nil {
 				return nil, err
 			}
+			pairs = append(pairs, lisp.MapPair{Key: text, Val: k.Val})
 		}
-		if err := w.count(); err != nil {
-			return nil, err
-		}
-		prefix, rest := tagKeyParts(k)
-		if w.enc != nil {
-			buf := &w.enc.buf
-			start := buf.Len()
-			buf.Grow(len(prefix) + len(rest) + 3)
-			b := append(buf.AvailableBuffer(), '"')
-			buf.Write(append(appendJSONStringBody(append(b, prefix...), rest), ':'))
-			if err := w.grow(buf.Len() - start); err != nil {
-				return nil, err
-			}
-		} else {
-			if err := w.grow(len(appendJSONString(nil, prefix+rest)) + 1); err != nil {
-				return nil, err
-			}
-		}
-		c, err := w.value(k.Val, depth+1)
-		if err != nil {
-			return nil, err
-		}
-		if out != nil {
-			out.MapSet(prefix+rest, c)
-		}
+		slices.SortFunc(pairs, func(a, b lisp.MapPair) int { return strings.Compare(a.Key, b.Key) })
 	}
-	if err := w.write("}"); err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-// intKeyObject writes a map that has an int key, or a key of a type no map
-// key can have, through materialized key text.
-func (w *tagWalker) intKeyObject(keys []lisp.MapKeyPair, depth int) (*lisp.LVal, error) {
-	pairs := make([]lisp.MapPair, 0, len(keys))
-	for _, k := range keys {
-		text, err := taggedKeyText(k)
-		if err != nil {
-			return nil, err
-		}
-		pairs = append(pairs, lisp.MapPair{Key: text, Val: k.Val})
-	}
-	slices.SortFunc(pairs, func(a, b lisp.MapPair) int { return strings.Compare(a.Key, b.Key) })
 	var out *lisp.LVal
 	if w.enc == nil {
 		out = lisp.SortedMap()
