@@ -85,7 +85,10 @@ func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal 
 	if sym != nil && !isExpansionMacro(sym) {
 		return nil
 	}
-	call := importedMacroCall(node, sym, pkg)
+	call := node
+	if !a.fileMacros[expansionKey{pkg: pkg, head: node.Cells[0].Str}] {
+		call = importedMacroCall(node, sym, pkg)
+	}
 	key := expansionKey{node: node, pkg: pkg, head: call.Cells[0].Str}
 	if expanded, ok := a.expansions[key]; ok {
 		return expanded
@@ -162,10 +165,24 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 		// Prescan runs before the file's own definitions are registered, so
 		// note which names the file defines as functions or variables: the
 		// deep walk will resolve those heads to the file's definition and
-		// never expand them, and prescan must agree.
+		// never expand them, and prescan must agree. Likewise note the file's
+		// own macros: the deep walk resolves those heads to the file's
+		// definition, not to a macro an earlier use-package imported.
 		a.fileNonMacros = map[string]bool{}
+		a.fileMacros = map[expansionKey]bool{}
+		filePkg := pkg
 		for _, form := range forms {
-			switch astutil.HeadSymbol(form) {
+			switch a.packageFormHead(form) {
+			case "in-package":
+				if astutil.ArgCount(form) >= 1 {
+					if name := extractPackageName(form.Cells[1]); name != "" {
+						filePkg = name
+					}
+				}
+			case "defmacro":
+				if astutil.ArgCount(form) >= 1 && form.Cells[1].Type == lisp.LSymbol {
+					a.fileMacros[expansionKey{pkg: filePkg, head: form.Cells[1].Str}] = true
+				}
 			case "defun":
 				if astutil.ArgCount(form) >= 1 && form.Cells[1].Type == lisp.LSymbol {
 					a.fileNonMacros[form.Cells[1].Str] = true

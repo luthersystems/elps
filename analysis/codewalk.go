@@ -318,16 +318,27 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
 		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
+		// An imported macro without a declaration location is referenced
+		// here only when it expands; otherwise the ordinary traversal
+		// references its head, as it does without an expander.
+		importedOnly := false
 		if a.cfg != nil && a.cfg.MacroExpander != nil {
 			sym = scope.LookupInPackage(node.Cells[0].Str, currentPkg)
-			isMacro = isExpansionMacro(sym)
+			isMacro = sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
+			importedOnly = !isMacro && isExpansionMacro(sym)
 		}
-		if isMacro {
+		if isMacro || importedOnly {
 			sym.References++
 			a.result.References = append(a.result.References, newReference(sym, node.Cells[0]))
 		}
 		if pkg, ok := a.analyzeExpansion(node, scope, currentPkg); ok {
 			return false, false, pkg
+		}
+		if importedOnly {
+			// analyzeExpansion analyzed nothing, so the reference just
+			// added is still the last one.
+			sym.References--
+			a.result.References = a.result.References[:len(a.result.References)-1]
 		}
 		if isMacro {
 			a.insideMacroCall++

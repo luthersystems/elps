@@ -33,6 +33,10 @@ type analyzer struct {
 	// fileNonMacros names the functions and variables the analyzed source
 	// defines at package level; expand never offers them to the expander.
 	fileNonMacros map[string]bool
+	// fileMacros holds the (package, name) of each top-level macro the
+	// analyzed source defines; in that package it shadows a same-named macro
+	// imported by use-package during prescan expansion. node is unused.
+	fileMacros map[expansionKey]bool
 }
 
 // defaultPackage returns the default package for bare files. If a

@@ -73,3 +73,57 @@ func TestExpansionCacheIncludesImportedHead(t *testing.T) {
 	assert.Equal(t, "value", head.Str)
 	assert.Equal(t, loc, astutil.SymbolLoc(head))
 }
+
+// A macro the file defines shadows one imported by an earlier use-package:
+// prescan must expand the file's own macro, as the deep walk does.
+func TestFileMacroShadowsImportedMacroInPrescan(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(export 'm)
+(defmacro m () '(set 'ghost 1))
+(in-package 'user)
+(defmacro m () '(set 'actual 1))`)
+	result := parseAndAnalyzeWithConfig(t, `(use-package 'q)
+(defmacro m () '(set 'actual 1))
+(m)
+ghost
+actual`, &Config{
+		MacroExpander:  &EnvMacroExpander{Env: env},
+		PackageExports: map[string][]ExternalSymbol{"q": {{Name: "m", Kind: SymMacro, Package: "q"}}},
+	})
+	assert.Nil(t, findSymbol(result, "ghost"), "the shadowed import must not be expanded")
+	require.NotNil(t, findSymbol(result, "actual"))
+	require.Len(t, result.Unresolved, 1)
+	assert.Equal(t, "ghost", result.Unresolved[0].Name)
+	for _, def := range result.GeneratedDefinitions() {
+		assert.NotEqual(t, "ghost", def.Name)
+	}
+}
+
+type nilExpander struct{}
+
+func (nilExpander) ExpandMacro(*lisp.LVal, string) *lisp.LVal { return nil }
+
+// An imported macro without a declaration location that fails to expand is
+// referenced once, as without an expander.
+func TestFailedImportedMacroExpansionReferencesOnce(t *testing.T) {
+	t.Parallel()
+	exports := map[string][]ExternalSymbol{"q": {{Name: "m", Kind: SymMacro, Package: "q"}}}
+	for _, cfg := range []*Config{{PackageExports: exports}, {PackageExports: exports, MacroExpander: nilExpander{}}} {
+		result := parseAndAnalyzeWithConfig(t, `(use-package 'q)
+(m)`, cfg)
+		var m *Symbol
+		refs := 0
+		for _, ref := range result.References {
+			if ref.Symbol.Name == "m" {
+				m = ref.Symbol
+				refs++
+			}
+		}
+		require.NotNil(t, m)
+		assert.Equal(t, 1, refs)
+		assert.Equal(t, 1, m.References)
+	}
+}
