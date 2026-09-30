@@ -25,14 +25,18 @@ type analyzer struct {
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
 	expansionDepth   int // current macro expansion nesting depth
-	// expansions caches MacroExpander results per call node (nil = not
-	// expandable) so prescan and the deep walk share one expansion.
-	expansions map[*lisp.LVal]*lisp.LVal
+	// expansions caches MacroExpander results per call node, package and head
+	// (nil = not expandable) so prescan and the deep walk share one expansion.
+	expansions map[expansionKey]*lisp.LVal
 	// origin is the outermost macro call whose expansion is being analyzed.
 	origin *MacroOrigin
 	// fileNonMacros names the functions and variables the analyzed source
 	// defines at package level; expand never offers them to the expander.
 	fileNonMacros map[string]bool
+	// fileMacros holds the (package, name) of each top-level macro the
+	// analyzed source defines; in that package it shadows a same-named macro
+	// imported by use-package during prescan expansion. node is unused.
+	fileMacros map[expansionKey]bool
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -49,20 +53,25 @@ func (a *analyzer) defaultPackage() string {
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
-	exprs = astutil.PackageForms(exprs)
+	if a.cfg != nil && a.cfg.MacroExpander != nil {
+		exprs = expansionPackageForms(exprs)
+	} else {
+		exprs = astutil.PackageForms(exprs)
+	}
 	// With a MacroExpander, top-level macro calls are replaced by the package
 	// forms of their expansion, so generated definitions are forward
-	// referenceable too. generatedBy maps those forms to their macro call.
-	generatedBy := map[*lisp.LVal]*lisp.LVal{}
-	exprs = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
+	// referenceable too. generatedBy records each occurrence's macro call;
+	// different expansions may share the same form nodes.
+	exprs, generatedBy, _ := a.expandPackageForms(exprs, scope, a.defaultPackage(), nil)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
-	for _, expr := range exprs {
+	for i, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		if call := generatedBy[expr]; call != nil {
-			a.withOrigin(call, currentPkg, func() { a.prescanForm(expr, scope, &currentPkg) })
+		if len(generatedBy) > 0 && generatedBy[i] != nil {
+			call := generatedBy[i]
+			a.withOrigin(call.node, call.pkg, func() { a.prescanForm(expr, scope, &currentPkg) })
 			continue
 		}
 		a.prescanForm(expr, scope, &currentPkg)
@@ -73,7 +82,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+		if a.packageFormHead(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
 			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 				currentPkg = pkgName
 			}
@@ -96,7 +105,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 				continue
 			}
-			if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+			if a.packageFormHead(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
 				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 					filePkgs[pkgName] = true
 				}
@@ -113,7 +122,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 // prescanForm registers the definition one package form makes, advancing
 // *currentPkg past an in-package.
 func (a *analyzer) prescanForm(expr *lisp.LVal, scope *Scope, currentPkg *string) {
-	switch astutil.HeadSymbol(expr) {
+	switch a.packageFormHead(expr) {
 	case "defun", "defmacro", "deftype":
 		a.prescanDefinition(expr, scope, *currentPkg)
 	case "set":
