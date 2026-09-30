@@ -8,14 +8,16 @@ package libjson
 // float, list versus vector, symbol and keyword versus string, bytes, key
 // types, tagged values, arrays of any rank -- using the tag spellings of
 // Transit (github.com/cognitect/transit-format, JSON-Verbose mode), and
-// writes it canonically in the sense of RFC 8785 (JCS): members in JCS
-// order, JCS number text, minimal escapes, no whitespace.  LoadTyped accepts
+// writes it canonically: RFC 8785 number text (with type-preserving
+// exceptions), UTF-8 byte key order, the plain encoder's escape set and no
+// whitespace. This is not strict RFC 8785 (JCS). LoadTyped accepts
 // exactly the bytes DumpTyped produces and nothing else, so one value has
 // one encoding and the bytes can be hashed, used as a key, or stored and
 // read back.  docs/internals/typed-json.md specifies the format and gives
 // the reasons for each choice; TestTypedGolden fails on any change to it.
 
 import (
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -265,7 +267,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagTagged+`",[`...)
-		e.buf = appendJSONString(e.buf, v.Str, true)
+		e.buf = appendJSONString(e.buf, v.Str)
 		e.buf = append(e.buf, ',')
 		if err := e.value(v.Cells[0], depth+1); err != nil {
 			return err
@@ -361,16 +363,16 @@ func needsTilde(s string) bool {
 
 func appendTypedString(b []byte, s string) []byte {
 	if needsTilde(s) {
-		return appendJSONStringBody(append(b, '"', '~'), s, true)
+		return appendJSONStringBody(append(b, '"', '~'), s)
 	}
-	return appendJSONString(b, s, true)
+	return appendJSONString(b, s)
 }
 
 func appendTypedSymbol(b []byte, name string) []byte {
 	if name[0] == ':' {
-		return appendJSONStringBody(append(b, '"', '~', ':'), name[1:], true)
+		return appendJSONStringBody(append(b, '"', '~', ':'), name[1:])
 	}
-	return appendJSONStringBody(append(b, '"', '~', '$'), name, true)
+	return appendJSONStringBody(append(b, '"', '~', '$'), name)
 }
 
 // array writes a vector (rank 1) as a plain JSON array and any other
@@ -469,37 +471,6 @@ func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) 
 	}
 }
 
-// compareJCS orders member names as RFC 8785 section 3.2.3 does: by their
-// UTF-16 code units.  That is UTF-8 byte order except where a character
-// above U+FFFF (a surrogate pair, first unit 0xD800-0xDBFF) meets one in
-// U+E000-U+FFFF, which UTF-16 orders the other way.
-func compareJCS(a, b []byte) int {
-	n := min(len(a), len(b))
-	i := 0
-	for i < n && a[i] == b[i] {
-		i++
-	}
-	if i == n {
-		return len(a) - len(b)
-	}
-	// Back up to the start of the character that differs.
-	for i > 0 && !utf8.RuneStart(a[i]) {
-		i--
-	}
-	ra, _ := utf8.DecodeRune(a[i:])
-	rb, _ := utf8.DecodeRune(b[i:])
-	if ra > 0xFFFF && rb >= 0xE000 && rb <= 0xFFFF {
-		return -1
-	}
-	if rb > 0xFFFF && ra >= 0xE000 && ra <= 0xFFFF {
-		return 1
-	}
-	if ra < rb {
-		return -1
-	}
-	return 1
-}
-
 func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	if err := e.enter(v, depth); err != nil {
 		return err
@@ -534,9 +505,11 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	e.kp = e.kp[:kbase]
 	members := e.pairs[pbase:]
 	keys := e.keys
-	slices.SortFunc(members, func(a, b typedPair) int { return compareJCS(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
+	// Order the UTF-8 member text after Transit prefixes, before JSON escaping,
+	// matching the plain encoder's order for string keys.
+	slices.SortFunc(members, func(a, b typedPair) int { return bytes.Compare(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
 	for i := 1; i < len(members); i++ {
-		if compareJCS(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) == 0 {
+		if bytes.Equal(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) {
 			return errors.New("typed json: map has two keys with one encoding")
 		}
 	}
@@ -552,7 +525,7 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 		}
 		p := e.pairs[i]
 		// A nested map may grow e.keys; the offsets stay valid.
-		e.buf = appendJSONString(e.buf, e.keys[p.ks:p.ke], true)
+		e.buf = appendJSONString(e.buf, e.keys[p.ks:p.ke])
 		e.buf = append(e.buf, ':')
 		if err := e.value(p.val, depth+1); err != nil {
 			return err

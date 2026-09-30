@@ -12,6 +12,7 @@ Common values are ordinary JSON, so most documents read as-is:
 | elps value | typed JSON |
 |---|---|
 | `"text"` | `"text"` |
+| `"<>&"` | `"\u003c\u003e\u0026"` |
 | `"^draft"` | `"^draft"` |
 | `` "`draft" `` | `` "`draft" `` |
 | `42` | `42` |
@@ -29,7 +30,7 @@ Floats always have a `.` or an exponent (`5.0`, `1e+21`); ints never do.
 
 Sequences are Transit-aligned: vectors are plain JSON arrays and nonempty
 lists use Transit's `"~#list"` tag. The empty list `()` is also nil and uses
-`null`, matching plain `json:dump`. Plain `json:load` can produce nil from
+`null`, matching plain `json:dump-string`. Plain `json:load-string` can produce nil from
 JSON null, so its typed encoding must keep that plain spelling. `[]` decodes
 as an empty vector. A tagged empty list and the old `"~#vector"` tag are
 rejected, leaving one canonical encoding for each value.
@@ -72,10 +73,38 @@ breaks, you see the tag.
 ## Same bytes everywhere
 
 One value always gives the same bytes, on any machine, OS or architecture:
-keys are sorted by the format's own rule (UTF-16 order, as RFC 8785), numbers
-have one spelling, and strings are not normalized. So a SHA-256 of the output
+keys use UTF-8 byte order of the written member text after Transit prefixes,
+before JSON escaping; numbers have one spelling, and strings are not
+normalized. So a SHA-256 of the output
 identifies the value. A golden test pins this on Linux, Windows and 32-bit
 Windows.
+
+The canonical form is **RFC 8785 number text + UTF-8 byte key order + the
+plain encoder's escape set**, with `.0` added to floats whose number text
+has no decimal point or exponent, and negative zero kept as `-0.0`.
+The escape set matches existing `json:dump-bytes` and `json:dump-string`
+output: quotes, backslashes and control characters use the usual Go JSON
+escapes, and `<`, `>`, `&`, U+2028 and U+2029 are always `\u003c`, `\u003e`,
+`\u0026`, `\u2028` and `\u2029`. The decoder requires these exact escapes;
+literal `<` and unnecessary escapes such as `\u0041` are rejected.
+
+This is chosen for byte compatibility with existing stored JSON and hashes
+and cache/state keys built from the plain dump output. Plain dumps already
+in the shared canonical subset can be read by `json:load-typed`:
+
+<!-- typedjson:eval -->
+```lisp
+(json:load-typed (json:dump-string "<>&"))
+; => "<>&"
+(equal? (json:dump-typed (sorted-map "<" 1 "Z" 0.5)) (json:dump-bytes (sorted-map "<" 1 "Z" 0.5)))
+; => true
+```
+
+It is **not strict RFC 8785**: UTF-8 rather than UTF-16 key order, the five
+extra mandatory Unicode escapes, float type/signed-zero preservation and
+Transit tags are deliberate differences. Outside JCS verifiers will not
+match when these differences apply. For example, plain `1.0` dumps as `1`
+and typed `1.0` as `1.0`; `1e+21` has the same exponent form in both.
 
 ## jq
 

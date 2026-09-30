@@ -76,9 +76,9 @@ Decisions and reasons:
   arrays, and nonempty lists use Transit's `"~#list"` tag. A plain JSON array
   decodes as a vector, including `[]` as an empty vector. The old
   `"~#vector"` tag is rejected.
-- **`()` is `null`.** Plain `json:dump` writes the empty list / nil as `null`,
-  and plain `json:load` maps JSON null back to `()`. Consequently
-  `canonize(v) = (json:load (json:dump v))` can produce nil. Encoding nil as
+- **`()` is `null`.** Plain `json:dump-string` writes the empty list / nil as `null`,
+  and plain `json:load-string` maps JSON null back to `()`. Consequently
+  `canonize(v) = (json:load-string (json:dump-string v))` can produce nil. Encoding nil as
   `null` keeps the sequence and nil cases consistent with the later property
   that `dump-typed(canonize(v))` equals a canonical plain dump of `v`.
   `["~#list",[]]` is rejected as a second spelling of nil; `[]` belongs
@@ -114,25 +114,44 @@ Decisions and reasons:
   There is no native-value hook: a native's meaning is the embedder's, and a
   host that needs one stored converts it to data first.
 
-## Canonical form: RFC 8785 (JCS)
+## Canonical form
+
+The canonical form is **RFC 8785 number text + UTF-8 byte key order + the
+plain encoder's escape set**, with the type-preserving number exceptions below.
+This choice preserves byte compatibility with existing stored JSON: hashes
+and cache/state keys built from `json:dump-bytes` or `json:dump-string` depend
+on those bytes. Matching the existing escaping and string-key order avoids
+changing them for data whose plain and typed representations coincide.
+
+It is **not strict RFC 8785 (JCS)**. Outside JCS verifiers will not match this
+format's canonical bytes or hashes when any deliberate difference applies:
+UTF-8 rather than UTF-16 member order; mandatory escapes for `<`, `>`, `&`,
+U+2028 and U+2029; the float `.0` suffix and signed zero; and Transit tags
+for types outside plain JSON. Unicode normalization is never applied.
 
 - **No whitespace** anywhere.
-- **Member order** is RFC 8785 section 3.2.3: by the UTF-16 code units of
-  the member name as written (after the Transit prefix), which differs from
-  byte order only between characters above U+FFFF and those in U+E000-U+FFFF.
+- **Member order** is UTF-8 byte order of the member name as written after
+  the Transit prefix, **before JSON escaping**. This matches the plain
+  encoder's string-key order. Characters in U+E000-U+FFFF precede characters
+  above U+FFFF; RFC 8785's UTF-16 order places those groups the other way.
   Two members may not name one key: the decoder rejects a string and a symbol
   of one spelling (`"a"` and `"~$a"`) because an elps map cannot hold both.
-- **Strings** use the RFC 8785 escapes and no others: `\"`, `\\`, `\b \f \n \r
-  \t`, and a lowercase `\u00xx` for the other control characters. Everything
-  else, including DEL, U+2028 and non-ASCII, is written as itself. (Plain mode
-  keeps encoding/json's HTML escapes; the two modes share one escaper,
-  `appendJSONString`, parameterised by mode.)
+- **Strings** use exactly the plain encoder's Go `encoding/json` escape set:
+  `\"`, `\\`, `\b \f \n \r \t`, and a lowercase `\u00xx` for the other
+  controls U+0000-U+001F. In addition, these characters are always written
+  as `\uXXXX`: `<` (`\u003c`), `>` (`\u003e`), `&` (`\u0026`), U+2028
+  (`\u2028`) and U+2029 (`\u2029`). Everything else, including `/`, DEL,
+  U+FFFD and other non-ASCII, is literal. Both modes use `appendJSONString`
+  with no escaping mode switch; typed callers reject invalid UTF-8 first,
+  while plain callers retain their existing U+FFFD substitution. The strict
+  decoder requires the mandatory escapes and rejects all others, including
+  `\/`, uppercase hex, surrogate escapes and `\u000a` instead of `\n`.
 - **Numbers.** An int is its decimal text. A finite float is RFC 8785's number
   text -- ECMAScript's shortest round-trip form, fixed notation for
   1e-6 <= |x| < 1e21 and `1e+21`, `1.5e-7` otherwise, written by the same
   `appendJSONFloat` plain mode uses -- with **`.0` appended when that text has
   no `.` and no exponent**, so a float is never read back as an int. That is
-  the one departure from JCS number text: JCS writes `1.0` as `1`, which would
+  a departure from JCS number text: JCS writes `1.0` as `1`, which would
   merge two types this format keeps apart. `-0.0` keeps its sign (`-0.0`; JCS
   would write `0`). Every NaN is written as the one `"~zNaN"`.
   The decoder parses a number and requires the text to equal what the encoder
@@ -140,14 +159,34 @@ Decisions and reasons:
   int of 2^53 or more written as a number are all rejected.
 - **Base64** must re-encode to the same text (no stray pad bits).
 
+Number comparison against the plain golden/fuzz corpus and random float64 bit
+patterns is pinned by `TestTypedNumberTextPlainCorpus`,
+`TestTypedNumberTextRandomFloat64` and `FuzzDumpJSON`. All finite
+float text, including exponent form and notation cutoffs, matches the plain
+encoder except when the typed encoder appends `.0`: plain `0`, `-0`, `1`,
+`100` and `100000000000000000000` become typed `0.0`, `-0.0`, `1.0`,
+`100.0` and `100000000000000000000.0`. The suffix applies only when the
+plain text has neither a decimal point nor an exponent; `1e+21` and `1e-7`
+are unchanged. Plain `-0` also differs from strict JCS, which writes `0`.
+Ints below 2^53 in magnitude keep the plain decimal text; larger ints use
+`~n` tags. Plain mode rejects NaN and infinities; typed mode uses `~z` tags.
+
+Plain dumps of data already in the shared canonical subset are loadable by
+`load-typed`: valid UTF-8 strings and string keys without a leading `~`,
+booleans, null, vectors, string-keyed maps, ints below 2^53 that fit the
+platform's `int`, and finite floats whose plain text contains `.` or an
+exponent. This does not make arbitrary plain JSON a typed document: integral
+floats lose their type in plain output, and plain strings starting with `~`
+do not have the required Transit escape.
+
 ## Same bytes on every machine
 
 The encoding is a function of the value alone: no machine, OS, architecture,
 locale, time zone, environment variable or Go map iteration order changes a
 byte. What guarantees it:
 
-- **Member order** comes only from `compareJCS`, the codec's own UTF-16
-  comparison of the encoded key text. The map is read unsorted
+- **Member order** comes only from `bytes.Compare` on UTF-8 member text
+  after Transit prefixes and before JSON escaping. The map is read unsorted
   (`AppendMapKeyPairs`) and sorted by the codec, so neither Go map iteration
   nor the sorted-map implementation's order is ever visible.
 - **Numbers** are written with `strconv.AppendInt` / `strconv.AppendFloat`
@@ -164,7 +203,7 @@ byte. What guarantees it:
 `TestTypedGoldenCorpus` (`lisp/lisplib/libjson/typedgolden`, golden file
 `testdata/golden.txt`, checked out without newline conversion) pins about 60
 values byte for byte: maps with mixed key types and non-ASCII and astral keys
-in UTF-16 order, float edge cases (subnormals, the 1e21 and 1e-6 boundaries,
+in UTF-8 byte order, float edge cases (subnormals, the 1e21 and 1e-6 boundaries,
 -0.0, NaN, infinities), ints at 2^31, 2^53 and 2^63, escapes and
 unnormalized strings. CI runs it on linux/arm64 (with the rest of the suite),
 windows/amd64 and windows/386.

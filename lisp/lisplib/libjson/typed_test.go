@@ -157,7 +157,7 @@ func TestTypedGolden(t *testing.T) {
 		{"float -Inf", lisp.Float(math.Inf(-1)), `"~z-INF"`},
 		{"string", lisp.String("hé 世界"), `"hé 世界"`},
 		{"empty string", lisp.String(""), `""`},
-		{"string escapes", lisp.String("a\"b\\c\n\x01\x1f\x7f</>&"), `"a` + bs + `"b` + bs + bs + `c` + bs + `n` + bs + `u0001` + bs + `u001f` + "\x7f</>&\""},
+		{"string escapes", lisp.String("a\"b\\c\n\x01\x1f\x7f</>&"), `"a` + bs + `"b` + bs + bs + `c` + bs + `n` + bs + `u0001` + bs + `u001f` + "\x7f" + `\u003c/\u003e\u0026"`},
 		{"string tilde", lisp.String("~x"), `"~~x"`},
 		{"string caret", lisp.String("^ "), `"^ "`},
 		{"string backtick", lisp.String("`a"), "\"`a\""},
@@ -328,16 +328,19 @@ func TestTypedCanonizedSequences(t *testing.T) {
 	}
 }
 
-// TestTypedJCSKeyOrder: members sort by UTF-16 code units, which puts a
-// character above U+FFFF before one in U+E000-U+FFFF (RFC 8785 3.2.3).
-func TestTypedJCSKeyOrder(t *testing.T) {
+// UTF-8 byte order matches plain JSON string-key order. Astral characters
+// follow U+E000-U+FFFF, unlike the UTF-16 order specified by RFC 8785.
+func TestTypedUTF8KeyOrder(t *testing.T) {
 	m := tsmap(t, lisp.String("￿"), lisp.Int(1), lisp.String("😀"), lisp.Int(2), lisp.String("a"), lisp.Int(3))
 	b, err := DumpTyped(m)
 	require.NoError(t, err)
-	assert.Equal(t, `{"a":3,"😀":2,"`+"￿"+`":1}`, string(b))
+	assert.Equal(t, `{"a":3,"`+"￿"+`":1,"😀":2}`, string(b))
+	plain, err := Dump(m, false)
+	require.NoError(t, err)
+	assert.Equal(t, plain, b)
 	_, err = LoadTyped(b)
 	require.NoError(t, err)
-	_, err = LoadTyped([]byte(`{"a":3,"` + "￿" + `":1,"😀":2}`))
+	_, err = LoadTyped([]byte(`{"a":3,"😀":2,"` + "￿" + `":1}`))
 	require.Error(t, err)
 }
 

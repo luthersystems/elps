@@ -17,11 +17,12 @@ import (
 
 // LoadTyped decodes b, which must be one complete document exactly as
 // DumpTyped writes it.  Anything DumpTyped could not have produced is
-// rejected with an error: whitespace, a member out of JCS order or
+// rejected with an error: whitespace, a member out of UTF-8 byte order or
 // duplicated, number text other than the canonical text of its value (1.50,
 // 1E5, -0, 01, an int written as a float or past 2^53 as a number), an
-// escape other than the minimal one, an unknown or misused tag, a tagged
-// empty list, non-canonical base64, trailing bytes, and input over any
+// escape outside the plain encoder's set or a missing mandatory escape,
+// an unknown or misused tag, a tagged empty list, non-canonical base64,
+// trailing bytes, and input over any
 // configured limit. It never panics on malformed input.
 //
 // Every value it returns is freshly allocated and shares no storage with b
@@ -150,6 +151,9 @@ func (d *typedDecoder) rawString() ([]byte, error) {
 		if c == '\\' || c < 0x20 {
 			break
 		}
+		if needsUnicodeEscape(d.b[d.i:]) {
+			return nil, d.errorf("missing mandatory escape")
+		}
 		d.i++
 	}
 	out := append(d.str[:0], d.b[start:d.i]...)
@@ -165,11 +169,16 @@ func (d *typedDecoder) rawString() ([]byte, error) {
 			return out, nil
 		case c < 0x20:
 			return nil, d.errorf("unescaped control character")
+		case needsUnicodeEscape(d.b[d.i:]):
+			return nil, d.errorf("missing mandatory escape")
 		case c != '\\':
 			// Copy the run up to the next quote, escape or control
 			// character in one append.
 			j := d.i + 1
 			for j < len(d.b) && d.b[j] != '"' && d.b[j] != '\\' && d.b[j] >= 0x20 {
+				if needsUnicodeEscape(d.b[j:]) {
+					break
+				}
 				j++
 			}
 			out = append(out, d.b[d.i:j]...)
@@ -195,13 +204,11 @@ func (d *typedDecoder) rawString() ([]byte, error) {
 		case 't':
 			out = append(out, '\t')
 		case 'u':
-			// Only a control character without a short form, as
-			// 00 and two lowercase hex digits.
-			x, ok := canonicalControlEscape(d.b[d.i:])
+			x, ok := canonicalUnicodeEscape(d.b[d.i:])
 			if !ok {
 				return nil, d.errorf("non-canonical escape")
 			}
-			out = append(out, x)
+			out = utf8.AppendRune(out, x)
 			d.i += 4
 		default:
 			return nil, d.errorf("non-canonical escape")
@@ -210,11 +217,32 @@ func (d *typedDecoder) rawString() ([]byte, error) {
 	return nil, d.errorf("unterminated string")
 }
 
-// canonicalControlEscape reads the four hex digits of an escape that must
-// be one appendJSONString writes: a control character without a short
-// form, as 00 and two lowercase hex digits.
-func canonicalControlEscape(b []byte) (byte, bool) {
-	if len(b) < 4 || b[0] != '0' || b[1] != '0' || (b[2] != '0' && b[2] != '1') {
+// needsUnicodeEscape identifies the five non-control runes that the plain
+// encoder always escapes. The byte scan leaves UTF-8 validation to rawString.
+func needsUnicodeEscape(b []byte) bool {
+	return b[0] == '<' || b[0] == '>' || b[0] == '&' ||
+		(len(b) >= 3 && b[0] == 0xe2 && b[1] == 0x80 && (b[2] == 0xa8 || b[2] == 0xa9))
+}
+
+// canonicalUnicodeEscape accepts exactly appendJSONString's lowercase
+// Unicode escapes: controls without short forms, <, >, &, U+2028 and U+2029.
+func canonicalUnicodeEscape(b []byte) (rune, bool) {
+	if len(b) < 4 {
+		return 0, false
+	}
+	switch string(b[:4]) {
+	case "003c":
+		return '<', true
+	case "003e":
+		return '>', true
+	case "0026":
+		return '&', true
+	case "2028":
+		return '\u2028', true
+	case "2029":
+		return '\u2029', true
+	}
+	if b[0] != '0' || b[1] != '0' || (b[2] != '0' && b[2] != '1') {
 		return 0, false
 	}
 	var lo byte
@@ -231,7 +259,7 @@ func canonicalControlEscape(b []byte) (byte, bool) {
 	case '\b', '\f', '\n', '\r', '\t':
 		return 0, false
 	}
-	return x, true
+	return rune(x), true
 }
 
 // stringValue interprets a string in value position.
@@ -567,7 +595,7 @@ func (d *typedDecoder) object(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if prev != nil && compareJCS(prev, s) >= 0 {
+		if prev != nil && bytes.Compare(prev, s) >= 0 {
 			return nil, d.errorf("members out of order or duplicated")
 		}
 		// s aliases scratch the value below may reuse.

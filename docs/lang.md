@@ -1751,7 +1751,7 @@ and `'sym` come back as strings, a list comes back as a vector.
 
 Ordinary values stay ordinary JSON. Sequences are Transit-aligned: vectors
 are JSON arrays, nonempty lists use Transit's `"~#list"` tag, and the empty
-list / nil is `null`, matching plain `json:dump`. Only the cases plain JSON
+list / nil is `null`, matching plain `json:dump-string`. Only the cases plain JSON
 cannot tell apart get a short tag, a string beginning with `~`:
 
 <!-- typedjson:table elps=1 plain=2 typed=3 -->
@@ -1760,6 +1760,7 @@ cannot tell apart get a short tag, a string beginning with `~`:
 | `5` | `5` | `5` |
 | `5.0` | `5` | `5.0` |
 | `"s"` | `"s"` | `"s"` |
+| `"<>&"` | `"\u003c\u003e\u0026"` | `"\u003c\u003e\u0026"` |
 | `:kw` | `":kw"` | `"~:kw"` |
 | `'sym` | `"sym"` | `"~$sym"` |
 | `true` | `true` | `true` |
@@ -1811,6 +1812,8 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 ; => 'array
 (json:load-typed "null")
 ; => ()
+(json:load-typed (json:dump-string "<>&"))
+; => "<>&"
 (float? (json:load-typed "5.0"))
 ; => true
 (json:load-typed "\"^x\"")
@@ -1825,9 +1828,25 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 ; => json:load-typed: typed json: offset 3: invalid value
 ```
 
-The output is canonical: the same value always gives the same bytes (keys
-sorted, no spaces), so it can be hashed or used as a key. `1` and `1.0`
-encode differently. Functions, native values, error values, nested quotes
+The canonical form is **RFC 8785 number text + UTF-8 byte key order + the
+plain encoder's escape set**. Keys sort by UTF-8 bytes after Transit prefixes,
+before JSON escaping, matching plain string-key order. Strings use Go JSON
+escapes, with `<`, `>`, `&`, U+2028 and U+2029 always written as `\u003c`,
+`\u003e`, `\u0026`, `\u2028` and `\u2029`. The decoder requires this exact
+escape set and rejects unnecessary escapes. Floats without a decimal point
+or exponent gain `.0`, and signed zero stays `-0.0`: plain `5.0` dumps as
+`5`, typed as `5.0`, while exponent forms such as `1e+21` match.
+
+These rules are chosen for byte compatibility with existing stored JSON and
+hashes and cache/state keys built from `json:dump-bytes` and
+`json:dump-string` output. It is **not strict RFC 8785**: UTF-8 instead of
+UTF-16 order, the five extra Unicode escapes, float type/signed-zero
+preservation and Transit tags are deliberate differences. Outside JCS
+verifiers will not match when those differences apply.
+
+The same value always gives the same bytes (sorted keys, no spaces), so it
+can be hashed or used as a key. `1` and `1.0` encode differently.
+Functions, native values, error values, nested quotes
 and values that contain themselves raise an error. See the [typed JSON cheat sheet](typed-json.md)
 for every tag, `jq` and CouchDB, and
 [internals/typed-json.md](internals/typed-json.md) for the exact rules and

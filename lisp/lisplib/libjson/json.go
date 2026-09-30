@@ -139,8 +139,15 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			plain JSON arrays, nonempty lists are tagged, and nil is null.
 			Only a leading "~" in strings or string map keys is escaped as "~~";
 			leading caret and backquote stay unchanged.
-			The same value always gives the same bytes (keys sorted, no
-			spaces), so 1 and 1.0 differ. Raises an error for
+			Canonical form: RFC 8785 number text + UTF-8 byte key order +
+			the plain encoder's escape set. Keys sort after Transit prefixes,
+			before JSON escaping. Like dump-string, always escapes <, >, &,
+			U+2028 and U+2029 as lowercase Unicode escapes. Floats gain .0
+			when their number text has no decimal point or exponent; -0.0
+			keeps its sign. This is not strict RFC 8785: outside JCS verifiers
+			will not match when these differences apply.
+			The same value always gives the same bytes (no spaces), so
+			1 and 1.0 differ. Raises an error for
 			functions, native values, error values, nested quotes and
 			values that contain themselves.
 			Costs one step per KiB of output.
@@ -150,6 +157,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			  ; => "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}"
 			  (to-string (json:dump-typed (vector "^draft" "~draft")))
 			  ; => "[\"^draft\",\"~~draft\"]"
+			  (equal? (json:dump-typed "<>&") (json:dump-bytes "<>&"))
+			  ; => true
 
 			See docs/typed-json.md for every tag.`),
 		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,
@@ -161,14 +170,19 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			text; a "~" before either is an unknown tag.
 			Raises an error for anything dump-typed would not write, such as spaces,
 			unsorted keys, strings starting with an unescaped "~" or unknown
-			tags (including "~#vector") or tagged empty lists. The value is new
+			tags (including "~#vector") or tagged empty lists. Keys must be in
+			UTF-8 byte order; strings require exactly dump-string's escapes,
+			including Unicode escapes for <, >, &, U+2028 and U+2029.
+			Unnecessary escapes and missing mandatory escapes are rejected. The value is new
 			and shares nothing. Costs one step per KiB of input.
 
 			Example:
 			  (json:load-typed "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}")
 			  ; => (sorted-map 'id 7 'tags '(:a))
 			  (json:load-typed "\"^draft\"")
-			  ; => "^draft"`),
+			  ; => "^draft"
+			  (json:load-typed (json:dump-string "<>&"))
+			  ; => "<>&"`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON

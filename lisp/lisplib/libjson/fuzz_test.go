@@ -4,6 +4,8 @@ package libjson_test
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 
@@ -155,14 +157,24 @@ func FuzzLoadJSON(f *testing.F) {
 //
 // The comparison is therefore made on the far side of every lossy conversion:
 // the SECOND decode against the FIRST, exactly as FuzzLoadJSON does.
+//
+// Each input also supplies a float64 bit pattern for the typed/plain number
+// text comparison. It permits only the documented .0 suffix or Transit tag
+// differences and checks type-faithful round-trip bits (except NaN payloads).
 func FuzzDumpJSON(f *testing.F) {
 	for _, seed := range fuzzval.Seeds() {
 		for _, mode := range stringNumberModes() {
 			f.Add(seed, mode)
 		}
 	}
+	for _, x := range []float64{0, math.Copysign(0, -1), 1, -1, 0.1, 1e-6, 1e-7, 1e20, 1e21, math.SmallestNonzeroFloat64, math.MaxFloat64, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		f.Add(binary.LittleEndian.AppendUint64(nil, math.Float64bits(x)), false)
+	}
 	f.Fuzz(func(t *testing.T, data []byte, stringNums bool) {
 		before := lisp.TakeSingletonSnapshot()
+		var bits [8]byte
+		copy(bits[:], data)
+		checkTypedNumberText(t, lisp.Float(math.Float64frombits(binary.LittleEndian.Uint64(bits[:]))))
 
 		env := newJSONEnv(t)
 		gen := fuzzval.New(data, env)

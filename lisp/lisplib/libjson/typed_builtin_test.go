@@ -44,6 +44,11 @@ func TestTypedBuiltins(t *testing.T) {
 			{`(equal? (vector 1 2) (json:load-typed "[1,2]"))`, `true`},
 			{`(json:load-typed "[\"~#list\",[1,2]]")`, `'(1 2)`},
 		}},
+		{"plain escaping compatibility", [][2]string{
+			{`(equal? (json:dump-typed "<>&") (json:dump-bytes "<>&"))`, `true`},
+			{`(json:load-typed (json:dump-string "<>&"))`, `"<>&"`},
+			{`(equal? (sorted-map "<" (vector 1 0.5 "&>")) (json:load-typed (json:dump-string (sorted-map "<" (vector 1 0.5 "&>")))))`, `true`},
+		}},
 		{"round trip", [][2]string{
 			{`(json:load-typed (json:dump-typed '(1 2.5 "s" sym :kw (nested))))`, `'(1 2.5 "s" sym :kw '(nested))`},
 			{`(let ((v (vector 1 (sorted-map "b" 2 :a 1 7 'x)))) (equal? v (json:load-typed (json:dump-typed v))))`, `true`},

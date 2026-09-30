@@ -1037,42 +1037,35 @@ func (enc *encoder) encodeLString(v *lisp.LVal, g encodeGuard) error {
 // encoding/json escapes it (TestPlainStringBytesMatchEncodingJSON).
 func (enc *encoder) encodeString(s string) error {
 	enc.buf.Grow(len(s) + 2)
-	enc.buf.Write(appendJSONString(enc.buf.AvailableBuffer(), s, false))
+	enc.buf.Write(appendJSONString(enc.buf.AvailableBuffer(), s))
 	return nil
 }
 
 // appendJSONString appends s to b as a JSON string.  It is the one string
 // writer of both modes, so their escaping cannot drift apart.
 //
-// Plain mode (canonical false) escapes what encoding/json escapes: control
+// Both modes escape what encoding/json escapes: control
 // characters, '"', '\\', the HTML characters <, > and &, U+2028 and U+2029,
 // and writes each invalid UTF-8 byte as U+FFFD.
 //
-// Canonical mode (the typed encoder) escapes what RFC 8785 section 3.2.2.2
-// requires and nothing more: '"', '\\' and the control characters below
-// 0x20, the five with short forms as \b \f \n \r \t and the rest as a
-// lowercase six-character escape.  The caller has checked that s is valid
-// UTF-8.  Runs of bytes that need no escape are copied in one append.
+// The five controls with short forms use \b \f \n \r \t, the rest use
+// lowercase six-character escapes. Typed callers reject invalid UTF-8 before
+// calling this writer. Runs of bytes needing no escape use one append.
 //
 // NOTE:  adapted from encodeState.string in encoding/json.
 // https://cs.opensource.google/go/go/+/refs/tags/go1.22.1:src/encoding/json/encode.go;l=956
-func appendJSONString[T string | []byte](b []byte, s T, canonical bool) []byte {
-	return appendJSONStringBody(append(b, '"'), s, canonical)
+func appendJSONString[T string | []byte](b []byte, s T) []byte {
+	return appendJSONStringBody(append(b, '"'), s)
 }
 
 // appendJSONStringBody is appendJSONString after the opening quote, for a
 // caller that writes a prefix inside the quotes first.
-func appendJSONStringBody[T string | []byte](b []byte, s T, canonical bool) []byte {
+func appendJSONStringBody[T string | []byte](b []byte, s T) []byte {
 	const hex = "0123456789abcdef"
 	start := 0
 	for i := 0; i < len(s); {
 		if c := s[i]; c < utf8.RuneSelf {
-			if canonical {
-				if c >= 0x20 && c != '"' && c != '\\' {
-					i++
-					continue
-				}
-			} else if htmlSafeSet[c] {
+			if htmlSafeSet[c] {
 				i++
 				continue
 			}
@@ -1092,7 +1085,7 @@ func appendJSONStringBody[T string | []byte](b []byte, s T, canonical bool) []by
 			case '\t':
 				b = append(b, 't')
 			default:
-				// The other control characters and, in plain mode, <, >
+				// The other control characters and <, >
 				// and &, which can lead to security holes when
 				// user-controlled strings are rendered into JSON and
 				// served to some browsers.
@@ -1102,11 +1095,7 @@ func appendJSONStringBody[T string | []byte](b []byte, s T, canonical bool) []by
 			start = i
 			continue
 		}
-		if canonical {
-			i++
-			continue
-		}
-		c, size := utf8.DecodeRuneInString(string(s[i:])) // plain mode passes only strings
+		c, size := utf8.DecodeRuneInString(string(s[i:]))
 		if c == utf8.RuneError && size == 1 {
 			b = append(b, s[start:i]...)
 			b = append(b, '\\', 'u', 'f', 'f', 'f', 'd')
@@ -1119,7 +1108,7 @@ func appendJSONStringBody[T string | []byte](b []byte, s T, canonical bool) []by
 		// They are both technically valid characters in JSON strings,
 		// but don't work in JSONP, which has to be evaluated as JavaScript,
 		// and can lead to security holes there. It is valid JSON to
-		// escape them, so plain mode does so unconditionally.
+		// escape them, so both modes do so unconditionally.
 		// See http://timelessrepo.com/json-isnt-a-javascript-subset for discussion.
 		if c == 0x2028 || c == 0x2029 {
 			b = append(b, s[start:i]...)
