@@ -1695,81 +1695,59 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 9007199254740993
 ```
 
-### Canonical encoding (`codec`)
+### Typed JSON (`json:dump-typed`, `json:load-typed`)
 
-The `codec` standard-library package turns a value into bytes with
-`codec:encode` and turns those bytes back into the same value with
-`codec:decode`.  The encoding is *canonical*: values of the same
-types and structure always produce the same bytes, whatever order a map's
-entries were added in and whichever cells happen to be shared, on every
-machine and in every process.  It is type-faithful, so it is finer than
-`equal?`: `1` and `1.0` are `equal?` but encode differently, and so do
-`(sorted-map "a" 1)` and `(sorted-map 'a 1)`, whose keys differ in type.
-That makes the bytes suitable as a cache or memoization key, as the input to
-a content hash, as a deterministic test fixture, and for passing a value to
-another process.
+`json:dump-bytes` writes ordinary JSON, which cannot say whether a number was
+an int or a float, a sequence a list or a vector, a string a symbol or a
+keyword. `json:dump-typed` writes *typed* JSON that keeps all of it, and
+`json:load-typed` reads it back to a value of the same types and structure:
 
 ```lisp
-elps> (codec:encode '(1 "a" :k))
-#<bytes 1 8 3 1 2 4 1 97 7 1 107>
-elps> (codec:decode (codec:encode (vector 1.5 (sorted-map "b" 2 :a 1))))
-(vector 1.5 (sorted-map ':a 1 "b" 2))
-elps> (equal? (codec:encode (sorted-map "x" 1 "y" 2))
-              (codec:encode (sorted-map "y" 2 "x" 1)))
-true
+(to-string (json:dump-typed (sorted-map 'amount 125000 'rate 0.0375 'status :pending
+                                        'steps '(:kyc :fund) 'sig (to-bytes "hi"))))
+; => "{\"~$amount\":125000,\"~$rate\":0.0375,\"~$sig\":\"~baGk=\",\"~$status\":\"~:pending\",\"~$steps\":[\"~#list\",[\"~:kyc\",\"~:fund\"]]}"
 ```
 
-A memoized function can key its cache on the encoded arguments, so two
-argument lists of the same types and structure hit the same entry even when
-they are different objects:
+The tags are those of [Transit](https://github.com/cognitect/transit-format):
 
-```lisp
-(set 'cache (sorted-map))
-(defun area (shape)
-  (let* ((k (to-string (codec:encode shape)))
-         (hit (get cache k)))
-    (or hit
-        (let ((a (* (get shape "w") (get shape "h"))))
-          (assoc! cache k a)
-          a))))
-(area (sorted-map "w" 3 "h" 4))   ; computes 12
-(area (sorted-map "h" 4 "w" 3))   ; same key, served from the cache
-```
+| Value | Typed JSON |
+|---|---|
+| int below 2^53 in magnitude | `42` |
+| other int | `"~i9007199254740993"` |
+| float | `1.5`, `1.0`, `-0.0`, `1e+21` (always a `.` or an exponent) |
+| NaN, +Inf, -Inf | `"~zNaN"`, `"~zINF"`, `"~z-INF"` |
+| string | `"text"`; one starting with `~`, `^` or `` ` `` gets a leading `~`: `"~~x"` |
+| symbol | `"~$name"`; `true` and `false` are JSON `true` and `false` |
+| keyword | `"~:name"` |
+| bytes | `"~b"` and standard padded base64 |
+| list, `()` included | `["~#list",[...]]` |
+| vector | `[...]` |
+| array of another rank | `["~#array",[[dims...],[cells...]]]` |
+| sorted map | `{...}`; keys are strings as above, or `"~$sym"`, `"~:kw"`, `"~?t"`/`"~?f"`, `"~i7"` |
+| tagged value (`deftype`) | `["~#tagged",["type-name",data]]` |
 
-What can be encoded: ints, floats, strings, bytes, symbols, keywords,
-lists, arrays of any rank, sorted-maps and tagged values (see
-[User-Defined Types](#user-defined-types)).  `true` and `false` are symbols
-and round-trip as such.  Functions, errors and native Go values raise an
-error, as does a value that contains itself.
+The output is *canonical*: members are sorted (RFC 8785 order), numbers are
+written in RFC 8785 form, strings use the fewest escapes, and there is no
+whitespace. So values of the same types and structure always give the same
+bytes, whatever order a map was built in, and the bytes can be hashed, used as
+a key or stored. The encoding is finer than `equal?`: `1` and `1.0` encode
+differently, as do a string and a symbol of one spelling.
 
-Details that are part of the format:
+`json:load-typed` accepts bytes or a string, and only exactly what
+`json:dump-typed` writes: whitespace, members out of order, `1.50`, an
+unneeded escape, an unknown tag or `null` raise an error. It returns a fresh
+value that shares nothing with any other. Lists come back as data lists, and a
+tagged value comes back with its type name and data without running its
+`deftype` constructor.
 
-- **Floats** keep their exact bits, including `-0.0`.  Every NaN is written
-  as the same NaN.
-- **Lists** always come back quoted, as the data lists `list` returns, even
-  if the encoded list was an unquoted form.  Whether a
-  list was quoted is not data and is not recorded.
-- **Shared structure** is written out in full at every place it occurs, and
-  `codec:decode` never returns two references to one cell: every value it
-  returns is new and shares nothing, so mutating it cannot affect anything
-  else.
-- **Tagged values** keep their type name and data.  `codec:decode` does not
-  run the type's constructor, and does not check the value against any type
-  defined with `deftype`: the bytes may name a type this program never
-  defined.
-- **Limits**: `codec:decode` accepts only bytes `codec:encode` could have
-  produced and raises an error on anything else, including extra trailing
-  bytes.  Nesting deeper than 1024 levels, more than 2^20 values, or an
-  encoding larger than 16 MiB (or the runtime's allocation limit, if lower)
-  raises an error.
-- **Steps**: `codec:encode` costs one step per started KiB of output,
-  charged as the output grows, so a step budget or a cancelled context stops
-  a large encode part way; `codec:decode` costs one step per started KiB of
-  input, charged before it decodes.
-
-The format begins with a version byte and is frozen: bytes written today
-decode the same way in every later release.  The byte layout is described in
-[docs/internals/canonical-codec.md](internals/canonical-codec.md).
+`json:dump-typed` raises an error for a function, a native value, an error, a
+string that is not valid UTF-8 and a value that contains itself. Shared
+structure is written in full at each occurrence. Both functions stop at limits
+on nesting depth (1024), size (16 MiB, or the runtime's allocation cap if
+lower) and value count (2^20). `json:dump-typed` costs one step per started KiB
+of output, charged as it writes; `json:load-typed` one per started KiB of
+input, charged first. The format is specified in
+[internals/typed-json.md](internals/typed-json.md).
 
 ## Packages
 

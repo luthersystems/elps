@@ -16,15 +16,14 @@ func TestTemplatePublicationAllocationBudget(t *testing.T) {
 	for _, tc := range []struct {
 		functions int
 		base      float64
-	}{{0, 524}, {250, 1783}} {
+	}{{0, 514}, {250, 1774}} {
 		t.Run(strconv.Itoa(tc.functions), func(t *testing.T) {
 			env := templatePlanBenchmarkFixture(t, tc.functions)
 			allocations := testing.AllocsPerRun(20, func() { snapshotFixture(t, env) })
 			// Lazy bases retain the compiler's binding descriptors and adopt
 			// the private export copy: neither needs a second slice. Scratch
 			// must not add allocations per binding, builtin environment or
-			// sealed scalar. Keep budgets at or below the measured baseline. The codec
-			// package (#747) adds 10 / 9 per publication and 1 per fork.
+			// sealed scalar. Keep budgets at or below the measured baseline.
 			if allocations > tc.base*1.05 {
 				t.Fatalf("publication used %g allocations, want within 5%% of %g", allocations, tc.base)
 			}
@@ -36,7 +35,7 @@ func TestTemplateForkAllocationBudget(t *testing.T) {
 	for _, tc := range []struct {
 		functions int
 		base      float64
-	}{{0, 28}, {250, 33}} {
+	}{{0, 27}, {250, 32}} {
 		t.Run(strconv.Itoa(tc.functions), func(t *testing.T) {
 			tmpl := snapshotFixture(t, templatePlanBenchmarkFixture(t, tc.functions))
 			allocations := testing.AllocsPerRun(100, func() {

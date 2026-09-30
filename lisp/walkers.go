@@ -267,12 +267,6 @@ var memoExemptions = []memoExemption{
 			"carries Native across -- only that it is unobservable, which is what the paragraph above establishes.",
 	},
 	{
-		Subject: "lisp.canonEncoder.path",
-		Reason: "the canonical encoder's descent path (lisp/codec.go), used only to reject cycles. The encoder " +
-			"writes bytes, rebuilds no value, and by design reproduces no sharing: shared substructure is " +
-			"written in full at each occurrence.",
-	},
-	{
 		Subject: "lisp.cycleState.path",
 		Reason:  "the cycle guard's descent path (lisp/cycle.go). It bounds a walk; it holds no copy and reproduces no sharing.",
 	},

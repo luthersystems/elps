@@ -23,7 +23,7 @@ func TestLazyTableAllowlist(t *testing.T) {
 		"Package.slotValue", "Package.ensureBaseValues",
 		"sortedmap.entry", "sortedmap.forceAll", "sortedmap.discardPending", "Package.reserve",
 		"Package.symbolTable", "Package.thaw", "sortedmap.Entries", "sortedmap.copyInto", "sortedmap.entriesWithInts", "setTemplateFrameSortedMap",
-		"LVal.AppendSortedPairs", "LVal.mapRange", "copier.mapData", "templateInventory.mapData",
+		"LVal.AppendSortedPairs", "LVal.AppendMapKeyPairs", "LVal.mapRange", "copier.mapData", "templateInventory.mapData",
 		"templateCompiler.mapData", "templateCompiler.packageDescriptor", "admitPackage",
 		"sortedmap.Set", "sortedmap.Del", "sortedmap.Len", "sortedmap.Keys", "sortedmap.keysWithInts", "sortedmap.emptyLike",
 		"Package.SymbolNames", "Package.putName", "Package.putSlot", "LVal.copyMapData",

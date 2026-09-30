@@ -129,6 +129,29 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			The :string-numbers keyword controls whether JSON numbers are
 			returned as strings. The :exact-integers keyword controls whether
 			JSON integer literals are returned as ints rather than floats.`),
+		libutil.FunctionDoc("dump-typed", lisp.Formals("object"), DumpTypedBuiltin,
+			`Serializes an ELPS value to canonical typed JSON and returns
+			bytes.  Unlike dump-bytes it keeps every type -- int versus float,
+			list versus vector, symbols, keywords, bytes, map key types,
+			tagged values and arrays of any rank -- with Transit's tags
+			("~:kw", "~$sym", "~b<base64>", ["~#list",[...]]), and it is
+			canonical (RFC 8785 member order and number text, no
+			whitespace): values of the same types and structure always give
+			the same bytes, so the result can be hashed, used as a key or
+			stored and read back with load-typed.  It is finer than equal?:
+			1 and 1.0 encode differently.  Functions, native values, errors,
+			strings that are not valid UTF-8 and values that contain
+			themselves raise an error.  Costs one step per started KiB of
+			output, charged as the output grows.`),
+		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,
+			`Parses bytes or a string that dump-typed produced and returns
+			the value, with every type as it was dumped.  Anything dump-typed
+			could not have produced -- whitespace, members out of order,
+			non-canonical numbers or escapes, unknown tags -- raises an
+			error.  The value is newly allocated and shares nothing with
+			any other value; a tagged value is not checked against deftype.
+			Costs one step per started KiB of input, charged before
+			decoding.`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON

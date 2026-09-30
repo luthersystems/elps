@@ -7,8 +7,8 @@ guides, see the parent [docs](..) directory.
 
 - [sealed-ast.md](sealed-ast.md): the `IsSealed` write protection for shared
   program literals, its verification layers, and the embedder contract.
-- [canonical-codec.md](canonical-codec.md): the frozen byte format of
-  `codec:encode` / `EncodeCanonical`, and why each choice was made.
+- [typed-json.md](typed-json.md): the frozen canonical typed JSON format of
+  `json:dump-typed` / `libjson.DumpTyped`, and why each choice was made.
 - [walker-oracle.md](walker-oracle.md): the behavioral guard shared by every
   value-rebuilding walker.
 - [tailrec-optimization.md](tailrec-optimization.md): how the interpreter
