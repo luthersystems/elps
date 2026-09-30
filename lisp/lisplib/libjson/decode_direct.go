@@ -95,9 +95,6 @@ func (d *directDecoder) value() *lisp.LVal {
 			if d.fail {
 				return nil
 			}
-			if len(s) == 0 || s[0] != '~' {
-				return lisp.String(string(s))
-			}
 			v, err := d.semantic.stringValue(s)
 			if err != nil {
 				d.reject(err)
