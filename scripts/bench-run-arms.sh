@@ -32,15 +32,19 @@
 # in benchmark.yml. Writes bench-baseline.txt and bench-current.txt in $PWD.
 #
 # Run locally as:  BENCH_COUNT=3 scripts/bench-run-arms.sh
+#
+# `-skip='Parallel$'`: RunParallel benchmarks (named *Parallel, which
+# ci-gates-test enforces) measure contention, which this job's GOMAXPROCS=1
+# cannot express; bench-run-parallel.sh measures them at 4 instead (#767).
 set -euo pipefail
 
 : > bench-baseline.txt
 : > bench-current.txt
 for round in $(seq 1 "${BENCH_COUNT}"); do
   echo "::group::round ${round}/${BENCH_COUNT}"
-  (cd base && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+  (cd base && go test -bench=. -skip='Parallel$' -benchmem -benchtime=100ms -count=1 \
     -run='^$' -timeout=10m ./...) | tee -a bench-baseline.txt
-  (cd pr && go test -bench=. -benchmem -benchtime=100ms -count=1 \
+  (cd pr && go test -bench=. -skip='Parallel$' -benchmem -benchtime=100ms -count=1 \
     -run='^$' -timeout=10m ./...) | tee -a bench-current.txt
   echo "::endgroup::"
 done

@@ -79,54 +79,9 @@ env:
   # on this pool -- and note that lowering it cannot hide a regression, it can
   # only convert one into "re-measure".
   BENCH_VARIANCE_CEILING_PCT: "30"
-  # Pinned, not inherited from the runner's core count. `go test` appends
-  # GOMAXPROCS to every benchmark name (EnvGet-2, EnvGet-4), and benchstat
-  # pairs rows by that full name -- so two arms measured at different core
-  # counts share NO names and benchstat pairs nothing, from a table that looks
-  # entirely normal. Pinning it means a change to `runs-on` -- a different
-  # line, in a different context, made by someone with no reason to think they
-  # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
-  # is the backstop that names the failure if this pin is ever removed.
-  #
-  # PINNED TO 1, NOT 2 (issue #767). It was 2, and on the 4-vCPU shared ARM
-  # runner that made allocation-heavy rows measure GC scheduling rather than
-  # code. With 2 Ps the concurrent GC runs its background mark workers on the
-  # second P, so how much GC work a timed loop absorbs (assists and
-  # write-barrier time on its own thread, versus marking done in parallel on
-  # another vCPU) depends on how the OS schedules that thread on a machine it
-  # shares. Measured on this runner with IDENTICAL code in both arms (PR #771,
-  # 10 interleaved rounds each):
-  #
-  #   row                                   GOMAXPROCS=2   GOMAXPROCS=1   GOGC=off
-  #   SchemaCaptures/construct-map          +/-6-13%       +/-1%          +/-1%
-  #   PathConstruct/practical/key.index.key +/-4-12%       +/-1-5%        +/-0%
-  #
-  # and zero-allocation rows sat at +/-1% either way. Real PRs showed the
-  # same: #763 changed no Go code, and its PathConstruct rows came out +17-19%
-  # on one attempt and -11 to -15% on the re-run. GOGC=off removes the noise
-  # too, but by taking GC cost out of sec/op; one P keeps that cost and makes
-  # it deterministic, so the gate still sees an allocation regression's time.
-  #
-  # Consequences, all deliberate:
-  #
-  #   * `go test` prints no suffix at GOMAXPROCS=1, so rows are named
-  #     `EnvGet`, not `EnvGet-2`. Both arms are renamed together, so the gate
-  #     is unaffected; only a cross-run look at raw results recorded before
-  #     #767 has to strip the old suffix. This is the baseline reset.
-  #   * absolute sec/op rises (GC now runs on the timed thread): ~20% on the
-  #     allocation-heavy rows above. Nothing compares across that change.
-  #   * BenchmarkPackageGetFunParallel runs one goroutine here, so in this
-  #     gate it measures single-P lookup cost, not contention.
-  #
-  # These benchmarks are single-goroutine, so this constrains only the
-  # runtime's background work (GC marker Ps), which is exactly the part that
-  # was varying. scripts/ci-gates-test.sh fails if this is raised.
-  #
-  # Absolute numbers are of course NOT comparable with results recorded on the
-  # old runner -- different silicon is different silicon. Nothing in the gate
-  # depends on that: it compares two arms measured against each other, here,
-  # today.
-  GOMAXPROCS: "1"
+  # GOMAXPROCS is NOT set here. It is pinned per job -- 1 on the gated
+  # `benchmark` job, 4 on `benchmark-parallel` -- because a workflow-level
+  # value would reach both (#767). See the note on the `benchmark` job.
 
 # DOCS-ONLY PULL REQUESTS. The `changes` job runs scripts/docs-only-changes.sh
 # and the heavy jobs below carry `if: needs.changes.outputs.docs_only != 'true'`,
@@ -310,8 +265,8 @@ jobs:
     # sits on one 4-vCPU ARM fleet. What was checked before moving a gate that
     # adjudicates PRs:
     #
-    #   * MEASUREMENT CONDITIONS. GOMAXPROCS is pinned at the workflow level
-    #     (now 1, see #767) -- it is not derived from the runner and did not
+    #   * MEASUREMENT CONDITIONS. GOMAXPROCS is pinned in this job's env
+    #     (1, see #767) -- it is not derived from the runner and did not
     #     follow it, so the benchmark-name suffix cannot move with `runs-on`.
     #     See the long note on GOMAXPROCS above.
     #   * INTERNAL VALIDITY IS UNAFFECTED, which is the reason this move is
@@ -345,7 +300,7 @@ jobs:
     # because both arms are measured in this job on whatever runner it lands
     # on; a swap changes the absolute numbers but never compares across
     # architectures. It cannot move the benchmark-name suffix either, because
-    # GOMAXPROCS is pinned at the workflow level.
+    # GOMAXPROCS is pinned in this job's env.
     #
     # NOTE: `runs-on` cannot read the `env` context, which is why this is a
     # literal plus a `vars` override rather than a workflow-level env var.
@@ -361,6 +316,59 @@ jobs:
     timeout-minutes: 45
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
+    env:
+      # Pinned, not inherited from the runner's core count. `go test` appends
+      # GOMAXPROCS to every benchmark name (EnvGet-2, EnvGet-4), and benchstat
+      # pairs rows by that full name -- so two arms measured at different core
+      # counts share NO names and benchstat pairs nothing, from a table that looks
+      # entirely normal. Pinning it means a change to `runs-on` -- a different
+      # line, in a different context, made by someone with no reason to think they
+      # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
+      # is the backstop that names the failure if this pin is ever removed.
+      #
+      # PINNED TO 1, NOT 2 (issue #767). It was 2, and on the 4-vCPU shared ARM
+      # runner allocation-heavy rows then varied far more than the code did. The
+      # likely mechanism -- inferred from the measurements below, not observed
+      # directly (no perf counters on this runner) -- is the concurrent GC: with 2
+      # Ps its background mark workers run on the second P, so how much GC work a
+      # timed loop absorbs depends on how the OS schedules that thread on a
+      # machine it shares. Measured on this runner with IDENTICAL code in both
+      # arms (PR #771, one experiment of 10 interleaved rounds per setting, then
+      # the PR's own full run at 1):
+      #
+      #   row                                   GOMAXPROCS=2   GOMAXPROCS=1   GOGC=off
+      #   SchemaCaptures/construct-map          +/-6-13%       +/-1%          +/-1%
+      #   PathConstruct/practical/key.index.key +/-4-12%       +/-1-5%        +/-0%
+      #
+      # and zero-allocation rows sat at +/-1% either way. Real PRs showed the
+      # same: #763 changed no Go code, and its PathConstruct rows came out +17-19%
+      # on one attempt and -11 to -15% on the re-run. GOGC=off removes the noise
+      # too, but by taking GC cost out of sec/op; one P keeps that cost and makes
+      # it deterministic, so the gate still sees an allocation regression's time.
+      #
+      # Consequences, all deliberate:
+      #
+      #   * `go test` prints no suffix at GOMAXPROCS=1, so rows are named
+      #     `EnvGet`, not `EnvGet-2`. Both arms are renamed together, so the gate
+      #     is unaffected; only a cross-run look at raw results recorded before
+      #     #767 has to strip the old suffix. This is the baseline reset.
+      #   * absolute sec/op rises (GC now runs on the timed thread): ~20% on the
+      #     allocation-heavy rows above. Nothing compares across that change.
+      #   * RunParallel benchmarks (named *Parallel, enforced by ci-gates-test)
+      #     measure contention, which one P cannot express, so this job skips
+      #     them and `benchmark-parallel` measures them at GOMAXPROCS=4.
+      #
+      # Every gated benchmark runs its timed loop on one goroutine (the only
+      # RunParallel one is skipped), so this pin constrains the runtime's
+      # background work -- GC marker Ps -- which is the part that was varying.
+      # scripts/ci-gates-test.sh fails unless this job has exactly one
+      # GOMAXPROCS assignment and it is 1.
+      #
+      # Absolute numbers are of course NOT comparable with results recorded on the
+      # old runner -- different silicon is different silicon. Nothing in the gate
+      # depends on that: it compares two arms measured against each other, here,
+      # today.
+      GOMAXPROCS: "1"
     steps:
       # Two working trees, measured on the SAME runner in the SAME job. This
       # replaces the cached-baseline design, which compared this PR against
@@ -512,6 +520,57 @@ jobs:
   # always() plus an explicit success check, because `needs` alone would SKIP
   # this job when an upstream one fails, and a skipped required check reads as
   # green rather than red.
+  # RunParallel benchmarks, measured where contention exists (#767). The gated
+  # `benchmark` job runs at GOMAXPROCS=1 and skips them (`-skip='Parallel$'`);
+  # this job measures exactly those at 4, one per vCPU of the runner, with
+  # both arms interleaved. Its VERDICT is informational (the job is in
+  # `required`'s needs, as every job must be, but only fails when the
+  # benchmarks cannot build or run): on identical code the one such benchmark
+  # (PackageGetFunParallel, ~11 ns/op) spread ~30% per arm and moved up to
+  # -28% between arms across three CI runs, at the fitness ceiling, so as a
+  # gate it would mostly say "re-measure". The verdict goes to the job summary
+  # and log; the job still goes red if the benchmarks fail to build or run.
+  # scripts/bench-run-parallel.sh carries the measurements.
+  benchmark-parallel:
+    name: Parallel Benchmarks (informational)
+    runs-on: ubuntu-24.04-arm
+    # A liveness bound: ten rounds of one sub-second benchmark per arm, plus
+    # compiling each package's tests once per arm.
+    timeout-minutes: 20
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    env:
+      # One P per vCPU of the 4-vCPU runner: contention is the point here. The
+      # -4 suffix this adds is told to benchgate via BENCH_GOMAXPROCS.
+      GOMAXPROCS: "4"
+    steps:
+      - name: Check out PR head
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          path: pr
+          persist-credentials: false
+
+      - name: Check out PR base
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: base
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+          cache-dependency-path: pr/go.sum
+
+      - name: Build the benchmark gate
+        working-directory: pr
+        run: go build -o "${GITHUB_WORKSPACE}/bin/benchgate" ./cmd/benchgate
+
+      - name: Run parallel benchmarks (both arms, interleaved; informational)
+        run: bash "${GITHUB_WORKSPACE}/pr/scripts/bench-run-parallel.sh"
+
   required:
     name: "Required: benchmark"
     # ARM for the reason on elps.yml's lint-and-test job. Note this is the
@@ -524,7 +583,7 @@ jobs:
     # here for which "stuck in_progress" and "blocks the PR forever" are the
     # same sentence.
     timeout-minutes: 5
-    needs: [changes, gates, queue-watchdog, benchmark]
+    needs: [changes, gates, queue-watchdog, benchmark, benchmark-parallel]
     if: always()
     steps:
       # NOTE: this checkout is NEW. This job previously carried its assertion

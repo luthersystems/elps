@@ -2546,18 +2546,81 @@ else
 	bad "benchmark.yml does not pin GOMAXPROCS — a runner size change would silently unpair every benchmark"
 fi
 
-# And pinned to ONE P (issue #767). With 2 Ps the concurrent GC's background
-# mark workers run on the second P, so how much GC work a timed loop absorbs
-# depends on whether the OS schedules that thread onto another vCPU of the
-# shared runner. Allocation-heavy rows then measured +/-7-20% on IDENTICAL
-# code and crossed the 15% gate on PRs that did not touch them. One P keeps GC
-# cost in sec/op but runs it on the benchmark's own thread, deterministically
-# (+/-1% on the same rows, same runner). Raising it reopens that noise.
-if grep -qE '^\s*GOMAXPROCS:\s*"?1"?\s*$' "$BENCH_WF"; then
-	ok "benchmark.yml pins GOMAXPROCS to 1 (concurrent GC cannot land on another vCPU mid-sample; #767)"
+# The GATED job measures at exactly ONE P (issue #767). With 2 Ps the
+# concurrent GC's mark workers run on the second P, and allocation-heavy rows
+# measured +/-6-13% on IDENTICAL code on the CI runner (+/-1% at one P), enough
+# to cross the 15% gate on PRs that did not touch them. So: exactly one
+# GOMAXPROCS assignment reaches the `benchmark:` job, it is 1, and no
+# workflow-level value can leak into it.
+bench_job_block() {
+	awk '/^  benchmark:$/ {on=1; print; next} on && /^  [a-z][a-z-]*:$/ {exit} on {print}' "$1"
+}
+workflow_env_block() {
+	awk '/^env:$/ {on=1; next} on && /^[a-z]/ {exit} on {print}' "$1"
+}
+check_gated_procs() { # workflow -> prints a problem, or nothing
+	local n v
+	n="$(bench_job_block "$1" | grep -cE '^\s*GOMAXPROCS:')"
+	v="$(bench_job_block "$1" | sed -nE 's/^\s*GOMAXPROCS:\s*"?([0-9]+)"?\s*$/\1/p')"
+	if workflow_env_block "$1" | grep -qE '^\s*GOMAXPROCS:'; then
+		echo "a workflow-level GOMAXPROCS applies to every job, the gated one included"
+	elif [ "$n" -ne 1 ]; then
+		echo "the benchmark job has ${n} GOMAXPROCS assignments, want exactly 1"
+	elif [ "$v" != "1" ]; then
+		echo "the benchmark job sets GOMAXPROCS=${v:-<non-numeric>}, want 1"
+	fi
+}
+procs_problem="$(check_gated_procs "$BENCH_WF")"
+if [ -z "$procs_problem" ]; then
+	ok "the gated benchmark job pins GOMAXPROCS to exactly 1 (#767)"
 else
-	bad "benchmark.yml pins GOMAXPROCS above 1 — allocation-heavy rows measure GC scheduling noise, not code (#767)"
+	bad "gated benchmark job GOMAXPROCS: ${procs_problem} -- at >1 P allocation-heavy rows measure GC scheduling, not code (#767)"
 fi
+# Negative controls: the check must be able to fail.
+PROCS_TMP="$(mktemp -d)"
+sed 's/^\(\s*\)GOMAXPROCS: "1"/\1GOMAXPROCS: "2"/' "$BENCH_WF" >"${PROCS_TMP}/two.yml"
+if [ -n "$(check_gated_procs "${PROCS_TMP}/two.yml")" ]; then
+	ok "negative control: GOMAXPROCS=2 in the gated job is caught"
+else
+	bad "negative control: GOMAXPROCS=2 in the gated job was NOT caught"
+fi
+awk '{print} /^env:$/ {print "  GOMAXPROCS: \"1\""}' "$BENCH_WF" >"${PROCS_TMP}/wf.yml"
+if [ -n "$(check_gated_procs "${PROCS_TMP}/wf.yml")" ]; then
+	ok "negative control: a workflow-level GOMAXPROCS is caught"
+else
+	bad "negative control: a workflow-level GOMAXPROCS was NOT caught"
+fi
+
+# RunParallel benchmarks measure contention, which one P cannot express, so
+# they are excluded from the gated job by name (`-skip 'Parallel$'` in
+# bench-run-arms.sh) and measured at GOMAXPROCS=4 by bench-run-parallel.sh
+# (#767). That only holds if every RunParallel benchmark is NAMED *Parallel.
+unnamed_parallel() { # dir -> Benchmark funcs that call RunParallel but are not named *Parallel
+	find "$1" -name '*_test.go' -not -path '*/testdata/*' -print0 |
+		xargs -0 awk '
+			/^func Benchmark[A-Za-z0-9_]*\(/ { match($0, /Benchmark[A-Za-z0-9_]*/); fn = substr($0, RSTART, RLENGTH); next }
+			/^}/ { fn = "" }
+			/\.RunParallel\(/ && fn != "" && fn !~ /Parallel$/ { print FILENAME ": " fn }'
+}
+np="$(unnamed_parallel "$REPO_ROOT")"
+if [ -z "$np" ]; then
+	ok "every RunParallel benchmark is named *Parallel, so the GOMAXPROCS=1 gate skips it (#767)"
+else
+	bad "RunParallel benchmark(s) not named *Parallel would run in the GOMAXPROCS=1 gate: ${np}"
+fi
+mkdir -p "${PROCS_TMP}/p"
+printf 'package p\nimport "testing"\nfunc BenchmarkFoo(b *testing.B) {\n\tb.RunParallel(func(pb *testing.PB) {})\n}\n' >"${PROCS_TMP}/p/x_test.go"
+if [ -n "$(unnamed_parallel "${PROCS_TMP}/p")" ]; then
+	ok "negative control: a RunParallel benchmark not named *Parallel is caught"
+else
+	bad "negative control: a RunParallel benchmark not named *Parallel was NOT caught"
+fi
+if grep -qE -- "-skip='Parallel\\\$'" "$BENCH_RUN_ARMS" && grep -qE -- "-bench='Parallel\\\$'" "${SCRIPT_DIR}/bench-run-parallel.sh" 2>/dev/null; then
+	ok "the gated run skips *Parallel benchmarks and the parallel job runs exactly those (#767)"
+else
+	bad "bench-run-arms.sh must -skip='Parallel\$' and bench-run-parallel.sh must -bench='Parallel\$' (#767)"
+fi
+rm -rf "$PROCS_TMP"
 
 if [ -n "$(invoked_in_any 'scripts/bench-arms-check.sh' "${BENCH_PLUMBING[@]}")" ]; then
 	ok "the benchmark plumbing INVOKES scripts/bench-arms-check.sh before comparing"
