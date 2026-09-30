@@ -19,8 +19,7 @@ import (
 
 // Entries identify one function (including its nested closures), or one
 // package variable initializer, never an entire file. Every exception needs a
-// reason, and unused exceptions fail the guard. Entries marked #766 are
-// legacy walkers to move onto the code walker.
+// reason, and unused exceptions fail the guard.
 //
 //nolint:gosec // G101: dispatch exception reasons, not credentials
 var specialOpAllowlist = map[string]string{
@@ -88,7 +87,6 @@ var specialOpAllowlist = map[string]string{
 	"minifier/minifier.go:firstDynamicEvaluation":               "recognizes runtime evaluation and quoted code",
 	"minifier/minifier.go:firstGlobalFallback":                  "recognizes forms that can reference package globals",
 	"minifier/minifier.go:preservePackageSurfaceSymbols":        "preserves names used by package-writing declarations",
-	"minifier/minifier.go:scanProgramSymbols":                   "existing minifier binding analysis; migrate separately (#766)",
 }
 
 var specialFormNames = func() map[string]bool {

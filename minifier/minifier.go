@@ -17,6 +17,7 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/formatter"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -299,36 +300,37 @@ func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSym
 	currentPkg := "user"
 	packages := map[string]bool{"user": true}
 
-	for _, expr := range exprs {
+	visit := func(expr, _ *lisp.LVal, op string, _ int) bool {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 || expr.Cells[0].Type != lisp.LSymbol {
-			continue
+			return false
 		}
-		switch expr.Cells[0].Str {
-		case "in-package":
+		head := expr.Cells[0].Str
+		switch {
+		case head == "in-package":
 			if pkg := packageName(expr.Cells[1:]); pkg != "" {
 				currentPkg = pkg
 				packages[pkg] = true
 			}
-		case "defun":
+		case head == op && op == codewalk.OpDefun:
 			if sym := topLevelDef(expr, analysis.SymFunction, currentPkg); sym != nil {
 				defs[currentPkg+"/"+sym.Name] = *sym
 			}
-		case "defmacro":
+		case head == op && op == codewalk.OpDefmacro:
 			if sym := topLevelDef(expr, analysis.SymMacro, currentPkg); sym != nil {
 				defs[currentPkg+"/"+sym.Name] = *sym
 			}
-		case "deftype":
+		case head == op && op == codewalk.OpDeftype:
 			if sym := topLevelDef(expr, analysis.SymType, currentPkg); sym != nil {
 				defs[currentPkg+"/"+sym.Name] = *sym
 			}
-		case "set":
+		case head == "set":
 			if sym := topLevelSet(expr, currentPkg); sym != nil {
 				defs[currentPkg+"/"+sym.Name] = *sym
 			}
-		case "export", "lisp:export":
+		case head == "export" || head == "lisp:export":
 			names := astutil.ExportNames(expr.Cells[1:])
 			if len(names) == 0 {
-				continue
+				return false
 			}
 			if exported[currentPkg] == nil {
 				exported[currentPkg] = make(map[string]bool)
@@ -341,6 +343,10 @@ func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSym
 				defs[currentPkg+"/"+sym.Name] = *sym
 			}
 		}
+		return false // only top-level forms declare program symbols
+	}
+	for _, expr := range exprs {
+		codewalk.Syntax(expr, nil, 0, visit)
 	}
 
 	globals := make([]analysis.ExternalSymbol, 0, len(defs))
