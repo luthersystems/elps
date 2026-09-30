@@ -50,8 +50,3 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
-go | lisp/lisplib/libtime.BuiltinElapsed | 2026-12-29 | elps#757 luthersystems/substrate#624 | stdlib must be deterministic; hosts supply time (substrate: cc:now)
-go | lisp/lisplib/libtime.BuiltinUTCNow | 2026-12-29 | elps#757 luthersystems/substrate#624 | stdlib must be deterministic; hosts supply time (substrate: cc:now)
-lisp | time:sleep | 2026-12-29 | elps#757 luthersystems/substrate#624 | stdlib must be deterministic; hosts register libtime.BuiltinSleep themselves
-lisp | time:time-elapsed | 2026-12-29 | elps#757 luthersystems/substrate#624 | stdlib must be deterministic; use time:time-from with a host timestamp
-lisp | time:utc-now | 2026-12-29 | elps#757 luthersystems/substrate#624 | stdlib must be deterministic; hosts supply time (substrate: cc:now)
