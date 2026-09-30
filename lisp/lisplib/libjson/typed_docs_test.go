@@ -66,7 +66,7 @@ func evalDoc(t *testing.T, env *lisp.LEnv, src string) *lisp.LVal {
 func TestTypedDocExamples(t *testing.T) {
 	counts := map[string]int{}
 	for _, file := range typedDocFiles {
-		b, err := os.ReadFile(file)
+		b, err := os.ReadFile(file) //nolint:gosec // G304: a fixed list of this repository's docs
 		require.NoError(t, err)
 		lines := strings.Split(string(b), "\n")
 		files := map[string]string{}
@@ -192,7 +192,7 @@ func checkDocTable(t *testing.T, env *lisp.LEnv, loc string, lines []string, arg
 			want, _ := codeCell(cells[plainCol-1])
 			plain, err := libjson.Dump(v, false)
 			if want == "error" {
-				assert.Error(t, err, "plain column of row %q", l)
+				require.Error(t, err, "plain column of row %q", l)
 			} else {
 				require.NoError(t, err, "row %q", l)
 				assert.Equal(t, want, string(plain), "plain column of row %q", l)
@@ -269,7 +269,7 @@ func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[
 			want = append(want, lines[i])
 		}
 		cmdArgs := append(strings.Fields(m[1]), m[2], m[3])
-		cmd := exec.Command(jq, cmdArgs...) //nolint:gosec // G204: the arguments come from the repository's own docs
+		cmd := exec.CommandContext(t.Context(), jq, cmdArgs...) //nolint:gosec // G204: the arguments come from the repository's own docs
 		cmd.Dir = dir
 		out, err := cmd.Output()
 		require.NoError(t, err, "%s", lines[i])
