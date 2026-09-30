@@ -144,6 +144,13 @@ func TestTemplateFreshness(t *testing.T) {
 	}
 }
 
+// Every unquote form is a placeholder, even inside a nested quasiquote, so a
+// literal unquote cannot be written in a template (documented on Template).
+func TestTemplateNestedQuasiquoteSubstitutes(t *testing.T) {
+	got := elpsutil.MustTemplate(`(quasiquote (a (unquote x)))`, "x").Expand(lisp.Symbol("y"))
+	assert.Equal(t, `(quasiquote (a y))`, got.String())
+}
+
 func TestTemplateCompilePanics(t *testing.T) {
 	for _, tt := range []struct {
 		name, src, message string

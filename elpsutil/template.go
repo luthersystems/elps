@@ -23,6 +23,10 @@ import (
 // A placeholder is recognised anywhere in the form, including under a quote,
 // so '(unquote name) quotes the argument.  unquote-splicing must appear
 // directly inside a list, not at the top level or directly under a quote.
+// Because every unquote form is a placeholder, a template cannot contain a
+// literal unquote form or a nested quasiquote: in
+// (quasiquote (a (unquote x))) the inner unquote is substituted.  Build such
+// a form in Go and pass it as an argument.
 //
 // A template stores no LVals.  Each Expand constructs fresh, unsealed,
 // unlocated syntax, as the Go macro contract in lisp.LEnv.AddMacros requires:

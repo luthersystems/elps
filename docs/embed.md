@@ -385,7 +385,10 @@ declared parameter: `(unquote name)` inserts that argument and
 nil) into the enclosing list; `lisp.SExpr(args.Cells[1:])` above wraps the
 unevaluated body for that purpose. A placeholder is recognised anywhere,
 including under a quote, so `'(unquote name)` quotes the argument;
-`unquote-splicing` must sit directly inside a list. Parameter names declare
+`unquote-splicing` must sit directly inside a list. Because every unquote
+form is a placeholder, a template cannot contain a literal `unquote` form or
+a nested `quasiquote`: in `(quasiquote (a (unquote x)))` the inner unquote is
+substituted. Build such a form in Go and pass it as an argument. Parameter names declare
 argument order. `MustTemplate` panics if the source is not exactly one form or
 fails to parse, and on undeclared, duplicate or unused parameters or a
 malformed placeholder; `Expand` panics on an argument count mismatch or an
