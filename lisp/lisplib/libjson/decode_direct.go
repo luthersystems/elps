@@ -5,7 +5,6 @@ package libjson
 import (
 	"encoding/json"
 	"errors"
-	"fmt"
 	"math"
 	"strconv"
 	"unicode/utf8"
@@ -161,15 +160,6 @@ func (d *directDecoder) array() *lisp.LVal {
 	clear(d.stack[base:])
 	d.stack = d.stack[:base]
 	return lisp.Array(nil, cells)
-}
-
-func (d *directDecoder) expect(c byte) bool {
-	if d.i >= len(d.b) || d.b[d.i] != c {
-		d.reject(fmt.Errorf("json: expected %q", c))
-		return false
-	}
-	d.i++
-	return true
 }
 
 func (d *directDecoder) reject(err error) {
