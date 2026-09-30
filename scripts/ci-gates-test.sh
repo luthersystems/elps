@@ -965,6 +965,25 @@ assert_exit 2 "GOMAXPROCS suffix mismatch (-4 vs -2) -> not comparable" \
 assert_contains "GOMAXPROCS suffix" "GOMAXPROCS mismatch is DIAGNOSED, not reported as generic unpairability" \
 	"$ARMS" "${ARMS_TMP}/gomaxprocs4.txt" "${ARMS_TMP}/pr.txt"
 
+# At GOMAXPROCS=1 `go test` appends NO suffix, so a benchmark's own trailing
+# -N (libjson Package/get-nested-baseline-2) must not be read as one (#767).
+# Only a suffix that EVERY name in an arm carries is a GOMAXPROCS suffix.
+{
+	echo "goos: linux"; echo "goarch: arm64"; echo "pkg: example.com/p"
+	printf 'BenchmarkEnvGet\t 100\t 10 ns/op\n'
+	printf 'BenchmarkPkg/get-nested-2\t 100\t 10 ns/op\n'
+} >"${ARMS_TMP}/procs1.txt"
+{
+	echo "goos: linux"; echo "goarch: arm64"; echo "pkg: example.com/p"
+	printf 'BenchmarkEnvGet-4\t 100\t 10 ns/op\n'
+	printf 'BenchmarkPkg/get-nested-2-4\t 100\t 10 ns/op\n'
+} >"${ARMS_TMP}/procs4.txt"
+assert_exit 0 "GOMAXPROCS=1 arms whose names end in their own -N are comparable" \
+	"$ARMS" "${ARMS_TMP}/procs1.txt" "${ARMS_TMP}/procs1.txt"
+assert_contains "base benchmarks end in -[none], PR benchmarks in -[4]" \
+	"a GOMAXPROCS=1 arm is diagnosed as having NO suffix, not the benchmark's own -2 (#767)" \
+	"$ARMS" "${ARMS_TMP}/procs1.txt" "${ARMS_TMP}/procs4.txt"
+
 # The heterogeneous-pool failure: benchstat keys its configuration off the
 # cpu: header, so two different CPU models pair nothing even at the same arch.
 arms_fixture "${ARMS_TMP}/othercpu.txt" "AMD EPYC 7763" 2
