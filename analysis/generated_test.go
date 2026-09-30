@@ -26,6 +26,32 @@ func (c *headCountingExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LV
 	return c.inner.ExpandMacro(form, pkg)
 }
 
+func TestExpandCacheIncludesPackage(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'p)
+(defmacro package-value () '"p")
+(in-package 'q)
+(defmacro package-value () '"q")`)
+	expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+	a := &analyzer{cfg: &Config{MacroExpander: expander}}
+	scope := NewScope(ScopeGlobal, nil, nil)
+	call := lisp.SExpr([]*lisp.LVal{lisp.Symbol("package-value")})
+	for _, pkg := range []string{"p", "q"} {
+		expanded := a.expand(call, scope, pkg)
+		require.NotNil(t, expanded)
+		assert.Equal(t, pkg, expanded.Str)
+		assert.Same(t, expanded, a.expand(call, scope, pkg))
+	}
+	assert.Equal(t, 2, expander.calls["package-value"])
+	assert.Nil(t, a.expand(call, scope, "user"))
+	assert.Nil(t, a.expand(call, scope, "user"), "failed expansions are cached per package too")
+	assert.Equal(t, "p", a.expand(call, scope, "p").Str)
+	assert.Equal(t, "q", a.expand(call, scope, "q").Str)
+	assert.Equal(t, 3, expander.calls["package-value"])
+}
+
 // Definition-generating macros unrelated to any embedder: a named constant,
 // and a pair of accessor functions for a counter.
 const generatingMacros = `
@@ -209,4 +235,166 @@ func TestGeneratedDefinitionsFallbackWithoutLoadedMacro(t *testing.T) {
 	for _, sym := range result.Symbols {
 		assert.Nil(t, sym.GeneratedBy, sym.Name)
 	}
+}
+
+// An in-package produced by an expansion applies to the forms after it, and a
+// call site is expanded in the package current at that call (#769).
+func TestGeneratedInPackageCarriesOverAndKeysTheCache(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () (quasiquote (in-package 'q)))`)
+	result := parseAndAnalyzeWithConfig(t, `(enter-q)
+(qconst qa 1)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	assert.Empty(t, result.Unresolved, "qconst and qa must resolve in package q")
+	qa := findSymbol(result, "qa")
+	require.NotNil(t, qa)
+	assert.Equal(t, "q", qa.Package)
+}
+
+func TestGeneratedNestedInPackageCarriesOver(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{
+		`(enter-q-nested) (qconst qa 1) (defun read-qa () qa) qa`,
+		`(progn (enter-q) (qconst qa 1)) (defun read-qa () qa) qa`,
+		`(enter-and-define qa) (defun read-qa () qa) qa`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			env := newTestEnv(t)
+			evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () (quasiquote (in-package 'q)))
+(defmacro enter-q-nested () (quasiquote (progn (enter-q))))
+(defmacro enter-and-define (name)
+  (quasiquote (progn (enter-q) (qconst (unquote name) 1))))`)
+			expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+			result := parseAndAnalyzeWithConfig(t, source, &Config{MacroExpander: expander})
+			assert.Empty(t, result.Unresolved)
+			for _, name := range []string{"qa", "read-qa"} {
+				sym := findSymbol(result, name)
+				require.NotNil(t, sym, name)
+				assert.Equal(t, "q", sym.Package, name)
+			}
+			assert.Equal(t, 1, expander.calls["enter-q"])
+			assert.Equal(t, 1, expander.calls["qconst"], "prescan and the deep walk expand in the same package")
+			origin := findSymbol(result, "qa").GeneratedBy
+			require.NotNil(t, origin)
+			if origin.Macro == "enter-and-define" {
+				assert.Equal(t, "user", origin.Package, "the outer call precedes its generated package switch")
+			} else {
+				assert.Equal(t, "q", origin.Package)
+			}
+		})
+	}
+}
+
+func TestGeneratedInPackageInsideFunctionDoesNotCarryOver(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, generatingMacros+`
+(defmacro enter-q () (quasiquote (in-package 'q)))`)
+	expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+	result := parseAndAnalyzeWithConfig(t, `(defun later () (enter-q))
+(constant answer 42)
+answer`, &Config{MacroExpander: expander})
+	assert.Empty(t, result.Unresolved)
+	answer := findSymbol(result, "answer")
+	require.NotNil(t, answer)
+	assert.Equal(t, "user", answer.Package)
+	assert.Equal(t, 1, expander.calls["constant"])
+}
+
+func TestInPackageWithoutExpanderPreservesPackagePolicy(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []*Config{nil, {}} {
+		result := Analyze(parsePreamble(t, `(in-package 'q)
+(set 'value 1)
+(in-package 'user)
+(set 'value 2)
+(progn (in-package 'q))
+value`), cfg)
+		assert.Empty(t, result.Unresolved)
+		require.NotEmpty(t, result.References)
+		ref := result.References[len(result.References)-1]
+		assert.Equal(t, "value", ref.Symbol.Name)
+		assert.Equal(t, "user", ref.Symbol.Package)
+	}
+}
+
+// A macro returning a shared quoted form is attributed per expansion: each
+// generated definition records its own call site and package (#769).
+func TestGeneratedOriginIsPerOccurrence(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `(defmacro fixed () '(progn (set 'x 1)))`)
+	result := parseAndAnalyzeWithConfig(t, `(user:fixed)
+(in-package 'q)
+(user:fixed)`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	byPkg := map[string]*Symbol{}
+	for _, sym := range result.Symbols {
+		if sym.Name == "x" && sym.GeneratedBy != nil {
+			byPkg[sym.Package] = sym
+		}
+	}
+	for pkg, line := range map[string]int{"user": 1, "q": 3} {
+		sym := byPkg[pkg]
+		require.NotNil(t, sym, pkg)
+		assert.Equal(t, pkg, sym.GeneratedBy.Package, pkg)
+		require.NotNil(t, sym.GeneratedBy.CallSite, pkg)
+		assert.Equal(t, line, sym.GeneratedBy.CallSite.Line, pkg)
+	}
+}
+
+// A qualified lisp:in-package produced by an expansion switches packages too.
+func TestGeneratedQualifiedInPackageCarriesOver(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () '(lisp:in-package 'q))`)
+	result := parseAndAnalyzeWithConfig(t, `(enter-q)
+(qconst qa 1)
+(defun read-qa () qa)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	assert.Empty(t, result.Unresolved)
+	for _, name := range []string{"qa", "read-qa"} {
+		sym := findSymbol(result, name)
+		require.NotNil(t, sym, name)
+		assert.Equal(t, "q", sym.Package, name)
+	}
+}
+
+// A use-package produced by an expansion makes the used package's exported
+// macros expandable, and its names resolvable, in later forms.
+func TestGeneratedUsePackageReachesTheExpander(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(export 'qconst)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro import-q () '(progn (use-package 'q)))`)
+	exports := map[string][]ExternalSymbol{"q": {{Name: "qconst", Kind: SymMacro, Package: "q"}}}
+	result := parseAndAnalyzeWithConfig(t, `(import-q)
+(qconst qa 1)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}, PackageExports: exports})
+	assert.Empty(t, result.Unresolved)
+	qa := findSymbol(result, "qa")
+	require.NotNil(t, qa)
+	assert.Equal(t, "user", qa.Package)
+	require.NotNil(t, qa.GeneratedBy)
+	assert.Equal(t, "qconst", qa.GeneratedBy.Macro)
 }

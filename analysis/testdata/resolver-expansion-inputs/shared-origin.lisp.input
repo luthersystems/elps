@@ -1,0 +1,7 @@
+(defmacro fixed () '(progn (set 'x 1)))
+(user:fixed)
+(in-package 'q)
+(user:fixed)
+x
+(in-package 'user)
+x

@@ -52,3 +52,7 @@ var PackageForms any
 
 // Occurrences holds func(*lisp.CodeWalker, int, *lisp.LVal) bool.
 var Occurrences any
+
+// SyntaxOp holds the raw-syntax operator classifier. Visitors stay on the
+// codewalk side of the bridge so their callbacks do not escape through any.
+var SyntaxOp any

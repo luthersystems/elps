@@ -1,0 +1,10 @@
+(in-package 'q)
+(export 'qconst)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro import-q () '(progn (lisp:use-package 'q)))
+(import-q)
+(qconst qa 1)
+(defun read-qa () qa)
+qa

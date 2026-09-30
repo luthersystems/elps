@@ -201,6 +201,8 @@ file (after `SetupFn` when running tests/benchmarks; discovery skips
   package-level vars), writes to `Package` tables or `packageBase`, and reads
   of `Package.symbols`, `Package.baseValues` or `sortedmap.m`.
 - Before committing → `verify` (mirrors CI). Never commit to `main`.
+- All writing (docs, docstrings, comments, commits, PRs, issues, release
+  notes) → `write-docs`.
 
 ## Skills
 
@@ -220,6 +222,7 @@ read the matching skill file and follow its workflow.**
 | `audit/SKILL.md` | Systematic codebase audit — bugs, security, perf, tests, docs, quality |
 | `release/SKILL.md` | Create a tagged GitHub release via the release pipeline |
 | `codex-delegate/SKILL.md` | Hand a bounded coding unit to Codex in a worktree; verify on host |
+| `write-docs/SKILL.md` | House writing style for docs, docstrings, comments, commits, PRs, issues and release notes |
 
 Skills chain: e.g. `implement` for the change, `verify` before committing,
 and `pr` to ship.

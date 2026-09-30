@@ -1,0 +1,8 @@
+(defmacro constant (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(defmacro via-constant (name value)
+  (quasiquote (constant (unquote name) (unquote value))))
+(defmacro constants ()
+  (quasiquote (progn (via-constant left 1) (via-constant right 2))))
+(constants)
+(+ left right)

@@ -1,0 +1,5 @@
+(defmacro constant (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(constant answer 42)
+(export 'answer)
+answer

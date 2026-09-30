@@ -19,8 +19,7 @@ import (
 
 // Entries identify one function (including its nested closures), or one
 // package variable initializer, never an entire file. Every exception needs a
-// reason, and unused exceptions fail the guard. Entries marked #766 are
-// legacy walkers to move onto the code walker.
+// reason, and unused exceptions fail the guard.
 //
 //nolint:gosec // G101: dispatch exception reasons, not credentials
 var specialOpAllowlist = map[string]string{
@@ -29,31 +28,26 @@ var specialOpAllowlist = map[string]string{
 	"analysis/codewalk.go:analyzer.bindingForm":                 "excludes explicit call policies from application-defined grammar",
 	"analysis/codewalk.go:analyzer.defineWalkSymbol":            "maps walker definition events to package symbol kinds",
 	"analysis/codewalk.go:definitionScanner.visit":              "maps walker declaration events to symbol kinds",
+	"analysis/codewalk.go:sourceResolver.form":                  "tracks package changes through top-level progns while CodeWalker owns lexical syntax",
 	"analysis/codewalk.go:sourceResolver.visit":                 "maps walker scope and binding events to resolver scopes",
 	"analysis/expander.go:evalPreambleForm":                     "selects definitions safe to evaluate when loading a macro preamble",
 	"analysis/generated.go:analyzer.expandPackageForms":         "excludes file-defined non-macros and advances package context while expanding selected package forms",
+	"analysis/generated.go:expansionPackageForms":               "flattens transparent top-level progns for package-aware expansion, delegating nested declarations to PackageForms",
 	"analysis/generated.go:isPackageFormHead":                   "keeps declarations and package control calls out of prescan macro expansion",
-	"analysis/perf/local.go:ScanFile":                           "existing performance analyzer declaration scan; migrate separately (#766)",
-	"analysis/perf/local.go:isCallable":                         "existing performance analyzer callable classification; migrate separately (#766)",
-	"analysis/perf/local.go:scanExpr":                           "existing performance analyzer syntax traversal; migrate separately (#766)",
 	"analysis/workspace.go:FindEnclosingFunction":               "finds the definition enclosing a cursor position",
 	"analysis/workspace.go:SymbolKeyFromNameKind":               "translates declaration names to workspace symbol keys",
 	"analysis/workspace.go:extractDefinitions":                  "extracts workspace declaration metadata, not expression traversal",
 	"analysis/workspace.go:scanFileFull":                        "collects top-level workspace definitions",
 	"astutil/exports.go:ExportNames":                            "extracts literal export operands, including explicit quote",
 	"astutil/query.go:ClassifyNodes":                            "reads walker Op events and classifies quasiquote template holes",
-	"astutil/walk.go:UserDefined":                               "legacy file-wide builtin-shadowing heuristic; migrate separately (#766)",
 	"astutil/walk.go:quotedSymbolName":                          "extracts a quoted symbol operand, not expression dispatch",
-	"astutil/walk.go:walkNode":                                  "legacy syntactic walk omits quasiquote templates; not scope resolution (#766)",
 	"elpsutil/template.go:templateCompiler.placeholderKind":     "recognizes the unquote and unquote-splicing placeholder markers of a template, not expression dispatch",
 	"formatter/printer.go:printer.tryPrefixForm":                "prints reader prefixes for their explicit form spellings",
 	"formatter/rules.go:DefaultRules":                           "form-specific indentation configuration",
 	"internal/fuzzseed/evalseed.go:EvalTerminating":             "names test seeds after the forms they exercise",
-	"lint/analyzers.go:aritySkipNodes":                          "legacy conservative file-local shadowing and threading exclusions (#766)",
 	"lint/analyzers.go:checkLispBindings":                       "checks writes to the sealed lisp package",
 	"lint/analyzers.go:isDeprecatedDefinition":                  "recognizes definition annotations",
 	"lint/analyzers.go:lambdaCallback":                          "recognizes literal comparator/iteration callbacks",
-	"lint/analyzers.go:letRecursionState.walk":                  "existing initializer recursion check; migrate separately (#766)",
 	"lint/analyzers.go:mutationRun.indexNode":                   "indexes comparator definitions and quasiquote holes for mutation checks",
 	"lint/analyzers.go:packageNameArg":                          "extracts the literal package operand of use-package/in-package, including explicit quote",
 	"lint/analyzers.go:packageLiteralArg":                       "extracts literal package operands",
@@ -70,18 +64,14 @@ var specialOpAllowlist = map[string]string{
 	"lint/analyzers.go:var AnalyzerPackageBuiltins":             "checks literal package builtin operands",
 	"lint/analyzers.go:var AnalyzerUnnecessaryProgn":            "reports redundant progn inside implicit bodies",
 	"lint/analyzers.go:var AnalyzerWithCleanupForms":            "validates cleanup-list syntax",
-	"lint/analyzers.go:var bindingForms":                        "legacy arity shadowing exclusions; migrate separately (#766)",
 	"lint/analyzers.go:var implicitPrognForms":                  "body offsets for redundant progn diagnostics",
 	"lint/analyzers.go:var iterationMutatingTargets":            "callback argument configuration for mutating iteration calls",
 	"lint/analyzers.go:var mutatingBuiltins":                    "mutation check classifies writes including set!",
 	"lint/analyzers.go:var rethrowFunctionForms":                "function enclosure classification for generated macro templates",
 	"lint/analyzers.go:var storingCalls":                        "classifies storage calls including set! for loop-capture diagnostics",
 	"lint/analyzers.go:var testDefinitionForms":                 "test-registration vocabulary",
-	"lint/analyzers.go:walkEvaluated":                           "legacy mutation check traversal; migrate separately (#766)",
-	"lint/analyzers.go:walkLambdaListCalls":                     "legacy lambda-list validation traversal; migrate separately (#766)",
 	"lint/analyzers.go:walkRethrowContext":                      "reads handler walker enclosures and definition events",
 	"lint/analyzers.go:walkRethrowTemplate":                     "syntactic scan of generated code templates rather than evaluated code",
-	"lint/analyzers.go:walkTemplate":                            "legacy mutation check template traversal; migrate separately (#766)",
 	"lisp/codewalk.go:CodeWalker.let":                           "source initializer metadata in the shared syntax walker",
 	"lisp/codewalk.go:CodeWalker.templateList":                  "template-hole grammar in the shared syntax walker",
 	"lisp/codewalk.go:var formKinds":                            "the single registry of structural special forms",
@@ -99,7 +89,6 @@ var specialOpAllowlist = map[string]string{
 	"minifier/minifier.go:firstDynamicEvaluation":               "recognizes runtime evaluation and quoted code",
 	"minifier/minifier.go:firstGlobalFallback":                  "recognizes forms that can reference package globals",
 	"minifier/minifier.go:preservePackageSurfaceSymbols":        "preserves names used by package-writing declarations",
-	"minifier/minifier.go:scanProgramSymbols":                   "existing minifier binding analysis; migrate separately (#766)",
 }
 
 var specialFormNames = func() map[string]bool {
