@@ -92,7 +92,7 @@ var ErrTypedLimit = errors.New("typed json: limit exceeded")
 // Transit tags this format uses.  Frozen: a stored document may use any of
 // them, so a change is a new format, never an edit.
 const (
-	tagList   = "~#list"
+	tagVector = "~#vector"
 	tagArray  = "~#array"
 	tagTagged = "~#tagged"
 )
@@ -238,11 +238,11 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		if err := e.enter(v, depth); err != nil {
 			return err
 		}
-		e.buf = append(e.buf, `["`+tagList+`",`...)
+		// Lists are the common sequence in elps, so they are the plain
+		// JSON array and the vector is the one that carries a tag.
 		if err := e.cells(v.Cells, depth); err != nil {
 			return err
 		}
-		e.buf = append(e.buf, ']')
 		e.leave()
 	case lisp.LArray:
 		return e.array(v, depth)
@@ -365,8 +365,8 @@ func appendTypedSymbol(b []byte, name string) []byte {
 	return appendJSONStringBody(append(b, '"', '~', '$'), name, true)
 }
 
-// array writes a vector (rank 1) as a JSON array and any other rank as
-// ["~#array",[[dims...],[cells...]]], cells in row-major order.
+// array writes a vector (rank 1) as ["~#vector",[cells...]] and any other
+// rank as ["~#array",[[dims...],[cells...]]], cells in row-major order.
 func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil ||
 		v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
@@ -400,9 +400,11 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 		return err
 	}
 	if len(dims) == 1 {
+		e.buf = append(e.buf, `["`+tagVector+`",`...)
 		if err := e.cells(cells, depth); err != nil {
 			return err
 		}
+		e.buf = append(e.buf, ']')
 		e.leave()
 		return nil
 	}

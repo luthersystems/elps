@@ -83,11 +83,11 @@ func TestTypedGolden(t *testing.T) {
 		{"true", lisp.Symbol("true"), `true`},
 		{"false", lisp.Symbol("false"), `false`},
 		{"keyword", lisp.Symbol(":ab"), `"~:ab"`},
-		{"nil", lisp.Nil(), `["~#list",[]]`},
-		{"list", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a")}), `["~#list",[1,"a"]]`},
-		{"unquoted list", lisp.SExpr([]*lisp.LVal{lisp.Int(1)}), `["~#list",[1]]`},
-		{"vector", lisp.Vector(ints(1, 2)), `[1,2]`},
-		{"empty vector", lisp.Vector(nil), `[]`},
+		{"nil", lisp.Nil(), `[]`},
+		{"list", lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a")}), `[1,"a"]`},
+		{"unquoted list", lisp.SExpr([]*lisp.LVal{lisp.Int(1)}), `[1]`},
+		{"vector", lisp.Vector(ints(1, 2)), `["~#vector",[1,2]]`},
+		{"empty vector", lisp.Vector(nil), `["~#vector",[]]`},
 		{"2x3 array", lisp.Array(lisp.QExpr(ints(2, 3)), ints(1, 2, 3, 4, 5, 6)), `["~#array",[[2,3],[1,2,3,4,5,6]]]`},
 		{"rank 0 array", lisp.Array(lisp.QExpr(nil), ints(7)), `["~#array",[[],[7]]]`},
 		{"string-keyed map", tsmap(t, lisp.String("b"), lisp.Int(2), lisp.String("a"), lisp.Int(1)), `{"a":1,"b":2}`},
@@ -95,9 +95,9 @@ func TestTypedGolden(t *testing.T) {
 			lisp.Symbol("s"), lisp.Float(1), lisp.Symbol("true"), lisp.Int(3), lisp.String("~t"), lisp.Int(4)),
 			`{"b":2,"~$s":1.0,"~:a":1,"~?t":3,"~i7":0,"~~t":4}`},
 		{"empty map", lisp.SortedMap(), `{}`},
-		{"tagged", ttagged("user:point", lisp.QExpr(ints(1, 2))), `["~#tagged",["user:point",["~#list",[1,2]]]]`},
+		{"tagged", ttagged("user:point", lisp.QExpr(ints(1, 2))), `["~#tagged",["user:point",[1,2]]]`},
 		{"nested", tsmap(t, lisp.String("xs"), lisp.Vector([]*lisp.LVal{tsmap(t, lisp.String("k"), lisp.Symbol(":v"))})),
-			`{"xs":[{"k":"~:v"}]}`},
+			`{"xs":["~#vector",[{"k":"~:v"}]]}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -181,7 +181,7 @@ func TestTypedSharedSubstructure(t *testing.T) {
 	shared := lisp.QExpr(ints(1, 2))
 	b, err := DumpTyped(lisp.Vector([]*lisp.LVal{shared, shared}))
 	require.NoError(t, err)
-	assert.Equal(t, `[["~#list",[1,2]],["~#list",[1,2]]]`, string(b))
+	assert.Equal(t, `["~#vector",[[1,2],[1,2]]]`, string(b))
 	// A small DAG that doubles at every level is stopped by the limits.
 	v := lisp.Int(0)
 	for range 40 {
@@ -195,10 +195,10 @@ func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 	for _, in := range []string{
 		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `null`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
 		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740992`, `"~i5"`, `"~i05"`,
-		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"^a"`, "\"`a\"", `"~"`, `"~x"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
+		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"^a"`, "\"`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
 		`"a` + bs + `/"`, `"` + bs + `u0041"`, `"` + bs + `u000a"`, `"` + bs + `u001F"`, "\"\x01\"", `"` + bs + `x"`, "\"\xff\"",
-		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#list":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"^a":1}`,
-		`["~#list",[1],2]`, `["~#list",1]`, `["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,
+		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"^a":1}`,
+		`["~#vector",[1],2]`, `["~#vector",1]`, `["~#list",[1]]`, `["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,
 		`["~#array",[[2,2],[1,2,3]]]`, `["~#array",[[-1,0],[]]]`, `["~#array",[[1.0,1],[1]]]`, `["~#tagged",["",1]]`,
 		`["~#tagged",["t"]]`, `["~#tagged",["t",1,2]]`, `[1,]`, `{"a":1,}`, `[1`, `{"a"}`, `"abc`, `[]]`,
 	} {
@@ -208,7 +208,7 @@ func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 }
 
 func TestTypedDecodeFresh(t *testing.T) {
-	in := []byte(`{"a":"~bAQID","b":"text","c":["~#list",["x"]]}`)
+	in := []byte(`{"a":"~bAQID","b":"text","c":["x"]}`)
 	v, err := LoadTyped(in)
 	require.NoError(t, err)
 	for i := range in {

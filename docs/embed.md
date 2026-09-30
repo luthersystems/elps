@@ -740,7 +740,7 @@ process or release.
 
 ```go
 v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a"), lisp.Symbol(":k")})
-b, err := libjson.DumpTyped(v) // ["~#list",[1,"a","~:k"]]
+b, err := libjson.DumpTyped(v) // [1,"a","~:k"]
 if err != nil {
     return err // a function, native, error or cyclic value: no key; fall back
 }

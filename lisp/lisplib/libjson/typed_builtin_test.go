@@ -33,8 +33,8 @@ func TestTypedBuiltins(t *testing.T) {
 	}{
 		{"dump", [][2]string{
 			{`(to-string (json:dump-typed 1))`, `"1"`},
-			{`(to-string (json:dump-typed '(a :b "c" 1.0)))`, `"[\"~#list\",[\"~$a\",\"~:b\",\"c\",1.0]]"`},
-			{`(to-string (json:dump-typed (sorted-map 'amount 125000 "k" (vector true false))))`, `"{\"k\":[true,false],\"~$amount\":125000}"`},
+			{`(to-string (json:dump-typed '(a :b "c" 1.0)))`, `"[\"~$a\",\"~:b\",\"c\",1.0]"`},
+			{`(to-string (json:dump-typed (sorted-map 'amount 125000 "k" (vector true false))))`, `"{\"k\":[\"~#vector\",[true,false]],\"~$amount\":125000}"`},
 		}},
 		{"round trip", [][2]string{
 			{`(json:load-typed (json:dump-typed '(1 2.5 "s" sym :kw (nested))))`, `'(1 2.5 "s" sym :kw '(nested))`},

@@ -374,7 +374,7 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 	return lisp.Float(f), nil
 }
 
-// array reads a JSON array: a vector, or a tagged composite whose first
+// array reads a JSON array: a list, or a tagged composite whose first
 // element is a "~#" tag.
 func (d *typedDecoder) array(depth int) (*lisp.LVal, error) {
 	d.i++
@@ -385,7 +385,7 @@ func (d *typedDecoder) array(depth int) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	return lisp.Vector(cells), nil
+	return lisp.QExpr(cells), nil
 }
 
 // elements reads values up to and including the closing ']' (the '[' has
@@ -420,7 +420,7 @@ func (d *typedDecoder) elements(depth int) ([]*lisp.LVal, error) {
 
 func (d *typedDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagList, tagArray, tagTagged} {
+	for _, t := range [...]string{tagVector, tagArray, tagTagged} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -435,12 +435,12 @@ func (d *typedDecoder) tagged(depth int) (*lisp.LVal, error) {
 	}
 	var v *lisp.LVal
 	switch tag {
-	case tagList:
+	case tagVector:
 		cells, err := d.elements(depth)
 		if err != nil {
 			return nil, err
 		}
-		v = lisp.QExpr(cells)
+		v = lisp.Vector(cells)
 	case tagTagged:
 		s, err := d.rawString()
 		if err != nil {

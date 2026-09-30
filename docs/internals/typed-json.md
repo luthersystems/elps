@@ -2,7 +2,8 @@
 
 `json:dump-typed` / `libjson.DumpTyped` and `json:load-typed` /
 `libjson.LoadTyped` (luthersystems/elps#747). Code: `lisp/lisplib/libjson/typed.go`
-and `typed_decode.go`. `TestTypedGolden` pins every rule below byte for byte.
+and `typed_decode.go`. `TestTypedGolden` pins every rule below byte for byte. For a reader's
+cheat sheet (every tag, jq, CouchDB) see [../typed-json.md](../typed-json.md).
 
 ## Goals
 
@@ -41,20 +42,38 @@ published description and existing readers of the notation:
 | other symbol | `"~$name"` | symbol `$` |
 | keyword `:name` | `"~:name"` | keyword `:` |
 | bytes | `"~b<base64>"`, RFC 4648 standard alphabet, padded | bytes `b` |
-| list (`()` included) | `["~#list",[...]]` | composite `list` |
-| vector (rank-1 array) | JSON array | array |
+| list (`()` included) | JSON array | **deviation**: Transit reads a JSON array as its array type |
+| vector (rank-1 array) | `["~#vector",[...]]` | **deviation**: extension tag, not in the Transit spec |
 | array of rank 0 or >= 2 | `["~#array",[[dims...],[cells...]]]`, row-major | extension tag |
 | sorted map | JSON object | map (JSON-Verbose) |
 | tagged value | `["~#tagged",["type-name",data]]` | extension tag |
 
 Decisions and reasons:
 
-- **Vector is the JSON array, list is tagged.** A vector is what JSON arrays
-  mean everywhere else, and it is what `json:load-bytes` already returns for
-  one; the list is the elps-specific type, so it carries the tag.
-- **`()` is `["~#list",[]]`, never `null`.** elps has no null distinct from
-  the empty list, so `null` would be a second spelling of one value. The
-  decoder rejects `null`.
+- **The list is the plain JSON array; the vector is tagged.** Types that are
+  common get the plain spelling, so tags appear only on edge cases. Counted
+  in stored-value shapes (September 2026), lists dominate construction by
+  roughly 5 to 1 or more: substrate shirocore production sources build 137
+  lists (`(list` 74, quoted `'(` 63) against 13 `(vector`; substrate e2e
+  phyla 92 against 12; elps `_examples` 154 against 1; every payload of the
+  #751 codec comparison, defflow frames included, holds lists only. (Test
+  files, which build JSON fixtures with `vector`, and values read back with
+  plain `json:load-*`, which always yields vectors, go the other way; neither
+  is what typed JSON stores.) This departs from Transit, where a JSON array
+  is the array type and `list` is the extension, and Transit has no vector
+  tag, so `~#vector` is this format's own. A Transit reader sees an elps
+  list as an array (it keeps the order, loses nothing a non-elps reader can
+  use) and an elps vector as an unknown tagged value.
+- **`()` is `[]`, never `null`.** elps has no null distinct from the empty
+  list, so `null` would be a second spelling of one value. The decoder
+  rejects `null`.
+- **Nothing else can become plain.** Strings, ints, floats, booleans and
+  string-keyed maps are already plain JSON. A symbol-keyed map cannot also be
+  plain: `{"a":1}` has to mean one of the string key or the symbol key, and
+  string keys are what every JSON document from outside elps has, so the
+  string key keeps the plain spelling and the symbol key is `~$a`. Keywords
+  and symbols as values need their prefix for the same reason: a plain JSON
+  string is an elps string.
 - **Every map is a JSON object; `cmap` is never written.** Transit writes a map
   as an object when every key has a string form, and uses `["~#cmap",[k,v,...]]`
   only for composite keys. Every key an elps sorted map can hold (string,
@@ -63,7 +82,7 @@ Decisions and reasons:
   symbols. So `cmap` cannot arise and the decoder rejects it. Objects keep
   CouchDB queries and `jq` paths natural (`."~$amount"`).
 - **Tagged values use one fixed tag.** `["~#tagged",[name,data]]` rather than
-  Transit's `["~#name",data]`, so a user type named `list` or `array` cannot
+  Transit's `["~#name",data]`, so a user type named `vector` or `array` cannot
   collide with the format's own tags, and the tag set stays closed.
 - **Arrays** of rank other than 1 have no JSON counterpart, so they carry their
   dimensions. A rank-1 array written with the tag is rejected (it has a
