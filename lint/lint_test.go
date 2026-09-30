@@ -2628,7 +2628,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"user-arity":           SeverityError,
 		"duplicate-definition": SeverityWarning,
 		"deprecated":           SeverityWarning,
-		"removed-builtin":      SeverityWarning,
+		"removed-builtin":      SeverityError,
 		// Warning, not info: unlike unnecessary-progn neither shape is a
 		// style preference -- one guarantees nothing, the other silently
 		// drops the cleanup entirely.
@@ -5262,8 +5262,10 @@ func TestRemovedBuiltin_Positive(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			diags := lintCheck(t, AnalyzerRemovedBuiltin, tc.src)
-			assert.Len(t, diags, 1)
+			require.Len(t, diags, 1)
 			assertHasDiag(t, diags, tc.want)
+			// A removed builtin fails at runtime, so the lint is a hard error.
+			assert.Equal(t, SeverityError, diags[0].Severity)
 		})
 	}
 }
@@ -5276,11 +5278,43 @@ func TestRemovedBuiltin_Negative(t *testing.T) {
 		{"user redefinition", "(use-package 'time)\n(defun sleep (d) d)\n(sleep 1)"},
 		{"unqualified data", "(use-package 'time)\n(list 'utc-now)"},
 		{"string", `"time:utc-now"`},
+		// Another imported package may supply the name (substrate's cc
+		// registers a sleep); the unqualified call is then ambiguous, so
+		// only a qualified reference is reported.
+		{"another use-package supplies it", "(use-package 'time)\n(use-package 'cc)\n(sleep d)"},
+		{"another use-package first", "(use-package 'cc)\n(use-package 'time)\n(sleep d)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			assertNoDiags(t, lintCheck(t, AnalyzerRemovedBuiltin, tc.src))
 		})
 	}
+}
+
+// An own package plus use-package of lisp and time still reaches time's
+// removed names unqualified.
+func TestRemovedBuiltin_OwnPackageStillReported(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRemovedBuiltin,
+		"(in-package 'my-app)\n(use-package 'lisp)\n(use-package 'time)\n(sleep d)")
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "'time:sleep' is removed")
+}
+
+// A host that provides the name from another package (semantic info) wins
+// over the time import; a host symbol from time itself does not.
+func TestRemovedBuiltin_HostSuppliesName(t *testing.T) {
+	src := []byte("(use-package 'time)\n(sleep d)")
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRemovedBuiltin}}
+	diags, err := l.LintFileWithAnalysis(src, "test.lisp", &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{{Name: "sleep", Kind: analysis.SymFunction, Package: "cc"}},
+	})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+
+	diags, err = l.LintFileWithAnalysis(src, "test.lisp", &analysis.Config{
+		ExtraGlobals: []analysis.ExternalSymbol{{Name: "now", Kind: analysis.SymFunction, Package: "cc"}},
+	})
+	require.NoError(t, err)
+	assertHasDiag(t, diags, "'time:sleep' is removed")
 }
 
 func TestRemovedBuiltin_Nolint(t *testing.T) {

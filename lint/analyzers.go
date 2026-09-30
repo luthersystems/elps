@@ -2882,23 +2882,49 @@ var removedBuiltins = map[string]string{
 // it appears outside a quasiquote template, quoted or not, and an unqualified
 // one is reported in call position when the file contains a top-level
 // (use-package 'time) or (in-package 'time), unless the file defines that
-// name itself.  It cannot see a name built at runtime, produced by a macro,
+// name itself, the file use-packages another package (other than lisp and
+// user) that could supply the same short name, or the semantic info names a
+// host symbol of that name from another package.  It cannot see a name built at runtime, produced by a macro,
 // inside a quasiquote template, or imported into a package by another file.
 var AnalyzerRemovedBuiltin = &Analyzer{
 	Name:     "removed-builtin",
-	Severity: SeverityWarning,
-	Doc:      "Report references to standard-library builtins that elps has removed, naming the replacement.\n\nCovers time:utc-now, time:time-elapsed and time:sleep (elps#757). Qualified references are reported anywhere outside a quasiquote template; unqualified calls are reported when the file uses or is in the time package and does not define the name itself. Names built at runtime or produced by macros are not seen.",
+	Severity: SeverityError,
+	Doc:      "Report references to standard-library builtins that elps has removed, naming the replacement.\n\nCovers time:utc-now, time:time-elapsed and time:sleep (elps#757). Qualified references are reported anywhere outside a quasiquote template; unqualified calls are reported when the file uses or is in the time package, does not define the name itself, uses no other package that could supply it, and no host symbol of that name comes from another package. Names built at runtime or produced by macros are not seen.",
 	Run: func(pass *Pass) error {
 		// Packages whose removed names this file can reach unqualified.
 		unqualified := map[string]bool{}
+		// Other packages this file imports; any of them may export the same
+		// short name, so an unqualified match is ambiguous.
+		imported := map[string]bool{}
 		for _, top := range pass.Exprs {
 			head := HeadSymbol(top)
 			if (head == "use-package" || head == "in-package" ||
 				head == "lisp:use-package" || head == "lisp:in-package") && ArgCount(top) >= 1 {
-				if name := astutilQuotedName(top.Cells[1]); name != "" {
+				if name := packageNameArg(top.Cells[1]); name != "" {
 					unqualified[name] = true
+					if head == "use-package" || head == "lisp:use-package" {
+						imported[name] = true
+					}
 				}
 			}
+		}
+		// suppliedElsewhere reports whether the short name of pkg:short may
+		// resolve to another package: another use-package in the file, or a
+		// host symbol of that name from a different package.
+		suppliedElsewhere := func(pkg, short string) bool {
+			for other := range imported {
+				if other != pkg && other != "lisp" && other != lisp.DefaultUserPackage {
+					return true
+				}
+			}
+			if pass.Semantics != nil {
+				for _, ext := range pass.Semantics.ExtraGlobals {
+					if ext.Name == short && ext.Package != pkg {
+						return true
+					}
+				}
+			}
+			return false
 		}
 		defined := UserDefined(pass.Exprs)
 		Walk(pass.Exprs, func(node, parent *lisp.LVal, depth int) {
@@ -2913,7 +2939,7 @@ var AnalyzerRemovedBuiltin = &Analyzer{
 				}
 				found := false
 				for pkg := range unqualified {
-					if _, ok := removedBuiltins[pkg+":"+name]; ok {
+					if _, ok := removedBuiltins[pkg+":"+name]; ok && !suppliedElsewhere(pkg, name) {
 						name, found = pkg+":"+name, true
 						break
 					}
@@ -2933,9 +2959,9 @@ var AnalyzerRemovedBuiltin = &Analyzer{
 	},
 }
 
-// astutilQuotedName returns the package name a use-package/in-package
+// packageNameArg returns the package name a use-package/in-package
 // argument spells: a quoted symbol, a bare symbol or a string.
-func astutilQuotedName(v *lisp.LVal) string {
+func packageNameArg(v *lisp.LVal) string {
 	if v == nil {
 		return ""
 	}

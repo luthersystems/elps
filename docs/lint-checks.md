@@ -687,16 +687,21 @@ Functions with `&rest` are variadic (no maximum). Threading macro children
 ### `removed-builtin`
 
 **Reports references to standard-library builtins that elps has removed.**
+(Severity: **error** — the reference fails at runtime, so `elps lint` exits 1
+under the default `--fail-on error`)
 
 Structural, so it needs no workspace.  elps#757 removed `time:utc-now`,
 `time:time-elapsed` and `time:sleep` because the standard library must be
 deterministic; the diagnostic names the replacement.  A qualified reference is
 reported anywhere outside a quasiquote template, quoted or not.  An unqualified
 call is reported when the file has a top-level `(use-package 'time)` or
-`(in-package 'time)` and does not define that name itself.
+`(in-package 'time)` and does not define that name itself.  It is skipped when
+another top-level `use-package` (other than `lisp` and `user`) could supply the
+same short name, as in `(use-package 'time) (use-package 'cc) (sleep d)`, or
+when the host's semantic info names a symbol of that name from another package.
 
 ```lisp
-;; WARNING — 'time:utc-now' is removed ...; use a timestamp the host supplies
+;; ERROR — 'time:utc-now' is removed ...; use a timestamp the host supplies
 (time:utc-now)
 
 ;; OK — measure between two known times
