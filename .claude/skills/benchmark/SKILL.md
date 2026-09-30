@@ -114,6 +114,32 @@ BENCH_WAIVERS= go run ./cmd/benchgate /tmp/benchstat.txt      # with waivers off
 benchgate can also adjudicate the two raw `go test -bench` arms directly, with no
 `benchstat` binary in the loop (`make bench-gate-arms BENCH_BASE=… BENCH_HEAD=…`).
 
+### CI measures at `GOMAXPROCS=1`
+
+`benchmark.yml` pins `GOMAXPROCS: "1"` (issue #767). At 2 Ps the concurrent
+GC's mark workers ran on the second P, and allocation-heavy rows measured how
+the shared runner scheduled that thread: ±7-20% on identical code, enough to
+cross the 15% gate on PRs that never touched them. One P keeps GC cost in
+sec/op and makes it deterministic. So CI rows carry no `-N` suffix, and to
+reproduce a CI verdict locally measure the same way:
+
+```bash
+GOMAXPROCS=1 go test -run='^$' -bench=. -skip='Parallel$' -benchmem -benchtime=100ms -count=10 ./lisp/... | tee /tmp/bench.txt
+```
+
+The mechanism (concurrent GC on the second P) is inferred from one controlled
+experiment plus the PR's own run, not observed with perf counters.
+
+RunParallel benchmarks must be named `*Parallel` (ci-gates-test enforces it).
+The gated job skips them; the `benchmark-parallel` job measures them at
+`GOMAXPROCS=4` and reports benchgate's verdict without failing on it, because
+on identical code they spread ~30% per arm.
+
+benchgate strips the `-N` suffix only as told by `-gomaxprocs` /
+`BENCH_GOMAXPROCS` (`bench-compare.sh` passes the job's `GOMAXPROCS`): at 1 a
+benchmark's own trailing `-2` is kept, at N>1 exactly `-N` is stripped, and
+unset keeps the old strip-any-trailing-number behaviour.
+
 ### Before you measure: is the machine fit? (`make bench-burnin`)
 
 ```bash
