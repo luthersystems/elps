@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
@@ -345,148 +346,98 @@ func (s *TestSuite) OpBenchmark(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return coreDef("benchmark").Eval(env, args)
 }
 
+// The assert macros' expansions.  Each binds the evaluated expressions to
+// temporaries and asserts on them; the rendered source text of an expression
+// is passed as a string argument, so a failure reports what the caller wrote.
+var (
+	assertStringEqForm = elpsutil.MustTemplate(`
+(let (((unquote expect-sym) (unquote expect)) ((unquote s-sym) (unquote s)))
+  (assert (lisp:string? (unquote expect-sym))
+          "expression did not evaluate to a string\n\texpression: {}\n\t    result: {}"
+          (unquote expect-text) (unquote expect-sym))
+  (assert (lisp:string? (unquote s-sym))
+          "expression did not evaluate to a string\n\texpression: {}\n\t    result: {}"
+          (unquote s-text) (unquote s-sym))
+  (assert (lisp:string= (unquote expect-sym) (unquote s-sym))
+          "the string expressions are not equal\n\texpression: {}\n\t    result: {}\n\t  expected: {}"
+          (unquote s-text) (unquote s-sym) (unquote expect-sym)))`,
+		"expect-sym", "expect", "s-sym", "s", "expect-text", "s-text")
+
+	assertNumEqForm = elpsutil.MustTemplate(`
+(let (((unquote expect-sym) (unquote expect)) ((unquote n-sym) (unquote n)))
+  (assert (lisp:number? (unquote expect-sym))
+          "expression did not evaluate to a number\n\texpression: {}\n\t    result: {}"
+          (unquote expect-text) (unquote expect-sym))
+  (assert (lisp:number? (unquote n-sym))
+          "expression did not evaluate to a number\n\texpression: {}\n\t    result: {}"
+          (unquote n-text) (unquote n-sym))
+  (assert (lisp:= (unquote expect-sym) (unquote n-sym))
+          "the numeric expressions are not equal\n\texpression: {}\n\t    result: {}\n\t  expected: {}"
+          (unquote n-text) (unquote n-sym) (unquote expect-sym)))`,
+		"expect-sym", "expect", "n-sym", "n", "expect-text", "n-text")
+
+	assertEqualForm = elpsutil.MustTemplate(`
+(let (((unquote expect-sym) (unquote expect)) ((unquote expr-sym) (unquote expr)))
+  (assert (lisp:equal? (unquote expect-sym) (unquote expr-sym))
+          "the expressions are not `+"``"+`equal?''\n\texpression: {}\n\t    result: {}\n\t  expected: {}"
+          (unquote expr-text) (unquote expr-sym) (unquote expect-sym)))`,
+		"expect-sym", "expect", "expr-sym", "expr", "expr-text")
+
+	assertNilForm = elpsutil.MustTemplate(`
+(let (((unquote expr-sym) (unquote expr)))
+  (assert (lisp:nil? (unquote expr-sym))
+          "the expressions is not nil\n\texpression: {}\n\t    result: {}"
+          (unquote expr-text) (unquote expr-sym)))`,
+		"expr-sym", "expr", "expr-text")
+
+	assertNotNilForm = elpsutil.MustTemplate(`
+(let (((unquote expr-sym) (unquote expr)))
+  (assert (not (lisp:nil? (unquote expr-sym)))
+          "the expressions is nil\n\texpression: {}"
+          (unquote expr-text)))`,
+		"expr-sym", "expr", "expr-text")
+
+	assertNotForm = elpsutil.MustTemplate(`
+(let (((unquote expr-sym) (unquote expr)))
+  (assert (not (unquote expr-sym))
+          "the expressions is not falsey\n\texpression: {}\n\t    result: {}"
+          (unquote expr-text) (unquote expr-sym)))`,
+		"expr-sym", "expr", "expr-text")
+)
+
 func (s *TestSuite) MacroAssertStringEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	expectExpr, sExpr := args.Cells[0], args.Cells[1]
 	expectSym, sSym := env.GenSym(), env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(expectSym, expectExpr),
-			list(sSym, sExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:string?"), expectSym),
-			lisp.String("expression did not evaluate to a string\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(expectExpr)),
-			expectSym,
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:string?"), sSym),
-			lisp.String("expression did not evaluate to a string\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(sExpr)),
-			sSym,
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:string="), expectSym, sSym),
-			lisp.String("the string expressions are not equal\n\texpression: {}\n\t    result: {}\n\t  expected: {}"),
-			lisp.String(env.Render(sExpr)),
-			sSym,
-			expectSym,
-		),
-	)
+	return assertStringEqForm.Expand(expectSym, expectExpr, sSym, sExpr,
+		lisp.String(env.Render(expectExpr)), lisp.String(env.Render(sExpr)))
 }
 
 func (s *TestSuite) MacroAssertNumEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	expectExpr, nExpr := args.Cells[0], args.Cells[1]
 	expectSym, nSym := env.GenSym(), env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(expectSym, expectExpr),
-			list(nSym, nExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:number?"), expectSym),
-			lisp.String("expression did not evaluate to a number\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(expectExpr)),
-			expectSym,
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:number?"), nSym),
-			lisp.String("expression did not evaluate to a number\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(nExpr)),
-			nSym,
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:="), expectSym, nSym),
-			lisp.String("the numeric expressions are not equal\n\texpression: {}\n\t    result: {}\n\t  expected: {}"),
-			lisp.String(env.Render(nExpr)),
-			nSym,
-			expectSym,
-		),
-	)
+	return assertNumEqForm.Expand(expectSym, expectExpr, nSym, nExpr,
+		lisp.String(env.Render(expectExpr)), lisp.String(env.Render(nExpr)))
 }
 
 func (s *TestSuite) MacroAssertEqual(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	expectExpr, exprExpr := args.Cells[0], args.Cells[1]
 	expectSym, exprSym := env.GenSym(), env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(expectSym, expectExpr),
-			list(exprSym, exprExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:equal?"), expectSym, exprSym),
-			lisp.String("the expressions are not ``equal?''\n\texpression: {}\n\t    result: {}\n\t  expected: {}"),
-			lisp.String(env.Render(exprExpr)),
-			exprSym,
-			expectSym,
-		),
-	)
+	return assertEqualForm.Expand(expectSym, expectExpr, exprSym, exprExpr, lisp.String(env.Render(exprExpr)))
 }
 
 func (s *TestSuite) MacroAssertNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	exprExpr := args.Cells[0]
-	exprSym := env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(exprSym, exprExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("lisp:nil?"), exprSym),
-			lisp.String("the expressions is not nil\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(exprExpr)),
-			exprSym,
-		),
-	)
+	return assertNilForm.Expand(env.GenSym(), exprExpr, lisp.String(env.Render(exprExpr)))
 }
 
 func (s *TestSuite) MacroAssertNotNil(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	exprExpr := args.Cells[0]
-	exprSym := env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(exprSym, exprExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(
-				lisp.Symbol("not"),
-				list(lisp.Symbol("lisp:nil?"), exprSym),
-			),
-			lisp.String("the expressions is nil\n\texpression: {}"),
-			lisp.String(env.Render(exprExpr)),
-		),
-	)
+	return assertNotNilForm.Expand(env.GenSym(), exprExpr, lisp.String(env.Render(exprExpr)))
 }
 
 func (s *TestSuite) MacroAssertNot(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	exprExpr := args.Cells[0]
-	exprSym := env.GenSym()
-	return list(
-		lisp.Symbol("let"),
-		list(
-			list(exprSym, exprExpr),
-		),
-		list(
-			lisp.Symbol("assert"),
-			list(lisp.Symbol("not"), exprSym),
-			lisp.String("the expressions is not falsey\n\texpression: {}\n\t    result: {}"),
-			lisp.String(env.Render(exprExpr)),
-			exprSym,
-		),
-	)
+	return assertNotForm.Expand(env.GenSym(), exprExpr, lisp.String(env.Render(exprExpr)))
 }
 
 type Test struct {
@@ -514,8 +465,4 @@ func EnvTestSuite(env *lisp.LEnv) *TestSuite {
 	}
 	suite, _ := lsuite.Native.(*TestSuite)
 	return suite
-}
-
-func list(v ...*lisp.LVal) *lisp.LVal {
-	return lisp.SExpr(v)
 }

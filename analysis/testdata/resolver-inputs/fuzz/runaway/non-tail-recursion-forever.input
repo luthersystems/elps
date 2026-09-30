@@ -1,0 +1,1 @@
+(defun rec (n) (+ 1 (rec n))) (rec 0)

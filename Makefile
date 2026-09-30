@@ -280,6 +280,14 @@ fuzz-budget-check:
 ci-gates-test:
 	bash scripts/ci-gates-test.sh
 
+# API break gate (#761): Go API (apidiff) and Lisp surface (elps doc --json -l)
+# of this tree against BASE's merge base; intended breaks need a reviewed line
+# in scripts/api-breaks.txt.  CI runs it as the `api-break` job.
+BASE ?= origin/main
+.PHONY: api-break-gate
+api-break-gate:
+	bash scripts/api-break-gate.sh $(BASE)
+
 # The complement to ci-gates-test: that suite proves the fuzz gate can FAIL,
 # this one proves it fails for the RIGHT REASON. It drives scripts/fuzz.sh
 # against a stub toolchain and asserts that a crasher, a seed-corpus failure,
@@ -352,6 +360,9 @@ release-notes:
 	else \
 		git log --oneline $(LATEST_TAG)..HEAD; \
 	fi
+	@echo ""
+	@echo "--- Waived API breaks since $(LATEST_TAG) (scripts/api-breaks.txt; list each in the notes) ---"
+	@bash scripts/api-breaks-since.sh $(LATEST_TAG)
 	@echo ""
 	@echo "--- Merged PRs since $(LATEST_TAG) ---"
 	@if [ "$(LATEST_TAG)" = "none" ]; then \

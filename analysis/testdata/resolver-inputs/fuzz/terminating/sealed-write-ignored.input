@@ -1,0 +1,1 @@
+(ignore-errors (append 'vector (slice 'list '(1 2 3) 0 1) 99)) '(1 2 3)

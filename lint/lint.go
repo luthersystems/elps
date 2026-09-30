@@ -187,6 +187,10 @@ type Pass struct {
 
 	// diagnostics collects reported findings.
 	diagnostics []Diagnostic
+
+	// shared is state every analyzer's Pass over one file shares: the
+	// file's macro-expanded forms, computed once.
+	shared *passShared
 }
 
 // Report records a diagnostic finding.
@@ -512,12 +516,14 @@ func (l *Linter) LintFileWithContext(source []byte, filename string, semantics *
 
 	var all []Diagnostic
 
+	shared := &passShared{}
 	for _, analyzer := range l.Analyzers {
 		pass := &Pass{
 			Analyzer:  analyzer,
 			Filename:  filename,
 			Exprs:     exprs,
 			Semantics: semantics,
+			shared:    shared,
 		}
 		if err := analyzer.Run(pass); err != nil {
 			return nil, fmt.Errorf("%s: analyzer %s: %w", filename, analyzer.Name, err)
@@ -856,6 +862,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerQuoteCall,
 		AnalyzerCondMissingElse,
 		AnalyzerRethrowContext,
+		AnalyzerLoopVariableCapture,
 		AnalyzerTestOutsideTestFile,
 		AnalyzerComparatorMutation,
 		AnalyzerIterationMutation,
@@ -868,5 +875,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerUserArity,
 		AnalyzerDuplicateDefinition,
 		AnalyzerDeprecated,
+		AnalyzerRemovedBuiltin,
 	}
 }

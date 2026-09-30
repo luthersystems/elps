@@ -1051,7 +1051,7 @@ func firstDynamicEvaluation(node *lisp.LVal) *lisp.LVal {
 		name := strings.TrimPrefix(node.Str, "lisp:")
 		switch name {
 		case "load-string", "load-bytes", "load-file", "eval", "symbol", "intern",
-			"macroexpand", "macroexpand-1", "gensym", "type", "qualified-symbol":
+			"macroexpand", "macroexpand-1", "macroexpand-all", "gensym", "type", "qualified-symbol":
 			// symbol/intern are included for host-provided implementations;
 			// the core currently has no string-to-symbol builtin by those names.
 			return node

@@ -240,6 +240,10 @@ all builtins (`car`, `cdr`, `cons`, `=`, `not`, etc.), special operators
 (gensym)
 ```
 
+A call-shaped list that the code walker classifies as quoted data or as
+structure (`(quote (car))`, `'((car) 1)`, a `dotimes` control list) is not a
+call and is not checked.
+
 **Note:** User-defined functions that shadow builtin names are automatically
 detected and excluded from arity checking. This covers `defun`/`defmacro`
 names as well as names bound locally by `let`, `let*`, `flet`, `labels` and
@@ -308,6 +312,18 @@ outside causes a runtime error. An `(error-stack)` inside a function body
 (`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
 that function; `rethrow` is reported there as before.
 
+The check walks code with the shared code walker (`astutil.ExpandAll`), so
+quoted data and quasiquote templates are not searched, a local function or
+variable named `rethrow` is not the builtin, and the body of a `flet` or
+`labels` form (unlike its function bodies) is not a function body. When
+semantic analysis runs with a macro expander (`--workspace` with an
+environment, the LSP, `elps mcp`), each form is fully expanded first, so a
+user macro that expands to `handler-bind` counts as one, however deeply it is
+nested. A call a macro synthesizes is not reported at the call site;
+instead the quoted and quasiquoted templates inside a `defmacro` body are
+searched as code, so a macro that emits a bare `(rethrow)` is reported at its
+template.
+
 ```lisp
 ;; BAD — not inside handler-bind
 (defun my-handler (c &rest args)
@@ -317,6 +333,35 @@ that function; `rethrow` is reported there as before.
 (handler-bind ((condition (lambda (c &rest args) (rethrow))))
   (error 'test "data"))
 ```
+
+### `loop-variable-capture`
+
+**Warns when a closure stored from a `dotimes` body captures the loop
+variable.** (Severity: **warning**)
+
+`dotimes` reuses one binding for every turn, so a closure that captures the
+loop variable and outlives its turn sees the variable's final value, not the
+value of the turn that created it (see "dotimes and captured loop variables"
+in the language reference).
+
+```lisp
+;; BAD — every closure returns 3
+(dotimes (i 3) (append! fs (lambda () i)))
+
+;; GOOD — a fresh binding per turn
+(dotimes (i 3) (let ((i i)) (append! fs (lambda () i))))
+```
+
+The check runs on fully expanded code, with the macro expander when semantic
+analysis has one, and reads the analysis package's scope resolution to decide
+what a closure captures, so a parameter or inner `let` that shadows the
+variable is not reported. Only the loop body is checked; the result form runs
+once, after the loop. A closure counts as stored only when it is the
+direct argument, not shadowed by a local function, of `set`, `set!`, `append!`, `append`, `assoc!`, `assoc`,
+`cons`, `list`, `vector`, `concat`, `sorted-map`, `insert-index` or
+`insert-sorted`; one passed to `map` or called on the spot runs during its
+turn and is not reported. A closure stored some other way (returned from a
+helper, passed to a user function that stores it) is not seen.
 
 ### `test-outside-test-file`
 
@@ -683,6 +728,34 @@ Functions with `&rest` are variadic (no maximum). Threading macro children
 (add 1)        ; too few
 (add 1 2 3)    ; too many
 ```
+
+### `removed-builtin`
+
+**Reports references to standard-library builtins that elps has removed.**
+(Severity: **error** — the reference fails at runtime, so `elps lint` exits 1
+under the default `--fail-on error`)
+
+Structural, so it needs no workspace.  elps#757 removed `time:utc-now`,
+`time:time-elapsed` and `time:sleep` because the standard library must be
+deterministic; the diagnostic names the replacement.  A qualified reference is
+reported anywhere outside a quasiquote template, quoted or not.  An unqualified
+call is reported when the file has a top-level `(use-package 'time)` or
+`(in-package 'time)` and does not define that name itself.  It is skipped when
+another top-level `use-package` (other than `lisp` and `user`) could supply the
+same short name, as in `(use-package 'time) (use-package 'cc) (sleep d)`, or
+when the host's semantic info names a symbol of that name from another package.
+
+```lisp
+;; ERROR — 'time:utc-now' is removed ...; use a timestamp the host supplies
+(time:utc-now)
+
+;; OK — measure between two known times
+(time:time-from start end)
+```
+
+Limits: it cannot see a name built at runtime, produced by a macro, inside a
+quasiquote template, or imported by another file.  A host that registers its
+own `time:sleep` can suppress the diagnostic with `; nolint:removed-builtin`.
 
 ### `deprecated`
 

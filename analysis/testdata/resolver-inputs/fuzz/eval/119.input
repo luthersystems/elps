@@ -1,0 +1,1 @@
+(ignore-errors (get 0 'a))

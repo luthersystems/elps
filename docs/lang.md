@@ -535,6 +535,52 @@ The macroexpand-1 function is just like macroexpand except it will not
 recursively expand macros when the result of the argument macro form is itself
 a macro form.
 
+`macroexpand` only expands the head of a form. `macroexpand-all` expands every
+macro call in the form, the way the evaluator would meet them: the head until
+it is no longer a macro, then each nested form in code position.
+
+```lisp
+(defmacro swap! (a b)
+  (let ((tmp (gensym)))
+    (quasiquote (let (((unquote tmp) (unquote a)))
+                  (set! (unquote a) (unquote b))
+                  (set! (unquote b) (unquote tmp))))))
+(defmacro unless-nil (x &rest body)
+  (quasiquote (if (nil? (unquote x)) () (progn (unquote-splicing body)))))
+
+(macroexpand '(unless-nil p (swap! a b)))
+; '(if (nil? p) () (progn (swap! a b)))           -- inner call untouched
+(macroexpand-all '(unless-nil p (swap! a b)))
+; '(if (nil? p) () (progn (let ((gen00000001 a)) (set! a b) (set! b gen00000001))))
+```
+
+`macroexpand-all` knows the syntax of every special form, so it only expands
+code:
+
+- Quoted data is never entered: `(quote (swap! a b))`, `'(swap! a b)`,
+  condition types in `handler-bind`, and the parts of a `quasiquote` template
+  outside `unquote` / `unquote-splicing`.
+- A local binding of a macro's name hides the macro in its scope, exactly as
+  at run time: `(flet ((swap! (x y) (list y x))) (swap! 1 2))` is a function
+  call and stays one. The same holds for `let`, `let*`, `labels`, `lambda`
+  parameters and `dotimes` variables.
+- `macrolet` macros are expanded inside their body, and may use enclosing
+  local macros. A local macro whose expander reads a local variable cannot
+  be expanded ahead of time, since the value only exists at run time: that
+  signals an error instead of reading a global of the same name.
+- An `expr` whose pattern changes is returned as a `lambda` with the
+  parameters `expr` inferred from the original pattern, so the function's
+  arity does not change.
+- Special operators a host package registers are left alone: their
+  arguments are neither walked nor expanded.
+- `defun` and `defmacro` are kept as written with their bodies expanded;
+  their own expansion embeds a compiled function rather than source.
+
+The input form is never modified. The result evaluates to the same value as
+the input. Code that shares structure is walked once per shared node, and each
+list walked costs one step, so a step budget or deadline bounds the walk. Like `macroexpand`, it runs macros (which may call `gensym`), so it
+is meant for load time, tooling and debugging, not for hot paths.
+
 The `gensym` builtin is used to generate a new symbol, which is most often used
 with macros to avoid naming collisions. The symbol is named `gen` followed by
 at least eight digits taken from a counter that belongs to the runtime, so
@@ -727,6 +773,8 @@ iteration's value, introduce a fresh `let` binding inside the body:
     (let ((saved i)) (append! fs (lambda () saved))))
   (map 'list (lambda (f) (funcall f)) fs))       ; '(0 1 2)
 ```
+
+`elps lint` reports the first shape (`loop-variable-capture`).
 
 ### flet vs labels
 
@@ -1978,9 +2026,17 @@ json, stream encodings, math, etc.  These packages generally have simple, short
 names.
 
 ```lisp
-(set 'now (time:utc-now))
-(debug-print (time:format-rfc3339 now))
+(set 'start (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
+(debug-print (time:format-rfc3339 (time:time-add start (time:parse-duration "1h"))))
 ```
+
+The standard library is deterministic: no builtin reads the wall clock or
+waits on a timer, so the same program gives the same result on every run.
+`time:utc-now`, `time:time-elapsed` and `time:sleep` were removed for that
+reason.  A host that needs the current time or a sleep registers its own
+builtin (for example a transaction timestamp) and Lisp code measures with
+`time:time-from`.  `libtime.BuiltinSleep` remains exported for hosts that
+register a sleep themselves.
 
 The `string` package follows the names of Go's `strings` package. Besides
 case conversion, `split`, `join`, `repeat` and the cutset trims (`trim`,
@@ -2938,11 +2994,11 @@ function's definition location.
 
 The context is normally observed *between* evaluation steps, so a builtin
 that blocks for a long time inside a single step can outlive the deadline.
-`time:sleep` is the exception that is checked explicitly: it waits on the
-context as well as on its timer, so it wakes on cancellation and never sleeps
-past the deadline, raising `context-cancelled` instead of returning nil when
-it is cut short.  With no context configured, `time:sleep` sleeps for the
-full duration it was given, however long that is.  The `json:dump-*`
+A host sleep built on `libtime.BuiltinSleep` is the exception that is checked
+explicitly: it waits on the context as well as on its timer, so it wakes on
+cancellation and never sleeps past the deadline, raising `context-cancelled`
+instead of returning nil when it is cut short.  With no context configured it
+sleeps for the full duration it was given, up to the sleep length limit.  The `json:dump-*`
 functions also poll the context while they serialize a value, so a large
 document cannot outlive the deadline either.
 
@@ -2990,7 +3046,9 @@ exceeded` error.
 
 `macroexpand-1` performs at most one outer expansion. `macroexpand` continues
 while the outer result is another macro call; it does not recursively expand
-every nested subexpression. Each actual expansion in its loop consumes one
+every nested subexpression. `macroexpand-all` does; the successive-expansion
+limit applies to each form's head chain, and its nesting is bounded by the
+evaluator's nesting limit. Each actual expansion in its loop consumes one
 step, including a Go-defined macro whose body does not call the evaluator.
 A non-macro input adds no expansion step; `macroexpand-1` and direct Go
 `MacroCall` retain their ordinary one-call accounting.
@@ -3111,11 +3169,14 @@ depending on the shape of the loop.  It is **disabled by default**
 **Sleep length** is the one limit whose unit is wall clock rather than work.
 Every limit above counts something the interpreter *does* — steps, frames,
 turns, bytes, nesting — and a sleeping goroutine does none of them, so
-`time:sleep` was bounded by none of them at once and
+a sleep was bounded by none of them at once and
 `"9223372036854775807ns"` blocked for roughly 292 years.
 
 A single sleep is capped at one hour (`lisp.DefaultMaxSleep`).  Over that
-raises `sleep-limit-exceeded` **immediately**, without sleeping:
+raises `sleep-limit-exceeded` **immediately**, without sleeping.  The standard
+library no longer registers a sleep (see Standard library); these limits
+apply to a host that registers `libtime.BuiltinSleep`, shown here as
+`time:sleep`:
 
 ```lisp
 (time:sleep (time:parse-duration "2h"))

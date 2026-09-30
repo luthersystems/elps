@@ -1,0 +1,1 @@
+(let ([v (concat 'vector (vector 1))]) (list (nth v 0) (aref v 0) (equal? v v)))

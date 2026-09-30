@@ -1,0 +1,1 @@
+(defun p (n) (+ 1 (q n))) (defun q (n) (+ 1 (p n))) (p 0)

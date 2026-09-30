@@ -35,6 +35,9 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	if sym != nil {
 		content := buildHoverContent(sym)
 		if content != "" {
+			if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+				content += "\n\n" + captures
+			}
 			return hoverWithContent(content, hoverRange(sym, ref)), nil
 		}
 	}
@@ -49,6 +52,9 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	// Fallback: check builtins, special ops, macros, and use-package imports
 	// in the registry's package exports.
 	if content := s.registryHover(word, doc.ast, line+1); content != "" {
+		if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+			content += "\n\n" + captures
+		}
 		return hoverWithContent(content, wordRange), nil
 	}
 
@@ -258,4 +264,110 @@ func symbolKindLabel(kind analysis.SymbolKind) string {
 	default:
 		return "symbol"
 	}
+}
+
+// lambdaCapturesHover describes, for a cursor on the head of a lambda form,
+// which local variables of the enclosing code the closure captures.  It
+// reads the document's scope resolution (analysis, with macro expansion
+// when configured): a reference inside the lambda whose symbol is bound by
+// a local scope enclosing the lambda is a capture.  It returns "" when the
+// cursor is not on a lambda head.  line and col are 0-based, col in bytes.
+func lambdaCapturesHover(doc *Document, line, col int) string {
+	if w := wordAtPosition(doc.Content, line, col); w != "lambda" && w != "lisp:lambda" {
+		return ""
+	}
+	doc.mu.Lock()
+	ast, res := doc.ast, doc.analysis
+	doc.mu.Unlock()
+	if res == nil {
+		return ""
+	}
+	form := lambdaHeadAt(ast, line+1, col+1)
+	if form == nil {
+		return ""
+	}
+	scope := scopeForNode(res.RootScope, form)
+	if scope == nil {
+		return ""
+	}
+	inside := make(map[*lisp.LVal]bool)
+	var mark func(v *lisp.LVal)
+	mark = func(v *lisp.LVal) {
+		if v == nil || inside[v] {
+			return
+		}
+		inside[v] = true
+		for _, c := range v.Cells {
+			mark(c)
+		}
+	}
+	mark(form)
+	// A symbol in a quasiquote template is data; only its holes are code.
+	roles := astutil.ClassifyNodes(form)
+	var names []string
+	seen := make(map[string]bool)
+	for _, ref := range res.References {
+		sym := ref.Symbol
+		if ref.Node == nil || !inside[ref.Node] || roles.Role(ref.Node) == astutil.RoleData || sym == nil || sym.Scope == nil ||
+			sym.Scope.Kind == analysis.ScopeGlobal || seen[sym.Name] || !strictlyEncloses(sym.Scope, scope) {
+			continue
+		}
+		seen[sym.Name] = true
+		names = append(names, "`"+sym.Name+"`")
+	}
+	if len(names) == 0 {
+		return "Captures no local variables."
+	}
+	return "**Captures:** " + strings.Join(names, ", ")
+}
+
+// scopeForNode returns the scope form introduced, or nil.
+func scopeForNode(s *analysis.Scope, form *lisp.LVal) *analysis.Scope {
+	if s.Node == form {
+		return s
+	}
+	for _, c := range s.Children {
+		if found := scopeForNode(c, form); found != nil {
+			return found
+		}
+	}
+	return nil
+}
+
+// strictlyEncloses reports whether outer is a proper ancestor of inner.
+func strictlyEncloses(outer, inner *analysis.Scope) bool {
+	for s := inner.Parent; s != nil; s = s.Parent {
+		if s == outer {
+			return true
+		}
+	}
+	return false
+}
+
+// lambdaHeadAt returns the lambda form whose head symbol is at the 1-based
+// line and byte column, or nil.
+func lambdaHeadAt(ast []*lisp.LVal, line, col int) *lisp.LVal {
+	var found *lisp.LVal
+	var visit func(v *lisp.LVal)
+	visit = func(v *lisp.LVal) {
+		if found != nil || v == nil || v.Type != lisp.LSExpr {
+			return
+		}
+		if len(v.Cells) > 0 && !v.IsQuoted() {
+			head := v.Cells[0]
+			if head.Type == lisp.LSymbol && (head.Str == "lambda" || head.Str == "lisp:lambda") {
+				if loc, ok := head.Source(); ok && loc.Line == line && locContainsCol(&loc, head.Str, col) {
+					found = v
+					return
+				}
+			}
+		}
+		for _, c := range v.Cells {
+			visit(c)
+		}
+	}
+	for _, e := range ast {
+		visit(e)
+	}
+	return found
 }

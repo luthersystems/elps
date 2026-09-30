@@ -51,7 +51,7 @@ type Runtime struct {
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int           // Maximum macro expansion iterations (0 = use default).
 	MaxEvalNesting         int           // Evaluator recursion depth cap (0 = use default, negative = disabled).
-	MaxSleep               time.Duration // Hard ceiling on a single time:sleep (0 or negative = none). See MaxSleepCeiling.
+	MaxSleep               time.Duration // Hard ceiling on a single host sleep, libtime.BuiltinSleep (0 or negative = none). See MaxSleepCeiling.
 	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
 	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
 	evalNestingSetting     int           // MaxEvalNesting used to derive evalNestingLimit.
@@ -461,7 +461,8 @@ const (
 )
 
 // DefaultMaxSleep bounds a single (time:sleep d) that does not pass an
-// explicit :max, and is the last of the execution limits because it bounds
+// explicit :max (time:sleep meaning a host-registered libtime.BuiltinSleep;
+// the standard library no longer registers one, #757), and is the last of the execution limits because it bounds
 // WALL CLOCK rather than work.
 //
 // Every other limit here counts something the interpreter does — steps,
@@ -528,6 +529,8 @@ func (r *Runtime) closuresCreated() uint64 {
 	return atomic.LoadUint64((*uint64)(&r.closures))
 }
 
+// GenSym returns the next genNNNNNNNN name from this runtime's counter.
+// Go macros should use NewGenSyms for deterministic temporary bindings.
 func (r *Runtime) GenSym() string {
 	// "gen" plus at least eight decimal digits, zero-padded, as
 	// fmt.Sprintf("gen%08d") produced; one allocation, the final string.

@@ -1,0 +1,4 @@
+# every break in the fixtures, reviewed
+go   | lisp.QSymbol | 2099-01-01 | elps#761 | removed with the quoted-symbol type; substrate#1 migrates
+lisp | time:sleep   | 2099-01-01 | elps#761 substrate#2 | blocking sleep removed; phyla use cc timers
+lisp | gone:*       | 2099-01-01 | #761 | package folded into another; consumers switch imports

@@ -11,6 +11,7 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -553,43 +554,60 @@ var AnalyzerBuiltinArity = &Analyzer{
 		// Collect AST nodes where arity checking should be skipped.
 		skipNodes := aritySkipNodes(pass.Exprs)
 
-		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if skipNodes[sexpr] {
-				return
+		// Consume code events directly rather than building role maps and then
+		// traversing the same tree again. The syntactic lint walk historically
+		// omits the entire quasiquote, including its holes.
+		walker := lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+			if n.Event != lisp.WalkForm {
+				return true
 			}
-			head := HeadSymbol(sexpr)
-			if head == "" {
-				return
-			}
-			if userDefs[head] {
-				return
-			}
-			spec, ok := builtinArityTable[head]
-			if !ok {
-				return
-			}
-			argc := ArgCount(sexpr)
-			helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
-			headNode := sexpr.Cells[0]
-			if argc < spec.min {
-				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
-					Pos:     posFromSource(astutil.SourceLoc(headNode)),
-					EndPos:  endPosFromNode(headNode),
-					Notes:   []string{helpNote},
-				})
-			}
-			if spec.max >= 0 && argc > spec.max {
-				pass.Report(Diagnostic{
-					Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
-					Pos:     posFromSource(astutil.SourceLoc(headNode)),
-					EndPos:  endPosFromNode(headNode),
-					Notes:   []string{helpNote},
-				})
-			}
-		})
+			checkBuiltinArity(pass, n.Node, skipNodes, userDefs)
+			return n.Op != "quasiquote"
+		}}
+		for _, expr := range pass.Exprs {
+			codewalk.Forms(&walker, expr)
+		}
 		return nil
 	},
+}
+
+func checkBuiltinArity(pass *Pass, sexpr *lisp.LVal, skipNodes map[*lisp.LVal]bool, userDefs map[string]bool) {
+	if skipNodes[sexpr] {
+		return
+	}
+	head := HeadSymbol(sexpr)
+	if head == "" {
+		return
+	}
+	if userDefs[head] {
+		return
+	}
+	spec, ok := builtinArityTable[head]
+	if !ok {
+		return
+	}
+	argc := ArgCount(sexpr)
+	if argc >= spec.min && (spec.max < 0 || argc <= spec.max) {
+		return
+	}
+	helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
+	headNode := sexpr.Cells[0]
+	if argc < spec.min {
+		pass.Report(Diagnostic{
+			Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
+			Pos:     posFromSource(astutil.SourceLoc(headNode)),
+			EndPos:  endPosFromNode(headNode),
+			Notes:   []string{helpNote},
+		})
+	}
+	if spec.max >= 0 && argc > spec.max {
+		pass.Report(Diagnostic{
+			Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
+			Pos:     posFromSource(astutil.SourceLoc(headNode)),
+			EndPos:  endPosFromNode(headNode),
+			Notes:   []string{helpNote},
+		})
+	}
 }
 
 // bindingForms are the special operators whose first argument is a list of
@@ -798,8 +816,17 @@ var AnalyzerRethrowContext = &Analyzer{
 	Severity: SeverityError,
 	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
-		walkRethrowContext(pass.Exprs, 0, func(sexpr *lisp.LVal) {
+		walkRethrowContext(pass, func(sexpr *lisp.LVal, incomplete bool) {
 			src := SourceOf(sexpr)
+			if incomplete {
+				pass.Report(Diagnostic{
+					Message: "too many rethrow or error-stack calls in this form to check",
+					Pos:     posFromSource(astutil.SourceLoc(src)),
+					EndPos:  endPosFromNode(src),
+					Notes:   []string{"the form shares or repeats calls past the checker's budget, so a call outside handler-bind cannot be ruled out; split the form"},
+				})
+				return
+			}
 			name := HeadSymbol(sexpr)
 			pass.Report(Diagnostic{
 				Message: name + " used outside handler-bind",
@@ -812,54 +839,174 @@ var AnalyzerRethrowContext = &Analyzer{
 	},
 }
 
-// walkRethrowContext recursively walks the AST, tracking how many
-// handler-bind forms are in scope. When it finds a (rethrow) or
-// (error-stack) call with handlerDepth == 0, it calls report.
-func walkRethrowContext(exprs []*lisp.LVal, handlerDepth int, report func(*lisp.LVal)) {
-	for _, expr := range exprs {
-		walkRethrowNode(expr, handlerDepth, false, report)
+// walkRethrowContext expands each top-level form (astutil.ExpandAll) and
+// asks astutil.FindCalls for every (rethrow) and (error-stack) call with the
+// handler-bind forms and function bodies around it.  For a call outside
+// every handler-bind, it calls report.
+//
+// The code walker knows each special form's shape, so quoted data is not
+// searched, and a local function or variable named rethrow is not the
+// builtin.  When semantic analysis ran with a macro expander, the whole
+// form is expanded first, including macros nested in the arguments of other
+// calls, so a user macro that expands to handler-bind is a handler-bind.
+//
+// A call a macro synthesizes has no location in this file, or one inside
+// the macro's template, and is not reported against the call site.
+// Instead, the quoted and quasiquoted templates inside a defmacro body are
+// searched syntactically, as templates are code once expanded, so a macro
+// that emits a bare (rethrow) is reported at its template.
+//
+// When FindCallSites runs out of budget for a form, the form itself is
+// reported: a dropped call may be outside every handler-bind.
+func walkRethrowContext(pass *Pass, report func(form *lisp.LVal, incomplete bool)) {
+	hasExpander := pass.Semantics != nil && pass.Semantics.MacroExpander != nil
+	if hasExpander && !mentionsRethrowContext(pass.Exprs) {
+		return
+	}
+	passFile := analysis.NormalizePath(pass.Filename)
+	reported := make(map[int]bool)
+	reportOnce := func(form *lisp.LVal, incomplete bool) {
+		src, ok := form.Source()
+		if !ok || analysis.NormalizePath(src.File) != passFile {
+			return
+		}
+		if src.Pos >= 0 {
+			if reported[src.Pos] {
+				return
+			}
+			reported[src.Pos] = true
+		}
+		report(form, incomplete)
+	}
+	macroScanner := lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		if n.Op == "defmacro" {
+			scanMacroTemplates(n.Node, func(f *lisp.LVal) { reportOnce(f, false) })
+			return false
+		}
+		return true
+	}}
+	check := func(code *lisp.LVal) {
+		if !mentionsRethrowContext([]*lisp.LVal{code}) {
+			return
+		}
+		sites, complete := astutil.FindCallSites(code, "rethrow", "error-stack")
+		if !complete {
+			// Sites past the budget were dropped; one may be a violation.
+			reportOnce(code, true)
+		}
+		for _, site := range sites {
+			name := strings.TrimPrefix(site.Name, lisp.DefaultLangPackage+":")
+			inHandler, inFunction := false, false
+			for _, e := range site.Enclosing {
+				switch {
+				case e.Function:
+					inFunction = true
+				case e.Op == "handler-bind":
+					inHandler = true
+				}
+			}
+			if inHandler || (name == "error-stack" && inFunction) {
+				continue
+			}
+			reportOnce(site.Form, false)
+		}
+		codewalk.Forms(&macroScanner, code)
+	}
+	if !hasExpander {
+		// Unexpanded input needs no whole-file expansion cache or package
+		// bookkeeping. Only selected forms are scanned for calls/templates.
+		for _, code := range pass.Exprs {
+			check(code)
+		}
+		return
+	}
+	for _, ef := range pass.expandedExprs() {
+		check(ef.code)
+	}
+}
+
+// scanMacroTemplates walks a defmacro form as code and searches each
+// quoted datum and quasiquote template in it as code, since a template is
+// code once the macro expands.  A template inside a handler-bind in the
+// macro body is left alone, as are binding lists, which read as quoted
+// lists but are structure.
+func scanMacroTemplates(macro *lisp.LVal, report func(*lisp.LVal)) {
+	astutil.ExpandAll(macro, nil, "", func(n *lisp.WalkNode) bool {
+		switch {
+		case n.Event == lisp.WalkForm && n.Op == "handler-bind":
+			return false // templates inside a handler are fine
+		case n.Event == lisp.WalkData:
+			walkRethrowTemplate(n.Node, 0, true, report)
+		case n.Event == lisp.WalkForm && n.Op == "quasiquote":
+			for _, c := range n.Node.Cells[1:] {
+				walkRethrowTemplate(c, 0, true, report)
+			}
+		}
+		return true
+	})
+}
+
+// mentionsRethrowContext reports whether any symbol in exprs is spelled
+// rethrow or error-stack.  A file that never names either cannot contain a
+// call written in it, so the check skips expanding it.
+func mentionsRethrowContext(exprs []*lisp.LVal) bool {
+	for _, e := range exprs {
+		if nodeMentionsRethrowContext(e) {
+			return true
+		}
+	}
+	return false
+}
+
+func nodeMentionsRethrowContext(v *lisp.LVal) bool {
+	if v == nil {
+		return false
+	}
+	if v.Type == lisp.LSymbol {
+		return v.Str == "rethrow" || v.Str == "error-stack" ||
+			v.Str == "lisp:rethrow" || v.Str == "lisp:error-stack"
+	}
+	for _, c := range v.Cells {
+		if nodeMentionsRethrowContext(c) {
+			return true
+		}
+	}
+	return false
+}
+
+// walkRethrowTemplate searches a macro template syntactically, the way the
+// check searched all code before it used the code walker: a template is
+// code once the macro expands.  handlerDepth counts the handler-bind forms
+// inside the template around node.
+func walkRethrowTemplate(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
+	if node == nil {
+		return
+	}
+	if (node.Type != lisp.LSExpr && node.Type != lisp.LQuote) || len(node.Cells) == 0 {
+		return
+	}
+	head := strings.TrimPrefix(HeadSymbol(node), lisp.DefaultLangPackage+":")
+	if node.Type == lisp.LSExpr && !node.IsQuoted() {
+		if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
+			report(node)
+			return
+		}
+		if head == "handler-bind" {
+			handlerDepth++
+		}
+		inFunction = inFunction || rethrowFunctionForms[head]
+	}
+	for _, child := range node.Cells {
+		walkRethrowTemplate(child, handlerDepth, inFunction, report)
 	}
 }
 
 // rethrowFunctionForms are the forms whose body may run later, from inside a
 // handler that calls the function.  error-stack in such a body is not
 // reported: a logging helper a handler calls is the common way to use it,
-// and whether it runs under a handler is only known at run time.  rethrow
-// keeps its historical, stricter rule.
+// and whether it runs under a handler is only known at run time.
 var rethrowFunctionForms = map[string]bool{
 	"defun": true, "lambda": true, "defmacro": true, "flet": true, "labels": true,
-}
-
-func walkRethrowNode(node *lisp.LVal, handlerDepth int, inFunction bool, report func(*lisp.LVal)) {
-	if node == nil {
-		return
-	}
-	if node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
-		for _, child := range node.Cells {
-			walkRethrowNode(child, handlerDepth, inFunction, report)
-		}
-		return
-	}
-
-	head := HeadSymbol(node)
-
-	if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
-		report(node)
-		return
-	}
-
-	if head == "handler-bind" {
-		// Walk the bindings (first arg) and body forms with incremented depth.
-		for _, child := range node.Cells[1:] {
-			walkRethrowNode(child, handlerDepth+1, inFunction, report)
-		}
-		return
-	}
-
-	inFunction = inFunction || rethrowFunctionForms[head]
-	for _, child := range node.Cells {
-		walkRethrowNode(child, handlerDepth, inFunction, report)
-	}
 }
 
 // implicitPrognForms lists forms whose body already supports multiple
@@ -2860,4 +3007,300 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		})
 		return nil
 	},
+}
+
+// removedBuiltins maps each standard-library builtin elps has removed to the
+// migration advice reported for it.  Add a row when a stdlib export is
+// removed, so a program that still names it gets a pointed diagnostic rather
+// than only a runtime unbound-symbol error.
+var removedBuiltins = map[string]string{
+	"time:utc-now": "removed because the standard library does not read the wall clock (elps#757); " +
+		"use a timestamp the host supplies (substrate: cc:now or utils:now)",
+	"time:time-elapsed": "removed because it read the wall clock (elps#757); " +
+		"compute (time:time-from start end) with a host-supplied end time",
+	"time:sleep": "removed because its timing is non-deterministic (elps#757); " +
+		"a host that needs a sleep registers libtime.BuiltinSleep in its own package",
+}
+
+// AnalyzerRemovedBuiltin reports references to standard-library builtins
+// that elps has removed (removedBuiltins), naming the replacement.
+//
+// It is structural: a qualified reference (time:utc-now) is reported wherever
+// it appears outside a quasiquote template, quoted or not, and an unqualified
+// one is reported in call position when the file contains a top-level
+// (use-package 'time) or (in-package 'time), unless the file defines that
+// name itself, the file use-packages another package (other than lisp and
+// user) that could supply the same short name, or the semantic info names a
+// host symbol of that name from another package.  It cannot see a name built at runtime, produced by a macro,
+// inside a quasiquote template, or imported into a package by another file.
+var AnalyzerRemovedBuiltin = &Analyzer{
+	Name:     "removed-builtin",
+	Severity: SeverityError,
+	Doc:      "Report references to standard-library builtins that elps has removed, naming the replacement.\n\nCovers time:utc-now, time:time-elapsed and time:sleep (elps#757). Qualified references are reported anywhere outside a quasiquote template; unqualified calls are reported when the file uses or is in the time package, does not define the name itself, uses no other package that could supply it, and no host symbol of that name comes from another package. Names built at runtime or produced by macros are not seen.",
+	Run: func(pass *Pass) error {
+		// Packages whose removed names this file can reach unqualified.
+		unqualified := map[string]bool{}
+		// Other packages this file imports; any of them may export the same
+		// short name, so an unqualified match is ambiguous.
+		imported := map[string]bool{}
+		for _, top := range pass.Exprs {
+			head := HeadSymbol(top)
+			if (head == "use-package" || head == "in-package" ||
+				head == "lisp:use-package" || head == "lisp:in-package") && ArgCount(top) >= 1 {
+				if name := packageNameArg(top.Cells[1]); name != "" {
+					unqualified[name] = true
+					if head == "use-package" || head == "lisp:use-package" {
+						imported[name] = true
+					}
+				}
+			}
+		}
+		// suppliedElsewhere reports whether the short name of pkg:short may
+		// resolve to another package: another use-package in the file, or a
+		// host symbol of that name from a different package.
+		suppliedElsewhere := func(pkg, short string) bool {
+			for other := range imported {
+				if other != pkg && other != "lisp" && other != lisp.DefaultUserPackage {
+					return true
+				}
+			}
+			if pass.Semantics != nil {
+				for _, ext := range pass.Semantics.ExtraGlobals {
+					if ext.Name == short && ext.Package != pkg {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		defined := UserDefined(pass.Exprs)
+		Walk(pass.Exprs, func(node, parent *lisp.LVal, depth int) {
+			if node == nil || node.Type != lisp.LSymbol {
+				return
+			}
+			name := node.Str
+			if _, ok := removedBuiltins[name]; !ok {
+				if len(unqualified) == 0 || defined[name] || parent == nil ||
+					parent.Type != lisp.LSExpr || len(parent.Cells) == 0 || parent.Cells[0] != node {
+					return
+				}
+				found := false
+				for pkg := range unqualified {
+					if _, ok := removedBuiltins[pkg+":"+name]; ok && !suppliedElsewhere(pkg, name) {
+						name, found = pkg+":"+name, true
+						break
+					}
+				}
+				if !found {
+					return
+				}
+			}
+			src := SourceOf(node)
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("'%s' is %s", name, removedBuiltins[name]),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
+				EndPos:  endPosFromNode(src),
+			})
+		})
+		return nil
+	},
+}
+
+// storingCalls are the calls whose function argument outlives the loop
+// turn: the value is bound, stored in a container, or returned inside one.
+var storingCalls = map[string]bool{
+	"set": true, "set!": true, "append!": true, "append": true, "assoc!": true,
+	"assoc": true, "cons": true, "list": true, "vector": true, "concat": true,
+	"sorted-map": true, "insert-index": true, "insert-sorted": true,
+}
+
+// AnalyzerLoopVariableCapture warns when a closure created in a dotimes
+// body captures the loop variable and is stored.  dotimes reuses one
+// binding for every turn (docs/lang.md, "dotimes and captured loop
+// variables"), so every stored closure sees the variable's final value.
+//
+// It reads the analysis package's scope resolution (the same resolver the
+// LSP and the semantic checks use, with the macro expander when there is
+// one): a reference inside the closure that resolves to the dotimes
+// variable is a capture, so a closure whose own parameter or an inner let
+// shadows the variable is not reported.  A closure only counts as stored
+// when it is the direct argument of a storing call (set, set!, append!,
+// assoc!, cons, list, ...) that no local function shadows; one passed to
+// map or called on the spot runs during the turn and is fine.  Only the
+// loop body is checked: the result form runs once, after the loop.
+var AnalyzerLoopVariableCapture = &Analyzer{
+	Name:     "loop-variable-capture",
+	Severity: SeverityWarning,
+	Doc:      "Warn when a closure stored from a dotimes body captures the loop variable.\n\ndotimes reuses one binding for every turn, so each stored closure sees the variable's final value, not the value of the turn that created it. Bind a fresh copy inside the body: (let ((i i)) (lambda () i)).",
+	Run: func(pass *Pass) error {
+		if !mentionsSymbol(pass.Exprs, "dotimes") && (pass.Semantics == nil || pass.Semantics.MacroExpander == nil) {
+			return nil // no loop in the file, and no macro can make one
+		}
+		// Reuse the file's analysis (its workspace config, custom
+		// definition forms and macro expansion); without one, analyze
+		// the file alone.  A closure a macro synthesizes is resolved
+		// but has no place in the source tree, so it is not checked.
+		sem := pass.Semantics
+		if sem == nil {
+			sem = analysis.Analyze(pass.Exprs, nil)
+		}
+		reportLoopCaptures(pass, sem)
+		return nil
+	},
+}
+
+// packageNameArg returns the package name a use-package/in-package
+// argument spells: a quoted symbol, a bare symbol or a string.
+func packageNameArg(v *lisp.LVal) string {
+	if v == nil {
+		return ""
+	}
+	if v.Type == lisp.LSymbol || v.Type == lisp.LString {
+		return v.Str
+	}
+	if v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+		(v.Cells[0].Str == "quote" || v.Cells[0].Str == "lisp:quote") &&
+		v.Cells[1].Type == lisp.LSymbol {
+		return v.Cells[1].Str
+	}
+	return ""
+}
+
+func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
+	passFile := analysis.NormalizePath(pass.Filename)
+	refAt := make(map[*lisp.LVal]*analysis.Reference, len(sem.References))
+	for _, r := range sem.References {
+		if r.Node != nil {
+			refAt[r.Node] = r
+		}
+	}
+	var visit func(s *analysis.Scope)
+	visit = func(s *analysis.Scope) {
+		if s.Kind == analysis.ScopeDotimes && s.Node != nil && len(s.Node.Cells) > 2 {
+			checkLoop(pass, sem, s, refAt, passFile)
+		}
+		for _, c := range s.Children {
+			visit(c)
+		}
+	}
+	visit(sem.RootScope)
+}
+
+func checkLoop(pass *Pass, sem *analysis.Result, loop *analysis.Scope, refAt map[*lisp.LVal]*analysis.Reference, passFile string) {
+	// The loop variable is the first name of the control list; other
+	// names defined in the loop scope (a deftype in the body) are not it.
+	ctrl := loop.Node.Cells[1]
+	if ctrl.Type != lisp.LSExpr || len(ctrl.Cells) == 0 || ctrl.Cells[0].Type != lisp.LSymbol {
+		return
+	}
+	loopVar := loop.Symbols[ctrl.Cells[0].Str]
+	if loopVar == nil {
+		return
+	}
+	// parent maps each node of the loop body to the list holding it.
+	parent := make(map[*lisp.LVal]*lisp.LVal)
+	inBody := make(map[*lisp.LVal]bool)
+	var link func(v *lisp.LVal)
+	link = func(v *lisp.LVal) {
+		if inBody[v] {
+			return
+		}
+		inBody[v] = true
+		for _, c := range v.Cells {
+			if c != nil && !inBody[c] {
+				parent[c] = v
+				link(c)
+			}
+		}
+	}
+	for _, body := range loop.Node.Cells[2:] {
+		link(body)
+	}
+	var visit func(s *analysis.Scope)
+	visit = func(s *analysis.Scope) {
+		for _, c := range s.Children {
+			if c.Kind == analysis.ScopeLambda && inBody[c.Node] && storedClosure(c.Node, parent, refAt) {
+				if r := firstCapture(c.Node, loopVar, refAt); r != nil {
+					if src, ok := r.Node.Source(); ok && analysis.NormalizePath(src.File) == passFile {
+						pass.Report(Diagnostic{
+							Message: "closure captures dotimes variable " + loopVar.Name + ", which the loop reuses",
+							Pos:     posFromSource(astutil.SourceLoc(r.Node)),
+							EndPos:  endPosFromNode(r.Node),
+							Notes: []string{
+								"every stored closure sees the variable's final value, not this turn's",
+								"bind a fresh copy inside the body: (let ((" + loopVar.Name + " " + loopVar.Name + ")) ...)",
+							},
+						})
+					}
+				}
+				continue // one report per closure; nested closures are inside it
+			}
+			visit(c)
+		}
+	}
+	visit(loop)
+}
+
+// storedClosure reports whether the lambda (or expr) form fn is the direct
+// argument of a storing call whose head is not a local binding.
+func storedClosure(fn *lisp.LVal, parent map[*lisp.LVal]*lisp.LVal, refAt map[*lisp.LVal]*analysis.Reference) bool {
+	call := parent[fn]
+	if call == nil || len(call.Cells) == 0 || call.Cells[0] == fn || call.IsQuoted() {
+		return false
+	}
+	head := call.Cells[0]
+	if !storingCalls[strings.TrimPrefix(HeadSymbol(call), lisp.DefaultLangPackage+":")] {
+		return false
+	}
+	if r := refAt[head]; r != nil && r.Symbol != nil && r.Symbol.Scope != nil && r.Symbol.Scope.Kind != analysis.ScopeGlobal {
+		return false // a local function shadows the builtin
+	}
+	return true
+}
+
+// firstCapture returns the first reference inside fn that resolves to v.
+func firstCapture(fn *lisp.LVal, v *analysis.Symbol, refAt map[*lisp.LVal]*analysis.Reference) *analysis.Reference {
+	// A symbol in a quasiquote template is data; only its holes are code.
+	roles := astutil.ClassifyNodes(fn)
+	var found *analysis.Reference
+	seen := make(map[*lisp.LVal]bool)
+	var walk func(n *lisp.LVal)
+	walk = func(n *lisp.LVal) {
+		if found != nil || n == nil || seen[n] {
+			return
+		}
+		seen[n] = true
+		if r := refAt[n]; r != nil && r.Symbol == v && roles.Role(n) != astutil.RoleData {
+			found = r
+			return
+		}
+		for _, c := range n.Cells {
+			walk(c)
+		}
+	}
+	walk(fn)
+	return found
+}
+
+// mentionsSymbol reports whether any symbol in exprs is spelled name, bare
+// or lisp-qualified.
+func mentionsSymbol(exprs []*lisp.LVal, name string) bool {
+	found := false
+	var walk func(v *lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		if found || v == nil {
+			return
+		}
+		if v.Type == lisp.LSymbol {
+			found = strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":") == name
+			return
+		}
+		for _, c := range v.Cells {
+			walk(c)
+		}
+	}
+	for _, e := range exprs {
+		walk(e)
+	}
+	return found
 }

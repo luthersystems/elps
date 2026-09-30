@@ -550,8 +550,8 @@ func (g *Gen) tagged(depth int) *lisp.LVal {
 	return v
 }
 
-// fuzzDurations are the durations handed to time:sleep and the rest of
-// libtime.
+// fuzzDurations are the durations handed to libtime (BuiltinSleep,
+// which hosts register, and the time package builtins).
 //
 // Bounded deliberately.  BuiltinSleep refuses a duration over an hour and one
 // that would outlast the evaluation deadline, both instantly -- but anything
