@@ -278,7 +278,9 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 	case '~':
 		return lisp.String(string(s[1:])), nil
 	case ':':
-		return lisp.Symbol(":" + string(body)), nil
+		// The keyword keeps the tag's ':' byte, so its name is one
+		// conversion of the tag text.
+		return lisp.Symbol(string(s[1:])), nil
 	case '$':
 		if err := checkSymbolName(body); err != nil {
 			return nil, d.errorf("%v", err)
