@@ -88,29 +88,45 @@ env:
   # touched this gate -- cannot move the suffix. scripts/bench-arms-check.sh
   # is the backstop that names the failure if this pin is ever removed.
   #
-  # HELD AT 2 THROUGH THE MOVE TO A 4-vCPU RUNNER, DELIBERATELY. This used to
-  # read "2 matches the ARM runner below", which made it look derived; it is
-  # not, and the whole point of a pin is that it does not follow the hardware.
-  # The runner below is now `ubuntu-24.04-arm` (4 vCPU) and this stays 2, so:
+  # PINNED TO 1, NOT 2 (issue #767). It was 2, and on the 4-vCPU shared ARM
+  # runner that made allocation-heavy rows measure GC scheduling rather than
+  # code. With 2 Ps the concurrent GC runs its background mark workers on the
+  # second P, so how much GC work a timed loop absorbs (assists and
+  # write-barrier time on its own thread, versus marking done in parallel on
+  # another vCPU) depends on how the OS schedules that thread on a machine it
+  # shares. Measured on this runner with IDENTICAL code in both arms (PR #771,
+  # 10 interleaved rounds each):
   #
-  #   * every benchmark keeps the `-2` name suffix it has always had, which is
-  #     what benchstat pairs rows by. Raising this to 4 would rename all 80+
-  #     rows at once -- harmless to THIS job, whose two arms would both be
-  #     renamed together, but it would unpair every historical raw result and
-  #     any future cross-run look at them;
-  #   * the runtime's own parallelism is unchanged, so the only measurement
-  #     variable that actually moved is the microarchitecture (and the machine
-  #     it is sharing), not the Go scheduler's shape.
+  #   row                                   GOMAXPROCS=2   GOMAXPROCS=1   GOGC=off
+  #   SchemaCaptures/construct-map          +/-6-13%       +/-1%          +/-1%
+  #   PathConstruct/practical/key.index.key +/-4-12%       +/-1-5%        +/-0%
+  #
+  # and zero-allocation rows sat at +/-1% either way. Real PRs showed the
+  # same: #763 changed no Go code, and its PathConstruct rows came out +17-19%
+  # on one attempt and -11 to -15% on the re-run. GOGC=off removes the noise
+  # too, but by taking GC cost out of sec/op; one P keeps that cost and makes
+  # it deterministic, so the gate still sees an allocation regression's time.
+  #
+  # Consequences, all deliberate:
+  #
+  #   * `go test` prints no suffix at GOMAXPROCS=1, so rows are named
+  #     `EnvGet`, not `EnvGet-2`. Both arms are renamed together, so the gate
+  #     is unaffected; only a cross-run look at raw results recorded before
+  #     #767 has to strip the old suffix. This is the baseline reset.
+  #   * absolute sec/op rises (GC now runs on the timed thread): ~20% on the
+  #     allocation-heavy rows above. Nothing compares across that change.
+  #   * BenchmarkPackageGetFunParallel runs one goroutine here, so in this
+  #     gate it measures single-P lookup cost, not contention.
   #
   # These benchmarks are single-goroutine, so this constrains only the
-  # runtime's background work (GC assist/marker Ps), which is exactly the part
-  # that would otherwise silently double.
+  # runtime's background work (GC marker Ps), which is exactly the part that
+  # was varying. scripts/ci-gates-test.sh fails if this is raised.
   #
   # Absolute numbers are of course NOT comparable with results recorded on the
   # old runner -- different silicon is different silicon. Nothing in the gate
   # depends on that: it compares two arms measured against each other, here,
   # today.
-  GOMAXPROCS: "2"
+  GOMAXPROCS: "1"
 
 # DOCS-ONLY PULL REQUESTS. The `changes` job runs scripts/docs-only-changes.sh
 # and the heavy jobs below carry `if: needs.changes.outputs.docs_only != 'true'`,
@@ -295,10 +311,9 @@ jobs:
     # adjudicates PRs:
     #
     #   * MEASUREMENT CONDITIONS. GOMAXPROCS is pinned at the workflow level
-    #     and STAYS AT 2 -- it is not derived from the runner and did not
-    #     follow it. So every benchmark keeps its `-2` name suffix and the
-    #     runtime keeps 2 Ps; the microarchitecture is the variable, not the
-    #     scheduler. See the long note on GOMAXPROCS above.
+    #     (now 1, see #767) -- it is not derived from the runner and did not
+    #     follow it, so the benchmark-name suffix cannot move with `runs-on`.
+    #     See the long note on GOMAXPROCS above.
     #   * INTERNAL VALIDITY IS UNAFFECTED, which is the reason this move is
     #     safe at all. Both arms are checked out, built and measured
     #     interleaved in THIS job on THIS runner, so base and head see the

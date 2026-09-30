@@ -2527,6 +2527,19 @@ else
 	bad "benchmark.yml does not pin GOMAXPROCS — a runner size change would silently unpair every benchmark"
 fi
 
+# And pinned to ONE P (issue #767). With 2 Ps the concurrent GC's background
+# mark workers run on the second P, so how much GC work a timed loop absorbs
+# depends on whether the OS schedules that thread onto another vCPU of the
+# shared runner. Allocation-heavy rows then measured +/-7-20% on IDENTICAL
+# code and crossed the 15% gate on PRs that did not touch them. One P keeps GC
+# cost in sec/op but runs it on the benchmark's own thread, deterministically
+# (+/-1% on the same rows, same runner). Raising it reopens that noise.
+if grep -qE '^\s*GOMAXPROCS:\s*"?1"?\s*$' "$BENCH_WF"; then
+	ok "benchmark.yml pins GOMAXPROCS to 1 (concurrent GC cannot land on another vCPU mid-sample; #767)"
+else
+	bad "benchmark.yml pins GOMAXPROCS above 1 — allocation-heavy rows measure GC scheduling noise, not code (#767)"
+fi
+
 if [ -n "$(invoked_in_any 'scripts/bench-arms-check.sh' "${BENCH_PLUMBING[@]}")" ]; then
 	ok "the benchmark plumbing INVOKES scripts/bench-arms-check.sh before comparing"
 else

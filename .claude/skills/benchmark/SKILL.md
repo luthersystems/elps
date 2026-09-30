@@ -114,6 +114,19 @@ BENCH_WAIVERS= go run ./cmd/benchgate /tmp/benchstat.txt      # with waivers off
 benchgate can also adjudicate the two raw `go test -bench` arms directly, with no
 `benchstat` binary in the loop (`make bench-gate-arms BENCH_BASE=… BENCH_HEAD=…`).
 
+### CI measures at `GOMAXPROCS=1`
+
+`benchmark.yml` pins `GOMAXPROCS: "1"` (issue #767). At 2 Ps the concurrent
+GC's mark workers ran on the second P, and allocation-heavy rows measured how
+the shared runner scheduled that thread: ±7-20% on identical code, enough to
+cross the 15% gate on PRs that never touched them. One P keeps GC cost in
+sec/op and makes it deterministic. So CI rows carry no `-N` suffix, and to
+reproduce a CI verdict locally measure the same way:
+
+```bash
+GOMAXPROCS=1 go test -run='^$' -bench=. -benchmem -benchtime=100ms -count=10 ./lisp/... | tee /tmp/bench.txt
+```
+
 ### Before you measure: is the machine fit? (`make bench-burnin`)
 
 ```bash
