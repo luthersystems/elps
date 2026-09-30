@@ -190,12 +190,6 @@
 (time:format-rfc3339 (time:time-add (time:parse-rfc3339 "2023-01-15T10:30:00Z") (time:parse-duration "1h")))
 	=> "2023-01-15T11:30:00Z"
 	steps 10
-(time:time-elapsed 1)
-	=> error error in time:time-elapsed: argument is not a time: int @golden
-	steps 3
-(time:time-elapsed (time:parse-duration "1s"))
-	=> error error in time:time-elapsed: argument is not a time: #<native value: time.Duration> @golden
-	steps 5
 (time:time-from 1 2)
 	=> error error in time:time-from: argument is not a time: int @golden
 	steps 4
@@ -240,21 +234,6 @@
 	steps 5
 (time:duration-ns (time:parse-duration "1500ms"))
 	=> 1500000000
-	steps 5
-(time:sleep 1)
-	=> error error in time:sleep: argument is not a duration: int @golden
-	steps 3
-(time:sleep (time:parse-rfc3339 "2023-01-15T10:30:00Z"))
-	=> error error in time:sleep: argument is not a duration: #<native value: libtime.ownedTime> @golden
-	steps 5
-(time:sleep (time:parse-duration "0s") :max 1)
-	=> error error in time:sleep: max is not a duration: int @golden
-	steps 7
-(time:sleep (time:parse-duration "2h"))
-	=> error sleep-limit-exceeded in time:sleep: sleep of 2h0m0s exceeds the maximum 1h0m0s (pass :max to allow a longer sleep, subject to any host ceiling) @golden
-	steps 5
-(time:sleep (time:parse-duration "0s"))
-	=> ()
 	steps 5
 (base64:encode 1)
 	=> error error in base64:encode: argument is not a string: int @golden

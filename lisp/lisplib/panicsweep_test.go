@@ -185,7 +185,6 @@ var panicSweepSkips = map[string]string{
 	"lisp:load-file":   "evaluates its argument as a program",
 	"lisp:load-string": "evaluates its argument as a program",
 	"lisp:load-bytes":  "evaluates its argument as a program",
-	"time:sleep":       "blocks for the duration in its argument",
 	// The testing package runs its body as a subtest against the ambient
 	// *testing.T, so calling it from inside one reports failures for programs
 	// this test made up.

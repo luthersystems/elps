@@ -998,7 +998,7 @@ lisp.InitializeUserEnv(env, lisp.WithMaxSteps(1000000))
 | `WithMaxTailIterations(n)` | 1,000,000 (`DefaultMaxTailIterations`) | 0 disables the check. |
 | `WithMaximumLogicalStackHeight(n)` | 0, disabled (`DefaultMaxLogicalStackHeight`) | Opt-in logical (virtual) stack limit. |
 | `WithMaxValueDepth(n)` | 1,000,000 (`lisp.MaxValueDepth`) | Must be at least 1024. |
-| `WithMaxSleep(d)` | one hour (`DefaultMaxSleep`) | Ceiling that `time:sleep`'s `:max` cannot exceed. |
+| `WithMaxSleep(d)` | one hour (`DefaultMaxSleep`) | Ceiling that the `:max` of a host sleep built on `libtime.BuiltinSleep` cannot exceed. |
 
 `WithMaxMacroExpansionDepth(n)` selects the limit; a nonpositive value uses
 the default of 1,000.

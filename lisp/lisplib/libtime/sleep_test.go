@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 	"github.com/luthersystems/elps/lisp/lisplib/libtime"
 	"github.com/luthersystems/elps/parser"
 )
@@ -47,10 +48,25 @@ func sleepEnv(t *testing.T, ctx context.Context) *lisp.LEnv {
 	if rc := libtime.LoadPackage(env); rc.Type == lisp.LError {
 		t.Fatalf("load time package: %v", rc)
 	}
+	registerSleep(t, env)
 	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
 		t.Fatalf("in-package: %v", rc)
 	}
 	return env
+}
+
+// registerSleep binds libtime.BuiltinSleep as time:sleep the way a host
+// does.  LoadPackage no longer registers it (#757), but the exported builtin
+// is still what hosts install, so its behaviour stays under test here.
+func registerSleep(t *testing.T, env *lisp.LEnv) {
+	t.Helper()
+	prev := env.Runtime.Package.Name
+	defer env.InPackage(lisp.Symbol(prev))
+	if rc := env.InPackage(lisp.Symbol(libtime.DefaultPackageName)); rc.Type == lisp.LError {
+		t.Fatalf("in-package time: %v", rc)
+	}
+	env.AddBuiltins(true, libutil.Function("sleep",
+		lisp.Formals("time-duration", lisp.KeyArgSymbol, "max"), libtime.BuiltinSleep))
 }
 
 // callSleep invokes the builtin directly with a native duration and no :max.
@@ -541,6 +557,7 @@ func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	if rc := libtime.LoadPackage(env); rc.Type == lisp.LError {
 		t.Fatalf("load time package: %v", rc)
 	}
+	registerSleep(t, env)
 
 	v, _ := runBounded(t, slack, func() *lisp.LVal {
 		return callSleepMax(env, time.Hour, libtime.Duration(time.Hour))

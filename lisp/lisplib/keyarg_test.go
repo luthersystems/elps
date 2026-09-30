@@ -80,7 +80,7 @@ func TestOptionalArgBuiltinsTolerateShortArgLists(t *testing.T) {
 
 	// Guard against the sweep silently finding nothing -- a registry walk that
 	// matches zero builtins would pass this test while asserting nothing at
-	// all. time:sleep, math:atan, help:help-package-symbols and the libjson
+	// all. math:atan, help:help-package-symbols and the libjson
 	// pair are the known members; if the registry shape changes so that none
 	// are found, fail rather than pass.
 	require.NotEmpty(t, flexible, "found no &optional/&key builtins to check; the registry walk is broken")

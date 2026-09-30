@@ -175,8 +175,19 @@ func newFuzzEnv() (*lisp.LEnv, *bytes.Buffer, *lisp.LVal) {
 	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
 		return nil, stderr, rc
 	}
+	// The stdlib offers no clock (#757), but embedders register their own,
+	// so the fuzz environment carries one too: it keeps nondeterministic
+	// programs reachable by the mutator and gives the differential targets'
+	// determinism control something real to detect
+	// (TestSharedProgramNondeterminismIsDetected).
+	env.AddBuiltins(true, elpsutil.Function(fuzzClockName, lisp.Formals(),
+		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Int(int(time.Now().UnixNano())) }))
 	return env, stderr, nil
 }
+
+// fuzzClockName is the host-style wall-clock builtin newFuzzEnv registers in
+// the user package.  It returns the current Unix time in nanoseconds.
+const fuzzClockName = "fuzz-clock-ns"
 
 // evalOutcome is the record of one budgeted evaluation.
 type evalOutcome struct {

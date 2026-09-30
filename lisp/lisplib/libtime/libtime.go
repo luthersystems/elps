@@ -74,10 +74,6 @@ func GetDuration(v *lisp.LVal) (time.Duration, bool) {
 
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var builtins = []*libutil.Builtin{
-	libutil.FunctionDoc("utc-now", lisp.Formals(), BuiltinUTCNow,
-		`Returns the current time in UTC as a native time value. Takes no
-		arguments. Use format-rfc3339 or format-rfc3339-nano to convert
-		the result to a string.`),
 	libutil.FunctionDoc("parse-rfc3339", lisp.Formals("timestamp"), BuiltinParseRFC3339,
 		`Parses an RFC 3339 timestamp string (e.g. "2023-01-15T10:30:00Z")
 		and returns a native time value. Returns an error if the string
@@ -90,8 +86,8 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("format-rfc3339", lisp.Formals("datetime"), BuiltinFormatRFC3339,
 		`Formats a native time value as an RFC 3339 string with second
 		precision (e.g. "2023-01-15T10:30:00Z"). Returns a string.
-		The argument must be a native time value from utc-now or
-		parse-rfc3339.`),
+		The argument must be a native time value from parse-rfc3339
+		or a host-supplied timestamp.`),
 	libutil.FunctionDoc("format-rfc3339-nano", lisp.Formals("datetime"), BuiltinFormatRFC3339Nano,
 		`Formats a native time value as an RFC 3339 string with nanosecond
 		precision (e.g. "2023-01-15T10:30:00.123456789Z"). Returns a
@@ -109,10 +105,6 @@ var builtins = []*libutil.Builtin{
 		`Returns a new time value equal to datetime plus duration. The
 		first argument must be a native time value and the second must
 		be a native duration value (from parse-duration or time-from).`),
-	libutil.FunctionDoc("time-elapsed", lisp.Formals("start"), BuiltinElapsed,
-		`Returns the duration elapsed since start as a native duration
-		value. Equivalent to (time-from start (utc-now)). The argument
-		must be a native time value.`),
 	libutil.FunctionDoc("time-from", lisp.Formals("start", "end"), BuiltinDurationBetween,
 		`Returns the duration between start and end as a native duration
 		value (end - start). Both arguments must be native time values.
@@ -132,26 +124,6 @@ var builtins = []*libutil.Builtin{
 		`Returns the number of nanoseconds in the duration as an integer.
 		The argument must be a native duration value. Returns an error
 		if the value overflows an int.`),
-	libutil.FunctionDoc("sleep", lisp.Formals("time-duration", lisp.KeyArgSymbol, "max"), BuiltinSleep,
-		`Pauses execution for the specified duration. The argument must
-		be a native duration value (from parse-duration). Returns nil.
-
-		A sleep that cannot succeed is REFUSED IMMEDIATELY rather than
-		blocked on. Two things refuse it, both before any time passes:
-
-		  1. A duration longer than one hour raises
-		     sleep-limit-exceeded. Pass :max with a longer duration to
-		     allow it -- (time:sleep d :max m) -- which makes an
-		     unusually long sleep explicit at the call site. The host
-		     may set a ceiling that :max cannot exceed.
-		  2. A duration that would outlast the evaluation's context
-		     deadline raises context-cancelled. The sleep could not
-		     have completed, so waiting out the remaining time would
-		     only consume the budget the caller has left to react in.
-
-		Once started, the pause is still interruptible: if the context
-		is cancelled while sleeping, sleep wakes at that point and
-		raises context-cancelled instead of returning nil.`),
 }
 
 const (
@@ -191,10 +163,6 @@ func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
 	d, ok := v.Native.(time.Duration)
 	a.Check(ok, notDuration, v)
 	return d
-}
-
-func BuiltinUTCNow(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return Time(time.Now().UTC())
 }
 
 func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -282,14 +250,6 @@ func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return Duration(t[1].Sub(t[0]))
 }
 
-func BuiltinElapsed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	t, lerr := timeArgs(env, args, 1)
-	if lerr.Type == lisp.LError {
-		return lerr
-	}
-	return Duration(time.Since(t[0]))
-}
-
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	v := args.Cells[0]
 	if v.Type != lisp.LString {
@@ -336,6 +296,11 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 // BuiltinSleep sleeps for the given duration before returning.
+//
+// LoadPackage does not register it: the time package offers no builtin whose
+// result depends on goroutine timing (#757).  It stays exported for hosts
+// that register a sleep in their own package, with formals
+// (time-duration &key max).
 //
 // The sleep is bounded by the evaluation's context (see LEnv.Context): it
 // wakes early if the context is cancelled, and never sleeps past the

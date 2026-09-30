@@ -3009,6 +3009,103 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 	},
 }
 
+// removedBuiltins maps each standard-library builtin elps has removed to the
+// migration advice reported for it.  Add a row when a stdlib export is
+// removed, so a program that still names it gets a pointed diagnostic rather
+// than only a runtime unbound-symbol error.
+var removedBuiltins = map[string]string{
+	"time:utc-now": "removed because the standard library does not read the wall clock (elps#757); " +
+		"use a timestamp the host supplies (substrate: cc:now or utils:now)",
+	"time:time-elapsed": "removed because it read the wall clock (elps#757); " +
+		"compute (time:time-from start end) with a host-supplied end time",
+	"time:sleep": "removed because its timing is non-deterministic (elps#757); " +
+		"a host that needs a sleep registers libtime.BuiltinSleep in its own package",
+}
+
+// AnalyzerRemovedBuiltin reports references to standard-library builtins
+// that elps has removed (removedBuiltins), naming the replacement.
+//
+// It is structural: a qualified reference (time:utc-now) is reported wherever
+// it appears outside a quasiquote template, quoted or not, and an unqualified
+// one is reported in call position when the file contains a top-level
+// (use-package 'time) or (in-package 'time), unless the file defines that
+// name itself, the file use-packages another package (other than lisp and
+// user) that could supply the same short name, or the semantic info names a
+// host symbol of that name from another package.  It cannot see a name built at runtime, produced by a macro,
+// inside a quasiquote template, or imported into a package by another file.
+var AnalyzerRemovedBuiltin = &Analyzer{
+	Name:     "removed-builtin",
+	Severity: SeverityError,
+	Doc:      "Report references to standard-library builtins that elps has removed, naming the replacement.\n\nCovers time:utc-now, time:time-elapsed and time:sleep (elps#757). Qualified references are reported anywhere outside a quasiquote template; unqualified calls are reported when the file uses or is in the time package, does not define the name itself, uses no other package that could supply it, and no host symbol of that name comes from another package. Names built at runtime or produced by macros are not seen.",
+	Run: func(pass *Pass) error {
+		// Packages whose removed names this file can reach unqualified.
+		unqualified := map[string]bool{}
+		// Other packages this file imports; any of them may export the same
+		// short name, so an unqualified match is ambiguous.
+		imported := map[string]bool{}
+		for _, top := range pass.Exprs {
+			head := HeadSymbol(top)
+			if (head == "use-package" || head == "in-package" ||
+				head == "lisp:use-package" || head == "lisp:in-package") && ArgCount(top) >= 1 {
+				if name := packageNameArg(top.Cells[1]); name != "" {
+					unqualified[name] = true
+					if head == "use-package" || head == "lisp:use-package" {
+						imported[name] = true
+					}
+				}
+			}
+		}
+		// suppliedElsewhere reports whether the short name of pkg:short may
+		// resolve to another package: another use-package in the file, or a
+		// host symbol of that name from a different package.
+		suppliedElsewhere := func(pkg, short string) bool {
+			for other := range imported {
+				if other != pkg && other != "lisp" && other != lisp.DefaultUserPackage {
+					return true
+				}
+			}
+			if pass.Semantics != nil {
+				for _, ext := range pass.Semantics.ExtraGlobals {
+					if ext.Name == short && ext.Package != pkg {
+						return true
+					}
+				}
+			}
+			return false
+		}
+		defined := UserDefined(pass.Exprs)
+		Walk(pass.Exprs, func(node, parent *lisp.LVal, depth int) {
+			if node == nil || node.Type != lisp.LSymbol {
+				return
+			}
+			name := node.Str
+			if _, ok := removedBuiltins[name]; !ok {
+				if len(unqualified) == 0 || defined[name] || parent == nil ||
+					parent.Type != lisp.LSExpr || len(parent.Cells) == 0 || parent.Cells[0] != node {
+					return
+				}
+				found := false
+				for pkg := range unqualified {
+					if _, ok := removedBuiltins[pkg+":"+name]; ok && !suppliedElsewhere(pkg, name) {
+						name, found = pkg+":"+name, true
+						break
+					}
+				}
+				if !found {
+					return
+				}
+			}
+			src := SourceOf(node)
+			pass.Report(Diagnostic{
+				Message: fmt.Sprintf("'%s' is %s", name, removedBuiltins[name]),
+				Pos:     posFromSource(astutil.SourceLoc(src)),
+				EndPos:  endPosFromNode(src),
+			})
+		})
+		return nil
+	},
+}
+
 // storingCalls are the calls whose function argument outlives the loop
 // turn: the value is bound, stored in a container, or returned inside one.
 var storingCalls = map[string]bool{
@@ -3050,6 +3147,23 @@ var AnalyzerLoopVariableCapture = &Analyzer{
 		reportLoopCaptures(pass, sem)
 		return nil
 	},
+}
+
+// packageNameArg returns the package name a use-package/in-package
+// argument spells: a quoted symbol, a bare symbol or a string.
+func packageNameArg(v *lisp.LVal) string {
+	if v == nil {
+		return ""
+	}
+	if v.Type == lisp.LSymbol || v.Type == lisp.LString {
+		return v.Str
+	}
+	if v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
+		(v.Cells[0].Str == "quote" || v.Cells[0].Str == "lisp:quote") &&
+		v.Cells[1].Type == lisp.LSymbol {
+		return v.Cells[1].Str
+	}
+	return ""
 }
 
 func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
