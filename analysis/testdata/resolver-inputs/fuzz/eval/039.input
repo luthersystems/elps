@@ -1,0 +1,1 @@
+(aref (vector 1) -1)

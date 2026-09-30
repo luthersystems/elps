@@ -1,0 +1,2 @@
+(defmacro 'qmac () 1)
+(qmac)

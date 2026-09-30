@@ -74,6 +74,36 @@ func Inputs(root string) ([]Input, error) {
 	return inputs, nil
 }
 
+// FixtureInputs reads the frozen copies of the golden's inputs under dir:
+// each input is stored as <name>.input, so the parity test compares the same
+// bytes the golden was recorded from even after the repository changes.
+func FixtureInputs(dir string) ([]Input, error) {
+	var inputs []Input
+	err := filepath.WalkDir(dir, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !strings.HasSuffix(path, ".input") {
+			return fmt.Errorf("unexpected file in resolver fixtures: %s", path)
+		}
+		src, err := os.ReadFile(path) //nolint:gosec // test fixture selected by WalkDir
+		if err != nil {
+			return err
+		}
+		rel, err := filepath.Rel(dir, path)
+		if err != nil {
+			return err
+		}
+		inputs = append(inputs, Input{strings.TrimSuffix(filepath.ToSlash(rel), ".input"), src})
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	sort.Slice(inputs, func(i, j int) bool { return inputs[i].Name < inputs[j].Name })
+	return inputs, nil
+}
+
 // Snapshot dumps symbols, references, unresolved references and the complete
 // scope tree, including source spans. Only unordered maps and expr's inferred
 // parameter declarations are sorted; reference order remains part of parity.

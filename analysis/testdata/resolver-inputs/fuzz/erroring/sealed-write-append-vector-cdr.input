@@ -1,0 +1,1 @@
+(append 'vector (cdr '(1 2 3)) 99)

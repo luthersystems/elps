@@ -37,6 +37,13 @@ Unordered maps and declaration records are sorted. Reference and scope order
 remain significant. Sorting declarations also normalizes the old resolver's
 map iteration over inferred `expr` parameters.
 
+The inputs themselves are frozen under `resolver-inputs/`, one
+`<name>.input` file per golden entry (repository files by path, fuzz seeds as
+`fuzz/<group>/<name>`), so later edits to the repository do not change what is
+compared. `TestRepoResolverParity` reads only these fixtures and fails if a
+fixture and a golden entry do not correspond one to one or differ in content
+hash. Regenerate both together, from the same tree, if the inputs must change.
+
 There is one explicit, asserted difference: in
 `editors/vscode/test/grammar/builtins.lisp`, `macroexpand-all` is unresolved on
 main and resolves to the new builtin on PR #754. `TestRepoResolverParity`

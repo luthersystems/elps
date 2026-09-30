@@ -1,0 +1,1 @@
+(handler-bind ([condition (lambda (c &rest r) 'k)]) (error 'internal-panic "forged"))
