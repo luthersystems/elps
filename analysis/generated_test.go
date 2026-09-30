@@ -256,3 +256,75 @@ qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
 	require.NotNil(t, qa)
 	assert.Equal(t, "q", qa.Package)
 }
+
+func TestGeneratedNestedInPackageCarriesOver(t *testing.T) {
+	t.Parallel()
+	for _, source := range []string{
+		`(enter-q-nested) (qconst qa 1) (defun read-qa () qa) qa`,
+		`(progn (enter-q) (qconst qa 1)) (defun read-qa () qa) qa`,
+		`(enter-and-define qa) (defun read-qa () qa) qa`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			env := newTestEnv(t)
+			evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () (quasiquote (in-package 'q)))
+(defmacro enter-q-nested () (quasiquote (progn (enter-q))))
+(defmacro enter-and-define (name)
+  (quasiquote (progn (enter-q) (qconst (unquote name) 1))))`)
+			expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+			result := parseAndAnalyzeWithConfig(t, source, &Config{MacroExpander: expander})
+			assert.Empty(t, result.Unresolved)
+			for _, name := range []string{"qa", "read-qa"} {
+				sym := findSymbol(result, name)
+				require.NotNil(t, sym, name)
+				assert.Equal(t, "q", sym.Package, name)
+			}
+			assert.Equal(t, 1, expander.calls["enter-q"])
+			assert.Equal(t, 1, expander.calls["qconst"], "prescan and the deep walk expand in the same package")
+			origin := findSymbol(result, "qa").GeneratedBy
+			require.NotNil(t, origin)
+			if origin.Macro == "enter-and-define" {
+				assert.Equal(t, "user", origin.Package, "the outer call precedes its generated package switch")
+			} else {
+				assert.Equal(t, "q", origin.Package)
+			}
+		})
+	}
+}
+
+func TestGeneratedInPackageInsideFunctionDoesNotCarryOver(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, generatingMacros+`
+(defmacro enter-q () (quasiquote (in-package 'q)))`)
+	expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+	result := parseAndAnalyzeWithConfig(t, `(defun later () (enter-q))
+(constant answer 42)
+answer`, &Config{MacroExpander: expander})
+	assert.Empty(t, result.Unresolved)
+	answer := findSymbol(result, "answer")
+	require.NotNil(t, answer)
+	assert.Equal(t, "user", answer.Package)
+	assert.Equal(t, 1, expander.calls["constant"])
+}
+
+func TestInPackageWithoutExpanderPreservesPackagePolicy(t *testing.T) {
+	t.Parallel()
+	for _, cfg := range []*Config{nil, {}} {
+		result := Analyze(parsePreamble(t, `(in-package 'q)
+(set 'value 1)
+(in-package 'user)
+(set 'value 2)
+(progn (in-package 'q))
+value`), cfg)
+		assert.Empty(t, result.Unresolved)
+		require.NotEmpty(t, result.References)
+		ref := result.References[len(result.References)-1]
+		assert.Equal(t, "value", ref.Symbol.Name)
+		assert.Equal(t, "user", ref.Symbol.Package)
+	}
+}

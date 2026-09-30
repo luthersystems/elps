@@ -49,12 +49,16 @@ func (a *analyzer) defaultPackage() string {
 // that (export 'name) works regardless of source order — a common ELPS
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
-	exprs = astutil.PackageForms(exprs)
+	if a.cfg != nil && a.cfg.MacroExpander != nil {
+		exprs = expansionPackageForms(exprs)
+	} else {
+		exprs = astutil.PackageForms(exprs)
+	}
 	// With a MacroExpander, top-level macro calls are replaced by the package
 	// forms of their expansion, so generated definitions are forward
 	// referenceable too. generatedBy maps those forms to their macro call.
-	generatedBy := map[*lisp.LVal]*lisp.LVal{}
-	exprs = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
+	generatedBy := map[*lisp.LVal]*expansionKey{}
+	exprs, _ = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
@@ -62,7 +66,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			continue
 		}
 		if call := generatedBy[expr]; call != nil {
-			a.withOrigin(call, currentPkg, func() { a.prescanForm(expr, scope, &currentPkg) })
+			a.withOrigin(call.node, call.pkg, func() { a.prescanForm(expr, scope, &currentPkg) })
 			continue
 		}
 		a.prescanForm(expr, scope, &currentPkg)

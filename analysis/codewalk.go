@@ -64,18 +64,19 @@ func (d *definitionScanner) visit(n *codewalk.Node) bool {
 
 // analyzeExpr owns resolution policy; CodeWalker owns the grammar. The scope
 // stack follows walker events, including temporary selections of the outer
-// scope for parallel initializers and flet closures.
-func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string) {
+// scope for parallel initializers and flet closures. With an expander, it
+// returns the package after top-level forms, including progn and expansions.
+func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string) string {
 	// Atomic set values and expansion results need no walker or visitor closure.
 	if node == nil || node.IsQuoted() {
-		return
+		return currentPkg
 	}
 	if node.Type == lisp.LSymbol {
 		a.resolveSymbol(node, scope, currentPkg)
-		return
+		return currentPkg
 	}
 	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
-		return
+		return currentPkg
 	}
 	// Reuse one resolver/walker at each expansion or set recursion depth.
 	// Method visitors avoid a fresh escaping closure and scope stack per form.
@@ -93,18 +94,26 @@ func (a *analyzer) analyzeExpr(node *lisp.LVal, scope *Scope, currentPkg string)
 	r.scope, r.pkg = scope, currentPkg
 	r.scopes, r.opaqueCalls = r.scopes[:0], r.opaqueCalls[:0]
 	r.endDepth = -1
+	r.packageDepth = 0
+	if a.cfg != nil && a.cfg.MacroExpander != nil {
+		// Balance top-level progns as well as opaque calls. The no-expander
+		// path keeps its selective End callbacks and historical package policy.
+		r.walker.EndDepth = nil
+	}
 	r.walker.Walk(node)
 	a.resolverDepth--
+	return r.pkg
 }
 
 type sourceResolver struct {
-	a           *analyzer
-	scope       *Scope
-	pkg         string
-	scopes      []*Scope
-	opaqueCalls []int
-	endDepth    int
-	walker      codewalk.Walker
+	a            *analyzer
+	scope        *Scope
+	pkg          string
+	scopes       []*Scope
+	opaqueCalls  []int
+	endDepth     int
+	packageDepth int // depth of top-level forms, through transparent progns
+	walker       codewalk.Walker
 }
 
 func (r *sourceResolver) reference(node *lisp.LVal) {
@@ -112,6 +121,9 @@ func (r *sourceResolver) reference(node *lisp.LVal) {
 }
 
 func (r *sourceResolver) end(depth int) {
+	if depth == r.packageDepth-1 {
+		r.packageDepth--
+	}
 	if len(r.opaqueCalls) > 0 && r.opaqueCalls[len(r.opaqueCalls)-1] == depth {
 		r.a.insideMacroCall--
 		r.opaqueCalls = r.opaqueCalls[:len(r.opaqueCalls)-1]
@@ -128,7 +140,21 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 	}
 	head := astutil.HeadSymbol(node)
 	switch head {
-	case "in-package", "use-package":
+	case "progn", "lisp:progn":
+		if r.a.cfg != nil && r.a.cfg.MacroExpander != nil {
+			if depth == r.packageDepth {
+				r.packageDepth++
+			}
+			return true
+		}
+	case "in-package":
+		if depth == r.packageDepth && r.a.cfg != nil && r.a.cfg.MacroExpander != nil && astutil.ArgCount(node) >= 1 {
+			if pkg := extractPackageName(node.Cells[1]); pkg != "" {
+				r.pkg = pkg
+			}
+		}
+		return false
+	case "use-package":
 		return false
 	case "set":
 		// set is an ordinary function with package-writing semantics, not a
@@ -148,7 +174,10 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 			return true
 		}
 	}
-	descend, opaque := r.a.visitCall(node, r.scope, r.pkg)
+	descend, opaque, pkg := r.a.visitCall(node, r.scope, r.pkg)
+	if depth == r.packageDepth {
+		r.pkg = pkg
+	}
 	if opaque {
 		r.opaqueCalls = append(r.opaqueCalls, depth)
 		r.endDepth = depth
@@ -285,7 +314,7 @@ func (a *analyzer) defineWalkSymbol(n *codewalk.Node, scope *Scope, pkg string) 
 // walked with another CodeWalker so the depth cap counts all nested expansions,
 // not just a chain of heads. Prescan shares the expansion cache, and opaque
 // calls retain the original double reference to an unexpanded user macro.
-func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (descend, opaque bool) {
+func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (descend, opaque bool, pkg string) {
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
 		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
@@ -293,33 +322,34 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 			sym.References++
 			a.result.References = append(a.result.References, newReference(sym, node.Cells[0]))
 		}
-		if a.analyzeExpansion(node, scope, currentPkg) {
-			return false, false
+		if pkg, ok := a.analyzeExpansion(node, scope, currentPkg); ok {
+			return false, false, pkg
 		}
 		if isMacro {
 			a.insideMacroCall++
-			return true, true
+			return true, true, currentPkg
 		}
 	}
-	return true, false
+	return true, false, currentPkg
 }
 
 // analyzeExpansion analyzes node's macro expansion in its place, recording
 // node as the origin of the definitions the expansion makes. It reports
-// false, doing nothing, when node does not expand.
-func (a *analyzer) analyzeExpansion(node *lisp.LVal, scope *Scope, currentPkg string) bool {
+// the package after the expansion, and false when node does not expand.
+func (a *analyzer) analyzeExpansion(node *lisp.LVal, scope *Scope, currentPkg string) (string, bool) {
 	expanded := a.expand(node, scope, currentPkg)
 	if expanded == nil {
-		return false
+		return currentPkg, false
 	}
+	pkg := currentPkg
 	a.withOrigin(node, currentPkg, func() {
 		a.insideMacroCall++
 		a.expansionDepth++
-		a.analyzeExpr(expanded, scope, currentPkg)
+		pkg = a.analyzeExpr(expanded, scope, currentPkg)
 		a.expansionDepth--
 		a.insideMacroCall--
 	})
-	return true
+	return pkg, true
 }
 
 // analyzeSet keeps package declaration policy separate from lexical syntax.
