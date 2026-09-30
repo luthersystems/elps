@@ -1,0 +1,1 @@
+(with-cleanup ((stable-sort > '(9 3 7 1 8))) 1)

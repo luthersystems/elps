@@ -1,0 +1,1 @@
+(handler-bind ([modify-literal-error (lambda (c &rest args) 'caught)]) (stable-sort > '(9 3 7 1 8)))

@@ -71,8 +71,12 @@ func (p *Pass) expandedExprs() []expandedForm {
 				pkg = name
 			}
 		}
+		code := expr
+		if exp != nil {
+			code = astutil.ExpandAll(expr, exp, pkg, nil)
+		}
 		p.shared.expanded = append(p.shared.expanded, expandedForm{
-			code: astutil.ExpandAll(expr, exp, pkg, nil),
+			code: code,
 			pkg:  pkg,
 		})
 	}

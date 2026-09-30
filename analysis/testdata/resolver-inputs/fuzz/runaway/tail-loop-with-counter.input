@@ -1,0 +1,1 @@
+(defun countup (n) (countup (+ n 1))) (countup 0)

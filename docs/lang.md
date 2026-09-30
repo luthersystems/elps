@@ -774,6 +774,8 @@ iteration's value, introduce a fresh `let` binding inside the body:
   (map 'list (lambda (f) (funcall f)) fs))       ; '(0 1 2)
 ```
 
+`elps lint` reports the first shape (`loop-variable-capture`).
+
 ### flet vs labels
 
 `flet` and `labels` are used to create bindings for local functions within a
