@@ -36,7 +36,7 @@ import (
 //	able to observe anything Ej wrote.
 //
 // The determinism control is the same and for the same reason: the mutator
-// writes whatever it likes, `(time:utc-now)` legitimately differs between
+// writes whatever it likes, a host clock such as `(fuzz-clock-ns)` legitimately differs between
 // runs, and a differential assertion is only sound over deterministic
 // programs.  Two no-cache runs in two virgin environments are the baseline
 // and its control; a divergence is only reported when the control agreed

@@ -82,7 +82,7 @@ func TestRegisteredFunctionsHaveWellFormedFormals(t *testing.T) {
 // addressed, LEnv.AddBuiltins/AddSpecialOps/AddMacros installed that very
 // *LVal into the function value with no protection at all, so every
 // environment in the process shared one MUTABLE formals object per definition
-// -- time:sleep, math:atan and lisp:map among them.  One in-place write to a
+// -- time:sleep (since removed, #757), math:atan and lisp:map among them.  One in-place write to a
 // formals cell was a cross-environment correctness bug and, for the embedders
 // that run many environments concurrently, a data race.  See issue #363;
 // issue #362 is the same class of assumption, written to.
@@ -114,7 +114,7 @@ func TestRegisteredFormalsAreNotSharedAcrossEnvs(t *testing.T) {
 	// so that a registry walk which stops finding them -- a renamed package, a
 	// changed loader -- fails loudly instead of sweeping zero of the functions
 	// the bug was reported against.
-	reported := []string{"time:sleep", "math:atan", "lisp:map", "json:dump-string"}
+	reported := []string{"math:atan", "lisp:map", "json:dump-string"}
 	for _, name := range reported {
 		require.Contains(t, funsA, name, "issue #363 names %s, but the sweep did not find it", name)
 	}

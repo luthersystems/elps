@@ -65,6 +65,9 @@ func WithMaxEvalNesting(n int) Config {
 
 // WithMaxSleep returns a Config that sets a HARD CEILING on how long a single
 // (time:sleep d) may block, in the host's hands rather than the program's.
+// The standard library no longer registers time:sleep (#757); the bound
+// applies to a host that registers libtime.BuiltinSleep, written here as
+// time:sleep.
 //
 // This is the containment bound, and it is not the same knob as
 // DefaultMaxSleep. A sleep with no explicit :max is capped at
