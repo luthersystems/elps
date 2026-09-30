@@ -36,17 +36,6 @@ func FunctionDoc(name string, formals *lisp.LVal, fun lisp.LBuiltin, docs string
 	return &Builtin{formals, fun, name, docs}
 }
 
-// Macro returns a Builtin to register as a macro through PackageMacros or
-// lisp.LEnv.AddMacros. It behaves like FunctionDoc; registration as a macro
-// determines how it is called. A Go macro receives unevaluated argument forms
-// and must return a fresh expansion consisting of newly constructed nodes and
-// its arguments. The evaluator may locate those fresh nodes in place; do not
-// reuse expansion syntax across calls or return bindings looked up by the macro.
-// Use lisp.FormTemplate to construct expansions with this freshness contract.
-func Macro(name string, formals *lisp.LVal, fun lisp.LBuiltin, docs string) *Builtin {
-	return FunctionDoc(name, formals, fun, docs)
-}
-
 // Builtin captures Go functions that are callable from elps.
 type Builtin struct {
 	formals *lisp.LVal

@@ -317,7 +317,7 @@ What this means for a builtin you write:
 - **To bind or evaluate in the caller, write a Go macro.** The macro runs in
   its own package, but its expansion is evaluated where the caller wrote it,
   so an expansion built from qualified core forms (`lisp:set`, `lisp:lambda`)
-  acts in the caller's package. Use `lisp.FormTemplate` and `elpsutil.Macro`
+  acts in the caller's package. Use `lisp.FormTemplate` and `elpsutil.FunctionDoc`
   as shown in [Writing a Go macro](#writing-a-go-macro).
 - **Name a fixed package explicitly.** A builtin that must work in some
   package (a loader that starts in `user`, say) switches to it by name with
@@ -364,14 +364,14 @@ func macroUnless(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 ```
 
-Register it in your package with `elpsutil.Macro`, which takes the same
-arguments as `elpsutil.FunctionDoc` and carries the docstring through
-registration. The definition belongs in `AddMacros` or your package's
+Register it in your package with `elpsutil.FunctionDoc`, which carries the
+docstring through registration; registering the definition as a macro is what
+makes it one. The definition belongs in `AddMacros` or your package's
 `Macros() []lisp.LBuiltinDef` method:
 
 ```go
 // With your package current (for example, inside its PackageInit):
-env.AddMacros(true, elpsutil.Macro("unless",
+env.AddMacros(true, elpsutil.FunctionDoc("unless",
     lisp.Formals("condition", lisp.VarArgSymbol, "body"), macroUnless,
     "Evaluates body only when condition is falsey."))
 ```
@@ -1299,7 +1299,7 @@ it is undocumented; prefer the forms above.
 
 `libutil` is internal to the standard library; code outside this module uses
 `elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a
-builtin" below). For Go macros, use `elpsutil.Macro` and register through
+builtin" below). For Go macros, use `elpsutil.FunctionDoc` and register through
 `AddMacros` or `PackageMacros` (see [Writing a Go macro](#writing-a-go-macro)).
 
 All builtins, macros, and exported symbols are required to have

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 )
 
 // DefaultPackageName is the package name used by LoadPackage.
@@ -271,27 +271,27 @@ func (s *TestSuite) Macros() []lisp.LBuiltinDef {
 
 // assertMacros are the macros package testing defines itself.  They only
 // build forms: their expansions are evaluated in the caller's package.
-func assertMacros(s *TestSuite) []*elpsutil.Builtin {
-	return []*elpsutil.Builtin{
-		elpsutil.Macro("assert=", lisp.Formals("expect", "num"), s.MacroAssertNumEq,
+func assertMacros(s *TestSuite) []*libutil.Builtin {
+	return []*libutil.Builtin{
+		libutil.FunctionDoc("assert=", lisp.Formals("expect", "num"), s.MacroAssertNumEq,
 			`Asserts that two expressions evaluate to numerically equal
 			values. Both expect and num must evaluate to numbers (int or
 			float). Reports the expected and actual values on failure.`),
-		elpsutil.Macro("assert-string=", lisp.Formals("expect", "str"), s.MacroAssertStringEq,
+		libutil.FunctionDoc("assert-string=", lisp.Formals("expect", "str"), s.MacroAssertStringEq,
 			`Asserts that two expressions evaluate to equal strings.
 			Both expect and str must evaluate to string values. Reports
 			the expected and actual values on failure.`),
-		elpsutil.Macro("assert-equal", lisp.Formals("expect", "expression"), s.MacroAssertEqual,
+		libutil.FunctionDoc("assert-equal", lisp.Formals("expect", "expression"), s.MacroAssertEqual,
 			`Asserts that two expressions are structurally equal using
 			equal?. Works with any value types. Reports the expected
 			and actual values on failure.`),
-		elpsutil.Macro("assert-nil", lisp.Formals("expression"), s.MacroAssertNil,
+		libutil.FunctionDoc("assert-nil", lisp.Formals("expression"), s.MacroAssertNil,
 			`Asserts that expression evaluates to nil. Reports the
 			actual value on failure.`),
-		elpsutil.Macro("assert-not-nil", lisp.Formals("expression"), s.MacroAssertNotNil,
+		libutil.FunctionDoc("assert-not-nil", lisp.Formals("expression"), s.MacroAssertNotNil,
 			`Asserts that expression does not evaluate to nil. Reports
 			the expression on failure.`),
-		elpsutil.Macro("assert-not", lisp.Formals("expression"), s.MacroAssertNot,
+		libutil.FunctionDoc("assert-not", lisp.Formals("expression"), s.MacroAssertNot,
 			`Asserts that expression evaluates to a falsey value (nil or
 			false). Reports the actual value on failure.`),
 	}

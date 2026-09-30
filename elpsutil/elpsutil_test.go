@@ -456,7 +456,7 @@ func TestMacroRegistration(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
 			env := newTestEnv(t)
-			macro := elpsutil.Macro("unless", lisp.Formals("condition", lisp.VarArgSymbol, "body"),
+			macro := elpsutil.FunctionDoc("unless", lisp.Formals("condition", lisp.VarArgSymbol, "body"),
 				func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 					return tmpl.Expand(args.Cells[0], lisp.SExpr(args.Cells[1:]))
 				}, docs)
