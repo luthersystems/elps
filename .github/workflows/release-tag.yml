@@ -99,7 +99,11 @@ jobs:
                  (`git rev-parse HEAD` == `git rev-parse origin/main`).
             2. Notes: summarize the merged PRs / commits since that latest
                stable tag (`git log <lasttag>..HEAD --oneline`). Concise
-               plain-Markdown bullets; omit noise.
+               plain-Markdown bullets; omit noise. Then run
+               `bash scripts/api-breaks-since.sh <lasttag>`: if it prints any
+               override lines, add a "Breaking changes" section listing EVERY
+               one (surface, symbol, issue, reason) verbatim-faithfully; never
+               omit one.
             3. Ship: if the env var DRY_RUN is "true", PRINT the version and
                notes, then STOP — create nothing. Otherwise run
                `gh release create "$RELEASE_VERSION" --title "$RELEASE_VERSION" --notes "<notes>"`.

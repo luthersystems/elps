@@ -1,0 +1,3 @@
+Ignoring internal package github.com/luthersystems/elps/internal/fuzzseed
+Incompatible changes:
+- ./lisp.QSymbol: removed

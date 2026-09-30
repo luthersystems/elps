@@ -1,0 +1,4 @@
+[{"name":"time","symbols":[
+ {"name":"now","kind":"function","formals":{"required":[],"optional":["zone"]}},
+ {"name":"parse","kind":"function","formals":{"required":["str"],"optional":["layout"]}},
+ {"name":"added","kind":"macro","formals":{"required":["x"]}}]}]
