@@ -21,6 +21,7 @@ import (
 var update = flag.Bool("update", false, "rewrite testdata/golden.txt from the encoder")
 
 const goldenFile = "testdata/golden.txt"
+const canonicalGoldenFile = "testdata/canonical.txt"
 
 // big returns an int that needs 64 bits, or nil where int is 32 bits.
 func big(s string) *lisp.LVal {
@@ -172,9 +173,9 @@ func encodeCorpus(t *testing.T) []string {
 	return lines
 }
 
-func readGolden(t *testing.T) map[string]string {
+func readGolden(t *testing.T, file string) map[string]string {
 	t.Helper()
-	b, err := os.ReadFile(goldenFile)
+	b, err := os.ReadFile(file) //nolint:gosec // fixed repository golden paths supplied by tests
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +199,7 @@ func TestTypedGoldenCorpus(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	golden := readGolden(t)
+	golden := readGolden(t, goldenFile)
 	cs := corpus()
 	if len(golden) != len(cs) {
 		t.Fatalf("golden file has %d entries, corpus has %d", len(golden), len(cs))
@@ -233,5 +234,72 @@ func TestTypedGoldenCorpus(t *testing.T) {
 		if again, err := libjson.DumpTyped(back); err != nil || string(again) != want {
 			t.Errorf("%s: golden does not round-trip: %s (%v)", c.name, again, err)
 		}
+	}
+}
+
+// Canonical images reuse every successful case of the typed corpus, so the
+// adoption guarantee is pinned for symbols, lists, bytes, tags and maps too.
+func TestCanonicalGoldenCorpus(t *testing.T) {
+	if *update {
+		if strconv.IntSize != 64 {
+			t.Fatal("regenerate where int is 64 bits")
+		}
+		var lines []string
+		for _, c := range corpus() {
+			v, err := libjson.Canonize(c.v)
+			if err != nil {
+				continue
+			}
+			b, err := libjson.Dump(v, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			lines = append(lines, c.name+"\t"+string(b))
+		}
+		if err := os.WriteFile(canonicalGoldenFile, []byte(strings.Join(lines, "\n")+"\n"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	golden := readGolden(t, canonicalGoldenFile)
+	checked := 0
+	for _, c := range corpus() {
+		want, ok := golden[c.name]
+		if !ok {
+			continue
+		}
+		checked++
+		if c.v == nil {
+			if _, err := libjson.LoadTyped([]byte(want)); err == nil {
+				t.Errorf("%s: wide canonical integer decoded on 32 bits", c.name)
+			}
+			continue
+		}
+		v, err := libjson.Canonize(c.v)
+		if err != nil {
+			t.Fatalf("%s: %v", c.name, err)
+		}
+		plain, err := libjson.Dump(v, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		typed, err := libjson.DumpTyped(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		original, err := libjson.Dump(c.v, false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(plain) != want || string(typed) != want || string(original) != want {
+			t.Errorf("%s: canonical %s, typed %s, original %s; want %s", c.name, plain, typed, original, want)
+		}
+		back := libjson.LoadWith(plain, libjson.LoadOpts{ExactIntegers: true})
+		again, err := libjson.DumpTyped(back)
+		if err != nil || string(again) != want {
+			t.Errorf("%s: exact plain decode differs: %s (%v)", c.name, again, err)
+		}
+	}
+	if checked != len(golden) {
+		t.Fatal("canonical golden contains unknown corpus cases")
 	}
 }

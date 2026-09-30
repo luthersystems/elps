@@ -173,6 +173,13 @@ func checkDocTable(t *testing.T, env *lisp.LEnv, loc string, lines []string, arg
 		src, isCode := codeCell(cells[elpsCol-1])
 		var v *lisp.LVal
 		if isCode {
+			// Large literal examples document 64-bit values; on 32 bits they must
+			// fail parsing loudly rather than silently truncate.
+			if n, err := strconv.ParseInt(src, 10, 64); err == nil && (n < int64(-1<<31) || n > int64(1<<31-1)) && strconv.IntSize == 32 {
+				require.Equal(t, lisp.LError, env.LoadString("doc", src).Type)
+				rows++
+				continue
+			}
 			v = evalDoc(t, env, src)
 		} else {
 			mk, ok := docGoValues[src]
@@ -288,7 +295,7 @@ func TestTypedDocstringExamples(t *testing.T) {
 	env := docEnv(t)
 	found := 0
 	for _, b := range libjson.Builtins(libjson.DefaultSerializer()) {
-		if b.Name() != "dump-typed" && b.Name() != "load-typed" {
+		if b.Name() != "dump-typed" && b.Name() != "load-typed" && b.Name() != "canonize" {
 			continue
 		}
 		_, ex, ok := strings.Cut(b.Docstring(), "Example:")
@@ -307,5 +314,5 @@ func TestTypedDocstringExamples(t *testing.T) {
 		checkDocEval(t, env, lines)
 		found++
 	}
-	assert.Equal(t, 2, found)
+	assert.Equal(t, 3, found)
 }

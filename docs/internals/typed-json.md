@@ -35,8 +35,8 @@ this canonical ELPS format is not a general Transit reader or writer.
 
 | elps value | Encoding | Transit rule |
 |---|---|---|
-| int, \|n\| < 2^53 | JSON integer text | integer: JSON number below 2^53 |
-| int value, \|n\| >= 2^53 | `"~n<decimal>"` | arbitrary-precision integer `n` |
+| int, \|n\| <= 2^53 | JSON integer text | integer: JSON number up to 2^53 |
+| int value, \|n\| > 2^53 | `"~n<decimal>"` | arbitrary-precision integer `n` |
 | int map key, any supported magnitude | `"~i<decimal>"` | signed 64-bit integer `i` |
 | finite float | number text, see below | floating point: JSON number |
 | NaN / +Inf / -Inf | `"~zNaN"` / `"~zINF"` / `"~z-INF"` | special numbers `z` |
@@ -57,11 +57,11 @@ Decisions and reasons:
 
 - **Large integer values select `n`, not `i`.** Transit defines `i` as a
   signed 64-bit integer, not an arbitrary-precision integer; `n` carries the
-  latter meaning. ELPS selects `n` for values with magnitude >= 2^53, including
+  latter meaning. ELPS selects `n` for values with magnitude > 2^53, including
   array dimensions, and keeps `i` for every integer map key. Decoding either
   form still requires the integer to fit Go's platform-sized `int`; the wire
   tag does not expand ELPS's integer range. The decoder rejects `i` in value
-  position, `n` values below the boundary, and `n` map keys as noncanonical.
+  position, `n` values at or below the boundary, and `n` map keys as noncanonical.
 - **Other shared meanings match Transit.** `~:` is a keyword, `~$` a symbol,
   `~b` RFC 4648 base64 bytes, and `~z` one of NaN or the signed infinities.
   `~?t` / `~?f` are boolean keys; `~#list` is a list represented by its
@@ -78,7 +78,7 @@ Decisions and reasons:
   `"~#vector"` tag is rejected.
 - **`()` is `null`.** Plain `json:dump-string` writes the empty list / nil as `null`,
   and plain `json:load-string` maps JSON null back to `()`. Consequently
-  `canonize(v) = (json:load-string (json:dump-string v))` can produce nil. Encoding nil as
+  `canonize(v) = (json:load-string (json:dump-string v) :exact-integers true)` can produce nil. Encoding nil as
   `null` keeps the sequence and nil cases consistent with the later property
   that `dump-typed(canonize(v))` equals a canonical plain dump of `v`.
   `["~#list",[]]` is rejected as a second spelling of nil; `[]` belongs
@@ -116,8 +116,8 @@ Decisions and reasons:
 
 ## Canonical form
 
-The canonical form is **RFC 8785 number text + UTF-8 byte key order + the
-plain encoder's escape set**, with the type-preserving number exceptions below.
+The format is **elps canonical JSON**: shortest round-trip number text,
+UTF-8 byte key order and the plain encoder's escape set, with the type-preserving number exceptions below.
 This choice preserves byte compatibility with existing stored JSON: hashes
 and cache/state keys built from `json:dump-bytes` or `json:dump-string` depend
 on those bytes. Matching the existing escaping and string-key order avoids
@@ -156,7 +156,7 @@ for types outside plain JSON. Unicode normalization is never applied.
   would write `0`). Every NaN is written as the one `"~zNaN"`.
   The decoder parses a number and requires the text to equal what the encoder
   would write for the parsed value, so `1.50`, `1E5`, `1e5`, `01`, `-0` and an
-  int of 2^53 or more written as a number are all rejected.
+  int greater than 2^53 in magnitude written as a number are all rejected.
 - **Base64** must re-encode to the same text (no stray pad bits).
 
 Number comparison against the plain golden/fuzz corpus and random float64 bit
@@ -168,12 +168,12 @@ encoder except when the typed encoder appends `.0`: plain `0`, `-0`, `1`,
 `100.0` and `100000000000000000000.0`. The suffix applies only when the
 plain text has neither a decimal point nor an exponent; `1e+21` and `1e-7`
 are unchanged. Plain `-0` also differs from strict JCS, which writes `0`.
-Ints below 2^53 in magnitude keep the plain decimal text; larger ints use
+Ints up to 2^53 in magnitude keep the plain decimal text; larger ints use
 `~n` tags. Plain mode rejects NaN and infinities; typed mode uses `~z` tags.
 
 Plain dumps of data already in the shared canonical subset are loadable by
 `load-typed`: valid UTF-8 strings and string keys without a leading `~`,
-booleans, null, vectors, string-keyed maps, ints below 2^53 that fit the
+booleans, null, vectors, string-keyed maps, ints up to 2^53 that fit the
 platform's `int`, and finite floats whose plain text contains `.` or an
 exponent. This does not make arbitrary plain JSON a typed document: integral
 floats lose their type in plain output, and plain strings starting with `~`
@@ -261,3 +261,36 @@ unescaped string bytes in one append, and walks maps with
 pair list (unlike `MapEntries`, it reports each key's type, which the plain
 encoder's `AppendSortedPairs` does not). The decoder builds LVals directly in
 one pass.
+
+## Canonize implementation and guarantees
+
+`Canonize` walks the original value graph directly and allocates a fresh tree.
+It counts output bytes without building JSON, bounds expanded values and bytes,
+and charges each started KiB incrementally. Active-path sets detect Lisp and
+native cycles; one shared `DefaultTypedMaxDepth` bounds container depth at 1024.
+The defaults and runtime MaxAlloc also stop shared graphs from expanding without
+bound. Every divergence error includes the case, value and JSON-style path.
+
+The invariants and adoption rules are specified at the top of
+[../typed-json.md](../typed-json.md). Plain decoding in that invariant explicitly
+uses `ExactIntegers`: default decoding always uses floats. Whole-number floats
+become platform ints only up to magnitude 2^53; negative zero, larger whole
+floats and platform overflow raise. Finite fractional floats keep the identical
+plain/typed shortest round-trip text. Symbols keep their full spelling when
+converted, apart from the plain booleans and json:null. Bytes, lists, tags,
+quotes and scalar arrays follow the plain encoder's image.
+
+Int map keys always raise; string and symbol keys are converted by text.
+Collisions and changed order in a custom map raise, while stock mixed key
+maps retain their UTF-8 text order. Invalid UTF-8 or leading tildes in either
+key or value also raise. Opaque native marshalers and structs with fields are
+refused without calling host code. Native numbers raise because their plain
+encoder ignores StringNumbers; converting them would break that option's byte
+guarantee. Native strings, booleans, nil, bytes and ordinary containers of these
+are walked directly.
+
+`FuzzCanonizeRoundTripInvariant` proves exact round trips, idempotence and both
+byte guarantees over all generated value shapes, mixed map keys and arbitrary
+float64 bits. The property test replays the seed corpus and deterministic random
+values. `typedgolden/testdata/canonical.txt` freezes successful canonical images
+from the cross-platform corpus alongside the existing typed golden bytes.

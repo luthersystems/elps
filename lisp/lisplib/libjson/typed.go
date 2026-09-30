@@ -29,9 +29,9 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// Default limits of DumpTyped and LoadTyped.  They bound the work and memory
+// Default limits of DumpTyped, LoadTyped and Canonize.  They bound the work and memory
 // of one call on hostile or accidental input; each can be changed with an
-// option.
+// option for typed encoding/decoding; Canonize only lowers these limits.
 const (
 	DefaultTypedMaxDepth  = 1024
 	DefaultTypedMaxBytes  = 16 << 20
@@ -39,15 +39,15 @@ const (
 )
 
 // maxExactInt is the largest magnitude written as a JSON number: every int
-// of smaller magnitude is exactly a binary64, so any JSON reader keeps it.
+// up to this magnitude is exactly a binary64, so any JSON reader keeps it.
 // Larger int values use Transit's arbitrary-precision "~n" tag.
-const maxExactInt = 1<<53 - 1
+const maxExactInt = 1 << 53
 
 // exactInt reports whether x is written as a JSON number.  The comparison is
 // on int64 so that it compiles, and means the same, where int is 32 bits.
 func exactInt(x int64) bool { return x >= -maxExactInt && x <= maxExactInt }
 
-// TypedOption configures DumpTyped and LoadTyped.
+// TypedOption configures DumpTyped, LoadTyped and Canonize.
 type TypedOption func(*typedConfig)
 
 type typedConfig struct {
@@ -75,7 +75,8 @@ func WithTypedMaxValues(n int) TypedOption { return func(c *typedConfig) { c.max
 // ceil(n/1024) for n output bytes, the same as lisp.ChargeStartedKiB, and
 // depend only on the output.  A non-nil error stops the encode and is
 // returned wrapped.  LoadTyped ignores it: a decode can charge for its whole
-// input before it starts.
+// input before it starts. Canonize uses the same charge on its counted output
+// size during the value walk, without building JSON bytes.
 func WithTypedCharge(charge func(kib int) error) TypedOption {
 	return func(c *typedConfig) { c.charge = charge }
 }
@@ -315,7 +316,7 @@ func (e *typedEncoder) cells(cells []*lisp.LVal, depth int) error {
 	return e.grow()
 }
 
-// appendTypedInt writes an int: a JSON number below 2^53 in magnitude, else
+// appendTypedInt writes an int: a JSON number up to 2^53 in magnitude, else
 // a "~n" string. Map keys use the signed 64-bit "~i" tag in appendTypedKey.
 func appendTypedInt(b []byte, x int) []byte {
 	if exactInt(int64(x)) {

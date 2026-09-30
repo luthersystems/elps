@@ -29,7 +29,7 @@ func checkTypedNumberText(t *testing.T, v *lisp.LVal) {
 	switch v.Type {
 	case lisp.LInt:
 		require.NoError(t, plainErr)
-		if int64(v.Int) <= -(1<<53) || int64(v.Int) >= 1<<53 {
+		if int64(v.Int) < -(1<<53) || int64(v.Int) > 1<<53 {
 			want = `"~n` + want + `"`
 		}
 	case lisp.LFloat:

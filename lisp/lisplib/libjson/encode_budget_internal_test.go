@@ -72,7 +72,7 @@ func TestEncodeBudgetObservesCancelledContext(t *testing.T) {
 	dag := doublingDAG(lisp.Int(1), 20)
 	for _, v := range []*lisp.LVal{dag, wrapLists(dag, 2*encodeGuardDepth)} {
 		enc := getEncoder(false)
-		err := enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{maxBytes: 1 << 40, ctx: ctx})
+		err := enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{maxBytes: 1 << 30, ctx: ctx})
 		var cancelled encodeCancelledError
 		require.ErrorAs(t, err, &cancelled)
 		require.ErrorIs(t, err, context.Canceled)

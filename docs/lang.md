@@ -1745,6 +1745,43 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 
 ### Typed JSON (`json:dump-typed`, `json:load-typed`)
 
+`json:canonize` makes a fresh plain JSON image for canonical hashing. It
+converts symbols/keywords to strings, lists to vectors, bytes to base64
+strings, whole-number floats to ints, and map keys to strings; nil and booleans
+keep their plain meaning. For every success `c`, plain dumping `c` and typed
+dumping `c` give identical bytes, and those bytes equal the original plain dump
+of `v`. Canonize is idempotent. Plain loading with `:exact-integers true` and
+typed loading both return exactly `c`, including its numeric types. Default
+plain loading returns floats and is outside this exact-type invariant.
+
+Use `(json:dump-string (json:canonize payload))`, or the shorter
+`(json:dump-string payload :canonize true)` (`:canon true` is an alias).
+Existing hashes and keys keep the same bytes on success. `:typed true` on
+dump-string/dump-bytes or load-string/load-bytes selects the typed encoder or
+decoder; dump-message has no new options. Canonical and typed modes ignore
+package number defaults. Canonical dumping permits explicit :string-numbers;
+typed mode rejects that keyword and permits :exact-integers on loads.
+
+Canonize raises `json:canonize-error` with the offending value and path for
+leading `~` strings or keys, invalid UTF-8/surrogates, ints beyond +/-2^53,
+NaN/Inf, negative zero,
+whole-number floats beyond 2^53 or the platform int range, int map keys,
+converted key collisions/order changes, unsupported plain values and opaque
+native encodings/numbers. Distinct mixed string/symbol/keyword keys are allowed.
+It enforces the shared 1024 depth limit, cycles, allocation and step budgets.
+Keys sort by UTF-8 bytes; differences from UTF-16 order are allowed.
+The condition is catchable with `handler-bind` and `ignore-errors`; its data
+is `(message case path)`, with a keyword case such as `:leading-tilde`.
+See [typed-json.md](typed-json.md) for all cases, handlers and adoption rules.
+
+<!-- typedjson:eval -->
+```lisp
+(json:dump-string (json:canonize '(a :b 1.0 ())))
+; => "[\"a\",\":b\",1,null]"
+(equal? (json:dump-bytes '(a 1.0) :canonize true) (json:dump-typed (json:canonize '(a 1.0))))
+; => true
+```
+
 Plain JSON (`json:dump-bytes`) loses types: `5.0` comes back as `5`, `:kw`
 and `'sym` come back as strings, a list comes back as a vector.
 `json:dump-typed` writes JSON that reads back as exactly the value you wrote.
@@ -1781,8 +1818,8 @@ Only `~` is reserved as the escape marker. String values and string map keys
 beginning with `~` get one extra `~`; leading `^` and `` ` `` stay unchanged.
 The decoder rejects `~^...` and `` ~`... `` as unknown tags.
 
-Integer values with magnitude >= 2^53 use Transit's arbitrary-precision `~n`
-tag; smaller ones are JSON numbers. Integer map keys always use Transit's
+Integer values with magnitude > 2^53 use Transit's arbitrary-precision `~n`
+tag; values at or below that boundary are JSON numbers. Integer map keys always use Transit's
 signed 64-bit `~i` tag. The decoder rejects alternate spellings, including
 `~i` values and `~n` map keys, and integers that do not fit the platform's Go
 `int`.
@@ -1828,8 +1865,8 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 ; => json:load-typed: typed json: offset 3: invalid value
 ```
 
-The canonical form is **RFC 8785 number text + UTF-8 byte key order + the
-plain encoder's escape set**. Keys sort by UTF-8 bytes after Transit prefixes,
+The format is **elps canonical JSON**: shortest round-trip number text,
+UTF-8 byte key order and the plain encoder's escape set. Keys sort by UTF-8 bytes after Transit prefixes,
 before JSON escaping, matching plain string-key order. Strings use Go JSON
 escapes, with `<`, `>`, `&`, U+2028 and U+2029 always written as `\u003c`,
 `\u003e`, `\u0026`, `\u2028` and `\u2029`. The decoder requires this exact

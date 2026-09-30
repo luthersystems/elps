@@ -134,8 +134,8 @@ func TestTypedGolden(t *testing.T) {
 		{"int negative", lisp.Int(-42), `-42`},
 		{"int 2^53-1", int64Value(1<<53 - 1), `9007199254740991`},
 		{"int -(2^53-1)", int64Value(-(1<<53 - 1)), `-9007199254740991`},
-		{"int 2^53", int64Value(1 << 53), `"~n9007199254740992"`},
-		{"int -(2^53)", int64Value(-(1 << 53)), `"~n-9007199254740992"`},
+		{"int 2^53", int64Value(1 << 53), `9007199254740992`},
+		{"int -(2^53)", int64Value(-(1 << 53)), `-9007199254740992`},
 		{"int 2^53+1", int64Value(1<<53 + 1), `"~n9007199254740993"`},
 		{"int -(2^53+1)", int64Value(-(1<<53 + 1)), `"~n-9007199254740993"`},
 		{"int max", int64Value(math.MaxInt64), `"~n9223372036854775807"`},
@@ -221,7 +221,7 @@ func TestTypedIntegerTags(t *testing.T) {
 			n, err := strconv.ParseInt(digits, 10, 64)
 			require.NoError(t, err)
 			want := digits
-			if n <= -(1<<53) || n >= 1<<53 {
+			if n < -(1<<53) || n > 1<<53 {
 				want = `"~n` + digits + `"`
 			}
 			mapDoc := `{"~i` + digits + `":` + want + `}`
@@ -413,7 +413,7 @@ func TestTypedSharedSubstructure(t *testing.T) {
 func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 	for _, in := range []string{
 		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `nul`, `null `, `nullnull`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
-		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740992`, `"~i5"`, `"~i05"`,
+		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740993`, `"~i5"`, `"~i05"`,
 		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"~^a"`, "\"~`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
 		`"a` + bs + `/"`, `"` + bs + `u0041"`, `"` + bs + `u000a"`, `"` + bs + `u001F"`, "\"\x01\"", `"` + bs + `x"`, "\"\xff\"",
 		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"~^a":1}`, "{\"~`a\":1}",

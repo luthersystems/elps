@@ -313,11 +313,14 @@ func TestIssue350HidingMechanism(t *testing.T) {
 		"the value has been rounded down by one")
 
 	// The hiding mechanism itself.
-	eq := loaded.Equal(lisp.Int(maxExactFloat + 1))
-	assert.True(t, lisp.True(eq),
-		"the corrupted value must still compare = to its integer -- that is"+
-			" WHY nothing reports the corruption, and pinning it here is what"+
-			" stops the regression returning silently")
+	if strconv.IntSize == 64 {
+		wide := int64(maxExactFloat + 1)
+		eq := loaded.Equal(lisp.Int(int(wide)))
+		assert.True(t, lisp.True(eq),
+			"the corrupted value must still compare = to its integer -- that is"+
+				" WHY nothing reports the corruption, and pinning it here is what"+
+				" stops the regression returning silently")
+	}
 
 	// It also compares = to the value it was actually rounded TO, which is
 	// how two distinct JSON documents become indistinguishable in memory.

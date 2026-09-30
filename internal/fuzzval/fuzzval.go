@@ -122,16 +122,24 @@ func (g *Gen) Bytes(n int) []byte {
 // arithmetic: the signed boundaries powInt's doubling loop overflows through,
 // the 32-bit boundaries, the float64 exact-integer boundary, and the small
 // values around zero that off-by-one bugs live on.
-var interestingInts = []int{
-	0, 1, -1, 2, -2, 3, 8,
-	math.MaxInt, math.MinInt,
-	math.MaxInt - 1, math.MinInt + 1,
-	math.MaxInt32, math.MinInt32,
-	1 << 53, -(1 << 53),
-	1 << 62, -(1 << 62),
-	1 << 31, 1 << 16,
-	-9223372036854775807,
-}
+var interestingInts = func() []int {
+	values := []int64{
+		0, 1, -1, 2, -2, 3, 8,
+		math.MaxInt, math.MinInt,
+		math.MaxInt - 1, math.MinInt + 1,
+		math.MaxInt32, math.MinInt32,
+		1 << 53, -(1 << 53),
+		1 << 62, -(1 << 62),
+		1 << 31, 1 << 16,
+		-9223372036854775807,
+	}
+	out := make([]int, len(values))
+	for i, n := range values {
+		// Keep selectors stable; clamp 64-bit-only cases on 32-bit hosts.
+		out[i] = int(max(int64(math.MinInt), min(int64(math.MaxInt), n)))
+	}
+	return out
+}()
 
 // interestingFloats are the float64 values with no total order and no
 // round-trip: NaN (which is not equal to itself, so reflexivity must NOT be

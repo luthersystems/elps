@@ -93,17 +93,21 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			serializer setting). The :exact-integers keyword controls whether
 			JSON integer literals are returned as ints rather than floats
 			(default: serializer setting).`),
-		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpBytesBuiltin,
+		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers", "canon", "canonize", "typed"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON and returns the result as
 			bytes. Sorted-maps become JSON objects, arrays become JSON
 			arrays, strings/ints/floats map naturally. The values json:null
 			and () serialize as JSON null, including inside containers. The
 			:string-numbers keyword controls whether numbers are serialized
-			as strings.
+			as strings. :canonize true (also :canon true) first calls canonize;
+			:typed true uses dump-typed's encoding. These modes ignore the
+			package string-numbers default; :canonize honors an explicit
+			:string-numbers option, while :typed rejects it. Both modes can
+			be combined to write the same canonical bytes.
 			Raises an ordinary depth error beyond 1000000 value levels
 			(or the configured WithMaxValueDepth setting), and an allocation
 			error if the document would exceed the allocation cap.`),
-		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadBytesBuiltin,
+		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed"), s.LoadBytesBuiltin,
 			`Parses a JSON bytes value into ELPS values. JSON objects become
 			sorted-maps, arrays become ELPS arrays, strings/numbers map
 			naturally. JSON null becomes (), never the json:null symbol.
@@ -111,30 +115,82 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			string keys. The :string-numbers keyword controls whether JSON
 			numbers are returned as strings. The :exact-integers keyword
 			controls whether JSON integer literals are returned as ints
-			rather than floats.`),
-		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers"), s.DumpStringBuiltin,
+			rather than floats. :typed true uses load-typed's strict decoder,
+			ignores package defaults and :exact-integers, and rejects an explicit
+			:string-numbers argument.`),
+		libutil.FunctionDoc("dump-string", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers", "canon", "canonize", "typed"), s.DumpStringBuiltin,
 			`Serializes an ELPS value to a JSON string. Like dump-bytes
 			but returns a string instead of bytes. The values json:null and
 			() serialize as JSON null, including inside containers. Map keys
 			use their full names: :height becomes ":height". Use string keys
 			for interchange. The :string-numbers keyword controls whether
-			numbers are serialized as strings.
+			numbers are serialized as strings. :canonize true (also :canon true)
+			first calls canonize; :typed true uses dump-typed's encoding.
+			Both modes ignore the package string-numbers default. :canonize
+			honors an explicit :string-numbers option; :typed rejects it.
 			Raises an ordinary depth error beyond 1000000 value levels
 			(or the configured WithMaxValueDepth setting), and an allocation
 			error if the document would exceed the allocation cap.`),
-		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers"), s.LoadStringBuiltin,
+		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values. Like load-bytes but
 			accepts a string argument. Decoded maps accept symbol keys by
 			name but always retain and emit string keys.
 			The :string-numbers keyword controls whether JSON numbers are
 			returned as strings. The :exact-integers keyword controls whether
-			JSON integer literals are returned as ints rather than floats.`),
+			JSON integer literals are returned as ints rather than floats.
+			:typed true uses load-typed's strict decoder, ignores package
+			defaults and :exact-integers, and rejects :string-numbers.`),
+		libutil.FunctionDoc("canonize", lisp.Formals("object"), CanonizeBuiltin,
+			`Returns a fresh plain JSON image as elps canonical JSON. Symbols
+			and keywords become strings (true/false remain booleans, json:null
+			becomes ()); lists become vectors, bytes become base64 strings,
+			tags and quotes unwrap, and map keys become strings. Whole-number
+			floats become ints, including 0.0; other finite floats keep their type.
+
+			For every successful result c = (json:canonize v), exact value AND
+			numeric type equality holds (plain numeric JSON; pass
+			:string-numbers false when package defaults differ):
+			  (json:load-string (json:dump-string c) :exact-integers true) == c
+			  c == (json:load-typed (json:dump-typed c))
+			  (json:dump-bytes c) == (json:dump-typed c)
+			  (json:canonize c) == c
+			  c == (json:load-string (json:dump-string v) :exact-integers true)
+			If canonize succeeds, adopting it does not change dump bytes:
+			  (json:dump-bytes c) == (json:dump-bytes v)
+			Default load uses floats; use :exact-integers true for this invariant.
+
+			Raises json:canonize-error with the value and path for leading ~ strings/keys, invalid
+			UTF-8 (including surrogate encodings), ints beyond +/-2^53, NaN/Inf,
+			negative zero, whole-number floats beyond 2^53 or platform int range,
+			int keys, converted key collisions/order changes, unsupported values
+			and opaque native encodings/numbers. Other mixed keys are accepted.
+			Keys sort by UTF-8 bytes. Ignores package number defaults. Cycles,
+			depth beyond 1024 and allocation/step limits also raise.
+			Every data rejection uses this ordinary catchable condition, never
+			internal-panic. A handler receives (condition message case path),
+			where case is a keyword: :leading-tilde, :invalid-utf8, :int-range,
+			:float-range, :negative-zero, :non-finite, :key-type, :key-collision,
+			:key-order, :depth, :cycle, :unsupported or :limit (bytes/value count).
+			The message includes the case, offending value and path; path is
+			also a separate string. handler-bind and ignore-errors can catch it,
+			including from dump's :canonize option. Runtime step-budget and
+			cancellation conditions propagate unchanged, as in other builtins.
+
+			Example:
+			  (json:dump-string (json:canonize '(a :b 1.0 ())))
+			  ; => "[\"a\",\":b\",1,null]"
+			  (equal? (json:dump-bytes (json:canonize '(a 1.0))) (json:dump-bytes '(a 1.0)))
+			  ; => true
+			  (let ([payload "~draft"]) (handler-bind ([json:canonize-error (lambda (_condition _message case _path) (if (equal? case :leading-tilde) (json:dump-string payload) (rethrow)))]) (json:dump-string (json:canonize payload))))
+			  ; => "\"~draft\""
+
+			See docs/typed-json.md for adoption and exact equality rules.`),
 		libutil.FunctionDoc("dump-typed", lisp.Formals("object"), DumpTypedBuiltin,
 			`Returns object as typed JSON bytes: JSON that load-typed reads
 			back as exactly the same value. Plain values stay plain JSON;
 			only what plain JSON would lose gets a "~" tag: keywords "~:k",
 			symbols "~$s", bytes "~b...", lists ["~#list",[...]], ints
-			with magnitude >= 2^53 as "~n...", NaN/infinity. Integer map
+			with magnitude > 2^53 as "~n...", NaN/infinity. Integer map
 			keys always use "~i...". Sequences are Transit-aligned: vectors are
 			plain JSON arrays, nonempty lists are tagged, and nil is null.
 			Only a leading "~" in strings or string map keys is escaped as "~~";
@@ -229,6 +285,41 @@ func LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
 	return DefaultSerializer().LoadWith(b, opts)
 }
 
+// DumpOpts opts into canonical or typed output. The zero value preserves
+// existing plain output. Canon is an alias of Canonize. Canonical and typed
+// modes ignore package defaults; StringNumbers is explicit and cannot be
+// combined with Typed. dump-message deliberately has no such options.
+type DumpOpts struct {
+	StringNumbers bool
+	Canonize      bool
+	Canon         bool
+	Typed         bool
+}
+
+// DumpWith encodes v under opts without changing the existing Dump API.
+func DumpWith(v *lisp.LVal, opts DumpOpts) ([]byte, error) {
+	return DefaultSerializer().DumpWith(v, opts)
+}
+
+// DumpWith encodes v under opts, using the serializer's plain rules when
+// neither Canonize nor Typed is set.
+func (s *Serializer) DumpWith(v *lisp.LVal, opts DumpOpts) ([]byte, error) {
+	if opts.Typed && opts.StringNumbers {
+		return nil, errors.New("typed json: string-numbers is incompatible with typed")
+	}
+	if opts.Canonize || opts.Canon {
+		c, err := Canonize(v)
+		if err != nil {
+			return nil, err
+		}
+		v = c
+	}
+	if opts.Typed {
+		return DumpTyped(v)
+	}
+	return s.Dump(v, opts.StringNumbers)
+}
+
 // LoadOpts controls how a JSON document is decoded into lisp values.
 //
 // The zero value reproduces Load(b, false) exactly -- the behaviour every
@@ -270,6 +361,10 @@ type LoadOpts struct {
 	// every node that reads the same bytes -- which is the property that
 	// matters where this package decodes replicated state.
 	ExactIntegers bool
+
+	// Typed selects the strict typed decoder, independent of package defaults.
+	// StringNumbers is incompatible; ExactIntegers is allowed and redundant.
+	Typed bool
 }
 
 // Serializer defines JSON serialization rules for lisp values.
@@ -303,6 +398,20 @@ func (s *Serializer) LoadMax(b []byte, stringNums bool, maxAlloc int) *lisp.LVal
 
 // LoadWith parses b under opts and returns an LVal representing its structure.
 func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
+	if opts.Typed {
+		if opts.StringNumbers {
+			return lisp.Errorf("typed json: string-numbers is incompatible with typed")
+		}
+		var limits []TypedOption
+		if opts.MaxAlloc > 0 {
+			limits = []TypedOption{WithTypedMaxBytes(min(DefaultTypedMaxBytes, opts.MaxAlloc)), WithTypedMaxValues(min(DefaultTypedMaxValues, opts.MaxAlloc))}
+		}
+		v, err := LoadTyped(b, limits...)
+		if err != nil {
+			return lisp.Error(err)
+		}
+		return v
+	}
 	if v, ok := s.loadDirect(b, opts); ok {
 		return v
 	}
@@ -773,6 +882,9 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 }
 
 func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lisp.True(args.KeyArg(2)) || lisp.True(args.KeyArg(3)) || lisp.True(args.KeyArg(4)) {
+		return s.dumpModeBuiltin(env, args, false)
+	}
 	b, _, lerr := s.dumpBuiltin(env, args)
 	if lerr != nil {
 		return lerr
@@ -863,6 +975,12 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 	if js.Type != lisp.LBytes {
 		return env.Errorf("argument is not bytes: %v", js.Type)
 	}
+	if lisp.True(args.KeyArg(3)) {
+		if !stringNums.IsNil() {
+			return env.Errorf("string-numbers is incompatible with typed")
+		}
+		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
+	}
 	if lerr := libutil.ChargeKiB(env, len(js.Bytes())); lerr != nil {
 		return lerr
 	}
@@ -870,6 +988,9 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 }
 
 func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if lisp.True(args.KeyArg(2)) || lisp.True(args.KeyArg(3)) || lisp.True(args.KeyArg(4)) {
+		return s.dumpModeBuiltin(env, args, true)
+	}
 	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
 	if obj.Type == lisp.LError {
 		return obj
@@ -897,6 +1018,12 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 	}
 	if js.Type != lisp.LString {
 		return env.Errorf("argument is not a string: %v", js.Type)
+	}
+	if lisp.True(args.KeyArg(3)) {
+		if !stringNums.IsNil() {
+			return env.Errorf("string-numbers is incompatible with typed")
+		}
+		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
 	}
 	if lerr := libutil.ChargeKiB(env, len(js.Str)); lerr != nil {
 		return lerr
