@@ -140,7 +140,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			the same bytes, so the result can be hashed, used as a key or
 			stored and read back with load-typed.  It is finer than equal?:
 			1 and 1.0 encode differently.  Functions, native values, errors,
-			strings that are not valid UTF-8 and values that contain
+			strings or symbol names that are not valid UTF-8, and values that contain
 			themselves raise an error.  Costs one step per started KiB of
 			output, charged as the output grows.`),
 		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,

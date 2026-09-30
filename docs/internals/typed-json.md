@@ -68,7 +68,8 @@ Decisions and reasons:
 - **Arrays** of rank other than 1 have no JSON counterpart, so they carry their
   dimensions. A rank-1 array written with the tag is rejected (it has a
   shorter spelling).
-- **Invalid UTF-8 strings are rejected**, on encode and decode. JSON text is
+- **Invalid UTF-8 is rejected**, on encode and decode, in strings and in
+  symbol, keyword, map key and tagged type names. JSON text is
   Unicode; a lossy U+FFFD substitution (what plain mode does) would break type
   faithfulness, and a private escape would not be Transit. Byte data belongs
   in a bytes value.

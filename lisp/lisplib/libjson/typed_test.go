@@ -163,6 +163,9 @@ func TestTypedRejectsUnencodable(t *testing.T) {
 		"cyclic map":   cm,
 		"invalid utf8": lisp.String("\xff"),
 		"empty symbol": lisp.Symbol(""),
+		"utf8 symbol":  lisp.Symbol("a\xffb"),
+		"utf8 keyword": lisp.Symbol(":a\xffb"),
+		"utf8 tag":     ttagged("t\xff", lisp.Int(1)),
 		"bad key":      tsmap(t, lisp.String("\xff"), lisp.Int(1)),
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -224,6 +227,13 @@ func TestTypedLimits(t *testing.T) {
 	_, err = LoadTyped([]byte(`[1,2,3,4]`), WithTypedMaxValues(4))
 	require.ErrorIs(t, err, ErrTypedLimit)
 	_, err = LoadTyped([]byte(`[1,2,3,4]`), WithTypedMaxBytes(8))
+	require.ErrorIs(t, err, ErrTypedLimit)
+	// The limits of the two directions agree at the boundary.
+	b5, err := DumpTyped(lisp.String("abc"), WithTypedMaxBytes(5))
+	require.NoError(t, err)
+	_, err = LoadTyped(b5, WithTypedMaxBytes(5))
+	require.NoError(t, err)
+	_, err = DumpTyped(lisp.String("~bc"), WithTypedMaxBytes(5))
 	require.ErrorIs(t, err, ErrTypedLimit)
 	_, err = DumpTyped(lisp.String(strings.Repeat("x", 100)), WithTypedMaxBytes(50))
 	require.ErrorIs(t, err, ErrTypedLimit)

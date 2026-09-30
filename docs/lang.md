@@ -1741,7 +1741,7 @@ tagged value comes back with its type name and data without running its
 `deftype` constructor.
 
 `json:dump-typed` raises an error for a function, a native value, an error, a
-string that is not valid UTF-8 and a value that contains itself. Shared
+string or symbol name that is not valid UTF-8, and a value that contains itself. Shared
 structure is written in full at each occurrence. Both functions stop at limits
 on nesting depth (1024), size (16 MiB, or the runtime's allocation cap if
 lower) and value count (2^20). `json:dump-typed` costs one step per started KiB

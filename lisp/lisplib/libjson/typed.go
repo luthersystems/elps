@@ -99,8 +99,8 @@ const (
 
 // DumpTyped returns the canonical typed JSON encoding of v.
 //
-// Supported: ints, floats (NaN and the infinities included), strings (which
-// must be valid UTF-8), bytes, symbols, keywords, lists (quoted or not: the
+// Supported: ints, floats (NaN and the infinities included), strings (which,
+// like symbol, keyword, map key and tagged type names, must be valid UTF-8), bytes, symbols, keywords, lists (quoted or not: the
 // quote flag is not data), arrays of any rank, sorted maps and tagged
 // values.  Functions, native values, errors, nested quotes and values that
 // contain themselves are rejected with an error, so a caller that uses the
@@ -206,7 +206,11 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		if !utf8.ValidString(v.Str) {
 			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
 		}
-		if err := e.reserve(len(v.Str) + 3); err != nil {
+		n := len(v.Str) + 2 // the quotes
+		if needsTilde(v.Str) {
+			n++
+		}
+		if err := e.reserve(n); err != nil {
 			return err
 		}
 		e.buf = appendTypedString(e.buf, v.Str)
@@ -225,6 +229,9 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		case lisp.TrueSymbol, lisp.FalseSymbol:
 			e.buf = append(e.buf, v.Str...)
 		default:
+			if !utf8.ValidString(v.Str) {
+				return errors.New("typed json: cannot encode a symbol that is not valid UTF-8")
+			}
 			e.buf = appendTypedSymbol(e.buf, v.Str)
 		}
 	case lisp.LSExpr:
@@ -271,7 +278,10 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 }
 
 // reserve refuses a leaf that will write at least n more bytes than the byte
-// limit allows, before writing it.
+// limit allows, before writing it.  n is a lower bound (escapes can make a
+// string up to six times longer), so a leaf can still pass the limit; grow
+// then rejects it right after, and the overshoot is bounded by a value
+// already in memory.  No output past the limit is ever returned.
 func (e *typedEncoder) reserve(n int) error {
 	if n > e.cfg.maxBytes-len(e.buf) {
 		return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
