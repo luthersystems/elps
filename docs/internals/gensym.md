@@ -117,9 +117,14 @@ temporaries before referencing them; this generator does not resolve other
 free names in a macro's template.
 
 The Lisp `gensym` builtin, `LEnv.GenSym` and `Runtime.GenSym` keep their
-existing `genNNNNNNNN` counter behavior. Existing Lisp programs can inspect
-or depend on those spellings and counter continuity, including across
-template publication and forks. Changing them would be a separate language
-compatibility decision. Lisp macros, and Go macros still using that API,
+existing `genNNNNNNNN` scheme, but the numbers they return change. Each call
+still advances one runtime counter, but `get-default` no longer draws from it
+(it took two names per expansion), so any `gensym` after a `get-default`
+expansion now returns a lower number than before: `(gensym)
+(get-default (sorted-map) "a" 0) (gensym)` returned `gen00000004` and now
+returns `gen00000002` (`TestGetDefaultLeavesGenSymCounter`). A program that
+prints or stores gensym names sees the difference, so peers that must agree
+on output take this change together. The change was chosen over fake counter
+calls that would keep the old numbers. Lisp macros, and Go macros still using that API,
 can still collide with a user symbol of the same spelling. Porting other
 macros or changing the Lisp API is outside this change.
