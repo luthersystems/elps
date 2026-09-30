@@ -1893,7 +1893,7 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 (json:load-string "\"~`x\"" :typed true)
 ; => json:load-string: typed json: offset 5: invalid tagged string
 (json:load-string "[1, 2]" :typed true)
-; => json:load-string: json: non-canonical whitespace
+; => json:load-string: typed json: offset 3: invalid value
 ```
 
 The format is **elps canonical JSON**: shortest round-trip number text,

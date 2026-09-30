@@ -3,7 +3,6 @@
 package libjson
 
 import (
-	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -47,7 +46,6 @@ type directDecoder struct {
 	semantic typedDecoder
 	opts     LoadOpts
 	i        int
-	depth    int
 	fail     bool
 }
 
@@ -70,37 +68,12 @@ func (d *directDecoder) skipSpace() {
 // loadDirect.
 func (d *directDecoder) value() *lisp.LVal {
 	d.skipSpace()
-	if d.opts.Typed {
-		if err := d.semantic.count(); err != nil {
-			d.reject(err)
-			return nil
-		}
-	}
-	if d.opts.Typed && (d.b[d.i] == '[' || d.b[d.i] == '{') {
-		if d.opts.Typed && d.depth >= d.semantic.cfg.maxDepth {
-			d.reject(fmt.Errorf("%w: nesting depth exceeds %d", ErrTypedLimit, d.semantic.cfg.maxDepth))
-			return nil
-		}
-		d.depth++
-		defer func() { d.depth-- }()
-	}
 	switch c := d.b[d.i]; c {
 	case '{':
 		return d.object()
 	case '[':
 		return d.array()
 	case '"':
-		if d.opts.Typed {
-			s := d.strictString()
-			if d.fail {
-				return nil
-			}
-			v, err := d.semantic.stringValue(s)
-			if err != nil {
-				d.reject(err)
-			}
-			return v
-		}
 		return lisp.String(d.str())
 	case 't':
 		d.i += 4
@@ -110,9 +83,6 @@ func (d *directDecoder) value() *lisp.LVal {
 		return lisp.Bool(false)
 	case 'n':
 		d.i += 4
-		if d.opts.Typed {
-			return lisp.SExpr(nil)
-		}
 		return lisp.Nil()
 	default:
 		return d.number()
@@ -120,84 +90,32 @@ func (d *directDecoder) value() *lisp.LVal {
 }
 
 func (d *directDecoder) object() *lisp.LVal {
-	d.i++
+	d.i++ // '{'
 	m := make(map[string]any)
-	var typed *lisp.LVal
 	d.skipSpace()
 	if d.b[d.i] == '}' {
 		d.i++
 		return jsonraw.Wrap(m)
 	}
-	prev, size := "", 0
+	prev := ""
 	for {
 		d.skipSpace()
-		var k string
-		var key *lisp.LVal
-		if d.opts.Typed {
-			raw := d.strictString()
-			if d.fail {
-				return nil
-			}
-			k = string(raw)
-			if err := d.semantic.count(); err != nil {
-				d.reject(err)
-				return nil
-			}
-			if needsTilde(k) {
-				var err error
-				key, err = d.semantic.key(raw)
-				if err != nil {
-					d.reject(err)
-					return nil
-				}
-			}
-		} else {
-			k = d.str()
-		}
+		k := d.str()
 		if d.fail {
 			return nil
 		}
-		if d.opts.Strict && size > 0 && prev >= k {
+		if d.opts.Strict && len(m) > 0 && prev >= k {
 			d.reject(errors.New("json: members out of order or duplicated"))
 			return nil
 		}
 		prev = k
 		d.skipSpace()
-		d.i++
+		d.i++ // ':'
 		v := d.value()
 		if d.fail {
 			return nil
 		}
-		size++
-		if key != nil && key.Type != lisp.LString && typed == nil {
-			typed = lisp.SortedMap()
-			for name, value := range m {
-				typed.MapSet(name, value.(*lisp.LVal))
-			}
-		}
-		if typed != nil {
-			if key == nil {
-				key = lisp.String(k)
-			}
-			if r := typed.MapSetLVal(key, v); r.Type == lisp.LError {
-				d.reject(lisp.GoError(r))
-				return nil
-			}
-			if typed.Len() != size {
-				d.reject(errors.New("typed json: two members name one key"))
-				return nil
-			}
-		} else {
-			name := k
-			if key != nil {
-				name = key.Str
-			}
-			m[name] = v
-			if d.opts.Typed && len(m) != size {
-				d.reject(errors.New("typed json: two members name one key"))
-				return nil
-			}
-		}
+		m[k] = v
 		d.skipSpace()
 		c := d.b[d.i]
 		d.i++
@@ -205,40 +123,20 @@ func (d *directDecoder) object() *lisp.LVal {
 			break
 		}
 	}
-	count := len(m)
-	if typed != nil {
-		count = size
-	}
-	if d.opts.MaxAlloc > 0 && count > d.opts.MaxAlloc {
+	if d.opts.MaxAlloc > 0 && len(m) > d.opts.MaxAlloc {
 		d.reject(errors.New("json: allocation limit"))
 		return nil
-	}
-	if typed != nil {
-		return typed
 	}
 	return jsonraw.Wrap(m)
 }
 
 func (d *directDecoder) array() *lisp.LVal {
-	if d.opts.Typed && bytes.HasPrefix(d.b[d.i:], []byte(`["~#`)) {
-		return d.composite()
-	}
-	cells := d.elements()
-	if d.fail {
-		return nil
-	}
-	return lisp.Vector(cells)
-}
-
-func (d *directDecoder) elements() []*lisp.LVal {
-	if !d.expect('[') {
-		return nil
-	}
+	d.i++ // '['
 	base := len(d.stack)
 	d.skipSpace()
 	if d.b[d.i] == ']' {
 		d.i++
-		return []*lisp.LVal{}
+		return lisp.Array(nil, []*lisp.LVal{})
 	}
 	for {
 		v := d.value()
@@ -262,71 +160,7 @@ func (d *directDecoder) elements() []*lisp.LVal {
 	copy(cells, d.stack[base:])
 	clear(d.stack[base:])
 	d.stack = d.stack[:base]
-	return cells
-}
-
-func (d *directDecoder) composite() *lisp.LVal {
-	d.i++
-	tag := d.str()
-	if !d.expect(',') {
-		return nil
-	}
-	var v *lisp.LVal
-	switch tag {
-	case tagList:
-		cells := d.elements()
-		if d.fail {
-			return nil
-		}
-		if len(cells) == 0 {
-			d.reject(errors.New("typed json: empty list must be null"))
-			return nil
-		}
-		v = lisp.QExpr(cells)
-	case tagTagged:
-		if !d.expect('[') || d.i >= len(d.b) || d.b[d.i] != '"' {
-			d.reject(errors.New("typed json: malformed tagged value"))
-			return nil
-		}
-		name := d.str()
-		if name == "" {
-			d.reject(errors.New("typed json: empty type name"))
-			return nil
-		}
-		if !d.expect(',') {
-			return nil
-		}
-		inner := d.value()
-		if d.fail || !d.expect(']') {
-			return nil
-		}
-		v = &lisp.LVal{Type: lisp.LTaggedVal, Str: name, Cells: []*lisp.LVal{inner}}
-	case tagArray:
-		if !d.expect('[') {
-			return nil
-		}
-		dims := d.elements()
-		if d.fail || !d.expect(',') {
-			return nil
-		}
-		cells := d.elements()
-		if d.fail || !d.expect(']') {
-			return nil
-		}
-		var err error
-		v, err = restoreArray(dims, cells)
-		if err != nil {
-			d.reject(err)
-			return nil
-		}
-	default:
-		d.reject(errors.New("typed json: unknown tag"))
-		return nil
-	}
-	if !d.expect(']') {
-		return nil
-	}
-	return v
+	return lisp.Array(nil, cells)
 }
 
 func (d *directDecoder) expect(c byte) bool {
@@ -426,29 +260,6 @@ func (d *directDecoder) number() *lisp.LVal {
 			}
 		}
 	}
-	if d.opts.Typed {
-		if n, ok := smallCanonicalInt(d.b[start:d.i]); ok {
-			return lisp.Int(n)
-		}
-		if isJSONInteger(text) {
-			n, err := d.semantic.canonicalInt(d.b[start:d.i])
-			if err != nil {
-				d.reject(err)
-				return nil
-			}
-			if !exactInt(int64(n)) {
-				d.reject(errors.New("typed json: non-canonical number"))
-				return nil
-			}
-			return lisp.Int(n)
-		}
-		f, err := strconv.ParseFloat(text, 64)
-		if err != nil || math.Trunc(f) == f {
-			d.reject(errors.New("typed json: whole float requires ~d"))
-			return nil
-		}
-		return lisp.Float(f)
-	}
 	if d.opts.StringNumbers {
 		return lisp.String(text)
 	}
@@ -468,16 +279,12 @@ func (d *directDecoder) number() *lisp.LVal {
 	return lisp.Float(f)
 }
 
-// loadStrict checks canonical spelling while decoding each token.
-func loadStrict(b []byte, opts LoadOpts, cfg typedConfig) (*lisp.LVal, error) {
-	if opts.Typed && len(b) > cfg.maxBytes {
-		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, cfg.maxBytes)
-	}
+// loadStrict decodes b with the Strict spelling checks of LoadOpts.
+func loadStrict(b []byte, opts LoadOpts) (*lisp.LVal, error) {
 	if !json.Valid(b) {
 		return nil, errors.New("json: invalid JSON")
 	}
-	opts.Strict = true
-	d := directDecoder{b: b, opts: opts, semantic: typedDecoder{cfg: cfg}}
+	d := directDecoder{b: b, opts: opts}
 	v := d.value()
 	d.skipSpace()
 	if d.fail {
@@ -487,9 +294,4 @@ func loadStrict(b []byte, opts LoadOpts, cfg typedConfig) (*lisp.LVal, error) {
 		return nil, errors.New("json: trailing bytes")
 	}
 	return v, nil
-}
-
-// LoadTyped applies strict plain decoding and restores tags during decoding.
-func LoadTyped(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
-	return loadStrict(b, LoadOpts{Typed: true, ExactIntegers: true}, newTypedConfig(opts))
 }

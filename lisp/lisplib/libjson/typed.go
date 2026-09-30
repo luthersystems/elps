@@ -103,7 +103,8 @@ const (
 	tagTagged = "~#tagged"
 )
 
-// dumpTypedSeparate supplies the separate encoder benchmark arm.
+// DumpTyped writes v as typed JSON: exactly the bytes of Dump(Tag(v), false),
+// without building Tag(v).
 //
 // Supported: ints, floats (NaN and the infinities included), strings (which,
 // like symbol, keyword, map key and tagged type names, must be valid UTF-8), bytes, symbols, keywords, lists (quoted or not: the
@@ -119,7 +120,7 @@ const (
 // bytes, whatever order a map was built in and whichever cells are shared;
 // shared structure is written in full at each occurrence, so a small value
 // whose tree expansion passes the value or byte limit is rejected.
-func dumpTypedSeparate(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
+func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
 	e := typedEncoder{cfg: newTypedConfig(opts)}
 	e.buf = make([]byte, 0, 256)
 	if err := e.value(v, 0); err != nil {
@@ -207,7 +208,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 	case lisp.LInt:
 		e.buf = appendTypedInt(e.buf, v.Int)
 	case lisp.LFloat:
-		e.buf = appendSeparateFloat(e.buf, v.Float)
+		e.buf = appendTaggedFloat(e.buf, v.Float)
 	case lisp.LString:
 		if !utf8.ValidString(v.Str) {
 			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
@@ -325,36 +326,6 @@ func appendTypedInt(b []byte, x int) []byte {
 	b = append(b, '"', '~', 'n')
 	b = strconv.AppendInt(b, int64(x), 10)
 	return append(b, '"')
-}
-
-// appendSeparateFloat writes a float for the separate benchmark arm.  A finite float is its RFC 8785 number
-// text (the ECMAScript shortest round-trip form appendJSONFloat writes),
-// with ".0" appended when that text has neither '.' nor an exponent, so a
-// float never reads back as an int; -0.0 keeps its sign.  NaN and the
-// infinities are Transit's special numbers "~zNaN", "~zINF" and "~z-INF";
-// every NaN is the one NaN.
-func appendSeparateFloat(b []byte, f float64) []byte {
-	switch {
-	case math.IsNaN(f):
-		return append(b, `"~zNaN"`...)
-	case math.IsInf(f, 1):
-		return append(b, `"~zINF"`...)
-	case math.IsInf(f, -1):
-		return append(b, `"~z-INF"`...)
-	case f == 0:
-		if math.Signbit(f) {
-			return append(b, "-0.0"...)
-		}
-		return append(b, "0.0"...)
-	}
-	n := len(b)
-	b = appendJSONFloat(b, f)
-	for _, c := range b[n:] {
-		if c == '.' || c == 'e' {
-			return b
-		}
-	}
-	return append(b, '.', '0')
 }
 
 // needsTilde reports whether a string starts with the format's escape marker.

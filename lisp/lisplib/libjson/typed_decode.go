@@ -15,8 +15,8 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// loadTypedSeparate supplies the separate decoder benchmark arm. Input must
-// match dumpTypedSeparate output.  Anything DumpTyped could not have produced is
+// LoadTyped decodes typed JSON: the same value as Untag of a Strict,
+// ExactIntegers plain load of b, in one pass.  Anything DumpTyped could not have produced is
 // rejected with an error: whitespace, a member out of UTF-8 byte order or
 // duplicated, number text other than the canonical text of its value (1.50,
 // 1E5, -0, 01, an int written as a float or past 2^53 as a number), an
@@ -33,7 +33,7 @@ import (
 //
 // Memory is bounded by the input: every value costs at least one byte of
 // it, and nothing is reserved from a count the input declares.
-func loadTypedSeparate(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
+func LoadTyped(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
 	d := typedDecoder{cfg: newTypedConfig(opts), b: b}
 	if len(b) > d.cfg.maxBytes {
 		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, d.cfg.maxBytes)
@@ -427,8 +427,11 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 	if err != nil || math.IsInf(f, 0) {
 		return nil, d.errorf("non-canonical number")
 	}
+	if math.Trunc(f) == f {
+		return nil, d.errorf("whole float requires ~d")
+	}
 	var tmp [40]byte
-	if !bytes.Equal(appendSeparateFloat(tmp[:0], f), text) {
+	if !bytes.Equal(appendJSONFloat(tmp[:0], f), text) {
 		return nil, d.errorf("non-canonical number")
 	}
 	return lisp.Float(f), nil

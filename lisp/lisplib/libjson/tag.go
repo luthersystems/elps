@@ -27,19 +27,7 @@ func Tag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 	return out, nil
 }
 
-// DumpTyped writes exactly Dump(Tag(v), false), without building Tag(v).
-func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
-	enc := getEncoder(false)
-	defer putEncoder(enc)
-	w := tagWalker{enc: enc, cfg: newTypedConfig(opts)}
-	if _, err := w.value(v, 0); err != nil {
-		return nil, err
-	}
-	return enc.donateBuffer(), nil
-}
-
 type tagWalker struct {
-	enc                   *encoder
 	path                  []*lisp.LVal
 	cfg                   typedConfig
 	values, size, charged int
@@ -54,9 +42,6 @@ func (w *tagWalker) count() error {
 }
 
 func (w *tagWalker) write(s string) error {
-	if w.enc != nil {
-		w.enc.buf.WriteString(s)
-	}
 	return w.grow(len(s))
 }
 
@@ -80,91 +65,22 @@ func (w *tagWalker) grow(n int) error {
 
 func (w *tagWalker) leaf(v *lisp.LVal) (*lisp.LVal, error) {
 	var n int
-	if w.enc != nil {
-		start := w.enc.buf.Len()
-		var err error
-		switch v.Type {
-		case lisp.LString:
-			err = w.enc.encodeString(v.Str)
-		case lisp.LInt:
-			err = w.enc.encodeInt(v.Int)
-		case lisp.LFloat:
-			err = w.enc.encodeFloat(v.Float)
-		case lisp.LSymbol:
-			err = w.enc.encodeLSymbol(v, encodeGuard{})
-		default:
-			w.enc.buf.WriteString("null")
-		}
-		if err != nil {
-			return nil, err
-		}
-		n = w.enc.buf.Len() - start
-	} else {
-		switch v.Type {
-		case lisp.LString:
-			n = len(appendJSONString(nil, v.Str))
-		case lisp.LInt:
-			n = len(strconv.Itoa(v.Int))
-		case lisp.LFloat:
-			n = len(appendJSONFloat(nil, v.Float))
-		case lisp.LSymbol:
-			n = len(v.Str)
-		default:
-			n = 4
-		}
+	switch v.Type {
+	case lisp.LString:
+		n = len(appendJSONString(nil, v.Str))
+	case lisp.LInt:
+		n = len(strconv.Itoa(v.Int))
+	case lisp.LFloat:
+		n = len(appendJSONFloat(nil, v.Float))
+	case lisp.LSymbol:
+		n = len(v.Str)
+	default:
+		n = 4
 	}
 	if err := w.grow(n); err != nil {
 		return nil, err
 	}
 	return v, nil
-}
-
-// scalar sends transformed leaves directly to the plain encoder's buffer.
-func (w *tagWalker) scalar(v *lisp.LVal) error {
-	start := w.enc.buf.Len()
-	var err error
-	switch v.Type {
-	case lisp.LInt:
-		if exactInt(int64(v.Int)) {
-			err = w.enc.encodeInt(v.Int)
-		} else {
-			w.enc.buf.Write(appendTypedInt(w.enc.buf.AvailableBuffer(), v.Int))
-		}
-	case lisp.LFloat:
-		w.enc.buf.Write(appendTaggedFloat(w.enc.buf.AvailableBuffer(), v.Float))
-	case lisp.LString:
-		if !utf8.ValidString(v.Str) {
-			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
-		}
-		w.enc.buf.Grow(len(v.Str) + 3)
-		w.enc.buf.Write(appendTypedString(w.enc.buf.AvailableBuffer(), v.Str))
-	case lisp.LBytes:
-		w.enc.buf.Grow(enc64.EncodedLen(len(v.Bytes())) + 4)
-		b := append(w.enc.buf.AvailableBuffer(), '"', '~', 'b')
-		b = enc64.AppendEncode(b, v.Bytes())
-		w.enc.buf.Write(append(b, '"'))
-	case lisp.LSymbol:
-		if v.Str == "" {
-			return errors.New("typed json: cannot encode an empty symbol")
-		}
-		if !utf8.ValidString(v.Str) {
-			return errors.New("typed json: cannot encode a symbol that is not valid UTF-8")
-		}
-		if v.Str == lisp.TrueSymbol || v.Str == lisp.FalseSymbol {
-			w.enc.buf.WriteString(v.Str)
-		} else {
-			w.enc.buf.Grow(len(v.Str) + 4)
-			w.enc.buf.Write(appendTypedSymbol(w.enc.buf.AvailableBuffer(), v.Str))
-		}
-	case lisp.LSExpr:
-		w.enc.buf.WriteString("null")
-	default:
-		return fmt.Errorf("typed json: cannot encode a %v", v.Type)
-	}
-	if err != nil {
-		return err
-	}
-	return w.grow(w.enc.buf.Len() - start)
 }
 
 func appendTaggedFloat(b []byte, f float64) []byte {
@@ -254,9 +170,6 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		return nil, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
 	}
 	if v.Type != lisp.LArray && v.Type != lisp.LSortMap && v.Type != lisp.LTaggedVal && (v.Type != lisp.LSExpr || v.IsNil()) {
-		if w.enc != nil {
-			return nil, w.scalar(v)
-		}
 		out, err := tagScalar(v)
 		if err != nil {
 			return nil, err
@@ -285,9 +198,6 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
-			return nil, nil
-		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
 	case lisp.LArray:
 		dims, cells, err := typedArrayParts(v)
@@ -314,9 +224,6 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
-			return nil, nil
-		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
 	case lisp.LTaggedVal:
 		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
@@ -338,9 +245,6 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
-			return nil, nil
-		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
 	default:
 		return w.object(v, depth)
@@ -351,10 +255,7 @@ func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
 	if err := w.write("["); err != nil {
 		return nil, err
 	}
-	var out []*lisp.LVal
-	if w.enc == nil {
-		out = make([]*lisp.LVal, len(cells))
-	}
+	out := make([]*lisp.LVal, len(cells))
 	for i, v := range cells {
 		if i > 0 {
 			if err := w.write(","); err != nil {
@@ -365,15 +266,10 @@ func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if out != nil {
-			out[i] = c
-		}
+		out[i] = c
 	}
 	if err := w.write("]"); err != nil {
 		return nil, err
-	}
-	if w.enc != nil {
-		return nil, nil
 	}
 	return lisp.Vector(out), nil
 }
@@ -446,10 +342,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		}
 		slices.SortFunc(pairs, func(a, b lisp.MapPair) int { return strings.Compare(a.Key, b.Key) })
 	}
-	var out *lisp.LVal
-	if w.enc == nil {
-		out = lisp.SortedMap()
-	}
+	out := lisp.SortedMap()
 	if err := w.write("{"); err != nil {
 		return nil, err
 	}
@@ -475,9 +368,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if out != nil {
-			out.MapSet(p.Key, c)
-		}
+		out.MapSet(p.Key, c)
 	}
 	if err := w.write("}"); err != nil {
 		return nil, err

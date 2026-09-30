@@ -79,3 +79,52 @@ func FuzzTypedJSON(f *testing.F) {
 		}
 	})
 }
+
+// FuzzTypedDecodeComposition checks that LoadTyped is the composition it
+// is defined as: Untag of a Strict, ExactIntegers plain load.
+//
+// ASSERTIONS
+//
+//  1. LoadTyped accepts exactly the inputs the composition accepts.
+//  2. Both give the same value, compared by its typed bytes, which tell
+//     every type apart.
+func FuzzTypedDecodeComposition(f *testing.F) {
+	for _, s := range []string{
+		`0`, `1.5`, `"~d1"`, `"~d-0"`, `1.0`, `-0`, `"~n9007199254740993"`, `"~~x"`, `"~:a"`, `"~$b"`,
+		`"~bAP8B"`, `null`, `[]`, `["~#list",[1]]`, `["~#list",[]]`, `["~#array",[[2],[1,2]]]`,
+		`["~#tagged",["t",1]]`, `{"a":1,"b":2}`, `{"b":1,"a":2}`, `{"~:a":1,"~i7":2}`, `{"a": 1}`,
+		`"<"`, `"<"`, `[1e+21]`, `["~#unknown",[]]`,
+	} {
+		f.Add([]byte(s))
+	}
+	for _, s := range fuzzseed.Adversarial() {
+		f.Add(s)
+	}
+	f.Fuzz(func(t *testing.T, data []byte) {
+		direct, err := LoadTyped(data)
+		var composed *lisp.LVal
+		var cerr error
+		if plain := LoadWith(data, LoadOpts{Strict: true, ExactIntegers: true}); plain.Type == lisp.LError {
+			cerr = lisp.GoError(plain)
+		} else {
+			composed, cerr = Untag(plain)
+		}
+		if (err == nil) != (cerr == nil) {
+			t.Fatalf("LoadTyped error %v, composition error %v, input %q", err, cerr, data)
+		}
+		if err != nil {
+			return
+		}
+		a, err := DumpTyped(direct)
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := DumpTyped(composed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(a, b) {
+			t.Fatalf("LoadTyped %q, composition %q, input %q", a, b, data)
+		}
+	})
+}

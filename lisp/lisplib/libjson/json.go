@@ -446,7 +446,7 @@ func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
 		return v
 	}
 	if opts.Strict {
-		v, err := loadStrict(b, opts, newTypedConfig(nil))
+		v, err := loadStrict(b, opts)
 		if err != nil {
 			return lisp.Error(err)
 		}
