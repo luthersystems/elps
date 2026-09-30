@@ -46,21 +46,20 @@ func checkCanonizeInvariant(t *testing.T, v *lisp.LVal) bool {
 		require.Nil(t, c)
 		return false
 	}
-	b, err := libjson.Dump(c, false)
+	b, err := libjson.DumpWith(v, libjson.DumpOpts{Canonize: true})
 	require.NoError(t, err)
 	require.NoError(t, originalErr)
 	after, err := libjson.Dump(v, false)
 	require.NoError(t, err)
 	require.Equal(t, original, after, "canonize mutated its input")
 	require.Equal(t, original, b, "adopting canonize changed dump bytes")
-	typed, err := libjson.DumpTyped(c)
+	typed, err := libjson.DumpWith(v, libjson.DumpOpts{Canonize: true, Typed: true})
 	require.NoError(t, err)
 	require.Equal(t, b, typed, "plain and typed canonical bytes differ")
 	back := libjson.LoadWith(b, libjson.LoadOpts{ExactIntegers: true})
 	canonExact(t, c, back)
 	canonExact(t, c, libjson.LoadWith(original, libjson.LoadOpts{ExactIntegers: true}))
-	back, err = libjson.LoadTyped(typed)
-	require.NoError(t, err)
+	back = libjson.LoadWith(b, libjson.LoadOpts{Typed: true})
 	canonExact(t, c, back)
 	again, err := libjson.Canonize(c)
 	require.NoError(t, err)
@@ -71,6 +70,9 @@ func checkCanonizeInvariant(t *testing.T, v *lisp.LVal) bool {
 		b, err := libjson.Dump(c, sn)
 		require.NoError(t, err)
 		require.Equal(t, a, b, "string-numbers byte guarantee")
+		canonical, err := libjson.DumpWith(v, libjson.DumpOpts{Canonize: true, StringNumbers: sn})
+		require.NoError(t, err)
+		require.Equal(t, a, canonical, "canonical option string-numbers byte guarantee")
 	}
 	return true
 }
@@ -337,7 +339,7 @@ func TestCanonizeGoOptions(t *testing.T) {
 	v := lisp.QExpr([]*lisp.LVal{lisp.Symbol("a"), lisp.Float(1)})
 	want, err := libjson.Dump(v, false)
 	require.NoError(t, err)
-	for _, opts := range []libjson.DumpOpts{{Canon: true}, {Canonize: true}, {Canonize: true, Typed: true}} {
+	for _, opts := range []libjson.DumpOpts{{Canonize: true}, {Canonize: true, Typed: true}} {
 		got, err := libjson.DumpWith(v, opts)
 		require.NoError(t, err)
 		require.Equal(t, want, got)
@@ -405,7 +407,7 @@ func makeCanonLeaves(n int) []*lisp.LVal {
 func TestCanonizeDumpOptions(t *testing.T) {
 	env := newTypedTestEnv(t)
 	for _, src := range []string{
-		`(equal? (json:dump-bytes '(a 1.0) :canon true) (json:dump-typed (json:canonize '(a 1.0))))`,
+		`(equal? (json:dump-bytes '(a 1.0) :canonize true) (json:dump-bytes (json:canonize '(a 1.0)) :typed true))`,
 		`(equal? (json:dump-string '(a 1.0) :canonize true) "[\"a\",1]")`,
 		`(equal? (json:dump-bytes '(a 1.0) :typed true :canonize true) (json:dump-bytes '(a 1.0) :canonize true))`,
 		`(float? (json:load-string (json:dump-string 1.0 :typed true) :typed true))`,

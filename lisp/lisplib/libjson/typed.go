@@ -96,7 +96,7 @@ func newTypedConfig(opts []TypedOption) typedConfig {
 // ErrTypedLimit is wrapped by every error that reports a configured limit.
 var ErrTypedLimit = errors.New("typed json: limit exceeded")
 
-// Transit tags this format uses. This unreleased format has a closed tag set.
+// Transit tags this format uses. The format has a closed tag set.
 const (
 	tagList   = "~#list"
 	tagArray  = "~#array"
@@ -552,7 +552,7 @@ func typedOptions(env *lisp.LEnv) []TypedOption {
 
 var errTypedCharge = errors.New("step charge failed")
 
-// DumpTypedBuiltin implements json:dump-typed.
+// DumpTypedBuiltin is the runtime adapter for typed dumping across the JSON family.
 func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// Steps are charged as the output grows, so a step budget or a
 	// cancelled context stops a large encode part way.
@@ -574,7 +574,7 @@ func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Bytes(b)
 }
 
-// LoadTypedBuiltin implements json:load-typed.
+// LoadTypedBuiltin is the runtime adapter for typed loading across the JSON family.
 func LoadTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	var b []byte
 	switch in := args.Cells[0]; in.Type {

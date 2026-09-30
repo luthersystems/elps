@@ -164,7 +164,7 @@ func encodeCorpus(t *testing.T) []string {
 			lines = append(lines, c.name+"\t")
 			continue
 		}
-		b, err := libjson.DumpTyped(c.v)
+		b, err := libjson.DumpWith(c.v, libjson.DumpOpts{Typed: true})
 		if err != nil {
 			t.Fatalf("%s: %v", c.name, err)
 		}
@@ -213,12 +213,12 @@ func TestTypedGoldenCorpus(t *testing.T) {
 		if c.v == nil {
 			// A 64-bit int on a 32-bit int platform: decoding must fail
 			// loudly, never truncate.
-			if _, err := libjson.LoadTyped([]byte(want)); err == nil {
+			if _, err := loadTyped([]byte(want)); err == nil {
 				t.Errorf("%s: %s decoded where int is %d bits", c.name, want, strconv.IntSize)
 			}
 			continue
 		}
-		got, err := libjson.DumpTyped(c.v)
+		got, err := libjson.DumpWith(c.v, libjson.DumpOpts{Typed: true})
 		if err != nil {
 			t.Errorf("%s: %v", c.name, err)
 			continue
@@ -226,12 +226,12 @@ func TestTypedGoldenCorpus(t *testing.T) {
 		if string(got) != want {
 			t.Errorf("%s:\n got %s\nwant %s", c.name, got, want)
 		}
-		back, err := libjson.LoadTyped([]byte(want))
+		back, err := loadTyped([]byte(want))
 		if err != nil {
 			t.Errorf("%s: golden does not decode: %v", c.name, err)
 			continue
 		}
-		if again, err := libjson.DumpTyped(back); err != nil || string(again) != want {
+		if again, err := libjson.DumpWith(back, libjson.DumpOpts{Typed: true}); err != nil || string(again) != want {
 			t.Errorf("%s: golden does not round-trip: %s (%v)", c.name, again, err)
 		}
 	}
@@ -269,20 +269,16 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 		}
 		checked++
 		if c.v == nil {
-			if _, err := libjson.LoadTyped([]byte(want)); err == nil {
+			if _, err := loadTyped([]byte(want)); err == nil {
 				t.Errorf("%s: wide canonical integer decoded on 32 bits", c.name)
 			}
 			continue
 		}
-		v, err := libjson.Canonize(c.v)
-		if err != nil {
-			t.Fatalf("%s: %v", c.name, err)
-		}
-		plain, err := libjson.Dump(v, false)
+		plain, err := libjson.DumpWith(c.v, libjson.DumpOpts{Canonize: true})
 		if err != nil {
 			t.Fatal(err)
 		}
-		typed, err := libjson.DumpTyped(v)
+		typed, err := libjson.DumpWith(c.v, libjson.DumpOpts{Canonize: true, Typed: true})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -294,7 +290,15 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 			t.Errorf("%s: canonical %s, typed %s, original %s; want %s", c.name, plain, typed, original, want)
 		}
 		back := libjson.LoadWith(plain, libjson.LoadOpts{ExactIntegers: true})
-		again, err := libjson.DumpTyped(back)
+		typedBack, err := loadTyped(plain)
+		if err != nil {
+			t.Fatalf("%s: canonical bytes do not typed-decode: %v", c.name, err)
+		}
+		typedAgain, err := libjson.DumpWith(typedBack, libjson.DumpOpts{Typed: true})
+		if err != nil || string(typedAgain) != want {
+			t.Errorf("%s: typed decode differs: %s (%v)", c.name, typedAgain, err)
+		}
+		again, err := libjson.DumpWith(back, libjson.DumpOpts{Typed: true})
 		if err != nil || string(again) != want {
 			t.Errorf("%s: exact plain decode differs: %s (%v)", c.name, again, err)
 		}
@@ -302,4 +306,13 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 	if checked != len(golden) {
 		t.Fatal("canonical golden contains unknown corpus cases")
 	}
+}
+
+// Exercise the option API while preserving the golden harness's Go error checks.
+func loadTyped(b []byte) (*lisp.LVal, error) {
+	v := libjson.LoadWith(b, libjson.LoadOpts{Typed: true})
+	if err := lisp.GoError(v); err != nil {
+		return nil, err
+	}
+	return v, nil
 }

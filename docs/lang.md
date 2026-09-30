@@ -1691,7 +1691,7 @@ The value is correct at every step and stable from the second read onwards;
 what changed is the document, not the value, and every node reading the same
 bytes still agrees.  Machine-generated JSON does not hit this — Go,
 JavaScript and Python all render `1e9` as plain digits — so it is a footgun
-for hand-written JSON inside a phylum, not a data-loss risk.
+for hand-written JSON in an application, not a data-loss risk.
 
 **An oversized literal is accepted when it is already canonical float text.**
 This is the one exception to the range error above:
@@ -1743,7 +1743,10 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 9007199254740993
 ```
 
-### Typed JSON (`json:dump-typed`, `json:load-typed`)
+### Typed JSON
+
+The output is plain JSON, readable by standard JSON tools such as `jq` and
+when retrieved from a database or file system.
 
 `json:canonize` makes a fresh plain JSON image for canonical hashing. It
 converts symbols/keywords to strings, lists to vectors, bytes to base64
@@ -1754,11 +1757,20 @@ of `v`. Canonize is idempotent. Plain loading with `:exact-integers true` and
 typed loading both return exactly `c`, including its numeric types. Default
 plain loading returns floats and is outside this exact-type invariant.
 
+For `c = (json:canonize v)`, in explicit numeric JSON mode:
+
+```text
+(json:load-string (json:dump-string c) :exact-integers true)
+  == c == (json:load-string (json:dump-string c :typed true) :typed true)
+(json:dump-string c) == (json:dump-string c :typed true)
+(json:dump-string c) == (json:dump-string v)
+```
+
 Use `(json:dump-string (json:canonize payload))`, or the shorter
-`(json:dump-string payload :canonize true)` (`:canon true` is an alias).
+`(json:dump-string payload :canonize true)`.
 Existing hashes and keys keep the same bytes on success. `:typed true` on
-dump-string/dump-bytes or load-string/load-bytes selects the typed encoder or
-decoder; dump-message has no new options. Canonical and typed modes ignore
+any of dump-string, dump-bytes, dump-message or their matching load functions
+selects the typed encoder or decoder. Canonical and typed modes ignore
 package number defaults. Canonical dumping permits explicit :string-numbers;
 typed mode rejects that keyword and permits :exact-integers on loads.
 
@@ -1778,13 +1790,16 @@ See [typed-json.md](typed-json.md) for all cases, handlers and adoption rules.
 ```lisp
 (json:dump-string (json:canonize '(a :b 1.0 ())))
 ; => "[\"a\",\":b\",1,null]"
-(equal? (json:dump-bytes '(a 1.0) :canonize true) (json:dump-typed (json:canonize '(a 1.0))))
+(json:dump-string '(a :b 1.0 ()) :canonize true)
+; => "[\"a\",\":b\",1,null]"
+(equal? (json:dump-bytes '(a 1.0) :canonize true) (json:dump-bytes (json:canonize '(a 1.0)) :typed true))
 ; => true
 ```
 
-Plain JSON (`json:dump-bytes`) loses types: `5.0` comes back as `5`, `:kw`
-and `'sym` come back as strings, a list comes back as a vector.
-`json:dump-typed` writes JSON that reads back as exactly the value you wrote.
+Plain JSON (`json:dump-bytes`) loses types: `5` and `5.0` have the same bytes,
+`:kw` and `'sym` come back as strings, and a list comes back as a vector.
+`(json:dump-bytes v :typed true)` writes JSON that reads back as exactly the
+value you wrote with `(json:load-bytes b :typed true)`.
 
 Ordinary values stay ordinary JSON. Sequences are Transit-aligned: vectors
 are JSON arrays, nonempty lists use Transit's `"~#list"` tag, and the empty
@@ -1792,7 +1807,7 @@ list / nil is `null`, matching plain `json:dump-string`. Only the cases plain JS
 cannot tell apart get a short tag, a string beginning with `~`:
 
 <!-- typedjson:table elps=1 plain=2 typed=3 -->
-| elps value | plain `json:dump-bytes` | typed `json:dump-typed` |
+| elps value | plain `json:dump-bytes` | `json:dump-bytes` with `:typed true` |
 |---|---|---|
 | `5` | `5` | `5` |
 | `5.0` | `5` | `5.0` |
@@ -1843,26 +1858,26 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 
 <!-- typedjson:eval -->
 ```lisp
-(json:load-typed "{\"~$status\":\"~:pending\",\"~$steps\":[\"~#list\",[\"~:kyc\",\"~:fund\"]]}")
+(json:load-string "{\"~$status\":\"~:pending\",\"~$steps\":[\"~#list\",[\"~:kyc\",\"~:fund\"]]}" :typed true)
 ; => (sorted-map 'status :pending 'steps '(:kyc :fund))
-(type (json:load-typed "[1,2]"))
+(type (json:load-string "[1,2]" :typed true))
 ; => 'array
-(json:load-typed "null")
+(json:load-string "null" :typed true)
 ; => ()
-(json:load-typed (json:dump-string "<>&"))
+(json:load-string (json:dump-string "<>&") :typed true)
 ; => "<>&"
-(float? (json:load-typed "5.0"))
+(float? (json:load-string "5.0" :typed true))
 ; => true
-(json:load-typed "\"^x\"")
+(json:load-string "\"^x\"" :typed true)
 ; => "^x"
-(json:load-typed "\"`x\"")
+(json:load-string "\"`x\"" :typed true)
 ; => "`x"
-(json:load-typed "\"~^x\"")
-; => json:load-typed: typed json: offset 5: invalid tagged string
-(json:load-typed "\"~`x\"")
-; => json:load-typed: typed json: offset 5: invalid tagged string
-(json:load-typed "[1, 2]")
-; => json:load-typed: typed json: offset 3: invalid value
+(json:load-string "\"~^x\"" :typed true)
+; => json:load-string: typed json: offset 5: invalid tagged string
+(json:load-string "\"~`x\"" :typed true)
+; => json:load-string: typed json: offset 5: invalid tagged string
+(json:load-string "[1, 2]" :typed true)
+; => json:load-string: typed json: offset 3: invalid value
 ```
 
 The format is **elps canonical JSON**: shortest round-trip number text,
@@ -1881,11 +1896,13 @@ UTF-16 order, the five extra Unicode escapes, float type/signed-zero
 preservation and Transit tags are deliberate differences. Outside JCS
 verifiers will not match when those differences apply.
 
-The same value always gives the same bytes (sorted keys, no spaces), so it
-can be hashed or used as a key. `1` and `1.0` encode differently.
+Typed bytes are frozen and preserve types: `1` and `1.0` encode differently.
+For hashing and cache/state keys use `(json:dump-string v :canonize true
+:string-numbers false)` and let a canonize error fail the operation; see
+[Hashing guidance](typed-json.md#hashing-guidance).
 Functions, native values, error values, nested quotes
 and values that contain themselves raise an error. See the [typed JSON cheat sheet](typed-json.md)
-for every tag, `jq` and CouchDB, and
+for every tag and `jq` examples, and
 [internals/typed-json.md](internals/typed-json.md) for the exact rules and
 limits.
 

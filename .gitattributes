@@ -1,3 +1,4 @@
 # Golden bytes must reach the test unchanged on every platform (no CRLF
 # conversion on Windows checkouts).
 lisp/lisplib/libjson/typedgolden/testdata/golden.txt -text
+lisp/lisplib/libjson/typedgolden/testdata/canonical.txt -text

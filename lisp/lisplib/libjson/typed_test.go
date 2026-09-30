@@ -116,7 +116,7 @@ func TestTypedEscapeMarkerKeyOrder(t *testing.T) {
 }
 
 // TestTypedGolden pins the typed JSON format byte for byte.  Stored
-// documents (ledger state, content hashes) depend on it, so ANY change to an
+// documents and content hashes depend on it, so ANY change to an
 // expected value below is a format change, not an edit.
 func TestTypedGolden(t *testing.T) {
 	int64Value := func(n int64) *lisp.LVal {
@@ -286,7 +286,7 @@ func TestTypedSequenceDecode(t *testing.T) {
 		{`[null,[],["~#list",[1]]]`, lisp.Vector([]*lisp.LVal{lisp.Nil(), lisp.Vector(nil), lisp.QExpr(ints(1))})},
 		{`["~#list",[null,[],[1]]]`, lisp.QExpr([]*lisp.LVal{lisp.Nil(), lisp.Vector(nil), lisp.Vector(ints(1))})},
 		{`["~~#list",[1]]`, lisp.Vector([]*lisp.LVal{lisp.String("~#list"), lisp.Vector(ints(1))})},
-		{`["~~#vector",[]]`, lisp.Vector([]*lisp.LVal{lisp.String("~#vector"), lisp.Vector(nil)})},
+		{`["~~#unknown",[]]`, lisp.Vector([]*lisp.LVal{lisp.String("~#unknown"), lisp.Vector(nil)})},
 	} {
 		t.Run(tt.in, func(t *testing.T) {
 			v, err := LoadTyped([]byte(tt.in))
@@ -414,10 +414,10 @@ func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 	for _, in := range []string{
 		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `nul`, `null `, `nullnull`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
 		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740993`, `"~i5"`, `"~i05"`,
-		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"~^a"`, "\"~`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
+		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"~^a"`, "\"~`a\"", `"~"`, `"~x"`, `"~#unknown"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
 		`"a` + bs + `/"`, `"` + bs + `u0041"`, `"` + bs + `u000a"`, `"` + bs + `u001F"`, "\"\x01\"", `"` + bs + `x"`, "\"\xff\"",
-		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"~^a":1}`, "{\"~`a\":1}",
-		`["~#vector",[1],2]`, `["~#vector",1]`, `["~#vector",[1]]`, `["~#vector",[]]`,
+		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#unknown":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"~^a":1}`, "{\"~`a\":1}",
+		`["~#unknown",[1],2]`, `["~#unknown",1]`, `["~#unknown",[1]]`, `["~#unknown",[]]`,
 		`["~#list",[]]`, `["~#list",1]`, `["~#list",null]`, `["~#list",[1],2]`, `["~#list",[1,]]`,
 		`["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,
 		`["~#array",[[2,2],[1,2,3]]]`, `["~#array",[[-1,0],[]]]`, `["~#array",[[1.0,1],[1]]]`, `["~#tagged",["",1]]`,

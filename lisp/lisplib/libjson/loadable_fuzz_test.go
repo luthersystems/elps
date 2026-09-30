@@ -18,8 +18,8 @@ import (
 // accept -- and it is checked as an EQUIVALENCE in both directions, because
 // the two ways to be wrong are opposite and equally bad. Accepting bytes Load
 // refuses is #410 itself: a document written and then unreadable. Refusing
-// bytes Load accepts is the opposite failure, and it turns a working phylum
-// into a broken one just as effectively.
+// bytes Load accepts is the opposite failure, and it prevents an application
+// from saving otherwise valid data.
 //
 // checkLoadable decodes with the decoder's own function, so today the
 // equivalence holds by construction and this target cannot fail on the

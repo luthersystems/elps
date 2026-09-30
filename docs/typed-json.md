@@ -1,8 +1,23 @@
 # Reading typed JSON
 
-A cheat sheet for the JSON that `json:dump-typed` writes and `json:load-typed`
-reads (introduced in [lang.md](lang.md#typed-json-jsondump-typed-jsonload-typed);
-exact rules in [internals/typed-json.md](internals/typed-json.md)).
+The typed format uses **Transit-verbose tag spellings on top of the canonical
+byte form (RFC 8785 number text + UTF-8 byte key order + the plain encoder's
+escape set)**. Select it with `:typed true` on `json:dump-bytes`,
+`json:dump-string`, `json:dump-message` and their matching load functions.
+Use `json:canonize` or dump's `:canonize true` for **elps canonical JSON**.
+See [lang.md](lang.md#typed-json) for an introduction and
+[internals/typed-json.md](internals/typed-json.md) for exact rules.
+
+The output is plain JSON, readable by standard JSON tools such as `jq` and
+when retrieved from a database or file system.
+
+Deliberate differences from Transit:
+
+- Maps are always JSON objects, never `["^ ",...]` or composite-map arrays.
+- There is no caching (`^0` or similar substitutions).
+- Only `~` is reserved; `^` and backquote are ordinary text.
+- `~#array` and `~#tagged` are elps extension tags.
+- Canonical key order and escapes preserve byte compatibility with plain dump.
 
 ## Canonize and the invariant
 
@@ -11,12 +26,12 @@ For every value `v` where `c = (json:canonize v)` succeeds, the following use
 exact equality of values **and numeric types**, including int versus float:
 
 ```text
-load-string(dump-string(c), :exact-integers true) == c
-c == load-typed(dump-typed(c))
-dump-bytes(c) == dump-typed(c)                 ; identical bytes
-canonize(c) == c                             ; idempotent
-canonize(v) == load-string(dump-string(v), :exact-integers true)
-dump-bytes(c) == dump-bytes(v)                ; identical adoption bytes
+For c = (json:canonize v):
+(json:load-string (json:dump-string c) :exact-integers true)
+  == c == (json:load-string (json:dump-string c :typed true) :typed true)
+(json:dump-string c) == (json:dump-string c :typed true)   ; same bytes
+(json:dump-string c) == (json:dump-string v)              ; same adoption bytes
+(json:canonize c) == c                                  ; idempotent
 ```
 
 **If canonize succeeds, adopting it does not change dump bytes.** Default
@@ -49,7 +64,7 @@ case, offending value and path. The error data is `(message case path)`:
 the message and path are strings, and the case is a stable keyword.
 `handler-bind` receives `(condition message case path)`; callers can branch
 on `case` without parsing the message. The same condition propagates from
-`dump-string` and `dump-bytes` with `:canonize true`.
+all three dump functions with `:canonize true`.
 
 | Case keyword | Rejection |
 |---|---|
@@ -87,8 +102,8 @@ The rejected values include:
   it to a Lisp number would break that option's adoption guarantee. Ordinary
   native strings, booleans, nil, bytes and containers of these are supported.
 
-Allocation, value-count and step budgets apply during the walk. `dump-typed`
-continues to escape/tag leading tildes, large ints and nonfinite floats; only
+Allocation, value-count and step budgets apply during the walk. Dumping with
+`:typed true` escapes/tags leading tildes, large ints and nonfinite floats;
 canonize refuses those cases. Interpreter step-budget and cancellation
 conditions propagate unchanged, following the other library builtins;
 they are separate from canonize's data rejection cases.
@@ -97,6 +112,10 @@ they are separate from canonize's data rejection cases.
 ```lisp
 (json:dump-string (json:canonize '(a :b 1.0 ())))
 ; => "[\"a\",\":b\",1,null]"
+(json:dump-string '(a :b 1.0 ()) :canonize true)
+; => "[\"a\",\":b\",1,null]"
+(json:load-string (json:dump-string '(a :b 1.0 ()) :canonize true) :typed true)
+; => (vector "a" ":b" 1 ())
 (int? (json:canonize 1.0))
 ; => true
 (handler-bind ([json:canonize-error (lambda (_condition _message case _path) case)]) (json:canonize '~name))
@@ -123,35 +142,58 @@ case, preserving its existing bytes. `rethrow` propagates all other cases:
 ; => "\"~draft\""
 ```
 
-The shorter `(json:dump-string payload :canonize true)` is equivalent;
-`:canon true` is an alias. This equivalence assumes the default numeric JSON
-mode; when a package default quotes numbers, pass `:string-numbers` explicitly
-to select matching bytes. Both dump-string and dump-bytes accept `:typed true`
-to use the typed format; both load-string and load-bytes accept `:typed true`
-to use its strict decoder. dump-message has no new flags.
+The shorter `(json:dump-string payload :canonize true)` first calls canonize
+and propagates exactly its errors. With `:string-numbers false` it is the same
+as `(json:dump-string (json:canonize payload) :string-numbers false)`.
+The bytes, string and message dump functions accept both `:canonize` and
+`:typed`; all matching load functions accept `:typed`. Canonical dumping
+ignores the package string-number default, so a plain call using that default
+needs an explicit `:string-numbers` to select matching bytes.
 
-| Dump options | Result |
+| Call and options | Result |
 |---|---|
-| `:canonize true` | Plain dump of canonize's result |
-| `:typed true` | Typed dump of the original value |
-| Both | Typed dump of canonize's result, identical canonical bytes |
-| `:canonize true :string-numbers true` | Numbers quoted; bytes still match the original explicit string-number dump |
-| `:typed true :string-numbers ...` | Error, including an explicit `false` |
+| dump `:canonize true` | Plain dump of `(json:canonize v)`: canonical bytes; exactly canonize's errors |
+| dump `:typed true` | Typed bytes of `v` |
+| dump `:typed true :canonize true` | Typed bytes of `(json:canonize v)`, the same bytes as dump `:canonize true` |
+| dump `:canonize true :string-numbers true` | Plain dump of `(json:canonize v)` with numbers as strings; equals plain dump of `v` with the same explicit option |
+| dump `:typed true :string-numbers ...` | Error, even for explicit `false`: quoting numbers would lose numeric types |
+| load `:typed true` | Strict typed decode, preserving types |
+| load `:typed true :exact-integers true` | Allowed, no effect: typed ints are always exact |
+| load `:typed true :string-numbers ...` | Error, even for explicit `false` |
+| load `:string-numbers` / `:exact-integers` without `:typed` | Existing plain behavior |
+| dump/load with no new flags | Existing plain behavior and bytes for every input |
 
-Canonize and typed modes ignore the `json:use-string-numbers` package default;
-only an explicit `:string-numbers` affects canonical dumping. Typed loading
-ignores package number defaults, permits `:exact-integers` without effect,
-and rejects explicit `:string-numbers`. Plain calls without the flags keep
-all existing behavior. Go callers use `Canonize`, `DumpWith`/`DumpOpts` and
-`LoadWith`/`LoadOpts.Typed`; the existing `Dump` and `Load` APIs stay available.
+Canonical dumping and typed dump/load ignore the `json:use-string-numbers`
+package default. Only an explicit `:string-numbers` changes canonical output;
+typed mode never quotes numbers and rejects that argument. Typed loading also
+ignores the package exact-integer default. Hash code should pass
+`:string-numbers false` explicitly. Go callers use `Canonize`,
+`DumpWith`/`DumpOpts` and `LoadWith`/`LoadOpts.Typed`; `DumpTyped` and `LoadTyped`
+remain the typed implementation API, and plain `Dump`/`Load` stay available.
 
 <!-- typedjson:eval -->
 ```lisp
 (equal? (json:dump-string (sorted-map "id" 7 "rate" 0.25) :canonize true) (json:dump-string (sorted-map "id" 7 "rate" 0.25)))
 ; => true
-(equal? (json:dump-bytes '(a 1.0) :canon true :typed true) (json:dump-bytes '(a 1.0)))
+(equal? (json:dump-bytes '(a 1.0) :canonize true :typed true) (json:dump-bytes '(a 1.0)))
 ; => true
 ```
+
+## Hashing guidance
+
+If you hash an elps value or use it as a cache/state key, hash
+`(json:dump-string v :canonize true)`. Those bytes are frozen. For string-keyed
+data they equal plain dump, so existing hashes stay valid. Let a canonize error
+fail the operation. Don't hash `:typed` output of non-canonical values, printed
+forms, or anything that depends on `json:use-string-numbers`.
+
+This advice applies when canonize succeeds. Use an explicit
+`:string-numbers false` for numeric JSON, or an explicit `true` if your existing
+hash scheme quotes numbers; both modes preserve the bytes of plain dump with
+that same explicit option. Canonical dumping itself ignores the package default.
+Do not fall back to another representation when canonize fails in a hash or key
+operation. Hash algorithms belong with the embedding application's crypto
+functions.
 
 ## What stays plain
 
@@ -181,8 +223,8 @@ Sequences are Transit-aligned: vectors are plain JSON arrays and nonempty
 lists use Transit's `"~#list"` tag. The empty list `()` is also nil and uses
 `null`, matching plain `json:dump-string`. Plain `json:load-string` can produce nil from
 JSON null, so its typed encoding must keep that plain spelling. `[]` decodes
-as an empty vector. A tagged empty list and the old `"~#vector"` tag are
-rejected, leaving one canonical encoding for each value.
+as an empty vector. Tagged empty lists and unknown tags are rejected, leaving
+one canonical encoding for each value.
 
 ## What gets a tag, and why
 
@@ -224,9 +266,9 @@ breaks, you see the tag.
 One value always gives the same bytes, on any machine, OS or architecture:
 keys use UTF-8 byte order of the written member text after Transit prefixes,
 before JSON escaping; numbers have one spelling, and strings are not
-normalized. So a SHA-256 of the output
-identifies the value. A golden test pins this on Linux, Windows and 32-bit
-Windows.
+normalized. The typed and canonical byte forms are frozen across versions
+and platforms; changing those bytes is a breaking change. Golden tests pin
+this on Linux, Windows and 32-bit builds.
 
 The format is **elps canonical JSON**: shortest round-trip number text,
 UTF-8 byte key order and the plain encoder's escape set, with `.0` added to floats whose number text
@@ -239,13 +281,13 @@ literal `<` and unnecessary escapes such as `\u0041` are rejected.
 
 This is chosen for byte compatibility with existing stored JSON and hashes
 and cache/state keys built from the plain dump output. Plain dumps already
-in the shared canonical subset can be read by `json:load-typed`:
+in the shared canonical subset can be read by `(json:load-string text :typed true)`:
 
 <!-- typedjson:eval -->
 ```lisp
-(json:load-typed (json:dump-string "<>&"))
+(json:load-string (json:dump-string "<>&") :typed true)
 ; => "<>&"
-(equal? (json:dump-typed (sorted-map "<" 1 "Z" 0.5)) (json:dump-bytes (sorted-map "<" 1 "Z" 0.5)))
+(equal? (json:dump-bytes (sorted-map "<" 1 "Z" 0.5) :typed true) (json:dump-bytes (sorted-map "<" 1 "Z" 0.5)))
 ; => true
 ```
 
@@ -257,7 +299,7 @@ and typed `1.0` as `1.0`; `1e+21` has the same exponent form in both.
 
 ## jq
 
-The record from [lang.md](lang.md#typed-json-jsondump-typed-jsonload-typed):
+The record from [lang.md](lang.md#typed-json):
 
 <!-- typedjson:record name=record.json -->
 ```lisp
@@ -282,25 +324,13 @@ $ jq -c 'with_entries(.key |= ltrimstr("~$")) | {id, amount}' record.json
 {"id":"ord-7","amount":125000}
 ```
 
-## CouchDB
-
-Keys and tagged values are stored as written, so a Mango query uses the tagged
-spelling:
-
-```json
-{"selector": {"~$status": "~:pending", "~$amount": {"$gt": 100000}}}
-```
-
-An index is declared on `"~$status"` the same way. Plain values (numbers,
-strings, string keys) need nothing.
-
 ## Why not ...
 
-**Plain `json:dump-bytes`?** It is lossy: `5.0` reads back as `5`, keywords
-and symbols as strings, lists as vectors, bytes as a base64 string. A stored
-value would not come back as written.
+**Plain `json:dump-bytes`?** It is lossy: `5` and `5.0` have the same bytes,
+keywords and symbols become strings, lists become vectors, and bytes become a
+base64 string. A stored value would not come back with all its original types.
 
 **A type mask (plain JSON plus a separate "types" description)?** Every
-reader, jq and CouchDB included, would have to join the mask to the data to
+reader, including `jq`, would have to join the mask to the data to
 know that `":pending"` is a keyword. It doubles what must stay in sync, and
 inline tags keep each value self-describing.

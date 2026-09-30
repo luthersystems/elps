@@ -732,8 +732,8 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 // pooled state and once into the document.  Encoder.Write goes straight from
 // the pooled state into enc.buf.
 //
-// It is the largest remaining byte cost on the path substrate runs per
-// response -- json.Marshal was 41% of BenchmarkEncodeOwnMessageMedium's bytes
+// It is the largest remaining byte cost when embedding a native JSON message
+// in a response -- json.Marshal was 41% of BenchmarkEncodeOwnMessageMedium's bytes
 // in the issue #379 item-6 profile, second only to the output buffer itself --
 // because every JSON-RPC envelope embeds one `json:dump-message` native whose
 // size IS the response.
@@ -758,8 +758,8 @@ func (enc *encoder) encodeNative(v any) error {
 	// produce can be read back.  An ownMessage is the one native for which
 	// this package DID produce them, and the loadable flag says it produced
 	// them under the conditions loadableBytes checks -- so the answer is
-	// already known, and re-deriving it is duplicated work on substrate's
-	// per-response path, where every JSON-RPC response embeds one.
+	// already known, and re-deriving it duplicates work when an application
+	// embeds one in a JSON response.
 	//
 	// The exemption is by TYPE, and the type is unexported with unexported
 	// fields, minted on one line of DumpMessageBuiltin from this package's own
@@ -792,7 +792,7 @@ func (enc *encoder) encodeNative(v any) error {
 // json.Valid would agree. It only fails at UNMARSHAL time, where the target is
 // a float64 and the value overflows. The result was a document json:dump
 // wrote and json:load then rejected: not corruption, but a value that cannot
-// be read back, which for a phylum persisting its state is worse.
+// be read back, which prevents an application from restoring its saved state.
 //
 // The check calls jsonDecode -- the decoder's own function -- so the two agree
 // by construction rather than by a rule restated here and left to drift. One

@@ -17,7 +17,9 @@ import (
 // FuzzCanonizeRoundTripInvariant checks exact types, idempotence, the plain
 // image, identical typed/plain bytes, and unchanged adoption bytes over ALL
 // value shapes. It also exercises arbitrary float bits, mixed map keys, and
-// the common ASCII string-keyed case. The value generator and walkers have
+// the common ASCII string-keyed case through the bytes/string/message family
+// with both number modes. Canonical bytes decode exactly in plain and typed
+// modes. The value generator and walkers have
 // bounded depth/work; there is no Lisp evaluation or watchdog here.
 func FuzzCanonizeRoundTripInvariant(f *testing.F) {
 	for _, seed := range fuzzval.Seeds() {
@@ -31,6 +33,7 @@ func FuzzCanonizeRoundTripInvariant(f *testing.F) {
 		snapshot := lisp.TakeSingletonSnapshot()
 		v := fuzzval.New(data, env).Value()
 		checkCanonizeInvariant(t, v)
+		checkCanonizeFamilyInvariant(t, env, v)
 		result := libjson.CanonizeBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
 		require.False(t, lisp.IsInternalPanic(result))
 		// An existing error argument propagates unchanged. All new data
@@ -49,10 +52,12 @@ func FuzzCanonizeRoundTripInvariant(f *testing.F) {
 		copy(bits[:], data)
 		x := math.Float64frombits(binary.LittleEndian.Uint64(bits[:]))
 		checkCanonizeInvariant(t, lisp.Float(x))
+		checkCanonizeFamilyInvariant(t, env, lisp.Float(x))
 		m := canonMap(t, lisp.String("text"), lisp.String("hello <>& é😀"),
 			lisp.String("int"), lisp.Int(int(bits[0])), lisp.String("nested"),
 			lisp.Vector([]*lisp.LVal{canonMap(t, lisp.String("float"), lisp.Float(float64(bits[1])/8))}))
 		require.True(t, checkCanonizeInvariant(t, m))
+		checkCanonizeFamilyInvariant(t, env, m)
 		// Keys are built through the same mutable map operation as assoc!.
 		mixed := lisp.SortedMap()
 		for i, k := range []*lisp.LVal{lisp.Symbol(":k"), lisp.Symbol("true"), lisp.String("z"), lisp.Symbol("a"), lisp.Int(9), lisp.Int(10)} {
@@ -61,6 +66,7 @@ func FuzzCanonizeRoundTripInvariant(f *testing.F) {
 			}
 		}
 		checkCanonizeInvariant(t, mixed)
+		checkCanonizeFamilyInvariant(t, env, mixed)
 		require.Empty(t, snapshot.Verify())
 	})
 }

@@ -592,18 +592,18 @@ func CanonizeBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return c
 }
 
-// dumpModeBuiltin handles only the opt-in paths of dump-bytes/dump-string;
-// dump-message and calls without flags keep the original argument handling.
+// dumpModeBuiltin handles the opt-in paths of the dump family. Calls without
+// flags keep the plain serializer's argument handling.
 func (s *Serializer) dumpModeBuiltin(env *lisp.LEnv, args *lisp.LVal, asString bool) *lisp.LVal {
 	v, sn := args.ReqArg(env, 0), args.KeyArg(1)
 	if v.Type == lisp.LError {
 		return v
 	}
-	typed := lisp.True(args.KeyArg(4))
+	typed := lisp.True(args.KeyArg(3))
 	if typed && !sn.IsNil() {
 		return env.Errorf("string-numbers is incompatible with typed")
 	}
-	if lisp.True(args.KeyArg(2)) || lisp.True(args.KeyArg(3)) {
+	if lisp.True(args.KeyArg(2)) {
 		v = CanonizeBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
 		if v.Type == lisp.LError {
 			return v

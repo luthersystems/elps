@@ -151,9 +151,9 @@ var unencodableTypes = map[lisp.LType]string{
 //
 // The encoder dispatches on the encoderFuncs table rather than a switch, so
 // the exhaustive linter cannot see it: a newly added lisp.LType would get a
-// nil table entry with nothing flagging it at build time.  Downstream this
-// output is chaincode state, so a type that quietly serialized to nothing
-// would be written to a ledger.  This test forces the choice -- register an
+// nil table entry with nothing flagging it at build time. An application
+// could then save empty output and lose the value. This test forces the
+// choice -- register an
 // encoder, or record here why the type has no JSON form -- and pins the
 // runtime behaviour for the refused types (an error, never empty output).
 func TestEncoderTypeCoverage(t *testing.T) {

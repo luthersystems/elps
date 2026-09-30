@@ -848,26 +848,39 @@ nature and their semantics could change.
 
 ### Typed JSON
 
-`libjson.DumpTyped` and `libjson.LoadTyped` are the Go side of
-`json:dump-typed` and `json:load-typed`: JSON that keeps every elps type
-(Transit's tags) and is canonical (RFC 8785 order and number text), so values
-of the same types and structure always give the same bytes. A host can hash
-them, use them as a memo key, or store them and read them back in another
-process or release.
+`libjson.DumpTyped` and `libjson.LoadTyped` implement `:typed true` on the
+`json:dump-bytes`, `json:dump-string`, `json:dump-message` and matching load
+family. Typed JSON preserves elps types with Transit-verbose tag spellings on
+the elps canonical byte form: RFC 8785 number text, UTF-8 byte key order and
+the plain encoder's escape set, with float types preserved. A host can store
+values and read them back with the same types in another process or release.
 
 ```go
 v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a"), lisp.Symbol(":k")})
-b, err := libjson.DumpTyped(v) // [1,"a","~:k"]
+b, err := libjson.DumpTyped(v) // ["~#list",[1,"a","~:k"]]
 if err != nil {
-    return err // a function, native, error or cyclic value: no key; fall back
+    return err // a function, native, error or cyclic value cannot be stored
 }
-sum := sha256.Sum256(b) // a content hash of the value
 
 back, err := libjson.LoadTyped(b)
 if err != nil {
     return err // bytes DumpTyped could not have produced
 }
 ```
+
+For hashing and cache/state keys, use canonical output and let errors fail the
+operation. An explicit string-number mode fixes the numeric representation:
+
+```go
+key, err := libjson.DumpWith(v, libjson.DumpOpts{Canonize: true, StringNumbers: false})
+if err != nil {
+    return err
+}
+sum := sha256.Sum256(key)
+```
+
+Canonical bytes are frozen and equal plain dump with the same explicit number
+mode whenever canonize succeeds. See [Hashing guidance](typed-json.md#hashing-guidance).
 
 The encoding is finer than `equal?`: `1` and `1.0` encode differently, so do
 a string and a symbol of one spelling. `DumpTyped` returns an error, never a

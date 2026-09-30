@@ -19,14 +19,14 @@ import (
 
 // The typed JSON documentation is executable: every example marked with a
 // <!-- typedjson:... --> comment in the files below, and the examples in the
-// dump-typed and load-typed docstrings, is checked here, so the docs cannot
+// dump/load family and canonize docstrings, is checked here, so the docs cannot
 // drift from the code.
 //
 // Markers (each applies to the table or code blocks that follow it):
 //
 //	typedjson:table elps=N typed=N [plain=N]
 //	    each row: column elps is an elps expression (or a name from
-//	    docGoValues), column typed its json:dump-typed text, column plain
+//	    docGoValues), column typed its json:dump-bytes :typed true text, column plain
 //	    its json:dump-bytes text or "error".  Columns count from 1.
 //	typedjson:record [name=F]
 //	    a lisp block holding one expression, then a json block whose first
@@ -37,7 +37,7 @@ import (
 //	    result" (for an error, the end of the error message).
 //	typedjson:jq file=F
 //	    a sh block of "$ jq ... F" lines, each followed by its output.
-var typedDocFiles = []string{"../../../docs/lang.md", "../../../docs/typed-json.md"}
+var typedDocFiles = []string{"../../../docs/lang.md", "../../../docs/typed-json.md", "../../../docs/internals/typed-json.md"}
 
 // docGoValues are table values elps code cannot build.
 var docGoValues = map[string]func() *lisp.LVal{
@@ -187,12 +187,12 @@ func checkDocTable(t *testing.T, env *lisp.LEnv, loc string, lines []string, arg
 			v = mk()
 		}
 		want, _ := codeCell(cells[typedCol-1])
-		got, err := libjson.DumpTyped(v)
+		got, err := libjson.DumpWith(v, libjson.DumpOpts{Typed: true})
 		require.NoError(t, err, "row %q", l)
 		assert.Equal(t, want, string(got), "typed column of row %q", l)
-		back, err := libjson.LoadTyped(got)
-		require.NoError(t, err, "row %q", l)
-		again, err := libjson.DumpTyped(back)
+		back := libjson.LoadWith(got, libjson.LoadOpts{Typed: true})
+		require.NotEqual(t, lisp.LError, back.Type, "row %q: %v", l, back)
+		again, err := libjson.DumpWith(back, libjson.DumpOpts{Typed: true})
 		require.NoError(t, err)
 		assert.Equal(t, string(got), string(again), "row %q does not round-trip", l)
 		if plainCol > 0 {
@@ -223,7 +223,7 @@ func checkDocRecord(t *testing.T, env *lisp.LEnv, lines []string, args map[strin
 	}
 	out := fencedBlock(t, rest, "json")
 	require.Len(t, out, 2, "record json block: typed line, then plain line")
-	typed, err := libjson.DumpTyped(v)
+	typed, err := libjson.DumpWith(v, libjson.DumpOpts{Typed: true})
 	require.NoError(t, err)
 	assert.Equal(t, out[0], string(typed), "typed line")
 	plain, err := libjson.Dump(v, false)
@@ -290,12 +290,12 @@ func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[
 	require.Positive(t, n, "empty jq block")
 }
 
-// The docstring examples of dump-typed and load-typed are checked too.
+// The docstring examples of the dump/load family and canonize are checked too.
 func TestTypedDocstringExamples(t *testing.T) {
 	env := docEnv(t)
 	found := 0
 	for _, b := range libjson.Builtins(libjson.DefaultSerializer()) {
-		if b.Name() != "dump-typed" && b.Name() != "load-typed" && b.Name() != "canonize" {
+		if !strings.HasPrefix(b.Name(), "dump-") && !strings.HasPrefix(b.Name(), "load-") && b.Name() != "canonize" {
 			continue
 		}
 		_, ex, ok := strings.Cut(b.Docstring(), "Example:")
@@ -314,5 +314,5 @@ func TestTypedDocstringExamples(t *testing.T) {
 		checkDocEval(t, env, lines)
 		found++
 	}
-	assert.Equal(t, 3, found)
+	assert.Equal(t, 7, found)
 }

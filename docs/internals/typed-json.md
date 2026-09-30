@@ -1,9 +1,27 @@
 # Canonical typed JSON
 
-`json:dump-typed` / `libjson.DumpTyped` and `json:load-typed` /
-`libjson.LoadTyped` (luthersystems/elps#747). Code: `lisp/lisplib/libjson/typed.go`
-and `typed_decode.go`. The format is unreleased. `TestTypedGolden` pins every rule below byte for byte. For a reader's
-cheat sheet (every tag, jq, CouchDB) see [../typed-json.md](../typed-json.md).
+The format uses **Transit-verbose tag spellings on top of the canonical byte
+form (RFC 8785 number text + UTF-8 byte key order + the plain encoder's escape
+set)**. This is **elps canonical JSON**, with typed extensions selected by
+`:typed true` on the dump/load bytes, string and message family. Dump's
+`:canonize true` first calls `json:canonize` and propagates exactly its errors.
+The Go implementation API is `libjson.DumpTyped` / `libjson.LoadTyped`, in
+`lisp/lisplib/libjson/typed.go` and `typed_decode.go`; `Canonize`, `DumpWith`
+and `LoadWith` expose the option API. `TestTypedGoldenCorpus` and
+`TestCanonicalGoldenCorpus` pin the bytes across platforms. See
+[../typed-json.md](../typed-json.md) for the tags, combinations and hashing
+advice.
+
+The output is plain JSON, readable by standard JSON tools such as `jq` and
+when retrieved from a database or file system.
+
+Deliberate differences from Transit:
+
+- Maps always use JSON objects, never `["^ ",...]` or composite-map arrays.
+- No caching (`^0` or similar substitutions).
+- Only `~` is reserved; `^` and backquote are ordinary text.
+- `~#array` and `~#tagged` are elps extension tags.
+- Canonical key order and escapes keep byte compatibility with plain dump.
 
 ## Goals
 
@@ -11,19 +29,12 @@ cheat sheet (every tag, jq, CouchDB) see [../typed-json.md](../typed-json.md).
    encoded from. Plain `json:dump-bytes` loses most of them (ints become floats,
    lists become vectors, symbols and keywords become strings, map key types and
    tags vanish), so it cannot back durable Lisp state.
-2. **Canonical.** One value, one encoding: the bytes can be a content hash
-   (SHA-256), a memo key or a consensus-visible ledger record. The decoder
-   accepts only what the encoder writes, so a hash of stored bytes identifies a
-   value.
-3. **Ordinary JSON.** Readable in a block explorer, queryable with `jq` and by
-   CouchDB (Fabric's rich-query state DB indexes JSON values and treats anything
-   else as an opaque attachment), and the same kind of state substrate already
-   stores.
-
-It replaced a binary canonical codec (`codec:encode`) that was never released.
-Measured against it (PR #751): about 20% larger raw on maps and strings and
-0-7% after compression, the same one step for a typical defflow frame, and no
-slower on anything but float-heavy payloads.
+2. **Canonical.** One value, one encoding. The decoder accepts only what
+   the encoder writes. For hashing and cache/state keys, use dump's
+   `:canonize true` and let rejection fail the operation, following the
+   [hashing guidance](../typed-json.md#hashing-guidance).
+3. **Ordinary JSON.** The output is plain JSON, readable by standard JSON
+   tools such as `jq` and when retrieved from a database or file system.
 
 ## Tags: Transit
 
@@ -74,13 +85,14 @@ Decisions and reasons:
   and `` ~`... `` as unknown tags, leaving one canonical spelling per string.
 - **Sequences are Transit-aligned.** Vectors (rank-1 arrays) use plain JSON
   arrays, and nonempty lists use Transit's `"~#list"` tag. A plain JSON array
-  decodes as a vector, including `[]` as an empty vector. The old
-  `"~#vector"` tag is rejected.
+  decodes as a vector, including `[]` as an empty vector. Unknown tags
+  are rejected.
 - **`()` is `null`.** Plain `json:dump-string` writes the empty list / nil as `null`,
   and plain `json:load-string` maps JSON null back to `()`. Consequently
   `canonize(v) = (json:load-string (json:dump-string v) :exact-integers true)` can produce nil. Encoding nil as
   `null` keeps the sequence and nil cases consistent with the later property
-  that `dump-typed(canonize(v))` equals a canonical plain dump of `v`.
+  that `(json:dump-string v :typed true :canonize true)` equals
+  `(json:dump-string v :canonize true)`.
   `["~#list",[]]` is rejected as a second spelling of nil; `[]` belongs
   exclusively to the empty vector.
 - **Nothing else can become plain.** Strings, ints, floats, booleans and
@@ -95,8 +107,8 @@ Decisions and reasons:
   only for composite keys. Every key an elps sorted map can hold (string,
   symbol, keyword, int) has one: the string itself, `~$`, `~:`, `~i` (Transit
   writes a signed 64-bit int key as `~i` at any magnitude), and `~?t`/`~?f` for
-  the boolean symbols. So `cmap` cannot arise and the decoder rejects it. Objects keep
-  CouchDB queries and `jq` paths natural (`."~$amount"`).
+  the boolean symbols. So `cmap` cannot arise and the decoder rejects it.
+  Object fields are directly accessible with `jq` paths (`."~$amount"`).
 - **Tagged values use one fixed tag.** `["~#tagged",[name,data]]` rather than
   Transit's `["~#name",data]`, so a user type named `vector` or `array` cannot
   collide with the format's own tags, and the tag set stays closed.
@@ -109,8 +121,8 @@ Decisions and reasons:
   faithfulness, and a private escape would not be Transit. Byte data belongs
   in a bytes value.
 - **Rejected on encode:** functions, native values, errors, nested quotes,
-  empty symbols and values that contain themselves. A caller using the bytes
-  as a key gets an error and can fall back; nothing is ever encoded lossily.
+  empty symbols and values that contain themselves. A caller must handle the
+  error; nothing is ever encoded lossily.
   There is no native-value hook: a native's meaning is the embedder's, and a
   host that needs one stored converts it to data first.
 
@@ -172,7 +184,7 @@ Ints up to 2^53 in magnitude keep the plain decimal text; larger ints use
 `~n` tags. Plain mode rejects NaN and infinities; typed mode uses `~z` tags.
 
 Plain dumps of data already in the shared canonical subset are loadable by
-`load-typed`: valid UTF-8 strings and string keys without a leading `~`,
+`(json:load-string text :typed true)`: valid UTF-8 strings and string keys without a leading `~`,
 booleans, null, vectors, string-keyed maps, ints up to 2^53 that fit the
 platform's `int`, and finite floats whose plain text contains `.` or an
 exponent. This does not make arbitrary plain JSON a typed document: integral
@@ -187,7 +199,7 @@ byte. What guarantees it:
 
 - **Member order** comes only from `bytes.Compare` on UTF-8 member text
   after Transit prefixes and before JSON escaping. The map is read unsorted
-  (`AppendMapKeyPairs`) and sorted by the codec, so neither Go map iteration
+  (`AppendMapKeyPairs`) and sorted by the encoder, so neither Go map iteration
   nor the sorted-map implementation's order is ever visible.
 - **Numbers** are written with `strconv.AppendInt` / `strconv.AppendFloat`
   (pure Go, locale-free, exact shortest round-trip), formatted by the RFC 8785
@@ -206,16 +218,15 @@ values byte for byte: maps with mixed key types and non-ASCII and astral keys
 in UTF-8 byte order, float edge cases (subnormals, the 1e21 and 1e-6 boundaries,
 -0.0, NaN, infinities), ints at 2^31, 2^53 and 2^63, escapes and
 unnormalized strings. CI runs it on linux/arm64 (with the rest of the suite),
-windows/amd64 and windows/386.
+windows/amd64 and windows/386, with the typed and canonical tests also
+run with GOARCH=386.
 
 ## No version marker
 
 The document is the value itself, with no `["~#elps1", value]` wrapper:
 
-- A wrapper would put every value one array level down, which costs the
-  readability and queryability that are the reason for choosing JSON:
-  CouchDB Mango selectors and indexes address object fields, not array
-  positions, and `jq` paths gain a `[1]`.
+- A wrapper would put every value one array level down, making object fields
+  less direct to access with standard JSON tools: `jq` paths gain a `[1]`.
 - The format is versioned by its closed tag set instead. The decoder rejects
   any tag, prefix or number form it does not know, so a reader never
   misreads a document from a later format: it fails loudly. A later format can
@@ -224,7 +235,7 @@ The document is the value itself, with no `["~#elps1", value]` wrapper:
   wrapper is shorter.
 
 If a change ever has to reinterpret existing text rather than add new text,
-it must be a new function pair with its own name, not a new mode of these.
+it requires an explicit API for a distinct format.
 
 ## Limits and allocation
 
@@ -247,11 +258,10 @@ its input.
 
 ## Steps
 
-`json:dump-typed` charges one step per started KiB of output, ceil(n/1024), as
+Dumping with `:typed true` charges one step per started KiB of output, ceil(n/1024), as
 the output grows (`WithTypedCharge`), so a step budget or a cancelled context
-stops a large encode part way. `json:load-typed` charges ceil(n/1024) for its
-input before decoding. This is the convention of substrate's storage builtins,
-so a value costs the same to encode as to store.
+stops a large encode part way. Loading with `:typed true` charges ceil(n/1024) for its
+input before decoding. These charges meter work by the document's byte size.
 
 ## Performance
 
@@ -294,3 +304,23 @@ byte guarantees over all generated value shapes, mixed map keys and arbitrary
 float64 bits. The property test replays the seed corpus and deterministic random
 values. `typedgolden/testdata/canonical.txt` freezes successful canonical images
 from the cross-platform corpus alongside the existing typed golden bytes.
+
+Canonical dumping and typed dump/load ignore package number defaults.
+Only explicit `:string-numbers` changes canonical dumping, and the byte
+adoption guarantee holds in both modes. Typed dumping/loading rejects that
+keyword because string numbers lose types; typed loading permits
+`:exact-integers` with no effect. Calls without these flags retain every plain
+behavior and byte. The message family uses the same runtime adapters and
+retains its native-message return/input contract.
+
+<!-- typedjson:eval -->
+```lisp
+(json:dump-string (json:canonize '(a :b 1.0 ())))
+; => "[\"a\",\":b\",1,null]"
+(json:dump-string '(a :b 1.0 ()) :canonize true)
+; => "[\"a\",\":b\",1,null]"
+(json:load-string (json:dump-string '(a :b 1.0 ()) :canonize true) :typed true)
+; => (vector "a" ":b" 1 ())
+(equal? (json:dump-string '(a :b 1.0 ()) :canonize true) (json:dump-string '(a :b 1.0 ()) :canonize true :typed true))
+; => true
+```

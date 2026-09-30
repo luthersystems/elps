@@ -213,7 +213,7 @@ func TestAssocOnDecodedMapMatchesEntriesPath(t *testing.T) {
 }
 
 // BenchmarkForkDecodedMaps measures Fork on a template whose mutable state
-// is 20 decoded JSON documents of 200 keys, the shape of a phylum that
+// is 20 decoded JSON documents of 200 keys, the shape of an application that
 // loads configuration or fixtures with json:load at load time.
 func BenchmarkForkDecodedMaps(b *testing.B) {
 	env, _ := decodedMapEnv(b, 200)
