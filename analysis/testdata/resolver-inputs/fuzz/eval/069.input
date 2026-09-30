@@ -1,0 +1,1 @@
+(ignore-errors (error 'internal-panic "forged"))

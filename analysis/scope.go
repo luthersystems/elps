@@ -176,10 +176,15 @@ func (s *Scope) LookupAllLocal(name string) []*Symbol {
 // registered only via DefineQualifiedOnly is invisible to LookupInPackage
 // unless the correct package is specified.
 func (s *Scope) LookupInPackage(name, pkg string) *Symbol {
+	// Lexical scopes usually have no package declarations. Only build a
+	// qualified key when there is a package table to search. Keep the
+	// concatenation in the lookup so short keys use Go's stack buffer.
 	for scope := s; scope != nil; scope = scope.Parent {
 		if pkg != "" {
-			if sym, ok := scope.PackageSymbols[pkg+":"+name]; ok {
-				return sym
+			if len(scope.PackageSymbols) > 0 {
+				if sym, ok := scope.PackageSymbols[pkg+":"+name]; ok {
+					return sym
+				}
 			}
 			if imports := scope.PackageImports[pkg]; imports != nil {
 				if sym, ok := imports[name]; ok {

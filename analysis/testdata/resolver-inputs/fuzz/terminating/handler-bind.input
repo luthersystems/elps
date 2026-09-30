@@ -1,0 +1,1 @@
+(handler-bind ([condition (lambda (c &rest args) 'caught)]) (error 'boom "x"))

@@ -1,0 +1,1 @@
+(let ([m (assoc (sorted-map 2 'b "1" "s" 'a 3) 1 (vector 1))]) (list (keys m) (get m 1) (get m "1") (copy m) (dissoc m 2) (json:dump-string (dissoc m "1"))))

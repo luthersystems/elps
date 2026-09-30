@@ -1,0 +1,1 @@
+(stable-sort < (rest '(1)))

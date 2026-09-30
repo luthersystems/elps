@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -13,6 +14,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Source policy must never become part of the embedder-facing API again.
+func TestCodeWalkerPublicSurface(t *testing.T) {
+	for _, name := range []string{"SourceAnalysis", "BindingForm", "PackageForms"} {
+		_, exposed := reflect.TypeFor[CodeWalker]().FieldByName(name)
+		assert.False(t, exposed, "CodeWalker.%s belongs in internal/codewalk", name)
+	}
+	for _, name := range []string{"Owner", "Formals", "Init", "Outer", "Template"} {
+		_, exposed := reflect.TypeFor[WalkNode]().FieldByName(name)
+		assert.False(t, exposed, "WalkNode.%s belongs in internal/codewalk", name)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "codewalk.go", nil, 0)
+	require.NoError(t, err)
+	for _, decl := range f.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			assert.NotEqual(t, "PackageForms", decl.Name.Name)
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					assert.NotEqual(t, "CodeBinding", spec.Name.Name)
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						assert.NotEqual(t, "WalkEnd", name.Name)
+					}
+				}
+			}
+		}
+	}
+}
 
 // kindConsts returns the formKind constants declared in codewalk.go.
 func kindConsts(t *testing.T) (map[string]bool, *ast.File) {
@@ -38,12 +70,12 @@ func kindConsts(t *testing.T) (map[string]bool, *ast.File) {
 
 // TestEverySpecialOpHasAKind fails when a special operator is added to
 // lisp/op.go without a formKind, or a formKind no longer names one: the
-// special operators (plus defun and defmacro) and the formKind constants
-// must correspond one to one.  Add a kind constant and a formKinds entry,
-// then handle the kind in every formKind switch (the exhaustive linter
-// lists them).
+// special operators (plus the source definition/testing macros) and the
+// formKind constants must correspond one to one. Add a kind constant and
+// a formKinds entry, then handle the kind in every formKind switch (the
+// exhaustive linter lists them).
 func TestEverySpecialOpHasAKind(t *testing.T) {
-	names := []string{"defun", "defmacro"}
+	names := []string{"defun", "defmacro", "deftype", "test-let", "test-let*"}
 	for _, op := range append(append([]*langBuiltin{}, langSpecialOps...), userSpecialOps...) {
 		names = append(names, op.Name())
 	}
@@ -99,18 +131,19 @@ func TestFormKindSwitchesHaveNoDefault(t *testing.T) {
 // without deciding how the code walker treats it.  Most macros expand to
 // ordinary source and need nothing.  A macro whose expansion embeds a value
 // that is not source (defun and defmacro embed a compiled function) must be
-// given a kind instead, so walkers keep it as written.
+// given a kind instead, so walkers keep it as written. Source-only forms
+// have kinds for analysis, but runtime walks still expand them normally.
 func TestEveryCoreMacroReviewedForWalking(t *testing.T) {
 	reviewed := map[string]formKind{
 		"defmacro":         kindDefmacro,
 		"defun":            kindDefun,
-		"deftype":          kindNone,
+		"deftype":          kindDeftype,
 		"curry-function":   kindNone,
 		"get-default":      kindNone,
 		"trace":            kindNone,
 		"defconst":         kindNone,
-		"test-let":         kindNone,
-		"test-let*":        kindNone,
+		"test-let":         kindTestLet,
+		"test-let*":        kindTestLetSeq,
 		"benchmark-simple": kindNone,
 	}
 	var names []string

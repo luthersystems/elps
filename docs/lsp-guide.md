@@ -107,6 +107,8 @@ Hovering over a symbol shows:
   paragraph
 - **Docstring** if available
 - **Source location** (file:line) for user-defined symbols
+- **Captured variables** when hovering the head of a `lambda`: the local
+  variables of the enclosing code that the closure uses
 
 ### Go to Definition
 
