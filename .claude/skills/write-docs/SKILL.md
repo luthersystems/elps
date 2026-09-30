@@ -5,21 +5,21 @@ titles and bodies, issue text, release notes and commit messages.
 
 ## Trigger
 
-Use before you write or edit any text that a person will read.
+Load this skill before you write or edit any text that a person reads.
 
 ## Rules
 
 Write in the spirit of Simplified Technical English (ASD-STE100).
 
 1. Put the answer or the rule first. Put the details after it.
-2. Keep sentences short: 20 words or fewer.
+2. Keep each sentence to about 20 words or fewer.
 3. Use active voice and present tense.
 4. Give each word one meaning. Use the same word for the same thing.
 5. Write one instruction per sentence.
 6. Do not use idioms, filler or marketing adjectives. Filler includes "note
    that", "it's worth noting", "simply" and "basically".
 7. Do not use em dashes. Use a period, comma, colon or parentheses.
-8. Do not use emoji.
+8. Do not use emoji. A footer that a repo requires is the only exception.
 9. Be specific. Give exact names, units, numbers and versions. Cite code
    as `path:line`.
 10. Write for the reader's next action, not for the system's internals.
@@ -39,10 +39,10 @@ Write in the spirit of Simplified Technical English (ASD-STE100).
 |-------|----|
 | `set!` will basically throw an error if the symbol isn't there. | `set!` returns an error when the symbol is unbound. |
 | Fix #742 | Fix luthersystems/elps#742 |
-| The parser was rewritten — it used to be a PEG parser that we dropped. | `parser.NewReader` returns an `rdparser` reader. |
+| The parser was rewritten; it used to be a PEG parser that we dropped. | `parser.NewReader` returns an `rdparser` reader. |
 | This blazing-fast new builtin makes JSON a breeze! | `json:load-bytes` parses JSON bytes. JSON objects become sorted-maps. |
 | Note that the step budget can be exceeded in some cases. | Exhausting the step budget raises `step-budget-exceeded`. |
-| See the lexer for details. | See `parser/lexer/lexer.go:120`. |
+| See the lexer for details. | See `parser/lexer/lexer.go:55` (`ReadToken`). |
 
 ## Self-check
 
