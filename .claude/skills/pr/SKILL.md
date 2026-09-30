@@ -83,6 +83,18 @@ Return the PR URL so the user can review it.
 - **Closes #N**: Link to the issue if this PR resolves one
 - End with the attribution line your session instructions specify
 
+## Stacked PRs
+
+- A PR whose base is neither `main` nor `claude/**` gets only the Socket
+  checks; `elps.yml` does not run. Run the full local gate (`verify`) and say
+  "CI has not run" in the PR body and report.
+- When the lower PR merges, retarget to `main` FIRST, then push a real change
+  (e.g. merge `origin/main`); never close/reopen or push an empty commit. The
+  push is needed because `elps.yml` has no `types:` filter, and the default
+  `pull_request` types exclude `edited`, so retargeting alone runs nothing.
+- Rebase stacked branches with `--force-with-lease`, and only your own branches.
+- After a base PR merges, retarget only the PRs based directly on it.
+
 ## Checklist
 
 - [ ] All changes committed

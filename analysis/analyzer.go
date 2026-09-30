@@ -7,6 +7,7 @@ import (
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // maxMacroExpansionDepth caps recursive macro expansion in the analyzer
@@ -24,6 +25,14 @@ type analyzer struct {
 	qualifiedSymbols map[string]*Symbol
 	insideMacroCall  int // depth counter for user-macro body analysis
 	expansionDepth   int // current macro expansion nesting depth
+	// expansions caches MacroExpander results per call node (nil = not
+	// expandable) so prescan and the deep walk share one expansion.
+	expansions map[*lisp.LVal]*lisp.LVal
+	// origin is the outermost macro call whose expansion is being analyzed.
+	origin *MacroOrigin
+	// fileNonMacros names the functions and variables the analyzed source
+	// defines at package level; expand never offers them to the expander.
+	fileNonMacros map[string]bool
 }
 
 // defaultPackage returns the default package for bare files. If a
@@ -41,30 +50,22 @@ func (a *analyzer) defaultPackage() string {
 // convention is to place exports before the corresponding defun.
 func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	exprs = astutil.PackageForms(exprs)
+	// With a MacroExpander, top-level macro calls are replaced by the package
+	// forms of their expansion, so generated definitions are forward
+	// referenceable too. generatedBy maps those forms to their macro call.
+	generatedBy := map[*lisp.LVal]*lisp.LVal{}
+	exprs = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for _, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		head := astutil.HeadSymbol(expr)
-		switch head {
-		case "defun", "defmacro", "deftype":
-			a.prescanDefinition(expr, scope, currentPkg)
-		case "set":
-			a.prescanSet(expr, scope, currentPkg)
-		case "use-package":
-			a.prescanUsePackage(expr, scope, currentPkg)
-		case "in-package":
-			if astutil.ArgCount(expr) >= 1 {
-				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
-					currentPkg = pkgName
-				}
-			}
-			a.prescanInPackage(expr, scope)
-		default:
-			a.prescanCustomDef(expr, scope, currentPkg)
+		if call := generatedBy[expr]; call != nil {
+			a.withOrigin(call, currentPkg, func() { a.prescanForm(expr, scope, &currentPkg) })
+			continue
 		}
+		a.prescanForm(expr, scope, &currentPkg)
 	}
 	// Phase 2: Apply exports (all definitions now exist in scope).
 	currentPkg = a.defaultPackage()
@@ -106,6 +107,28 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 				a.importPackageSymbols(scope, importPkg, pkg)
 			}
 		}
+	}
+}
+
+// prescanForm registers the definition one package form makes, advancing
+// *currentPkg past an in-package.
+func (a *analyzer) prescanForm(expr *lisp.LVal, scope *Scope, currentPkg *string) {
+	switch astutil.HeadSymbol(expr) {
+	case "defun", "defmacro", "deftype":
+		a.prescanDefinition(expr, scope, *currentPkg)
+	case "set":
+		a.prescanSet(expr, scope, *currentPkg)
+	case "use-package":
+		a.prescanUsePackage(expr, scope, *currentPkg)
+	case "in-package":
+		if astutil.ArgCount(expr) >= 1 {
+			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
+				*currentPkg = pkgName
+			}
+		}
+		a.prescanInPackage(expr, scope)
+	default:
+		a.prescanCustomDef(expr, scope, *currentPkg)
 	}
 }
 
@@ -154,7 +177,7 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 		Name:    name,
 		Package: pkg,
 		Kind:    SymVariable,
-		Source:  astutil.SymbolLoc(expr.Cells[1]),
+		Source:  setTargetLoc(expr.Cells[1]),
 		Node:    extractSetSymbolNode(expr.Cells[1]),
 	}
 	scope.Define(sym)
@@ -268,11 +291,36 @@ var extractPackageName = astutil.PackageNameArg
 // quote into the symbol, so the branch only ever matched a quoted LIST, and
 // the definition it invented carried the LIST's span as the location of the
 // name -- textDocumentRename then replaced '(a b) wholesale, dropping b.
+//
+// The long spelling (set (quote name) ...) -- an unquoted two-cell list headed
+// by quote -- names the inner symbol. Source rarely writes it, but macro
+// expansions do: (quote (unquote name)) inside a quasiquote template expands
+// to exactly that list.
 func extractSetSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg
 	}
+	if arg.Type == lisp.LSExpr && !arg.IsQuoted() && len(arg.Cells) == 2 {
+		if head := astutil.HeadSymbol(arg); head == "quote" || head == "lisp:quote" {
+			if name := arg.Cells[1]; name.Type == lisp.LSymbol && !name.IsQuoted() {
+				return name
+			}
+		}
+	}
 	return nil
+}
+
+// setTargetLoc is the location of the symbol a set target names: the inner
+// symbol of (quote name), which for a macro-generated set is the name as
+// written in the macro call rather than the quote list from the macro's
+// template. It falls back to arg's own location.
+func setTargetLoc(arg *lisp.LVal) *token.Location {
+	if node := extractSetSymbolNode(arg); node != nil {
+		if loc := astutil.SymbolLoc(node); loc != nil {
+			return loc
+		}
+	}
+	return astutil.SymbolLoc(arg)
 }
 
 // extractSetSymbolName is extractSetSymbolNode's name, or "" when the first
@@ -436,70 +484,6 @@ func isFormalsLike(node *lisp.LVal) bool {
 // parenthesized list (), representing a zero-argument formals list.
 func isEmptyFormals(node *lisp.LVal) bool {
 	return node.Type == lisp.LSExpr && !node.IsQuoted() && len(node.Cells) == 0
-}
-
-// analyzeSet keeps package declaration policy separate from lexical syntax.
-// Analysis historically visits only the target/value, omitting the head and
-// extra arguments; an ordinary CodeWalker call would change its references.
-func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) {
-	if astutil.ArgCount(node) < 2 {
-		return
-	}
-	// set evaluates both arguments in the current lexical scope. Only a
-	// quoted symbol target also identifies a static package binding below.
-	a.analyzeExpr(node.Cells[1], scope, currentPkg)
-	a.analyzeExpr(node.Cells[2], scope, currentPkg)
-
-	name := extractSetSymbolName(node.Cells[1])
-	if name == "" {
-		return
-	}
-
-	// At runtime, set always calls PutGlobal — it writes to the package-
-	// level scope regardless of where the call appears. Model this by:
-	// - In non-global scopes: treat as a reference to the existing global
-	//   binding (or create one in the root scope if none exists).
-	// - In global scope: create or overwrite in the current scope (existing
-	//   behavior, matches prescan).
-	if scope.Kind != ScopeGlobal {
-		// Look up in the root (global) scope specifically — set always
-		// targets the package scope via PutGlobal, so let/lambda-local
-		// bindings with the same name should not be found here.
-		if existing := a.root.LookupLocalInPackage(name, currentPkg); existing != nil {
-			existing.References++
-			a.result.References = append(a.result.References, &Reference{
-				Symbol: existing,
-				Source: astutil.SymbolLoc(node.Cells[1]),
-				Node:   extractSetSymbolNode(node.Cells[1]),
-			})
-			return
-		}
-		// No existing global — set will create it at package scope.
-		sym := &Symbol{
-			Name:    name,
-			Package: currentPkg,
-			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
-			Node:    extractSetSymbolNode(node.Cells[1]),
-		}
-		a.root.Define(sym)
-		a.result.Symbols = append(a.result.Symbols, sym)
-		return
-	}
-
-	// Global scope: define locally if not already present.
-	defPkg := packageForScope(scope, currentPkg)
-	if scope.LookupLocalInPackage(name, defPkg) == nil {
-		sym := &Symbol{
-			Name:    name,
-			Package: defPkg,
-			Kind:    SymVariable,
-			Source:  astutil.SymbolLoc(node.Cells[1]),
-			Node:    extractSetSymbolNode(node.Cells[1]),
-		}
-		scope.Define(sym)
-		a.result.Symbols = append(a.result.Symbols, sym)
-	}
 }
 
 func packageForScope(scope *Scope, currentPkg string) string {

@@ -142,7 +142,11 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 		return false
 	}
 	if r.a.bindingForm(node) != nil {
-		return true
+		// Explicit application grammar wins. A name-based guess is only a
+		// fallback when the expander cannot describe the call's actual code.
+		if _, custom := customDefLikeMatch(node, r.a.cfg); custom || r.a.expand(node, r.scope, r.pkg) == nil {
+			return true
+		}
 	}
 	descend, opaque := r.a.visitCall(node, r.scope, r.pkg)
 	if opaque {
@@ -279,8 +283,8 @@ func (a *analyzer) defineWalkSymbol(n *codewalk.Node, scope *Scope, pkg string) 
 
 // visitCall keeps expansion and opacity as resolution policy. Expansions are
 // walked with another CodeWalker so the depth cap counts all nested expansions,
-// not just a chain of heads. This also preserves MacroExpander/PanicReporter
-// call counts and the original double reference to an unexpanded user macro.
+// not just a chain of heads. Prescan shares the expansion cache, and opaque
+// calls retain the original double reference to an unexpanded user macro.
 func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (descend, opaque bool) {
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
@@ -289,15 +293,8 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 			sym.References++
 			a.result.References = append(a.result.References, newReference(sym, node.Cells[0]))
 		}
-		if a.cfg != nil && a.cfg.MacroExpander != nil && (isMacro || sym == nil) && a.expansionDepth < maxMacroExpansionDepth {
-			if expanded := a.cfg.MacroExpander.ExpandMacro(node, currentPkg); expanded != nil {
-				a.insideMacroCall++
-				a.expansionDepth++
-				a.analyzeExpr(expanded, scope, currentPkg)
-				a.expansionDepth--
-				a.insideMacroCall--
-				return false, false
-			}
+		if a.analyzeExpansion(node, scope, currentPkg) {
+			return false, false
 		}
 		if isMacro {
 			a.insideMacroCall++
@@ -305,4 +302,86 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 		}
 	}
 	return true, false
+}
+
+// analyzeExpansion analyzes node's macro expansion in its place, recording
+// node as the origin of the definitions the expansion makes. It reports
+// false, doing nothing, when node does not expand.
+func (a *analyzer) analyzeExpansion(node *lisp.LVal, scope *Scope, currentPkg string) bool {
+	expanded := a.expand(node, scope, currentPkg)
+	if expanded == nil {
+		return false
+	}
+	a.withOrigin(node, currentPkg, func() {
+		a.insideMacroCall++
+		a.expansionDepth++
+		a.analyzeExpr(expanded, scope, currentPkg)
+		a.expansionDepth--
+		a.insideMacroCall--
+	})
+	return true
+}
+
+// analyzeSet keeps package declaration policy separate from lexical syntax.
+// Analysis historically visits only the target/value, omitting the head and
+// extra arguments; an ordinary CodeWalker call would change its references.
+func (a *analyzer) analyzeSet(node *lisp.LVal, scope *Scope, currentPkg string) {
+	if astutil.ArgCount(node) < 2 {
+		return
+	}
+	// set evaluates both arguments in the current lexical scope. Only a
+	// quoted symbol target also identifies a static package binding below.
+	a.analyzeExpr(node.Cells[1], scope, currentPkg)
+	a.analyzeExpr(node.Cells[2], scope, currentPkg)
+
+	name := extractSetSymbolName(node.Cells[1])
+	if name == "" {
+		return
+	}
+
+	// At runtime, set always calls PutGlobal — it writes to the package-
+	// level scope regardless of where the call appears. Model this by:
+	// - In non-global scopes: treat as a reference to the existing global
+	//   binding (or create one in the root scope if none exists).
+	// - In global scope: create or overwrite in the current scope (existing
+	//   behavior, matches prescan).
+	if scope.Kind != ScopeGlobal {
+		// Look up in the root (global) scope specifically — set always
+		// targets the package scope via PutGlobal, so let/lambda-local
+		// bindings with the same name should not be found here.
+		if existing := a.root.LookupLocalInPackage(name, currentPkg); existing != nil {
+			existing.References++
+			a.result.References = append(a.result.References, &Reference{
+				Symbol: existing,
+				Source: setTargetLoc(node.Cells[1]),
+				Node:   extractSetSymbolNode(node.Cells[1]),
+			})
+			return
+		}
+		// No existing global — set will create it at package scope.
+		sym := &Symbol{
+			Name:    name,
+			Package: currentPkg,
+			Kind:    SymVariable,
+			Source:  setTargetLoc(node.Cells[1]),
+			Node:    extractSetSymbolNode(node.Cells[1]),
+		}
+		a.root.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+		return
+	}
+
+	// Global scope: define locally if not already present.
+	defPkg := packageForScope(scope, currentPkg)
+	if scope.LookupLocalInPackage(name, defPkg) == nil {
+		sym := &Symbol{
+			Name:    name,
+			Package: defPkg,
+			Kind:    SymVariable,
+			Source:  setTargetLoc(node.Cells[1]),
+			Node:    extractSetSymbolNode(node.Cells[1]),
+		}
+		scope.Define(sym)
+		a.result.Symbols = append(a.result.Symbols, sym)
+	}
 }

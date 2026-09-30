@@ -24,12 +24,15 @@ import (
 //
 //nolint:gosec // G101: dispatch exception reasons, not credentials
 var specialOpAllowlist = map[string]string{
-	"analysis/analyzer.go:analyzer.prescan":                     "package declaration registration after PackageForms selects the grammar",
+	"analysis/analyzer.go:analyzer.prescanForm":                 "registers one selected package declaration using walker definition events",
+	"analysis/analyzer.go:extractSetSymbolNode":                 "extracts the literal symbol operand of set, including explicit quote",
 	"analysis/codewalk.go:analyzer.bindingForm":                 "excludes explicit call policies from application-defined grammar",
 	"analysis/codewalk.go:analyzer.defineWalkSymbol":            "maps walker definition events to package symbol kinds",
 	"analysis/codewalk.go:definitionScanner.visit":              "maps walker declaration events to symbol kinds",
 	"analysis/codewalk.go:sourceResolver.visit":                 "maps walker scope and binding events to resolver scopes",
 	"analysis/expander.go:evalPreambleForm":                     "selects definitions safe to evaluate when loading a macro preamble",
+	"analysis/generated.go:analyzer.expandPackageForms":         "excludes file-defined non-macros and advances package context while expanding selected package forms",
+	"analysis/generated.go:isPackageFormHead":                   "keeps declarations and package control calls out of prescan macro expansion",
 	"analysis/perf/local.go:ScanFile":                           "existing performance analyzer declaration scan; migrate separately (#766)",
 	"analysis/perf/local.go:isCallable":                         "existing performance analyzer callable classification; migrate separately (#766)",
 	"analysis/perf/local.go:scanExpr":                           "existing performance analyzer syntax traversal; migrate separately (#766)",

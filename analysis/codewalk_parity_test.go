@@ -141,7 +141,8 @@ func TestCodeWalkMacroContext(t *testing.T) {
 		t.Run(strconv.FormatBool(nested), func(t *testing.T) {
 			exp := &parityMacroExpander{nested: nested}
 			result := parseAndAnalyzeWithConfig(t, `(defmacro m (x) x) (m inside) outside`, &Config{MacroExpander: exp})
-			require.Equal(t, maxMacroExpansionDepth, exp.calls)
+			// The per-call-site expansion cache from main's 716b953 serves repeated expansions.
+			require.Equal(t, 1, exp.calls)
 			require.Equal(t, maxMacroExpansionDepth+2, result.RootScope.LookupInPackage("m", "user").References)
 			require.Len(t, result.Unresolved, 2)
 			require.Equal(t, "inside", result.Unresolved[0].Name)

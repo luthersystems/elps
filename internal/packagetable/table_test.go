@@ -51,3 +51,11 @@ func TestStringsOwnership(t *testing.T) {
 		break
 	}
 }
+
+func TestAdoptStringsOwnership(t *testing.T) {
+	table := packagetable.AdoptStrings([]string{"z", "a", "z"})
+	table.Copy()[0] = "corrupt"
+	if got := slices.Collect(table.All()); !slices.Equal(got, []string{"z", "a", "z"}) {
+		t.Fatalf("adopted storage changed through its copy: %v", got)
+	}
+}
