@@ -103,16 +103,14 @@ type templateStringPair struct{ key, value string }
 // templatePackage describes one package.  An unfrozen package is rebuilt per
 // VM from bindings, funNames, symbolDocs and externals.  A frozen package
 // (TemplateWithFrozenPackages) instead has a base, built once at publication
-// and SHARED by every VM the plan instantiates; refs[i] is the value of
-// base.index's slot i, resolved per VM into Package.baseValues.
+// and SHARED by every VM the plan instantiates; base.bindings describes its
+// slot values, resolved per VM into Package.baseValues on first fill or write.
 type templatePackage struct {
 	base                 *packageBase
 	name, doc            string
 	bindings             []templateBinding
-	refs                 []templateRef
 	funNames, symbolDocs []templateStringPair
 	externals            []string
-	pending              int // refs with a per-VM value (index != 0)
 	bindingsSealed       bool
 	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
@@ -209,7 +207,7 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 	// Borrow unfrozen source maps only for construction. Every descriptor and
 	// base below takes its own snapshot before publication.
 	symbols, funNames, symbolDocs := pkg.symbols, pkg.funNames, pkg.symbolDocs
-	if pkg.base != nil || pkg.lazy != nil {
+	if pkg.base != nil || pkg.lazy.inst != nil {
 		symbols, funNames, symbolDocs = pkg.symbolTable(), pkg.funNameTable(), pkg.symbolDocTable()
 	}
 	// A lazy plan gives every package a base, so each binding can start
@@ -224,24 +222,24 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 	}
 	bindings := c.bindings(symbols)
 	index := make(map[string]int, len(bindings))
-	refs := make([]templateRef, len(bindings))
 	pending := 0
 	for i, binding := range bindings {
 		index[binding.name] = i
-		refs[i] = binding.value
 		if binding.value.index != 0 {
 			pending++
 		}
 	}
 	base := &packageBase{
+		bindings:   bindings,
+		pending:    pending,
 		index:      packagetable.AdoptMap(index), // built above, referenced nowhere else
 		funNames:   packagetable.NewMap(funNames),
 		symbolDocs: packagetable.NewMap(symbolDocs),
-		externals:  packagetable.NewStrings(pkg.Externals()),
+		externals:  packagetable.AdoptStrings(pkg.Externals()), // Externals returns a private copy
 		onThaw:     c.onThaw,
 	}
 	base.publish()
-	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, refs: refs, pending: pending, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
+	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
 }
 
 func (c *templateCompiler) ref(v *LVal) templateRef {
@@ -512,7 +510,7 @@ func (i *templateInstance) env(index int) *LEnv {
 
 // instantiateEager rebuilds the whole value graph (TemplateWithEagerInstantiation).
 func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
-	rt := p.runtime.newRuntime(config)
+	rt := p.runtime.newRuntime(config, len(p.packages))
 	instance := templateInstance{
 		values: templateObjects[LVal](len(p.values)), envs: templateObjects[LEnv](len(p.envs)),
 		functions: templateObjects[funData](len(p.functions)), captures: templateObjects[builtinCaptures](p.numCaptures),
@@ -621,9 +619,9 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 	// constructors may initialize its tables without the write gate.
 	for _, pkg := range p.packages {
 		if pkg.base != nil {
-			values := make([]*LVal, len(pkg.refs))
-			for slot, ref := range pkg.refs {
-				values[slot] = instance.ref(ref)
+			values := make([]*LVal, len(pkg.base.bindings))
+			for slot, binding := range pkg.base.bindings {
+				values[slot] = instance.ref(binding.value)
 			}
 			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
 				base: pkg.base, baseValues: values}

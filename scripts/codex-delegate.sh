@@ -33,6 +33,7 @@
 #   --read-only         Codex cannot change files. Default: Codex CAN change files.
 #   --background        Return a job id immediately. Collect it later.
 #   --model <name>      Codex model. "spark" maps to gpt-5.3-codex-spark.
+#                       Which model to pick: the skill's "Models" section.
 #   --effort <level>    none | minimal | low | medium | high | xhigh
 #   --resume            Continue the last Codex thread for this workspace.
 #   --allow-busy        Explicitly allow an occupied workspace (unsafe).

@@ -76,6 +76,10 @@ func NewStrings(values []string) Strings {
 	return Strings{values: slices.Clone(values)}
 }
 
+// AdoptStrings takes ownership of values without copying. The caller must
+// hold no other reference to the backing slice, as with AdoptMap.
+func AdoptStrings(values []string) Strings { return Strings{values: values} }
+
 // Len returns the number of names.
 func (s Strings) Len() int { return len(s.values) }
 
