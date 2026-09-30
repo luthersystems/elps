@@ -1799,8 +1799,8 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 
 The output is canonical: the same value always gives the same bytes (keys
 sorted, no spaces), so it can be hashed or used as a key. `1` and `1.0`
-encode differently. Functions, native values and values that contain
-themselves raise an error. See the [typed JSON cheat sheet](typed-json.md)
+encode differently. Functions, native values, error values, nested quotes
+and values that contain themselves raise an error. See the [typed JSON cheat sheet](typed-json.md)
 for every tag, `jq` and CouchDB, and
 [internals/typed-json.md](internals/typed-json.md) for the exact rules and
 limits.

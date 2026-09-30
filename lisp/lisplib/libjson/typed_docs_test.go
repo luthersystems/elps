@@ -252,6 +252,9 @@ func checkDocEval(t *testing.T, env *lisp.LEnv, lines []string) {
 func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[string]string) {
 	jq, err := exec.LookPath("jq")
 	if err != nil {
+		if os.Getenv("CI") != "" {
+			t.Fatal("jq is not installed; CI must run the documented jq examples")
+		}
 		t.Skip("jq not installed")
 	}
 	doc, ok := files[args["file"]]
@@ -261,8 +264,9 @@ func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[
 	cmdRE := regexp.MustCompile(`^\$ jq ((?:-\w+ )*)'([^']*)' (\S+)$`)
 	n := 0
 	for i := 0; i < len(lines); i++ {
-		m := cmdRE.FindStringSubmatch(lines[i])
-		require.NotNil(t, m, "unrecognised jq line %q", lines[i])
+		cmdLine := lines[i]
+		m := cmdRE.FindStringSubmatch(cmdLine)
+		require.NotNil(t, m, "unrecognised jq line %q", cmdLine)
 		var want []string
 		for i+1 < len(lines) && !strings.HasPrefix(lines[i+1], "$ ") {
 			i++
@@ -272,8 +276,8 @@ func checkDocJQ(t *testing.T, lines []string, args map[string]string, files map[
 		cmd := exec.CommandContext(t.Context(), jq, cmdArgs...) //nolint:gosec // G204: the arguments come from the repository's own docs
 		cmd.Dir = dir
 		out, err := cmd.Output()
-		require.NoError(t, err, "%s", lines[i])
-		assert.Equal(t, strings.Join(want, "\n"), strings.TrimRight(string(out), "\n"), "jq %s", strings.Join(cmdArgs, " "))
+		require.NoError(t, err, "%s", cmdLine)
+		assert.Equal(t, strings.Join(want, "\n"), strings.TrimRight(string(out), "\n"), "%s", cmdLine)
 		n++
 	}
 	require.Positive(t, n, "empty jq block")

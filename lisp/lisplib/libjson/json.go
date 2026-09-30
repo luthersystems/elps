@@ -134,9 +134,10 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			back as exactly the same value. Plain values stay plain JSON;
 			only what plain JSON would lose gets a "~" tag: keywords "~:k",
 			symbols "~$s", bytes "~b...", vectors ["~#vector",[...]], big
-			ints, NaN. The same value always gives the same bytes (keys
+			ints, NaN/infinity. The same value always gives the same bytes (keys
 			sorted, no spaces), so 1 and 1.0 differ. Raises an error for
-			functions, native values and values that contain themselves.
+			functions, native values, error values, nested quotes and
+			values that contain themselves.
 			Costs one step per KiB of output.
 
 			Example:
@@ -148,7 +149,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			`Reads typed JSON (bytes or a string) written by dump-typed and
 			returns the value, every type as it was dumped. Raises an error
 			for anything dump-typed would not write, such as spaces,
-			unsorted keys or untagged keywords. The value is new and shares
+			unsorted keys, strings starting with an unescaped "~" or unknown
+			tags. The value is new and shares
 			nothing. Costs one step per KiB of input.
 
 			Example:
