@@ -217,16 +217,20 @@ var getDefaultForm = MustFormTemplate(`
 '(lisp:let ((,map-sym ,map) (,key-sym ,key))
    (lisp:if (lisp:if (lisp:nil? ,map-sym)
                        lisp:false
-                       (lisp:key? ,map-sym ,key-sym))
+                       ,key-check)
             (lisp:get ,map-sym ,key-sym)
-            ,default))`, "map-sym", "key-sym", "map", "key", "default")
+            ,default))`, "map-sym", "key-sym", "map", "key", "default", "key-check")
+
+// getDefaultKeyCheck is the one generated call that rejects the user's value
+// (key? raises for a non-map), so it alone is located at the map form; the
+// let and if wrappers keep the call site, which stack notes name.
+var getDefaultKeyCheck = MustFormTemplate(`(lisp:key? ,map-sym ,key-sym)`, "map-sym", "key-sym")
 
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	g := NewGenSyms(args)
 	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
-	// Locate the wrappers at the map form: the generated key? call rejects
-	// non-map values, so its runtime error should point at the user's map.
-	return getDefaultForm.ExpandAt(args.Cells[0], mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2])
+	keyCheck := getDefaultKeyCheck.ExpandAt(args.Cells[0], mapSym, keySym)
+	return getDefaultForm.Expand(mapSym, keySym, args.Cells[0], args.Cells[1], args.Cells[2], keyCheck)
 }
 
 func macroDeftype(env *LEnv, args *LVal) *LVal {
@@ -406,10 +410,64 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 // evaluating the expansion still reports the macro call site.
 // ---------------------------------------------------------------------------
 func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime) *LVal {
+	return stampExpansion(v, callSite, ctx, rt, nil)
+}
+
+// stampGoMacroExpansion is stampMacroExpansion for a Go macro's expansion
+// under a debugger (ctx non-nil).  A Go macro may already have located some
+// of its own nodes (FormTemplate.ExpandAt), and the ordinary stamp skips a
+// located node, so the debugger would lose the expansion metadata on them.
+// Here every located syntax node the macro created -- reached from v without
+// entering the macro's arguments, which are the caller's -- is copied with
+// the metadata too, keeping its own location.  Without a debugger it is
+// stampMacroExpansion exactly.
+func stampGoMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime, args []*LVal) *LVal {
+	if v == nil || callSite == nil || ctx == nil {
+		return stampMacroExpansion(v, callSite, ctx, rt)
+	}
+	return stampExpansion(v, callSite, ctx, rt, locatedGoMacroNodes(v, args))
+}
+
+// locatedGoMacroNodes returns the located, unsealed syntax nodes reachable
+// from a Go macro's expansion v without entering its arguments, or nil when
+// there are none.  Debugger-only, so its allocations are not on the hot path.
+func locatedGoMacroNodes(v *LVal, args []*LVal) map[*LVal]struct{} {
+	boundary := make(map[*LVal]struct{}, len(args))
+	for _, a := range args {
+		boundary[a] = struct{}{}
+	}
+	var found map[*LVal]struct{}
+	seen := make(map[*LVal]struct{})
+	pending := []*LVal{v}
+	for len(pending) > 0 {
+		n := pending[len(pending)-1]
+		pending = pending[:len(pending)-1]
+		if n == nil || isSingleton(n) || n.sealed || isValueNode(n) {
+			continue
+		}
+		if _, ok := boundary[n]; ok {
+			continue
+		}
+		if _, ok := seen[n]; ok {
+			continue
+		}
+		seen[n] = struct{}{}
+		if !needsStamp(n) {
+			if found == nil {
+				found = make(map[*LVal]struct{})
+			}
+			found[n] = struct{}{}
+		}
+		pending = append(pending, n.Cells...)
+	}
+	return found
+}
+
+func stampExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionContext, rt *Runtime, generated map[*LVal]struct{}) *LVal {
 	if v == nil || callSite == nil {
 		return v
 	}
-	s := macroStamper{callSite: callSite, ctx: ctx, rt: rt}
+	s := macroStamper{callSite: callSite, ctx: ctx, rt: rt, generated: generated}
 	if ctx != nil {
 		s.nextID, s.firstID = rt.macroExpSeq, rt.macroExpSeq
 	}
@@ -560,6 +618,10 @@ type macroStamper struct {
 	callSite *token.Location
 	ctx      *macroExpansionContext
 	rt       *Runtime
+	// generated holds located nodes a Go macro created, which are copied
+	// with the debugger's metadata although they need no location
+	// (stampGoMacroExpansion).  Nil otherwise.
+	generated map[*LVal]struct{}
 	// copies memoises containers by identity, in one of two modes told
 	// apart by the guard's strict flag.
 	//
@@ -619,6 +681,17 @@ func (s *macroStamper) commitIDs() {
 // and, under a debugger, the expansion metadata.  v is never written to.
 func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 	cp := *v
+	if !needsStamp(v) {
+		// A located node in s.generated: only the metadata is added.
+		if s.ctx != nil {
+			s.nextID++
+			cp.macroExpansion = &macroExpansionInfo{
+				macroExpansionContext: s.ctx,
+				ID:                    s.nextID,
+			}
+		}
+		return &cp
+	}
 	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
 	if s.ctx != nil {
 		s.nextID++
@@ -663,10 +736,21 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 // binding, which is why the value bug existed at all.  Here the copy is
 // deliberate, unconditional, and extended to every value type.
 func (s *macroStamper) value(v *LVal) *LVal {
-	if !needsStamp(v) {
+	if !s.needsCopy(v) {
 		return v
 	}
 	return s.stampedCopy(v)
+}
+
+// needsCopy reports whether the stamp replaces v with a stamped copy: v has
+// no real location, or it is a located node a Go macro created and the
+// debugger needs its metadata.
+func (s *macroStamper) needsCopy(v *LVal) bool {
+	if needsStamp(v) {
+		return true
+	}
+	_, ok := s.generated[v]
+	return ok
 }
 
 // syntax returns the stamped counterpart of the syntax node v: v itself when
@@ -749,7 +833,7 @@ walk:
 				return v, nil // The caller discards this pass and restarts in strict mode.
 			}
 			f := frame{v: v, start: s.visits}
-			if needsStamp(v) {
+			if s.needsCopy(v) {
 				f.cp = s.stampedCopy(v)
 			}
 			if g.strict && s.copies != nil {

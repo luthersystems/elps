@@ -72,16 +72,20 @@ func (t *FormTemplate) Expand(args ...*LVal) *LVal {
 // ExpandAt is Expand with at's source location on each template-created list,
 // symbol and quote header. Inserted arguments and spliced cells are unchanged;
 // empty lists still use the immutable Nil singleton. A quote of an argument
-// locates only the private header Quote would create, preserving its seal.
+// locates only the private header Quote would create, preserving its seal,
+// and only when the argument has no real location of its own.
+// Under a debugger the expansion metadata still reaches these located nodes
+// (see stampGoMacroExpansion); they keep at's location.
 // The expansion owns one location copy shared by all its new nodes, following
 // the source ownership rule; it never aliases at's stored location.
-// If at is nil or carries no source location, ExpandAt is identical to Expand.
+// If at is nil or carries no real source location (none, or a synthetic one
+// with Pos < 0, as ErrorfAt treats it), ExpandAt is identical to Expand.
 func (t *FormTemplate) ExpandAt(at *LVal, args ...*LVal) *LVal {
 	if len(args) != t.paramCount {
 		panic(fmt.Sprintf("lisp.FormTemplate.Expand: expected %d arguments, got %d", t.paramCount, len(args)))
 	}
 	var loc *token.Location
-	if at != nil {
+	if at != nil && at.source != nil && at.source.Pos >= 0 {
 		loc = copyLocation(at.source)
 	}
 	return t.root.expand(args, loc)
@@ -113,11 +117,14 @@ func (n *formTemplateNode) expand(args []*LVal, loc *token.Location) *LVal {
 	case formTemplateArg:
 		return args[n.index]
 	case formTemplateQuote:
-		v := Quote(n.children[0].expand(args, loc))
+		child := &n.children[0]
+		v := Quote(child.expand(args, loc))
 		// Quote always allocates a private header, even over sealed Cells.
 		// Initialize only that new header; the argument and backing stay
 		// untouched. SetSource would skip it because it inherits the seal.
-		if loc != nil {
+		// A quoted argument that has a real location keeps it: the quote
+		// stands for the user's form, not for template syntax.
+		if loc != nil && (child.kind != formTemplateArg || needsStamp(args[child.index])) {
 			v.source = loc
 		}
 		return v

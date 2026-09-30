@@ -449,12 +449,18 @@ error with its chosen location.
 Use `FormTemplate.ExpandAt(wrappedForm, args...)` for errors raised later by
 generated wrappers. Above, `ExpandAt(name, ...)` locates the generated `set`
 at the user's name: `(define-pair` followed by `  true 1 2)` on the next line
-reports the constant-rebinding error at line 2, column 3. Each template-created
-list, symbol and quote header shares one copied location; inserted arguments
-and spliced cells retain their pointers and locations. Quoting an argument
-locates its new header while preserving the original argument and its seal.
-Empty template lists still use the immutable nil singleton. A nil form or a
-form without a source location makes `ExpandAt` identical to `Expand`.
+reports the constant-rebinding error at line 2, column 3. Locate only the
+generated form that can fail because of that argument; leave outer wrappers
+to `Expand` so they keep the macro call site, which stack traces name
+(`get-default` locates just its `key?` call at the map form). Each
+template-created list, symbol and quote header shares one copied location;
+inserted arguments and spliced cells retain their pointers and locations, and
+a quoted argument that has its own location keeps it. Empty template lists
+still use the immutable nil singleton. If the form is nil, has no location, or
+has a synthetic one (`Pos < 0`, which `ErrorfAt` also ignores), `ExpandAt` is
+identical to `Expand`. A debugger still sees every node the macro created as
+part of its expansion (step-into metadata), including the nodes `ExpandAt`
+located; they keep that location.
 
 ### Toolkit for replacing Lisp with Go builtins
 

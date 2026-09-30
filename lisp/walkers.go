@@ -267,6 +267,12 @@ var memoExemptions = []memoExemption{
 			"carries Native across -- only that it is unobservable, which is what the paragraph above establishes.",
 	},
 	{
+		Subject: "lisp.macroStamper.generated",
+		Reason: "a membership set the stamp reads, not a memo (lisp/macro.go, stampGoMacroExpansion): the located " +
+			"nodes a Go macro created, computed before the walk under a debugger so those nodes get expansion " +
+			"metadata. It maps no node to a copy; the stamp's copies memo stays `copies`.",
+	},
+	{
 		Subject: "lisp.cycleState.path",
 		Reason:  "the cycle guard's descent path (lisp/cycle.go). It bounds a walk; it holds no copy and reproduces no sharing.",
 	},

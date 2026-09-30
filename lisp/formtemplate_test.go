@@ -116,7 +116,8 @@ func TestFormTemplateExpandAt(t *testing.T) {
 	assert.Same(t, lisp.Nil(), lisp.MustFormTemplate(`(,@rest)`, "rest").ExpandAt(at, lisp.Nil()))
 
 	// Quoting an argument creates a private header over the same sealed
-	// cells. Locate that header while keeping the argument and seal intact.
+	// cells. The argument is located, so the header keeps the argument's
+	// location, and the argument and its seal stay intact.
 	quoted := got.Cells[8]
 	assert.NotSame(t, arg, quoted)
 	assert.True(t, quoted.IsQuoted())
@@ -125,6 +126,13 @@ func TestFormTemplateExpandAt(t *testing.T) {
 	assert.Same(t, arg.Cells[1], quoted.Cells[1])
 	assert.Equal(t, lisp.LQuote, got.Cells[9].Type)
 	assert.True(t, got.Cells[9].Cells[0].IsSealed())
+	argLoc, _ := arg.Source()
+	for _, q := range []*lisp.LVal{quoted, got.Cells[9].Cells[0]} {
+		loc, ok := q.Source()
+		assert.True(t, ok)
+		assert.Equal(t, argLoc, loc, "a quoted located argument keeps its own location")
+	}
+	quotedArgs := map[*lisp.LVal]bool{quoted: true, got.Cells[9].Cells[0]: true}
 
 	want, ok := at.Source()
 	require.True(t, ok)
@@ -133,7 +141,7 @@ func TestFormTemplateExpandAt(t *testing.T) {
 	assert.NotSame(t, inputs[at], shared, "the expansion owns one location copy")
 	var check func(*lisp.LVal)
 	check = func(v *lisp.LVal) {
-		if _, inserted := inputs[v]; inserted || v == lisp.Nil() {
+		if _, inserted := inputs[v]; inserted || v == lisp.Nil() || quotedArgs[v] {
 			return
 		}
 		loc, ok := v.Source()

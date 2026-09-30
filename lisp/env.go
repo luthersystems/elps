@@ -1940,7 +1940,11 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 			Args:     args.Cells,
 		}
 	}
-	r = stampMacroExpansion(r, callSite, mctx, env.Runtime)
+	if fun.Builtin() != nil {
+		r = stampGoMacroExpansion(r, callSite, mctx, env.Runtime, args.Cells)
+	} else {
+		r = stampMacroExpansion(r, callSite, mctx, env.Runtime)
+	}
 
 	// The stamp is copy-on-write (see the warning above it): r is never
 	// written to, and the stamped tree it returns is what is evaluated.
