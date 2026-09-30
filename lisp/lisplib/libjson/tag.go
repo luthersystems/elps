@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -19,7 +20,7 @@ import (
 // Whole floats use ~d followed by appendJSONFloat text, including ~d-0.
 // Limits count logical values and containers, without counting tag wrappers.
 func Tag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
-	w := tagWalker{cfg: newTypedConfig(opts)}
+	w := tagWalker[buildTag]{cfg: newTypedConfig(opts)}
 	out, err := w.value(v, 0)
 	if err != nil {
 		return nil, err
@@ -31,21 +32,37 @@ func Tag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
 	enc := getEncoder(false)
 	defer putEncoder(enc)
-	w := tagWalker{enc: enc, cfg: newTypedConfig(opts)}
+	w := tagWalker[streamTag]{enc: enc, cfg: newTypedConfig(opts)}
 	if _, err := w.value(v, 0); err != nil {
 		return nil, err
 	}
 	return enc.donateBuffer(), nil
 }
 
-type tagWalker struct {
+// tagMode selects, at compile time, whether a tagWalker streams into an
+// encoder (streamTag) or builds the tagged value (buildTag). The two types
+// differ in size, so each instantiation gets its own compiled body and
+// streaming[M] folds to a constant.
+type tagMode interface{ streamTag | buildTag }
+
+type (
+	streamTag struct{}
+	buildTag  struct{ _ byte }
+)
+
+func streaming[M tagMode]() bool {
+	var m M
+	return unsafe.Sizeof(m) == 0
+}
+
+type tagWalker[M tagMode] struct {
 	enc                   *encoder
 	path                  []*lisp.LVal
 	cfg                   typedConfig
 	values, size, charged int
 }
 
-func (w *tagWalker) count() error {
+func (w *tagWalker[M]) count() error {
 	w.values++
 	if w.values > w.cfg.maxValues {
 		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
@@ -53,14 +70,14 @@ func (w *tagWalker) count() error {
 	return nil
 }
 
-func (w *tagWalker) write(s string) error {
-	if w.enc != nil {
+func (w *tagWalker[M]) write(s string) error {
+	if streaming[M]() {
 		w.enc.buf.WriteString(s)
 	}
 	return w.grow(len(s))
 }
 
-func (w *tagWalker) grow(n int) error {
+func (w *tagWalker[M]) grow(n int) error {
 	w.size += n
 	if w.size > w.cfg.maxBytes {
 		return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
@@ -78,9 +95,9 @@ func (w *tagWalker) grow(n int) error {
 	return nil
 }
 
-func (w *tagWalker) leaf(v *lisp.LVal) (*lisp.LVal, error) {
+func (w *tagWalker[M]) leaf(v *lisp.LVal) (*lisp.LVal, error) {
 	var n int
-	if w.enc != nil {
+	if streaming[M]() {
 		start := w.enc.buf.Len()
 		var err error
 		switch v.Type {
@@ -120,7 +137,7 @@ func (w *tagWalker) leaf(v *lisp.LVal) (*lisp.LVal, error) {
 }
 
 // scalar sends transformed leaves directly to the plain encoder's buffer.
-func (w *tagWalker) scalar(v *lisp.LVal) error {
+func (w *tagWalker[M]) scalar(v *lisp.LVal) error {
 	start := w.enc.buf.Len()
 	var err error
 	switch v.Type {
@@ -233,7 +250,7 @@ func tagScalar(v *lisp.LVal) (*lisp.LVal, error) {
 	return v, nil
 }
 
-func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
+func (w *tagWalker[M]) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	if v == nil {
 		return nil, errors.New("typed json: cannot encode a Go nil value")
 	}
@@ -254,7 +271,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		return nil, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
 	}
 	if v.Type != lisp.LArray && v.Type != lisp.LSortMap && v.Type != lisp.LTaggedVal && (v.Type != lisp.LSExpr || v.IsNil()) {
-		if w.enc != nil {
+		if streaming[M]() {
 			return nil, w.scalar(v)
 		}
 		out, err := tagScalar(v)
@@ -285,7 +302,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
+		if streaming[M]() {
 			return nil, nil
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
@@ -314,7 +331,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
+		if streaming[M]() {
 			return nil, nil
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
@@ -338,7 +355,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		if w.enc != nil {
+		if streaming[M]() {
 			return nil, nil
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
@@ -347,12 +364,12 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	}
 }
 
-func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
+func (w *tagWalker[M]) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
 	if err := w.write("["); err != nil {
 		return nil, err
 	}
 	var out []*lisp.LVal
-	if w.enc == nil {
+	if !streaming[M]() {
 		out = make([]*lisp.LVal, len(cells))
 	}
 	for i, v := range cells {
@@ -372,7 +389,7 @@ func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
 	if err := w.write("]"); err != nil {
 		return nil, err
 	}
-	if w.enc != nil {
+	if streaming[M]() {
 		return nil, nil
 	}
 	return lisp.Vector(out), nil
@@ -391,7 +408,7 @@ func taggedKeyText(k lisp.MapKeyPair) (string, error) {
 	return string(b), err
 }
 
-func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
+func (w *tagWalker[M]) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	kp := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
 	keys, ok := v.AppendMapKeyPairs((*kp)[:0])
 	defer func() {
@@ -447,7 +464,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		slices.SortFunc(pairs, func(a, b lisp.MapPair) int { return strings.Compare(a.Key, b.Key) })
 	}
 	var out *lisp.LVal
-	if w.enc == nil {
+	if !streaming[M]() {
 		out = lisp.SortedMap()
 	}
 	if err := w.write("{"); err != nil {
