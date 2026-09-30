@@ -15,11 +15,12 @@ import (
 // Walk calls fn for every node in the tree, depth-first.
 // parent is nil for top-level expressions.
 func Walk(exprs []*lisp.LVal, fn func(node *lisp.LVal, parent *lisp.LVal, depth int)) {
-	visit := func(node, parent *lisp.LVal, op string, depth int) bool {
+	visit := func(node, parent *lisp.LVal, _ string, depth int) bool {
 		fn(node, parent, depth)
 		// Templates were always opaque to this syntactic walk, even when
 		// quoted. Every other node, including quoted structure, is visited.
-		return op != codewalk.OpQuasiquote
+		// Classify after fn, which may rewrite the node's head.
+		return codewalk.Operator(node) != codewalk.OpQuasiquote
 	}
 	for _, expr := range exprs {
 		codewalk.Syntax(expr, nil, 0, visit)

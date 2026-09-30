@@ -38,3 +38,26 @@ func TestUserDefinedPreservesSyntacticPolicy(t *testing.T) {
 	})
 	require.Len(t, templates, 1)
 }
+
+// Walk decides whether to descend after its callback runs, so a callback
+// that rewrites a node's head controls pruning of that node.
+func TestWalkPrunesOnPostCallbackHead(t *testing.T) {
+	for _, tc := range []struct {
+		src, newHead string
+		want         []string
+	}{
+		{"(quasiquote (f))", "progn", []string{"progn", "f"}},
+		{"(progn (f))", "quasiquote", []string{"quasiquote"}},
+	} {
+		exprs, err := rdparser.New(token.NewScanner("walk.lisp", strings.NewReader(tc.src))).ParseProgram()
+		require.NoError(t, err)
+		var heads []string
+		WalkSExprs(exprs, func(v *lisp.LVal, _ int) {
+			if v == exprs[0] {
+				v.Cells[0] = lisp.Symbol(tc.newHead)
+			}
+			heads = append(heads, HeadSymbol(v))
+		})
+		require.Equal(t, tc.want, heads, tc.src)
+	}
+}

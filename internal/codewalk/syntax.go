@@ -58,6 +58,15 @@ func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor) {
 	}
 }
 
+// Operator returns the canonical operator name of form's head, as Syntax
+// reports it, or "" for anything that is not a classified form.
+func Operator(form *lisp.LVal) string {
+	if form == nil || form.Type != lisp.LSExpr || len(form.Cells) == 0 {
+		return ""
+	}
+	return syntaxOp(form.Cells[0])
+}
+
 var syntaxOp func(*lisp.LVal) string
 
 func init() {
