@@ -91,7 +91,7 @@ func ClassifyNodes(form *lisp.LVal) *Roles {
 			r.m[n.Node] = roleCode
 		case lisp.WalkData:
 			mark(n.Node, RoleData)
-		case lisp.WalkEnter, lisp.WalkLeave, lisp.WalkEnd:
+		case lisp.WalkEnter, lisp.WalkLeave:
 		}
 		return true
 	})
@@ -179,9 +179,6 @@ func FindCalls(form *lisp.LVal, names ...string) []CallSite {
 			}
 		}
 	}
-	if form != nil {
-		link(form)
-	}
 	ops := make(map[*lisp.LVal]string)       // special forms
 	functions := make(map[*lisp.LVal]string) // nodes whose body is a function
 	type call struct {
@@ -206,10 +203,15 @@ func FindCalls(form *lisp.LVal, names ...string) []CallSite {
 				want[strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")] {
 				calls = append(calls, call{form: current, name: n.Node.Str})
 			}
-		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave, lisp.WalkEnd:
+		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave:
 		}
 		return true
 	})
+	// Most selected forms only mention a target name in data or a template.
+	// Build ancestry only when the code walk found an actual call.
+	if len(calls) > 0 {
+		link(form)
+	}
 	sites := make([]CallSite, 0, len(calls))
 	for _, c := range calls {
 		for _, path := range pathsToRoot(c.form, parents) {

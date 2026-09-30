@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -245,7 +246,7 @@ func TestCodeWalkerSourceAnalysis(t *testing.T) {
 			form := parseCached(t, tt.source)[0]
 			before := fingerprintAST([]*lisp.LVal{form})
 			var got []string
-			w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+			w := &codewalk.Walker{Visit: func(n *codewalk.Node) bool {
 				switch n.Event {
 				case lisp.WalkEnter:
 					if n.Outer {
@@ -275,7 +276,7 @@ func TestCodeWalkerSourceAnalysis(t *testing.T) {
 					if n.Template && n.Node.Type == lisp.LSymbol && !n.Node.IsQuoted() {
 						got = append(got, "template:"+n.Node.Str)
 					}
-				case lisp.WalkEnd:
+				case codewalk.End:
 					got = append(got, "end:"+n.Op)
 				case lisp.WalkForm, lisp.WalkSet, lisp.WalkDefine, lisp.WalkLiteral:
 				}
@@ -291,15 +292,15 @@ func TestCodeWalkerSourceAnalysis(t *testing.T) {
 func TestCodeWalkerCustomBinding(t *testing.T) {
 	form := parseCached(t, `(custom name meta (x) (+ x missing))`)[0]
 	var refs []string
-	var definitions []*lisp.WalkNode
-	w := &lisp.CodeWalker{SourceAnalysis: true,
-		BindingForm: func(v *lisp.LVal) *lisp.CodeBinding {
+	var definitions []*codewalk.Node
+	w := &codewalk.Walker{
+		BindingForm: func(v *lisp.LVal) *codewalk.Binding {
 			if v.Cells[0].Str == "custom" {
-				return &lisp.CodeBinding{NameIndex: 1, FormalsIndex: 3}
+				return &codewalk.Binding{NameIndex: 1, FormalsIndex: 3}
 			}
 			return nil
 		},
-		Visit: func(n *lisp.WalkNode) bool {
+		Visit: func(n *codewalk.Node) bool {
 			if n.Event == lisp.WalkDefine {
 				cp := *n
 				definitions = append(definitions, &cp)
@@ -321,7 +322,7 @@ func TestCodeWalkerSourceVisitsSharedCodePerOccurrence(t *testing.T) {
 	shared := parseCached(t, `(f x)`)[0]
 	form := lisp.SExpr([]*lisp.LVal{lisp.Symbol("progn"), shared, shared})
 	refs := 0
-	w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+	w := &codewalk.Walker{Visit: func(n *codewalk.Node) bool {
 		if n.Event == lisp.WalkRef {
 			refs++
 		}
@@ -335,8 +336,8 @@ func TestCodeWalkerSourceDefinitionMetadata(t *testing.T) {
 	for _, op := range []string{"defun", "defmacro", "deftype"} {
 		t.Run(op, func(t *testing.T) {
 			form := parseCached(t, "("+op+" name (x) x)")[0]
-			var definition *lisp.WalkNode
-			w := &lisp.CodeWalker{SourceAnalysis: true, Visit: func(n *lisp.WalkNode) bool {
+			var definition *codewalk.Node
+			w := &codewalk.Walker{Visit: func(n *codewalk.Node) bool {
 				if n.Event == lisp.WalkDefine {
 					cp := *n
 					definition = &cp

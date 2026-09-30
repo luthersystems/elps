@@ -15,6 +15,9 @@ const maxMacroExpansionDepth = 64
 
 // analyzer is the internal state for a single analysis run.
 type analyzer struct {
+	definitions      definitionScanner
+	resolvers        []*sourceResolver
+	resolverDepth    int
 	root             *Scope
 	result           *Result
 	cfg              *Config
@@ -539,18 +542,9 @@ func (a *analyzer) resolveSymbol(node *lisp.LVal, scope *Scope, currentPkg strin
 	sym := scope.LookupInPackage(name, currentPkg)
 	if sym != nil {
 		sym.References++
-		a.result.References = append(a.result.References, &Reference{
-			Symbol: sym,
-			Source: astutil.SymbolLoc(node),
-			Node:   node,
-		})
+		a.result.References = append(a.result.References, newReference(sym, node))
 	} else {
-		a.result.Unresolved = append(a.result.Unresolved, &UnresolvedRef{
-			Name:            name,
-			Source:          astutil.SymbolLoc(node),
-			Node:            node,
-			InsideMacroCall: a.insideMacroCall > 0,
-		})
+		a.result.Unresolved = append(a.result.Unresolved, newUnresolvedRef(node, a.insideMacroCall > 0))
 	}
 }
 
@@ -598,11 +592,7 @@ func (a *analyzer) resolveQualifiedSymbol(node *lisp.LVal, scope *Scope, pkgName
 	}
 
 	sym.References++
-	a.result.References = append(a.result.References, &Reference{
-		Symbol: sym,
-		Source: astutil.SymbolLoc(node),
-		Node:   node,
-	})
+	a.result.References = append(a.result.References, newReference(sym, node))
 }
 
 // FindExternalSymbol looks up a symbol by name in a package-to-symbols map.
@@ -649,11 +639,7 @@ func (a *analyzer) resolveTemplateSymbol(node *lisp.LVal, scope *Scope, currentP
 	sym := scope.LookupInPackage(name, currentPkg)
 	if sym != nil {
 		sym.References++
-		a.result.References = append(a.result.References, &Reference{
-			Symbol: sym,
-			Source: astutil.SymbolLoc(node),
-			Node:   node,
-		})
+		a.result.References = append(a.result.References, newReference(sym, node))
 	}
 	// Unlike resolveSymbol, we intentionally do NOT append to Unresolved here.
 	// Template symbols may refer to names introduced at macro expansion time.

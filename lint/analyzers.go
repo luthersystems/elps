@@ -11,6 +11,7 @@ import (
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
@@ -553,56 +554,60 @@ var AnalyzerBuiltinArity = &Analyzer{
 		// Collect AST nodes where arity checking should be skipped.
 		skipNodes := aritySkipNodes(pass.Exprs)
 
-		// The code walker knows which lists are code: a call-shaped list
-		// inside quoted data, or a structural list such as a dotimes
-		// control list, is not a call.
+		// Consume code events directly rather than building role maps and then
+		// traversing the same tree again. The syntactic lint walk historically
+		// omits the entire quasiquote, including its holes.
+		walker := lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+			if n.Event != lisp.WalkForm {
+				return true
+			}
+			checkBuiltinArity(pass, n.Node, skipNodes, userDefs)
+			return n.Op != "quasiquote"
+		}}
 		for _, expr := range pass.Exprs {
-			roles := astutil.ClassifyNodes(expr)
-			checkBuiltinArity(pass, expr, roles, skipNodes, userDefs)
+			codewalk.Forms(&walker, expr)
 		}
 		return nil
 	},
 }
 
-func checkBuiltinArity(pass *Pass, expr *lisp.LVal, roles *astutil.Roles, skipNodes map[*lisp.LVal]bool, userDefs map[string]bool) {
-	WalkSExprs([]*lisp.LVal{expr}, func(sexpr *lisp.LVal, depth int) {
-		if skipNodes[sexpr] {
-			return
-		}
-		if r := roles.Role(sexpr); r == astutil.RoleData || r == astutil.RoleSyntax {
-			return
-		}
-		head := HeadSymbol(sexpr)
-		if head == "" {
-			return
-		}
-		if userDefs[head] {
-			return
-		}
-		spec, ok := builtinArityTable[head]
-		if !ok {
-			return
-		}
-		argc := ArgCount(sexpr)
-		helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
-		headNode := sexpr.Cells[0]
-		if argc < spec.min {
-			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
-				Pos:     posFromSource(astutil.SourceLoc(headNode)),
-				EndPos:  endPosFromNode(headNode),
-				Notes:   []string{helpNote},
-			})
-		}
-		if spec.max >= 0 && argc > spec.max {
-			pass.Report(Diagnostic{
-				Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
-				Pos:     posFromSource(astutil.SourceLoc(headNode)),
-				EndPos:  endPosFromNode(headNode),
-				Notes:   []string{helpNote},
-			})
-		}
-	})
+func checkBuiltinArity(pass *Pass, sexpr *lisp.LVal, skipNodes map[*lisp.LVal]bool, userDefs map[string]bool) {
+	if skipNodes[sexpr] {
+		return
+	}
+	head := HeadSymbol(sexpr)
+	if head == "" {
+		return
+	}
+	if userDefs[head] {
+		return
+	}
+	spec, ok := builtinArityTable[head]
+	if !ok {
+		return
+	}
+	argc := ArgCount(sexpr)
+	if argc >= spec.min && (spec.max < 0 || argc <= spec.max) {
+		return
+	}
+	helpNote := fmt.Sprintf("see (help '%s) or `elps doc %s` for usage", head, head)
+	headNode := sexpr.Cells[0]
+	if argc < spec.min {
+		pass.Report(Diagnostic{
+			Message: fmt.Sprintf("%s requires at least %d argument(s), got %d", head, spec.min, argc),
+			Pos:     posFromSource(astutil.SourceLoc(headNode)),
+			EndPos:  endPosFromNode(headNode),
+			Notes:   []string{helpNote},
+		})
+	}
+	if spec.max >= 0 && argc > spec.max {
+		pass.Report(Diagnostic{
+			Message: fmt.Sprintf("%s accepts at most %d argument(s), got %d", head, spec.max, argc),
+			Pos:     posFromSource(astutil.SourceLoc(headNode)),
+			EndPos:  endPosFromNode(headNode),
+			Notes:   []string{helpNote},
+		})
+	}
 }
 
 // bindingForms are the special operators whose first argument is a list of
@@ -842,7 +847,8 @@ var AnalyzerRethrowContext = &Analyzer{
 // searched syntactically, as templates are code once expanded, so a macro
 // that emits a bare (rethrow) is reported at its template.
 func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
-	if !mentionsRethrowContext(pass.Exprs) {
+	hasExpander := pass.Semantics != nil && pass.Semantics.MacroExpander != nil
+	if hasExpander && !mentionsRethrowContext(pass.Exprs) {
 		return
 	}
 	passFile := analysis.NormalizePath(pass.Filename)
@@ -860,8 +866,17 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 		}
 		report(form)
 	}
-	for _, ef := range pass.expandedExprs() {
-		code := ef.code
+	macroScanner := lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		if n.Op == "defmacro" {
+			scanMacroTemplates(n.Node, reportOnce)
+			return false
+		}
+		return true
+	}}
+	check := func(code *lisp.LVal) {
+		if !mentionsRethrowContext([]*lisp.LVal{code}) {
+			return
+		}
 		for _, site := range astutil.FindCalls(code, "rethrow", "error-stack") {
 			name := strings.TrimPrefix(site.Name, lisp.DefaultLangPackage+":")
 			inHandler, inFunction := false, false
@@ -878,13 +893,18 @@ func walkRethrowContext(pass *Pass, report func(*lisp.LVal)) {
 			}
 			reportOnce(site.Form)
 		}
-		astutil.ExpandAll(code, nil, ef.pkg, func(n *lisp.WalkNode) bool {
-			if n.Event == lisp.WalkForm && n.Op == "defmacro" {
-				scanMacroTemplates(n.Node, reportOnce)
-				return false // scanMacroTemplates walks it
-			}
-			return true
-		})
+		codewalk.Forms(&macroScanner, code)
+	}
+	if !hasExpander {
+		// Unexpanded input needs no whole-file expansion cache or package
+		// bookkeeping. Only selected forms are scanned for calls/templates.
+		for _, code := range pass.Exprs {
+			check(code)
+		}
+		return
+	}
+	for _, ef := range pass.expandedExprs() {
+		check(ef.code)
 	}
 }
 
@@ -913,25 +933,28 @@ func scanMacroTemplates(macro *lisp.LVal, report func(*lisp.LVal)) {
 // rethrow or error-stack.  A file that never names either cannot contain a
 // call written in it, so the check skips expanding it.
 func mentionsRethrowContext(exprs []*lisp.LVal) bool {
-	found := false
-	var walk func(v *lisp.LVal)
-	walk = func(v *lisp.LVal) {
-		if found || v == nil {
-			return
-		}
-		if v.Type == lisp.LSymbol {
-			name := strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":")
-			found = name == "rethrow" || name == "error-stack"
-			return
-		}
-		for _, c := range v.Cells {
-			walk(c)
-		}
-	}
 	for _, e := range exprs {
-		walk(e)
+		if nodeMentionsRethrowContext(e) {
+			return true
+		}
 	}
-	return found
+	return false
+}
+
+func nodeMentionsRethrowContext(v *lisp.LVal) bool {
+	if v == nil {
+		return false
+	}
+	if v.Type == lisp.LSymbol {
+		return v.Str == "rethrow" || v.Str == "error-stack" ||
+			v.Str == "lisp:rethrow" || v.Str == "lisp:error-stack"
+	}
+	for _, c := range v.Cells {
+		if nodeMentionsRethrowContext(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // walkRethrowTemplate searches a macro template syntactically, the way the

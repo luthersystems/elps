@@ -177,9 +177,6 @@ const (
 	WalkEnter
 	// WalkLeave closes the scope the matching WalkEnter opened.
 	WalkLeave
-	// WalkEnd finishes a SourceAnalysis compound form, including one skipped by Visit.
-	// It balances WalkForm, so visitors can restore per-call context.
-	WalkEnd
 )
 
 // WalkNode is one event of a code walk.
@@ -187,15 +184,7 @@ type WalkNode struct {
 	// Node is the value the event is about.  For WalkForm it is the form
 	// after expansion; the walker never modifies it.
 	Node *LVal
-	// Owner is the containing definition form for WalkDefine.
-	Owner *LVal
-	// Formals is the parameter list for a definition, local function binding,
-	// or function scope. It lets clients inspect signatures without decoding
-	// the containing form's syntax.
-	Formals *LVal
-	// Init is a SourceAnalysis let binding's initializer (nil for test-let).
-	Init *LVal
-	// Op is the builtin form name for WalkForm, WalkEnd, WalkDefine,
+	// Op is the builtin form name for WalkForm, WalkDefine,
 	// WalkEnter, WalkLeave and WalkBind ("lambda", "let", ...), "" for a function call.
 	Op string
 	// Depth is the nesting depth, 0 for the walked form.  Everything
@@ -212,16 +201,9 @@ type WalkNode struct {
 	Bound bool
 	// Function marks a WalkEnter/WalkLeave pair around a function body:
 	// lambda, defun, defmacro, one flet/labels/macrolet binding, and expr.
-	// In SourceAnalysis, WalkBind also uses it to mark a parameter.
 	// The body of a let, flet, dotimes, test or benchmark is a scope but
 	// not a function.
 	Function bool
-	// Outer on WalkEnter selects the enclosing lexical scope. A nil Node
-	// borrows that scope for an initializer; a non-nil Node opens a function
-	// there (flet). WalkLeave restores the previous scope in either case.
-	Outer bool
-	// Template marks WalkData for a symbol inside a quasiquote template.
-	Template bool
 	// Event is the kind of event.
 	Event WalkEvent
 }
@@ -234,15 +216,6 @@ type CodeVisitor func(n *WalkNode) bool
 // localMacroExpander is the compiled macro a macrolet binding defines,
 // expanded through the walker's environment.
 type localMacroExpander = *LVal
-
-// CodeBinding describes an embedder's definition-like form. A negative
-// NameIndex means no name is declared. Children before FormalsIndex are code
-// in the outer scope, except the declared name; children after it are the body.
-// The head is a reference. BindingForm must validate the indices and formals.
-type CodeBinding struct {
-	NameIndex    int
-	FormalsIndex int
-}
 
 // CodeWalker walks ELPS code, expanding macros and reporting what each part
 // of every form is.  The walk understands every builtin special form's
@@ -257,10 +230,6 @@ type CodeBinding struct {
 // same node.  So a sealed program literal can be walked, and the result
 // shares no mutable storage with it.
 type CodeWalker struct {
-	// BindingForm recognizes custom definition-like forms in SourceAnalysis
-	// mode, after builtin syntax has been classified. Nil means none.
-	BindingForm func(form *LVal) *CodeBinding
-
 	// SpecialOp classifies a head symbol that is not lexically bound.  It
 	// returns the builtin form name the symbol denotes, or false for a
 	// function or macro.  Nil means defaultSpecialOpName.
@@ -280,11 +249,18 @@ type CodeWalker struct {
 	// Visit receives the walk's events.  It may be nil.
 	Visit CodeVisitor
 
-	err     *LVal
-	scopes  []walkScope
-	memo    map[walkMemoKey]*LVal
-	step    func() *LVal // charges one step; nil: free
-	scratch WalkNode
+	err             *LVal
+	scopes          []walkScope
+	memo            map[walkMemoKey]*LVal
+	step            func() *LVal // charges one step; nil: free
+	binding         func(*LVal) *codeBinding
+	sourceVisit     func(*walkNode) bool
+	sourceReference func(*LVal)
+	sourceForm      func(*LVal, string, int) bool
+	sourceEnd       func(int)
+	sourceEndDepth  *int
+	sourceScratch   walkNode
+	scratch         WalkNode
 
 	// MaxDepth bounds form nesting (default DefaultMaxEvalNesting) and
 	// MaxExpansions the macro expansions of one form's head (default
@@ -299,20 +275,12 @@ type CodeWalker struct {
 	// it; macroexpand-all does not.
 	KeepGoing bool
 
-	// SourceAnalysis preserves the source analyzer's interpretation of forms:
-	// malformed forms are skipped, only its historical builtin qualifications
-	// are structural, macrolet bodies are omitted and calls remain visitable,
-	// and expr binds the placeholders actually written. Runtime walks retain
-	// the evaluator's interpretation. Both use the same syntax dispatcher.
-	// Source walks visit shared nodes per occurrence and impose no nesting cap,
-	// because each occurrence is a separate source reference. Expand1 and
-	// SpecialOp are not used: callers control expansion through Visit so their
-	// resolution policy and total expansion-depth budget remain authoritative.
-	SourceAnalysis bool
-
-	// packageScan selects the conservative source traversal used by
-	// PackageForms: no expansion or scope resolution, and no template holes.
-	packageScan bool
+	// Source policy is available only through internal/codewalk's adapter.
+	sourceAnalysis         bool
+	packageScan            bool
+	formsOnly              bool
+	sourceSkipLiterals     bool
+	sourceDeclarationsOnly bool
 
 	nextScope int
 }
@@ -353,7 +321,7 @@ func (w *CodeWalker) charge() *LVal {
 func (w *CodeWalker) Walk(form *LVal) *LVal {
 	w.scopes = w.scopes[:0]
 	w.err = nil
-	w.memo = nil
+	clear(w.memo)
 	w.nextScope = 0
 	out := w.form(form, 0)
 	if w.err != nil {
@@ -362,12 +330,21 @@ func (w *CodeWalker) Walk(form *LVal) *LVal {
 	return out
 }
 
-func (w *CodeWalker) visit(n WalkNode) bool {
+func (w *CodeWalker) visit(n *walkNode) bool {
+	if w.sourceSkipLiterals && n.Event == WalkLiteral {
+		return true
+	}
+	if w.formsOnly && n.Event != WalkForm {
+		return true
+	}
+	if w.sourceVisit != nil {
+		w.sourceScratch = *n
+		return w.sourceVisit(&w.sourceScratch)
+	}
 	if w.Visit == nil {
 		return true
 	}
-	// One node per walker, so an event does not allocate.
-	w.scratch = n
+	w.scratch = WalkNode{Node: n.Node, Op: n.Op, Depth: n.Depth, Head: n.Head, Bound: n.Bound, Function: n.Function, Event: n.Event}
 	return w.Visit(&w.scratch)
 }
 
@@ -393,11 +370,25 @@ func (w *CodeWalker) maxExpansions() int {
 }
 
 func (w *CodeWalker) push(macros bool) {
+	if w.sourceAnalysis {
+		return // source scopes belong to the resolver
+	}
 	w.nextScope++
-	w.scopes = append(w.scopes, walkScope{macros: macros, id: w.nextScope})
+	index := len(w.scopes)
+	if index < cap(w.scopes) {
+		w.scopes = w.scopes[:index+1]
+		scope := &w.scopes[index]
+		clear(scope.names)
+		scope.macros, scope.id = macros, w.nextScope
+	} else {
+		w.scopes = append(w.scopes, walkScope{macros: macros, id: w.nextScope})
+	}
 }
 
 func (w *CodeWalker) pop() {
+	if w.sourceAnalysis {
+		return
+	}
 	w.scopes = w.scopes[:len(w.scopes)-1]
 }
 
@@ -405,6 +396,10 @@ func (w *CodeWalker) pop() {
 // expander (nil for a variable or function, or a local macro that cannot be
 // expanded).
 func (w *CodeWalker) bind(name *LVal, mac localMacroExpander) {
+	if w.sourceAnalysis {
+		return
+	} // the resolver maintains the source scopes
+
 	if name == nil || name.Type != LSymbol || len(w.scopes) == 0 {
 		return
 	}
@@ -420,7 +415,7 @@ func (w *CodeWalker) bind(name *LVal, mac localMacroExpander) {
 func (w *CodeWalker) lookup(name string) (bound, macro bool, mac localMacroExpander) {
 	// As in LEnv.Get, a qualified symbol or keyword resolves in a package
 	// (or to itself), never in a lexical scope.
-	if strings.IndexByte(name, ':') >= 0 {
+	if len(w.scopes) == 0 || strings.IndexByte(name, ':') >= 0 {
 		return false, false, nil
 	}
 	for i := len(w.scopes) - 1; i >= 0; i-- {
@@ -432,8 +427,21 @@ func (w *CodeWalker) lookup(name string) (bound, macro bool, mac localMacroExpan
 }
 
 func (w *CodeWalker) isBound(sym *LVal) bool {
+	if w.sourceAnalysis {
+		return false
+	}
+
 	bound, _, _ := w.lookup(sym.Str)
 	return bound
+}
+
+func (w *CodeWalker) hasLocalMacros() bool {
+	for i := range w.scopes {
+		if w.scopes[i].macros {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac localMacroExpander) {
@@ -441,34 +449,55 @@ func (w *CodeWalker) emitBind(name *LVal, op string, depth int, mac localMacroEx
 		return
 	}
 	w.bind(name, mac)
-	w.visit(WalkNode{Event: WalkBind, Node: name, Op: op, Depth: depth})
+	w.visit(&walkNode{Event: WalkBind, Node: name, Op: op, Depth: depth})
+}
+
+func (w *CodeWalker) reference(event WalkEvent, node *LVal, depth int, head bool) {
+	if w.formsOnly {
+		return
+	}
+	if w.sourceReference != nil {
+		w.sourceReference(node)
+		return
+	}
+	if w.Visit == nil && w.sourceVisit == nil {
+		return
+	}
+	w.visit(&walkNode{Event: event, Node: node, Depth: depth, Head: head, Bound: w.isBound(node)})
 }
 
 // form walks one value in code position.
 func (w *CodeWalker) form(v *LVal, depth int) *LVal {
+	if w.sourceAnalysis {
+		return w.sourceValue(v, depth)
+	}
+	return w.runtimeForm(v, depth)
+}
+
+func (w *CodeWalker) runtimeForm(v *LVal, depth int) *LVal {
 	if w.err != nil || v == nil {
 		return v
 	}
-	if !w.SourceAnalysis && !w.packageScan && depth > w.maxDepth() {
+	if depth > w.maxDepth() {
 		if w.KeepGoing {
-			w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth})
+			w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
 			return v
 		}
 		return w.fail(Errorf("code nesting depth exceeds maximum: %d", w.maxDepth()))
 	}
 	switch {
 	case v.quoted || v.Type == LQuote:
-		w.visit(WalkNode{Event: WalkData, Node: v, Depth: depth})
+		w.visit(&walkNode{Event: WalkData, Node: v, Depth: depth})
 		return v
 	case v.Type == LSymbol:
 		if isKeyword(v.Str) {
-			w.visit(WalkNode{Event: WalkLiteral, Node: v, Depth: depth})
+			w.visit(&walkNode{Event: WalkLiteral, Node: v, Depth: depth})
 		} else {
-			w.visit(WalkNode{Event: WalkRef, Node: v, Depth: depth, Bound: w.isBound(v)})
+			w.reference(WalkRef, v, depth, false)
 		}
 		return v
 	case v.Type != LSExpr || len(v.Cells) == 0:
-		w.visit(WalkNode{Event: WalkLiteral, Node: v, Depth: depth})
+		w.visit(&walkNode{Event: WalkLiteral, Node: v, Depth: depth})
 		return v
 	}
 
@@ -477,40 +506,22 @@ func (w *CodeWalker) form(v *LVal, depth int) *LVal {
 	// otherwise shared structure costs a walk per path, exponential in
 	// the depth of sharing.
 	key := walkMemoKey{node: v, scope: w.scopeID()}
-	if r, ok := w.memo[key]; ok && !w.SourceAnalysis && !w.packageScan {
+	if r, ok := w.memo[key]; ok {
 		return r
 	}
 	if lerr := w.charge(); lerr != nil {
 		return w.fail(lerr)
 	}
 	r := w.compound(v, depth)
-	if !w.SourceAnalysis && !w.packageScan {
-		if w.memo == nil {
-			w.memo = make(map[walkMemoKey]*LVal)
-		}
-		w.memo[key] = r
+	if w.memo == nil {
+		w.memo = make(map[walkMemoKey]*LVal)
 	}
+	w.memo[key] = r
 	return r
 }
 
 // compound walks a non-empty, unquoted list in code position.
 func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
-	if w.SourceAnalysis || w.packageScan {
-		op, isOp := w.sourceSpecialOp(v.Cells[0])
-		defer func() { w.visit(WalkNode{Event: WalkEnd, Node: v, Op: op, Depth: depth}) }()
-		if !w.visit(WalkNode{Event: WalkForm, Node: v, Op: op, Depth: depth}) {
-			return v
-		}
-		if isOp {
-			return w.special(v, op, specialFormKind(op), depth)
-		}
-		if w.BindingForm != nil {
-			if binding := w.BindingForm(v); binding != nil {
-				return w.bindingForm(v, binding, depth)
-			}
-		}
-		return w.call(v, depth)
-	}
 	// A compound form.  Expand its head until it is no longer a macro,
 	// classifying it on the way: op is the special form it names, if any.
 	op, isOp := "", false
@@ -519,20 +530,30 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 		if head.Type != LSymbol || head.quoted {
 			break
 		}
+		// A static form-only visitor needs lexical lookup only for a head
+		// that could be a special form. Local macros still require the
+		// general path: an unexpandable macrolet call is opaque.
+		if w.formsOnly && w.SpecialOp == nil && w.Expand1 == nil && !w.hasLocalMacros() {
+			op, isOp = defaultSpecialOpName(head)
+			if isOp && w.isBound(head) {
+				op, isOp = "", false
+			}
+			break
+		}
 		var exp *LVal
 		if bound, macro, mac := w.lookup(head.Str); bound {
 			if !macro {
 				break
 			}
 			if mac == nil {
-				w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth})
+				w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
 				return v
 			}
 			if n >= w.maxExpansions() {
 				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
 			}
 			if exp, _ = w.env.callMacro(mac, v); exp == nil {
-				w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth})
+				w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
 				return v
 			}
 		} else {
@@ -563,17 +584,17 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 	}
 
 	if !isOp {
-		if !w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth}) {
+		if !w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth}) {
 			return v
 		}
 		return w.call(v, depth)
 	}
 	kind := specialFormKind(op)
 	if kind == kindNone || kind == kindDeftype || kind == kindTestLet || kind == kindTestLetSeq {
-		w.visit(WalkNode{Event: WalkForm, Node: v, Op: op, Depth: depth})
+		w.visit(&walkNode{Event: WalkForm, Node: v, Op: op, Depth: depth})
 		return v
 	}
-	if !w.visit(WalkNode{Event: WalkForm, Node: v, Op: op, Depth: depth}) {
+	if !w.visit(&walkNode{Event: WalkForm, Node: v, Op: op, Depth: depth}) {
 		return v
 	}
 	return w.special(v, op, kind, depth)
@@ -585,7 +606,7 @@ func (w *CodeWalker) expansionFailed(v *LVal, depth int, err *LVal) *LVal {
 	if !w.KeepGoing {
 		return w.fail(err)
 	}
-	if !w.visit(WalkNode{Event: WalkForm, Node: v, Depth: depth}) {
+	if !w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth}) {
 		return v
 	}
 	return w.call(v, depth)
@@ -600,16 +621,27 @@ func (w *CodeWalker) specialOp(head *LVal) (string, bool) {
 
 // call walks a function call: the head is a reference, the arguments code.
 func (w *CodeWalker) call(v *LVal, depth int) *LVal {
-	b := newRebuild(v)
-	if w.packageScan {
-		w.forms(b, 0, depth)
-		return b.done()
+	var b *rebuild
+	if !w.sourceAnalysis {
+		b = newRebuild(v)
 	}
 	head := v.Cells[0]
 	if head.Type == LSymbol && !head.quoted && !isKeyword(head.Str) {
-		w.visit(WalkNode{Event: WalkRef, Node: head, Head: true, Depth: depth + 1, Bound: w.isBound(head)})
+		if w.sourceReference != nil {
+			w.sourceReference(head)
+		} else if !w.formsOnly {
+			w.reference(WalkRef, head, depth+1, true)
+		}
+	} else if w.sourceAnalysis {
+		w.sourceValue(head, depth+1)
 	} else {
 		b.set(0, w.form(head, depth+1))
+	}
+	if w.sourceAnalysis {
+		for _, arg := range v.Cells[1:] {
+			w.sourceValue(arg, depth+1)
+		}
+		return v
 	}
 	w.forms(b, 1, depth)
 	return b.done()
@@ -617,6 +649,12 @@ func (w *CodeWalker) call(v *LVal, depth int) *LVal {
 
 // forms walks v's cells from index i on as code.
 func (w *CodeWalker) forms(b *rebuild, i int, depth int) {
+	if w.sourceAnalysis {
+		for ; i < len(b.orig.Cells); i++ {
+			w.form(b.orig.Cells[i], depth+1)
+		}
+		return
+	}
 	for ; i < len(b.orig.Cells); i++ {
 		b.set(i, w.form(b.orig.Cells[i], depth+1))
 	}
@@ -624,7 +662,7 @@ func (w *CodeWalker) forms(b *rebuild, i int, depth int) {
 
 func (w *CodeWalker) data(v *LVal, depth int) {
 	if v != nil {
-		w.visit(WalkNode{Event: WalkData, Node: v, Depth: depth})
+		w.visit(&walkNode{Event: WalkData, Node: v, Depth: depth})
 	}
 }
 
@@ -646,10 +684,10 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 				formals = cells[idx]
 			}
 		}
-		w.visit(WalkNode{Event: WalkEnter, Node: node, Formals: formals, Op: op, Depth: depth, Function: fn})
+		w.visit(&walkNode{Event: WalkEnter, Node: node, Formals: formals, Op: op, Depth: depth, Function: fn})
 	}
 	leave := func(node *LVal) {
-		w.visit(WalkNode{Event: WalkLeave, Node: node, Op: op, Depth: depth, Function: fn})
+		w.visit(&walkNode{Event: WalkLeave, Node: node, Op: op, Depth: depth, Function: fn})
 		w.pop()
 	}
 	switch kind {
@@ -657,7 +695,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 		kindDefault, kindWhile, kindOr, kindAnd:
 		w.forms(b, 1, depth)
 	case kindHelp, kindQualifiedSymbol:
-		if w.SourceAnalysis && kind == kindQualifiedSymbol {
+		if w.sourceAnalysis && kind == kindQualifiedSymbol {
 			b.set(0, w.form(cells[0], d))
 			w.forms(b, 2, depth)
 			break
@@ -670,59 +708,48 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			w.data(c, d)
 		}
 	case kindQuasiquote:
-		if w.packageScan {
-			break
-		}
 		for i := 1; i < len(cells); i++ {
 			b.set(i, w.template(cells[i], d))
-			if w.SourceAnalysis {
+			if w.sourceAnalysis {
 				break
 			}
 		}
 	case kindFunction:
 		for i, c := range cells[1:] {
-			if w.SourceAnalysis && i > 0 {
+			if w.sourceAnalysis && i > 0 {
 				break
 			}
 			if c.Type == LSymbol {
-				w.visit(WalkNode{Event: WalkRef, Node: c, Depth: d, Bound: w.isBound(c)})
+				w.reference(WalkRef, c, d, false)
 			} else {
 				w.data(c, d)
 			}
 		}
 	case kindSetBang:
-		if w.SourceAnalysis && len(cells) < 3 {
+		if w.sourceAnalysis && len(cells) < 3 {
 			break
 		}
 		if len(cells) > 1 {
 			if cells[1].Type == LSymbol {
-				w.visit(WalkNode{Event: WalkSet, Node: cells[1], Depth: d, Bound: w.isBound(cells[1])})
+				w.reference(WalkSet, cells[1], d, false)
 			} else {
 				w.data(cells[1], d)
 			}
-			if w.SourceAnalysis {
+			if w.sourceAnalysis {
 				b.set(2, w.form(cells[2], d))
 			} else {
 				w.forms(b, 2, depth)
 			}
 		}
 	case kindLambda:
-		if w.packageScan {
-			w.forms(b, 2, depth)
-			break
-		}
-		if len(cells) > 1 && (!w.SourceAnalysis || cells[1].Type == LSExpr) {
+		if len(cells) > 1 && (!w.sourceAnalysis || cells[1].Type == LSExpr) {
 			enter(v, false)
 			b.set(1, w.formals(cells[1], op, d))
 			w.forms(b, 2, depth)
 			leave(v)
 		}
 	case kindDefun, kindDefmacro, kindDeftype:
-		if w.packageScan {
-			w.forms(b, 3, depth)
-			break
-		}
-		if w.SourceAnalysis && len(cells) < 3 {
+		if w.sourceAnalysis && len(cells) < 3 {
 			break
 		}
 		if len(cells) > 1 {
@@ -731,12 +758,15 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 				if len(cells) > 2 {
 					formals = cells[2]
 				}
-				w.visit(WalkNode{Event: WalkDefine, Node: cells[1], Owner: v, Formals: formals, Op: op, Depth: d})
+				w.visit(&walkNode{Event: WalkDefine, Node: cells[1], Owner: v, Formals: formals, Op: op, Depth: d})
 			} else {
 				w.data(cells[1], d)
 			}
 		}
-		if len(cells) > 2 && (!w.SourceAnalysis || cells[2].Type == LSExpr) {
+		if w.sourceDeclarationsOnly {
+			break
+		}
+		if len(cells) > 2 && (!w.sourceAnalysis || cells[2].Type == LSExpr) {
 			enter(v, false)
 			b.set(2, w.formals(cells[2], op, d))
 			w.forms(b, 3, depth)
@@ -766,21 +796,21 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 		if kind == kindTestLet || kind == kindTestLetSeq {
 			idx = 2
 		}
-		if len(cells) > idx && (!w.SourceAnalysis || cells[idx].Type == LSExpr) {
+		if len(cells) > idx && (!w.sourceAnalysis || cells[idx].Type == LSExpr) {
 			b.set(idx, w.let(cells[idx], v, op, kind == kindLetSeq || kind == kindTestLetSeq, d, func() { w.forms(b, idx+1, depth) }))
 		}
 	case kindFlet, kindLabels, kindMacrolet:
-		if len(cells) > 1 && (!w.SourceAnalysis || cells[1].Type == LSExpr) {
+		if len(cells) > 1 && (!w.sourceAnalysis || cells[1].Type == LSExpr) {
 			b.set(1, w.flet(cells[1], v, op, kind, d, func() { w.forms(b, 2, depth) }))
 		}
 	case kindHandlerBind:
 		if len(cells) > 1 {
-			if w.SourceAnalysis && (cells[1].Type != LSExpr || cells[1].quoted) {
+			if w.sourceAnalysis && (cells[1].Type != LSExpr || cells[1].quoted) {
 				w.forms(b, 2, depth)
 				break
 			}
 			b.set(1, w.pairs(cells[1], d, func(pb *rebuild, pair *LVal) {
-				if w.SourceAnalysis && len(pair.Cells) < 2 {
+				if w.sourceAnalysis && len(pair.Cells) < 2 {
 					return
 				}
 				if len(pair.Cells) > 0 {
@@ -793,7 +823,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 	case kindCond:
 		for i := 1; i < len(cells); i++ {
 			clause := cells[i]
-			if w.SourceAnalysis && (clause.Type != LSExpr || clause.quoted || len(clause.Cells) == 0) {
+			if w.sourceAnalysis && (clause.Type != LSExpr || clause.quoted || len(clause.Cells) == 0) {
 				continue
 			}
 			// A clause is structure even when written [test body...],
@@ -803,8 +833,8 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 				continue
 			}
 			cb := newRebuild(clause)
-			if t := clause.Cells[0]; t.Type == LSymbol && !t.quoted && (t.Str == "else" || t.Str == ":else" || (w.SourceAnalysis && t.Str == "true")) {
-				w.visit(WalkNode{Event: WalkLiteral, Node: t, Depth: d + 1})
+			if t := clause.Cells[0]; t.Type == LSymbol && !t.quoted && (t.Str == "else" || t.Str == ":else" || (w.sourceAnalysis && t.Str == "true")) {
+				w.visit(&walkNode{Event: WalkLiteral, Node: t, Depth: d + 1})
 			} else {
 				cb.set(0, w.form(t, d+1))
 			}
@@ -814,7 +844,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 	case kindDotimes:
 		if len(cells) > 1 {
 			ctrl := cells[1]
-			if w.SourceAnalysis && (ctrl.Type != LSExpr || len(ctrl.Cells) < 2) {
+			if w.sourceAnalysis && (ctrl.Type != LSExpr || len(ctrl.Cells) < 2) {
 				break
 			}
 			if ctrl.Type != LSExpr {
@@ -831,7 +861,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 				w.emitBind(ctrl.Cells[0], op, d+1, nil)
 			}
 			w.forms(b, 2, depth)
-			if !w.SourceAnalysis && len(ctrl.Cells) > 2 {
+			if !w.sourceAnalysis && len(ctrl.Cells) > 2 {
 				for i := 2; i < len(ctrl.Cells); i++ {
 					cb.set(i, w.form(ctrl.Cells[i], d+1))
 				}
@@ -843,14 +873,14 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 		if len(cells) > 1 {
 			enter(v, false)
 			names := exprFormalNames(cells[1])
-			if w.SourceAnalysis {
+			if w.sourceAnalysis {
 				names = sourceExprFormalNames(cells[1])
 			}
 			for _, name := range names {
 				w.bind(name, nil)
-				w.visit(WalkNode{Event: WalkBind, Node: name, Op: op, Depth: d, Function: w.SourceAnalysis})
+				w.visit(&walkNode{Event: WalkBind, Node: name, Op: op, Depth: d, Function: w.sourceAnalysis})
 			}
-			if w.SourceAnalysis {
+			if w.sourceAnalysis {
 				b.set(1, w.form(cells[1], d))
 			} else {
 				w.forms(b, 1, depth)
@@ -889,7 +919,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			switch {
 			case step.Type == LSExpr && !step.quoted && len(step.Cells) > 0:
 				// Step heads are regular functions: never expanded.
-				if !w.visit(WalkNode{Event: WalkForm, Node: step, Depth: d}) {
+				if !w.visit(&walkNode{Event: WalkForm, Node: step, Depth: d}) {
 					continue
 				}
 				b.set(i, w.call(step, d))
@@ -915,7 +945,7 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 			case OptArgSymbol, VarArgSymbol, KeyArgSymbol:
 				continue
 			}
-			if w.SourceAnalysis {
+			if w.sourceAnalysis {
 				// The analyzer has always located duplicate parameters at
 				// their first occurrence (ParseFormals keeps the duplicates).
 				for _, first := range formals.Cells {
@@ -926,8 +956,8 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 				}
 			}
 			w.bind(f, nil)
-			w.visit(WalkNode{Event: WalkBind, Node: f, Op: op, Depth: depth, Function: w.SourceAnalysis})
-		case f.Type == LSExpr && len(f.Cells) > 0 && f.Cells[0].Type == LSymbol && !w.SourceAnalysis:
+			w.visit(&walkNode{Event: WalkBind, Node: f, Op: op, Depth: depth, Function: w.sourceAnalysis})
+		case f.Type == LSExpr && len(f.Cells) > 0 && f.Cells[0].Type == LSymbol && !w.sourceAnalysis:
 			// (name default): the default is code, evaluated in the
 			// scope of the parameters before it; then name is bound.
 			pb := newRebuild(f)
@@ -942,15 +972,6 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 // pairs walks a list of binding pairs, calling fn with each well-formed
 // pair and a rebuild over it.  It returns the rebuilt list.
 func (w *CodeWalker) pairs(list *LVal, depth int, fn func(pb *rebuild, pair *LVal)) *LVal {
-	if w.packageScan {
-		lb := newRebuild(list)
-		for i, pair := range list.Cells {
-			pb := newRebuild(pair)
-			fn(pb, pair)
-			lb.set(i, pb.done())
-		}
-		return lb.done()
-	}
 	if list == nil || list.Type != LSExpr {
 		w.data(list, depth)
 		return list
@@ -970,25 +991,17 @@ func (w *CodeWalker) pairs(list *LVal, depth int, fn func(pb *rebuild, pair *LVa
 
 // let walks a let or let* binding list and then the body.
 func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body func()) *LVal {
-	if w.packageScan {
-		out := w.pairs(list, depth, func(pb *rebuild, _ *LVal) { w.forms(pb, 1, depth+1) })
-		body()
-		return out
-	}
-	if w.SourceAnalysis {
+	if w.sourceAnalysis {
 		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
 		out := w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
 			if len(pair.Cells) < 2 {
 				return
 			}
 			if !seq {
-				scope := w.scopes[len(w.scopes)-1]
-				w.pop()
-				w.visit(WalkNode{Event: WalkEnter, Outer: true, Depth: depth + 1})
+				w.visit(&walkNode{Event: WalkEnter, Outer: true, Depth: depth + 1})
 				pb.set(1, w.form(pair.Cells[1], depth+2))
-				w.visit(WalkNode{Event: WalkLeave, Outer: true, Depth: depth + 1})
-				w.scopes = append(w.scopes, scope)
+				w.visit(&walkNode{Event: WalkLeave, Outer: true, Depth: depth + 1})
 			} else {
 				pb.set(1, w.form(pair.Cells[1], depth+2))
 			}
@@ -999,11 +1012,11 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 				if op == "let" || op == "let*" {
 					init = pair.Cells[1]
 				}
-				w.visit(WalkNode{Event: WalkBind, Node: name, Init: init, Op: op, Depth: depth + 2})
+				w.visit(&walkNode{Event: WalkBind, Node: name, Init: init, Op: op, Depth: depth + 2})
 			}
 		})
 		body()
-		w.visit(WalkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
 		w.pop()
 		return out
 	}
@@ -1017,7 +1030,7 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 	var out *LVal
 	if seq {
 		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
 		out = w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
 			w.forms(pb, 1, depth+1)
 			if len(pair.Cells) > 0 {
@@ -1029,7 +1042,7 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 			w.forms(pb, 1, depth+1)
 		})
 		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
 		for _, pair := range list.Cells {
 			if pair.Type == LSExpr && len(pair.Cells) > 0 {
 				w.emitBind(pair.Cells[0], op, depth+2, nil)
@@ -1037,24 +1050,19 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 		}
 	}
 	body()
-	w.visit(WalkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
+	w.visit(&walkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
 	w.pop()
 	return out
 }
 
 // flet walks a flet, labels or macrolet binding list and then the body.
 func (w *CodeWalker) flet(list, form *LVal, op string, kind formKind, depth int, body func()) *LVal {
-	if w.packageScan {
-		out := w.pairs(list, depth, func(pb *rebuild, _ *LVal) { w.forms(pb, 2, depth+1) })
-		body()
-		return out
-	}
 	enter := func(macros bool) {
 		w.push(macros)
-		w.visit(WalkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
 	}
 	leave := func() {
-		w.visit(WalkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
+		w.visit(&walkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
 		w.pop()
 	}
 	if list == nil || list.Type != LSExpr {
@@ -1069,33 +1077,25 @@ func (w *CodeWalker) flet(list, form *LVal, op string, kind formKind, depth int,
 		if len(bind.Cells) < 2 {
 			return
 		}
-		if w.SourceAnalysis && (bind.Cells[1].Type != LSExpr || (kind == kindFlet && bind.Cells[0].Type != LSymbol)) {
+		if w.sourceAnalysis && (bind.Cells[1].Type != LSExpr || (kind == kindFlet && bind.Cells[0].Type != LSymbol)) {
 			return
 		}
-		var outer *walkScope
-		if w.SourceAnalysis && kind == kindFlet {
-			s := w.scopes[len(w.scopes)-1]
-			outer = &s
-			w.pop()
-		}
+		outer := w.sourceAnalysis && kind == kindFlet
 		w.push(false)
-		w.visit(WalkNode{Event: WalkEnter, Node: bind, Formals: bind.Cells[1], Outer: outer != nil, Op: op, Depth: depth + 1, Function: true})
+		w.visit(&walkNode{Event: WalkEnter, Node: bind, Formals: bind.Cells[1], Outer: outer, Op: op, Depth: depth + 1, Function: true})
 		pb.set(1, w.formals(bind.Cells[1], op, depth+2))
 		w.forms(pb, 2, depth+1)
-		w.visit(WalkNode{Event: WalkLeave, Node: bind, Op: op, Depth: depth + 1, Function: true})
+		w.visit(&walkNode{Event: WalkLeave, Node: bind, Op: op, Depth: depth + 1, Function: true})
 		w.pop()
-		if outer != nil {
-			w.scopes = append(w.scopes, *outer)
-		}
 	}
 	bindName := func(bind *LVal) {
 		if bind.Type != LSExpr || len(bind.Cells) < 2 || bind.Cells[0].Type != LSymbol {
 			return
 		}
 		w.bind(bind.Cells[0], nil)
-		w.visit(WalkNode{Event: WalkBind, Node: bind.Cells[0], Formals: bind.Cells[1], Op: op, Depth: depth + 1})
+		w.visit(&walkNode{Event: WalkBind, Node: bind.Cells[0], Formals: bind.Cells[1], Op: op, Depth: depth + 1})
 	}
-	if w.SourceAnalysis {
+	if w.sourceAnalysis {
 		enter(kind == kindMacrolet)
 		if kind != kindFlet {
 			for _, bind := range list.Cells {
@@ -1162,45 +1162,47 @@ func (w *CodeWalker) template(v *LVal, depth int) *LVal {
 	if w.err != nil || v == nil {
 		return v
 	}
-	if !w.SourceAnalysis && !w.packageScan && depth > w.maxDepth() {
+	if !w.sourceAnalysis && depth > w.maxDepth() {
 		if w.KeepGoing {
 			return v
 		}
 		return w.fail(Errorf("code nesting depth exceeds maximum: %d", w.maxDepth()))
 	}
 	if v.Type == LSymbol {
-		if w.SourceAnalysis {
-			w.visit(WalkNode{Event: WalkData, Node: v, Template: true, Depth: depth})
+		if w.sourceAnalysis {
+			w.visit(&walkNode{Event: WalkData, Node: v, Template: true, Depth: depth})
 		}
 		return v
 	}
-	if w.SourceAnalysis && v.Type != LSExpr {
+	if w.sourceAnalysis && v.Type != LSExpr {
 		return v
 	}
 	if (v.Type != LSExpr && v.Type != LQuote) || len(v.Cells) == 0 {
 		return v
 	}
+	if w.sourceAnalysis {
+		return w.templateList(v, depth)
+	}
+
 	key := walkMemoKey{node: v, scope: w.scopeID(), template: true}
-	if r, ok := w.memo[key]; ok && !w.SourceAnalysis && !w.packageScan {
+	if r, ok := w.memo[key]; ok {
 		return r
 	}
 	if lerr := w.charge(); lerr != nil {
 		return w.fail(lerr)
 	}
 	r := w.templateList(v, depth)
-	if !w.SourceAnalysis && !w.packageScan {
-		if w.memo == nil {
-			w.memo = make(map[walkMemoKey]*LVal)
-		}
-		w.memo[key] = r
+	if w.memo == nil {
+		w.memo = make(map[walkMemoKey]*LVal)
 	}
+	w.memo[key] = r
 	return r
 }
 
 func (w *CodeWalker) templateList(v *LVal, depth int) *LVal {
 	b := newRebuild(v)
 	if h := v.Cells[0]; v.Type == LSExpr && h.Type == LSymbol &&
-		((!w.SourceAnalysis && len(v.Cells) == 2) || (w.SourceAnalysis && !v.quoted)) &&
+		((!w.sourceAnalysis && len(v.Cells) == 2) || (w.sourceAnalysis && !v.quoted)) &&
 		(h.Str == "unquote" || h.Str == "unquote-splicing") {
 		w.forms(b, 1, depth)
 		return b.done()
@@ -1453,40 +1455,89 @@ func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
 // registry. Keeping qualification policy here prevents tools from maintaining
 // their own lists of builtin binding forms. Package scanning is deliberately
 // conservative: it descends ordinary list structure but never template holes.
-func (w *CodeWalker) sourceSpecialOp(head *LVal) (string, bool) {
+func (w *CodeWalker) sourceSpecialOp(head *LVal) (string, formKind) {
 	if head == nil || head.Type != LSymbol {
-		return "", false
+		return "", kindNone
 	}
-	name := strings.TrimPrefix(head.Str, DefaultLangPackage+":")
-	qualified := name != head.Str
-	k := specialFormKind(name)
-	known := false
-	switch k {
-	case kindQuote, kindQuasiquote:
-		known = true
-	case kindLambda, kindLet, kindLetSeq, kindFlet, kindLabels:
-		known = !w.packageScan || !qualified
-	case kindDefun, kindDefmacro, kindDeftype, kindMacrolet, kindHandlerBind:
-		known = !qualified
-	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
-		known = !w.packageScan && !qualified
-	case kindExpr:
-		known = !w.packageScan
-	case kindNone, kindAssert, kindThreadFirst, kindThreadLast, kindProgn, kindIgnoreErrors, kindWithCleanup,
-		kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindBenchmark:
+	mode := 0
+	if w.packageScan {
+		mode = 1
 	}
-	if !known {
-		return "", false
+	lengths := sourceNameLengths[mode]
+	if n := len(head.Str); n >= len(lengths) || !lengths[n] {
+		return "", kindNone
 	}
-	return name, true
+	k := sourceFormModes[mode][head.Str]
+	if k == kindNone {
+		return "", kindNone
+	}
+	return strings.TrimPrefix(head.Str, DefaultLangPackage+":"), k
 }
 
-func (w *CodeWalker) bindingForm(v *LVal, spec *CodeBinding, depth int) *LVal {
+// sourceModes is an exhaustive policy over the one syntax registry. Cache
+// both spellings so ordinary calls need only one lookup, without prefix scans.
+func (k formKind) sourceModes() uint8 {
+	switch k {
+	case kindQuote, kindQuasiquote:
+		return 0b1111 // source and package scan, plain and qualified
+	case kindLambda, kindLet, kindLetSeq, kindFlet, kindLabels:
+		return 0b0111 // package scan omits qualified bindings
+	case kindDefun, kindDefmacro, kindDeftype, kindMacrolet, kindHandlerBind:
+		return 0b0101 // unqualified only
+	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
+		return 0b0001 // unqualified source only
+	case kindExpr:
+		return 0b0011 // source only
+	case kindNone, kindAssert, kindThreadFirst, kindThreadLast, kindProgn, kindIgnoreErrors, kindWithCleanup,
+		kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindBenchmark:
+		return 0
+	}
+	return 0
+}
+
+var sourceFormModes = func() [2]map[string]formKind {
+	var modes [2]map[string]formKind
+	for i := range modes {
+		modes[i] = make(map[string]formKind)
+	}
+	for name, kind := range formKinds {
+		flags := kind.sourceModes()
+		for i := range 4 {
+			if flags&(1<<i) != 0 {
+				spelling := name
+				if i%2 != 0 {
+					spelling = DefaultLangPackage + ":" + name
+				}
+				modes[i/2][spelling] = kind
+			}
+		}
+	}
+	return modes
+}()
+
+// Ordinary calls often have lengths no structural spelling can have (for
+// example +, <= and long qualified library names). Reject them before hashing.
+var sourceNameLengths = func() [2][]bool {
+	var lengths [2][]bool
+	for i, forms := range sourceFormModes {
+		maxLength := 0
+		for name := range forms {
+			maxLength = max(maxLength, len(name))
+		}
+		lengths[i] = make([]bool, maxLength+1)
+		for name := range forms {
+			lengths[i][len(name)] = true
+		}
+	}
+	return lengths
+}()
+
+func (w *CodeWalker) bindingForm(v *LVal, spec *codeBinding, depth int) *LVal {
 	b := newRebuild(v)
 	d := depth + 1
 	w.form(v.Cells[0], d)
 	if spec.NameIndex > 0 {
-		w.visit(WalkNode{Event: WalkDefine, Node: v.Cells[spec.NameIndex], Owner: v, Formals: v.Cells[spec.FormalsIndex], Depth: d})
+		w.visit(&walkNode{Event: WalkDefine, Node: v.Cells[spec.NameIndex], Owner: v, Formals: v.Cells[spec.FormalsIndex], Depth: d})
 	}
 	for i := 1; i < spec.FormalsIndex; i++ {
 		if i != spec.NameIndex {
@@ -1494,10 +1545,10 @@ func (w *CodeWalker) bindingForm(v *LVal, spec *CodeBinding, depth int) *LVal {
 		}
 	}
 	w.push(false)
-	w.visit(WalkNode{Event: WalkEnter, Node: v, Formals: v.Cells[spec.FormalsIndex], Function: true, Depth: depth})
+	w.visit(&walkNode{Event: WalkEnter, Node: v, Formals: v.Cells[spec.FormalsIndex], Function: true, Depth: depth})
 	w.formals(v.Cells[spec.FormalsIndex], "", d)
 	w.forms(b, spec.FormalsIndex+1, depth)
-	w.visit(WalkNode{Event: WalkLeave, Node: v, Function: true, Depth: depth})
+	w.visit(&walkNode{Event: WalkLeave, Node: v, Function: true, Depth: depth})
 	w.pop()
 	return b.done()
 }
@@ -1535,27 +1586,63 @@ func sourceExprFormalNames(pattern *LVal) []*LVal {
 // order for forward-reference and export registration. It preserves the tooling
 // prescan's conservative traversal of otherwise opaque call arguments. Quoted
 // data and quasiquote (including its holes) are excluded from this phase.
-func PackageForms(exprs []*LVal) []*LVal {
+func packageForms(exprs []*LVal) []*LVal {
 	var forms []*LVal
-	w := &CodeWalker{packageScan: true, Visit: func(n *WalkNode) bool {
-		if n.Event != WalkForm {
-			return true
-		}
-		if n.Op == "quote" || n.Op == "quasiquote" {
-			return false
-		}
-		h := n.Node.Cells[0]
-		name := ""
-		if h.Type == LSymbol {
-			name = h.Str
-		}
-		if n.Depth == 0 || name == "defun" || name == "defmacro" || name == "set" || name == "export" || name == "lisp:export" {
-			forms = append(forms, n.Node)
-		}
-		return true
-	}}
+	w := CodeWalker{packageScan: true}
 	for _, expr := range exprs {
-		w.Walk(expr)
+		w.scanPackage(expr, true, &forms)
 	}
 	return forms
+}
+
+// scanPackage is the declaration-only visitor of this walker. It needs no
+// expansion, lexical tracking, rebuilding, or runtime events. Classification
+// still comes from the same registry and exhaustive formKind dispatch.
+func (w *CodeWalker) scanPackage(v *LVal, top bool, out *[]*LVal) {
+	if v == nil || v.Type != LSExpr || v.quoted || len(v.Cells) == 0 {
+		return
+	}
+	_, kind := w.sourceSpecialOp(v.Cells[0])
+	if kind == kindQuote || kind == kindQuasiquote {
+		return
+	}
+	name := ""
+	if v.Cells[0].Type == LSymbol {
+		name = v.Cells[0].Str
+	}
+	if top || kind == kindDefun || kind == kindDefmacro || name == "set" || name == "export" || name == "lisp:export" {
+		*out = append(*out, v)
+	}
+	start := 0
+	switch kind {
+	case kindLet, kindLetSeq, kindFlet, kindLabels, kindMacrolet, kindHandlerBind:
+		bindingStart := 1
+		if kind == kindFlet || kind == kindLabels || kind == kindMacrolet {
+			bindingStart = 2
+		}
+		if len(v.Cells) > 1 {
+			for _, binding := range v.Cells[1].Cells {
+				for i := bindingStart; i < len(binding.Cells); i++ {
+					if child := binding.Cells[i]; child != nil && child.Type == LSExpr {
+						w.scanPackage(child, false, out)
+					}
+				}
+			}
+		}
+		start = 2
+	case kindDefun, kindDefmacro, kindDeftype:
+		start = 3
+	case kindLambda:
+		start = 2
+	case kindNone, kindFunction, kindSetBang, kindAssert, kindQuote, kindQuasiquote,
+		kindExpr, kindThreadFirst, kindThreadLast, kindDotimes, kindProgn,
+		kindIgnoreErrors, kindWithCleanup, kindCond, kindIf, kindWhen, kindUnless,
+		kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindTest, kindBenchmark,
+		kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
+	}
+	for i := start; i < len(v.Cells); i++ {
+		if child := v.Cells[i]; child != nil && child.Type == LSExpr {
+			w.scanPackage(child, false, out)
+		}
+	}
 }

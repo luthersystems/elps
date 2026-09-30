@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"reflect"
 	"sort"
 	"strings"
 	"testing"
@@ -13,6 +14,37 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// Source policy must never become part of the embedder-facing API again.
+func TestCodeWalkerPublicSurface(t *testing.T) {
+	for _, name := range []string{"SourceAnalysis", "BindingForm", "PackageForms"} {
+		_, exposed := reflect.TypeFor[CodeWalker]().FieldByName(name)
+		assert.False(t, exposed, "CodeWalker.%s belongs in internal/codewalk", name)
+	}
+	for _, name := range []string{"Owner", "Formals", "Init", "Outer", "Template"} {
+		_, exposed := reflect.TypeFor[WalkNode]().FieldByName(name)
+		assert.False(t, exposed, "WalkNode.%s belongs in internal/codewalk", name)
+	}
+	f, err := parser.ParseFile(token.NewFileSet(), "codewalk.go", nil, 0)
+	require.NoError(t, err)
+	for _, decl := range f.Decls {
+		switch decl := decl.(type) {
+		case *ast.FuncDecl:
+			assert.NotEqual(t, "PackageForms", decl.Name.Name)
+		case *ast.GenDecl:
+			for _, spec := range decl.Specs {
+				switch spec := spec.(type) {
+				case *ast.TypeSpec:
+					assert.NotEqual(t, "CodeBinding", spec.Name.Name)
+				case *ast.ValueSpec:
+					for _, name := range spec.Names {
+						assert.NotEqual(t, "WalkEnd", name.Name)
+					}
+				}
+			}
+		}
+	}
+}
 
 // kindConsts returns the formKind constants declared in codewalk.go.
 func kindConsts(t *testing.T) (map[string]bool, *ast.File) {
