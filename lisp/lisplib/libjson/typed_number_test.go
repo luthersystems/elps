@@ -112,7 +112,8 @@ func TestTypedNumberTextPlainCorpus(t *testing.T) {
 	for _, file := range files {
 		b, err := os.ReadFile(file) //nolint:gosec // G304: fixed repository fuzz corpus
 		require.NoError(t, err)
-		for _, line := range strings.Split(string(b), "\n") {
+		// Windows checkouts may convert the corpus to CRLF line endings.
+		for _, line := range strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n") {
 			if !strings.HasPrefix(line, "[]byte(") {
 				continue
 			}

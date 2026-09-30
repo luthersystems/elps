@@ -68,7 +68,8 @@ func TestTypedDocExamples(t *testing.T) {
 	for _, file := range typedDocFiles {
 		b, err := os.ReadFile(file) //nolint:gosec // G304: a fixed list of this repository's docs
 		require.NoError(t, err)
-		lines := strings.Split(string(b), "\n")
+		// Windows checkouts may convert the docs to CRLF line endings.
+		lines := strings.Split(strings.ReplaceAll(string(b), "\r\n", "\n"), "\n")
 		files := map[string]string{}
 		for i, line := range lines {
 			m := markerRE.FindStringSubmatch(line)
