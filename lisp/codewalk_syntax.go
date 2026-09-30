@@ -78,10 +78,12 @@ func init() {
 		panic("lisp: too many syntax operators for the bucket table")
 	}
 	syntaxBuckets = make([][256]uint8, maxLength+1)
+	var index uint8 // 1-based index of the entry just appended
 	for _, name := range names {
 		b := &syntaxBuckets[len(name)][name[0]]
 		bare := slices.Contains(syntaxHoleMarkers, name)
 		syntaxEntries = append(syntaxEntries, syntaxEntry{name: name, next: *b, bareOnly: bare})
-		*b = uint8(len(syntaxEntries))
+		index++
+		*b = index
 	}
 }
