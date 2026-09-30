@@ -204,3 +204,39 @@ func TestTemplateLazyConcurrentVMs(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestTemplateLazyStepParity: the same evaluation charges the same steps on a
+// cold build, on a fork of each template mode, and on a prewarmed fork, so
+// deferring package slot storage cannot change what a transaction is charged.
+func TestTemplateLazyStepParity(t *testing.T) {
+	templates := lazyParityTemplates(t)
+	run := func(vm *lisp.LEnv) (string, int64) {
+		before := vm.Runtime.TotalSteps()
+		got := vm.LoadString("probe.lisp", lazyParityProbe).String()
+		return got, vm.Runtime.TotalSteps() - before
+	}
+	const budget = 1 << 40 // steps are metered only under a budget
+	cold := loadTemplateFixture(t, lazyParitySource)
+	cold.Runtime.SetStepBudget(budget)
+	want, wantSteps := run(cold)
+	if wantSteps == 0 {
+		t.Fatal("probe charged no steps")
+	}
+	forkTemplateFixture(t, templates["prewarm"]).LoadString("probe.lisp", lazyParityProbe) // learn a hot set
+	for _, mode := range []string{"eager", "lazy", "lazy-frozen", "prewarm"} {
+		for _, prewarm := range []bool{false, true} {
+			opts := []lisp.VMOption{lisp.VMWithStepBudget(budget)}
+			if prewarm {
+				opts = append(opts, lisp.VMWithPrewarm())
+			}
+			vm, err := templates[mode].NewVM(opts...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got, steps := run(vm)
+			if got != want || steps != wantSteps {
+				t.Errorf("%s prewarm=%v: %s in %d steps, cold %s in %d steps", mode, prewarm, got, steps, want, wantSteps)
+			}
+		}
+	}
+}

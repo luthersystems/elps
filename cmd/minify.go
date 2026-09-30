@@ -44,7 +44,7 @@ excluded with reason "quoted-reference". This conservative rule preserves quoted
 function designators such as (map 'list 'twice values).
 
 Calls to load-string, load-bytes, load-file, eval, macroexpand, macroexpand-1,
-gensym, type, or qualified-symbol preserve EVERY binding name, including lexical locals,
+macroexpand-all, gensym, type, or qualified-symbol preserve EVERY binding name, including lexical locals,
 across all input files, even with --rename-exports. The same rule covers symbol
 and intern when supplied by a host, and lisp:-qualified spellings. References
 passed as function values or appearing in quoted templates also trigger it

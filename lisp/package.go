@@ -197,10 +197,10 @@ type Package struct {
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
 	funNames map[string]string
-	// lazy is non-nil while some binding of this VM's package is not yet
-	// materialized from a lazy template plan: a nil baseValues slot, or (after
+	// lazy.inst is non-nil while some binding of this VM's package is not yet
+	// materialized from a lazy template plan: absent/nil slot storage, or (after
 	// a thaw) a lazyPending entry in symbols. See template_lazy.go.
-	lazy *lazyPackage
+	lazy lazyPackage
 	// base is non-nil while this Package belongs to a VM minted from a
 	// template that gave it a shared base -- it was named by
 	// TemplateWithFrozenPackages, or the template instantiates lazily, which
@@ -220,9 +220,11 @@ type Package struct {
 	Name         string
 	Doc          string
 	externals    []string
-	// baseValues holds this VM's values for base.index's slots.  The slice
-	// is per VM; only the name->slot index is shared.  putSlot writes it in
-	// place when a frozen package rebinds a name it already has.
+	// baseValues holds this VM's values for base.index's slots. Until the
+	// first materialization or slot write it is nil: reads use the shared
+	// references in base.bindings. Once allocated, its storage belongs to
+	// this package alone, so retaining it cannot retain another package's
+	// VM values. No VM writes the template's binding descriptors.
 	baseValues []*LVal
 	// externalsSortedLen records the length externals had the last time
 	// Exports left it in sorted order.  It is a validity token, not a flag:
@@ -242,19 +244,22 @@ type Package struct {
 	bindingsSealed bool
 }
 
-// packageBase holds a frozen package's read-only tables. The backing maps and
-// slice live in packagetable, outside the kernel's reach. The compiler builds
-// the base before publication; elpsfrozenpackage confines field replacement to
-// that constructor and checks writes to Package's mutable tables as well.
+// packageBase holds a frozen package's read-only tables and binding descriptors.
+// Table storage lives in packagetable, outside the kernel's reach. Descriptors
+// contain only admitted shared values or plan indices, never VM values. The
+// compiler builds the base before publication; elpsfrozenpackage confines every
+// descriptor/table write to that constructor and the audited package writers.
 type packageBase struct {
 	check packageBaseCheck
 	// onThaw is the template's TemplateWithThawHook callback, or nil. It is
 	// set once at publication and only read afterwards.
 	onThaw     func(pkg string)
+	bindings   []templateBinding
 	index      packagetable.Map[int]
 	funNames   packagetable.Map[string]
 	symbolDocs packagetable.Map[string]
 	externals  packagetable.Strings
+	pending    int // bindings with a per-VM value (index != 0)
 }
 
 // Frozen reports whether pkg still reads a template-frozen package's shared
@@ -267,33 +272,57 @@ func (pkg *Package) Frozen() bool {
 // baseValue is the only read of a base slot: it materializes the slot from
 // a lazy plan on first read.
 func (pkg *Package) baseValue(i int) *LVal {
-	v := pkg.baseValues[i]
-	if v == nil && pkg.lazy != nil {
+	v := pkg.slotValue(i)
+	if v == nil && pkg.lazy.inst != nil {
 		v = pkg.fillBaseValue(i)
 	}
 	return v
+}
+
+// slotValue reads a slot without materializing it. A nil baseValues slice
+// uses the immutable descriptors; nil means either a pending or a nil binding.
+// Only the filling accessors and thaw/putSlot may consume that distinction.
+func (pkg *Package) slotValue(i int) *LVal {
+	if pkg.baseValues == nil {
+		return pkg.base.bindings[i].value.shared
+	}
+	return pkg.baseValues[i]
+}
+
+// ensureBaseValues gives this package private slot storage on its first fill
+// or write. Shared values are copied; per-VM values remain nil until reached.
+func (pkg *Package) ensureBaseValues() {
+	if pkg.baseValues != nil {
+		return
+	}
+	pkg.baseValues = make([]*LVal, len(pkg.base.bindings))
+	for i, binding := range pkg.base.bindings {
+		pkg.baseValues[i] = binding.value.shared
+	}
 }
 
 // fillBaseValue materializes one base slot of a lazy package.
 //
 //go:noinline
 func (pkg *Package) fillBaseValue(i int) *LVal {
-	lazy := pkg.lazy
-	if lazy.refs[i].index == 0 {
+	lazy := &pkg.lazy
+	ref := lazy.base.bindings[i].value
+	if ref.index == 0 {
 		return nil
 	}
-	v := lazy.inst.ref(lazy.refs[i])
+	pkg.ensureBaseValues()
+	v := lazy.inst.ref(ref)
 	pkg.baseValues[i] = v
 	lazy.settle(pkg)
 	return v
 }
 
 // settle records one materialized binding and drops the link to the lazy
-// instance after the last, so a fully materialized package retains nothing.
+// instance after the last, so the embedded link retains no VM state.
 func (lazy *lazyPackage) settle(pkg *Package) {
 	lazy.pending--
 	if lazy.pending == 0 {
-		pkg.lazy = nil
+		pkg.lazy = lazyPackage{}
 	}
 }
 
@@ -314,9 +343,9 @@ func (pkg *Package) symbol(name string) (*LVal, bool) {
 func (pkg *Package) fillSymbol(name string) *LVal {
 	v := pkg.symbols[name]
 	if v == lazyPending {
-		lazy := pkg.lazy
-		i, _ := lazy.index.Lookup(name)
-		v = lazy.inst.ref(lazy.refs[i])
+		lazy := &pkg.lazy
+		i, _ := lazy.base.index.Lookup(name)
+		v = lazy.inst.ref(lazy.base.bindings[i].value)
 		pkg.symbols[name] = v
 		lazy.settle(pkg)
 	}
@@ -326,7 +355,7 @@ func (pkg *Package) fillSymbol(name string) *LVal {
 // materializeSymbols replaces every pending binding, before a caller that
 // reads the whole table.
 func (pkg *Package) materializeSymbols() {
-	if pkg.lazy == nil || pkg.base != nil {
+	if pkg.lazy.inst == nil || pkg.base != nil {
 		return
 	}
 	for name, v := range pkg.symbols {
@@ -357,7 +386,7 @@ func (pkg *Package) thaw() {
 	for name, i := range base.index.All() {
 		// A slot a lazy plan has not materialized stays pending: a write to
 		// one binding must not build the rest of the package.
-		if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil || pkg.lazy.refs[i].index == 0 {
+		if v := pkg.slotValue(i); v != nil || pkg.lazy.inst == nil || pkg.lazy.base.bindings[i].value.index == 0 {
 			symbols[name] = v
 		} else {
 			symbols[name] = lazyPending
@@ -401,7 +430,7 @@ func (pkg *Package) lookupRaw(name string) (*LVal, bool) {
 	if !ok {
 		return nil, false
 	}
-	if v := pkg.baseValues[i]; v != nil || pkg.lazy == nil {
+	if v := pkg.slotValue(i); v != nil || pkg.lazy.inst == nil {
 		return v, true
 	}
 	return lazyPending, true
@@ -461,7 +490,7 @@ func (pkg *Package) symbolDocTable() map[string]string {
 // package that already has a binding, a base or a lazy plan untouched, so it
 // never changes what a package holds -- only how much room it starts with.
 func (pkg *Package) reserve(n int) {
-	if pkg.base != nil || pkg.lazy != nil || len(pkg.symbols) != 0 || len(pkg.funNames) != 0 {
+	if pkg.base != nil || pkg.lazy.inst != nil || len(pkg.symbols) != 0 || len(pkg.funNames) != 0 {
 		return
 	}
 	pkg.symbols = make(map[string]*LVal, n)
@@ -766,7 +795,7 @@ func (pkg *Package) putName(name string, v *LVal) {
 			v.funData().name = name // see funData.name
 		}
 	}
-	if pkg.lazy != nil && pkg.symbols[name] == lazyPending {
+	if pkg.lazy.inst != nil && pkg.symbols[name] == lazyPending {
 		pkg.lazy.settle(pkg)
 	}
 	pkg.symbols[name] = v
@@ -800,7 +829,8 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 			v.funData().name = name // see funData.name
 		}
 	}
-	if pkg.lazy != nil && pkg.baseValues[i] == nil && pkg.lazy.refs[i].index != 0 {
+	pkg.ensureBaseValues()
+	if pkg.lazy.inst != nil && pkg.baseValues[i] == nil && pkg.lazy.base.bindings[i].value.index != 0 {
 		pkg.lazy.settle(pkg) // overwriting a binding a lazy plan never materialized
 	}
 	pkg.baseValues[i] = v

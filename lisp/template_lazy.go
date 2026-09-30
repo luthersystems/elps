@@ -8,8 +8,6 @@ import (
 	"math/bits"
 	"slices"
 	"sync/atomic"
-
-	"github.com/luthersystems/elps/internal/packagetable"
 )
 
 // Lazy template instantiation.
@@ -44,6 +42,9 @@ import (
 // pending entries, keeps its lazyInstance and therefore the plan and every
 // object this VM has materialized alive. Both drop the reference once their
 // last pending entry is filled.
+// Package shells have independent allocations, with embedded lazy state and
+// no slot storage until their first fill or write. A shared shell or slab of
+// private slots would let one escaped package retain other packages' VM state.
 
 // lazyPending marks a sorted-map entry or a thawed package binding that has
 // not been materialized. It is never returned by an accessor: every direct
@@ -81,12 +82,12 @@ type lazyInstance struct {
 	count        int
 }
 
-// lazyPackage is a package's link to the lazy instance. refs[i] describes
-// slot i of index; after a thaw it resolves pending bindings by name.
+// lazyPackage is embedded in its package shell. The base describes its slots
+// and resolves pending bindings by name after a thaw. All fields are cleared
+// when the last binding settles, including the link to the VM's lazy instance.
 type lazyPackage struct {
 	inst    *lazyInstance
-	index   packagetable.Map[int]
-	refs    []templateRef
+	base    *packageBase
 	pending int
 }
 
@@ -348,7 +349,7 @@ func (z *lazySorted) resolve(key string) *LVal {
 }
 
 func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
-	rt := p.runtime.newRuntime(config)
+	rt := p.runtime.newRuntime(config, len(p.packages))
 	for _, payload := range p.natives {
 		checkNativeAffinity(rt, payload)
 	}
@@ -361,20 +362,12 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 	}
 	for i := range p.packages {
 		pkg := &p.packages[i]
-		// One allocation per package: a shared backing array would let a
-		// retained package keep every other package's values alive.
-		values := make([]*LVal, len(pkg.refs))
-		var lazy *lazyPackage
-		if pkg.pending > 0 {
-			lazy = &lazyPackage{inst: l, index: pkg.base.index, refs: pkg.refs, pending: pkg.pending}
-		}
-		for slot, ref := range pkg.refs {
-			if ref.index == 0 {
-				values[slot] = ref.shared
-			}
+		var lazy lazyPackage
+		if pkg.base.pending > 0 {
+			lazy = lazyPackage{inst: l, base: pkg.base, pending: pkg.base.pending}
 		}
 		rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
-			base: pkg.base, baseValues: values, lazy: lazy, unfrozenBase: pkg.unfrozen}
+			base: pkg.base, lazy: lazy, unfrozenBase: pkg.unfrozen}
 	}
 	if p.runtime.hasCurrentPackage {
 		rt.Package = rt.Registry.packages[p.runtime.currentPackage]

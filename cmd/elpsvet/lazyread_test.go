@@ -20,6 +20,7 @@ func TestLazyReadAnalyzer(t *testing.T) {
 func TestLazyTableAllowlist(t *testing.T) {
 	want := []string{
 		"Package.baseValue", "Package.symbol", "Package.fillSymbol", "Package.lookupRaw", "Package.fillBaseValue", "sortedmap.Get", "Package.materializeSymbols",
+		"Package.slotValue", "Package.ensureBaseValues",
 		"sortedmap.entry", "sortedmap.forceAll", "sortedmap.discardPending", "Package.reserve",
 		"Package.symbolTable", "Package.thaw", "sortedmap.Entries", "sortedmap.copyInto", "sortedmap.entriesWithInts", "setTemplateFrameSortedMap",
 		"LVal.AppendSortedPairs", "LVal.mapRange", "copier.mapData", "templateInventory.mapData",

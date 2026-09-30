@@ -54,6 +54,12 @@ type Config struct {
 	// When set, the analyzer expands macro calls and analyzes the expanded
 	// code, resolving symbols introduced by the macro (e.g. lambda params).
 	// If expansion fails, the analyzer falls back to opaque macro handling.
+	//
+	// Top-level macro calls are expanded during prescan too, so definitions
+	// a macro generates are forward-referenceable, and each such definition
+	// records its macro call in Symbol.GeneratedBy (see
+	// Result.GeneratedDefinitions). With an expander, a def-prefixed call is
+	// expanded rather than guessed at by name; DefForms still take priority.
 	MacroExpander MacroExpander
 
 	// Filename is the source file being analyzed.
@@ -77,6 +83,9 @@ type ExternalSymbol struct {
 	Signature *Signature
 	Source    *token.Location
 	DocString string
+	// GeneratedBy records the macro call that produced this definition,
+	// when it came from Result.GeneratedDefinitions. Nil otherwise.
+	GeneratedBy *MacroOrigin
 }
 
 // Result holds the output of semantic analysis.
@@ -96,6 +105,12 @@ type Result struct {
 	// Copied from Config. Used by lint analyzers to check whether a symbol
 	// is referenced from other workspace files (e.g. unused-function check).
 	WorkspaceRefs map[string][]FileReference
+
+	// MacroExpander and DefaultPackage are copied from Config, so lint
+	// analyzers that walk fully expanded code (astutil.ExpandAll) expand
+	// with the same expander, in the same package, as the analysis did.
+	MacroExpander  MacroExpander
+	DefaultPackage string
 }
 
 // Analyze performs semantic analysis on a set of parsed expressions.
@@ -119,6 +134,8 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 			DocString: ext.DocString,
 			Exported:  true,
 			External:  true,
+
+			GeneratedBy: ext.GeneratedBy,
 		}
 		if ext.Package != "" {
 			root.DefineQualifiedOnly(sym)
@@ -128,8 +145,14 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	a := &analyzer{
-		root:             root,
-		result:           &Result{RootScope: root, ExtraGlobals: cfg.ExtraGlobals, WorkspaceRefs: cfg.WorkspaceRefs},
+		root: root,
+		result: &Result{
+			RootScope:      root,
+			ExtraGlobals:   cfg.ExtraGlobals,
+			WorkspaceRefs:  cfg.WorkspaceRefs,
+			MacroExpander:  cfg.MacroExpander,
+			DefaultPackage: cfg.DefaultPackage,
+		},
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
 	}

@@ -99,16 +99,15 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 // Every VM starts with empty evaluation/condition stacks, location registers,
 // counters for evaluation work, context, debugger and profiler. Identifier
 // counters continue past publication so inherited function/gensym IDs stay unique.
-func (c templateRuntime) newRuntime(opts vmConfig) *Runtime {
+func (c templateRuntime) newRuntime(opts vmConfig, packages int) *Runtime {
 	rt := &Runtime{
-		Registry: NewRegistry(), Stderr: c.stderr,
+		Registry: &PackageRegistry{packages: make(map[string]*Package, packages), Lang: c.languagePackage}, Stderr: c.stderr,
 		Stack:  &CallStack{MaxHeightLogical: c.maxHeightLogical, MaxHeightPhysical: c.maxHeightPhysical, MaxTailIterations: c.maxTailIterations},
 		Reader: c.reader, Library: c.library, LoadCache: c.loadCache,
 		MaxAlloc: c.maxAlloc, MaxMacroExpansionDepth: c.maxMacroExpansionDepth,
 		MaxValueDepth: c.maxValueDepth, MaxEvalNesting: c.maxEvalNesting, MaxSleep: c.maxSleep, maxSteps: c.maxSteps, numenv: c.numenv, numsym: c.numsym,
 		LegacyKeywordFormals: c.legacyKeywordFormals,
 	}
-	rt.Registry.Lang = c.languagePackage
 	if c.settings != nil {
 		rt.settings = maps.Clone(c.settings)
 	}
