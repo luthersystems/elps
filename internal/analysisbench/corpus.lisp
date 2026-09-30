@@ -236,7 +236,6 @@
                               (invoke :mul (new rational 1 2))
                               (invoke :to-float))))
 
-
 ; Source: _examples/sicp/approx.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -303,7 +302,6 @@
 
 (debug-print '(accelerated-sequence 'euler-transform pi-stream))
 (stream-debug (stream-take (accelerated-sequence 'euler-transform pi-stream) 8))
-
 
 ; Source: _examples/sicp/complex.lisp
 ; Copyright © 2018 The ELPS authors
@@ -465,7 +463,6 @@
 (assert= (/ math:pi 2) (complex-angle (make-polar-from-real-imag 0 1)))
 (assert= (/ math:pi 4) (complex-angle (make-polar-from-real-imag 1 1)))
 
-
 ; Source: _examples/sicp/diff.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -531,7 +528,6 @@
 (assert-equal 'y (deriv '(* x y) 'x))
 (assert-equal '(+ (* x y) (* y (+ x 3)))
               (deriv '(* (* x y) (+ x 3)) 'x))
-
 
 ; Source: _examples/sicp/scheme-math.lisp
 ; Copyright © 2018 The ELPS authors
@@ -813,7 +809,6 @@
 (assert= 1 (magnitude (make-complex-from-real-imag 0 1)))
 (assert= (sqrt 2) (magnitude (make-complex-from-real-imag 1 1)))
 
-
 ; Source: _examples/sicp/sicp.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -1069,7 +1064,6 @@
                     (list 2 3 4))
               (ordered-triples 1 4))
 
-
 ; Source: _examples/sicp/stream.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -1291,7 +1285,6 @@
                 '(3 4)) ; this order is good 👍
               (stream-collect (stream-take (better-pairs positive-integers positive-integers) 9)))
 
-
 ; Source: _examples/user-defined-types/address-book.lisp
 (set 'address-book (sorted-map))
 
@@ -1314,7 +1307,6 @@
 (say-hello (sorted-map "Name" "Carol"))
 ;; "Hello, ()"
 
-
 ; Source: _examples/user-defined-types/contact-info_solved.lisp
 (deftype contact-info (name phone)
   (sorted-map "name" name "phone" phone))
@@ -1334,7 +1326,6 @@
 
 ;; (say-hello (sorted-map "name" "Bob"))
 ;; type-error: argument is not contact-info
-
 
 ; Source: _examples/user-defined-types/option_solved.lisp
 (in-package 'option)
@@ -1395,7 +1386,6 @@
 (optional-map #^(send-sms % "hello")
               (lookup m "phone"))
 
-
 ; Source: _examples/user-defined-types/phone_solved.lisp
 (use-package 'regexp)
 
@@ -1411,7 +1401,6 @@
 ;; (debug-print (new phone-number "+1 5555ABC"))
 ;; (debug-print (new phone-number 15555555))
 ;; format-error: invalid phone number
-
 
 ; Source: lisp/lisplib/libelpspath/libelpspath_cycle_test.lisp
 ; Copyright © 2026 The ELPS authors
@@ -1455,7 +1444,6 @@
          [both (vector x x)])
     (assert-equal (vector 1 1) (elpspath:? both '* "a"))
     (assert-equal (vector 1 2) (elpspath:? (elpspath:?set (sorted-map "v" (vector 1 2)) "k" 1) "v"))))
-
 
 ; Source: lisp/lisplib/libelpspath/libelpspath_test.lisp
 (use-package 'elpspath)
@@ -1860,7 +1848,6 @@
   (assert-equal (elpspath:parse-path ".a") (elpspath:parse-path ".a?"))
   (assert-equal '("a" 0) (elpspath:parse-path ".a[0]?")))
 
-
 ; Source: lisp/lisplib/libgolang/libgolang_test.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -1876,7 +1863,6 @@
              123))
   (assert (= (golang:float (field "FloatField"))
              12.34)))
-
 
 ; Source: lisp/lisplib/libjson/libjson_cycle_test.lisp
 ; Copyright © 2018 The ELPS authors
@@ -1906,7 +1892,6 @@
   ; Sharing a value is not a cycle: both copies still serialize.
   (let ([x (sorted-map "a" 1)])
     (assert-string= """[{"a":1},{"a":1}]""" (json:dump-string (vector x x)))))
-
 
 ; Source: lisp/lisplib/libjson/libjson_integer_test.lisp
 ; Copyright © 2026 The ELPS authors
@@ -2048,7 +2033,6 @@
   (assert= 9007199254740993
            (json:load-message (json:dump-message 9007199254740993) :exact-integers true)))
 
-
 ; Source: lisp/lisplib/libjson/libjson_null_test.lisp
 ; Copyright © 2026 The ELPS authors
 
@@ -2099,7 +2083,6 @@
   (assert-string= "\"other:null\"" (json:dump-string 'other:null))
   (assert-string= "json:null" (json:load-string "\"json:null\"")))
 
-
 ; Source: lisp/lisplib/libjson/libjson_string_numbers_test.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -2137,7 +2120,6 @@
     (assert-string= "syntax"
                     (handler-bind ([json:syntax-error (lambda (_c _) "syntax")])
                       (json:load-string "tru")))))
-
 
 ; Source: lisp/lisplib/libjson/libjson_test.lisp
 ; Copyright © 2018 The ELPS authors
@@ -2463,7 +2445,6 @@
 }
 """)
 
-
 ; Source: lisp/lisplib/libregexp/libregexp_test.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -2496,7 +2477,6 @@
   (assert-match """^\n*$""" "\n\n")
   (assert-match "^\n*$" "\n\n")
   (assert-match """\s""" "abc\n"))
-
 
 ; Source: lisp/lisplib/libschema/libschema_test.lisp
 (use-package 'testing)
@@ -2782,7 +2762,6 @@
                 (handler-bind (('error (lambda (&rest e) e)))
                   (s:deftype "removed" s:string))))
 
-
 ; Source: lisp/lisplib/libstring/libstring_test.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -2932,7 +2911,6 @@
   (assert-string= "日本" (trim-suffix "日本語" "語"))
   (assert-string= "日本語" (trim-suffix "日本語" "本")))
 
-
 ; Source: lisp/lisplib/libtime/libtime_test.lisp
 ; Copyright © 2018 The ELPS authors
 
@@ -2969,6 +2947,5 @@
                    "2000-01-01T01:13:00Z"))
   (assert (string= (format-rfc3339-nano (time-add epoch complex-dur))
                    "2000-01-01T01:13:00.45Z")))
-
 
 (handler-bind ((problem (lambda (c) (rethrow c)))) (error 'problem "example"))
