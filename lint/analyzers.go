@@ -242,13 +242,23 @@ type letRecursionState struct {
 // Resolution is joined by source position: pass.Exprs and pass.Semantics can
 // be separate parses, so comparing their LVal pointers would miss every ref.
 func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
+	if s.visit(node, depth) {
+		for _, child := range node.Cells {
+			s.walk(child, depth)
+		}
+	}
+}
+
+// visit handles node and reports whether walk should descend into all of its
+// children at the same function depth.
+func (s *letRecursionState) visit(node *lisp.LVal, depth int) bool {
 	if node == nil || node.IsQuoted() {
-		return
+		return false
 	}
 	if node.Type == lisp.LSymbol {
 		pos := posFromSource(astutil.SourceLoc(node))
 		if s.unresolved[pos] != node.Str {
-			return
+			return false
 		}
 		bindings := s.pending[node.Str]
 		for i := len(bindings) - 1; i >= 0; i-- {
@@ -266,27 +276,27 @@ func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
 				},
 				Related: relatedFromSource(astutil.SymbolLoc(binding.name), "binding introduced after its initializer"),
 			})
-			return
+			return false
 		}
-		return
+		return false
 	}
 	if node.Type != lisp.LSExpr || len(node.Cells) == 0 {
-		return
+		return false
 	}
 	spelling := HeadSymbol(node)
-	head := strings.TrimPrefix(spelling, "lisp:")
+	head := codewalk.Operator(node)
 	switch head {
-	case "quote", "quasiquote":
-		return
-	case "let", "let*", "lambda", "expr", "flet", "labels", "defun", "defmacro":
+	case codewalk.OpQuote, codewalk.OpQuasiquote:
+		return false
+	case codewalk.OpLet, codewalk.OpLetSeq, codewalk.OpLambda, codewalk.OpExpr, codewalk.OpFlet, codewalk.OpLabels, codewalk.OpDefun, codewalk.OpDefmacro:
 		if spelling == head && s.shadowed[head] {
-			return
+			return false
 		}
 	}
 	switch head {
-	case "let", "let*":
+	case codewalk.OpLet, codewalk.OpLetSeq:
 		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
-			return
+			return false
 		}
 		for _, binding := range node.Cells[1].Cells {
 			if binding == nil || binding.Type != lisp.LSExpr || len(binding.Cells) != 2 || binding.Cells[0] == nil || binding.Cells[0].Type != lisp.LSymbol {
@@ -301,19 +311,19 @@ func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
 		for _, body := range node.Cells[2:] {
 			s.walk(body, depth)
 		}
-	case "lambda":
+	case codewalk.OpLambda:
 		if len(node.Cells) >= 2 {
 			for _, body := range node.Cells[2:] {
 				s.walk(body, depth+1)
 			}
 		}
-	case "expr":
+	case codewalk.OpExpr:
 		for _, body := range node.Cells[1:] {
 			s.walk(body, depth+1)
 		}
-	case "flet", "labels":
+	case codewalk.OpFlet, codewalk.OpLabels:
 		if len(node.Cells) < 2 || node.Cells[1] == nil || node.Cells[1].Type != lisp.LSExpr {
-			return
+			return false
 		}
 		for _, binding := range node.Cells[1].Cells {
 			if binding != nil && binding.Type == lisp.LSExpr && len(binding.Cells) >= 2 {
@@ -325,17 +335,16 @@ func (s *letRecursionState) walk(node *lisp.LVal, depth int) {
 		for _, body := range node.Cells[2:] {
 			s.walk(body, depth)
 		}
-	case "defun", "defmacro":
+	case codewalk.OpDefun, codewalk.OpDefmacro:
 		if len(node.Cells) >= 3 {
 			for _, body := range node.Cells[3:] {
 				s.walk(body, depth+1)
 			}
 		}
 	default:
-		for _, child := range node.Cells {
-			s.walk(child, depth)
-		}
+		return true
 	}
+	return false
 }
 
 // AnalyzerQuoteCall warns when set is called with an unquoted symbol
@@ -610,34 +619,25 @@ func checkBuiltinArity(pass *Pass, sexpr *lisp.LVal, skipNodes map[*lisp.LVal]bo
 	}
 }
 
-// bindingForms are the special operators whose first argument is a list of
-// bindings rather than an expression to evaluate. Their binding entries look
-// like function calls to a naive walk — (let ((map (sorted-map))) ...)
-// contains the s-expression (map (sorted-map)) — so they must be excluded
-// from call-shaped checks.
-//
-// letBinding entries are (name value); funBinding entries are
-// (name (formals...) body...).
-var bindingForms = map[string]struct{ funBinding bool }{
-	"let":      {funBinding: false},
-	"let*":     {funBinding: false},
-	"flet":     {funBinding: true},
-	"labels":   {funBinding: true},
-	"macrolet": {funBinding: true},
-}
-
-// bindingList returns the binding list of a binding form, or nil if sexpr is
-// not a binding form or is malformed.
-func bindingList(sexpr *lisp.LVal) (*lisp.LVal, bool) {
-	kind, ok := bindingForms[HeadSymbol(sexpr)]
-	if !ok || ArgCount(sexpr) < 1 {
+// bindingList reads binding-list syntax selected by a walker operator event.
+// Preserve the arity check's bare-spelling policy and permissive validation.
+func bindingList(sexpr *lisp.LVal, op string) (*lisp.LVal, bool) {
+	if HeadSymbol(sexpr) != op || ArgCount(sexpr) < 1 {
+		return nil, false
+	}
+	funBinding := false
+	switch op {
+	case codewalk.OpLet, codewalk.OpLetSeq:
+	case codewalk.OpFlet, codewalk.OpLabels, codewalk.OpMacrolet:
+		funBinding = true
+	default:
 		return nil, false
 	}
 	binds := sexpr.Cells[1]
 	if binds == nil || binds.Type != lisp.LSExpr {
 		return nil, false
 	}
-	return binds, kind.funBinding
+	return binds, funBinding
 }
 
 // markLocallyShadowedCalls marks every call in form's subtree whose head is
@@ -690,27 +690,35 @@ func markLocallyShadowedCalls(form *lisp.LVal, binds *lisp.LVal, funBinding bool
 //     entries additionally carry a formals list.
 func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 	skip := make(map[*lisp.LVal]bool)
-	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
-		head := HeadSymbol(sexpr)
-		switch head {
-		case "defun", "defmacro":
+	visit := func(sexpr, _ *lisp.LVal, op string, _ int) bool {
+		if op == codewalk.OpQuasiquote {
+			return false
+		}
+		if sexpr.Type != lisp.LSExpr || sexpr.IsQuoted() || len(sexpr.Cells) == 0 {
+			return true
+		}
+		if HeadSymbol(sexpr) != op {
+			return true
+		}
+		switch op {
+		case codewalk.OpDefun, codewalk.OpDefmacro:
 			// Formals at position 2: (defun name (formals...) body...)
 			if ArgCount(sexpr) >= 2 {
 				skip[sexpr.Cells[2]] = true
 			}
-		case "lambda":
+		case codewalk.OpLambda:
 			// Formals at position 1: (lambda (formals...) body...)
 			if ArgCount(sexpr) >= 1 {
 				skip[sexpr.Cells[1]] = true
 			}
-		case "thread-first", "thread-last":
+		case codewalk.OpThreadFirst, codewalk.OpThreadLast:
 			// Children at positions 2+ are forms that get an extra arg
 			// inserted by the macro: (thread-first val (f a)) => (f val a)
 			for i := 2; i < len(sexpr.Cells); i++ {
 				skip[sexpr.Cells[i]] = true
 			}
 		}
-		if binds, funBinding := bindingList(sexpr); binds != nil {
+		if binds, funBinding := bindingList(sexpr, op); binds != nil {
 			skip[binds] = true
 			for _, bind := range binds.Cells {
 				if bind == nil || bind.Type != lisp.LSExpr {
@@ -723,7 +731,11 @@ func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 			}
 			markLocallyShadowedCalls(sexpr, binds, funBinding, skip)
 		}
-	})
+		return true
+	}
+	for _, expr := range exprs {
+		codewalk.Syntax(expr, nil, 0, visit)
+	}
 	return skip
 }
 
@@ -2450,11 +2462,12 @@ func (r *mutationRun) report(d Diagnostic) {
 // walkEvaluatedSExprs calls fn for every s-expression in exprs that the
 // program evaluates, skipping the ones that are data.
 func walkEvaluatedSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal)) {
+	w := evaluatedSyntax{fn: func(sexpr *lisp.LVal) bool {
+		fn(sexpr)
+		return true
+	}}
 	for _, expr := range exprs {
-		walkEvaluated(expr, func(sexpr *lisp.LVal) bool {
-			fn(sexpr)
-			return true
-		})
+		w.code(expr)
 	}
 }
 
@@ -2479,46 +2492,55 @@ func walkEvaluated(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
 	if node == nil || node.IsQuoted() {
 		return
 	}
-	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
-		switch mutationHead(node) {
-		case "quote":
-			return
-		case "quasiquote":
-			for _, cell := range node.Cells[1:] {
-				walkTemplate(cell, fn)
-			}
-			return
-		}
-		if !fn(node) {
-			return
-		}
-	}
-	for _, cell := range node.Cells {
-		walkEvaluated(cell, fn)
-	}
+	w := evaluatedSyntax{fn: fn}
+	w.code(node)
 }
 
-// walkTemplate walks the inside of a quasiquote template looking only for the
-// subtrees that escape it, and hands each of those back to walkEvaluated.
-//
-// Match findAndUnquote: nested quasiquotes, quote forms and reader quotes
-// do not hide unquote operands. Only the bare unquote/unquote-splicing markers
-// are recognized by getUnquoteType; lisp:unquote is ordinary template data.
-func walkTemplate(node *lisp.LVal, fn func(sexpr *lisp.LVal) bool) {
-	if node == nil {
+// evaluatedSyntax preserves this check's raw-structure policy: formals and
+// binding entries are inspected as before, and malformed template holes may
+// contain several operands. Ordinary evaluated-code walks omit that syntax.
+// Operator spellings come from CodeWalker's registry through codewalk.IsOp.
+type evaluatedSyntax struct {
+	fn func(*lisp.LVal) bool
+}
+
+func (w *evaluatedSyntax) code(node *lisp.LVal) {
+	if node == nil || node.IsQuoted() {
 		return
 	}
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
-		switch HeadSymbol(node) {
-		case "unquote", "unquote-splicing":
+		switch {
+		case codewalk.IsOp(node, codewalk.OpQuote):
+			return
+		case codewalk.IsOp(node, codewalk.OpQuasiquote):
 			for _, cell := range node.Cells[1:] {
-				walkEvaluated(cell, fn)
+				w.template(cell)
 			}
+			return
+		}
+		if !w.fn(node) {
 			return
 		}
 	}
 	for _, cell := range node.Cells {
-		walkTemplate(cell, fn)
+		w.code(cell)
+	}
+}
+
+// template follows the interpreter's hole vocabulary through nested quotes
+// and quasiquotes, including reader-quoted lists. Qualified hole names are data.
+func (w *evaluatedSyntax) template(node *lisp.LVal) {
+	if node == nil {
+		return
+	}
+	if codewalk.IsOp(node, codewalk.OpUnquote) || codewalk.IsOp(node, codewalk.OpUnquoteSplicing) {
+		for _, cell := range node.Cells[1:] {
+			w.code(cell)
+		}
+		return
+	}
+	for _, cell := range node.Cells {
+		w.template(cell)
 	}
 }
 
@@ -2898,25 +2920,24 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
 			return
 		}
-		head := unqualifiedLispName(HeadSymbol(v))
-		if head == "quote" || head == "quasiquote" {
+		head := codewalk.Operator(v)
+		if head == codewalk.OpQuote || head == codewalk.OpQuasiquote {
 			return
 		}
 		visit(v)
-		start := 0
+		start := 2
 		switch head {
-		case "lambda":
-			start = 2
-		case "defun", "defmacro", "deftype":
+		case codewalk.OpLambda:
+		case codewalk.OpDefun, codewalk.OpDefmacro, codewalk.OpDeftype:
 			start = 3
-		case "let", "let*", "labels", "flet", "macrolet", "handler-bind":
+		case codewalk.OpLet, codewalk.OpLetSeq, codewalk.OpLabels, codewalk.OpFlet, codewalk.OpMacrolet, codewalk.OpHandlerBind:
 			if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
 				for _, binding := range v.Cells[1].Cells {
 					if binding.Type != lisp.LSExpr {
 						continue
 					}
 					body := 1
-					if head == "labels" || head == "flet" || head == "macrolet" {
+					if head == codewalk.OpLabels || head == codewalk.OpFlet || head == codewalk.OpMacrolet {
 						body = 2
 					}
 					for i := body; i < len(binding.Cells); i++ {
@@ -2924,8 +2945,7 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 					}
 				}
 			}
-			start = 2
-		case "cond":
+		case codewalk.OpCond:
 			for _, clause := range v.Cells[1:] {
 				if clause.Type == lisp.LSExpr {
 					for _, expr := range clause.Cells {
@@ -2934,6 +2954,8 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 				}
 			}
 			return
+		default:
+			start = 0
 		}
 		for i := start; i < len(v.Cells); i++ {
 			walk(v.Cells[i])
