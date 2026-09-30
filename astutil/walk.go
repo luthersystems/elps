@@ -7,6 +7,7 @@
 package astutil
 
 import (
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -14,26 +15,14 @@ import (
 // Walk calls fn for every node in the tree, depth-first.
 // parent is nil for top-level expressions.
 func Walk(exprs []*lisp.LVal, fn func(node *lisp.LVal, parent *lisp.LVal, depth int)) {
+	visit := func(node, parent *lisp.LVal, op string, depth int) bool {
+		fn(node, parent, depth)
+		// Templates were always opaque to this syntactic walk, even when
+		// quoted. Every other node, including quoted structure, is visited.
+		return op != codewalk.OpQuasiquote
+	}
 	for _, expr := range exprs {
-		walkNode(expr, nil, 0, fn)
-	}
-}
-
-func walkNode(node *lisp.LVal, parent *lisp.LVal, depth int, fn func(*lisp.LVal, *lisp.LVal, int)) {
-	if node == nil {
-		return
-	}
-	fn(node, parent, depth)
-	// Don't recurse into quasiquote bodies — they are code-generation
-	// templates where forms like (defun (unquote name) ...) are data,
-	// not actual function definitions or calls.
-	if node.Type == lisp.LSExpr && len(node.Cells) > 0 &&
-		node.Cells[0].Type == lisp.LSymbol &&
-		(node.Cells[0].Str == "quasiquote" || node.Cells[0].Str == "lisp:quasiquote") {
-		return
-	}
-	for _, child := range node.Cells {
-		walkNode(child, node, depth+1, fn)
+		codewalk.Syntax(expr, nil, 0, visit)
 	}
 }
 
@@ -87,30 +76,43 @@ func ArgCount(sexpr *lisp.LVal) int {
 // suppress a valid finding but will never produce a false positive.
 func UserDefined(exprs []*lisp.LVal) map[string]bool {
 	defs := make(map[string]bool)
-	WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
+	visit := func(sexpr, _ *lisp.LVal, op string, _ int) bool {
+		if op == codewalk.OpQuasiquote {
+			return false
+		}
+		if sexpr.Type != lisp.LSExpr || sexpr.IsQuoted() || len(sexpr.Cells) == 0 {
+			return true
+		}
 		head := HeadSymbol(sexpr)
-		switch head {
-		case "defun", "defmacro":
+		// This heuristic has always recognized only bare kernel spellings.
+		if head != op && head != "set" {
+			return true
+		}
+		switch op {
+		case codewalk.OpDefun, codewalk.OpDefmacro:
 			if ArgCount(sexpr) >= 1 && sexpr.Cells[1].Type == lisp.LSymbol {
 				defs[sexpr.Cells[1].Str] = true
 			}
-			// Collect parameter names from the formals list
 			if ArgCount(sexpr) >= 2 {
 				CollectFormals(sexpr.Cells[2], defs)
 			}
-		case "lambda":
+		case codewalk.OpLambda:
 			if ArgCount(sexpr) >= 1 {
 				CollectFormals(sexpr.Cells[1], defs)
 			}
-		case "set", "set!":
-			// (set 'name v) rebinds name, e.g. a program's own when.
-			if ArgCount(sexpr) >= 1 {
+		case codewalk.OpSetBang, "":
+			// set is an ordinary function; set! is a walker operator.
+			if (op == codewalk.OpSetBang || head == "set") && ArgCount(sexpr) >= 1 {
 				if name := quotedSymbolName(sexpr.Cells[1]); name != "" {
 					defs[name] = true
 				}
 			}
 		}
-	})
+		return true
+	}
+	for _, expr := range exprs {
+		codewalk.Syntax(expr, nil, 0, visit)
+	}
 	return defs
 }
 
