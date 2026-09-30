@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -32,18 +33,24 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 
 	var summaries []*FunctionSummary
 
-	astutil.WalkSExprs(exprs, func(sexpr *lisp.LVal, depth int) {
+	visit := func(sexpr, _ *lisp.LVal, op string, _ int) bool {
+		if op == codewalk.OpQuasiquote {
+			return false
+		}
+		if sexpr.Type != lisp.LSExpr || sexpr.IsQuoted() || len(sexpr.Cells) == 0 {
+			return true
+		}
 		head := astutil.HeadSymbol(sexpr)
-		if head != "defun" && head != "defmacro" {
-			return
+		if head != op || (op != codewalk.OpDefun && op != codewalk.OpDefmacro) {
+			return true
 		}
 		if astutil.ArgCount(sexpr) < 2 {
-			return
+			return true
 		}
 
 		nameNode := sexpr.Cells[1]
 		if nameNode.Type != lisp.LSymbol {
-			return
+			return true
 		}
 
 		funcName := nameNode.Str
@@ -70,27 +77,42 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 		scanBody(body, funcName, 0, ctx, summary)
 
 		summaries = append(summaries, summary)
-	})
-
+		return true
+	}
+	for _, expr := range exprs {
+		codewalk.Syntax(expr, nil, 0, visit)
+	}
 	return summaries
 }
 
 // scanBody recursively walks body expressions, tracking loop depth and
 // collecting call edges and cost.
 func scanBody(exprs []*lisp.LVal, caller string, loopDepth int, ctx *scanContext, summary *FunctionSummary) {
+	s := bodyScanner{caller: caller, loopDepth: loopDepth, ctx: ctx, summary: summary}
 	for _, expr := range exprs {
-		scanExpr(expr, caller, loopDepth, ctx, summary)
+		s.walk(expr, loopDepth)
 	}
 }
 
-func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, summary *FunctionSummary) {
-	if expr == nil {
-		return
-	}
+type bodyScanner struct {
+	ctx       *scanContext
+	summary   *FunctionSummary
+	caller    string
+	loopDepth int
+}
 
+func (s *bodyScanner) walk(expr *lisp.LVal, loopDepth int) {
+	previous := s.loopDepth
+	s.loopDepth = loopDepth
+	codewalk.Syntax(expr, nil, 0, s.scanExpr)
+	s.loopDepth = previous
+}
+
+func (s *bodyScanner) scanExpr(expr, _ *lisp.LVal, op string, _ int) bool {
+	caller, loopDepth, ctx, summary := s.caller, s.loopDepth, s.ctx, s.summary
 	// Only process unquoted s-expressions (calls/forms)
 	if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
-		return
+		return false
 	}
 
 	head := astutil.HeadSymbol(expr)
@@ -106,9 +128,9 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		}
 		// Still scan children
 		for _, child := range expr.Cells {
-			scanExpr(child, caller, loopDepth, ctx, summary)
+			s.walk(child, loopDepth)
 		}
-		return
+		return false
 	}
 
 	// Check if this is a loop form
@@ -119,27 +141,34 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		}
 		// Scan children with increased loop depth
 		for _, child := range expr.Cells[1:] {
-			scanExpr(child, caller, newDepth, ctx, summary)
+			s.walk(child, newDepth)
 		}
-		return
+		return false
 	}
 
 	// Skip nested defun/defmacro — they define separate top-level functions
 	// that will be scanned independently.
-	switch head {
-	case "defun", "defmacro":
-		return
-	case "quote", "quasiquote":
-		return
-	case "lambda":
+	// Only bare spellings were structural in the original cost scan.
+	if head != op {
+		op = ""
+	}
+	switch op {
+	case codewalk.OpDefun, codewalk.OpDefmacro:
+		return false
+	case codewalk.OpQuote, codewalk.OpQuasiquote:
+		return false
+	case codewalk.OpLambda:
 		// Lambda bodies execute inline (often as callbacks to map/foldl),
 		// so scan the body at the current loop depth. Skip formals (Cells[1]).
-		bodyStart := 2 // Cells[0]="lambda", Cells[1]=formals
+		bodyStart := 2 // Cells[0]=head, Cells[1]=formals
 		if bodyStart < len(expr.Cells) {
-			scanBody(expr.Cells[bodyStart:], caller, loopDepth, ctx, summary)
+			for _, child := range expr.Cells[bodyStart:] {
+				s.walk(child, loopDepth)
+			}
 		}
-		return
-	case "funcall", "apply":
+		return false
+	}
+	if head == "funcall" || head == "apply" {
 		// Dynamic dispatch — callee is a runtime value.
 		summary.Calls = append(summary.Calls, CallEdge{
 			Caller:  caller,
@@ -149,13 +178,13 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		})
 		// Scan arguments (skip head + function arg)
 		for _, child := range expr.Cells[2:] {
-			scanExpr(child, caller, loopDepth, ctx, summary)
+			s.walk(child, loopDepth)
 		}
-		return
+		return false
 	}
 
 	// Record call edge for named function calls (skip special forms)
-	if isCallable(head) {
+	if callableOperator(head, op) {
 		expensive := matchesAnyPattern(head, ctx.expensivePatterns)
 		cost := 1
 		if override, ok := ctx.functionCosts[head]; ok {
@@ -180,30 +209,37 @@ func scanExpr(expr *lisp.LVal, caller string, loopDepth int, ctx *scanContext, s
 		})
 	}
 
-	// Recurse into children (skip head symbol)
-	for _, child := range expr.Cells[1:] {
-		scanExpr(child, caller, loopDepth, ctx, summary)
-	}
+	return true // raw children preserve the cost scan's structural-list quirks
 }
 
-// isCallable returns true if the symbol name looks like a function call
-// rather than a special form that doesn't produce a call edge.
+// isCallable preserves the standalone classification used by drift probes.
+// Production scans already have the walker's Op and use callableOperator.
 func isCallable(name string) bool {
+	head := lisp.LVal{Type: lisp.LSymbol, Str: name}
+	cells := [1]*lisp.LVal{&head}
+	form := lisp.LVal{Type: lisp.LSExpr, Cells: cells[:]}
+	callable := true
+	codewalk.Syntax(&form, nil, 0, func(_, _ *lisp.LVal, op string, _ int) bool {
+		callable = callableOperator(name, op)
+		return false
+	})
+	return callable
+}
+
+func callableOperator(name, op string) bool {
+	if op == codewalk.OpUnquote || op == codewalk.OpUnquoteSplicing {
+		return true // template markers are ordinary calls outside a template
+	}
+	if name == op && op != "" {
+		// These forms are intercepted by scanExpr, which also redirects or
+		// stops traversal. Historically isCallable itself returned true.
+		return op == codewalk.OpLambda || op == codewalk.OpQuote || op == codewalk.OpQuasiquote
+	}
+	// Package-writing calls and macros outside the walker's structural
+	// registry do not contribute call edges either.
 	switch name {
-	case // special operators
-		"if", "cond", "when", "unless", "while", "default", "progn", "let", "let*", "flet", "labels", "macrolet",
-		"set", "set!", "and", "or",
-		"handler-bind", "ignore-errors", "with-cleanup",
-		"in-package", "use-package", "export",
-		"dotimes",
-		"thread-first", "thread-last",
-		"assert", "qualified-symbol", "help",
-		"function", "expr",
-		// macros
-		"defun", "defmacro", "deftype", "defconst",
-		"curry-function", "get-default", "trace",
-		// testing forms (not real calls)
-		"test", "test-let", "test-let*", "benchmark", "benchmark-simple":
+	case "set", "in-package", "use-package", "export", "defconst",
+		"curry-function", "get-default", "trace", "benchmark-simple":
 		return false
 	}
 	return true
