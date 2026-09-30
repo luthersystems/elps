@@ -103,7 +103,7 @@ const (
 	tagTagged = "~#tagged"
 )
 
-// DumpTyped returns the canonical typed JSON encoding of v.
+// dumpTypedSeparate supplies the separate encoder benchmark arm.
 //
 // Supported: ints, floats (NaN and the infinities included), strings (which,
 // like symbol, keyword, map key and tagged type names, must be valid UTF-8), bytes, symbols, keywords, lists (quoted or not: the
@@ -119,7 +119,7 @@ const (
 // bytes, whatever order a map was built in and whichever cells are shared;
 // shared structure is written in full at each occurrence, so a small value
 // whose tree expansion passes the value or byte limit is rejected.
-func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
+func dumpTypedSeparate(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
 	e := typedEncoder{cfg: newTypedConfig(opts)}
 	e.buf = make([]byte, 0, 256)
 	if err := e.value(v, 0); err != nil {
@@ -207,7 +207,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 	case lisp.LInt:
 		e.buf = appendTypedInt(e.buf, v.Int)
 	case lisp.LFloat:
-		e.buf = appendTypedFloat(e.buf, v.Float)
+		e.buf = appendSeparateFloat(e.buf, v.Float)
 	case lisp.LString:
 		if !utf8.ValidString(v.Str) {
 			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
@@ -327,13 +327,13 @@ func appendTypedInt(b []byte, x int) []byte {
 	return append(b, '"')
 }
 
-// appendTypedFloat writes a float.  A finite float is its RFC 8785 number
+// appendSeparateFloat writes a float for the separate benchmark arm.  A finite float is its RFC 8785 number
 // text (the ECMAScript shortest round-trip form appendJSONFloat writes),
 // with ".0" appended when that text has neither '.' nor an exponent, so a
 // float never reads back as an int; -0.0 keeps its sign.  NaN and the
 // infinities are Transit's special numbers "~zNaN", "~zINF" and "~z-INF";
 // every NaN is the one NaN.
-func appendTypedFloat(b []byte, f float64) []byte {
+func appendSeparateFloat(b []byte, f float64) []byte {
 	switch {
 	case math.IsNaN(f):
 		return append(b, `"~zNaN"`...)

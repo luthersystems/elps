@@ -18,7 +18,7 @@ import (
 )
 
 // All finite number text must match the real plain encoder, except the
-// documented .0 suffix preserving float type. Large ints and nonfinite
+// documented ~d tag preserving whole-float type. Large ints and nonfinite
 // floats deliberately use Transit tags instead of JSON number text.
 func checkTypedNumberText(t *testing.T, v *lisp.LVal) {
 	t.Helper()
@@ -45,8 +45,8 @@ func checkTypedNumberText(t *testing.T, v *lisp.LVal) {
 			want = `"~z-INF"`
 		default:
 			require.NoError(t, plainErr)
-			if !strings.ContainsAny(want, ".e") {
-				want += ".0"
+			if math.Trunc(v.Float) == v.Float {
+				want = `"~d` + want + `"`
 			}
 		}
 	default:

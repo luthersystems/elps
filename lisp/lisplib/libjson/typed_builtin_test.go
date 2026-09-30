@@ -33,7 +33,7 @@ func TestTypedBuiltins(t *testing.T) {
 	}{
 		{"dump", [][2]string{
 			{`(to-string (json:dump-bytes 1 :typed true))`, `"1"`},
-			{`(to-string (json:dump-bytes '(a :b "c" 1.0) :typed true))`, `"[\"~#list\",[\"~$a\",\"~:b\",\"c\",1.0]]"`},
+			{`(to-string (json:dump-bytes '(a :b "c" 1.0) :typed true))`, `"[\"~#list\",[\"~$a\",\"~:b\",\"c\",\"~d1\"]]"`},
 			{`(to-string (json:dump-bytes (sorted-map 'amount 125000 "k" (vector true false)) :typed true))`, `"{\"k\":[true,false],\"~$amount\":125000}"`},
 			{`(to-string (json:dump-bytes () :typed true))`, `"null"`},
 			{`(to-string (json:dump-bytes (vector) :typed true))`, `"[]"`},
@@ -68,10 +68,10 @@ func TestTypedBuiltins(t *testing.T) {
 		}},
 		{"rejects", [][2]string{
 			{`(json:dump-bytes (lambda () 1) :typed true)`, `test:1:1: json:dump-bytes: typed json: cannot encode a function`},
-			{`(json:load-string "{\"a\": 1}" :typed true)`, `test:1:1: json:load-string: typed json: offset 5: invalid value`},
+			{`(json:load-string "{\"a\": 1}" :typed true)`, `test:1:1: json:load-string: json: non-canonical whitespace`},
 			{`(json:load-string 1 :typed true)`, `test:1:1: json:load-string: argument is not a string: int`},
-			{`(json:load-string "[\"~#unknown\",[1,2]]" :typed true)`, `test:1:1: json:load-string: typed json: offset 1: unknown tag`},
-			{`(json:load-string "[\"~#list\",[]]" :typed true)`, `test:1:1: json:load-string: typed json: offset 12: empty list must be null`},
+			{`(json:load-string "[\"~#unknown\",[1,2]]" :typed true)`, `test:1:1: json:load-string: typed json: unknown tag`},
+			{`(json:load-string "[\"~#list\",[]]" :typed true)`, `test:1:1: json:load-string: typed json: empty list must be null`},
 		}},
 	} {
 		t.Run(seq.name, func(t *testing.T) {

@@ -158,7 +158,7 @@ func FuzzLoadJSON(f *testing.F) {
 // the SECOND decode against the FIRST, exactly as FuzzLoadJSON does.
 //
 // Each input also supplies a float64 bit pattern for the typed/plain number
-// text comparison. It permits only the documented .0 suffix or Transit tag
+// text comparison. It permits only the documented ~d tag or Transit tag
 // differences and checks type-faithful round-trip bits (except NaN payloads).
 func FuzzDumpJSON(f *testing.F) {
 	for _, seed := range fuzzval.Seeds() {

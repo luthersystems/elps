@@ -140,17 +140,17 @@ func TestTypedGolden(t *testing.T) {
 		{"int -(2^53+1)", int64Value(-(1<<53 + 1)), `"~n-9007199254740993"`},
 		{"int max", int64Value(math.MaxInt64), `"~n9223372036854775807"`},
 		{"int min", int64Value(math.MinInt64), `"~n-9223372036854775808"`},
-		{"float 1.0", lisp.Float(1), `1.0`},
+		{"float 1.0", lisp.Float(1), `"~d1"`},
 		{"float 1.5", lisp.Float(1.5), `1.5`},
 		{"float 0.1", lisp.Float(0.1), `0.1`},
-		{"float 0", lisp.Float(0), `0.0`},
-		{"float -0", lisp.Float(math.Copysign(0, -1)), `-0.0`},
-		{"float 1e20", lisp.Float(1e20), `100000000000000000000.0`},
-		{"float 1e21", lisp.Float(1e21), `1e+21`},
+		{"float 0", lisp.Float(0), `"~d0"`},
+		{"float -0", lisp.Float(math.Copysign(0, -1)), `"~d-0"`},
+		{"float 1e20", lisp.Float(1e20), `"~d100000000000000000000"`},
+		{"float 1e21", lisp.Float(1e21), `"~d1e+21"`},
 		{"float 1e-6", lisp.Float(1e-6), `0.000001`},
 		{"float 1e-7", lisp.Float(1e-7), `1e-7`},
 		{"float -2.5e-300", lisp.Float(-2.5e-300), `-2.5e-300`},
-		{"float max", lisp.Float(math.MaxFloat64), `1.7976931348623157e+308`},
+		{"float max", lisp.Float(math.MaxFloat64), `"~d1.7976931348623157e+308"`},
 		{"float NaN", lisp.Float(math.NaN()), `"~zNaN"`},
 		{"float NaN payload", lisp.Float(math.Float64frombits(0xfff0000000000001)), `"~zNaN"`},
 		{"float +Inf", lisp.Float(math.Inf(1)), `"~zINF"`},
@@ -182,7 +182,7 @@ func TestTypedGolden(t *testing.T) {
 		{"string-keyed map", tsmap(t, lisp.String("b"), lisp.Int(2), lisp.String("a"), lisp.Int(1)), `{"a":1,"b":2}`},
 		{"typed keys", tsmap(t, lisp.String("b"), lisp.Int(2), lisp.Int(7), lisp.Int(0), lisp.Symbol(":a"), lisp.Int(1),
 			lisp.Symbol("s"), lisp.Float(1), lisp.Symbol("true"), lisp.Int(3), lisp.String("~t"), lisp.Int(4)),
-			`{"b":2,"~$s":1.0,"~:a":1,"~?t":3,"~i7":0,"~~t":4}`},
+			`{"b":2,"~$s":"~d1","~:a":1,"~?t":3,"~i7":0,"~~t":4}`},
 		{"empty map", lisp.SortedMap(), `{}`},
 		{"tagged", ttagged("user:point", lisp.QExpr(ints(1, 2))), `["~#tagged",["user:point",["~#list",[1,2]]]]`},
 		{"nested", tsmap(t, lisp.String("xs"), lisp.Vector([]*lisp.LVal{tsmap(t, lisp.String("k"), lisp.Symbol(":v"))})),
@@ -198,6 +198,16 @@ func TestTypedGolden(t *testing.T) {
 			b, err := DumpTyped(tt.v)
 			require.NoError(t, err)
 			assert.Equal(t, tt.want, string(b))
+			image, err := Tag(tt.v)
+			require.NoError(t, err)
+			plain, err := Dump(image, false)
+			require.NoError(t, err)
+			require.Equal(t, b, plain)
+			composed, err := Untag(LoadWith(plain, LoadOpts{ExactIntegers: true, Strict: true}))
+			require.NoError(t, err)
+			composedBytes, err := DumpTyped(composed)
+			require.NoError(t, err)
+			require.Equal(t, b, composedBytes)
 			back, err := LoadTyped(b)
 			require.NoError(t, err)
 			again, err := DumpTyped(back)

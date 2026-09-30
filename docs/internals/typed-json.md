@@ -49,7 +49,7 @@ this canonical ELPS format is not a general Transit reader or writer.
 | int, \|n\| <= 2^53 | JSON integer text | integer: JSON number up to 2^53 |
 | int value, \|n\| > 2^53 | `"~n<decimal>"` | arbitrary-precision integer `n` |
 | int map key, any supported magnitude | `"~i<decimal>"` | signed 64-bit integer `i` |
-| finite float | number text, see below | floating point: JSON number |
+| finite float | `~d` plus plain text for whole floats; numbers otherwise | floating point: JSON number |
 | NaN / +Inf / -Inf | `"~zNaN"` / `"~zINF"` / `"~z-INF"` | special numbers `z` |
 | string | JSON string; only a leading `~` is escaped as `~~` | escape marker `~` |
 | symbol `true` / `false` | JSON `true` / `false` | boolean |
@@ -138,7 +138,7 @@ changing them for data whose plain and typed representations coincide.
 It is **not strict RFC 8785 (JCS)**. Outside JCS verifiers will not match this
 format's canonical bytes or hashes when any deliberate difference applies:
 UTF-8 rather than UTF-16 member order; mandatory escapes for `<`, `>`, `&`,
-U+2028 and U+2029; the float `.0` suffix and signed zero; and Transit tags
+U+2028 and U+2029; whole-float `~d` tags and signed zero; and Transit tags
 for types outside plain JSON. Unicode normalization is never applied.
 
 - **No whitespace** anywhere.
@@ -158,36 +158,24 @@ for types outside plain JSON. Unicode normalization is never applied.
   while plain callers retain their existing U+FFFD substitution. The strict
   decoder requires the mandatory escapes and rejects all others, including
   `\/`, uppercase hex, surrogate escapes and `\u000a` instead of `\n`.
-- **Numbers.** An int is its decimal text. A finite float is RFC 8785's number
-  text -- ECMAScript's shortest round-trip form, fixed notation for
-  1e-6 <= |x| < 1e21 and `1e+21`, `1.5e-7` otherwise, written by the same
-  `appendJSONFloat` plain mode uses -- with **`.0` appended when that text has
-  no `.` and no exponent**, so a float is never read back as an int. That is
-  a departure from JCS number text: JCS writes `1.0` as `1`, which would
-  merge two types this format keeps apart. `-0.0` keeps its sign (`-0.0`; JCS
-  would write `0`). Every NaN is written as the one `"~zNaN"`.
-  The decoder parses a number and requires the text to equal what the encoder
-  would write for the parsed value, so `1.50`, `1E5`, `1e5`, `01`, `-0` and an
-  int greater than 2^53 in magnitude written as a number are all rejected.
+- **Numbers.** An int is its decimal text up to 2^53 in magnitude. Larger ints use `~n`.
+  Whole floats use `~d` plus the plain encoder's `appendJSONFloat` text.
+  This includes `"~d1"`, `"~d-0"`, and `"~d1e+21"`.
+  Non-whole floats remain JSON numbers. Every NaN uses `"~zNaN"`.
+  The decoder rejects alternate spellings, including `~d1.0`, `~d1e21`, and `~d0.5`.
 - **Base64** must re-encode to the same text (no stray pad bits).
 
-Number comparison against the plain golden/fuzz corpus and random float64 bit
-patterns is pinned by `TestTypedNumberTextPlainCorpus`,
-`TestTypedNumberTextRandomFloat64` and `FuzzDumpJSON`. All finite
-float text, including exponent form and notation cutoffs, matches the plain
-encoder except when the typed encoder appends `.0`: plain `0`, `-0`, `1`,
-`100` and `100000000000000000000` become typed `0.0`, `-0.0`, `1.0`,
-`100.0` and `100000000000000000000.0`. The suffix applies only when the
-plain text has neither a decimal point nor an exponent; `1e+21` and `1e-7`
-are unchanged. Plain `-0` also differs from strict JCS, which writes `0`.
+Number comparison uses the plain golden corpus, fuzz seeds, and random float64 bit patterns.
+`TestTypedNumberTextPlainCorpus`, `TestTypedNumberTextRandomFloat64`, and `FuzzDumpJSON` pin this behavior.
+The `~d` body always matches plain float text. Non-whole floats keep identical JSON number text.
+Plain `-0` differs from strict JCS, which writes `0`.
 Ints up to 2^53 in magnitude keep the plain decimal text; larger ints use
 `~n` tags. Plain mode rejects NaN and infinities; typed mode uses `~z` tags.
 
 Plain dumps of data already in the shared canonical subset are loadable by
 `(json:load-string text :typed true)`: valid UTF-8 strings and string keys without a leading `~`,
 booleans, null, vectors, string-keyed maps, ints up to 2^53 that fit the
-platform's `int`, and finite floats whose plain text contains `.` or an
-exponent. This does not make arbitrary plain JSON a typed document: integral
+platform's `int`, and finite non-whole floats. This does not make arbitrary plain JSON a typed document: integral
 floats lose their type in plain output, and plain strings starting with `~`
 do not have the required Transit escape.
 
@@ -345,3 +333,7 @@ retains its native-message return/input contract.
 (equal? (json:dump-string '(a :b 1.0 ()) :canonize true) (json:dump-string '(a :b 1.0 ()) :canonize true :typed true))
 ; => true
 ```
+
+`Tag` and `Untag` implement the value transform. `DumpTyped` streams `Tag` through the plain encoder.
+`LoadTyped` streams `Untag` through strict plain decoding with exact integers.
+Strict decoding validates spelling as each token is read. It does not dump the decoded document.

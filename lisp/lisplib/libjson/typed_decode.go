@@ -15,8 +15,8 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// LoadTyped decodes b, which must be one complete document exactly as
-// DumpTyped writes it.  Anything DumpTyped could not have produced is
+// loadTypedSeparate supplies the separate decoder benchmark arm. Input must
+// match dumpTypedSeparate output.  Anything DumpTyped could not have produced is
 // rejected with an error: whitespace, a member out of UTF-8 byte order or
 // duplicated, number text other than the canonical text of its value (1.50,
 // 1E5, -0, 01, an int written as a float or past 2^53 as a number), an
@@ -33,7 +33,7 @@ import (
 //
 // Memory is bounded by the input: every value costs at least one byte of
 // it, and nothing is reserved from a count the input declares.
-func LoadTyped(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
+func loadTypedSeparate(b []byte, opts ...TypedOption) (*lisp.LVal, error) {
 	d := typedDecoder{cfg: newTypedConfig(opts), b: b}
 	if len(b) > d.cfg.maxBytes {
 		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, d.cfg.maxBytes)
@@ -305,6 +305,13 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 			return nil, d.errorf("non-canonical int")
 		}
 		return lisp.Int(n), nil
+	case 'd':
+		f, err := strconv.ParseFloat(string(body), 64)
+		if err != nil || math.IsInf(f, 0) || math.IsNaN(f) || math.Trunc(f) != f ||
+			!bytes.Equal(appendJSONFloat(nil, f), body) {
+			return nil, d.errorf("non-canonical whole float")
+		}
+		return lisp.Float(f), nil
 	case 'z':
 		switch string(body) {
 		case "NaN":
@@ -421,7 +428,7 @@ func (d *typedDecoder) number() (*lisp.LVal, error) {
 		return nil, d.errorf("non-canonical number")
 	}
 	var tmp [40]byte
-	if !bytes.Equal(appendTypedFloat(tmp[:0], f), text) {
+	if !bytes.Equal(appendSeparateFloat(tmp[:0], f), text) {
 		return nil, d.errorf("non-canonical number")
 	}
 	return lisp.Float(f), nil

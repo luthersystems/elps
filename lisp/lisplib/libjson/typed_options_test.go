@@ -20,10 +20,10 @@ func TestTypedKeywordSurface(t *testing.T) {
 			require.Equal(t, lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers", "canonize", "typed").String(), b.Formals().String())
 		}
 		if strings.HasPrefix(b.Name(), "load-") {
-			require.Equal(t, lisp.Formals("json-"+strings.TrimPrefix(b.Name(), "load-"), lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed").String(), b.Formals().String())
+			require.Equal(t, lisp.Formals("json-"+strings.TrimPrefix(b.Name(), "load-"), lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed", "strict").String(), b.Formals().String())
 		}
 	}
-	require.ElementsMatch(t, []string{"message-bytes", "dump-message", "load-message", "dump-bytes", "load-bytes", "dump-string", "load-string", "canonize", "use-string-numbers", "string-numbers?", "use-exact-integers"}, names)
+	require.ElementsMatch(t, []string{"message-bytes", "dump-message", "load-message", "dump-bytes", "load-bytes", "dump-string", "load-string", "canonize", "tag", "untag", "use-string-numbers", "string-numbers?", "use-exact-integers"}, names)
 }
 
 func TestTypedFamilyOptions(t *testing.T) {
@@ -50,7 +50,7 @@ func TestTypedFamilyOptions(t *testing.T) {
 			value := `'(a :b 1.0 0.25 ())`
 			for _, tc := range []struct{ name, flags, want string }{
 				{"canonize", ":canonize true", `["a",":b",1,0.25,null]`},
-				{"typed", ":typed true", `["~#list",["~$a","~:b",1.0,0.25,null]]`},
+				{"typed", ":typed true", `["~#list",["~$a","~:b","~d1",0.25,null]]`},
 				{"typed-canonize", ":typed true :canonize true", `["a",":b",1,0.25,null]`},
 				{"canonize-string-numbers", ":canonize true :string-numbers true", `["a",":b","1","0.25",null]`},
 			} {

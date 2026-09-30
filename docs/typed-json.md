@@ -55,8 +55,8 @@ positive zero, provided they fit the platform's Go `int`. Other finite floats
 stay floats. Their text is the plain encoder's shortest round-trip form:
 fixed notation for `1e-6 <= |x| < 1e21`, exponent notation otherwise, without
 padding a negative exponent with a zero. Typed float text uses that same form,
-adding `.0` only when it contains neither a decimal point nor an exponent;
-canonize removes precisely those whole-number float cases by producing ints.
+using `~d` plus that text for every whole float, including negative zero.
+Examples are `"~d1"`, `"~d-0"`, and `"~d1e+21"`. Other floats remain JSON numbers.
 
 Canonize raises the ordinary, catchable condition **`json:canonize-error`**,
 never `internal-panic`, for data it cannot canonize. Its message names the
@@ -72,7 +72,7 @@ all three dump functions with `:canonize true`.
 | `:invalid-utf8` | A string or key contains invalid UTF-8, including surrogate encodings. |
 | `:int-range` | An int has magnitude greater than 2^53; the boundary is allowed. |
 | `:float-range` | A whole-number float exceeds 2^53 or cannot fit the platform `int`. |
-| `:negative-zero` | Negative zero: plain `-0` and typed `-0.0` differ. |
+| `:negative-zero` | Negative zero: plain `-0` and typed `"~d-0"` differ. |
 | `:non-finite` | NaN, +Inf or -Inf. |
 | `:key-type` | An int map key or another unsupported map key type. |
 | `:key-collision` | Distinct map keys become the same string. |
@@ -87,7 +87,7 @@ The rejected values include:
 - Strings or keys beginning with `~`, including converted symbol names.
 - Invalid UTF-8, including UTF-8 encodings of lone surrogate code points.
 - Ints with magnitude **greater than** 2^53; the boundary itself is allowed.
-- NaN, +Inf, -Inf and **negative zero** (plain `-0` and typed `-0.0` cannot
+- NaN, +Inf, -Inf and **negative zero** (plain `-0` and typed `"~d-0"` cannot
   satisfy the byte and exact-type invariants).
 - Whole-number floats beyond 2^53 or outside the platform `int` range. On
   32-bit builds, for example, `2147483648.0` raises.
@@ -224,7 +224,7 @@ Common values are ordinary JSON, so most documents read as-is:
 | `` "`draft" `` | `` "`draft" `` |
 | `42` | `42` |
 | `0.5` | `0.5` |
-| `5.0` | `5.0` |
+| `5.0` | `"~d5"` |
 | `true` | `true` |
 | `false` | `false` |
 | `(vector 1 "a")` | `[1,"a"]` |
@@ -233,7 +233,7 @@ Common values are ordinary JSON, so most documents read as-is:
 | `(sorted-map "k" 1)` | `{"k":1}` |
 | `` (sorted-map "^draft" 1 "`draft" 2 "~draft" 3) `` | `` {"^draft":1,"`draft":2,"~~draft":3} `` |
 
-Floats always have a `.` or an exponent (`5.0`, `1e+21`); ints never do.
+Whole floats use `~d` plus plain float text. Non-whole floats remain JSON numbers.
 
 Sequences are Transit-aligned: vectors are plain JSON arrays and nonempty
 lists use Transit's `"~#list"` tag. The empty list `()` is also nil and uses
@@ -255,6 +255,7 @@ plain JSON cannot tell apart:
 | `~$` | symbol | `'approve` | `"~$approve"` |
 | `~b` | bytes, base64 | `(to-bytes "hi")` | `"~baGk="` |
 | `~n` | int with magnitude > 2^53, using Transit's arbitrary-precision tag | `9007199254740993` | `"~n9007199254740993"` |
+| `~d` | whole float, including signed zero | `1.0` | `"~d1"` |
 | `~z` | NaN or infinity (not JSON numbers) | `(/ 1.0 0.0)` | `"~zINF"` |
 | `~~` | a string that itself starts with `~` | `"~draft"` | `"~~draft"` |
 | `~#list` | nonempty list (a plain array is a vector) | `'(1 2)` | `["~#list",[1,2]]` |
@@ -287,8 +288,8 @@ and platforms; changing those bytes is a breaking change. Golden tests pin
 this on Linux, Windows and 32-bit builds.
 
 The format is **elps canonical JSON**: shortest round-trip number text,
-UTF-8 byte key order and the plain encoder's escape set, with `.0` added to floats whose number text
-has no decimal point or exponent, and negative zero kept as `-0.0`.
+UTF-8 byte key order and the plain encoder's escape set.
+Whole floats use `~d` plus plain float text, including `"~d-0"` for negative zero.
 The escape set matches existing `json:dump-bytes` and `json:dump-string`
 output: quotes, backslashes and control characters use the usual Go JSON
 escapes, and `<`, `>`, `&`, U+2028 and U+2029 are always `\u003c`, `\u003e`,
@@ -311,7 +312,7 @@ It is **not strict RFC 8785**: UTF-8 rather than UTF-16 key order, the five
 extra mandatory Unicode escapes, float type/signed-zero preservation and
 Transit tags are deliberate differences. Outside JCS verifiers will not
 match when these differences apply. For example, plain `1.0` dumps as `1`
-and typed `1.0` as `1.0`; `1e+21` has the same exponent form in both.
+and typed `1.0` as `"~d1"`; typed `1e+21` uses `"~d1e+21"`.
 
 ## jq
 
@@ -350,3 +351,8 @@ base64 string. A stored value would not come back with all its original types.
 reader, including `jq`, would have to join the mask to the data to
 know that `":pending"` is a keyword. It doubles what must stay in sync, and
 inline tags keep each value self-describing.
+
+`json:tag` and `json:untag` expose the typed value transform.
+Typed dump equals plain dump of `(json:tag v)`.
+Typed load equals `(json:untag (json:load-bytes b :exact-integers true :strict true))`.
+`:strict true` checks key order, escapes, number text, whitespace, and duplicate keys during decoding.

@@ -868,6 +868,11 @@ if err != nil {
 }
 ```
 
+`libjson.Tag(v)` returns a plain JSON value. `libjson.Untag(v)` restores its types.
+`DumpTyped(v)` writes exactly `Dump(Tag(v), false)` without building the transformed value.
+`LoadOpts{Strict: true, ExactIntegers: true}` accepts canonical plain bytes for composition with `Untag`.
+Whole floats use `~d` plus plain float text, including `~d1`, `~d-0`, and `~d1e+21`.
+
 For hashing and cache/state keys, use canonical output and let errors fail the
 operation. An explicit string-number mode fixes the numeric representation:
 

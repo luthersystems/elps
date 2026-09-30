@@ -1810,6 +1810,13 @@ Plain JSON (`json:dump-bytes`) loses types: `5` and `5.0` have the same bytes,
 `(json:dump-bytes v :typed true)` writes JSON that reads back as exactly the
 value you wrote with `(json:load-bytes b :typed true)`.
 
+`json:tag` returns a plain JSON value that preserves the input's types.
+`json:untag` restores those types and rejects unknown or malformed tags.
+Typed dump equals plain dump of `(json:tag v)`.
+Typed load equals `(json:untag (json:load-bytes b :exact-integers true :strict true))`.
+`:strict true` rejects whitespace, duplicate keys, and non-canonical key order, escapes, or number text.
+Plain load keeps its current behavior when `:strict` is omitted.
+
 Ordinary values stay ordinary JSON. Sequences are Transit-aligned: vectors
 are JSON arrays, nonempty lists use Transit's `"~#list"` tag, and the empty
 list / nil is `null`, matching plain `json:dump-string`. Only the cases plain JSON
@@ -1819,7 +1826,7 @@ cannot tell apart get a short tag, a string beginning with `~`:
 | elps value | plain `json:dump-bytes` | `json:dump-bytes` with `:typed true` |
 |---|---|---|
 | `5` | `5` | `5` |
-| `5.0` | `5` | `5.0` |
+| `5.0` | `5` | `"~d5"` |
 | `"s"` | `"s"` | `"s"` |
 | `"<>&"` | `"\u003c\u003e\u0026"` | `"\u003c\u003e\u0026"` |
 | `:kw` | `":kw"` | `"~:kw"` |
@@ -1875,7 +1882,7 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 ; => ()
 (json:load-string (json:dump-string "<>&") :typed true)
 ; => "<>&"
-(float? (json:load-string "5.0" :typed true))
+(float? (json:load-string "\"~d5\"" :typed true))
 ; => true
 (json:load-string "\"^x\"" :typed true)
 ; => "^x"
@@ -1886,7 +1893,7 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 (json:load-string "\"~`x\"" :typed true)
 ; => json:load-string: typed json: offset 5: invalid tagged string
 (json:load-string "[1, 2]" :typed true)
-; => json:load-string: typed json: offset 3: invalid value
+; => json:load-string: json: non-canonical whitespace
 ```
 
 The format is **elps canonical JSON**: shortest round-trip number text,
@@ -1894,9 +1901,8 @@ UTF-8 byte key order and the plain encoder's escape set. Keys sort by UTF-8 byte
 before JSON escaping, matching plain string-key order. Strings use Go JSON
 escapes, with `<`, `>`, `&`, U+2028 and U+2029 always written as `\u003c`,
 `\u003e`, `\u0026`, `\u2028` and `\u2029`. The decoder requires this exact
-escape set and rejects unnecessary escapes. Floats without a decimal point
-or exponent gain `.0`, and signed zero stays `-0.0`: plain `5.0` dumps as
-`5`, typed as `5.0`, while exponent forms such as `1e+21` match.
+escape set and rejects unnecessary escapes. Whole floats use `~d` plus plain
+float text: `"~d5"`, `"~d-0"`, and `"~d1e+21"`. Other floats remain JSON numbers.
 
 These rules are chosen for byte compatibility with existing stored JSON and
 hashes and cache/state keys built from `json:dump-bytes` and

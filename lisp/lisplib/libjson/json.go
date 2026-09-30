@@ -94,13 +94,15 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			  ; => "[\"a\",1]"
 			  (json:load-message (json:dump-message :pending :typed true) :typed true)
 			  ; => :pending`),
-		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed"), s.LoadMessageBuiltin,
+		libutil.FunctionDoc("load-message", lisp.Formals("json-message", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed", "strict"), s.LoadMessageBuiltin,
 			`Parses a native JSON message produced by dump-message or a
 			json.RawMessage supplied by an embedder. Plain decoding retains string
 			map keys; :string-numbers returns numbers as strings, and
 			:exact-integers returns integer literals as ints (default: serializer
 			settings). :typed true uses the strict typed decoder, ignores package
 			defaults and :exact-integers, and rejects explicit :string-numbers.
+			:strict true rejects whitespace, duplicate keys, key order changes,
+			and escapes or number text that plain dump does not produce.
 
 			Example:
 			  (json:load-message (json:dump-message '(1 :a) :typed true) :typed true :exact-integers true)
@@ -117,8 +119,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			"~b...", lists ["~#list",[...]], large ints "~n..." and special floats
 			"~z...". Vectors remain arrays and nil remains null. Only leading ~
 			strings/keys gain an extra ~; caret and backquote are ordinary text.
-			Typed numbers use the plain shortest round-trip text, adding .0 when
-			there is no decimal point or exponent to preserve the float type.
+			Whole floats use "~d" plus plain shortest round-trip text, including
+			"~d1", "~d-0" and "~d1e+21". Other floats remain JSON numbers.
 			Both modes ignore package number defaults. Canonical dumping honors
 			explicit :string-numbers; typed dumping rejects that keyword, even
 			false. Combining :typed and :canonize writes identical canonical bytes.
@@ -142,7 +144,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			  ; => true
 
 			See docs/typed-json.md for every tag and combination.`),
-		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed"), s.LoadBytesBuiltin,
+		libutil.FunctionDoc("load-bytes", lisp.Formals("json-bytes", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed", "strict"), s.LoadBytesBuiltin,
 			`Parses JSON bytes into ELPS values. Plain objects become sorted-maps
 			with string keys, arrays become vectors, null becomes (), and numbers
 			become floats by default. :string-numbers returns numbers as strings;
@@ -150,7 +152,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			settings). :typed true restores every dumped type with a strict decoder:
 			vectors are plain arrays, nonempty lists use ~#list, and nil is null.
 			Ignores package defaults and :exact-integers; rejects any explicit
-			:string-numbers. Typed input must have no whitespace, sorted keys,
+			:string-numbers. :strict true checks canonical plain spelling.
+			Typed input must have no whitespace, sorted keys,
 			canonical number text and exactly the encoder's escapes (including
 			Unicode escapes for <, >, &, U+2028 and U+2029). Unknown tags and
 			alternate spellings raise. The result is fresh; costs one step per KiB.
@@ -190,7 +193,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			  ; => "[\"^draft\",\"~~draft\"]"
 			  (equal? (json:dump-string "<>&" :typed true) (json:dump-string "<>&"))
 			  ; => true`),
-		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed"), s.LoadStringBuiltin,
+		libutil.FunctionDoc("load-string", lisp.Formals("json-string", lisp.KeyArgSymbol, "string-numbers", "exact-integers", "typed", "strict"), s.LoadStringBuiltin,
 			`Parses a JSON string into ELPS values, like load-bytes. Plain maps
 			retain string keys and numbers become floats by default.
 			:string-numbers returns numbers as strings; :exact-integers returns
@@ -209,6 +212,18 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			  ; => "^draft"
 			  (json:load-string (json:dump-string "<>&") :typed true)
 			  ; => "<>&"`),
+		libutil.FunctionDoc("tag", lisp.Formals("object"), TagBuiltin,
+			`Returns a plain JSON value that preserves the input's data types.
+			Keywords use "~:k", symbols "~$s", bytes "~b...", and lists
+			use ["~#list",[...]]. Whole floats use "~d" plus plain float text:
+			"~d1", "~d-0", or "~d1e+21". Non-whole floats remain numbers.
+			Leading ~ strings gain one ~. Unsupported values raise an error.
+			Dumping this value equals dumping the input with :typed true.`),
+		libutil.FunctionDoc("untag", lisp.Formals("object"), UntagBuiltin,
+			`Restores the data types represented by tag. Input must contain plain
+			JSON values. Unknown tags and malformed forms raise an error.
+			Use :strict true and :exact-integers true when loading tagged JSON.
+			Typed loading applies these options and untags during decoding.`),
 		libutil.FunctionDoc("canonize", lisp.Formals("object"), CanonizeBuiltin,
 			`Returns a fresh plain JSON image as elps canonical JSON. Symbols
 			and keywords become strings (true/false remain booleans, json:null
@@ -381,6 +396,8 @@ type LoadOpts struct {
 	// Typed selects the strict typed decoder, independent of package defaults.
 	// StringNumbers is incompatible; ExactIntegers is allowed and redundant.
 	Typed bool
+	// Strict accepts only the plain encoder's key order, escapes and number text.
+	Strict bool
 }
 
 // Serializer defines JSON serialization rules for lisp values.
@@ -423,6 +440,13 @@ func (s *Serializer) LoadWith(b []byte, opts LoadOpts) *lisp.LVal {
 			limits = []TypedOption{WithTypedMaxBytes(min(DefaultTypedMaxBytes, opts.MaxAlloc)), WithTypedMaxValues(min(DefaultTypedMaxValues, opts.MaxAlloc))}
 		}
 		v, err := LoadTyped(b, limits...)
+		if err != nil {
+			return lisp.Error(err)
+		}
+		return v
+	}
+	if opts.Strict {
+		v, err := loadStrict(b, opts, newTypedConfig(nil))
 		if err != nil {
 			return lisp.Error(err)
 		}
@@ -991,7 +1015,7 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if !ok {
 		return errNotAMessage(env)
 	}
-	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3)}))
+	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3), args.KeyArg(4)}))
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -1011,7 +1035,9 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 	if lerr := libutil.ChargeKiB(env, len(js.Bytes())); lerr != nil {
 		return lerr
 	}
-	return s.attachStack(env, s.LoadWith(js.Bytes(), s.loadOpts(env, stringNums, exactInts)))
+	opts := s.loadOpts(env, stringNums, exactInts)
+	opts.Strict = lisp.True(args.KeyArg(4))
+	return s.attachStack(env, s.LoadWith(js.Bytes(), opts))
 }
 
 func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -1055,7 +1081,9 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 	if lerr := libutil.ChargeKiB(env, len(js.Str)); lerr != nil {
 		return lerr
 	}
-	return s.attachStack(env, s.LoadWith([]byte(js.Str), s.loadOpts(env, stringNums, exactInts)))
+	opts := s.loadOpts(env, stringNums, exactInts)
+	opts.Strict = lisp.True(args.KeyArg(4))
+	return s.attachStack(env, s.LoadWith([]byte(js.Str), opts))
 }
 
 // GoValue converts v to its natural representation in Go.  Quotes are ignored

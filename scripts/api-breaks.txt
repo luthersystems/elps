@@ -58,3 +58,13 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
+golden | golden.txt:float-zero | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-negzero | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-one | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-hundred | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-max | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-1e300 | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-below-1e21 | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-1e21 | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:float-2^70 | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
+golden | golden.txt:vector | 2027-03-31 | https://github.com/luthersystems/elps/pull/751 | typed format unreleased; one-codec proof of concept
