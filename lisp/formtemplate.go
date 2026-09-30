@@ -211,5 +211,20 @@ func (p *formTemplateReader) symbol() string {
 	if p.offset == start {
 		p.fail(start, "expected a symbol")
 	}
-	return p.src[start:p.offset]
+	tok := p.src[start:p.offset]
+	if numberLikeToken(tok) {
+		p.fail(start, "unsupported number %q; pass literals as arguments", tok)
+	}
+	return tok
+}
+
+// numberLikeToken reports whether tok looks like a number.  The reader reads
+// some such tokens as numbers (-1, -1e3) and others as symbols (+1, .5), so
+// a template refuses them all rather than guess: pass numbers as arguments.
+// A leading digit is refused earlier; here a sign or dot (or a sign then a
+// dot) followed by a digit is.  Symbols such as inf and nan, which
+// strconv.ParseFloat would accept, stay symbols.
+func numberLikeToken(tok string) bool {
+	rest := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(tok, "+"), "-"), ".")
+	return len(rest) < len(tok) && rest != "" && rest[0] >= '0' && rest[0] <= '9'
 }

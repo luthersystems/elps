@@ -159,6 +159,15 @@ func TestFormTemplateFreshness(t *testing.T) {
 	}
 }
 
+func TestFormTemplateSignSymbols(t *testing.T) {
+	// Sign and dot symbols that the reader reads as symbols stay symbols.
+	got := lisp.MustFormTemplate(`(- + ... -x +y .z inf nan -inf)`).Expand()
+	require.Len(t, got.Cells, 9)
+	for _, c := range got.Cells {
+		assert.Equal(t, lisp.LSymbol, c.Type, c.String())
+	}
+}
+
 func TestFormTemplateSyntaxPanics(t *testing.T) {
 	for _, tt := range []struct {
 		name, src, message string
@@ -186,6 +195,14 @@ func TestFormTemplateSyntaxPanics(t *testing.T) {
 		{"quoted splice", `',@x`, "offset 1: splice must be directly inside a list", []string{"x"}},
 		{"quoted splice in list", `(',@x)`, "offset 2: splice must be directly inside a list", []string{"x"}},
 		{"double quoted splice", `('',@x)`, "offset 3: splice must be directly inside a list", []string{"x"}},
+		// Number-like tokens: the reader reads some as numbers (-1) and
+		// others as symbols (+1, .5), so a template refuses them all.
+		{"negative int", `(f -1)`, `offset 3: unsupported number "-1"; pass literals as arguments`, nil},
+		{"positive int", `(f +1)`, `offset 3: unsupported number "+1"; pass literals as arguments`, nil},
+		{"leading dot float", `(f .5)`, `offset 3: unsupported number ".5"; pass literals as arguments`, nil},
+		{"negative dot float", `(f -.5)`, `offset 3: unsupported number "-.5"; pass literals as arguments`, nil},
+		{"exponent float", `(f -1e3)`, `offset 3: unsupported number "-1e3"; pass literals as arguments`, nil},
+		{"placeholder number", `,-1`, `offset 1: unsupported number "-1"; pass literals as arguments`, nil},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			assert.PanicsWithValue(t, "lisp.MustFormTemplate: "+tt.message, func() {
