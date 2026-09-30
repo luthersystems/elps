@@ -9,7 +9,11 @@ import (
 	_ "embed"
 )
 
-//go:embed corpus.lisp
+// corpus.txt concatenates unrelated sample files (including test files) into
+// one input. It is benchmark data, not a program, so it is not named .lisp:
+// the repository-wide elps fmt/lint gates would otherwise lint it as one.
+//
+//go:embed corpus.txt
 var corpus []byte
 
 // Source repeats the checked-in sample to approximately one MiB. Both arms of
