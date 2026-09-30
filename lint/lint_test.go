@@ -2135,7 +2135,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 30)
+	assert.Len(t, analyzers, 31)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2155,6 +2155,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"let-bindings",
 		"let-recursion",
 		"lisp-package-seal",
+		"loop-variable-capture",
 		"package-builtins",
 		"quote-call",
 		"removed-builtin",
@@ -2633,6 +2634,9 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		// style preference -- one guarantees nothing, the other silently
 		// drops the cleanup entirely.
 		"with-cleanup-forms": SeverityWarning,
+		// A stored closure that sees the wrong value is a bug, but a
+		// closure that is only ever called in its own turn is fine.
+		"loop-variable-capture": SeverityWarning,
 	}
 	for _, a := range DefaultAnalyzers() {
 		want, ok := expected[a.Name]

@@ -1,0 +1,1 @@
+(ignore-errors (with-cleanup ((error 'boom "x")) 1))

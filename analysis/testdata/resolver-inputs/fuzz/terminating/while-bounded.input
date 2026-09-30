@@ -1,0 +1,1 @@
+(set 'i 0) (while (< i 100) (set! i (+ i 1))) i

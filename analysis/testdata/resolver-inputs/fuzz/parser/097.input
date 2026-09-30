@@ -1,0 +1,3 @@
+(in-package 'foo)
+(export 'bar)
+(defun bar () ())

@@ -3,6 +3,7 @@
 package lint
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -117,4 +118,24 @@ func TestRethrowContext_NonTerminatingMacroKeepsWalking(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, diags, 1)
 	assert.Equal(t, 2, diags[0].Pos.Line)
+}
+
+// A form with more distinct rethrow sites than FindCallSites reports cannot
+// be shown to have none outside handler-bind; the form itself is reported.
+func TestRethrowContextOverflowAssumesViolation(t *testing.T) {
+	var b strings.Builder
+	b.WriteString("(progn\n")
+	for i := range 70 {
+		fmt.Fprintf(&b, "  (handler-bind ((condition (lambda (c &rest a) (rethrow)))) %d)\n", i)
+	}
+	b.WriteString("  (rethrow))\n")
+	diags := lintCheck(t, AnalyzerRethrowContext, b.String())
+	require.NotEmpty(t, diags)
+	found := false
+	for _, d := range diags {
+		if strings.Contains(d.Message, "too many rethrow") {
+			found = true
+		}
+	}
+	assert.True(t, found, "the unhandled (rethrow) past the budget must not be silently dropped: %v", diags)
 }

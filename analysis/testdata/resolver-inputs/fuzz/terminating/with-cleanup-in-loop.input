@@ -1,0 +1,1 @@
+(set 'n 0) (dotimes (i 100) (with-cleanup ((set! 'n (+ n 1))) (set! 'n (+ n 1)))) n

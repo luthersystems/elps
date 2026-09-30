@@ -317,7 +317,8 @@ What this means for a builtin you write:
 - **To bind or evaluate in the caller, write a Go macro.** The macro runs in
   its own package, but its expansion is evaluated where the caller wrote it,
   so an expansion built from qualified core forms (`lisp:set`, `lisp:lambda`)
-  acts in the caller's package.
+  acts in the caller's package. Use `elpsutil.MustTemplate` and
+  `elpsutil.FunctionDoc` as shown in [Writing a Go macro](#writing-a-go-macro).
 - **Name a fixed package explicitly.** A builtin that must work in some
   package (a loader that starts in `user`, say) switches to it by name with
   `env.InPackage` and restores it itself.
@@ -346,6 +347,94 @@ documented `(help-package 'math)` is unchanged, but an unquoted
 library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
+
+### Writing a Go macro
+
+A Go macro receives unevaluated forms and returns an expansion for the caller
+to evaluate. Build an `elpsutil.Template` once at package initialization, then
+substitute the argument forms on each call. For example, this `unless` macro
+runs its body only when the condition is falsey:
+
+```go
+var unlessForm = elpsutil.MustTemplate(
+    `(lisp:if (unquote condition) () (lisp:progn (unquote-splicing body)))`,
+    "condition", "body")
+
+func macroUnless(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    return unlessForm.Expand(args.Cells[0], lisp.SExpr(args.Cells[1:]))
+}
+```
+
+Register it in your package with `elpsutil.FunctionDoc`, which carries the
+docstring through registration; registering the definition as a macro is what
+makes it one. The definition belongs in `AddMacros` or your package's
+`Macros() []lisp.LBuiltinDef` method:
+
+```go
+// With your package current (for example, inside its PackageInit):
+env.AddMacros(true, elpsutil.FunctionDoc("unless",
+    lisp.Formals("condition", lisp.VarArgSymbol, "body"), macroUnless,
+    "Evaluates body only when condition is falsey."))
+```
+
+`MustTemplate` reads its source with the elps reader, once, so a template is
+one ordinary elps form: symbols, lists, `()`, strings, numbers and `'form` are
+copied as written. Placeholders are the forms elps quasiquote uses, naming a
+declared parameter: `(unquote name)` inserts that argument and
+`(unquote-splicing name)` splices an **unquoted** list's cells (or nothing for
+nil) into the enclosing list; `lisp.SExpr(args.Cells[1:])` above wraps the
+unevaluated body for that purpose. A placeholder is recognised anywhere,
+including under a quote, so `'(unquote name)` quotes the argument;
+`unquote-splicing` must sit directly inside a list. Because every unquote
+form is a placeholder, a template cannot contain a literal `unquote` form or
+a nested `quasiquote`: in `(quasiquote (a (unquote x)))` the inner unquote is
+substituted. Build such a form in Go and pass it as an argument. Parameter names declare
+argument order. `MustTemplate` panics if the source is not exactly one form or
+fails to parse, and on undeclared, duplicate or unused parameters or a
+malformed placeholder; `Expand` panics on an argument count mismatch or an
+invalid splice argument. libtesting's assert macros are built this way.
+
+Each expansion allocates fresh, unlocated syntax, shares the inserted
+argument forms, and uses the immutable nil singleton for `()`; it never
+parses or evaluates. This follows the Go macro contract: the evaluator
+locates new syntax at the macro call site, in place. Reuse the template, never
+a previously returned expansion or a binding looked up by the macro. Qualify
+generated core names (`lisp:if`, `lisp:progn`), and use `env.GenSym()` for
+temporary bindings to avoid capturing the caller's names.
+
+Use `env.ErrorfAt(form, format, values...)` for argument validation so an
+error points at the offending form. For example, this macro binds a name to
+a pair of values:
+
+```go
+var definePairForm = elpsutil.MustTemplate(
+    `(lisp:set '(unquote name) (lisp:list (unquote left) (unquote right)))`,
+    "name", "left", "right")
+
+func macroDefinePair(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    name := args.Cells[0]
+    if name.Type != lisp.LSymbol || name.IsQuoted() {
+        return env.ErrorfAt(name, "first argument is not a symbol: %v", name)
+    }
+    return definePairForm.Expand(name, args.Cells[1], args.Cells[2])
+}
+```
+
+Register it with formals `lisp.Formals("name", "left", "right")`. The
+template quotes the name itself, so the check also rejects a quoted name:
+`(define-pair 'q 1 2)` gets the macro's own error, located at `'q`. In this
+call the error reports line 2, column 3, where `42` starts:
+
+```lisp
+(define-pair
+  42 1 2)
+```
+
+`ErrorfAt` copies the form's location; nil forms and forms without a valid
+source position fall back to the evaluator's current location, as `Errorf`
+does. The captured call stack
+still describes the macro call, and debugger error notifications see the
+error with its chosen location.
 
 ### Toolkit for replacing Lisp with Go builtins
 
@@ -1274,6 +1363,25 @@ result still point into the original file. A special operator an embedder
 registers has no known shape, and the walker treats a form headed by one as
 opaque: its arguments are neither walked nor expanded.
 
+### Asking where a node is
+
+Two queries in `astutil` are built on the same walker:
+
+- `astutil.ClassifyNodes(form)` gives each node a `Role`. `RoleData` means
+  quoted data, including anything inside it. `RoleSyntax` means structure a
+  form reads but does not evaluate. The reader turns `[x (f)]` in a `let` and
+  `'(x (f))` into the same kind of value; `Role` tells them apart.
+- `astutil.FindCalls(form, names...)` returns each call to one of `names` in
+  code position, skipping local functions that shadow those names. Each
+  result lists the special forms and function bodies on the call's path, as
+  `Enclosure`s. A macro that must reject a call inside a `lambda`, handler or
+  `quasiquote` can inspect them.
+
+Scope questions (what a name refers to, what a closure captures) go to the
+`analysis` package. Its resolver walks code with `lisp.CodeWalker` too, so
+the repository has one walker that knows special-form syntax and one scope
+resolver.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.
@@ -1295,7 +1403,8 @@ it is undocumented; prefer the forms above.
 
 `libutil` is internal to the standard library; code outside this module uses
 `elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a
-builtin" below).
+builtin" below). For Go macros, use `elpsutil.FunctionDoc` and register through
+`AddMacros` or `PackageMacros` (see [Writing a Go macro](#writing-a-go-macro)).
 
 All builtins, macros, and exported symbols are required to have
 documentation. The `elps doc -m` command checks for missing docstrings

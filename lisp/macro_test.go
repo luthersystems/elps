@@ -156,6 +156,24 @@ func TestMacroExpansionSourceLocations(t *testing.T) {
 	elpstest.RunTestSuite(t, tests)
 }
 
+func TestMacroArgumentErrorLocations(t *testing.T) {
+	tests := elpstest.TestSuite{
+		{"deftype name", elpstest.TestSequence{
+			{`(deftype 42 () 0)`, `test:1:10: lisp:deftype: first argument is not a symbol: 'int`, ""},
+			{"(deftype\n   42\n   () 0)", `test:2:4: lisp:deftype: first argument is not a symbol: 'int`, ""},
+		}},
+		{"deftype formals", elpstest.TestSequence{
+			{`(deftype thing 42 0)`, `test:1:16: lisp:deftype: second argument is not a list: 'int`, ""},
+			{"(deftype thing\n   42\n   0)", `test:2:4: lisp:deftype: second argument is not a list: 'int`, ""},
+		}},
+		{"defconst name", elpstest.TestSequence{
+			{`(defconst 42 0)`, `test:1:11: lisp:defconst: first argument is not a symbol: int`, ""},
+			{"(defconst\n   42\n   0)", `test:2:4: lisp:defconst: first argument is not a symbol: int`, ""},
+		}},
+	}
+	elpstest.RunTestSuite(t, tests)
+}
+
 func BenchmarkMacroDefun(b *testing.B) {
 	elpstest.RunBenchmark(b, `
 		(defun benchmark () (debug-print 1 2 3))

@@ -1446,6 +1446,18 @@ func (env *LEnv) Errorf(format string, v ...any) *LVal {
 	return env.ErrorConditionf("error", format, v...)
 }
 
+// ErrorfAt is Errorf located at form: the error carries form's source location
+// (when form has one) instead of the evaluator's current location (the macro call).
+func (env *LEnv) ErrorfAt(form *LVal, format string, v ...any) *LVal {
+	lerr := env.newErrorConditionf("error", format, v...)
+	if form != nil && form.source != nil && form.source.Pos >= 0 {
+		// Copy the form's location for the escaping error, just as Errorf
+		// copies env.loc (issues #366 and #431).
+		lerr.source = form.source.Copy() //elps:mutates sets the location on the fresh error newErrorConditionf allocated above, before notifying any observer
+	}
+	return env.notifyError(lerr)
+}
+
 // ErrorConditionf returns an LError value with the given condition type and a
 // a formatted error message rendered using fmt.Sprintf.
 //

@@ -28,6 +28,7 @@ const (
 // A body that is nothing but strings is a constant function returning a string
 // rather than a documented one, so it has no docstring.
 //
+// This extracts declaration metadata; CodeWalker traverses function bodies.
 // expr is only read positionally; validating that it is a definition form at
 // all is the caller's job. Indexing is guarded rather than assumed: analysis
 // runs over fault-tolerant parses of arbitrary bytes, where a definition can

@@ -1,0 +1,1 @@
+(reverse 'list '(1 2))
