@@ -317,7 +317,8 @@ What this means for a builtin you write:
 - **To bind or evaluate in the caller, write a Go macro.** The macro runs in
   its own package, but its expansion is evaluated where the caller wrote it,
   so an expansion built from qualified core forms (`lisp:set`, `lisp:lambda`)
-  acts in the caller's package.
+  acts in the caller's package. Use `elpsutil.MustTemplate` and
+  `elpsutil.FunctionDoc` as shown in [Writing a Go macro](#writing-a-go-macro).
 - **Name a fixed package explicitly.** A builtin that must work in some
   package (a loader that starts in `user`, say) switches to it by name with
   `env.InPackage` and restores it itself.
@@ -346,6 +347,57 @@ documented `(help-package 'math)` is unchanged, but an unquoted
 library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
+
+### Writing a Go macro
+
+A Go macro receives unevaluated forms and returns an expansion for the caller
+to evaluate. Build an `elpsutil.Template` once at package initialization, then
+substitute the argument forms on each call. For example, this `unless` macro
+runs its body only when the condition is falsey:
+
+```go
+var unlessForm = elpsutil.MustTemplate(
+    `(lisp:if (unquote condition) () (lisp:progn (unquote-splicing body)))`,
+    "condition", "body")
+
+func macroUnless(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    return unlessForm.Expand(args.Cells[0], lisp.SExpr(args.Cells[1:]))
+}
+```
+
+Register it in your package with `elpsutil.FunctionDoc`, which carries the
+docstring through registration; registering the definition as a macro is what
+makes it one. The definition belongs in `AddMacros` or your package's
+`Macros() []lisp.LBuiltinDef` method:
+
+```go
+// With your package current (for example, inside its PackageInit):
+env.AddMacros(true, elpsutil.FunctionDoc("unless",
+    lisp.Formals("condition", lisp.VarArgSymbol, "body"), macroUnless,
+    "Evaluates body only when condition is falsey."))
+```
+
+`MustTemplate` reads its source with the elps reader, once, so a template is
+one ordinary elps form: symbols, lists, `()`, strings, numbers and `'form` are
+copied as written. Placeholders are the forms elps quasiquote uses, naming a
+declared parameter: `(unquote name)` inserts that argument and
+`(unquote-splicing name)` splices an **unquoted** list's cells (or nothing for
+nil) into the enclosing list; `lisp.SExpr(args.Cells[1:])` above wraps the
+unevaluated body for that purpose. A placeholder is recognised anywhere,
+including under a quote, so `'(unquote name)` quotes the argument;
+`unquote-splicing` must sit directly inside a list. Parameter names declare
+argument order. `MustTemplate` panics if the source is not exactly one form or
+fails to parse, and on undeclared, duplicate or unused parameters or a
+malformed placeholder; `Expand` panics on an argument count mismatch or an
+invalid splice argument. libtesting's assert macros are built this way.
+
+Each expansion allocates fresh, unlocated syntax, shares the inserted
+argument forms, and uses the immutable nil singleton for `()`; it never
+parses or evaluates. This follows the Go macro contract: the evaluator
+locates new syntax at the macro call site, in place. Reuse the template, never
+a previously returned expansion or a binding looked up by the macro. Qualify
+generated core names (`lisp:if`, `lisp:progn`), and use `env.GenSym()` for
+temporary bindings to avoid capturing the caller's names.
 
 ### Toolkit for replacing Lisp with Go builtins
 
@@ -1251,7 +1303,8 @@ it is undocumented; prefer the forms above.
 
 `libutil` is internal to the standard library; code outside this module uses
 `elpsutil.FunctionDoc`, which takes the same arguments (see "Deprecating a
-builtin" below).
+builtin" below). For Go macros, use `elpsutil.FunctionDoc` and register through
+`AddMacros` or `PackageMacros` (see [Writing a Go macro](#writing-a-go-macro)).
 
 All builtins, macros, and exported symbols are required to have
 documentation. The `elps doc -m` command checks for missing docstrings
