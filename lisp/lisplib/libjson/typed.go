@@ -115,7 +115,7 @@ const (
 // value has no encoding.
 //
 // The encoding is type-faithful and so finer than equal?: 1 and 1.0 encode
-// differently ("1" and "1.0"), and so do a string and a symbol of one
+// differently ("1" and "\"~d1\""), and so do a string and a symbol of one
 // spelling.  Values of the same types and structure always give the same
 // bytes, whatever order a map was built in and whichever cells are shared;
 // shared structure is written in full at each occurrence, so a small value

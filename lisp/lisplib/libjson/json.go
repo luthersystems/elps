@@ -113,8 +113,10 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			inside containers. Output is plain JSON, readable by standard JSON
 			tools and when retrieved from a database or file system.
 			:string-numbers controls whether numbers become
-			strings (default: serializer setting). :canonize true first calls
-			canonize and propagates exactly its errors. :typed true preserves
+			strings (default: serializer setting). :canonize true is a short form
+			of (json:dump-bytes (json:canonize v) :string-numbers false) and
+			propagates exactly canonize's errors. :typed true is a short form of
+			(json:dump-bytes (json:tag v) :string-numbers false). It preserves
 			types with Transit-verbose tags: keywords "~:k", symbols "~$s", bytes
 			"~b...", lists ["~#list",[...]], large ints "~n..." and special floats
 			"~z...". Vectors remain arrays and nil remains null. Only leading ~
@@ -149,8 +151,10 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			with string keys, arrays become vectors, null becomes (), and numbers
 			become floats by default. :string-numbers returns numbers as strings;
 			:exact-integers returns integer literals as ints (default: serializer
-			settings). :typed true restores every dumped type with a strict decoder:
-			vectors are plain arrays, nonempty lists use ~#list, and nil is null.
+			settings). :typed true is a short form of (json:untag (json:load-bytes
+			b :strict true :exact-integers true :string-numbers false)). It
+			restores every dumped type: vectors are plain arrays, nonempty lists
+			use ~#list, and nil is null.
 			Ignores package defaults and :exact-integers; rejects any explicit
 			:string-numbers. :strict true checks canonical plain spelling.
 			Typed input must have no whitespace, sorted keys,
@@ -218,12 +222,14 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			use ["~#list",[...]]. Whole floats use "~d" plus plain float text:
 			"~d1", "~d-0", or "~d1e+21". Non-whole floats remain numbers.
 			Leading ~ strings gain one ~. Unsupported values raise an error.
-			Dumping this value equals dumping the input with :typed true.`),
+			(json:dump-bytes (json:tag v) :string-numbers false) returns the
+			bytes of (json:dump-bytes v :typed true).`),
 		libutil.FunctionDoc("untag", lisp.Formals("object"), UntagBuiltin,
 			`Restores the data types represented by tag. Input must contain plain
 			JSON values. Unknown tags and malformed forms raise an error.
-			Use :strict true and :exact-integers true when loading tagged JSON.
-			Typed loading applies these options and untags during decoding.`),
+			(json:untag (json:load-bytes b :strict true :exact-integers true
+			:string-numbers false)) returns the value of (json:load-bytes b
+			:typed true), and rejects the same inputs.`),
 		libutil.FunctionDoc("canonize", lisp.Formals("object"), CanonizeBuiltin,
 			`Returns a fresh plain JSON image as elps canonical JSON. Symbols
 			and keywords become strings (true/false remain booleans, json:null

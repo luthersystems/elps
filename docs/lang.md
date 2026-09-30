@@ -1810,12 +1810,21 @@ Plain JSON (`json:dump-bytes`) loses types: `5` and `5.0` have the same bytes,
 `(json:dump-bytes v :typed true)` writes JSON that reads back as exactly the
 value you wrote with `(json:load-bytes b :typed true)`.
 
-`json:tag` returns a plain JSON value that preserves the input's types.
-`json:untag` restores those types and rejects unknown or malformed tags.
-Typed dump equals plain dump of `(json:tag v)`.
-Typed load equals `(json:untag (json:load-bytes b :exact-integers true :strict true))`.
-`:strict true` rejects whitespace, duplicate keys, and non-canonical key order, escapes, or number text.
-Plain load keeps its current behavior when `:strict` is omitted.
+`json:tag`, `json:untag` and `json:canonize` define typed JSON, and the flags
+are short forms of their compositions:
+
+| Short form | Composition |
+|---|---|
+| `(json:dump-bytes v :typed true)` | `(json:dump-bytes (json:tag v) :string-numbers false)` |
+| `(json:dump-bytes v :canonize true)` | `(json:dump-bytes (json:canonize v) :string-numbers false)` |
+| `(json:load-bytes b :typed true)` | `(json:untag (json:load-bytes b :strict true :exact-integers true :string-numbers false))` |
+
+A short form gives the same result as its composition and rejects the same
+inputs, without building the intermediate value. `json:tag` returns a plain
+JSON value that spells each type with a tag. `json:untag` restores the types
+and rejects unknown or malformed tags. `:strict true` on a load rejects
+whitespace, duplicate keys, and non-canonical key order, escapes or number
+text. Plain load keeps its current behavior when `:strict` is omitted.
 
 Ordinary values stay ordinary JSON. Sequences are Transit-aligned: vectors
 are JSON arrays, nonempty lists use Transit's `"~#list"` tag, and the empty

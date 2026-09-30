@@ -1,7 +1,7 @@
 # Canonical typed JSON
 
 The format uses **Transit-verbose tag spellings on top of the canonical byte
-form (RFC 8785 number text + UTF-8 byte key order + the plain encoder's escape
+form (shortest round-trip number text, UTF-8 byte key order and the plain encoder's escape
 set)**. This is **elps canonical JSON**, with typed extensions selected by
 `:typed true` on the dump/load bytes, string and message family. Dump's
 `:canonize true` first calls `json:canonize` and propagates exactly its errors.
@@ -334,6 +334,10 @@ retains its native-message return/input contract.
 ; => true
 ```
 
-`Tag` and `Untag` implement the value transform. `DumpTyped` streams `Tag` through the plain encoder.
-`LoadTyped` streams `Untag` through strict plain decoding with exact integers.
-Strict decoding validates spelling as each token is read. It does not dump the decoded document.
+`Tag`, `Untag` and `Canonize` define the format. `DumpTyped` writes the bytes
+of `Dump(Tag(v), false)` in one walk, and `LoadTyped` returns the value of
+`Untag` of a strict, exact-integer plain load in one pass. Neither builds the
+intermediate value. `TestTagComposition` checks the encoder byte for byte
+against the composition, and `FuzzTypedDecodeComposition` checks that the
+decoder accepts, rejects and returns exactly what the composition does.
+Strict decoding (`LoadOpts.Strict`) checks spelling as it reads each token.

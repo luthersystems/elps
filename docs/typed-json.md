@@ -1,12 +1,12 @@
 # Reading typed JSON
 
 The typed format uses **Transit-verbose tag spellings on top of the canonical
-byte form (RFC 8785 number text + UTF-8 byte key order + the plain encoder's
-escape set)**. Select it with `:typed true` on `json:dump-bytes`,
-`json:dump-string`, `json:dump-message` and their matching load functions.
-Use `json:canonize` or dump's `:canonize true` for **elps canonical JSON**.
-See [lang.md](lang.md#typed-json) for an introduction and
-[internals/typed-json.md](internals/typed-json.md) for exact rules.
+byte form (shortest round-trip number text, UTF-8 byte key order and the plain
+encoder's escape set)**. Three functions define it: `json:tag`, `json:untag`
+and `json:canonize`. The `:typed` and `:canonize` flags are short forms of
+compositions of these functions. See [lang.md](lang.md#typed-json) for an
+introduction and [internals/typed-json.md](internals/typed-json.md) for exact
+rules.
 
 The output is plain JSON, readable by standard JSON tools such as `jq` and
 when retrieved from a database or file system.
@@ -18,6 +18,45 @@ Deliberate differences from Transit:
 - Only `~` is reserved; `^` and backquote are ordinary text.
 - `~#array` and `~#tagged` are elps extension tags.
 - Canonical key order and escapes preserve byte compatibility with plain dump.
+
+## Functions and short forms
+
+| Function | Result |
+|---|---|
+| `(json:tag v)` | A plain JSON value that spells each elps type with a `~` tag |
+| `(json:untag x)` | The elps value that `x` spells; the inverse of `json:tag` |
+| `(json:canonize v)` | The **elps canonical JSON** image of `v`, or a `json:canonize-error` |
+
+Each flag is a short form of one composition. The table uses the string
+functions; the bytes and message functions follow the same rules.
+
+| Short form | Composition |
+|---|---|
+| `(json:dump-string v :typed true)` | `(json:dump-string (json:tag v) :string-numbers false)` |
+| `(json:dump-string v :canonize true)` | `(json:dump-string (json:canonize v) :string-numbers false)` |
+| `(json:dump-string v :typed true :canonize true)` | `(json:dump-string (json:tag (json:canonize v)) :string-numbers false)` |
+| `(json:load-string b :typed true)` | `(json:untag (json:load-string b :strict true :exact-integers true :string-numbers false))` |
+
+A short form returns the same bytes or value as its composition, and it
+rejects the same inputs. Error messages can differ. The short forms do not
+build the intermediate value, and they ignore the package defaults set by
+`json:use-string-numbers` and `json:use-exact-integers`. Write the composition
+to inspect or change the tagged value, and write the short form otherwise.
+
+`:strict true` on a load function accepts only the plain encoder's spelling:
+no whitespace, members in UTF-8 byte order with no duplicates, the plain
+escape set and canonical number text. It checks spelling only; it does not
+untag.
+
+<!-- typedjson:eval -->
+```lisp
+(json:tag (list :a 1.0))
+; => (vector "~#list" (vector "~:a" "~d1"))
+(equal? (json:dump-string '(:a 1.0) :typed true) (json:dump-string (json:tag '(:a 1.0)) :string-numbers false))
+; => true
+(json:untag (json:load-string "[\"~#list\",[\"~:a\"]]" :strict true :exact-integers true :string-numbers false))
+; => '(:a)
+```
 
 ## Canonize and the invariant
 
@@ -142,13 +181,9 @@ case, preserving its existing bytes. `rethrow` propagates all other cases:
 ; => "\"~draft\""
 ```
 
-The shorter `(json:dump-string payload :canonize true)` first calls canonize
-and propagates exactly its errors. With `:string-numbers false` it is the same
-as `(json:dump-string (json:canonize payload) :string-numbers false)`.
-The bytes, string and message dump functions accept both `:canonize` and
-`:typed`; all matching load functions accept `:typed`. Canonical dumping
-ignores the package string-number default, so a plain call using that default
-needs an explicit `:string-numbers` to select matching bytes.
+The short form `(json:dump-string payload :canonize true)` calls canonize
+first and propagates exactly its errors. The table lists how the flags combine
+with the number options.
 
 | Call and options | Result |
 |---|---|
@@ -352,7 +387,3 @@ reader, including `jq`, would have to join the mask to the data to
 know that `":pending"` is a keyword. It doubles what must stay in sync, and
 inline tags keep each value self-describing.
 
-`json:tag` and `json:untag` expose the typed value transform.
-Typed dump equals plain dump of `(json:tag v)`.
-Typed load equals `(json:untag (json:load-bytes b :exact-integers true :strict true))`.
-`:strict true` checks key order, escapes, number text, whitespace, and duplicate keys during decoding.

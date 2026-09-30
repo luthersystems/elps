@@ -851,9 +851,11 @@ nature and their semantics could change.
 `libjson.DumpTyped` and `libjson.LoadTyped` implement `:typed true` on the
 `json:dump-bytes`, `json:dump-string`, `json:dump-message` and matching load
 family. Typed JSON preserves elps types with Transit-verbose tag spellings on
-the elps canonical byte form: RFC 8785 number text, UTF-8 byte key order and
-the plain encoder's escape set, with float types preserved. A host can store
-values and read them back with the same types in another process or release.
+the elps canonical byte form: shortest round-trip number text, UTF-8 byte key
+order and the plain encoder's escape set, with float types preserved. A host
+can store values and read them back with the same types in another process or
+release. `libjson.Tag`, `libjson.Untag` and `libjson.Canonize` define the
+format: `DumpTyped(v)` writes the bytes of `Dump(Tag(v), false)`.
 
 ```go
 v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a"), lisp.Symbol(":k")})
