@@ -328,3 +328,27 @@ value`), cfg)
 		assert.Equal(t, "user", ref.Symbol.Package)
 	}
 }
+
+// A macro returning a shared quoted form is attributed per expansion: each
+// generated definition records its own call site and package (#769).
+func TestGeneratedOriginIsPerOccurrence(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `(defmacro fixed () '(progn (set 'x 1)))`)
+	result := parseAndAnalyzeWithConfig(t, `(user:fixed)
+(in-package 'q)
+(user:fixed)`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	byPkg := map[string]*Symbol{}
+	for _, sym := range result.Symbols {
+		if sym.Name == "x" && sym.GeneratedBy != nil {
+			byPkg[sym.Package] = sym
+		}
+	}
+	for pkg, line := range map[string]int{"user": 1, "q": 3} {
+		sym := byPkg[pkg]
+		require.NotNil(t, sym, pkg)
+		assert.Equal(t, pkg, sym.GeneratedBy.Package, pkg)
+		require.NotNil(t, sym.GeneratedBy.CallSite, pkg)
+		assert.Equal(t, line, sym.GeneratedBy.CallSite.Line, pkg)
+	}
+}

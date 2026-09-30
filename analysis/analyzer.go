@@ -56,16 +56,17 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	}
 	// With a MacroExpander, top-level macro calls are replaced by the package
 	// forms of their expansion, so generated definitions are forward
-	// referenceable too. generatedBy maps those forms to their macro call.
-	generatedBy := map[*lisp.LVal]*expansionKey{}
-	exprs, _ = a.expandPackageForms(exprs, scope, a.defaultPackage(), nil, generatedBy)
+	// referenceable too. generatedBy records each occurrence's macro call;
+	// different expansions may share the same form nodes.
+	exprs, generatedBy, _ := a.expandPackageForms(exprs, scope, a.defaultPackage(), nil)
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
-	for _, expr := range exprs {
+	for i, expr := range exprs {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		if call := generatedBy[expr]; call != nil {
+		if len(generatedBy) > 0 && generatedBy[i] != nil {
+			call := generatedBy[i]
 			a.withOrigin(call.node, call.pkg, func() { a.prescanForm(expr, scope, &currentPkg) })
 			continue
 		}

@@ -193,6 +193,19 @@ ref :progn scope=0 source=107:5:8-112:5:13 node=symbol:"progn" quoted=false@107:
 ref user:step scope=0 source=175:6:10-179:6:14 node=symbol:"step" quoted=false@175:6:10-179:6:14
 ref :y scope=3 source=158:5:59-159:5:60 node=symbol:"y" quoted=false@158:5:59-159:5:60
 ref user:twice scope=0 source=188:7:2-193:7:7 node=symbol:"twice" quoted=false@188:7:2-193:7:7
+input shared-origin.lisp sha256=8265052be7c35a29bbe299e1920ea2e73d09fb006fbbe56f7b7b4970e9538903
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-39:1:40
+symbol q:x variable scope=0 source=33:1:34-34:1:35 node=symbol:"x" quoted=true@32:1:33-34:1:35 init=- sig=- doc="" exported=false external=false refs=1 generated-by=user:fixed package=q source=70:4:2-80:4:12
+symbol user:fixed macro scope=0 source=10:1:11-15:1:16 node=symbol:"fixed" quoted=false@10:1:11-15:1:16 init=- sig=[] doc="" exported=false external=false refs=0
+symbol user:x variable scope=0 source=33:1:34-34:1:35 node=symbol:"x" quoted=true@32:1:33-34:1:35 init=- sig=- doc="" exported=false external=false refs=1 generated-by=user:fixed package=user source=41:2:2-51:2:12
+package 0 q:x q:x variable scope=0 source=33:1:34-34:1:35 node=symbol:"x" quoted=true@32:1:33-34:1:35 init=- sig=- doc="" exported=false external=false refs=1 generated-by=user:fixed package=q source=70:4:2-80:4:12
+package 0 user:fixed user:fixed macro scope=0 source=10:1:11-15:1:16 node=symbol:"fixed" quoted=false@10:1:11-15:1:16 init=- sig=[] doc="" exported=false external=false refs=0
+package 0 user:x user:x variable scope=0 source=33:1:34-34:1:35 node=symbol:"x" quoted=true@32:1:33-34:1:35 init=- sig=- doc="" exported=false external=false refs=1 generated-by=user:fixed package=user source=41:2:2-51:2:12
+ref :progn scope=0 source=21:1:22-26:1:27 node=symbol:"progn" quoted=false@21:1:22-26:1:27
+ref :progn scope=0 source=21:1:22-26:1:27 node=symbol:"progn" quoted=false@21:1:22-26:1:27
+ref q:x scope=0 source=82:5:1-83:5:2 node=symbol:"x" quoted=false@82:5:1-83:5:2
+ref user:x scope=0 source=103:7:1-104:7:2 node=symbol:"x" quoted=false@103:7:1-104:7:2
 input switch-and-define.lisp sha256=849bf601590534e391e157d782c71235a2f038ab35bdd5904d2458ab454b58ca
 scope 0 global parent=-1 node=-
 scope 1 function parent=0 node=list:"defmacro" quoted=false@16:2:1-106:3:61

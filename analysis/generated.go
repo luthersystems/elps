@@ -147,12 +147,13 @@ func (a *analyzer) withOrigin(call *lisp.LVal, pkg string, fn func()) {
 
 // expandPackageForms replaces each top-level macro call among forms with the
 // package forms of its expansion, recursively, so prescan registers
-// definitions a macro generates. origins maps each form taken from an
-// expansion to the outermost call and its original package. The returned
-// package is the one in effect after all forms, including expanded ones.
-func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg string, origin *expansionKey, origins map[*lisp.LVal]*expansionKey) ([]*lisp.LVal, string) {
+// definitions a macro generates. The parallel origins slice records each
+// occurrence's outermost call and its original package, even when expansions
+// share form nodes. The returned package is the one in effect after all forms,
+// including expanded ones.
+func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg string, origin *expansionKey) ([]*lisp.LVal, []*expansionKey, string) {
 	if a.cfg == nil || a.cfg.MacroExpander == nil {
-		return forms, pkg
+		return forms, nil, pkg
 	}
 	if origin == nil && a.fileNonMacros == nil {
 		// Prescan runs before the file's own definitions are registered, so
@@ -176,6 +177,7 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 		}
 	}
 	out := make([]*lisp.LVal, 0, len(forms))
+	origins := make([]*expansionKey, 0, len(forms))
 	for _, form := range forms {
 		head := ""
 		if form.Type == lisp.LSExpr && !form.IsQuoted() && len(form.Cells) > 0 {
@@ -193,10 +195,8 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 			}
 		}
 		if expanded == nil {
-			if origin != nil {
-				origins[form] = origin
-			}
 			out = append(out, form)
+			origins = append(origins, origin)
 			continue
 		}
 		o := origin
@@ -205,9 +205,11 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 		}
 		a.expansionDepth++
 		var expandedForms []*lisp.LVal
-		expandedForms, pkg = a.expandPackageForms(expansionPackageForms([]*lisp.LVal{expanded}), scope, pkg, o, origins)
+		var expandedOrigins []*expansionKey
+		expandedForms, expandedOrigins, pkg = a.expandPackageForms(expansionPackageForms([]*lisp.LVal{expanded}), scope, pkg, o)
 		out = append(out, expandedForms...)
+		origins = append(origins, expandedOrigins...)
 		a.expansionDepth--
 	}
-	return out, pkg
+	return out, origins, pkg
 }
