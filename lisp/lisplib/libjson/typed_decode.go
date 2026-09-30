@@ -20,9 +20,9 @@ import (
 // rejected with an error: whitespace, a member out of JCS order or
 // duplicated, number text other than the canonical text of its value (1.50,
 // 1E5, -0, 01, an int written as a float or past 2^53 as a number), an
-// escape other than the minimal one, a string beginning with '^' or '`', an
-// unknown or misused tag, a tagged empty list, non-canonical base64, trailing
-// bytes, and input over any configured limit. It never panics on malformed input.
+// escape other than the minimal one, an unknown or misused tag, a tagged
+// empty list, non-canonical base64, trailing bytes, and input over any
+// configured limit. It never panics on malformed input.
 //
 // Every value it returns is freshly allocated and shares no storage with b
 // or with any other value, so the caller owns it outright. Plain JSON arrays
@@ -239,11 +239,7 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 	if len(s) == 0 {
 		return lisp.String(""), nil
 	}
-	switch s[0] {
-	case '^', '`':
-		return nil, d.errorf("unescaped reserved string")
-	case '~':
-	default:
+	if s[0] != '~' {
 		return lisp.String(string(s)), nil
 	}
 	if len(s) < 2 {
@@ -251,7 +247,7 @@ func (d *typedDecoder) stringValue(s []byte) (*lisp.LVal, error) {
 	}
 	body := s[2:]
 	switch s[1] {
-	case '~', '^', '`':
+	case '~':
 		return lisp.String(string(s[1:])), nil
 	case ':':
 		return lisp.Symbol(":" + string(body)), nil
@@ -612,11 +608,7 @@ func (d *typedDecoder) key(s []byte) (*lisp.LVal, error) {
 	if len(s) == 0 {
 		return lisp.String(""), nil
 	}
-	switch s[0] {
-	case '^', '`':
-		return nil, d.errorf("unescaped reserved key")
-	case '~':
-	default:
+	if s[0] != '~' {
 		return lisp.String(string(s)), nil
 	}
 	if len(s) < 2 {
@@ -624,7 +616,7 @@ func (d *typedDecoder) key(s []byte) (*lisp.LVal, error) {
 	}
 	body := s[2:]
 	switch s[1] {
-	case '~', '^', '`':
+	case '~':
 		return lisp.String(string(s[1:])), nil
 	case ':':
 		return lisp.Symbol(":" + string(body)), nil

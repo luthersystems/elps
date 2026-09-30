@@ -38,6 +38,83 @@ func ints(xs ...int) []*lisp.LVal {
 // bs is a backslash, so escapes in expected JSON read plainly.
 const bs = "\\"
 
+func TestTypedStringEscapeMarker(t *testing.T) {
+	for _, tt := range []struct {
+		value string
+		want  string
+	}{
+		{"", `""`},
+		{"~", `"~~"`},
+		{"~x", `"~~x"`},
+		{"~~x", `"~~~x"`},
+		{"~^x", `"~~^x"`},
+		{"~`x", "\"~~`x\""},
+		{"^", `"^"`},
+		{"^x", `"^x"`},
+		{"`", "\"`\""},
+		{"`x", "\"`x\""},
+		{"x~^`", "\"x~^`\""},
+	} {
+		t.Run(tt.value, func(t *testing.T) {
+			t.Run("value", func(t *testing.T) {
+				b, err := DumpTyped(lisp.String(tt.value), WithTypedMaxBytes(len(tt.want)))
+				require.NoError(t, err)
+				assert.Equal(t, tt.want, string(b))
+			})
+			t.Run("decode value", func(t *testing.T) {
+				v, err := LoadTyped([]byte(tt.want))
+				require.NoError(t, err)
+				assert.Equal(t, lisp.LString, v.Type)
+				assert.Equal(t, tt.value, v.Str)
+			})
+			t.Run("key", func(t *testing.T) {
+				want := `{` + tt.want + `:1}`
+				b, err := DumpTyped(tsmap(t, lisp.String(tt.value), lisp.Int(1)))
+				require.NoError(t, err)
+				assert.Equal(t, want, string(b))
+				v, err := LoadTyped([]byte(want))
+				require.NoError(t, err)
+				entries := v.MapEntries()
+				require.Len(t, entries.Cells, 1)
+				key := entries.Cells[0].Cells[0]
+				assert.Equal(t, lisp.LString, key.Type)
+				assert.Equal(t, tt.value, key.Str)
+				assert.Equal(t, 1, entries.Cells[0].Cells[1].Int)
+			})
+		})
+	}
+}
+
+func TestTypedRejectsUnknownEscapeTags(t *testing.T) {
+	for _, tag := range []string{"~^", "~^x", "~`", "~`x"} {
+		s := strconv.Quote(tag)
+		for _, doc := range []string{s, `[` + s + `]`, `["~#list",[` + s + `]]`, `{"k":` + s + `}`} {
+			t.Run(doc, func(t *testing.T) {
+				_, err := LoadTyped([]byte(doc))
+				require.ErrorContains(t, err, "invalid tagged string")
+			})
+		}
+		t.Run("key "+tag, func(t *testing.T) {
+			_, err := LoadTyped([]byte(`{` + s + `:1}`))
+			require.ErrorContains(t, err, "invalid tagged key")
+		})
+	}
+}
+
+func TestTypedEscapeMarkerKeyOrder(t *testing.T) {
+	m := tsmap(t, lisp.String("~b"), lisp.Int(5), lisp.Symbol("key"), lisp.Int(4),
+		lisp.String("b"), lisp.Int(3), lisp.String("`b"), lisp.Int(2), lisp.String("^b"), lisp.Int(1))
+	want := "{\"^b\":1,\"`b\":2,\"b\":3,\"~$key\":4,\"~~b\":5}"
+	b, err := DumpTyped(m)
+	require.NoError(t, err)
+	assert.Equal(t, want, string(b))
+	back, err := LoadTyped([]byte(want))
+	require.NoError(t, err)
+	again, err := DumpTyped(back)
+	require.NoError(t, err)
+	assert.Equal(t, want, string(again))
+}
+
 // TestTypedGolden pins the typed JSON format byte for byte.  Stored
 // documents (ledger state, content hashes) depend on it, so ANY change to an
 // expected value below is a format change, not an edit.
@@ -82,8 +159,8 @@ func TestTypedGolden(t *testing.T) {
 		{"empty string", lisp.String(""), `""`},
 		{"string escapes", lisp.String("a\"b\\c\n\x01\x1f\x7f</>&"), `"a` + bs + `"b` + bs + bs + `c` + bs + `n` + bs + `u0001` + bs + `u001f` + "\x7f</>&\""},
 		{"string tilde", lisp.String("~x"), `"~~x"`},
-		{"string caret", lisp.String("^ "), `"~^ "`},
-		{"string backtick", lisp.String("`a"), "\"~`a\""},
+		{"string caret", lisp.String("^ "), `"^ "`},
+		{"string backtick", lisp.String("`a"), "\"`a\""},
 		{"string tilde inside", lisp.String("a~"), `"a~"`},
 		{"bytes", lisp.Bytes([]byte{0, 0xff, 1}), `"~bAP8B"`},
 		{"bytes padded", lisp.Bytes([]byte{1}), `"~bAQ=="`},
@@ -334,9 +411,9 @@ func TestTypedDecodeRejectsNonCanonical(t *testing.T) {
 	for _, in := range []string{
 		``, ` 1`, `1 `, `[1, 2]`, `{"a" :1}`, `nul`, `null `, `nullnull`, `tru`, `1.50`, `1E5`, `1e5`, `01`, `-0`, `+1`, `1.`, `.5`,
 		`1.0e+21`, `100000000000000000000`, `1e+20`, `0.10`, `-0.00`, `9007199254740992`, `"~i5"`, `"~i05"`,
-		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"^a"`, "\"`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
+		`"~zInf"`, `"~$"`, `"~$true"`, `"~$:a"`, `"~^a"`, "\"~`a\"", `"~"`, `"~x"`, `"~#vector"`, `"~#list"`, `"~bAQ"`, `"~bAR=="`, `"~b!!"`,
 		`"a` + bs + `/"`, `"` + bs + `u0041"`, `"` + bs + `u000a"`, `"` + bs + `u001F"`, "\"\x01\"", `"` + bs + `x"`, "\"\xff\"",
-		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"^a":1}`,
+		`{"b":1,"a":2}`, `{"a":1,"a":2}`, `{"a":1,"~$a":2}`, `{"~#vector":[]}`, `{"~?x":1}`, `{"~i01":1}`, `{"~^a":1}`, "{\"~`a\":1}",
 		`["~#vector",[1],2]`, `["~#vector",1]`, `["~#vector",[1]]`, `["~#vector",[]]`,
 		`["~#list",[]]`, `["~#list",1]`, `["~#list",null]`, `["~#list",[1],2]`, `["~#list",[1,]]`,
 		`["~#set",[1]]`, `["~#cmap",["a",1]]`, `["~#array",[[2],[1,2]]]`,

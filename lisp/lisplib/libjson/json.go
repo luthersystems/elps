@@ -137,6 +137,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			with magnitude >= 2^53 as "~n...", NaN/infinity. Integer map
 			keys always use "~i...". Sequences are Transit-aligned: vectors are
 			plain JSON arrays, nonempty lists are tagged, and nil is null.
+			Only a leading "~" in strings or string map keys is escaped as "~~";
+			leading caret and backquote stay unchanged.
 			The same value always gives the same bytes (keys sorted, no
 			spaces), so 1 and 1.0 differ. Raises an error for
 			functions, native values, error values, nested quotes and
@@ -146,6 +148,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			Example:
 			  (to-string (json:dump-typed (sorted-map 'id 7 'tags '(:a))))
 			  ; => "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}"
+			  (to-string (json:dump-typed (vector "^draft" "~draft")))
+			  ; => "[\"^draft\",\"~~draft\"]"
 
 			See docs/typed-json.md for every tag.`),
 		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,
@@ -153,6 +157,8 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			returns the value, every type as it was dumped. Plain JSON arrays
 			decode as vectors, null as nil, and "~#list" tags as nonempty lists.
 			Large integer values require "~n..."; "~i..." is only for map keys.
+			Leading caret and backquote in strings or string map keys are plain
+			text; a "~" before either is an unknown tag.
 			Raises an error for anything dump-typed would not write, such as spaces,
 			unsorted keys, strings starting with an unescaped "~" or unknown
 			tags (including "~#vector") or tagged empty lists. The value is new
@@ -160,7 +166,9 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 
 			Example:
 			  (json:load-typed "{\"~$id\":7,\"~$tags\":[\"~#list\",[\"~:a\"]]}")
-			  ; => (sorted-map 'id 7 'tags '(:a))`),
+			  ; => (sorted-map 'id 7 'tags '(:a))
+			  (json:load-typed "\"^draft\"")
+			  ; => "^draft"`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON

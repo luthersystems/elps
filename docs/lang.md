@@ -1769,10 +1769,16 @@ cannot tell apart get a short tag, a string beginning with `~`:
 | `()` | `null` | `null` |
 | `(to-bytes "hi")` | `"aGk="` | `"~baGk="` |
 | `"~x"` | `"~x"` | `"~~x"` |
+| `"^x"` | `"^x"` | `"^x"` |
+| `` "`x" `` | `` "`x" `` | `` "`x" `` |
 | `(/ 0.0 0.0)` | error | `"~zNaN"` |
 | `9007199254740993` | `9007199254740993` | `"~n9007199254740993"` |
 | `(sorted-map "a" 1)` | `{"a":1}` | `{"a":1}` |
 | `(sorted-map 'a 1)` | `{"a":1}` | `{"~$a":1}` |
+
+Only `~` is reserved as the escape marker. String values and string map keys
+beginning with `~` get one extra `~`; leading `^` and `` ` `` stay unchanged.
+The decoder rejects `~^...` and `` ~`... `` as unknown tags.
 
 Integer values with magnitude >= 2^53 use Transit's arbitrary-precision `~n`
 tag; smaller ones are JSON numbers. Integer map keys always use Transit's
@@ -1807,6 +1813,14 @@ Reading it back gives the same value, and nothing but typed JSON is accepted:
 ; => ()
 (float? (json:load-typed "5.0"))
 ; => true
+(json:load-typed "\"^x\"")
+; => "^x"
+(json:load-typed "\"`x\"")
+; => "`x"
+(json:load-typed "\"~^x\"")
+; => json:load-typed: typed json: offset 5: invalid tagged string
+(json:load-typed "\"~`x\"")
+; => json:load-typed: typed json: offset 5: invalid tagged string
 (json:load-typed "[1, 2]")
 ; => json:load-typed: typed json: offset 3: invalid value
 ```

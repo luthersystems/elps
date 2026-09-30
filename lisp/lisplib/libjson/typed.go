@@ -354,10 +354,9 @@ func appendTypedFloat(b []byte, f float64) []byte {
 	return append(b, '.', '0')
 }
 
-// needsTilde reports whether a string must be escaped with a leading '~':
-// Transit reserves the three characters below at the start of a string.
+// needsTilde reports whether a string starts with the format's escape marker.
 func needsTilde(s string) bool {
-	return s != "" && (s[0] == '~' || s[0] == '^' || s[0] == '`')
+	return s != "" && s[0] == '~'
 }
 
 func appendTypedString(b []byte, s string) []byte {

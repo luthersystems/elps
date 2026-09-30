@@ -12,6 +12,8 @@ Common values are ordinary JSON, so most documents read as-is:
 | elps value | typed JSON |
 |---|---|
 | `"text"` | `"text"` |
+| `"^draft"` | `"^draft"` |
+| `` "`draft" `` | `` "`draft" `` |
 | `42` | `42` |
 | `0.5` | `0.5` |
 | `5.0` | `5.0` |
@@ -21,6 +23,7 @@ Common values are ordinary JSON, so most documents read as-is:
 | `(vector)` | `[]` |
 | `()` | `null` |
 | `(sorted-map "k" 1)` | `{"k":1}` |
+| `` (sorted-map "^draft" 1 "`draft" 2 "~draft" 3) `` | `` {"^draft":1,"`draft":2,"~~draft":3} `` |
 
 Floats always have a `.` or an exponent (`5.0`, `1e+21`); ints never do.
 
@@ -52,8 +55,10 @@ plain JSON cannot tell apart:
 
 In **map keys** the same prefixes mark the key's type: `"~$id"` is the symbol
 key `'id`, `"~:id"` the keyword `:id`, `"~i7"` the int `7`, `"~?t"` / `"~?f"`
-the symbols `true` / `false`. A key with no prefix is a string. A string value
-or key starting with `^` or `` ` `` also gets a `~` (Transit reserves them).
+the symbols `true` / `false`. A key with no prefix is a string. Only `~` is
+reserved as the escape marker: a string value or string key starting with
+`~` gets one extra `~`. Leading `^` and `` ` `` stay unchanged; `~^...` and
+`` ~`... `` are unknown tags and are rejected.
 
 Integer map keys always use `~i`, including large ones: Transit defines it as
 a signed 64-bit integer. Integer values with magnitude >= 2^53 use `~n`;

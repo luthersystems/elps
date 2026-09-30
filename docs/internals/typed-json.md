@@ -40,7 +40,7 @@ this canonical ELPS format is not a general Transit reader or writer.
 | int map key, any supported magnitude | `"~i<decimal>"` | signed 64-bit integer `i` |
 | finite float | number text, see below | floating point: JSON number |
 | NaN / +Inf / -Inf | `"~zNaN"` / `"~zINF"` / `"~z-INF"` | special numbers `z` |
-| string | JSON string; a leading `~`, `^` or `` ` `` is escaped with `~` | the escape rule |
+| string | JSON string; only a leading `~` is escaped as `~~` | escape marker `~` |
 | symbol `true` / `false` | JSON `true` / `false` | boolean |
 | boolean map key | `"~?t"` / `"~?f"` | boolean `?` string form |
 | other symbol | `"~$name"` | symbol `$` |
@@ -65,8 +65,13 @@ Decisions and reasons:
 - **Other shared meanings match Transit.** `~:` is a keyword, `~$` a symbol,
   `~b` RFC 4648 base64 bytes, and `~z` one of NaN or the signed infinities.
   `~?t` / `~?f` are boolean keys; `~#list` is a list represented by its
-  elements. `~~` escapes a data string beginning with `~`; the same escape
-  rule covers leading `^` and backquote. None is repurposed for another type.
+  elements. `~~` escapes a data string beginning with `~`. None is
+  repurposed for another type.
+- **Only `~` is reserved as an escape marker.** String values and string map
+  keys beginning with `~` get one extra `~`; leading `^` and backquote stay
+  unchanged. This differs from Transit's special-character rules because this
+  format uses neither caching nor substitutions. The decoder rejects `~^...`
+  and `` ~`... `` as unknown tags, leaving one canonical spelling per string.
 - **Sequences are Transit-aligned.** Vectors (rank-1 arrays) use plain JSON
   arrays, and nonempty lists use Transit's `"~#list"` tag. A plain JSON array
   decodes as a vector, including `[]` as an empty vector. The old
