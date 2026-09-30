@@ -4,6 +4,35 @@ Published extension versions track the `elps` release tag they ship with -- the
 publish workflow sets `package.json` from the tag name -- so the numbering
 jumps from 0.2.0 to 1.50.0.
 
+## 1.73.0
+
+- Syntax highlighting: `macroexpand-all` is highlighted as a builtin function,
+  and `help` and `benchmark` as special forms.
+- Removed builtins: `time:utc-now`, `time:time-elapsed` and `time:sleep` are
+  gone from the bundled `elps` binary, because the standard library must be
+  deterministic (elps#757). The new `removed-builtin` lint check reports a
+  reference to one as an error and names the replacement.
+- New builtin `macroexpand-all` expands every macro call in a form, not only
+  the head as `macroexpand` does.
+- `test`, `test-let`, `test-let*`, `benchmark`, `benchmark-simple` and `help`
+  are now core `lisp` forms rather than `testing` and `help` package builtins;
+  `(use-package 'testing)` and `testing:test` keep working. Library builtins
+  now run in their own package (elps#736). `s:deftype` is removed from the
+  schema library; bind the result of `s:make-validator` with `set` instead.
+- New lint checks: `loop-variable-capture` (warning) reports a closure stored
+  from a `dotimes` body that captures the loop variable, and
+  `test-outside-test-file` (error) reports tests registered outside a
+  `_test.lisp` file, which fail to load in production.
+- Lint changes: `; nolint:shadowing` now also suppresses `builtin-shadowing`
+  (a top-level `defun`, `defmacro`, `set` or `set!` of a core `lisp` name);
+  `rethrow-context` no longer reports quoted data, quasiquote templates or
+  locally shadowed names, sees through user macros that expand to
+  `handler-bind` when a macro expander is available, and reports a form it
+  could not check fully.
+- Language server: hovering the head of a `lambda` lists the local variables
+  it captures, and `test-let*`, `benchmark-simple` and `help` are highlighted
+  as keywords in semantic tokens.
+
 ## 1.70.0
 
 - Faster interpreter in the bundled `elps` binary: whole-program benchmarks
