@@ -49,3 +49,6 @@ var Forms any
 
 // PackageForms holds func([]*lisp.LVal) []*lisp.LVal.
 var PackageForms any
+
+// Occurrences holds func(*lisp.CodeWalker, int, *lisp.LVal) bool.
+var Occurrences any

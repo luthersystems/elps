@@ -281,6 +281,9 @@ type CodeWalker struct {
 	formsOnly              bool
 	sourceSkipLiterals     bool
 	sourceDeclarationsOnly bool
+	// noMemo walks each occurrence of shared structure (internal/codewalk's
+	// Occurrences); its step hook bounds the work instead.
+	noMemo bool
 
 	nextScope int
 }
@@ -506,7 +509,7 @@ func (w *CodeWalker) runtimeForm(v *LVal, depth int) *LVal {
 	// otherwise shared structure costs a walk per path, exponential in
 	// the depth of sharing.
 	key := walkMemoKey{node: v, scope: w.scopeID()}
-	if r, ok := w.memo[key]; ok {
+	if r, ok := w.memo[key]; ok && !w.noMemo {
 		return r
 	}
 	if lerr := w.charge(); lerr != nil {
@@ -1185,7 +1188,7 @@ func (w *CodeWalker) template(v *LVal, depth int) *LVal {
 	}
 
 	key := walkMemoKey{node: v, scope: w.scopeID(), template: true}
-	if r, ok := w.memo[key]; ok {
+	if r, ok := w.memo[key]; ok && !w.noMemo {
 		return r
 	}
 	if lerr := w.charge(); lerr != nil {

@@ -65,6 +65,12 @@ func (w *Walker) Walk(form *lisp.LVal) *lisp.LVal {
 	}, form)
 }
 
+// Occurrences walks form like the runtime walker but visits every occurrence
+// of shared structure, in its own lexical context, instead of walking a node
+// once per scope. budget bounds the lists walked; the result is false when
+// the walk stopped because it ran out.
+var Occurrences func(w *lisp.CodeWalker, budget int, form *lisp.LVal) (complete bool)
+
 // PackageForms selects top-level forms and nested package declarations for
 // prescan. It omits quoted data and quasiquote, including template holes.
 var PackageForms func([]*lisp.LVal) []*lisp.LVal
@@ -78,6 +84,10 @@ func init() {
 	Forms, ok = hook.Forms.(func(*lisp.CodeWalker, *lisp.LVal) *lisp.LVal)
 	if !ok {
 		panic("codewalk: lisp did not inject the form visitor")
+	}
+	Occurrences, ok = hook.Occurrences.(func(*lisp.CodeWalker, int, *lisp.LVal) bool)
+	if !ok {
+		panic("codewalk: lisp did not inject the occurrence walker")
 	}
 	PackageForms, ok = hook.PackageForms.(func([]*lisp.LVal) []*lisp.LVal)
 	if !ok {

@@ -25,6 +25,19 @@ func init() {
 		return w.Walk(form)
 	}
 	hook.PackageForms = packageForms
+	hook.Occurrences = func(w *CodeWalker, budget int, form *LVal) bool {
+		n := 0
+		w.noMemo = true
+		w.step = func() *LVal {
+			if n++; n > budget {
+				return Errorf("code walk budget of %d lists exhausted", budget)
+			}
+			return nil
+		}
+		defer func() { w.noMemo, w.step = false, nil }()
+		w.Walk(form)
+		return n <= budget
+	}
 }
 
 // sourceValue reports source occurrences without the runtime walk's memo,

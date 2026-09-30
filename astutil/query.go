@@ -5,6 +5,7 @@ package astutil
 import (
 	"strings"
 
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -149,121 +150,151 @@ type CallSite struct {
 
 // FindCalls returns every call in form, in code position, whose head is one
 // of names (bare, or qualified by the lisp package) and is not lexically
-// bound in form, with the special forms and function bodies around it.  A
-// macro whose body must not contain some call (inside a lambda, a handler,
-// a quasiquote) can reject it by inspecting Enclosing.  Calls inside quoted
-// data are not calls and are not returned.  Pass expanded code.
+// bound where it occurs, with the special forms and function bodies around
+// it.  A macro whose body must not contain some call (inside a lambda, a
+// handler, a quasiquote) can reject it by inspecting Enclosing.  Calls
+// inside quoted data are not calls and are not returned.  Pass expanded
+// code.
 //
-// Ancestry is structural: a call's enclosures are the special forms and
-// function bodies on its path from form, so a sibling that follows a form
-// is never taken to be inside it.
+// Code built by macros can share structure.  A shared call is reported once
+// per place it occurs in code, each with its own enclosures and lexical
+// context.  The work and the number of sites are bounded; FindCalls drops
+// what does not fit.  A check that must not miss a call uses FindCallSites,
+// which says when the result is incomplete.
 func FindCalls(form *lisp.LVal, names ...string) []CallSite {
+	sites, _ := FindCallSites(form, names...)
+	return sites
+}
+
+// maxCallSites bounds the distinct sites one query reports: code that shares
+// structure exponentially has exponentially many places.  Sites identical to
+// one already reported (same call, same enclosures) do not count against it
+// once it is reached.
+const maxCallSites = 64
+
+// maxCallWork bounds the lists one query walks, across every occurrence of
+// shared structure.
+const maxCallWork = 1 << 16
+
+// FindCallSites is FindCalls reporting whether the result is complete.
+// complete is false when the query ran out of work or site budget; a
+// caller checking that no call occurs in some context must then assume
+// one does.
+func FindCallSites(form *lisp.LVal, names ...string) (sites []CallSite, complete bool) {
 	want := make(map[string]bool, len(names))
 	for _, n := range names {
 		want[n] = true
 	}
-	// parents links each node to every list holding it: a node shared by
-	// two places has two parents, and a call in it one site per place.
-	parents := make(map[*lisp.LVal][]*lisp.LVal)
-	linked := make(map[*lisp.LVal]bool)
-	var link func(v *lisp.LVal)
-	link = func(v *lisp.LVal) {
-		if linked[v] {
+	type entry struct {
+		enc   Enclosure
+		depth int
+	}
+	var stack []entry
+	var current *lisp.LVal
+	complete = true
+	full := false
+	add := func(site CallSite) {
+		if len(sites) >= maxCallSites {
+			sites = dedupSites(sites)
+		}
+		if len(sites) >= maxCallSites {
+			for _, s := range sites {
+				if sameSite(s, site) {
+					return
+				}
+			}
+			complete, full = false, true
 			return
 		}
-		linked[v] = true
-		for _, c := range v.Cells {
-			if c != nil && c != form {
-				parents[c] = append(parents[c], v)
-				link(c)
-			}
+		sites = append(sites, site)
+	}
+	w := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		if full {
+			return false
 		}
-	}
-	ops := make(map[*lisp.LVal]string)       // special forms
-	functions := make(map[*lisp.LVal]string) // nodes whose body is a function
-	type call struct {
-		form *lisp.LVal
-		name string
-	}
-	var calls []call
-	var current *lisp.LVal
-	ExpandAll(form, nil, "", func(n *lisp.WalkNode) bool {
+		switch n.Event {
+		case lisp.WalkLeave:
+			return true
+		case lisp.WalkEnter:
+			// A form's scope is entered at the form's own depth: drop what is
+			// deeper, then keep the form itself if it is on top.
+			stack = popDeeper(stack, n.Depth+1, false, func(e entry) int { return e.depth })
+			keep := len(stack) > 0 && stack[len(stack)-1].enc.Form == n.Node
+			stack = popDeeper(stack, n.Depth, keep, func(e entry) int { return e.depth })
+			if n.Function {
+				stack = append(stack, entry{Enclosure{Form: n.Node, Op: n.Op, Function: true}, n.Depth})
+			}
+			return true
+		case lisp.WalkForm, lisp.WalkRef, lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData:
+		}
+		stack = popDeeper(stack, n.Depth, false, func(e entry) int { return e.depth })
 		switch n.Event {
 		case lisp.WalkForm:
 			current = n.Node
 			if n.Op != "" {
-				ops[n.Node] = n.Op
-			}
-		case lisp.WalkEnter:
-			if n.Function {
-				functions[n.Node] = n.Op
+				stack = append(stack, entry{Enclosure{Form: n.Node, Op: n.Op}, n.Depth})
 			}
 		case lisp.WalkRef:
 			if n.Head && !n.Bound && current != nil &&
 				want[strings.TrimPrefix(n.Node.Str, lisp.DefaultLangPackage+":")] {
-				calls = append(calls, call{form: current, name: n.Node.Str})
+				encl := make([]Enclosure, len(stack))
+				for i, e := range stack {
+					encl[i] = e.enc
+				}
+				add(CallSite{Form: current, Name: n.Node.Str, Enclosing: encl})
 			}
-		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave:
+		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkEnter, lisp.WalkLeave:
 		}
 		return true
-	})
-	// Most selected forms only mention a target name in data or a template.
-	// Build ancestry only when the code walk found an actual call.
-	if len(calls) > 0 {
-		link(form)
+	}}
+	if !codewalk.Occurrences(w, maxCallWork, form) {
+		complete = false
 	}
-	sites := make([]CallSite, 0, len(calls))
-	for _, c := range calls {
-		for _, path := range pathsToRoot(c.form, parents) {
-			var encl []Enclosure
-			// path runs outward from the call; a lambda form is both a
-			// special form and the owner of a function body, the body
-			// being the inner of the two.
-			for _, a := range path {
-				if op, ok := functions[a]; ok {
-					encl = append(encl, Enclosure{Form: a, Op: op, Function: true})
-				}
-				if op, ok := ops[a]; ok {
-					encl = append(encl, Enclosure{Form: a, Op: op})
-				}
-			}
-			for i, j := 0, len(encl)-1; i < j; i, j = i+1, j-1 {
-				encl[i], encl[j] = encl[j], encl[i]
-			}
-			sites = append(sites, CallSite{Form: c.form, Name: c.name, Enclosing: encl})
-		}
-	}
-	return sites
+	return sites, complete
 }
 
-// maxCallPaths bounds how many places one shared call node is reported at;
-// code that shares structure exponentially would otherwise have
-// exponentially many paths.
-const maxCallPaths = 64
+// popDeeper drops the entries at least as deep as depth, except a top entry
+// keep asks to retain.
+func popDeeper[T any](stack []T, depth int, keep bool, d func(T) int) []T {
+	n := len(stack)
+	if keep {
+		n--
+	}
+	for n > 0 && d(stack[n-1]) >= depth {
+		n--
+	}
+	if keep {
+		return append(stack[:n], stack[len(stack)-1])
+	}
+	return stack[:n]
+}
 
-// pathsToRoot returns the ancestor chains of n, innermost first, one per
-// place n occurs.
-func pathsToRoot(n *lisp.LVal, parents map[*lisp.LVal][]*lisp.LVal) [][]*lisp.LVal {
-	var out [][]*lisp.LVal
-	var up func(v *lisp.LVal, path []*lisp.LVal, seen map[*lisp.LVal]bool)
-	up = func(v *lisp.LVal, path []*lisp.LVal, seen map[*lisp.LVal]bool) {
-		if len(out) >= maxCallPaths {
-			return
-		}
-		ps := parents[v]
-		if len(ps) == 0 {
-			out = append(out, append([]*lisp.LVal(nil), path...))
-			return
-		}
-		for _, p := range ps {
-			if seen[p] {
-				continue // a cycle
-			}
-			seen[p] = true
-			up(p, append(path, p), seen)
-			delete(seen, p)
+func sameSite(a, b CallSite) bool {
+	if a.Form != b.Form || a.Name != b.Name || len(a.Enclosing) != len(b.Enclosing) {
+		return false
+	}
+	for i := range a.Enclosing {
+		if a.Enclosing[i] != b.Enclosing[i] {
+			return false
 		}
 	}
-	up(n, nil, map[*lisp.LVal]bool{})
+	return true
+}
+
+// dedupSites drops sites identical to an earlier one.
+func dedupSites(sites []CallSite) []CallSite {
+	out := sites[:0]
+	for _, s := range sites {
+		dup := false
+		for _, o := range out {
+			if sameSite(o, s) {
+				dup = true
+				break
+			}
+		}
+		if !dup {
+			out = append(out, s)
+		}
+	}
 	return out
 }
