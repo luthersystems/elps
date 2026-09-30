@@ -181,7 +181,7 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 	for _, form := range forms {
 		head := ""
 		if form.Type == lisp.LSExpr && !form.IsQuoted() && len(form.Cells) > 0 {
-			head = astutil.HeadSymbol(form)
+			head = a.packageFormHead(form)
 		}
 		if head == "in-package" && astutil.ArgCount(form) >= 1 {
 			if name := extractPackageName(form.Cells[1]); name != "" {

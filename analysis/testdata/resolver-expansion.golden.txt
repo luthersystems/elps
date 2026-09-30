@@ -193,6 +193,31 @@ ref :progn scope=0 source=107:5:8-112:5:13 node=symbol:"progn" quoted=false@107:
 ref user:step scope=0 source=175:6:10-179:6:14 node=symbol:"step" quoted=false@175:6:10-179:6:14
 ref :y scope=3 source=158:5:59-159:5:60 node=symbol:"y" quoted=false@158:5:59-159:5:60
 ref user:twice scope=0 source=188:7:2-193:7:7 node=symbol:"twice" quoted=false@188:7:2-193:7:7
+input qualified-in-package.lisp sha256=b8daa5c5c763d681492a4625bfc8819e8c9c70c43bbcf7234fa19619f3413d57
+scope 0 global parent=-1 node=-
+scope 1 function parent=0 node=list:"defmacro" quoted=false@16:2:1-106:3:61
+scope 2 function parent=0 node=list:"defmacro" quoted=false@126:5:1-169:5:44
+scope 3 function parent=0 node=list:"defun" quoted=false@194:8:1-215:8:22
+symbol :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+symbol :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+symbol q:qa variable scope=0 source=188:7:9-190:7:11 node=symbol:"qa" quoted=false@188:7:9-190:7:11 init=- sig=- doc="" exported=false external=false refs=2 generated-by=qconst package=q source=181:7:2-187:7:8
+symbol q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+symbol q:read-qa function scope=0 source=201:8:8-208:8:15 node=symbol:"read-qa" quoted=false@201:8:8-208:8:15 init=- sig=[] doc="" exported=false external=false refs=0
+symbol user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=1
+map 1 name :name parameter scope=1 source=34:2:19-38:2:23 node=symbol:"name" quoted=false@34:2:19-38:2:23 init=- sig=- doc="" exported=false external=false refs=1
+map 1 value :value parameter scope=1 source=39:2:24-44:2:29 node=symbol:"value" quoted=false@39:2:24-44:2:29 init=- sig=- doc="" exported=false external=false refs=1
+package 0 q:qa q:qa variable scope=0 source=188:7:9-190:7:11 node=symbol:"qa" quoted=false@188:7:9-190:7:11 init=- sig=- doc="" exported=false external=false refs=2 generated-by=qconst package=q source=181:7:2-187:7:8
+package 0 q:qconst q:qconst macro scope=0 source=26:2:11-32:2:17 node=symbol:"qconst" quoted=false@26:2:11-32:2:17 init=- sig=[{name required} {value required}] doc="" exported=false external=false refs=1
+package 0 q:read-qa q:read-qa function scope=0 source=201:8:8-208:8:15 node=symbol:"read-qa" quoted=false@201:8:8-208:8:15 init=- sig=[] doc="" exported=false external=false refs=0
+package 0 user:enter-q user:enter-q macro scope=0 source=136:5:11-143:5:18 node=symbol:"enter-q" quoted=false@136:5:11-143:5:18 init=- sig=[] doc="" exported=false external=false refs=1
+ref :set scope=0 source=61:3:16-64:3:19 node=symbol:"set" quoted=false@61:3:16-64:3:19
+ref :quote scope=0 source=66:3:21-71:3:26 node=symbol:"quote" quoted=false@66:3:21-71:3:26
+ref :name scope=1 source=81:3:36-85:3:40 node=symbol:"name" quoted=false@81:3:36-85:3:40
+ref :value scope=1 source=97:3:52-102:3:57 node=symbol:"value" quoted=false@97:3:52-102:3:57
+ref user:enter-q scope=0 source=171:6:2-178:6:9 node=symbol:"enter-q" quoted=false@171:6:2-178:6:9
+ref q:qconst scope=0 source=181:7:2-187:7:8 node=symbol:"qconst" quoted=false@181:7:2-187:7:8
+ref q:qa scope=0 source=212:8:19-214:8:21 node=symbol:"qa" quoted=false@212:8:19-214:8:21
+ref q:qa scope=0 source=216:9:1-218:9:3 node=symbol:"qa" quoted=false@216:9:1-218:9:3
 input shared-origin.lisp sha256=8265052be7c35a29bbe299e1920ea2e73d09fb006fbbe56f7b7b4970e9538903
 scope 0 global parent=-1 node=-
 scope 1 function parent=0 node=list:"defmacro" quoted=false@0:1:1-39:1:40

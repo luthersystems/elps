@@ -138,7 +138,7 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 	if op != "" {
 		return true
 	}
-	head := astutil.HeadSymbol(node)
+	head := r.a.packageFormHead(node)
 	switch head {
 	case "progn", "lisp:progn":
 		if r.a.cfg != nil && r.a.cfg.MacroExpander != nil {

@@ -352,3 +352,25 @@ func TestGeneratedOriginIsPerOccurrence(t *testing.T) {
 		assert.Equal(t, line, sym.GeneratedBy.CallSite.Line, pkg)
 	}
 }
+
+// A qualified lisp:in-package produced by an expansion switches packages too.
+func TestGeneratedQualifiedInPackageCarriesOver(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'q)
+(defmacro qconst (name value)
+  (quasiquote (set (quote (unquote name)) (unquote value))))
+(in-package 'user)
+(defmacro enter-q () '(lisp:in-package 'q))`)
+	result := parseAndAnalyzeWithConfig(t, `(enter-q)
+(qconst qa 1)
+(defun read-qa () qa)
+qa`, &Config{MacroExpander: &EnvMacroExpander{Env: env}})
+	assert.Empty(t, result.Unresolved)
+	for _, name := range []string{"qa", "read-qa"} {
+		sym := findSymbol(result, name)
+		require.NotNil(t, sym, name)
+		assert.Equal(t, "q", sym.Package, name)
+	}
+}

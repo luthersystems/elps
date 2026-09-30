@@ -78,7 +78,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 		if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 			continue
 		}
-		if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+		if a.packageFormHead(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
 			if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 				currentPkg = pkgName
 			}
@@ -101,7 +101,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 			if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 				continue
 			}
-			if astutil.HeadSymbol(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
+			if a.packageFormHead(expr) == "in-package" && astutil.ArgCount(expr) >= 1 {
 				if pkgName := extractPackageName(expr.Cells[1]); pkgName != "" {
 					filePkgs[pkgName] = true
 				}
@@ -118,7 +118,7 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 // prescanForm registers the definition one package form makes, advancing
 // *currentPkg past an in-package.
 func (a *analyzer) prescanForm(expr *lisp.LVal, scope *Scope, currentPkg *string) {
-	switch astutil.HeadSymbol(expr) {
+	switch a.packageFormHead(expr) {
 	case "defun", "defmacro", "deftype":
 		a.prescanDefinition(expr, scope, *currentPkg)
 	case "set":
