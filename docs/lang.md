@@ -1697,57 +1697,65 @@ elps> (to-int (get (json:load-string "{\"id\": \"9007199254740993\"}") "id"))
 
 ### Typed JSON (`json:dump-typed`, `json:load-typed`)
 
-`json:dump-bytes` writes ordinary JSON, which cannot say whether a number was
-an int or a float, a sequence a list or a vector, a string a symbol or a
-keyword. `json:dump-typed` writes *typed* JSON that keeps all of it, and
-`json:load-typed` reads it back to a value of the same types and structure:
+Plain JSON (`json:dump-bytes`) loses types: `5.0` comes back as `5`, `:kw`
+and `'sym` come back as strings, a list comes back as a vector.
+`json:dump-typed` writes JSON that reads back as exactly the value you wrote.
 
+Ordinary values stay ordinary JSON. Only the cases plain JSON cannot tell
+apart get a short tag, a string beginning with `~`:
+
+<!-- typedjson:table elps=1 plain=2 typed=3 -->
+| elps value | plain `json:dump-bytes` | typed `json:dump-typed` |
+|---|---|---|
+| `5` | `5` | `5` |
+| `5.0` | `5` | `5.0` |
+| `"s"` | `"s"` | `"s"` |
+| `:kw` | `":kw"` | `"~:kw"` |
+| `'sym` | `"sym"` | `"~$sym"` |
+| `true` | `true` | `true` |
+| `'(1 2)` | `[1,2]` | `[1,2]` |
+| `(vector 1 2)` | `[1,2]` | `["~#vector",[1,2]]` |
+| `(to-bytes "hi")` | `"aGk="` | `"~baGk="` |
+| `"~x"` | `"~x"` | `"~~x"` |
+| `(/ 0.0 0.0)` | error | `"~zNaN"` |
+| `9007199254740993` | `9007199254740993` | `"~i9007199254740993"` |
+| `(sorted-map "a" 1)` | `{"a":1}` | `{"a":1}` |
+| `(sorted-map 'a 1)` | `{"a":1}` | `{"~$a":1}` |
+
+A whole record, both ways:
+
+<!-- typedjson:record -->
 ```lisp
-(to-string (json:dump-typed (sorted-map 'amount 125000 'rate 0.0375 'status :pending
-                                        'steps '(:kyc :fund) 'sig (to-bytes "hi"))))
-; => "{\"~$amount\":125000,\"~$rate\":0.0375,\"~$sig\":\"~baGk=\",\"~$status\":\"~:pending\",\"~$steps\":[\"~#list\",[\"~:kyc\",\"~:fund\"]]}"
+(sorted-map 'id "ord-7" 'amount 125000 'rate 0.0375 'status :pending
+            'steps '(:kyc :fund) 'sig (to-bytes "hi") 'meta (sorted-map "source" "web"))
 ```
 
-The tags are those of [Transit](https://github.com/cognitect/transit-format):
+Typed (first line) and plain (second line):
 
-| Value | Typed JSON |
-|---|---|
-| int below 2^53 in magnitude | `42` |
-| other int | `"~i9007199254740993"` |
-| float | `1.5`, `1.0`, `-0.0`, `1e+21` (always a `.` or an exponent) |
-| NaN, +Inf, -Inf | `"~zNaN"`, `"~zINF"`, `"~z-INF"` |
-| string | `"text"`; one starting with `~`, `^` or `` ` `` gets a leading `~`: `"~~x"` |
-| symbol | `"~$name"`; `true` and `false` are JSON `true` and `false` |
-| keyword | `"~:name"` |
-| bytes | `"~b"` and standard padded base64 |
-| list, `()` included | `["~#list",[...]]` |
-| vector | `[...]` |
-| array of another rank | `["~#array",[[dims...],[cells...]]]` |
-| sorted map | `{...}`; keys are strings as above, or `"~$sym"`, `"~:kw"`, `"~?t"`/`"~?f"`, `"~i7"` |
-| tagged value (`deftype`) | `["~#tagged",["type-name",data]]` |
+```json
+{"~$amount":125000,"~$id":"ord-7","~$meta":{"source":"web"},"~$rate":0.0375,"~$sig":"~baGk=","~$status":"~:pending","~$steps":["~:kyc","~:fund"]}
+{"amount":125000,"id":"ord-7","meta":{"source":"web"},"rate":0.0375,"sig":"aGk=","status":":pending","steps":[":kyc",":fund"]}
+```
 
-The output is *canonical*: members are sorted (RFC 8785 order), numbers are
-written in RFC 8785 form, strings use the fewest escapes, and there is no
-whitespace. So values of the same types and structure always give the same
-bytes, whatever order a map was built in, and the bytes can be hashed, used as
-a key or stored. The encoding is finer than `equal?`: `1` and `1.0` encode
-differently, as do a string and a symbol of one spelling.
+Reading it back gives the same value, and nothing but typed JSON is accepted:
 
-`json:load-typed` accepts bytes or a string, and only exactly what
-`json:dump-typed` writes: whitespace, members out of order, `1.50`, an
-unneeded escape, an unknown tag or `null` raise an error. It returns a fresh
-value that shares nothing with any other. Lists come back as data lists, and a
-tagged value comes back with its type name and data without running its
-`deftype` constructor.
+<!-- typedjson:eval -->
+```lisp
+(json:load-typed "{\"~$status\":\"~:pending\",\"~$steps\":[\"~:kyc\",\"~:fund\"]}")
+; => (sorted-map 'status :pending 'steps '(:kyc :fund))
+(float? (json:load-typed "5.0"))
+; => true
+(json:load-typed "[1, 2]")
+; => json:load-typed: typed json: offset 3: invalid value
+```
 
-`json:dump-typed` raises an error for a function, a native value, an error, a
-string or symbol name that is not valid UTF-8, and a value that contains itself. Shared
-structure is written in full at each occurrence. Both functions stop at limits
-on nesting depth (1024), size (16 MiB, or the runtime's allocation cap if
-lower) and value count (2^20). `json:dump-typed` costs one step per started KiB
-of output, charged as it writes; `json:load-typed` one per started KiB of
-input, charged first. The format is specified in
-[internals/typed-json.md](internals/typed-json.md).
+The output is canonical: the same value always gives the same bytes (keys
+sorted, no spaces), so it can be hashed or used as a key. `1` and `1.0`
+encode differently. Functions, native values and values that contain
+themselves raise an error. See the [typed JSON cheat sheet](typed-json.md)
+for every tag, `jq` and CouchDB, and
+[internals/typed-json.md](internals/typed-json.md) for the exact rules and
+limits.
 
 ## Packages
 

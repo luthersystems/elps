@@ -130,28 +130,30 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			returned as strings. The :exact-integers keyword controls whether
 			JSON integer literals are returned as ints rather than floats.`),
 		libutil.FunctionDoc("dump-typed", lisp.Formals("object"), DumpTypedBuiltin,
-			`Serializes an ELPS value to canonical typed JSON and returns
-			bytes.  Unlike dump-bytes it keeps every type -- int versus float,
-			list versus vector, symbols, keywords, bytes, map key types,
-			tagged values and arrays of any rank -- with Transit's tags
-			("~:kw", "~$sym", "~b<base64>", ["~#list",[...]]), and it is
-			canonical (RFC 8785 member order and number text, no
-			whitespace): values of the same types and structure always give
-			the same bytes, so the result can be hashed, used as a key or
-			stored and read back with load-typed.  It is finer than equal?:
-			1 and 1.0 encode differently.  Functions, native values, errors,
-			strings or symbol names that are not valid UTF-8, and values that contain
-			themselves raise an error.  Costs one step per started KiB of
-			output, charged as the output grows.`),
+			`Returns object as typed JSON bytes: JSON that load-typed reads
+			back as exactly the same value. Plain values stay plain JSON;
+			only what plain JSON would lose gets a "~" tag: keywords "~:k",
+			symbols "~$s", bytes "~b...", vectors ["~#vector",[...]], big
+			ints, NaN. The same value always gives the same bytes (keys
+			sorted, no spaces), so 1 and 1.0 differ. Raises an error for
+			functions, native values and values that contain themselves.
+			Costs one step per KiB of output.
+
+			Example:
+			  (to-string (json:dump-typed (sorted-map 'id 7 'tags '(:a))))
+			  ; => "{\"~$id\":7,\"~$tags\":[\"~:a\"]}"
+
+			See docs/typed-json.md for every tag.`),
 		libutil.FunctionDoc("load-typed", lisp.Formals("typed-json"), LoadTypedBuiltin,
-			`Parses bytes or a string that dump-typed produced and returns
-			the value, with every type as it was dumped.  Anything dump-typed
-			could not have produced -- whitespace, members out of order,
-			non-canonical numbers or escapes, unknown tags -- raises an
-			error.  The value is newly allocated and shares nothing with
-			any other value; a tagged value is not checked against deftype.
-			Costs one step per started KiB of input, charged before
-			decoding.`),
+			`Reads typed JSON (bytes or a string) written by dump-typed and
+			returns the value, every type as it was dumped. Raises an error
+			for anything dump-typed would not write, such as spaces,
+			unsorted keys or untagged keywords. The value is new and shares
+			nothing. Costs one step per KiB of input.
+
+			Example:
+			  (json:load-typed "{\"~$id\":7,\"~$tags\":[\"~:a\"]}")
+			  ; => (sorted-map 'id 7 'tags '(:a))`),
 		libutil.FunctionDoc("use-string-numbers", lisp.Formals("bool"), s.UseStringNumbersBuiltin,
 			`Sets the default string-numbers mode for the JSON serializer.
 			When true, numbers are serialized as JSON strings and JSON
