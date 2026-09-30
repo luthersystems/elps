@@ -1347,6 +1347,50 @@ it signals), the analyzer falls back to that name-based guess, and a name it
 guesses has `GeneratedBy` nil. Each call site is expanded at most once per
 analysis.
 
+### Walking and expanding code
+
+Tools that analyze ELPS source need to know which parts of a form are code.
+`lisp.CodeWalker` walks a form as code: it knows the binding shape of every
+special form, never descends into quoted data, tracks lexical bindings, and
+optionally expands macros as it goes. It reports what it sees to a visitor as
+`lisp.WalkNode` events: `WalkForm` (a compound form, after expansion),
+`WalkRef` (a symbol evaluated as a reference; `Bound` says whether a binding
+inside the walked form introduces it), `WalkSet` (`set!` targets), `WalkBind`
+and `WalkDefine` (names introduced), `WalkEnter` / `WalkLeave` (scopes;
+`Function` marks function bodies), `WalkLiteral` and `WalkData`.
+
+```go
+import (
+    "github.com/luthersystems/elps/astutil"
+    "github.com/luthersystems/elps/lisp"
+)
+
+// Collect the global functions a form calls, ignoring local functions.
+calls := map[string]bool{}
+astutil.ExpandAll(form, nil, "user", func(n *lisp.WalkNode) bool {
+    if n.Event == lisp.WalkRef && n.Head && !n.Bound {
+        calls[n.Node.Str] = true
+    }
+    return true
+})
+```
+
+Two entry points share one walker:
+
+- `astutil.ExpandAll(form, expander, pkg, visit)` expands every macro call an
+  `astutil.MacroExpander` can expand (an `*analysis.EnvMacroExpander` is one),
+  then visits the expanded code (with a nil expander it only walks). Calls
+  to local macros are not entered.
+- `(*lisp.LEnv).MacroExpandAll(form)` resolves heads in a live environment and
+  expands `macrolet` macros too. It is what `macroexpand-all` calls.
+
+None of them writes to the input. A list on the path to an expansion is
+rebuilt as a fresh, unsealed list carrying the original's source location;
+every untouched subtree is returned as the same node, so positions in the
+result still point into the original file. A special operator an embedder
+registers has no known shape, and the walker treats a form headed by one as
+opaque: its arguments are neither walked nor expanded.
+
 ### Documenting Go builtins
 
 Go-implemented builtins provide documentation through their definition.

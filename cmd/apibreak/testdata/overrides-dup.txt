@@ -1,0 +1,5 @@
+# the same surface|symbol twice: which expiry/reason applies is ambiguous
+go   | lisp.QSymbol | 2099-01-01 | elps#761 | removed with the quoted-symbol type; substrate#1 migrates
+lisp | time:sleep   | 2099-01-01 | elps#761 | blocking sleep removed; phyla use cc timers
+lisp | gone:*       | 2099-01-01 | #761 | package folded into another; consumers switch imports
+lisp | time:sleep   | 2000-01-01 | elps#761 | an older, expired copy of the same override

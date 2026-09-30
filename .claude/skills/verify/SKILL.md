@@ -25,6 +25,7 @@ Run in order. Stop and report on the first failure.
 | 8 | Format | `go build -o elps . && ./elps fmt -l ./...` | Check formatting |
 | 9 | Lisp lint | `./elps lint --workspace=. --exclude 'grammar' --include '_examples' ./...` | Lint ELPS source |
 | 10 | Docstrings | `./elps doc -m` | Check missing documentation |
+| 11 | API break gate | `make api-break-gate` (`BASE=origin/main` default) | API break gate (job `api-break`) |
 
 Notes:
 
@@ -40,6 +41,13 @@ Notes:
 - **Step 9**: fix the diagnostic, or add `; nolint:<check-name>` only for a
   genuine false positive.
 - **Step 10**: add the missing docstring to the builtin/op/macro/export.
+- **Step 11**: fails when the branch removes or incompatibly changes the Go
+  API of a non-internal package or the Lisp public surface (packages,
+  exports, kind, formals) against its merge base with `BASE`. If the break is
+  intended, paste the line the gate prints into `scripts/api-breaks.txt`,
+  fill the issue (and the substrate migration) and reason, and justify it in
+  the PR. Otherwise restore compatibility (keep the old name/arity, add
+  instead of change).
 - CI also builds and vets on Windows (`go build ./... && go vet ./...`); run
   `go vet ./...` if you touched OS-specific code.
 - Touched `scripts/`, `cmd/benchgate`, `benchmark.yml` or `fuzz.yml`? Also run
