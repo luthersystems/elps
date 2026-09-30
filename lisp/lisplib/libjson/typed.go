@@ -239,6 +239,9 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 			if !utf8.ValidString(v.Str) {
 				return errors.New("typed json: cannot encode a symbol that is not valid UTF-8")
 			}
+			if err := e.reserve(len(v.Str) + 3); err != nil {
+				return err
+			}
 			e.buf = appendTypedSymbol(e.buf, v.Str)
 		}
 	case lisp.LSExpr:
@@ -266,6 +269,9 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 			return errors.New("typed json: malformed tagged value")
 		}
 		if err := e.enter(v, depth); err != nil {
+			return err
+		}
+		if err := e.reserve(len(v.Str) + len(tagTagged) + 8); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagTagged+`",[`...)
@@ -443,9 +449,29 @@ func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) 
 	}
 }
 
+// checkHostMapKeys rejects an embedder's map that has a string key and a
+// symbol key of one spelling. A built-in map holds them as one entry, so the
+// decoder rejects such output.
+func checkHostMapKeys(keys []lisp.MapKeyPair) error {
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if k.Kind != lisp.LString && k.Kind != lisp.LSymbol {
+			continue
+		}
+		if _, dup := seen[k.Key]; dup {
+			return errors.New("typed json: map has two keys that name one entry")
+		}
+		seen[k.Key] = struct{}{}
+	}
+	return nil
+}
+
 func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	if err := e.enter(v, depth); err != nil {
 		return err
+	}
+	if v.Len() > e.cfg.maxValues-e.values {
+		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 	}
 	kbase, pbase, keysMark := len(e.kp), len(e.pairs), len(e.keys)
 	var ok bool
@@ -462,6 +488,9 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 			}
 			k := p.Cells[0]
 			e.kp = append(e.kp, lisp.MapKeyPair{Val: p.Cells[1], Key: k.Str, Int: k.Int, Kind: k.Type})
+		}
+		if err := checkHostMapKeys(e.kp[kbase:]); err != nil {
+			return err
 		}
 	}
 	for i := kbase; i < len(e.kp); i++ {
@@ -540,7 +569,7 @@ func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lerr
 	}
 	if err != nil {
-		return env.Errorf("%v", err)
+		return env.Error(err)
 	}
 	return lisp.Bytes(b)
 }
@@ -561,7 +590,7 @@ func LoadTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	v, err := LoadTyped(b, typedOptions(env)...)
 	if err != nil {
-		return env.Errorf("%v", err)
+		return env.Error(err)
 	}
 	return v
 }

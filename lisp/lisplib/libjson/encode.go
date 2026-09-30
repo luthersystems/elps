@@ -1095,7 +1095,9 @@ func appendJSONStringBody[T string | []byte](b []byte, s T) []byte {
 			start = i
 			continue
 		}
-		c, size := utf8.DecodeRuneInString(string(s[i:]))
+		// Convert at most one rune's bytes, so a []byte s is not copied
+		// from i to its end for every rune.
+		c, size := utf8.DecodeRuneInString(string(s[i:min(i+utf8.UTFMax, len(s))]))
 		if c == utf8.RuneError && size == 1 {
 			b = append(b, s[start:i]...)
 			b = append(b, '\\', 'u', 'f', 'f', 'f', 'd')

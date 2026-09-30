@@ -255,6 +255,9 @@ func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
 	if err := w.write("["); err != nil {
 		return nil, err
 	}
+	if len(cells) > w.cfg.maxValues-w.values {
+		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
+	}
 	out := make([]*lisp.LVal, len(cells))
 	for i, v := range cells {
 		if i > 0 {
@@ -288,6 +291,9 @@ func taggedKeyText(k lisp.MapKeyPair) (string, error) {
 }
 
 func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
+	if v.Len() > w.cfg.maxValues-w.values {
+		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
+	}
 	kp := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
 	keys, ok := v.AppendMapKeyPairs((*kp)[:0])
 	defer func() {
@@ -308,6 +314,9 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			}
 			k := p.Cells[0]
 			keys = append(keys, lisp.MapKeyPair{Kind: k.Type, Key: k.Str, Int: k.Int, Val: p.Cells[1]})
+		}
+		if err := checkHostMapKeys(keys); err != nil {
+			return nil, err
 		}
 	}
 	sp := mapPairPool.Get().(*[]lisp.MapPair)
