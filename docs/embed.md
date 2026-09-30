@@ -399,8 +399,36 @@ argument forms, and uses the immutable nil singleton for `()`; it never
 parses or evaluates. This follows the Go macro contract: the evaluator
 locates new syntax at the macro call site, in place. Reuse the template, never
 a previously returned expansion or a binding looked up by the macro. Qualify
-generated core names (`lisp:if`, `lisp:progn`), and use `env.GenSym()` for
-temporary bindings to avoid capturing the caller's names.
+generated core names (`lisp:if`, `lisp:progn`), and use `lisp.NewGenSyms(args)`
+for temporary bindings. For example, `pair-once` evaluates a form once and
+returns its value twice:
+
+```go
+var pairOnceForm = elpsutil.MustTemplate(
+    `(lisp:let (((unquote value) (unquote form))) (lisp:list (unquote value) (unquote value)))`,
+    "value", "form")
+
+func macroPairOnce(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+    syms := lisp.NewGenSyms(args)
+    return pairOnceForm.Expand(syms.Symbol("value"), args.Cells[0])
+}
+```
+
+Register it with `elpsutil.FunctionDoc`, formals `lisp.Formals("form")`, and a
+docstring. Create one generator per expansion and reuse each returned symbol
+where that binding is referenced. `Symbol(hint)` returns a fresh symbol on
+every call; hints must not contain `:`. Names such as `value@1@1` use a
+namespace the source reader cannot produce and depend only on argument forms
+and the order of `Symbol` calls. Generation is lazy, charges no steps, and
+allocates only the symbol and its name when the generator stays local.
+Keep its temporary bindings within the expansion: independent expansions
+may reuse names. The [design and limits](internals/gensym.md) explain why
+this prevents capture and why ordinary source nesting can reuse a level.
+The Lisp `gensym` builtin and `env.GenSym()` retain their history-dependent
+`genNNNNNNNN` names. A macro ported to `NewGenSyms` no longer advances that
+counter, so the numbers later `gensym` calls print change: `get-default`
+used to take two, and a `(gensym)` after it now prints a lower number than
+before.
 
 Use `env.ErrorfAt(form, format, values...)` for argument validation so an
 error points at the offending form. For example, this macro binds a name to
