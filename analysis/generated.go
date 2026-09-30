@@ -70,8 +70,8 @@ func isPackageFormHead(head string) bool {
 // expand returns the MacroExpander's expansion of node in pkg, or nil when
 // there is no expander, node's head is not a candidate macro (a builtin, a
 // non-macro definition, a non-symbol) or expansion fails. Each call site is
-// expanded at most once per analysis, so prescan and the deep walk see the
-// same expanded nodes.
+// expanded at most once per package per analysis, so prescan and the deep
+// walk see the same expanded nodes in the same package.
 func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal {
 	if a.cfg == nil || a.cfg.MacroExpander == nil || a.expansionDepth >= maxMacroExpansionDepth ||
 		node == nil || node.Type != lisp.LSExpr || node.IsQuoted() ||
@@ -85,15 +85,22 @@ func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal 
 	if sym != nil && (sym.Kind != SymMacro || !isUserMacro(sym)) {
 		return nil
 	}
-	if expanded, ok := a.expansions[node]; ok {
+	key := expansionKey{node: node, pkg: pkg}
+	if expanded, ok := a.expansions[key]; ok {
 		return expanded
 	}
 	expanded := a.cfg.MacroExpander.ExpandMacro(node, pkg)
 	if a.expansions == nil {
-		a.expansions = make(map[*lisp.LVal]*lisp.LVal)
+		a.expansions = make(map[expansionKey]*lisp.LVal)
 	}
-	a.expansions[node] = expanded
+	a.expansions[key] = expanded
 	return expanded
+}
+
+// expansionKey identifies a call in the package where it is expanded.
+type expansionKey struct {
+	node *lisp.LVal
+	pkg  string
 }
 
 // withOrigin runs fn with call as the current macro origin (unless an outer

@@ -26,6 +26,32 @@ func (c *headCountingExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LV
 	return c.inner.ExpandMacro(form, pkg)
 }
 
+func TestExpandCacheIncludesPackage(t *testing.T) {
+	t.Parallel()
+	env := newTestEnv(t)
+	evalSource(t, env, `
+(in-package 'p)
+(defmacro package-value () '"p")
+(in-package 'q)
+(defmacro package-value () '"q")`)
+	expander := &headCountingExpander{inner: &EnvMacroExpander{Env: env}}
+	a := &analyzer{cfg: &Config{MacroExpander: expander}}
+	scope := NewScope(ScopeGlobal, nil, nil)
+	call := lisp.SExpr([]*lisp.LVal{lisp.Symbol("package-value")})
+	for _, pkg := range []string{"p", "q"} {
+		expanded := a.expand(call, scope, pkg)
+		require.NotNil(t, expanded)
+		assert.Equal(t, pkg, expanded.Str)
+		assert.Same(t, expanded, a.expand(call, scope, pkg))
+	}
+	assert.Equal(t, 2, expander.calls["package-value"])
+	assert.Nil(t, a.expand(call, scope, "user"))
+	assert.Nil(t, a.expand(call, scope, "user"), "failed expansions are cached per package too")
+	assert.Equal(t, "p", a.expand(call, scope, "p").Str)
+	assert.Equal(t, "q", a.expand(call, scope, "q").Str)
+	assert.Equal(t, 3, expander.calls["package-value"])
+}
+
 // Definition-generating macros unrelated to any embedder: a named constant,
 // and a pair of accessor functions for a counter.
 const generatingMacros = `
