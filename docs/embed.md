@@ -413,18 +413,26 @@ var definePairForm = elpsutil.MustTemplate(
 
 func macroDefinePair(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
     name := args.Cells[0]
-    if name.Type != lisp.LSymbol {
-        return env.ErrorfAt(name, "first argument is not a symbol: %s", name.Type)
+    if name.Type != lisp.LSymbol || name.IsQuoted() {
+        return env.ErrorfAt(name, "first argument is not a symbol: %v", name)
     }
     return definePairForm.Expand(name, args.Cells[1], args.Cells[2])
 }
 ```
 
-Register it with formals `lisp.Formals("name", "left", "right")`. In a call
-such as `(define-pair` followed by `  42 1 2)` on the next line, the error
-reports line 2, column 3, where `42` starts. `ErrorfAt` copies the form's
-location; nil forms and forms without a valid source position fall back to
-the evaluator's current location, as `Errorf` does. The captured call stack
+Register it with formals `lisp.Formals("name", "left", "right")`. The
+template quotes the name itself, so the check also rejects a quoted name:
+`(define-pair 'q 1 2)` gets the macro's own error, located at `'q`. In this
+call the error reports line 2, column 3, where `42` starts:
+
+```lisp
+(define-pair
+  42 1 2)
+```
+
+`ErrorfAt` copies the form's location; nil forms and forms without a valid
+source position fall back to the evaluator's current location, as `Errorf`
+does. The captured call stack
 still describes the macro call, and debugger error notifications see the
 error with its chosen location.
 
