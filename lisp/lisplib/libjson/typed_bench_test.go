@@ -9,7 +9,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// typedBenchFrame is a defflow-sized frame: ten symbol-keyed variables of
+// typedBenchFrame is a frame of ten symbol-keyed variables of
 // mixed types.
 func typedBenchFrame() *lisp.LVal {
 	sig := make([]byte, 32)

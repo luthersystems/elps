@@ -38,7 +38,11 @@ functions; the bytes and message functions follow the same rules.
 | `(json:load-string b :typed true)` | `(json:untag (json:load-string b :strict true :exact-integers true :string-numbers false))` |
 
 A short form returns the same bytes or value as its composition, and it
-rejects the same inputs. Error messages can differ. The short forms do not
+rejects the same inputs. Error messages can differ. Interpreter limits apply
+to each builtin call: a composition makes two calls and charges steps for
+both, and the runtime value-depth limit applies to the deeper tagged value
+that `json:tag` returns. So a composition can meet a step or depth limit that
+its short form does not. The short forms do not
 build the intermediate value, and they ignore the package defaults set by
 `json:use-string-numbers` and `json:use-exact-integers`. Write the composition
 to inspect or change the tagged value, and write the short form otherwise.
@@ -376,14 +380,10 @@ $ jq -c 'with_entries(.key |= ltrimstr("~$")) | {id, amount}' record.json
 {"id":"ord-7","amount":125000}
 ```
 
-## Why not ...
+## Alternatives considered
 
-**Plain `json:dump-bytes`?** It is lossy: `5` and `5.0` have the same bytes,
-keywords and symbols become strings, lists become vectors, and bytes become a
-base64 string. A stored value would not come back with all its original types.
-
-**A type mask (plain JSON plus a separate "types" description)?** Every
-reader, including `jq`, would have to join the mask to the data to
-know that `":pending"` is a keyword. It doubles what must stay in sync, and
-inline tags keep each value self-describing.
+| Alternative | Why typed JSON does not use it |
+|---|---|
+| Plain `json:dump-bytes` | It loses types: `5` and `5.0` have the same bytes, keywords and symbols become strings, lists become vectors, and bytes become base64 strings. |
+| A type mask (plain JSON plus a separate description of types) | Every reader, `jq` included, must join the mask to the data to know that `":pending"` is a keyword. Two documents must stay in sync. Inline tags keep each value self-describing. |
 

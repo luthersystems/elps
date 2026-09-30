@@ -41,8 +41,10 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 		JSON bytes or strings and unmarshal JSON into ELPS data structures.
 		Output is plain JSON, readable by standard JSON tools such as jq and
 		when retrieved from a database or file system.
-		The output-only sentinel json:null and () serialize as JSON null at
-		any value position, including nested maps, lists, and arrays. All load
+		In plain and canonical output, the sentinel json:null and () serialize
+		as JSON null at any value position, including nested maps, lists, and
+		arrays. Typed output writes () as null and json:null as the symbol
+		"~$json:null". All load
 		functions decode JSON null as (), never as the json:null symbol.
 		Decoded maps accept string and symbol keys by name but always print
 		and dump string keys. Keyword names retain their leading colon;
@@ -79,8 +81,9 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("dump-message", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers", "canonize", "typed"), s.DumpMessageBuiltin,
 			`Serializes an ELPS value to a native JSON message suitable for
 			embedding in Go structures or passing back to a dump function.
-			json:null and () serialize as JSON null, including inside containers.
-			:string-numbers controls whether numbers are JSON strings (default:
+			In plain and canonical output, json:null and () serialize as JSON
+			null, including inside containers; typed output keeps json:null as
+			a symbol. :string-numbers controls whether numbers are JSON strings (default:
 			serializer setting). :canonize true first calls canonize and propagates
 			its errors; :typed true preserves types with Transit-verbose tags.
 			Both modes ignore package number defaults. Canonical dumping honors
@@ -110,7 +113,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 		libutil.FunctionDoc("dump-bytes", lisp.Formals("object", lisp.KeyArgSymbol, "string-numbers", "canonize", "typed"), s.DumpBytesBuiltin,
 			`Serializes an ELPS value to JSON bytes. Sorted-maps become objects,
 			arrays become JSON arrays, and json:null and () become null, including
-			inside containers. Output is plain JSON, readable by standard JSON
+			inside containers (typed output keeps json:null as a symbol). Output is plain JSON, readable by standard JSON
 			tools and when retrieved from a database or file system.
 			:string-numbers controls whether numbers become
 			strings (default: serializer setting). :canonize true is a short form
@@ -170,7 +173,7 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			returns a string. Output is plain JSON, readable by standard JSON
 			tools and when retrieved from a database or file system.
 			json:null and () become JSON null at any value
-			position. Plain map keys keep their full names: :height becomes
+			position, except that typed output keeps json:null as a symbol. Plain map keys keep their full names: :height becomes
 			":height". :string-numbers controls whether numbers become strings
 			(default: serializer setting). :canonize true first calls canonize
 			and propagates exactly its errors; :typed true preserves types with
