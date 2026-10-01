@@ -303,3 +303,118 @@ func callbackParameter(v *l.LVal) {
 	}
 }
 func invokeCallback(v *l.LVal, callback func(*l.LVal)) { callback(v) }
+
+// commentAllowed is audited in its own source.
+//
+//elpsvet:allow-valwalker fixture walks only cons cells, depth bounded by caller
+func commentAllowed(v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentAllowed(v.Cells[0])
+	}
+}
+
+// commentAllowedClosure covers the closure it owns.
+//
+//elpsvet:allow-valwalker fixture closure recursion is bounded by caller depth
+func commentAllowedClosure(v *l.LVal) {
+	var walk func(*l.LVal)
+	walk = func(v *l.LVal) {
+		if v.Type == l.LSExpr {
+			walk(v.Cells[0])
+		}
+	}
+	walk(v)
+}
+
+//elpsvet:allow-valwalker too short
+func commentShortReason(v *l.LVal) { // want `value walker walkers.commentShortReason dispatches`
+	if v.Type == l.LSExpr {
+		commentShortReason(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalkers fixture walks only cons cells safely
+func commentWrongMarker(v *l.LVal) { // want `value walker walkers.commentWrongMarker dispatches`
+	if v.Type == l.LSExpr {
+		commentWrongMarker(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-native fixture walks only cons cells safely
+func commentOtherRule(v *l.LVal) { // want `value walker walkers.commentOtherRule dispatches`
+	if v.Type == l.LSExpr {
+		commentOtherRule(v.Cells[0])
+	}
+}
+
+func commentInBody(v *l.LVal) { // want `value walker walkers.commentInBody dispatches`
+	//elpsvet:allow-valwalker fixture walks only cons cells safely
+	if v.Type == l.LSExpr {
+		commentInBody(v.Cells[0])
+	}
+}
+
+func commentOnClosure(v *l.LVal) { // want `value walker walkers.commentOnClosure dispatches`
+	var walk func(*l.LVal)
+	//elpsvet:allow-valwalker fixture closure recursion is bounded by caller depth
+	walk = func(v *l.LVal) {
+		if v.Type == l.LSExpr {
+			walk(v.Cells[0])
+		}
+	}
+	walk(v)
+}
+
+func commentTrailing(v *l.LVal) { //elpsvet:allow-valwalker fixture walks only cons cells safely // want `value walker walkers.commentTrailing dispatches`
+	if v.Type == l.LSExpr {
+		commentTrailing(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker fixture walks only cons cells safely
+var commentOnVar = 1
+
+func commentAfterMarkedVar(v *l.LVal) { // want `value walker walkers.commentAfterMarkedVar dispatches`
+	if v.Type == l.LSExpr {
+		commentAfterMarkedVar(v.Cells[0])
+	}
+}
+
+/*elpsvet:allow-valwalker too short
+ *
+ */
+func commentBlock(v *l.LVal) { // want `value walker walkers.commentBlock dispatches`
+	if v.Type == l.LSExpr {
+		commentBlock(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker too short // extra padding words here
+func commentPadded(v *l.LVal) { // want `value walker walkers.commentPadded dispatches`
+	if v.Type == l.LSExpr {
+		commentPadded(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker see https://example.org/audit for recursion bounds
+func commentURL(v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentURL(v.Cells[0])
+	}
+}
+
+type commentRecv struct{}
+
+//elpsvet:allow-valwalker caller bounds the recursion depth
+func (commentRecv) walk(v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentRecv{}.walk(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker caller bounds the recursion depth
+func commentGeneric[A, B any](v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentGeneric[A, B](v.Cells[0])
+	}
+}

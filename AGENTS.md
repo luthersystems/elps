@@ -204,7 +204,10 @@ file (after `SetupFn` when running tests/benchmarks; discovery skips
   exhaustive value switches (`elpsltypeswitch`) and new value walkers
   (`elpsvalwalker`). Value walkers own their traversal and choose children
   through `lisp.ShapeOf` or exhaustive `LType` switches. Each new walker
-  needs an audited traversal contract in `valueWalkerFunctions`.
+  needs an audited traversal contract in `valueWalkerFunctions`. A module
+  that runs elpsvet's `elpsvalwalker` over its own code records the audit as
+  `//elpsvet:allow-valwalker <reason>` in the walker's doc comment instead;
+  elps itself ignores that marker and keeps the table.
 - Before committing → `verify` (mirrors CI). Never commit to `main`.
 - All writing (docs, docstrings, comments, commits, PRs, issues, release
   notes) → `write-docs`.

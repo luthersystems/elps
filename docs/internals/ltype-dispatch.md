@@ -7,7 +7,7 @@ the `elpsltypeswitch` scope. Three parts enforce this:
 |------|----------|------|
 | `lisp.ShapeOf` | `lisp/shape.go` | One switch over every `LType` with no `default:` arm |
 | `elpsltypeswitch` | `cmd/elpsvet/ltypeswitch.go` | In its scope, an `LType` switch names every constant and has no `default:` arm |
-| `elpsvalwalker` | `cmd/elpsvet/valwalker.go` | A new recursive value walker is reported unless an allowlist row gives its reason |
+| `elpsvalwalker` | `cmd/elpsvet/valwalker.go` | A new recursive value walker is reported unless an allowlist row (inside elps) or an `//elpsvet:allow-valwalker <reason>` doc comment (another module) gives its reason |
 
 When you add an `LType`, run `make elpsvet` and fix every report. Then add
 the type to `TestShapeOfCoversEveryLType` (`lisp/shape_test.go`). Then review
@@ -83,6 +83,11 @@ The 144 rows are:
 | hand-rolled JSON walker | 11 |
 | hand-rolled path walker | 10 |
 | oracle (independent checker for another walker) | 10 |
+
+Another module that runs the analyzer over its own code cannot add a row,
+so it writes `//elpsvet:allow-valwalker <reason of at least three words>` in
+the walker's doc comment. The marker covers closures the function owns and
+is ignored inside elps, which keeps every audit in the table.
 
 Limits: cross-package calls, interface calls, method values, function
 parameters and reflection are not followed. A clean run means no new walker
