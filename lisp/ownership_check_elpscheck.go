@@ -391,6 +391,7 @@ func cleanupOwnership(owner weak.Pointer[Runtime]) {
 // while the value itself was still live.  Those entries are tombstones and
 // must stay until the value dies; sweepOwnershipOrphans removes them then, so
 // the table does not accumulate entries for dead values of dead Runtimes.
+//
 //elpsvet:allow weak.Pointer[Runtime] only type-tags *LVal via a zero-length array; nothing is strongly held
 var ownershipOrphans struct {
 	table   *sync.Map
@@ -488,8 +489,10 @@ func ownershipKey(v *LVal) any {
 		if md, ok := v.Native.(*MapData); ok && md != nil {
 			return weak.Make(md)
 		}
-	default:
-		// Every other type: the header is the value's identity.
+	case LInvalid, LInt, LFloat, LError, LSymbol, LSExpr, LQuote, LString,
+		LBytes, LArray, LNative, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// These types use the header as the value's identity.
 	}
 	return weak.Make(v)
 }

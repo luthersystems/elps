@@ -376,8 +376,9 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // (.claude/skills/elpsvet/SKILL.md) all claim it does.
 // The payload rule is fourth, builtin-state fifth, frozen-package sixth,
 // lazy-read seventh, and own-package (elpsvet/ownpkg, importable) eighth.
+// Exhaustive switches and value walkers are ninth and tenth.
 func TestRegisteredAnalyzers(t *testing.T) {
-	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread", "elpsownpkg"}
+	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread", "elpsownpkg", "elpsltypeswitch", "elpsvalwalker"}
 	got := make([]string, 0, len(analyzers))
 	for _, a := range analyzers {
 		got = append(got, a.Name)

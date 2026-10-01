@@ -137,8 +137,9 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		return lisp.Vector(out), nil
-	default:
-		break
+	case lisp.LBytes, lisp.LError, lisp.LFun, lisp.LQuote, lisp.LNative,
+		lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 	}
 	return nil, fmt.Errorf("typed json: input is not a plain JSON value: %v", v.Type)
 }

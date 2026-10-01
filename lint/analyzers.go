@@ -2777,48 +2777,27 @@ var AnalyzerLambdaList = &Analyzer{
 	Run: func(pass *Pass) error {
 		userDefs := UserDefined(pass.Exprs)
 		skip := aritySkipNodes(pass.Exprs)
-		walkLambdaListCalls(pass.Exprs, func(v *lisp.LVal) {
-			if userDefs[HeadSymbol(v)] || skip[v] {
+		codewalk.Calls(pass.Exprs, nil, func(n codewalk.Node) {
+			if n.Role != codewalk.Parameters || userDefs[HeadSymbol(n.Owner)] || skip[n.Owner] {
 				return
 			}
-			check := func(formals *lisp.LVal) {
-				if formals.Type != lisp.LSExpr {
+			formals := n.Formals
+			if formals.Type != lisp.LSExpr {
+				return
+			}
+			for _, sym := range formals.Cells {
+				if sym.Type != lisp.LSymbol {
+					pass.ReportNode(sym, "lambda list requires symbol parameters; replace the non-symbol parameter")
 					return
 				}
-				for _, sym := range formals.Cells {
-					if sym.Type != lisp.LSymbol {
-						pass.ReportNode(sym, "lambda list requires symbol parameters; replace the non-symbol parameter")
-						return
-					}
-				}
-				if i, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
-					hint := "use unique parameter names and valid &optional, &key, or final &rest name"
-					if name := formals.Cells[i].Str; strings.HasPrefix(name, ":") {
-						// Issue #686: a keyword formal is positional and
-						// evaluates to itself -- almost always a
-						// misspelt &key list.
-						hint = fmt.Sprintf("a keyword parameter name is positional, not a keyword argument; use &key for keyword arguments, e.g. (&key %s ...), or rename it to a plain symbol", strings.TrimLeft(name, ":"))
-					}
-					pass.ReportNode(formals.Cells[i], "%s; %s", message, hint)
-				}
 			}
-			switch unqualifiedLispName(HeadSymbol(v)) {
-			case "lambda":
-				if len(v.Cells) > 1 {
-					check(v.Cells[1])
+			if i, message := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); message != "" {
+				hint := "use unique parameter names and valid &optional, &key, or final &rest name"
+				if name := formals.Cells[i].Str; strings.HasPrefix(name, ":") {
+					// A keyword formal is positional and evaluates to itself.
+					hint = fmt.Sprintf("a keyword parameter name is positional, not a keyword argument; use &key for keyword arguments, e.g. (&key %s ...), or rename it to a plain symbol", strings.TrimLeft(name, ":"))
 				}
-			case "defun", "defmacro":
-				if len(v.Cells) > 2 {
-					check(v.Cells[2])
-				}
-			case "labels", "flet", "macrolet":
-				if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
-					for _, binding := range v.Cells[1].Cells {
-						if binding.Type == lisp.LSExpr && len(binding.Cells) > 1 {
-							check(binding.Cells[1])
-						}
-					}
-				}
+				pass.ReportNode(formals.Cells[i], "%s; %s", message, hint)
 			}
 		})
 		return nil
@@ -2915,55 +2894,7 @@ var AnalyzerDuplicateKeyword = &Analyzer{
 // walkLambdaListCalls excludes data, formals and binding entries, including
 // qualified core forms. Initializers and function bodies remain executable.
 func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
-	var walk func(*lisp.LVal)
-	walk = func(v *lisp.LVal) {
-		if v == nil || v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
-			return
-		}
-		head := codewalk.Operator(v)
-		if head == codewalk.OpQuote || head == codewalk.OpQuasiquote {
-			return
-		}
-		visit(v)
-		start := 2
-		switch head {
-		case codewalk.OpLambda:
-		case codewalk.OpDefun, codewalk.OpDefmacro, codewalk.OpDeftype:
-			start = 3
-		case codewalk.OpLet, codewalk.OpLetSeq, codewalk.OpLabels, codewalk.OpFlet, codewalk.OpMacrolet, codewalk.OpHandlerBind:
-			if len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
-				for _, binding := range v.Cells[1].Cells {
-					if binding.Type != lisp.LSExpr {
-						continue
-					}
-					body := 1
-					if head == codewalk.OpLabels || head == codewalk.OpFlet || head == codewalk.OpMacrolet {
-						body = 2
-					}
-					for i := body; i < len(binding.Cells); i++ {
-						walk(binding.Cells[i])
-					}
-				}
-			}
-		case codewalk.OpCond:
-			for _, clause := range v.Cells[1:] {
-				if clause.Type == lisp.LSExpr {
-					for _, expr := range clause.Cells {
-						walk(expr)
-					}
-				}
-			}
-			return
-		default:
-			start = 0
-		}
-		for i := start; i < len(v.Cells); i++ {
-			walk(v.Cells[i])
-		}
-	}
-	for _, expr := range exprs {
-		walk(expr)
-	}
+	codewalk.Calls(exprs, visit, nil)
 }
 
 // testDefinitionForms are the core forms that register a test or benchmark

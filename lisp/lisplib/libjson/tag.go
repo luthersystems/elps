@@ -149,6 +149,14 @@ func tagScalar(v *lisp.LVal) (*lisp.LVal, error) {
 	return v, nil
 }
 
+func (w *tagWalker) scalar(v *lisp.LVal) (*lisp.LVal, error) {
+	out, err := tagScalar(v)
+	if err != nil {
+		return nil, err
+	}
+	return w.leaf(out)
+}
+
 func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	if v == nil {
 		return nil, errors.New("typed json: cannot encode a Go nil value")
@@ -169,12 +177,15 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	if minimum > w.cfg.maxBytes-w.size {
 		return nil, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
 	}
-	if v.Type != lisp.LArray && v.Type != lisp.LSortMap && v.Type != lisp.LTaggedVal && (v.Type != lisp.LSExpr || v.IsNil()) {
-		out, err := tagScalar(v)
-		if err != nil {
-			return nil, err
+	shape := lisp.ShapeOf(v.Type)
+	switch shape {
+	case lisp.ShapeList:
+		if v.Type != lisp.LSExpr || v.IsNil() {
+			return w.scalar(v)
 		}
-		return w.leaf(out)
+	case lisp.ShapeArray, lisp.ShapeMap, lisp.ShapeTagged:
+	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
+		return w.scalar(v)
 	}
 	if depth >= w.cfg.maxDepth {
 		for _, p := range w.path {
@@ -186,8 +197,8 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	}
 	w.path = append(w.path, v)
 	defer func() { w.path = w.path[:len(w.path)-1] }()
-	switch v.Type {
-	case lisp.LSExpr:
+	switch shape {
+	case lisp.ShapeList:
 		if err := w.write(`["~#list",`); err != nil {
 			return nil, err
 		}
@@ -199,7 +210,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
-	case lisp.LArray:
+	case lisp.ShapeArray:
 		dims, cells, err := typedArrayParts(v)
 		if err != nil {
 			return nil, err
@@ -225,7 +236,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
-	case lisp.LTaggedVal:
+	case lisp.ShapeTagged:
 		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
 			return nil, errors.New("typed json: malformed tagged value")
 		}
@@ -246,9 +257,11 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
-	default:
+	case lisp.ShapeMap:
 		return w.object(v, depth)
+	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
 	}
+	return w.scalar(v)
 }
 
 func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {

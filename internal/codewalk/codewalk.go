@@ -18,11 +18,35 @@ type Binding = hook.Binding
 // Node is a source event. Owner contains a definition's form; Formals holds
 // its signature; Init is a let initializer. Outer selects the enclosing scope
 // for a parallel initializer or flet closure. Template marks template symbols.
+// Scope describes lexical scope categories. Role describes a signature's use.
 // The walker reuses this node: copy it to retain an event.
 type Node = hook.Node[lisp.LVal, lisp.WalkEvent]
 
 // End balances each Form, including forms whose visitor skips the children.
 const End lisp.WalkEvent = lisp.WalkLeave + 1
+
+// FormalsOccurrence reports a literal signature before grammar validation.
+const FormalsOccurrence lisp.WalkEvent = End + 1
+
+type ScopeCategory = hook.ScopeCategory
+
+const (
+	ScopeFunction  = hook.ScopeFunction
+	ScopeAnonymous = hook.ScopeAnonymous
+	ScopeLocal     = hook.ScopeLocal
+	ScopeFunctions = hook.ScopeFunctions
+	ScopeMacros    = hook.ScopeMacros
+	ScopeLoop      = hook.ScopeLoop
+	ScopeTest      = hook.ScopeTest
+)
+
+type FormalsRole = hook.FormalsRole
+
+const (
+	Parameters  = hook.Parameters
+	Constructor = hook.Constructor
+	Benchmark   = hook.Benchmark
+)
 
 // Walker preserves source occurrences and has no nesting cap or implicit
 // macro expansion. The resolver controls expansion through Visit.
@@ -36,6 +60,9 @@ type Walker struct {
 	// Form, when set, receives forms, operator names and depths instead of
 	// Form events. Its result has the same meaning as Visit's result.
 	Form func(*lisp.LVal, string, int) bool
+	// Formals receives original signatures, including empty and malformed lists.
+	// Owner is the operator form. Binding is its local function entry, if present.
+	Formals func(*Node)
 	// End, when set, receives completed form depths instead of End events.
 	End func(int)
 	// EndDepth optionally selects the depth that needs an End callback.
@@ -46,7 +73,10 @@ type Walker struct {
 	// DeclarationsOnly omits definition signatures, bodies and End events.
 	// Prescan uses it for defun, defmacro and deftype declaration metadata.
 	DeclarationsOnly bool
-	walker           lisp.CodeWalker
+	// SyntacticCalls visits calls without rejecting malformed binding grammar.
+	// It skips quote and quasiquote, formals lists and binding structure.
+	SyntacticCalls bool
+	walker         lisp.CodeWalker
 }
 
 var walk func(*lisp.CodeWalker, hook.Options[lisp.LVal, lisp.WalkEvent], *lisp.LVal) *lisp.LVal
@@ -61,6 +91,7 @@ func (w *Walker) Walk(form *lisp.LVal) *lisp.LVal {
 	return walk(&w.walker, hook.Options[lisp.LVal, lisp.WalkEvent]{
 		Visit: w.Visit, BindingForm: w.BindingForm, Reference: w.Reference,
 		Form: w.Form, End: w.End, EndDepth: w.EndDepth,
+		Formals: w.Formals, SyntacticCalls: w.SyntacticCalls,
 		SkipLiterals: w.SkipLiterals, DeclarationsOnly: w.DeclarationsOnly,
 	}, form)
 }

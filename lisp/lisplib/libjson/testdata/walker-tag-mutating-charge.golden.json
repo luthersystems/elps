@@ -1,0 +1,8 @@
+[
+{"input_after":{"len":1211,"sha256":"577042efe700d6222d96c05b979673cf8edc042cfcfe4dfc9051785e5ca880ef"},"name":"vector-separator","output":{"len":1188,"sha256":"22fd2c0a23fb6247a3fc78142875011353b2470b1a7f239e9b19e67308b94bc4"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":1105,"sha256":"bdd10b8fbb3ff43382145eaba8e9d50bc933f6d333e5df3380a1f83f500b9174"},"name":"list-separator","output":{"len":1304,"sha256":"e905e2e48233893a7127d83fbce6ef84c6502d75f963f5e7201f670b994f6680"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":1228,"sha256":"f172820e6d329b9adbd6fa28e1a94ebe80fb59510f456aba5f097bad372c27c0"},"name":"array-data-separator","output":{"len":1561,"sha256":"5c62177e6c287b17fb7e7cf0259ad7dba840c5d80f24c81a57063f1e2dcf7d08"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":20519,"sha256":"9831ecd2525f82e7b9b29ef977a581827919efbe304a553c57d43094670ee0d6"},"name":"array-data-prelude","output":{"len":20869,"sha256":"9443b08958c4c517615d45ae24a877a906683e5891280200876e6b4bc80b31d8"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":20608,"sha256":"98d2d6b6c4511341141caf247052218fa575f45658b31069b8d436ce38d225bd"},"name":"array-dimension-separator","output":{"len":20970,"sha256":"510d0fc86790355d644779ec8d332e652cfa96f010681fbd285bd400cf51f521"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":1151,"sha256":"e07a687dc107d33bf0e0a4ee46beeeb4c87cfa854343d6368e4f2583237aacfd"},"name":"map-key","output":{"len":1101,"sha256":"44349a84094bc665e6ee995293d000858244d3b96cabd3ade4becc59232ecceb"},"trace":["entries:charge-map","charge:1","charge:1"]}
+]

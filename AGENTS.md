@@ -90,7 +90,8 @@ them (`scripts/api-breaks-since.sh`), then are deleted.
   `minify`, `analyze`, `debug`, `mcp`.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,
   freshness, escape, native payload, builtin shared state, frozen packages,
-  lazy reads, own package). See the `elpsvet` skill.
+  lazy reads, own package, exhaustive value switches, new value walkers).
+  See the `elpsvet` skill.
 - **`elpsvet/ownpkg/`** — The importable `elpsownpkg` analyzer: a library
   builtin runs in its own package (#736), so it must not evaluate code, build
   lambdas, read `Runtime.Package` or resolve a symbol it was handed.
@@ -199,7 +200,11 @@ file (after `SetupFn` when running tests/benchmarks; discovery skips
 - Go-side invariants → `elpsvet`: native payloads, LVal ownership and
   freshness, builtins that capture state (method values, closures,
   package-level vars), writes to `Package` tables or `packageBase`, and reads
-  of `Package.symbols`, `Package.baseValues` or `sortedmap.m`.
+  of `Package.symbols`, `Package.baseValues` or `sortedmap.m`. Also use it for
+  exhaustive value switches (`elpsltypeswitch`) and new value walkers
+  (`elpsvalwalker`). Value walkers own their traversal and choose children
+  through `lisp.ShapeOf` or exhaustive `LType` switches. Each new walker
+  needs an audited traversal contract in `valueWalkerFunctions`.
 - Before committing → `verify` (mirrors CI). Never commit to `main`.
 - All writing (docs, docstrings, comments, commits, PRs, issues, release
   notes) → `write-docs`.

@@ -343,9 +343,12 @@ func (m sortedmap) Get(key *LVal) (*LVal, bool) {
 			return v, true
 		}
 		return Nil(), false
-	default:
+	case LInvalid, LFloat, LError, LSExpr, LFun, LQuote, LBytes,
+		LSortMap, LArray, LNative, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return Errorf("unhashable type: %s", key.Type), false
 	}
+	return Errorf("unhashable type: %s", key.Type), false
 }
 
 func (m sortedmap) Del(key *LVal) *LVal {
@@ -358,9 +361,12 @@ func (m sortedmap) Del(key *LVal) *LVal {
 	case LInt:
 		delete(m.kt.ints, key.Int)
 		return Nil()
-	default:
+	case LInvalid, LFloat, LError, LSExpr, LFun, LQuote, LBytes,
+		LSortMap, LArray, LNative, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return Errorf("unhashable type: %s", key.Type)
 	}
+	return Errorf("unhashable type: %s", key.Type)
 }
 
 func (m sortedmap) Set(key, val *LVal) *LVal {
@@ -381,9 +387,12 @@ func (m sortedmap) Set(key, val *LVal) *LVal {
 		}
 		m.kt.ints[key.Int] = val
 		return Nil()
-	default:
+	case LInvalid, LFloat, LError, LSExpr, LFun, LQuote, LBytes,
+		LSortMap, LArray, LNative, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return Errorf("unhashable type: %s", key.Type)
 	}
+	return Errorf("unhashable type: %s", key.Type)
 }
 
 // Entries materialises the map as sorted two-element pair lists.

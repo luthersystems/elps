@@ -19,7 +19,7 @@ Use when:
   or resolves a symbol it was handed (`elpsownpkg`: take a value, qualify the
   name, or turn it into a macro over core forms).
 
-## The eight rules
+## The ten rules
 
 | Analyzer | File | Flags | Suppression marker |
 |----------|------|-------|--------------------|
@@ -31,10 +31,20 @@ Use when:
 | `elpsfrozenpackage` | `frozenpackage.go` | a write to `Package` tables or a `packageBase` field outside the audited write paths | allowlist row in `packageWriteFunctions` (no marker) |
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
+| `elpsltypeswitch` | `ltypeswitch.go` | an audited `lisp.LType` switch has a default arm or misses a constant | scope list in the analyzer (no marker) |
+| `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | audited `pkgpath.FuncName` row in `valueWalkerFunctions` (no marker) |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `nativepayload.go`'s header is the authority on the payload
 tiers; this skill only condenses it.
+
+## Value walker contracts
+
+`lisp.ShapeOf` classifies values. Each walker selects its children and owns its
+traversal. Child dispatch uses `ShapeOf` or an exhaustive `LType` switch without
+`default`. A new walker needs an audited row in `valueWalkerFunctions`.
+State its current traversal contract, including limits, paths and callback order.
+Do not use an earlier implementation's benchmark result as the audit reason.
 
 ## Run it
 
