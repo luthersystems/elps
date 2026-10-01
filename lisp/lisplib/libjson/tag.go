@@ -12,6 +12,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
+	"github.com/luthersystems/elps/internal/valwalk"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -19,16 +20,27 @@ import (
 // Whole floats use ~d followed by appendJSONFloat text, including ~d-0.
 // Limits count logical values and containers, without counting tag wrappers.
 func Tag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
-	w := tagWalker{cfg: newTypedConfig(opts)}
-	out, err := w.value(v, 0)
+	w := tagWalkerPool.Get().(*tagWalker)
+	w.cfg = newTypedConfig(opts)
+	defer func() {
+		w.release()
+		clear(w.frames[:cap(w.frames)])
+		w.frames = w.frames[:0]
+		w.cfg = typedConfig{}
+		w.values, w.size, w.charged = 0, 0, 0
+		tagWalkerPool.Put(w)
+	}()
+	out, err := valwalk.Walk(v, w)
 	if err != nil {
 		return nil, err
 	}
 	return out, nil
 }
 
+var tagWalkerPool = sync.Pool{New: func() any { return &tagWalker{} }}
+
 type tagWalker struct {
-	path                  []*lisp.LVal
+	frames                []tagFrame
 	cfg                   typedConfig
 	values, size, charged int
 }
@@ -149,12 +161,45 @@ func tagScalar(v *lisp.LVal) (*lisp.LVal, error) {
 	return v, nil
 }
 
-func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
+type tagFrame struct {
+	shape       lisp.Shape
+	multi       bool
+	dims, cells int
+	pairs       []lisp.MapPair
+	pool        *[]lisp.MapPair
+}
+
+func (w *tagWalker) release() {
+	for _, f := range w.frames {
+		releaseTagPairs(f)
+	}
+}
+
+func releaseTagPairs(f tagFrame) {
+	if f.pool != nil {
+		clear(f.pairs)
+		if cap(f.pairs) <= mapPairRetentionLimit {
+			*f.pool = f.pairs[:0]
+			mapPairPool.Put(f.pool)
+		}
+	}
+}
+
+func (w *tagWalker) scalar(v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
+	out, err := tagScalar(v)
+	if err != nil {
+		return valwalk.Step{}, nil, err
+	}
+	out, err = w.leaf(out)
+	return valwalk.Step{Done: true}, out, err
+}
+
+func (w *tagWalker) Visit(walk *valwalk.Walker[*lisp.LVal], v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
 	if v == nil {
-		return nil, errors.New("typed json: cannot encode a Go nil value")
+		return valwalk.Step{}, nil, errors.New("typed json: cannot encode a Go nil value")
 	}
 	if err := w.count(); err != nil {
-		return nil, err
+		return valwalk.Step{}, nil, err
 	}
 	minimum := 0
 	if v.Type == lisp.LString || v.Type == lisp.LSymbol {
@@ -167,114 +212,177 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		minimum = enc64.EncodedLen(len(v.Bytes())) + 4
 	}
 	if minimum > w.cfg.maxBytes-w.size {
-		return nil, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
+		return valwalk.Step{}, nil, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
 	}
-	if v.Type != lisp.LArray && v.Type != lisp.LSortMap && v.Type != lisp.LTaggedVal && (v.Type != lisp.LSExpr || v.IsNil()) {
-		out, err := tagScalar(v)
-		if err != nil {
-			return nil, err
+	shape := lisp.ShapeOf(v.Type)
+	switch shape {
+	case lisp.ShapeList:
+		if v.Type != lisp.LSExpr || v.IsNil() {
+			return w.scalar(v)
 		}
-		return w.leaf(out)
+	case lisp.ShapeArray, lisp.ShapeMap, lisp.ShapeTagged:
+	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
+		return w.scalar(v)
 	}
-	if depth >= w.cfg.maxDepth {
-		for _, p := range w.path {
-			if p == v {
-				return nil, errors.New("typed json: cannot encode a value that contains itself")
-			}
+	if walk.Depth() >= w.cfg.maxDepth {
+		if walk.OnPath(v) {
+			return valwalk.Step{}, nil, errors.New("typed json: cannot encode a value that contains itself")
 		}
-		return nil, fmt.Errorf("%w: nesting depth exceeds %d", ErrTypedLimit, w.cfg.maxDepth)
+		return valwalk.Step{}, nil, fmt.Errorf("%w: nesting depth exceeds %d", ErrTypedLimit, w.cfg.maxDepth)
 	}
-	w.path = append(w.path, v)
-	defer func() { w.path = w.path[:len(w.path)-1] }()
-	switch v.Type {
-	case lisp.LSExpr:
+	f := tagFrame{shape: shape}
+	var children, following []*lisp.LVal
+	switch shape {
+	case lisp.ShapeList:
 		if err := w.write(`["~#list",`); err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
-		inner, err := w.cells(v.Cells, depth)
-		if err != nil {
-			return nil, err
+		if err := w.beginCells(len(v.Cells)); err != nil {
+			return valwalk.Step{}, nil, err
 		}
-		if err = w.write("]"); err != nil {
-			return nil, err
-		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
-	case lisp.LArray:
+		children = v.Cells
+	case lisp.ShapeArray:
 		dims, cells, err := typedArrayParts(v)
 		if err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
 		if len(dims) == 1 {
-			return w.cells(cells, depth)
+			if err := w.beginCells(len(cells)); err != nil {
+				return valwalk.Step{}, nil, err
+			}
+			children = cells
+		} else {
+			f.multi, f.dims, f.cells = true, len(dims), len(cells)
+			if err := w.write(`["~#array",[`); err != nil {
+				return valwalk.Step{}, nil, err
+			}
+			if err := w.beginCells(len(dims)); err != nil {
+				return valwalk.Step{}, nil, err
+			}
+			children, following = dims, cells
 		}
-		if err = w.write(`["~#array",[`); err != nil {
-			return nil, err
-		}
-		ds, err := w.cells(dims, depth)
-		if err != nil {
-			return nil, err
-		}
-		if err = w.write(","); err != nil {
-			return nil, err
-		}
-		cs, err := w.cells(cells, depth)
-		if err != nil {
-			return nil, err
-		}
-		if err = w.write("]]"); err != nil {
-			return nil, err
-		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
-	case lisp.LTaggedVal:
+	case lisp.ShapeTagged:
 		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
-			return nil, errors.New("typed json: malformed tagged value")
+			return valwalk.Step{}, nil, errors.New("typed json: malformed tagged value")
 		}
 		if err := w.write(`["~#tagged",[`); err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
 		if _, err := w.leaf(lisp.String(v.Str)); err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
 		if err := w.write(","); err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
-		inner, err := w.value(v.Cells[0], depth+1)
-		if err != nil {
-			return nil, err
-		}
-		if err = w.write("]]"); err != nil {
-			return nil, err
-		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
-	default:
-		return w.object(v, depth)
+		children = v.Cells
+	case lisp.ShapeMap:
+		return w.object(v)
+	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
+		return w.scalar(v)
 	}
+	w.frames = append(w.frames, f)
+	return valwalk.Step{Children: children, Following: following}, nil, nil
 }
 
-func (w *tagWalker) cells(cells []*lisp.LVal, depth int) (*lisp.LVal, error) {
+func (w *tagWalker) beginCells(n int) error {
 	if err := w.write("["); err != nil {
-		return nil, err
+		return err
 	}
-	if len(cells) > w.cfg.maxValues-w.values {
-		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
+	if n > w.cfg.maxValues-w.values {
+		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
 	}
-	out := make([]*lisp.LVal, len(cells))
-	for i, v := range cells {
+	return nil
+}
+
+func (w *tagWalker) nextCells(f tagFrame) error {
+	if err := w.write("]"); err != nil {
+		return err
+	}
+	if err := w.write(","); err != nil {
+		return err
+	}
+	return w.beginCells(f.cells)
+}
+
+func (w *tagWalker) Child(_ *valwalk.Walker[*lisp.LVal], _ *lisp.LVal, i int) error {
+	f := w.frames[len(w.frames)-1]
+	if f.shape == lisp.ShapeMap {
+		p := f.pairs[i]
 		if i > 0 {
+			if f.pairs[i-1].Key == p.Key {
+				return errors.New("typed json: map has two keys with one encoding")
+			}
 			if err := w.write(","); err != nil {
+				return err
+			}
+		}
+		if err := w.count(); err != nil {
+			return err
+		}
+		if _, err := w.leaf(lisp.String(p.Key)); err != nil {
+			return err
+		}
+		return w.write(":")
+	}
+	if f.shape == lisp.ShapeTagged {
+		return nil
+	}
+	if f.multi && i == f.dims {
+		return w.nextCells(f)
+	}
+	if i > 0 {
+		return w.write(",")
+	}
+	return nil
+}
+
+func (w *tagWalker) Leave(_ *valwalk.Walker[*lisp.LVal], v *lisp.LVal, children []*lisp.LVal) (*lisp.LVal, error) {
+	f := w.frames[len(w.frames)-1]
+	w.frames = w.frames[:len(w.frames)-1]
+	defer releaseTagPairs(f)
+	switch f.shape {
+	case lisp.ShapeList:
+		if err := w.write("]"); err != nil {
+			return nil, err
+		}
+		if err := w.write("]"); err != nil {
+			return nil, err
+		}
+		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), lisp.Vector(slices.Clone(children))}), nil
+	case lisp.ShapeArray:
+		if !f.multi {
+			if err := w.write("]"); err != nil {
+				return nil, err
+			}
+			return lisp.Vector(slices.Clone(children)), nil
+		}
+		if f.cells == 0 {
+			if err := w.nextCells(f); err != nil {
 				return nil, err
 			}
 		}
-		c, err := w.value(v, depth+1)
-		if err != nil {
+		if err := w.write("]"); err != nil {
 			return nil, err
 		}
-		out[i] = c
+		if err := w.write("]]"); err != nil {
+			return nil, err
+		}
+		ds, cs := lisp.Vector(slices.Clone(children[:f.dims])), lisp.Vector(slices.Clone(children[f.dims:]))
+		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
+	case lisp.ShapeTagged:
+		if err := w.write("]]"); err != nil {
+			return nil, err
+		}
+		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), children[0]})}), nil
+	case lisp.ShapeMap:
+		out := lisp.SortedMap()
+		for i, p := range f.pairs {
+			out.MapSet(p.Key, children[i])
+		}
+		return out, w.write("}")
+	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
 	}
-	if err := w.write("]"); err != nil {
-		return nil, err
-	}
-	return lisp.Vector(out), nil
+	return nil, errors.New("typed json: unsupported shape")
 }
 
 var tagKeyPairPool = sync.Pool{New: func() any { p := make([]lisp.MapKeyPair, 0, 16); return &p }}
@@ -290,9 +398,9 @@ func taggedKeyText(k lisp.MapKeyPair) (string, error) {
 	return string(b), err
 }
 
-func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
+func (w *tagWalker) object(v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
 	if v.Len() > w.cfg.maxValues-w.values {
-		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
+		return valwalk.Step{}, nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
 	}
 	kp := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
 	keys, ok := v.AppendMapKeyPairs((*kp)[:0])
@@ -305,27 +413,26 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	}()
 	if !ok {
 		entries := v.MapEntries()
-		if entries.Type == lisp.LError {
-			return nil, lisp.GoError(entries)
+		if err := lisp.GoError(entries); err != nil {
+			return valwalk.Step{}, nil, err
 		}
 		for _, p := range entries.Cells {
 			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
-				return nil, errors.New("typed json: malformed map entry")
+				return valwalk.Step{}, nil, errors.New("typed json: malformed map entry")
 			}
 			k := p.Cells[0]
 			keys = append(keys, lisp.MapKeyPair{Kind: k.Type, Key: k.Str, Int: k.Int, Val: p.Cells[1]})
 		}
 		if err := checkHostMapKeys(keys); err != nil {
-			return nil, err
+			return valwalk.Step{}, nil, err
 		}
 	}
 	sp := mapPairPool.Get().(*[]lisp.MapPair)
 	pairs := (*sp)[:0]
+	retained := false
 	defer func() {
-		clear(pairs)
-		if cap(pairs) <= mapPairRetentionLimit {
-			*sp = pairs[:0]
-			mapPairPool.Put(sp)
+		if !retained {
+			releaseTagPairs(tagFrame{pairs: pairs, pool: sp})
 		}
 	}()
 	plainKeys := true
@@ -335,7 +442,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			break
 		}
 		if !utf8.ValidString(k.Key) {
-			return nil, errors.New("typed json: cannot encode a map key that is not valid UTF-8")
+			return valwalk.Step{}, nil, errors.New("typed json: cannot encode a map key that is not valid UTF-8")
 		}
 	}
 	if plainKeys {
@@ -345,44 +452,22 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		for _, k := range keys {
 			text, err := taggedKeyText(k)
 			if err != nil {
-				return nil, err
+				return valwalk.Step{}, nil, err
 			}
 			pairs = append(pairs, lisp.MapPair{Key: text, Val: k.Val})
 		}
 		slices.SortFunc(pairs, func(a, b lisp.MapPair) int { return strings.Compare(a.Key, b.Key) })
 	}
-	out := lisp.SortedMap()
 	if err := w.write("{"); err != nil {
-		return nil, err
+		return valwalk.Step{}, nil, err
 	}
+	children := make([]*lisp.LVal, len(pairs))
 	for i, p := range pairs {
-		if i > 0 {
-			if pairs[i-1].Key == p.Key {
-				return nil, errors.New("typed json: map has two keys with one encoding")
-			}
-			if err := w.write(","); err != nil {
-				return nil, err
-			}
-		}
-		if err := w.count(); err != nil {
-			return nil, err
-		}
-		if _, err := w.leaf(lisp.String(p.Key)); err != nil {
-			return nil, err
-		}
-		if err := w.write(":"); err != nil {
-			return nil, err
-		}
-		c, err := w.value(p.Val, depth+1)
-		if err != nil {
-			return nil, err
-		}
-		out.MapSet(p.Key, c)
+		children[i] = p.Val
 	}
-	if err := w.write("}"); err != nil {
-		return nil, err
-	}
-	return out, nil
+	w.frames = append(w.frames, tagFrame{shape: lisp.ShapeMap, pairs: pairs, pool: sp})
+	retained = true
+	return valwalk.Step{Children: children}, nil, nil
 }
 
 func typedArrayParts(v *lisp.LVal) (dims, cells []*lisp.LVal, err error) {
