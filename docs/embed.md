@@ -354,8 +354,8 @@ A builtin keeps Lisp-controlled modes and per-VM metadata in runtime
 settings. It must not keep them in Go closure or receiver state. A template
 shares each approved builtin's Go function with every VM it mints, so state
 hidden there leaks between VMs (luthersystems/elps#678). `Serializer.setMode`
-in `lisp/lisplib/libjson/json.go` is the in-repository example: it stores the
-JSON modes on the calling VM's runtime.
+(`lisp/lisplib/libjson/json.go:720`) is the in-repository example: it stores
+the JSON modes on the calling VM's runtime.
 
 | Method | Purpose |
 | --- | --- |
@@ -385,7 +385,7 @@ shares without a host policy, plus a copied byte slice:
 | --- | --- |
 | A scalar kind: `bool`, `string`, an integer, float or complex kind, named types included | Stored as given. `SettingValue` returns the same dynamic type. |
 | Exactly `[]byte` | Copied on set and on every read. Nil and empty slices read back with length zero. |
-| A struct value that embeds `templatepolicy.Marker` | Stored as given. The marker is internal to this repository, so embedders cannot use this row. |
+| A struct value that embeds `templatepolicy.Marker` | Stored as given. Embedders cannot mark their own structs. They can store a marked value that an ELPS API returns, such as the payload of `libtime.Time`. |
 | Anything else: nil, any pointer, unmarked structs, maps, slices other than `[]byte`, arrays, channels, functions, `uintptr`, `unsafe.Pointer` | Rejected. The setting is unchanged. |
 
 A payload that only `TemplateWithNativePolicy` admits cannot be a value
