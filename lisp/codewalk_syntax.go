@@ -11,6 +11,12 @@ import (
 func init() {
 	w := CodeWalker{}
 	hook.SyntaxOp = w.syntaxOperator
+	hook.SyntaxCall = func(head *LVal) (string, *hook.CallPolicy) {
+		if e := syntaxHead(head); e != nil {
+			return e.name, &e.calls
+		}
+		return "", nil
+	}
 }
 
 // syntaxOperator classifies raw heads, including quoted heads, without
@@ -18,26 +24,31 @@ func init() {
 // Syntax walks call it on every list, so it rejects ordinary call names by
 // length and first byte before comparing any strings.
 func (*CodeWalker) syntaxOperator(head *LVal) string {
+	if e := syntaxHead(head); e != nil {
+		return e.name
+	}
+	return ""
+}
+
+func syntaxHead(head *LVal) *syntaxEntry {
 	if head == nil || head.Type != LSymbol {
-		return ""
+		return nil
 	}
 	name := head.Str
 	if len(name) > len(syntaxLangPrefix) && name[:len(syntaxLangPrefix)] == syntaxLangPrefix {
 		if e := syntaxLookup(name[len(syntaxLangPrefix):]); e != nil && !e.bareOnly {
-			return e.name
+			return e
 		}
-		return ""
+		return nil
 	}
-	if e := syntaxLookup(name); e != nil {
-		return e.name
-	}
-	return ""
+	return syntaxLookup(name)
 }
 
 const syntaxLangPrefix = DefaultLangPackage + ":"
 
 type syntaxEntry struct {
 	name     string
+	calls    hook.CallPolicy
 	next     uint8 // 1-based index of the next entry in the bucket, or 0
 	bareOnly bool  // template-hole markers have no lisp: spelling
 }
@@ -82,7 +93,10 @@ func init() {
 	for _, name := range names {
 		b := &syntaxBuckets[len(name)][name[0]]
 		bare := slices.Contains(syntaxHoleMarkers, name)
-		syntaxEntries = append(syntaxEntries, syntaxEntry{name: name, next: *b, bareOnly: bare})
+		spec := formKinds[name]
+		syntaxEntries = append(syntaxEntries, syntaxEntry{name: name, next: *b, bareOnly: bare,
+			calls: hook.CallPolicy{FormalsIndex: spec.formalsIndex, CallsStart: spec.callsStart,
+				BindingStart: spec.bindingStart, Role: spec.role, BindingFormals: spec.bindingFormals, Clauses: spec.clauses}})
 		index++
 		*b = index
 	}

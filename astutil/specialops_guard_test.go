@@ -86,6 +86,7 @@ var specialOpAllowlist = map[string]string{
 	"lsp/semantic_tokens.go:var specialOps":                     "semantic token vocabulary, not structural traversal",
 	"minifier/minifier.go:collectQuotedSymbols":                 "preserves quoted names across renaming",
 	"minifier/minifier.go:firstDynamicEvaluation":               "recognizes runtime evaluation and quoted code",
+	"minifier/minifier.go:firstGlobalFallback":                  "keeps the allocation-free package-flow scan because codewalk.Syntax exceeds the benchmark gate",
 	"minifier/minifier.go:preservePackageSurfaceSymbols":        "preserves names used by package-writing declarations",
 }
 

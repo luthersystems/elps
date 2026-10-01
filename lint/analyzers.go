@@ -2777,7 +2777,7 @@ var AnalyzerLambdaList = &Analyzer{
 	Run: func(pass *Pass) error {
 		userDefs := UserDefined(pass.Exprs)
 		skip := aritySkipNodes(pass.Exprs)
-		w := codewalk.Walker{SyntacticCalls: true, Formals: func(n *codewalk.Node) {
+		codewalk.Calls(pass.Exprs, nil, func(n codewalk.Node) {
 			if n.Role != codewalk.Parameters || userDefs[HeadSymbol(n.Owner)] || skip[n.Owner] {
 				return
 			}
@@ -2799,10 +2799,7 @@ var AnalyzerLambdaList = &Analyzer{
 				}
 				pass.ReportNode(formals.Cells[i], "%s; %s", message, hint)
 			}
-		}}
-		for _, expr := range pass.Exprs {
-			w.Walk(expr)
-		}
+		})
 		return nil
 	},
 }
@@ -2897,13 +2894,7 @@ var AnalyzerDuplicateKeyword = &Analyzer{
 // walkLambdaListCalls excludes data, formals and binding entries, including
 // qualified core forms. Initializers and function bodies remain executable.
 func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
-	w := codewalk.Walker{SyntacticCalls: true, Form: func(v *lisp.LVal, _ string, _ int) bool {
-		visit(v)
-		return true
-	}}
-	for _, expr := range exprs {
-		w.Walk(expr)
-	}
+	codewalk.Calls(exprs, visit, nil)
 }
 
 // testDefinitionForms are the core forms that register a test or benchmark

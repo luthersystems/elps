@@ -33,6 +33,16 @@ const (
 	Benchmark
 )
 
+// CallPolicy selects executable children and literal signatures in raw syntax.
+type CallPolicy struct {
+	FormalsIndex   int
+	CallsStart     int
+	BindingStart   int
+	Role           FormalsRole
+	BindingFormals bool
+	Clauses        bool
+}
+
 // Node carries source-only metadata without depending on lisp. Both sides
 // instantiate exactly this type, so the bridge does not copy each event.
 type Node[V, E any] struct {
@@ -83,3 +93,6 @@ var Occurrences any
 // SyntaxOp holds the raw-syntax operator classifier. Visitors stay on the
 // codewalk side of the bridge so their callbacks do not escape through any.
 var SyntaxOp any
+
+// SyntaxCall holds the raw operator classifier with its registry call policy.
+var SyntaxCall any

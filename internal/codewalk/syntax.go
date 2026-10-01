@@ -48,11 +48,64 @@ func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop ...*bo
 	if len(stop) > 0 {
 		stopped = stop[0]
 	}
-	syntax(node, parent, depth, visit, stopped)
+	syntax(node, parent, depth, visit, stopped, nil)
 }
 
-func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool) {
+func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool, calls *callVisitor) {
 	if node == nil || (stop != nil && *stop) {
+		return
+	}
+	if calls != nil {
+		v := node
+		visit, formals := calls.visit, calls.formals
+		if v.IsQuoted() || v.Type != lisp.LSExpr || len(v.Cells) == 0 {
+			return
+		}
+		op, policy := syntaxCall(v.Cells[0])
+		if op == OpQuote || op == OpQuasiquote {
+			return
+		}
+		if visit != nil {
+			visit(v)
+		}
+		start := 0
+		if policy != nil {
+			if formals != nil {
+				if i := policy.FormalsIndex; i > 0 && len(v.Cells) > i {
+					emitCallFormals(formals, v, v.Cells[i], nil, op, depth+1, policy.Role)
+				}
+				if policy.BindingFormals && len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+					for _, binding := range v.Cells[1].Cells {
+						if binding.Type == lisp.LSExpr && len(binding.Cells) > 1 {
+							emitCallFormals(formals, v, binding.Cells[1], binding, op, depth+2, policy.Role)
+						}
+					}
+				}
+			}
+			if policy.BindingStart > 0 && len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
+				for _, binding := range v.Cells[1].Cells {
+					if binding.Type == lisp.LSExpr {
+						for _, child := range binding.Cells[min(policy.BindingStart, len(binding.Cells)):] {
+							syntax(child, v, depth+3, nil, nil, calls)
+						}
+					}
+				}
+			}
+			if policy.Clauses {
+				for _, clause := range v.Cells[1:] {
+					if clause.Type == lisp.LSExpr {
+						for _, child := range clause.Cells {
+							syntax(child, v, depth+2, nil, nil, calls)
+						}
+					}
+				}
+				return
+			}
+			start = policy.CallsStart
+		}
+		for _, child := range v.Cells[min(start, len(v.Cells)):] {
+			syntax(child, v, depth+1, nil, nil, calls)
+		}
 		return
 	}
 	op := ""
@@ -66,7 +119,7 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool)
 		if stop != nil && *stop {
 			return
 		}
-		syntax(child, node, depth+1, visit, stop)
+		syntax(child, node, depth+1, visit, stop, nil)
 	}
 }
 
