@@ -19,8 +19,8 @@ func TestValWalkerAnalyzer(t *testing.T) {
 }
 
 func TestValueWalkerAllowlistReasons(t *testing.T) {
-	if len(valueWalkerFunctions) != 143 {
-		t.Fatalf("walker audit changed: have %d rows, want 143", len(valueWalkerFunctions))
+	if len(valueWalkerFunctions) != 138 {
+		t.Fatalf("walker audit changed: have %d rows, want 138", len(valueWalkerFunctions))
 	}
 	for _, name := range []string{
 		"lisp.copier.copy", "lisp.detacher.detach", "lisp.detacher.detachNode",
@@ -31,7 +31,7 @@ func TestValueWalkerAllowlistReasons(t *testing.T) {
 			t.Errorf("missing audited walker family %s", name)
 		}
 	}
-	prefixes := []string{"syntax walker:", "hot path:", "oracle:", "dropped-per-plan:", "pending-migration:", "kept hand-rolled:"}
+	prefixes := []string{"syntax walker:", "hot path:", "oracle:", "dropped-per-plan:", "kept hand-rolled:"}
 	for name, reason := range valueWalkerFunctions {
 		if !strings.HasPrefix(name, "github.com/luthersystems/elps/") {
 			t.Errorf("unqualified walker %q", name)
@@ -45,14 +45,6 @@ func TestValueWalkerAllowlistReasons(t *testing.T) {
 		}
 	}
 	for _, name := range []string{
-		"lisp/lisplib/libjson.tagWalker.value", "lisp/lisplib/libjson.untagWalker.value",
-		"lisp/lisplib/libjson.canonWalker.value", "lisp/lisplib/libjson.typedEncoder.value",
-	} {
-		if !strings.HasPrefix(valueWalkerFunctions["github.com/luthersystems/elps/"+name], "pending-migration:") {
-			t.Errorf("missing pending migration for %s", name)
-		}
-	}
-	for _, name := range []string{
 		"lisp/lisplib/libelpspath.okSimpleContainerContents",
 		"lisp/lisplib/libelpspath.okSimpleContainerTypeGuarded",
 		"lisp/lisplib/libelpspath.okSimpleTypeGuarded",
@@ -63,4 +55,22 @@ func TestValueWalkerAllowlistReasons(t *testing.T) {
 			t.Errorf("missing measured regression for %s", name)
 		}
 	}
+	for _, name := range []string{
+		"tagWalker.object", "tagWalker.value",
+		"canonWalker.nativeMap", "canonWalker.sortedMap", "canonWalker.value",
+	} {
+		if _, ok := valueWalkerFunctions["github.com/luthersystems/elps/lisp/lisplib/libjson."+name]; ok {
+			t.Errorf("migrated walker remains allowlisted: %s", name)
+		}
+	}
+	for _, name := range []string{
+		"untagWalker.object", "untagWalker.tagged", "untagWalker.value",
+		"typedEncoder.array", "typedEncoder.sortedMap", "typedEncoder.value",
+	} {
+		reason := valueWalkerFunctions["github.com/luthersystems/elps/lisp/lisplib/libjson."+name]
+		if !strings.HasPrefix(reason, "kept hand-rolled:") || !strings.Contains(reason, "%") {
+			t.Errorf("walker needs its measured regression: %s: %q", name, reason)
+		}
+	}
+
 }
