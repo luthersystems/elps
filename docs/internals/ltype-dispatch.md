@@ -1,7 +1,7 @@
 # Exhaustive LType dispatch
 
-A new `lisp.LType` must fail a check at every place that walks values or
-classifies them. Three parts enforce this:
+A new `lisp.LType` fails a check in `lisp.ShapeOf` and in every switch in
+the `elpsltypeswitch` scope. Three parts enforce this:
 
 | Part | Location | Rule |
 |------|----------|------|
@@ -10,7 +10,11 @@ classifies them. Three parts enforce this:
 | `elpsvalwalker` | `cmd/elpsvet/valwalker.go` | A new recursive value walker is reported unless an allowlist row gives its reason |
 
 When you add an `LType`, run `make elpsvet` and fix every report. Then add
-the type to `TestShapeOfCoversEveryLType` (`lisp/shape_test.go`).
+the type to `TestShapeOfCoversEveryLType` (`lisp/shape_test.go`). Then review
+each walker in the `elpsvalwalker` allowlist that is outside the
+`elpsltypeswitch` scope. Some of them keep a `default:` arm, for example
+`typedEncoder.value` (`lisp/lisplib/libjson/typed.go:293`), and no analyzer
+reports them.
 
 ## Problem
 
@@ -103,10 +107,11 @@ keep byte identity at 1.6 MB.
 
 ### Canonize paths
 
-`json:canonize` reports a path such as `$[0]["a"]` in its errors. The walker
-keeps a stack of path edges (index or key) and renders the path only when it
-returns an error. It does not build a path string for each value. The walker
-state comes from a `sync.Pool`.
+`json:canonize` reports a path such as `$[0]["a"]` in its errors. For lisp
+values, the walker keeps a stack of path edges (index or key) and renders the
+path only when it returns an error. A native Go value is the exception: the
+reflection walker (`canonWalker.native`) builds its path strings as it goes,
+as on `origin/main`. The walker state comes from a `sync.Pool`.
 
 Measured against `origin/main` (`GOMAXPROCS=1`, n=10, interleaved,
 `cmd/benchgate`):
@@ -124,9 +129,10 @@ build no paths on success, so the change does not apply to them.
 ### Alternatives considered
 
 A shared generic walker engine (visitor callbacks over an explicit frame
-stack) was measured on the same benchmarks. Each value costs three
-dictionary-dispatched calls in Go 1.26, and walkers with little work per
-value could not absorb that:
+stack) was measured on the same benchmarks. It made one `Visit` call per
+value, one `Child` call per edge and one `Leave` call per container it
+entered. Go 1.26 dispatches each call through the instantiation dictionary,
+and walkers with little work per value could not absorb that:
 
 | Walker | Engine cost against hand-rolled |
 |--------|--------------------------------|
