@@ -1,0 +1,7292 @@
+[
+  {
+    "Source": "(in-package 'p) (export 'f) (defun f (x) x)",
+    "Fallbacks": [
+      "in-package@1:1:2",
+      "in-package@1:1:2",
+      "-",
+      "in-package@1:1:2",
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18",
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(in-package 'p)\n(export 'f)\n(defun f (x1) x1)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "x",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 39
+        }
+      ],
+      "minified_to_original": {
+        "x1": "x"
+      },
+      "original_to_minified": {
+        "x": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(progn (in-package 'p) (export computed))",
+    "Fallbacks": [
+      "in-package@8:1:9",
+      "in-package@8:1:9",
+      "in-package@8:1:9",
+      "in-package@8:1:9"
+    ],
+    "Output": "(progn (in-package 'p) (export computed))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quote (export 'f)) '(export 'f) [in-package 'p]",
+    "Fallbacks": [
+      "-",
+      "export@8:1:9",
+      "-",
+      "export@8:1:9",
+      "-",
+      "export@22:1:23",
+      "-",
+      "export@22:1:23",
+      "in-package@34:1:35",
+      "in-package@34:1:35",
+      "-",
+      "in-package@34:1:35"
+    ],
+    "Output": "(quote (export 'f))\n'(export 'f)\n[in-package 'p]\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "in-package",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quasiquote (unquote (quote (export 'f))))",
+    "Fallbacks": [
+      "export@29:1:30",
+      "export@29:1:30",
+      "export@29:1:30",
+      "export@29:1:30"
+    ],
+    "Output": "(quasiquote (unquote (quote (export 'f))))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(defmacro m () '(export 'f)) (export 'later)",
+    "Fallbacks": [
+      "export@17:1:18",
+      "export@17:1:18",
+      "export@17:1:18",
+      "export@17:1:18",
+      "-",
+      "export@30:1:31",
+      "-",
+      "export@30:1:31"
+    ],
+    "Output": "(defmacro m () '(export 'f))\n(export 'later)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "later",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "m",
+          "reason": "unproven-package-flow"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(macrolet ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(macrolet ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "macro",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 13
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(progn (quasiquote safe) (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@26:1:27",
+      "-",
+      "export@26:1:27"
+    ],
+    "Output": "(progn (quasiquote safe) (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "safe",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn (defmacro m () safe) (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@29:1:30",
+      "-",
+      "export@29:1:30"
+    ],
+    "Output": "(progn (defmacro m () safe) (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn (export 'f) (use-package computed) (export computed))",
+    "Fallbacks": [
+      "use-package@20:1:21",
+      "export@8:1:9",
+      "use-package@20:1:21",
+      "export@8:1:9"
+    ],
+    "Output": "(progn (export 'f) (use-package computed) (export computed))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:export '(a b)) (lisp:in-package 'p)",
+    "Fallbacks": [
+      "-",
+      "lisp:export@1:1:2",
+      "-",
+      "lisp:export@1:1:2",
+      "lisp:in-package@22:1:23",
+      "lisp:in-package@22:1:23",
+      "lisp:in-package@22:1:23",
+      "lisp:in-package@22:1:23"
+    ],
+    "Output": "(lisp:export '(a b))\n(lisp:in-package 'p)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "a",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "b",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(in-package) (use-package) (export)",
+    "Fallbacks": [
+      "in-package@1:1:2",
+      "in-package@1:1:2",
+      "in-package@1:1:2",
+      "in-package@1:1:2",
+      "use-package@14:1:15",
+      "use-package@14:1:15",
+      "-",
+      "use-package@14:1:15",
+      "-",
+      "export@28:1:29",
+      "-",
+      "export@28:1:29"
+    ],
+    "Output": "(in-package)\n(use-package)\n(export)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(export '(a (b) 1)) (export (quote f)) (export \"f\")",
+    "Fallbacks": [
+      "export@1:1:2",
+      "export@1:1:2",
+      "export@1:1:2",
+      "export@1:1:2",
+      "export@21:1:22",
+      "export@21:1:22",
+      "export@21:1:22",
+      "export@21:1:22",
+      "-",
+      "export@40:1:41",
+      "-",
+      "export@40:1:41"
+    ],
+    "Output": "(export '(a (b) 1))\n(export (quote f))\n(export \"f\")\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "a",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "b",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(and)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(and)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(and () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@9:1:10",
+      "-",
+      "export@9:1:10"
+    ],
+    "Output": "(and () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(and bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@10:1:11",
+      "in-package@10:1:11",
+      "in-package@10:1:11",
+      "in-package@10:1:11"
+    ],
+    "Output": "(and bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(and ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@34:1:35",
+      "export@34:1:35",
+      "export@34:1:35",
+      "export@34:1:35"
+    ],
+    "Output": "(and ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:and)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:and)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:and () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@14:1:15",
+      "-",
+      "export@14:1:15"
+    ],
+    "Output": "(lisp:and () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:and bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(lisp:and bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:and ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(lisp:and ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(assert)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(assert)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(assert () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@12:1:13",
+      "-",
+      "export@12:1:13"
+    ],
+    "Output": "(assert () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(assert bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14"
+    ],
+    "Output": "(assert bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(assert ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38"
+    ],
+    "Output": "(assert ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:assert)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:assert)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:assert () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(lisp:assert () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:assert bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(lisp:assert bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:assert ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(lisp:assert ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(benchmark)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(benchmark)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(benchmark () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(benchmark () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(benchmark bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(benchmark bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(benchmark ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(benchmark ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:benchmark)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:benchmark)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:benchmark () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@20:1:21",
+      "-",
+      "export@20:1:21"
+    ],
+    "Output": "(lisp:benchmark () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:benchmark bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@21:1:22",
+      "in-package@21:1:22",
+      "in-package@21:1:22",
+      "in-package@21:1:22"
+    ],
+    "Output": "(lisp:benchmark bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:benchmark ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@45:1:46",
+      "export@45:1:46",
+      "export@45:1:46",
+      "export@45:1:46"
+    ],
+    "Output": "(lisp:benchmark ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(cond)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(cond)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(cond () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(cond () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(cond bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(cond bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(cond ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(cond ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:cond)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:cond)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:cond () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:cond () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:cond bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:cond bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:cond ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:cond ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(default)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(default)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(default () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@13:1:14",
+      "-",
+      "export@13:1:14"
+    ],
+    "Output": "(default () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(default bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15"
+    ],
+    "Output": "(default bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(default ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39"
+    ],
+    "Output": "(default ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:default)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:default)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:default () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(lisp:default () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:default bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(lisp:default bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:default ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(lisp:default ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(defmacro)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(defmacro)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(defmacro () (export 'f))",
+    "Fallbacks": [
+      "export@14:1:15",
+      "export@14:1:15",
+      "export@14:1:15",
+      "export@14:1:15"
+    ],
+    "Output": "(defmacro () (x1 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 15
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(defmacro bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(defmacro bad (x1 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "unproven-package-flow"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 16
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(defmacro ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(defmacro ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defmacro)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:defmacro)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defmacro () (export 'f))",
+    "Fallbacks": [
+      "export@19:1:20",
+      "export@19:1:20",
+      "export@19:1:20",
+      "export@19:1:20"
+    ],
+    "Output": "(lisp:defmacro () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defmacro bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21"
+    ],
+    "Output": "(lisp:defmacro bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defmacro ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45"
+    ],
+    "Output": "(lisp:defmacro ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(deftype)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(deftype)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(deftype () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@13:1:14",
+      "-",
+      "export@13:1:14"
+    ],
+    "Output": "(deftype () (x1 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 14
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(deftype bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15"
+    ],
+    "Output": "(deftype bad (x1 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "unproven-package-flow"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 15
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(deftype ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39"
+    ],
+    "Output": "(deftype ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:deftype)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:deftype)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:deftype () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(lisp:deftype () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:deftype bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(lisp:deftype bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:deftype ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(lisp:deftype ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(defun)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(defun)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(defun () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@11:1:12",
+      "-",
+      "export@11:1:12"
+    ],
+    "Output": "(defun () (x1 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 12
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(defun bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13"
+    ],
+    "Output": "(defun bad (x1 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "unproven-package-flow"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "parameter",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 13
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(defun ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37"
+    ],
+    "Output": "(defun ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defun)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:defun)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defun () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@16:1:17",
+      "-",
+      "export@16:1:17"
+    ],
+    "Output": "(lisp:defun () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defun bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(lisp:defun bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:defun ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(lisp:defun ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(dotimes)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(dotimes)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(dotimes () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@13:1:14",
+      "-",
+      "export@13:1:14"
+    ],
+    "Output": "(dotimes () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(dotimes bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15"
+    ],
+    "Output": "(dotimes bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(dotimes ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39"
+    ],
+    "Output": "(dotimes ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:dotimes)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:dotimes)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:dotimes () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(lisp:dotimes () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:dotimes bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(lisp:dotimes bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:dotimes ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(lisp:dotimes ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(expr)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(expr)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(expr () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(expr () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(expr bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(expr bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(expr ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(expr ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:expr)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:expr)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:expr () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:expr () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:expr bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:expr bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:expr ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:expr ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(flet)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(flet)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(flet () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(flet () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(flet bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(flet bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(flet ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(flet ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "function",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 9
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:flet)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:flet)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:flet () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:flet () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:flet bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:flet bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:flet ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:flet ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "function",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 14
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(function)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(function)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(function () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@14:1:15",
+      "-",
+      "export@14:1:15"
+    ],
+    "Output": "(function () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(function bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(function bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(function ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(function ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:function)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:function)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:function () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@19:1:20",
+      "-",
+      "export@19:1:20"
+    ],
+    "Output": "(lisp:function () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:function bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21"
+    ],
+    "Output": "(lisp:function bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:function ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45"
+    ],
+    "Output": "(lisp:function ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(handler-bind)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(handler-bind)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(handler-bind () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(handler-bind () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(handler-bind bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(handler-bind bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(handler-bind ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(handler-bind ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:handler-bind)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:handler-bind)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:handler-bind () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@23:1:24",
+      "-",
+      "export@23:1:24"
+    ],
+    "Output": "(lisp:handler-bind () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:handler-bind bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25"
+    ],
+    "Output": "(lisp:handler-bind bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:handler-bind ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49"
+    ],
+    "Output": "(lisp:handler-bind ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(help)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(help)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(help () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(help () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(help bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(help bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(help ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(help ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:help)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:help)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:help () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:help () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:help bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:help bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:help ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:help ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(if)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(if)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(if () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@8:1:9",
+      "-",
+      "export@8:1:9"
+    ],
+    "Output": "(if () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(if bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@9:1:10",
+      "in-package@9:1:10",
+      "in-package@9:1:10",
+      "in-package@9:1:10"
+    ],
+    "Output": "(if bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(if ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@33:1:34",
+      "export@33:1:34",
+      "export@33:1:34",
+      "export@33:1:34"
+    ],
+    "Output": "(if ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:if)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:if)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:if () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@13:1:14",
+      "-",
+      "export@13:1:14"
+    ],
+    "Output": "(lisp:if () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:if bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15"
+    ],
+    "Output": "(lisp:if bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:if ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39"
+    ],
+    "Output": "(lisp:if ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(ignore-errors)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(ignore-errors)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(ignore-errors () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@19:1:20",
+      "-",
+      "export@19:1:20"
+    ],
+    "Output": "(ignore-errors () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(ignore-errors bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21"
+    ],
+    "Output": "(ignore-errors bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(ignore-errors ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45"
+    ],
+    "Output": "(ignore-errors ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:ignore-errors)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:ignore-errors)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:ignore-errors () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@24:1:25",
+      "-",
+      "export@24:1:25"
+    ],
+    "Output": "(lisp:ignore-errors () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:ignore-errors bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@25:1:26",
+      "in-package@25:1:26",
+      "in-package@25:1:26",
+      "in-package@25:1:26"
+    ],
+    "Output": "(lisp:ignore-errors bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:ignore-errors ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@49:1:50",
+      "export@49:1:50",
+      "export@49:1:50",
+      "export@49:1:50"
+    ],
+    "Output": "(lisp:ignore-errors ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(labels)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(labels)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(labels () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@12:1:13",
+      "-",
+      "export@12:1:13"
+    ],
+    "Output": "(labels () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(labels bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14"
+    ],
+    "Output": "(labels bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(labels ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38"
+    ],
+    "Output": "(labels ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "function",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 11
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:labels)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:labels)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:labels () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(lisp:labels () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:labels bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(lisp:labels bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:labels ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(lisp:labels ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "function",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 16
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lambda)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lambda)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lambda () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@12:1:13",
+      "-",
+      "export@12:1:13"
+    ],
+    "Output": "(lambda () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lambda bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14"
+    ],
+    "Output": "(lambda bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lambda ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38"
+    ],
+    "Output": "(lambda ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:lambda)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:lambda)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:lambda () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(lisp:lambda () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:lambda bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(lisp:lambda bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:lambda ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(lisp:lambda ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(let)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@9:1:10",
+      "-",
+      "export@9:1:10"
+    ],
+    "Output": "(let () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@10:1:11",
+      "in-package@10:1:11",
+      "in-package@10:1:11",
+      "in-package@10:1:11"
+    ],
+    "Output": "(let bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@34:1:35",
+      "export@34:1:35",
+      "export@34:1:35",
+      "export@34:1:35"
+    ],
+    "Output": "(let ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 8
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:let)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:let)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@14:1:15",
+      "-",
+      "export@14:1:15"
+    ],
+    "Output": "(lisp:let () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(lisp:let bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(lisp:let ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 13
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(let*)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(let*)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let* () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(let* () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let* bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(let* bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(let* ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 9
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:let*)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:let*)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let* () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:let* () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let* bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:let* bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:let* ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 14
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(macrolet)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(macrolet)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(macrolet () (export 'f))",
+    "Fallbacks": [
+      "export@14:1:15",
+      "export@14:1:15",
+      "export@14:1:15",
+      "export@14:1:15"
+    ],
+    "Output": "(macrolet () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(macrolet bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(macrolet bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(macrolet ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(macrolet ((x1 () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "m",
+          "kind": "macro",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 13
+        }
+      ],
+      "minified_to_original": {
+        "x1": "m"
+      },
+      "original_to_minified": {
+        "m": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:macrolet)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:macrolet)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:macrolet () (export 'f))",
+    "Fallbacks": [
+      "export@19:1:20",
+      "export@19:1:20",
+      "export@19:1:20",
+      "export@19:1:20"
+    ],
+    "Output": "(lisp:macrolet () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:macrolet bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21"
+    ],
+    "Output": "(lisp:macrolet bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:macrolet ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45"
+    ],
+    "Output": "(lisp:macrolet ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(or)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(or)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(or () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@8:1:9",
+      "-",
+      "export@8:1:9"
+    ],
+    "Output": "(or () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(or bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@9:1:10",
+      "in-package@9:1:10",
+      "in-package@9:1:10",
+      "in-package@9:1:10"
+    ],
+    "Output": "(or bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(or ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@33:1:34",
+      "export@33:1:34",
+      "export@33:1:34",
+      "export@33:1:34"
+    ],
+    "Output": "(or ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:or)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:or)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:or () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@13:1:14",
+      "-",
+      "export@13:1:14"
+    ],
+    "Output": "(lisp:or () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:or bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15",
+      "in-package@14:1:15"
+    ],
+    "Output": "(lisp:or bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:or ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39",
+      "export@38:1:39"
+    ],
+    "Output": "(lisp:or ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(progn)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@11:1:12",
+      "-",
+      "export@11:1:12"
+    ],
+    "Output": "(progn () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13"
+    ],
+    "Output": "(progn bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(progn ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37"
+    ],
+    "Output": "(progn ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:progn)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:progn)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:progn () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@16:1:17",
+      "-",
+      "export@16:1:17"
+    ],
+    "Output": "(lisp:progn () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:progn bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(lisp:progn bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:progn ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(lisp:progn ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(qualified-symbol)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(qualified-symbol)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(qualified-symbol () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@22:1:23",
+      "-",
+      "export@22:1:23"
+    ],
+    "Output": "(qualified-symbol () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(qualified-symbol bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24"
+    ],
+    "Output": "(qualified-symbol bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(qualified-symbol ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48"
+    ],
+    "Output": "(qualified-symbol ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:qualified-symbol)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:qualified-symbol)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:qualified-symbol () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@27:1:28",
+      "-",
+      "export@27:1:28"
+    ],
+    "Output": "(lisp:qualified-symbol () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:qualified-symbol bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@28:1:29",
+      "in-package@28:1:29",
+      "in-package@28:1:29",
+      "in-package@28:1:29"
+    ],
+    "Output": "(lisp:qualified-symbol bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:qualified-symbol ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@52:1:53",
+      "export@52:1:53",
+      "export@52:1:53",
+      "export@52:1:53"
+    ],
+    "Output": "(lisp:qualified-symbol ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quasiquote)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(quasiquote)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quasiquote () (export 'f))",
+    "Fallbacks": [
+      "export@16:1:17",
+      "export@16:1:17",
+      "export@16:1:17",
+      "export@16:1:17"
+    ],
+    "Output": "(quasiquote () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quasiquote bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(quasiquote bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "in-package",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quasiquote ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(quasiquote ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "m",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quasiquote)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:quasiquote)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "lisp:quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quasiquote () (export 'f))",
+    "Fallbacks": [
+      "export@21:1:22",
+      "export@21:1:22",
+      "export@21:1:22",
+      "export@21:1:22"
+    ],
+    "Output": "(lisp:quasiquote () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quasiquote bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@22:1:23",
+      "in-package@22:1:23",
+      "in-package@22:1:23",
+      "in-package@22:1:23"
+    ],
+    "Output": "(lisp:quasiquote bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "in-package",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quasiquote ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@46:1:47",
+      "export@46:1:47",
+      "export@46:1:47",
+      "export@46:1:47"
+    ],
+    "Output": "(lisp:quasiquote ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "m",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quote)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(quote)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quote () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@11:1:12",
+      "-",
+      "export@11:1:12"
+    ],
+    "Output": "(quote () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quote bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13"
+    ],
+    "Output": "(quote bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "in-package",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(quote ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37"
+    ],
+    "Output": "(quote ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "m",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quote)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:quote)\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "lisp:quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quote () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@16:1:17",
+      "-",
+      "export@16:1:17"
+    ],
+    "Output": "(lisp:quote () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quote bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(lisp:quote bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "bad",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "in-package",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:quote ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(lisp:quote ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "lisp:quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "m",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(set!)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(set!)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(set! () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(set! () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(set! bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(set! bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(set! ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(set! ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:set!)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:set!)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:set! () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:set! () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:set! bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:set! bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:set! ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:set! ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(test)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(test () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(test bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(test ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:test)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:test () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:test bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:test ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(test-let)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@14:1:15",
+      "-",
+      "export@14:1:15"
+    ],
+    "Output": "(test-let () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16",
+      "in-package@15:1:16"
+    ],
+    "Output": "(test-let bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40",
+      "export@39:1:40"
+    ],
+    "Output": "(test-let ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:test-let)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@19:1:20",
+      "-",
+      "export@19:1:20"
+    ],
+    "Output": "(lisp:test-let () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21",
+      "in-package@20:1:21"
+    ],
+    "Output": "(lisp:test-let bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45",
+      "export@44:1:45"
+    ],
+    "Output": "(lisp:test-let ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let*)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(test-let*)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let* () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(test-let* () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let* bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(test-let* bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(test-let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(test-let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let*)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:test-let*)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let* () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@20:1:21",
+      "-",
+      "export@20:1:21"
+    ],
+    "Output": "(lisp:test-let* () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let* bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@21:1:22",
+      "in-package@21:1:22",
+      "in-package@21:1:22",
+      "in-package@21:1:22"
+    ],
+    "Output": "(lisp:test-let* bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:test-let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@45:1:46",
+      "export@45:1:46",
+      "export@45:1:46",
+      "export@45:1:46"
+    ],
+    "Output": "(lisp:test-let* ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-first)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(thread-first)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-first () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(thread-first () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-first bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(thread-first bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-first ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(thread-first ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-first)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:thread-first)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-first () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@23:1:24",
+      "-",
+      "export@23:1:24"
+    ],
+    "Output": "(lisp:thread-first () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-first bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25"
+    ],
+    "Output": "(lisp:thread-first bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-first ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49"
+    ],
+    "Output": "(lisp:thread-first ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-last)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(thread-last)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-last () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(thread-last () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-last bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(thread-last bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(thread-last ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(thread-last ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-last)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:thread-last)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-last () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@22:1:23",
+      "-",
+      "export@22:1:23"
+    ],
+    "Output": "(lisp:thread-last () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-last bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24"
+    ],
+    "Output": "(lisp:thread-last bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:thread-last ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48"
+    ],
+    "Output": "(lisp:thread-last ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(unless)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(unless)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(unless () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@12:1:13",
+      "-",
+      "export@12:1:13"
+    ],
+    "Output": "(unless () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(unless bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14",
+      "in-package@13:1:14"
+    ],
+    "Output": "(unless bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(unless ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38",
+      "export@37:1:38"
+    ],
+    "Output": "(unless ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:unless)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:unless)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:unless () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(lisp:unless () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:unless bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(lisp:unless bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:unless ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(lisp:unless ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(when)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(when)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(when () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@10:1:11",
+      "-",
+      "export@10:1:11"
+    ],
+    "Output": "(when () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(when bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12",
+      "in-package@11:1:12"
+    ],
+    "Output": "(when bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(when ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36",
+      "export@35:1:36"
+    ],
+    "Output": "(when ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:when)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:when)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:when () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@15:1:16",
+      "-",
+      "export@15:1:16"
+    ],
+    "Output": "(lisp:when () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:when bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17",
+      "in-package@16:1:17"
+    ],
+    "Output": "(lisp:when bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:when ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41",
+      "export@40:1:41"
+    ],
+    "Output": "(lisp:when ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(while)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(while)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(while () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@11:1:12",
+      "-",
+      "export@11:1:12"
+    ],
+    "Output": "(while () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(while bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13"
+    ],
+    "Output": "(while bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(while ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37"
+    ],
+    "Output": "(while ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:while)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:while)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:while () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@16:1:17",
+      "-",
+      "export@16:1:17"
+    ],
+    "Output": "(lisp:while () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:while bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(lisp:while bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:while ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(lisp:while ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(with-cleanup)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(with-cleanup)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(with-cleanup () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@18:1:19",
+      "-",
+      "export@18:1:19"
+    ],
+    "Output": "(with-cleanup () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(with-cleanup bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20",
+      "in-package@19:1:20"
+    ],
+    "Output": "(with-cleanup bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(with-cleanup ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44",
+      "export@43:1:44"
+    ],
+    "Output": "(with-cleanup ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:with-cleanup)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:with-cleanup)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:with-cleanup () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@23:1:24",
+      "-",
+      "export@23:1:24"
+    ],
+    "Output": "(lisp:with-cleanup () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:with-cleanup bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25",
+      "in-package@24:1:25"
+    ],
+    "Output": "(lisp:with-cleanup bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:with-cleanup ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49",
+      "export@48:1:49"
+    ],
+    "Output": "(lisp:with-cleanup ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  }
+]

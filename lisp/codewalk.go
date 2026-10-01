@@ -6,6 +6,8 @@ import (
 	"math"
 	"strconv"
 	"strings"
+
+	"github.com/luthersystems/elps/internal/codewalk/hook"
 )
 
 // formKind is one builtin special form: each special operator in
@@ -64,50 +66,63 @@ const (
 	kindTestLetSeq               // source test-let*
 )
 
+// formSpec carries scope and signature metadata for each builtin form.
+type formSpec struct {
+	formalsIndex   int
+	callsStart     int
+	bindingStart   int
+	kind           formKind
+	scope          hook.ScopeCategory
+	functionScope  hook.ScopeCategory
+	role           hook.FormalsRole
+	bindingFormals bool
+	clauses        bool
+}
+
 // formKinds is the single registry of builtin forms with walking rules.
-var formKinds = map[string]formKind{
-	"function":         kindFunction,
-	"set!":             kindSetBang,
-	"assert":           kindAssert,
-	"quote":            kindQuote,
-	"quasiquote":       kindQuasiquote,
-	"lambda":           kindLambda,
-	"expr":             kindExpr,
-	"thread-first":     kindThreadFirst,
-	"thread-last":      kindThreadLast,
-	"dotimes":          kindDotimes,
-	"labels":           kindLabels,
-	"macrolet":         kindMacrolet,
-	"flet":             kindFlet,
-	"let*":             kindLetSeq,
-	"let":              kindLet,
-	"progn":            kindProgn,
-	"handler-bind":     kindHandlerBind,
-	"ignore-errors":    kindIgnoreErrors,
-	"with-cleanup":     kindWithCleanup,
-	"cond":             kindCond,
-	"if":               kindIf,
-	"when":             kindWhen,
-	"unless":           kindUnless,
-	"default":          kindDefault,
-	"while":            kindWhile,
-	"or":               kindOr,
-	"and":              kindAnd,
-	"help":             kindHelp,
-	"test":             kindTest,
-	"benchmark":        kindBenchmark,
-	"qualified-symbol": kindQualifiedSymbol,
-	"defun":            kindDefun,
-	"defmacro":         kindDefmacro,
-	"deftype":          kindDeftype,
-	"test-let":         kindTestLet,
-	"test-let*":        kindTestLetSeq,
+var formKinds = map[string]formSpec{
+	"function":         {kind: kindFunction},
+	"set!":             {kind: kindSetBang},
+	"assert":           {kind: kindAssert},
+	"quote":            {kind: kindQuote},
+	"quasiquote":       {kind: kindQuasiquote},
+	"lambda":           {kind: kindLambda, scope: hook.ScopeAnonymous, functionScope: hook.ScopeAnonymous, formalsIndex: 1, callsStart: 2},
+	"expr":             {kind: kindExpr, scope: hook.ScopeAnonymous, functionScope: hook.ScopeAnonymous},
+	"thread-first":     {kind: kindThreadFirst},
+	"thread-last":      {kind: kindThreadLast},
+	"dotimes":          {kind: kindDotimes, scope: hook.ScopeLoop},
+	"labels":           {kind: kindLabels, scope: hook.ScopeFunctions, bindingFormals: true, callsStart: 2, bindingStart: 2},
+	"macrolet":         {kind: kindMacrolet, scope: hook.ScopeMacros, functionScope: hook.ScopeMacros, bindingFormals: true, callsStart: 2, bindingStart: 2},
+	"flet":             {kind: kindFlet, scope: hook.ScopeFunctions, bindingFormals: true, callsStart: 2, bindingStart: 2},
+	"let*":             {kind: kindLetSeq, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1},
+	"let":              {kind: kindLet, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1},
+	"progn":            {kind: kindProgn},
+	"handler-bind":     {kind: kindHandlerBind, callsStart: 2, bindingStart: 1},
+	"ignore-errors":    {kind: kindIgnoreErrors},
+	"with-cleanup":     {kind: kindWithCleanup},
+	"cond":             {kind: kindCond, clauses: true},
+	"if":               {kind: kindIf},
+	"when":             {kind: kindWhen},
+	"unless":           {kind: kindUnless},
+	"default":          {kind: kindDefault},
+	"while":            {kind: kindWhile},
+	"or":               {kind: kindOr},
+	"and":              {kind: kindAnd},
+	"help":             {kind: kindHelp},
+	"test":             {kind: kindTest, scope: hook.ScopeTest},
+	"benchmark":        {kind: kindBenchmark, formalsIndex: 2, role: hook.Benchmark},
+	"qualified-symbol": {kind: kindQualifiedSymbol},
+	"defun":            {kind: kindDefun, formalsIndex: 2, callsStart: 3},
+	"defmacro":         {kind: kindDefmacro, formalsIndex: 2, callsStart: 3},
+	"deftype":          {kind: kindDeftype, formalsIndex: 2, role: hook.Constructor, callsStart: 3},
+	"test-let":         {kind: kindTestLet, scope: hook.ScopeLocal},
+	"test-let*":        {kind: kindTestLetSeq, scope: hook.ScopeLocal},
 }
 
 // specialFormKind returns the kind of the builtin special form named name,
 // unqualified, or kindNone.
 func specialFormKind(name string) formKind {
-	return formKinds[name]
+	return formKinds[name].kind
 }
 
 // opensFunction reports whether the scope a form of kind k opens is a
@@ -144,7 +159,7 @@ func defaultSpecialOpName(head *LVal) (string, bool) {
 	} else if strings.Contains(name, ":") {
 		return "", false
 	}
-	if k, ok := formKinds[name]; ok && k != kindDeftype && k != kindTestLet && k != kindTestLetSeq {
+	if spec, ok := formKinds[name]; ok && spec.kind != kindDeftype && spec.kind != kindTestLet && spec.kind != kindTestLetSeq {
 		return name, true
 	}
 	return "", false
@@ -257,6 +272,7 @@ type CodeWalker struct {
 	sourceVisit     func(*walkNode) bool
 	sourceReference func(*LVal)
 	sourceForm      func(*LVal, string, int) bool
+	sourceFormals   func(*walkNode)
 	sourceEnd       func(int)
 	sourceEndDepth  *int
 	sourceScratch   walkNode
@@ -281,6 +297,7 @@ type CodeWalker struct {
 	formsOnly              bool
 	sourceSkipLiterals     bool
 	sourceDeclarationsOnly bool
+	sourceSyntacticCalls   bool
 	// noMemo walks each occurrence of shared structure (internal/codewalk's
 	// Occurrences); its step hook bounds the work instead.
 	noMemo bool
@@ -342,6 +359,13 @@ func (w *CodeWalker) visit(n *walkNode) bool {
 	}
 	if w.sourceVisit != nil {
 		w.sourceScratch = *n
+		if n.Event == WalkEnter || n.Event == WalkLeave {
+			spec := formKinds[n.Op]
+			w.sourceScratch.Scope = spec.scope
+			if n.Function {
+				w.sourceScratch.Scope = spec.functionScope
+			}
+		}
 		return w.sourceVisit(&w.sourceScratch)
 	}
 	if w.Visit == nil {
@@ -1503,15 +1527,15 @@ var sourceFormModes = func() [2]map[string]formKind {
 	for i := range modes {
 		modes[i] = make(map[string]formKind)
 	}
-	for name, kind := range formKinds {
-		flags := kind.sourceModes()
+	for name, spec := range formKinds {
+		flags := spec.kind.sourceModes()
 		for i := range 4 {
 			if flags&(1<<i) != 0 {
 				spelling := name
 				if i%2 != 0 {
 					spelling = DefaultLangPackage + ":" + name
 				}
-				modes[i/2][spelling] = kind
+				modes[i/2][spelling] = spec.kind
 			}
 		}
 	}

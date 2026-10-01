@@ -11,10 +11,13 @@ type sourceWalkOptions = hook.Options[LVal, WalkEvent]
 // walkEnd belongs to the source adapter, not the public runtime event stream.
 const walkEnd WalkEvent = WalkLeave + 1
 
+const walkFormalsOccurrence WalkEvent = walkEnd + 1
+
 func init() {
 	hook.Walk = func(w *CodeWalker, opts sourceWalkOptions, form *LVal) *LVal {
 		w.sourceAnalysis, w.sourceVisit, w.binding = true, opts.Visit, opts.BindingForm
 		w.sourceReference, w.sourceForm = opts.Reference, opts.Form
+		w.sourceFormals, w.sourceSyntacticCalls = opts.Formals, opts.SyntacticCalls
 		w.sourceEnd, w.sourceSkipLiterals = opts.End, opts.SkipLiterals
 		w.sourceEndDepth, w.sourceDeclarationsOnly = opts.EndDepth, opts.DeclarationsOnly
 		return w.Walk(form)
@@ -69,6 +72,13 @@ func (w *CodeWalker) sourceValue(v *LVal, depth int) *LVal {
 
 func (w *CodeWalker) sourceCompound(v *LVal, depth int) *LVal {
 	op, kind := w.sourceSpecialOp(v.Cells[0])
+	if w.sourceSyntacticCalls {
+		op = w.syntaxOperator(v.Cells[0])
+		kind = specialFormKind(op)
+		if kind == kindQuote || kind == kindQuasiquote {
+			return v
+		}
+	}
 	result := v
 	var descend bool
 	if w.sourceForm != nil {
@@ -77,7 +87,10 @@ func (w *CodeWalker) sourceCompound(v *LVal, depth int) *LVal {
 		descend = w.visit(&walkNode{Event: WalkForm, Node: v, Op: op, Depth: depth})
 	}
 	if descend {
-		if kind != kindNone {
+		w.formalsOccurrences(v, depth)
+		if w.sourceSyntacticCalls {
+			w.sourceCalls(v, formKinds[op], depth)
+		} else if kind != kindNone {
 			result = w.special(v, op, kind, depth)
 		} else if w.binding != nil {
 			if binding := w.binding(v); binding != nil {
@@ -100,4 +113,54 @@ func (w *CodeWalker) sourceCompound(v *LVal, depth int) *LVal {
 		w.visit(&walkNode{Event: walkEnd, Node: v, Op: op, Depth: depth})
 	}
 	return result
+}
+
+// formalsOccurrences reports signatures before the grammar can reject their owners.
+func (w *CodeWalker) formalsOccurrences(v *LVal, depth int) {
+	if w.sourceFormals == nil {
+		return
+	}
+	op := w.syntaxOperator(v.Cells[0])
+	spec := formKinds[op]
+	emit := func(formals, binding *LVal, depth int) {
+		w.sourceScratch = walkNode{Event: walkFormalsOccurrence, Node: formals, Formals: formals,
+			Owner: v, Binding: binding, Op: op, Depth: depth, Role: spec.role}
+		w.sourceFormals(&w.sourceScratch)
+	}
+	if spec.formalsIndex > 0 && len(v.Cells) > spec.formalsIndex {
+		emit(v.Cells[spec.formalsIndex], nil, depth+1)
+	}
+	if spec.bindingFormals && len(v.Cells) > 1 && v.Cells[1].Type == LSExpr {
+		for _, binding := range v.Cells[1].Cells {
+			if binding.Type == LSExpr && len(binding.Cells) > 1 {
+				emit(binding.Cells[1], binding, depth+2)
+			}
+		}
+	}
+}
+
+// sourceCalls preserves permissive call inspection of structural source lists.
+func (w *CodeWalker) sourceCalls(v *LVal, spec formSpec, depth int) {
+	if spec.bindingStart > 0 && len(v.Cells) > 1 && v.Cells[1].Type == LSExpr {
+		for _, binding := range v.Cells[1].Cells {
+			if binding.Type == LSExpr {
+				for _, child := range binding.Cells[min(spec.bindingStart, len(binding.Cells)):] {
+					w.sourceValue(child, depth+3)
+				}
+			}
+		}
+	}
+	if spec.clauses {
+		for _, clause := range v.Cells[1:] {
+			if clause.Type == LSExpr {
+				for _, child := range clause.Cells {
+					w.sourceValue(child, depth+2)
+				}
+			}
+		}
+		return
+	}
+	for _, child := range v.Cells[min(spec.callsStart, len(v.Cells)):] {
+		w.sourceValue(child, depth+1)
+	}
 }

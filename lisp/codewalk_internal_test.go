@@ -17,11 +17,11 @@ import (
 
 // Source policy must never become part of the embedder-facing API again.
 func TestCodeWalkerPublicSurface(t *testing.T) {
-	for _, name := range []string{"SourceAnalysis", "BindingForm", "PackageForms"} {
+	for _, name := range []string{"SourceAnalysis", "BindingForm", "PackageForms", "Formals", "SyntacticCalls"} {
 		_, exposed := reflect.TypeFor[CodeWalker]().FieldByName(name)
 		assert.False(t, exposed, "CodeWalker.%s belongs in internal/codewalk", name)
 	}
-	for _, name := range []string{"Owner", "Formals", "Init", "Outer", "Template"} {
+	for _, name := range []string{"Owner", "Formals", "Init", "Outer", "Template", "Scope", "Binding", "Role"} {
 		_, exposed := reflect.TypeFor[WalkNode]().FieldByName(name)
 		assert.False(t, exposed, "WalkNode.%s belongs in internal/codewalk", name)
 	}

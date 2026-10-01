@@ -74,3 +74,21 @@ func TestSyntaxVisitsQuotedStructureAndPrunesChildren(t *testing.T) {
 	require.Equal(t, before, quoted.String())
 	require.True(t, quoted.IsQuoted())
 }
+
+func TestSyntaxStopsBeforeLaterSiblings(t *testing.T) {
+	first := lisp.SExpr([]*lisp.LVal{lisp.Symbol("first")})
+	later := lisp.SExpr([]*lisp.LVal{lisp.Symbol("later")})
+	root := lisp.SExpr([]*lisp.LVal{first, later})
+	var stopped bool
+	var got []*lisp.LVal
+	codewalk.Syntax(root, nil, 0, func(node, _ *lisp.LVal, _ string, _ int) bool {
+		got = append(got, node)
+		stopped = node == first
+		return true
+	}, &stopped)
+	require.Equal(t, []*lisp.LVal{root, first}, got)
+	codewalk.Syntax(later, nil, 0, func(_, _ *lisp.LVal, _ string, _ int) bool {
+		t.Fatal("a stopped walk must not visit nodes")
+		return true
+	}, &stopped)
+}

@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
@@ -35,20 +36,64 @@ import (
 // CanonizeBuiltin exposes these data rejections as json:canonize-error,
 // with (message, case keyword, path) data for Lisp handlers.
 func Canonize(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
-	w := canonWalker{cfg: newTypedConfig(opts), path: make(map[*lisp.LVal]bool)}
+	w := canonWalkerPool.Get().(*canonWalker)
+	w.cfg = newTypedConfig(opts)
+	defer func() {
+		clear(w.edges[:cap(w.edges)])
+		w.edges = w.edges[:0]
+		clear(w.path)
+		clear(w.nativePath)
+		w.cfg = typedConfig{}
+		w.values, w.bytes, w.charged = 0, 0, 0
+		canonWalkerPool.Put(w)
+	}()
 	w.cfg.maxDepth = min(w.cfg.maxDepth, DefaultTypedMaxDepth)
 	w.cfg.maxBytes = min(w.cfg.maxBytes, DefaultTypedMaxBytes)
 	w.cfg.maxValues = min(w.cfg.maxValues, DefaultTypedMaxValues)
-	return w.value(v, 0, "$")
+	return w.value(v, 0, "")
 }
 
+var canonWalkerPool = sync.Pool{New: func() any {
+	return &canonWalker{path: make(map[*lisp.LVal]bool)}
+}}
+
 type canonWalker struct {
+	edges      []canonPathEdge
 	path       map[*lisp.LVal]bool
 	nativePath map[reflect.Value]bool
 	cfg        typedConfig
 	values     int
 	bytes      int
 	charged    int
+}
+
+// canonPathEdge retains path data until an error needs its text.
+type canonPathEdge struct {
+	key    string
+	index  int
+	mapKey bool
+}
+
+func (w *canonWalker) resolvePath(path string) string {
+	if path != "" {
+		return path
+	}
+	return w.renderPath(len(w.edges))
+}
+
+func (w *canonWalker) renderPath(n int) string {
+	var path strings.Builder
+	path.WriteByte('$')
+	for _, edge := range w.edges[:n] {
+		path.WriteByte('[')
+		if edge.mapKey {
+			path.WriteString(strconv.Quote(edge.key))
+		} else {
+			path.WriteString(strconv.Itoa(edge.index))
+		}
+		path.WriteByte(']')
+	}
+	return path.String()
 }
 
 // Canonize rejection data is independent of its human-readable message.
@@ -89,12 +134,12 @@ func (w *canonWalker) fail(path, caseName, reason string, v *lisp.LVal) error {
 			value = v.Type.String()
 		}
 	}
-	return canonizeFailure(caseName, path, reason+": "+value, nil)
+	return canonizeFailure(caseName, w.resolvePath(path), reason+": "+value, nil)
 }
 
 func (w *canonWalker) count(path string) error {
 	if w.values >= w.cfg.maxValues {
-		return canonizeFailure("limit", path, fmt.Sprintf("value-count limit exceeded: %d values", w.cfg.maxValues), ErrTypedLimit)
+		return canonizeFailure("limit", w.resolvePath(path), fmt.Sprintf("value-count limit exceeded: %d values", w.cfg.maxValues), ErrTypedLimit)
 	}
 	w.values++
 	return nil
@@ -104,7 +149,7 @@ func (w *canonWalker) count(path string) error {
 // expansion as well as allocation and charges as work progresses.
 func (w *canonWalker) add(n int, path string) error {
 	if n > w.cfg.maxBytes-w.bytes {
-		return canonizeFailure("limit", path, fmt.Sprintf("output exceeds %d bytes: %d bytes counted, %d more requested", w.cfg.maxBytes, w.bytes, n), ErrTypedLimit)
+		return canonizeFailure("limit", w.resolvePath(path), fmt.Sprintf("output exceeds %d bytes: %d bytes counted, %d more requested", w.cfg.maxBytes, w.bytes, n), ErrTypedLimit)
 	}
 	w.bytes += n
 	if w.cfg.charge != nil {
@@ -214,7 +259,7 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 	case lisp.LBytes:
 		return w.byteString(v.Bytes(), path)
 	case lisp.LNative:
-		return w.native(reflect.ValueOf(v.Native), depth, path)
+		return w.native(reflect.ValueOf(v.Native), depth, w.resolvePath(path))
 	case lisp.LSExpr, lisp.LArray, lisp.LQuote, lisp.LTaggedVal, lisp.LSortMap:
 		if v.IsNil() {
 			return w.null(path)
@@ -246,12 +291,15 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 			return w.cells(cells, depth, path)
 		case lisp.LSortMap:
 			return w.sortedMap(v, depth, path)
-		default:
-			return nil, w.fail(path, "unsupported", "unsupported container", v)
+		case lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol, lisp.LFun,
+			lisp.LString, lisp.LBytes, lisp.LNative, lisp.LMarkTerminal,
+			lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 		}
-	default:
-		return nil, w.fail(path, "unsupported", "unsupported value", v)
+		return nil, w.fail(path, "unsupported", "unsupported container", v)
+	case lisp.LError, lisp.LFun, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 	}
+	return nil, w.fail(path, "unsupported", "unsupported value", v)
 }
 
 func (w *canonWalker) null(path string) (*lisp.LVal, error) {
@@ -267,7 +315,7 @@ func (w *canonWalker) byteString(b []byte, path string) (*lisp.LVal, error) {
 	}
 	// Bound before base64's length calculation or allocation.
 	if len(b) > (w.cfg.maxBytes-w.bytes)/4*3 {
-		return nil, canonizeFailure("limit", path, fmt.Sprintf("bytes value exceeds output limit: %d bytes", len(b)), ErrTypedLimit)
+		return nil, canonizeFailure("limit", w.resolvePath(path), fmt.Sprintf("bytes value exceeds output limit: %d bytes", len(b)), ErrTypedLimit)
 	}
 	if err := w.add(base64.StdEncoding.EncodedLen(len(b))+2, path); err != nil {
 		return nil, err
@@ -277,7 +325,7 @@ func (w *canonWalker) byteString(b []byte, path string) (*lisp.LVal, error) {
 
 func (w *canonWalker) width(n int, path string) error {
 	if n > w.cfg.maxValues-w.values || n > w.cfg.maxBytes-w.bytes {
-		return canonizeFailure("limit", path, fmt.Sprintf("container width exceeds value/byte limit: %d entries", n), ErrTypedLimit)
+		return canonizeFailure("limit", w.resolvePath(path), fmt.Sprintf("container width exceeds value/byte limit: %d entries", n), ErrTypedLimit)
 	}
 	return nil
 }
@@ -290,8 +338,12 @@ func (w *canonWalker) cells(cells []*lisp.LVal, depth int, path string) (*lisp.L
 		return nil, err
 	}
 	out := make([]*lisp.LVal, len(cells))
+	start := len(w.edges)
+	w.edges = append(w.edges, canonPathEdge{})
+	defer func() { w.edges = w.edges[:start] }()
 	for i, v := range cells {
-		c, err := w.value(v, depth+1, fmt.Sprintf("%s[%d]", path, i))
+		w.edges[start].index = i
+		c, err := w.value(v, depth+1, "")
 		if err != nil {
 			return nil, err
 		}
@@ -326,7 +378,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		})
 	} else {
 		entries := v.MapEntries()
-		if entries.Type == lisp.LError {
+		if lisp.GoError(entries) != nil {
 			return nil, w.fail(path, "unsupported", "cannot read map entries", v)
 		}
 		for _, p := range entries.Cells {
@@ -341,12 +393,16 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		return nil, err
 	}
 	out := lisp.SortedMap()
+	start := len(w.edges)
+	w.edges = append(w.edges, canonPathEdge{mapKey: true})
+	defer func() { w.edges = w.edges[:start] }()
 	for i, p := range pairs {
-		kp := path + "[" + strconv.Quote(p.Key) + "]"
+		w.edges[start].key = p.Key
+		kp := ""
 		k := lisp.String(p.Key)
 		switch p.Kind {
 		case lisp.LInt:
-			return nil, w.fail(path+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
+			return nil, w.fail(w.renderPath(start)+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
 		case lisp.LString, lisp.LSymbol:
 		default:
 			return nil, w.fail(kp, "key-type", "unsupported map key", lisp.Symbol(p.Kind.String()+" "+p.Key))
@@ -368,7 +424,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		if err != nil {
 			return nil, err
 		}
-		if r := out.MapSetLVal(key, c); r.Type == lisp.LError {
+		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
 			return nil, w.fail(kp, "unsupported", "cannot construct map", k)
 		}
 	}
@@ -553,7 +609,7 @@ func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.
 		if err != nil {
 			return nil, err
 		}
-		if r := out.MapSetLVal(key, c); r.Type == lisp.LError {
+		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
 			return nil, canonizeFailure("unsupported", kp, "invalid native map key "+strconv.Quote(k.String()), nil)
 		}
 	}

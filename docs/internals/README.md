@@ -9,6 +9,9 @@ guides, see the parent [docs](..) directory.
   program literals, its verification layers, and the embedder contract.
 - [typed-json.md](typed-json.md): the frozen canonical typed JSON format of
   `json:dump-string` with `:typed true` / `libjson.DumpTyped`, and why each choice was made.
+- [ltype-dispatch.md](ltype-dispatch.md): how `lisp.ShapeOf` and two elpsvet
+  analyzers catch a new `LType` in the audited value walkers and
+  classifiers, and the measurements behind the JSON walkers.
 - [walker-oracle.md](walker-oracle.md): the behavioral guard shared by every
   value-rebuilding walker.
 - [tailrec-optimization.md](tailrec-optimization.md): how the interpreter

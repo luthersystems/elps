@@ -1245,7 +1245,13 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			}
 			children = v.Cells[1].Cells
 		case lisp.LSortMap:
-		default:
+		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
+			lisp.LFun, lisp.LString, lisp.LBytes, lisp.LNative, lisp.LTaggedVal,
+			lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:
+			*f.dst = s.conversionLeaf(v, stringNums)
+			continue
+		}
+		if v.Type >= lisp.LTypeMax {
 			*f.dst = s.conversionLeaf(v, stringNums)
 			continue
 		}
@@ -1348,9 +1354,12 @@ func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) any {
 		return v.Float
 	case lisp.LNative:
 		return v.Native
-	default:
+	case lisp.LInvalid, lisp.LSExpr, lisp.LFun, lisp.LQuote, lisp.LSortMap,
+		lisp.LArray, lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LTypeMax:
 		return v
 	}
+	return v
 }
 
 // GoError returns an error that represents v.  If v is not LError then nil is

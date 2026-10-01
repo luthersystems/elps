@@ -536,7 +536,9 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			enc.buf.WriteByte('{')
 			f.cells = entries.Cells
 			f.token = '}'
-		default:
+		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
+			lisp.LFun, lisp.LString, lisp.LBytes, lisp.LNative,
+			lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:
 			if err := fn(enc, v, g); err != nil {
 				return err
 			}
@@ -645,9 +647,13 @@ func (enc *encoder) encodeMapKey(v *lisp.LVal) error {
 		return enc.encodeString(v.Str)
 	case lisp.LInt:
 		return enc.encodeString(strconv.Itoa(v.Int))
-	default:
+	case lisp.LInvalid, lisp.LFloat, lisp.LError, lisp.LSExpr, lisp.LFun,
+		lisp.LQuote, lisp.LBytes, lisp.LSortMap, lisp.LArray, lisp.LNative,
+		lisp.LTaggedVal, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LTypeMax:
 		return invalidKeyTypeError(v.Type)
 	}
+	return invalidKeyTypeError(v.Type)
 }
 
 // checkIntKeyCollisions refuses a map an int key of which spells the same

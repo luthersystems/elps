@@ -549,12 +549,10 @@ func (c *copier) copyNode(v *LVal) *LVal {
 		if cl, ok := v.Native.(NativeCloner); ok {
 			cp.Native = c.cloneNative(v.Native, cl) //elpsvet:allow-native a NativeCloner clone stored by the walker that invoked it: Copy is a within-runtime value copy, not template admission, and publication classifies the clone on its own dynamic type if the copy is ever published
 		}
-	default:
-		// Every other type carries its payload in the struct copy above —
-		// an LError's *CallStack included, shared by design (see the type
-		// comment) — and its children in Cells, walked below.  An LArray
-		// is one of them: its dims and data-list headers are children,
-		// memoised like any other (see "What changed" in the type comment).
+	case LInvalid, LInt, LFloat, LError, LSymbol, LSExpr, LFun, LQuote,
+		LArray, LTaggedVal, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+		// These types keep Native from the struct copy. Error stacks remain shared.
+		// Cells are copied below, including array dimensions and data-list headers.
 	}
 	cp.Cells = c.cells(v)
 	return cp
