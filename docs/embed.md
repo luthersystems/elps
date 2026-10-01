@@ -348,6 +348,71 @@ library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
 
+### Per-VM settings
+
+A builtin keeps Lisp-controlled modes and per-VM metadata in runtime
+settings. It must not keep them in Go closure or receiver state. A template
+shares each approved builtin's Go function with every VM it mints, so state
+hidden there leaks between VMs (luthersystems/elps#678). `Serializer.setMode`
+(`lisp/lisplib/libjson/json.go:720`) is the in-repository example: it stores
+the JSON modes on the calling VM's runtime.
+
+| Method | Purpose |
+| --- | --- |
+| `Runtime.Setting(name) (bool, bool)` | Reads a boolean setting and whether it is set. |
+| `Runtime.SetSetting(name, value bool)` | Sets a boolean setting. |
+| `Runtime.SettingValue(name) (any, bool)` | Reads a value setting and whether it is set. |
+| `Runtime.SetSettingValue(name, v any) error` | Sets a value setting. Returns an error for a type that is not allowed. |
+| `Runtime.DeleteSettingValue(name)` | Removes a value setting. Removing an unset name does nothing. |
+
+Boolean and value settings are separate namespaces, so one name can hold
+both. Settings are Go API only. Lisp code reaches a setting only through a
+builtin that reads or writes it.
+
+All settings follow the same template rules:
+
+- `NewTemplate` publishes the source runtime's settings.
+- Every VM that `Template.NewVM` mints starts from the published settings.
+- A write in one VM is seen by no other VM, by the template, or by the source.
+- A write to the source after `NewTemplate` returns does not change the template.
+- A cold runtime has no settings.
+
+VMs share stored values without copying them, so a value setting must be
+immutable. `SetSettingValue` accepts the payloads that template publication
+shares without a host policy, plus a copied byte slice:
+
+| Go type of `v` | Treatment |
+| --- | --- |
+| A scalar kind: `bool`, `string`, an integer, float or complex kind, named types included | Stored as given. `SettingValue` returns the same dynamic type. |
+| Exactly `[]byte` | Copied on set and on every read. Nil and empty slices read back with length zero. |
+| A struct value that embeds `templatepolicy.Marker` | Stored as given. Embedders cannot mark their own structs. They can store a marked value that an ELPS API returns, such as the payload of `libtime.Time`. |
+| Anything else: nil, any pointer, unmarked structs, maps, slices other than `[]byte`, arrays, channels, functions, `uintptr`, `unsafe.Pointer` | Rejected. The setting is unchanged. |
+
+A payload that only `TemplateWithNativePolicy` admits cannot be a value
+setting. Store an immutable scalar form of it instead, such as an id or
+encoded bytes.
+
+A VM reads the template's value map until its first value write copies it,
+so `NewVM` does no per-VM work for value settings.
+
+Record a string while the program loads, and read it in a VM:
+
+```go
+if err := source.Runtime.SetSettingValue("program:id", "example-v1"); err != nil {
+    return err
+}
+tmpl, err := lisp.NewTemplate(source, lisp.TemplateWithBuiltinPolicy(approveAuditedBuiltin))
+if err != nil {
+    return err
+}
+vm, err := tmpl.NewVM()
+if err != nil {
+    return err
+}
+v, ok := vm.Runtime.SettingValue("program:id")
+id, _ := v.(string) // "example-v1"; ok is false in a cold runtime
+```
+
 ### Writing a Go macro
 
 A Go macro receives unevaluated forms and returns an expansion for the caller

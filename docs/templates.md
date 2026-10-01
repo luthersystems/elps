@@ -100,6 +100,7 @@ lookup table, native clone callback, or foreign map factory.
 | Native scalars and explicitly immutable payloads | Shared, never cloned |
 | Other natives and foreign map implementations | Rejected at publication |
 | Limits and identifier counters | Copied; counters continue past published definitions |
+| Runtime settings (boolean and value) | Copied; a VM reads the template's value map until its first value write |
 | Reader, source library, sealed load cache, source metadata | Shared under their read-only/concurrency contracts |
 | Context, current evaluation location, active stacks, step accounting, debugger and profiler | Not inherited |
 | Stderr | Shared unless replaced with `VMWithStderr` |
@@ -156,6 +157,10 @@ views, source mutations and concurrent instances. Neither a matching checksum
 nor absence of races alone proves behavioral equivalence.
 
 ## Go embedding
+
+Keep Lisp-controlled modes and per-VM metadata in runtime settings. A
+builtin closure must not hold them. [Per-VM settings](embed.md#per-vm-settings)
+lists the methods, the allowed value types and the template rules.
 
 The public lifecycle and sharing contract also live in the `lisp` package docs
 (`lisp/doc.go`), with an executable `ExampleTemplate` checked by the Go test suite.
