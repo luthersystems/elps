@@ -134,11 +134,17 @@ func evalSnapshot(env *lisp.LEnv, exprs []*lisp.LVal) ([]string, any) {
 	var panicked any
 	func() {
 		defer func() { panicked = recover() }()
-		for _, e := range exprs {
-			snaps = append(snaps, env.EvalContext(context.Background(), e).String())
-		}
+		snapshotInto(env, exprs, &snaps)
 	}()
 	return snaps, panicked
+}
+
+// snapshotInto appends the rendered result of each expression in exprs to
+// *snaps, so the caller keeps the snapshots that came before a panic.
+func snapshotInto(env *lisp.LEnv, exprs []*lisp.LVal, snaps *[]string) {
+	for _, e := range exprs {
+		*snaps = append(*snaps, env.EvalContext(context.Background(), e).String())
+	}
 }
 
 // TestGetDoesNotCorruptLiteral is the direct regression test for the four

@@ -115,9 +115,9 @@ func WithMaxTailIterations(n int) Config {
 // function more like the LEnv methods LoadFile, LoadString, etc.
 func WithLoader(fn Loader) Config {
 	return func(env *LEnv) *LVal {
+		pkg := env.Runtime.Package.Name
 		var lerr *LVal
 		func() {
-			pkg := env.Runtime.Package.Name
 			defer func() {
 				e := env.InPackage(Symbol(pkg))
 				if e.Type == LError && lerr.Type != LError {

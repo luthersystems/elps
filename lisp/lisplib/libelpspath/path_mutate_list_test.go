@@ -104,11 +104,17 @@ func evalAll(env *lisp.LEnv, exprs []*lisp.LVal) ([]*lisp.LVal, any) {
 	var panicked any
 	func() {
 		defer func() { panicked = recover() }()
-		for _, e := range exprs {
-			results = append(results, env.EvalContext(context.Background(), e))
-		}
+		evalInto(env, exprs, &results)
 	}()
 	return results, panicked
+}
+
+// evalInto appends the result of each expression in exprs to *results, so
+// the caller keeps the results that came before a panic.
+func evalInto(env *lisp.LEnv, exprs []*lisp.LVal, results *[]*lisp.LVal) {
+	for _, e := range exprs {
+		*results = append(*results, env.EvalContext(context.Background(), e))
+	}
 }
 
 func assertList102030(t *testing.T, v *lisp.LVal) {

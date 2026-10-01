@@ -480,9 +480,9 @@ type goldenRecord struct {
 
 func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) goldenRecord {
 	var r goldenRecord
+	r.Name = name
+	r.Causes = []string{}
 	func() {
-		r.Name = name
-		r.Causes = []string{}
 		defer func() {
 			if p := recover(); p != nil {
 				r.Panic = fmt.Sprintf("%T: %v", p, p)
@@ -497,22 +497,27 @@ func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte,
 			}
 			r.Trace = append([]string{}, in.trace...)
 		}()
-		v, b, err := run()
-		if v != nil {
-			r.Output, _ = in.render(v)
-		} else if b != nil {
-			r.Output = string(b)
-		}
-		if err != nil {
-			r.Error, r.ErrorType = err.Error(), fmt.Sprintf("%T", err)
-			for _, name := range []string{"typed-limit", "charge", "host", "cycle", "depth", "operation-stopped"} {
-				if cause := causes[name]; cause != nil && errors.Is(err, cause) {
-					r.Causes = append(r.Causes, name)
-				}
-			}
-		}
+		goldenRun(&r, in, run, causes)
 	}()
 	return r
+}
+
+// goldenRun runs run and records its output, error and matching causes in r.
+func goldenRun(r *goldenRecord, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) {
+	v, b, err := run()
+	if v != nil {
+		r.Output, _ = in.render(v)
+	} else if b != nil {
+		r.Output = string(b)
+	}
+	if err != nil {
+		r.Error, r.ErrorType = err.Error(), fmt.Sprintf("%T", err)
+		for _, name := range []string{"typed-limit", "charge", "host", "cycle", "depth", "operation-stopped"} {
+			if cause := causes[name]; cause != nil && errors.Is(err, cause) {
+				r.Causes = append(r.Causes, name)
+			}
+		}
+	}
 }
 
 // compactWalkerGolden preserves expectations and reuses identical records by name.

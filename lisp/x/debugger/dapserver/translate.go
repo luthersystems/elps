@@ -106,171 +106,156 @@ func resolveSourcePath(path, file, sourceRoot string) string {
 // allocRef assigns a variable reference for expandable values. eng is used
 // for custom native type formatting.
 func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine, envs ...*lisp.LEnv) []dap.Variable {
-	var result []dap.Variable
-	func() {
-		var env *lisp.LEnv
-		if len(envs) > 0 {
-			env = envs[0]
+	var env *lisp.LEnv
+	if len(envs) > 0 {
+		env = envs[0]
+	}
+	formatter := debugger.NewProtocolValueFormatter(env, eng)
+	vars := formatBindings(bindings, allocRef, formatter)
+	if formatter.Exhausted() {
+		vars = append(vars, dap.Variable{Name: "#<truncated>"})
+	}
+	return vars
+}
+
+// formatBindings formats bindings until formatter's budget is exhausted.
+func formatBindings(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, formatter *debugger.ValueFormatter) []dap.Variable {
+	vars := make([]dap.Variable, 0, min(len(bindings), 64))
+	for _, b := range bindings {
+		if formatter.Exhausted() {
+			return vars
 		}
-		formatter := debugger.NewProtocolValueFormatter(env, eng)
-		defer func() {
-			if formatter.Exhausted() {
-				result = append(result, dap.Variable{Name: "#<truncated>"})
-			}
-		}()
-		vars := make([]dap.Variable, 0, min(len(bindings), 64))
-		for _, b := range bindings {
-			if formatter.Exhausted() {
-				result = vars
-				return
-			}
-			v := dap.Variable{
-				Name:               variableName(formatter, b.Name),
-				Value:              formatter.Format(b.Value),
-				Type:               lvalTypeName(b.Value),
-				VariablesReference: allocRef(b.Value),
-			}
-			setChildHints(&v, b.Value)
-			vars = append(vars, v)
+		v := dap.Variable{
+			Name:               variableName(formatter, b.Name),
+			Value:              formatter.Format(b.Value),
+			Type:               lvalTypeName(b.Value),
+			VariablesReference: allocRef(b.Value),
 		}
-		result = vars
-	}()
-	return result
+		setChildHints(&v, b.Value)
+		vars = append(vars, v)
+	}
+	return vars
 }
 
 // expandVariable returns the child variables of a structured LVal.
 // mapKeyFilter, if non-nil, filters sorted-map entries to only those whose
 // formatted key name matches the regex. It is ignored for non-map types.
 func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) []dap.Variable {
-	var result []dap.Variable
-	func() {
-		if v == nil {
-			result = []dap.Variable{}
-			return
-		}
-		formatter := debugger.NewProtocolValueFormatter(nil, eng)
-		defer func() {
+	if v == nil {
+		return []dap.Variable{}
+	}
+	formatter := debugger.NewProtocolValueFormatter(nil, eng)
+	vars := expandChildren(v, allocRef, eng, mapKeyFilter, formatter)
+	if formatter.Exhausted() {
+		vars = append(vars, dap.Variable{Name: "#<truncated>"})
+	}
+	return vars
+}
+
+// expandChildren formats the children of v until formatter's budget is exhausted.
+func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp, formatter *debugger.ValueFormatter) []dap.Variable {
+	switch v.Type {
+	case lisp.LSExpr:
+		vars := make([]dap.Variable, len(v.Cells))
+		for i, cell := range v.Cells {
 			if formatter.Exhausted() {
-				result = append(result, dap.Variable{Name: "#<truncated>"})
+				return vars[:i]
 			}
-		}()
-		switch v.Type {
-		case lisp.LSExpr:
-			vars := make([]dap.Variable, len(v.Cells))
-			for i, cell := range v.Cells {
-				if formatter.Exhausted() {
-					result = vars[:i]
-					return
-				}
-				vars[i] = dap.Variable{
-					Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
-					Value:              formatter.Format(cell),
-					Type:               lvalTypeName(cell),
-					VariablesReference: allocRef(cell),
-				}
-				setChildHints(&vars[i], cell)
+			vars[i] = dap.Variable{
+				Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
+				Value:              formatter.Format(cell),
+				Type:               lvalTypeName(cell),
+				VariablesReference: allocRef(cell),
 			}
-			result = vars
-			return
-		case lisp.LSortMap:
-			entries := v.MapEntries()
-			if entries.Type == lisp.LError {
-				result = []dap.Variable{}
-				return
-			}
-			var vars []dap.Variable
-			for _, pair := range entries.Cells {
-				if formatter.Exhausted() {
-					break
-				}
-				key := pair.Cells[0]
-				val := pair.Cells[1]
-				overhead := formatter.Text(strings.Repeat(" ", 48))
-				if formatter.Exhausted() {
-					vars = append(vars, dap.Variable{Name: overhead})
-					break
-				}
-				name := formatter.Format(key)
-				if mapKeyFilter != nil && !mapKeyFilter.MatchString(name) {
-					continue
-				}
-				v := dap.Variable{
-					Name:               name,
-					Value:              formatter.Format(val),
-					Type:               lvalTypeName(val),
-					VariablesReference: allocRef(val),
-				}
-				setChildHints(&v, val)
-				vars = append(vars, v)
-			}
-			result = vars
-			return
-		case lisp.LArray:
-			// Cells[0] = dimensions, Cells[1] = flat data.
-			data := v.Cells[1]
-			vars := make([]dap.Variable, len(data.Cells))
-			for i, cell := range data.Cells {
-				if formatter.Exhausted() {
-					result = vars[:i]
-					return
-				}
-				vars[i] = dap.Variable{
-					Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
-					Value:              formatter.Format(cell),
-					Type:               lvalTypeName(cell),
-					VariablesReference: allocRef(cell),
-				}
-				setChildHints(&vars[i], cell)
-			}
-			result = vars
-			return
-		case lisp.LTaggedVal:
-			if len(v.Cells) == 0 {
-				result = []dap.Variable{}
-				return
-			}
-			inner := v.Cells[0]
-			child := dap.Variable{
-				Name:               variableName(formatter, "data"),
-				Value:              formatter.Format(inner),
-				Type:               lvalTypeName(inner),
-				VariablesReference: allocRef(inner),
-			}
-			setChildHints(&child, inner)
-			result = []dap.Variable{child}
-			return
-		case lisp.LNative:
-			if eng == nil {
-				result = []dap.Variable{}
-				return
-			}
-			children := eng.NativeChildren(v.Native)
-			if len(children) == 0 {
-				result = []dap.Variable{}
-				return
-			}
-			vars := make([]dap.Variable, len(children))
-			for i, ch := range children {
-				if formatter.Exhausted() {
-					result = vars[:i]
-					return
-				}
-				vars[i] = dap.Variable{
-					Name:               variableName(formatter, ch.Name),
-					Value:              formatter.Format(ch.Value),
-					Type:               lvalTypeName(ch.Value),
-					VariablesReference: allocRef(ch.Value),
-				}
-				setChildHints(&vars[i], ch.Value)
-			}
-			result = vars
-			return
-		default:
-			result = []dap.Variable{}
-			return
+			setChildHints(&vars[i], cell)
 		}
-	}()
-	return result
+		return vars
+	case lisp.LSortMap:
+		entries := v.MapEntries()
+		if entries.Type == lisp.LError {
+			return []dap.Variable{}
+		}
+		var vars []dap.Variable
+		for _, pair := range entries.Cells {
+			if formatter.Exhausted() {
+				break
+			}
+			key := pair.Cells[0]
+			val := pair.Cells[1]
+			overhead := formatter.Text(strings.Repeat(" ", 48))
+			if formatter.Exhausted() {
+				vars = append(vars, dap.Variable{Name: overhead})
+				break
+			}
+			name := formatter.Format(key)
+			if mapKeyFilter != nil && !mapKeyFilter.MatchString(name) {
+				continue
+			}
+			v := dap.Variable{
+				Name:               name,
+				Value:              formatter.Format(val),
+				Type:               lvalTypeName(val),
+				VariablesReference: allocRef(val),
+			}
+			setChildHints(&v, val)
+			vars = append(vars, v)
+		}
+		return vars
+	case lisp.LArray:
+		// Cells[0] = dimensions, Cells[1] = flat data.
+		data := v.Cells[1]
+		vars := make([]dap.Variable, len(data.Cells))
+		for i, cell := range data.Cells {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
+			vars[i] = dap.Variable{
+				Name:               variableName(formatter, fmt.Sprintf("[%d]", i)),
+				Value:              formatter.Format(cell),
+				Type:               lvalTypeName(cell),
+				VariablesReference: allocRef(cell),
+			}
+			setChildHints(&vars[i], cell)
+		}
+		return vars
+	case lisp.LTaggedVal:
+		if len(v.Cells) == 0 {
+			return []dap.Variable{}
+		}
+		inner := v.Cells[0]
+		child := dap.Variable{
+			Name:               variableName(formatter, "data"),
+			Value:              formatter.Format(inner),
+			Type:               lvalTypeName(inner),
+			VariablesReference: allocRef(inner),
+		}
+		setChildHints(&child, inner)
+		return []dap.Variable{child}
+	case lisp.LNative:
+		if eng == nil {
+			return []dap.Variable{}
+		}
+		children := eng.NativeChildren(v.Native)
+		if len(children) == 0 {
+			return []dap.Variable{}
+		}
+		vars := make([]dap.Variable, len(children))
+		for i, ch := range children {
+			if formatter.Exhausted() {
+				return vars[:i]
+			}
+			vars[i] = dap.Variable{
+				Name:               variableName(formatter, ch.Name),
+				Value:              formatter.Format(ch.Value),
+				Type:               lvalTypeName(ch.Value),
+				VariablesReference: allocRef(ch.Value),
+			}
+			setChildHints(&vars[i], ch.Value)
+		}
+		return vars
+	default:
+		return []dap.Variable{}
+	}
 }
 
 // childInfo returns the number of indexed and named children for an LVal.

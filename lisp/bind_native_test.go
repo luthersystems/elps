@@ -82,6 +82,12 @@ func describeBind(v *LVal) string {
 	return fmt.Sprintf("%v len=%d cap=%d quoted=%v %s", v.Type, len(v.Cells), cap(v.Cells), v.quoted, v.String())
 }
 
+// bindDescription runs bind and describes the bound argument list.
+func bindDescription(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) string {
+	_, list := bind(fun, args)
+	return describeBind(list)
+}
+
 // TestBindNativePositionalMatchesGeneral checks, for every shape and
 // argument list, that bind returns exactly what the general binder returns
 // (same env, same argument list or the same error), that the fast path is
@@ -213,8 +219,7 @@ func TestBindNilFormalAfterRequiredFailsLikeGeneral(t *testing.T) {
 					msg = "panic: " + fmt.Sprint(r)
 				}
 			}()
-			_, list := bind(fun, args)
-			msg = describeBind(list)
+			msg = bindDescription(bind, fun, args)
 		}()
 		return msg
 	}
@@ -242,8 +247,7 @@ func TestBindMalformedFunctionFailsLikeGeneral(t *testing.T) {
 					msg = fmt.Sprint(r)
 				}
 			}()
-			_, list := bind(fun, args)
-			msg = describeBind(list)
+			msg = bindDescription(bind, fun, args)
 		}()
 		return msg
 	}

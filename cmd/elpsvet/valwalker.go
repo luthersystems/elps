@@ -92,7 +92,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.CodeWalker.templateList":                           "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.LEnv.call":                                         "hot path: preserves evaluator or copy identity and allocation contracts",
 	"github.com/luthersystems/elps/lisp.LEnv.callBuiltin":                                  "hot path: preserves evaluator or copy identity and allocation contracts",
-	"github.com/luthersystems/elps/lisp.LEnv.eval":                                         "hot path: preserves evaluator or copy identity and allocation contracts",
+	"github.com/luthersystems/elps/lisp.LEnv.evalUnchecked":                                "hot path: preserves evaluator or copy identity and allocation contracts",
 	"github.com/luthersystems/elps/lisp.LEnv.evalSExpr":                                    "hot path: preserves evaluator or copy identity and allocation contracts",
 	"github.com/luthersystems/elps/lisp.LEnv.evalSExprCells":                               "hot path: preserves evaluator or copy identity and allocation contracts",
 	"github.com/luthersystems/elps/lisp.LEnv.funCall":                                      "hot path: preserves evaluator or copy identity and allocation contracts",

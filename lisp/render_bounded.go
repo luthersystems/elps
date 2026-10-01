@@ -343,10 +343,10 @@ func (v *LVal) boundedRender(limit int, budget *renderBudget, message bool) (str
 // than to the rendering's own budget: neither produces output, and an
 // exhausted rendering budget means something else entirely.
 func strictRenderingStands(v *LVal, message bool, ctx context.Context, analysis *int) bool {
+	lazy, search := newRenderBudget(0, ctx), newRenderBudget(0, ctx)
+	start := lazy.remaining + search.remaining
 	var stands bool
 	func() {
-		lazy, search := newRenderBudget(0, ctx), newRenderBudget(0, ctx)
-		start := lazy.remaining + search.remaining
 		defer func() {
 			*analysis += start - lazy.remaining - search.remaining
 			if recovered := recover(); recovered != nil {
@@ -354,9 +354,15 @@ func strictRenderingStands(v *LVal, message bool, ctx context.Context, analysis 
 				stands = false
 			}
 		}()
-		stands = !lazyRenderTerminates(v, message, &lazy) && containsCycle(v, &search)
+		stands = strictRenderingStandsUnchecked(v, message, &lazy, &search)
 	}()
 	return stands
+}
+
+// strictRenderingStandsUnchecked is strictRenderingStands without the
+// accounting and the panic recovery.
+func strictRenderingStandsUnchecked(v *LVal, message bool, lazy, search *renderBudget) bool {
+	return !lazyRenderTerminates(v, message, lazy) && containsCycle(v, search)
 }
 
 // lazyRenderTerminates reports whether the representation String is defined
@@ -959,13 +965,17 @@ func nativeErrorText(e *ErrorVal) (string, bool) {
 				text, ok = corruptedNativeMessage, true
 			}
 		}()
-		if len(e.Cells) > 0 && e.Cells[0] != nil {
-			if err, isErr := e.Cells[0].Native.(error); isErr && err != nil {
-				text, ok = err.Error(), true
-				return
-			}
-		}
-		text, ok = "", false
+		text, ok = nativeErrorTextUnchecked(e)
 	}()
 	return text, ok
+}
+
+// nativeErrorTextUnchecked is nativeErrorText without the panic recovery.
+func nativeErrorTextUnchecked(e *ErrorVal) (string, bool) {
+	if len(e.Cells) > 0 && e.Cells[0] != nil {
+		if err, ok := e.Cells[0].Native.(error); ok && err != nil {
+			return err.Error(), true
+		}
+	}
+	return "", false
 }

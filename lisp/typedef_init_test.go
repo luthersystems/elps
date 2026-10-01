@@ -36,9 +36,9 @@ import (
 // requirePanics runs fn and returns the recovered value, failing if fn did
 // not panic.
 func requirePanics(t *testing.T, what string, fn func()) any {
+	t.Helper()
 	var recovered any
 	func() {
-		t.Helper()
 		defer func() {
 			recovered = recover()
 			if recovered == nil {
@@ -48,7 +48,6 @@ func requirePanics(t *testing.T, what string, fn func()) any {
 			}
 		}()
 		fn()
-		recovered = nil
 	}()
 	return recovered
 }

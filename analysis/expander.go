@@ -207,14 +207,18 @@ func safeHeadSymbol(form *lisp.LVal) string {
 				name = "<unreadable>"
 			}
 		}()
-		if form == nil || len(form.Cells) == 0 || form.Cells[0] == nil ||
-			form.Cells[0].Type != lisp.LSymbol {
-			name = "<unknown>"
-			return
-		}
-		name = form.Cells[0].Str
+		name = headSymbolUnchecked(form)
 	}()
 	return name
+}
+
+// headSymbolUnchecked is safeHeadSymbol without the panic recovery.
+func headSymbolUnchecked(form *lisp.LVal) string {
+	if form == nil || len(form.Cells) == 0 || form.Cells[0] == nil ||
+		form.Cells[0].Type != lisp.LSymbol {
+		return "<unknown>"
+	}
+	return form.Cells[0].Str
 }
 
 // ExpandMacro looks up the head symbol in the environment relative to
@@ -390,30 +394,33 @@ func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) error {
 				retErr = fmt.Errorf("panic in preamble form: %v", r)
 			}
 		}()
-		// Auto-create workspace packages so in-package doesn't fail.
-		// Import the lang package so builtins (defmacro, use-package, etc.) work.
-		head := astutil.HeadSymbol(form)
-		if head == "in-package" && len(form.Cells) > 1 {
-			if name := preamblePkgName(form.Cells[1]); name != "" {
-				env.Runtime.Registry.DefinePackage(name)
-				// Temporarily switch to the new package to import lang builtins,
-				// then let the actual (in-package ...) eval do the real switch.
-				env.InPackage(lisp.String(name))
-				env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
-			}
-		}
-		result := env.Eval(form)
-		if result.Type == lisp.LError {
-			if head == "defmacro" {
-				retErr = fmt.Errorf("error loading macro %s: %v", preambleDefName(form), result)
-				return
-			}
-			retErr = fmt.Errorf("error in preamble (%s): %v", head, result)
-			return
-		}
-		retErr = nil
+		retErr = evalPreambleFormUnchecked(env, form)
 	}()
 	return retErr
+}
+
+// evalPreambleFormUnchecked is evalPreambleForm without the panic recovery.
+func evalPreambleFormUnchecked(env *lisp.LEnv, form *lisp.LVal) error {
+	// Auto-create workspace packages so in-package doesn't fail.
+	// Import the lang package so builtins (defmacro, use-package, etc.) work.
+	head := astutil.HeadSymbol(form)
+	if head == "in-package" && len(form.Cells) > 1 {
+		if name := preamblePkgName(form.Cells[1]); name != "" {
+			env.Runtime.Registry.DefinePackage(name)
+			// Temporarily switch to the new package to import lang builtins,
+			// then let the actual (in-package ...) eval do the real switch.
+			env.InPackage(lisp.String(name))
+			env.UsePackage(lisp.Symbol(env.Runtime.Registry.Lang))
+		}
+	}
+	result := env.Eval(form)
+	if result.Type == lisp.LError {
+		if head == "defmacro" {
+			return fmt.Errorf("error loading macro %s: %v", preambleDefName(form), result)
+		}
+		return fmt.Errorf("error in preamble (%s): %v", head, result)
+	}
+	return nil
 }
 
 // preamblePkgName extracts a package name from a quoted or bare symbol.

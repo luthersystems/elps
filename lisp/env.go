@@ -915,31 +915,31 @@ func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
 	var result *LVal
 	func() {
 		defer env.recoverPanic(&result)
-		if typ.Type != LTaggedVal {
-			result = env.Errorf("first argument is not a typedef: %v", GetType(typ))
-			return
-		}
-		if typ.Str != env.Runtime.Registry.Lang+":typedef" {
-			result = env.Errorf("first argument is not a typedef: %v", GetType(typ))
-			return
-		}
-		if args.Type != LSExpr {
-			result = env.Errorf("second argument is not a list: %v", GetType(args))
-			return
-		}
-		tname, ctor, lerr := env.typedefFields(typ)
-		if lerr != nil {
-			result = lerr
-			return
-		}
-		v := env.FunCall(ctor, args)
-		if v.Type == LError {
-			result = v
-			return
-		}
-		result = env.TaggedValue(tname, v)
+		result = env.newUnchecked(typ, args)
 	}()
 	return result
+}
+
+// newUnchecked is New without the panic recovery.
+func (env *LEnv) newUnchecked(typ *LVal, args *LVal) *LVal {
+	if typ.Type != LTaggedVal {
+		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
+	}
+	if typ.Str != env.Runtime.Registry.Lang+":typedef" {
+		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
+	}
+	if args.Type != LSExpr {
+		return env.Errorf("second argument is not a list: %v", GetType(args))
+	}
+	tname, ctor, lerr := env.typedefFields(typ)
+	if lerr != nil {
+		return lerr
+	}
+	v := env.FunCall(ctor, args)
+	if v.Type == LError {
+		return v
+	}
+	return env.TaggedValue(tname, v)
 }
 
 // typedefFields checks the descriptor before indexing or invoking it.
@@ -1417,46 +1417,47 @@ func (env *LEnv) ErrorCondition(condition string, v ...any) *LVal {
 		// Error/As/Unwrap are host hooks, including when a source reader returns
 		// an error outside env.eval. Contain faults at this boundary as well.
 		defer env.recoverPanic(&result)
-
-		narg := len(v)
-		cells := make([]*LVal, 0, len(v))
-		for _, v := range v {
-			switch v := v.(type) {
-			case *LVal:
-				cells = append(cells, v)
-			case error:
-				if narg > 1 {
-					result = ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
-					return
-				}
-				lerr := ErrorCondition(condition, v)
-				if failure := env.ErrorAssociate(lerr); failure != nil {
-					result = failure
-					return
-				}
-				result = env.notifyError(lerr)
-				return
-			case string:
-				cells = append(cells, String(v))
-			default:
-				cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: the kernel only formats condition data, never writes through it, and publication still classifies the value by its dynamic type before any template could share it
-			}
-		}
-		lerr := &LVal{
-			Type: LError,
-			// Copied, not aliased: the error outlives the evaluator's current
-			// location and must not move when env.loc's pointee does.  The
-			// evaluator (or a producing parser) may still fix that Location up
-			// in place.  Same reasoning as ErrorAssociate below (issue #366).
-			// Copy preserves nil, which is the "<native code>" convention.
-			source: env.loc.Copy(),
-			Str:    condition,
-			Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-			Cells:  cells,
-		}
-		result = env.notifyError(lerr)
+		result = env.errorConditionUnchecked(condition, v...)
 	}()
 	return result
+}
+
+// errorConditionUnchecked is ErrorCondition without the panic recovery.
+func (env *LEnv) errorConditionUnchecked(condition string, v ...any) *LVal {
+	narg := len(v)
+	cells := make([]*LVal, 0, len(v))
+	for _, v := range v {
+		switch v := v.(type) {
+		case *LVal:
+			cells = append(cells, v)
+		case error:
+			if narg > 1 {
+				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
+			}
+			lerr := ErrorCondition(condition, v)
+			if failure := env.ErrorAssociate(lerr); failure != nil {
+				return failure
+			}
+			return env.notifyError(lerr)
+		case string:
+			cells = append(cells, String(v))
+		default:
+			cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: the kernel only formats condition data, never writes through it, and publication still classifies the value by its dynamic type before any template could share it
+		}
+	}
+	lerr := &LVal{
+		Type: LError,
+		// Copied, not aliased: the error outlives the evaluator's current
+		// location and must not move when env.loc's pointee does.  The
+		// evaluator (or a producing parser) may still fix that Location up
+		// in place.  Same reasoning as ErrorAssociate below (issue #366).
+		// Copy preserves nil, which is the "<native code>" convention.
+		source: env.loc.Copy(),
+		Str:    condition,
+		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
+		Cells:  cells,
+	}
+	return env.notifyError(lerr)
 }
 
 // Errorf returns an LError value with a formatted error message.
@@ -1507,14 +1508,19 @@ func (env *LEnv) notifyError(lerr *LVal) *LVal {
 	var result *LVal
 	func() {
 		defer env.recoverPanic(&result)
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			if d.OnError(env, lerr) {
-				d.WaitIfPaused(env, lerr)
-			}
-		}
-		result = lerr
+		result = env.notifyErrorUnchecked(lerr)
 	}()
 	return result
+}
+
+// notifyErrorUnchecked is notifyError without the panic recovery.
+func (env *LEnv) notifyErrorUnchecked(lerr *LVal) *LVal {
+	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+		if d.OnError(env, lerr) {
+			d.WaitIfPaused(env, lerr)
+		}
+	}
+	return lerr
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
@@ -1720,124 +1726,115 @@ func (env *LEnv) eval(ctx context.Context, v *LVal) *LVal {
 				result = env.panicError(r)
 			}
 		}()
-		// Ownership check (elpscheck builds only; no-op otherwise): eval is the
-		// funnel every expression passes through, so the first evaluation of a
-		// value adopts it for this Runtime and any later evaluation under a
-		// different Runtime panics.  Placed after the deferred recover so the
-		// evalNesting counter stays balanced when the check panics.
-		checkOwnership(env.Runtime, v)
-		if env.Runtime.evalNestingExceeded() {
-			result = env.ErrorConditionf(CondEvalNestingExceeded,
-				"evaluation nesting depth exceeded maximum: %d"+
-					" (expressions nested this deeply consume Go stack without pushing"+
-					" call frames, so the limit stops the Go runtime from aborting the"+
-					" process with an unrecoverable stack overflow; raise or disable it"+
-					" with WithMaxEvalNesting)", env.Runtime.evalNesting)
-			return
-		}
-		macroDepth := 0
-	eval:
-		if lerr := env.checkLimits(ctx); lerr != nil {
-			result = lerr
-			return
-		}
-		if v.spliced {
-			result = env.Errorf("spliced value used as expression")
-			return
-		}
-		env.loc = v.source
-		if v.source != nil {
-			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-				func() {
-					// Protocol renderers inspect Context while this environment is
-					// paused, including outside a builtin's context bridge.
-					previous := env.evalCtx
-					env.evalCtx = ctx
-					defer func() { env.evalCtx = previous }()
-					if d.OnEval(env, v) {
-						d.WaitIfPaused(env, v)
-					}
-				}()
-			}
-		}
-		if v.quoted {
-			result = v
-			return
-		}
-		switch v.Type {
-		case LSymbol:
-			colonIdx := strings.IndexByte(v.Str, ':')
-			if colonIdx < 0 {
-				// No colon — simple unqualified symbol (the common case).
-				result = env.Get(v)
-				return
-			}
-			if colonIdx == 0 {
-				// Keyword like :foo
-				result = v
-				return
-			}
-			// Qualified symbol like pkg:name — check for extra colons.
-			ns := v.Str[:colonIdx]
-			name := v.Str[colonIdx+1:]
-			if strings.IndexByte(name, ':') >= 0 {
-				result = env.Errorf("illegal symbol: %q", v.Str)
-				return
-			}
-			pkg := env.Runtime.Registry.packages[ns]
-			if pkg == nil {
-				result = env.Errorf("unknown package: %q", ns)
-				return
-			}
-			lerr := pkg.Get(Symbol(name))
-			if lerr.Type == LError {
-				if err := env.ErrorAssociate(lerr); err != nil {
-					result = err
-					return
-				}
-			}
-			result = lerr
-			return
-		case LSExpr:
-			res := env.evalSExpr(ctx, v)
-			// Post-call check: after a function call returns, the stack
-			// frame has been popped and depth has decreased. If the debugger
-			// is stepping out, this is where we catch tail-position returns
-			// that would otherwise unwind without hitting OnEval.
-			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
-				if d.AfterFunCall(env) {
-					d.WaitIfPaused(env, v)
-				}
-			}
-			if res.Type == LMarkMacExpand {
-				// A macro was just expanded and returned an unevaluated
-				// expression.  We have to evaluate the result before we return.
-				macroDepth++
-				if macroDepth > env.Runtime.MaxMacroExpansions() {
-					result = env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
-					return
-				}
-				v = res.Cells[0]
-				goto eval
-			}
-			if res.Type == LError {
-				if err := env.ErrorAssociate(res); err != nil {
-					result = err
-					return
-				}
-			}
-			result = res
-			return
-		case LQuote:
-			// this quote was unquoted... eval the underlying value
-			v = v.Cells[0]
-			goto eval
-		default:
-			result = v
-			return
-		}
+		result = env.evalUnchecked(ctx, v)
 	}()
 	return result
+}
+
+// evalUnchecked is eval without the nesting count and the panic recovery.
+func (env *LEnv) evalUnchecked(ctx context.Context, v *LVal) *LVal {
+	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
+	// funnel every expression passes through, so the first evaluation of a
+	// value adopts it for this Runtime and any later evaluation under a
+	// different Runtime panics.  It runs inside eval's deferred recover so
+	// the evalNesting counter stays balanced when the check panics.
+	checkOwnership(env.Runtime, v)
+	if env.Runtime.evalNestingExceeded() {
+		return env.ErrorConditionf(CondEvalNestingExceeded,
+			"evaluation nesting depth exceeded maximum: %d"+
+				" (expressions nested this deeply consume Go stack without pushing"+
+				" call frames, so the limit stops the Go runtime from aborting the"+
+				" process with an unrecoverable stack overflow; raise or disable it"+
+				" with WithMaxEvalNesting)", env.Runtime.evalNesting)
+	}
+	macroDepth := 0
+eval:
+	if lerr := env.checkLimits(ctx); lerr != nil {
+		return lerr
+	}
+	if v.spliced {
+		return env.Errorf("spliced value used as expression")
+	}
+	env.loc = v.source
+	if v.source != nil {
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+			func() {
+				// Protocol renderers inspect Context while this environment is
+				// paused, including outside a builtin's context bridge.
+				previous := env.evalCtx
+				env.evalCtx = ctx
+				defer func() { env.evalCtx = previous }()
+				if d.OnEval(env, v) {
+					d.WaitIfPaused(env, v)
+				}
+			}()
+		}
+	}
+	if v.quoted {
+		return v
+	}
+	switch v.Type {
+	case LSymbol:
+		colonIdx := strings.IndexByte(v.Str, ':')
+		if colonIdx < 0 {
+			// No colon — simple unqualified symbol (the common case).
+			return env.Get(v)
+		}
+		if colonIdx == 0 {
+			// Keyword like :foo
+			return v
+		}
+		// Qualified symbol like pkg:name — check for extra colons.
+		ns := v.Str[:colonIdx]
+		name := v.Str[colonIdx+1:]
+		if strings.IndexByte(name, ':') >= 0 {
+			return env.Errorf("illegal symbol: %q", v.Str)
+		}
+		pkg := env.Runtime.Registry.packages[ns]
+		if pkg == nil {
+			return env.Errorf("unknown package: %q", ns)
+		}
+		lerr := pkg.Get(Symbol(name))
+		if lerr.Type == LError {
+			if err := env.ErrorAssociate(lerr); err != nil {
+				return err
+			}
+		}
+		return lerr
+	case LSExpr:
+		res := env.evalSExpr(ctx, v)
+		// Post-call check: after a function call returns, the stack
+		// frame has been popped and depth has decreased. If the debugger
+		// is stepping out, this is where we catch tail-position returns
+		// that would otherwise unwind without hitting OnEval.
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
+			if d.AfterFunCall(env) {
+				d.WaitIfPaused(env, v)
+			}
+		}
+		if res.Type == LMarkMacExpand {
+			// A macro was just expanded and returned an unevaluated
+			// expression.  We have to evaluate the result before we return.
+			macroDepth++
+			if macroDepth > env.Runtime.MaxMacroExpansions() {
+				return env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
+			}
+			v = res.Cells[0]
+			goto eval
+		}
+		if res.Type == LError {
+			if err := env.ErrorAssociate(res); err != nil {
+				return err
+			}
+		}
+		return res
+	case LQuote:
+		// this quote was unquoted... eval the underlying value
+		v = v.Cells[0]
+		goto eval
+	default:
+		return v
+	}
 }
 
 // EvalSExpr evaluates s and returns the resulting LVal.

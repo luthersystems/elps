@@ -29,9 +29,7 @@ func TestRenderProbeReplaysPanicOnlyUnderErrorMessage(t *testing.T) {
 		var recovered any
 		func() {
 			defer func() { recovered = recover() }()
-			var st cycleState
-			r.container(v, false, cycleGuard{state: &st})
-			recovered = nil
+			r.container(v, false, cycleGuard{state: new(cycleState)})
 		}()
 		return recovered
 	}
