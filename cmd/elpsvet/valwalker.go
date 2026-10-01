@@ -13,7 +13,7 @@ import (
 
 // valWalkerAnalyzer reports new value walkers outside internal/valwalk.
 // A function must dispatch on LType and either recur or push LVal pointers in a loop.
-// Dispatch includes typed switch tags, LVal.Type conditions, and lisp.ShapeOf calls.
+// Dispatch includes typed switch tags, tagless LType comparisons, LVal.Type conditions, and lisp.ShapeOf calls.
 // Recursion follows the package's static calls, concrete methods, and local closures.
 // Closure diagnostics name the enclosing declared function. Each function reports once.
 // Loop detection recognises append to slices of *lisp.LVal, including ... and named slices.
@@ -26,6 +26,7 @@ import (
 // A clean run excludes new walkers of these forms. It does not prove that no walker exists.
 // Dispatch and stack pushes must occur in the same function. Split helper drivers can bypass this rule.
 // Package-level closures are not inspected. Closure bindings use their last literal assignment, without control-flow analysis.
+// Tagless cases require a comparison with an LType operand. Boolean dispatch helpers are not followed.
 // Existing walkers require a reason in valueWalkerFunctions. Comment markers do not suppress this rule.
 var valWalkerAnalyzer = &analysis.Analyzer{
 	Name: "elpsvalwalker",
@@ -72,6 +73,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.CodeWalker.compound":                               "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.flet":                                   "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.formals":                                "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/lisp.CodeWalker.runtimeForm":                            "syntax walker: dispatches code forms with quote, lexical scope, and macro expansion rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.scanPackage":                            "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.sourceValue":                            "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.special":                                "syntax walker: visits source forms with syntax and quote rules",
@@ -305,6 +307,14 @@ func (g *valueWalkGraph) scan(node *valueWalkFunc) {
 		case *ast.SwitchStmt:
 			if n.Tag != nil && isLispNamed(pass.TypesInfo.TypeOf(n.Tag), "LType") {
 				node.dispatch = true
+			} else if n.Tag == nil {
+				for _, stmt := range n.Body.List {
+					for _, cond := range stmt.(*ast.CaseClause).List {
+						if valueWalkLTypeComparison(pass, cond) {
+							node.dispatch = true
+						}
+					}
+				}
 			}
 		case *ast.IfStmt:
 			ast.Inspect(n.Cond, func(expr ast.Node) bool {
@@ -330,6 +340,30 @@ func (g *valueWalkGraph) scan(node *valueWalkFunc) {
 		}
 		return true
 	})
+}
+
+func valueWalkLTypeComparison(pass *analysis.Pass, cond ast.Expr) bool {
+	found := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok {
+			return false
+		}
+		binary, ok := n.(*ast.BinaryExpr)
+		if !ok {
+			return true
+		}
+		switch binary.Op {
+		case token.EQL, token.NEQ, token.LSS, token.LEQ, token.GTR, token.GEQ:
+			if isLispNamed(pass.TypesInfo.TypeOf(binary.X), "LType") ||
+				isLispNamed(pass.TypesInfo.TypeOf(binary.Y), "LType") {
+				found = true
+			}
+		default:
+			return true
+		}
+		return !found
+	})
+	return found
 }
 
 func valueWalkRecursive(start, current *valueWalkFunc, seen map[*valueWalkFunc]bool) bool {

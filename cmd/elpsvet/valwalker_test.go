@@ -19,11 +19,12 @@ func TestValWalkerAnalyzer(t *testing.T) {
 }
 
 func TestValueWalkerAllowlistReasons(t *testing.T) {
-	if len(valueWalkerFunctions) != 138 {
-		t.Fatalf("walker audit changed: have %d rows, want 138", len(valueWalkerFunctions))
+	if len(valueWalkerFunctions) != 139 {
+		t.Fatalf("walker audit changed: have %d rows, want 139", len(valueWalkerFunctions))
 	}
 	for _, name := range []string{
 		"lisp.copier.copy", "lisp.detacher.detach", "lisp.detacher.detachNode",
+		"lisp.CodeWalker.runtimeForm",
 		"lisp.templateInventory.val", "lisp.containsCycle", "lisp.checkContainerDepth",
 		"lisp.sealChildren", "lisp.stampMacroExpansion", "lisp.sealFP.walk",
 	} {

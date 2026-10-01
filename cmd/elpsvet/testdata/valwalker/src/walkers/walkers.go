@@ -11,6 +11,32 @@ func direct(v *l.LVal) { // want "value walker walkers.direct"
 		}
 	}
 }
+
+func taglessField(v *l.LVal) { // want "value walker walkers.taglessField"
+	switch {
+	case v.Type == l.LSExpr:
+		for _, child := range v.Cells {
+			taglessField(child)
+		}
+	}
+}
+
+func taglessLocal(v *l.LVal) { // want "value walker walkers.taglessLocal"
+	tag := v.Type
+	switch {
+	case len(v.Cells) > 0 && (l.LSExpr == tag || tag == l.LArray):
+		taglessLocal(v.Cells[0])
+	}
+}
+
+func taglessUnrelated(v *l.LVal) {
+	type other struct{ Type int }
+	x := other{}
+	switch {
+	case x.Type == 1:
+		taglessUnrelated(v.Cells[0])
+	}
+}
 func mutual(v *l.LVal) { // want "value walker walkers.mutual"
 	t := v.Type
 	switch t {
