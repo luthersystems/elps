@@ -34,7 +34,7 @@ var valWalkerAnalyzer = &analysis.Analyzer{
 }
 
 // valueWalkerFunctions names existing walkers and their traversal contracts.
-var valueWalkerFunctions = map[string]string{
+var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function names and audit reasons contain no credentials.
 	"github.com/luthersystems/elps/analysis.analyzer.expandPackageForms":                   "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/analysis.scanFileFull":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/analysis.walkLoadFile":                                  "syntax walker: visits source forms with syntax and quote rules",

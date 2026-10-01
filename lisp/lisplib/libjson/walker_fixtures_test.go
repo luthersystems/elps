@@ -267,8 +267,11 @@ func goldenWire(tag string, payload *lisp.LVal) *lisp.LVal {
 }
 func goldenPair(k, v *lisp.LVal) *lisp.LVal { return lisp.QExpr([]*lisp.LVal{k, v}) }
 func goldenStockMap(kv ...*lisp.LVal) *lisp.LVal {
+	if len(kv)%2 != 0 {
+		panic("fixture map requires key/value pairs")
+	}
 	v := lisp.SortedMap()
-	for i := 0; i < len(kv); i += 2 {
+	for i := 0; i+1 < len(kv); i += 2 {
 		v.MapSetLVal(kv[i], kv[i+1])
 	}
 	return v
@@ -379,7 +382,7 @@ func (in *goldenInput) render(root *lisp.LVal) (string, map[*lisp.LVal]int) {
 	}
 	var out strings.Builder
 	out.WriteString(ref(root))
-	for i := 0; i < len(pending); i++ {
+	for i := 0; i < len(pending); i++ { //nolint:intrange // ref appends discovered values to pending during traversal.
 		v := pending[i]
 		fmt.Fprintf(&out, ";#%d=%s(q=%t", ids[v], v.Type, v.IsQuoted())
 		if n := in.sources[v]; n != 0 {
@@ -523,14 +526,16 @@ func checkWalkerGolden(t *testing.T, name string, records []goldenRecord) {
 	data = append(data, '\n')
 	path := filepath.Join("testdata", name+".golden.json")
 	if *updateWalkerGoldens {
-		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		// Restrict fixture directory access to the owner and group.
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.WriteFile(path, data, 0644); err != nil {
+		// Only the owner needs to read or write generated golden files.
+		if err := os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}
-	want, err := os.ReadFile(path)
+	want, err := os.ReadFile(path) //nolint:gosec // G304: the golden path comes from test-controlled names.
 	if err != nil {
 		t.Fatalf("%v; generate with -update on the unchanged walkers", err)
 	}
@@ -543,8 +548,14 @@ func checkWalkerGolden(t *testing.T, name string, records []goldenRecord) {
 			t.Fatalf("%s: got %d fixtures, want %d", path, len(records), len(expected))
 		}
 		for i := range records {
-			a, _ := json.Marshal(expected[i])
-			b, _ := json.Marshal(records[i])
+			a, err := json.Marshal(expected[i])
+			if err != nil {
+				t.Fatal(err)
+			}
+			b, err := json.Marshal(records[i])
+			if err != nil {
+				t.Fatal(err)
+			}
 			if string(a) != string(b) {
 				t.Errorf("%s: fixture %s differs\nwant: %.2000s\ngot:  %.2000s", path, records[i].Name, a, b)
 			}

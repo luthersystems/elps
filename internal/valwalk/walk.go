@@ -75,7 +75,7 @@ func (w *Walker[R]) Depth() int { return w.active }
 
 // OnPath reports whether v is an active ancestor. It excludes the current value.
 func (w *Walker[R]) OnPath(v *lisp.LVal) bool {
-	for i := 0; i < w.active; i++ {
+	for i := range w.active {
 		if w.frames[i].value == v {
 			return true
 		}
@@ -96,7 +96,7 @@ func (w *Walker[R]) Ancestors() []*lisp.LVal {
 // The root path is empty. Visitors can prepend their own root marker.
 func (w *Walker[R]) Path() string {
 	var path strings.Builder
-	for i := 0; i < w.active; i++ {
+	for i := range w.active {
 		f := &w.frames[i]
 		if f.edge != nil {
 			path.WriteString(f.edge(f.value, f.next))

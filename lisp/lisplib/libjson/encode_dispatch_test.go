@@ -1,7 +1,9 @@
 package libjson
 
 import (
+	"errors"
 	"fmt"
+	"strconv"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -36,7 +38,7 @@ func TestPlainEncodeEveryLType(t *testing.T) {
 		t.Fatal("fixture table does not cover every type")
 	}
 	for i, tc := range tests {
-		t.Run(fmt.Sprintf("%d", i), func(t *testing.T) {
+		t.Run(strconv.Itoa(i), func(t *testing.T) {
 			if tc.v.Type != lisp.LType(i) {
 				t.Fatal("fixture type differs from its table index")
 			}
@@ -116,7 +118,7 @@ func TestEncodeMapKeyDefaultTypes(t *testing.T) {
 				return
 			}
 			want := fmt.Sprintf("invalid map key type: %v", typ)
-			if err != invalidKeyTypeError(typ) || err.Error() != want || len(enc.bytes()) != 0 {
+			if !errors.Is(err, invalidKeyTypeError(typ)) || err.Error() != want || len(enc.bytes()) != 0 {
 				t.Fatalf("encodeMapKey = %q, %v, want empty bytes, %q", enc.bytes(), err, want)
 			}
 		})

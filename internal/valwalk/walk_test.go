@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"runtime"
 	"slices"
+	"strconv"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -80,7 +81,7 @@ func (m *fixtureMap) Entries(buf []*lisp.LVal) *lisp.LVal {
 func TestValwalkReachesEveryChild(t *testing.T) {
 	// Each type has an explicit fixture. Adding a type requires an edge decision.
 	for typ := lisp.LInt; typ < lisp.LTypeMax; typ++ {
-		t.Run(fmt.Sprint(uint(typ)), func(t *testing.T) {
+		t.Run(strconv.FormatUint(uint64(typ), 10), func(t *testing.T) {
 			a, b := lisp.String("sentinel-a"), lisp.String("sentinel-b")
 			root := &lisp.LVal{Type: typ}
 			want := map[*lisp.LVal]string{}

@@ -57,15 +57,15 @@ func Canonize(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 var canonWalkerPool = sync.Pool{New: func() any { return &canonWalker{} }}
 
 type canonWalker struct {
-	frames     []canonFrame
 	walk       *valwalk.Walker[*lisp.LVal]
-	childIndex int
-	child      bool
 	nativePath map[reflect.Value]bool
+	frames     []canonFrame
 	cfg        typedConfig
+	childIndex int
 	values     int
 	bytes      int
 	charged    int
+	child      bool
 }
 
 // Canonize rejection data is independent of its human-readable message.
@@ -221,14 +221,15 @@ func (w *canonWalker) scalar(v *lisp.LVal, path string) (*lisp.LVal, error) {
 		}
 	case lisp.LBytes:
 		return w.byteString(v.Bytes(), path)
+	default:
+		return nil, w.fail(path, "unsupported", "unsupported value", v)
 	}
-	return nil, w.fail(path, "unsupported", "unsupported value", v)
 }
 
 type canonFrame struct {
-	object, transparent bool
 	pairs               []lisp.MapKeyPair
 	keys                []*lisp.LVal
+	object, transparent bool
 }
 
 func canonIndexEdge(_ *lisp.LVal, i int) string { return "[" + strconv.Itoa(i) + "]" }

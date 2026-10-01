@@ -162,11 +162,11 @@ func tagScalar(v *lisp.LVal) (*lisp.LVal, error) {
 }
 
 type tagFrame struct {
+	pool        *[]lisp.MapPair
+	pairs       []lisp.MapPair
+	dims, cells int
 	shape       lisp.Shape
 	multi       bool
-	dims, cells int
-	pairs       []lisp.MapPair
-	pool        *[]lisp.MapPair
 }
 
 func (w *tagWalker) release() {
