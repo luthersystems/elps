@@ -5,6 +5,7 @@ package lisp
 import (
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"strconv"
@@ -34,7 +35,7 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 136 bytes. Add scalars below conditionStack.
+// extent stops at 144 bytes. Add scalars below conditionStack.
 type Runtime struct {
 	Stderr                 io.Writer
 	Reader                 Reader
@@ -46,6 +47,7 @@ type Runtime struct {
 	Package                *Package
 	Stack                  *CallStack
 	settings               map[string]bool // Per-VM library flags; see Setting.
+	values                 map[string]any  // Per-VM value settings; see SetSettingValue.
 	conditionStack         []*LVal
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
@@ -69,6 +71,7 @@ type Runtime struct {
 	loadCacheActive        bool          // Guards LoadCache re-entrancy; see (*LEnv).readCached.
 	stepsOverflowed        bool          // steps saturated: the true count exceeds math.MaxInt64, so it exceeds any budget.
 	stepBudgetOverflowed   bool          // stepBudgetUsed saturated; it exceeds any budget.
+	valuesShared           bool          // values is a template's map: copy it before a write.
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.
@@ -613,7 +616,8 @@ func (c *atomicCounter) Store(n uint64) { c.v.Store(n) }
 // publishes the source's settings and every VM it mints starts from a
 // private copy, so SetSetting in one VM is invisible to every other. They
 // let a library keep Lisp-controlled modes without writing a package, which
-// may be frozen (TemplateWithFrozenPackages).
+// may be frozen (TemplateWithFrozenPackages). SettingValue holds values of
+// other types under the same rules.
 func (rt *Runtime) Setting(name string) (value, ok bool) {
 	value, ok = rt.settings[name]
 	return value, ok
@@ -628,19 +632,64 @@ func (rt *Runtime) SetSetting(name string, value bool) {
 }
 
 // SettingValue reports the value setting called name and whether it is set.
+// A byte setting returns a fresh []byte on every call. Every other value
+// keeps the dynamic type it was stored with. See SetSettingValue for the
+// allowed types and the template rules.
 func (rt *Runtime) SettingValue(name string) (any, bool) {
-	// TODO(phase 2): Read the per-VM value setting.
-	return nil, false
+	v, ok := rt.values[name]
+	if bytes, isBytes := v.(settingBytes); isBytes {
+		return []byte(bytes), ok
+	}
+	return v, ok
 }
 
-// SetSettingValue sets the value setting called name to v.
-// It returns an error and changes nothing when v's type cannot be shared between VMs.
+// SetSettingValue sets the value setting called name to v. Value settings
+// are per-VM interpreter state, like Setting, in a separate namespace. A
+// template publishes the source's value settings and every VM it mints
+// starts from them. A write in one VM is seen by no other VM, by the
+// template, or by the source. A cold runtime has no value settings.
+//
+// VMs share stored values without copying them, so v must be immutable.
+// SetSettingValue accepts the payloads that template publication shares
+// without a host policy: a value of a Go scalar kind (bool, string, or an
+// integer, float or complex kind, named types included), or a struct value
+// that embeds the repository's internal immutability marker. It also
+// accepts exactly []byte and stores a private copy. Any other type,
+// including nil, a pointer, and a payload that only TemplateWithNativePolicy
+// admits, returns an error and changes nothing.
+//
+// A VM reads the template's value map until its first write copies it, so
+// Template.NewVM does no per-VM work for value settings.
 func (rt *Runtime) SetSettingValue(name string, v any) error {
-	// TODO(phase 2): Validate and store the per-VM value setting.
+	if bytes, ok := v.([]byte); ok {
+		v = settingBytes(bytes)
+	} else if !templateSharesNative(v) {
+		return fmt.Errorf("runtime setting %q: value of type %T cannot be shared between VMs", name, v)
+	}
+	if rt.valuesShared {
+		rt.values = maps.Clone(rt.values)
+		rt.valuesShared = false
+	}
+	if rt.values == nil {
+		rt.values = make(map[string]any, 1)
+	}
+	rt.values[name] = v
 	return nil
 }
 
-// DeleteSettingValue removes the value setting called name. Removing an unset name does nothing.
+// DeleteSettingValue removes the value setting called name. Removing an
+// unset name does nothing. A delete in one VM is seen by no other VM, by
+// the template, or by the source.
 func (rt *Runtime) DeleteSettingValue(name string) {
-	// TODO(phase 2): Remove the per-VM value setting.
+	if _, ok := rt.values[name]; !ok {
+		return
+	}
+	if rt.valuesShared {
+		rt.values = maps.Clone(rt.values)
+		rt.valuesShared = false
+	}
+	delete(rt.values, name)
 }
+
+// settingBytes stores a private byte copy as an immutable string.
+type settingBytes string

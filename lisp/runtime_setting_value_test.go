@@ -139,7 +139,7 @@ func TestRuntimeSettingValueBytes(t *testing.T) {
 			got, ok := rt.SettingValue("bytes")
 			require.True(t, ok)
 			require.IsType(t, []byte(nil), got)
-			assert.Len(t, got.([]byte), 0)
+			assert.Empty(t, got.([]byte))
 		})
 	}
 }
@@ -177,8 +177,8 @@ func TestRuntimeSettingValueRejectsTypes(t *testing.T) {
 		{"named_byte_slice", runtimeSettingBytes{1, 2}},
 		{"nil_named_byte_slice", runtimeSettingBytes(nil)},
 		{"uintptr", uintptr(1)},
-		{"unsafe_pointer", unsafe.Pointer(&text)},
-		{"nil_unsafe_pointer", unsafe.Pointer(nil)},
+		{"unsafe_pointer", unsafe.Pointer(&text)},   //nolint:gosec // Test rejection without dereferencing the pointer.
+		{"nil_unsafe_pointer", unsafe.Pointer(nil)}, //nolint:gosec // Test rejection of a nil unsafe pointer.
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rt := NewEnv(nil).Runtime
@@ -422,16 +422,17 @@ func TestRuntimeSettingValueConcurrentForks(t *testing.T) {
 			assertRuntimeSettingValue(t, vm.Runtime, "remove", "keep")
 			assertRuntimeSettingValue(t, vm.Runtime, "bytes", []byte("template"))
 			assertNoRuntimeSettingValue(t, vm.Runtime, "local")
+			workerBytes := []byte(fmt.Sprintf("worker-%d", worker))
 			assert.NoError(t, vm.Runtime.SetSettingValue("id", worker))
 			assert.NoError(t, vm.Runtime.SetSettingValue("local", worker))
-			assert.NoError(t, vm.Runtime.SetSettingValue("bytes", []byte{byte(worker)}))
+			assert.NoError(t, vm.Runtime.SetSettingValue("bytes", workerBytes))
 			assertRuntimeSettingValue(t, vm.Runtime, "id", worker)
 			vm.Runtime.DeleteSettingValue("remove")
 			writes.Done()
 			writes.Wait()
 			assertRuntimeSettingValue(t, vm.Runtime, "id", worker)
 			assertRuntimeSettingValue(t, vm.Runtime, "local", worker)
-			assertRuntimeSettingValue(t, vm.Runtime, "bytes", []byte{byte(worker)})
+			assertRuntimeSettingValue(t, vm.Runtime, "bytes", workerBytes)
 			assertNoRuntimeSettingValue(t, vm.Runtime, "remove")
 		}()
 	}

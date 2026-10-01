@@ -753,30 +753,37 @@ func (s *templateInventory) checkSharedStorage() error {
 }
 
 func (s *templateInventory) native(payload any) error {
-	if payload == nil {
+	if payload == nil || templateSharesNative(payload) {
 		return nil
-	}
-	// Pointer method sets inherit value markers, but a caller can replace a
-	// whole pointee even when all its fields are private. Only audited struct
-	// values receive automatic admission; pointer forms require host policy.
-	if _, ok := payload.(templatepolicy.Immutable); ok && reflect.TypeOf(payload).Kind() == reflect.Struct {
-		return nil
-	}
-	// Only actual scalar values have no hidden reference graph. A value struct
-	// containing a map or slice is not made immutable by being held by value.
-	switch reflect.TypeOf(payload).Kind() {
-	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
-		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
-		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.String:
-		return nil
-	case reflect.Invalid, reflect.Uintptr, reflect.Array, reflect.Chan, reflect.Func,
-		reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.Struct, reflect.UnsafePointer:
-		// These kinds may hide mutable references or process-local identities.
 	}
 	if s.config.nativePolicy != nil && s.config.nativePolicy(payload) {
 		return nil
 	}
 	return fmt.Errorf("native %T has no template immutability declaration", payload)
+}
+
+// templateSharesNative reports whether a non-nil payload is shareable without a host policy.
+func templateSharesNative(payload any) bool {
+	if payload == nil {
+		return false
+	}
+	kind := reflect.TypeOf(payload).Kind()
+	// Pointer types inherit value markers, but a caller can replace the pointee.
+	// Only marked struct values receive automatic admission.
+	if _, ok := payload.(templatepolicy.Immutable); ok && kind == reflect.Struct {
+		return true
+	}
+	// Scalars contain no mutable references. Unmarked structs may contain mutable maps or slices.
+	switch kind {
+	case reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64, reflect.Complex64, reflect.Complex128, reflect.String:
+		return true
+	case reflect.Invalid, reflect.Uintptr, reflect.Array, reflect.Chan, reflect.Func,
+		reflect.Interface, reflect.Map, reflect.Pointer, reflect.Slice, reflect.Struct, reflect.UnsafePointer:
+		// These kinds may hide mutable references or process-local identities.
+	}
+	return false
 }
 
 func (s *templateInventory) mapData(data *MapData) error {

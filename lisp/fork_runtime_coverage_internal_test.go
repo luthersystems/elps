@@ -4,10 +4,14 @@ package lisp
 
 import (
 	"bytes"
+	"fmt"
 	"io"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 // forkRuntimeFieldPolicy records, for every field of Runtime, what Template.NewVM
@@ -48,6 +52,10 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"numenv":   "rebuilt",
 	"numsym":   "rebuilt",
 	"settings": "copied",
+	// Values are copied at publication and borrowed until a VM's first write.
+	"values": "copied",
+	// Each VM rebuilds the flag from the presence of a published map.
+	"valuesShared": "rebuilt",
 
 	// Deliberately NOT carried: an observer the embedder attaches itself, or
 	// state about an evaluation/load in progress (the template is quiescent,
@@ -140,6 +148,85 @@ func TestForkCarriesSharedRuntimeFields(t *testing.T) {
 	}
 	if fork.Runtime.loadCacheActive {
 		t.Error("fork carried the load-cache re-entrancy guard")
+	}
+}
+
+func TestRuntimeSettingValueMapBorrow(t *testing.T) {
+	source := NewEnv(nil)
+	require.NoError(t, source.Runtime.SetSettingValue("published", "source"))
+	require.NoError(t, source.Runtime.SetSettingValue("keep", "source"))
+	tmpl, err := NewTemplate(source)
+	require.NoError(t, err)
+	published := reflect.ValueOf(tmpl.plan.runtime.values).UnsafePointer()
+	require.NotNil(t, published)
+	assert.NotEqual(t, published, reflect.ValueOf(source.Runtime.values).UnsafePointer())
+	assert.False(t, source.Runtime.valuesShared)
+
+	for _, action := range []string{"set", "overwrite", "delete"} {
+		t.Run(action, func(t *testing.T) {
+			vm, err := tmpl.NewVM()
+			require.NoError(t, err)
+			assert.True(t, vm.Runtime.valuesShared)
+			assert.Equal(t, published, reflect.ValueOf(vm.Runtime.values).UnsafePointer())
+			assertRuntimeSettingValue(t, vm.Runtime, "published", "source")
+			vm.Runtime.DeleteSettingValue("missing")
+			require.Error(t, vm.Runtime.SetSettingValue("published", new(int)))
+			require.Error(t, vm.Runtime.SetSettingValue("missing", new(int)))
+			assert.True(t, vm.Runtime.valuesShared)
+			assert.Equal(t, published, reflect.ValueOf(vm.Runtime.values).UnsafePointer())
+			assertRuntimeSettingValue(t, vm.Runtime, "published", "source")
+			assertNoRuntimeSettingValue(t, vm.Runtime, "missing")
+
+			switch action {
+			case "set":
+				require.NoError(t, vm.Runtime.SetSettingValue("new", "vm"))
+				assertRuntimeSettingValue(t, vm.Runtime, "new", "vm")
+			case "overwrite":
+				require.NoError(t, vm.Runtime.SetSettingValue("published", "vm"))
+				assertRuntimeSettingValue(t, vm.Runtime, "published", "vm")
+			case "delete":
+				vm.Runtime.DeleteSettingValue("published")
+				assertNoRuntimeSettingValue(t, vm.Runtime, "published")
+			}
+			assert.False(t, vm.Runtime.valuesShared)
+			private := reflect.ValueOf(vm.Runtime.values).UnsafePointer()
+			assert.NotEqual(t, published, private)
+			require.NoError(t, vm.Runtime.SetSettingValue("keep", "vm"))
+			vm.Runtime.DeleteSettingValue("keep")
+			assert.Equal(t, private, reflect.ValueOf(vm.Runtime.values).UnsafePointer())
+			sibling, err := tmpl.NewVM()
+			require.NoError(t, err)
+			assert.True(t, sibling.Runtime.valuesShared)
+			assert.Equal(t, published, reflect.ValueOf(sibling.Runtime.values).UnsafePointer())
+			for _, rt := range []*Runtime{source.Runtime, sibling.Runtime} {
+				assertRuntimeSettingValue(t, rt, "published", "source")
+				assertRuntimeSettingValue(t, rt, "keep", "source")
+				assertNoRuntimeSettingValue(t, rt, "new")
+			}
+		})
+	}
+}
+
+func TestRuntimeSettingValueEmptyMapNotBorrowed(t *testing.T) {
+	for _, initiallySet := range []bool{false, true} {
+		t.Run(fmt.Sprintf("initially_set=%t", initiallySet), func(t *testing.T) {
+			source := NewEnv(nil)
+			if initiallySet {
+				require.NoError(t, source.Runtime.SetSettingValue("removed", "source"))
+				source.Runtime.DeleteSettingValue("removed")
+			}
+			tmpl, err := NewTemplate(source)
+			require.NoError(t, err)
+			assert.Nil(t, tmpl.plan.runtime.values)
+			vm, err := tmpl.NewVM()
+			require.NoError(t, err)
+			assert.Nil(t, vm.Runtime.values)
+			assert.False(t, vm.Runtime.valuesShared)
+			vm.Runtime.DeleteSettingValue("missing")
+			require.Error(t, vm.Runtime.SetSettingValue("missing", nil))
+			assert.Nil(t, vm.Runtime.values)
+			assert.False(t, vm.Runtime.valuesShared)
+		})
 	}
 }
 
