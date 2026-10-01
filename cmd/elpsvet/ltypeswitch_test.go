@@ -11,7 +11,7 @@ import (
 
 func TestLTypeSwitchAnalyzer(t *testing.T) {
 	analysistest.Run(t, filepath.Join(analysistest.TestData(), "ltypeswitch"), lTypeSwitchAnalyzer,
-		lispPkgPath, "github.com/luthersystems/elps/internal/valwalk/nested")
+		lispPkgPath, libjsonPkgPath)
 }
 
 func TestLTypeSwitchScope(t *testing.T) {
@@ -26,11 +26,10 @@ func TestLTypeSwitchScope(t *testing.T) {
 		{lispPkgPath, "lisp.go", true},
 		{lispPkgPath, "builtins.go", false},
 		{libjsonPkgPath, "encode.go", true},
-		{libjsonPkgPath, "tag.go", false},
+		{libjsonPkgPath, "tag.go", true},
+		{libjsonPkgPath, "canonize.go", true},
+		{libjsonPkgPath, "untag.go", true},
 		{"other", "shape.go", false},
-		{"github.com/luthersystems/elps/internal/valwalk", "walk.go", true},
-		{"github.com/luthersystems/elps/internal/valwalk/nested", "walk.go", true},
-		{"github.com/luthersystems/elps/internal/valwalker", "walk.go", false},
 	} {
 		if _, got := lTypeSwitchFuncs(tc.pkg, tc.file); got != tc.want {
 			t.Errorf("scope(%q, %q) = %t, want %t", tc.pkg, tc.file, got, tc.want)

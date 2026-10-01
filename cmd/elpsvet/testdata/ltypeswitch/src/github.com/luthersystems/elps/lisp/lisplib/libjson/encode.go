@@ -1,4 +1,4 @@
-package nested
+package libjson
 
 import alias "github.com/luthersystems/elps/lisp"
 

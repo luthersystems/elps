@@ -10,7 +10,7 @@
 // Lazy table reads must use filling accessors (elpslazyread).
 // Library builtins must not depend on the current package (elpsownpkg).
 // Audited value switches must name every LType (elpsltypeswitch).
-// New value walkers must use shared traversal or an audited exception (elpsvalwalker).
+// New value walkers must have an audited traversal contract (elpsvalwalker).
 // Other modules can import elpsownpkg from elpsvet/ownpkg.
 //
 // A package-level var whose type transitively contains *lisp.LVal is the

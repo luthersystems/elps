@@ -202,7 +202,9 @@ file (after `SetupFn` when running tests/benchmarks; discovery skips
   package-level vars), writes to `Package` tables or `packageBase`, and reads
   of `Package.symbols`, `Package.baseValues` or `sortedmap.m`. Also use it for
   exhaustive value switches (`elpsltypeswitch`) and new value walkers
-  (`elpsvalwalker`).
+  (`elpsvalwalker`). Value walkers own their traversal and choose children
+  through `lisp.ShapeOf` or exhaustive `LType` switches. Each new walker
+  needs an audited traversal contract in `valueWalkerFunctions`.
 - Before committing → `verify` (mirrors CI). Never commit to `main`.
 - All writing (docs, docstrings, comments, commits, PRs, issues, release
   notes) → `write-docs`.

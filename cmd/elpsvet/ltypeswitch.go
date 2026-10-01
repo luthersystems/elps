@@ -16,7 +16,7 @@ import (
 // lTypeSwitchAnalyzer requires exhaustive LType switches in audited value walkers.
 // It checks the tag's Go type, including aliases, locals, and method results.
 // A default arm always fails. Cases cover constant values, including named aliases.
-// Code outside lTypeSwitchScope and internal/valwalk remain outside this rule.
+// Code outside lTypeSwitchScope remains outside this rule.
 var lTypeSwitchAnalyzer = &analysis.Analyzer{
 	Name: "elpsltypeswitch",
 	Doc:  "require every lisp.LType constant and forbid default arms in audited value walkers",
@@ -39,6 +39,9 @@ var lTypeSwitchScope = map[string][]string{
 	lispPkgPath + "/lisp.go":                      {"equalShallow", "equalIter"},
 	libjsonPkgPath + "/encode.go":                 nil,
 	libjsonPkgPath + "/json.go":                   nil,
+	libjsonPkgPath + "/canonize.go":               {"value"},
+	libjsonPkgPath + "/tag.go":                    {"value"},
+	libjsonPkgPath + "/untag.go":                  {"value"},
 }
 
 const libjsonPkgPath = "github.com/luthersystems/elps/lisp/lisplib/libjson"
@@ -46,10 +49,6 @@ const libjsonPkgPath = "github.com/luthersystems/elps/lisp/lisplib/libjson"
 // lTypeSwitchFuncs reports whether a file is in scope and, if so, which
 // functions are checked (nil means all).
 func lTypeSwitchFuncs(pkg, filename string) (funcs []string, ok bool) {
-	if pkg == "github.com/luthersystems/elps/internal/valwalk" ||
-		strings.HasPrefix(pkg, "github.com/luthersystems/elps/internal/valwalk/") {
-		return nil, true
-	}
 	funcs, ok = lTypeSwitchScope[pkg+"/"+filepath.Base(filename)]
 	return funcs, ok
 }

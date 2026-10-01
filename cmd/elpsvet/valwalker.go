@@ -11,7 +11,7 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
-// valWalkerAnalyzer reports new value walkers outside internal/valwalk.
+// valWalkerAnalyzer requires an audit for each new value walker.
 // A function must dispatch on LType and either recur or push LVal pointers in a loop.
 // Dispatch includes typed switch tags, tagless LType comparisons, LVal.Type conditions, and lisp.ShapeOf calls.
 // Recursion follows the package's static calls, concrete methods, and local closures.
@@ -36,6 +36,11 @@ var valWalkerAnalyzer = &analysis.Analyzer{
 
 // valueWalkerFunctions names existing walkers and their traversal contracts.
 var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function names and audit reasons contain no credentials.
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.tagWalker.object":                  "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.tagWalker.value":                   "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.canonWalker.nativeMap":             "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.canonWalker.sortedMap":             "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.canonWalker.value":                 "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
 	"github.com/luthersystems/elps/analysis.analyzer.expandPackageForms":                   "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/analysis.scanFileFull":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/analysis.walkLoadFile":                                  "syntax walker: visits source forms with syntax and quote rules",
@@ -101,13 +106,13 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.builtinZip":                                        "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/lisp.checkContainerDepth":                               "hot path: preserves storage depth and sharing checks",
 	"github.com/luthersystems/elps/lisp.classifySymbolValue":                               "syntax walker: validates sealed source storage before package publication",
-	"github.com/luthersystems/elps/lisp.containsCycle":                                     "dropped-per-plan: renderer cycle probes use an independent colouring pass",
-	"github.com/luthersystems/elps/lisp.convertContainer":                                  "dropped-per-plan: conversion keeps distinct memo weights and array policy",
+	"github.com/luthersystems/elps/lisp.containsCycle":                                     "specialized traversal: renderer cycle probes use an independent colouring pass",
+	"github.com/luthersystems/elps/lisp.convertContainer":                                  "specialized traversal: conversion keeps distinct memo weights and array policy",
 	"github.com/luthersystems/elps/lisp.copier.copy":                                       "hot path: drives the copy frames and preserves graph identity",
 	"github.com/luthersystems/elps/lisp.copier.copyNode":                                   "hot path: preserves evaluator or copy identity and allocation contracts",
 	"github.com/luthersystems/elps/lisp.copier.mapData":                                    "hot path: preserves evaluator or copy identity and allocation contracts",
-	"github.com/luthersystems/elps/lisp.detacher.detach":                                   "dropped-per-plan: detachment copies storage and native payloads with its own memo",
-	"github.com/luthersystems/elps/lisp.detacher.detachNode":                               "dropped-per-plan: detachment dispatch is separate from its frame driver",
+	"github.com/luthersystems/elps/lisp.detacher.detach":                                   "specialized traversal: detachment copies storage and native payloads with its own memo",
+	"github.com/luthersystems/elps/lisp.detacher.detachNode":                               "specialized traversal: detachment dispatch is separate from its frame driver",
 	"github.com/luthersystems/elps/lisp.exportArgs":                                        "syntax walker: validates export declarations and their symbol lists",
 	"github.com/luthersystems/elps/lisp.findAndUnquote":                                    "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.firstUnsealed":                                     "syntax walker: validates sealed source storage before package publication",
@@ -117,41 +122,41 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.opAssert":                                          "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/lisp.opHandlerBind":                                     "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/lisp.opLet":                                             "hot path: evaluates forms or constructs sequences with LVal slices",
-	"github.com/luthersystems/elps/lisp.renderChildren":                                    "dropped-per-plan: bounded rendering uses multiple passes and cycle probes",
+	"github.com/luthersystems/elps/lisp.renderChildren":                                    "specialized traversal: bounded rendering uses multiple passes and cycle probes",
 	"github.com/luthersystems/elps/lisp.sealChildren":                                      "syntax walker: seals source cells with a slice cursor per ancestor",
 	"github.com/luthersystems/elps/lisp.sealFP.walk":                                       "oracle: fingerprints sealed storage independently of production traversal",
 	"github.com/luthersystems/elps/lisp.sourceExprFormalNames":                             "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.stampMacroExpansion":                               "syntax walker: stamps generated syntax while preserving caller metadata",
-	"github.com/luthersystems/elps/lisp.templateCompiler.value":                            "dropped-per-plan: template storage walks include environments and capacity tails",
-	"github.com/luthersystems/elps/lisp.templateInventory.val":                             "dropped-per-plan: admission registers identity before walking environments and storage",
+	"github.com/luthersystems/elps/lisp.templateCompiler.value":                            "specialized traversal: template storage walks include environments and capacity tails",
+	"github.com/luthersystems/elps/lisp.templateInventory.val":                             "specialized traversal: admission registers identity before walking environments and storage",
 	"github.com/luthersystems/elps/lisp.threadValue":                                       "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/lisp.validateExportArgs":                                "syntax walker: validates export declarations and their symbol lists",
-	"github.com/luthersystems/elps/lisp.valueRenderer.errorMessage":                        "dropped-per-plan: bounded rendering uses multiple passes and cycle probes",
-	"github.com/luthersystems/elps/lisp.valueRenderer.nested":                              "dropped-per-plan: bounded rendering uses multiple passes and cycle probes",
-	"github.com/luthersystems/elps/lisp.valueRenderer.value":                               "dropped-per-plan: bounded rendering uses multiple passes and cycle probes",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.copyContainer":                 "kept hand-rolled: BenchmarkCopy +23.86% B/op and BuiltinSetCopyDeep/depth8 +32.99% time exceed the gates",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.copySeqOffPath":                "kept hand-rolled: BenchmarkCopy +23.86% B/op and BuiltinSetCopyDeep/depth8 +32.99% time exceed the gates",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.delete":               "dropped-per-plan: selected-path accessors and mutating iterators keep their own traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.get":                  "dropped-per-plan: selected-path accessors and mutating iterators keep their own traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.null":                 "dropped-per-plan: selected-path accessors and mutating iterators keep their own traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.set":                  "dropped-per-plan: selected-path accessors and mutating iterators keep their own traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleContainerContents":     "kept hand-rolled: BenchmarkTypeCheck +5.56% allocs/op and +10.24% B/op exceed the 5% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleContainerTypeGuarded":  "kept hand-rolled: BenchmarkTypeCheck +5.56% allocs/op and +10.24% B/op exceed the 5% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleTypeGuarded":           "kept hand-rolled: BenchmarkTypeCheck +5.56% allocs/op and +10.24% B/op exceed the 5% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.rangePath.nilMutate":           "dropped-per-plan: selected-path accessors and mutating iterators keep their own traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.DumpStringBuiltin":      "dropped-per-plan: serializer adapters construct values and delegate encoding or conversion",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.convertValue":           "dropped-per-plan: conversion keeps distinct memo weights and array policy",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.dumpModeBuiltin":        "dropped-per-plan: serializer adapters construct values and delegate encoding or conversion",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.loadInterfaceOpts":      "dropped-per-plan: serializer adapters construct values and delegate encoding or conversion",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.encoder.encodeDeepValue":           "hot path: plain JSON encoding keeps its measured traversal",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedDecoder.multiArray":           "dropped-per-plan: parses JSON bytes and constructs values rather than walking a value graph",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedDecoder.object":               "dropped-per-plan: parses JSON bytes and constructs values rather than walking a value graph",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.array":                "kept hand-rolled: typed timing regresses 22.65% (TypedJSON/dump/records400) and 23.11% (ValwalkJSON/Typed/records400); 15% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.sortedMap":            "kept hand-rolled: typed timing regresses 22.65% (TypedJSON/dump/records400) and 23.11% (ValwalkJSON/Typed/records400); 15% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.value":                "kept hand-rolled: typed timing regresses 22.65% (TypedJSON/dump/records400) and 23.11% (ValwalkJSON/Typed/records400); 15% gate",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.object":                "kept hand-rolled: Untag timing regresses 23.95% for small inputs and 18.32% for 400 records (15% gate)",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.tagged":                "kept hand-rolled: Untag timing regresses 23.95% for small inputs and 18.32% for 400 records (15% gate)",
-	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.value":                 "kept hand-rolled: Untag timing regresses 23.95% for small inputs and 18.32% for 400 records (15% gate)",
+	"github.com/luthersystems/elps/lisp.valueRenderer.errorMessage":                        "specialized traversal: bounded rendering uses multiple passes and cycle probes",
+	"github.com/luthersystems/elps/lisp.valueRenderer.nested":                              "specialized traversal: bounded rendering uses multiple passes and cycle probes",
+	"github.com/luthersystems/elps/lisp.valueRenderer.value":                               "specialized traversal: bounded rendering uses multiple passes and cycle probes",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.copyContainer":                 "hand-rolled path walker: operation budget, height memo and off-path copying preserve aliases",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.copySeqOffPath":                "hand-rolled path walker: operation budget, height memo and off-path copying preserve aliases",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.delete":               "hand-rolled path walker: selected-path accessors and mutating iterators follow addressed children",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.get":                  "hand-rolled path walker: selected-path accessors and mutating iterators follow addressed children",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.null":                 "hand-rolled path walker: selected-path accessors and mutating iterators follow addressed children",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.iterPath.set":                  "hand-rolled path walker: selected-path accessors and mutating iterators follow addressed children",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleContainerContents":     "hand-rolled path walker: delayed cycle tracking and width-weighted memo bound validation work",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleContainerTypeGuarded":  "hand-rolled path walker: delayed cycle tracking and width-weighted memo bound validation work",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.okSimpleTypeGuarded":           "hand-rolled path walker: delayed cycle tracking and width-weighted memo bound validation work",
+	"github.com/luthersystems/elps/lisp/lisplib/libelpspath.rangePath.nilMutate":           "hand-rolled path walker: selected-path accessors and mutating iterators follow addressed children",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.DumpStringBuiltin":      "specialized traversal: serializer adapters construct values and delegate encoding or conversion",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.convertValue":           "specialized traversal: conversion keeps distinct memo weights and array policy",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.dumpModeBuiltin":        "specialized traversal: serializer adapters construct values and delegate encoding or conversion",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.loadInterfaceOpts":      "specialized traversal: serializer adapters construct values and delegate encoding or conversion",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.encoder.encodeDeepValue":           "hot path: plain JSON encoding emits bytes with recursive traversal",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedDecoder.multiArray":           "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedDecoder.object":               "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.array":                "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.sortedMap":            "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.typedEncoder.value":                "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.object":                "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.tagged":                "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.value":                 "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinArrayOf":                  "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinCheckTaggedVal":           "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinHasKey":                   "hot path: schema callbacks construct and apply recursive validation constraints",
@@ -161,7 +166,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.getHandler":                      "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver.exprWalk.hasUserFunCall":      "syntax walker: inspects source calls for debugger stepping",
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver.handler.collectStepInTargets": "syntax walker: inspects source calls for debugger stepping",
-	"github.com/luthersystems/elps/lisp/x/debugger/dapserver.handler.onVariables":          "dropped-per-plan: debugger expands one value level per request",
+	"github.com/luthersystems/elps/lisp/x/debugger/dapserver.handler.onVariables":          "specialized traversal: debugger expands one value level per request",
 	"github.com/luthersystems/elps/lsp.collectFoldingRanges":                               "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lsp.collectSemanticTokens":                              "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lsp.lambdaHeadAt":                                       "syntax walker: visits source forms with syntax and quote rules",
@@ -170,7 +175,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lsp.walkNodeForCall":                                    "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.collectQuotedSymbols":                          "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.firstDynamicEvaluation":                        "syntax walker: visits source forms with syntax and quote rules",
-	"github.com/luthersystems/elps/minifier.firstGlobalFallback":                           "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/minifier.firstGlobalFallback":                           "syntax walker: raw forms keep macro templates and quoted data in the fallback scan",
 	"github.com/luthersystems/elps/minifier.literalExportArgument":                         "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.recordQualifiedReferences":                     "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/parser/rdparser.Parser.ParseConsExpression":             "syntax walker: visits source forms with syntax and quote rules",
@@ -194,10 +199,6 @@ type valueWalkGraph struct {
 }
 
 func runValWalker(pass *analysis.Pass) (any, error) {
-	if pass.Pkg.Path() == "github.com/luthersystems/elps/internal/valwalk" ||
-		strings.HasPrefix(pass.Pkg.Path(), "github.com/luthersystems/elps/internal/valwalk/") {
-		return nil, nil
-	}
 	g := &valueWalkGraph{pass: pass, funcs: map[*types.Func]*valueWalkFunc{}, lits: map[*ast.FuncLit]*valueWalkFunc{}, closures: map[types.Object]*valueWalkFunc{}}
 	for _, file := range pass.Files {
 		if strings.HasSuffix(pass.Fset.Position(file.Pos()).Filename, "_test.go") {
@@ -255,7 +256,7 @@ func runValWalker(pass *analysis.Pass) (any, error) {
 			continue
 		}
 		reported[fn] = true
-		pass.Reportf(fn.Name.Pos(), "value walker %s dispatches on lisp.LType and walks children; use internal/valwalk or audit it in valueWalkerFunctions", name)
+		pass.Reportf(fn.Name.Pos(), "value walker %s dispatches on lisp.LType and walks children; audit its traversal contract in valueWalkerFunctions", name)
 	}
 	return nil, nil
 }

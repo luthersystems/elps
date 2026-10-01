@@ -10,7 +10,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-func valwalkBenchRecords(n int) *lisp.LVal {
+func jsonWalkerBenchRecords(n int) *lisp.LVal {
 	cells := make([]*lisp.LVal, n)
 	for i := range cells {
 		m := lisp.SortedMap()
@@ -24,7 +24,7 @@ func valwalkBenchRecords(n int) *lisp.LVal {
 	return lisp.Vector(cells)
 }
 
-func BenchmarkValwalkJSON(b *testing.B) {
+func BenchmarkJSONWalkers(b *testing.B) {
 	b.Run("Tag/rejected-array", func(b *testing.B) {
 		v := lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(1024), lisp.Int(1024)}), nil)
 		opts := []TypedOption{WithTypedMaxValues(3)}
@@ -39,7 +39,7 @@ func BenchmarkValwalkJSON(b *testing.B) {
 		name string
 		n    int
 	}{{"small", 1}, {"records400", 400}} {
-		v := valwalkBenchRecords(size.n)
+		v := jsonWalkerBenchRecords(size.n)
 		tagged, err := Tag(v)
 		if err != nil {
 			b.Fatal(err)
@@ -63,5 +63,25 @@ func BenchmarkValwalkJSON(b *testing.B) {
 				}
 			})
 		}
+	}
+}
+
+func BenchmarkCanonize(b *testing.B) { benchmarkJSONTransform(b, Canonize) }
+
+func BenchmarkTag(b *testing.B) { benchmarkJSONTransform(b, Tag) }
+
+func benchmarkJSONTransform(b *testing.B, transform func(*lisp.LVal, ...TypedOption) (*lisp.LVal, error)) {
+	for _, fixture := range []struct {
+		name string
+		v    *lisp.LVal
+	}{{"frame", typedBenchFrame()}, {"records400", typedBenchRecords(400)}} {
+		b.Run(fixture.name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				if _, err := transform(fixture.v); err != nil {
+					b.Fatal(err)
+				}
+			}
+		})
 	}
 }

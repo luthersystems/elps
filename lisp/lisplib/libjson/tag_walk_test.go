@@ -19,7 +19,7 @@ func TestTagRejectedArrayAllocationBound(t *testing.T) {
 			t.Fatalf("Tag error = %v, want value limit", err)
 		}
 	}
-	run() // Warm reusable walker storage before measuring.
+	run() // Warm error formatting before measuring.
 	var before, after runtime.MemStats
 	runtime.ReadMemStats(&before)
 	const runs = 20

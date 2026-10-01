@@ -38,6 +38,14 @@ The header comment of each file is the full design rationale — read it before
 changing a rule. `nativepayload.go`'s header is the authority on the payload
 tiers; this skill only condenses it.
 
+## Value walker contracts
+
+`lisp.ShapeOf` classifies values. Each walker selects its children and owns its
+traversal. Child dispatch uses `ShapeOf` or an exhaustive `LType` switch without
+`default`. A new walker needs an audited row in `valueWalkerFunctions`.
+State its current traversal contract, including limits, paths and callback order.
+Do not use an earlier implementation's benchmark result as the audit reason.
+
 ## Run it
 
 ```bash
