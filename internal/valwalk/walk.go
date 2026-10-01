@@ -5,7 +5,9 @@
 package valwalk
 
 import (
+	"reflect"
 	"strings"
+	"sync"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -24,22 +26,25 @@ type Visitor[R any] interface {
 // It runs only when Path is called. An empty segment is transparent.
 type EdgeFunc func(parent *lisp.LVal, i int) string
 
-// Step selects a result or a snapshot of children to walk.
+// Step selects a result and the child slices to walk.
 type Step struct {
 	// Done skips Child and Leave and returns the Visit result.
 	Done bool
-	// Children is a snapshot taken by Visit. Keep its slots stable until Leave.
+	// Children selects child storage. Walk retains this slice header until Leave.
 	Children []*lisp.LVal
+	// Following appends another child slice at the same depth, without copying its slots.
+	Following []*lisp.LVal
 	// Edge renders child path segments. Nil makes every edge transparent.
 	Edge EdgeFunc
 }
 
 type frame struct {
-	value    *lisp.LVal
-	children []*lisp.LVal
-	edge     EdgeFunc
-	start    int
-	next     int
+	value     *lisp.LVal
+	children  []*lisp.LVal
+	following []*lisp.LVal
+	edge      EdgeFunc
+	start     int
+	next      int
 }
 
 // Walker exposes the active ancestors of the current callback value.
@@ -51,6 +56,18 @@ type Walker[R any] struct {
 	// Inline storage avoids allocations per container on shallow walks.
 	frameBuf  [8]frame
 	resultBuf [32]R
+}
+
+// Each result type has separate reusable storage. Walk clears all retained values.
+var walkerPools sync.Map
+
+func walkerPool[R any]() *sync.Pool {
+	key := reflect.TypeFor[R]()
+	if pool, ok := walkerPools.Load(key); ok {
+		return pool.(*sync.Pool)
+	}
+	pool, _ := walkerPools.LoadOrStore(key, &sync.Pool{New: func() any { return &Walker[R]{} }})
+	return pool.(*sync.Pool)
 }
 
 // Depth returns the number of container frames above the callback value.
@@ -88,10 +105,11 @@ func (w *Walker[R]) Path() string {
 	return path.String()
 }
 
-// Walk visits root and its snapshot children in depth-first order.
+// Walk visits root and the selected child slices in depth-first order.
 // It imposes no depth, count, byte, or cycle limit. The first error stops the walk.
 func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
-	w := &Walker[R]{}
+	pool := walkerPool[R]()
+	w := pool.Get().(*Walker[R])
 	w.frames = w.frameBuf[:0]
 	w.results = w.resultBuf[:0]
 	defer func() {
@@ -99,6 +117,10 @@ func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
 		clear(w.results)
 		clear(w.frameBuf[:])
 		clear(w.resultBuf[:])
+		w.frames = nil
+		w.results = nil
+		w.active = 0
+		pool.Put(w)
 	}()
 	var zero R
 	v := root
@@ -110,15 +132,16 @@ func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
 		}
 		if !step.Done {
 			start := len(w.results)
-			end := start + len(step.Children)
+			count := len(step.Children) + len(step.Following)
+			end := start + count
 			if end > cap(w.results) {
-				w.results = append(w.results, make([]R, len(step.Children))...)
+				w.results = append(w.results, make([]R, count)...)
 			} else {
 				// Leave clears reused slots. New storage starts with zero values.
 				w.results = w.results[:end]
 			}
 			w.frames = append(w.frames, frame{
-				value: v, children: step.Children, edge: step.Edge, start: start,
+				value: v, children: step.Children, following: step.Following, edge: step.Edge, start: start,
 			})
 		}
 		for {
@@ -132,11 +155,15 @@ func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
 			}
 			f := &w.frames[len(w.frames)-1]
 			w.active = len(w.frames) - 1
-			if f.next < len(f.children) {
+			if f.next < len(f.children)+len(f.following) {
 				if err := vis.Child(w, f.value, f.next); err != nil {
 					return zero, err
 				}
-				v = f.children[f.next]
+				if f.next < len(f.children) {
+					v = f.children[f.next]
+				} else {
+					v = f.following[f.next-len(f.children)]
+				}
 				break
 			}
 			result, err = vis.Leave(w, f.value, w.results[f.start:len(w.results):len(w.results)])

@@ -347,3 +347,76 @@ func TestEmptyDescentAndLazyEdges(t *testing.T) {
 		}
 	}
 }
+
+func TestNestedWalkStorage(t *testing.T) {
+	root := lisp.SExpr([]*lisp.LVal{lisp.Int(3), lisp.Int(5)})
+	leaf := callbackVisitor[int]{visit: func(w *Walker[int], v *lisp.LVal) (Step, int, error) {
+		if w.Depth() != 0 || w.Path() != "" || w.OnPath(root) {
+			t.Fatal("nested walk inherited outer state")
+		}
+		return Step{Done: true}, v.Int, nil
+	}}
+	outer := callbackVisitor[int]{
+		visit: func(w *Walker[int], v *lisp.LVal) (Step, int, error) {
+			if v == root {
+				return Step{Children: v.Cells, Edge: indexEdge}, 0, nil
+			}
+			n, err := Walk(v, leaf)
+			if w.Depth() != 1 || !w.OnPath(root) {
+				t.Fatal("nested walk changed outer state")
+			}
+			return Step{Done: true}, n, err
+		},
+		leave: func(_ *Walker[int], _ *lisp.LVal, children []int) (int, error) {
+			return children[0] + children[1], nil
+		},
+	}
+	for range 20 {
+		n, err := Walk(root, outer)
+		if err != nil || n != 8 {
+			t.Fatalf("result %d, error %v", n, err)
+		}
+	}
+}
+
+func TestFollowingChildren(t *testing.T) {
+	for _, first := range []bool{false, true} {
+		root := lisp.SExpr(nil)
+		following := []*lisp.LVal{lisp.Int(5)}
+		var children []*lisp.LVal
+		if first {
+			children = []*lisp.LVal{lisp.Int(3)}
+		}
+		vis := callbackVisitor[int]{
+			visit: func(w *Walker[int], v *lisp.LVal) (Step, int, error) {
+				if v == root {
+					return Step{Children: children, Following: following, Edge: indexEdge}, 0, nil
+				}
+				if w.Depth() != 1 || !w.OnPath(root) {
+					t.Fatal("following children changed depth or ancestors")
+				}
+				if v.Int == 7 && w.Path() != fmt.Sprintf("[%d]", len(children)) {
+					t.Fatal("following child has the wrong index")
+				}
+				return Step{Done: true}, v.Int, nil
+			},
+			child: func(_ *Walker[int], _ *lisp.LVal, i int) error {
+				if i == len(children) {
+					following[0] = lisp.Int(7)
+				}
+				return nil
+			},
+			leave: func(_ *Walker[int], _ *lisp.LVal, results []int) (int, error) {
+				n := 0
+				for _, result := range results {
+					n += result
+				}
+				return n, nil
+			},
+		}
+		n, err := Walk(root, vis)
+		if err != nil || n != 7+3*len(children) {
+			t.Fatalf("result %d, error %v", n, err)
+		}
+	}
+}
