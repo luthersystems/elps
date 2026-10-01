@@ -3,6 +3,7 @@
 package libjson
 
 import (
+	"errors"
 	"strconv"
 	"testing"
 
@@ -24,6 +25,16 @@ func valwalkBenchRecords(n int) *lisp.LVal {
 }
 
 func BenchmarkValwalkJSON(b *testing.B) {
+	b.Run("Tag/rejected-array", func(b *testing.B) {
+		v := lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(1024), lisp.Int(1024)}), nil)
+		opts := []TypedOption{WithTypedMaxValues(3)}
+		b.ReportAllocs()
+		for b.Loop() {
+			if _, err := Tag(v, opts...); !errors.Is(err, ErrTypedLimit) {
+				b.Fatalf("Tag error = %v, want value limit", err)
+			}
+		}
+	})
 	for _, size := range []struct {
 		name string
 		n    int

@@ -17,6 +17,7 @@ type Visitor[R any] interface {
 	// Visit runs once per value. Done returns the result without descending.
 	Visit(w *Walker[R], v *lisp.LVal) (Step, R, error)
 	// Child runs before each child. Walker state still describes the parent.
+	// Walk captures the child first, except at the start of Following.
 	Child(w *Walker[R], parent *lisp.LVal, i int) error
 	// Leave builds a result. The children slice is borrowed only during this call.
 	Leave(w *Walker[R], v *lisp.LVal, children []R) (R, error)
@@ -33,6 +34,7 @@ type Step struct {
 	// Children selects child storage. Walk retains this slice header until Leave.
 	Children []*lisp.LVal
 	// Following appends another child slice at the same depth, without copying its slots.
+	// Its first Child call runs before capturing the child or reserving result slots.
 	Following []*lisp.LVal
 	// Edge renders child path segments. Nil makes every edge transparent.
 	Edge EdgeFunc
@@ -105,6 +107,16 @@ func (w *Walker[R]) Path() string {
 	return path.String()
 }
 
+func (w *Walker[R]) reserveResults(count int) {
+	end := len(w.results) + count
+	if end > cap(w.results) {
+		w.results = append(w.results, make([]R, count)...)
+	} else {
+		// Leave clears reused slots. New storage starts with zero values.
+		w.results = w.results[:end]
+	}
+}
+
 // Walk visits root and the selected child slices in depth-first order.
 // It imposes no depth, count, byte, or cycle limit. The first error stops the walk.
 func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
@@ -132,14 +144,7 @@ func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
 		}
 		if !step.Done {
 			start := len(w.results)
-			count := len(step.Children) + len(step.Following)
-			end := start + count
-			if end > cap(w.results) {
-				w.results = append(w.results, make([]R, count)...)
-			} else {
-				// Leave clears reused slots. New storage starts with zero values.
-				w.results = w.results[:end]
-			}
+			w.reserveResults(len(step.Children))
 			w.frames = append(w.frames, frame{
 				value: v, children: step.Children, following: step.Following, edge: step.Edge, start: start,
 			})
@@ -156,13 +161,22 @@ func Walk[R any, V Visitor[R]](root *lisp.LVal, vis V) (R, error) {
 			f := &w.frames[len(w.frames)-1]
 			w.active = len(w.frames) - 1
 			if f.next < len(f.children)+len(f.following) {
-				if err := vis.Child(w, f.value, f.next); err != nil {
-					return zero, err
-				}
-				if f.next < len(f.children) {
-					v = f.children[f.next]
+				if f.next == len(f.children) {
+					// The between-slice prelude can check limits and mutate the first child.
+					if err := vis.Child(w, f.value, f.next); err != nil {
+						return zero, err
+					}
+					w.reserveResults(len(f.following))
+					v = f.following[0]
 				} else {
-					v = f.following[f.next-len(f.children)]
+					if f.next < len(f.children) {
+						v = f.children[f.next]
+					} else {
+						v = f.following[f.next-len(f.children)]
+					}
+					if err := vis.Child(w, f.value, f.next); err != nil {
+						return zero, err
+					}
 				}
 				break
 			}

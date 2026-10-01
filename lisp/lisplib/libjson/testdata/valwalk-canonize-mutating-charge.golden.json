@@ -1,0 +1,8 @@
+[
+{"input_after":{"len":1211,"sha256":"577042efe700d6222d96c05b979673cf8edc042cfcfe4dfc9051785e5ca880ef"},"name":"vector-separator","output":{"len":1161,"sha256":"232c4a5c05172d8e722ae53bfe414e42734709b5144577617762217bf3281d73"},"trace":["charge:1","charge:1"]},
+{"input_after":{"len":1122,"sha256":"4173518ad65c2c026db018051c41f39ff380e6984acee6708e6cce8d250b2ed1"},"name":"list-separator","output":{"len":1158,"sha256":"d093f46fa47c35287e21814acd1ca1059fea3f812496aa4c849ed18b8ae7b18c"},"trace":["charge:1"]},
+{"error":"json:canonize: unsupported array dimensions: array at $","error_type":"*libjson.canonizeError","input_after":{"len":1245,"sha256":"5a0c95e1dee4257b238727f4619aafcfada5f77ecf618d5aaf1af32352c1e097"},"name":"array-data-separator"},
+{"error":"json:canonize: unsupported array dimensions: array at $","error_type":"*libjson.canonizeError","input_after":{"len":20538,"sha256":"51afd2dee42dd8e601381f300a5a4139a5bb45bc36814fbc1b09840da58db686"},"name":"array-data-prelude"},
+{"error":"json:canonize: unsupported array dimensions: array at $","error_type":"*libjson.canonizeError","input_after":{"len":20620,"sha256":"848712b9e32d0c4452571d01a22a2265863882cb99ac8446dd02ffcdbfb8c67f"},"name":"array-dimension-separator"},
+{"input_after":{"len":1151,"sha256":"e07a687dc107d33bf0e0a4ee46beeeb4c87cfa854343d6368e4f2583237aacfd"},"name":"map-key","output":{"len":1091,"sha256":"0748a6a78d9ba0b08e56b120adec086c186f2ee3cc632a857d18b9769605d7d7"},"trace":["entries:charge-map","charge:1","charge:1"]}
+]

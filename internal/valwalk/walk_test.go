@@ -421,3 +421,65 @@ func TestFollowingChildren(t *testing.T) {
 		}
 	}
 }
+
+func TestFollowingLimitBeforeResultReservation(t *testing.T) {
+	root := lisp.SExpr(nil)
+	limit := errors.New("following width limit")
+	vis := callbackVisitor[int]{
+		visit: func(_ *Walker[int], v *lisp.LVal) (Step, int, error) {
+			if v == root {
+				return Step{Children: []*lisp.LVal{lisp.Int(1)}, Following: make([]*lisp.LVal, 1024)}, 0, nil
+			}
+			return Step{Done: true}, v.Int, nil
+		},
+		child: func(w *Walker[int], _ *lisp.LVal, i int) error {
+			if i == 1 {
+				if len(w.results) != 1 || cap(w.results) != len(w.resultBuf) {
+					t.Fatalf("following results reserved before limit: len=%d cap=%d", len(w.results), cap(w.results))
+				}
+				return limit
+			}
+			return nil
+		},
+	}
+	if _, err := Walk(root, vis); !errors.Is(err, limit) {
+		t.Fatalf("error %v, want following width limit", err)
+	}
+}
+
+func TestChildCapturedBeforeCallback(t *testing.T) {
+	for _, following := range []bool{false, true} {
+		t.Run(strconv.FormatBool(following), func(t *testing.T) {
+			root := lisp.SExpr(nil)
+			cells := []*lisp.LVal{lisp.Int(1), lisp.Int(2)}
+			vis := callbackVisitor[int]{
+				visit: func(_ *Walker[int], v *lisp.LVal) (Step, int, error) {
+					if v == root {
+						if following {
+							return Step{Following: cells}, 0, nil
+						}
+						return Step{Children: cells}, 0, nil
+					}
+					return Step{Done: true}, v.Int, nil
+				},
+				child: func(_ *Walker[int], _ *lisp.LVal, i int) error {
+					cells[i] = lisp.Int(9)
+					return nil
+				},
+				leave: func(_ *Walker[int], _ *lisp.LVal, results []int) (int, error) {
+					wantFirst := 1
+					if following {
+						wantFirst = 9 // Following captures its first child after the prelude.
+					}
+					if !slices.Equal(results, []int{wantFirst, 2}) {
+						t.Fatalf("visited %v, want [%d 2]", results, wantFirst)
+					}
+					return 0, nil
+				},
+			}
+			if _, err := Walk(root, vis); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
