@@ -1,0 +1,596 @@
+// Copyright © 2026 The ELPS authors
+
+package libjson
+
+// Canonical typed JSON (luthersystems/elps#747).
+//
+// DumpTyped writes a value as JSON that keeps every elps type -- int versus
+// float, list versus vector, symbol and keyword versus string, bytes, key
+// types, tagged values, arrays of any rank -- using the tag spellings of
+// Transit (github.com/cognitect/transit-format, JSON-Verbose mode), and
+// writes it canonically: RFC 8785 number text (with type-preserving
+// exceptions), UTF-8 byte key order, the plain encoder's escape set and no
+// whitespace. This is not strict RFC 8785 (JCS). LoadTyped accepts
+// exactly the bytes DumpTyped produces and nothing else, so one value has
+// one encoding and the bytes can be hashed, used as a key, or stored and
+// read back.  docs/internals/typed-json.md specifies the format and gives
+// the reasons for each choice; TestTypedGolden fails on any change to it.
+
+import (
+	"bytes"
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"math"
+	"slices"
+	"strconv"
+	"unicode/utf8"
+
+	"github.com/luthersystems/elps/lisp"
+)
+
+// Default limits of DumpTyped, LoadTyped and Canonize.  They bound the work and memory
+// of one call on hostile or accidental input; each can be changed with an
+// option for typed encoding/decoding; Canonize only lowers these limits.
+const (
+	DefaultTypedMaxDepth  = 1024
+	DefaultTypedMaxBytes  = 16 << 20
+	DefaultTypedMaxValues = 1 << 20
+)
+
+// maxExactInt is the largest magnitude written as a JSON number: every int
+// up to this magnitude is exactly a binary64, so any JSON reader keeps it.
+// Larger int values use Transit's arbitrary-precision "~n" tag.
+const maxExactInt = 1 << 53
+
+// exactInt reports whether x is written as a JSON number.  The comparison is
+// on int64 so that it compiles, and means the same, where int is 32 bits.
+func exactInt(x int64) bool { return x >= -maxExactInt && x <= maxExactInt }
+
+// TypedOption configures DumpTyped, LoadTyped and Canonize.
+type TypedOption func(*typedConfig)
+
+type typedConfig struct {
+	charge    func(kib int) error
+	maxDepth  int
+	maxBytes  int
+	maxValues int
+}
+
+// WithTypedMaxDepth limits container nesting (default DefaultTypedMaxDepth).
+func WithTypedMaxDepth(n int) TypedOption { return func(c *typedConfig) { c.maxDepth = n } }
+
+// WithTypedMaxBytes limits the encoded size: the output of DumpTyped and the
+// input of LoadTyped (default DefaultTypedMaxBytes).
+func WithTypedMaxBytes(n int) TypedOption { return func(c *typedConfig) { c.maxBytes = n } }
+
+// WithTypedMaxValues limits the number of values written or read, counting
+// every element, map key, array dimension and nested value (default
+// DefaultTypedMaxValues).
+func WithTypedMaxValues(n int) TypedOption { return func(c *typedConfig) { c.maxValues = n } }
+
+// WithTypedCharge makes DumpTyped call charge as its output grows, with the
+// number of KiB newly started since the last call, so a caller can meter the
+// work (a step budget, a context) while it happens.  The units add up to
+// ceil(n/1024) for n output bytes, the same as lisp.ChargeStartedKiB, and
+// depend only on the output.  A non-nil error stops the encode and is
+// returned wrapped.  LoadTyped ignores it: a decode can charge for its whole
+// input before it starts. Canonize uses the same charge on its counted output
+// size during the value walk, without building JSON bytes.
+func WithTypedCharge(charge func(kib int) error) TypedOption {
+	return func(c *typedConfig) { c.charge = charge }
+}
+
+func newTypedConfig(opts []TypedOption) typedConfig {
+	c := typedConfig{
+		maxDepth:  DefaultTypedMaxDepth,
+		maxBytes:  DefaultTypedMaxBytes,
+		maxValues: DefaultTypedMaxValues,
+	}
+	for _, o := range opts {
+		o(&c)
+	}
+	return c
+}
+
+// ErrTypedLimit is wrapped by every error that reports a configured limit.
+var ErrTypedLimit = errors.New("typed json: limit exceeded")
+
+// Transit tags this format uses. The format has a closed tag set.
+const (
+	tagList   = "~#list"
+	tagArray  = "~#array"
+	tagTagged = "~#tagged"
+)
+
+// DumpTyped writes v as typed JSON: exactly the bytes of Dump(Tag(v), false),
+// without building Tag(v).
+//
+// Supported: ints, floats (NaN and the infinities included), strings (which,
+// like symbol, keyword, map key and tagged type names, must be valid UTF-8), bytes, symbols, keywords, lists (quoted or not: the
+// quote flag is not data), arrays of any rank, sorted maps and tagged
+// values.  Functions, native values, errors, nested quotes and values that
+// contain themselves are rejected with an error, so a caller that uses the
+// bytes as a key (a memo key, a SHA-256 content hash) can fall back when a
+// value has no encoding.
+//
+// The encoding is type-faithful and so finer than equal?: 1 and 1.0 encode
+// differently ("1" and "\"~d1\""), and so do a string and a symbol of one
+// spelling.  Values of the same types and structure always give the same
+// bytes, whatever order a map was built in and whichever cells are shared;
+// shared structure is written in full at each occurrence, so a small value
+// whose tree expansion passes the value or byte limit is rejected.
+func DumpTyped(v *lisp.LVal, opts ...TypedOption) ([]byte, error) {
+	e := typedEncoder{cfg: newTypedConfig(opts)}
+	e.buf = make([]byte, 0, 256)
+	if err := e.value(v, 0); err != nil {
+		return nil, err
+	}
+	if err := e.grow(); err != nil {
+		return nil, err
+	}
+	return e.buf, nil
+}
+
+type typedEncoder struct {
+	buf []byte
+	// path holds the containers on the current descent.  It is consulted
+	// only once the depth limit is passed, to say whether the value is
+	// cyclic or merely deep; a cycle always passes the limit.
+	path []*lisp.LVal
+	// kp, pairs and keys are scratch stacks shared by nested maps: a map
+	// uses the tail past the length it found and truncates back after.
+	kp      []lisp.MapKeyPair
+	pairs   []typedPair
+	keys    []byte
+	cfg     typedConfig
+	values  int
+	charged int
+}
+
+// typedPair is one map member: its encoded key text is keys[ks:ke].
+type typedPair struct {
+	val    *lisp.LVal
+	ks, ke int
+}
+
+// grow checks the byte limit and reports newly started KiB to cfg.charge.
+func (e *typedEncoder) grow() error {
+	if len(e.buf) > e.cfg.maxBytes {
+		return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+	}
+	if e.cfg.charge != nil {
+		if want := startedKiB(len(e.buf)); want > e.charged {
+			n := want - e.charged
+			e.charged = want
+			if err := e.cfg.charge(n); err != nil {
+				return fmt.Errorf("typed json: %w", err)
+			}
+		}
+	}
+	return nil
+}
+
+func startedKiB(n int) int {
+	if n <= 0 {
+		return 0
+	}
+	return (n-1)/1024 + 1
+}
+
+// enter pushes container v onto the path, failing past the depth limit.
+func (e *typedEncoder) enter(v *lisp.LVal, depth int) error {
+	if depth >= e.cfg.maxDepth {
+		seen := make(map[*lisp.LVal]struct{}, len(e.path))
+		for _, p := range append(e.path, v) {
+			if _, ok := seen[p]; ok {
+				return errors.New("typed json: cannot encode a value that contains itself")
+			}
+			seen[p] = struct{}{}
+		}
+		return fmt.Errorf("%w: nesting depth exceeds %d", ErrTypedLimit, e.cfg.maxDepth)
+	}
+	e.path = append(e.path, v)
+	return nil
+}
+
+func (e *typedEncoder) leave() { e.path = e.path[:len(e.path)-1] }
+
+func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
+	if v == nil {
+		return errors.New("typed json: cannot encode a Go nil value")
+	}
+	e.values++
+	if e.values > e.cfg.maxValues {
+		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
+	}
+	switch v.Type {
+	case lisp.LInt:
+		e.buf = appendTypedInt(e.buf, v.Int)
+	case lisp.LFloat:
+		e.buf = appendTaggedFloat(e.buf, v.Float)
+	case lisp.LString:
+		if !utf8.ValidString(v.Str) {
+			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
+		}
+		n := len(v.Str) + 2 // the quotes
+		if needsTilde(v.Str) {
+			n++
+		}
+		if err := e.reserve(n); err != nil {
+			return err
+		}
+		e.buf = appendTypedString(e.buf, v.Str)
+	case lisp.LBytes:
+		b := v.Bytes()
+		if err := e.reserve(base64.StdEncoding.EncodedLen(len(b)) + 4); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, '"', '~', 'b')
+		e.buf = base64.StdEncoding.AppendEncode(e.buf, b)
+		e.buf = append(e.buf, '"')
+	case lisp.LSymbol:
+		switch v.Str {
+		case "":
+			return errors.New("typed json: cannot encode an empty symbol")
+		case lisp.TrueSymbol, lisp.FalseSymbol:
+			e.buf = append(e.buf, v.Str...)
+		default:
+			if !utf8.ValidString(v.Str) {
+				return errors.New("typed json: cannot encode a symbol that is not valid UTF-8")
+			}
+			if err := e.reserve(len(v.Str) + 3); err != nil {
+				return err
+			}
+			e.buf = appendTypedSymbol(e.buf, v.Str)
+		}
+	case lisp.LSExpr:
+		// Nil matches plain JSON's null. Nonempty lists carry Transit's
+		// list tag, while vectors use plain JSON arrays.
+		if v.IsNil() {
+			e.buf = append(e.buf, "null"...)
+			break
+		}
+		if err := e.enter(v, depth); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, `["`+tagList+`",`...)
+		if err := e.cells(v.Cells, depth); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, ']')
+		e.leave()
+	case lisp.LArray:
+		return e.array(v, depth)
+	case lisp.LSortMap:
+		return e.sortedMap(v, depth)
+	case lisp.LTaggedVal:
+		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
+			return errors.New("typed json: malformed tagged value")
+		}
+		if err := e.enter(v, depth); err != nil {
+			return err
+		}
+		if err := e.reserve(len(v.Str) + len(tagTagged) + 8); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, `["`+tagTagged+`",[`...)
+		e.buf = appendJSONString(e.buf, v.Str)
+		e.buf = append(e.buf, ',')
+		if err := e.value(v.Cells[0], depth+1); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, ']', ']')
+		e.leave()
+	case lisp.LNative:
+		return fmt.Errorf("typed json: cannot encode a native value (%T)", v.Native)
+	case lisp.LFun:
+		return errors.New("typed json: cannot encode a function")
+	case lisp.LError:
+		return errors.New("typed json: cannot encode an error")
+	case lisp.LQuote:
+		return errors.New("typed json: cannot encode a nested quote")
+	default:
+		return fmt.Errorf("typed json: cannot encode a %v", v.Type)
+	}
+	return e.grow()
+}
+
+// reserve refuses a leaf that will write at least n more bytes than the byte
+// limit allows, before writing it.  n is a lower bound (escapes can make a
+// string up to six times longer), so a leaf can still pass the limit; grow
+// then rejects it right after, and the overshoot is bounded by a value
+// already in memory.  No output past the limit is ever returned.
+func (e *typedEncoder) reserve(n int) error {
+	if n > e.cfg.maxBytes-len(e.buf) {
+		return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+	}
+	return nil
+}
+
+// cells writes a JSON array of values.
+func (e *typedEncoder) cells(cells []*lisp.LVal, depth int) error {
+	e.buf = append(e.buf, '[')
+	for i, c := range cells {
+		if i > 0 {
+			e.buf = append(e.buf, ',')
+		}
+		if err := e.value(c, depth+1); err != nil {
+			return err
+		}
+	}
+	e.buf = append(e.buf, ']')
+	return e.grow()
+}
+
+// appendTypedInt writes an int: a JSON number up to 2^53 in magnitude, else
+// a "~n" string. Map keys use the signed 64-bit "~i" tag in appendTypedKey.
+func appendTypedInt(b []byte, x int) []byte {
+	if exactInt(int64(x)) {
+		return strconv.AppendInt(b, int64(x), 10)
+	}
+	b = append(b, '"', '~', 'n')
+	b = strconv.AppendInt(b, int64(x), 10)
+	return append(b, '"')
+}
+
+// needsTilde reports whether a string starts with the format's escape marker.
+func needsTilde(s string) bool {
+	return s != "" && s[0] == '~'
+}
+
+func appendTypedString(b []byte, s string) []byte {
+	if needsTilde(s) {
+		return appendJSONStringBody(append(b, '"', '~'), s)
+	}
+	return appendJSONString(b, s)
+}
+
+func appendTypedSymbol(b []byte, name string) []byte {
+	if name[0] == ':' {
+		return appendJSONStringBody(append(b, '"', '~', ':'), name[1:])
+	}
+	return appendJSONStringBody(append(b, '"', '~', '$'), name)
+}
+
+// array writes a vector (rank 1) as a plain JSON array and any other
+// rank as ["~#array",[[dims...],[cells...]]], cells in row-major order.
+func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
+	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil ||
+		v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
+		return errors.New("typed json: malformed array")
+	}
+	dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
+	// A zero dimension makes the array empty however large the others are,
+	// so the product is checked for overflow only when none is zero.
+	zero := false
+	for _, d := range dims {
+		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
+			return errors.New("typed json: malformed array dimensions")
+		}
+		zero = zero || d.Int == 0
+	}
+	total := 1
+	if zero {
+		total = 0
+	} else {
+		for _, d := range dims {
+			if total > math.MaxInt/d.Int {
+				return errors.New("typed json: malformed array dimensions")
+			}
+			total *= d.Int
+		}
+	}
+	if total != len(cells) {
+		return errors.New("typed json: array contents do not match its dimensions")
+	}
+	if err := e.enter(v, depth); err != nil {
+		return err
+	}
+	if len(dims) == 1 {
+		if err := e.cells(cells, depth); err != nil {
+			return err
+		}
+		e.leave()
+		return nil
+	}
+	e.buf = append(e.buf, `["`+tagArray+`",[[`...)
+	for i, d := range dims {
+		if i > 0 {
+			e.buf = append(e.buf, ',')
+		}
+		e.values++
+		if e.values > e.cfg.maxValues {
+			return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
+		}
+		e.buf = appendTypedInt(e.buf, d.Int)
+	}
+	e.buf = append(e.buf, ']', ',')
+	if err := e.cells(cells, depth); err != nil {
+		return err
+	}
+	e.buf = append(e.buf, ']', ']')
+	e.leave()
+	return e.grow()
+}
+
+// appendTypedKey appends the text of a map key -- the string that becomes
+// the JSON member name, before JSON escaping -- to b.  Every elps key type
+// has a Transit string form, so every map is a JSON object and the cmap tag
+// is never needed.
+func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) {
+	switch kind {
+	case lisp.LString:
+		if !utf8.ValidString(s) {
+			return b, errors.New("typed json: cannot encode a map key that is not valid UTF-8")
+		}
+		if needsTilde(s) {
+			b = append(b, '~')
+		}
+		return append(b, s...), nil
+	case lisp.LSymbol:
+		switch {
+		case s == "":
+			return b, errors.New("typed json: cannot encode an empty symbol")
+		case !utf8.ValidString(s):
+			return b, errors.New("typed json: cannot encode a map key that is not valid UTF-8")
+		case s == lisp.TrueSymbol:
+			return append(b, "~?t"...), nil
+		case s == lisp.FalseSymbol:
+			return append(b, "~?f"...), nil
+		case s[0] == ':':
+			return append(append(b, '~', ':'), s[1:]...), nil
+		}
+		return append(append(b, '~', '$'), s...), nil
+	case lisp.LInt:
+		return strconv.AppendInt(append(b, '~', 'i'), int64(n), 10), nil
+	default:
+		return b, fmt.Errorf("typed json: cannot encode a %v map key", kind)
+	}
+}
+
+// checkHostMapKeys rejects an embedder's map that has a string key and a
+// symbol key of one spelling. A built-in map holds them as one entry, so the
+// decoder rejects such output.
+func checkHostMapKeys(keys []lisp.MapKeyPair) error {
+	seen := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		if k.Kind != lisp.LString && k.Kind != lisp.LSymbol {
+			continue
+		}
+		if _, dup := seen[k.Key]; dup {
+			return errors.New("typed json: map has two keys that name one entry")
+		}
+		seen[k.Key] = struct{}{}
+	}
+	return nil
+}
+
+func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
+	if err := e.enter(v, depth); err != nil {
+		return err
+	}
+	if v.Len() > e.cfg.maxValues-e.values {
+		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
+	}
+	kbase, pbase, keysMark := len(e.kp), len(e.pairs), len(e.keys)
+	var ok bool
+	e.kp, ok = v.AppendMapKeyPairs(e.kp)
+	if !ok {
+		// An embedder's own map backing: read it through MapEntries.
+		ents := v.MapEntries()
+		if ents.Type == lisp.LError {
+			return fmt.Errorf("typed json: %s", ents.Str)
+		}
+		for _, p := range ents.Cells {
+			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
+				return errors.New("typed json: malformed map entry")
+			}
+			k := p.Cells[0]
+			e.kp = append(e.kp, lisp.MapKeyPair{Val: p.Cells[1], Key: k.Str, Int: k.Int, Kind: k.Type})
+		}
+		if err := checkHostMapKeys(e.kp[kbase:]); err != nil {
+			return err
+		}
+	}
+	for i := kbase; i < len(e.kp); i++ {
+		p := e.kp[i]
+		ks := len(e.keys)
+		var err error
+		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
+			return err
+		}
+		e.pairs = append(e.pairs, typedPair{val: p.Val, ks: ks, ke: len(e.keys)})
+	}
+	clear(e.kp[kbase:])
+	e.kp = e.kp[:kbase]
+	members := e.pairs[pbase:]
+	keys := e.keys
+	// Order the UTF-8 member text after Transit prefixes, before JSON escaping,
+	// matching the plain encoder's order for string keys.
+	slices.SortFunc(members, func(a, b typedPair) int { return bytes.Compare(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
+	for i := 1; i < len(members); i++ {
+		if bytes.Equal(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) {
+			return errors.New("typed json: map has two keys with one encoding")
+		}
+	}
+	e.buf = append(e.buf, '{')
+	for i := pbase; i < len(e.pairs); i++ {
+		if i > pbase {
+			e.buf = append(e.buf, ',')
+		}
+		// Keys count as values, as they do on decode.
+		e.values++
+		if e.values > e.cfg.maxValues {
+			return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
+		}
+		p := e.pairs[i]
+		// A nested map may grow e.keys; the offsets stay valid.
+		e.buf = appendJSONString(e.buf, e.keys[p.ks:p.ke])
+		e.buf = append(e.buf, ':')
+		if err := e.value(p.val, depth+1); err != nil {
+			return err
+		}
+	}
+	e.buf = append(e.buf, '}')
+	clear(e.pairs[pbase:])
+	e.pairs = e.pairs[:pbase]
+	e.keys = e.keys[:keysMark]
+	e.leave()
+	return e.grow()
+}
+
+// typedOptions bounds a builtin call by the runtime's per-operation
+// allocation cap as well as the default limits.
+func typedOptions(env *lisp.LEnv) []TypedOption {
+	limit := env.Runtime.MaxAllocBytes()
+	return []TypedOption{
+		WithTypedMaxBytes(min(DefaultTypedMaxBytes, limit)),
+		WithTypedMaxValues(min(DefaultTypedMaxValues, limit)),
+	}
+}
+
+var errTypedCharge = errors.New("step charge failed")
+
+// DumpTypedBuiltin is the runtime adapter for typed dumping across the JSON family.
+func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	// Steps are charged as the output grows, so a step budget or a
+	// cancelled context stops a large encode part way.
+	var lerr *lisp.LVal
+	charge := WithTypedCharge(func(kib int) error {
+		if r := env.ChargeSteps(int64(kib)); r.Type == lisp.LError {
+			lerr = r
+			return errTypedCharge
+		}
+		return nil
+	})
+	b, err := DumpTyped(args.Cells[0], append(typedOptions(env), charge)...)
+	if lerr != nil {
+		return lerr
+	}
+	if err != nil {
+		return env.Error(err)
+	}
+	return lisp.Bytes(b)
+}
+
+// LoadTypedBuiltin is the runtime adapter for typed loading across the JSON family.
+func LoadTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	var b []byte
+	switch in := args.Cells[0]; in.Type {
+	case lisp.LBytes:
+		b = in.Bytes()
+	case lisp.LString:
+		b = []byte(in.Str)
+	default:
+		return env.Errorf("argument is not bytes or a string: %v", lisp.GetType(in))
+	}
+	if lerr := lisp.ChargeStartedKiB(env, len(b)); lerr.Type == lisp.LError {
+		return lerr
+	}
+	v, err := LoadTyped(b, typedOptions(env)...)
+	if err != nil {
+		return env.Error(err)
+	}
+	return v
+}

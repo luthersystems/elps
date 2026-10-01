@@ -732,8 +732,8 @@ func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
 // pooled state and once into the document.  Encoder.Write goes straight from
 // the pooled state into enc.buf.
 //
-// It is the largest remaining byte cost on the path substrate runs per
-// response -- json.Marshal was 41% of BenchmarkEncodeOwnMessageMedium's bytes
+// It is the largest remaining byte cost when embedding a native JSON message
+// in a response -- json.Marshal was 41% of BenchmarkEncodeOwnMessageMedium's bytes
 // in the issue #379 item-6 profile, second only to the output buffer itself --
 // because every JSON-RPC envelope embeds one `json:dump-message` native whose
 // size IS the response.
@@ -758,8 +758,8 @@ func (enc *encoder) encodeNative(v any) error {
 	// produce can be read back.  An ownMessage is the one native for which
 	// this package DID produce them, and the loadable flag says it produced
 	// them under the conditions loadableBytes checks -- so the answer is
-	// already known, and re-deriving it is duplicated work on substrate's
-	// per-response path, where every JSON-RPC response embeds one.
+	// already known, and re-deriving it duplicates work when an application
+	// embeds one in a JSON response.
 	//
 	// The exemption is by TYPE, and the type is unexported with unexported
 	// fields, minted on one line of DumpMessageBuiltin from this package's own
@@ -792,7 +792,7 @@ func (enc *encoder) encodeNative(v any) error {
 // json.Valid would agree. It only fails at UNMARSHAL time, where the target is
 // a float64 and the value overflows. The result was a document json:dump
 // wrote and json:load then rejected: not corruption, but a value that cannot
-// be read back, which for a phylum persisting its state is worse.
+// be read back, which prevents an application from restoring its saved state.
 //
 // The check calls jsonDecode -- the decoder's own function -- so the two agree
 // by construction rather than by a rule restated here and left to drift. One
@@ -1033,55 +1033,74 @@ func (enc *encoder) encodeLString(v *lisp.LVal, g encodeGuard) error {
 	return enc.encodeString(v.Str)
 }
 
-// NOTE:  encodeString adapted from the json package.
-// https://cs.opensource.google/go/go/+/refs/tags/go1.22.1:src/encoding/json/encode.go;l=956
+// encodeString writes s as a plain-mode JSON string, escaped exactly as
+// encoding/json escapes it (TestPlainStringBytesMatchEncodingJSON).
 func (enc *encoder) encodeString(s string) error {
+	enc.buf.Grow(len(s) + 2)
+	enc.buf.Write(appendJSONString(enc.buf.AvailableBuffer(), s))
+	return nil
+}
+
+// appendJSONString appends s to b as a JSON string.  It is the one string
+// writer of both modes, so their escaping cannot drift apart.
+//
+// Both modes escape what encoding/json escapes: control
+// characters, '"', '\\', the HTML characters <, > and &, U+2028 and U+2029,
+// and writes each invalid UTF-8 byte as U+FFFD.
+//
+// The five controls with short forms use \b \f \n \r \t, the rest use
+// lowercase six-character escapes. Typed callers reject invalid UTF-8 before
+// calling this writer. Runs of bytes needing no escape use one append.
+//
+// NOTE:  adapted from encodeState.string in encoding/json.
+// https://cs.opensource.google/go/go/+/refs/tags/go1.22.1:src/encoding/json/encode.go;l=956
+func appendJSONString[T string | []byte](b []byte, s T) []byte {
+	return appendJSONStringBody(append(b, '"'), s)
+}
+
+// appendJSONStringBody is appendJSONString after the opening quote, for a
+// caller that writes a prefix inside the quotes first.
+func appendJSONStringBody[T string | []byte](b []byte, s T) []byte {
 	const hex = "0123456789abcdef"
-	enc.buf.WriteByte('"')
 	start := 0
 	for i := 0; i < len(s); {
-		if b := s[i]; b < utf8.RuneSelf {
-			if htmlSafeSet[b] {
+		if c := s[i]; c < utf8.RuneSelf {
+			if htmlSafeSet[c] {
 				i++
 				continue
 			}
-			if start < i {
-				enc.buf.WriteString(s[start:i])
-			}
-			enc.buf.WriteByte('\\')
-			switch b {
+			b = append(b, s[start:i]...)
+			b = append(b, '\\')
+			switch c {
 			case '\\', '"':
-				enc.buf.WriteByte(b)
+				b = append(b, c)
 			case '\b':
-				enc.buf.WriteByte('b')
+				b = append(b, 'b')
 			case '\f':
-				enc.buf.WriteByte('f')
+				b = append(b, 'f')
 			case '\n':
-				enc.buf.WriteByte('n')
+				b = append(b, 'n')
 			case '\r':
-				enc.buf.WriteByte('r')
+				b = append(b, 'r')
 			case '\t':
-				enc.buf.WriteByte('t')
+				b = append(b, 't')
 			default:
-				// This encodes bytes < 0x20 except for \t, \n and \r.
-				// If escapeHTML is set, it also escapes <, >, and &
-				// because they can lead to security holes when
-				// user-controlled strings are rendered into JSON
-				// and served to some browsers.
-				enc.buf.WriteString(`u00`)
-				enc.buf.WriteByte(hex[b>>4])
-				enc.buf.WriteByte(hex[b&0xF])
+				// The other control characters and <, >
+				// and &, which can lead to security holes when
+				// user-controlled strings are rendered into JSON and
+				// served to some browsers.
+				b = append(b, 'u', '0', '0', hex[c>>4], hex[c&0xF])
 			}
 			i++
 			start = i
 			continue
 		}
-		c, size := utf8.DecodeRuneInString(s[i:])
+		// Convert at most one rune's bytes, so a []byte s is not copied
+		// from i to its end for every rune.
+		c, size := utf8.DecodeRuneInString(string(s[i:min(i+utf8.UTFMax, len(s))]))
 		if c == utf8.RuneError && size == 1 {
-			if start < i {
-				enc.buf.WriteString(s[start:i])
-			}
-			enc.buf.WriteString(`\ufffd`)
+			b = append(b, s[start:i]...)
+			b = append(b, '\\', 'u', 'f', 'f', 'f', 'd')
 			i += size
 			start = i
 			continue
@@ -1091,25 +1110,19 @@ func (enc *encoder) encodeString(s string) error {
 		// They are both technically valid characters in JSON strings,
 		// but don't work in JSONP, which has to be evaluated as JavaScript,
 		// and can lead to security holes there. It is valid JSON to
-		// escape them, so we do so unconditionally.
+		// escape them, so both modes do so unconditionally.
 		// See http://timelessrepo.com/json-isnt-a-javascript-subset for discussion.
-		if c == '\u2028' || c == '\u2029' {
-			if start < i {
-				enc.buf.WriteString(s[start:i])
-			}
-			enc.buf.WriteString(`\u202`)
-			enc.buf.WriteByte(hex[c&0xF])
+		if c == 0x2028 || c == 0x2029 {
+			b = append(b, s[start:i]...)
+			b = append(b, '\\', 'u', '2', '0', '2', hex[c&0xF])
 			i += size
 			start = i
 			continue
 		}
 		i += size
 	}
-	if start < len(s) {
-		enc.buf.WriteString(s[start:])
-	}
-	enc.buf.WriteByte('"')
-	return nil
+	b = append(b, s[start:]...)
+	return append(b, '"')
 }
 
 // NOTE:  htmlSafeSet is from the json package

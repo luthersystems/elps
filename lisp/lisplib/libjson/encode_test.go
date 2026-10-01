@@ -9,6 +9,7 @@ import (
 	mathrand "math/rand"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,15 @@ type encodeTest struct {
 	js string
 }
 
+// encodeWideInt keeps existing 64-bit cases and skips them on 32-bit hosts.
+func encodeWideInt(text string) *lisp.LVal {
+	n, err := strconv.ParseInt(text, 10, strconv.IntSize)
+	if err != nil {
+		return nil
+	}
+	return lisp.Int(int(n))
+}
+
 var stdEncodeTests = []encodeTest{
 	{lisp.String(""), `""`},
 	{lisp.String("\t"), `"\t"`},
@@ -47,8 +57,8 @@ var stdEncodeTests = []encodeTest{
 	{lisp.SExpr(nil), `null`},
 	{lisp.QExpr(nil), `null`},
 	{lisp.Int(0), `0`},
-	{lisp.Int(1 << 60), `1152921504606846976`},
-	{lisp.Int(-(1 << 60)), `-1152921504606846976`},
+	{encodeWideInt("1152921504606846976"), `1152921504606846976`},
+	{encodeWideInt("-1152921504606846976"), `-1152921504606846976`},
 	{lisp.Float(0), `0`},
 	{lisp.Float(-1.5e-7), `-1.5e-7`},
 	{lisp.Float(1.125e21), `1.125e+21`},
@@ -88,8 +98,8 @@ var stdEncodeTests = []encodeTest{
 
 var stringNumberEncodeTests = []encodeTest{
 	{lisp.Int(0), `"0"`},
-	{lisp.Int(1 << 60), `"1152921504606846976"`},
-	{lisp.Int(-(1 << 60)), `"-1152921504606846976"`},
+	{encodeWideInt("1152921504606846976"), `"1152921504606846976"`},
+	{encodeWideInt("-1152921504606846976"), `"-1152921504606846976"`},
 	{lisp.Float(0), `"0"`},
 	{lisp.Float(-1.5e-7), `"-1.5e-7"`},
 	{lisp.Float(1.125e21), `"1.125e+21"`},
@@ -97,6 +107,9 @@ var stringNumberEncodeTests = []encodeTest{
 
 func testEncode(t testing.TB) {
 	for i, test := range stdEncodeTests {
+		if test.v == nil {
+			continue
+		}
 		enc := getEncoder(false)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
@@ -108,6 +121,9 @@ func testEncode(t testing.TB) {
 
 func testEncode_stringNumbers(t testing.TB) {
 	for i, test := range stringNumberEncodeTests {
+		if test.v == nil {
+			continue
+		}
 		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(test.v), "test %d: %v", i, test.v) {
 			js := string(enc.bytes())
@@ -135,9 +151,9 @@ var unencodableTypes = map[lisp.LType]string{
 //
 // The encoder dispatches on the encoderFuncs table rather than a switch, so
 // the exhaustive linter cannot see it: a newly added lisp.LType would get a
-// nil table entry with nothing flagging it at build time.  Downstream this
-// output is chaincode state, so a type that quietly serialized to nothing
-// would be written to a ledger.  This test forces the choice -- register an
+// nil table entry with nothing flagging it at build time. An application
+// could then save empty output and lose the value. This test forces the
+// choice -- register an
 // encoder, or record here why the type has no JSON form -- and pins the
 // runtime behaviour for the refused types (an error, never empty output).
 func TestEncoderTypeCoverage(t *testing.T) {
@@ -356,6 +372,9 @@ func TestEncodeFixturesAcrossGuard(t *testing.T) {
 		}
 		for _, depth := range []int{encodeGuardDepth - 2, encodeGuardDepth} {
 			for i, test := range tests {
+				if test.v == nil {
+					continue // a 64-bit-only fixture on a 32-bit host
+				}
 				t.Run(fmt.Sprintf("stringNums=%t/depth=%d/fixture=%d", stringNums, depth, i), func(t *testing.T) {
 					v := test.v
 					for range depth {

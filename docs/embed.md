@@ -846,6 +846,59 @@ if s != "hello" {
 These functions for converting types to native values are experimental in
 nature and their semantics could change.
 
+### Typed JSON
+
+`libjson.DumpTyped` and `libjson.LoadTyped` implement `:typed true` on the
+`json:dump-bytes`, `json:dump-string`, `json:dump-message` and matching load
+family. Typed JSON preserves elps types with Transit-verbose tag spellings on
+the elps canonical byte form: shortest round-trip number text, UTF-8 byte key
+order and the plain encoder's escape set, with float types preserved. A host
+can store values and read them back with the same types in another process or
+release. `libjson.Tag`, `libjson.Untag` and `libjson.Canonize` define the
+format: `DumpTyped(v)` writes the bytes of `Dump(Tag(v), false)`.
+
+```go
+v := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.String("a"), lisp.Symbol(":k")})
+b, err := libjson.DumpTyped(v) // ["~#list",[1,"a","~:k"]]
+if err != nil {
+    return err // a function, native, error or cyclic value cannot be stored
+}
+
+back, err := libjson.LoadTyped(b)
+if err != nil {
+    return err // bytes DumpTyped could not have produced
+}
+```
+
+`libjson.Tag(v)` returns a plain JSON value. `libjson.Untag(v)` restores its types.
+`DumpTyped(v)` writes exactly `Dump(Tag(v), false)` without building the transformed value.
+`LoadOpts{Strict: true, ExactIntegers: true}` accepts canonical plain bytes for composition with `Untag`.
+Whole floats use `~d` plus plain float text, including `~d1`, `~d-0`, and `~d1e+21`.
+
+For hashing and cache/state keys, use canonical output and let errors fail the
+operation. An explicit string-number mode fixes the numeric representation:
+
+```go
+key, err := libjson.DumpWith(v, libjson.DumpOpts{Canonize: true, StringNumbers: false})
+if err != nil {
+    return err
+}
+sum := sha256.Sum256(key)
+```
+
+Canonical bytes are frozen and equal plain dump with the same explicit number
+mode whenever canonize succeeds. See [Hashing guidance](typed-json.md#hashing-guidance).
+
+The encoding is finer than `equal?`: `1` and `1.0` encode differently, so do
+a string and a symbol of one spelling. `DumpTyped` returns an error, never a
+lossy encoding, for any value it cannot represent. `LoadTyped` is safe on
+untrusted input: it never panics, accepts only canonical bytes, and stops at
+the limits set by `WithTypedMaxDepth`, `WithTypedMaxBytes` and
+`WithTypedMaxValues` (defaults `DefaultTypedMaxDepth`, `DefaultTypedMaxBytes`,
+`DefaultTypedMaxValues`); a limit error wraps `ErrTypedLimit`.
+`WithTypedCharge` meters an encode as its output grows. Every value
+`LoadTyped` returns is freshly allocated, so the caller owns it.
+
 ## Operating on Go types
 
 To pass a native Go value to lisp code wrap it in a call to `lisp.Native()` so

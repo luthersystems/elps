@@ -54,6 +54,13 @@ func TestPackageStringNumbersGetter(t *testing.T) {
 	r.RunTestFile(t, "libjson_string_numbers_test.lisp")
 }
 
+// Keep condition regressions separate from BenchmarkPackage's loader input.
+func TestPackageCanonizeErrors(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "libjson_canonize_test.lisp")
+}
+
 func BenchmarkPackage(b *testing.B) {
 	r := &elpstest.Runner{}
 	defer r.Close()

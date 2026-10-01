@@ -4,6 +4,8 @@ package libjson_test
 
 import (
 	"bytes"
+	"encoding/binary"
+	"math"
 	"strings"
 	"testing"
 
@@ -13,11 +15,10 @@ import (
 	"github.com/luthersystems/elps/parser"
 )
 
-// libjson decodes untrusted JSON: in substrate this is chaincode state and
-// connector payloads, neither of which the phylum author controls.  Load must
-// therefore survive any byte string, and the values it produces must survive
-// being handed straight back to Dump, which is what every read-modify-write
-// path in a phylum does.
+// libjson decodes untrusted JSON from files, databases and external inputs.
+// Load must therefore survive any byte string, and the values it produces
+// must survive being handed straight back to Dump, as in an application
+// that reads, modifies and saves data.
 //
 // Two invariants:
 //
@@ -102,7 +103,7 @@ func FuzzLoadJSON(f *testing.F) {
 				want, got, enc)
 		}
 
-		// Dump must also be deterministic: a phylum that hashes or compares
+		// Dump must also be deterministic: an application that hashes or compares
 		// serialised state depends on it.  Sorted-map ordering is the part
 		// that could drift, since Go map iteration is randomised.
 		enc2, err := libjson.Dump(v, stringNums)
@@ -120,18 +121,18 @@ func FuzzLoadJSON(f *testing.F) {
 //
 // FuzzLoadJSON only ever hands Dump a value that Load produced, and Load emits
 // exactly six shapes: string, float, bool, nil, array, sorted-map. Everything
-// else a phylum can put in front of json:dump-string -- a tagged-value from
+// else a program can pass to json:dump-string -- a tagged-value from
 // deftype/new, an LNative handed in by host code, a multi-dimensional array,
 // an integer, a byte slice, a function, an error value, a symbol-keyed
-// sorted-map -- has never been encoded under fuzzing. In substrate the value
-// being serialised is phylum state, so its shape is chosen by the phylum
-// author, not by the decoder.
+// sorted-map -- requires generated encoder inputs. The value being
+// serialised can be arbitrary application data; its shape is chosen by the
+// caller, not by the decoder.
 //
 // INVARIANTS
 //
 //  1. Dump does not panic. An unsupported type must come back as an error.
 //  2. Dump is deterministic. Sorted-map iteration is the part that could
-//     drift, and a phylum that hashes or compares serialised state depends on
+//     drift, and an application that hashes or compares serialised data depends on
 //     it.
 //  3. Whatever Dump accepts, Load must be able to read back, and the value
 //     must then be STABLE under further round trips. Emitting bytes that the
@@ -155,14 +156,24 @@ func FuzzLoadJSON(f *testing.F) {
 //
 // The comparison is therefore made on the far side of every lossy conversion:
 // the SECOND decode against the FIRST, exactly as FuzzLoadJSON does.
+//
+// Each input also supplies a float64 bit pattern for the typed/plain number
+// text comparison. It permits only the documented ~d tag or Transit tag
+// differences and checks type-faithful round-trip bits (except NaN payloads).
 func FuzzDumpJSON(f *testing.F) {
 	for _, seed := range fuzzval.Seeds() {
 		for _, mode := range stringNumberModes() {
 			f.Add(seed, mode)
 		}
 	}
+	for _, x := range []float64{0, math.Copysign(0, -1), 1, -1, 0.1, 1e-6, 1e-7, 1e20, 1e21, math.SmallestNonzeroFloat64, math.MaxFloat64, math.NaN(), math.Inf(1), math.Inf(-1)} {
+		f.Add(binary.LittleEndian.AppendUint64(nil, math.Float64bits(x)), false)
+	}
 	f.Fuzz(func(t *testing.T, data []byte, stringNums bool) {
 		before := lisp.TakeSingletonSnapshot()
+		var bits [8]byte
+		copy(bits[:], data)
+		checkTypedNumberText(t, lisp.Float(math.Float64frombits(binary.LittleEndian.Uint64(bits[:]))))
 
 		env := newJSONEnv(t)
 		gen := fuzzval.New(data, env)

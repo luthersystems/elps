@@ -4,6 +4,8 @@ package libjson
 
 import (
 	"encoding/json"
+	"errors"
+	"math"
 	"strconv"
 	"unicode/utf8"
 
@@ -38,16 +40,21 @@ type directDecoder struct {
 	b []byte
 	// stack is scratch space shared by every array being decoded, so each
 	// array's final cell slice is allocated once at its exact length.
-	stack []*lisp.LVal
-	opts  LoadOpts
-	i     int
-	fail  bool
+	stack    []*lisp.LVal
+	err      error
+	semantic typedDecoder
+	opts     LoadOpts
+	i        int
+	fail     bool
 }
 
 func (d *directDecoder) skipSpace() {
 	for d.i < len(d.b) {
 		switch d.b[d.i] {
 		case ' ', '\t', '\n', '\r':
+			if d.opts.Strict {
+				d.reject(errors.New("json: non-canonical whitespace"))
+			}
 			d.i++
 		default:
 			return
@@ -89,9 +96,18 @@ func (d *directDecoder) object() *lisp.LVal {
 		d.i++
 		return jsonraw.Wrap(m)
 	}
+	prev := ""
 	for {
 		d.skipSpace()
 		k := d.str()
+		if d.fail {
+			return nil
+		}
+		if d.opts.Strict && len(m) > 0 && prev >= k {
+			d.reject(errors.New("json: members out of order or duplicated"))
+			return nil
+		}
+		prev = k
 		d.skipSpace()
 		d.i++ // ':'
 		v := d.value()
@@ -107,7 +123,7 @@ func (d *directDecoder) object() *lisp.LVal {
 		}
 	}
 	if d.opts.MaxAlloc > 0 && len(m) > d.opts.MaxAlloc {
-		d.fail = true
+		d.reject(errors.New("json: allocation limit"))
 		return nil
 	}
 	return jsonraw.Wrap(m)
@@ -136,7 +152,7 @@ func (d *directDecoder) array() *lisp.LVal {
 	}
 	n := len(d.stack) - base
 	if d.opts.MaxAlloc > 0 && n > d.opts.MaxAlloc {
-		d.fail = true
+		d.reject(errors.New("json: allocation limit"))
 		return nil
 	}
 	cells := make([]*lisp.LVal, n)
@@ -146,10 +162,20 @@ func (d *directDecoder) array() *lisp.LVal {
 	return lisp.Array(nil, cells)
 }
 
+func (d *directDecoder) reject(err error) {
+	d.fail = true
+	if d.err == nil {
+		d.err = err
+	}
+}
+
 // str decodes the string starting at d.i. A string with no escapes and valid
 // UTF-8 is taken verbatim; anything else is handed to encoding/json, which
 // owns the escape, surrogate and invalid-UTF-8 replacement rules.
 func (d *directDecoder) str() string {
+	if d.opts.Strict {
+		return string(d.strictString())
+	}
 	start := d.i
 	d.i++ // opening quote
 	simple := true
@@ -184,6 +210,17 @@ func (d *directDecoder) str() string {
 	return s
 }
 
+func (d *directDecoder) strictString() []byte {
+	d.semantic.b, d.semantic.i = d.b, d.i
+	s, err := d.semantic.rawString()
+	d.i = d.semantic.i
+	if err != nil {
+		d.reject(err)
+		return nil
+	}
+	return s
+}
+
 func containsByte(b []byte, c byte) bool {
 	for _, x := range b {
 		if x == c {
@@ -204,21 +241,47 @@ func (d *directDecoder) number() *lisp.LVal {
 		break
 	}
 	text := string(d.b[start:d.i])
+	if d.opts.Strict {
+		if _, ok := smallCanonicalInt(d.b[start:d.i]); !ok && !isJSONInteger(text) {
+			f, err := strconv.ParseFloat(text, 64)
+			if err != nil || math.IsInf(f, 0) || string(appendJSONFloat(nil, f)) != text {
+				d.reject(errors.New("json: non-canonical number"))
+				return nil
+			}
+		}
+	}
 	if d.opts.StringNumbers {
 		return lisp.String(text)
 	}
 	if d.opts.ExactIntegers {
 		v := loadNumber(text)
 		if v.Type == lisp.LError {
-			d.fail = true
+			d.reject(lisp.GoError(v))
 			return nil
 		}
 		return v
 	}
 	f, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		d.fail = true
+		d.reject(err)
 		return nil
 	}
 	return lisp.Float(f)
+}
+
+// loadStrict decodes b with the Strict spelling checks of LoadOpts.
+func loadStrict(b []byte, opts LoadOpts) (*lisp.LVal, error) {
+	if !json.Valid(b) {
+		return nil, errors.New("json: invalid JSON")
+	}
+	d := directDecoder{b: b, opts: opts}
+	v := d.value()
+	d.skipSpace()
+	if d.fail {
+		return nil, d.err
+	}
+	if d.i != len(b) {
+		return nil, errors.New("json: trailing bytes")
+	}
+	return v, nil
 }

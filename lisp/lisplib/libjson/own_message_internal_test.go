@@ -150,8 +150,8 @@ func TestOwnOutputLoadsWithExactIntegers(t *testing.T) {
 		{"2^53+1 as a float", lisp.Float(9007199254740993)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			// The document is the one substrate builds: the value inside the
-			// envelope json:dump-message produces.
+			// The document is the value inside the native message that
+			// json:dump-message produces.
 			b, loadable, err := s.dump(tc.v, false)
 			require.NoError(t, err)
 			require.True(t, loadable,

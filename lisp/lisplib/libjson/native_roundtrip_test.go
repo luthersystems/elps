@@ -21,7 +21,7 @@ import (
 // puts no bound on an exponent, so `1E1000` is valid syntax and marshals
 // straight through -- it only fails at unmarshal time, where the target is a
 // float64 and the value overflows. Before the fix this produced a document
-// json:dump wrote and json:load then refused, which for a phylum persisting
+// json:dump wrote and json:load then refused, which for an application persisting
 // state is a liveness bug rather than a corruption one.
 func TestDumpRefusesNativeItCannotLoad(t *testing.T) {
 	// Every case is SYNTACTICALLY valid JSON. json.Valid accepts all of them,

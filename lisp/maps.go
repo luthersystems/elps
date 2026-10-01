@@ -688,6 +688,53 @@ func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
 	return dst, true
 }
 
+// MapKeyPair is one sorted-map entry with its key's type: an LString or
+// LSymbol key is spelled by Key, an LInt key's value is Int.
+type MapKeyPair struct {
+	Val  *LVal
+	Key  string
+	Int  int
+	Kind LType
+}
+
+// AppendMapKeyPairs appends the entries of the sorted-map v to dst, in no
+// particular order, each with its key's type, and returns the extended
+// slice.  Unlike AppendSortedPairs it carries int keys and tells a string
+// key from a symbol key, for a walk (the typed JSON encoder) that must
+// write each key's type and orders the entries itself.  Values are the
+// map's own; nothing is allocated beyond growing dst.
+//
+// ok is false when v's backing is not one of the built-in maps; dst is
+// then returned unchanged and the caller must fall back to MapEntries.  A
+// map with no backing is empty.  It panics if v.Type is not LSortMap.
+func (v *LVal) AppendMapKeyPairs(dst []MapKeyPair) (out []MapKeyPair, ok bool) {
+	md := v.Map()
+	if md == nil || md.mapBacking == nil {
+		return dst, true
+	}
+	switch b := md.mapBacking.(type) {
+	case sortedmap:
+		b.forceAll()
+		for k, val := range b.m {
+			kind := LString
+			if b.keytype(k) != stringkey {
+				kind = LSymbol
+			}
+			dst = append(dst, MapKeyPair{Key: k, Val: val, Kind: kind})
+		}
+		for k, val := range b.ints() {
+			dst = append(dst, MapKeyPair{Int: k, Val: val, Kind: LInt})
+		}
+	case jsonMap:
+		for k, x := range b {
+			dst = append(dst, MapKeyPair{Key: k, Val: jsonMapLVal(x), Kind: LString})
+		}
+	default:
+		return dst, false
+	}
+	return dst, true
+}
+
 // entry is the single-key read of a sorted map's table: it materializes a
 // pending entry of a lazily instantiated map.
 //

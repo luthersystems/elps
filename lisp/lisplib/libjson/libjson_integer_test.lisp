@@ -11,7 +11,7 @@
 
 (use-package 'testing)
 
-; The defect, from the phylum author's side.  Every number decodes as a float,
+; The defect, from the application's side.  Every number decodes as a float,
 ; a float carries 53 bits of integer precision, and nothing anywhere says so.
 (test "default-rounds-silently"
   ; 2^53+1 comes back as 2^53.
@@ -27,7 +27,7 @@
 
 ; THE HIDING MECHANISM.  This is why the defect sat open since 2018: the
 ; corrupted value still compares = to the integer it was supposed to be, so a
-; phylum can read a corrupted identifier, check it against the value it
+; program can read a corrupted identifier, check it against the value it
 ; expected, match, and carry on.  Nothing signals.
 ;
 ; The assertion is deliberately written the "wrong" way round -- it asserts the

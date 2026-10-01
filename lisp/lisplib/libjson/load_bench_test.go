@@ -95,7 +95,7 @@ func benchRecords(n int) []byte {
 			`"memo":"line \"%d\"\nnext","tags":["t%d","t%d","t%d"],`+
 			`"owner":{"name":"owner %d","roles":["admin","user"],"limits":{"daily":%d,"monthly":%d}},`+
 			`"history":[{"seq":1,"ok":true},{"seq":2,"ok":false,"err":null}],"note":null}`,
-			9007199254740000+i, i, i*37%100000, i%100, i%2 == 0, i, i%7, i%11, i%13, i, i*10, i*300)
+			int64(9007199254740000)+int64(i), i, i*37%100000, i%100, i%2 == 0, i, i%7, i%11, i%13, i, i*10, i*300)
 	}
 	sb.WriteByte(']')
 	return []byte(sb.String())

@@ -89,11 +89,11 @@ func TestGlobalSymbolParts(t *testing.T) {
 func TestGeneratedNameFormatting(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	for _, next := range []uint{0, 1, 9, 10, 255, 256, 9999999, 10000000, 99999999, 100000000, ^uint(0) >> 1, ^uint(0)} {
-		env.Runtime.numenv = atomicCounter(next - 1)
+		env.Runtime.numenv.Store(uint64(next - 1))
 		fun := env.Lambda(Formals(), nil)
 		require.Equal(t, LFun, fun.Type)
 		assert.Equal(t, fmt.Sprintf("_fun%d", next), fun.FID())
-		env.Runtime.numsym = atomicCounter(next - 1)
+		env.Runtime.numsym.Store(uint64(next - 1))
 		assert.Equal(t, fmt.Sprintf("gen%08d", next), env.Runtime.GenSym())
 	}
 }

@@ -23,12 +23,12 @@ import (
 //     fits round-trips exactly and one that does not is a loud error; and
 //
 //   - the DEFAULT half, which must keep rounding exactly as it always has,
-//     because libjson decodes replicated state and two nodes on different
-//     elps versions must not disagree about what a document means.
+//     because applications on different elps versions must not disagree
+//     about what a saved document means.
 //
 // The default-half assertions are not decoration.  They are the thing that
 // makes the opt-in an opt-in, and a change that "fixes" them has silently
-// widened the blast radius from one call site to every phylum in the fleet.
+// widened its effect from one call site to every application using libjson.
 
 const (
 	maxExactFloat = 1 << 53 // 9007199254740992: the largest 2^k a float64 holds
@@ -210,7 +210,7 @@ func TestLoadExactNegativeZeroRoundTrips(t *testing.T) {
 //
 // This is not a softening of the loud-failure rule, it is what makes the rule
 // survivable. This package renders every float in [2^63, 1e21) as plain
-// digits, so without this a phylum holding an ordinary float of 1e19 would
+// digits, so without this an application holding an ordinary float of 1e19 would
 // dump its state and then be unable to read it back. "Anything Dump can emit,
 // Load can read" has to hold, or the option is a liveness bug.
 func TestLoadExactAcceptsCanonicalLargeFloats(t *testing.T) {
@@ -313,11 +313,14 @@ func TestIssue350HidingMechanism(t *testing.T) {
 		"the value has been rounded down by one")
 
 	// The hiding mechanism itself.
-	eq := loaded.Equal(lisp.Int(maxExactFloat + 1))
-	assert.True(t, lisp.True(eq),
-		"the corrupted value must still compare = to its integer -- that is"+
-			" WHY nothing reports the corruption, and pinning it here is what"+
-			" stops the regression returning silently")
+	if strconv.IntSize == 64 {
+		wide := int64(maxExactFloat + 1)
+		eq := loaded.Equal(lisp.Int(int(wide)))
+		assert.True(t, lisp.True(eq),
+			"the corrupted value must still compare = to its integer -- that is"+
+				" WHY nothing reports the corruption, and pinning it here is what"+
+				" stops the regression returning silently")
+	}
 
 	// It also compares = to the value it was actually rounded TO, which is
 	// how two distinct JSON documents become indistinguishable in memory.

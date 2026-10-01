@@ -90,7 +90,7 @@ func BenchmarkEncodeOwnMessageSmall(b *testing.B) { benchOwnMessage(b, 7, 570) }
 // elps#412's table.
 func BenchmarkEncodeOwnMessageMedium(b *testing.B) { benchOwnMessage(b, 172, 14600) }
 
-// BenchmarkEncodeOwnMessageLarge is roughly 295 KB, the top row: a phylum that
+// BenchmarkEncodeOwnMessageLarge is roughly 295 KB, the top row: an application that
 // has started returning large opaque blobs.  The point of keeping it is that
 // the saving must be shown to SCALE, not merely to exist.
 //
