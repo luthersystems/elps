@@ -68,3 +68,22 @@ func TestValueWalkerAllowlistReasons(t *testing.T) {
 		}
 	}
 }
+
+func TestValWalkerInElpsModule(t *testing.T) {
+	for _, c := range []struct {
+		module, pkg string
+		want        bool
+	}{
+		{"github.com/luthersystems/elps", "github.com/luthersystems/elps/lisp", true},
+		{"github.com/luthersystems/elps", "github.com/luthersystems/elps", true},
+		{"github.com/luthersystems/elps/extensions", "github.com/luthersystems/elps/extensions/walk", false},
+		{"github.com/luthersystems/elps-foo", "github.com/luthersystems/elps-foo", false},
+		{"", "github.com/luthersystems/elps/internal/walkfixture", true},
+		{"", "github.com/luthersystems/elps-foo/walk", false},
+		{"", "walkers", false},
+	} {
+		if got := valWalkerInElpsModule(c.module, c.pkg); got != c.want {
+			t.Errorf("valWalkerInElpsModule(%q, %q) = %v, want %v", c.module, c.pkg, got, c.want)
+		}
+	}
+}

@@ -60,7 +60,10 @@ func walk(v *lisp.LVal) { ... }
 The marker must sit in the doc comment of the declared function the
 diagnostic names, with a reason of at least three words. It covers closures
 that function owns. A marker in the body, trailing a line or above a closure
-does not count, and neither does a prefix match (`allow-valwalkers`). Inside
+does not count, and neither does a prefix match (`allow-valwalkers`) or a
+`/* */` comment. Text after ` // ` is not part of the reason; a URL is. Elps
+is recognised by module path (`github.com/luthersystems/elps` exactly), so a
+separate module under that prefix keeps its markers. Inside
 the elps module the marker is ignored, so elps keeps one mechanism: the
 table, whose rows `TestValueWalkerAllowlistReasons` classifies and counts.
 

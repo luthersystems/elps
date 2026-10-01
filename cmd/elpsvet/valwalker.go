@@ -211,14 +211,19 @@ const (
 )
 
 // hasJustifiedValWalkerAllow reports whether a function's doc comment carries
-// a reasoned allow-valwalker. Text after a nested "//" is not part of the reason.
+// a reasoned allow-valwalker. Only a // line comment counts. Text after a
+// " // " is not part of the reason (an analysistest "// want" or padding),
+// but a "//" inside a word, as in a URL, is.
 func hasJustifiedValWalkerAllow(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
 	for _, c := range cg.List {
-		text := strings.TrimPrefix(c.Text, "//")
-		if i := strings.Index(text, "//"); i >= 0 {
+		text, ok := strings.CutPrefix(c.Text, "//")
+		if !ok {
+			continue
+		}
+		if i := strings.Index(text, " //"); i >= 0 {
 			text = text[:i]
 		}
 		if justifiedAllow(text, valWalkerAllowMarker, valWalkerAllowMinWords) {
@@ -226,6 +231,18 @@ func hasJustifiedValWalkerAllow(cg *ast.CommentGroup) bool {
 		}
 	}
 	return false
+}
+
+// valWalkerInElpsModule reports whether a package belongs to the elps module,
+// where the marker is ignored. It uses the module path when the driver knows
+// it, so a separate module named github.com/luthersystems/elps/x keeps its
+// markers, and falls back to the package path otherwise (analysistest's
+// GOPATH fixtures).
+func valWalkerInElpsModule(module, pkg string) bool {
+	if module != "" {
+		return module == elpsModulePath
+	}
+	return pkg == elpsModulePath || strings.HasPrefix(pkg, elpsModulePath+"/")
 }
 
 func runValWalker(pass *analysis.Pass) (any, error) {
@@ -276,7 +293,11 @@ func runValWalker(pass *analysis.Pass) (any, error) {
 		g.scan(node)
 	}
 	reported := map[*ast.FuncDecl]bool{}
-	elpsModule := pass.Pkg.Path() == elpsModulePath || strings.HasPrefix(pass.Pkg.Path(), elpsModulePath+"/")
+	module := ""
+	if pass.Module != nil {
+		module = pass.Module.Path
+	}
+	elpsModule := valWalkerInElpsModule(module, pass.Pkg.Path())
 	for _, node := range g.nodes {
 		if !node.dispatch || !node.push && !valueWalkRecursive(node, node, map[*valueWalkFunc]bool{}) {
 			continue

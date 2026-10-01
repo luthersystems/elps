@@ -373,3 +373,48 @@ func commentTrailing(v *l.LVal) { //elpsvet:allow-valwalker fixture walks only c
 
 //elpsvet:allow-valwalker fixture walks only cons cells safely
 var commentOnVar = 1
+
+func commentAfterMarkedVar(v *l.LVal) { // want `value walker walkers.commentAfterMarkedVar dispatches`
+	if v.Type == l.LSExpr {
+		commentAfterMarkedVar(v.Cells[0])
+	}
+}
+
+/*elpsvet:allow-valwalker too short
+ *
+ */
+func commentBlock(v *l.LVal) { // want `value walker walkers.commentBlock dispatches`
+	if v.Type == l.LSExpr {
+		commentBlock(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker too short // extra padding words here
+func commentPadded(v *l.LVal) { // want `value walker walkers.commentPadded dispatches`
+	if v.Type == l.LSExpr {
+		commentPadded(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker see https://example.org/audit for recursion bounds
+func commentURL(v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentURL(v.Cells[0])
+	}
+}
+
+type commentRecv struct{}
+
+//elpsvet:allow-valwalker caller bounds the recursion depth
+func (commentRecv) walk(v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentRecv{}.walk(v.Cells[0])
+	}
+}
+
+//elpsvet:allow-valwalker caller bounds the recursion depth
+func commentGeneric[A, B any](v *l.LVal) {
+	if v.Type == l.LSExpr {
+		commentGeneric[A, B](v.Cells[0])
+	}
+}
