@@ -1,19 +1,17 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs eight go/analysis rules: no
-// package-level variable may keep a *lisp.LVal reachable (elpsownership,
-// below), no function may write a lisp.LVal field on a value it did not
-// construct (elpsfreshness, freshness.go), no function may store a
-// runtime-owned *token.Location uncopied into a field of an escaping value
-// (elpsescape, escape.go), and no native payload may be minted with a type a
-// template could not publish safely (elpsnativepayload, nativepayload.go),
-// and no registered builtin may write its receiver, captured variables or
-// package-level state (elpsbuiltinstate, builtinstate.go). Package table writes
-// must pass the frozen-package gate (elpsfrozenpackage, frozenpackage.go),
-// lazily filled tables are read only through their accessors (elpslazyread,
-// lazyread.go), and no library builtin may depend on which package is current
-// (elpsownpkg, issue #736, in the importable package elpsvet/ownpkg so other
-// modules' vet tools can run it too).
+// Command elpsvet runs ten Go analysis rules over this module.
+// Package variables must not retain runtime values (elpsownership).
+// LVal writes require ownership (elpsfreshness).
+// Escaping source locations require a copy (elpsescape).
+// Native payloads must meet template publication rules (elpsnativepayload).
+// Registered builtins must not write shared state (elpsbuiltinstate).
+// Package writes must pass the frozen-package gate (elpsfrozenpackage).
+// Lazy table reads must use filling accessors (elpslazyread).
+// Library builtins must not depend on the current package (elpsownpkg).
+// Audited value switches must name every LType (elpsltypeswitch).
+// New value walkers must use shared traversal or an audited exception (elpsvalwalker).
+// Other modules can import elpsownpkg from elpsvet/ownpkg.
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -82,6 +80,8 @@ var analyzers = []*analysis.Analyzer{
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
 	ownpkg.Analyzer,
+	lTypeSwitchAnalyzer,
+	valWalkerAnalyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }
