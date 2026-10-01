@@ -15,6 +15,9 @@ import (
 // storage may be shared. Tests pin the audited Go layouts and public methods.
 type ownedTime struct {
 	templatepolicy.Marker
+	// Time.loc points to a Location that detachTime copies and initializes;
+	// no exported Location method writes it after that.
+	//elpsvet:allow-marker detached Location is never written after construction
 	t time.Time
 }
 

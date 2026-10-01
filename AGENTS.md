@@ -90,7 +90,7 @@ them (`scripts/api-breaks-since.sh`), then are deleted.
   `minify`, `analyze`, `debug`, `mcp`.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,
   freshness, escape, native payload, builtin shared state, frozen packages,
-  lazy reads, own package, exhaustive value switches, new value walkers).
+  lazy reads, own package, exhaustive value switches, new value walkers, marker fields).
   See the `elpsvet` skill.
 - **`elpsvet/ownpkg/`** — The importable `elpsownpkg` analyzer: a library
   builtin runs in its own package (#736), so it must not evaluate code, build

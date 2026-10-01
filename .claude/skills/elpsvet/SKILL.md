@@ -19,7 +19,7 @@ Use when:
   or resolves a symbol it was handed (`elpsownpkg`: take a value, qualify the
   name, or turn it into a macro over core forms).
 
-## The ten rules
+## The eleven rules
 
 | Analyzer | File | Flags | Suppression marker |
 |----------|------|-------|--------------------|
@@ -33,6 +33,7 @@ Use when:
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
 | `elpsltypeswitch` | `ltypeswitch.go` | an audited `lisp.LType` switch has a default arm or misses a constant | scope list in the analyzer (no marker) |
 | `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | audited `pkgpath.FuncName` row in `valueWalkerFunctions` (no marker) |
+| `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, the field line or the line above |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `nativepayload.go`'s header is the authority on the payload
@@ -199,7 +200,8 @@ A site is exempt only if one of:
    `internal/templatepolicy.Marker`. `*T` is reported even if `T` is marked
    (needs the embedder's `lisp.TemplateWithNativePolicy` + a site annotation).
    Examples: `libtime.ownedTime`, `libregexp.compiledRegexp`,
-   `libschema.validatorTag`. Only packages under the module path can use it.
+   `libschema.validatorTag`. `elpsmarkerfields` checks that its fields
+   hold no mutable storage. Only packages under the module path can use it.
 3. **Allowlist row** (`allowedPayloadTypes`: `*funData`/`LFun`,
    `*[]byte`/`LBytes`, `*MapData`/`LSortMap`) — only when (a) the site is in
    package `lisp`, (b) it is not a constructor call, and (c) a literal's
@@ -265,7 +267,7 @@ together and stay green, so a tier change is checked against the runtime:
 ## Checklist
 
 - [ ] `make elpsvet` clean (both passes)
-- [ ] Every new marker carries a reason a reviewer can audit (≥3 words for `allow-native` and `allow-shared`)
+- [ ] Every new marker carries a reason a reviewer can audit (≥3 words for `allow-native`, `allow-shared` and `allow-marker`)
 - [ ] New `packageWriteFunctions` / `lazyTableFunctions` rows carry a justification
 - [ ] Tier/allowlist change: inventory test, fixtures, and a paired runtime case updated
 - [ ] `go test ./cmd/elpsvet/` passes
