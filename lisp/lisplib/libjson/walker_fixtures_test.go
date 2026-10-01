@@ -3,11 +3,14 @@
 package libjson
 
 import (
+	"bytes"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"maps"
 	"math"
 	"os"
 	"path/filepath"
@@ -510,20 +513,105 @@ func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte,
 	return r
 }
 
+// compactWalkerGolden preserves expectations and reuses identical records by name.
+func compactWalkerGolden(data []byte) ([]byte, error) {
+	records, err := decodeWalkerGolden(data)
+	if err != nil {
+		return nil, err
+	}
+	var out bytes.Buffer
+	out.WriteString("[\n")
+	shared := make(map[string]string)
+	for i, r := range records {
+		name := r["name"].(string)
+		delete(r, "name")
+		payload, err := json.Marshal(r)
+		if err != nil {
+			return nil, err
+		}
+		if prior := shared[string(payload)]; prior != "" {
+			r = map[string]any{"same_as": prior}
+		} else {
+			shared[string(payload)] = name
+		}
+		r["name"] = name
+		encoded, err := json.Marshal(r)
+		if err != nil {
+			return nil, err
+		}
+		if i > 0 {
+			out.WriteString(",\n")
+		}
+		out.Write(encoded)
+	}
+	out.WriteString("\n]\n")
+	return out.Bytes(), nil
+}
+
+func decodeWalkerGolden(data []byte) ([]map[string]any, error) {
+	var records []map[string]any
+	if err := json.Unmarshal(data, &records); err != nil {
+		return nil, err
+	}
+	seen := make(map[string]map[string]any)
+	for i, r := range records {
+		name, ok := r["name"].(string)
+		if !ok || name == "" || seen[name] != nil {
+			return nil, fmt.Errorf("invalid or duplicate fixture name: %v", r["name"])
+		}
+		if prior, ok := r["same_as"].(string); ok {
+			if seen[prior] == nil || len(r) != 2 {
+				return nil, fmt.Errorf("fixture %s: invalid same_as reference %s", name, prior)
+			}
+			r = maps.Clone(seen[prior])
+			r["name"] = name
+		}
+		for k, v := range r {
+			if v == "" {
+				delete(r, k)
+				continue
+			}
+			if list, ok := v.([]any); ok && len(list) == 0 {
+				delete(r, k)
+				continue
+			}
+			r[k] = compactGoldenPayload(v)
+		}
+		records[i], seen[name] = r, r
+	}
+	return records, nil
+}
+
+// Large strings retain their byte length and SHA-256 digest, including error data.
+func compactGoldenPayload(v any) any {
+	switch v := v.(type) {
+	case string:
+		if len(v) > 512 {
+			digest := sha256.Sum256([]byte(v))
+			return map[string]any{"len": len(v), "sha256": hex.EncodeToString(digest[:])}
+		}
+	case []any:
+		for i := range v {
+			v[i] = compactGoldenPayload(v[i])
+		}
+	case map[string]any:
+		for k := range v {
+			v[k] = compactGoldenPayload(v[k])
+		}
+	}
+	return v
+}
+
 func checkWalkerGolden(t *testing.T, name string, records []goldenRecord) {
 	t.Helper()
-	seen := make(map[string]bool)
-	for _, r := range records {
-		if seen[r.Name] {
-			t.Fatalf("%s: duplicate fixture %s", name, r.Name)
-		}
-		seen[r.Name] = true
-	}
-	data, err := json.MarshalIndent(records, "", "  ")
+	raw, err := json.Marshal(records)
 	if err != nil {
 		t.Fatal(err)
 	}
-	data = append(data, '\n')
+	data, err := compactWalkerGolden(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
 	path := filepath.Join("testdata", name+".golden.json")
 	if *updateWalkerGoldens {
 		// Restrict fixture directory access to the owner and group.
@@ -539,27 +627,38 @@ func checkWalkerGolden(t *testing.T, name string, records []goldenRecord) {
 	if err != nil {
 		t.Fatalf("%v; generate with -update on the unchanged walkers", err)
 	}
-	if string(want) != string(data) {
-		var expected []goldenRecord
-		if err := json.Unmarshal(want, &expected); err != nil {
+	expected, err := decodeWalkerGolden(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	actual, err := decodeWalkerGolden(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expected) != len(actual) {
+		t.Fatalf("%s: got %d fixtures, want %d", path, len(actual), len(expected))
+	}
+	for i := range actual {
+		a, err := json.Marshal(expected[i])
+		if err != nil {
 			t.Fatal(err)
 		}
-		if len(expected) != len(records) {
-			t.Fatalf("%s: got %d fixtures, want %d", path, len(records), len(expected))
+		b, err := json.Marshal(actual[i])
+		if err != nil {
+			t.Fatal(err)
 		}
-		for i := range records {
-			a, err := json.Marshal(expected[i])
-			if err != nil {
-				t.Fatal(err)
-			}
-			b, err := json.Marshal(records[i])
-			if err != nil {
-				t.Fatal(err)
-			}
-			if string(a) != string(b) {
-				t.Errorf("%s: fixture %s differs\nwant: %.2000s\ngot:  %.2000s", path, records[i].Name, a, b)
-			}
+		if bytes.Equal(a, b) {
+			continue
 		}
+		offset := 0
+		for offset < min(len(a), len(b)) && a[offset] == b[offset] {
+			offset++
+		}
+		start := max(0, offset-80)
+		// Hash-only expectations cannot locate a difference inside the original payload.
+		t.Errorf("%s: fixture %s differs; encoded lengths want=%d got=%d, first differing offset=%d\nwant: %s\ngot:  %s",
+			path, records[i].Name, len(a), len(b), offset,
+			a[start:min(len(a), offset+160)], b[start:min(len(b), offset+160)])
 	}
 	t.Logf("%s: %d fixtures", name, len(records))
 }
