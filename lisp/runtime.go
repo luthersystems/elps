@@ -626,3 +626,21 @@ func (rt *Runtime) SetSetting(name string, value bool) {
 	}
 	rt.settings[name] = value
 }
+
+// SettingValue reports the value setting called name and whether it is set.
+func (rt *Runtime) SettingValue(name string) (any, bool) {
+	// TODO(phase 2): Read the per-VM value setting.
+	return nil, false
+}
+
+// SetSettingValue sets the value setting called name to v.
+// It returns an error and changes nothing when v's type cannot be shared between VMs.
+func (rt *Runtime) SetSettingValue(name string, v any) error {
+	// TODO(phase 2): Validate and store the per-VM value setting.
+	return nil
+}
+
+// DeleteSettingValue removes the value setting called name. Removing an unset name does nothing.
+func (rt *Runtime) DeleteSettingValue(name string) {
+	// TODO(phase 2): Remove the per-VM value setting.
+}
