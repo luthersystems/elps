@@ -33,6 +33,7 @@ package main
 import (
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -155,14 +156,37 @@ func parseOverrides(source, content, today string) ([]*override, []string) {
 // items ("Incompatible changes:", "Ignoring internal package ...") are
 // skipped; any other non-blank line is an error, so a format change in
 // apidiff cannot silently read as "no breaks".
+//
+// apidiff also prints a three-line note when it reports one object twice
+// (apidiff's messageSet.add; a generic type changed under several
+// instantiations): "! second, different message for obj ...", then
+// "  first:  ..." and "  second: ...".  The note is skipped.  The object's
+// "-" change line is still printed and is read as usual.
 func parseGoReport(r io.Reader) ([]brk, error) {
 	var out []brk
 	sc := bufio.NewScanner(r)
 	sc.Buffer(make([]byte, 1<<20), 1<<20)
+	// note is the prefix of the next line of a duplicate-message note, or ""
+	// outside a note.
+	note := ""
 	for sc.Scan() {
 		l := strings.TrimRight(sc.Text(), " \r")
+		if note != "" {
+			if !strings.HasPrefix(l, note) {
+				return nil, fmt.Errorf("unrecognized apidiff line in a duplicate-message note: %q", l)
+			}
+			if note == goNoteFirst {
+				note = goNoteSecond
+			} else {
+				note = ""
+			}
+			continue
+		}
 		switch {
 		case l == "", l == "Incompatible changes:", strings.HasPrefix(l, "Ignoring internal package "):
+			continue
+		case strings.HasPrefix(l, goNoteStart):
+			note = goNoteFirst
 			continue
 		}
 		m := goLineRe.FindStringSubmatch(l)
@@ -171,8 +195,18 @@ func parseGoReport(r io.Reader) ([]brk, error) {
 		}
 		out = append(out, brk{surface: "go", symbol: strings.TrimPrefix(m[1], "./"), what: m[2]})
 	}
+	if note != "" {
+		return nil, errors.New("apidiff output ends inside a duplicate-message note")
+	}
 	return out, sc.Err()
 }
+
+// The lines of apidiff's duplicate-message note (parseGoReport).
+const (
+	goNoteStart  = "! second, different message for obj "
+	goNoteFirst  = "  first:  "
+	goNoteSecond = "  second: "
+)
 
 // The subset of libhelp's JSON (lisp/lisplib/libhelp.PackageDoc) the gate
 // reads.
