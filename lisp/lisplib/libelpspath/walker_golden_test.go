@@ -151,7 +151,7 @@ func TestValueWalkerGoldens(t *testing.T) {
 				}
 				records = append(records, r)
 			}
-			checkWalkerGolden(t, "valwalk-"+walker, records)
+			checkWalkerGolden(t, "walker-"+walker, records)
 		})
 	}
 }

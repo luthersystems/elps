@@ -136,7 +136,7 @@ func TestValueWalkerGoldens(t *testing.T) {
 				}
 				records = append(records, r)
 			}
-			checkWalkerGolden(t, "valwalk-"+walker.name, records)
+			checkWalkerGolden(t, "walker-"+walker.name, records)
 		})
 	}
 }
@@ -222,7 +222,7 @@ func TestCanonizeConditionGoldens(t *testing.T) {
 		}
 		records = append(records, r)
 	}
-	checkWalkerGolden(t, "valwalk-canonize-condition", records)
+	checkWalkerGolden(t, "walker-canonize-condition", records)
 }
 
 // All DumpOpts combinations and resolved builtin keywords use the same corpus.
@@ -279,5 +279,5 @@ func TestValueWalkerPlainBytesGolden(t *testing.T) {
 			}
 		}
 	}
-	checkWalkerGolden(t, "valwalk-plain-bytes", records)
+	checkWalkerGolden(t, "walker-plain-bytes", records)
 }

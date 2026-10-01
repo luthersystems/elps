@@ -77,7 +77,7 @@ func TestValueWalkerMutatingChargeGoldens(t *testing.T) {
 				r.After, _ = in.render(v)
 				records = append(records, r)
 			}
-			checkWalkerGolden(t, "valwalk-"+walker.name+"-mutating-charge", records)
+			checkWalkerGolden(t, "walker-"+walker.name+"-mutating-charge", records)
 		})
 	}
 }
