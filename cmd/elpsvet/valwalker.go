@@ -65,6 +65,8 @@ var valueWalkerFunctions = map[string]string{
 	"github.com/luthersystems/elps/lint.nodeMentionsRethrowContext":                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.walkLambdaListCalls":                               "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.walkRethrowTemplate":                               "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/internal/codewalk.syntax":                               "syntax walker: the raw source traversal behind codewalk.Syntax",
+	"github.com/luthersystems/elps/lisp.CodeWalker.sourceCalls":                            "syntax walker: source calls for the internal formals event, quote and quasiquote skipped",
 	"github.com/luthersystems/elps/lisp.Array":                                             "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/lisp.CodeWalker.call":                                   "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.CodeWalker.compound":                               "syntax walker: visits source forms with syntax and quote rules",

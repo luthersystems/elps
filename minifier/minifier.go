@@ -1002,49 +1002,59 @@ func compareLocations(a, b *token.Location) int {
 // Package forms in macro definitions or quasiquotes cannot supply proof: their
 // generated code may export names that differ from the template's literal data.
 func firstGlobalFallback(node *lisp.LVal, topLevel, template bool) *lisp.LVal {
-	if node == nil {
-		return nil
-	}
-	head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
-	switch head {
-	case "defmacro", "macrolet", "quasiquote":
-		// Conservatively treat all contents as templates, including quoted
-		// data and unquotes; neither can restore directly evaluated context.
-		template = true
-	case "export":
-		if template {
-			return node.Cells[0]
+	var found *lisp.LVal
+	var stopped bool
+	var templates []bool
+	codewalk.Syntax(node, nil, 0, func(node, parent *lisp.LVal, op string, depth int) bool {
+		inTemplate := template
+		if parent != nil {
+			inTemplate = templates[depth-1]
 		}
-		for _, arg := range node.Cells[1:] {
-			if !literalExportArgument(arg, false) {
-				return node.Cells[0]
+		if op == codewalk.OpDefmacro || op == codewalk.OpMacrolet || op == codewalk.OpQuasiquote {
+			inTemplate = true
+		}
+		// Template state stays active through quoted data and unquotes.
+		templates = append(templates[:depth], inTemplate)
+		head := strings.TrimPrefix(astutil.HeadSymbol(node), "lisp:")
+		fallback := false
+		switch head {
+		case "export":
+			fallback = inTemplate
+			if !fallback {
+				for _, arg := range node.Cells[1:] {
+					if !literalExportArgument(arg, false) {
+						fallback = true
+						break
+					}
+				}
+			}
+		case "in-package", "use-package":
+			// The package scanner models only unqualified calls at the top level.
+			fallback = inTemplate || parent != nil || !topLevel || astutil.HeadSymbol(node) != head
+			if fallback {
+				break
+			}
+			args := node.Cells[1:]
+			if head == "in-package" {
+				if len(args) == 0 {
+					fallback = true
+				} else {
+					args = args[:1]
+				}
+			}
+			for _, arg := range args {
+				if arg.Type != lisp.LString && (arg.Type != lisp.LSymbol || !arg.IsQuoted()) {
+					fallback = true
+					break
+				}
 			}
 		}
-	case "in-package", "use-package":
-		// The package scanner models the unqualified spellings only. A
-		// qualified call therefore cannot supply the proof needed to rename.
-		if template || !topLevel || astutil.HeadSymbol(node) != head {
-			return node.Cells[0]
+		if fallback {
+			found, stopped = node.Cells[0], true
 		}
-		args := node.Cells[1:]
-		if head == "in-package" {
-			if len(args) == 0 {
-				return node.Cells[0]
-			}
-			args = args[:1] // Remaining arguments are package docstrings.
-		}
-		for _, arg := range args {
-			if arg.Type != lisp.LString && (arg.Type != lisp.LSymbol || !arg.IsQuoted()) {
-				return node.Cells[0]
-			}
-		}
-	}
-	for _, child := range node.Cells {
-		if found := firstGlobalFallback(child, false, template); found != nil {
-			return found
-		}
-	}
-	return nil
+		return !stopped
+	}, &stopped)
+	return found
 }
 
 // firstDynamicEvaluation scans independently of package flow so an earlier

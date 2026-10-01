@@ -42,8 +42,17 @@ type SyntaxVisitor = func(node, parent *lisp.LVal, op string, depth int) bool
 // policy to its visitor. Tools that intentionally inspect malformed forms or
 // quoted structure can preserve that policy without decoding operator names.
 // A visitor may recursively call Syntax to select particular children.
-func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor) {
-	if node == nil {
+// An optional stop flag ends the walk when the visitor sets it to true.
+func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop ...*bool) {
+	var stopped *bool
+	if len(stop) > 0 {
+		stopped = stop[0]
+	}
+	syntax(node, parent, depth, visit, stopped)
+}
+
+func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool) {
+	if node == nil || (stop != nil && *stop) {
 		return
 	}
 	op := ""
@@ -54,7 +63,10 @@ func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor) {
 		return
 	}
 	for _, child := range node.Cells {
-		Syntax(child, node, depth+1, visit)
+		if stop != nil && *stop {
+			return
+		}
+		syntax(child, node, depth+1, visit, stop)
 	}
 }
 

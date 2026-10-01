@@ -59,7 +59,6 @@ var specialOpAllowlist = map[string]string{
 	"lint/analyzers.go:var AnalyzerDefunStructure":              "validates malformed definition syntax before code walking",
 	"lint/analyzers.go:var AnalyzerDuplicateBinding":            "validates duplicate lexical binding entries",
 	"lint/analyzers.go:var AnalyzerIfArity":                     "checks if argument count",
-	"lint/analyzers.go:var AnalyzerLambdaList":                  "validates lambda-list syntax",
 	"lint/analyzers.go:var AnalyzerLetBindings":                 "validates malformed let binding syntax before code walking",
 	"lint/analyzers.go:var AnalyzerPackageBuiltins":             "checks literal package builtin operands",
 	"lint/analyzers.go:var AnalyzerUnnecessaryProgn":            "reports redundant progn inside implicit bodies",
@@ -87,7 +86,6 @@ var specialOpAllowlist = map[string]string{
 	"lsp/semantic_tokens.go:var specialOps":                     "semantic token vocabulary, not structural traversal",
 	"minifier/minifier.go:collectQuotedSymbols":                 "preserves quoted names across renaming",
 	"minifier/minifier.go:firstDynamicEvaluation":               "recognizes runtime evaluation and quoted code",
-	"minifier/minifier.go:firstGlobalFallback":                  "recognizes forms that can reference package globals",
 	"minifier/minifier.go:preservePackageSurfaceSymbols":        "preserves names used by package-writing declarations",
 }
 

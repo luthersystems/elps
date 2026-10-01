@@ -200,21 +200,20 @@ func (r *sourceResolver) visit(n *codewalk.Node) bool {
 			return true
 		}
 		kind := ScopeFunction
-		switch n.Op {
-		case "lambda", "expr":
+		switch n.Scope {
+		case codewalk.ScopeAnonymous:
 			kind = ScopeLambda
-		case "let", "let*", "test-let", "test-let*":
+		case codewalk.ScopeLocal:
 			kind = ScopeLet
-		case "dotimes":
+		case codewalk.ScopeLoop:
 			kind = ScopeDotimes
-		case "flet", "labels":
-			if !n.Function {
-				kind = ScopeFlet
-			}
-		case "macrolet":
+		case codewalk.ScopeFunctions:
+			kind = ScopeFlet
+		case codewalk.ScopeMacros:
 			kind = ScopeMacrolet
-		case "test":
+		case codewalk.ScopeTest:
 			return true // test bodies have no lexical analysis scope
+		case codewalk.ScopeFunction:
 		}
 		r.scope = NewScope(kind, r.scope, n.Node)
 	case lisp.WalkLeave:
@@ -246,7 +245,7 @@ func (r *sourceResolver) visit(n *codewalk.Node) bool {
 		if n.Template && !n.Node.IsQuoted() {
 			r.a.resolveTemplateSymbol(n.Node, r.scope, r.pkg)
 		}
-	case lisp.WalkLiteral:
+	case lisp.WalkLiteral, codewalk.FormalsOccurrence:
 	}
 	return true
 }

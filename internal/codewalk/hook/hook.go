@@ -11,12 +11,35 @@ type Binding struct {
 	FormalsIndex int
 }
 
+// ScopeCategory describes the scope an internal source event opens.
+type ScopeCategory uint8
+
+const (
+	ScopeFunction ScopeCategory = iota
+	ScopeAnonymous
+	ScopeLocal
+	ScopeFunctions
+	ScopeMacros
+	ScopeLoop
+	ScopeTest
+)
+
+// FormalsRole describes the use of a literal formals list.
+type FormalsRole uint8
+
+const (
+	Parameters FormalsRole = iota
+	Constructor
+	Benchmark
+)
+
 // Node carries source-only metadata without depending on lisp. Both sides
 // instantiate exactly this type, so the bridge does not copy each event.
 type Node[V, E any] struct {
 	Node     *V
 	Owner    *V
 	Formals  *V
+	Binding  *V
 	Init     *V
 	Op       string
 	Depth    int
@@ -26,6 +49,8 @@ type Node[V, E any] struct {
 	Outer    bool
 	Template bool
 	Event    E
+	Scope    ScopeCategory
+	Role     FormalsRole
 }
 
 // Options carries source visitor policy across the import-cycle bridge.
@@ -34,10 +59,12 @@ type Options[V, E any] struct {
 	BindingForm      func(*V) *Binding
 	Reference        func(*V)
 	Form             func(*V, string, int) bool
+	Formals          func(*Node[V, E])
 	End              func(int)
 	EndDepth         *int
 	SkipLiterals     bool
 	DeclarationsOnly bool
+	SyntacticCalls   bool
 }
 
 // Walk holds the source adapter accepting a walker, Options, and a form.
