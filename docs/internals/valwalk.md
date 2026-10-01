@@ -106,10 +106,15 @@ func (w *Walker[R]) Path() string             // rendered on demand
 
 Rules:
 
-1. **Snapshot children.** `Visit` returns the children to walk. The engine
-   walks that slice. A custom `Map.Entries` that mutates a later sibling
-   during the walk does not change the walk (`lisp/embed.go:224` keeps the
-   same contract).
+1. **Borrowed children.** `Visit` returns the children to walk in
+   `Step.Children`, and optionally a second slice in `Step.Following` (an
+   array's data after its dimensions). The engine reads these slices as the
+   walk goes. It does not copy them. A visitor that must not see later
+   mutation passes a slice it built itself: the map visitors build their
+   pair snapshot from `Map.Entries` once, as `lisp/embed.go:224` does. List
+   and array visitors pass the value's own `Cells`. The engine loads each
+   child before it calls `Child`, so a charge callback in `Child` cannot
+   change which child is visited.
 2. **Iterative.** The frame stack is a slice. A deep value does not grow the
    Go stack.
 3. **Results.** `children` in `Leave` is valid only during the call. A
@@ -136,18 +141,22 @@ Rules:
 A walker moves only if the engine reproduces its output, error text, error
 path, error precedence and callback calls on golden fixtures.
 
-| # | Walker | Location | Cycle behaviour kept |
-|---|--------|----------|----------------------|
-| 1 | `json:tag` | `lisp/lisplib/libjson/tag.go:152` | reports a cycle only when the container repeats on the path at the depth boundary |
-| 2 | `json:untag` | `lisp/lisplib/libjson/untag.go:65` | none; limits end a cycle |
-| 3 | `json:canonize` | `lisp/lisplib/libjson/canonize.go:156` | rejects an active ancestor before dispatch, after the count check |
-| 4 | Typed encoder (value walk only) | `lisp/lisplib/libjson/typed.go:199` | scans the full path for any repeat at the depth boundary |
-| 5 | `libelpspath` validator | `lisp/lisplib/libelpspath/libelpspath.go:287`, `lisp/cycle.go:192` | tracking after 64 levels, width-weighted memo |
-| 6 | `libelpspath` copy | `lisp/lisplib/libelpspath/path.go:169` | memo with height, operation-scoped budget |
+| # | Walker | Location | Cycle behaviour kept | Status |
+|---|--------|----------|----------------------|--------|
+| 1 | `json:tag` | `lisp/lisplib/libjson/tag.go` | reports a cycle only when the container repeats on the path at the depth boundary | migrated |
+| 2 | `json:untag` | `lisp/lisplib/libjson/untag.go:65` | none; limits end a cycle | kept: +18% to +24% time |
+| 3 | `json:canonize` | `lisp/lisplib/libjson/canonize.go` | rejects an active ancestor before dispatch, after the count check | migrated |
+| 4 | Typed encoder (traversal only) | `lisp/lisplib/libjson/typed.go:199` | scans the full path for any repeat at the depth boundary | kept: +23% time |
+| 5 | `libelpspath` validator | `lisp/lisplib/libelpspath/libelpspath.go:287`, `lisp/cycle.go:192` | tracking after 64 levels, width-weighted memo | kept: +5.6% allocs/op |
+| 6 | `libelpspath` copy | `lisp/lisplib/libelpspath/path.go:169` | memo with height, operation-scoped budget | kept: +24% B/op, +33% time |
 
-Step 4 moves only the traversal. Number, string and key formatting stay in
-`typed.go`. Commas go in `Child`. Steps 5 and 6 keep selected-path accessors
-(`dotPath.Get`, `path.go:1225`) and mutating iterators out of scope.
+"Kept" means the migration matched every golden but went over CI's gate
+(15% timing, 5% allocations) at `GOMAXPROCS=1`, n=10. The code stays
+hand-rolled, and its `elpsvalwalker` allowlist row records the measurement.
+The cost is the engine itself: each value goes through three
+dictionary-dispatched calls and a `Step` value, which a walker doing little
+work per value cannot absorb. Selected-path accessors (`dotPath.Get`,
+`path.go:1225`) and mutating iterators were out of scope.
 
 ### Dropped from migration
 
@@ -217,7 +226,7 @@ analyzer scope so they stay that way.
 |------|---------|------|
 | `analysis/codewalk.go:204` | Already on `codewalk.Walker`. The switch labels scope kinds. | No traversal change. Scope kind comes from neutral metadata on the internal source event, so the operator-name switch goes. |
 | `lint/analyzers.go:2806`, `:2814` (`walkLambdaListCalls`, `:2917`) | Needs every formals list, including malformed and empty ones, and skips quote and quasiquote. | Add an internal formals-occurrence event to the source walker, emitted before grammar rejection. Keep it internal (`codewalk_internal_test.go:24`). |
-| `minifier/minifier.go:1010` (`firstGlobalFallback`) | Treats all of defmacro, macrolet and quasiquote as template, quoted data included. | Move onto `internal/codewalk.Syntax` (`internal/codewalk/syntax.go:45`) with sticky template state and first-match stop. |
+| `minifier/minifier.go:1010` (`firstGlobalFallback`) | Treats all of defmacro, macrolet and quasiquote as template, quoted data included. | Kept hand-rolled. On `internal/codewalk.Syntax` it matched the goldens but was 121% to 382% slower. |
 
 Each move is kept only if its existing tests and new goldens pass unchanged.
 
@@ -283,3 +292,16 @@ is resolved in the plan above.
 | 23 | major | Lint needs a formals-occurrence event. | Internal event before grammar rejection. |
 | 24 | major | The minifier needs raw syntax traversal. | `internal/codewalk.Syntax` with sticky state. |
 | 25 | major | Goldens covered only steps 1 to 4. Byte identity was not testable. | Goldens before every move, generated on base. Base-versus-head byte comparison. |
+
+## Implementation review
+
+A read-only adversarial review of the finished implementation found five
+issues. Each is fixed in this pull request.
+
+| # | Severity | Finding | Fix |
+|---|----------|---------|-----|
+| 1 | major | `Walk` reserved result slots for `Children` and `Following` at once. A tagged `1024x1024` array rejected by its value limit allocated about 8 MiB first. | `Following` storage is reserved after its checks pass. The rejection now allocates 120 B/op. A test bounds it. |
+| 2 | minor | `Child` ran before the child was loaded, so a charge callback that mutated the next cell changed the `json:tag` output. | The engine loads each child before `Child`. Goldens generated on `origin/main` pin the order for tag and canonize. |
+| 3 | minor | `elpsvalwalker` missed a tagless `switch { case v.Type == ...: }`. | Case conditions of tagless switches count as dispatch. Fixtures cover fields, locals and an unrelated `Type int`. |
+| 4 | minor | This document did not record the final status or the borrowing contract. | Status column in "Migration list" and the "Borrowed children" rule. |
+| 5 | nit | The goldens were 11 MB. | Payloads over 512 bytes are stored as length and SHA-256. The goldens are 1.6 MB, and they still pass on the code before this change. |
