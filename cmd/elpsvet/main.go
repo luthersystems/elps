@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs ten Go analysis rules over this module.
+// Command elpsvet runs eleven Go analysis rules over this module.
 // Package variables must not retain runtime values (elpsownership).
 // LVal writes require ownership (elpsfreshness).
 // Escaping source locations require a copy (elpsescape).
@@ -11,6 +11,7 @@
 // Library builtins must not depend on the current package (elpsownpkg).
 // Audited value switches must name every LType (elpsltypeswitch).
 // New value walkers must have an audited traversal contract (elpsvalwalker).
+// Marked immutable structs must hold only value fields (elpsmarkerfields).
 // Other modules can import elpsownpkg from elpsvet/ownpkg.
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
@@ -82,6 +83,7 @@ var analyzers = []*analysis.Analyzer{
 	ownpkg.Analyzer,
 	lTypeSwitchAnalyzer,
 	valWalkerAnalyzer,
+	markerFieldsAnalyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }

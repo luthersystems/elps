@@ -26,6 +26,9 @@ const DefaultPackageName = "regexp"
 // callers. Only this package's read-only operations access the program.
 type compiledRegexp struct {
 	templatepolicy.Marker
+	// A *regexp.Regexp is safe for concurrent use and has no mutating
+	// method this package calls; the pointer is never returned to callers.
+	//elpsvet:allow-marker compiled program is read-only after compilation
 	re *regexp.Regexp
 }
 
