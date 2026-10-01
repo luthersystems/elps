@@ -32,7 +32,7 @@ Use when:
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
 | `elpsltypeswitch` | `ltypeswitch.go` | an audited `lisp.LType` switch has a default arm or misses a constant | scope list in the analyzer (no marker) |
-| `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | audited `pkgpath.FuncName` row in `valueWalkerFunctions` (no marker) |
+| `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | in elps: audited `pkgpath.FuncName` row in `valueWalkerFunctions`; in another module: `//elpsvet:allow-valwalker <≥3-word reason>` in the declared function's doc comment (ignored inside elps) |
 | `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays; covers types in function bodies, `type T U` and anonymous struct literals (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, or on a field line or the line above (any nesting depth) |
 
 The header comment of each file is the full design rationale — read it before
@@ -46,6 +46,23 @@ traversal. Child dispatch uses `ShapeOf` or an exhaustive `LType` switch without
 `default`. A new walker needs an audited row in `valueWalkerFunctions`.
 State its current traversal contract, including limits, paths and callback order.
 Do not use an earlier implementation's benchmark result as the audit reason.
+
+A downstream module that runs `elpsvalwalker` cannot edit elps's table, so it
+records the same contract in its own source:
+
+```go
+// walk copies a request tree.
+//
+//elpsvet:allow-valwalker depth bounded by the request decoder's nesting limit
+func walk(v *lisp.LVal) { ... }
+```
+
+The marker must sit in the doc comment of the declared function the
+diagnostic names, with a reason of at least three words. It covers closures
+that function owns. A marker in the body, trailing a line or above a closure
+does not count, and neither does a prefix match (`allow-valwalkers`). Inside
+the elps module the marker is ignored, so elps keeps one mechanism: the
+table, whose rows `TestValueWalkerAllowlistReasons` classifies and counts.
 
 ## Run it
 
@@ -267,7 +284,7 @@ together and stay green, so a tier change is checked against the runtime:
 ## Checklist
 
 - [ ] `make elpsvet` clean (both passes)
-- [ ] Every new marker carries a reason a reviewer can audit (≥3 words for `allow-native`, `allow-shared` and `allow-marker`)
+- [ ] Every new marker carries a reason a reviewer can audit (≥3 words for `allow-native`, `allow-shared`, `allow-marker` and `allow-valwalker`)
 - [ ] New `packageWriteFunctions` / `lazyTableFunctions` rows carry a justification
 - [ ] Tier/allowlist change: inventory test, fixtures, and a paired runtime case updated
 - [ ] `go test ./cmd/elpsvet/` passes

@@ -27,10 +27,16 @@ import (
 // Dispatch and stack pushes must occur in the same function. Split helper drivers can bypass this rule.
 // Package-level closures are not inspected. Closure bindings use their last literal assignment, without control-flow analysis.
 // Tagless cases require a comparison with an LType operand. Boolean dispatch helpers are not followed.
-// Existing walkers require a reason in valueWalkerFunctions. Comment markers do not suppress this rule.
+// An audited walker is accepted by a reason in valueWalkerFunctions (elps's own walkers)
+// or by `//elpsvet:allow-valwalker <reason of at least three words>` in the doc comment of
+// the declared function the diagnostic names. The marker covers closures that function owns.
+// It is the only way for a module that runs elpsvalwalker over its own code to record an audit.
+// Inside the elps module the marker is ignored: elps keeps one mechanism, the table, whose
+// rows are classified, counted and pinned by TestValueWalkerAllowlistReasons in one place.
+// A marker in a body, trailing a line, above a closure, or with a shorter reason does not count.
 var valWalkerAnalyzer = &analysis.Analyzer{
 	Name: "elpsvalwalker",
-	Doc:  "flag new LType-dispatching recursive or stack-based walkers; static calls only, with audited exceptions",
+	Doc:  "flag new LType-dispatching recursive or stack-based walkers; static calls only, unless audited by //elpsvet:allow-valwalker <reason> or a valueWalkerFunctions row",
 	Run:  runValWalker,
 }
 
@@ -198,6 +204,30 @@ type valueWalkGraph struct {
 	nodes    []*valueWalkFunc
 }
 
+const (
+	valWalkerAllowMarker   = "elpsvet:allow-valwalker"
+	valWalkerAllowMinWords = 3
+	elpsModulePath         = "github.com/luthersystems/elps"
+)
+
+// hasJustifiedValWalkerAllow reports whether a function's doc comment carries
+// a reasoned allow-valwalker. Text after a nested "//" is not part of the reason.
+func hasJustifiedValWalkerAllow(cg *ast.CommentGroup) bool {
+	if cg == nil {
+		return false
+	}
+	for _, c := range cg.List {
+		text := strings.TrimPrefix(c.Text, "//")
+		if i := strings.Index(text, "//"); i >= 0 {
+			text = text[:i]
+		}
+		if justifiedAllow(text, valWalkerAllowMarker, valWalkerAllowMinWords) {
+			return true
+		}
+	}
+	return false
+}
+
 func runValWalker(pass *analysis.Pass) (any, error) {
 	g := &valueWalkGraph{pass: pass, funcs: map[*types.Func]*valueWalkFunc{}, lits: map[*ast.FuncLit]*valueWalkFunc{}, closures: map[types.Object]*valueWalkFunc{}}
 	for _, file := range pass.Files {
@@ -246,17 +276,18 @@ func runValWalker(pass *analysis.Pass) (any, error) {
 		g.scan(node)
 	}
 	reported := map[*ast.FuncDecl]bool{}
+	elpsModule := pass.Pkg.Path() == elpsModulePath || strings.HasPrefix(pass.Pkg.Path(), elpsModulePath+"/")
 	for _, node := range g.nodes {
 		if !node.dispatch || !node.push && !valueWalkRecursive(node, node, map[*valueWalkFunc]bool{}) {
 			continue
 		}
 		fn := node.owner
 		name := pass.Pkg.Path() + "." + funcDeclName(pass, fn)
-		if valueWalkerFunctions[name] != "" || reported[fn] {
+		if valueWalkerFunctions[name] != "" || reported[fn] || !elpsModule && hasJustifiedValWalkerAllow(fn.Doc) {
 			continue
 		}
 		reported[fn] = true
-		pass.Reportf(fn.Name.Pos(), "value walker %s dispatches on lisp.LType and walks children; audit its traversal contract in valueWalkerFunctions", name)
+		pass.Reportf(fn.Name.Pos(), "value walker %s dispatches on lisp.LType and walks children; audit its traversal contract with //elpsvet:allow-valwalker <reason> in its doc comment (a valueWalkerFunctions row inside elps)", name)
 	}
 	return nil, nil
 }
