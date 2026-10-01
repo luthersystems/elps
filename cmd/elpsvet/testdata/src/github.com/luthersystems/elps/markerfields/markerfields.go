@@ -140,4 +140,51 @@ type generic[T any] struct {
 	v T // want `marked struct generic: field v is a type parameter`
 }
 
-var _ = []any{clean{}, unmarked{}, kind("")}
+// A type declared in a function body is checked.
+func local() any {
+	type localMarked struct {
+		templatepolicy.Marker
+		m map[string]int // want `marked struct localMarked: field m is a map`
+	}
+	return localMarked{}
+}
+
+// An anonymous struct literal that embeds the marker is checked.
+var anonymous = struct {
+	templatepolicy.Marker
+	m map[string]int // want `marked struct struct literal: field m is a map`
+}{}
+
+// A defined type over a marked struct is its own audit.
+//
+//elpsvet:allow-marker frozen map is never written after construction
+type frozen struct {
+	templatepolicy.Marker
+	m map[string]int
+}
+
+type mutable frozen // want `marked struct mutable: field m is a map`
+
+// A type over a struct whose field carries the allow inherits that audit.
+type fieldAudited fieldAllowed
+
+// An allow on a nested field covers that field.
+type nestedAllowed struct {
+	templatepolicy.Marker
+	inner struct { // want `marked struct nestedAllowed: field inner.p is a pointer`
+		//elpsvet:allow-marker map stays frozen after construction
+		m map[string]int
+		p *int
+	}
+}
+
+// A comment after the closing brace allows nothing.
+type trailingBrace struct {
+	templatepolicy.Marker
+	m map[string]int // want `marked struct trailingBrace: field m is a map`
+	s []int } //elpsvet:allow-marker slice stays frozen after construction // want `marked struct trailingBrace: field s is a slice`
+
+// An alias is the same type and is checked at its declaration.
+type aliasOfClean = clean
+
+var _ = []any{clean{}, unmarked{}, kind(""), anonymous, local, mutable{}, fieldAudited{}, aliasOfClean{}}

@@ -33,7 +33,7 @@ Use when:
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
 | `elpsltypeswitch` | `ltypeswitch.go` | an audited `lisp.LType` switch has a default arm or misses a constant | scope list in the analyzer (no marker) |
 | `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | audited `pkgpath.FuncName` row in `valueWalkerFunctions` (no marker) |
-| `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, the field line or the line above |
+| `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays; covers types in function bodies, `type T U` and anonymous struct literals (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, or on a field line or the line above (any nesting depth) |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `nativepayload.go`'s header is the authority on the payload

@@ -16,15 +16,20 @@
 // declared in other packages (time.Time holds a *time.Location). A field of
 // type-parameter type is reported because its kind is not known.
 //
+// It checks defined types at any scope (also inside function bodies and with
+// a non-literal right-hand side, as in `type T U`) and anonymous struct type
+// literals that embed the marker.
+//
 // Suppression: `//elpsvet:allow-marker <reason of at least three words>` in
 // the type's doc comment covers the whole type; trailing on a field or on the
-// line above it covers that field. The reason states why nothing reachable
+// line above it covers that field, at any nesting depth in this package. The reason states why nothing reachable
 // through the field is written after construction.
 package main
 
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"strings"
 
@@ -67,75 +72,119 @@ func hasJustifiedMarkerAllow(groups ...*ast.CommentGroup) bool {
 }
 
 func runMarkerFields(pass *analysis.Pass) (any, error) {
+	allowed := markerAllowedFields(pass)
 	for _, file := range pass.Files {
-		for _, decl := range file.Decls {
-			gd, ok := decl.(*ast.GenDecl)
-			if !ok {
-				continue
+		rhs := map[*ast.StructType]bool{}
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch n := n.(type) {
+			case *ast.GenDecl:
+				for _, spec := range n.Specs {
+					if ts, ok := spec.(*ast.TypeSpec); ok {
+						if st, ok := ts.Type.(*ast.StructType); ok {
+							rhs[st] = true
+						}
+						checkMarkedTypeSpec(pass, allowed, n, ts)
+					}
+				}
+			case *ast.StructType:
+				if !rhs[n] {
+					checkAnonymousMarked(pass, allowed, n)
+				}
 			}
-			for _, spec := range gd.Specs {
-				ts, ok := spec.(*ast.TypeSpec)
-				if !ok {
-					continue
-				}
-				st, ok := ts.Type.(*ast.StructType)
-				if !ok {
-					continue
-				}
-				obj, ok := pass.TypesInfo.Defs[ts.Name].(*types.TypeName)
-				if !ok || obj.Pkg() == nil {
-					continue
-				}
-				if obj.Pkg().Path() == templatePolicyPkgPath && obj.Name() == "Marker" {
-					continue
-				}
-				if !declaresTemplateImmutable(obj.Type()) {
-					continue
-				}
-				if hasJustifiedMarkerAllow(gd.Doc, ts.Doc, ts.Comment) {
-					continue
-				}
-				checkMarkedFields(pass, ts.Name.Name, st)
-			}
-		}
+			return true
+		})
 	}
 	return nil, nil
 }
 
-func checkMarkedFields(pass *analysis.Pass, typeName string, st *ast.StructType) {
-	for _, field := range st.Fields.List {
-		if hasJustifiedMarkerAllow(field.Doc, field.Comment) {
-			continue
-		}
-		t := pass.TypesInfo.TypeOf(field.Type)
-		if t == nil {
-			continue
-		}
-		names := []string{}
-		for _, n := range field.Names {
-			names = append(names, n.Name)
-		}
-		if len(names) == 0 { // embedded
-			names = append(names, embeddedName(t))
-		}
-		for _, name := range names {
-			for _, v := range mutableReach(t, name, map[types.Type]bool{}) {
-				pass.Reportf(field.Pos(),
-					"marked struct %s: field %s is %s; a template shares this value across VMs, so a write through it in one transaction is visible in another (luthersystems/elps#778); hold only value fields, or add //elpsvet:allow-marker <reason> if nothing reachable is ever written",
-					typeName, v.path, v.kind)
+// markerAllowedFields maps each struct field declared in this package that
+// carries a reasoned allow-marker, at any nesting depth, to true.
+func markerAllowedFields(pass *analysis.Pass) map[*types.Var]bool {
+	allowed := map[*types.Var]bool{}
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			st, ok := n.(*ast.StructType)
+			if !ok {
+				return true
 			}
-		}
+			ts, ok := pass.TypesInfo.TypeOf(st).(*types.Struct)
+			if !ok {
+				return true
+			}
+			i := 0
+			for _, field := range st.Fields.List {
+				count := max(len(field.Names), 1)
+				if hasJustifiedMarkerAllow(field.Doc, field.Comment) {
+					for j := i; j < i+count && j < ts.NumFields(); j++ {
+						allowed[ts.Field(j)] = true
+					}
+				}
+				i += count
+			}
+			return true
+		})
 	}
+	return allowed
 }
 
-func embeddedName(t types.Type) string {
-	if p, ok := t.(*types.Pointer); ok {
-		t = p.Elem()
+// checkMarkedTypeSpec checks a defined type at any scope, whatever its
+// right-hand side. Only the type's doc comment allows the whole type: a
+// trailing comment after the closing brace attaches to the TypeSpec too, and
+// it reads as a field comment.
+func checkMarkedTypeSpec(pass *analysis.Pass, allowed map[*types.Var]bool, gd *ast.GenDecl, ts *ast.TypeSpec) {
+	obj, ok := pass.TypesInfo.Defs[ts.Name].(*types.TypeName)
+	if !ok || obj.Pkg() == nil || ts.Assign.IsValid() {
+		return
 	}
-	if n, ok := types.Unalias(t).(*types.Named); ok {
-		return n.Obj().Name()
+	if obj.Pkg().Path() == templatePolicyPkgPath && obj.Name() == "Marker" {
+		return
 	}
-	return t.String()
+	if !declaresTemplateImmutable(obj.Type()) {
+		return
+	}
+	var docs []*ast.CommentGroup
+	if len(gd.Specs) == 1 {
+		docs = append(docs, gd.Doc)
+	}
+	if hasJustifiedMarkerAllow(append(docs, ts.Doc)...) {
+		return
+	}
+	_, literal := ts.Type.(*ast.StructType)
+	reportMarkedStruct(pass, allowed, ts.Name.Name, ts.Name.Pos(), literal, obj.Type())
+}
+
+// checkAnonymousMarked checks a struct type literal that is not the
+// right-hand side of a type declaration. Embedding the marker still gives it
+// templateImmutable, so a template shares its values.
+func checkAnonymousMarked(pass *analysis.Pass, allowed map[*types.Var]bool, st *ast.StructType) {
+	t := pass.TypesInfo.TypeOf(st)
+	if t == nil || !declaresTemplateImmutable(t) {
+		return
+	}
+	reportMarkedStruct(pass, allowed, "struct literal", st.Pos(), true, t)
+}
+
+func reportMarkedStruct(pass *analysis.Pass, allowed map[*types.Var]bool, name string, pos token.Pos, atFields bool, t types.Type) {
+	// atFields reports at each field's declaration; it holds when the
+	// struct literal is written at this declaration.
+	st, ok := t.Underlying().(*types.Struct)
+	if !ok {
+		return
+	}
+	for f := range st.Fields() {
+		if allowed[f] {
+			continue
+		}
+		at := pos
+		if atFields && f.Pos().IsValid() {
+			at = f.Pos()
+		}
+		for _, v := range mutableReach(f.Type(), f.Name(), allowed, map[types.Type]bool{}) {
+			pass.Reportf(at,
+				"marked struct %s: field %s is %s; a template shares this value across VMs, so a write through it in one transaction is visible in another (luthersystems/elps#778); hold only value fields, or add //elpsvet:allow-marker <reason> if nothing reachable is ever written",
+				name, v.path, v.kind)
+		}
+	}
 }
 
 type mutableField struct {
@@ -146,7 +195,7 @@ type mutableField struct {
 // mutableReach lists every place under t, named path, that is not plain
 // value storage. seen breaks cycles, which a value struct cannot form without
 // a pointer, but a malformed type set should not hang the gate.
-func mutableReach(t types.Type, path string, seen map[types.Type]bool) []mutableField {
+func mutableReach(t types.Type, path string, allowed map[*types.Var]bool, seen map[types.Type]bool) []mutableField {
 	if _, ok := types.Unalias(t).(*types.TypeParam); ok {
 		return []mutableField{{path, "a type parameter"}}
 	}
@@ -172,7 +221,7 @@ func mutableReach(t types.Type, path string, seen map[types.Type]bool) []mutable
 	case *types.Interface:
 		return []mutableField{{path, "an interface"}}
 	case *types.Array:
-		return mutableReach(u.Elem(), path+"[]", seen)
+		return mutableReach(u.Elem(), path+"[]", allowed, seen)
 	case *types.Struct:
 		if seen[t] {
 			return nil
@@ -181,7 +230,10 @@ func mutableReach(t types.Type, path string, seen map[types.Type]bool) []mutable
 		defer delete(seen, t)
 		var out []mutableField
 		for f := range u.Fields() {
-			out = append(out, mutableReach(f.Type(), path+"."+f.Name(), seen)...)
+			if allowed[f] {
+				continue
+			}
+			out = append(out, mutableReach(f.Type(), path+"."+f.Name(), allowed, seen)...)
 		}
 		return out
 	}
