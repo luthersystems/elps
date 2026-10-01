@@ -137,9 +137,11 @@ func sealableNodeType(t LType) bool {
 	switch t {
 	case LSExpr, LQuote, LSymbol, LString, LInt, LFloat:
 		return true
-	default:
+	case LInvalid, LError, LFun, LBytes, LSortMap, LArray, LNative,
+		LTaggedVal, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return false
 	}
+	return false
 }
 
 func (v *LVal) sealAST() {

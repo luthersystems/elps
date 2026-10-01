@@ -98,10 +98,12 @@ func convertValue(v *LVal, limit int) (any, bool) {
 	switch v.Type {
 	case LQuote, LSExpr, LArray, LSortMap:
 		return convertContainer(v, limit)
-	default:
+	case LInvalid, LInt, LFloat, LError, LSymbol, LFun, LString, LBytes,
+		LNative, LTaggedVal, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		// Leaves must not create an addressable result slot or walk state.
 		return conversionLeaf(v), true
 	}
+	return conversionLeaf(v), true
 }
 
 // conversionFrame holds output under construction, not a memo of source
@@ -202,7 +204,12 @@ walk:
 				f.children = entries.Cells
 				f.mapping = make(map[any]any, len(entries.Cells))
 				out = f.mapping
-			default:
+			case LInvalid, LInt, LFloat, LError, LSymbol, LFun, LString, LBytes,
+				LNative, LTaggedVal, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+				container = false
+				out = conversionLeaf(v)
+			}
+			if v.Type >= LTypeMax {
 				container = false
 				out = conversionLeaf(v)
 			}
@@ -337,9 +344,11 @@ func conversionLeaf(v *LVal) any {
 		return v.Float
 	case LNative:
 		return v.Native
-	default:
+	case LInvalid, LSExpr, LFun, LQuote, LSortMap, LArray, LTaggedVal,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return v
 	}
+	return v
 }
 
 // GoError returns an error that represents v.  If v is not LError then nil is

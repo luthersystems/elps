@@ -22,15 +22,21 @@ func TestLTypeSwitchScope(t *testing.T) {
 		{lispPkgPath, "/tmp/lisp/shape.go", true},
 		{lispPkgPath, "loader.go", true},
 		{lispPkgPath, "detach.go", true},
-		{lispPkgPath, "copier.go", false},
-		{lispPkgPath, "lisp.go", false},
+		{lispPkgPath, "copier.go", true},
+		{lispPkgPath, "lisp.go", true},
+		{lispPkgPath, "builtins.go", false},
+		{libjsonPkgPath, "encode.go", true},
+		{libjsonPkgPath, "tag.go", false},
 		{"other", "shape.go", false},
 		{"github.com/luthersystems/elps/internal/valwalk", "walk.go", true},
 		{"github.com/luthersystems/elps/internal/valwalk/nested", "walk.go", true},
 		{"github.com/luthersystems/elps/internal/valwalker", "walk.go", false},
 	} {
-		if got := inLTypeSwitchScope(tc.pkg, tc.file); got != tc.want {
+		if _, got := lTypeSwitchFuncs(tc.pkg, tc.file); got != tc.want {
 			t.Errorf("scope(%q, %q) = %t, want %t", tc.pkg, tc.file, got, tc.want)
 		}
+	}
+	if funcs, _ := lTypeSwitchFuncs(lispPkgPath, "lisp.go"); len(funcs) != 2 {
+		t.Errorf("lisp.go scope = %v, want equalShallow and equalIter only", funcs)
 	}
 }

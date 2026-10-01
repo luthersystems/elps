@@ -1736,9 +1736,11 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 			}
 		}
 		return Bool(true)
-	default:
+	case LInvalid, LInt, LFloat, LError, LFun, LNative,
+		LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
 		return Bool(false)
 	}
+	return Bool(false)
 }
 
 // A repeated pair restarts the entire comparison with memoization from the
@@ -1848,7 +1850,11 @@ walk:
 					return Bool(false), false
 				}
 				width = 2 * a.Map().Len()
-			default:
+			case LInvalid, LInt, LFloat, LError, LSymbol, LFun, LString, LBytes,
+				LNative, LMarkTerminal, LMarkTailRec, LMarkMacExpand, LTypeMax:
+				return Bool(false), false
+			}
+			if a.Type >= LTypeMax {
 				return Bool(false), false
 			}
 			if len(stack) >= limit {
