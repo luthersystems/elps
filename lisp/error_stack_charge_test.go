@@ -32,7 +32,7 @@ func TestErrorStackChargesPerStartedSixtyFourFrames(t *testing.T) {
 		require.NotEqual(t, lisp.LError, got.Type, "%v", got)
 		return env.Runtime.TotalSteps() - before, got
 	}
-	charge := func(depth int) (frames int, delta int64) {
+	charge := func(depth int) (int, int64) {
 		with, n := run(depth, "(error-stack)")
 		without, _ := run(depth, "(list)")
 		return n.Int, with - without

@@ -33,7 +33,7 @@ import (
 // process for, so recovering is enough to keep the rest of the package
 // reporting -- but an unrecovered panic here would still take the whole test
 // binary down, which is exactly what an embedder gets.
-func callEnvTestSuite(tb testing.TB, env *lisp.LEnv) (suite *libtesting.TestSuite) {
+func callEnvTestSuite(tb testing.TB, env *lisp.LEnv) *libtesting.TestSuite {
 	tb.Helper()
 	defer func() {
 		if r := recover(); r != nil {

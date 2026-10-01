@@ -342,17 +342,21 @@ func (v *LVal) boundedRender(limit int, budget *renderBudget, message bool) (str
 // What the two walks spend is charged to the caller through analysis rather
 // than to the rendering's own budget: neither produces output, and an
 // exhausted rendering budget means something else entirely.
-func strictRenderingStands(v *LVal, message bool, ctx context.Context, analysis *int) (stands bool) {
-	lazy, search := newRenderBudget(0, ctx), newRenderBudget(0, ctx)
-	start := lazy.remaining + search.remaining
-	defer func() {
-		*analysis += start - lazy.remaining - search.remaining
-		if recovered := recover(); recovered != nil {
-			log.Printf("elps: render cycle analysis recovered panic: %v; keeping the depth-bounded verdict", recovered)
-			stands = false
-		}
+func strictRenderingStands(v *LVal, message bool, ctx context.Context, analysis *int) bool {
+	var stands bool
+	func() {
+		lazy, search := newRenderBudget(0, ctx), newRenderBudget(0, ctx)
+		start := lazy.remaining + search.remaining
+		defer func() {
+			*analysis += start - lazy.remaining - search.remaining
+			if recovered := recover(); recovered != nil {
+				log.Printf("elps: render cycle analysis recovered panic: %v; keeping the depth-bounded verdict", recovered)
+				stands = false
+			}
+		}()
+		stands = !lazyRenderTerminates(v, message, &lazy) && containsCycle(v, &search)
 	}()
-	return !lazyRenderTerminates(v, message, &lazy) && containsCycle(v, &search)
+	return stands
 }
 
 // lazyRenderTerminates reports whether the representation String is defined
@@ -945,17 +949,23 @@ func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
 	}
 }
 
-func nativeErrorText(e *ErrorVal) (text string, ok bool) {
-	defer func() {
-		if recovered := recover(); recovered != nil {
-			log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", recovered, corruptedNativeMessage)
-			text, ok = corruptedNativeMessage, true
+func nativeErrorText(e *ErrorVal) (string, bool) {
+	var text string
+	var ok bool
+	func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", recovered, corruptedNativeMessage)
+				text, ok = corruptedNativeMessage, true
+			}
+		}()
+		if len(e.Cells) > 0 && e.Cells[0] != nil {
+			if err, isErr := e.Cells[0].Native.(error); isErr && err != nil {
+				text, ok = err.Error(), true
+				return
+			}
 		}
+		text, ok = "", false
 	}()
-	if len(e.Cells) > 0 && e.Cells[0] != nil {
-		if err, ok := e.Cells[0].Native.(error); ok && err != nil {
-			return err.Error(), true
-		}
-	}
-	return "", false
+	return text, ok
 }

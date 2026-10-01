@@ -129,12 +129,16 @@ func (v sealLaunderVariant) runtimeControl() string {
 // exactly what makes the cross-environment divergence observable.
 //
 // Go panics are recovered so a corrupted tree can still be inspected.
-func evalSnapshot(env *lisp.LEnv, exprs []*lisp.LVal) (snaps []string, panicked any) {
-	defer func() { panicked = recover() }()
-	for _, e := range exprs {
-		snaps = append(snaps, env.EvalContext(context.Background(), e).String())
-	}
-	return snaps, nil
+func evalSnapshot(env *lisp.LEnv, exprs []*lisp.LVal) ([]string, any) {
+	var snaps []string
+	var panicked any
+	func() {
+		defer func() { panicked = recover() }()
+		for _, e := range exprs {
+			snaps = append(snaps, env.EvalContext(context.Background(), e).String())
+		}
+	}()
+	return snaps, panicked
 }
 
 // TestGetDoesNotCorruptLiteral is the direct regression test for the four

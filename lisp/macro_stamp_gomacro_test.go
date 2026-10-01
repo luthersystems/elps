@@ -47,7 +47,10 @@ func newGoMacroEnv(t *testing.T) *lisp.LEnv {
 // and attaches the expansion metadata to the copies, and the macro's own
 // nodes stay unlocated.
 func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
-	run := func(t *testing.T, debugger lisp.Debugger) (fresh []*lisp.LVal, arg *lisp.LVal, result *lisp.LVal) {
+	run := func(t *testing.T, debugger lisp.Debugger) ([]*lisp.LVal, *lisp.LVal, *lisp.LVal) {
+		var fresh []*lisp.LVal
+		var arg *lisp.LVal
+		var result *lisp.LVal
 		env := newGoMacroEnv(t)
 		env.Runtime.Debugger = debugger
 		// (m X) expands to (lisp:+ X (lisp:* 2 3)): four fresh nodes and

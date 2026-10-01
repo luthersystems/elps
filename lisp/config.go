@@ -114,15 +114,19 @@ func WithMaxTailIterations(n int) Config {
 // fn having the same signature as a Config WithLoader allows a Loader to
 // function more like the LEnv methods LoadFile, LoadString, etc.
 func WithLoader(fn Loader) Config {
-	return func(env *LEnv) (lerr *LVal) {
-		pkg := env.Runtime.Package.Name
-		defer func() {
-			e := env.InPackage(Symbol(pkg))
-			if e.Type == LError && lerr.Type != LError {
-				lerr = e
-			}
+	return func(env *LEnv) *LVal {
+		var lerr *LVal
+		func() {
+			pkg := env.Runtime.Package.Name
+			defer func() {
+				e := env.InPackage(Symbol(pkg))
+				if e.Type == LError && lerr.Type != LError {
+					lerr = e
+				}
+			}()
+			lerr = fn(env)
 		}()
-		return fn(env)
+		return lerr
 	}
 }
 

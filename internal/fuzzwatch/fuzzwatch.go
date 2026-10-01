@@ -332,7 +332,8 @@ func (m *monitor) observe(gap, nominal time.Duration) {
 // It computes; it does not accumulate. Nothing here writes to the charged
 // totals, so the tick that eventually arrives charges the same stall exactly
 // once and a caller folding this into a Report cannot double-count it.
-func (m *monitor) pending(now time.Time, nominal time.Duration) (gap, lost time.Duration) {
+func (m *monitor) pending(now time.Time, nominal time.Duration) (time.Duration, time.Duration) {
+	var gap time.Duration
 	if m.origin.IsZero() {
 		// Never started -- no heartbeat, and no instant at which the process
 		// was known to be running. Nothing may be claimed.

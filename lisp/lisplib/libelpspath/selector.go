@@ -509,7 +509,7 @@ func selectorBody(selector string) string {
 // a cut selector rather than parse its prefix must TrimSpace first, as
 // selectorPaths does -- otherwise a trailing "\n" reads as a discarded tail
 // when it is only trailing whitespace.
-func selectorBodyCut(selector string) (body, discarded string) {
+func selectorBodyCut(selector string) (string, string) {
 	if selector == "" || selector[0] != '.' {
 		return selector, ""
 	}

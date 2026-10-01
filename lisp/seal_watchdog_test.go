@@ -95,7 +95,7 @@ var sealWatchdogSink uint64
 // startSealWriteWatchdog launches the watchdog and returns a function
 // that stops it and waits for it to exit.  Started by TestMain next to
 // the singleton watchdog.
-func startSealWriteWatchdog() (stop func()) {
+func startSealWriteWatchdog() func() {
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -186,7 +186,7 @@ func sealWatchRead(v *LVal, depth int, budget *int, acc uint64) uint64 {
 // function that removes exactly those entries.  A registered tree is read
 // on every watchdog tick, which is what makes detection deterministic for
 // the guard-reversal red-proofs.
-func registerSealWatch(roots ...*LVal) (unregister func()) {
+func registerSealWatch(roots ...*LVal) func() {
 	sealWatchdogMu.Lock()
 	sealWatchExplicit = append(sealWatchExplicit, roots...)
 	sealWatchdogMu.Unlock()
@@ -221,7 +221,7 @@ func registerSealWatch(roots ...*LVal) (unregister func()) {
 // Only tests that are *about* sealed-node corruption may use this, and
 // they must restore the mutated bytes before resuming — the checked-mode
 // inspector's end-of-suite verification does not pause with the watchdog.
-func pauseSealWatchdog() (resume func()) {
+func pauseSealWatchdog() func() {
 	sealWatchdogMu.Lock()
 	return sealWatchdogMu.Unlock
 }

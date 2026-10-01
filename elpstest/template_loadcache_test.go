@@ -51,7 +51,7 @@ func (c *templateTopologyCache) Store(key string, source *lisp.CachedSource) {
 	c.stores[source.Name()]++
 }
 
-func (c *templateTopologyCache) counts(name string) (stores, hits int) {
+func (c *templateTopologyCache) counts(name string) (int, int) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.stores[name], c.hits[name]

@@ -148,9 +148,13 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 // ScanWorkspaceAll combines ScanWorkspaceFull and ScanWorkspaceDefinitions
 // into a single pass: each file is parsed once and all three results are
 // extracted from the same AST.
-func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, err error) {
+func ScanWorkspaceAll(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, error) {
+	var globals []ExternalSymbol
+	var pkgs map[string][]ExternalSymbol
+	var allDefs []ExternalSymbol
+	var err error
 	globals, pkgs, allDefs, _, err = ScanWorkspaceAllWithConfig(root, nil)
-	return
+	return globals, pkgs, allDefs, err
 }
 
 // ScanWorkspaceAllWithConfig is like ScanWorkspaceAll but accepts a
@@ -159,7 +163,8 @@ func ScanWorkspaceAll(root string) (globals []ExternalSymbol, pkgs map[string][]
 //
 // Delegates to PrescanWorkspace internally to avoid duplicating the
 // concurrent worker pool logic.
-func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, truncated bool, err error) {
+func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, bool, error) {
+	var err error
 	prescan, err := PrescanWorkspace(root, scanCfg)
 	if err != nil {
 		return nil, nil, nil, false, err
@@ -288,7 +293,9 @@ func scanFilePackage(exprs []*lisp.LVal) (string, int) {
 // Also returns loadOrder — the DFS traversal order of files, matching the
 // runtime's sequential load-file evaluation. Used to sort preamble forms
 // so workspace macros see definitions in the same order as the runtime.
-func buildLoadTree(mainPath string) (pkgMap map[string]string, loadOrder []string) {
+func buildLoadTree(mainPath string) (map[string]string, []string) {
+	var pkgMap map[string]string
+	var loadOrder []string
 	pkgMap = make(map[string]string)
 	visited := make(map[string]bool)
 	walkLoadFile(mainPath, lisp.DefaultUserPackage, pkgMap, visited, &loadOrder)
@@ -349,7 +356,14 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 // scanFileFull parses a file once and extracts exported globals, package-grouped
 // exports, all definitions, use-package declarations, raw defmacro AST nodes,
 // and the file's primary package ("" for bare files without in-package).
-func scanFileFull(source []byte, filename string) (globals []ExternalSymbol, pkgs map[string][]ExternalSymbol, allDefs []ExternalSymbol, pkgAll map[string][]ExternalSymbol, usePackages map[string][]string, preamble []*lisp.LVal, filePkg string, firstInPkgLine int) {
+func scanFileFull(source []byte, filename string) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, map[string][]ExternalSymbol, map[string][]string, []*lisp.LVal, string, int) {
+	var globals []ExternalSymbol
+	var pkgs map[string][]ExternalSymbol
+	var pkgAll map[string][]ExternalSymbol
+	var usePackages map[string][]string
+	var preamble []*lisp.LVal
+	var filePkg string
+	var firstInPkgLine int
 	s := token.NewScanner(filename, bytes.NewReader(source))
 	p := rdparser.New(s)
 

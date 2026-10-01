@@ -479,37 +479,40 @@ type goldenRecord struct {
 	After         string   `json:"input_after,omitempty"`
 }
 
-func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) (r goldenRecord) {
-	r.Name = name
-	r.Causes = []string{}
-	defer func() {
-		if p := recover(); p != nil {
-			r.Panic = fmt.Sprintf("%T: %v", p, p)
+func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) goldenRecord {
+	var r goldenRecord
+	func() {
+		r.Name = name
+		r.Causes = []string{}
+		defer func() {
+			if p := recover(); p != nil {
+				r.Panic = fmt.Sprintf("%T: %v", p, p)
+			}
+			if strings.Contains(name, "host-map-replace") || strings.Contains(name, "host-map-mutate") || strings.Contains(name, "cycle-before-boundary") {
+				for v, id := range in.sources {
+					if id == 1 {
+						r.After, _ = in.render(v)
+						break
+					}
+				}
+			}
+			r.Trace = append([]string{}, in.trace...)
+		}()
+		v, b, err := run()
+		if v != nil {
+			r.Output, _ = in.render(v)
+		} else if b != nil {
+			r.Output = string(b)
 		}
-		if strings.Contains(name, "host-map-replace") || strings.Contains(name, "host-map-mutate") || strings.Contains(name, "cycle-before-boundary") {
-			for v, id := range in.sources {
-				if id == 1 {
-					r.After, _ = in.render(v)
-					break
+		if err != nil {
+			r.Error, r.ErrorType = err.Error(), fmt.Sprintf("%T", err)
+			for _, name := range []string{"typed-limit", "charge", "host", "cycle", "depth", "operation-stopped"} {
+				if cause := causes[name]; cause != nil && errors.Is(err, cause) {
+					r.Causes = append(r.Causes, name)
 				}
 			}
 		}
-		r.Trace = append([]string{}, in.trace...)
 	}()
-	v, b, err := run()
-	if v != nil {
-		r.Output, _ = in.render(v)
-	} else if b != nil {
-		r.Output = string(b)
-	}
-	if err != nil {
-		r.Error, r.ErrorType = err.Error(), fmt.Sprintf("%T", err)
-		for _, name := range []string{"typed-limit", "charge", "host", "cycle", "depth", "operation-stopped"} {
-			if cause := causes[name]; cause != nil && errors.Is(err, cause) {
-				r.Causes = append(r.Causes, name)
-			}
-		}
-	}
 	return r
 }
 

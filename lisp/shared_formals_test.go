@@ -144,7 +144,9 @@ func describeLVal(v *lisp.LVal) string {
 // assertNoMutableSharing so TestCensusDetectsUnsealedFormalsSharing can run
 // the same census expecting a nonzero mutable count — the red-proof that
 // this walk actually fails when the sharing it polices occurs.
-func countSharing(seen1, seen2, allowed map[*lisp.LVal]bool) (mutableShared []*lisp.LVal, sealedShared int) {
+func countSharing(seen1, seen2, allowed map[*lisp.LVal]bool) ([]*lisp.LVal, int) {
+	var mutableShared []*lisp.LVal
+	var sealedShared int
 	for p := range seen1 {
 		if !seen2[p] || allowed[p] {
 			continue

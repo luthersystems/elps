@@ -39,7 +39,9 @@ func fillerTree(n int) *LVal {
 
 // countContainers returns the number of distinct containers reachable from
 // v and the number of container visits a tree walk would make.
-func countContainers(v *LVal) (distinct, paths int) {
+func countContainers(v *LVal) (int, int) {
+	var distinct int
+	var paths int
 	seen := map[*LVal]bool{}
 	var walk func(*LVal)
 	walk = func(v *LVal) {

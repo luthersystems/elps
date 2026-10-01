@@ -670,7 +670,7 @@ type MapPair struct {
 // MapPair cannot carry; dst is then returned unchanged and the caller must
 // fall back to MapEntries.  A map with no backing is empty.
 // AppendSortedPairs panics if v.Type is not LSortMap.
-func (v *LVal) AppendSortedPairs(dst []MapPair) (out []MapPair, ok bool) {
+func (v *LVal) AppendSortedPairs(dst []MapPair) ([]MapPair, bool) {
 	md := v.Map()
 	if md == nil || md.mapBacking == nil {
 		return dst, true
@@ -716,7 +716,7 @@ type MapKeyPair struct {
 // ok is false when v's backing is not one of the built-in maps; dst is
 // then returned unchanged and the caller must fall back to MapEntries.  A
 // map with no backing is empty.  It panics if v.Type is not LSortMap.
-func (v *LVal) AppendMapKeyPairs(dst []MapKeyPair) (out []MapKeyPair, ok bool) {
+func (v *LVal) AppendMapKeyPairs(dst []MapKeyPair) ([]MapKeyPair, bool) {
 	md := v.Map()
 	if md == nil || md.mapBacking == nil {
 		return dst, true

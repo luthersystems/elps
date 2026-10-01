@@ -295,7 +295,7 @@ func classifySymbol(
 	line, col int,
 	defs map[symbolKey]*analysis.Symbol,
 	refs map[symbolKey]*analysis.Symbol,
-) (tokenType int, modifiers int) {
+) (int, int) {
 	// Check if this is a keyword symbol (starts with :).
 	if strings.HasPrefix(name, ":") {
 		return semTokenVariable, 0
@@ -438,7 +438,9 @@ func (s *sourceText) byteAt(l, c int) (byte, bool) {
 // fallbackLen is used when the node has no usable end position, which the
 // fault-tolerant parser can in principle produce; it is the length the case in
 // question computed before this function existed.
-func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (line, col, length int) {
+func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (int, int, int) {
+	var line int
+	var col int
 	loc, _ := v.Source()
 	line = loc.Line - 1
 	col = max(loc.Col-1, 0)

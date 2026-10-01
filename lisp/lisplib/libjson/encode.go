@@ -554,7 +554,7 @@ func (enc *encoder) encodeLQuote(v *lisp.LVal, g encodeGuard) error {
 	return enc.encodeValue(v.Cells[0], g)
 }
 
-func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) (err error) {
+func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) error {
 	switch v.Cells[0].Len() {
 	case 0:
 		return enc.encodeValue(v.Cells[1].Cells[0], g)
@@ -578,7 +578,8 @@ var mapPairPool = sync.Pool{
 // into mapPairPool, so one unusually wide map does not pin its slice per P.
 const mapPairRetentionLimit = 1 << 12
 
-func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
+func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) error {
+	var err error
 	sp := mapPairPool.Get().(*[]lisp.MapPair)
 	pairs, ok := v.AppendSortedPairs((*sp)[:0])
 	defer func() {
@@ -611,7 +612,8 @@ func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) (err error) {
 // encodeSortMapEntries encodes a map through the generic pair list: a map
 // whose backing is an embedder's own Map implementation, or a stock map that
 // holds an int key (which AppendSortedPairs declines).
-func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) (err error) {
+func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) error {
+	var err error
 	ents := v.MapEntries()
 	if ents.Type == lisp.LError {
 		return lisp.GoError(ents)
@@ -705,7 +707,8 @@ func (enc *encoder) encodeLSExpr(v *lisp.LVal, g encodeGuard) error {
 	return enc.encodeSExpr(v.Cells, g)
 }
 
-func (enc *encoder) encodeSExpr(cells []*lisp.LVal, g encodeGuard) (err error) {
+func (enc *encoder) encodeSExpr(cells []*lisp.LVal, g encodeGuard) error {
+	var err error
 	enc.buf.WriteByte('[')
 	for i, v := range cells {
 		if i > 0 {
@@ -899,7 +902,8 @@ func (enc *encoder) encodeLInt(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeInt(v.Int)
 }
 
-func (enc *encoder) encodeInt(x int) (err error) {
+func (enc *encoder) encodeInt(x int) error {
+	var err error
 	b := strconv.AppendInt(enc.scratch[:0], int64(x), 10)
 	if enc.stringNums {
 		enc.buf.WriteByte('"')
@@ -975,7 +979,7 @@ func appendJSONFloat(b []byte, x float64) []byte {
 	return b
 }
 
-func (enc *encoder) encodeLBytes(v *lisp.LVal, g encodeGuard) (err error) {
+func (enc *encoder) encodeLBytes(v *lisp.LVal, g encodeGuard) error {
 	if b := v.Bytes(); b != nil {
 		if err := enc.reserve(g.budget, enc64.EncodedLen(len(b))+2); err != nil {
 			return err
@@ -986,7 +990,7 @@ func (enc *encoder) encodeLBytes(v *lisp.LVal, g encodeGuard) (err error) {
 
 var enc64 = base64.StdEncoding
 
-func (enc *encoder) encodeBytes(b []byte) (err error) {
+func (enc *encoder) encodeBytes(b []byte) error {
 	if b == nil {
 		// This is needed for backwards compatability with v1.13.0 which would
 		// use encoding/json to marshal all []byte values.
@@ -1019,7 +1023,7 @@ func (enc *encoder) encodeBytes(b []byte) (err error) {
 	return nil
 }
 
-func (enc *encoder) encodeLSymbol(v *lisp.LVal, _ encodeGuard) (err error) {
+func (enc *encoder) encodeLSymbol(v *lisp.LVal, _ encodeGuard) error {
 	if v.Str == lisp.TrueSymbol || v.Str == lisp.FalseSymbol {
 		enc.buf.WriteString(v.Str)
 		return nil

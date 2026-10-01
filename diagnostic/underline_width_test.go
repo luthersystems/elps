@@ -35,7 +35,7 @@ import (
 // renderOneSpan renders a single-span diagnostic over src and returns the
 // printed source line and the caret line beneath it, both with the gutter
 // stripped.  Colour is off, so the lines contain no escape sequences.
-func renderOneSpan(t *testing.T, src string, span Span) (srcLine, caretLine string) {
+func renderOneSpan(t *testing.T, src string, span Span) (string, string) {
 	t.Helper()
 	r := testRenderer(map[string]string{span.File: src})
 	var buf bytes.Buffer

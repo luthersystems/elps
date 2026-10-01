@@ -249,7 +249,7 @@ func (r *Runtime) ResetStepBudget() {
 // StepBudget returns the shared step budget (0 = unlimited) and the steps
 // charged against it since it was last set or reset.  Usage saturates at
 // math.MaxInt64.
-func (r *Runtime) StepBudget() (budget, used int64) {
+func (r *Runtime) StepBudget() (int64, int64) {
 	return r.stepBudget, r.stepBudgetUsed
 }
 
@@ -618,7 +618,9 @@ func (c *atomicCounter) Store(n uint64) { c.v.Store(n) }
 // let a library keep Lisp-controlled modes without writing a package, which
 // may be frozen (TemplateWithFrozenPackages). SettingValue holds values of
 // other types under the same rules.
-func (rt *Runtime) Setting(name string) (value, ok bool) {
+func (rt *Runtime) Setting(name string) (bool, bool) {
+	var value bool
+	var ok bool
 	value, ok = rt.settings[name]
 	return value, ok
 }

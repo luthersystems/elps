@@ -68,7 +68,11 @@ const (
 // renameOverLimitFixture stands up the reviewer's sequence: a closed file on
 // disk indexed while small, and an open document that defines the same symbol
 // and from which the rename is driven.
-func renameOverLimitFixture(t *testing.T, enc positionEncoding) (s *Server, openURI, closedURI, closedPath string) {
+func renameOverLimitFixture(t *testing.T, enc positionEncoding) (*Server, string, string, string) {
+	var s *Server
+	var openURI string
+	var closedURI string
+	var closedPath string
 	t.Helper()
 	s = renameTestServer(enc)
 	setTestAnalysisCfg(s, &analysis.Config{})

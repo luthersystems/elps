@@ -23,7 +23,9 @@ import (
 
 // aliasedHeaders binds a and b in env to two headers over one payload, from
 // lisp source, and checks the fixture actually has that shape.
-func aliasedHeaders(t *testing.T, env *lisp.LEnv, src string) (a, b *lisp.LVal) {
+func aliasedHeaders(t *testing.T, env *lisp.LEnv, src string) (*lisp.LVal, *lisp.LVal) {
+	var a *lisp.LVal
+	var b *lisp.LVal
 	t.Helper()
 	if rc := env.LoadString("alias.lisp", src); rc.Type == lisp.LError {
 		t.Fatalf("fixture: %v", rc)

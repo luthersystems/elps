@@ -26,6 +26,7 @@ linters:
     - nilerr
     - noctx
     - nolintlint
+    - nonamedreturns
     - perfsprint
     - predeclared
     - testifylint
@@ -50,6 +51,12 @@ linters:
       # collapses identical messages, so a plain run under-reports these as
       # 50/24. Use `issues.max-same-issues: 0` to see the real counts.
       default-signifies-exhaustive: true
+    nonamedreturns:
+      # A deferred closure that writes a named result is the one case where
+      # result names change behaviour. Report it too: such a function keeps
+      # its result in a local and wraps the deferring body in a func literal
+      # (#781).
+      report-error-in-defer: true
     govet:
       enable:
         # fieldalignment guards the struct layout of the interpreter. LVal,

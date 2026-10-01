@@ -40,7 +40,7 @@ func (m PathMethod) String() string {
 // applyMethod runs one operation and renders the outcome as a comparable
 // string. Errors are reported as a bare marker rather than their message;
 // what matters to these tests is which inputs fail, not the prose.
-func applyMethod(path Path, method PathMethod, in string) (result string, failed bool) {
+func applyMethod(path Path, method PathMethod, in string) (string, bool) {
 	lval := libjson.Load([]byte(in), false)
 	newVal := lisp.String("REPLACEMENT")
 

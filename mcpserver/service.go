@@ -1150,7 +1150,7 @@ func getWorkspaceRefs(state *workspaceState, key string, excludeFile string) []a
 	return filtered
 }
 
-func splitPackageQualified(prefix string) (pkg, partial string, ok bool) {
+func splitPackageQualified(prefix string) (string, string, bool) {
 	if strings.HasPrefix(prefix, ":") {
 		return "", "", false
 	}

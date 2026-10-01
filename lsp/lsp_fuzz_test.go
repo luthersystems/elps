@@ -573,7 +573,9 @@ func (s *session) decode(chunk []byte) (lspOp, opArgs) {
 // a duplicating script holds documents of fuzzMaxContentBytes: splitting
 // 16 MiB of "0\n" allocates 8M string headers (128 MiB) per op, which was
 // the harness's own dominant cost once the server stopped parsing.
-func lineStats(content string) (nlines, width int) {
+func lineStats(content string) (int, int) {
+	var nlines int
+	var width int
 	nlines, width = 1, 1
 	start := 0
 	for i := range len(content) {

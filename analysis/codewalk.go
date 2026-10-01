@@ -313,7 +313,7 @@ func (a *analyzer) defineWalkSymbol(n *codewalk.Node, scope *Scope, pkg string) 
 // walked with another CodeWalker so the depth cap counts all nested expansions,
 // not just a chain of heads. Prescan shares the expansion cache, and opaque
 // calls retain the original double reference to an unexpanded user macro.
-func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (descend, opaque bool, pkg string) {
+func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (bool, bool, string) {
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
 		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)

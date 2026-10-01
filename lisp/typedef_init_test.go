@@ -35,18 +35,22 @@ import (
 
 // requirePanics runs fn and returns the recovered value, failing if fn did
 // not panic.
-func requirePanics(t *testing.T, what string, fn func()) (recovered any) {
-	t.Helper()
-	defer func() {
-		recovered = recover()
-		if recovered == nil {
-			t.Errorf("%s: expected a panic, got none;"+
-				" if the nil guards were added deliberately, InitializeTypedef's and"+
-				" LEnv.New's doc comments must stop saying it panics (issue #433)", what)
-		}
+func requirePanics(t *testing.T, what string, fn func()) any {
+	var recovered any
+	func() {
+		t.Helper()
+		defer func() {
+			recovered = recover()
+			if recovered == nil {
+				t.Errorf("%s: expected a panic, got none;"+
+					" if the nil guards were added deliberately, InitializeTypedef's and"+
+					" LEnv.New's doc comments must stop saying it panics (issue #433)", what)
+			}
+		}()
+		fn()
+		recovered = nil
 	}()
-	fn()
-	return nil
+	return recovered
 }
 
 // TestInitializeTypedefRequiresRuntimePackage is a GUARD: it passes on main.

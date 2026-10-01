@@ -45,7 +45,7 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 
 // splitPackageQualified checks if a prefix looks like "pkg:partial" and
 // splits it. Returns false if there's no package qualifier.
-func splitPackageQualified(prefix string) (pkg, partial string, ok bool) {
+func splitPackageQualified(prefix string) (string, string, bool) {
 	// Keywords start with ':' — don't treat as package qualifier.
 	if strings.HasPrefix(prefix, ":") {
 		return "", "", false

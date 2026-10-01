@@ -19,9 +19,9 @@ import (
 
 // walkTree returns a two-level tree and its interior node.  Four distinct
 // nodes: root, inner, and inner's two leaves.
-func walkTree() (root, inner *LVal) {
-	inner = SExpr([]*LVal{Int(2), Int(3)})
-	root = SExpr([]*LVal{inner, Int(1)})
+func walkTree() (*LVal, *LVal) {
+	inner := SExpr([]*LVal{Int(2), Int(3)})
+	root := SExpr([]*LVal{inner, Int(1)})
 	return root, inner
 }
 

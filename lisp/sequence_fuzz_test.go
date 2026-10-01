@@ -117,7 +117,9 @@ var sequenceTypeSpecs = []string{"list", "vector", "bytes", "string", "nonsense"
 
 // runSequenceSequence executes one generated operation sequence.  Named,
 // not inline, so the coverage gate drives the identical code path.
-func runSequenceSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (wanted, ran int) {
+func runSequenceSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+	var wanted int
+	var ran int
 	t.Helper()
 
 	// The base sequence, plus a free-form value so an operation can be

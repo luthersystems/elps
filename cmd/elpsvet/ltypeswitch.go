@@ -48,7 +48,9 @@ const libjsonPkgPath = "github.com/luthersystems/elps/lisp/lisplib/libjson"
 
 // lTypeSwitchFuncs reports whether a file is in scope and, if so, which
 // functions are checked (nil means all).
-func lTypeSwitchFuncs(pkg, filename string) (funcs []string, ok bool) {
+func lTypeSwitchFuncs(pkg, filename string) ([]string, bool) {
+	var funcs []string
+	var ok bool
 	funcs, ok = lTypeSwitchScope[pkg+"/"+filepath.Base(filename)]
 	return funcs, ok
 }

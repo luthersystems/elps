@@ -124,7 +124,8 @@ func (m jsonMap) Keys() *LVal {
 	return QExpr(cells)
 }
 
-func jsonMapLVal(x any) (v *LVal) {
+func jsonMapLVal(x any) *LVal {
+	var v *LVal
 	var ok bool
 	if v, ok = x.(*LVal); ok {
 		return v

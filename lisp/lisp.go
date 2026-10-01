@@ -569,7 +569,9 @@ func Bytes(b []byte) *LVal {
 
 // splitSymbolParts returns the namespace, name and number of colon-separated
 // parts without allocating. An unqualified symbol has an empty namespace.
-func splitSymbolParts(s string) (ns, name string, n int) {
+func splitSymbolParts(s string) (string, string, int) {
+	var ns string
+	var name string
 	i := strings.IndexByte(s, ':')
 	if i < 0 {
 		return "", s, 1

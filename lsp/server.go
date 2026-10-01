@@ -597,7 +597,8 @@ const (
 // they are NOT the same: an over-limit file leaves the index exactly as if the
 // scan had skipped it, which means purging what an earlier under-limit scan
 // put there; a missing or unreadable one leaves the tables alone (elps#611).
-func (s *Server) readWorkspaceFile(path string) (source []byte, status workspaceReadStatus) {
+func (s *Server) readWorkspaceFile(path string) ([]byte, workspaceReadStatus) {
+	var source []byte
 	maxBytes := s.scanConfig().EffectiveMaxFileBytes()
 	info, err := os.Stat(path)
 	if err != nil || info.IsDir() {

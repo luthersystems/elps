@@ -911,33 +911,44 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // InitializeTypedef, which InitializeUserEnv calls, is a step inside it and
 // not a substitute for it: it panics on an environment InitializeUserEnv has
 // not already established.  See its doc comment, and issue #433.
-func (env *LEnv) New(typ *LVal, args *LVal) (result *LVal) {
-	defer env.recoverPanic(&result)
-	if typ.Type != LTaggedVal {
-		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
-	}
-	if typ.Str != env.Runtime.Registry.Lang+":typedef" {
-		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
-	}
-	if args.Type != LSExpr {
-		return env.Errorf("second argument is not a list: %v", GetType(args))
-	}
-	tname, ctor, lerr := env.typedefFields(typ)
-	if lerr != nil {
-		return lerr
-	}
-	v := env.FunCall(ctor, args)
-	if v.Type == LError {
-		return v
-	}
-	return env.TaggedValue(tname, v)
+func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		if typ.Type != LTaggedVal {
+			result = env.Errorf("first argument is not a typedef: %v", GetType(typ))
+			return
+		}
+		if typ.Str != env.Runtime.Registry.Lang+":typedef" {
+			result = env.Errorf("first argument is not a typedef: %v", GetType(typ))
+			return
+		}
+		if args.Type != LSExpr {
+			result = env.Errorf("second argument is not a list: %v", GetType(args))
+			return
+		}
+		tname, ctor, lerr := env.typedefFields(typ)
+		if lerr != nil {
+			result = lerr
+			return
+		}
+		v := env.FunCall(ctor, args)
+		if v.Type == LError {
+			result = v
+			return
+		}
+		result = env.TaggedValue(tname, v)
+	}()
+	return result
 }
 
 // typedefFields checks the descriptor before indexing or invoking it.
 // Lisp can construct a value tagged lisp:typedef with arbitrary user data,
 // or mutate an existing descriptor through user-data. The tag alone is not
 // proof that the value is a usable type definition (docs/lang.md#user-defined-types).
-func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
+func (env *LEnv) typedefFields(typ *LVal) (*LVal, *LVal, *LVal) {
+	var name *LVal
+	var ctor *LVal
 	if len(typ.Cells) != 1 || typ.Cells[0] == nil || typ.Cells[0].Type != LSExpr || len(typ.Cells[0].Cells) != 2 {
 		return nil, nil, env.Errorf("invalid typedef: expected a name and constructor")
 	}
@@ -1400,45 +1411,52 @@ func (env *LEnv) Error(msg ...any) *LVal {
 //
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
-func (env *LEnv) ErrorCondition(condition string, v ...any) (result *LVal) {
-	// Error/As/Unwrap are host hooks, including when a source reader returns
-	// an error outside env.eval. Contain faults at this boundary as well.
-	defer env.recoverPanic(&result)
+func (env *LEnv) ErrorCondition(condition string, v ...any) *LVal {
+	var result *LVal
+	func() {
+		// Error/As/Unwrap are host hooks, including when a source reader returns
+		// an error outside env.eval. Contain faults at this boundary as well.
+		defer env.recoverPanic(&result)
 
-	narg := len(v)
-	cells := make([]*LVal, 0, len(v))
-	for _, v := range v {
-		switch v := v.(type) {
-		case *LVal:
-			cells = append(cells, v)
-		case error:
-			if narg > 1 {
-				return ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
+		narg := len(v)
+		cells := make([]*LVal, 0, len(v))
+		for _, v := range v {
+			switch v := v.(type) {
+			case *LVal:
+				cells = append(cells, v)
+			case error:
+				if narg > 1 {
+					result = ErrorConditionf("runtime", "invalid error argument: cannot mix error and *LVal arguments")
+					return
+				}
+				lerr := ErrorCondition(condition, v)
+				if failure := env.ErrorAssociate(lerr); failure != nil {
+					result = failure
+					return
+				}
+				result = env.notifyError(lerr)
+				return
+			case string:
+				cells = append(cells, String(v))
+			default:
+				cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: the kernel only formats condition data, never writes through it, and publication still classifies the value by its dynamic type before any template could share it
 			}
-			lerr := ErrorCondition(condition, v)
-			if failure := env.ErrorAssociate(lerr); failure != nil {
-				return failure
-			}
-			return env.notifyError(lerr)
-		case string:
-			cells = append(cells, String(v))
-		default:
-			cells = append(cells, Native(v)) //elpsvet:allow-native error-data cell holding a caller's arbitrary condition argument: the kernel only formats condition data, never writes through it, and publication still classifies the value by its dynamic type before any template could share it
 		}
-	}
-	lerr := &LVal{
-		Type: LError,
-		// Copied, not aliased: the error outlives the evaluator's current
-		// location and must not move when env.loc's pointee does.  The
-		// evaluator (or a producing parser) may still fix that Location up
-		// in place.  Same reasoning as ErrorAssociate below (issue #366).
-		// Copy preserves nil, which is the "<native code>" convention.
-		source: env.loc.Copy(),
-		Str:    condition,
-		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-		Cells:  cells,
-	}
-	return env.notifyError(lerr)
+		lerr := &LVal{
+			Type: LError,
+			// Copied, not aliased: the error outlives the evaluator's current
+			// location and must not move when env.loc's pointee does.  The
+			// evaluator (or a producing parser) may still fix that Location up
+			// in place.  Same reasoning as ErrorAssociate below (issue #366).
+			// Copy preserves nil, which is the "<native code>" convention.
+			source: env.loc.Copy(),
+			Str:    condition,
+			Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
+			Cells:  cells,
+		}
+		result = env.notifyError(lerr)
+	}()
+	return result
 }
 
 // Errorf returns an LError value with a formatted error message.
@@ -1485,14 +1503,18 @@ func (env *LEnv) newErrorConditionf(condition string, format string, v ...any) *
 
 // notifyError is a host-callback boundary. A broken observer produces a
 // marked host fault instead of re-entering itself from panic recovery.
-func (env *LEnv) notifyError(lerr *LVal) (result *LVal) {
-	defer env.recoverPanic(&result)
-	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-		if d.OnError(env, lerr) {
-			d.WaitIfPaused(env, lerr)
+func (env *LEnv) notifyError(lerr *LVal) *LVal {
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+			if d.OnError(env, lerr) {
+				d.WaitIfPaused(env, lerr)
+			}
 		}
-	}
-	return lerr
+		result = lerr
+	}()
+	return result
 }
 
 // ErrorAssociate associates the LError value lerr with env's current call
@@ -1688,123 +1710,145 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 // NOTE:  eval shouldn't unquote v during evaluation -- a difference between
 // Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
-func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
-	env.Runtime.evalNesting++
-	defer func() {
-		env.Runtime.evalNesting--
-		if r := recover(); r != nil {
-			result = env.panicError(r)
+func (env *LEnv) eval(ctx context.Context, v *LVal) *LVal {
+	var result *LVal
+	func() {
+		env.Runtime.evalNesting++
+		defer func() {
+			env.Runtime.evalNesting--
+			if r := recover(); r != nil {
+				result = env.panicError(r)
+			}
+		}()
+		// Ownership check (elpscheck builds only; no-op otherwise): eval is the
+		// funnel every expression passes through, so the first evaluation of a
+		// value adopts it for this Runtime and any later evaluation under a
+		// different Runtime panics.  Placed after the deferred recover so the
+		// evalNesting counter stays balanced when the check panics.
+		checkOwnership(env.Runtime, v)
+		if env.Runtime.evalNestingExceeded() {
+			result = env.ErrorConditionf(CondEvalNestingExceeded,
+				"evaluation nesting depth exceeded maximum: %d"+
+					" (expressions nested this deeply consume Go stack without pushing"+
+					" call frames, so the limit stops the Go runtime from aborting the"+
+					" process with an unrecoverable stack overflow; raise or disable it"+
+					" with WithMaxEvalNesting)", env.Runtime.evalNesting)
+			return
 		}
-	}()
-	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
-	// funnel every expression passes through, so the first evaluation of a
-	// value adopts it for this Runtime and any later evaluation under a
-	// different Runtime panics.  Placed after the deferred recover so the
-	// evalNesting counter stays balanced when the check panics.
-	checkOwnership(env.Runtime, v)
-	if env.Runtime.evalNestingExceeded() {
-		return env.ErrorConditionf(CondEvalNestingExceeded,
-			"evaluation nesting depth exceeded maximum: %d"+
-				" (expressions nested this deeply consume Go stack without pushing"+
-				" call frames, so the limit stops the Go runtime from aborting the"+
-				" process with an unrecoverable stack overflow; raise or disable it"+
-				" with WithMaxEvalNesting)", env.Runtime.evalNesting)
-	}
-	macroDepth := 0
-eval:
-	if lerr := env.checkLimits(ctx); lerr != nil {
-		return lerr
-	}
-	if v.spliced {
-		return env.Errorf("spliced value used as expression")
-	}
-	env.loc = v.source
-	if v.source != nil {
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			func() {
-				// Protocol renderers inspect Context while this environment is
-				// paused, including outside a builtin's context bridge.
-				previous := env.evalCtx
-				env.evalCtx = ctx
-				defer func() { env.evalCtx = previous }()
-				if d.OnEval(env, v) {
+		macroDepth := 0
+	eval:
+		if lerr := env.checkLimits(ctx); lerr != nil {
+			result = lerr
+			return
+		}
+		if v.spliced {
+			result = env.Errorf("spliced value used as expression")
+			return
+		}
+		env.loc = v.source
+		if v.source != nil {
+			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
+				func() {
+					// Protocol renderers inspect Context while this environment is
+					// paused, including outside a builtin's context bridge.
+					previous := env.evalCtx
+					env.evalCtx = ctx
+					defer func() { env.evalCtx = previous }()
+					if d.OnEval(env, v) {
+						d.WaitIfPaused(env, v)
+					}
+				}()
+			}
+		}
+		if v.quoted {
+			result = v
+			return
+		}
+		switch v.Type {
+		case LSymbol:
+			colonIdx := strings.IndexByte(v.Str, ':')
+			if colonIdx < 0 {
+				// No colon — simple unqualified symbol (the common case).
+				result = env.Get(v)
+				return
+			}
+			if colonIdx == 0 {
+				// Keyword like :foo
+				result = v
+				return
+			}
+			// Qualified symbol like pkg:name — check for extra colons.
+			ns := v.Str[:colonIdx]
+			name := v.Str[colonIdx+1:]
+			if strings.IndexByte(name, ':') >= 0 {
+				result = env.Errorf("illegal symbol: %q", v.Str)
+				return
+			}
+			pkg := env.Runtime.Registry.packages[ns]
+			if pkg == nil {
+				result = env.Errorf("unknown package: %q", ns)
+				return
+			}
+			lerr := pkg.Get(Symbol(name))
+			if lerr.Type == LError {
+				if err := env.ErrorAssociate(lerr); err != nil {
+					result = err
+					return
+				}
+			}
+			result = lerr
+			return
+		case LSExpr:
+			res := env.evalSExpr(ctx, v)
+			// Post-call check: after a function call returns, the stack
+			// frame has been popped and depth has decreased. If the debugger
+			// is stepping out, this is where we catch tail-position returns
+			// that would otherwise unwind without hitting OnEval.
+			if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
+				if d.AfterFunCall(env) {
 					d.WaitIfPaused(env, v)
 				}
-			}()
-		}
-	}
-	if v.quoted {
-		return v
-	}
-	switch v.Type {
-	case LSymbol:
-		colonIdx := strings.IndexByte(v.Str, ':')
-		if colonIdx < 0 {
-			// No colon — simple unqualified symbol (the common case).
-			return env.Get(v)
-		}
-		if colonIdx == 0 {
-			// Keyword like :foo
-			return v
-		}
-		// Qualified symbol like pkg:name — check for extra colons.
-		ns := v.Str[:colonIdx]
-		name := v.Str[colonIdx+1:]
-		if strings.IndexByte(name, ':') >= 0 {
-			return env.Errorf("illegal symbol: %q", v.Str)
-		}
-		pkg := env.Runtime.Registry.packages[ns]
-		if pkg == nil {
-			return env.Errorf("unknown package: %q", ns)
-		}
-		lerr := pkg.Get(Symbol(name))
-		if lerr.Type == LError {
-			if err := env.ErrorAssociate(lerr); err != nil {
-				return err
 			}
-		}
-		return lerr
-	case LSExpr:
-		res := env.evalSExpr(ctx, v)
-		// Post-call check: after a function call returns, the stack
-		// frame has been popped and depth has decreased. If the debugger
-		// is stepping out, this is where we catch tail-position returns
-		// that would otherwise unwind without hitting OnEval.
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
-			if d.AfterFunCall(env) {
-				d.WaitIfPaused(env, v)
+			if res.Type == LMarkMacExpand {
+				// A macro was just expanded and returned an unevaluated
+				// expression.  We have to evaluate the result before we return.
+				macroDepth++
+				if macroDepth > env.Runtime.MaxMacroExpansions() {
+					result = env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
+					return
+				}
+				v = res.Cells[0]
+				goto eval
 			}
-		}
-		if res.Type == LMarkMacExpand {
-			// A macro was just expanded and returned an unevaluated
-			// expression.  We have to evaluate the result before we return.
-			macroDepth++
-			if macroDepth > env.Runtime.MaxMacroExpansions() {
-				return env.Errorf("macro expansion depth exceeded (%d expansions)", macroDepth)
+			if res.Type == LError {
+				if err := env.ErrorAssociate(res); err != nil {
+					result = err
+					return
+				}
 			}
-			v = res.Cells[0]
+			result = res
+			return
+		case LQuote:
+			// this quote was unquoted... eval the underlying value
+			v = v.Cells[0]
 			goto eval
+		default:
+			result = v
+			return
 		}
-		if res.Type == LError {
-			if err := env.ErrorAssociate(res); err != nil {
-				return err
-			}
-		}
-		return res
-	case LQuote:
-		// this quote was unquoted... eval the underlying value
-		v = v.Cells[0]
-		goto eval
-	default:
-		return v
-	}
+	}()
+	return result
 }
 
 // EvalSExpr evaluates s and returns the resulting LVal.
-func (env *LEnv) EvalSExpr(s *LVal) (result *LVal) {
+func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.evalSExpr(env.evalCtx, s)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.evalSExpr(env.evalCtx, s)
+	}()
+	return result
 }
 
 func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
@@ -1838,10 +1882,14 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 }
 
 // MacroCall invokes macro fun with argument list args.
-func (env *LEnv) MacroCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.macroCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.macroCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
@@ -1960,10 +2008,14 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 }
 
 // SpecialOpCall invokes special operator fun with the argument list args.
-func (env *LEnv) SpecialOpCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.specialOpCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.specialOpCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
@@ -2023,10 +2075,14 @@ callf:
 // FunCall invokes regular function fun with the argument list args.
 //
 // Deprecated: Use FunCallContext for cancellation and timeout support.
-func (env *LEnv) FunCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.funCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.funCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 // callValueFunction invokes an already-evaluated callback, error handler or
@@ -2103,10 +2159,14 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 // FunCallContext invokes regular function fun with args under the given
 // context.  If ctx is cancelled or its deadline expires during the call,
 // a CondContextCancelled error is returned.
-func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) (result *LVal) {
+func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.funCall(ctx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.funCall(ctx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) trace(fun *LVal) func() {
@@ -2184,7 +2244,7 @@ callf:
 	return r
 }
 
-func extractMarkTailRec(mark *LVal) (fun, args *LVal) {
+func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {
 	return mark.tailRecFun(), mark.tailRecArgs()
 }
 
@@ -2193,7 +2253,7 @@ func extractMarkTailRec(mark *LVal) (fun, args *LVal) {
 // next call.
 //
 // mark must be LMarkTailRec
-func decrementMarkTailRec(mark *LVal) (done bool) {
+func decrementMarkTailRec(mark *LVal) bool {
 	if len(mark.Cells) != 4 {
 		// NOT LISP-REACHABLE (#367): markTailRec is the only producer of an
 		// LMarkTailRec and it always builds exactly four cells; the mark is
