@@ -16,7 +16,6 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/luthersystems/elps/internal/valwalk"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -40,32 +39,61 @@ func Canonize(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 	w := canonWalkerPool.Get().(*canonWalker)
 	w.cfg = newTypedConfig(opts)
 	defer func() {
-		clear(w.frames[:cap(w.frames)])
-		w.frames = w.frames[:0]
+		clear(w.edges[:cap(w.edges)])
+		w.edges = w.edges[:0]
+		clear(w.path)
 		clear(w.nativePath)
 		w.cfg = typedConfig{}
-		w.walk = nil
 		w.values, w.bytes, w.charged = 0, 0, 0
 		canonWalkerPool.Put(w)
 	}()
 	w.cfg.maxDepth = min(w.cfg.maxDepth, DefaultTypedMaxDepth)
 	w.cfg.maxBytes = min(w.cfg.maxBytes, DefaultTypedMaxBytes)
 	w.cfg.maxValues = min(w.cfg.maxValues, DefaultTypedMaxValues)
-	return valwalk.Walk(v, w)
+	return w.value(v, 0, "")
 }
 
-var canonWalkerPool = sync.Pool{New: func() any { return &canonWalker{} }}
+var canonWalkerPool = sync.Pool{New: func() any {
+	return &canonWalker{path: make(map[*lisp.LVal]bool)}
+}}
 
 type canonWalker struct {
-	walk       *valwalk.Walker[*lisp.LVal]
+	edges      []canonPathEdge
+	path       map[*lisp.LVal]bool
 	nativePath map[reflect.Value]bool
-	frames     []canonFrame
 	cfg        typedConfig
-	childIndex int
 	values     int
 	bytes      int
 	charged    int
-	child      bool
+}
+
+// canonPathEdge retains path data until an error needs its text.
+type canonPathEdge struct {
+	key    string
+	index  int
+	mapKey bool
+}
+
+func (w *canonWalker) resolvePath(path string) string {
+	if path != "" {
+		return path
+	}
+	return w.renderPath(len(w.edges))
+}
+
+func (w *canonWalker) renderPath(n int) string {
+	var path strings.Builder
+	path.WriteByte('$')
+	for _, edge := range w.edges[:n] {
+		path.WriteByte('[')
+		if edge.mapKey {
+			path.WriteString(strconv.Quote(edge.key))
+		} else {
+			path.WriteString(strconv.Itoa(edge.index))
+		}
+		path.WriteByte(']')
+	}
+	return path.String()
 }
 
 // Canonize rejection data is independent of its human-readable message.
@@ -170,7 +198,16 @@ func (w *canonWalker) text(s, path string, v *lisp.LVal) (*lisp.LVal, error) {
 	return lisp.String(strings.Clone(s)), nil
 }
 
-func (w *canonWalker) scalar(v *lisp.LVal, path string) (*lisp.LVal, error) {
+func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, error) {
+	if err := w.count(path); err != nil {
+		return nil, err
+	}
+	if v == nil {
+		return nil, w.fail(path, "unsupported", "unsupported Go nil value", v)
+	}
+	if w.path[v] {
+		return nil, w.fail(path, "cycle", "cycle in value", v)
+	}
 	switch v.Type {
 	case lisp.LInt:
 		if !exactInt(int64(v.Int)) {
@@ -221,148 +258,48 @@ func (w *canonWalker) scalar(v *lisp.LVal, path string) (*lisp.LVal, error) {
 		}
 	case lisp.LBytes:
 		return w.byteString(v.Bytes(), path)
-	default:
-		return nil, w.fail(path, "unsupported", "unsupported value", v)
-	}
-}
-
-type canonFrame struct {
-	pairs               []lisp.MapKeyPair
-	keys                []*lisp.LVal
-	object, transparent bool
-}
-
-func canonIndexEdge(_ *lisp.LVal, i int) string { return "[" + strconv.Itoa(i) + "]" }
-
-func (w *canonWalker) resolvePath(path string) string {
-	if path != "" {
-		return path
-	}
-	path = "$" + w.walk.Path()
-	if w.child {
-		f := w.frames[len(w.frames)-1]
-		path += "[" + strconv.Quote(f.pairs[w.childIndex].Key) + "]"
-	}
-	return path
-}
-
-func (w *canonWalker) Visit(walk *valwalk.Walker[*lisp.LVal], v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
-	w.walk, w.child = walk, false
-	if err := w.count(""); err != nil {
-		return valwalk.Step{}, nil, err
-	}
-	if v == nil {
-		return valwalk.Step{}, nil, w.fail("", "unsupported", "unsupported Go nil value", v)
-	}
-	if walk.OnPath(v) {
-		return valwalk.Step{}, nil, w.fail("", "cycle", "cycle in value", v)
-	}
-	shape := lisp.ShapeOf(v.Type)
-	switch shape {
-	case lisp.ShapeLeaf:
-		out, err := w.scalar(v, "")
-		return valwalk.Step{Done: true}, out, err
-	case lisp.ShapeNative:
-		out, err := w.native(reflect.ValueOf(v.Native), walk.Depth(), w.resolvePath(""))
-		return valwalk.Step{Done: true}, out, err
-	case lisp.ShapeList, lisp.ShapeArray, lisp.ShapeTagged, lisp.ShapeMap:
+	case lisp.LNative:
+		return w.native(reflect.ValueOf(v.Native), depth, w.resolvePath(path))
+	case lisp.LSExpr, lisp.LArray, lisp.LQuote, lisp.LTaggedVal, lisp.LSortMap:
 		if v.IsNil() {
-			out, err := w.null("")
-			return valwalk.Step{Done: true}, out, err
+			return w.null(path)
 		}
-		if walk.Depth() >= w.cfg.maxDepth {
-			return valwalk.Step{}, nil, w.fail("", "depth", "nesting depth limit exceeded", v)
+		if depth >= w.cfg.maxDepth {
+			return nil, w.fail(path, "depth", "nesting depth limit exceeded", v)
 		}
-	case lisp.ShapeError, lisp.ShapeFun, lisp.ShapeMark, lisp.ShapeInvalid:
-		return valwalk.Step{}, nil, w.fail("", "unsupported", "unsupported value", v)
-	}
-	switch shape {
-	case lisp.ShapeList:
-		if v.Type == lisp.LQuote {
-			return w.wrapper(v)
+		w.path[v] = true
+		defer delete(w.path, v)
+		switch v.Type {
+		case lisp.LQuote, lisp.LTaggedVal:
+			if len(v.Cells) != 1 {
+				return nil, w.fail(path, "unsupported", "malformed wrapper", v)
+			}
+			return w.value(v.Cells[0], depth+1, path)
+		case lisp.LSExpr:
+			return w.cells(v.Cells, depth, path)
+		case lisp.LArray:
+			if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
+				return nil, w.fail(path, "unsupported", "malformed array", v)
+			}
+			dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
+			if len(dims) == 0 && len(cells) == 1 {
+				return w.value(cells[0], depth+1, path)
+			}
+			if len(dims) != 1 || dims[0] == nil || dims[0].Type != lisp.LInt || dims[0].Int != len(cells) {
+				return nil, w.fail(path, "unsupported", "unsupported array dimensions", v)
+			}
+			return w.cells(cells, depth, path)
+		case lisp.LSortMap:
+			return w.sortedMap(v, depth, path)
+		case lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol, lisp.LFun,
+			lisp.LString, lisp.LBytes, lisp.LNative, lisp.LMarkTerminal,
+			lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 		}
-		return w.cells(v.Cells)
-	case lisp.ShapeTagged:
-		return w.wrapper(v)
-	case lisp.ShapeArray:
-		if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-			return valwalk.Step{}, nil, w.fail("", "unsupported", "malformed array", v)
-		}
-		dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
-		if len(dims) == 0 && len(cells) == 1 {
-			w.frames = append(w.frames, canonFrame{transparent: true})
-			return valwalk.Step{Children: cells}, nil, nil
-		}
-		if len(dims) != 1 || dims[0] == nil || dims[0].Type != lisp.LInt || dims[0].Int != len(cells) {
-			return valwalk.Step{}, nil, w.fail("", "unsupported", "unsupported array dimensions", v)
-		}
-		return w.cells(cells)
-	case lisp.ShapeMap:
-		return w.sortedMap(v)
-	case lisp.ShapeLeaf, lisp.ShapeNative, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeMark, lisp.ShapeInvalid:
+		return nil, w.fail(path, "unsupported", "unsupported container", v)
+	case lisp.LError, lisp.LFun, lisp.LMarkTerminal, lisp.LMarkTailRec,
+		lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 	}
-	return valwalk.Step{}, nil, w.fail("", "unsupported", "unsupported container", v)
-}
-
-func (w *canonWalker) wrapper(v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
-	if len(v.Cells) != 1 {
-		return valwalk.Step{}, nil, w.fail("", "unsupported", "malformed wrapper", v)
-	}
-	w.frames = append(w.frames, canonFrame{transparent: true})
-	return valwalk.Step{Children: v.Cells}, nil, nil
-}
-
-func (w *canonWalker) Child(walk *valwalk.Walker[*lisp.LVal], _ *lisp.LVal, i int) error {
-	w.walk, w.child, w.childIndex = walk, false, i
-	f := &w.frames[len(w.frames)-1]
-	if !f.object {
-		return nil
-	}
-	p := f.pairs[i]
-	switch p.Kind {
-	case lisp.LInt:
-		return w.fail(w.resolvePath("")+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
-	case lisp.LString, lisp.LSymbol:
-	default:
-		w.child = true
-		return w.fail("", "key-type", "unsupported map key", lisp.Symbol(p.Kind.String()+" "+p.Key))
-	}
-	w.child = true
-	k := lisp.String(p.Key)
-	if i > 0 && f.pairs[i-1].Key == p.Key {
-		return w.fail("", "key-collision", "map key collision after string conversion", k)
-	}
-	if i > 0 && f.pairs[i-1].Key > p.Key {
-		return w.fail("", "key-order", "map key order would change dump bytes", k)
-	}
-	if err := w.count(""); err != nil {
-		return err
-	}
-	key, err := w.text(p.Key, "", k)
-	if err != nil {
-		return err
-	}
-	f.keys[i] = key
-	return nil
-}
-
-func (w *canonWalker) Leave(walk *valwalk.Walker[*lisp.LVal], _ *lisp.LVal, children []*lisp.LVal) (*lisp.LVal, error) {
-	w.walk, w.child = walk, false
-	f := w.frames[len(w.frames)-1]
-	w.frames = w.frames[:len(w.frames)-1]
-	if f.transparent {
-		return children[0], nil
-	}
-	if !f.object {
-		return lisp.Vector(slices.Clone(children)), nil
-	}
-	out := lisp.SortedMap()
-	for i, k := range f.keys {
-		if err := lisp.GoError(out.MapSetLVal(k, children[i])); err != nil {
-			return nil, w.fail(w.resolvePath("")+"["+strconv.Quote(f.pairs[i].Key)+"]", "unsupported", "cannot construct map", lisp.String(f.pairs[i].Key))
-		}
-	}
-	return out, nil
+	return nil, w.fail(path, "unsupported", "unsupported value", v)
 }
 
 func (w *canonWalker) null(path string) (*lisp.LVal, error) {
@@ -393,20 +330,31 @@ func (w *canonWalker) width(n int, path string) error {
 	return nil
 }
 
-func (w *canonWalker) cells(cells []*lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
-	if err := w.width(len(cells), ""); err != nil {
-		return valwalk.Step{}, nil, err
+func (w *canonWalker) cells(cells []*lisp.LVal, depth int, path string) (*lisp.LVal, error) {
+	if err := w.width(len(cells), path); err != nil {
+		return nil, err
 	}
-	if err := w.add(2+max(0, len(cells)-1), ""); err != nil {
-		return valwalk.Step{}, nil, err
+	if err := w.add(2+max(0, len(cells)-1), path); err != nil {
+		return nil, err
 	}
-	w.frames = append(w.frames, canonFrame{})
-	return valwalk.Step{Children: cells, Edge: canonIndexEdge}, nil, nil
+	out := make([]*lisp.LVal, len(cells))
+	start := len(w.edges)
+	w.edges = append(w.edges, canonPathEdge{})
+	defer func() { w.edges = w.edges[:start] }()
+	for i, v := range cells {
+		w.edges[start].index = i
+		c, err := w.value(v, depth+1, "")
+		if err != nil {
+			return nil, err
+		}
+		out[i] = c
+	}
+	return lisp.Vector(out), nil
 }
 
-func (w *canonWalker) sortedMap(v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) {
-	if err := w.width(v.Len(), ""); err != nil {
-		return valwalk.Step{}, nil, err
+func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVal, error) {
+	if err := w.width(v.Len(), path); err != nil {
+		return nil, err
 	}
 	pairs, stock := v.AppendMapKeyPairs(nil)
 	if stock {
@@ -430,26 +378,57 @@ func (w *canonWalker) sortedMap(v *lisp.LVal) (valwalk.Step, *lisp.LVal, error) 
 		})
 	} else {
 		entries := v.MapEntries()
-		if err := lisp.GoError(entries); err != nil {
-			return valwalk.Step{}, nil, w.fail("", "unsupported", "cannot read map entries", v)
+		if lisp.GoError(entries) != nil {
+			return nil, w.fail(path, "unsupported", "cannot read map entries", v)
 		}
 		for _, p := range entries.Cells {
 			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
-				return valwalk.Step{}, nil, w.fail("", "unsupported", "malformed map entry", v)
+				return nil, w.fail(path, "unsupported", "malformed map entry", v)
 			}
 			k := p.Cells[0]
 			pairs = append(pairs, lisp.MapKeyPair{Key: k.Str, Int: k.Int, Kind: k.Type, Val: p.Cells[1]})
 		}
 	}
-	if err := w.add(2+max(0, len(pairs)-1)+len(pairs), ""); err != nil {
-		return valwalk.Step{}, nil, err
+	if err := w.add(2+max(0, len(pairs)-1)+len(pairs), path); err != nil {
+		return nil, err
 	}
-	children := make([]*lisp.LVal, len(pairs))
+	out := lisp.SortedMap()
+	start := len(w.edges)
+	w.edges = append(w.edges, canonPathEdge{mapKey: true})
+	defer func() { w.edges = w.edges[:start] }()
 	for i, p := range pairs {
-		children[i] = p.Val
+		w.edges[start].key = p.Key
+		kp := ""
+		k := lisp.String(p.Key)
+		switch p.Kind {
+		case lisp.LInt:
+			return nil, w.fail(w.renderPath(start)+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
+		case lisp.LString, lisp.LSymbol:
+		default:
+			return nil, w.fail(kp, "key-type", "unsupported map key", lisp.Symbol(p.Kind.String()+" "+p.Key))
+		}
+		if i > 0 && pairs[i-1].Key == p.Key {
+			return nil, w.fail(kp, "key-collision", "map key collision after string conversion", k)
+		}
+		if i > 0 && pairs[i-1].Key > p.Key {
+			return nil, w.fail(kp, "key-order", "map key order would change dump bytes", k)
+		}
+		if err := w.count(kp); err != nil {
+			return nil, err
+		}
+		key, err := w.text(p.Key, kp, k)
+		if err != nil {
+			return nil, err
+		}
+		c, err := w.value(p.Val, depth+1, kp)
+		if err != nil {
+			return nil, err
+		}
+		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
+			return nil, w.fail(kp, "unsupported", "cannot construct map", k)
+		}
 	}
-	w.frames = append(w.frames, canonFrame{object: true, pairs: pairs, keys: make([]*lisp.LVal, len(pairs))})
-	return valwalk.Step{Children: children, Edge: func(_ *lisp.LVal, i int) string { return "[" + strconv.Quote(pairs[i].Key) + "]" }}, nil, nil
+	return out, nil
 }
 
 // Native leaves and ordinary Go containers are walked without invoking host
@@ -630,7 +609,7 @@ func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.
 		if err != nil {
 			return nil, err
 		}
-		if err := lisp.GoError(out.MapSetLVal(key, c)); err != nil {
+		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
 			return nil, canonizeFailure("unsupported", kp, "invalid native map key "+strconv.Quote(k.String()), nil)
 		}
 	}
