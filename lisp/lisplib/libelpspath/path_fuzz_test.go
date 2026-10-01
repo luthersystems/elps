@@ -4,6 +4,7 @@ package libelpspath
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"testing"
@@ -754,7 +755,8 @@ var pathKeys = []string{"a", "b", "c", "k", "", "x y", "0"}
 // pathIndices are the integer steps.  The small values around the ends of a
 // sequence, plus the magnitudes that made resolveIndex and validateRange
 // fold a negative index into another negative one.
-var pathIndices = []int{0, 1, 2, -1, -2, 5, -5, 1 << 31, -(1 << 31)}
+// The positive boundary fits the platform int width.
+var pathIndices = []int{0, 1, 2, -1, -2, 5, -5, int(min(int64(1<<31), int64(math.MaxInt))), -(1 << 31)}
 
 type pathGen struct {
 	b      []byte

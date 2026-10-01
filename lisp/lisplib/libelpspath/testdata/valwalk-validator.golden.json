@@ -1,0 +1,3059 @@
+[
+  {
+    "name": "corpus/go-nil",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/invalid",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/out-of-range-type",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/int",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/int-32-boundary",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-whole",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-negative-zero",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-nan",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-infinity",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-negative-infinity",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/float-range",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-escapes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-invalid-utf8",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-leading-tilde",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-double-tilde",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-typed-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-typed-float",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-typed-bytes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/string-unknown-tag",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/keyword",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/true",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/false",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/json-null",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/empty-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/symbol-invalid-utf8",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/bytes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/bytes-nil",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/bytes-empty",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/error",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/function",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/native-string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/native-number",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/native-nil",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/native-container",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/native-cycle",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nil-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/quoted-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/quote",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2,valid=0,path=0"
+  },
+  {
+    "name": "corpus/empty-vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-zero-rank",
+    "output": "",
+    "error": "cannot index zero-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-zero-dimension",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-empty",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-no-backing",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-symbol-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-int-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-mixed-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=7,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-int-string-collision",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-tilde-key",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-invalid-utf8-key",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=15,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-tilde-path",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=10,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-plain",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/list-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/map-nil-value",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged-nil-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged-two-cells",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged-empty-name",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2,valid=0,path=0"
+  },
+  {
+    "name": "corpus/tagged-invalid-name",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2,valid=0,path=0"
+  },
+  {
+    "name": "corpus/quote-no-cell",
+    "output": "",
+    "error": "invalid quote wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/quote-nil-cell",
+    "output": "",
+    "error": "invalid quote wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-no-cells",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.boundsError: runtime error: index out of range [0] with length 0",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-nil-dims",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-nil-data",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-data-not-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-dimension-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-nil-dimension",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-negative-dimension",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/array-wrong-size",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=1,valid=0,path=0"
+  },
+  {
+    "name": "corpus/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/self-quote",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/branching-cycle",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/shared-small",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=7,valid=0,path=0"
+  },
+  {
+    "name": "corpus/shared-dag-30-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4182,valid=29,path=0"
+  },
+  {
+    "name": "corpus/shared-dag-30-vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4182,valid=29,path=0"
+  },
+  {
+    "name": "corpus/charge-long-string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/charge-chunks",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4,valid=0,path=0"
+  },
+  {
+    "name": "corpus/charge-map-key",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/charge-escaped-string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/charge-bytes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:host"
+    ],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-bad-key",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:bad-key"
+    ],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-key-collision",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:collision"
+    ],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-key-order",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:order"
+    ],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-nil-entry",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:nil-entry"
+    ],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-nil-key",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:nil-key"
+    ],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-short-entry",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:short-entry"
+    ],
+    "panic": "runtime.boundsError: runtime error: index out of range [1] with length 1",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/host-map-replace-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:replace"
+    ],
+    "state": "work=6,valid=0,path=0",
+    "input_after": "#1;#1=array(q=false,source=#1)[#2,#3];#2=list(q=true,source=#2)[#4];#3=list(q=true,source=#3)[#5,#6];#4=int(q=false,source=#4,int=2);#5=sorted-map(q=false,source=#5){#7};#6=string(q=false,str=\"after\");#7=list(q=true,source=#7)[#8,#9];#8=string(q=false,source=#8,str=\"a\");#9=int(q=false,source=#9,int=1)"
+  },
+  {
+    "name": "corpus/host-map-mutate-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:mutate"
+    ],
+    "state": "work=8,valid=0,path=0",
+    "input_after": "#1;#1=array(q=false,source=#1)[#2,#3];#2=list(q=true,source=#2)[#4];#3=list(q=true,source=#3)[#5,#6];#4=int(q=false,source=#4,int=2);#5=sorted-map(q=false,source=#5){#7};#6=list(q=false,source=#6)[#8];#7=list(q=true,source=#7)[#9,#10];#8=int(q=false,int=9);#9=string(q=false,source=#9,str=\"a\");#10=int(q=false,source=#10,int=1)"
+  },
+  {
+    "name": "corpus/host-map-replace-map-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:replace-map"
+    ],
+    "state": "work=8,valid=0,path=0",
+    "input_after": "#1;#1=sorted-map(q=false,source=#1){string:\"a\":0=#2,string:\"z\":0=#3};#2=sorted-map(q=false,source=#2){#4};#3=string(q=false,str=\"after\");#4=list(q=true,source=#4)[#5,#6];#5=string(q=false,source=#5,str=\"a\");#6=int(q=false,source=#6,int=1)"
+  },
+  {
+    "name": "corpus/cycle-before-boundary",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:cycle-tail",
+      "entries:cycle-tail",
+      "entries:cycle-tail"
+    ],
+    "state": "work=11,valid=0,path=0",
+    "input_after": "#1;#1=sorted-map(q=false,source=#1){#2};#2=list(q=true,source=#2)[#3,#4];#3=string(q=false,source=#3,str=\"self\");#4=array(q=false)[#5,#6];#5=list(q=true)[#7];#6=list(q=true)[#8];#7=int(q=false,int=1);#8=int(q=false,int=1)"
+  },
+  {
+    "name": "corpus/wire-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-tagged",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-array",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=12,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-empty-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-unknown",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-nil-payload",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/wire-tagged-cycle",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/mark-14",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/mark-15",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/mark-16",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-go-nil",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-invalid",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-out-of-range-type",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-int",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-int-32-boundary",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-whole",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-negative-zero",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-nan",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-infinity",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-negative-infinity",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-float-range",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-escapes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-invalid-utf8",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-leading-tilde",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-double-tilde",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-typed-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-typed-float",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-typed-bytes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-string-unknown-tag",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-keyword",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-true",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-false",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-json-null",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-empty-symbol",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-symbol-invalid-utf8",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-bytes",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-bytes-nil",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-bytes-empty",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-error",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-function",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-native-string",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-native-number",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-native-nil",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-native-container",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/nested-native-cycle",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-3",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-4",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-63",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=126,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-64",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=128,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-65",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=130,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-3",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-4",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-63",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=126,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-64",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=128,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-65",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=130,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-3",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=9,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-4",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=12,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-63",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=189,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-64",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=192,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-65",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=195,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-3",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-4",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-63",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=126,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-64",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=128,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-65",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=130,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-3",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-4",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-63",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=126,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-64",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=128,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-65",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=130,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "corpus/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit--1/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-0/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1023/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-list-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-list-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-vector-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-vector-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-map-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3072,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-map-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3075,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-tagged-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-tagged-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-quote-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2048,valid=0,path=0"
+  },
+  {
+    "name": "limit-1024/depth-quote-1025",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=2050,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-62/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-63/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-63/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-63/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-63/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-63/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=1"
+  },
+  {
+    "name": "guard-depth-63/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-64/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-64/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-64/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-64/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-64/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=1"
+  },
+  {
+    "name": "guard-depth-64/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1023/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1023/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1023/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1023/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1023/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=1"
+  },
+  {
+    "name": "guard-depth-1023/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1024/self-list",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1024/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1024/self-map",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1024/self-tagged",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "guard-depth-1024/vector-nil-cell",
+    "output": "",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "panic": "runtime.errorString: runtime error: invalid memory address or nil pointer dereference",
+    "state": "work=0,valid=0,path=1"
+  },
+  {
+    "name": "guard-depth-1024/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "wide-list-2047",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6148,valid=2,path=0"
+  },
+  {
+    "name": "wide-list-2048",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "wide-list-4095",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8196,valid=2,path=0"
+  },
+  {
+    "name": "wide-list-4096",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4101,valid=2,path=0"
+  },
+  {
+    "name": "wide-vector-2047",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=6148,valid=2,path=0"
+  },
+  {
+    "name": "wide-vector-2048",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "wide-vector-4095",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8196,valid=2,path=0"
+  },
+  {
+    "name": "wide-vector-4096",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4101,valid=2,path=0"
+  },
+  {
+    "name": "wide-map-2047",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8194,valid=2,path=0"
+  },
+  {
+    "name": "wide-map-2048",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4101,valid=2,path=0"
+  },
+  {
+    "name": "wide-map-4095",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8195,valid=2,path=0"
+  },
+  {
+    "name": "wide-map-4096",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=8197,valid=2,path=0"
+  },
+  {
+    "name": "memo-work-4095/shared-small",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4100,valid=2,path=0"
+  },
+  {
+    "name": "memo-work-4095/shared-dag-30-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4185,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4095/shared-dag-30-vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4185,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4095/host-map-replace-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:replace"
+    ],
+    "state": "work=4101,valid=2,path=0",
+    "input_after": "#1;#1=array(q=false,source=#1)[#2,#3];#2=list(q=true,source=#2)[#4];#3=list(q=true,source=#3)[#5,#6];#4=int(q=false,source=#4,int=2);#5=sorted-map(q=false,source=#5){#7};#6=string(q=false,str=\"after\");#7=list(q=true,source=#7)[#8,#9];#8=string(q=false,source=#8,str=\"a\");#9=int(q=false,source=#9,int=1)"
+  },
+  {
+    "name": "memo-work-4096/shared-small",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4101,valid=2,path=0"
+  },
+  {
+    "name": "memo-work-4096/shared-dag-30-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4186,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4096/shared-dag-30-vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4186,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4096/host-map-replace-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:replace"
+    ],
+    "state": "work=4102,valid=2,path=0",
+    "input_after": "#1;#1=array(q=false,source=#1)[#2,#3];#2=list(q=true,source=#2)[#4];#3=list(q=true,source=#3)[#5,#6];#4=int(q=false,source=#4,int=2);#5=sorted-map(q=false,source=#5){#7};#6=string(q=false,str=\"after\");#7=list(q=true,source=#7)[#8,#9];#8=string(q=false,source=#8,str=\"a\");#9=int(q=false,source=#9,int=1)"
+  },
+  {
+    "name": "memo-work-4097/shared-small",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "memo-work-4097/shared-dag-30-list",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4187,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4097/shared-dag-30-vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4187,valid=30,path=0"
+  },
+  {
+    "name": "memo-work-4097/host-map-replace-sibling",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [
+      "entries:replace"
+    ],
+    "state": "work=4103,valid=2,path=0",
+    "input_after": "#1;#1=array(q=false,source=#1)[#2,#3];#2=list(q=true,source=#2)[#4];#3=list(q=true,source=#3)[#5,#6];#4=int(q=false,source=#4,int=2);#5=sorted-map(q=false,source=#5){#7};#6=string(q=false,str=\"after\");#7=list(q=true,source=#7)[#8,#9];#8=string(q=false,source=#8,str=\"a\");#9=int(q=false,source=#9,int=1)"
+  },
+  {
+    "name": "memo-height-1022",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "memo-height-1023",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "memo-height-1024",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=4102,valid=2,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/vector",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=3,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/map-string-keys",
+    "output": "#1;#1=symbol(q=false,str=\"valid\")",
+    "error": "",
+    "error_type": "",
+    "causes": [],
+    "trace": [],
+    "state": "work=5,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/self-vector",
+    "output": "",
+    "error": "cannot operate on a value that contains itself",
+    "error_type": "*errors.errorString",
+    "causes": [
+      "cycle"
+    ],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/array-multi",
+    "output": "",
+    "error": "cannot index multi-dimensional array",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/tagged-no-cell",
+    "output": "",
+    "error": "invalid tagged-value wrapper: expected one value",
+    "error_type": "*errors.errorString",
+    "causes": [],
+    "trace": [],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048573/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048576/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "iterator-work-1048577/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-step-limit-budget/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  },
+  {
+    "name": "precedence-depth-budget/host-map-error",
+    "output": "",
+    "error": "\u003cnative code\u003e: fixture map failure",
+    "error_type": "*lisp.ErrorVal",
+    "causes": [
+      "host"
+    ],
+    "trace": [
+      "entries:error"
+    ],
+    "state": "work=0,valid=0,path=0"
+  }
+]
