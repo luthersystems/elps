@@ -285,11 +285,11 @@ func TestWithDocEnvSharesOneEnvForDoc(t *testing.T) {
 	defer closeServerSession(t, serverSession)
 
 	for range 5 {
-		res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		res, callErr := session.CallTool(context.Background(), &mcp.CallToolParams{
 			Name:      "doc",
 			Arguments: map[string]any{"query": "map"},
 		})
-		require.NoError(t, err)
+		require.NoError(t, callErr)
 		require.False(t, res.IsError)
 		got := decodeStructured[DocResponse](t, res)
 		require.True(t, got.Found)

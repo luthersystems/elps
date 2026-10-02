@@ -24,7 +24,7 @@ func TestForkOracleStockMapLayouts(t *testing.T) {
 	if backing.Kind() != reflect.Struct || backing.Type().Name() != "sortedmap" || backing.Type().PkgPath() != "github.com/luthersystems/elps/lisp" || backing.NumField() != 3 {
 		t.Fatalf("stock map layout changed: update the independent oracle map census: %s", backing.Type())
 	}
-	if m, ok := backing.Type().FieldByName("m"); !ok || m.Type.Kind() != reflect.Map || m.Type.Key().Kind() != reflect.String {
+	if m, found := backing.Type().FieldByName("m"); !found || m.Type.Kind() != reflect.Map || m.Type.Key().Kind() != reflect.String {
 		t.Fatal("stock map field m changed: update the independent oracle map census")
 	}
 	kt, ok := backing.Type().FieldByName("kt")

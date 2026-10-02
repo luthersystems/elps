@@ -248,7 +248,7 @@ func (s *Scanner) ScanRune() error {
 		// more than one rune.
 		kept := copy(s.peek, s.peek[1:])
 		s.peek = s.peek[:kept]
-		if err := s.checkRuneError(); err != nil {
+		if err = s.checkRuneError(); err != nil {
 			return s.fail(err)
 		}
 		return nil

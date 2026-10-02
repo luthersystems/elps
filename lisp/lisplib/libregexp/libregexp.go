@@ -153,11 +153,11 @@ func getRegexp(env *lisp.LEnv, v *lisp.LVal) (*regexp.Regexp, *lisp.LVal) {
 		if lerr := libutil.ChargeKiB(env, len(v.Str)); lerr != nil {
 			return nil, lerr
 		}
-		re, err := regexp.Compile(v.Str)
+		compiled, err := regexp.Compile(v.Str)
 		if err != nil {
 			return nil, invalidPatternError(env, err)
 		}
-		return re, nil
+		return compiled, nil
 	}
 	if v.Type != lisp.LNative {
 		return nil, env.Errorf("argument is not a regexp: %v", v.Type)

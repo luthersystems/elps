@@ -618,7 +618,7 @@ func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) error {
 	if ents.Type == lisp.LError {
 		return lisp.GoError(ents)
 	}
-	if err := checkIntKeyCollisions(ents.Cells); err != nil {
+	if err = checkIntKeyCollisions(ents.Cells); err != nil {
 		return err
 	}
 	enc.buf.WriteByte('{')

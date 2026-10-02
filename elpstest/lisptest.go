@@ -238,7 +238,7 @@ func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *lib
 	}
 	defer env.Runtime.Stderr.(*Logger).Flush()
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		t.FailNow()
 	}
@@ -288,7 +288,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 
 	_ = r.Setup(env)
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		return
 	}
@@ -383,7 +383,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	_ = r.Setup(env)
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(b, err)
 		return
 	}

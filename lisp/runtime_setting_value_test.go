@@ -373,8 +373,8 @@ func TestRuntimeSettingValueRepublish(t *testing.T) {
 			require.NoError(t, vm.Runtime.SetSettingValue("inherited", runtimeSettingVersion("v3")))
 			vm.Runtime.DeleteSettingValue("local")
 			for range 2 {
-				fork, err := republished.NewVM()
-				require.NoError(t, err)
+				fork, forkErr := republished.NewVM()
+				require.NoError(t, forkErr)
 				assertRuntimeSettingValue(t, fork.Runtime, "inherited", want)
 				assertRuntimeSettingValue(t, fork.Runtime, "bytes", []byte("source"))
 				if tc.written {
@@ -413,8 +413,8 @@ func TestRuntimeSettingValueConcurrentForks(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			<-start
-			vm, err := tmpl.NewVM()
-			if !assert.NoError(t, err, "worker %d", worker) {
+			vm, vmErr := tmpl.NewVM()
+			if !assert.NoError(t, vmErr, "worker %d", worker) {
 				writes.Done()
 				return
 			}
@@ -470,7 +470,7 @@ func TestRuntimeValueSettingBooleanTemplateRegression(t *testing.T) {
 	c, err := tmpl.NewVM()
 	require.NoError(t, err)
 	for _, vm := range []*LEnv{b, c} {
-		value, ok := vm.Runtime.Setting("enabled")
+		value, ok = vm.Runtime.Setting("enabled")
 		assert.True(t, ok)
 		assert.True(t, value)
 		value, ok = vm.Runtime.Setting("disabled")
@@ -492,7 +492,7 @@ func TestRuntimeValueSettingBooleanTemplateRegression(t *testing.T) {
 	fork, err := forkTestSnapshot(a)
 	require.NoError(t, err)
 	for _, rt := range []*Runtime{a.Runtime, fork.Runtime} {
-		value, ok := rt.Setting("enabled")
+		value, ok = rt.Setting("enabled")
 		assert.True(t, ok)
 		assert.False(t, value)
 		for _, name := range []string{"disabled", "local"} {

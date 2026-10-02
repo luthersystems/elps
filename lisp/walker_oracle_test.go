@@ -362,7 +362,7 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		return errors.New("source changed during construction")
 	}
 	for _, result := range []*LVal{a, b} {
-		if err := oracleCompare(w, source, result); err != nil {
+		if err = oracleCompare(w, source, result); err != nil {
 			return err
 		}
 	}

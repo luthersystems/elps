@@ -156,7 +156,7 @@ func TestNativeValueWrongType(t *testing.T) {
 	// The other direction, so the test cannot pass by refusing everything:
 	// the same two type parameters against a payload of the other type.
 	w := lisp.NativeOf[*other](&other{id: "xyz"})
-	if _, ok := lisp.NativeValue[*handle](w); ok {
+	if _, matched := lisp.NativeValue[*handle](w); matched {
 		t.Error("NativeValue[*handle] matched an *other payload")
 	}
 	o, ok := lisp.NativeValue[*other](w)

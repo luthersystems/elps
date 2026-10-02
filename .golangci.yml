@@ -64,6 +64,14 @@ linters:
         # call, so their field order decides how many bytes the GC must scan on
         # every mark. It is scoped by the exclusion rules below — see #304.
         - fieldalignment
+        # shadow reports a `:=` that redeclares a name from an enclosing
+        # scope, the shape that leaves an outer err or result unset (#785).
+        - shadow
+      settings:
+        shadow:
+          # Report a shadow only when the outer variable is used after the
+          # inner declaration.
+          strict: false
     staticcheck:
       checks:
         - "all"

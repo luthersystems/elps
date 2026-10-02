@@ -53,9 +53,9 @@ func BenchmarkTemplatePlan(b *testing.B) {
 					}
 				}
 				b.StopTimer()
-				vm, err := result.NewVM()
-				if err != nil {
-					b.Fatal(err)
+				vm, vmErr := result.NewVM()
+				if vmErr != nil {
+					b.Fatal(vmErr)
 				}
 				check(b, vm)
 			})

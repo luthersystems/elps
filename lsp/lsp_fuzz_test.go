@@ -1717,7 +1717,7 @@ func TestLSPFuzzDetectsSwallowedExpansionPanic(t *testing.T) {
 			" swallowed panics", cfg.MacroExpander)
 	}
 
-	if err := s.checkExpansionPanics(); err != nil {
+	if err = s.checkExpansionPanics(); err != nil {
 		t.Fatalf("a fresh session already reports a swallowed panic: %v", err)
 	}
 

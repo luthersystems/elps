@@ -309,7 +309,7 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 			continue
 		}
 		checked++
-		if err := lisp.GoError(env.PutGlobal(sym("v"), c.v)); err != nil {
+		if err = lisp.GoError(env.PutGlobal(sym("v"), c.v)); err != nil {
 			t.Fatal(err)
 		}
 		for _, source := range []string{
@@ -324,8 +324,8 @@ func TestCanonicalGoldenCorpus(t *testing.T) {
 				t.Errorf("%s via %s: got %s, want %s", c.name, source, got, want)
 			}
 		}
-		if got, err := libjson.Dump(canonical, false); err != nil || string(got) != want {
-			t.Errorf("%s: direct canonical dump %s (%v); want %s", c.name, got, err, want)
+		if got, dumpErr := libjson.Dump(canonical, false); dumpErr != nil || string(got) != want {
+			t.Errorf("%s: direct canonical dump %s (%v); want %s", c.name, got, dumpErr, want)
 		}
 		plain, err := libjson.DumpWith(c.v, libjson.DumpOpts{Canonize: true})
 		if err != nil {

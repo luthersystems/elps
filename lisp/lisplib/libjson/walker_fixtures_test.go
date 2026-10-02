@@ -623,11 +623,11 @@ func checkWalkerGolden(t *testing.T, name string, records []goldenRecord) {
 	path := filepath.Join("testdata", name+".golden.json")
 	if *updateWalkerGoldens {
 		// Restrict fixture directory access to the owner and group.
-		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+		if err = os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 			t.Fatal(err)
 		}
 		// Only the owner needs to read or write generated golden files.
-		if err := os.WriteFile(path, data, 0o600); err != nil {
+		if err = os.WriteFile(path, data, 0o600); err != nil {
 			t.Fatal(err)
 		}
 	}

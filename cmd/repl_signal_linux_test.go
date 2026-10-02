@@ -51,8 +51,8 @@ func TestReplSignalRestoresTerminal(t *testing.T) {
 	// Observe raw mode before signalling, so cancellation happens during an
 	// interactive input wait. Keep the slave open to inspect it after exit.
 	require.Eventually(t, func() bool {
-		state, err := unix.IoctlGetTermios(slaveFD, unix.TCGETS)
-		return err == nil && state.Lflag&(unix.ICANON|unix.ECHO) == 0
+		state, termErr := unix.IoctlGetTermios(slaveFD, unix.TCGETS)
+		return termErr == nil && state.Lflag&(unix.ICANON|unix.ECHO) == 0
 	}, 3*time.Second, 10*time.Millisecond, "REPL did not enter raw mode")
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	require.Error(t, cmd.Wait())

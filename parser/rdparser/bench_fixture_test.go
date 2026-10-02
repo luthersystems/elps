@@ -43,9 +43,9 @@ func TestParserBenchmarkFixtures(t *testing.T) {
 			t.Errorf("unexpected parser benchmark input %q; update the reviewed corpus and provenance together", name)
 			continue
 		}
-		data, err := os.ReadFile(path) //#nosec G304 -- fixed benchmark corpus paths
-		if err != nil {
-			t.Error(err)
+		data, readErr := os.ReadFile(path) //#nosec G304 -- fixed benchmark corpus paths
+		if readErr != nil {
+			t.Error(readErr)
 			continue
 		}
 		digest := fmt.Sprintf("%x", sha256.Sum256(data))

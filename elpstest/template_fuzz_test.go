@@ -432,7 +432,7 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 			return fmt.Errorf("anchor/fork: %w", err)
 		}
 		if fault != nil {
-			if err := fault("anchor", source, anchor); err != nil {
+			if err = fault("anchor", source, anchor); err != nil {
 				return err
 			}
 		}
@@ -481,7 +481,7 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 			return fmt.Errorf("cold[%d]/load: %w", i, err)
 		}
 		if fault != nil {
-			if err := fault("cold", source, cold); err != nil {
+			if err = fault("cold", source, cold); err != nil {
 				return fmt.Errorf("cold[%d]/load: %w", i, err)
 			}
 		}

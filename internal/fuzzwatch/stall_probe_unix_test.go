@@ -277,7 +277,7 @@ func runStallProbe(t *testing.T, childTest, prefix string) (stallResult, error) 
 		return stallResult{}, fmt.Errorf("stdout pipe: %w", err)
 	}
 	cmd.Stderr = os.Stderr
-	if err := cmd.Start(); err != nil {
+	if err = cmd.Start(); err != nil {
 		return stallResult{}, fmt.Errorf("starting child: %w", err)
 	}
 	// A frozen child would otherwise outlive the test run.
@@ -294,21 +294,21 @@ func runStallProbe(t *testing.T, childTest, prefix string) (stallResult, error) 
 		for sc.Scan() {
 			lines <- sc.Text()
 		}
-		if err := sc.Err(); err != nil {
-			t.Logf("child stdout: %v", err)
+		if scanErr := sc.Err(); scanErr != nil {
+			t.Logf("child stdout: %v", scanErr)
 		}
 	}()
 
-	if _, err := awaitLine(lines, "FUZZWATCH-CHILD READY", 30*time.Second); err != nil {
+	if _, err = awaitLine(lines, "FUZZWATCH-CHILD READY", 30*time.Second); err != nil {
 		return stallResult{}, fmt.Errorf("waiting for the child to arm its budget: %w", err)
 	}
 
 	time.Sleep(stallRunBefore)
-	if err := cmd.Process.Signal(syscall.SIGSTOP); err != nil {
+	if err = cmd.Process.Signal(syscall.SIGSTOP); err != nil {
 		return stallResult{}, fmt.Errorf("SIGSTOP: %w", err)
 	}
 	time.Sleep(stallFreeze)
-	if err := cmd.Process.Signal(syscall.SIGCONT); err != nil {
+	if err = cmd.Process.Signal(syscall.SIGCONT); err != nil {
 		return stallResult{}, fmt.Errorf("SIGCONT: %w", err)
 	}
 

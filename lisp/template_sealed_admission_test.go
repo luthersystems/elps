@@ -82,9 +82,9 @@ func TestTemplateValidatesSealedCellCapacity(t *testing.T) {
 				if err != nil {
 					t.Fatalf("nil capacity tail rejected: %v", err)
 				}
-				vm, err := plan.NewVM()
-				if err != nil {
-					t.Fatal(err)
+				vm, vmErr := plan.NewVM()
+				if vmErr != nil {
+					t.Fatal(vmErr)
 				}
 				got := vm.Runtime.Package.symbolTable()["node"]
 				if got.Cells[0].Int != 7 || cap(got.Cells) != 3 || got.Cells[:3][1] != nil || got.Cells[:3][2] != nil {
