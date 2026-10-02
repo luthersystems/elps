@@ -179,7 +179,11 @@ func TestDetachPreservesBytesAliasAcrossHeaders(t *testing.T) {
 	if cp.Cells[0].Native != cp.Cells[1].Native {
 		t.Errorf("detach de-aliased the shared bytes: a=%p b=%p", cp.Cells[0].Native, cp.Cells[1].Native)
 	}
-	*cp.Cells[0].Native.(*[]byte) = append(cp.Cells[0].Bytes(), 'c')
+	backing, ok := cp.Cells[0].Native.(*[]byte)
+	if !ok {
+		t.Fatalf("detached bytes payload: got %T, want *[]byte", cp.Cells[0].Native)
+	}
+	*backing = append(cp.Cells[0].Bytes(), 'c')
 	if got := cp.Cells[1].Bytes(); string(got) != "abc" {
 		t.Errorf("detach write through Cells[0] not visible through Cells[1]: %q", got)
 	}
@@ -235,7 +239,11 @@ func TestCopyClonesDistinctNativePayloadsSeparately(t *testing.T) {
 	if cp.Cells[0].Native == cp.Cells[1].Native {
 		t.Fatalf("two distinct payloads were merged into one clone")
 	}
-	if got := cp.Cells[1].Native.(*cloneableNative).state; got != 2 {
+	second, ok := cp.Cells[1].Native.(*cloneableNative)
+	if !ok {
+		t.Fatalf("second clone: got %T, want *cloneableNative", cp.Cells[1].Native)
+	}
+	if got := second.state; got != 2 {
 		t.Errorf("second clone carries state %d, want 2", got)
 	}
 	if p1.clones != 1 || p2.clones != 1 {

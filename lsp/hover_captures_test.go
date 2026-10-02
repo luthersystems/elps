@@ -22,7 +22,7 @@ func hoverAt(t *testing.T, s *Server, line, char uint32) string {
 	if hover == nil {
 		return ""
 	}
-	return hover.Contents.(protocol.MarkupContent).Value
+	return requireType[protocol.MarkupContent](t, hover.Contents).Value
 }
 
 // Hovering over lambda lists the enclosing local variables the closure

@@ -574,13 +574,22 @@ var mapPairPool = sync.Pool{
 	New: func() any { return new([]lisp.MapPair) },
 }
 
+// getMapPairs takes a scratch slice from mapPairPool.
+func getMapPairs() *[]lisp.MapPair {
+	sp, ok := mapPairPool.Get().(*[]lisp.MapPair)
+	if !ok {
+		sp = new([]lisp.MapPair)
+	}
+	return sp
+}
+
 // mapPairRetentionLimit bounds the entries a scratch slice may carry back
 // into mapPairPool, so one unusually wide map does not pin its slice per P.
 const mapPairRetentionLimit = 1 << 12
 
 func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) error {
 	var err error
-	sp := mapPairPool.Get().(*[]lisp.MapPair)
+	sp := getMapPairs()
 	pairs, ok := v.AppendSortedPairs((*sp)[:0])
 	defer func() {
 		clear(pairs) // drop value references before the slice is pooled

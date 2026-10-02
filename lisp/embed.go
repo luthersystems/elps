@@ -129,6 +129,17 @@ type conversionMemo struct {
 	height int
 }
 
+// snapshotChild returns the unconverted child that convertContainer saved in
+// values[i]. The slot holds an *LVal until the child's conversion replaces
+// it.
+func snapshotChild(values []any, i int) *LVal {
+	child, ok := values[i].(*LVal)
+	if !ok {
+		panic("convertContainer: snapshot slot does not hold an unconverted child")
+	}
+	return child
+}
+
 // convertContainer converts v and everything under it.
 //
 // SHARING (lisp/sharing.go).  A value built as (set! x (list x x)) D times
@@ -258,7 +269,7 @@ walk:
 				if len(f.children) > 0 {
 					pending = append(pending, f)
 					if f.values != nil {
-						v = f.values[0].(*LVal)
+						v = snapshotChild(f.values, 0)
 					} else {
 						v = f.children[0]
 						if f.mapping != nil {
@@ -310,7 +321,7 @@ walk:
 				f.values[f.index] = out
 				f.index++
 				if f.index < len(f.values) {
-					v = f.values[f.index].(*LVal)
+					v = snapshotChild(f.values, f.index)
 					continue walk
 				}
 				out = f.values

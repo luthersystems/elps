@@ -533,7 +533,15 @@ func TestForkNativeStateIsCreatedPerVM(t *testing.T) {
 	first.PutGlobal(Symbol("handle"), Native(a))
 	second.PutGlobal(Symbol("handle"), Native(b))
 	a.n = 99
-	if first.GetGlobal(Symbol("handle")).Native.(*plainNative).n != 99 || second.GetGlobal(Symbol("handle")).Native.(*plainNative).n != 3 {
+	firstHandle, ok := first.GetGlobal(Symbol("handle")).Native.(*plainNative)
+	if !ok {
+		t.Fatalf("first handle: got %T, want *plainNative", first.GetGlobal(Symbol("handle")).Native)
+	}
+	secondHandle, ok := second.GetGlobal(Symbol("handle")).Native.(*plainNative)
+	if !ok {
+		t.Fatalf("second handle: got %T, want *plainNative", second.GetGlobal(Symbol("handle")).Native)
+	}
+	if firstHandle.n != 99 || secondHandle.n != 3 {
 		t.Fatal("per-VM handles share state")
 	}
 	if env.GetGlobal(Symbol("handle")).Type != LError {

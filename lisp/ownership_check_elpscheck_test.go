@@ -244,7 +244,10 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 	if !ok || afterReset != record {
 		t.Fatal("reset lost the live runtime's cleanup record")
 	}
-	adoptions := record.(*ownershipAdoptions)
+	adoptions, isAdoptions := record.(*ownershipAdoptions)
+	if !isAdoptions {
+		t.Fatalf("cleanup record: got %T, want *ownershipAdoptions", record)
+	}
 	adoptions.mu.Lock()
 	cleared := adoptions.keys == nil && adoptions.table == nil
 	adoptions.mu.Unlock()

@@ -271,7 +271,10 @@ func TestTemplateLazyMapPendingAccounting(t *testing.T) {
 		t.Fatal(err)
 	}
 	a, _ := vm.Runtime.Registry.Package("user").Symbol("a")
-	sm := a.Map().mapBacking.(sortedmap)
+	sm, isSorted := a.Map().mapBacking.(sortedmap)
+	if !isSorted {
+		t.Fatalf("map backing: got %T, want sortedmap", a.Map().mapBacking)
+	}
 	if sm.lz == nil || sm.lz.pending == 0 {
 		t.Fatal("map has nothing pending")
 	}

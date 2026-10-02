@@ -282,13 +282,19 @@ func (l *lazyInstance) mapBacking(i int) Map {
 func (l *lazyInstance) fillBacking(i int) {
 	backing := &l.p.mapBackings[i]
 	if backing.json {
-		m := l.mapBackings[i].(jsonMap)
+		m, ok := l.mapBackings[i].(jsonMap)
+		if !ok {
+			panic("template: JSON map backing is not a jsonMap")
+		}
 		for _, entry := range backing.entries {
 			m[entry.name] = l.allocRef(entry.value)
 		}
 		return
 	}
-	sm := l.mapBackings[i].(sortedmap)
+	sm, ok := l.mapBackings[i].(sortedmap)
+	if !ok {
+		panic("template: sorted-map backing is not a sortedmap")
+	}
 	for _, kind := range backing.types {
 		sm.kt.types[kind.key] = kind.kind
 	}

@@ -111,14 +111,14 @@ func TestRuntimeSettingValueBytes(t *testing.T) {
 		require.NoError(t, rt.SetSettingValue("bytes", []byte("loaded")))
 		first, ok := rt.SettingValue("bytes")
 		require.True(t, ok)
-		require.IsType(t, []byte(nil), first)
-		firstBytes := first.([]byte)
+		firstBytes, isBytes := first.([]byte)
+		require.True(t, isBytes, "first read: got %T, want []byte", first)
 		require.Equal(t, []byte("loaded"), firstBytes)
 		firstBytes[0] = 'X'
 		second, ok := rt.SettingValue("bytes")
 		require.True(t, ok)
-		require.IsType(t, []byte(nil), second)
-		secondBytes := second.([]byte)
+		secondBytes, isBytes := second.([]byte)
+		require.True(t, isBytes, "second read: got %T, want []byte", second)
 		require.Equal(t, []byte("loaded"), secondBytes)
 		secondBytes[1] = 'Y'
 		assert.Equal(t, []byte("Xoaded"), firstBytes)
@@ -138,8 +138,9 @@ func TestRuntimeSettingValueBytes(t *testing.T) {
 			require.NoError(t, rt.SetSettingValue("bytes", tc.value))
 			got, ok := rt.SettingValue("bytes")
 			require.True(t, ok)
-			require.IsType(t, []byte(nil), got)
-			assert.Empty(t, got.([]byte))
+			gotBytes, isBytes := got.([]byte)
+			require.True(t, isBytes, "got %T, want []byte", got)
+			assert.Empty(t, gotBytes)
 		})
 	}
 }

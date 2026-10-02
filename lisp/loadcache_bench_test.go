@@ -84,10 +84,11 @@ type readerCacheCopy struct {
 	mu      sync.Mutex
 }
 
-func newReaderCacheCopy() *readerCacheCopy {
+func newReaderCacheCopy(tb testing.TB) *readerCacheCopy {
+	tb.Helper()
 	return &readerCacheCopy{
 		entries: make(map[string][]*lisp.LVal),
-		inner:   parser.NewReader().(readLocationReader),
+		inner:   newReadLocationReader(tb),
 	}
 }
 
@@ -199,7 +200,7 @@ func BenchmarkLoadIntoEnv(b *testing.B) {
 		})
 
 		b.Run(name+"/arm=reader-cache-copy", func(b *testing.B) {
-			reader := newReaderCacheCopy()
+			reader := newReaderCacheCopy(b)
 			// Warm: the miss path is not what a preheated pool pays.
 			loadBenchSource(b, newBenchEnv(b, reader, nil), src)
 			b.ResetTimer()
@@ -244,14 +245,14 @@ func TestBenchmarkArmsAgree(t *testing.T) {
 
 	states := make(map[string]string)
 
-	plain := newCountingReader()
+	plain := newCountingReader(t)
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = plain
 	require.NotEqual(t, lisp.LError, lisp.InitializeUserEnv(env).Type)
 	require.NotEqual(t, lisp.LError, env.LoadLocation("bench.lisp", "bench.lisp", strings.NewReader(src)).Type)
 	states["no-cache"] = envStateDump(t, env)
 
-	copyCache := newReaderCacheCopy()
+	copyCache := newReaderCacheCopy(t)
 	for i := range 2 {
 		env := lisp.NewEnv(nil)
 		env.Runtime.Reader = copyCache
@@ -262,7 +263,7 @@ func TestBenchmarkArmsAgree(t *testing.T) {
 		}
 	}
 
-	aliasReader := newCountingReader()
+	aliasReader := newCountingReader(t)
 	aliasCache := newBenchLoadCache()
 	for i := range 2 {
 		env := lisp.NewEnv(nil)

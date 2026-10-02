@@ -50,7 +50,11 @@ func TestGeneratorTimePopulations(t *testing.T) {
 		if population == "raw" {
 			// Get detaches even raw timestamps. Mutate the generated payload's
 			// own header, otherwise a shared generator Location goes undetected.
-			mutationLocation = v.Native.(time.Time).Location()
+			raw, ok := v.Native.(time.Time)
+			if !ok {
+				t.Fatalf("%s seed %x: raw payload is %T, want time.Time", population, seed, v.Native)
+			}
+			mutationLocation = raw.Location()
 		}
 		if mutationLocation != time.UTC {
 			// Fresh headers prevent a mutation in one fuzz input from poisoning

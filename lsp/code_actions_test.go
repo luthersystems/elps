@@ -198,7 +198,7 @@ func TestCodeActionUsesDiagnosticDataAnalyzer(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, result)
 
-	actions := result.([]protocol.CodeAction)
+	actions := requireType[[]protocol.CodeAction](t, result)
 	require.NotEmpty(t, actions)
 	assert.Equal(t, "Suppress with ; nolint:set-usage", actions[0].Title)
 }

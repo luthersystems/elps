@@ -15,7 +15,10 @@ func TestTemplatePlanOwnsFunctionDefinitionLocation(t *testing.T) {
 	source.loc = &token.Location{File: "definitions.lisp", Line: 7, Col: 3}
 	fn := source.Lambda(Formals(), []*LVal{Int(1)})
 	source.Runtime.Package.symbols["fn"] = fn
-	fd := fn.Native.(*funData)
+	fd, isFun := fn.Native.(*funData)
+	if !isFun {
+		t.Fatalf("source fn: got native %T, want *funData", fn.Native)
+	}
 	plan, err := NewTemplate(source)
 	if err != nil {
 		t.Fatal(err)
@@ -28,7 +31,11 @@ func TestTemplatePlanOwnsFunctionDefinitionLocation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		got := vm.Runtime.Package.symbolTable()["fn"].Native.(*funData)
+		forked := vm.Runtime.Package.symbolTable()["fn"]
+		got, isForkedFun := forked.Native.(*funData)
+		if !isForkedFun {
+			t.Fatalf("forked fn: got native %T, want *funData", forked.Native)
+		}
 		if got.loc == nil || got.loc == fd.loc || got.loc.File != "definitions.lisp" || got.loc.Line != 7 || got.loc.Col != 3 {
 			t.Fatalf("definition location was dropped or borrowed: %+v", got.loc)
 		}

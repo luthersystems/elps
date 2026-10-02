@@ -39,8 +39,12 @@ func TestForkOracleSeesSwappedNativeAndLispMapBacking(t *testing.T) {
 	if rc := first.Get(lisp.Symbol("a")).MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
-	if got := second.Get(lisp.Symbol("b")).Native.(map[string]any)["witness"]; got.(*lisp.LVal).Int != 17 {
-		t.Fatalf("premise: the native exposure did not observe the Lisp map write: %v", got)
+	native, isMap := second.Get(lisp.Symbol("b")).Native.(map[string]any)
+	if !isMap {
+		t.Fatalf("premise: b is not a native JSON map: %T", second.Get(lisp.Symbol("b")).Native)
+	}
+	if got, isLVal := native["witness"].(*lisp.LVal); !isLVal || got.Int != 17 {
+		t.Fatalf("premise: the native exposure did not observe the Lisp map write: %v", native["witness"])
 	}
 }
 
@@ -241,8 +245,12 @@ func TestForkOracleCensusPreservesEarlierOwnedStorage(t *testing.T) {
 			t.Fatal(rc)
 		}
 	}
-	*data.Native.(*[]byte) = []byte("different") //elps:mutates deliberate detachment after the oracle snapshot
-	list.Cells = nil                             //elps:mutates deliberate detachment after the oracle snapshot
+	backing, ok := data.Native.(*[]byte)
+	if !ok {
+		t.Fatalf("data is not a bytes value: %T", data.Native)
+	}
+	*backing = []byte("different") //elps:mutates deliberate detachment after the oracle snapshot
+	list.Cells = nil               //elps:mutates deliberate detachment after the oracle snapshot
 	*mapValue.Map() = *jsonraw.Wrap(make(map[string]any)).Map()
 	// Keeping only the mutable headers would retain their NEW backing, not
 	// the snapshot addresses. Pin the copied storage headers in the retainer.

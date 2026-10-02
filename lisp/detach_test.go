@@ -519,7 +519,11 @@ func TestDetachEmptyMapDataDisjoint(t *testing.T) {
 	if cp.Native == v.Native {
 		t.Fatal("detached copy shares its *MapData with the original")
 	}
-	if lisp.MapBacking(cp.Native.(*lisp.MapData)) != nil {
+	cpData, ok := cp.Native.(*lisp.MapData)
+	if !ok {
+		t.Fatalf("detached copy: got native %T, want *lisp.MapData", cp.Native)
+	}
+	if lisp.MapBacking(cpData) != nil {
 		t.Fatal("detached copy of a nil-Map MapData should preserve the nil Map")
 	}
 }

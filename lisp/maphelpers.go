@@ -63,7 +63,10 @@ func (v *LVal) mapRange(fn func(key MapKey, val *LVal) bool) *LVal {
 	if md == nil || md.mapBacking == nil {
 		return Nil()
 	}
-	bufp := mapRangePool.Get().(*[]mapRangeEntry)
+	bufp, ok := mapRangePool.Get().(*[]mapRangeEntry)
+	if !ok {
+		bufp = new([]mapRangeEntry)
+	}
 	buf := (*bufp)[:0]
 	defer func() {
 		clear(buf)

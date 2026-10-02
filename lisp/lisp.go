@@ -1240,7 +1240,11 @@ func (v *LVal) funData() *funData {
 	if v.Type != LFun {
 		panic("not a function: " + v.Type.String())
 	}
-	return v.Native.(*funData)
+	fd, ok := v.Native.(*funData)
+	if !ok {
+		panic("function has no function data")
+	}
+	return fd
 }
 
 // Package returns the name of the package a function value was defined in,
@@ -1382,7 +1386,11 @@ func (v *LVal) Bytes() []byte {
 	}
 	// NOTE:  Bytes are stored as a pointer to a slice to allow for effecient
 	// appending in the same style as normal vectors.
-	return *v.Native.(*[]byte)
+	b, ok := v.Native.(*[]byte)
+	if !ok {
+		panic("bytes value has no byte slice")
+	}
+	return *b
 }
 
 // Map returns the map data stored in v.  Map panics if v.Type is not
@@ -1397,7 +1405,11 @@ func (v *LVal) Map() *MapData {
 	if v.Type != LSortMap {
 		panic("not sorted-map: " + v.Type.String())
 	}
-	return v.Native.(*MapData)
+	m, ok := v.Native.(*MapData)
+	if !ok {
+		panic("sorted-map value has no map data")
+	}
+	return m
 }
 
 // MapKeys returns a list of keys in the map.  MapKeys panics if v.Type is not

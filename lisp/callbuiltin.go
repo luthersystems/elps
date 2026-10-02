@@ -145,7 +145,10 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 		return env.funCall(env.evalCtx, fun, fargs)
 	}
 	if val.Type == LMarkTerminal {
-		termEnv := val.Native.(*LEnv)
+		termEnv, ok := val.Native.(*LEnv)
+		if !ok {
+			return env.Errorf("internal error: terminal mark has no environment")
+		}
 		ctx := env.evalCtx
 		if termEnv != env {
 			prev := termEnv.evalCtx

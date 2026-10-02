@@ -28,7 +28,11 @@ func TestTemplateRejectsSealedMacroExpansionMetadata(t *testing.T) {
 			t.Fatal(forkErr)
 		}
 		got, ok := vm.Runtime.Package.symbolTable()["node"].MacroExpansion()
-		leaked := ok && len(got.Args) == 1 && got.Args[0] == fn && got.Args[0].Native.(*funData).env == source
+		leaked := false
+		if ok && len(got.Args) == 1 && got.Args[0] == fn {
+			fd, isFun := got.Args[0].Native.(*funData)
+			leaked = isFun && fd.env == source
+		}
 		t.Fatalf("sealed debug graph admitted: public metadata exposes source closure=%t", leaked)
 	}
 	if err == nil || !strings.Contains(err.Error(), "sealed graph contains macro expansion metadata") {

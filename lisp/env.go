@@ -2471,7 +2471,10 @@ func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, fd *funData, fn LBu
 	}
 	if val.Type == LMarkTerminal {
 		env.Runtime.Stack.Top().Terminal = true
-		termEnv := val.Native.(*LEnv)
+		termEnv, ok := val.Native.(*LEnv)
+		if !ok {
+			return env.Errorf("internal error: terminal mark has no environment")
+		}
 		if termEnv != env {
 			prevTerm := termEnv.evalCtx
 			defer func() { termEnv.evalCtx = prevTerm }()

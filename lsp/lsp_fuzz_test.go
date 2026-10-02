@@ -1285,11 +1285,18 @@ func opcode(name string) byte {
 func script(steps ...[4]any) []byte {
 	out := make([]byte, 0, len(steps)*bytesPerOp)
 	for _, st := range steps {
+		name, okName := st[0].(string)
+		a, okA := st[1].(int)
+		b, okB := st[2].(int)
+		flags, okFlags := st[3].(byte)
+		if !okName || !okA || !okB || !okFlags {
+			panic(fmt.Sprintf("malformed fuzz script step %v: want [string, int, int, byte]", st))
+		}
 		out = append(out,
-			opcode(st[0].(string)),
-			byte(st[1].(int)), //nolint:gosec // G115: the step tables in this file are written with byte-ranged values
-			byte(st[2].(int)), //nolint:gosec // G115: as above
-			st[3].(byte),
+			opcode(name),
+			byte(a), //nolint:gosec // G115: the step tables in this file are written with byte-ranged values
+			byte(b), //nolint:gosec // G115: as above
+			flags,
 		)
 	}
 	return out

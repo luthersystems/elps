@@ -3,6 +3,7 @@
 package libjson
 
 import (
+	"fmt"
 	"math/bits"
 	"testing"
 	"time"
@@ -37,6 +38,17 @@ func mapBomb(depth int) *lisp.LVal {
 	return v
 }
 
+// anySlice returns v as a []any, failing the test (with the formatted
+// context) when it is anything else.
+func anySlice(t testing.TB, v any, format string, args ...any) []any {
+	t.Helper()
+	s, ok := v.([]any)
+	if !ok {
+		t.Fatalf("%s: got %T, want []any", fmt.Sprintf(format, args...), v)
+	}
+	return s
+}
+
 func TestSerializerGoValueKeepsSharing(t *testing.T) {
 	s := DefaultSerializer()
 	// The bottom levels -- about log2(sharedWalkBudget) of them -- are
@@ -56,8 +68,8 @@ func TestSerializerGoValueKeepsSharing(t *testing.T) {
 		}
 		var viaSlice any = slice
 		for i := range levels {
-			s := viaSlice.([]any)
-			a, b := s[0].([]any), s[1].([]any)
+			s := anySlice(t, viaSlice, "GoSlice level %d", i)
+			a, b := anySlice(t, s[0], "GoSlice level %d a", i), anySlice(t, s[1], "GoSlice level %d b", i)
 			if &a[0] != &b[0] {
 				t.Fatalf("GoSlice level %d: the conversion unshared the value", i)
 			}
@@ -68,7 +80,7 @@ func TestSerializerGoValueKeepsSharing(t *testing.T) {
 			if !ok || len(s) != 2 {
 				t.Fatalf("level %d: got %T", i, got)
 			}
-			a, b := s[0].([]any), s[1].([]any)
+			a, b := anySlice(t, s[0], "level %d a", i), anySlice(t, s[1], "level %d b", i)
 			if &a[0] != &b[0] {
 				t.Fatalf("level %d: the conversion unshared the value", i)
 			}
@@ -112,7 +124,7 @@ func TestSerializerGoValueSmallSharingUnchanged(t *testing.T) {
 	if !ok || len(got) != 2 {
 		t.Fatalf("got %T", got)
 	}
-	a, b := got[0].([]any), got[1].([]any)
+	a, b := anySlice(t, got[0], "a"), anySlice(t, got[1], "b")
 	if &a[0] == &b[0] {
 		t.Fatal("a value under the budget converted with sharing")
 	}
@@ -131,7 +143,7 @@ func TestSerializerGoValueLargeTreeUnshared(t *testing.T) {
 	}
 	seen := map[*any]bool{}
 	for i, c := range got {
-		s := c.([]any)
+		s := anySlice(t, c, "element %d", i)
 		if seen[&s[0]] || s[0] != i {
 			t.Fatalf("element %d shared or wrong: %v", i, s)
 		}
@@ -189,14 +201,14 @@ func TestSerializerGoValueMemoHitHonoursValueDepthLimit(t *testing.T) {
 		if _, isErr := got.(error); isErr {
 			return true
 		}
-		top := got.([]any)
+		top := anySlice(t, got, "k=%d: top", k)
 		second := top[len(top)-1]
-		for range k {
-			second = second.([]any)[0]
+		for j := range k {
+			second = anySlice(t, second, "k=%d: chain level %d", k, j)[0]
 		}
 		for i, c := range first {
 			if c == again {
-				a, b := top[1+i].([]any), second.([]any)
+				a, b := anySlice(t, top[1+i], "k=%d: first %d", k, i), anySlice(t, second, "k=%d: again", k)
 				if &a[0] != &b[0] {
 					t.Fatalf("k=%d: the shared container was converted per path", k)
 				}

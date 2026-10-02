@@ -25,7 +25,6 @@ import (
 	"testing/fstest"
 
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -48,8 +47,9 @@ type reusingSliceReader struct {
 	reads int
 }
 
-func newReusingSliceReader() *reusingSliceReader {
-	return &reusingSliceReader{inner: parser.NewReader().(readLocationReader)}
+func newReusingSliceReader(tb testing.TB) *reusingSliceReader {
+	tb.Helper()
+	return &reusingSliceReader{inner: newReadLocationReader(tb)}
 }
 
 func (r *reusingSliceReader) Read(name string, in io.Reader) ([]*lisp.LVal, error) {
@@ -121,7 +121,7 @@ func TestLoadCacheReaderReusingOutputSliceServesTheRightFile(t *testing.T) {
 	t.Parallel()
 
 	// Control: the same Reader with NO cache installed.
-	ctrlReader := newReusingSliceReader()
+	ctrlReader := newReusingSliceReader(t)
 	ctrl := custodyEnv(t, ctrlReader, nil)
 	require.Equal(t, 111, loadInt(t, ctrl, "a.lisp"))
 	require.Equal(t, 222, loadInt(t, ctrl, "b.lisp"))
@@ -129,7 +129,7 @@ func TestLoadCacheReaderReusingOutputSliceServesTheRightFile(t *testing.T) {
 		"the control is not a control if the Reader alone corrupts the load")
 
 	cache := newTestLoadCache()
-	reader := newReusingSliceReader()
+	reader := newReusingSliceReader(t)
 	env := custodyEnv(t, reader, cache)
 
 	a1 := loadInt(t, env, "a.lisp")

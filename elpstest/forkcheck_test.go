@@ -73,7 +73,10 @@ func TestForkCheck_NativeAliasAcrossHeaders(t *testing.T) {
 				return lisp.GoError(rc)
 			}
 			bump := lisp.FunInPackage(lisp.DefaultUserPackage, "counter-bump", lisp.Formals("value"), func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				counter := args.Cells[0].Native.(*setupCounter)
+				counter, ok := args.Cells[0].Native.(*setupCounter)
+				if !ok {
+					return lisp.Errorf("counter-bump: value is not a setup counter: %v", args.Cells[0].Type)
+				}
 				counter.n++
 				return lisp.Int(counter.n)
 			})

@@ -20,6 +20,7 @@ linters:
     - errchkjson
     - errorlint
     - exhaustive
+    - forcetypeassert
     - gosec
     - intrange
     - makezero

@@ -96,8 +96,18 @@ type readLocationReader interface {
 	lisp.LocationReader
 }
 
-func newCountingReader() *countingReader {
-	return &countingReader{inner: parser.NewReader().(readLocationReader)}
+// newReadLocationReader returns the real parser as a readLocationReader.
+func newReadLocationReader(tb testing.TB) readLocationReader {
+	tb.Helper()
+	reader := parser.NewReader()
+	inner, ok := reader.(readLocationReader)
+	require.True(tb, ok, "parser.NewReader: got %T, want a lisp.Reader and lisp.LocationReader", reader)
+	return inner
+}
+
+func newCountingReader(tb testing.TB) *countingReader {
+	tb.Helper()
+	return &countingReader{inner: newReadLocationReader(tb)}
 }
 
 func (r *countingReader) Read(name string, in io.Reader) ([]*lisp.LVal, error) {
@@ -116,7 +126,7 @@ func (r *countingReader) ReadLocation(name, loc string, in io.Reader) ([]*lisp.L
 // given cache installed (nil for the no-hook path).
 func newCacheEnv(t *testing.T, files fstest.MapFS, cache lisp.LoadCache) (*lisp.LEnv, *countingReader) {
 	t.Helper()
-	reader := newCountingReader()
+	reader := newCountingReader(t)
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = reader
 	env.Runtime.Library = &lisp.FSLibrary{FS: files}

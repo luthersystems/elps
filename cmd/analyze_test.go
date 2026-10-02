@@ -102,7 +102,9 @@ func TestRunAnalyze_IncludeTestsFlagIncludesTestFiles(t *testing.T) {
 	var issues []map[string]any
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &issues))
 	require.NotEmpty(t, issues)
-	assert.Equal(t, "feature_test.lisp", filepath.Base(issues[0]["file"].(string)))
+	file, ok := issues[0]["file"].(string)
+	require.Truef(t, ok, "issue file is %T, want string", issues[0]["file"])
+	assert.Equal(t, "feature_test.lisp", filepath.Base(file))
 }
 
 func TestRunAnalyze_ConfigCanIncludeTests(t *testing.T) {
@@ -127,7 +129,9 @@ func TestRunAnalyze_ConfigCanIncludeTests(t *testing.T) {
 	var issues []map[string]any
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &issues))
 	require.NotEmpty(t, issues)
-	assert.Equal(t, "feature_test.lisp", filepath.Base(issues[0]["file"].(string)))
+	file, ok := issues[0]["file"].(string)
+	require.Truef(t, ok, "issue file is %T, want string", issues[0]["file"])
+	assert.Equal(t, "feature_test.lisp", filepath.Base(file))
 }
 
 func TestRunAnalyze_IncludeTestsPreservesExplicitConfigTestExclude(t *testing.T) {
@@ -179,7 +183,9 @@ func TestRunAnalyze_IncludeTestsStillHonorsSpecificTestExcludes(t *testing.T) {
 	var issues []map[string]any
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &issues))
 	require.NotEmpty(t, issues)
-	assert.Equal(t, "feature_test.lisp", filepath.Base(issues[0]["file"].(string)))
+	file, ok := issues[0]["file"].(string)
+	require.Truef(t, ok, "issue file is %T, want string", issues[0]["file"])
+	assert.Equal(t, "feature_test.lisp", filepath.Base(file))
 }
 
 func TestRunAnalyze_NoFilesRemainAfterDefaultTestExclusion(t *testing.T) {

@@ -531,7 +531,10 @@ func compactWalkerGolden(data []byte) ([]byte, error) {
 	out.WriteString("[\n")
 	shared := make(map[string]string)
 	for i, r := range records {
-		name := r["name"].(string)
+		name, ok := r["name"].(string)
+		if !ok {
+			return nil, fmt.Errorf("walker golden record %d: name is %T, want string", i, r["name"])
+		}
 		delete(r, "name")
 		payload, err := json.Marshal(r)
 		if err != nil {

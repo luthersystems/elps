@@ -47,7 +47,7 @@ func TestHoverOnDeprecatedDefun(t *testing.T) {
 	require.NoError(t, err)
 	assertHoverContains(t, hover, "old-fn", "**Deprecated.** use new-fn instead.")
 
-	mc := hover.Contents.(protocol.MarkupContent)
+	mc := requireType[protocol.MarkupContent](t, hover.Contents)
 	assert.Contains(t, mc.Value, "Adds one to x.",
 		"the banner must not replace the docstring")
 	assert.Less(t, strings.Index(mc.Value, "**Deprecated.**"), strings.Index(mc.Value, "Adds one to x."),
@@ -69,7 +69,7 @@ func TestHoverOnParagraphStyleDeprecatedDefun(t *testing.T) {
 	require.NoError(t, err)
 	assertHoverContains(t, hover, "blend-paths", "**Deprecated.** use join-paths instead.")
 
-	mc := hover.Contents.(protocol.MarkupContent)
+	mc := requireType[protocol.MarkupContent](t, hover.Contents)
 	assert.Contains(t, mc.Value, "Combines two paths.",
 		"the first paragraph must survive the join")
 }

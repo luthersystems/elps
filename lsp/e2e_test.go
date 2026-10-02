@@ -202,8 +202,8 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	}))
 
 	resp, _ := readResponse(t, reader, 1)
-	result := resp["result"].(map[string]any)
-	caps := result["capabilities"].(map[string]any)
+	result := requireType[map[string]any](t, resp["result"])
+	caps := requireType[map[string]any](t, result["capabilities"])
 
 	// Verify key capabilities.
 	assert.NotNil(t, caps["hoverProvider"], "should have hover")
@@ -213,7 +213,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 	assert.NotNil(t, caps["documentSymbolProvider"], "should have document symbols")
 	assert.NotNil(t, caps["renameProvider"], "should have rename")
 
-	serverInfo := result["serverInfo"].(map[string]any)
+	serverInfo := requireType[map[string]any](t, result["serverInfo"])
 	assert.Equal(t, "elps-lsp", serverInfo["name"])
 
 	// --- Step 2: Initialized ---
@@ -241,9 +241,9 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	hoverResp, _ := readResponse(t, reader, 2)
 	require.NotNil(t, hoverResp["result"], "hover should return a result")
-	hoverResult := hoverResp["result"].(map[string]any)
-	hoverContents := hoverResult["contents"].(map[string]any)
-	hoverValue := hoverContents["value"].(string)
+	hoverResult := requireType[map[string]any](t, hoverResp["result"])
+	hoverContents := requireType[map[string]any](t, hoverResult["contents"])
+	hoverValue := requireType[string](t, hoverContents["value"])
 	assert.Contains(t, hoverValue, "add", "hover should mention function name")
 	assert.Contains(t, hoverValue, "function", "hover should show kind")
 	assert.Contains(t, hoverValue, "Add two numbers", "hover should show docstring")
@@ -256,9 +256,9 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	defResp, _ := readResponse(t, reader, 3)
 	require.NotNil(t, defResp["result"], "definition should return a result")
-	defResult := defResp["result"].(map[string]any)
-	defRange := defResult["range"].(map[string]any)
-	defStart := defRange["start"].(map[string]any)
+	defResult := requireType[map[string]any](t, defResp["result"])
+	defRange := requireType[map[string]any](t, defResult["range"])
+	defStart := requireType[map[string]any](t, defRange["start"])
 	// encoding/json decodes the LSP line number into a float64, so this has to
 	// be a float comparison. Delta 0 keeps it an EXACT equality check (same as
 	// the assert.Equal it replaces) while satisfying testifylint's
@@ -273,13 +273,13 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	symResp, _ := readResponse(t, reader, 4)
 	require.NotNil(t, symResp["result"], "document symbols should return a result")
-	syms := symResp["result"].([]any)
+	syms := requireType[[]any](t, symResp["result"])
 	require.GreaterOrEqual(t, len(syms), 2, "should have at least add and multiply")
 
 	var symNames []string
 	for _, s := range syms {
-		sym := s.(map[string]any)
-		symNames = append(symNames, sym["name"].(string))
+		sym := requireType[map[string]any](t, s)
+		symNames = append(symNames, requireType[string](t, sym["name"]))
 	}
 	assert.Contains(t, symNames, "add")
 	assert.Contains(t, symNames, "multiply")
@@ -292,11 +292,11 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	compResp, _ := readResponse(t, reader, 5)
 	require.NotNil(t, compResp["result"], "completion should return a result")
-	compItems := compResp["result"].([]any)
+	compItems := requireType[[]any](t, compResp["result"])
 	var compLabels []string
 	for _, item := range compItems {
-		ci := item.(map[string]any)
-		compLabels = append(compLabels, ci["label"].(string))
+		ci := requireType[map[string]any](t, item)
+		compLabels = append(compLabels, requireType[string](t, ci["label"]))
 	}
 	assert.Contains(t, compLabels, "add", "completion should include 'add'")
 
@@ -309,7 +309,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	refsResp, _ := readResponse(t, reader, 6)
 	require.NotNil(t, refsResp["result"], "references should return a result")
-	refs := refsResp["result"].([]any)
+	refs := requireType[[]any](t, refsResp["result"])
 	assert.GreaterOrEqual(t, len(refs), 2, "should find definition + at least one call site")
 
 	// --- Step 9: Prepare Rename on "add" ---
@@ -320,7 +320,7 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	prepResp, _ := readResponse(t, reader, 7)
 	require.NotNil(t, prepResp["result"], "prepare rename should succeed for user function")
-	prepResult := prepResp["result"].(map[string]any)
+	prepResult := requireType[map[string]any](t, prepResp["result"])
 	assert.Equal(t, "add", prepResult["placeholder"], "placeholder should be the symbol name")
 
 	// --- Step 10: Rename "add" to "sum" ---
@@ -332,12 +332,12 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	renameResp, _ := readResponse(t, reader, 8)
 	require.NotNil(t, renameResp["result"], "rename should return a workspace edit")
-	renameResult := renameResp["result"].(map[string]any)
-	changes := renameResult["changes"].(map[string]any)
-	fileEdits := changes[testURI].([]any)
+	renameResult := requireType[map[string]any](t, renameResp["result"])
+	changes := requireType[map[string]any](t, renameResult["changes"])
+	fileEdits := requireType[[]any](t, changes[testURI])
 	assert.GreaterOrEqual(t, len(fileEdits), 2, "should rename at definition + call site(s)")
 	for _, edit := range fileEdits {
-		e := edit.(map[string]any)
+		e := requireType[map[string]any](t, edit)
 		assert.Equal(t, "sum", e["newText"], "all edits should use the new name")
 	}
 
@@ -370,9 +370,9 @@ func TestE2E_FullLifecycle(t *testing.T) {
 
 	builtinHoverResp, _ := readResponse(t, reader, 9)
 	require.NotNil(t, builtinHoverResp["result"], "hover on builtin should return a result")
-	builtinResult := builtinHoverResp["result"].(map[string]any)
-	builtinContents := builtinResult["contents"].(map[string]any)
-	builtinValue := builtinContents["value"].(string)
+	builtinResult := requireType[map[string]any](t, builtinHoverResp["result"])
+	builtinContents := requireType[map[string]any](t, builtinResult["contents"])
+	builtinValue := requireType[string](t, builtinContents["value"])
 	assert.Contains(t, builtinValue, "map")
 
 	// --- Step 13: Close document ---
@@ -427,20 +427,20 @@ func TestE2E_DiagnosticsPublishedOnOpen(t *testing.T) {
 		}
 		msg := readLSPMessage(t, reader)
 		if method, ok := msg["method"].(string); ok && method == "textDocument/publishDiagnostics" {
-			diagParams = msg["params"].(map[string]any)
+			diagParams = requireType[map[string]any](t, msg["params"])
 			break
 		}
 	}
 
 	require.NotNil(t, diagParams)
 	assert.Equal(t, testURI, diagParams["uri"])
-	diags := diagParams["diagnostics"].([]any)
+	diags := requireType[[]any](t, diagParams["diagnostics"])
 	require.NotEmpty(t, diags, "parse error should produce diagnostics")
 
 	// Verify at least one diagnostic is an error.
 	var foundError bool
 	for _, d := range diags {
-		diag := d.(map[string]any)
+		diag := requireType[map[string]any](t, d)
 		if sev, ok := diag["severity"].(float64); ok && sev == 1 { // 1 = Error
 			foundError = true
 		}
@@ -488,19 +488,19 @@ func TestE2E_LintDiagnostics(t *testing.T) {
 		}
 		msg := readLSPMessage(t, reader)
 		if method, ok := msg["method"].(string); ok && method == "textDocument/publishDiagnostics" {
-			diagParams = msg["params"].(map[string]any)
+			diagParams = requireType[map[string]any](t, msg["params"])
 			break
 		}
 	}
 
 	require.NotNil(t, diagParams)
-	diags := diagParams["diagnostics"].([]any)
+	diags := requireType[[]any](t, diagParams["diagnostics"])
 	require.NotEmpty(t, diags, "lint issues should produce diagnostics")
 
 	// At least one diagnostic should be from the linter.
 	var foundLint bool
 	for _, d := range diags {
-		diag := d.(map[string]any)
+		diag := requireType[map[string]any](t, d)
 		if source, ok := diag["source"].(string); ok && source == "elps-lint" {
 			foundLint = true
 		}
@@ -666,8 +666,8 @@ func TestE2E_SignatureHelp(t *testing.T) {
 	}))
 
 	resp, _ := readResponse(t, reader, 1)
-	result := resp["result"].(map[string]any)
-	caps := result["capabilities"].(map[string]any)
+	result := requireType[map[string]any](t, resp["result"])
+	caps := requireType[map[string]any](t, result["capabilities"])
 	assert.NotNil(t, caps["signatureHelpProvider"], "should have signatureHelp capability")
 
 	send(t, conn, jsonRPCNotification("initialized", map[string]any{}))
@@ -692,11 +692,11 @@ func TestE2E_SignatureHelp(t *testing.T) {
 
 	sigResp, _ := readResponse(t, reader, 2)
 	require.NotNil(t, sigResp["result"], "signature help should return a result")
-	sigResult := sigResp["result"].(map[string]any)
-	sigs := sigResult["signatures"].([]any)
+	sigResult := requireType[map[string]any](t, sigResp["result"])
+	sigs := requireType[[]any](t, sigResult["signatures"])
 	require.Len(t, sigs, 1)
-	sig := sigs[0].(map[string]any)
-	sigLabel := sig["label"].(string)
+	sig := requireType[map[string]any](t, sigs[0])
+	sigLabel := requireType[string](t, sig["label"])
 	assert.Contains(t, sigLabel, "greet")
 	assert.Contains(t, sigLabel, "name")
 
@@ -740,10 +740,10 @@ func TestE2E_Formatting(t *testing.T) {
 
 	resp, _ := readResponse(t, reader, 2)
 	require.NotNil(t, resp["result"], "formatting should return edits")
-	edits := resp["result"].([]any)
+	edits := requireType[[]any](t, resp["result"])
 	require.Len(t, edits, 1, "should return a single whole-document edit")
-	edit := edits[0].(map[string]any)
-	newText := edit["newText"].(string)
+	edit := requireType[map[string]any](t, edits[0])
+	newText := requireType[string](t, edit["newText"])
 	assert.Contains(t, newText, "  (+", "formatted text should be indented")
 
 	// Cleanup.
@@ -790,9 +790,9 @@ func TestE2E_InitializedNotRequired(t *testing.T) {
 
 	hoverResp, _ := readResponse(t, reader, 2)
 	require.NotNil(t, hoverResp["result"], "hover should work without initialized notification (#179)")
-	hoverResult := hoverResp["result"].(map[string]any)
-	hoverContents := hoverResult["contents"].(map[string]any)
-	hoverValue := hoverContents["value"].(string)
+	hoverResult := requireType[map[string]any](t, hoverResp["result"])
+	hoverContents := requireType[map[string]any](t, hoverResult["contents"])
+	hoverValue := requireType[string](t, hoverContents["value"])
 	assert.Contains(t, hoverValue, "add", "hover should mention function name")
 	assert.Contains(t, hoverValue, "function", "hover should show kind")
 
@@ -804,11 +804,11 @@ func TestE2E_InitializedNotRequired(t *testing.T) {
 
 	compResp, _ := readResponse(t, reader, 3)
 	require.NotNil(t, compResp["result"], "completion should work without initialized notification (#179)")
-	compItems := compResp["result"].([]any)
+	compItems := requireType[[]any](t, compResp["result"])
 	var compLabels []string
 	for _, item := range compItems {
-		ci := item.(map[string]any)
-		compLabels = append(compLabels, ci["label"].(string))
+		ci := requireType[map[string]any](t, item)
+		compLabels = append(compLabels, requireType[string](t, ci["label"]))
 	}
 	assert.Contains(t, compLabels, "add", "completion should include user-defined 'add'")
 

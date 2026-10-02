@@ -193,7 +193,8 @@ func TestTemplateForeignImmutablePolicyRunsOnlyAtConstruction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := fork.Get(lisp.Symbol("constant")).Native; got != value || *got.(*int) != 7 {
+		got := fork.Get(lisp.Symbol("constant")).Native
+		if n, isInt := got.(*int); got != value || !isInt || *n != 7 {
 			t.Fatalf("foreign immutable not shared correctly: %v", got)
 		}
 	}
@@ -291,7 +292,8 @@ func TestTemplatePolicyApprovedImmutableClonerIsNeverInvoked(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got := fork.Get(lisp.Symbol("constant")).Native; got != payload || got.(*templateForeignImmutableNumber).number != 7 {
+		got := fork.Get(lisp.Symbol("constant")).Native
+		if number, isNumber := got.(*templateForeignImmutableNumber); got != payload || !isNumber || number.number != 7 {
 			t.Fatalf("immutable value not shared intact: %v", got)
 		}
 	}

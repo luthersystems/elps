@@ -36,7 +36,10 @@ import (
 // CanonizeBuiltin exposes these data rejections as json:canonize-error,
 // with (message, case keyword, path) data for Lisp handlers.
 func Canonize(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
-	w := canonWalkerPool.Get().(*canonWalker)
+	w, ok := canonWalkerPool.Get().(*canonWalker)
+	if !ok {
+		w = &canonWalker{path: make(map[*lisp.LVal]bool)}
+	}
 	w.cfg = newTypedConfig(opts)
 	defer func() {
 		clear(w.edges[:cap(w.edges)])

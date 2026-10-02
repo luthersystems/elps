@@ -116,7 +116,7 @@ func FuzzGoSliceMapOf(f *testing.F) {
 				t.Fatalf("GoSliceOf[string] ok where GoSlice = %v, %v", ws, wok)
 			}
 			for i := range ws {
-				if ws[i].(string) != ss[i] {
+				if w, isString := ws[i].(string); !isString || w != ss[i] {
 					t.Fatalf("element %d: %v vs %v", i, ws[i], ss[i])
 				}
 			}

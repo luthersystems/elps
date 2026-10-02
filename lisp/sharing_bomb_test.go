@@ -407,6 +407,17 @@ func TestEqualWithEnvPollsDifferentlySharedValues(t *testing.T) {
 	}
 }
 
+// anySlice returns v as a []any, failing the test (with the formatted
+// context) when it is anything else.
+func anySlice(t testing.TB, v any, format string, args ...any) []any {
+	t.Helper()
+	s, ok := v.([]any)
+	if !ok {
+		t.Fatalf("%s: got %T, want []any", fmt.Sprintf(format, args...), v)
+	}
+	return s
+}
+
 // GoValue memoises past the budget too: a shared container converts once,
 // and the Go value shares the conversion where the LVal shared the
 // container.
@@ -421,7 +432,7 @@ func TestGoValueKeepsSharing(t *testing.T) {
 		if !ok || len(s) != 2 {
 			t.Fatalf("level %d: got %T", i, got)
 		}
-		a, b := s[0].([]any), s[1].([]any)
+		a, b := anySlice(t, s[0], "level %d a", i), anySlice(t, s[1], "level %d b", i)
 		if &a[0] != &b[0] {
 			t.Fatalf("level %d: the conversion unshared the value", i)
 		}
@@ -459,7 +470,7 @@ func TestGoValueLargeTreeUnshared(t *testing.T) {
 	}
 	seen := map[*any]bool{}
 	for i, c := range got {
-		s := c.([]any)
+		s := anySlice(t, c, "element %d", i)
 		if seen[&s[0]] || s[0] != i {
 			t.Fatalf("element %d shared or wrong: %v", i, s)
 		}
