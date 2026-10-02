@@ -582,6 +582,51 @@ func TestSharedDivergenceGate(t *testing.T) {
 	}
 }
 
+// TestSharedProgramDeadlinePathCompares is the control for the deadline
+// branch of runProgramFresh and runProgramShared.  The fixed tests above pass
+// deadline 0, and FuzzSharedProgramMultiEnv passes fuzzDeadline.  If every
+// load on the deadline branch came back as a context error, the baseline,
+// the control and every shared run would agree on that error, and the target
+// would compare nothing while passing.
+//
+// Each run here takes the deadline branch and must produce the same results
+// and environment state as a run with no deadline.  A context error cannot
+// match the no-deadline result.  The deadline is oracleDeadline and not
+// fuzzDeadline: the assertion is about what was compared, not speed, and a
+// starved process must not fail it (luthersystems/elps#788).
+func TestSharedProgramDeadlinePathCompares(t *testing.T) {
+	t.Parallel()
+	const src = `(defun double (x) (* x 2)) (double 21)`
+	const reps = 2
+
+	want, ok := runProgramFresh(t, []byte(src), reps, 0)
+	if !ok {
+		t.Fatal("the probe did not evaluate with no deadline")
+	}
+	fresh, ok := runProgramFresh(t, []byte(src), reps, oracleDeadline)
+	if !ok {
+		t.Fatalf("the probe did not evaluate under a %v deadline", oracleDeadline)
+	}
+	if !fresh.equal(want) {
+		t.Fatalf("a fresh run under a %v deadline differs from one with no deadline"+
+			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", oracleDeadline, want, fresh)
+	}
+
+	shared, err := lisp.ReadProgram(parser.NewReader(), "shared", bytes.NewReader([]byte(src)))
+	if err != nil {
+		t.Fatalf("the probe does not parse: %v", err)
+	}
+	sealed := astraw.Exprs(shared)
+	got, ok := runProgramShared(t, shared, sealed, lisp.SealedASTFingerprint(sealed), 0, reps, oracleDeadline)
+	if !ok {
+		t.Fatalf("the shared probe did not evaluate under a %v deadline", oracleDeadline)
+	}
+	if !got.equal(want) {
+		t.Fatalf("a shared run under a %v deadline differs from a fresh one with no deadline"+
+			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", oracleDeadline, want, got)
+	}
+}
+
 // TestSharedProgramNondeterminismIsDetected is the other half of the
 // control's red-proof: the control must actually be able to SEE
 // nondeterminism, not merely be wired into the gate.

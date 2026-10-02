@@ -133,6 +133,15 @@ const (
 	// See evalCorpusBudgeted for what the corpora run under instead.
 	fuzzDeadline = 2 * time.Second
 
+	// fuzzDeadlineFloor is the least fuzzDeadline may be.  The fixed tests
+	// run with no deadline, so they cannot see fuzzDeadline itself.  If it
+	// fell to near zero, every fuzzed expression would expire before it ran,
+	// the differential targets would compare nothing, and every test would
+	// still pass.  TestEvalCorpusHasNoWallClockDeadline holds fuzzDeadline at
+	// or above this floor, which is orders of magnitude above what a seed
+	// needs (luthersystems/elps#790).
+	fuzzDeadlineFloor = 100 * time.Millisecond
+
 	// watchdogTimeout is the outer bound, denominated in SCHEDULED time (see
 	// internal/fuzzwatch): wall clock during which this process was not run by the
 	// OS is not charged to the evaluator.  It is deliberately an order of
@@ -783,7 +792,7 @@ func TestTerminatingSeedVerdictIsNotAFunctionOfTheClock(t *testing.T) {
 
 // TestEvalCorpusHasNoWallClockDeadline pins the shape of #435's fix: the fixed
 // corpora are handed a context with no deadline, and fuzzed input is still
-// handed one.
+// handed one, no shorter than fuzzDeadlineFloor.
 //
 // It is deliberately narrow.  The behavioural assertion lives in
 // TestTerminatingSeedVerdictIsNotAFunctionOfTheClock; this one exists so that
@@ -805,6 +814,11 @@ func TestEvalCorpusHasNoWallClockDeadline(t *testing.T) {
 		t.Fatal("fuzzed input must still run under fuzzDeadline: it is the throughput bound" +
 			" that stops one pathological mutation from eating a whole fuzz job, and nothing" +
 			" in FuzzEval asserts that an input succeeds, so it cannot fail innocent code")
+	}
+	if fuzzDeadline < fuzzDeadlineFloor {
+		t.Fatalf("fuzzDeadline is %s, below the %s floor: fuzzed expressions expire before"+
+			" they run, and the differential fuzz targets compare nothing while passing",
+			fuzzDeadline, fuzzDeadlineFloor)
 	}
 }
 

@@ -563,3 +563,56 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 		t.Fatalf("the fixture raised %q, not its own condition", final.Str)
 	}
 }
+
+// TestSharedTreeDeadlinePathIsConclusive is the control for the deadline
+// branch of the real harness path.  TestSharedTreeLiveResultIsConclusive and
+// TestSharedTreeSeedsAgree pass deadline 0, so evalContext gives them a context
+// with no deadline.  FuzzSharedTreeEval passes fuzzDeadline and takes the other
+// branch.  A defect in that branch alone -- a context created already
+// expired, an expired flag read wrong only when a deadline is set -- would make
+// the fuzz target compare nothing while both of those tests stay green.
+//
+// This test drives the same fixture through sharedTreeProperty with a
+// deadline, and asserts that every shared arm compared every expression.  It
+// uses oracleDeadline and not fuzzDeadline: the assertion is about
+// conclusiveness, not speed, and a starved process must not fail it
+// (luthersystems/elps#788).  TestEvalCorpusHasNoWallClockDeadline holds
+// fuzzDeadline itself above fuzzDeadlineFloor.
+func TestSharedTreeDeadlinePathIsConclusive(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := evalContext(oracleDeadline)
+	defer cancel()
+	if _, ok := ctx.Deadline(); !ok {
+		t.Fatalf("evalContext(%v) gave a context with no deadline;"+
+			" this test would not exercise the fuzz target's branch", oracleDeadline)
+	}
+
+	exprs, ok := readTree([]byte(liveConclusiveSrc))
+	if !ok {
+		t.Fatalf("the fixture does not parse:\n%s", liveConclusiveSrc)
+	}
+
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), oracleDeadline)
+
+	if res.skipped != "" {
+		t.Fatalf("the deadline path skipped the fixture: %s", res.skipped)
+	}
+	if len(res.runs) != sharedRuns {
+		t.Fatalf("%d shared arms reported a verdict, want %d", len(res.runs), sharedRuns)
+	}
+	for i, v := range res.runs {
+		if !v.conclusive() {
+			t.Fatalf("shared run %d was inconclusive under a %v deadline: %s"+
+				"\n  the deadline path compared nothing from expression %d on",
+				i, oracleDeadline, v.inconclusive, v.compared)
+		}
+		if v.compared != len(exprs) {
+			t.Fatalf("shared run %d compared %d of %d expressions under a %v deadline",
+				i, v.compared, len(exprs), oracleDeadline)
+		}
+	}
+	if !res.conclusive() {
+		t.Fatal("the result is not conclusive as a whole")
+	}
+}
