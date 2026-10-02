@@ -130,7 +130,7 @@ func FuzzApplyStdlib(f *testing.F) {
 
 	seedCross(f, names)
 	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
-		applyOne(t, names, idx, data)
+		applyOne(t, names, idx, data, callDeadline)
 	})
 }
 
@@ -184,7 +184,7 @@ func FuzzApplyThinStdlib(f *testing.F) {
 	}
 	seedCross(f, names)
 	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
-		applyOne(t, names, idx, data)
+		applyOne(t, names, idx, data, callDeadline)
 	})
 }
 
@@ -256,7 +256,12 @@ func seedCross(f *testing.F, names []string) {
 }
 
 // applyOne is the body both targets share.
-func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
+//
+// The call runs under a context deadline of deadline.  A deadline of 0 means
+// no wall-clock deadline.  The fuzz targets pass callDeadline.  A fixed test
+// passes 0, so its verdict does not depend on how much CPU the process gets
+// (luthersystems/elps#788).
+func applyOne(t fuzzT, names []string, idx uint16, data []byte, deadline time.Duration) {
 	t.Helper()
 	name := names[int(idx)%len(names)]
 	if skipCallable(name) {
@@ -265,7 +270,13 @@ func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
 
 	before := lisp.TakeSingletonSnapshot()
 
-	ctx, cancel := context.WithTimeout(context.Background(), callDeadline)
+	var ctx context.Context
+	var cancel context.CancelFunc
+	if deadline > 0 {
+		ctx, cancel = context.WithTimeout(context.Background(), deadline)
+	} else {
+		ctx, cancel = context.WithCancel(context.Background())
+	}
 	defer cancel()
 
 	env := fuzzEnv(t, ctx)
@@ -293,7 +304,7 @@ func applyOne(t fuzzT, names []string, idx uint16, data []byte) {
 	// importantly, for what it deliberately does not.
 	guard := fuzzfp.Watch(args)
 
-	result := applyWithWatchdog(t, env, name, fun, args)
+	result := applyWithWatchdog(t, env, name, fun, args, deadline)
 
 	if result == nil {
 		t.Fatalf("%s returned a nil *LVal", name)
@@ -359,7 +370,7 @@ const fuzzMaxSteps = 20000
 // The goroutine is deliberately leaked on timeout: it cannot be interrupted
 // (that is the defect being reported), and a fuzz worker that reports a
 // crasher exits immediately afterwards.
-func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVal) *lisp.LVal {
+func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVal, deadline time.Duration) *lisp.LVal {
 	t.Helper()
 	done := make(chan *lisp.LVal, 1)
 	panicked := make(chan any, 1)
@@ -397,8 +408,8 @@ func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVa
 				t.Skipf("%s: no verdict, the process was starved throughout (%s)", name, report)
 				return nil
 			default:
-				t.Fatalf("%s did not terminate within %v of SCHEDULED time despite a %v context deadline and a %d-step limit (%s)\n--- args ---\n%s",
-					name, budget.Total(), callDeadline, fuzzMaxSteps, report, args)
+				t.Fatalf("%s did not terminate within %v of SCHEDULED time despite a context deadline of %v (0 is none) and a %d-step limit (%s)\n--- args ---\n%s",
+					name, budget.Total(), deadline, fuzzMaxSteps, report, args)
 				return nil
 			}
 		}
@@ -694,7 +705,7 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 							}
 						}
 					}()
-					applyOne(st, []string{name}, 0, seed)
+					applyOne(st, []string{name}, 0, seed, 0)
 				}()
 				ran++
 				if st.failed {
