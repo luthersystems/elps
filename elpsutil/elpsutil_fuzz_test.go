@@ -971,16 +971,15 @@ func (in *install) run(ctx context.Context, loaders []elpsutil.Loader, src []byt
 }
 
 // fatalf is the subset of *testing.T the harness needs, so the same code
-// serves the fuzz target and the ordinary corpus tests.
-type fatalf interface {
-	Helper()
-	Fatalf(format string, args ...any)
-	Skipf(format string, args ...any)
-}
+// serves the fuzz target and the ordinary corpus tests.  It is
+// fuzzwatch.T, so a starved watchdog can wait for a fixed input (see
+// fuzzwatch.AwaitStarved).
+type fatalf = fuzzwatch.T
 
 // runBudgeted installs and evaluates under the watchdog, and applies every
-// assertion. Returns the install so callers can read `reached` back.
-func runBudgeted(t fatalf, spec, src []byte) *install {
+// assertion. Returns the install so callers can read `reached` back. input
+// decides what a starved watchdog does (see fuzzwatch.AwaitStarved).
+func runBudgeted(t fatalf, spec, src []byte, input fuzzwatch.Input) *install {
 	t.Helper()
 
 	env, rc := newEnv()
@@ -1013,8 +1012,12 @@ func runBudgeted(t fatalf, spec, src []byte) *install {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return nil
+				var ok bool
+				if out, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "the install",
+					fmt.Sprintf("\n--- spec (%d bytes) ---\n%q\n--- src (%d bytes) ---\n%q",
+						len(spec), spec, len(src), src)); !ok {
+					return nil
+				}
 			default:
 				t.Fatalf("the install did not terminate within %s of SCHEDULED time"+
 					" despite a %s context deadline and a %d-step budget (%s)"+
@@ -1476,7 +1479,7 @@ func FuzzElpsutilEmbed(f *testing.F) {
 	add(nil, ``)
 
 	f.Fuzz(func(t *testing.T, spec, src []byte) {
-		runBudgeted(t, spec, src)
+		runBudgeted(t, spec, src, fuzzwatch.Fuzzed)
 	})
 }
 
@@ -1528,7 +1531,7 @@ func TestElpsutilFuzzReachesEveryFeature(t *testing.T) {
 	reached := map[string]bool{}
 	total := 0
 	for _, c := range guardCorpus() {
-		in := runBudgeted(t, c.spec, []byte(c.src))
+		in := runBudgeted(t, c.spec, []byte(c.src), fuzzwatch.Fixed)
 		if in == nil {
 			continue
 		}
@@ -1699,7 +1702,7 @@ func TestElpsutilSeedsTerminate(t *testing.T) {
 	for i, c := range guardCorpus() {
 		t.Run(fmt.Sprintf("case/%d", i), func(t *testing.T) {
 			t.Parallel()
-			runBudgeted(t, c.spec, []byte(c.src))
+			runBudgeted(t, c.spec, []byte(c.src), fuzzwatch.Fixed)
 		})
 	}
 }
