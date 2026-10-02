@@ -32,7 +32,7 @@ func TestAwaitSharedTreeFixedInputNeverSkips(t *testing.T) {
 	var skipped string
 	t.Run("fixed", func(t *testing.T) {
 		sub = t
-		skipped = awaitSharedTree(t, done, fixedInput, 0, inconclusive, "")
+		skipped = awaitSharedTree(t, done, fuzzwatch.Fixed, 0, inconclusive, "")
 	})
 	if sub.Skipped() {
 		t.Fatal("a fixed input was skipped on an Inconclusive verdict")
