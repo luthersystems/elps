@@ -15,9 +15,9 @@ name: Release (tag)
 # NOTE: cutting a tag here PUBLISHES the VS Code extension to the
 # Marketplace — treat a release as externally visible immediately.
 #
-# Model auth: repo secret CLAUDE_CODE_OAUTH_TOKEN (same identity as the
-# reliable/buildenv/lutherauth release automation) — must be granted to this
-# repo before the workflow can run.
+# Model auth: Amazon Bedrock via GitHub OIDC, assuming the AWS role
+# github-actions-claude-bedrock (managed in luthersystems/common-infrastructure
+# storage/github_actions_claude_bedrock.tf). No stored model secret.
 
 on:
   workflow_dispatch:
@@ -33,7 +33,7 @@ on:
 
 permissions:
   contents: write # gh release create (creates the tag + release)
-  id-token: write # lets claude-code-action mint the official Claude App token, so the tag triggers vscode-publish.yml
+  id-token: write # AWS role for Bedrock (OIDC), and lets claude-code-action mint the official Claude App token, so the tag triggers vscode-publish.yml
 
 concurrency:
   group: release-tag
@@ -73,6 +73,11 @@ jobs:
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.280
           echo "path=$(command -v claude)" >> "$GITHUB_OUTPUT"
+      - name: Configure AWS credentials for Bedrock (OIDC)
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::637423319757:role/github-actions-claude-bedrock
+          aws-region: us-west-2
       - name: Cut the release via Claude
         uses: anthropics/claude-code-action@v1
         env:
@@ -82,7 +87,7 @@ jobs:
           # Official-app auth (minted via OIDC using `id-token: write`). Do NOT
           # add a `github_token:` here — a default GITHUB_TOKEN tag does not
           # trigger vscode-publish.yml, which this release depends on.
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          use_bedrock: "true"
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
           prompt: |
             Cut a release of elps at the version in the RELEASE_VERSION env
@@ -117,7 +122,7 @@ jobs:
           claude_args: |
             --allowedTools Bash,Read,Grep,Glob
             --max-turns 30
-            --model claude-opus-5-5
+            --model us.anthropic.claude-opus-5-5
       # Capture the agent's stream-json conversation so a deliberate STOP
       # (validation refusal) is explainable after the fact — the action hides
       # the transcript from the job log. Mirrors buildenv's release-patch.yml.
