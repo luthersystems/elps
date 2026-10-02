@@ -58,3 +58,4 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
+go | lisp.ArgDecoder | 2027-01-01 | luthersystems/substrate#632 | Decoder type became a struct to avoid a per-call heap allocation; constructors unchanged (ValueArg, TypedArg, StringArg). A decoder written as a plain function now goes through lisp.CustomArg. Only known consumer: luthersystems/substrate#632 (unmerged).

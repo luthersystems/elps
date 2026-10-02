@@ -123,16 +123,13 @@ func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (string, strin
 	var lerr *LVal
 	func() {
 		defer env.recoverPanic(&lerr)
-		name, path, src, lerr = env.readLibrarySourceUnchecked(ctx, loc)
+		// The outputs are stored before the error is built, so a panic while
+		// rendering the error still returns them with the internal-panic.
+		var err error
+		name, path, src, err = env.Runtime.Library.LoadSource(ctx, loc)
+		if err != nil {
+			lerr = env.Errorf("library error: %v", err)
+		}
 	}()
 	return name, path, src, lerr
-}
-
-// readLibrarySourceUnchecked is readLibrarySource without the panic recovery.
-func (env *LEnv) readLibrarySourceUnchecked(ctx SourceContext, loc string) (string, string, []byte, *LVal) {
-	name, path, src, err := env.Runtime.Library.LoadSource(ctx, loc)
-	if err != nil {
-		return name, path, src, env.Errorf("library error: %v", err)
-	}
-	return name, path, src, nil
 }
