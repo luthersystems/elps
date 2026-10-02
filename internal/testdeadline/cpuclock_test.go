@@ -112,7 +112,8 @@ func TestGuardKillsASpin(t *testing.T) {
 }
 
 // TestBackstopEndsBeforeTheTestDeadline: with a -timeout, the backstop ends
-// backstopMargin before it; without one, it has no deadline.
+// at most backstopMargin before it and is still live, even under a short
+// -timeout such as 20s (#791); without one, it has no deadline.
 func TestBackstopEndsBeforeTheTestDeadline(t *testing.T) {
 	ctx, cancel := Backstop(t)
 	defer cancel()
@@ -121,7 +122,10 @@ func TestBackstopEndsBeforeTheTestDeadline(t *testing.T) {
 	if hasBackstop != hasTimeout {
 		t.Fatalf("backstop deadline %v, test deadline %v", hasBackstop, hasTimeout)
 	}
-	if hasTimeout && !got.Equal(want.Add(-backstopMargin)) {
-		t.Fatalf("backstop ends at %v, want %v", got, want.Add(-backstopMargin))
+	if err := ctx.Err(); err != nil {
+		t.Fatalf("backstop context already done: %v", err)
+	}
+	if hasTimeout && (got.After(want) || got.Before(want.Add(-backstopMargin))) {
+		t.Fatalf("backstop ends at %v, want within %v before %v", got, backstopMargin, want)
 	}
 }
