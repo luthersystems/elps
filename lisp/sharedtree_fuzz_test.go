@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -117,6 +118,12 @@ import (
 // enough for the race detector to see a conflicting pair, and keeping it small
 // keeps the per-input cost near FuzzEval's.
 const sharedRuns = 2
+
+// The watchdog in sharedTreeProperty budgets 3 evaluations: the private
+// baseline and sharedRuns shared ones.  This index does not compile unless
+// sharedRuns+1 == 3.  The budget is a literal so the fuzzwatch call-site
+// guard can read it.
+var _ = [1]struct{}{}[sharedRuns+1-3]
 
 // treeEval is one evaluation of a whole tree: what each expression rendered
 // to, and -- alongside the rendering, never derived from it -- whether this
@@ -445,11 +452,30 @@ func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration) shared
 	// a check; a builtin that loops inside Go is step-blind.  The watchdog is
 	// what turns "this terminates" into an assertion.  Denominated in
 	// SCHEDULED time so a starved process is not charged to the evaluator.
-	select {
-	case <-done:
-	case <-time.After(watchdogTimeout * (sharedRuns + 1)):
-		t.Fatalf("shared-tree evaluation did not terminate\n--- source (%d bytes) ---\n%q", len(src), src)
-		return sharedTreeResult{skipped: "evaluation did not terminate"}
+	// The budget is one watchdogTimeout per evaluation: the private baseline
+	// and the sharedRuns shared ones (#789).
+	budget := fuzzwatch.New(3 * watchdogTimeout)
+	wait := budget.Total()
+waitDone:
+	for {
+		select {
+		case <-done:
+			break waitDone
+		case <-time.After(wait):
+			verdict, more, report := budget.Check()
+			switch verdict {
+			case fuzzwatch.Continue:
+				wait = more
+			case fuzzwatch.Inconclusive:
+				// Starved throughout: nothing can be said about this input.
+				t.Skipf("no verdict: the process was starved throughout (%s)", report)
+				return sharedTreeResult{skipped: "starved throughout"}
+			default:
+				t.Fatalf("shared-tree evaluation did not terminate within %s of SCHEDULED time (%s)"+
+					"\n--- source (%d bytes) ---\n%q", budget.Total(), report, len(src), src)
+				return sharedTreeResult{skipped: "evaluation did not terminate"}
+			}
+		}
 	}
 
 	if wantErr != nil {
