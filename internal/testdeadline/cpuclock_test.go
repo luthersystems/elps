@@ -97,3 +97,31 @@ func TestRunChildKillsASpin(t *testing.T) {
 		t.Fatalf("a spinning child was not killed on its CPU budget: %v\n%s", err, out)
 	}
 }
+
+// TestGuardKillsASpin: Guard stops a started child that never exits.
+func TestGuardKillsASpin(t *testing.T) {
+	cmd := child(t, "spin")
+	if err := cmd.Start(); err != nil {
+		t.Fatal(err)
+	}
+	stop := guard(cmd.Process, time.Second)
+	_ = cmd.Wait()
+	if used, killed := stop(); !killed || used <= time.Second {
+		t.Fatalf("guard did not kill a spinning child on its budget: killed=%v used=%v", killed, used)
+	}
+}
+
+// TestBackstopEndsBeforeTheTestDeadline: with a -timeout, the backstop ends
+// backstopMargin before it; without one, it has no deadline.
+func TestBackstopEndsBeforeTheTestDeadline(t *testing.T) {
+	ctx, cancel := Backstop(t)
+	defer cancel()
+	got, hasBackstop := ctx.Deadline()
+	want, hasTimeout := t.Deadline()
+	if hasBackstop != hasTimeout {
+		t.Fatalf("backstop deadline %v, test deadline %v", hasBackstop, hasTimeout)
+	}
+	if hasTimeout && !got.Equal(want.Add(-backstopMargin)) {
+		t.Fatalf("backstop ends at %v, want %v", got, want.Add(-backstopMargin))
+	}
+}

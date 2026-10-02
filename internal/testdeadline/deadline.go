@@ -9,7 +9,10 @@
 // the process waits for a CPU, so a wall-clock bound fails a correct build on
 // a starved runner (-cpu=1 beside a CPU hog), and no margin is safe from
 // that. [Within] and [Watch] bound the CPU time of the goroutine under test;
-// [RunChild] bounds the CPU time of a re-executed child process.
+// [RunChild] and [Guard] bound the CPU time of a child process.
+//
+// A hang that blocks uses no CPU, so no CPU bound sees it. [Backstop] gives
+// such a wait a context that ends just before the binary's -timeout.
 //
 // Instrumentation still costs CPU: the race detector slows a program by
 // roughly an order of magnitude, and a budget picked for an ordinary build

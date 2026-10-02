@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -25,7 +26,10 @@ func TestEvaluationSignals(t *testing.T) {
 	for _, mode := range []string{"run", "repl-eval", "repl-batch"} {
 		for _, sig := range []os.Signal{os.Interrupt, syscall.SIGTERM} {
 			t.Run(mode+"/"+sig.String(), func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+				// No wall-clock deadline (#789).  An evaluation that
+				// ignores the signal keeps spinning, and Guard kills it
+				// on CPU time; Backstop catches a child that blocks.
+				ctx, cancel := testdeadline.Backstop(t)
 				defer cancel()
 				source := `(debug-print "ready") ` + runEndlessProgram
 				args := []string{"run", "-e", source}
@@ -40,6 +44,7 @@ func TestEvaluationSignals(t *testing.T) {
 				stderr, err := cmd.StderrPipe()
 				require.NoError(t, err)
 				require.NoError(t, cmd.Start())
+				stop := testdeadline.Guard(cmd.Process, 20*time.Second)
 				reader := bufio.NewReader(stderr)
 				ready, err := reader.ReadString('\n')
 				require.NoError(t, err)
@@ -48,6 +53,7 @@ func TestEvaluationSignals(t *testing.T) {
 				out, err := io.ReadAll(reader)
 				require.NoError(t, err)
 				err = cmd.Wait()
+				require.False(t, stop(), "signal did not stop evaluation: the child spun for its CPU budget")
 				require.NoError(t, ctx.Err(), "signal did not stop evaluation")
 				require.Error(t, err)
 				assert.Equal(t, 1, cmd.ProcessState.ExitCode(), "must exit normally with failure, not die from a signal")
@@ -73,7 +79,9 @@ func TestEvaluationSignalHelper(t *testing.T) {
 }
 
 func TestEvaluationSecondInterrupt(t *testing.T) {
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// The helper blocks rather than spins, so the bound is Backstop, not
+	// CPU time, and not a short wall-clock deadline (#789).
+	ctx, cancel := testdeadline.Backstop(t)
 	defer cancel()
 	bin, err := os.Executable()
 	require.NoError(t, err)
@@ -103,7 +111,8 @@ func TestRunSignalDuringFinalOutput(t *testing.T) {
 	const valueSize = (4 << 20) + 2 // string contents and quotes
 	for _, mode := range []string{"run", "repl"} {
 		t.Run(mode, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+			// Backstop, not a short wall-clock deadline (#789).
+			ctx, cancel := testdeadline.Backstop(t)
 			defer cancel()
 			args := []string{mode, "-e", `(string:repeat "x" 4194304)`}
 			if mode == "run" {

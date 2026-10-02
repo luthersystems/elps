@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"os"
 	"os/exec"
 	"runtime"
 	"time"
@@ -123,23 +124,57 @@ func runChild(cmd *exec.Cmd, budget time.Duration) ([]byte, error) {
 	if err := cmd.Start(); err != nil {
 		return nil, err
 	}
-	clock := processCPU(cmd.Process.Pid)
-	exited := make(chan error, 1)
-	go func() { exited <- cmd.Wait() }()
-	tick := time.NewTicker(pollEvery)
-	defer tick.Stop()
-	for {
-		select {
-		case err := <-exited:
-			return out.Bytes(), err
-		case <-tick.C:
-			used, ok := clock()
-			if !ok || used <= budget {
-				continue
+	stop := guard(cmd.Process, budget)
+	err := cmd.Wait()
+	if used, killed := stop(); killed {
+		return out.Bytes(), fmt.Errorf("killed: the child used %v of CPU time, %w of %v: %w", used, ErrOverBudget, budget, err)
+	}
+	return out.Bytes(), err
+}
+
+// Guard kills the started process p once it has used Scale(budget) of CPU
+// time, summed over its threads.  Call the returned stop function after
+// cmd.Wait returns; it reports whether Guard killed p.
+//
+// It is RunChild for a test that drives the child itself (pipes, signals).
+// As with RunChild, a child that blocks without using CPU is not bounded:
+// pair Guard with Backstop for that.
+func Guard(p *os.Process, budget time.Duration) func() bool {
+	stopUsed := guard(p, Scale(budget))
+	return func() bool {
+		_, killed := stopUsed()
+		return killed
+	}
+}
+
+func guard(p *os.Process, budget time.Duration) func() (time.Duration, bool) {
+	clock := processCPU(p.Pid)
+	quit := make(chan struct{})
+	done := make(chan struct{})
+	var used time.Duration
+	var killed bool
+	go func() {
+		defer close(done)
+		tick := time.NewTicker(pollEvery)
+		defer tick.Stop()
+		for {
+			select {
+			case <-quit:
+				return
+			case <-tick.C:
+				u, ok := clock()
+				if !ok || u <= budget {
+					continue
+				}
+				used, killed = u, true
+				_ = p.Kill()
+				return
 			}
-			_ = cmd.Process.Kill()
-			waitErr := <-exited
-			return out.Bytes(), fmt.Errorf("killed: the child used %v of CPU time, %w of %v (%v)", used, ErrOverBudget, budget, waitErr)
 		}
+	}()
+	return func() (time.Duration, bool) {
+		close(quit)
+		<-done
+		return used, killed
 	}
 }

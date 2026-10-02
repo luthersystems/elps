@@ -3,7 +3,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/sys/unix"
@@ -35,7 +35,9 @@ func TestReplSignalRestoresTerminal(t *testing.T) {
 	require.NotZero(t, original.Lflag&unix.ICANON)
 	bin, err := os.Executable()
 	require.NoError(t, err)
-	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	// Backstop, not a short wall-clock deadline (#789): the regressions
+	// here are an input wait that does not end, which uses no CPU.
+	ctx, cancel := testdeadline.Backstop(t)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, bin, "-test.run=^TestReplTerminalHelper$") //nolint:gosec // current test executable
 	cmd.Env = append(os.Environ(), "HOME="+t.TempDir(), "TERM=xterm", "ELPS_TEST_TERMINAL_HELPER=1")
@@ -50,10 +52,17 @@ func TestReplSignalRestoresTerminal(t *testing.T) {
 
 	// Observe raw mode before signalling, so cancellation happens during an
 	// interactive input wait. Keep the slave open to inspect it after exit.
-	require.Eventually(t, func() bool {
+	rawMode := func() bool {
 		state, termErr := unix.IoctlGetTermios(slaveFD, unix.TCGETS)
 		return termErr == nil && state.Lflag&(unix.ICANON|unix.ECHO) == 0
-	}, 3*time.Second, 10*time.Millisecond, "REPL did not enter raw mode")
+	}
+	for !rawMode() {
+		select {
+		case <-ctx.Done():
+			t.Fatal("REPL did not enter raw mode")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
 	require.NoError(t, cmd.Process.Signal(syscall.SIGTERM))
 	require.Error(t, cmd.Wait())
 	require.NoError(t, ctx.Err(), "signal did not stop input wait")
