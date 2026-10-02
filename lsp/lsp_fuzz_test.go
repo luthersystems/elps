@@ -15,6 +15,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/tliron/glsp"
+	protocol "github.com/tliron/glsp/protocol_3_16"
+
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/fuzzseed"
@@ -24,8 +27,6 @@ import (
 	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
-	"github.com/tliron/glsp"
-	protocol "github.com/tliron/glsp/protocol_3_16"
 )
 
 // Fuzzing the LANGUAGE SERVER as a session: a sequence of requests against
@@ -1202,53 +1203,55 @@ func runSession(srcA, srcB, script []byte) error {
 }
 
 // fatalf is the subset of *testing.T the harness needs, so the same driver
-// serves the fuzz target and the ordinary corpus tests.
-type fatalf interface {
-	Helper()
-	Fatalf(format string, args ...any)
-	Skipf(format string, args ...any)
-}
+// serves the fuzz target and the ordinary corpus tests.  It is
+// fuzzwatch.T, so a starved watchdog can wait for a fixed input (see
+// fuzzwatch.AwaitStarved).
+type fatalf = fuzzwatch.T
 
 // runSessionBudgeted runs a session on its own goroutine under the watchdog.
 //
 // A hang is a real possibility rather than a formality: analysis-time macro
 // expansion evaluates macro bodies, and lint walks an AST the fuzzer shaped.
 // The interpreter budgets bound the first; nothing but this bounds the second.
-func runSessionBudgeted(t fatalf, srcA, srcB, script []byte) {
+// input decides what a starved watchdog does (see fuzzwatch.AwaitStarved).
+func runSessionBudgeted(t fatalf, srcA, srcB, script []byte, input fuzzwatch.Input) {
 	t.Helper()
 
 	done := make(chan error, 1)
 	go func() { done <- runSession(srcA, srcB, script) }()
 
+	describe := fmt.Sprintf("\n--- doc A (%d bytes) ---\n%q\n--- doc B (%d bytes) ---\n%q"+
+		"\n--- script (%d bytes) ---\n%q",
+		len(srcA), srcA, len(srcB), srcB, len(script), script)
 	budget := fuzzwatch.New(lspWatchdogTimeout)
 	wait := budget.Total()
-	for {
+	var err error
+	for received := false; !received; {
 		select {
-		case err := <-done:
-			if err != nil {
-				t.Fatalf("%v\n--- doc A (%d bytes) ---\n%q\n--- doc B (%d bytes) ---\n%q"+
-					"\n--- script (%d bytes) ---\n%q",
-					err, len(srcA), srcA, len(srcB), srcB, len(script), script)
-			}
-			return
+		case err = <-done:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return
+				var ok bool
+				if err, ok = fuzzwatch.AwaitStarved(t, done, input, report, "the LSP session", describe); !ok {
+					return
+				}
+				received = true
 			default:
 				t.Fatalf("the LSP session did not terminate within %s of SCHEDULED time (%s)."+
 					" Analysis-time macro expansion runs under interpreter budgets, but nothing"+
-					" bounds a loop in analysis or lint themselves"+
-					"\n--- doc A (%d bytes) ---\n%q\n--- doc B (%d bytes) ---\n%q"+
-					"\n--- script (%d bytes) ---\n%q",
-					budget.Total(), report, len(srcA), srcA, len(srcB), srcB, len(script), script)
+					" bounds a loop in analysis or lint themselves%s",
+					budget.Total(), report, describe)
 				return
 			}
 		}
+	}
+	if err != nil {
+		t.Fatalf("%v%s", err, describe)
 	}
 }
 
@@ -1468,7 +1471,7 @@ func FuzzLSPSession(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, srcA, srcB, sc []byte) {
-		runSessionBudgeted(t, srcA, srcB, sc)
+		runSessionBudgeted(t, srcA, srcB, sc, fuzzwatch.Fuzzed)
 	})
 }
 
@@ -1690,7 +1693,7 @@ func TestLSPFuzzSeedsTerminate(t *testing.T) {
 	for name, seed := range seeds {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			runSessionBudgeted(t, seed, seed, allOpsScript())
+			runSessionBudgeted(t, seed, seed, allOpsScript(), fuzzwatch.Fixed)
 		})
 	}
 }
