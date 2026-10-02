@@ -7,6 +7,8 @@ import (
 	"math/big"
 	"testing"
 	"time"
+
+	"github.com/luthersystems/elps/internal/testdeadline"
 )
 
 // TestPowIntTerminates is the regression test for the non-terminating
@@ -17,12 +19,17 @@ import (
 // A plain `got := powInt(...)` regression test would therefore hang until the
 // package's 10-minute `go test` timeout, take the whole test binary down with
 // it, and report the failure against whatever test happened to be running.
-// Running the call on its own goroutine with a 500ms deadline turns the hang
-// into a normal, fast, attributable failure -- measured: the mutated build
-// fails this test in 500ms, versus a 10-minute package timeout without it.
-// 500ms is ~5 x 10^5 times the real cost of the worst case (63 iterations).
+// Running the call under testdeadline.Within with a 500ms budget turns the
+// hang into a normal, fast, attributable failure -- measured: the mutated
+// build fails this test in 500ms, versus a 10-minute package timeout without
+// it. 500ms is ~5 x 10^5 times the real cost of the worst case (63
+// iterations).
 //
-// The goroutine is leaked when the deadline fires. That is the point: the
+// The budget is CPU time, not wall time (#789): a bare 500ms timer failed on
+// a correct build whenever the process waited 500ms for a CPU. The loop that
+// does not terminate keeps using CPU, so it still reaches the budget.
+//
+// The goroutine is leaked when the budget is spent. That is the point: the
 // loop under test cannot be interrupted, which is exactly the defect. It only
 // happens on a regression.
 func TestPowIntTerminates(t *testing.T) {
@@ -41,19 +48,16 @@ func TestPowIntTerminates(t *testing.T) {
 		{2, math.MaxInt},
 	}
 	for _, c := range cases {
-		done := make(chan *LVal, 1)
-		go func() { done <- powInt(c.a, c.b) }()
-		select {
-		case v := <-done:
-			wantType := LError
-			if c.a >= -1 && c.a <= 1 {
-				wantType = LInt
-			}
-			if v.Type != wantType {
-				t.Errorf("powInt(%d, %d) returned %v, want %v", c.a, c.b, v.Type, wantType)
-			}
-		case <-time.After(500 * time.Millisecond):
-			t.Fatalf("powInt(%d, %d) did not terminate within 500ms", c.a, c.b)
+		var v *LVal
+		if _, ok := testdeadline.Within(500*time.Millisecond, func() { v = powInt(c.a, c.b) }); !ok {
+			t.Fatalf("powInt(%d, %d) did not terminate within 500ms of CPU time", c.a, c.b)
+		}
+		wantType := LError
+		if c.a >= -1 && c.a <= 1 {
+			wantType = LInt
+		}
+		if v.Type != wantType {
+			t.Errorf("powInt(%d, %d) returned %v, want %v", c.a, c.b, v.Type, wantType)
 		}
 	}
 }

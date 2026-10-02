@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
@@ -177,16 +178,13 @@ func TestLoadCacheCycleOutranksBudgetAcrossStream(t *testing.T) {
 	cache := newTestLoadCache()
 	env := readerEnv(t, cycleAfterBigReader{}, cache)
 
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.Load("mixed.lisp", strings.NewReader("x")) }()
-	select {
-	case v := <-done:
-		require.Equal(t, lisp.LError, v.Type, "a cycle behind a big expression must still be refused")
-		assert.Contains(t, v.String(), "not a finite tree",
-			"the budget sentinel outranked the cycle sentinel")
-	case <-time.After(30 * time.Second):
-		t.Fatal("admission did not terminate")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(30*time.Second, func() { v = env.Load("mixed.lisp", strings.NewReader("x")) }); !ok {
+		t.Fatalf("admission did not terminate: used %v of CPU time without returning", cpu)
 	}
+	require.Equal(t, lisp.LError, v.Type, "a cycle behind a big expression must still be refused")
+	assert.Contains(t, v.String(), "not a finite tree",
+		"the budget sentinel outranked the cycle sentinel")
 	assert.Zero(t, cache.stores)
 }
 
@@ -334,21 +332,17 @@ func cycleTree(n int) *lisp.LVal {
 func TestPublicAdmissionRefusesCycle(t *testing.T) {
 	t.Parallel()
 	for _, links := range []int{1, 3, 200} {
-		done := make(chan [2]error, 1)
-		go func() {
-			_, e1 := lisp.ReadProgram(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
-			_, e2 := lisp.TextLoader(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
-			done <- [2]error{e1, e2}
-		}()
-		select {
-		case errs := <-done:
-			require.Error(t, errs[0], "ReadProgram admitted a %d-link cycle", links)
-			assert.Contains(t, errs[0].Error(), "not a finite tree")
-			require.Error(t, errs[1], "TextLoader admitted a %d-link cycle", links)
-			assert.Contains(t, errs[1].Error(), "not a finite tree")
-		case <-time.After(30 * time.Second):
-			t.Fatalf("admission of a %d-link cycle did not terminate", links)
+		var e1, e2 error
+		if cpu, ok := testdeadline.Within(30*time.Second, func() {
+			_, e1 = lisp.ReadProgram(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
+			_, e2 = lisp.TextLoader(graphReader{tree: cycleTree(links)}, "c.lisp", strings.NewReader("x"))
+		}); !ok {
+			t.Fatalf("admission of a %d-link cycle did not terminate: used %v of CPU time without returning", links, cpu)
 		}
+		require.Error(t, e1, "ReadProgram admitted a %d-link cycle", links)
+		assert.Contains(t, e1.Error(), "not a finite tree")
+		require.Error(t, e2, "TextLoader admitted a %d-link cycle", links)
+		assert.Contains(t, e2.Error(), "not a finite tree")
 	}
 }
 
@@ -383,15 +377,12 @@ func doublingDAG(n int) *lisp.LVal {
 // the walk shows up as a test failure rather than as a suite that never ends.
 func loadWithin(t *testing.T, env *lisp.LEnv, name string, d time.Duration) *lisp.LVal {
 	t.Helper()
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.Load(name, strings.NewReader("x")) }()
-	select {
-	case v := <-done:
-		return v
-	case <-time.After(d):
-		t.Fatalf("%s: load did not terminate within %v", name, d)
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(d, func() { v = env.Load(name, strings.NewReader("x")) }); !ok {
+		t.Fatalf("%s: load did not terminate within %v: used %v of CPU time without returning", name, d, cpu)
 		return nil
 	}
+	return v
 }
 
 // TestLoadCacheAdmitsSharedQuotedData is the round-four blocker.

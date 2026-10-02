@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/elpstest"
+	"github.com/luthersystems/elps/internal/testdeadline"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
@@ -23,15 +24,17 @@ func dag(n int) *lisp.LVal {
 }
 
 // Code whose structure is shared (a DAG) is walked once per node, not once
-// per path: 40 doublings would otherwise be 2^40 visits.
+// per path: 40 doublings would otherwise be 2^40 visits.  The bound is CPU
+// time, not wall time (#789), and it stops a walk that does not come back
+// instead of waiting for it.
 func TestMacroExpandAllSharedStructureIsLinear(t *testing.T) {
 	for _, head := range []string{"quasiquote", "progn"} {
 		env := newCowTestEnv(t)
-		start := time.Now()
 		form := lisp.SExpr([]*lisp.LVal{lisp.Symbol(head), dag(40)})
-		r := env.MacroExpandAll(form)
+		var r *lisp.LVal
+		cpu, ok := testdeadline.Within(5*time.Second, func() { r = env.MacroExpandAll(form) })
+		require.True(t, ok, "%s: macroexpand-all over a 40-level DAG used %v of CPU without returning", head, cpu)
 		require.NotEqual(t, lisp.LError, r.Type, "%v", r)
-		assert.Less(t, time.Since(start), 5*time.Second, head)
 	}
 }
 

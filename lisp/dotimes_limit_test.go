@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -52,28 +53,27 @@ func TestDoTimesEmptyBodyRespectsContext(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
 	defer cancel()
 
-	done := make(chan *lisp.LVal, 1)
-	start := time.Now()
-	go func() {
-		done <- env.LoadStringContext(ctx, "dotimes-ctx", "(dotimes (i 2000000000))")
-	}()
-	select {
-	case v := <-done:
-		elapsed := time.Since(start)
-		if v.Type != lisp.LError {
-			t.Fatalf("expected a cancellation error, got %v after %v", v, elapsed)
-		}
-		if !strings.Contains(v.Str, lisp.CondContextCancelled) {
-			t.Fatalf("expected condition %q, got %q (%v)", lisp.CondContextCancelled, v.Str, v)
-		}
-		// 200ms deadline; anything under a couple of seconds means the loop
-		// is polling the context rather than running to completion (2e9 turns
-		// would take several minutes).
-		if elapsed > 5*time.Second {
-			t.Errorf("cancellation observed only after %v", elapsed)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("an empty-bodied dotimes ignored a 200ms context deadline for 20s")
+	// CPU time, not wall time (#789): the loop spins for at most the 200ms
+	// of wall time the deadline allows, so it uses at most 200ms of CPU.  A
+	// loop that ignores the deadline spins on until the 20s bound.
+	var v *lisp.LVal
+	cpu, ok := testdeadline.Within(20*time.Second, func() {
+		v = env.LoadStringContext(ctx, "dotimes-ctx", "(dotimes (i 2000000000))")
+	})
+	if !ok {
+		t.Fatalf("an empty-bodied dotimes ignored a 200ms context deadline for %v of CPU time", cpu)
+	}
+	if v.Type != lisp.LError {
+		t.Fatalf("expected a cancellation error, got %v after %v of CPU", v, cpu)
+	}
+	if !strings.Contains(v.Str, lisp.CondContextCancelled) {
+		t.Fatalf("expected condition %q, got %q (%v)", lisp.CondContextCancelled, v.Str, v)
+	}
+	// 200ms deadline; anything under a couple of seconds of CPU means the
+	// loop is polling the context rather than running to completion (2e9
+	// turns would take several minutes).
+	if cpu > 5*time.Second {
+		t.Errorf("cancellation observed only after %v of CPU", cpu)
 	}
 }
 
@@ -81,20 +81,17 @@ func TestDoTimesEmptyBodyRespectsContext(t *testing.T) {
 // bounds an empty-bodied loop, where before it bounded nothing.
 func TestDoTimesEmptyBodyRespectsMaxSteps(t *testing.T) {
 	env := limitEnv(t, lisp.WithMaxSteps(1000))
-	done := make(chan *lisp.LVal, 1)
-	go func() {
-		done <- env.LoadString("dotimes-steps", "(dotimes (i 2000000000))")
-	}()
-	select {
-	case v := <-done:
-		if v.Type != lisp.LError {
-			t.Fatalf("expected a step-limit error, got %v", v)
-		}
-		if !strings.Contains(v.Str, lisp.CondStepLimitExceeded) {
-			t.Fatalf("expected condition %q, got %q (%v)", lisp.CondStepLimitExceeded, v.Str, v)
-		}
-	case <-time.After(20 * time.Second):
-		t.Fatalf("an empty-bodied dotimes ignored a 1000-step budget for 20s")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(20*time.Second, func() {
+		v = env.LoadString("dotimes-steps", "(dotimes (i 2000000000))")
+	}); !ok {
+		t.Fatalf("an empty-bodied dotimes ignored a 1000-step budget for %v of CPU time", cpu)
+	}
+	if v.Type != lisp.LError {
+		t.Fatalf("expected a step-limit error, got %v", v)
+	}
+	if !strings.Contains(v.Str, lisp.CondStepLimitExceeded) {
+		t.Fatalf("expected condition %q, got %q (%v)", lisp.CondStepLimitExceeded, v.Str, v)
 	}
 }
 

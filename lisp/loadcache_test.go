@@ -32,6 +32,7 @@ import (
 	"testing/fstest"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 	"github.com/luthersystems/elps/parser/token"
@@ -703,15 +704,12 @@ func TestLoadCacheCyclicReaderOutputIsBounded(t *testing.T) {
 
 	env := readerEnv(t, graphReader{tree: cyc}, newTestLoadCache())
 
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.Load("cyclic.lisp", strings.NewReader("x")) }()
-	select {
-	case v := <-done:
-		require.Equal(t, lisp.LError, v.Type, "a cyclic reader tree must be refused, not admitted")
-		assert.Contains(t, v.String(), "not a finite tree")
-	case <-time.After(20 * time.Second):
-		t.Fatal("loading a cyclic reader tree did not terminate; the admission walk is unbounded")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(20*time.Second, func() { v = env.Load("cyclic.lisp", strings.NewReader("x")) }); !ok {
+		t.Fatalf("loading a cyclic reader tree did not terminate; the admission walk is unbounded: used %v of CPU time without returning", cpu)
 	}
+	require.Equal(t, lisp.LError, v.Type, "a cyclic reader tree must be refused, not admitted")
+	assert.Contains(t, v.String(), "not a finite tree")
 }
 
 // TestLoadCacheInternedSubtreeIsBounded is finding 3, interned-subtree case: a
@@ -732,15 +730,12 @@ func TestLoadCacheInternedSubtreeIsBounded(t *testing.T) {
 
 	env := readerEnv(t, graphReader{tree: node}, newTestLoadCache())
 
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.Load("dag.lisp", strings.NewReader("x")) }()
-	select {
-	case v := <-done:
-		require.Equal(t, lisp.LError, v.Type, "an interned-subtree reader tree must be refused")
-		assert.Contains(t, v.String(), "not a finite tree")
-	case <-time.After(20 * time.Second):
-		t.Fatal("loading an interned-subtree reader tree did not terminate in bounded time")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(20*time.Second, func() { v = env.Load("dag.lisp", strings.NewReader("x")) }); !ok {
+		t.Fatalf("loading an interned-subtree reader tree did not terminate in bounded time: used %v of CPU time without returning", cpu)
 	}
+	require.Equal(t, lisp.LError, v.Type, "an interned-subtree reader tree must be refused")
+	assert.Contains(t, v.String(), "not a finite tree")
 }
 
 // --- finding 7: a re-entrant cache must not kill the process ---
@@ -776,18 +771,15 @@ func TestLoadCacheReentrantLoadIsGuarded(t *testing.T) {
 	env := readerEnv(t, parser.NewReader(), cache)
 	cache.env = env
 
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.LoadString("main", "(+ 40 2)") }()
-	select {
-	case v := <-done:
-		require.NotEqual(t, lisp.LError, v.Type, "re-entrant load failed: %v", v)
-		assert.Equal(t, 42, v.Int)
-		assert.Equal(t, 1, cache.warmed,
-			"the guard must collapse re-entry to a single warm; more means it recursed, "+
-				"the safety cap (not the guard) stopped it")
-	case <-time.After(20 * time.Second):
-		t.Fatal("a re-entrant cache load did not terminate; the re-entrancy guard is missing")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(20*time.Second, func() { v = env.LoadString("main", "(+ 40 2)") }); !ok {
+		t.Fatalf("a re-entrant cache load did not terminate; the re-entrancy guard is missing: used %v of CPU time without returning", cpu)
 	}
+	require.NotEqual(t, lisp.LError, v.Type, "re-entrant load failed: %v", v)
+	assert.Equal(t, 42, v.Int)
+	assert.Equal(t, 1, cache.warmed,
+		"the guard must collapse re-entry to a single warm; more means it recursed, "+
+			"the safety cap (not the guard) stopped it")
 }
 
 // --- helpers ---
