@@ -5,6 +5,7 @@ package fuzzwatch
 import (
 	"context"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -73,8 +74,28 @@ func TestAwaitStarvedFixedInputFailsAtTheBackstop(t *testing.T) {
 	if rt.skipped != "" {
 		t.Fatalf("a fixed input skipped: %q", rt.skipped)
 	}
-	if rt.failed == "" {
-		t.Fatal("a fixed input whose work never finished did not fail")
+	if !strings.Contains(rt.failed, BackstopExpired) {
+		t.Fatalf("a fixed input whose work never finished: failed %q, want a message containing %q",
+			rt.failed, BackstopExpired)
+	}
+}
+
+// TestAwaitStarvedFixedInputPrefersAReadyResult pins that a result ready when
+// the backstop ends is taken, not failed: select picks at random between two
+// ready cases, so AwaitStarved looks at the channel again before it fails.
+func TestAwaitStarvedFixedInputPrefersAReadyResult(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	for i := range 200 {
+		rt := &recordT{ctx: ctx}
+		ch := make(chan int, 1)
+		ch <- i
+		got, ok := AwaitStarved(rt, ch, Fixed, Report{}, "the work", "")
+		if !ok || got != i || rt.failed != "" {
+			t.Fatalf("iteration %d: AwaitStarved returned (%d, %v), failed %q; want (%d, true) and no failure",
+				i, got, ok, rt.failed, i)
+		}
 	}
 }
 

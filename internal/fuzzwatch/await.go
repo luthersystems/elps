@@ -49,8 +49,9 @@ type T interface {
 // A Fuzzed input skips.  A Fixed input is a regression test, and a skip would
 // let it pass without asserting anything (luthersystems/elps#792).  So it
 // waits on ch, up to testdeadline.Backstop, and fails if no result arrives.
-// Starvation alone cannot fail it, because a run that reaches the backstop
-// would hit the binary's -timeout anyway.
+// The failure message contains [BackstopExpired].  Starvation alone almost
+// never fails it: the backstop ends at most 30 seconds before the binary's
+// -timeout, so a run that reaches it is all but certain to time out anyway.
 func AwaitStarved[V any](t T, ch <-chan V, input Input, report Report, what, describe string) (V, bool) {
 	t.Helper()
 	var zero V
@@ -65,7 +66,20 @@ func AwaitStarved[V any](t T, ch <-chan V, input Input, report Report, what, des
 	case v := <-ch:
 		return v, true
 	case <-backstop.Done():
-		t.Fatalf("%s did not terminate before the test's -timeout (%s)%s", what, report, describe)
+		// select picks at random when both are ready, so look at ch once
+		// more before failing.
+		select {
+		case v := <-ch:
+			return v, true
+		default:
+		}
+		t.Fatalf("%s %s (%s)%s", what, BackstopExpired, report, describe)
 		return zero, false
 	}
 }
+
+// BackstopExpired is in the message of every failure AwaitStarved reports
+// when a fixed input's work outlives the backstop.  A test that drives a
+// harness through a spy T matches it to fail for real instead of recording
+// the failure as the harness's own report.
+const BackstopExpired = "did not terminate before the test's -timeout"

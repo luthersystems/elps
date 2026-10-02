@@ -761,7 +761,9 @@ type fuzzT interface {
 // never takes.
 //
 // Logf, Deadline and Context go to the real test t, so a starved watchdog
-// waits on the real -timeout backstop.
+// waits on the real -timeout backstop.  A failure at that backstop also goes
+// to t: the seed's assertions never ran, so recording it as a report would let
+// the test pass on the other seeds alone (luthersystems/elps#792).
 type spyT struct {
 	t      *testing.T
 	msg    string
@@ -775,8 +777,12 @@ func (s *spyT) Logf(format string, args ...any) { s.t.Logf(format, args...) }
 func (s *spyT) Deadline() (time.Time, bool)     { return s.t.Deadline() }
 func (s *spyT) Context() context.Context        { return s.t.Context() }
 func (s *spyT) Fatalf(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	if strings.Contains(msg, fuzzwatch.BackstopExpired) {
+		s.t.Fatal(msg)
+	}
 	s.failed = true
-	s.msg = fmt.Sprintf(format, args...)
+	s.msg = msg
 	panic(spyFatal{})
 }
 func (s *spyT) Skipf(format string, args ...any) { panic(spyFatal{}) }
