@@ -7,9 +7,9 @@ import (
 	"errors"
 	"fmt"
 	"testing"
-	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/parser/lexer"
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -125,6 +125,8 @@ func TestLexerTerminatesOnUndecodableInput(t *testing.T) {
 				toks []*token.Token
 				err  error
 			}
+			backstop, stopBackstop := testdeadline.Backstop(t)
+			defer stopBackstop()
 			done := make(chan lexed, 1)
 			go func() {
 				toks, err := lexAll([]byte(src))
@@ -145,22 +147,14 @@ func TestLexerTerminatesOnUndecodableInput(t *testing.T) {
 					t.Fatalf("lexer stopped on %v, want EOF/ERROR/INVALID", last.Type)
 				}
 
-			// WALL CLOCK, deliberately -- not internal/fuzzwatch (#454).
-			//
-			// Three reasons.  The inputs here are eight fixed byte strings,
-			// not mutator output, and they lex in microseconds: this is a
-			// closed regression set, not a fuzz target.  Non-termination is
-			// already caught deterministically by lexAll's token-per-byte
-			// limit, which needs no clock at all; this arm only covers a lexer
-			// that BLOCKS rather than loops, and nothing in it can block.
-			//
-			// And converting would buy nothing measurable.  fuzzwatch resolves
-			// scheduler stall above 400ms, not CPU share; #453 measured it
-			// reporting lost=0s while real work ran 73-103x slower at ~1% CPU
-			// share.  Under the only load that could threaten a 30s bound it
-			// reports scheduled == wall, so a converted watchdog fires at
-			// exactly the moment this one does.
-			case <-time.After(30 * time.Second):
+			// Backstop, not a wall-clock timer (#454, #789).  The inputs
+			// here are eight fixed byte strings that lex in microseconds.
+			// Non-termination is caught by lexAll's token-per-byte limit,
+			// which needs no clock.  This arm only covers a lexer that
+			// BLOCKS, which uses no CPU, so a CPU bound cannot see it; a 30s
+			// timer could fire on a starved run.  Backstop ends just before
+			// the binary's -timeout.
+			case <-backstop.Done():
 				t.Fatal("lexer did not terminate")
 			}
 		})
