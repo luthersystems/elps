@@ -4,7 +4,6 @@ package lisp_test
 
 import (
 	"bytes"
-	"context"
 	"sync"
 	"testing"
 	"time"
@@ -287,16 +286,21 @@ func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.Cach
 // that is not a finding.
 func loadFileBudgeted(t *testing.T, env *lisp.LEnv, src []byte, envIdx, rep int) (*lisp.LVal, bool) {
 	t.Helper()
-	return loadNamedFileBudgeted(t, env, loadCacheFuzzName, src, envIdx, rep)
+	return loadNamedFileBudgeted(t, env, loadCacheFuzzName, src, envIdx, rep, fuzzDeadline)
 }
 
 // loadNamedFileBudgeted is loadFileBudgeted for a caller-chosen file name.
 // The name is part of the cache key, so a target that wants two DISTINCT
 // cache entries in one environment (FuzzLoadCacheHostileReader) needs it.
-func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte, envIdx, rep int) (*lisp.LVal, bool) {
+//
+// The load runs under a context deadline of deadline.  A deadline of 0 means
+// no wall-clock deadline (see evalContext).  Fuzzed input passes
+// fuzzDeadline.  A fixed regression test passes 0, so its verdict does not
+// depend on how much CPU the process gets (luthersystems/elps#783).
+func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte, envIdx, rep int, deadline time.Duration) (*lisp.LVal, bool) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
+	ctx, cancel := evalContext(deadline)
 	defer cancel()
 
 	ch := make(chan *lisp.LVal, 1)
@@ -333,8 +337,8 @@ func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte
 				return nil, false
 			default:
 				t.Fatalf("load %d in environment %d did not terminate within %s of SCHEDULED"+
-					" time despite a %s context deadline (%s)",
-					rep+1, envIdx, budget.Total(), fuzzDeadline, report)
+					" time despite %s (%s)",
+					rep+1, envIdx, budget.Total(), describeDeadline(deadline), report)
 				return nil, false
 			}
 		}

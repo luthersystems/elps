@@ -45,6 +45,12 @@ const (
 // TestLoadCacheRebindAcrossLoadsMatchesFreshParse is the deterministic form
 // of the crasher, in every transparent Reader mode: A, B, A through a cache
 // must fingerprint identically to A, B, A without one.
+//
+// The loads run with no wall-clock deadline (deadline 0).  The step, nesting
+// and allocation budgets of newFuzzEnv still bound them, and the scheduled-time
+// watchdog still catches a hang.  A deadline here makes the verdict depend on
+// machine load: on a starved process one arm hits the deadline in load 1, so
+// load 2 sees `lit` unbound and the arms diverge (luthersystems/elps#783).
 func TestLoadCacheRebindAcrossLoadsMatchesFreshParse(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct{ name, a, b string }{
@@ -64,9 +70,9 @@ func TestLoadCacheRebindAcrossLoadsMatchesFreshParse(t *testing.T) {
 		for _, mode := range transparentReaderModes {
 			t.Run(fmt.Sprintf("%s/mode=%d", tc.name, mode), func(t *testing.T) {
 				t.Parallel()
-				baseline, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), nil)
+				baseline, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), nil, 0)
 				require.True(t, ok)
-				cached, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), newFuzzLoadCache())
+				cached, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), newFuzzLoadCache(), 0)
 				require.True(t, ok)
 				assert.Truef(t, cached.equal(baseline),
 					"A,B,A through a cache diverged from A,B,A without one\n--- baseline ---\n%s\n--- cached ---\n%s",
