@@ -487,12 +487,18 @@ func TestSleepMaxRaisesTheCap(t *testing.T) {
 // otherwise untrusted source could grant itself an unbounded sleep and the
 // bound would be decorative.
 //
-// Both calls ask for ceilingProbe, which is outlast(t); see the block above
-// TestSleepLengthCapRefusesImmediately (#475, #499, #789).  The first is
-// refused inside sleepCap, before a sleep is reachable at all.  The second
-// must be refused by the default cap, which the ceiling lowers.  A build that
+// The :max call asks for ceilingProbe, which is outlast(t); see the block
+// above TestSleepLengthCapRefusesImmediately (#475, #499, #789).  It is
+// refused inside sleepCap, before a sleep is reachable at all.  A build that
 // slept ceilingProbe out and only then refused does not return before
 // runBounded's backstop, so it fails as a hang.
+//
+// The no-:max call asks for defaultProbe, which lies between the ceiling and
+// lisp.DefaultMaxSleep.  Only the ceiling can refuse it: the default cap
+// alone would let it through.  It runs under a short context deadline, so a
+// build that drops the ceiling clamp sleeps to that deadline and returns the
+// context-cancelled condition instead of the sleep limit, and the test fails
+// at once rather than as a hang.
 func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	t.Parallel()
 	// ceiling is the host's limit; ceilingProbe is the duration both calls
@@ -522,11 +528,33 @@ func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	requireSleepLimit(t, v)
 
 	// And the ceiling lowers the no-:max default too, so the default cannot
-	// quietly exceed it.
+	// quietly exceed it.  defaultProbe must sit strictly between the ceiling
+	// and the default cap, or the default cap refuses it and the clamp goes
+	// untested.
+	const defaultProbe = 30 * time.Minute
+	if defaultProbe <= ceiling || defaultProbe >= lisp.DefaultMaxSleep {
+		t.Fatalf("defaultProbe %v is not between the %v ceiling and the %v default cap:"+
+			" the test would pass on the wrong evidence",
+			defaultProbe, ceiling, lisp.DefaultMaxSleep)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	envCtx := lisp.NewEnv(nil)
+	envCtx.Runtime.Reader = parser.NewReader()
+	if rc := lisp.InitializeUserEnv(envCtx, lisp.WithMaxSleep(ceiling), lisp.WithContext(ctx)); rc.Type == lisp.LError {
+		t.Fatalf("initialize-user-env: %v", rc)
+	}
+	if rc := libtime.LoadPackage(envCtx); rc.Type == lisp.LError {
+		t.Fatalf("load time package: %v", rc)
+	}
+	registerSleep(t, envCtx)
 	v2, _ := runBounded(t, func() *lisp.LVal {
-		return callSleep(env, ceilingProbe)
+		return callSleep(envCtx, defaultProbe)
 	})
 	requireSleepLimit(t, v2)
+	if want := "maximum " + ceiling.String(); !strings.Contains(v2.String(), want) {
+		t.Fatalf("no-:max refusal = %v, want it to report %q", v2, want)
+	}
 }
 
 // TestSleepRejectsNonPositiveMax: a negative :max is a bug in the caller's
