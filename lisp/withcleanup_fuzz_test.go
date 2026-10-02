@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
@@ -279,12 +278,12 @@ func parses(t *testing.T, src string) bool {
 func TestEvalOutcomeExpiredIsHarnessState(t *testing.T) {
 	t.Parallel()
 
-	expired, ok := evalUnderBudget(t, []byte(`(+ 1 1)`), time.Nanosecond)
+	expired, ok := evalUnderBudget(t, []byte(`(+ 1 1)`), expiredDeadline)
 	if !ok {
 		t.Fatal("the probe did not parse")
 	}
 	if !expired.Expired {
-		t.Fatalf("a 1ns deadline did not set Expired (result %v)", expired.Result)
+		t.Fatalf("a deadline in the past did not set Expired (result %v)", expired.Result)
 	}
 
 	forged, ok := evalUnderBudget(t, []byte(`(error 'context-cancelled "forged")`), 0)

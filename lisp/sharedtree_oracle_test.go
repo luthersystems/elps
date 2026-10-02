@@ -3,7 +3,6 @@
 package lisp_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -74,11 +73,6 @@ import (
 // TestEvalCorpusHasNoWallClockDeadline pins that fuzzed input still gets
 // fuzzDeadline from evalContext.
 
-// oracleDeadline is the deadline the live-context cases run under.  Long
-// enough that nothing here reaches it, so an expired context in those cases
-// would be a real finding rather than a slow machine.
-const oracleDeadline = 30 * time.Second
-
 // oracleRun is one arm: the treeEval the fuzz target's own arm would produce,
 // plus the evaluator's values themselves, kept so the fixture checks can ask
 // what a result really is rather than what it renders as.
@@ -92,11 +86,15 @@ func (r oracleRun) last() *lisp.LVal { return r.values[len(r.values)-1] }
 func (r oracleRun) lastRendered() string { return r.eval.rendered[len(r.eval.rendered)-1] }
 
 // evalArm evaluates every expression of src under a fresh fuzz environment
-// and a context with the given deadline, recording exactly what evalTreeOnce
-// records.  cancelAfter, when non-negative, cancels the context once that
-// many expressions have been evaluated -- the deterministic way to put an arm
+// and evalContext(deadline), recording exactly what evalTreeOnce records.
+// cancelAfter, when non-negative, cancels the context once that many
+// expressions have been evaluated -- the deterministic way to put an arm
 // into the expired state PART WAY through a tree, which a deadline alone can
 // only do by racing the evaluator.
+//
+// The cases here pass deadline 0 (no deadline) or expiredDeadline (already
+// expired).  Neither depends on elapsed time, so no verdict here depends on
+// how much CPU the process gets (luthersystems/elps#788).
 func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) oracleRun {
 	t.Helper()
 	env, _, rc := newFuzzEnv()
@@ -107,7 +105,7 @@ func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) 
 	if err != nil {
 		t.Fatalf("reading %q failed: %v", src, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := evalContext(deadline)
 	defer cancel()
 	run := oracleRun{eval: treeEval{
 		rendered: make([]string, 0, len(exprs)),
@@ -128,10 +126,12 @@ func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) 
 	return run
 }
 
-// liveArm is the common case: a generous deadline and no cancellation.
+// liveArm is the common case: no deadline and no cancellation.  Its context
+// expires only if the test cancels it, so an expired context here is a real
+// finding and not a slow machine.
 func liveArm(t *testing.T, src string) oracleRun {
 	t.Helper()
-	return evalArm(t, src, oracleDeadline, -1)
+	return evalArm(t, src, 0, -1)
 }
 
 // The programs every case below is built from.  Each is real source the
@@ -217,7 +217,7 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 		}
 		for j, expired := range run.eval.expired {
 			if expired {
-				t.Fatalf("expression %d ran with an expired context on a %v deadline", j, oracleDeadline)
+				t.Fatalf("expression %d ran with an expired context and no deadline", j)
 			}
 		}
 	})
@@ -243,13 +243,13 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 		}
 		for j, expired := range run.eval.expired {
 			if expired {
-				t.Fatalf("expression %d ran with an expired context on a %v deadline", j, oracleDeadline)
+				t.Fatalf("expression %d ran with an expired context and no deadline", j)
 			}
 		}
 	})
 
 	t.Run("a deadline already in the past expires every expression", func(t *testing.T) {
-		run := evalArm(t, trivialSrc, time.Nanosecond, -1)
+		run := evalArm(t, trivialSrc, expiredDeadline, -1)
 		if !run.eval.expired[0] {
 			t.Fatal("the expired-deadline fixture ran with a live context")
 		}
@@ -260,7 +260,7 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 	})
 
 	t.Run("cancelling after the first expression expires only the rest", func(t *testing.T) {
-		run := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, 1)
+		run := evalArm(t, trivialSrc+" "+trivialSrc, 0, 1)
 		if len(run.eval.expired) != 2 {
 			t.Fatalf("expected two expressions, got %d", len(run.eval.expired))
 		}
@@ -404,7 +404,7 @@ func TestOracleTailBudgetArmsCompareEqual(t *testing.T) {
 func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 	t.Run("an already-passed deadline is inconclusive from expression 0", func(t *testing.T) {
 		private := liveArm(t, runawayLoopSrc)
-		shared := evalArm(t, runawayLoopSrc, time.Nanosecond, -1)
+		shared := evalArm(t, runawayLoopSrc, expiredDeadline, -1)
 		if private.lastRendered() == shared.lastRendered() {
 			t.Fatalf("the arms did not diverge, so this case proves nothing: %s",
 				private.lastRendered())
@@ -428,8 +428,8 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		// The arms differ at expression 0, under two live contexts; the
 		// shared arm's context is cancelled only afterwards.  A divergence
 		// the deadline had not yet touched must still be reported.
-		private := evalArm(t, valueNamingABudgetSrc("private")+" "+trivialSrc, oracleDeadline, -1)
-		shared := evalArm(t, valueNamingABudgetSrc("shared-corrupted")+" "+trivialSrc, oracleDeadline, 1)
+		private := evalArm(t, valueNamingABudgetSrc("private")+" "+trivialSrc, 0, -1)
+		shared := evalArm(t, valueNamingABudgetSrc("shared-corrupted")+" "+trivialSrc, 0, 1)
 		if shared.eval.expired[0] || !shared.eval.expired[1] {
 			t.Fatalf("the cancellation did not land between the expressions: %v", shared.eval.expired)
 		}
@@ -440,8 +440,8 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		// Same first expression in both arms, so the comparison reaches
 		// expression 1 -- where the shared arm's context has been cancelled
 		// and the two renderings differ because of it.
-		private := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, -1)
-		shared := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, 1)
+		private := evalArm(t, trivialSrc+" "+trivialSrc, 0, -1)
+		shared := evalArm(t, trivialSrc+" "+trivialSrc, 0, 1)
 		if private.eval.rendered[1] == shared.eval.rendered[1] {
 			t.Fatalf("the cancelled arm produced the same result, so this proves nothing: %s",
 				shared.eval.rendered[1])
