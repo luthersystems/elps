@@ -145,19 +145,27 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 		return env.funCall(env.evalCtx, fun, fargs)
 	}
 	if val.Type == LMarkTerminal {
-		termEnv, ok := val.Native.(*LEnv)
-		if !ok {
-			return env.Errorf("internal error: terminal mark has no environment")
-		}
-		ctx := env.evalCtx
-		if termEnv != env {
-			prev := termEnv.evalCtx
-			defer func() { termEnv.evalCtx = prev }()
-			termEnv.evalCtx = ctx
-		}
-		return termEnv.eval(ctx, val.Cells[0])
+		return env.evalTerminalMark(val)
 	}
 	return val
+}
+
+// evalTerminalMark evaluates the expression a terminal mark carries, in the
+// environment the mark names, under env's evaluation context.  It is
+// CallBuiltin's terminal-mark branch, kept separate so CallBuiltin stays
+// within the compiler's limits for open-coded defers.
+func (env *LEnv) evalTerminalMark(val *LVal) *LVal {
+	termEnv, ok := val.Native.(*LEnv)
+	if !ok {
+		return env.Errorf("internal error: terminal mark has no environment")
+	}
+	ctx := env.evalCtx
+	if termEnv != env {
+		prev := termEnv.evalCtx
+		defer func() { termEnv.evalCtx = prev }()
+		termEnv.evalCtx = ctx
+	}
+	return termEnv.eval(ctx, val.Cells[0])
 }
 
 // CallGlobal calls the function bound to the global symbol named sym -- a
