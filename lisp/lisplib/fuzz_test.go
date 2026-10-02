@@ -130,7 +130,7 @@ func FuzzApplyStdlib(f *testing.F) {
 
 	seedCross(f, names)
 	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
-		applyOne(t, names, idx, data, callDeadline)
+		applyOne(t, names, idx, data, callDeadline, fuzzwatch.Fuzzed)
 	})
 }
 
@@ -184,7 +184,7 @@ func FuzzApplyThinStdlib(f *testing.F) {
 	}
 	seedCross(f, names)
 	f.Fuzz(func(t *testing.T, idx uint16, data []byte) {
-		applyOne(t, names, idx, data, callDeadline)
+		applyOne(t, names, idx, data, callDeadline, fuzzwatch.Fuzzed)
 	})
 }
 
@@ -260,8 +260,9 @@ func seedCross(f *testing.F, names []string) {
 // The call runs under a context deadline of deadline.  A deadline of 0 means
 // no wall-clock deadline.  The fuzz targets pass callDeadline.  A fixed test
 // passes 0, so its verdict does not depend on how much CPU the process gets
-// (luthersystems/elps#788).
-func applyOne(t fuzzT, names []string, idx uint16, data []byte, deadline time.Duration) {
+// (luthersystems/elps#788).  input decides what a starved watchdog does (see
+// applyWithWatchdog).
+func applyOne(t fuzzwatch.T, names []string, idx uint16, data []byte, deadline time.Duration, input fuzzwatch.Input) {
 	t.Helper()
 	name := names[int(idx)%len(names)]
 	if skipCallable(name) {
@@ -304,7 +305,7 @@ func applyOne(t fuzzT, names []string, idx uint16, data []byte, deadline time.Du
 	// importantly, for what it deliberately does not.
 	guard := fuzzfp.Watch(args)
 
-	result := applyWithWatchdog(t, env, name, fun, args, deadline)
+	result := applyWithWatchdog(t, env, name, fun, args, deadline, input)
 
 	if result == nil {
 		t.Fatalf("%s returned a nil *LVal", name)
@@ -370,17 +371,25 @@ const fuzzMaxSteps = 20000
 // The goroutine is deliberately leaked on timeout: it cannot be interrupted
 // (that is the defect being reported), and a fuzz worker that reports a
 // crasher exits immediately afterwards.
-func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVal, deadline time.Duration) *lisp.LVal {
+//
+// input decides what a starved watchdog does: a fuzzed input skips, and a
+// fixed input waits (see fuzzwatch.AwaitStarved).
+func applyWithWatchdog(t fuzzwatch.T, env *lisp.LEnv, name string, fun, args *lisp.LVal, deadline time.Duration, input fuzzwatch.Input) *lisp.LVal {
 	t.Helper()
-	done := make(chan *lisp.LVal, 1)
-	panicked := make(chan any, 1)
+	// One channel carries both outcomes, so a starved fixed input that waits
+	// on it (fuzzwatch.AwaitStarved) also sees a panic.
+	type call struct {
+		v        *lisp.LVal
+		panicked any
+	}
+	done := make(chan call, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				panicked <- r
+				done <- call{panicked: r}
 			}
 		}()
-		done <- apply(env, fun, args)
+		done <- call{v: apply(env, fun, args)}
 	}()
 	// The budget is SCHEDULED time, not wall clock: see internal/fuzzwatch.  A
 	// plain time.After here charges the code under test for every second this
@@ -388,14 +397,11 @@ func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVa
 	// nobody can reproduce rather than a defect.
 	budget := fuzzwatch.New(callDeadline + watchdogGrace)
 	wait := budget.Total()
-	for {
+	var c call
+	for received := false; !received; {
 		select {
-		case v := <-done:
-			return v
-		case r := <-panicked:
-			// Re-panic on the test goroutine so the fuzzing engine records the
-			// crasher and prints the stack.
-			panic(r)
+		case c = <-done:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
@@ -403,10 +409,14 @@ func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVa
 				wait = more
 			case fuzzwatch.Inconclusive:
 				// The machine never gave us the CPU. Whether this call
-				// terminates is unknown, and guessing in either direction is
-				// worse than declining to answer for one input out of millions.
-				t.Skipf("%s: no verdict, the process was starved throughout (%s)", name, report)
-				return nil
+				// terminates is unknown: a fuzzed input declines to answer,
+				// and a fixed input waits (see fuzzwatch.AwaitStarved).
+				var ok bool
+				if c, ok = fuzzwatch.AwaitStarved(t, done, input, report, name,
+					fmt.Sprintf("\n--- args ---\n%s", args)); !ok {
+					return nil
+				}
+				received = true
 			default:
 				t.Fatalf("%s did not terminate within %v of SCHEDULED time despite a context deadline of %v (0 is none) and a %d-step limit (%s)\n--- args ---\n%s",
 					name, budget.Total(), deadline, fuzzMaxSteps, report, args)
@@ -414,6 +424,12 @@ func applyWithWatchdog(t fuzzT, env *lisp.LEnv, name string, fun, args *lisp.LVa
 			}
 		}
 	}
+	if c.panicked != nil {
+		// Re-panic on the test goroutine so the fuzzing engine records the
+		// crasher and prints the stack.
+		panic(c.panicked)
+	}
+	return c.v
 }
 
 // apply dispatches to the calling convention the callable actually has.
@@ -696,7 +712,7 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 			var reported, ran int
 			var lastMsg string
 			for _, seed := range fuzzval.Seeds() {
-				st := &spyT{}
+				st := &spyT{t: t}
 				func() {
 					defer func() {
 						if r := recover(); r != nil {
@@ -705,7 +721,7 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 							}
 						}
 					}()
-					applyOne(st, []string{name}, 0, seed, 0)
+					applyOne(st, []string{name}, 0, seed, 0, fuzzwatch.Fixed)
 				}()
 				ran++
 				if st.failed {
@@ -726,10 +742,10 @@ func TestArgumentGuardIsWiredIn(t *testing.T) {
 	}
 }
 
-// fuzzT is the subset of *testing.T and *testing.F the harness uses, so the
-// same body serves both fuzz targets AND can be driven by a spy in
-// TestArgumentGuardIsWiredIn. lisp/eval_fuzz_test.go carries the same
-// interface for the same reason.
+// fuzzT is the subset of *testing.T and *testing.F that callableNames and
+// thinCallables use.  applyOne takes fuzzwatch.T instead, so the same body
+// serves both fuzz targets AND can be driven by a spy in
+// TestArgumentGuardIsWiredIn.
 type fuzzT interface {
 	Helper()
 	Fatalf(format string, args ...any)
@@ -743,14 +759,21 @@ type fuzzT interface {
 // in the harness treats Fatalf as terminal (`t.Fatalf(...); return nil` and
 // the like); letting it fall through would exercise paths the real target
 // never takes.
+//
+// Logf, Deadline and Context go to the real test t, so a starved watchdog
+// waits on the real -timeout backstop.
 type spyT struct {
+	t      *testing.T
 	msg    string
 	failed bool
 }
 
 type spyFatal struct{}
 
-func (s *spyT) Helper() {}
+func (s *spyT) Helper()                         {}
+func (s *spyT) Logf(format string, args ...any) { s.t.Logf(format, args...) }
+func (s *spyT) Deadline() (time.Time, bool)     { return s.t.Deadline() }
+func (s *spyT) Context() context.Context        { return s.t.Context() }
 func (s *spyT) Fatalf(format string, args ...any) {
 	s.failed = true
 	s.msg = fmt.Sprintf(format, args...)
