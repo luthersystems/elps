@@ -142,6 +142,17 @@ const (
 	// needs (luthersystems/elps#790).
 	fuzzDeadlineFloor = 100 * time.Millisecond
 
+	// controlDeadline is the deadline the deadline-path controls run under.
+	// It is positive, so evalContext takes the same branch as fuzzDeadline.
+	// It is about 100 years, so it cannot expire while a test runs, however
+	// starved the process is.  Elapsed time then cannot decide a control's
+	// verdict.  requireDeadlineBranch checks both facts.
+	controlDeadline = 100 * 365 * 24 * time.Hour
+
+	// controlDeadlineMin is the least time to expiry that
+	// requireDeadlineBranch accepts.  No test run is this long.
+	controlDeadlineMin = 1000 * time.Hour
+
 	// watchdogTimeout is the outer bound, denominated in SCHEDULED time (see
 	// internal/fuzzwatch): wall clock during which this process was not run by the
 	// OS is not charged to the evaluator.  It is deliberately an order of
@@ -559,6 +570,28 @@ func evalContext(deadline time.Duration) (context.Context, context.CancelFunc) {
 		return context.WithCancel(context.Background())
 	}
 	return context.WithTimeout(context.Background(), deadline)
+}
+
+// requireDeadlineBranch fails t unless evalContext(deadline) takes the
+// deadline branch with a deadline that no test run can reach.  The
+// deadline-path controls call it.  The harness uses deadline only through
+// evalContext, so this check is what shows the control ran the fuzz targets'
+// branch.  The second check shows the deadline cannot fire during the test,
+// so the control's verdict does not depend on elapsed time
+// (luthersystems/elps#788).
+func requireDeadlineBranch(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	ctx, cancel := evalContext(deadline)
+	defer cancel()
+	at, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("evalContext(%v) gave a context with no deadline;"+
+			" the control does not run the fuzz targets' deadline branch", deadline)
+	}
+	if left := time.Until(at); left < controlDeadlineMin {
+		t.Fatalf("evalContext(%v) expires in %v, less than %v;"+
+			" elapsed time could decide the control's verdict", deadline, left, controlDeadlineMin)
+	}
 }
 
 // describeDeadline renders the deadline for a failure message, so a watchdog

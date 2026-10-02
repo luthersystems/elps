@@ -591,11 +591,12 @@ func TestSharedDivergenceGate(t *testing.T) {
 //
 // Each run here takes the deadline branch and must produce the same results
 // and environment state as a run with no deadline.  A context error cannot
-// match the no-deadline result.  The deadline is oracleDeadline and not
-// fuzzDeadline: the assertion is about what was compared, not speed, and a
-// starved process must not fail it (luthersystems/elps#788).
+// match the no-deadline result.  The deadline is controlDeadline, which takes
+// the fuzz targets' branch of evalContext and cannot expire during the test.
+// Elapsed time therefore cannot fail it (luthersystems/elps#788).
 func TestSharedProgramDeadlinePathCompares(t *testing.T) {
 	t.Parallel()
+	requireDeadlineBranch(t, controlDeadline)
 	const src = `(defun double (x) (* x 2)) (double 21)`
 	const reps = 2
 
@@ -603,13 +604,13 @@ func TestSharedProgramDeadlinePathCompares(t *testing.T) {
 	if !ok {
 		t.Fatal("the probe did not evaluate with no deadline")
 	}
-	fresh, ok := runProgramFresh(t, []byte(src), reps, oracleDeadline)
+	fresh, ok := runProgramFresh(t, []byte(src), reps, controlDeadline)
 	if !ok {
-		t.Fatalf("the probe did not evaluate under a %v deadline", oracleDeadline)
+		t.Fatalf("the probe did not evaluate under a %v deadline", controlDeadline)
 	}
 	if !fresh.equal(want) {
 		t.Fatalf("a fresh run under a %v deadline differs from one with no deadline"+
-			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", oracleDeadline, want, fresh)
+			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", controlDeadline, want, fresh)
 	}
 
 	shared, err := lisp.ReadProgram(parser.NewReader(), "shared", bytes.NewReader([]byte(src)))
@@ -617,13 +618,13 @@ func TestSharedProgramDeadlinePathCompares(t *testing.T) {
 		t.Fatalf("the probe does not parse: %v", err)
 	}
 	sealed := astraw.Exprs(shared)
-	got, ok := runProgramShared(t, shared, sealed, lisp.SealedASTFingerprint(sealed), 0, reps, oracleDeadline)
+	got, ok := runProgramShared(t, shared, sealed, lisp.SealedASTFingerprint(sealed), 0, reps, controlDeadline)
 	if !ok {
-		t.Fatalf("the shared probe did not evaluate under a %v deadline", oracleDeadline)
+		t.Fatalf("the shared probe did not evaluate under a %v deadline", controlDeadline)
 	}
 	if !got.equal(want) {
 		t.Fatalf("a shared run under a %v deadline differs from a fresh one with no deadline"+
-			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", oracleDeadline, want, got)
+			"\n--- no deadline ---\n%s\n--- deadline ---\n%s", controlDeadline, want, got)
 	}
 }
 
