@@ -277,26 +277,33 @@ func TestSleepInterruptedThroughEval(t *testing.T) {
 // TestSleepPastDeadlineFailsFast pins issue #338: a sleep the deadline will
 // outlast is refused on entry, NOT slept out to the deadline first.
 //
-// The distinction is invisible to a pass/fail check on the condition alone --
-// the old behaviour raised the same context-cancelled -- so the test makes
-// the wait impossible instead of timing it (#789).  stalledDeadline reports a
-// deadline 750ms away but never expires: its Done channel never closes and
-// Err stays nil.  A sleep refused on entry raises context-cancelled at once.
-// A sleep that waits instead can only end when its own minute is up, and it
-// then returns nil, so runBounded reports a hang or requireCancelled fails.
-// Neither outcome depends on how fast this process runs.
+// The distinction is invisible to a pass/fail check on the condition alone:
+// the old behaviour waited until the deadline and then raised the same
+// context-cancelled.  So the test makes that wait impossible to finish
+// instead of timing it (#789).  The context is a stalledDeadline whose
+// deadline is outlast(t) away, and the sleep is twice that, with a :max
+// above it so the length cap cannot refuse it.
+//
+//	sleep refused on entry      context-cancelled at once; the test passes
+//	sleep cut to the deadline   waits outlast(t); runBounded reports a hang
+//	sleep waits on Done         Done never closes; runBounded reports a hang
+//
+// The deadline never expires, so a slow or starved process cannot reach it,
+// and no assertion reads elapsed time.
 func TestSleepPastDeadlineFailsFast(t *testing.T) {
 	t.Parallel()
-	ctx := stalledDeadline{Context: context.Background(), deadline: time.Now().Add(750 * time.Millisecond)}
+	far := outlast(t)
+	deadline := time.Now().Add(far)
+	ctx := stalledDeadline{Context: context.Background(), deadline: deadline}
 	env := sleepEnv(t, ctx)
 
 	v, _ := runBounded(t, func() *lisp.LVal {
-		// A minute is far below DefaultMaxSleep, so only the deadline can
-		// refuse it.  A sleep that waits returns nil after the minute, and
-		// requireCancelled fails.
-		return callSleep(env, time.Minute)
+		return callSleepMax(env, 2*far, libtime.Duration(3*far))
 	})
 	requireCancelled(t, v)
+	if !time.Now().Before(deadline) {
+		t.Fatalf("returned after the %v deadline: the sleep waited for it", far)
+	}
 }
 
 // stalledDeadline is a context with a deadline that never expires.  Deadline
