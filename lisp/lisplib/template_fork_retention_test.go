@@ -3,7 +3,6 @@
 package lisplib_test
 
 import (
-	"context"
 	"math"
 	"os"
 	"os/exec"
@@ -11,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -24,12 +24,11 @@ func TestTemplateForkEscapedLeafDoesNotRetainVM(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
+		// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 		// #nosec G204 -- os.Executable returns this test binary; all arguments are fixed, not user-controlled.
-		command := exec.CommandContext(ctx, executable, "-test.run=^TestTemplateForkEscapedLeafDoesNotRetainVM$", "-test.v")
+		command := exec.CommandContext(t.Context(), executable, "-test.run=^TestTemplateForkEscapedLeafDoesNotRetainVM$", "-test.v")
 		command.Env = append(os.Environ(), childFlag+"=1")
-		output, err := command.CombinedOutput()
+		output, err := testdeadline.RunChild(command, 30*time.Second)
 		if err != nil {
 			t.Fatalf("isolated retention test: %v\n%s", err, output)
 		}

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -174,13 +175,12 @@ func TestEvalRenderDeadline(t *testing.T) {
 		require.Contains(t, string(wire), "truncated")
 		return
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
-	defer cancel()
+	// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 	//nolint:gosec // Re-execute the regression with a hard rendering deadline.
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestEvalRenderDeadline$")
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestEvalRenderDeadline$")
 	cmd.Env = append(os.Environ(), "ELPS_TEST_MCP_RENDER=1")
-	out, err := cmd.CombinedOutput()
-	require.NoError(t, err, "deadline=%v output=%s", ctx.Err(), out)
+	out, err := testdeadline.RunChild(cmd, 10*time.Second)
+	require.NoError(t, err, "output=%s", out)
 }
 
 func TestEvalTinyEnvelopeBudget(t *testing.T) {

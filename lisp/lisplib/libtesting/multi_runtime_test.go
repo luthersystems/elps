@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
 	"github.com/luthersystems/elps/parser"
@@ -194,21 +195,20 @@ func TestSharedSuiteConcurrentDefinition(t *testing.T) {
 
 func runParent(t *testing.T, scenario string) {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
-	defer cancel()
-
+	// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+	// The child gets no -test.timeout for the same reason.
+	//
 	// #nosec G204 G702 -- os.Args[0] is this test binary; the only variable
 	// part is a scenario name from childScenarioNames, passed via the
 	// environment. G702 is gosec's taint-analysis restatement of G204 and
 	// needs naming separately.
-	cmd := exec.CommandContext(ctx, os.Args[0],
+	cmd := exec.CommandContext(t.Context(), os.Args[0],
 		"-test.run=^"+childTestName+"$",
 		"-test.count=1",
-		"-test.timeout=90s",
 		"-test.v",
 	)
 	cmd.Env = append(os.Environ(), childEnvVar+"="+scenario)
-	out, err := cmd.CombinedOutput()
+	out, err := testdeadline.RunChild(cmd, 2*time.Minute)
 	if err == nil {
 		return
 	}

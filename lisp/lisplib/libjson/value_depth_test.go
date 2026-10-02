@@ -3,7 +3,6 @@
 package libjson
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -13,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -75,12 +75,11 @@ func TestJSONValueDepth(t *testing.T) {
 	for _, depth := range []int{100_000, 3_000_000} {
 		for _, mode := range []string{"dump-string", "GoValue"} {
 			t.Run(fmt.Sprintf("%d/%s", depth, mode), func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
-				defer cancel()
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestJSONValueDepth$", "-test.count=1") //nolint:gosec // executes this test binary, not a command supplied by the program under test
+				// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+				cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestJSONValueDepth$", "-test.count=1") //nolint:gosec // executes this test binary, not a command supplied by the program under test
 				cmd.Env = append(os.Environ(), "ELPS_JSON_DEPTH="+mode, "ELPS_JSON_SIZE="+strconv.Itoa(depth))
 				start := time.Now()
-				out, err := cmd.CombinedOutput()
+				out, err := testdeadline.RunChild(cmd, 45*time.Second)
 				t.Logf("process_wall=%s %s", time.Since(start), out)
 				if err != nil {
 					t.Fatalf("child failed (%v): %.800s", err, out)
@@ -142,11 +141,10 @@ func TestJSONValueDepthRaisedLimit(t *testing.T) {
 		}
 		return
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestJSONValueDepthRaisedLimit$", "-test.count=1") //nolint:gosec // this test binary with a fixed selector
+	// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestJSONValueDepthRaisedLimit$", "-test.count=1") //nolint:gosec // this test binary with a fixed selector
 	cmd.Env = append(os.Environ(), "ELPS_JSON_RAISED_DEPTH=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
+	if out, err := testdeadline.RunChild(cmd, 45*time.Second); err != nil {
 		t.Fatalf("raised-limit child: %v\n%s", err, out)
 	}
 }

@@ -3,13 +3,14 @@
 package lisp_test
 
 import (
-	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -38,13 +39,12 @@ func TestRuntimeWalkerDepthAt500K(t *testing.T) {
 		{"to-string", "ordinary LError: cannot convert type to string"},
 	} {
 		t.Run(tc.operation, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "-test.run=^TestRuntimeWalkerDepthAt500K$", "-test.count=1")
+			// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+			cmd := exec.CommandContext(t.Context(), executable, "-test.run=^TestRuntimeWalkerDepthAt500K$", "-test.count=1")
 			cmd.Env = append(os.Environ(), childEnv+"="+tc.operation)
-			output, err := cmd.CombinedOutput()
-			if ctx.Err() != nil {
-				t.Fatalf("walker exceeded external 30s deadline: %v\n%s", ctx.Err(), output)
+			output, err := testdeadline.RunChild(cmd, 30*time.Second)
+			if errors.Is(err, testdeadline.ErrOverBudget) {
+				t.Fatalf("walker exceeded its 30s CPU budget: %v\n%s", err, output)
 			}
 			if err != nil {
 				t.Fatalf("walker subprocess failed: %v\n%s", err, output)

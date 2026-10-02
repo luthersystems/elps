@@ -3,7 +3,6 @@
 package lisp
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -15,6 +14,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -290,12 +290,11 @@ const cyclicWalkEnv = "ELPS_TEST_CYCLIC_WALK"
 func TestCyclicValueDoesNotKillTheProcess(t *testing.T) {
 	for name, want := range cyclicWalks {
 		t.Run(name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-			defer cancel()
+			// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 			//nolint:gosec // os.Args[0] is this test binary
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestCyclicWalkHelper", "-test.v")
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=TestCyclicWalkHelper", "-test.v")
 			cmd.Env = append(os.Environ(), cyclicWalkEnv+"="+name)
-			out, err := cmd.CombinedOutput()
+			out, err := testdeadline.RunChild(cmd, time.Minute)
 			require.NoError(t, err, "the %s walk must not kill the process:\n%s", name, out)
 			assert.Contains(t, string(out), "RESULT: "+want,
 				"the %s walk must produce a bounded result:\n%s", name, out)
