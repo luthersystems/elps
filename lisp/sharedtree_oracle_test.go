@@ -58,10 +58,9 @@ import (
 // built with its own evalArm helper.  That is deliberate -- it is the only way
 // to put an arm's context into a chosen state -- and it leaves a gap of
 // exactly the shape this file was written to close.  The REAL harness path is
-// sharedTreeProperty -> evalTreeOnce, under the real fuzzDeadline, the real
-// newFuzzEnv and real shared arms; nothing here ran it.  So a regression that
-// made every real run INCONCLUSIVE from expression 0 -- a mis-set deadline, a
-// context created already cancelled, `expired` read from the wrong context or
+// sharedTreeProperty -> evalTreeOnce, under the real newFuzzEnv and real
+// shared arms; nothing here ran it.  So a regression that made every real run
+// INCONCLUSIVE from expression 0 -- a context created already cancelled, `expired` read from the wrong context or
 // pinned to true, a `continue` that skips the comparison -- would leave every
 // test in this file passing, FuzzSharedTreeEval finding nothing, and the
 // target comparing nothing.  "No failure" is worth as little here as "no
@@ -69,8 +68,11 @@ import (
 //
 // TestSharedTreeLiveResultIsConclusive is the direct control: it runs the real
 // path on a small terminating program and asserts the verdict came back
-// CONCLUSIVE with every expression compared.  Each of the three mutations
-// above fails it.
+// CONCLUSIVE with every expression compared.  Each of the mutations above
+// fails it.  It runs with no wall-clock deadline (luthersystems/elps#788), so
+// a starved process cannot mark an arm expired.
+// TestEvalCorpusHasNoWallClockDeadline pins that fuzzed input still gets
+// fuzzDeadline from evalContext.
 
 // oracleDeadline is the deadline the live-context cases run under.  Long
 // enough that nothing here reaches it, so an expired context in those cases
@@ -490,9 +492,8 @@ func TestOracleComparesRaisedContextCancelled(t *testing.T) {
 // harness compared both ordinary values and an error result -- an oracle that
 // silently stopped comparing errors would not reach the end of it.
 //
-// Everything here completes in microseconds, orders of magnitude inside
-// fuzzDeadline, so an inconclusive verdict is a harness defect and not a slow
-// machine.
+// The test runs it with no wall-clock deadline, so an inconclusive verdict is
+// a harness defect and not a slow machine.
 const liveConclusiveSrc = `(+ 1 1)
 (defun double (x) (* x 2))
 (double 21)
@@ -500,9 +501,10 @@ const liveConclusiveSrc = `(+ 1 1)
 (error 'deliberate "raised on purpose")`
 
 // TestSharedTreeLiveResultIsConclusive is the live control on the REAL fuzz
-// harness path: real newFuzzEnv, real fuzzDeadline, real evalTreeOnce, real
-// shared arms, driven through sharedTreeProperty exactly as FuzzSharedTreeEval
-// drives it.
+// harness path: real newFuzzEnv, real evalTreeOnce, real shared arms, driven
+// through sharedTreeProperty as FuzzSharedTreeEval drives it.  The one
+// difference is the deadline: this test passes 0 and the fuzz target passes
+// fuzzDeadline.
 //
 // The assertion is not "it did not fail" -- sharedTreeProperty passes silently
 // when it compares nothing -- but that every shared arm came back CONCLUSIVE
@@ -522,7 +524,7 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 		t.Fatalf("the fixture parsed to %d expressions; it is meant to have several", len(exprs))
 	}
 
-	res := sharedTreeProperty(t, []byte(liveConclusiveSrc))
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), 0)
 
 	if res.skipped != "" {
 		t.Fatalf("the live path skipped the fixture: %s", res.skipped)
@@ -535,10 +537,9 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 	}
 	for i, v := range res.runs {
 		if !v.conclusive() {
-			t.Fatalf("shared run %d was inconclusive on a program that finishes"+
-				" in microseconds under a %v deadline: %s"+
+			t.Fatalf("shared run %d was inconclusive with no wall-clock deadline: %s"+
 				"\n  the real harness path compared nothing from expression %d on",
-				i, fuzzDeadline, v.inconclusive, v.compared)
+				i, v.inconclusive, v.compared)
 		}
 		if v.compared == 0 {
 			t.Fatalf("shared run %d compared no expressions at all", i)
