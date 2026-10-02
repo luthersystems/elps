@@ -133,6 +133,34 @@ const (
 	// See evalCorpusBudgeted for what the corpora run under instead.
 	fuzzDeadline = 2 * time.Second
 
+	// fuzzDeadlineFloor is the least fuzzDeadline may be.  The fixed tests
+	// run with no deadline, so they cannot see fuzzDeadline itself.  If it
+	// fell to near zero, every fuzzed expression would expire before it ran,
+	// the differential targets would compare nothing, and every test would
+	// still pass.  TestEvalCorpusHasNoWallClockDeadline holds fuzzDeadline at
+	// or above this floor, which is orders of magnitude above what a seed
+	// needs (luthersystems/elps#790).
+	fuzzDeadlineFloor = 100 * time.Millisecond
+
+	// controlDeadline is the deadline the deadline-path controls run under.
+	// It is positive, so evalContext takes the same branch as fuzzDeadline.
+	// It is about 100 years, so it cannot expire while a test runs, however
+	// starved the process is.  Elapsed time then cannot decide a control's
+	// verdict.  requireDeadlineBranch checks both facts.
+	controlDeadline = 100 * 365 * 24 * time.Hour
+
+	// controlDeadlineMin is the least time to expiry that
+	// requireDeadlineBranch accepts.  No test run is this long.
+	controlDeadlineMin = 1000 * time.Hour
+
+	// expiredDeadline is the deadline the expired-context fixtures run
+	// under.  It is negative, so evalContext returns a context that is
+	// already cancelled when it returns.  A small positive deadline such as
+	// 1ns arms a timer instead, and on a starved process the evaluation can
+	// finish before that timer fires.  TestEvalCorpusHasNoWallClockDeadline
+	// checks the context is done on return (luthersystems/elps#788).
+	expiredDeadline = -time.Hour
+
 	// watchdogTimeout is the outer bound, denominated in SCHEDULED time (see
 	// internal/fuzzwatch): wall clock during which this process was not run by the
 	// OS is not charged to the evaluator.  It is deliberately an order of
@@ -195,6 +223,12 @@ type evalOutcome struct {
 	Stderr  string
 	Steps   int64
 	Elapsed time.Duration
+	// Expired reports whether this evaluation's own context had expired
+	// when the evaluation returned.  It is harness state: a program can
+	// raise context-cancelled itself, but it cannot make the deadline pass.
+	// A differential check reads it to excuse an arm the wall clock cut
+	// short (luthersystems/elps#788).
+	Expired bool
 }
 
 // locationWatch records, for every node the loader's reader produces, the
@@ -452,12 +486,18 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 		result  *lisp.LVal
 		steps   int64
 		elapsed time.Duration
+		expired bool
 	}
 	ch := make(chan done, 1)
 	go func() {
 		start := time.Now()
 		result := env.LoadProgramContext(ctx, prog)
-		ch <- done{result: result, steps: env.Runtime.TotalSteps(), elapsed: time.Since(start)}
+		ch <- done{
+			result:  result,
+			steps:   env.Runtime.TotalSteps(),
+			elapsed: time.Since(start),
+			expired: ctx.Err() != nil,
+		}
 	}()
 
 	// SCHEDULED time, not wall clock: see internal/fuzzwatch.  At a measured
@@ -501,6 +541,7 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 				Stderr:  stderr.String(),
 				Steps:   d.steps,
 				Elapsed: d.elapsed,
+				Expired: d.expired,
 			}, true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
@@ -531,20 +572,47 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 
 // evalContext builds the context an evaluation runs under.  A deadline of 0
 // yields a context that is cancellable but carries no deadline -- the shape
-// the fixed corpora need, where the bound must not be a clock (#435).
+// the fixed corpora need, where the bound must not be a clock (#435).  A
+// negative deadline (expiredDeadline) yields a context that is already
+// cancelled, with no timer involved.
 func evalContext(deadline time.Duration) (context.Context, context.CancelFunc) {
-	if deadline <= 0 {
+	if deadline == 0 {
 		return context.WithCancel(context.Background())
 	}
 	return context.WithTimeout(context.Background(), deadline)
+}
+
+// requireDeadlineBranch fails t unless evalContext(deadline) takes the
+// deadline branch with a deadline that no test run can reach.  The
+// deadline-path controls call it.  The harness uses deadline only through
+// evalContext, so this check is what shows the control ran the fuzz targets'
+// branch.  The second check shows the deadline cannot fire during the test,
+// so the control's verdict does not depend on elapsed time
+// (luthersystems/elps#788).
+func requireDeadlineBranch(t *testing.T, deadline time.Duration) {
+	t.Helper()
+	ctx, cancel := evalContext(deadline)
+	defer cancel()
+	at, ok := ctx.Deadline()
+	if !ok {
+		t.Fatalf("evalContext(%v) gave a context with no deadline;"+
+			" the control does not run the fuzz targets' deadline branch", deadline)
+	}
+	if left := time.Until(at); left < controlDeadlineMin {
+		t.Fatalf("evalContext(%v) expires in %v, less than %v;"+
+			" elapsed time could decide the control's verdict", deadline, left, controlDeadlineMin)
+	}
 }
 
 // describeDeadline renders the deadline for a failure message, so a watchdog
 // firing under the corpus budget does not claim a context deadline that is not
 // there.
 func describeDeadline(deadline time.Duration) string {
-	if deadline <= 0 {
+	if deadline == 0 {
 		return "no context deadline (the fixed-corpus budget: counts, not clocks)"
+	}
+	if deadline < 0 {
+		return "a context deadline already in the past"
 	}
 	return fmt.Sprintf("a %s context deadline", deadline)
 }
@@ -745,7 +813,7 @@ func TestTerminatingSeedVerdictIsNotAFunctionOfTheClock(t *testing.T) {
 	// A wall clock that is already spent.  Under one, this seed reports an
 	// error -- the same verdict #435 saw against a 2s clock on a machine that
 	// was not running us, and for the same reason.
-	starved, ok := evalUnderBudget(t, src, time.Nanosecond)
+	starved, ok := evalUnderBudget(t, src, expiredDeadline)
 	if !ok {
 		t.Fatalf("terminating seed %q does not parse", seed)
 	}
@@ -770,7 +838,7 @@ func TestTerminatingSeedVerdictIsNotAFunctionOfTheClock(t *testing.T) {
 
 // TestEvalCorpusHasNoWallClockDeadline pins the shape of #435's fix: the fixed
 // corpora are handed a context with no deadline, and fuzzed input is still
-// handed one.
+// handed one, no shorter than fuzzDeadlineFloor.
 //
 // It is deliberately narrow.  The behavioural assertion lives in
 // TestTerminatingSeedVerdictIsNotAFunctionOfTheClock; this one exists so that
@@ -792,6 +860,23 @@ func TestEvalCorpusHasNoWallClockDeadline(t *testing.T) {
 		t.Fatal("fuzzed input must still run under fuzzDeadline: it is the throughput bound" +
 			" that stops one pathological mutation from eating a whole fuzz job, and nothing" +
 			" in FuzzEval asserts that an input succeeds, so it cannot fail innocent code")
+	}
+	if fuzzDeadline < fuzzDeadlineFloor {
+		t.Fatalf("fuzzDeadline is %s, below the %s floor: fuzzed expressions expire before"+
+			" they run, and the differential fuzz targets compare nothing while passing",
+			fuzzDeadline, fuzzDeadlineFloor)
+	}
+
+	// The expired fixtures must not race a timer.  A context that is not
+	// done on return expires only when the runtime fires its timer, and a
+	// starved process can finish the evaluation first.
+	expired, cancel := evalContext(expiredDeadline)
+	defer cancel()
+	select {
+	case <-expired.Done():
+	default:
+		t.Fatalf("evalContext(%v) is not done on return; the expired-context fixtures"+
+			" then depend on when a timer fires", expiredDeadline)
 	}
 }
 

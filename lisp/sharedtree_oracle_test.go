@@ -3,7 +3,6 @@
 package lisp_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -58,10 +57,9 @@ import (
 // built with its own evalArm helper.  That is deliberate -- it is the only way
 // to put an arm's context into a chosen state -- and it leaves a gap of
 // exactly the shape this file was written to close.  The REAL harness path is
-// sharedTreeProperty -> evalTreeOnce, under the real fuzzDeadline, the real
-// newFuzzEnv and real shared arms; nothing here ran it.  So a regression that
-// made every real run INCONCLUSIVE from expression 0 -- a mis-set deadline, a
-// context created already cancelled, `expired` read from the wrong context or
+// sharedTreeProperty -> evalTreeOnce, under the real newFuzzEnv and real
+// shared arms; nothing here ran it.  So a regression that made every real run
+// INCONCLUSIVE from expression 0 -- a context created already cancelled, `expired` read from the wrong context or
 // pinned to true, a `continue` that skips the comparison -- would leave every
 // test in this file passing, FuzzSharedTreeEval finding nothing, and the
 // target comparing nothing.  "No failure" is worth as little here as "no
@@ -69,13 +67,11 @@ import (
 //
 // TestSharedTreeLiveResultIsConclusive is the direct control: it runs the real
 // path on a small terminating program and asserts the verdict came back
-// CONCLUSIVE with every expression compared.  Each of the three mutations
-// above fails it.
-
-// oracleDeadline is the deadline the live-context cases run under.  Long
-// enough that nothing here reaches it, so an expired context in those cases
-// would be a real finding rather than a slow machine.
-const oracleDeadline = 30 * time.Second
+// CONCLUSIVE with every expression compared.  Each of the mutations above
+// fails it.  It runs with no wall-clock deadline (luthersystems/elps#788), so
+// a starved process cannot mark an arm expired.
+// TestEvalCorpusHasNoWallClockDeadline pins that fuzzed input still gets
+// fuzzDeadline from evalContext.
 
 // oracleRun is one arm: the treeEval the fuzz target's own arm would produce,
 // plus the evaluator's values themselves, kept so the fixture checks can ask
@@ -90,11 +86,15 @@ func (r oracleRun) last() *lisp.LVal { return r.values[len(r.values)-1] }
 func (r oracleRun) lastRendered() string { return r.eval.rendered[len(r.eval.rendered)-1] }
 
 // evalArm evaluates every expression of src under a fresh fuzz environment
-// and a context with the given deadline, recording exactly what evalTreeOnce
-// records.  cancelAfter, when non-negative, cancels the context once that
-// many expressions have been evaluated -- the deterministic way to put an arm
+// and evalContext(deadline), recording exactly what evalTreeOnce records.
+// cancelAfter, when non-negative, cancels the context once that many
+// expressions have been evaluated -- the deterministic way to put an arm
 // into the expired state PART WAY through a tree, which a deadline alone can
 // only do by racing the evaluator.
+//
+// The cases here pass deadline 0 (no deadline) or expiredDeadline (already
+// expired).  Neither depends on elapsed time, so no verdict here depends on
+// how much CPU the process gets (luthersystems/elps#788).
 func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) oracleRun {
 	t.Helper()
 	env, _, rc := newFuzzEnv()
@@ -105,7 +105,7 @@ func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) 
 	if err != nil {
 		t.Fatalf("reading %q failed: %v", src, err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), deadline)
+	ctx, cancel := evalContext(deadline)
 	defer cancel()
 	run := oracleRun{eval: treeEval{
 		rendered: make([]string, 0, len(exprs)),
@@ -126,10 +126,12 @@ func evalArm(t *testing.T, src string, deadline time.Duration, cancelAfter int) 
 	return run
 }
 
-// liveArm is the common case: a generous deadline and no cancellation.
+// liveArm is the common case: no deadline and no cancellation.  Its context
+// expires only if the test cancels it, so an expired context here is a real
+// finding and not a slow machine.
 func liveArm(t *testing.T, src string) oracleRun {
 	t.Helper()
-	return evalArm(t, src, oracleDeadline, -1)
+	return evalArm(t, src, 0, -1)
 }
 
 // The programs every case below is built from.  Each is real source the
@@ -215,7 +217,7 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 		}
 		for j, expired := range run.eval.expired {
 			if expired {
-				t.Fatalf("expression %d ran with an expired context on a %v deadline", j, oracleDeadline)
+				t.Fatalf("expression %d ran with an expired context and no deadline", j)
 			}
 		}
 	})
@@ -241,13 +243,13 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 		}
 		for j, expired := range run.eval.expired {
 			if expired {
-				t.Fatalf("expression %d ran with an expired context on a %v deadline", j, oracleDeadline)
+				t.Fatalf("expression %d ran with an expired context and no deadline", j)
 			}
 		}
 	})
 
 	t.Run("a deadline already in the past expires every expression", func(t *testing.T) {
-		run := evalArm(t, trivialSrc, time.Nanosecond, -1)
+		run := evalArm(t, trivialSrc, expiredDeadline, -1)
 		if !run.eval.expired[0] {
 			t.Fatal("the expired-deadline fixture ran with a live context")
 		}
@@ -258,7 +260,7 @@ func TestOracleFixturesAreWhatTheyClaim(t *testing.T) {
 	})
 
 	t.Run("cancelling after the first expression expires only the rest", func(t *testing.T) {
-		run := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, 1)
+		run := evalArm(t, trivialSrc+" "+trivialSrc, 0, 1)
 		if len(run.eval.expired) != 2 {
 			t.Fatalf("expected two expressions, got %d", len(run.eval.expired))
 		}
@@ -402,7 +404,7 @@ func TestOracleTailBudgetArmsCompareEqual(t *testing.T) {
 func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 	t.Run("an already-passed deadline is inconclusive from expression 0", func(t *testing.T) {
 		private := liveArm(t, runawayLoopSrc)
-		shared := evalArm(t, runawayLoopSrc, time.Nanosecond, -1)
+		shared := evalArm(t, runawayLoopSrc, expiredDeadline, -1)
 		if private.lastRendered() == shared.lastRendered() {
 			t.Fatalf("the arms did not diverge, so this case proves nothing: %s",
 				private.lastRendered())
@@ -426,8 +428,8 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		// The arms differ at expression 0, under two live contexts; the
 		// shared arm's context is cancelled only afterwards.  A divergence
 		// the deadline had not yet touched must still be reported.
-		private := evalArm(t, valueNamingABudgetSrc("private")+" "+trivialSrc, oracleDeadline, -1)
-		shared := evalArm(t, valueNamingABudgetSrc("shared-corrupted")+" "+trivialSrc, oracleDeadline, 1)
+		private := evalArm(t, valueNamingABudgetSrc("private")+" "+trivialSrc, 0, -1)
+		shared := evalArm(t, valueNamingABudgetSrc("shared-corrupted")+" "+trivialSrc, 0, 1)
 		if shared.eval.expired[0] || !shared.eval.expired[1] {
 			t.Fatalf("the cancellation did not land between the expressions: %v", shared.eval.expired)
 		}
@@ -438,8 +440,8 @@ func TestOracleExpiredContextIsInconclusive(t *testing.T) {
 		// Same first expression in both arms, so the comparison reaches
 		// expression 1 -- where the shared arm's context has been cancelled
 		// and the two renderings differ because of it.
-		private := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, -1)
-		shared := evalArm(t, trivialSrc+" "+trivialSrc, oracleDeadline, 1)
+		private := evalArm(t, trivialSrc+" "+trivialSrc, 0, -1)
+		shared := evalArm(t, trivialSrc+" "+trivialSrc, 0, 1)
 		if private.eval.rendered[1] == shared.eval.rendered[1] {
 			t.Fatalf("the cancelled arm produced the same result, so this proves nothing: %s",
 				shared.eval.rendered[1])
@@ -490,9 +492,8 @@ func TestOracleComparesRaisedContextCancelled(t *testing.T) {
 // harness compared both ordinary values and an error result -- an oracle that
 // silently stopped comparing errors would not reach the end of it.
 //
-// Everything here completes in microseconds, orders of magnitude inside
-// fuzzDeadline, so an inconclusive verdict is a harness defect and not a slow
-// machine.
+// The test runs it with no wall-clock deadline, so an inconclusive verdict is
+// a harness defect and not a slow machine.
 const liveConclusiveSrc = `(+ 1 1)
 (defun double (x) (* x 2))
 (double 21)
@@ -500,9 +501,10 @@ const liveConclusiveSrc = `(+ 1 1)
 (error 'deliberate "raised on purpose")`
 
 // TestSharedTreeLiveResultIsConclusive is the live control on the REAL fuzz
-// harness path: real newFuzzEnv, real fuzzDeadline, real evalTreeOnce, real
-// shared arms, driven through sharedTreeProperty exactly as FuzzSharedTreeEval
-// drives it.
+// harness path: real newFuzzEnv, real evalTreeOnce, real shared arms, driven
+// through sharedTreeProperty as FuzzSharedTreeEval drives it.  The one
+// difference is the deadline: this test passes 0 and the fuzz target passes
+// fuzzDeadline.
 //
 // The assertion is not "it did not fail" -- sharedTreeProperty passes silently
 // when it compares nothing -- but that every shared arm came back CONCLUSIVE
@@ -522,7 +524,7 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 		t.Fatalf("the fixture parsed to %d expressions; it is meant to have several", len(exprs))
 	}
 
-	res := sharedTreeProperty(t, []byte(liveConclusiveSrc))
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), 0)
 
 	if res.skipped != "" {
 		t.Fatalf("the live path skipped the fixture: %s", res.skipped)
@@ -535,10 +537,9 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 	}
 	for i, v := range res.runs {
 		if !v.conclusive() {
-			t.Fatalf("shared run %d was inconclusive on a program that finishes"+
-				" in microseconds under a %v deadline: %s"+
+			t.Fatalf("shared run %d was inconclusive with no wall-clock deadline: %s"+
 				"\n  the real harness path compared nothing from expression %d on",
-				i, fuzzDeadline, v.inconclusive, v.compared)
+				i, v.inconclusive, v.compared)
 		}
 		if v.compared == 0 {
 			t.Fatalf("shared run %d compared no expressions at all", i)
@@ -560,5 +561,52 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 	}
 	if final.Str != "deliberate" {
 		t.Fatalf("the fixture raised %q, not its own condition", final.Str)
+	}
+}
+
+// TestSharedTreeDeadlinePathIsConclusive is the control for the deadline
+// branch of the real harness path.  TestSharedTreeLiveResultIsConclusive and
+// TestSharedTreeSeedsAgree pass deadline 0, so evalContext gives them a context
+// with no deadline.  FuzzSharedTreeEval passes fuzzDeadline and takes the other
+// branch.  A defect in that branch alone -- a context created already
+// expired, an expired flag read wrong only when a deadline is set -- would make
+// the fuzz target compare nothing while both of those tests stay green.
+//
+// This test drives the same fixture through sharedTreeProperty with a
+// deadline, and asserts that every shared arm compared every expression.  The
+// deadline is controlDeadline, which takes the fuzz targets' branch of
+// evalContext and cannot expire during the test.  Elapsed time therefore
+// cannot fail it (luthersystems/elps#788).  TestEvalCorpusHasNoWallClockDeadline
+// holds fuzzDeadline itself above fuzzDeadlineFloor.
+func TestSharedTreeDeadlinePathIsConclusive(t *testing.T) {
+	t.Parallel()
+	requireDeadlineBranch(t, controlDeadline)
+
+	exprs, ok := readTree([]byte(liveConclusiveSrc))
+	if !ok {
+		t.Fatalf("the fixture does not parse:\n%s", liveConclusiveSrc)
+	}
+
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), controlDeadline)
+
+	if res.skipped != "" {
+		t.Fatalf("the deadline path skipped the fixture: %s", res.skipped)
+	}
+	if len(res.runs) != sharedRuns {
+		t.Fatalf("%d shared arms reported a verdict, want %d", len(res.runs), sharedRuns)
+	}
+	for i, v := range res.runs {
+		if !v.conclusive() {
+			t.Fatalf("shared run %d was inconclusive under a %v deadline: %s"+
+				"\n  the deadline path compared nothing from expression %d on",
+				i, controlDeadline, v.inconclusive, v.compared)
+		}
+		if v.compared != len(exprs) {
+			t.Fatalf("shared run %d compared %d of %d expressions under a %v deadline",
+				i, v.compared, len(exprs), controlDeadline)
+		}
+	}
+	if !res.conclusive() {
+		t.Fatal("the result is not conclusive as a whole")
 	}
 }

@@ -4,7 +4,6 @@ package lisp_test
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"sync"
 	"sync/atomic"
@@ -139,12 +138,18 @@ type treeEval struct {
 // and returns the rendered results together with the per-expression record of
 // whether this run's context had expired.
 // exprs may be shared with other goroutines; nothing here may write to it.
-func evalTreeOnce(exprs []*lisp.LVal) (treeEval, error) {
+//
+// The run uses a context deadline of deadline.  A deadline of 0 means no
+// wall-clock deadline (see evalContext), so no expression can be marked
+// expired.  Fuzzed input passes fuzzDeadline.  A fixed test passes 0, so its
+// verdict does not depend on how much CPU the process gets
+// (luthersystems/elps#788).
+func evalTreeOnce(exprs []*lisp.LVal, deadline time.Duration) (treeEval, error) {
 	env, _, rc := newFuzzEnv()
 	if rc != nil {
 		return treeEval{}, errFromLVal(rc)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), fuzzDeadline)
+	ctx, cancel := evalContext(deadline)
 	defer cancel()
 	out := treeEval{
 		rendered: make([]string, 0, len(exprs)),
@@ -387,7 +392,9 @@ func (r sharedTreeResult) conclusive() bool {
 // A divergence is reported here, with t.Fatalf, exactly as before.  The
 // returned verdict answers the separate question of whether this input was
 // compared at all; see sharedTreeResult.
-func sharedTreeProperty(t *testing.T, src []byte) sharedTreeResult {
+//
+// Every arm runs under deadline; 0 means none (see evalTreeOnce).
+func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration) sharedTreeResult {
 	t.Helper()
 
 	shared, ok := readTree(src)
@@ -419,7 +426,7 @@ func sharedTreeProperty(t *testing.T, src []byte) sharedTreeResult {
 
 	go func() {
 		defer close(done)
-		want, wantErr = evalTreeOnce(private)
+		want, wantErr = evalTreeOnce(private, deadline)
 		var wg sync.WaitGroup
 		// Ranged over the arrays themselves rather than over sharedRuns: the
 		// bound is then the array's own length, which the bounds-check
@@ -428,7 +435,7 @@ func sharedTreeProperty(t *testing.T, src []byte) sharedTreeResult {
 			wg.Add(1)
 			go func(i int) {
 				defer wg.Done()
-				got[i], gotErr[i] = evalTreeOnce(shared)
+				got[i], gotErr[i] = evalTreeOnce(shared, deadline)
 			}(i)
 		}
 		wg.Wait()
@@ -519,7 +526,7 @@ func FuzzSharedTreeEval(f *testing.F) {
 		// still reach a conclusive comparison is asserted on FIXED input
 		// instead, by TestSharedTreeLiveResultIsConclusive and
 		// TestSharedTreeSeedsAgree.
-		_ = sharedTreeProperty(t, src)
+		_ = sharedTreeProperty(t, src, fuzzDeadline)
 	})
 }
 
@@ -573,6 +580,11 @@ func sharedTreeRunawaySeeds() map[string]bool { return map[string]bool{} }
 // the same guard one level up -- if the runaway list ever grew to cover
 // everything, the per-seed assertion would be skipped everywhere and this
 // test would go quiet again.
+//
+// The arms run with no wall-clock deadline (deadline 0).  The step, nesting
+// and allocation budgets of newFuzzEnv still bound them, and the watchdog
+// still catches a hang.  Under a deadline a starved process marks an arm
+// expired, and the conclusiveness assertion fails (luthersystems/elps#788).
 func TestSharedTreeSeedsAgree(t *testing.T) {
 	t.Parallel()
 	runaway := sharedTreeRunawaySeeds()
@@ -587,7 +599,7 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 	for _, src := range sharedTreeSeeds() {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			res := sharedTreeProperty(t, []byte(src))
+			res := sharedTreeProperty(t, []byte(src), 0)
 			if res.conclusive() {
 				conclusive.Add(1)
 			}

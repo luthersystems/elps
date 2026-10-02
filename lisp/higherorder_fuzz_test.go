@@ -290,7 +290,7 @@ func TestHigherOrderSharingIsReachable(t *testing.T) {
 // a healthy exec rate while asserting nothing about the interesting half.
 func TestHigherOrderCallbacksAreAdversarial(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 	defineHigherOrderCallbacks(t, env)
@@ -335,7 +335,7 @@ func TestHigherOrderCallbacksAreAdversarial(t *testing.T) {
 // for this target — see the note on TestSortedMapSequencesRunToCompletion.
 func TestHigherOrderSequencesRunToCompletion(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 	defineHigherOrderCallbacks(t, env)

@@ -49,16 +49,16 @@ func sharingBombDoc(t *testing.T) *lisp.LEnv {
 	return env
 }
 
-// runBomb evaluates src under a 1s deadline (scaled for the race detector;
-// the unfixed walks take hours) and the step budget, behind a watchdog that ends the test binary if it does not come back or allocates
-// without bound.
+// runBomb evaluates src under the step budget, behind a watchdog that ends
+// the test binary if it does not come back or allocates without bound.  The
+// unfixed walks take hours, so they still fail.  It sets no context
+// deadline: on a starved process a deadline turns a correct result into
+// context-cancelled (luthersystems/elps#788).
 func runBomb(t *testing.T, env *lisp.LEnv, src string) *lisp.LVal {
 	t.Helper()
 	var rc *lisp.LVal
 	testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(time.Second))
-		defer cancel()
-		rc = env.LoadStringContext(ctx, "probe.lisp", src)
+		rc = env.LoadStringContext(context.Background(), "probe.lisp", src)
 	})
 	if rc.Type == lisp.LError {
 		t.Fatalf("%s: %v", src, rc)
@@ -201,9 +201,11 @@ func TestSharingBombElpspathIterators(t *testing.T) {
 			env := sharingBombDoc(t)
 			var rc *lisp.LVal
 			testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
-				ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(10*time.Second))
-				defer cancel()
-				rc = env.LoadStringContext(ctx, "probe.lisp", src)
+				// No context deadline: the step budget is the
+				// property under test, and a deadline would end a
+				// starved run with context-cancelled instead
+				// (luthersystems/elps#788).
+				rc = env.LoadStringContext(context.Background(), "probe.lisp", src)
 			})
 			if rc.Type != lisp.LError || rc.Str != lisp.CondStepLimitExceeded {
 				t.Fatalf("%s: got %v, want the step-limit-exceeded condition", name, rc)
