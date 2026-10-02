@@ -3,7 +3,6 @@
 package lisp
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"runtime/debug"
@@ -11,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luthersystems/elps/internal/testdeadline"
 )
 
 func TestQuasiquoteMixedDepth(t *testing.T) {
@@ -58,11 +59,10 @@ func TestQuasiquoteMixedDepth(t *testing.T) {
 	}
 	for _, limit := range []int{1024, MaxValueDepth} {
 		t.Run(strconv.Itoa(limit), func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 45*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestQuasiquoteMixedDepth$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed selector
+			// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestQuasiquoteMixedDepth$", "-test.count=1") //nolint:gosec // executes this test binary with a fixed selector
 			cmd.Env = append(os.Environ(), "ELPS_QUASIQUOTE_LIMIT="+strconv.Itoa(limit))
-			if out, err := cmd.CombinedOutput(); err != nil {
+			if out, err := testdeadline.RunChild(cmd, 45*time.Second); err != nil {
 				t.Fatalf("mixed-depth child: %v\n%s", err, out)
 			}
 		})

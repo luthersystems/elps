@@ -3,7 +3,6 @@
 package elpstest
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"reflect"
@@ -14,6 +13,7 @@ import (
 
 	"github.com/luthersystems/elps/internal/jsonraw"
 	"github.com/luthersystems/elps/internal/templatepolicy"
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -193,12 +193,11 @@ func TestForkCheckMutableMapBackingOverridesNativeApproval(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 			// #nosec G204 -- this test binary and fixed selector contain no user input.
-			command := exec.CommandContext(ctx, executable, "-test.run=^TestForkCheckMutableMapBackingOverridesNativeApproval$")
+			command := exec.CommandContext(t.Context(), executable, "-test.run=^TestForkCheckMutableMapBackingOverridesNativeApproval$")
 			command.Env = append(os.Environ(), childFlag+"="+mode)
-			output, err := command.CombinedOutput()
+			output, err := testdeadline.RunChild(command, 30*time.Second)
 			needle := "mutable payload(s) shared with tx[0] cold"
 			if mode == "asymmetric" {
 				needle = "mutable payload(s) shared with the template"

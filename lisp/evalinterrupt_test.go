@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -23,34 +24,29 @@ import (
 // transaction that no timeout unwedges.
 //
 // These tests assert interruptibility directly -- budget configured, budget
-// honoured, in bounded wall-clock time -- rather than asserting termination,
-// which is what the fuzz harness's watchdog already does.  Both sites below
-// were found by FuzzEval (issue #320).
+// honoured, in bounded CPU time -- rather than asserting termination, which
+// is what the fuzz harness's watchdog already does.  Both sites below were
+// found by FuzzEval (issue #320).
+//
+// The bounds are CPU time on the evaluating goroutine, not wall time (#789).
+// A loop that ignores its limits keeps using CPU, so it still reaches the
+// bound; a correct evaluation on a starved process waits for a CPU without
+// using one, so it does not.
 
 // runBounded evaluates src with the given configs and fails if the evaluation
-// has not returned within limit.  The evaluation goroutine is deliberately
-// leaked on timeout: if it were interruptible it would already have stopped,
-// and the test has failed either way.
+// has used limit of CPU time without returning.  It returns the CPU time the
+// evaluation used.  The evaluation goroutine is deliberately leaked on
+// failure: if it were interruptible it would already have stopped, and the
+// test has failed either way.
 func runBounded(t *testing.T, limit time.Duration, src string, cfg ...lisp.Config) (*lisp.LVal, time.Duration) {
 	t.Helper()
 	env := newLimitTestEnv(t, cfg...)
-	type done struct {
-		res     *lisp.LVal
-		elapsed time.Duration
+	var res *lisp.LVal
+	used, ok := testdeadline.Within(limit, func() { res = env.LoadString("test", src) })
+	if !ok {
+		t.Fatalf("evaluation of %q used %s of CPU time without returning despite its configured limits", src, used)
 	}
-	ch := make(chan done, 1)
-	go func() {
-		start := time.Now()
-		res := env.LoadString("test", src)
-		ch <- done{res: res, elapsed: time.Since(start)}
-	}()
-	select {
-	case d := <-ch:
-		return d.res, d.elapsed
-	case <-time.After(limit):
-		t.Fatalf("evaluation of %q did not return within %s despite its configured limits", src, limit)
-		return nil, 0
-	}
+	return res, used
 }
 
 // TestDoTimesHonoursStepBudget pins that dotimes is interruptible even with an
@@ -76,17 +72,17 @@ func TestDoTimesHonoursStepBudget(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			res, elapsed := runBounded(t, 30*time.Second, tt.src, lisp.WithMaxSteps(10000))
+			res, cpu := runBounded(t, 30*time.Second, tt.src, lisp.WithMaxSteps(10000))
 			require.Equal(t, lisp.LError, res.Type,
-				"a 1e9-iteration dotimes must be stopped by a 10,000-step budget, got %v after %s",
-				res, elapsed)
+				"a 1e9-iteration dotimes must be stopped by a 10,000-step budget, got %v after %s of CPU",
+				res, cpu)
 			assert.Contains(t, res.String(), "step limit exceeded",
 				"expected the step budget to be the limit that fired")
-			// 10,000 steps of an empty loop body is microseconds of work.  A
-			// second of slack absorbs a loaded CI machine while still failing
-			// loudly if the loop is running to completion.
-			assert.Less(t, elapsed, time.Second,
-				"the step budget should stop this almost immediately, took %s", elapsed)
+			// 10,000 steps of an empty loop body is microseconds of CPU.  A
+			// loop running to completion is minutes of it.  CPU time, not
+			// wall time, so a starved process does not inflate it (#789).
+			assert.Less(t, cpu, testdeadline.Scale(time.Second),
+				"the step budget should stop this almost immediately, used %s of CPU", cpu)
 		})
 	}
 }
@@ -100,26 +96,19 @@ func TestDoTimesHonoursContextDeadline(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
 	defer cancel()
 
-	type done struct {
-		res     *lisp.LVal
-		elapsed time.Duration
-	}
-	ch := make(chan done, 1)
-	go func() {
-		start := time.Now()
-		res := env.LoadStringContext(ctx, "test", `(dotimes (i 1000000000))`)
-		ch <- done{res: res, elapsed: time.Since(start)}
-	}()
-	select {
-	case d := <-ch:
-		require.Equal(t, lisp.LError, d.res.Type,
-			"an empty-bodied 1e9-iteration dotimes must honour a 50ms deadline, got %v", d.res)
-		assert.Contains(t, diagnosticText(d.res), "context cancelled")
-		assert.Less(t, d.elapsed, 5*time.Second,
-			"the deadline should fire promptly, took %s", d.elapsed)
-	case <-time.After(30 * time.Second):
-		t.Fatal("dotimes ignored a 50ms context deadline for 30s")
-	}
+	// The 50ms deadline is wall time, so the loop spins for at most 50ms of
+	// wall time and uses no more CPU than that.  A loop that ignores the
+	// deadline spins until the 30s CPU bound.
+	var res *lisp.LVal
+	cpu, ok := testdeadline.Within(30*time.Second, func() {
+		res = env.LoadStringContext(ctx, "test", `(dotimes (i 1000000000))`)
+	})
+	require.True(t, ok, "dotimes ignored a 50ms context deadline for %s of CPU time", cpu)
+	require.Equal(t, lisp.LError, res.Type,
+		"an empty-bodied 1e9-iteration dotimes must honour a 50ms deadline, got %v", res)
+	assert.Contains(t, diagnosticText(res), "context cancelled")
+	assert.Less(t, cpu, 5*time.Second,
+		"the deadline should fire promptly, used %s of CPU", cpu)
 }
 
 // TestDoTimesStillIterates is the false-positive guard for the two tests

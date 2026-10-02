@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -88,9 +89,13 @@ func TestBatchContextCancelsInputWait(t *testing.T) {
 	_, err := io.WriteString(writer, "\n")
 	require.NoError(t, err)
 	cancel()
+	// Backstop, not a 1s timer (#789): the regression is a read that never
+	// returns, and a starved process can take longer than 1s to return.
+	backstop, stopBackstop := testdeadline.Backstop(t)
+	defer stopBackstop()
 	select {
 	case <-done:
-	case <-time.After(time.Second):
+	case <-backstop.Done():
 		t.Fatal("cancelled batch REPL still waiting for input")
 	}
 	assert.Empty(t, stdout.String())
@@ -139,22 +144,24 @@ func TestInteractiveCancellationReleasesInput(t *testing.T) {
 				defer close(finished)
 				RunEnv(env, "", "", WithContext(ctx), WithStdin(input))
 			}()
-			deadline := time.NewTimer(time.Second)
-			defer deadline.Stop()
+			// Backstop, not a 1s timer (#789): each regression here is a
+			// wait that never ends.
+			backstop, stopBackstop := testdeadline.Backstop(t)
+			defer stopBackstop()
 			select {
 			case <-input.started:
-			case <-deadline.C:
+			case <-backstop.Done():
 				t.Fatal("interactive input read did not start")
 			}
 			cancel()
 			select {
 			case <-finished:
-			case <-deadline.C:
+			case <-backstop.Done():
 				t.Fatal("cancelled interactive REPL did not return")
 			}
 			select {
 			case <-input.done:
-			case <-deadline.C:
+			case <-backstop.Done():
 				t.Fatal("cancelled interactive REPL left underlying input read blocked")
 			}
 		})

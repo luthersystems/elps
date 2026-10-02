@@ -4,7 +4,6 @@ package cmd
 
 import (
 	"bytes"
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -14,6 +13,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/internal/rootlibrary"
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/x/debugger"
 	"github.com/luthersystems/elps/parser"
@@ -47,14 +47,13 @@ func TestDiagnosticForgedLabels(t *testing.T) {
 					case "repl-batch":
 						args = []string{"repl", "--root-dir", root, "--batch", "--json=false"}
 					}
-					ctx, cancel := context.WithTimeout(t.Context(), 15*time.Second)
-					defer cancel()
-					command := exec.CommandContext(ctx, bin, args...) //nolint:gosec // freshly built test binary
+					// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
+					command := exec.CommandContext(t.Context(), bin, args...) //nolint:gosec // freshly built test binary
 					if mode == "repl-batch" {
 						command.Stdin = strings.NewReader(expr + "\n")
 					}
-					output, err := command.CombinedOutput()
-					require.NoError(t, ctx.Err(), "diagnostic command timed out")
+					output, err := testdeadline.RunChild(command, 15*time.Second)
+					require.NotErrorIs(t, err, testdeadline.ErrOverBudget, "diagnostic command did not stop")
 					if mode == "repl-batch" {
 						require.NoError(t, err)
 					} else {

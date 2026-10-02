@@ -90,17 +90,22 @@ func readLSPMessage(t *testing.T, r *bufio.Reader) map[string]any {
 	return msg
 }
 
+// maxUnrelatedMessages bounds how many messages a test reads while it waits
+// for one it expects.  A correct server sends a few.
+const maxUnrelatedMessages = 1000
+
 // readResponse reads LSP messages until a response with the given id appears.
 // Returns the response and any notifications received along the way.
 func readResponse(t *testing.T, r *bufio.Reader, id int) (map[string]any, []map[string]any) {
 	t.Helper()
 	var notifications []map[string]any
-	deadline := time.After(10 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatalf("timeout waiting for response id=%d", id)
-		default:
+	// A message count, not a wall-clock deadline (#789): the bound catches a
+	// server that keeps sending without answering, and a count does not
+	// depend on how fast this process runs.  A read that blocks is left to
+	// the binary's -timeout.
+	for n := 0; ; n++ {
+		if n == maxUnrelatedMessages {
+			t.Fatalf("no response id=%d after %d messages", id, n)
 		}
 		msg := readLSPMessage(t, r)
 		// If this message has the expected id, it's our response.
@@ -418,12 +423,9 @@ func TestE2E_DiagnosticsPublishedOnOpen(t *testing.T) {
 	// Read the diagnostics notification.
 	// We need to read messages until we see a publishDiagnostics notification.
 	var diagParams map[string]any
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for diagnostics notification")
-		default:
+	for n := 0; ; n++ {
+		if n == maxUnrelatedMessages {
+			t.Fatalf("no diagnostics notification after %d messages", n)
 		}
 		msg := readLSPMessage(t, reader)
 		if method, ok := msg["method"].(string); ok && method == "textDocument/publishDiagnostics" {
@@ -479,12 +481,9 @@ func TestE2E_LintDiagnostics(t *testing.T) {
 
 	// Read diagnostics — expect lint warnings.
 	var diagParams map[string]any
-	deadline := time.After(5 * time.Second)
-	for {
-		select {
-		case <-deadline:
-			t.Fatal("timeout waiting for diagnostics notification")
-		default:
+	for n := 0; ; n++ {
+		if n == maxUnrelatedMessages {
+			t.Fatalf("no diagnostics notification after %d messages", n)
 		}
 		msg := readLSPMessage(t, reader)
 		if method, ok := msg["method"].(string); ok && method == "textDocument/publishDiagnostics" {

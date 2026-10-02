@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -61,12 +62,12 @@ func TestRenderLongCyclePeriodsStillRender(t *testing.T) {
 		for _, n := range []int{61, 962, 1200, 4000} {
 			t.Run(build.name+"/"+strconv.Itoa(n), func(t *testing.T) {
 				ring := build.fn(t, n)
-				start := time.Now()
-				got := ring.String()
-				elapsed := time.Since(start)
+				// CPU time, not wall time (#789).
+				var got string
+				cpu, ok := testdeadline.Within(10*time.Second, func() { got = ring.String() })
+				require.True(t, ok, "rendering a ring must not unroll it (used %v of CPU)", cpu)
 				assert.NotContains(t, got, renderTruncatedMark, "a cyclic value must render")
 				assert.Contains(t, got, cycleMark)
-				assert.Less(t, elapsed, 10*time.Second, "rendering a ring must not unroll it")
 				// The oracle every other value obeys: the exact limit
 				// accepts the complete rendering, one byte less rejects it.
 				bounded, ok := ring.boundedString(len(got))

@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -36,14 +37,16 @@ func TestRenderContextAfterLoadDeadline(t *testing.T) {
 	for _, mode := range []string{"cancelled", "during-traversal"} {
 		t.Run(mode, func(t *testing.T) {
 			if os.Getenv("ELPS_TEST_RENDER_CONTEXT") != mode {
-				ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
-				defer cancel()
-				//nolint:gosec // Re-execute the regression under an external deadline.
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRenderContextAfterLoadDeadline$/^"+mode+"$")
+				// The child's bound is CPU time, not wall time (#789):
+				// process start and load under -race on a starved runner
+				// took more than a 5s wall-clock deadline.  The child uses
+				// well under a second of CPU.
+				//nolint:gosec // Re-execute the regression under an external bound.
+				cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRenderContextAfterLoadDeadline$/^"+mode+"$")
 				cmd.Env = append(os.Environ(), "ELPS_TEST_RENDER_CONTEXT="+mode)
-				out, err := cmd.CombinedOutput()
+				out, err := testdeadline.RunChild(cmd, 20*time.Second)
 				if err != nil {
-					t.Fatalf("render failed: %v (deadline: %v)\n%s", err, ctx.Err(), out)
+					t.Fatalf("render failed: %v\n%s", err, out)
 				}
 				return
 			}
@@ -63,13 +66,12 @@ func TestRenderContextAfterLoadDeadline(t *testing.T) {
 			} else {
 				ctx.armed = true
 			}
-			start := time.Now()
-			s := env.RenderContext(ctx, v)
+			var s string
+			if cpu, ok := testdeadline.Within(time.Second, func() { s = env.RenderContext(ctx, v) }); !ok {
+				t.Fatalf("rendering did not stop promptly: used %v of CPU time", cpu)
+			}
 			if !strings.Contains(s, "#<truncated>") {
 				t.Fatalf("post-evaluation rendering ignored cancellation (%d output bytes)", len(s))
-			}
-			if time.Since(start) > time.Second {
-				t.Fatal("rendering did not stop promptly")
 			}
 			if mode == "during-traversal" && (ctx.checks < 100 || ctx.checks > 200) {
 				t.Fatalf("unexpected cancellation checks: %d", ctx.checks)

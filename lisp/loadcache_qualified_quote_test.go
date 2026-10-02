@@ -17,6 +17,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/require"
 )
@@ -45,15 +46,12 @@ func qualifiedQuoteEnv(t *testing.T, reader lisp.Reader, cache lisp.LoadCache) *
 
 func r5bLoad(t *testing.T, env *lisp.LEnv, d time.Duration) *lisp.LVal {
 	t.Helper()
-	done := make(chan *lisp.LVal, 1)
-	go func() { done <- env.Load("r5b.lisp", strings.NewReader("x")) }()
-	select {
-	case v := <-done:
-		return v
-	case <-time.After(d):
-		t.Fatal("load did not terminate")
+	var v *lisp.LVal
+	if cpu, ok := testdeadline.Within(d, func() { v = env.Load("r5b.lisp", strings.NewReader("x")) }); !ok {
+		t.Fatalf("load did not terminate: used %v of CPU time without returning", cpu)
 		return nil
 	}
+	return v
 }
 
 // TestLoadCacheQualifiedQuoteSpellingParity: (user:quote DAG) over a 41-deep shared

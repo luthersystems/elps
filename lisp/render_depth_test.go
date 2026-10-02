@@ -3,13 +3,14 @@
 package lisp
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"runtime/debug"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/luthersystems/elps/internal/testdeadline"
 )
 
 // TestRenderMillionDeepValues isolates fatal stack overflows from the test
@@ -19,14 +20,13 @@ func TestRenderMillionDeepValues(t *testing.T) {
 		for _, renderer := range []string{"string", "bounded"} {
 
 			t.Run(kind+"/"+renderer, func(t *testing.T) {
-				ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
-				defer cancel()
+				// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 				//nolint:gosec // os.Args[0] is this test binary
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRenderDepthHelper$")
+				cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRenderDepthHelper$")
 				cmd.Env = append(os.Environ(), "ELPS_TEST_RENDER_DEPTH="+kind+"/"+renderer)
-				out, err := cmd.CombinedOutput()
+				out, err := testdeadline.RunChild(cmd, 30*time.Second)
 				if err != nil {
-					t.Fatalf("deep rendering failed (%v; deadline: %v):\n%s", err, ctx.Err(), out)
+					t.Fatalf("deep rendering failed (%v):\n%s", err, out)
 				}
 			})
 		}

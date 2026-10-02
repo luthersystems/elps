@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/require"
 )
@@ -19,21 +20,18 @@ func TestFormatValueGraphDeadline(t *testing.T) {
 	for _, mode := range []string{"dag", "cycle"} {
 		t.Run(mode, func(t *testing.T) {
 			if os.Getenv("ELPS_TEST_DEBUG_RENDER") != mode {
-				// The deadline exists to turn a runaway render or a fatal
-				// stack overflow in the child into a test failure, so it
-				// only needs to be far below the package timeout. It also
-				// covers the child's process start-up and teardown, which
-				// under -race on a loaded CI runner has exceeded ten
-				// seconds AFTER the child printed PASS; a minute keeps the
-				// guard and stops that from reading as a failure.
-				ctx, cancel := context.WithTimeout(t.Context(), time.Minute)
-				defer cancel()
+				// The bound exists to turn a runaway render or a fatal stack
+				// overflow in the child into a test failure.  It is CPU time,
+				// not wall time (#789): child start-up and teardown under
+				// -race on a loaded runner have exceeded ten seconds of wall
+				// time, and a starved runner can make any wall-clock deadline
+				// fire.  A runaway render keeps using CPU and reaches it.
 				//nolint:gosec // Isolate runaway rendering and fatal stack overflow.
-				cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestFormatValueGraphDeadline$/^"+mode+"$")
+				cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestFormatValueGraphDeadline$/^"+mode+"$")
 				cmd.Env = append(os.Environ(), "ELPS_TEST_DEBUG_RENDER="+mode)
-				out, err := cmd.CombinedOutput()
+				out, err := testdeadline.RunChild(cmd, 20*time.Second)
 				t.Logf("child output bytes=%d: %s", len(out), out[:min(len(out), 500)])
-				require.NoError(t, err, "deadline: %v", ctx.Err())
+				require.NoError(t, err)
 				return
 			}
 			v := lisp.Int(1)

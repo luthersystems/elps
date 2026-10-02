@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
 	"github.com/luthersystems/elps/lisp/lisplib/libtime"
@@ -21,15 +22,24 @@ import (
 
 // forever is longer than any test is willing to wait.  It stands in for the
 // unbounded duration issue #314 is about ("9223372036854775807ns" parses to
-// time.Duration(math.MaxInt64), roughly 292 years); a value this size proves
-// the same property without making a failing test hang for the full
+// time.Duration(math.MaxInt64), roughly 292 years).  It is DefaultMaxSleep,
+// so the length cap does not refuse it, and it is longer than CI's 10m
 // -timeout.
 const forever = time.Hour
 
-// slack is how long past the intended wake-up a correct implementation may
-// take before the test calls it a hang.  Generous because CI runners are
-// noisy; still four orders of magnitude below `forever`.
-const slack = 30 * time.Second
+// outlast returns a duration that no run of t can wait out: at least a day,
+// and twice the time left before the binary's -timeout.  A test that must
+// tell "refused on entry" from "slept, then refused" asks for a sleep this
+// long.  The sleep that waits then cannot return before runBounded's
+// backstop, whatever -timeout is in effect (#789).
+func outlast(t *testing.T) time.Duration {
+	t.Helper()
+	d := 24 * time.Hour
+	if deadline, ok := t.Deadline(); ok {
+		d = max(d, 2*time.Until(deadline))
+	}
+	return d
+}
 
 // sleepEnv builds a minimal environment with the time package loaded and ctx
 // installed as the evaluation context.  A nil ctx leaves the environment at
@@ -114,13 +124,17 @@ func requireCancelled(t *testing.T, v *lisp.LVal) {
 	}
 }
 
-// runBounded runs fn on its own goroutine and fails if it outlives limit.
+// runBounded runs fn on its own goroutine and fails if fn does not return
+// before testdeadline.Backstop, which ends just before the binary's -timeout.
 //
-// A bare `go test -timeout` would also catch a hang, but it kills the whole
-// binary with a goroutine dump and no indication of which assertion was being
-// made.  The goroutine is deliberately leaked on timeout: an uninterruptible
-// sleep is precisely the defect under test, so there is nothing to cancel.
-func runBounded(t *testing.T, limit time.Duration, fn func() *lisp.LVal) (*lisp.LVal, time.Duration) {
+// A sleep that does not wake uses no CPU, so a CPU bound cannot see it, and
+// a wall-clock timer fails a correct test on a starved process (#789).  The
+// backstop cannot fail a run that the -timeout would pass.  It does make the
+// hung test fail by name, which a bare -timeout does not: that kills the
+// whole binary with a goroutine dump.  The goroutine is deliberately leaked
+// on timeout: an uninterruptible sleep is the defect under test, so there is
+// nothing to cancel.  With no -timeout, a hang hangs.
+func runBounded(t *testing.T, fn func() *lisp.LVal) (*lisp.LVal, time.Duration) {
 	t.Helper()
 	type result struct {
 		v       *lisp.LVal
@@ -132,11 +146,13 @@ func runBounded(t *testing.T, limit time.Duration, fn func() *lisp.LVal) (*lisp.
 		v := fn()
 		done <- result{v, time.Since(start)}
 	}()
+	backstop, stop := testdeadline.Backstop(t)
+	defer stop()
 	select {
 	case r := <-done:
 		return r.v, r.elapsed
-	case <-time.After(limit):
-		t.Fatalf("sleep did not return within %v", limit)
+	case <-backstop.Done():
+		t.Fatal("sleep did not return before the test's -timeout")
 		return nil, 0
 	}
 }
@@ -151,7 +167,7 @@ func TestSleepInterruptedByContextDeadline(t *testing.T) {
 	defer cancel()
 	env := sleepEnv(t, ctx)
 
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal { return callSleep(env, forever) })
+	v, elapsed := runBounded(t, func() *lisp.LVal { return callSleep(env, forever) })
 	requireCancelled(t, v)
 	if elapsed >= forever {
 		t.Fatalf("slept %v, expected to wake at the %v deadline", elapsed, budget)
@@ -167,7 +183,7 @@ func TestSleepInterruptedByCancel(t *testing.T) {
 	env := sleepEnv(t, ctx)
 
 	time.AfterFunc(50*time.Millisecond, cancel)
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal { return callSleep(env, forever) })
+	v, elapsed := runBounded(t, func() *lisp.LVal { return callSleep(env, forever) })
 	requireCancelled(t, v)
 	if elapsed >= forever {
 		t.Fatalf("slept %v, expected to wake on cancel", elapsed)
@@ -212,11 +228,10 @@ func TestSleepLimitThroughEval(t *testing.T) {
 
 	// runBounded is the whole of the timing assertion, deliberately.  A cap
 	// that slept the 292 years before reporting would not return at all, so
-	// "it returned" is the property, and runBounded's 30s is a hang detector
+	// "it returned" is the property, and runBounded is a hang detector
 	// rather than a tolerance: nothing asserts success on the strength of a
-	// wall-clock reading.  An `elapsed >= slack` check after it would be
-	// unreachable, since runBounded has already failed the test by then.
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
+	// wall-clock reading.
+	v, _ := runBounded(t, func() *lisp.LVal {
 		// 9223372036854775807ns is time.Duration(math.MaxInt64) -- the
 		// literal from the issue, reachable from source alone.
 		return env.LoadStringContext(context.Background(), "sleep_test.lisp",
@@ -225,25 +240,6 @@ func TestSleepLimitThroughEval(t *testing.T) {
 	requireSleepLimit(t, v)
 }
 
-// evalDeadline and evalSleep are TestSleepInterruptedThroughEval's two
-// durations.  They are ordered so that the property under test is the only
-// reachable outcome, and the test checks the ordering rather than trusting
-// it:
-//
-// slack (30s) << evalDeadline (5m) < evalSleep (30m) <= DefaultMaxSleep (1h)
-//
-// evalSleep <= DefaultMaxSleep, so the length cap CANNOT refuse this sleep.
-// Only the context can.  evalDeadline < evalSleep, so the builtin's fail-fast
-// refuses on entry.  And slack << evalDeadline, so the evaluator's per-step
-// context check provably never fires: for it to fire the deadline must
-// already have passed, and runBounded fails the test ten times sooner than
-// that.  The margin is not a tuned tolerance -- any run in which the deadline
-// could expire is a run runBounded has already failed.
-const (
-	evalDeadline = 5 * time.Minute
-	evalSleep    = 30 * time.Minute
-)
-
 // TestSleepInterruptedThroughEval proves the context actually reaches the
 // builtin through ordinary evaluation, not just through a direct Go call.
 // LEnv.call bridges the evaluation context onto the environment at the
@@ -251,76 +247,73 @@ const (
 // still pass while real ELPS programs stayed unbounded.
 //
 // The evidence is the builtin's fail-fast (issue #338): a sleep the deadline
-// will outlast is refused ON ENTRY, while the context is still live.  That is
-// something only the builtin can produce -- LEnv.eval's checkLimits reports a
-// context that has ALREADY erred -- so asserting context-cancelled together
-// with a context that has not yet expired names the builtin as the source,
-// which a condition name alone cannot do.
+// will outlast is refused ON ENTRY.  The context is a stalledDeadline, which
+// reports a deadline but never expires.  LEnv.eval's per-step checkLimits
+// only reports a context that has ALREADY erred, so it cannot fire here, on
+// any machine (issue #455).  Only the builtin can raise context-cancelled,
+// so the condition names the builtin as the source.
+//
+// The durations are ordered so that the deadline is the only thing that can
+// refuse the sleep:
+//
+//	deadline (outlast) < sleep (2x) < :max (3x)
+//
+// The :max keeps the length cap out of it.  A build whose bridge is broken
+// sees no deadline and sleeps twice outlast, so runBounded reports a hang.
 func TestSleepInterruptedThroughEval(t *testing.T) {
 	t.Parallel()
-	if evalSleep > lisp.DefaultMaxSleep {
-		t.Fatalf("evalSleep %v exceeds DefaultMaxSleep %v: the length cap could refuse"+
-			" this sleep and the test would pass on the wrong evidence",
-			evalSleep, lisp.DefaultMaxSleep)
-	}
-	if evalDeadline >= evalSleep {
-		t.Fatalf("evalDeadline %v is not nearer than evalSleep %v: the builtin has"+
-			" nothing to fail fast about", evalDeadline, evalSleep)
-	}
-	if slack >= evalDeadline {
-		t.Fatalf("runBounded's %v bound is not comfortably inside the %v deadline:"+
-			" the evaluator's per-step context check could fire first (issue #455)",
-			slack, evalDeadline)
-	}
-
+	far := outlast(t)
+	ctx := stalledDeadline{Context: context.Background(), deadline: time.Now().Add(far)}
 	env := sleepEnv(t, nil)
-	ctx, cancel := context.WithTimeout(context.Background(), evalDeadline)
-	defer cancel()
 
-	src := fmt.Sprintf(`(time:sleep (time:parse-duration %q))`, evalSleep.String())
-	// As in TestSleepLimitThroughEval, runBounded is the only wall clock and
-	// it only detects a hang -- a sleep that was not refused on entry runs for
-	// evalSleep and never returns within slack.  The two assertions below are
-	// the ones that carry meaning, and neither reads a clock.
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
+	src := fmt.Sprintf(`(time:sleep (time:parse-duration %q) :max (time:parse-duration %q))`,
+		(2 * far).String(), (3 * far).String())
+	v, _ := runBounded(t, func() *lisp.LVal {
 		return env.LoadStringContext(ctx, "sleep_test.lisp", src)
 	})
 	requireCancelled(t, v)
-	if err := ctx.Err(); err != nil {
-		t.Fatalf("the %v deadline expired during a test bounded at %v (%v):"+
-			" context-cancelled here could have come from LEnv.eval's per-step check"+
-			" rather than from time:sleep, so this run proves nothing about the bridge",
-			evalDeadline, slack, err)
-	}
 }
 
 // TestSleepPastDeadlineFailsFast pins issue #338: a sleep the deadline will
 // outlast is refused on entry, NOT slept out to the deadline first.
 //
-// The distinction is invisible to a pass/fail check on the condition alone --
-// the old behaviour raised the same context-cancelled -- so the assertion
-// that carries the meaning is the elapsed time.  A sleep well under the cap
-// (so the length check cannot be what fires) with a deadline much nearer must
-// return in far less than the remaining budget.
+// The distinction is invisible to a pass/fail check on the condition alone:
+// the old behaviour waited until the deadline and then raised the same
+// context-cancelled.  So the test makes that wait impossible to finish
+// instead of timing it (#789).  The context is a stalledDeadline whose
+// deadline is outlast(t) away, and the sleep is twice that, with a :max
+// above it so the length cap cannot refuse it.
+//
+//	sleep refused on entry      context-cancelled at once; the test passes
+//	sleep cut to the deadline   waits outlast(t); runBounded reports a hang
+//	sleep waits on Done         Done never closes; runBounded reports a hang
+//
+// The deadline never expires, so a slow or starved process cannot reach it,
+// and no assertion reads elapsed time.
 func TestSleepPastDeadlineFailsFast(t *testing.T) {
 	t.Parallel()
-	const remaining = 750 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), remaining)
-	defer cancel()
+	far := outlast(t)
+	deadline := time.Now().Add(far)
+	ctx := stalledDeadline{Context: context.Background(), deadline: deadline}
 	env := sleepEnv(t, ctx)
 
-	v, elapsed := runBounded(t, remaining+slack, func() *lisp.LVal {
-		// A minute is far below DefaultMaxSleep, so only the deadline can
-		// refuse it.
-		return callSleep(env, time.Minute)
+	v, _ := runBounded(t, func() *lisp.LVal {
+		return callSleepMax(env, 2*far, libtime.Duration(3*far))
 	})
 	requireCancelled(t, v)
-	if elapsed > remaining/2 {
-		t.Fatalf("took %v to refuse a doomed sleep with %v remaining;"+
-			" expected an immediate refusal, not a wait to the deadline",
-			elapsed, remaining)
+	if !time.Now().Before(deadline) {
+		t.Fatalf("returned after the %v deadline: the sleep waited for it", far)
 	}
 }
+
+// stalledDeadline is a context with a deadline that never expires.  Deadline
+// reports the time; Done and Err are those of context.Background.
+type stalledDeadline struct {
+	context.Context
+	deadline time.Time
+}
+
+func (c stalledDeadline) Deadline() (time.Time, bool) { return c.deadline, true }
 
 // TestSleepCompletesWithinDeadline guards the other direction: a sleep that
 // fits inside the deadline must run to completion and return nil.  Without
@@ -329,11 +322,11 @@ func TestSleepPastDeadlineFailsFast(t *testing.T) {
 func TestSleepCompletesWithinDeadline(t *testing.T) {
 	t.Parallel()
 	const nap = 20 * time.Millisecond
-	ctx, cancel := context.WithTimeout(context.Background(), slack)
+	ctx, cancel := context.WithTimeout(context.Background(), forever)
 	defer cancel()
 	env := sleepEnv(t, ctx)
 
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal { return callSleep(env, nap) })
+	v, elapsed := runBounded(t, func() *lisp.LVal { return callSleep(env, nap) })
 	if v.Type == lisp.LError {
 		t.Fatalf("expected nil, got error: %v", v)
 	}
@@ -366,7 +359,7 @@ func TestSleepNoContextUnaffected(t *testing.T) {
 	}
 
 	const nap = 20 * time.Millisecond
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal { return callSleep(env, nap) })
+	v, elapsed := runBounded(t, func() *lisp.LVal { return callSleep(env, nap) })
 	if v.Type == lisp.LError {
 		t.Fatalf("expected nil, got error: %v", v)
 	}
@@ -386,7 +379,7 @@ func TestSleepAlreadyCancelled(t *testing.T) {
 	cancel()
 	env := sleepEnv(t, ctx)
 
-	v, _ := runBounded(t, slack, func() *lisp.LVal { return callSleep(env, forever) })
+	v, _ := runBounded(t, func() *lisp.LVal { return callSleep(env, forever) })
 	requireCancelled(t, v)
 }
 
@@ -395,7 +388,7 @@ func TestSleepAlreadyCancelled(t *testing.T) {
 func TestSleepNonPositive(t *testing.T) {
 	t.Parallel()
 	for _, d := range []time.Duration{0, -time.Hour} {
-		ctx, cancel := context.WithTimeout(context.Background(), slack)
+		ctx, cancel := context.WithTimeout(context.Background(), forever)
 		env := sleepEnv(t, ctx)
 		v := callSleep(env, d)
 		if v.Type == lisp.LError || !v.IsNil() {
@@ -423,47 +416,30 @@ func TestSleepRejectsNonDuration(t *testing.T) {
 }
 
 // The three tests below -- this one, TestSleepMaxCannotExceedHostCeiling and
-// TestSleepMaxThroughEval -- each used to follow their condition check with an
-// `elapsed > time.Second` assertion.  Those are gone, and this is why (#475).
+// TestSleepMaxThroughEval -- assert that a sleep is refused on entry rather
+// than performed.  None of them reads elapsed time (#475, #789).
 //
-// THEY WERE REDUNDANT.  Each enforced "the sleep was refused on entry rather
-// than performed", and each was already inside a runBounded(t, slack, ...)
-// that fails the test after 30s.  The durations being refused are 1h+1s, 1h
-// and 2h, and BuiltinSleep has no partial-sleep path: it either refuses
-// before reaching sleepContext, or sleeps the caller's full duration bounded
-// by the context -- and all three environments run on context.Background(),
-// so nothing can cut a sleep short.  elapsed is therefore either microseconds
-// or at least an hour.  There is no implementation that lands in the gap
-// between 1s and 30s by SLEEPING; the only way to land there is scheduling
-// delay, which is machine load.  That is the #435 shape -- a correctness
-// property enforced by a wall clock, where a correct implementation fails the
-// test for being slow -- and it is not fixed by widening the bound (#443/#452,
-// #435/#447).
+// Each asks for a sleep of at least outlast(t), which is longer than the time
+// left before the binary's -timeout.  BuiltinSleep has no partial-sleep path:
+// it either refuses before reaching sleepContext, or sleeps the caller's full
+// duration.  These environments run on context.Background(), so nothing can
+// cut a sleep short.  A build that refuses only AFTER sleeping therefore does
+// not return before runBounded's backstop, and the test fails by name.  A
+// correct build returns at once.  Neither outcome depends on how fast this
+// process runs, so a starved process cannot fail these tests.
 //
-// CHECKED BY MUTATION rather than by argument alone.  With the three checks
-// removed, a build in which the length cap refuses only AFTER sleeping (the
-// exact failure the old comment here said the elapsed assertion was
-// load-bearing for) still fails all three, through runBounded:
-//
-//	--- FAIL: TestSleepMaxThroughEval (30.03s)   sleep did not return within 30s
-//	--- FAIL: TestSleepLengthCapRefusesImmediately (30.03s)
-//	--- FAIL: TestSleepMaxCannotExceedHostCeiling (30.03s)
-//
-// So runBounded catches everything the deleted checks could, and nothing is
-// lost by letting it be the only clock.  It is a hang detector: no assertion
-// in these three tests succeeds on the strength of a wall-clock reading.
-//
-// Where a tighter statement IS wanted, TestSleepPastDeadlineFailsFast's
-// `elapsed > remaining/2` is the pattern -- relative to a duration the test
-// controls rather than to an absolute second.
+// An `elapsed > time.Second` check used to sit after each condition check.
+// It added nothing the hang detector does not catch, and it failed correct
+// builds on a loaded machine (#435).
 //
 // TestSleepLengthCapRefusesImmediately covers the length cap itself, with no
 // context involved: a duration over DefaultMaxSleep is refused on entry.
 func TestSleepLengthCapRefusesImmediately(t *testing.T) {
 	t.Parallel()
 	env := sleepEnv(t, nil)
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
-		return callSleep(env, lisp.DefaultMaxSleep+time.Second)
+	d := max(lisp.DefaultMaxSleep+time.Second, outlast(t))
+	v, _ := runBounded(t, func() *lisp.LVal {
+		return callSleep(env, d)
 	})
 	requireSleepLimit(t, v)
 }
@@ -474,7 +450,7 @@ func TestSleepLengthCapRefusesImmediately(t *testing.T) {
 func TestSleepUnderCapStillSleeps(t *testing.T) {
 	t.Parallel()
 	env := sleepEnv(t, nil)
-	v, elapsed := runBounded(t, slack, func() *lisp.LVal {
+	v, elapsed := runBounded(t, func() *lisp.LVal {
 		return callSleep(env, 20*time.Millisecond)
 	})
 	if v.Type == lisp.LError || !v.IsNil() {
@@ -497,7 +473,7 @@ func TestSleepMaxRaisesTheCap(t *testing.T) {
 	defer cancel()
 	envCtx := sleepEnv(t, ctx)
 
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
+	v, _ := runBounded(t, func() *lisp.LVal {
 		return callSleepMax(envCtx, 2*lisp.DefaultMaxSleep,
 			libtime.Duration(3*lisp.DefaultMaxSleep))
 	})
@@ -511,38 +487,25 @@ func TestSleepMaxRaisesTheCap(t *testing.T) {
 // otherwise untrusted source could grant itself an unbounded sleep and the
 // bound would be decorative.
 //
-// The first call's `elapsed > time.Second` check is gone; see the block above
-// TestSleepLengthCapRefusesImmediately (#475).  It is refused inside sleepCap,
-// before a sleep is reachable at all, and the only way past that is for
-// sleepCap to accept the 1h :max -- at which point the call sleeps an hour and
-// runBounded fails the test.
+// The :max call asks for ceilingProbe, which is outlast(t); see the block
+// above TestSleepLengthCapRefusesImmediately (#475, #499, #789).  It is
+// refused inside sleepCap, before a sleep is reachable at all.  A build that
+// slept ceilingProbe out and only then refused does not return before
+// runBounded's backstop, so it fails as a hang.
 //
-// The SECOND call is the exception in that family, and it does need a timing
-// assertion (#499).  The argument that lets runBounded be the only clock rests
-// on the refused duration dwarfing runBounded's 30s: 1h, 1h+1s and 2h all
-// either return in microseconds or not at all.  This call's duration is
-// ceilingProbe, which must exceed the 1s host ceiling but is otherwise as
-// small as the test likes -- and at 2s it is an order of magnitude SMALLER
-// than slack, so a build that slept it out and only then refused returns
-// comfortably inside runBounded's bound and looks identical to a refusal on
-// entry.  runBounded cannot separate the two here, so the elapsed time has to.
-//
-// The bound is relative to ceilingProbe, a duration this test picks, not to an
-// absolute second: it says "returned in well under the sleep it refused",
-// which is a statement about the implementation rather than about how fast the
-// machine is.  Pinning it to a wall-clock constant is the #435 shape that
-// #443/#452 and #435/#447 were about.  TestSleepPastDeadlineFailsFast's
-// `elapsed > remaining/2` is the same pattern.
+// The no-:max call asks for defaultProbe, which lies between the ceiling and
+// lisp.DefaultMaxSleep.  Only the ceiling can refuse it: the default cap
+// alone would let it through.  It runs under a short context deadline, so a
+// build that drops the ceiling clamp sleeps to that deadline and returns the
+// context-cancelled condition instead of the sleep limit, and the test fails
+// at once rather than as a hang.
 func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	t.Parallel()
-	// ceiling is the host's limit; ceilingProbe is the duration the second
-	// call asks for.  They are named together because the property being
-	// tested is entirely the relation between them: ceilingProbe > ceiling is
-	// what makes the sleep refusable at all.
-	const (
-		ceiling      = time.Second
-		ceilingProbe = 2 * time.Second
-	)
+	// ceiling is the host's limit; ceilingProbe is the duration both calls
+	// ask for.  The property being tested is the relation between them:
+	// ceilingProbe > ceiling is what makes the sleep refusable at all.
+	const ceiling = time.Minute
+	ceilingProbe := outlast(t)
 	if ceilingProbe <= ceiling {
 		t.Fatalf("ceilingProbe %v does not exceed the %v ceiling: the default cap"+
 			" has nothing to refuse and the test would pass on the wrong evidence",
@@ -559,20 +522,38 @@ func TestSleepMaxCannotExceedHostCeiling(t *testing.T) {
 	}
 	registerSleep(t, env)
 
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
-		return callSleepMax(env, time.Hour, libtime.Duration(time.Hour))
+	v, _ := runBounded(t, func() *lisp.LVal {
+		return callSleepMax(env, ceilingProbe, libtime.Duration(ceilingProbe))
 	})
 	requireSleepLimit(t, v)
 
 	// And the ceiling lowers the no-:max default too, so the default cannot
-	// quietly exceed it.
-	v2, elapsed := runBounded(t, slack, func() *lisp.LVal {
-		return callSleep(env, ceilingProbe)
+	// quietly exceed it.  defaultProbe must sit strictly between the ceiling
+	// and the default cap, or the default cap refuses it and the clamp goes
+	// untested.
+	const defaultProbe = 30 * time.Minute
+	if defaultProbe <= ceiling || defaultProbe >= lisp.DefaultMaxSleep {
+		t.Fatalf("defaultProbe %v is not between the %v ceiling and the %v default cap:"+
+			" the test would pass on the wrong evidence",
+			defaultProbe, ceiling, lisp.DefaultMaxSleep)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Millisecond)
+	defer cancel()
+	envCtx := lisp.NewEnv(nil)
+	envCtx.Runtime.Reader = parser.NewReader()
+	if rc := lisp.InitializeUserEnv(envCtx, lisp.WithMaxSleep(ceiling), lisp.WithContext(ctx)); rc.Type == lisp.LError {
+		t.Fatalf("initialize-user-env: %v", rc)
+	}
+	if rc := libtime.LoadPackage(envCtx); rc.Type == lisp.LError {
+		t.Fatalf("load time package: %v", rc)
+	}
+	registerSleep(t, envCtx)
+	v2, _ := runBounded(t, func() *lisp.LVal {
+		return callSleep(envCtx, defaultProbe)
 	})
 	requireSleepLimit(t, v2)
-	if elapsed >= ceilingProbe/2 {
-		t.Fatalf("took %v to refuse a %v sleep, expected a refusal on entry",
-			elapsed, ceilingProbe)
+	if want := "maximum " + ceiling.String(); !strings.Contains(v2.String(), want) {
+		t.Fatalf("no-:max refusal = %v, want it to report %q", v2, want)
 	}
 }
 
@@ -614,22 +595,22 @@ func TestSleepRejectsNonDurationMax(t *testing.T) {
 // formals machinery, not just through a hand-built args list. The direct
 // callers above would all still pass if the formal were misdeclared.
 //
-// Its `elapsed > time.Second` check is gone; see the block above
-// TestSleepLengthCapRefusesImmediately (#475).  This was the most exposed of
-// the three, because it goes through LoadString -- read, parse, evaluate two
-// calls -- which is the same work the 2.29s LoadStringContext measurement on
-// #455 covers.
+// It asks for outlast(t); see the block above
+// TestSleepLengthCapRefusesImmediately (#475, #789).  It goes through
+// LoadString (read, parse, evaluate two calls), the same work the 2.29s
+// LoadStringContext measurement on #455 covers.
 func TestSleepMaxThroughEval(t *testing.T) {
 	t.Parallel()
 	env := sleepEnv(t, nil)
-	v, _ := runBounded(t, slack, func() *lisp.LVal {
-		return env.LoadString("sleep_max_test.lisp",
-			`(time:sleep (time:parse-duration "2h") :max (time:parse-duration "1s"))`)
+	src := fmt.Sprintf(`(time:sleep (time:parse-duration %q) :max (time:parse-duration "1s"))`,
+		outlast(t).String())
+	v, _ := runBounded(t, func() *lisp.LVal {
+		return env.LoadString("sleep_max_test.lisp", src)
 	})
-	// 2h is over the 1s :max, so this must be refused -- and refused by the
-	// cap, which proves :max was read rather than ignored. Were the keyword
-	// dropped, 2h would be measured against DefaultMaxSleep instead and this
-	// would still error, so the message is checked too.
+	// The sleep is over the 1s :max, so this must be refused -- and refused
+	// by the cap, which proves :max was read rather than ignored.  Were the
+	// keyword dropped, the sleep would be measured against DefaultMaxSleep
+	// instead and this would still error, so the message is checked too.
 	requireSleepLimit(t, v)
 	if !strings.Contains(v.String(), "maximum 1s") {
 		t.Fatalf("error = %v, want the 1s :max to be the reported maximum", v)

@@ -90,17 +90,16 @@ func TestIterBudgetSharedDocumentHonoursDeadline(t *testing.T) {
 		t.Run(src, func(t *testing.T) {
 			env := iterEnv(t, 0, iterBombSetup(iterBombDepth))
 			var rc *lisp.LVal
-			var elapsed time.Duration
-			testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+			// CPU time, not wall time (#789): the deadline is 100ms of wall
+			// time, so a builtin that honours it uses at most that much CPU.
+			cpu := testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
 				ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(100*time.Millisecond))
 				defer cancel()
-				start := time.Now()
 				rc = env.LoadStringContext(ctx, "probe.lisp", src)
-				elapsed = time.Since(start)
 			})
 			requireCondition(t, rc, lisp.CondContextCancelled)
-			if limit := testdeadline.Scale(3 * time.Second); elapsed > limit {
-				t.Fatalf("the builtin ignored its deadline: returned after %v (limit %v)", elapsed, limit)
+			if limit := testdeadline.Scale(3 * time.Second); cpu > limit {
+				t.Fatalf("the builtin ignored its deadline: used %v of CPU time (limit %v)", cpu, limit)
 			}
 		})
 	}
@@ -172,17 +171,16 @@ func TestIterBudgetWideSharedMap(t *testing.T) {
 			t.Run("deadline", func(t *testing.T) {
 				env := iterEnv(t, 0, setup(4096))
 				var rc *lisp.LVal
-				var elapsed time.Duration
-				testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+				// CPU time, not wall time (#789): the deadline is 100ms of wall
+				// time, so a builtin that honours it uses at most that much CPU.
+				cpu := testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
 					ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(100*time.Millisecond))
 					defer cancel()
-					start := time.Now()
 					rc = env.LoadStringContext(ctx, "probe.lisp", src)
-					elapsed = time.Since(start)
 				})
 				requireCondition(t, rc, lisp.CondContextCancelled)
-				if limit := testdeadline.Scale(3 * time.Second); elapsed > limit {
-					t.Fatalf("the builtin ignored its deadline: returned after %v (limit %v)", elapsed, limit)
+				if limit := testdeadline.Scale(3 * time.Second); cpu > limit {
+					t.Fatalf("the builtin ignored its deadline: used %v of CPU time (limit %v)", cpu, limit)
 				}
 			})
 		})
@@ -377,17 +375,16 @@ func TestIterBudgetLongChainAfterIterator(t *testing.T) {
 			t.Run("deadline", func(t *testing.T) {
 				env := iterEnv(t, 0, setup(5000, 200_000))
 				var rc *lisp.LVal
-				var elapsed time.Duration
-				testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
+				// CPU time, not wall time (#789): the deadline is 100ms of wall
+				// time, so a builtin that honours it uses at most that much CPU.
+				cpu := testdeadline.Watch(src, 20*time.Second, 1<<30, func() {
 					ctx, cancel := context.WithTimeout(context.Background(), testdeadline.Scale(100*time.Millisecond))
 					defer cancel()
-					start := time.Now()
 					rc = env.LoadStringContext(ctx, "probe.lisp", src)
-					elapsed = time.Since(start)
 				})
 				requireCondition(t, rc, lisp.CondContextCancelled)
-				if limit := testdeadline.Scale(3 * time.Second); elapsed > limit {
-					t.Fatalf("the builtin ignored its deadline: returned after %v (limit %v)", elapsed, limit)
+				if limit := testdeadline.Scale(3 * time.Second); cpu > limit {
+					t.Fatalf("the builtin ignored its deadline: used %v of CPU time (limit %v)", cpu, limit)
 				}
 			})
 		})

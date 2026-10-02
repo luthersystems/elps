@@ -3,7 +3,6 @@
 package elpstest
 
 import (
-	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -11,6 +10,7 @@ import (
 	"time"
 
 	"github.com/luthersystems/elps/internal/templatepolicy"
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -55,12 +55,11 @@ func TestForkCheckRejectsSharedMarkerPointer(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 	// #nosec G204 -- this test binary and fixed selector contain no user input.
-	command := exec.CommandContext(ctx, executable, "-test.run=^TestForkCheckRejectsSharedMarkerPointer$")
+	command := exec.CommandContext(t.Context(), executable, "-test.run=^TestForkCheckRejectsSharedMarkerPointer$")
 	command.Env = append(os.Environ(), childFlag+"=1")
-	output, err := command.CombinedOutput()
+	output, err := testdeadline.RunChild(command, 30*time.Second)
 	if err == nil || !strings.Contains(string(output), "mutable payload(s) shared with tx[0] cold") {
 		t.Fatalf("marker pointer escaped the intended sharing oracle: error=%v\n%s", err, output)
 	}

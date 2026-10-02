@@ -27,7 +27,6 @@
 package lisp
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"os/exec"
@@ -36,6 +35,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/luthersystems/elps/internal/testdeadline"
 )
 
 // packageRaceSubprocessEnv gates the in-process arm so the parent test
@@ -147,13 +148,12 @@ func TestPackageGetSurvivesConcurrentReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("os.Executable: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Minute)
-	defer cancel()
+	// The bound is CPU time, not wall time (#789): see testdeadline.RunChild.
 	// #nosec G204 -- exe is this test binary's own path.
-	cmd := exec.CommandContext(ctx, exe,
+	cmd := exec.CommandContext(t.Context(), exe,
 		"-test.run", "^TestPackageGetConcurrentReadsAreSafe$", "-test.v")
 	cmd.Env = append(os.Environ(), packageRaceSubprocessEnv+"=1")
-	out, err := cmd.CombinedOutput()
+	out, err := testdeadline.RunChild(cmd, 2*time.Minute)
 	text := string(out)
 	if strings.Contains(text, "concurrent map read and map write") ||
 		strings.Contains(text, "concurrent map writes") {
