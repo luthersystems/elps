@@ -4,6 +4,7 @@ package testdeadline
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"os/exec"
 	"runtime"
@@ -92,9 +93,14 @@ func watch(budget time.Duration, maxHeap uint64, fn func()) (time.Duration, stri
 	}
 }
 
+// ErrOverBudget is the error RunChild wraps when it kills a child for using
+// its CPU budget.
+var ErrOverBudget = errors.New("over its CPU budget")
+
 // RunChild runs cmd and returns its combined output, as cmd.CombinedOutput
 // does.  It kills the child once the child has used Scale(budget) of CPU time,
-// summed over its threads, and then returns an error that names the budget.
+// summed over its threads, and then returns an error that wraps
+// ErrOverBudget.
 //
 // It is for tests that re-execute the test binary to contain a regression
 // that does not return.  A wall-clock deadline on the child counts process
@@ -133,7 +139,7 @@ func runChild(cmd *exec.Cmd, budget time.Duration) ([]byte, error) {
 			}
 			_ = cmd.Process.Kill()
 			waitErr := <-exited
-			return out.Bytes(), fmt.Errorf("killed: the child used %v of CPU time, over its %v budget (%v)", used, budget, waitErr)
+			return out.Bytes(), fmt.Errorf("killed: the child used %v of CPU time, %w of %v (%v)", used, ErrOverBudget, budget, waitErr)
 		}
 	}
 }

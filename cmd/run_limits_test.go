@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -75,13 +76,14 @@ func TestRunLimits(t *testing.T) {
 		{"negative-steps", []string{"--max-steps=-1", "-e", "42"}, "max-steps must be non-negative", true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), 3*time.Second)
-			defer cancel()
-			cmd := exec.CommandContext(ctx, bin, append([]string{"run"}, tc.args...)...) //nolint:gosec // locally built test binary
+			// The runner's bound is CPU time, not wall time (#789).  An
+			// endless program that ignores its limits keeps using CPU and
+			// is killed at 10s; a correct runner uses about 1s at most.
+			cmd := exec.CommandContext(t.Context(), bin, append([]string{"run"}, tc.args...)...) //nolint:gosec // locally built test binary
 			start := time.Now()
-			out, err := cmd.CombinedOutput()
+			out, err := testdeadline.RunChild(cmd, 10*time.Second)
 			elapsed := time.Since(start)
-			require.NoError(t, ctx.Err(), "runner failed to stop: %s", out)
+			require.NotErrorIs(t, err, testdeadline.ErrOverBudget, "runner failed to stop: %s", out)
 			if tc.fail {
 				require.Error(t, err)
 			} else {
@@ -89,8 +91,14 @@ func TestRunLimits(t *testing.T) {
 			}
 			assert.Contains(t, string(out), tc.want)
 			if tc.name == "timeout" {
+				// A starved runner only waits longer, so the lower bound
+				// holds on wall time.  The upper bound is the runner's CPU
+				// time: the endless program spins for the 1s timeout and
+				// then stops.  Measured 1.4s on 4 CPUs (the spin plus GC
+				// workers); 5s leaves room for more idle CPUs to run GC.
 				assert.GreaterOrEqual(t, elapsed, time.Second)
-				assert.Less(t, elapsed, 2500*time.Millisecond)
+				cpu := cmd.ProcessState.UserTime() + cmd.ProcessState.SystemTime()
+				assert.Less(t, cpu, 5*time.Second, "the runner did not stop at its 1s timeout")
 				assert.Equal(t, 1, strings.Count(string(out), "\n"), "cancellation must be one line")
 			}
 		})

@@ -3,6 +3,7 @@
 package testdeadline
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"strings"
@@ -92,7 +93,7 @@ func child(t *testing.T, mode string) *exec.Cmd {
 // its CPU budget.
 func TestRunChildKillsASpin(t *testing.T) {
 	out, err := runChild(child(t, "spin"), time.Second)
-	if err == nil || !strings.Contains(err.Error(), "CPU time") {
+	if !errors.Is(err, ErrOverBudget) {
 		t.Fatalf("a spinning child was not killed on its CPU budget: %v\n%s", err, out)
 	}
 }

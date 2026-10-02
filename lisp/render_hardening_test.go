@@ -4,7 +4,6 @@ package lisp_test
 
 import (
 	"bytes"
-	"context"
 	"os"
 	"os/exec"
 	"strings"
@@ -81,14 +80,16 @@ func TestRenderHardeningDeadline(t *testing.T) {
 				}
 				return
 			}
-			ctx, cancel := context.WithTimeout(t.Context(), testdeadline.Scale(5*time.Second))
-			defer cancel()
-			//nolint:gosec // Re-execute this test binary under an external deadline.
-			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestRenderHardeningDeadline$/^"+mode+"$")
+			// The child's bound is CPU time, not wall time (#789): process
+			// start under -race on a starved runner can outlast any
+			// wall-clock deadline.  A render that does not stop keeps using
+			// CPU, so it still reaches the bound.
+			//nolint:gosec // Re-execute this test binary under an external bound.
+			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRenderHardeningDeadline$/^"+mode+"$")
 			cmd.Env = append(os.Environ(), "ELPS_TEST_RENDER_HARDENING="+mode)
-			out, err := cmd.CombinedOutput()
+			out, err := testdeadline.RunChild(cmd, 20*time.Second)
 			if err != nil {
-				t.Fatalf("render failed: %v (deadline: %v)\n%s", err, ctx.Err(), out)
+				t.Fatalf("render failed: %v\n%s", err, out)
 			}
 		})
 	}
