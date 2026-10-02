@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -78,7 +79,7 @@ func FuzzHigherOrderOps(f *testing.F) {
 		defer cancel()
 		env := newContainerEnv(t, ctx)
 		defineHigherOrderCallbacks(t, env)
-		runHigherOrderSequence(t, env, newContainerGen(data))
+		runHigherOrderSequence(t, env, newContainerGen(data), fuzzwatch.Fuzzed)
 	})
 }
 
@@ -139,7 +140,8 @@ func defineHigherOrderCallbacks(t *testing.T, env *lisp.LEnv) {
 
 // runHigherOrderSequence executes one generated traversal sequence.  Named,
 // not inline, so the coverage gate drives the identical code path.
-func runHigherOrderSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+// input decides what a starved watchdog does (see containerFunCall).
+func runHigherOrderSequence(t *testing.T, env *lisp.LEnv, g *containerGen, input fuzzwatch.Input) (int, int) {
 	var wanted int
 	var ran int
 	t.Helper()
@@ -200,7 +202,7 @@ func runHigherOrderSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int,
 			effective.skipValueOracle = true
 		}
 
-		result := containerCall(t, env, effective, args, sealedRoots, fpSealed, step)
+		result := containerCall(t, env, effective, args, sealedRoots, fpSealed, step, input)
 		if result == nil {
 			return wanted, ran // skipped, abandoned, or already failed
 		}
@@ -344,7 +346,7 @@ func TestHigherOrderSequencesRunToCompletion(t *testing.T) {
 	completed, wantedTotal, ranTotal := 0, 0, 0
 	for i := range samples {
 		g := newContainerGen(containerProbeBytes(i))
-		wanted, ran := runHigherOrderSequence(t, env, g)
+		wanted, ran := runHigherOrderSequence(t, env, g, fuzzwatch.Fixed)
 		wantedTotal += wanted
 		ranTotal += ran
 		if ran == wanted {

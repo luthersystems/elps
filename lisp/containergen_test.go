@@ -417,14 +417,15 @@ type containerOp struct {
 }
 
 // containerCall applies one op and makes every assertion the family shares.
-// It returns the result so the caller can push it back into the pool.
+// It returns the result so the caller can push it back into the pool.  input
+// decides what a starved watchdog does (see containerFunCall).
 //
 // The op is applied through env.FunCall, NOT env.Eval: eval installs a
 // recover() that converts any Go panic into an ordinary-looking
 // `internal-panic` LVal, so a target that went through Eval would report a
 // pass on a crash.  FunCall has no recover, and a panicking input therefore
 // surfaces with the Go stack of the offending frame.
-func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LVal, sealedRoots []*lisp.LVal, fpSealed uint64, step int) *lisp.LVal {
+func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LVal, sealedRoots []*lisp.LVal, fpSealed uint64, step int, input fuzzwatch.Input) *lisp.LVal {
 	t.Helper()
 
 	// Every failure message below renders the arguments, so the arguments
@@ -474,7 +475,7 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 		t.Fatalf("%s is not bound to a function in the fuzz environment (got %v)", op.name, fun.Type)
 	}
 
-	result := containerFunCall(t, env, op.name, fun, lisp.SExpr(args))
+	result := containerFunCall(t, env, op.name, fun, lisp.SExpr(args), input)
 	if result == nil {
 		// Either the watchdog skipped the input, or the builtin returned a
 		// nil *LVal, which containerFunCall has already reported.
@@ -525,7 +526,8 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 
 // containerFunCall applies fun on a separate goroutine and fails the test if
 // the call outlives the deadline by containerWatchdogGrace of SCHEDULED
-// time.
+// time.  input decides what a starved watchdog does: a fuzzed input skips,
+// and a fixed input waits (see fuzzwatch.AwaitStarved).
 //
 // A watchdog is necessary because neither of the interpreter's own bounds
 // sees every loop: checkLimits is consulted per EVALUATION, and a builtin
@@ -536,33 +538,31 @@ func containerCall(t *testing.T, env *lisp.LEnv, op containerOp, args []*lisp.LV
 // The goroutine is deliberately leaked on timeout: it cannot be interrupted
 // — that is the defect being reported — and a fuzz worker that reports a
 // crasher exits immediately afterwards.
-func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp.LVal) *lisp.LVal {
+func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp.LVal, input fuzzwatch.Input) *lisp.LVal {
 	t.Helper()
-	done := make(chan *lisp.LVal, 1)
-	panicked := make(chan any, 1)
+	// One channel carries both outcomes, so a starved fixed input that waits
+	// on it (fuzzwatch.AwaitStarved) also sees a panic.
+	type call struct {
+		v        *lisp.LVal
+		panicked any
+	}
+	done := make(chan call, 1)
 	go func() {
 		defer func() {
 			if r := recover(); r != nil {
-				panicked <- r
+				done <- call{panicked: r}
 			}
 		}()
-		done <- env.FunCall(fun, args)
+		done <- call{v: env.FunCall(fun, args)}
 	}()
 
 	budget := fuzzwatch.New(containerDeadline + containerWatchdogGrace)
 	wait := budget.Total()
-	for {
+	var c call
+	for received := false; !received; {
 		select {
-		case v := <-done:
-			if v == nil {
-				t.Fatalf("%s returned a nil *LVal\n%s", name, renderContainerArgs(args.Cells))
-				return nil
-			}
-			return v
-		case r := <-panicked:
-			// Re-panic on the test goroutine so the fuzzing engine records
-			// the crasher and prints the stack.
-			panic(r)
+		case c = <-done:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
@@ -570,10 +570,14 @@ func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp
 				wait = more
 			case fuzzwatch.Inconclusive:
 				// The machine never gave us the CPU.  Whether this call
-				// terminates is unknown, and guessing in either direction is
-				// worse than declining to answer for one input.
-				t.Skipf("%s: no verdict, the process was starved throughout (%s)", name, report)
-				return nil
+				// terminates is unknown: a fuzzed input declines to answer,
+				// and a fixed input waits (see fuzzwatch.AwaitStarved).
+				var ok bool
+				if c, ok = fuzzwatch.AwaitStarved(t, done, input, report, name,
+					"\n"+renderContainerArgs(args.Cells)); !ok {
+					return nil
+				}
+				received = true
 			default:
 				t.Fatalf("%s did not terminate within %v of SCHEDULED time despite a %v deadline"+
 					" and a %d-step limit (%s)\n%s",
@@ -583,6 +587,16 @@ func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp
 			}
 		}
 	}
+	if c.panicked != nil {
+		// Re-panic on the test goroutine so the fuzzing engine records the
+		// crasher and prints the stack.
+		panic(c.panicked)
+	}
+	if c.v == nil {
+		t.Fatalf("%s returned a nil *LVal\n%s", name, renderContainerArgs(args.Cells))
+		return nil
+	}
+	return c.v
 }
 
 // collectContainerSealed returns the maximal sealed subtrees reachable from
