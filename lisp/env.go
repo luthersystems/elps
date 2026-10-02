@@ -911,8 +911,17 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 // InitializeTypedef, which InitializeUserEnv calls, is a step inside it and
 // not a substitute for it: it panics on an environment InitializeUserEnv has
 // not already established.  See its doc comment, and issue #433.
-func (env *LEnv) New(typ *LVal, args *LVal) (result *LVal) {
-	defer env.recoverPanic(&result)
+func (env *LEnv) New(typ *LVal, args *LVal) *LVal {
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.newUnchecked(typ, args)
+	}()
+	return result
+}
+
+// newUnchecked is New without the panic recovery.
+func (env *LEnv) newUnchecked(typ *LVal, args *LVal) *LVal {
 	if typ.Type != LTaggedVal {
 		return env.Errorf("first argument is not a typedef: %v", GetType(typ))
 	}
@@ -937,7 +946,9 @@ func (env *LEnv) New(typ *LVal, args *LVal) (result *LVal) {
 // Lisp can construct a value tagged lisp:typedef with arbitrary user data,
 // or mutate an existing descriptor through user-data. The tag alone is not
 // proof that the value is a usable type definition (docs/lang.md#user-defined-types).
-func (env *LEnv) typedefFields(typ *LVal) (name, ctor, lerr *LVal) {
+func (env *LEnv) typedefFields(typ *LVal) (*LVal, *LVal, *LVal) {
+	var name *LVal
+	var ctor *LVal
 	if len(typ.Cells) != 1 || typ.Cells[0] == nil || typ.Cells[0].Type != LSExpr || len(typ.Cells[0].Cells) != 2 {
 		return nil, nil, env.Errorf("invalid typedef: expected a name and constructor")
 	}
@@ -1400,11 +1411,19 @@ func (env *LEnv) Error(msg ...any) *LVal {
 //
 // Unlike the exported function, the ErrorCondition method returns an LVal with
 // a copy env.Runtime.Stack.
-func (env *LEnv) ErrorCondition(condition string, v ...any) (result *LVal) {
-	// Error/As/Unwrap are host hooks, including when a source reader returns
-	// an error outside env.eval. Contain faults at this boundary as well.
-	defer env.recoverPanic(&result)
+func (env *LEnv) ErrorCondition(condition string, v ...any) *LVal {
+	var result *LVal
+	func() {
+		// Error/As/Unwrap are host hooks, including when a source reader returns
+		// an error outside env.eval. Contain faults at this boundary as well.
+		defer env.recoverPanic(&result)
+		result = env.errorConditionUnchecked(condition, v...)
+	}()
+	return result
+}
 
+// errorConditionUnchecked is ErrorCondition without the panic recovery.
+func (env *LEnv) errorConditionUnchecked(condition string, v ...any) *LVal {
 	narg := len(v)
 	cells := make([]*LVal, 0, len(v))
 	for _, v := range v {
@@ -1485,8 +1504,17 @@ func (env *LEnv) newErrorConditionf(condition string, format string, v ...any) *
 
 // notifyError is a host-callback boundary. A broken observer produces a
 // marked host fault instead of re-entering itself from panic recovery.
-func (env *LEnv) notifyError(lerr *LVal) (result *LVal) {
-	defer env.recoverPanic(&result)
+func (env *LEnv) notifyError(lerr *LVal) *LVal {
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.notifyErrorUnchecked(lerr)
+	}()
+	return result
+}
+
+// notifyErrorUnchecked is notifyError without the panic recovery.
+func (env *LEnv) notifyErrorUnchecked(lerr *LVal) *LVal {
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 		if d.OnError(env, lerr) {
 			d.WaitIfPaused(env, lerr)
@@ -1688,19 +1716,28 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 // NOTE:  eval shouldn't unquote v during evaluation -- a difference between
 // Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
-func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) {
-	env.Runtime.evalNesting++
-	defer func() {
-		env.Runtime.evalNesting--
-		if r := recover(); r != nil {
-			result = env.panicError(r)
-		}
+func (env *LEnv) eval(ctx context.Context, v *LVal) *LVal {
+	var result *LVal
+	func() {
+		env.Runtime.evalNesting++
+		defer func() {
+			env.Runtime.evalNesting--
+			if r := recover(); r != nil {
+				result = env.panicError(r)
+			}
+		}()
+		result = env.evalUnchecked(ctx, v)
 	}()
+	return result
+}
+
+// evalUnchecked is eval without the nesting count and the panic recovery.
+func (env *LEnv) evalUnchecked(ctx context.Context, v *LVal) *LVal {
 	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
 	// funnel every expression passes through, so the first evaluation of a
 	// value adopts it for this Runtime and any later evaluation under a
-	// different Runtime panics.  Placed after the deferred recover so the
-	// evalNesting counter stays balanced when the check panics.
+	// different Runtime panics.  It runs inside eval's deferred recover so
+	// the evalNesting counter stays balanced when the check panics.
 	checkOwnership(env.Runtime, v)
 	if env.Runtime.evalNestingExceeded() {
 		return env.ErrorConditionf(CondEvalNestingExceeded,
@@ -1801,10 +1838,14 @@ eval:
 }
 
 // EvalSExpr evaluates s and returns the resulting LVal.
-func (env *LEnv) EvalSExpr(s *LVal) (result *LVal) {
+func (env *LEnv) EvalSExpr(s *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.evalSExpr(env.evalCtx, s)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.evalSExpr(env.evalCtx, s)
+	}()
+	return result
 }
 
 func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
@@ -1838,10 +1879,14 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 }
 
 // MacroCall invokes macro fun with argument list args.
-func (env *LEnv) MacroCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) MacroCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.macroCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.macroCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
@@ -1960,10 +2005,14 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 }
 
 // SpecialOpCall invokes special operator fun with the argument list args.
-func (env *LEnv) SpecialOpCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.specialOpCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.specialOpCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
@@ -2023,10 +2072,14 @@ callf:
 // FunCall invokes regular function fun with the argument list args.
 //
 // Deprecated: Use FunCallContext for cancellation and timeout support.
-func (env *LEnv) FunCall(fun, args *LVal) (result *LVal) {
+func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.funCall(env.evalCtx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.funCall(env.evalCtx, fun, args)
+	}()
+	return result
 }
 
 // callValueFunction invokes an already-evaluated callback, error handler or
@@ -2103,10 +2156,14 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 // FunCallContext invokes regular function fun with args under the given
 // context.  If ctx is cancelled or its deadline expires during the call,
 // a CondContextCancelled error is returned.
-func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) (result *LVal) {
+func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
 	defer env.Runtime.beginEval()()
-	defer env.recoverPanic(&result)
-	return env.funCall(ctx, fun, args)
+	var result *LVal
+	func() {
+		defer env.recoverPanic(&result)
+		result = env.funCall(ctx, fun, args)
+	}()
+	return result
 }
 
 func (env *LEnv) trace(fun *LVal) func() {
@@ -2184,7 +2241,7 @@ callf:
 	return r
 }
 
-func extractMarkTailRec(mark *LVal) (fun, args *LVal) {
+func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {
 	return mark.tailRecFun(), mark.tailRecArgs()
 }
 
@@ -2193,7 +2250,7 @@ func extractMarkTailRec(mark *LVal) (fun, args *LVal) {
 // next call.
 //
 // mark must be LMarkTailRec
-func decrementMarkTailRec(mark *LVal) (done bool) {
+func decrementMarkTailRec(mark *LVal) bool {
 	if len(mark.Cells) != 4 {
 		// NOT LISP-REACHABLE (#367): markTailRec is the only producer of an
 		// LMarkTailRec and it always builds exactly four cells; the mark is

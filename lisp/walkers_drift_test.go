@@ -74,7 +74,9 @@ var mustRebuild = []string{"detacher", "templateCompiler", "copier"}
 // checkRebuildingWalkers is the registry half, as a pure function over a
 // registry, so a negative control can hand it a weakened one.  It returns
 // one line per problem.
-func checkRebuildingWalkers(memos []walkerMemo) (problems, notes []string) {
+func checkRebuildingWalkers(memos []walkerMemo) ([]string, []string) {
+	var problems []string
+	var notes []string
 	rebuilding := map[string]bool{}
 	clean := 0
 	var reference *walkerMemo

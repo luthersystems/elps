@@ -77,19 +77,34 @@ func (env *LEnv) recoverReadPanic(err *error) {
 	}
 }
 
-func (env *LEnv) readSource(reader Reader, name string, r io.Reader) (exprs []*LVal, err error) {
-	defer env.recoverReadPanic(&err)
-	return reader.Read(name, r)
+func (env *LEnv) readSource(reader Reader, name string, r io.Reader) ([]*LVal, error) {
+	var exprs []*LVal
+	var err error
+	func() {
+		defer env.recoverReadPanic(&err)
+		exprs, err = reader.Read(name, r)
+	}()
+	return exprs, err
 }
 
-func (env *LEnv) readSourceLocation(reader LocationReader, name, loc string, r io.Reader) (exprs []*LVal, err error) {
-	defer env.recoverReadPanic(&err)
-	return reader.ReadLocation(name, loc, r)
+func (env *LEnv) readSourceLocation(reader LocationReader, name, loc string, r io.Reader) ([]*LVal, error) {
+	var exprs []*LVal
+	var err error
+	func() {
+		defer env.recoverReadPanic(&err)
+		exprs, err = reader.ReadLocation(name, loc, r)
+	}()
+	return exprs, err
 }
 
-func (env *LEnv) readSourceBytes(r io.Reader) (src []byte, err error) {
-	defer env.recoverReadPanic(&err)
-	return io.ReadAll(r)
+func (env *LEnv) readSourceBytes(r io.Reader) ([]byte, error) {
+	var src []byte
+	var err error
+	func() {
+		defer env.recoverReadPanic(&err)
+		src, err = io.ReadAll(r)
+	}()
+	return src, err
 }
 
 func (env *LEnv) sourceReadError(err error) *LVal {
@@ -101,11 +116,20 @@ func (env *LEnv) sourceReadError(err error) *LVal {
 	return env.Error(err)
 }
 
-func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (name, path string, src []byte, lerr *LVal) {
-	defer env.recoverPanic(&lerr)
-	name, path, src, err := env.Runtime.Library.LoadSource(ctx, loc)
-	if err != nil {
-		lerr = env.Errorf("library error: %v", err)
-	}
+func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (string, string, []byte, *LVal) {
+	var name string
+	var path string
+	var src []byte
+	var lerr *LVal
+	func() {
+		defer env.recoverPanic(&lerr)
+		// The outputs are stored before the error is built, so a panic while
+		// rendering the error still returns them with the internal-panic.
+		var err error
+		name, path, src, err = env.Runtime.Library.LoadSource(ctx, loc)
+		if err != nil {
+			lerr = env.Errorf("library error: %v", err)
+		}
+	}()
 	return name, path, src, lerr
 }

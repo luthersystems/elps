@@ -53,7 +53,7 @@ func (tr *envTracker) newEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 	}, nil
 }
 
-func (tr *envTracker) counts() (created, released, live, maxLive int) {
+func (tr *envTracker) counts() (int, int, int, int) {
 	tr.mu.Lock()
 	defer tr.mu.Unlock()
 	return tr.created, tr.released, tr.live, tr.maxLive

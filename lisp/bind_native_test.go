@@ -82,6 +82,12 @@ func describeBind(v *LVal) string {
 	return fmt.Sprintf("%v len=%d cap=%d quoted=%v %s", v.Type, len(v.Cells), cap(v.Cells), v.quoted, v.String())
 }
 
+// bindDescription runs bind and describes the bound argument list.
+func bindDescription(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) string {
+	_, list := bind(fun, args)
+	return describeBind(list)
+}
+
 // TestBindNativePositionalMatchesGeneral checks, for every shape and
 // argument list, that bind returns exactly what the general binder returns
 // (same env, same argument list or the same error), that the fast path is
@@ -205,14 +211,17 @@ func TestBindLambdaUnaffected(t *testing.T) {
 func TestBindNilFormalAfterRequiredFailsLikeGeneral(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	builtin := func(env *LEnv, args *LVal) *LVal { return Nil() }
-	try := func(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) (msg string) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = "panic: " + fmt.Sprint(r)
-			}
+	try := func(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) string {
+		var msg string
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					msg = "panic: " + fmt.Sprint(r)
+				}
+			}()
+			msg = bindDescription(bind, fun, args)
 		}()
-		_, list := bind(fun, args)
-		return describeBind(list)
+		return msg
 	}
 	for _, args := range []*LVal{QExpr(nil), QExpr([]*LVal{Int(1)})} {
 		fun := Fun("nil-formal", QExpr([]*LVal{Symbol("a"), nil}), builtin)
@@ -230,14 +239,17 @@ func TestBindNilFormalAfterRequiredFailsLikeGeneral(t *testing.T) {
 // same panic whichever path would have handled it.
 func TestBindMalformedFunctionFailsLikeGeneral(t *testing.T) {
 	env := initSafetyTestEnv(t)
-	try := func(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) (msg string) {
-		defer func() {
-			if r := recover(); r != nil {
-				msg = fmt.Sprint(r)
-			}
+	try := func(bind func(fun, args *LVal) (*LEnv, *LVal), fun, args *LVal) string {
+		var msg string
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					msg = fmt.Sprint(r)
+				}
+			}()
+			msg = bindDescription(bind, fun, args)
 		}()
-		_, list := bind(fun, args)
-		return describeBind(list)
+		return msg
 	}
 	one := QExpr([]*LVal{Int(1)})
 	for name, fun := range map[string]*LVal{

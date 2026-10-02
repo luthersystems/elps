@@ -540,7 +540,7 @@ func nativeKeyValues(pass *analysis.Pass, lit *ast.CompositeLit) []*ast.KeyValue
 // `l.LBytes` are all the same object and all resolve, while a same-named
 // constant declared in some other package is a different object and does
 // not.
-func literalHeader(pass *analysis.Pass, lit *ast.CompositeLit) (name string, hasTypeKey bool) {
+func literalHeader(pass *analysis.Pass, lit *ast.CompositeLit) (string, bool) {
 	for _, elt := range lit.Elts {
 		kv, ok := elt.(*ast.KeyValueExpr)
 		if !ok {

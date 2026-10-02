@@ -987,7 +987,9 @@ func (g *pathGen) steps(doc *lisp.LVal) []*lisp.LVal {
 // surveyDoc collects the map keys present anywhere in doc and the longest
 // sequence it contains — the two facts that make a generated step land
 // inside the structure rather than beside it.
-func surveyDoc(doc *lisp.LVal) (keys []string, maxLen int) {
+func surveyDoc(doc *lisp.LVal) ([]string, int) {
+	var keys []string
+	var maxLen int
 	seen := map[string]bool{}
 	var walk func(v *lisp.LVal, depth int)
 	walk = func(v *lisp.LVal, depth int) {

@@ -147,7 +147,8 @@ func BuiltinIsMatch(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // getRegexp borrows a compiled program for this package's read-only operations.
 // Strings compile on demand; owned wrappers and host regexps reuse their program.
 // The returned pointer must never escape through a public API or be mutated.
-func getRegexp(env *lisp.LEnv, v *lisp.LVal) (re *regexp.Regexp, lerr *lisp.LVal) {
+func getRegexp(env *lisp.LEnv, v *lisp.LVal) (*regexp.Regexp, *lisp.LVal) {
+	var re *regexp.Regexp
 	if v.Type == lisp.LString {
 		if lerr := libutil.ChargeKiB(env, len(v.Str)); lerr != nil {
 			return nil, lerr

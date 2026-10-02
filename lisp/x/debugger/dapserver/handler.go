@@ -1264,7 +1264,7 @@ type exprWalk struct {
 
 // enter counts the work of entering expression v and reports whether the
 // walk entered it before, past the budget.
-func (w *exprWalk) enter(v *lisp.LVal) (again bool) {
+func (w *exprWalk) enter(v *lisp.LVal) bool {
 	if w.seen != nil {
 		if _, ok := w.seen[v]; ok {
 			return true

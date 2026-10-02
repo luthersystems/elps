@@ -781,11 +781,13 @@ func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 // dump serializes v and reports, alongside the bytes, whether this package can
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
-func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (b []byte, loadable bool, err error) {
+func (s *Serializer) dump(v *lisp.LVal, stringNums bool) ([]byte, bool, error) {
 	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{})
 }
 
-func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) (b []byte, loadable bool, err error) {
+func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) ([]byte, bool, error) {
+	var b []byte
+	var loadable bool
 	enc := getEncoder(stringNums)
 	if err := enc.encodeLimit(v, limit, budget); err != nil {
 		putEncoder(enc)

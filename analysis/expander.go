@@ -199,12 +199,21 @@ func (e *EnvMacroExpander) recordAbort(r any, form *lisp.LVal, pkg string) {
 // well-formed. It runs while recovering from a panic that a malformed form may
 // itself have caused, so a second panic here would replace the original with a
 // far less useful one.
-func safeHeadSymbol(form *lisp.LVal) (name string) {
-	defer func() {
-		if recover() != nil {
-			name = "<unreadable>"
-		}
+func safeHeadSymbol(form *lisp.LVal) string {
+	var name string
+	func() {
+		defer func() {
+			if recover() != nil {
+				name = "<unreadable>"
+			}
+		}()
+		name = headSymbolUnchecked(form)
 	}()
+	return name
+}
+
+// headSymbolUnchecked is safeHeadSymbol without the panic recovery.
+func headSymbolUnchecked(form *lisp.LVal) string {
 	if form == nil || len(form.Cells) == 0 || form.Cells[0] == nil ||
 		form.Cells[0].Type != lisp.LSymbol {
 		return "<unknown>"
@@ -222,28 +231,31 @@ func safeHeadSymbol(form *lisp.LVal) (name string) {
 // handling is the right behaviour and does not change — but it is now also
 // COUNTED, so the crash is observable even though the return value cannot carry
 // it. See ExpansionPanics.
-func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) (result *lisp.LVal) {
-	// completed is the non-forgeable marker. It lives in this frame and is set
-	// by exactly one statement, below, that only a normal return from expand
-	// can reach. Read ExpansionPanics before changing anything here: moving
-	// this assignment, or adding a return between expand() and it, breaks the
-	// only detector this package has for a swallowed panic.
-	completed := false
-	defer func() {
-		r := recover()
-		if completed {
-			return
-		}
-		// Control is leaving ExpandMacro without expand having returned. Either
-		// r != nil (a Go panic, which this recover has just swallowed) or
-		// r == nil (runtime.Goexit unwinding through here). Both are aborts and
-		// both are recorded; only the first is a panic.
-		e.recordAbort(r, form, pkg)
-		result = nil
-	}()
+func (e *EnvMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal {
+	var result *lisp.LVal
+	func() {
+		// completed is the non-forgeable marker. It lives in this frame and is set
+		// by exactly one statement, below, that only a normal return from expand
+		// can reach. Read ExpansionPanics before changing anything here: moving
+		// this assignment, or adding a return between expand() and it, breaks the
+		// only detector this package has for a swallowed panic.
+		completed := false
+		defer func() {
+			r := recover()
+			if completed {
+				return
+			}
+			// Control is leaving ExpandMacro without expand having returned. Either
+			// r != nil (a Go panic, which this recover has just swallowed) or
+			// r == nil (runtime.Goexit unwinding through here). Both are aborts and
+			// both are recorded; only the first is a panic.
+			e.recordAbort(r, form, pkg)
+			result = nil
+		}()
 
-	result = e.expand(form, pkg)
-	completed = true
+		result = e.expand(form, pkg)
+		completed = true
+	}()
 	return result
 }
 
@@ -374,12 +386,21 @@ func LoadWorkspaceMacros(env *lisp.LEnv, preamble []*lisp.LVal) []error {
 	return errs
 }
 
-func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) (retErr error) {
-	defer func() {
-		if r := recover(); r != nil {
-			retErr = fmt.Errorf("panic in preamble form: %v", r)
-		}
+func evalPreambleForm(env *lisp.LEnv, form *lisp.LVal) error {
+	var retErr error
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				retErr = fmt.Errorf("panic in preamble form: %v", r)
+			}
+		}()
+		retErr = evalPreambleFormUnchecked(env, form)
 	}()
+	return retErr
+}
+
+// evalPreambleFormUnchecked is evalPreambleForm without the panic recovery.
+func evalPreambleFormUnchecked(env *lisp.LEnv, form *lisp.LVal) error {
 	// Auto-create workspace packages so in-package doesn't fail.
 	// Import the lang package so builtins (defmacro, use-package, etc.) work.
 	head := astutil.HeadSymbol(form)

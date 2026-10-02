@@ -180,7 +180,9 @@ const maxCallWork = 1 << 16
 // complete is false when the query ran out of work or site budget; a
 // caller checking that no call occurs in some context must then assume
 // one does.
-func FindCallSites(form *lisp.LVal, names ...string) (sites []CallSite, complete bool) {
+func FindCallSites(form *lisp.LVal, names ...string) ([]CallSite, bool) {
+	var sites []CallSite
+	var complete bool
 	want := make(map[string]bool, len(names))
 	for _, n := range names {
 		want[n] = true

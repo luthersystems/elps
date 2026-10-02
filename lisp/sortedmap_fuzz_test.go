@@ -68,7 +68,9 @@ func FuzzSortedMapOps(f *testing.F) {
 // It returns how many steps were requested and how many actually ran; the
 // two differ when a step produces a value the interpreter cannot render (see
 // containerRenderable) and the sequence is abandoned.
-func runSortedMapSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (wanted, ran int) {
+func runSortedMapSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+	var wanted int
+	var ran int
 	t.Helper()
 
 	// The pool starts with one nested map plus one free-form value, so an

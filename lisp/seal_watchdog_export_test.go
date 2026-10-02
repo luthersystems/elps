@@ -9,13 +9,13 @@ package lisp
 // is read unsynchronized on every watchdog tick, so under -race any
 // unsynchronized write to it is reported deterministically.  Test-only;
 // compiled only into the lisp test binary.
-func RegisterSealWatchForTest(roots ...*LVal) (unregister func()) {
+func RegisterSealWatchForTest(roots ...*LVal) func() {
 	return registerSealWatch(roots...)
 }
 
 // PauseSealWatchdogForTest exposes pauseSealWatchdog to the external test
 // package for tests that must deliberately mutate a sealed node.  The
 // caller must restore the mutated bytes before resuming.
-func PauseSealWatchdogForTest() (resume func()) {
+func PauseSealWatchdogForTest() func() {
 	return pauseSealWatchdog()
 }

@@ -243,7 +243,7 @@ func (loc *Location) Copy() *Location {
 // on invalid UTF-8, where `range` yields RuneError with a width that does not
 // describe the input; '\n' cannot occur as a UTF-8 continuation byte, so
 // looking for it bytewise finds exactly the newlines a rune scan would.
-func TokenEnd(tok *Token) (endLine, endCol, endPos int) {
+func TokenEnd(tok *Token) (int, int, int) {
 	if tok == nil || tok.Source == nil {
 		return 0, 0, 0
 	}

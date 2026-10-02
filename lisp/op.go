@@ -490,7 +490,10 @@ func parseExprArgIndex(numStr string) (int, error) {
 	return num, nil
 }
 
-func countExprArgs(expr *LVal) (nargs int, short bool, nopt int, vargs bool, err error) {
+func countExprArgs(expr *LVal) (int, bool, int, bool, error) {
+	var nargs int
+	var nopt int
+	var vargs bool
 	if expr.quoted {
 		return 0, false, 0, false, nil
 	}

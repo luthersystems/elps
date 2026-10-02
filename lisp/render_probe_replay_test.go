@@ -25,11 +25,13 @@ func TestRenderProbeReplaysPanicOnlyUnderErrorMessage(t *testing.T) {
 		p.nodes[renderProbeNode{value: v, depth: 1}] = &renderProbeVisit{panicVal: boom}
 		return p
 	}
-	visit := func(r *valueRenderer) (recovered any) {
-		defer func() { recovered = recover() }()
-		var st cycleState
-		r.container(v, false, cycleGuard{state: &st})
-		return nil
+	visit := func(r *valueRenderer) any {
+		var recovered any
+		func() {
+			defer func() { recovered = recover() }()
+			r.container(v, false, cycleGuard{state: new(cycleState)})
+		}()
+		return recovered
 	}
 
 	off := valueRenderer{limit: -1, budget: newRenderBudget(-1, nil), probe: probe()}

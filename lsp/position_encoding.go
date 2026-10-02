@@ -271,7 +271,9 @@ func (s *Server) byteColumnFromWire(content string, line, wireCol int) int {
 // without this a cursor on a line holding any non-ASCII character was read as
 // a byte index and hover, definition, references, rename and completion
 // answered for the wrong token or for none.
-func (s *Server) cursorAt(doc *Document, pos protocol.Position) (line, col int) {
+func (s *Server) cursorAt(doc *Document, pos protocol.Position) (int, int) {
+	var line int
+	var col int
 	line = int(pos.Line)
 	col = int(pos.Character)
 	if doc == nil || s.positionEncoding() == encodingUTF8 {

@@ -291,7 +291,7 @@ func TestGrammarsCoverSpecialOps(t *testing.T) {
 
 // grammarSources returns the raw text of both grammar files, for assertions
 // about rules rather than about keyword lists.
-func grammarSources(t *testing.T) (textmate, treeSitter string) {
+func grammarSources(t *testing.T) (string, string) {
 	t.Helper()
 	root := repoRoot(t)
 	//nolint:gosec // path derived from runtime.Caller, not input

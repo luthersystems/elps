@@ -165,13 +165,17 @@ func TestBuiltinRegistryNeverPanics(t *testing.T) {
 // value that panics a builtin may well panic String too -- and a report that
 // dies while describing the defect it found reports nothing.  The recovered
 // case still names the type, which is the part that identifies the input.
-func safeString(v *lisp.LVal) (s string) {
-	defer func() {
-		if r := recover(); r != nil {
-			s = fmt.Sprintf("<unrenderable %v: %v>", v.Type, r)
-		}
+func safeString(v *lisp.LVal) string {
+	var s string
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				s = fmt.Sprintf("<unrenderable %v: %v>", v.Type, r)
+			}
+		}()
+		s = v.String()
 	}()
-	return v.String()
+	return s
 }
 
 // panicSweepSkips names the registered functions the sweep must not call, and

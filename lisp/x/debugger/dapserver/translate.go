@@ -105,17 +105,21 @@ func resolveSourcePath(path, file, sourceRoot string) string {
 // translateVariables converts scope bindings to DAP Variable objects.
 // allocRef assigns a variable reference for expandable values. eng is used
 // for custom native type formatting.
-func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine, envs ...*lisp.LEnv) (result []dap.Variable) {
+func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, eng *debugger.Engine, envs ...*lisp.LEnv) []dap.Variable {
 	var env *lisp.LEnv
 	if len(envs) > 0 {
 		env = envs[0]
 	}
 	formatter := debugger.NewProtocolValueFormatter(env, eng)
-	defer func() {
-		if formatter.Exhausted() {
-			result = append(result, dap.Variable{Name: "#<truncated>"})
-		}
-	}()
+	vars := formatBindings(bindings, allocRef, formatter)
+	if formatter.Exhausted() {
+		vars = append(vars, dap.Variable{Name: "#<truncated>"})
+	}
+	return vars
+}
+
+// formatBindings formats bindings until formatter's budget is exhausted.
+func formatBindings(bindings []debugger.ScopeBinding, allocRef func(*lisp.LVal) int, formatter *debugger.ValueFormatter) []dap.Variable {
 	vars := make([]dap.Variable, 0, min(len(bindings), 64))
 	for _, b := range bindings {
 		if formatter.Exhausted() {
@@ -136,16 +140,20 @@ func translateVariables(bindings []debugger.ScopeBinding, allocRef func(*lisp.LV
 // expandVariable returns the child variables of a structured LVal.
 // mapKeyFilter, if non-nil, filters sorted-map entries to only those whose
 // formatted key name matches the regex. It is ignored for non-map types.
-func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) (result []dap.Variable) {
+func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp) []dap.Variable {
 	if v == nil {
 		return []dap.Variable{}
 	}
 	formatter := debugger.NewProtocolValueFormatter(nil, eng)
-	defer func() {
-		if formatter.Exhausted() {
-			result = append(result, dap.Variable{Name: "#<truncated>"})
-		}
-	}()
+	vars := expandChildren(v, allocRef, eng, mapKeyFilter, formatter)
+	if formatter.Exhausted() {
+		vars = append(vars, dap.Variable{Name: "#<truncated>"})
+	}
+	return vars
+}
+
+// expandChildren formats the children of v until formatter's budget is exhausted.
+func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp, formatter *debugger.ValueFormatter) []dap.Variable {
 	switch v.Type {
 	case lisp.LSExpr:
 		vars := make([]dap.Variable, len(v.Cells))
@@ -253,7 +261,7 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 // childInfo returns the number of indexed and named children for an LVal.
 // These counts are used as DAP pagination hints (IndexedVariables/NamedVariables)
 // so that clients like VS Code can paginate large collections.
-func childInfo(v *lisp.LVal) (indexedChildren, namedChildren int) {
+func childInfo(v *lisp.LVal) (int, int) {
 	if v == nil {
 		return 0, 0
 	}

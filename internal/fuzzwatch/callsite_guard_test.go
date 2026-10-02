@@ -44,7 +44,9 @@ type budgetSite struct {
 // plus a description of each one that could not. Shared by the repository scan
 // and by the negative control below, so the control exercises the same code
 // path the real guard runs on.
-func budgetsIn(fset *token.FileSet, f *ast.File, consts map[string]time.Duration) (sites []budgetSite, unreadable []string) {
+func budgetsIn(fset *token.FileSet, f *ast.File, consts map[string]time.Duration) ([]budgetSite, []string) {
+	var sites []budgetSite
+	var unreadable []string
 	ast.Inspect(f, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {

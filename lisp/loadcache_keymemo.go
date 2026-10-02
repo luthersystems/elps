@@ -104,7 +104,7 @@ func memoLoadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string
 
 // loadCacheKeyMemoUsage reports the retained entry count and charged bytes
 // (tests).
-func loadCacheKeyMemoUsage() (entries, charged int) {
+func loadCacheKeyMemoUsage() (int, int) {
 	loadCacheKeyMemoMu.Lock()
 	defer loadCacheKeyMemoMu.Unlock()
 	return len(loadCacheKeyMemoMap), loadCacheKeyMemoBytes

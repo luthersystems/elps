@@ -136,7 +136,8 @@ const (
 // have always run in, so a failure names the argument, and has the text, it
 // always did: "argument is not a time: <type>" for a value that is not
 // native, "argument is not a time: <value>" for a native that is not a time.
-func timeArgs(env *lisp.LEnv, args *lisp.LVal, n int) (t [2]time.Time, lerr *lisp.LVal) {
+func timeArgs(env *lisp.LEnv, args *lisp.LVal, n int) ([2]time.Time, *lisp.LVal) {
+	var t [2]time.Time
 	a := lisp.ReadArgs(env, args)
 	var vs [2]*lisp.LVal
 	for i := range n {

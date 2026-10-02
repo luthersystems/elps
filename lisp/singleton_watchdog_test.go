@@ -55,7 +55,7 @@ var singletonWatchdogSink SingletonSnapshot
 
 // startSingletonWriteWatchdog launches the watchdog and returns a
 // function that stops it and waits for it to exit.
-func startSingletonWriteWatchdog() (stop func()) {
+func startSingletonWriteWatchdog() func() {
 	done := make(chan struct{})
 	stopped := make(chan struct{})
 	go func() {
@@ -90,7 +90,7 @@ func startSingletonWriteWatchdog() (stop func()) {
 //
 // Only tests that are *about* singleton corruption should use this.
 // Production code has no business writing to a singleton at all.
-func pauseSingletonWatchdog() (resume func()) {
+func pauseSingletonWatchdog() func() {
 	singletonWatchdogMu.Lock()
 	return singletonWatchdogMu.Unlock
 }

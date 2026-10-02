@@ -575,26 +575,36 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 // One best-effort line to Stderr, because silently swallowing a panic in
 // embedder code would hide a bug the embedder needs to see. Checked-build
 // ownership violations remain hard failures, as at the evaluator boundary.
-func (env *LEnv) cacheReaderIdentity(reader Reader) (identity string, ok bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			rethrowOwnershipViolation(r)
-			identity, ok = "", false
-			env.reportCachePanic("ReaderIdentity", r)
-		}
+func (env *LEnv) cacheReaderIdentity(reader Reader) (string, bool) {
+	var identity string
+	var ok bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				rethrowOwnershipViolation(r)
+				identity, ok = "", false
+				env.reportCachePanic("ReaderIdentity", r)
+			}
+		}()
+		identity, ok = readerIdentity(reader)
 	}()
-	return readerIdentity(reader)
+	return identity, ok
 }
 
-func (env *LEnv) cacheLoad(cache LoadCache, key string) (entry *CachedSource, ok bool) {
-	defer func() {
-		if r := recover(); r != nil {
-			rethrowOwnershipViolation(r)
-			entry, ok = nil, false
-			env.reportCachePanic("LoadCache.Load", r)
-		}
+func (env *LEnv) cacheLoad(cache LoadCache, key string) (*CachedSource, bool) {
+	var entry *CachedSource
+	var ok bool
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				rethrowOwnershipViolation(r)
+				entry, ok = nil, false
+				env.reportCachePanic("LoadCache.Load", r)
+			}
+		}()
+		entry, ok = cache.Load(key)
 	}()
-	return cache.Load(key)
+	return entry, ok
 }
 
 func (env *LEnv) cacheStore(cache LoadCache, key string, src *CachedSource) {

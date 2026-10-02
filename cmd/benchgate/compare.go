@@ -111,7 +111,10 @@ func sign(v float64) int {
 // compareArms builds a comparison from two raw `go test -bench` outputs.
 // unpaired counts cells present in exactly one arm; they are not adjudicable
 // and the caller reports the count rather than letting them vanish.
-func compareArms(baseFile, headFile string, alpha float64, stderr io.Writer) (c *comparison, unpaired int, err error) {
+func compareArms(baseFile, headFile string, alpha float64, stderr io.Writer) (*comparison, int, error) {
+	var c *comparison
+	var unpaired int
+	var err error
 	bf, err := os.Open(baseFile) //#nosec G304 -- benchgate is a CLI given the arm file paths to read
 	if err != nil {
 		return nil, 0, err

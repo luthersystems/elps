@@ -398,7 +398,9 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	return out, nil
 }
 
-func typedArrayParts(v *lisp.LVal) (dims, cells []*lisp.LVal, err error) {
+func typedArrayParts(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
+	var dims []*lisp.LVal
+	var cells []*lisp.LVal
 	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
 		return nil, nil, errors.New("typed json: malformed array")
 	}

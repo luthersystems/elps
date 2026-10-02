@@ -23,7 +23,8 @@ func oldSortedMapKeys(m sortedmap) *LVal {
 }
 
 // oldJSONMapKeys is the pre-#670 jsonMap.Keys, kept verbatim as the oracle.
-func oldJSONMapKeys(m jsonMap) (keys *LVal) {
+func oldJSONMapKeys(m jsonMap) *LVal {
+	var keys *LVal
 	cells := make([]*LVal, len(m))
 	keys = m.Entries(cells)
 	if keys.Type == LError {

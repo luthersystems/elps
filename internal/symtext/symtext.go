@@ -66,7 +66,9 @@ func LineAt(content string, line int) string {
 // whole word.
 //
 // A missing line and an empty line both contain no word.
-func WordBoundsInLine(ln string, col int) (start, end int, ok bool) {
+func WordBoundsInLine(ln string, col int) (int, int, bool) {
+	var start int
+	var end int
 	if col < 0 || col > len(ln) {
 		return 0, 0, false
 	}

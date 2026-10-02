@@ -359,8 +359,9 @@ func roots(env *lisp.LEnv, visit func(pkg, name string, v *lisp.LVal)) {
 
 // sortedBindings snapshots an environment's own bindings in key order
 // (Bindings' iteration order is unspecified).
-func sortedBindings(e *lisp.LEnv) (keys []string, vals map[string]*lisp.LVal) {
-	vals = make(map[string]*lisp.LVal, e.NumBindings())
+func sortedBindings(e *lisp.LEnv) ([]string, map[string]*lisp.LVal) {
+	var keys []string
+	vals := make(map[string]*lisp.LVal, e.NumBindings())
 	for k, v := range e.Bindings() {
 		keys = append(keys, k)
 		vals[k] = v

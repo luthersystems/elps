@@ -1126,7 +1126,9 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 // error.  seen, when non-nil, is the set of wrappers the walk has unwrapped
 // before; dup counts those among this node's.  evaluated reports that
 // result is the value of an unquoted expression.
-func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]struct{}) (result, list *LVal, quotes, quoteEdges, dup int, evaluated bool) {
+func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]struct{}) (*LVal, *LVal, int, int, int, bool) {
+	var quoteEdges int
+	var dup int
 	// Read the depth limit once per call.  The boundary is this function:
 	// the quote-unwrapping loop below runs no user code (getUnquoteType is a
 	// pure shape test), and the only evaluation this function reaches --

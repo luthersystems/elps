@@ -225,13 +225,17 @@ func pathString(steps []*lisp.LVal) string {
 // the result.  A panic is turned into an error value: the battery is looking
 // for aliasing, and a panic partway through an operation would otherwise take
 // the whole run down before it could report which case found it.
-func callBuiltin(env *lisp.LEnv, fn func(*lisp.LEnv, *lisp.LVal) *lisp.LVal, args ...*lisp.LVal) (res *lisp.LVal) {
-	defer func() {
-		if r := recover(); r != nil {
-			res = env.Errorf("panic: %v", r)
-		}
+func callBuiltin(env *lisp.LEnv, fn func(*lisp.LEnv, *lisp.LVal) *lisp.LVal, args ...*lisp.LVal) *lisp.LVal {
+	var res *lisp.LVal
+	func() {
+		defer func() {
+			if r := recover(); r != nil {
+				res = env.Errorf("panic: %v", r)
+			}
+		}()
+		res = fn(env, lisp.QExpr(args))
 	}()
-	return fn(env, lisp.QExpr(args))
+	return res
 }
 
 func withSteps(head *lisp.LVal, steps []*lisp.LVal, tail ...*lisp.LVal) []*lisp.LVal {

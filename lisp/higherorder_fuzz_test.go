@@ -139,7 +139,9 @@ func defineHigherOrderCallbacks(t *testing.T, env *lisp.LEnv) {
 
 // runHigherOrderSequence executes one generated traversal sequence.  Named,
 // not inline, so the coverage gate drives the identical code path.
-func runHigherOrderSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (wanted, ran int) {
+func runHigherOrderSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+	var wanted int
+	var ran int
 	t.Helper()
 
 	// The pool is built from SHARED elements: sharedSeq repeats the same

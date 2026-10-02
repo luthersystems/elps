@@ -208,7 +208,9 @@ func admitSymbolValue(v *LVal, limit int) *LVal {
 // walk is what this classification is for).  A cycle therefore reports
 // "neither", which lands the value in the
 // by-reference row where no copy is attempted.
-func classifySymbolValue(v *LVal, g cycleGuard, limit int) (sealed, sealable bool) {
+func classifySymbolValue(v *LVal, g cycleGuard, limit int) (bool, bool) {
+	var sealed bool
+	var sealable bool
 	type frame struct {
 		v     *LVal
 		g     cycleGuard

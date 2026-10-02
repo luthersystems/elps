@@ -478,23 +478,32 @@ type goldenRecord struct {
 	After         string   `json:"input_after,omitempty"`
 }
 
-func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) (r goldenRecord) {
+func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) goldenRecord {
+	var r goldenRecord
 	r.Name = name
 	r.Causes = []string{}
-	defer func() {
-		if p := recover(); p != nil {
-			r.Panic = fmt.Sprintf("%T: %v", p, p)
-		}
-		if strings.Contains(name, "host-map-replace") || strings.Contains(name, "host-map-mutate") || strings.Contains(name, "cycle-before-boundary") {
-			for v, id := range in.sources {
-				if id == 1 {
-					r.After, _ = in.render(v)
-					break
+	func() {
+		defer func() {
+			if p := recover(); p != nil {
+				r.Panic = fmt.Sprintf("%T: %v", p, p)
+			}
+			if strings.Contains(name, "host-map-replace") || strings.Contains(name, "host-map-mutate") || strings.Contains(name, "cycle-before-boundary") {
+				for v, id := range in.sources {
+					if id == 1 {
+						r.After, _ = in.render(v)
+						break
+					}
 				}
 			}
-		}
-		r.Trace = append([]string{}, in.trace...)
+			r.Trace = append([]string{}, in.trace...)
+		}()
+		goldenRun(&r, in, run, causes)
 	}()
+	return r
+}
+
+// goldenRun runs run and records its output, error and matching causes in r.
+func goldenRun(r *goldenRecord, in *goldenInput, run func() (*lisp.LVal, []byte, error), causes map[string]error) {
 	v, b, err := run()
 	if v != nil {
 		r.Output, _ = in.render(v)
@@ -509,7 +518,6 @@ func goldenObserve(name string, in *goldenInput, run func() (*lisp.LVal, []byte,
 			}
 		}
 	}
-	return r
 }
 
 // compactWalkerGolden preserves expectations and reuses identical records by name.
