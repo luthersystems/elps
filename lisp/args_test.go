@@ -176,7 +176,7 @@ func TestCustomDecoder(t *testing.T) {
 		a.Check(n%2 == 0, "argument is odd: %d", n)
 		return n
 	}
-	fn := lisp.Func1(even, func(_ *lisp.LEnv, n int) *lisp.LVal { return lisp.Int(n / 2) })
+	fn := lisp.Func1(lisp.CustomArg(even), func(_ *lisp.LEnv, n int) *lisp.LVal { return lisp.Int(n / 2) })
 	assert.Equal(t, 2, fn(env, lisp.QExpr([]*lisp.LVal{lisp.Int(4)})).Int)
 	v := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Int(3)}))
 	require.Equal(t, lisp.LError, v.Type)

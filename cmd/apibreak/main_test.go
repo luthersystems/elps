@@ -90,3 +90,30 @@ func TestGoReportRejectsUnknownLines(t *testing.T) {
 		t.Fatal("an unrecognized apidiff line must be an error, not zero breaks")
 	}
 }
+
+// apidiff prints a "! second, different message" note, with its "first:" and
+// "second:" lines, when it reports one object twice (a generic type changed
+// under several instantiations).  The note is skipped; the "-" line that
+// follows it is the break.  A note line out of place is still an error.
+func TestGoReportSkipsDuplicateMessageNotes(t *testing.T) {
+	report := "! second, different message for obj type example.com/m/p.D[T any] func(i int) T, isNew false, part \"\"\n" +
+		"  first:  changed from func(int) T to struct{f func(i int) T}\n" +
+		"  second: changed from func(int) A to struct{f func(i int) A}\n" +
+		"- ./p.D: changed from func(int) T to struct{f func(i int) T}\n"
+	got, err := parseGoReport(strings.NewReader(report))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].symbol != "p.D" || got[0].what != "changed from func(int) T to struct{f func(i int) T}" {
+		t.Fatalf("got %+v, want the one p.D break", got)
+	}
+	for _, bad := range []string{
+		"  first:  changed from func(int) T to struct{}\n",
+		"! second, different message for obj x, isNew false, part \"\"\n  first:  a\n  second: b\n  second: c\n",
+		"! second, different message for obj x, isNew false, part \"\"\n- ./p.D: changed\n",
+	} {
+		if _, err := parseGoReport(strings.NewReader(bad)); err == nil {
+			t.Errorf("%q: a note line out of place must be an error", bad)
+		}
+	}
+}

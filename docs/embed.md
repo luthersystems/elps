@@ -630,7 +630,8 @@ func dateArg(a *lisp.ArgReader, i int) cctime.Date {
 arguments, list one decoder per formal, in order, and write the body against
 Go types. The decoders are the `ArgReader` reads above, so the check order and
 the messages are fixed at compile time and match the hand-written checks.
-Generics do this with no reflection and no allocation:
+Generics do this with no reflection. A call allocates what the equivalent
+hand-written builtin allocates, and nothing more:
 
 ```go
 var builtinRepeat = lisp.Func2(
@@ -639,8 +640,12 @@ var builtinRepeat = lisp.Func2(
 	func(env *lisp.LEnv, s string, n *lisp.LVal) *lisp.LVal { /* ... */ })
 ```
 
-Decoders: `ValueArg`, `TypedArg` and `StringArg`. A function like `dateArg`
-above is an `ArgDecoder` too. Beyond two arguments, or with `&rest`, use
+Decoders: `ValueArg`, `TypedArg` and `StringArg` for required arguments, and
+`OptArg`, `OptStringArg` and `OptIntArg` for `&optional` or `&key` arguments.
+Each one is the `ArgReader` read of the same name. For a function of your own
+like `dateArg` above, use `lisp.CustomArg(dateArg)`. A custom decoder is an
+indirect call, so each call of the builtin allocates one `ArgReader` copy.
+Beyond two arguments, or with `&rest`, use
 `ArgReader` directly: Go has no variadic type parameters, which is where
 generics stop. `string:split` and `string:repeat`
 are written this way.
