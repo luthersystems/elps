@@ -3,7 +3,9 @@
 package testdeadline
 
 import (
+	"fmt"
 	"os"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -12,10 +14,28 @@ import (
 // call that waits uses wall time but no CPU, which is what a starved process
 // looks like to the code under test.  A wall-clock bound fails both; a CPU
 // bound fails neither.  They are Linux-only because elsewhere the clock falls
-// back to wall time.
+// back to wall time.  For the same reason they skip when /proc hides the
+// stat files (requireCPUClock).
+
+// requireCPUClock skips t when this process cannot read its CPU time from
+// /proc.  procClock then falls back to wall time, which charges waiting, so
+// the CPU-specific assertions below cannot hold.  Every other failure still
+// fails the test.
+func requireCPUClock(t *testing.T) {
+	t.Helper()
+	for _, path := range []string{
+		"/proc/self/stat",
+		fmt.Sprintf("/proc/self/task/%d/stat", syscall.Gettid()),
+	} {
+		if _, err := readStatCPU(path); err != nil {
+			t.Skipf("no CPU clock (%v): the clock falls back to wall time", err)
+		}
+	}
+}
 
 // TestWatchDoesNotChargeWaiting: 500ms of wall time against a 100ms budget.
 func TestWatchDoesNotChargeWaiting(t *testing.T) {
+	requireCPUClock(t)
 	used, reason := watch(100*time.Millisecond, 0, func() { time.Sleep(500 * time.Millisecond) })
 	if reason != "" {
 		t.Fatalf("watch charged wall time to the call: %s", reason)
@@ -28,6 +48,7 @@ func TestWatchDoesNotChargeWaiting(t *testing.T) {
 // TestRunChildDoesNotChargeWaiting: a child that sleeps 2s against a 1s
 // budget completes.
 func TestRunChildDoesNotChargeWaiting(t *testing.T) {
+	requireCPUClock(t)
 	out, err := runChild(child(t, "sleep"), time.Second)
 	if err != nil {
 		t.Fatalf("RunChild charged wall time to the child: %v\n%s", err, out)
