@@ -12,6 +12,7 @@ import (
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/internal/fuzzwatch"
+	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -393,6 +394,18 @@ func (r sharedTreeResult) conclusive() bool {
 	return true
 }
 
+// sharedTreeInput says where sharedTreeProperty's input came from.  It
+// decides what an Inconclusive watchdog does; see awaitSharedTree.
+type sharedTreeInput int
+
+const (
+	// fuzzedInput is a generated program.  An Inconclusive watchdog skips
+	// it: the fuzzer runs again and re-finds a real hang.
+	fuzzedInput sharedTreeInput = iota
+	// fixedInput is a regression test's own program.  It never skips.
+	fixedInput
+)
+
 // sharedTreeProperty is the body of the target, factored out so the corpus
 // tests below assert exactly what the fuzzer asserts.
 //
@@ -400,8 +413,9 @@ func (r sharedTreeResult) conclusive() bool {
 // returned verdict answers the separate question of whether this input was
 // compared at all; see sharedTreeResult.
 //
-// Every arm runs under deadline; 0 means none (see evalTreeOnce).
-func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration) sharedTreeResult {
+// Every arm runs under deadline; 0 means none (see evalTreeOnce).  input
+// says what a starved watchdog does; see awaitSharedTree.
+func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration, input sharedTreeInput) sharedTreeResult {
 	t.Helper()
 
 	shared, ok := readTree(src)
@@ -455,27 +469,9 @@ func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration) shared
 	// The budget is one watchdogTimeout per evaluation: the private baseline
 	// and the sharedRuns shared ones (#789).
 	budget := fuzzwatch.New(3 * watchdogTimeout)
-	wait := budget.Total()
-waitDone:
-	for {
-		select {
-		case <-done:
-			break waitDone
-		case <-time.After(wait):
-			verdict, more, report := budget.Check()
-			switch verdict {
-			case fuzzwatch.Continue:
-				wait = more
-			case fuzzwatch.Inconclusive:
-				// Starved throughout: nothing can be said about this input.
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return sharedTreeResult{skipped: "starved throughout"}
-			default:
-				t.Fatalf("shared-tree evaluation did not terminate within %s of SCHEDULED time (%s)"+
-					"\n--- source (%d bytes) ---\n%q", budget.Total(), report, len(src), src)
-				return sharedTreeResult{skipped: "evaluation did not terminate"}
-			}
-		}
+	describe := fmt.Sprintf("\n--- source (%d bytes) ---\n%q", len(src), src)
+	if skipped := awaitSharedTree(t, done, input, budget.Total(), budget.Check, describe); skipped != "" {
+		return sharedTreeResult{skipped: skipped}
 	}
 
 	if wantErr != nil {
@@ -552,8 +548,58 @@ func FuzzSharedTreeEval(f *testing.F) {
 		// still reach a conclusive comparison is asserted on FIXED input
 		// instead, by TestSharedTreeLiveResultIsConclusive and
 		// TestSharedTreeSeedsAgree.
-		_ = sharedTreeProperty(t, src, fuzzDeadline)
+		_ = sharedTreeProperty(t, src, fuzzDeadline, fuzzedInput)
 	})
+}
+
+// awaitSharedTree waits for done under the watchdog.  first is the first
+// wait, check is the budget's Check, and describe ends a failure message.
+// It returns "" when done closed, or why the input has no verdict.
+//
+// A Hung verdict fails the test.  An Inconclusive verdict (the process was
+// starved throughout) skips a fuzzedInput: the fuzzer runs again.  A
+// fixedInput is a regression test, and a skip there would let it pass
+// without asserting anything (#791).  So it waits on for done, up to
+// testdeadline.Backstop, and fails if the evaluation has not finished by
+// then.  Starvation alone cannot fail it, because a run that reaches the
+// backstop would have hit the binary's -timeout anyway.
+func awaitSharedTree(t *testing.T, done <-chan struct{}, input sharedTreeInput,
+	first time.Duration, check func() (fuzzwatch.Verdict, time.Duration, fuzzwatch.Report),
+	describe string) string {
+	t.Helper()
+	wait := first
+	for {
+		select {
+		case <-done:
+			return ""
+		case <-time.After(wait):
+			verdict, more, report := check()
+			switch verdict {
+			case fuzzwatch.Continue:
+				wait = more
+			case fuzzwatch.Inconclusive:
+				if input == fuzzedInput {
+					t.Skipf("no verdict: the process was starved throughout (%s)", report)
+					return "starved throughout"
+				}
+				t.Logf("the process was starved throughout (%s); a fixed input waits for the -timeout backstop", report)
+				backstop, stop := testdeadline.Backstop(t)
+				defer stop()
+				select {
+				case <-done:
+					return ""
+				case <-backstop.Done():
+					t.Fatalf("shared-tree evaluation did not terminate before the test's -timeout (%s)%s",
+						report, describe)
+					return "evaluation did not terminate"
+				}
+			default:
+				t.Fatalf("shared-tree evaluation did not terminate within %s of SCHEDULED time (%s)%s",
+					first, report, describe)
+				return "evaluation did not terminate"
+			}
+		}
+	}
 }
 
 // sharedTreeSeeds are programs whose evaluation re-uses caller-supplied
@@ -625,7 +671,7 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 	for _, src := range sharedTreeSeeds() {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			res := sharedTreeProperty(t, []byte(src), 0)
+			res := sharedTreeProperty(t, []byte(src), 0, fixedInput)
 			if res.conclusive() {
 				conclusive.Add(1)
 			}
