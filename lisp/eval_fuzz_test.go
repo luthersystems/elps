@@ -195,6 +195,12 @@ type evalOutcome struct {
 	Stderr  string
 	Steps   int64
 	Elapsed time.Duration
+	// Expired reports whether this evaluation's own context had expired
+	// when the evaluation returned.  It is harness state: a program can
+	// raise context-cancelled itself, but it cannot make the deadline pass.
+	// A differential check reads it to excuse an arm the wall clock cut
+	// short (luthersystems/elps#788).
+	Expired bool
 }
 
 // locationWatch records, for every node the loader's reader produces, the
@@ -452,12 +458,18 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 		result  *lisp.LVal
 		steps   int64
 		elapsed time.Duration
+		expired bool
 	}
 	ch := make(chan done, 1)
 	go func() {
 		start := time.Now()
 		result := env.LoadProgramContext(ctx, prog)
-		ch <- done{result: result, steps: env.Runtime.TotalSteps(), elapsed: time.Since(start)}
+		ch <- done{
+			result:  result,
+			steps:   env.Runtime.TotalSteps(),
+			elapsed: time.Since(start),
+			expired: ctx.Err() != nil,
+		}
 	}()
 
 	// SCHEDULED time, not wall clock: see internal/fuzzwatch.  At a measured
@@ -501,6 +513,7 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 				Stderr:  stderr.String(),
 				Steps:   d.steps,
 				Elapsed: d.elapsed,
+				Expired: d.expired,
 			}, true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()

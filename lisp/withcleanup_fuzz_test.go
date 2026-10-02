@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
@@ -148,7 +149,12 @@ func FuzzWithCleanup(f *testing.F) {
 		}
 
 		// (2) It never catches.  One direction only -- see the header.
-		if erroredA && outB.Result.Type != lisp.LError {
+		// An arm A that its own wall-clock deadline cut short carries no
+		// verdict: its error comes from the clock, and B, run separately,
+		// may finish.  The excuse reads harness state (Expired), so a body
+		// that raises context-cancelled itself is still checked
+		// (luthersystems/elps#788).
+		if erroredA && !outA.Expired && outB.Result.Type != lisp.LError {
 			t.Fatalf("with-cleanup swallowed an error\nbody: %q\nbare: %v\nwrapped: %v",
 				body, outA.Result, outB.Result)
 		}
@@ -264,4 +270,32 @@ func parses(t *testing.T, src string) bool {
 	t.Helper()
 	_, err := parser.NewReader().Read("fuzz", strings.NewReader(src))
 	return err == nil
+}
+
+// TestEvalOutcomeExpiredIsHarnessState pins the record that property (2) of
+// FuzzWithCleanup reads to excuse an arm the wall clock cut short.  A context
+// that expired sets Expired.  A body that raises context-cancelled itself,
+// with no deadline, does not: the excuse cannot be forged from lisp.
+func TestEvalOutcomeExpiredIsHarnessState(t *testing.T) {
+	t.Parallel()
+
+	expired, ok := evalUnderBudget(t, []byte(`(+ 1 1)`), time.Nanosecond)
+	if !ok {
+		t.Fatal("the probe did not parse")
+	}
+	if !expired.Expired {
+		t.Fatalf("a 1ns deadline did not set Expired (result %v)", expired.Result)
+	}
+
+	forged, ok := evalUnderBudget(t, []byte(`(error 'context-cancelled "forged")`), 0)
+	if !ok {
+		t.Fatal("the forgery did not parse")
+	}
+	if forged.Result.Type != lisp.LError || forged.Result.Str != lisp.CondContextCancelled {
+		t.Fatalf("the forgery did not raise context-cancelled: %v", forged.Result)
+	}
+	if forged.Expired {
+		t.Fatal("a raised context-cancelled condition set Expired with no deadline;" +
+			" a body can now excuse itself from property (2)")
+	}
 }
