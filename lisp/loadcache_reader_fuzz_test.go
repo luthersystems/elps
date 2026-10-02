@@ -9,7 +9,6 @@ import (
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/parser"
 )
 
 // The HOSTILE-READER dimension of the load cache.
@@ -125,9 +124,10 @@ const (
 	readerModeCount
 )
 
-func newLoadCacheHostileReader(mode uint8) *loadCacheHostileReader {
+func newLoadCacheHostileReader(tb testing.TB, mode uint8) *loadCacheHostileReader {
+	tb.Helper()
 	return &loadCacheHostileReader{
-		inner: parser.NewReader().(readLocationReader),
+		inner: newReadLocationReader(tb),
 		mode:  mode % readerModeCount,
 	}
 }
@@ -359,7 +359,7 @@ func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache)
 	}
 	// Installed AFTER initialization: the standard parser boots the library,
 	// and only the files under test go through the hostile reader.
-	reader := newLoadCacheHostileReader(mode)
+	reader := newLoadCacheHostileReader(t, mode)
 	env.Runtime.Reader = reader
 	if cache != nil {
 		env.Runtime.LoadCache = cache

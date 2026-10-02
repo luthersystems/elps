@@ -53,8 +53,8 @@ func validateNames(n int, name func(int) string, legacyKeywords bool) (int, stri
 	}
 	group := func(i int, control string) (int, string, bool) {
 		if i == n-1 || strings.HasPrefix(name(i+1), "&") {
-			i, message := emptyGroup(i, control)
-			return i, message, false
+			next, message := emptyGroup(i, control)
+			return next, message, false
 		}
 		return 0, "", true
 	}

@@ -377,7 +377,10 @@ func setupTemplateParity(env *lisp.LEnv) error {
 	// only after publication. They are never smuggled into an immutable plan.
 	emit := lisp.FunInPackage(lisp.DefaultUserPackage, "emit", lisp.Formals("state", "n"),
 		func(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			host := args.Cells[0].Native.(*templateParityHost)
+			host, ok := args.Cells[0].Native.(*templateParityHost)
+			if !ok {
+				return lisp.Errorf("emit: state is not a host handle: %v", args.Cells[0].Type)
+			}
 			host.events = append(host.events, args.Cells[1].Int)
 			return lisp.Nil()
 		})
@@ -385,7 +388,11 @@ func setupTemplateParity(env *lisp.LEnv) error {
 }
 
 func templateParityEffects(env *lisp.LEnv) []int {
-	return env.Get(lisp.Symbol("host-state")).Native.(*templateParityHost).events
+	host, ok := env.Get(lisp.Symbol("host-state")).Native.(*templateParityHost)
+	if !ok {
+		panic("templateParityEffects: host-state is not a host handle")
+	}
+	return host.events
 }
 
 func renderTemplateParityNative(value any) string {
@@ -432,7 +439,7 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 			return fmt.Errorf("anchor/fork: %w", err)
 		}
 		if fault != nil {
-			if err := fault("anchor", source, anchor); err != nil {
+			if err = fault("anchor", source, anchor); err != nil {
 				return err
 			}
 		}
@@ -481,7 +488,7 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 			return fmt.Errorf("cold[%d]/load: %w", i, err)
 		}
 		if fault != nil {
-			if err := fault("cold", source, cold); err != nil {
+			if err = fault("cold", source, cold); err != nil {
 				return fmt.Errorf("cold[%d]/load: %w", i, err)
 			}
 		}
@@ -559,7 +566,11 @@ func runTemplateParity(g templateParityCase, schedule string, fault templatePari
 				if arm.value.Type != lisp.LNative || arm.value.Native != arm.env.Get(lisp.Symbol("host-state")).Native {
 					return fmt.Errorf("native-result/model %s: result is not this VM's host handle", arm.name)
 				}
-				if !slices.Equal(arm.value.Native.(*templateParityHost).events, tx.effects) {
+				host, ok := arm.value.Native.(*templateParityHost)
+				if !ok {
+					return fmt.Errorf("native-result/model %s: result is not a host handle", arm.name)
+				}
+				if !slices.Equal(host.events, tx.effects) {
 					return fmt.Errorf("native-result/model %s: contents differ", arm.name)
 				}
 			} else if tx.condition != "" {
@@ -869,7 +880,11 @@ func TestTemplateParityRejectsBrokenConstructors(t *testing.T) {
 		{"shared-byte-backing", "private/shared", func(role string, source, vm *lisp.LEnv) error {
 			if role == "initial" {
 				for _, name := range []string{"host-a", "host-b"} {
-					*vm.Get(lisp.Symbol(name)).Native.(*[]byte) = source.Get(lisp.Symbol(name)).Bytes() //elps:mutates deliberately broken storage copy for the isolation oracle
+					backing, ok := vm.Get(lisp.Symbol(name)).Native.(*[]byte)
+					if !ok {
+						return fmt.Errorf("%s is not a bytes value", name)
+					}
+					*backing = source.Get(lisp.Symbol(name)).Bytes() //elps:mutates deliberately broken storage copy for the isolation oracle
 				}
 			}
 			return nil
@@ -964,7 +979,10 @@ func TestTemplateParityConcurrentStateChannelRejectsHiddenWrite(t *testing.T) {
 		// can see this write to an existing, independently allocated scalar.
 		emit := lisp.FunInPackage(lisp.DefaultUserPackage, "emit", lisp.Formals("state", "n"),
 			func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				host := args.Cells[0].Native.(*templateParityHost)
+				host, ok := args.Cells[0].Native.(*templateParityHost)
+				if !ok {
+					return lisp.Errorf("emit: state is not a host handle: %v", args.Cells[0].Type)
+				}
 				host.events = append(host.events, args.Cells[1].Int)
 				env.Get(lisp.Symbol("hidden-state")).Int = 20 //elps:mutates deliberate private scalar-content corruption for the whole-state oracle
 				return lisp.Nil()

@@ -34,8 +34,10 @@ func TestOwnedTimePublicShapeAndDetachedEncoding(t *testing.T) {
 	require.Equal(t, 2, typ.NumMethod())
 	require.Equal(t, "MarshalJSON", typ.Method(0).Name)
 	require.Equal(t, "MarshalText", typ.Method(1).Name)
-	text := value.Native.(encoding.TextMarshaler)
-	encoded := value.Native.(json.Marshaler)
+	text, ok := value.Native.(encoding.TextMarshaler)
+	require.True(t, ok, "time payload as TextMarshaler: got %T", value.Native)
+	encoded, ok := value.Native.(json.Marshaler)
+	require.True(t, ok, "time payload as json.Marshaler: got %T", value.Native)
 	for _, marshaler := range []func() ([]byte, error){text.MarshalText, encoded.MarshalJSON} {
 		before, err := marshaler()
 		require.NoError(t, err)

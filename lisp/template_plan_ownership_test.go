@@ -47,9 +47,9 @@ func TestTemplatePlanOwnsMetadataAndStackFreeErrors(t *testing.T) {
 	errValue.Cells[0].Str = "changed source failure"
 	var siblings []*LEnv
 	for range 2 {
-		vm, err := plan.NewVM()
-		if err != nil {
-			t.Fatal(err)
+		vm, vmErr := plan.NewVM()
+		if vmErr != nil {
+			t.Fatal(vmErr)
 		}
 		siblings = append(siblings, vm)
 		got := vm.Runtime.Package

@@ -123,7 +123,7 @@ func funcDeclName(pass *analysis.Pass, fn *ast.FuncDecl) string {
 	if obj == nil {
 		return name
 	}
-	if recv := obj.Type().(*types.Signature).Recv(); recv != nil {
+	if recv := obj.Signature().Recv(); recv != nil {
 		if named := packageNamedType(recv.Type()); named != nil {
 			name = named.Obj().Name() + "." + name
 		}

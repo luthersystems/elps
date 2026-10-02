@@ -90,13 +90,23 @@ func mockContext() *glsp.Context {
 	}
 }
 
+// publishedDiagnostics returns the params of a publishDiagnostics
+// notification. A notify callback has no *testing.T, so a wrong type panics.
+func publishedDiagnostics(params any) *protocol.PublishDiagnosticsParams {
+	diags, ok := params.(*protocol.PublishDiagnosticsParams)
+	if !ok {
+		panic(fmt.Sprintf("publishDiagnostics notification carried %T", params))
+	}
+	return diags
+}
+
 // capturingContext returns a context that captures published diagnostics.
 func capturingContext() (*glsp.Context, *[]*protocol.PublishDiagnosticsParams) {
 	var captured []*protocol.PublishDiagnosticsParams
 	ctx := &glsp.Context{
 		Notify: func(method string, params any) {
 			if method == protocol.ServerTextDocumentPublishDiagnostics {
-				captured = append(captured, params.(*protocol.PublishDiagnosticsParams))
+				captured = append(captured, publishedDiagnostics(params))
 			}
 		},
 	}
@@ -466,7 +476,7 @@ func TestHoverOnBuiltin(t *testing.T) {
 	})
 	require.NoError(t, err)
 	assertHoverContains(t, hover, "map", "*Built-in*")
-	mc := hover.Contents.(protocol.MarkupContent)
+	mc := requireType[protocol.MarkupContent](t, hover.Contents)
 	assert.NotContains(t, mc.Value, "Defined in", "builtin hover should not show 'Defined in'")
 }
 
@@ -1487,7 +1497,7 @@ func TestReanalyzeOpenDocuments(t *testing.T) {
 	var captured []*protocol.PublishDiagnosticsParams
 	s.notify = func(method string, params any) {
 		if method == protocol.ServerTextDocumentPublishDiagnostics {
-			captured = append(captured, params.(*protocol.PublishDiagnosticsParams))
+			captured = append(captured, publishedDiagnostics(params))
 		}
 	}
 
@@ -1812,7 +1822,7 @@ func TestCompletionForPackageQualifiedPrefix(t *testing.T) {
 	require.Contains(t, labels, "string:join", "completion should include string:join (#170)")
 
 	// Verify ALL completion items have Kind metadata set.
-	items := result.([]protocol.CompletionItem)
+	items := requireType[[]protocol.CompletionItem](t, result)
 	var foundJoin bool
 	for _, item := range items {
 		require.NotNil(t, item.Kind, "completion item %q should have a Kind", item.Label)
@@ -2621,7 +2631,7 @@ func TestCrossFileCompletion(t *testing.T) {
 		},
 	})
 	require.NoError(t, err)
-	items := result.([]protocol.CompletionItem)
+	items := requireType[[]protocol.CompletionItem](t, result)
 	labels := completionLabels(t, result)
 	assert.Contains(t, labels, "remote-fn", "should complete remote-fn from ExtraGlobals")
 	assert.Contains(t, labels, "remote-helper", "should complete remote-helper from ExtraGlobals")

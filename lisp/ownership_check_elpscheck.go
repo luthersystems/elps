@@ -316,10 +316,23 @@ func checkOwnership(rt *Runtime, v *LVal) {
 		}
 		return
 	}
-	if owner.(weak.Pointer[Runtime]) == wrt {
+	ownerRT, ok := owner.(weak.Pointer[Runtime])
+	if !ok {
+		panic("elpscheck: ownership table entry is not a weak runtime pointer")
+	}
+	if ownerRT == wrt {
 		return
 	}
-	panic(ownershipViolation{msg: ownershipViolationMessage(owner.(weak.Pointer[Runtime]).Value(), rt, v)})
+	panic(ownershipViolation{msg: ownershipViolationMessage(ownerRT.Value(), rt, v)})
+}
+
+// adoptionsOf returns the *ownershipAdoptions stored in ownershipRuntimes.
+func adoptionsOf(entry any) *ownershipAdoptions {
+	adoptions, ok := entry.(*ownershipAdoptions)
+	if !ok {
+		panic("elpscheck: ownershipRuntimes entry is not *ownershipAdoptions")
+	}
+	return adoptions
 }
 
 func recordOwnershipAdoption(rt *Runtime, owner weak.Pointer[Runtime], table *sync.Map, key any) {
@@ -331,7 +344,7 @@ func recordOwnershipAdoption(rt *Runtime, owner weak.Pointer[Runtime], table *sy
 			runtime.AddCleanup(rt, cleanupOwnership, owner)
 		}
 	}
-	adoptions := entry.(*ownershipAdoptions)
+	adoptions := adoptionsOf(entry)
 	adoptions.mu.Lock()
 	defer adoptions.mu.Unlock()
 	// A concurrent reset may have already discarded this insertion. Do not
@@ -351,7 +364,7 @@ func cleanupOwnership(owner weak.Pointer[Runtime]) {
 	if !ok {
 		return
 	}
-	adoptions := entry.(*ownershipAdoptions)
+	adoptions := adoptionsOf(entry)
 	adoptions.mu.Lock()
 	defer adoptions.mu.Unlock()
 	table := ownershipTable.m.Load()
@@ -571,7 +584,7 @@ func resetOwnershipTable() {
 	// from old tables too. Locking and checking the CURRENT table protects
 	// new adoptions even if another reset or adoption races with this sweep.
 	ownershipRuntimes.Range(func(_, entry any) bool {
-		adoptions := entry.(*ownershipAdoptions)
+		adoptions := adoptionsOf(entry)
 		adoptions.mu.Lock()
 		if adoptions.table != ownershipTable.m.Load() {
 			adoptions.table = nil

@@ -620,8 +620,8 @@ func ensureHistoryFilePermissions(path string) {
 		return
 	}
 	if _, err := os.Stat(path); os.IsNotExist(err) {
-		f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600) //#nosec G304
-		if err != nil {
+		f, openErr := os.OpenFile(path, os.O_CREATE|os.O_WRONLY, 0600) //#nosec G304
+		if openErr != nil {
 			return // best-effort
 		}
 		f.Close() //nolint:errcheck,gosec // best-effort cleanup

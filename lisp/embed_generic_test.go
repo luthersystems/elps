@@ -38,14 +38,14 @@ func TestGoSliceOf(t *testing.T) {
 		"not list":  lisp.String("a"),
 		"float/int": lisp.QExpr([]*lisp.LVal{lisp.Float(1)}),
 	} {
-		if got, ok := lisp.GoSliceOf[string](v); ok || got != nil {
+		if got, gotOK := lisp.GoSliceOf[string](v); gotOK || got != nil {
 			if name == "float/int" {
 				continue
 			}
-			t.Errorf("%s: GoSliceOf[string] = %v, %v; want nil, false", name, got, ok)
+			t.Errorf("%s: GoSliceOf[string] = %v, %v; want nil, false", name, got, gotOK)
 		}
 	}
-	if got, ok := lisp.GoSliceOf[int](lisp.QExpr([]*lisp.LVal{lisp.Float(1)})); ok {
+	if got, gotOK := lisp.GoSliceOf[int](lisp.QExpr([]*lisp.LVal{lisp.Float(1)})); gotOK {
 		t.Errorf("GoSliceOf[int] of a float = %v; want false", got)
 	}
 	anys, ok := lisp.GoSliceOf[any](lisp.QExpr([]*lisp.LVal{lisp.Nil(), lisp.Int(1)}))
@@ -116,7 +116,7 @@ func FuzzGoSliceMapOf(f *testing.F) {
 				t.Fatalf("GoSliceOf[string] ok where GoSlice = %v, %v", ws, wok)
 			}
 			for i := range ws {
-				if ws[i].(string) != ss[i] {
+				if w, isString := ws[i].(string); !isString || w != ss[i] {
 					t.Fatalf("element %d: %v vs %v", i, ws[i], ss[i])
 				}
 			}

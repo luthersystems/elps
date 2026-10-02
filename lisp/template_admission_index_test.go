@@ -102,7 +102,10 @@ func TestTemplateCompilerRejectsMissingStorageIdentity(t *testing.T) {
 			storage := inventory.storage()
 			want := "template: cells missing admitted storage identity"
 			if kind == "bytes" {
-				payload := subject.Native.(*[]byte)
+				payload, isBytes := subject.Native.(*[]byte)
+				if !isBytes {
+					t.Fatalf("bytes subject: got native %T, want *[]byte", subject.Native)
+				}
 				if _, ok := storage.byteViews[payload]; !ok {
 					t.Fatal("fixture did not index byte backing")
 				}
@@ -187,7 +190,11 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 			t.Fatalf("explicit capture cycle or snapshot changed: %v", got.Type)
 		}
 		copyClosure := got.Cells[1]
-		copyEnv := copyClosure.Native.(*funData).env
+		copyFun, isFun := copyClosure.Native.(*funData)
+		if !isFun {
+			t.Fatalf("copied closure: got native %T, want *funData", copyClosure.Native)
+		}
+		copyEnv := copyFun.env
 		if copyEnv == lexical || copyEnv.parent != vm || copyEnv.scope.val("self") != copyClosure || copyEnv.scope.val("leaf") != got.Cells[0] {
 			t.Fatal("lexical environment cycle or aliases changed")
 		}

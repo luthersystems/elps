@@ -80,7 +80,10 @@ func checkLTypeSwitches(pass *analysis.Pass, decl ast.Decl) {
 		if !ok || sw.Tag == nil || !isLispNamed(pass.TypesInfo.TypeOf(sw.Tag), "LType") {
 			return true
 		}
-		named := types.Unalias(pass.TypesInfo.TypeOf(sw.Tag)).(*types.Named)
+		named, ok := types.Unalias(pass.TypesInfo.TypeOf(sw.Tag)).(*types.Named)
+		if !ok {
+			return true
+		}
 		constants := map[string][]string{}
 		for _, name := range named.Obj().Pkg().Scope().Names() {
 			c, ok := named.Obj().Pkg().Scope().Lookup(name).(*types.Const)
@@ -89,7 +92,10 @@ func checkLTypeSwitches(pass *analysis.Pass, decl ast.Decl) {
 			}
 		}
 		for _, stmt := range sw.Body.List {
-			arm := stmt.(*ast.CaseClause)
+			arm, ok := stmt.(*ast.CaseClause)
+			if !ok {
+				continue
+			}
 			if arm.List == nil {
 				pass.Reportf(arm.Pos(), "lisp.LType switch has a default arm; name every constant explicitly")
 			}

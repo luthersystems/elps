@@ -231,14 +231,23 @@ func (r *Runner) NewEnv(t testing.TB) (*lisp.LEnv, error) {
 	return env, nil
 }
 
+// stderrLogger returns the *Logger that NewEnv installs as env's stderr.
+func stderrLogger(env *lisp.LEnv) *Logger {
+	logger, ok := env.Runtime.Stderr.(*Logger)
+	if !ok {
+		panic("elpstest: runtime stderr is not the runner's *Logger")
+	}
+	return logger
+}
+
 func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *libtesting.TestSuite {
 	env, err := r.NewEnv(t)
 	if err != nil {
 		t.Fatal(err.Error())
 	}
-	defer env.Runtime.Stderr.(*Logger).Flush()
+	defer stderrLogger(env).Flush()
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		t.FailNow()
 	}
@@ -284,11 +293,11 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 		t.Error(err.Error())
 		return
 	}
-	defer env.Runtime.Stderr.(*Logger).Flush()
+	defer stderrLogger(env).Flush()
 
 	_ = r.Setup(env)
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		return
 	}
@@ -371,7 +380,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 		b.Error(err.Error())
 		return
 	}
-	defer env.Runtime.Stderr.(*Logger).Flush()
+	defer stderrLogger(env).Flush()
 
 	// Setup runs with the timer stopped and LEAVES it stopped.  Restarting it
 	// here would charge env.Load below -- parsing the whole benchmark file and
@@ -383,7 +392,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	_ = r.Setup(env)
 
-	if err := LoadTestHelpers(env, path); err != nil {
+	if err = LoadTestHelpers(env, path); err != nil {
 		r.helperError(b, err)
 		return
 	}

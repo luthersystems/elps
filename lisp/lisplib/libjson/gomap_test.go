@@ -29,7 +29,11 @@ func TestGoMapReturnsOrdinaryGoValues(t *testing.T) {
 			t.Fatalf("generic conversion changed: got %#v, want %#v", generic, want)
 		}
 		got["number"] = "changed"
-		got["nested"].(map[string]any)["text"] = "changed"
+		gotNested, isMap := got["nested"].(map[string]any)
+		if !isMap {
+			t.Fatalf("nested: got %T, want map[string]any", got["nested"])
+		}
+		gotNested["text"] = "changed"
 		if source.MapGetString("number").Int != 7 || nested.MapGetString("text").Str != "value" {
 			t.Fatal("Go map writes changed Lisp source values")
 		}

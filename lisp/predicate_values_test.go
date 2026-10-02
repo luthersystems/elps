@@ -162,7 +162,7 @@ func TestPredicateValuesShortCircuitAndErrors(t *testing.T) {
 
 func TestPredicateValuesRejectSpecialFunctions(t *testing.T) {
 	for _, form := range []string{"quote", "predicate-macro"} {
-		for _, expr := range []string{
+		for _, format := range []string{
 			`(all? %s ())`, `(all? %s '(1))`,
 			`(any? %s ())`, `(any? %s '(1))`,
 			`(stable-sort %s (list))`, `(stable-sort %s (list 2 1))`,
@@ -171,7 +171,7 @@ func TestPredicateValuesRejectSpecialFunctions(t *testing.T) {
 			`(insert-sorted 'list () < 1 %s)`, `(insert-sorted 'list '(2) < 1 %s)`,
 			`(search-sorted 0 %s)`, `(search-sorted 5 %s)`,
 		} {
-			expr := fmt.Sprintf(expr, form)
+			expr := fmt.Sprintf(format, form)
 			t.Run(expr, func(t *testing.T) {
 				env := newPredicateValuesEnv(t)
 				macro := env.LoadString("predicate-values.lisp", `(defmacro predicate-macro (&rest args) true)`)

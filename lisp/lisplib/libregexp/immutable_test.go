@@ -49,7 +49,9 @@ func TestRegexpRejectsInvalidInputs(t *testing.T) {
 	// Even a host that synthesizes a zero value using reflection must get a
 	// normal error, not a panic or access to an invalid compiled program.
 	zero := reflect.Zero(reflect.TypeOf(owned.Native)).Interface()
-	text, err := zero.(encoding.TextMarshaler).MarshalText()
+	marshaler, ok := zero.(encoding.TextMarshaler)
+	require.True(t, ok, "zero compiled regexp: got %T", zero)
+	text, err := marshaler.MarshalText()
 	require.Nil(t, text)
 	require.EqualError(t, err, "invalid compiled regexp")
 	for _, value := range []*lisp.LVal{lisp.Int(1), lisp.Native(nil), lisp.Native((*regexp.Regexp)(nil)), lisp.Native(struct{}{}), lisp.Native(zero)} {

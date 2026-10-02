@@ -124,10 +124,10 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			if len(cells) != 2 {
 				return nil, errors.New("typed json: malformed composite tag")
 			}
-			if err := w.add(3); err != nil {
+			if err = w.add(3); err != nil {
 				return nil, err
 			}
-			if err := w.stringSize(cells[0].Str); err != nil {
+			if err = w.stringSize(cells[0].Str); err != nil {
 				return nil, err
 			}
 			return w.tagged(cells[0].Str, cells[1], depth)

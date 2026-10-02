@@ -58,7 +58,9 @@ func kindConsts(t *testing.T) (map[string]bool, *ast.File) {
 			continue
 		}
 		for _, spec := range gd.Specs {
-			for _, n := range spec.(*ast.ValueSpec).Names {
+			vs, isValueSpec := spec.(*ast.ValueSpec)
+			require.True(t, isValueSpec, "const spec: got %T", spec)
+			for _, n := range vs.Names {
 				if strings.HasPrefix(n.Name, "kind") {
 					consts[n.Name] = true
 				}
@@ -108,7 +110,8 @@ func TestFormKindSwitchesHaveNoDefault(t *testing.T) {
 		}
 		isKind, hasDefault := false, false
 		for _, stmt := range sw.Body.List {
-			cc := stmt.(*ast.CaseClause)
+			cc, isCase := stmt.(*ast.CaseClause)
+			require.True(t, isCase, "switch body statement: got %T", stmt)
 			if cc.List == nil {
 				hasDefault = true
 			}

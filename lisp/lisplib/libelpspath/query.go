@@ -259,9 +259,9 @@ func BuiltinQueryGet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, err := path.Get(val)
-		if err != nil {
-			return env.Error(err)
+		data, opErr := path.Get(val)
+		if opErr != nil {
+			return env.Error(opErr)
 		}
 		return data
 	}
@@ -294,9 +294,9 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, err := path.SetMutate(val, newVal)
-		if err != nil {
-			return env.Error(err)
+		data, opErr := path.SetMutate(val, newVal)
+		if opErr != nil {
+			return env.Error(opErr)
 		}
 		return data
 	}
@@ -347,9 +347,9 @@ func BuiltinQueryDeleteMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, err := path.DeleteMutate(val)
-		if err != nil {
-			return env.Error(err)
+		data, opErr := path.DeleteMutate(val)
+		if opErr != nil {
+			return env.Error(opErr)
 		}
 		return data
 	}
@@ -392,9 +392,9 @@ func BuiltinQueryNilMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.Error(err)
 	}
 	if !hasIterStep(steps) {
-		data, err := path.NilMutate(val)
-		if err != nil {
-			return env.Error(err)
+		data, opErr := path.NilMutate(val)
+		if opErr != nil {
+			return env.Error(opErr)
 		}
 		return data
 	}

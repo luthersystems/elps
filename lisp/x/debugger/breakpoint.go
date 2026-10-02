@@ -269,7 +269,7 @@ func (s *BreakpointStore) SetForFileSpecs(file string, specs []BreakpointSpec) [
 	result := make([]*Breakpoint, len(specs))
 	for i, spec := range specs {
 		s.nextID++
-		hitOp, hitVal := parseHitCondition(spec.HitCondition)
+		op, hitVal := parseHitCondition(spec.HitCondition)
 		bp := &Breakpoint{
 			ID:           s.nextID,
 			File:         file,
@@ -278,7 +278,7 @@ func (s *BreakpointStore) SetForFileSpecs(file string, specs []BreakpointSpec) [
 			HitCondition: spec.HitCondition,
 			LogMessage:   spec.LogMessage,
 			Enabled:      true,
-			parsedHitOp:  hitOp,
+			parsedHitOp:  op,
 			parsedHitVal: hitVal,
 		}
 		s.byKey[bp.key()] = bp

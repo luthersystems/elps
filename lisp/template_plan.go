@@ -329,7 +329,11 @@ func (c *templateCompiler) value(v *LVal) (templateValue, error) {
 	switch v.Type {
 	case LFun:
 		out.kind = templateFunction
-		out.payload = c.function(v.Native.(*funData))
+		fd, ok := v.Native.(*funData)
+		if !ok {
+			return out, errors.New("template: function has no function data")
+		}
+		out.payload = c.function(fd)
 	case LNative:
 		out.kind = templateNativePayload
 		out.payload = c.native(v.Native)

@@ -2702,7 +2702,11 @@ func appendMutateBytes(env *LEnv, args *LVal) *LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	*lbytes.Native.(*[]byte) = b
+	backing, ok := lbytes.Native.(*[]byte)
+	if !ok {
+		return env.Errorf("bytes value has no byte slice")
+	}
+	*backing = b
 	return lbytes
 }
 
@@ -2730,7 +2734,11 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 			return env.Error(err)
 		}
 	}
-	*lbytes.Native.(*[]byte) = b
+	backing, ok := lbytes.Native.(*[]byte)
+	if !ok {
+		return env.Errorf("bytes value has no byte slice")
+	}
+	*backing = b
 	return lbytes
 }
 

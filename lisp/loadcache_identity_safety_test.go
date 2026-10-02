@@ -22,7 +22,7 @@ func (r *callbackIdentityReader) ReaderIdentity() string { return r.identity() }
 
 func TestLoadCacheIdentityReentryIsGuarded(t *testing.T) {
 	cache := newTestLoadCache()
-	reader := &callbackIdentityReader{countingReader: newCountingReader()}
+	reader := &callbackIdentityReader{countingReader: newCountingReader(t)}
 	env := readerEnv(t, reader, cache)
 	identities := 0
 	var nested *lisp.LVal
@@ -67,7 +67,7 @@ func TestLoadCacheIdentityPanicFallsBack(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			cache := newTestLoadCache()
-			reader := &callbackIdentityReader{countingReader: newCountingReader()}
+			reader := &callbackIdentityReader{countingReader: newCountingReader(t)}
 			identities := 0
 			reader.identity = func() string { identities++; panic("identity failed") }
 			env := readerEnv(t, reader, cache)
@@ -101,11 +101,11 @@ func TestLoadCacheIdentityPanicFallsBack(t *testing.T) {
 }
 
 func TestLoadCacheIdentityFallbackPreservesParseError(t *testing.T) {
-	uncached := readerEnv(t, newCountingReader(), nil)
+	uncached := readerEnv(t, newCountingReader(t), nil)
 	want := uncached.LoadString("invalid.lisp", `(`)
 	require.Equal(t, lisp.LError, want.Type, "%v", want)
 	cache := newTestLoadCache()
-	reader := &callbackIdentityReader{countingReader: newCountingReader(), identity: func() string { panic("identity failed") }}
+	reader := &callbackIdentityReader{countingReader: newCountingReader(t), identity: func() string { panic("identity failed") }}
 	env := readerEnv(t, reader, cache)
 	var got *lisp.LVal
 	require.NotPanics(t, func() { got = env.LoadString("invalid.lisp", `(`) })
@@ -120,7 +120,7 @@ func TestLoadCacheIdentityFallbackPreservesParseError(t *testing.T) {
 }
 
 func TestLoadCacheNilSkipsReaderIdentity(t *testing.T) {
-	reader := &callbackIdentityReader{countingReader: newCountingReader(), identity: func() string { panic("no cache must mean no identity hook") }}
+	reader := &callbackIdentityReader{countingReader: newCountingReader(t), identity: func() string { panic("no cache must mean no identity hook") }}
 	env := readerEnv(t, reader, nil)
 	got := env.LoadString("uncached.lisp", `(+ 40 2)`)
 	require.Equal(t, lisp.LInt, got.Type, "%v", got)
@@ -139,7 +139,7 @@ func TestLoadCachePanicDiagnosticCannotEscape(t *testing.T) {
 	for _, hook := range []string{"ReaderIdentity", "Load", "Store"} {
 		t.Run(hook, func(t *testing.T) {
 			cache := &panickingCache{entries: make(map[string]*lisp.CachedSource), panicLoad: hook == "Load", panicStore: hook == "Store"}
-			reader := &callbackIdentityReader{countingReader: newCountingReader(), identity: func() string {
+			reader := &callbackIdentityReader{countingReader: newCountingReader(t), identity: func() string {
 				if hook == "ReaderIdentity" {
 					panic("identity failed")
 				}

@@ -231,7 +231,7 @@ func (r *builtinStateRun) checkLiteral(lit *ast.CompositeLit) {
 		}
 		return
 	case *types.Slice, *types.Array:
-		if isLBuiltin(u.(interface{ Elem() types.Type }).Elem()) {
+		if seq, ok := u.(interface{ Elem() types.Type }); ok && isLBuiltin(seq.Elem()) {
 			for _, elt := range lit.Elts {
 				if kv, ok := elt.(*ast.KeyValueExpr); ok {
 					elt = kv.Value // [...]lisp.LBuiltin{3: f}

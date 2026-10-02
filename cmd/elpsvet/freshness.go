@@ -442,7 +442,7 @@ func isFreshCall(pass *analysis.Pass, call *ast.CallExpr) bool {
 
 func methodCallee(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
 	fn, ok := typeutil.Callee(pass.TypesInfo, call).(*types.Func)
-	if !ok || fn.Type().(*types.Signature).Recv() == nil {
+	if !ok || fn.Signature().Recv() == nil {
 		return nil
 	}
 	return fn

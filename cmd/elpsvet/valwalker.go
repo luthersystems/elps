@@ -362,7 +362,11 @@ func (g *valueWalkGraph) scan(node *valueWalkFunc) {
 				node.dispatch = true
 			} else if n.Tag == nil {
 				for _, stmt := range n.Body.List {
-					for _, cond := range stmt.(*ast.CaseClause).List {
+					arm, ok := stmt.(*ast.CaseClause)
+					if !ok {
+						continue
+					}
+					for _, cond := range arm.List {
 						if valueWalkLTypeComparison(pass, cond) {
 							node.dispatch = true
 						}

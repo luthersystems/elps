@@ -129,7 +129,13 @@ func TestForkOracleNativeIdentityIgnoresNamedWrappers(t *testing.T) {
 func TestForkOracleNativeObserverCoversBothChannels(t *testing.T) {
 	first, second := 1, 2
 	one, two := lisp.Native(&first), lisp.Native(&second)
-	render := func(value any) string { return strconv.Itoa(*value.(*int)) }
+	render := func(value any) string {
+		n, ok := value.(*int)
+		if !ok {
+			t.Fatalf("render: got %T, want *int", value)
+		}
+		return strconv.Itoa(*n)
+	}
 	if renderResultWithNative(one, render) == renderResultWithNative(two, render) {
 		t.Fatal("result channel ignores native contents")
 	}
@@ -144,7 +150,13 @@ func TestForkOracleDoesNotInventFunctionIdentity(t *testing.T) {
 	if len(nativeReferenceIDs(one)) != 0 || len(nativeReferenceIDs(two)) != 0 {
 		t.Fatal("a Go code address was treated as a captured function's storage identity")
 	}
-	render := func(value any) string { return strconv.Itoa(value.(func() int)()) }
+	render := func(value any) string {
+		fn, ok := value.(func() int)
+		if !ok {
+			t.Fatalf("render: got %T, want func() int", value)
+		}
+		return strconv.Itoa(fn())
+	}
 	if renderResultWithNative(lisp.Native(one), render) == renderResultWithNative(lisp.Native(two), render) {
 		t.Fatal("explicit native observations lost captured function state")
 	}
@@ -262,7 +274,13 @@ func TestForkOracleSeesNativeAnnotationsInsideSealedCode(t *testing.T) {
 	if len(sharedOracleCensuses(newOracleCensus(first), newOracleCensus(second), nil)) == 0 {
 		t.Fatal("a native annotation below sealed code escaped identity census")
 	}
-	render := func(value any) string { return strconv.Itoa(value.(map[string]int)["n"]) }
+	render := func(value any) string {
+		m, ok := value.(map[string]int)
+		if !ok {
+			t.Fatalf("render: got %T, want map[string]int", value)
+		}
+		return strconv.Itoa(m["n"])
+	}
 	before := envStateWithNative(first, render)
 	shared["n"] = 2
 	if envStateWithNative(first, render) == before {

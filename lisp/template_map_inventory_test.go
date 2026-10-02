@@ -95,7 +95,11 @@ func TestTemplateInventoryJSONRawValidationPrecedesCallbacks(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got := vm.Runtime.Package.symbolTable()["subject"].Map().mapBacking.(jsonMap)
+	subjectBacking := vm.Runtime.Package.symbolTable()["subject"].Map().mapBacking
+	got, isJSONMap := subjectBacking.(jsonMap)
+	if !isJSONMap {
+		t.Fatalf("map backing: got %T, want jsonMap", subjectBacking)
+	}
 	if nilEntry, ok := got["nil"]; !ok || nilEntry != nilValue {
 		t.Fatalf("typed nil entry changed: %v, present=%t", nilEntry, ok)
 	}

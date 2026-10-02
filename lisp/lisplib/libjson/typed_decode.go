@@ -516,7 +516,7 @@ func (d *typedDecoder) tagged(depth int) (*lisp.LVal, error) {
 			return nil, d.errorf("tagged value with an empty type")
 		}
 		name := string(s)
-		if err := d.expect(','); err != nil {
+		if err = d.expect(','); err != nil {
 			return nil, err
 		}
 		inner, err := d.value(depth + 1)
@@ -568,10 +568,10 @@ func (d *typedDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	if zero {
 		total = 0
 	}
-	if err := d.expect(','); err != nil {
+	if err = d.expect(','); err != nil {
 		return nil, err
 	}
-	if err := d.expect('['); err != nil {
+	if err = d.expect('['); err != nil {
 		return nil, err
 	}
 	cells, err := d.elements(depth)
@@ -614,7 +614,7 @@ func (d *typedDecoder) object(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := d.expect(':'); err != nil {
+		if err = d.expect(':'); err != nil {
 			return nil, err
 		}
 		v, err := d.value(depth + 1)

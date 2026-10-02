@@ -109,29 +109,46 @@ func CustomArg[T any](f func(a *ArgReader, i int) T) ArgDecoder[T] {
 
 // decode reads argument i with d.  Each built-in kind calls an ArgReader
 // method directly, which does not leak r, so r stays in the caller's frame.
-// The constructors fix T for each kind, so the type assertions cannot fail.
+// The constructors fix T for each kind, so a kind never meets the wrong T.
+// argCustom never reaches here: decodeShared handles it, so this switch has
+// no indirect call and r does not escape.
 func (d *ArgDecoder[T]) decode(r *ArgReader, i int) T {
 	var out T
-	switch d.kind {
-	case argValue:
-		*any(&out).(**LVal) = r.Value(i)
-	case argTyped:
-		*any(&out).(**LVal) = r.Typed(i, d.t, d.text)
-	case argString:
-		*any(&out).(*string) = r.String(i, d.text)
-	case argOpt:
-		*any(&out).(**LVal) = r.Opt(i)
-	case argOptString:
-		*any(&out).(*string) = r.OptString(i, d.text, d.defStr)
-	case argOptInt:
-		*any(&out).(*int) = r.OptInt(i, d.text, d.defInt)
+	switch p := any(&out).(type) {
+	case **LVal:
+		switch d.kind {
+		case argValue:
+			*p = r.Value(i)
+		case argTyped:
+			*p = r.Typed(i, d.t, d.text)
+		case argOpt:
+			*p = r.Opt(i)
+		default:
+			panic(errArgDecoderKind)
+		}
+	case *string:
+		switch d.kind {
+		case argString:
+			*p = r.String(i, d.text)
+		case argOptString:
+			*p = r.OptString(i, d.text, d.defStr)
+		default:
+			panic(errArgDecoderKind)
+		}
+	case *int:
+		if d.kind != argOptInt {
+			panic(errArgDecoderKind)
+		}
+		*p = r.OptInt(i, d.text, d.defInt)
 	default:
-		// argCustom: decodeShared handles it, so this switch has no
-		// indirect call and r does not escape.
-		panic("lisp: custom ArgDecoder reached the direct decoder")
+		panic(errArgDecoderKind)
 	}
 	return out
 }
+
+// errArgDecoderKind is decode's panic when a decoder's kind does not match
+// its type parameter, or a custom decoder reaches the direct decoder.
+const errArgDecoderKind = "lisp: ArgDecoder kind does not match the direct decoder"
 
 // decodeShared is decode for the shared-reader variant of Func1/Func2,
 // used when any decoder of the builtin is custom.  r is the call's one heap

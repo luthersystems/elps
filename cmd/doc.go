@@ -202,9 +202,9 @@ func docJSON(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag, lis
 
 	// --json -p <pkg>: single package
 	if pkgFlag {
-		pd, err := libhelp.QueryPackage(env, query)
-		if err != nil {
-			return err
+		pd, pkgErr := libhelp.QueryPackage(env, query)
+		if pkgErr != nil {
+			return pkgErr
 		}
 		return enc.Encode(pd)
 	}

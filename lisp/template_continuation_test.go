@@ -35,7 +35,12 @@ func TestTemplateContinuationPolicyOrder(t *testing.T) {
 	}
 	env.scope = scopeOf(map[string]*LVal{"subject": v})
 	_, err := NewTemplate(env, TemplateWithNativePolicy(func(payload any) bool {
-		calls = append(calls, *payload.(*int))
+		n, isInt := payload.(*int)
+		if !isInt {
+			t.Errorf("policy payload: got %T, want *int", payload)
+			return false
+		}
+		calls = append(calls, *n)
 		return true
 	}))
 	if err != nil {

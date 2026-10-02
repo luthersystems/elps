@@ -236,7 +236,7 @@ func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.Cach
 	}
 	// Installed AFTER initialization: the standard parser boots the library
 	// and only the file under test goes through the chosen reader.
-	env.Runtime.Reader = newLoadCacheHostileReader(mode)
+	env.Runtime.Reader = newLoadCacheHostileReader(t, mode)
 	if cache != nil {
 		env.Runtime.LoadCache = cache
 	}

@@ -286,7 +286,11 @@ func TestCopyClonesNativeCloner(t *testing.T) {
 	if inner.Type == lisp.LError {
 		t.Fatalf("map get: %v", inner)
 	}
-	if inner.Native.(*cloneableNative) == nested {
+	innerNative, ok := inner.Native.(*cloneableNative)
+	if !ok {
+		t.Fatalf("map get: got native %T, want *cloneableNative", inner.Native)
+	}
+	if innerNative == nested {
 		t.Errorf("a native nested in a sorted-map was shared, not cloned")
 	}
 }

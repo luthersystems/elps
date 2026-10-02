@@ -307,7 +307,10 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	if v.Len() > w.cfg.maxValues-w.values {
 		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, w.cfg.maxValues)
 	}
-	kp := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
+	kp, ok := tagKeyPairPool.Get().(*[]lisp.MapKeyPair)
+	if !ok {
+		kp = new([]lisp.MapKeyPair)
+	}
 	keys, ok := v.AppendMapKeyPairs((*kp)[:0])
 	defer func() {
 		clear(keys)
@@ -332,7 +335,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 	}
-	sp := mapPairPool.Get().(*[]lisp.MapPair)
+	sp := getMapPairs()
 	pairs := (*sp)[:0]
 	defer func() {
 		clear(pairs)

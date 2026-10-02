@@ -290,7 +290,7 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 	diags, err := linter.LintFile(src, lintFileA)
 	if err == nil {
 		stats.syntactic = len(diags)
-		if err := checkDiagnostics(diags, "LintFile"); err != nil {
+		if err = checkDiagnostics(diags, "LintFile"); err != nil {
 			return stats, err
 		}
 		// Determinism. Same bytes, same linter, same answer -- see the header.
@@ -330,16 +330,14 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 	semDiags, err := linter.LintFileWithAnalysis(src, lintFileA, acfg)
 	if err == nil {
 		stats.semantic = len(semDiags)
-		if err := checkDiagnostics(semDiags, "LintFileWithAnalysis"); err != nil {
+		if err = checkDiagnostics(semDiags, "LintFileWithAnalysis"); err != nil {
 			return stats, err
 		}
 	}
 
 	// LintFileWithContext with an explicitly nil Result, which is the
 	// "semantic analyzers are no-ops" contract, and with one built here.
-	if _, err := linter.LintFileWithContext(src, lintFileA, nil); err != nil {
-		_ = err // a parse failure is a legitimate outcome
-	}
+	_, _ = linter.LintFileWithContext(src, lintFileA, nil) // a parse failure is a legitimate outcome
 
 	// --- CLI entry points: LintFiles over a real (temp) workspace -----------
 	//
@@ -349,10 +347,10 @@ func runLint(root string, src, wsSrc, scriptBytes []byte) (lintStats, error) {
 	// here would be a file-read primitive.
 	pathA := filepath.Join(root, lintFileA)
 	pathB := filepath.Join(root, lintFileB)
-	if err := os.WriteFile(pathA, src, 0o600); err != nil {
+	if err = os.WriteFile(pathA, src, 0o600); err != nil {
 		return stats, fmt.Errorf("harness: %w", err)
 	}
-	if err := os.WriteFile(pathB, wsSrc, 0o600); err != nil {
+	if err = os.WriteFile(pathB, wsSrc, 0o600); err != nil {
 		return stats, fmt.Errorf("harness: %w", err)
 	}
 

@@ -340,9 +340,9 @@ func TestCanonizeGoOptions(t *testing.T) {
 	want, err := libjson.Dump(v, false)
 	require.NoError(t, err)
 	for _, opts := range []libjson.DumpOpts{{Canonize: true}, {Canonize: true, Typed: true}} {
-		got, err := libjson.DumpWith(v, opts)
-		require.NoError(t, err)
-		require.Equal(t, want, got)
+		canon, canonErr := libjson.DumpWith(v, opts)
+		require.NoError(t, canonErr)
+		require.Equal(t, want, canon)
 	}
 	got, err := libjson.DumpWith(v, libjson.DumpOpts{Typed: true})
 	require.NoError(t, err)

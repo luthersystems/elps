@@ -56,7 +56,7 @@ func packageWriteFunction(pass *analysis.Pass, fn *ast.FuncDecl) bool {
 	if obj == nil {
 		return false
 	}
-	if recv := obj.Type().(*types.Signature).Recv(); recv != nil {
+	if recv := obj.Signature().Recv(); recv != nil {
 		if named := packageNamedType(recv.Type()); named != nil {
 			name = named.Obj().Name() + "." + name
 		}

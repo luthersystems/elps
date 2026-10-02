@@ -56,7 +56,7 @@ func budgetsIn(fset *token.FileSet, f *ast.File, consts map[string]time.Duration
 		if !ok || sel.Sel.Name != "New" {
 			return true
 		}
-		if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "fuzzwatch" {
+		if pkg, isIdent := sel.X.(*ast.Ident); !isIdent || pkg.Name != "fuzzwatch" {
 			return true
 		}
 		if len(call.Args) != 1 {

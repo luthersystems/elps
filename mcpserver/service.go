@@ -340,13 +340,13 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 		return nil, DiagnosticsResponse{}, err
 	}
 	if in.IncludeWorkspace {
-		root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
-		if err != nil {
-			return nil, DiagnosticsResponse{}, err
+		root, wsErr := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
+		if wsErr != nil {
+			return nil, DiagnosticsResponse{}, wsErr
 		}
-		files, err := s.listWorkspaceFiles(root, true)
-		if err != nil {
-			return nil, DiagnosticsResponse{}, err
+		files, wsErr := s.listWorkspaceFiles(root, true)
+		if wsErr != nil {
+			return nil, DiagnosticsResponse{}, wsErr
 		}
 		contentByPath := make(map[string]*string)
 		var filterPath string
