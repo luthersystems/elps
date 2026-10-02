@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -109,14 +110,14 @@ func FuzzWithCleanup(f *testing.F) {
 			t.Skip("body does not parse")
 		}
 
-		outA, okA := evalBudgeted(t, []byte(fmt.Sprintf("(progn %s)", body)))
+		outA, okA := evalBudgeted(t, []byte(fmt.Sprintf("(progn %s)", body)), fuzzwatch.Fuzzed)
 		outB, okB := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(with-cleanup ((lisp:debug-print %q)) %s)", marker, body)))
+			"(with-cleanup ((lisp:debug-print %q)) %s)", marker, body)), fuzzwatch.Fuzzed)
 		outC, okC := evalBudgeted(t, []byte(fmt.Sprintf(
-			"(with-cleanup ((lisp:error '%s \"x\")) %s)", sentinelCleanupCond, body)))
+			"(with-cleanup ((lisp:error '%s \"x\")) %s)", sentinelCleanupCond, body)), fuzzwatch.Fuzzed)
 		outD, okD := evalBudgeted(t, []byte(fmt.Sprintf(
 			"(with-cleanup ((lisp:debug-print %q) (lisp:debug-print %q)) %s)",
-			marker+"1", marker+"2", body)))
+			marker+"1", marker+"2", body)), fuzzwatch.Fuzzed)
 		if !okA || !okB || !okC || !okD {
 			t.Skip("a wrapped arm does not parse")
 		}
@@ -278,7 +279,7 @@ func parses(t *testing.T, src string) bool {
 func TestEvalOutcomeExpiredIsHarnessState(t *testing.T) {
 	t.Parallel()
 
-	expired, ok := evalUnderBudget(t, []byte(`(+ 1 1)`), expiredDeadline)
+	expired, ok := evalUnderBudget(t, []byte(`(+ 1 1)`), expiredDeadline, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatal("the probe did not parse")
 	}
@@ -286,7 +287,7 @@ func TestEvalOutcomeExpiredIsHarnessState(t *testing.T) {
 		t.Fatalf("a deadline in the past did not set Expired (result %v)", expired.Result)
 	}
 
-	forged, ok := evalUnderBudget(t, []byte(`(error 'context-cancelled "forged")`), 0)
+	forged, ok := evalUnderBudget(t, []byte(`(error 'context-cancelled "forged")`), 0, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatal("the forgery did not parse")
 	}
