@@ -6,6 +6,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
@@ -301,11 +302,11 @@ func FuzzLoadCacheHostileReader(f *testing.F) {
 	f.Fuzz(func(t *testing.T, mode uint8, a, b []byte) {
 		mode %= readerModeCount
 
-		baseline, ok := runHostilePair(t, mode, a, b, nil)
+		baseline, ok := runHostilePair(t, mode, a, b, nil, fuzzDeadline)
 		if !ok {
 			return
 		}
-		control, ok := runHostilePair(t, mode, a, b, nil)
+		control, ok := runHostilePair(t, mode, a, b, nil, fuzzDeadline)
 		if !ok {
 			return
 		}
@@ -318,7 +319,7 @@ func FuzzLoadCacheHostileReader(f *testing.F) {
 		}
 
 		cache := newFuzzLoadCache()
-		got, ok := runHostilePair(t, mode, a, b, cache)
+		got, ok := runHostilePair(t, mode, a, b, cache, fuzzDeadline)
 		if !ok {
 			return
 		}
@@ -329,11 +330,11 @@ func FuzzLoadCacheHostileReader(f *testing.F) {
 		// must still agree with the baseline and the cached run must still
 		// disagree.  Same discipline as the sibling targets — a crasher this
 		// target cannot attribute to the cache is not reported.
-		fresh, ok := runHostilePair(t, mode, a, b, nil)
+		fresh, ok := runHostilePair(t, mode, a, b, nil, fuzzDeadline)
 		if !ok || !fresh.equal(baseline) {
 			return
 		}
-		again, ok := runHostilePair(t, mode, a, b, newFuzzLoadCache())
+		again, ok := runHostilePair(t, mode, a, b, newFuzzLoadCache(), fuzzDeadline)
 		if !ok || again.equal(baseline) {
 			return
 		}
@@ -349,7 +350,9 @@ func FuzzLoadCacheHostileReader(f *testing.F) {
 // hostile reader for mode, with cache installed (nil for the baseline).  A
 // nil return with ok == false means the input was rejected before any
 // assertion could be made (unparsable, or the harness skipped).
-func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache) (programRun, bool) {
+//
+// Each load runs under deadline; 0 means none (see loadNamedFileBudgeted).
+func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache, deadline time.Duration) (programRun, bool) {
 	t.Helper()
 
 	env, _, rc := newFuzzEnv()
@@ -374,7 +377,7 @@ func runHostilePair(t *testing.T, mode uint8, a, b []byte, cache *fuzzLoadCache)
 		{loadCacheHostileFileB, b},
 		{loadCacheHostileFileA, a},
 	} {
-		result, ok := loadNamedFileBudgeted(t, env, step.name, step.src, int(mode), i)
+		result, ok := loadNamedFileBudgeted(t, env, step.name, step.src, int(mode), i, deadline)
 		if !ok {
 			return programRun{}, false
 		}
