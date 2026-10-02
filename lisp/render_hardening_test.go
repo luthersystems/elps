@@ -83,9 +83,14 @@ func TestRenderHardeningDeadline(t *testing.T) {
 			// The child's bound is CPU time, not wall time (#789): process
 			// start under -race on a starved runner can outlast any
 			// wall-clock deadline.  A render that does not stop keeps using
-			// CPU, so it still reaches the bound.
+			// CPU, so it still reaches the bound.  A starved runner may not
+			// give it that CPU before the binary's -timeout, whose panic
+			// skips cleanup and would leave the child running, so Backstop
+			// kills it first and the subtest fails by name.
+			backstop, stop := testdeadline.Backstop(t)
+			defer stop()
 			//nolint:gosec // Re-execute this test binary under an external bound.
-			cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestRenderHardeningDeadline$/^"+mode+"$")
+			cmd := exec.CommandContext(backstop, os.Args[0], "-test.run=^TestRenderHardeningDeadline$/^"+mode+"$")
 			cmd.Env = append(os.Environ(), "ELPS_TEST_RENDER_HARDENING="+mode)
 			out, err := testdeadline.RunChild(cmd, 20*time.Second)
 			if err != nil {
