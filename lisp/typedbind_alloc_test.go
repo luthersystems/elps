@@ -176,3 +176,33 @@ func BenchmarkFuncDecode(b *testing.B) {
 		})
 	}
 }
+
+// TestFuncCustomArgsShareOneReader pins the shared reader for custom
+// decoders: a Func2 with two CustomArg decoders allocates one ArgReader, and
+// a failure one decoder records through a reader pointer it kept from an
+// earlier decoder still stops the call.
+func TestFuncCustomArgsShareOneReader(t *testing.T) {
+	env := newLimitTestEnv(t)
+	var kept *lisp.ArgReader
+	first := lisp.CustomArg(func(a *lisp.ArgReader, i int) *lisp.LVal {
+		kept = a
+		return a.Value(i)
+	})
+	second := lisp.CustomArg(func(a *lisp.ArgReader, i int) *lisp.LVal {
+		kept.Check(false, "second decoder failed through the first reader")
+		return a.Value(i)
+	})
+	called := false
+	fn := lisp.Func2(first, second, func(env *lisp.LEnv, a, b *lisp.LVal) *lisp.LVal {
+		called = true
+		return lisp.Nil()
+	})
+	got := fn(env, lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}))
+	require.False(t, called, "the body must not run after a decoder failed")
+	require.Equal(t, lisp.LError, got.Type)
+
+	plain := lisp.CustomArg(func(a *lisp.ArgReader, i int) *lisp.LVal { return a.Value(i) })
+	two := lisp.Func2(plain, plain, func(env *lisp.LEnv, a, b *lisp.LVal) *lisp.LVal { return a })
+	args := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)})
+	assert.Equal(t, 1, int(testing.AllocsPerRun(100, func() { _ = two(env, args) })))
+}

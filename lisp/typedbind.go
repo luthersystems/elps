@@ -99,8 +99,9 @@ func OptIntArg(what string, def int) ArgDecoder[int] {
 	return ArgDecoder[int]{kind: argOptInt, text: what, defInt: def}
 }
 
-// CustomArg returns a decoder that calls f.  The call is indirect, so each
-// builtin call allocates one ArgReader copy on the heap.  Prefer the
+// CustomArg returns a decoder that calls f.  The call is indirect, so a
+// builtin with a custom decoder puts its ArgReader on the heap: one
+// allocation per call, shared by all of the call's decoders.  Prefer the
 // constructors above when one of them fits.
 func CustomArg[T any](f func(a *ArgReader, i int) T) ArgDecoder[T] {
 	return ArgDecoder[T]{kind: argCustom, custom: f}
@@ -125,17 +126,37 @@ func (d *ArgDecoder[T]) decode(r *ArgReader, i int) T {
 	case argOptInt:
 		*any(&out).(*int) = r.OptInt(i, d.text, d.defInt)
 	default:
-		// f is unknown to escape analysis, so the reader it gets escapes.
-		// Pass it a copy, declared here so only this path allocates it.
-		cr := *r
-		out = d.custom(&cr, i)
-		*r = cr
+		// argCustom: decodeShared handles it, so this switch has no
+		// indirect call and r does not escape.
+		panic("lisp: custom ArgDecoder reached the direct decoder")
 	}
 	return out
 }
 
+// decodeShared is decode for the shared-reader variant of Func1/Func2,
+// used when any decoder of the builtin is custom.  r is the call's one heap
+// reader, and every decoder, custom or not, reads and records failures
+// through it.
+func (d *ArgDecoder[T]) decodeShared(r *ArgReader, i int) T {
+	if d.kind == argCustom {
+		return d.custom(r, i)
+	}
+	return d.decode(r, i)
+}
+
 // Func1 returns an LBuiltin that decodes one argument and calls f.
 func Func1[A any](da ArgDecoder[A], f func(env *LEnv, a A) *LVal) LBuiltin {
+	if da.kind == argCustom {
+		return func(env *LEnv, args *LVal) *LVal {
+			r := new(ArgReader)
+			*r = ReadArgs(env, args)
+			a := da.decodeShared(r, 0)
+			if r.err != nil {
+				return r.err
+			}
+			return f(env, a)
+		}
+	}
 	return func(env *LEnv, args *LVal) *LVal {
 		r := ReadArgs(env, args)
 		a := da.decode(&r, 0)
@@ -148,6 +169,18 @@ func Func1[A any](da ArgDecoder[A], f func(env *LEnv, a A) *LVal) LBuiltin {
 
 // Func2 returns an LBuiltin that decodes two arguments, in order, and calls f.
 func Func2[A, B any](da ArgDecoder[A], db ArgDecoder[B], f func(env *LEnv, a A, b B) *LVal) LBuiltin {
+	if da.kind == argCustom || db.kind == argCustom {
+		return func(env *LEnv, args *LVal) *LVal {
+			r := new(ArgReader)
+			*r = ReadArgs(env, args)
+			a := da.decodeShared(r, 0)
+			b := db.decodeShared(r, 1)
+			if r.err != nil {
+				return r.err
+			}
+			return f(env, a, b)
+		}
+	}
 	return func(env *LEnv, args *LVal) *LVal {
 		r := ReadArgs(env, args)
 		a := da.decode(&r, 0)
