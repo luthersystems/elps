@@ -268,7 +268,7 @@ func sliceOf(env *lisp.LEnv, seq *lisp.LVal, n int) *lisp.LVal {
 // nothing.
 func TestSequenceCapacitySharingIsReachable(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 
@@ -310,7 +310,7 @@ func TestSequenceCapacitySharingIsReachable(t *testing.T) {
 // in milliseconds rather than only by a sweep.
 func TestSequenceSealedLiteralSurvivesTheSameShape(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 
@@ -349,7 +349,7 @@ func TestSequenceSealedLiteralSurvivesTheSameShape(t *testing.T) {
 // mutate) and append! (promises to).
 func TestSequenceOpsAreDocumented(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 
@@ -394,7 +394,7 @@ func TestSequenceOpsAreDocumented(t *testing.T) {
 // unrenderable shape far more readily than the map family does.
 func TestSequenceSequencesRunToCompletion(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 

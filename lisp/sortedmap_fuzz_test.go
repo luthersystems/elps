@@ -189,7 +189,7 @@ var containerSeeds = [][]byte{
 // asked for.
 func TestSortedMapSequencesRunToCompletion(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 
@@ -219,7 +219,7 @@ func TestSortedMapSequencesRunToCompletion(t *testing.T) {
 // copying ops leave their input alone, and the mutating ones do not.
 func TestSortedMapOpsAreDocumented(t *testing.T) {
 	t.Parallel()
-	ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
+	ctx, cancel := evalContext(0)
 	defer cancel()
 	env := newContainerEnv(t, ctx)
 

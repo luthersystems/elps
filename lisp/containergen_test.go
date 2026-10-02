@@ -108,7 +108,11 @@ const (
 	// higher-order family run arbitrary lisp, so the step budget bounds it.
 	containerMaxEvalSteps = 20000
 
-	// containerDeadline bounds one whole operation sequence.
+	// containerDeadline bounds one whole operation sequence of FUZZED
+	// input.  The fixed tests run with no wall-clock deadline
+	// (evalContext(0)), so their verdicts do not depend on machine load
+	// (luthersystems/elps#788).  The step and allocation budgets and the
+	// scheduled-time watchdog still bound them.
 	containerDeadline = 5 * time.Second
 
 	// containerWatchdogGrace is the SCHEDULED time past the deadline after
