@@ -37,8 +37,12 @@ func heapBytes() uint64 {
 // A walk that does not come back keeps using CPU, so it still reaches the
 // budget; a correct walk on a starved process does not, however long it
 // waits for a CPU.
-func Watch(name string, d time.Duration, maxHeap uint64, fn func()) {
-	if _, reason := watch(Scale(d), maxHeap, fn); reason != "" {
+//
+// Watch returns the CPU time fn used.
+func Watch(name string, d time.Duration, maxHeap uint64, fn func()) time.Duration {
+	used, reason := watch(Scale(d), maxHeap, fn)
+	if reason != "" {
 		panic(name + ": " + reason)
 	}
+	return used
 }
