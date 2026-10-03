@@ -373,7 +373,10 @@ var (
 			given arguments.`},
 		{"append!", Formals("vec", VarArgSymbol, "values"), builtinAppendMutate,
 			`Appends values to vec, mutating it in place. Returns the
-			modified vector.`},
+			modified vector. When the values do not fit in vec's capacity,
+			the capacity grows to max(2c, n, 4) for capacity c and new
+			length n, on every platform; a new vector's capacity is its
+			length.`},
 		{"append", Formals("type-specifier", "vec", VarArgSymbol, "values"), builtinAppend,
 			`Returns a new sequence with values appended to vec. The
 			type-specifier ('list, 'vector, or 'bytes) determines the return
@@ -2206,7 +2209,9 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 		v.Cells = cells
 	case "vector":
 		v.Cells[0].Cells[0].Int = len(cells)
-		v.Cells[1].Cells = cells
+		// Go's append chose the capacity past the start; a new vector's
+		// capacity is its length (see Array).
+		v.Cells[1].Cells = cells[:len(cells):len(cells)]
 	}
 	return v
 }
@@ -2261,7 +2266,9 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 		v.Cells = cells
 	case "vector":
 		v.Cells[0].Cells[0].Int = len(cells)
-		v.Cells[1].Cells = cells
+		// Go's append chose the capacity past the start; a new vector's
+		// capacity is its length (see Array).
+		v.Cells[1].Cells = cells[:len(cells):len(cells)]
 	}
 	return v
 }
@@ -2658,11 +2665,40 @@ func builtinVector(env *LEnv, args *LVal) *LVal {
 	return Array(nil, args.Cells)
 }
 
+// minGrowCap is the smallest capacity append! gives a vector it grows.
+const minGrowCap = 4
+
+// GrowCap is the capacity append! gives a vector's data when n cells do
+// not fit in its capacity c: max(2c, n, 4).  append! lowers it to the
+// runtime's allocation cap, never below n.  It is part of the language,
+// not of the Go runtime, so a vector's capacity, and with it which later
+// append! calls write in place, is the same on every platform and Go
+// version.  A saved document records capacity (durable JSON views), so it
+// must not depend on where it was computed.
+func GrowCap(c, n int) int {
+	return max(2*c, n, minGrowCap)
+}
+
+// appendGrow appends vals to cells in place when they fit in its capacity,
+// and otherwise into a new backing of capacity GrowCap, at most limit (the
+// runtime's allocation cap) and at least the new length.
+func appendGrow(cells, vals []*LVal, limit int) []*LVal {
+	n := len(cells) + len(vals)
+	if n <= cap(cells) {
+		return append(cells, vals...) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	}
+	grown := make([]*LVal, n, max(n, min(GrowCap(cap(cells), n), limit)))
+	copy(grown, cells)
+	copy(grown[len(cells):], vals)
+	return grown
+}
+
 // builtinAppendMutate implements the append! builtin.
 //
 // NOTE (issue #373):  This is deliberately NOT capacity-clamped.  append! is
 // the in-place accumulator -- it is documented to mutate its argument and
-// return it -- so it keeps Go's amortised growth and stays O(1) per element.
+// return it -- so it keeps amortised growth (GrowCap) and stays O(1) per
+// element.
 // That is safe because the target's spare capacity is not reachable from any
 // other value: every producer of a view (slice, cdr, rest) clamps what it
 // hands out, and every non-mutating append clamps what it reads, so nothing
@@ -2682,8 +2718,8 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("%s", msg)
 	}
 	dims := vec.Cells[0]
-	dims.Cells[0].Int += len(vals)                           //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
-	vec.Cells[1].Cells = append(vec.Cells[1].Cells, vals...) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	dims.Cells[0].Int += len(vals)                                                         //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	vec.Cells[1].Cells = appendGrow(vec.Cells[1].Cells, vals, env.Runtime.MaxAllocBytes()) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
 	return vec
 }
 
