@@ -79,7 +79,7 @@ jobs:
           role-to-assume: arn:aws:iam::637423319757:role/github-actions-claude-bedrock
           aws-region: us-west-2
       - name: Cut the release via Claude
-        uses: anthropics/claude-code-action@v1
+        uses: anthropics/claude-code-action@97c53473391bff1901034d4b454b5bac7ab7a029 # v1.0.239
         env:
           RELEASE_VERSION: ${{ inputs.version }}
           DRY_RUN: ${{ inputs.dry_run }}
