@@ -50,8 +50,8 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          # EXACT, and identical to every other workflow here -- see the long
-          # note in .github/workflows/govulncheck.yml for why every looser
+          # EXACT: go.mod's `toolchain` line, the same as every other workflow
+          # here -- see the long note in .github/workflows/govulncheck.yml for why every looser
           # spelling ("stable", a bare minor, a ">=" range) resolved somewhere
           # unintended, and for the golangci-lint constraint that used to hold
           # this line at 1.25.
@@ -59,7 +59,7 @@ jobs:
           # This scheduled run is the one that reports on main, so it is the
           # one where a toolchain mismatch would be least visible and most
           # misleading.
-          go-version: "1.26.8"
+          go-version-file: go.mod
           check-latest: true
           cache: true
 

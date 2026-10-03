@@ -54,7 +54,8 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 	exit 0
 fi
 
-# Keep in sync with `go-version:` in .github/workflows/elps.yml.
+# Keep in sync with the `toolchain` line in go.mod, which CI installs through
+# setup-go's `go-version-file: go.mod`. scripts/go-pin-sync-test.py checks it.
 GO_TOOLCHAIN="go1.26.8"
 # Keep in sync with the golangci-lint-action `version:` in the same file.  That
 # pin is a major.minor (the action resolves the newest patch); this one has to
