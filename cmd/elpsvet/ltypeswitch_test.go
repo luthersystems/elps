@@ -29,6 +29,7 @@ func TestLTypeSwitchScope(t *testing.T) {
 		{libjsonPkgPath, "tag.go", true},
 		{libjsonPkgPath, "canonize.go", true},
 		{libjsonPkgPath, "untag.go", true},
+		{libjsonPkgPath, "durable.go", true},
 		{"other", "shape.go", false},
 	} {
 		if _, got := lTypeSwitchFuncs(tc.pkg, tc.file); got != tc.want {

@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func newTypedTestEnv(t *testing.T, cfg ...lisp.Config) *lisp.LEnv {
+func newTypedTestEnv(t testing.TB, cfg ...lisp.Config) *lisp.LEnv {
 	t.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()

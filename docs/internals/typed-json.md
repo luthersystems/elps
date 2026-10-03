@@ -124,7 +124,10 @@ Decisions and reasons:
   empty symbols and values that contain themselves. A caller must handle the
   error; nothing is ever encoded lossily.
   There is no native-value hook: a native's meaning is the embedder's, and a
-  host that needs one stored converts it to data first.
+  host that needs one stored converts it to data first. Durable typed JSON
+  ([durable-json.md](durable-json.md)) is the opt-in extension that keeps
+  sharing and cycles and saves natives and named functions; it does not
+  change these bytes.
 
 ## Canonical form
 
@@ -244,7 +247,8 @@ The document is the value itself, with no `["~#elps1", value]` wrapper:
   wrapper is shorter.
 
 If a change ever has to reinterpret existing text rather than add new text,
-it requires an explicit API for a distinct format.
+it requires an explicit API for a distinct format. Durable typed JSON is such a format: its documents start with
+`["~#durable",[1,`, a frozen version number, and `LoadTyped` rejects them.
 
 ## Limits and allocation
 

@@ -353,12 +353,12 @@ func appendTypedSymbol(b []byte, name string) []byte {
 	return appendJSONStringBody(append(b, '"', '~', '$'), name)
 }
 
-// array writes a vector (rank 1) as a plain JSON array and any other
-// rank as ["~#array",[[dims...],[cells...]]], cells in row-major order.
-func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
+// checkArray returns an array's dims and cells, or an error when the array
+// is malformed or its cells do not match its dimensions.
+func checkArray(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
 	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil ||
 		v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-		return errors.New("typed json: malformed array")
+		return nil, nil, errors.New("typed json: malformed array")
 	}
 	dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
 	// A zero dimension makes the array empty however large the others are,
@@ -366,7 +366,7 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 	zero := false
 	for _, d := range dims {
 		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return errors.New("typed json: malformed array dimensions")
+			return nil, nil, errors.New("typed json: malformed array dimensions")
 		}
 		zero = zero || d.Int == 0
 	}
@@ -376,13 +376,23 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 	} else {
 		for _, d := range dims {
 			if total > math.MaxInt/d.Int {
-				return errors.New("typed json: malformed array dimensions")
+				return nil, nil, errors.New("typed json: malformed array dimensions")
 			}
 			total *= d.Int
 		}
 	}
 	if total != len(cells) {
-		return errors.New("typed json: array contents do not match its dimensions")
+		return nil, nil, errors.New("typed json: array contents do not match its dimensions")
+	}
+	return dims, cells, nil
+}
+
+// array writes a vector (rank 1) as a plain JSON array and any other
+// rank as ["~#array",[[dims...],[cells...]]], cells in row-major order.
+func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
+	dims, cells, err := checkArray(v)
+	if err != nil {
+		return err
 	}
 	if err := e.enter(v, depth); err != nil {
 		return err
@@ -394,6 +404,20 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 		e.leave()
 		return nil
 	}
+	if err := e.arrayDims(dims); err != nil {
+		return err
+	}
+	if err := e.cells(cells, depth); err != nil {
+		return err
+	}
+	e.buf = append(e.buf, ']', ']')
+	e.leave()
+	return e.grow()
+}
+
+// arrayDims writes the opening of a tagged array through the comma after
+// its dimension list.  Each dimension counts as a value.
+func (e *typedEncoder) arrayDims(dims []*lisp.LVal) error {
 	e.buf = append(e.buf, `["`+tagArray+`",[[`...)
 	for i, d := range dims {
 		if i > 0 {
@@ -406,12 +430,7 @@ func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
 		e.buf = appendTypedInt(e.buf, d.Int)
 	}
 	e.buf = append(e.buf, ']', ',')
-	if err := e.cells(cells, depth); err != nil {
-		return err
-	}
-	e.buf = append(e.buf, ']', ']')
-	e.leave()
-	return e.grow()
+	return nil
 }
 
 // appendTypedKey appends the text of a map key -- the string that becomes
@@ -473,46 +492,9 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	if v.Len() > e.cfg.maxValues-e.values {
 		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 	}
-	kbase, pbase, keysMark := len(e.kp), len(e.pairs), len(e.keys)
-	var ok bool
-	e.kp, ok = v.AppendMapKeyPairs(e.kp)
-	if !ok {
-		// An embedder's own map backing: read it through MapEntries.
-		ents := v.MapEntries()
-		if ents.Type == lisp.LError {
-			return fmt.Errorf("typed json: %s", ents.Str)
-		}
-		for _, p := range ents.Cells {
-			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
-				return errors.New("typed json: malformed map entry")
-			}
-			k := p.Cells[0]
-			e.kp = append(e.kp, lisp.MapKeyPair{Val: p.Cells[1], Key: k.Str, Int: k.Int, Kind: k.Type})
-		}
-		if err := checkHostMapKeys(e.kp[kbase:]); err != nil {
-			return err
-		}
-	}
-	for i := kbase; i < len(e.kp); i++ {
-		p := e.kp[i]
-		ks := len(e.keys)
-		var err error
-		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
-			return err
-		}
-		e.pairs = append(e.pairs, typedPair{val: p.Val, ks: ks, ke: len(e.keys)})
-	}
-	clear(e.kp[kbase:])
-	e.kp = e.kp[:kbase]
-	members := e.pairs[pbase:]
-	keys := e.keys
-	// Order the UTF-8 member text after Transit prefixes, before JSON escaping,
-	// matching the plain encoder's order for string keys.
-	slices.SortFunc(members, func(a, b typedPair) int { return bytes.Compare(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
-	for i := 1; i < len(members); i++ {
-		if bytes.Equal(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) {
-			return errors.New("typed json: map has two keys with one encoding")
-		}
+	pbase, keysMark, err := e.mapMembers(v)
+	if err != nil {
+		return err
 	}
 	e.buf = append(e.buf, '{')
 	for i := pbase; i < len(e.pairs); i++ {
@@ -533,11 +515,66 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 		}
 	}
 	e.buf = append(e.buf, '}')
+	e.releaseMembers(pbase, keysMark)
+	e.leave()
+	return e.grow()
+}
+
+// mapMembers pushes the members of map v onto e.pairs, with their key text
+// on e.keys, in canonical member order.  The members are e.pairs[pbase:].
+// The caller releases them with releaseMembers(pbase, keysMark) once it has
+// written them; a nested map pushes and releases past them meanwhile.
+func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
+	kbase := len(e.kp)
+	pbase, keysMark := len(e.pairs), len(e.keys)
+	var ok bool
+	e.kp, ok = v.AppendMapKeyPairs(e.kp)
+	if !ok {
+		// An embedder's own map backing: read it through MapEntries.
+		ents := v.MapEntries()
+		if ents.Type == lisp.LError {
+			return 0, 0, fmt.Errorf("typed json: %s", ents.Str)
+		}
+		for _, p := range ents.Cells {
+			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
+				return 0, 0, errors.New("typed json: malformed map entry")
+			}
+			k := p.Cells[0]
+			e.kp = append(e.kp, lisp.MapKeyPair{Val: p.Cells[1], Key: k.Str, Int: k.Int, Kind: k.Type})
+		}
+		if err := checkHostMapKeys(e.kp[kbase:]); err != nil {
+			return 0, 0, err
+		}
+	}
+	for i := kbase; i < len(e.kp); i++ {
+		p := e.kp[i]
+		ks := len(e.keys)
+		var err error
+		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
+			return 0, 0, err
+		}
+		e.pairs = append(e.pairs, typedPair{val: p.Val, ks: ks, ke: len(e.keys)})
+	}
+	clear(e.kp[kbase:])
+	e.kp = e.kp[:kbase]
+	members := e.pairs[pbase:]
+	keys := e.keys
+	// Order the UTF-8 member text after Transit prefixes, before JSON escaping,
+	// matching the plain encoder's order for string keys.
+	slices.SortFunc(members, func(a, b typedPair) int { return bytes.Compare(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
+	for i := 1; i < len(members); i++ {
+		if bytes.Equal(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) {
+			return 0, 0, errors.New("typed json: map has two keys with one encoding")
+		}
+	}
+	return pbase, keysMark, nil
+}
+
+// releaseMembers drops the members mapMembers pushed.
+func (e *typedEncoder) releaseMembers(pbase, keysMark int) {
 	clear(e.pairs[pbase:])
 	e.pairs = e.pairs[:pbase]
 	e.keys = e.keys[:keysMark]
-	e.leave()
-	return e.grow()
 }
 
 // typedOptions bounds a builtin call by the runtime's per-operation
