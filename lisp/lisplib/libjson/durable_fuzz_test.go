@@ -144,6 +144,87 @@ func maskFunctionNames(b []byte) []byte {
 	}
 }
 
+// viewGraph builds, from fuzz bytes, a vector with spare capacity and up to
+// four list or vector views over overlapping parts of its cells: data[0]
+// sets the length, data[1] the spare capacity, and each later triple a
+// view's kind, start and end.
+func viewGraph(data []byte) *lisp.LVal {
+	if len(data) < 2 {
+		return nil
+	}
+	n := 1 + int(data[0]%10)
+	cells := make([]*lisp.LVal, n, n+int(data[1]%6))
+	for i := range cells {
+		cells[i] = lisp.Int(i)
+	}
+	roots := []*lisp.LVal{{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Int(n)}), lisp.QExpr(cells)}}}
+	for k := 2; k+2 < len(data) && len(roots) < 5; k += 3 {
+		i, j := int(data[k+1])%(n+1), int(data[k+2])%(n+1)
+		if i > j {
+			i, j = j, i
+		}
+		view := cells[i:j:j]
+		if data[k]%2 == 0 {
+			roots = append(roots, &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Int(j - i)}), lisp.QExpr(view)}})
+		} else if j > i {
+			roots = append(roots, lisp.QExpr(view))
+		}
+	}
+	return lisp.QExpr(roots)
+}
+
+// writeThrough writes a marker into the first cell of every root that has
+// one, and appends to the vector, in place where its capacity allows.  The
+// printed result shows which roots share storage.
+func writeThrough(v *lisp.LVal) string {
+	for k, r := range v.Cells {
+		cells := r.Cells
+		if r.Type == lisp.LArray {
+			cells = r.Cells[1].Cells
+		}
+		if len(cells) > 0 {
+			cells[0] = lisp.Int(100 + k)
+		}
+	}
+	vec := v.Cells[0]
+	vec.Cells[1].Cells = append(vec.Cells[1].Cells, lisp.Int(-1))
+	vec.Cells[0].Cells[0] = lisp.Int(len(vec.Cells[1].Cells))
+	for k, r := range v.Cells {
+		cells := r.Cells
+		if r.Type == lisp.LArray {
+			cells = r.Cells[1].Cells
+		}
+		if len(cells) > 1 {
+			cells[1] = lisp.Int(200 + k)
+		}
+	}
+	return v.String()
+}
+
+// checkViews round-trips the view graph data describes and requires that
+// writes through the restored values are seen exactly where they are seen
+// through the original ones.
+func checkViews(t *testing.T, env *lisp.LEnv, data []byte) {
+	orig := viewGraph(data)
+	if orig == nil {
+		return
+	}
+	b, err := libjson.DumpDurable(env, orig, nil)
+	if err != nil {
+		t.Fatalf("view graph does not dump: %v", err)
+	}
+	back, err := libjson.LoadDurable(env, b, nil)
+	if err != nil {
+		t.Fatalf("view graph does not load: %v\n%s", err, b)
+	}
+	if again, err := libjson.DumpDurable(env, back, nil); err != nil || !bytes.Equal(again, b) {
+		t.Fatalf("view graph is not canonical: %s, %s (%v)", b, again, err)
+	}
+	if want, got := writeThrough(viewGraph(data)), writeThrough(back); want != got {
+		t.Fatalf("sharing differs after restore of %s:\n want %s\n got  %s", b, want, got)
+	}
+}
+
 // FuzzDurableJSON feeds arbitrary bytes to LoadDurable, with strict test
 // native codecs registered and a global function defined.
 //
@@ -167,6 +248,10 @@ func maskFunctionNames(b []byte) []byte {
 //     with ErrTypedLimit where the default decode succeeds, or its value
 //     re-encodes under the same limits.  The encoder and the decoder count
 //     alike.
+//  7. Views: the same bytes also describe a vector and overlapping list
+//     and vector views of it (viewGraph).  It round-trips canonically, and
+//     writes through the restored values are seen where they are seen
+//     through the original ones.
 //
 // Decoding is pure Go bounded by the typed limits, and the test codecs do
 // constant work, so no watchdog or step budget is needed.
@@ -180,6 +265,11 @@ func FuzzDurableJSON(f *testing.F) {
 	}
 	for _, s := range []string{
 		`["~#durable",[1,1]]`,
+		"\x07\x03\x00\x01\x05\x01\x02\x07\x00\x00\x03",
+		`["~#durable",[1,["~#list",[["~#view",[["~#obj",[0,["~#cells",[4,[0,3,2,1]]]]],0,4,4]],["~#view",[["~#ref",0],1,3,3]]]]]]`,
+		`["~#durable",[1,["~#list",[["~#array",[[4],["~#view",[["~#obj",[0,["~#cells",[6,[3,2,1,0,null,null]]]]],0,4,6]]]],["~#array",[[2],["~#view",[["~#ref",0],0,2,2]]]]]]]]`,
+		`["~#durable",[1,["~#list",[["~#array",[[2,3],["~#obj",[0,["~#list",[1,2,3,4,5,6]]]]]],["~#array",[[6],["~#ref",0]]]]]]]`,
+		`["~#durable",[1,["~#list",[["~#view",[["~#obj",[0,["~#cells",[3,[1,2,null]]]]],0,2,2]],["~#view",[["~#ref",0],1,2,2]]]]]]`,
 		`["~#durable",[1,["~#list",[["~#fn","lisp:not"],["~#fn","s:not"]]]]]`,
 		`["~#durable",[1,["~#list",[["~#fn","lisp:first"],1.5,"~d2"]]]]`,
 		`["~#durable",[1,["~#obj",[0,[["~#obj",[1,["~#list",[["~#obj",[2,["~#list",[["~#ref",1]]]]],["~#ref",0]]]]],["~#native",["test:box",1,["~#ref",2]]]]]]]]`,
@@ -222,6 +312,7 @@ func FuzzDurableJSON(f *testing.F) {
 	reg := durableFuzzRegistry(f)
 	small := []libjson.TypedOption{libjson.WithTypedMaxDepth(8), libjson.WithTypedMaxValues(64)}
 	f.Fuzz(func(t *testing.T, data []byte) {
+		checkViews(t, env, data)
 		var charges [2][]int
 		for i := range charges {
 			_, _ = libjson.LoadDurable(env, data, reg, libjson.WithTypedCharge(func(n int) error {

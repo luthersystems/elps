@@ -72,12 +72,12 @@ A change that reinterprets existing text needs a new version number.
 
 Version 1 was tightened before its first release (luthersystems/elps#797).
 Payload sharing is refused unless a codec registers `WithSharedPayload`. A
-native may not be part of any cycle. Overlapping lists and arrays are
-refused. A function is written under its first sorted name, and any of its
+native may not be part of any cycle. Lists and arrays that share storage
+are written as views of one storage object. A function is written under its first sorted name, and any of its
 package's names for it is accepted on load. No release wrote version 1
 under the earlier rules.
 
-`VALUE` uses every typed JSON spelling unchanged, plus four extension tags:
+`VALUE` uses every typed JSON spelling unchanged, plus these extension tags:
 
 | Tag | Form | Meaning |
 |---|---|---|
@@ -85,6 +85,18 @@ under the earlier rules.
 | `~#ref` | `["~#ref",ID]` | The object `ID`, defined earlier in the document. |
 | `~#native` | `["~#native",["NAME",VERSION,PAYLOAD]]` | A native value, saved by the codec registered as `NAME`. |
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
+| `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. |
+| `~#cells` | `["~#cells",[N,[CELL...]]]` | Storage of `N` cells. It appears only as `STORAGE`: as `["~#obj",[ID,["~#cells",...]]]` at its first view and `["~#ref",ID]` after. |
+| `~#array` with data | `["~#array",[[DIMS...],DATA]]` | An array whose data list has an identity of its own. `DATA` is a `~#obj` of a list (empty allowed), a `~#ref` to one, or a `~#view`. Any rank. |
+
+The grammar of the view forms:
+
+```text
+VIEW    = ["~#view",[STORAGE,OFF,LEN,CAP]]        LEN <= CAP, OFF+CAP <= N, CAP > 0
+STORAGE = ["~#obj",[ID,["~#cells",[N,[CELL,...]]]]] | ["~#ref",ID]
+CELL    = VALUE                                    null where no view's LEN covers it
+ARRAY   = ["~#array",[[DIM,...],DATA]]             DATA as above, LEN = product of DIMs
+```
 
 `X` is the typed spelling of a list, vector, array, sorted map, tagged value
 or bytes value, or a `~#native` form. `PAYLOAD` is a durable `VALUE`, so it can
@@ -105,9 +117,10 @@ An object is a value whose identity Lisp code can observe through mutation or
 | Kind | Identity |
 |---|---|
 | Sorted map | Its map storage (`*lisp.MapData`). Two headers over one map are one object. |
-| Vector or array | Its data list header (`Cells[1]`). The dims header (`Cells[0]`) must be the same one too. |
+| Vector or array | Its dims header and its data list header together. Two arrays with different dims headers over one data list are two arrays that share the data list. |
+| Array data list | Its header, because `append!` replaces the header's cells and every array over that header sees it. A list value that is that header is the same object. |
 | Bytes | Its buffer (`*[]byte`). |
-| Nonempty list | Its cells: the address of the first cell and the length. Two headers over the same cells are one list, because `stable-sort` through one is seen through the other. |
+| Nonempty list | Its cells: the address of the first cell and the length. Two headers over the same cells are one list, because `stable-sort` through one is seen through the other. (A list header that is an array's data list is that data list.) |
 | Tagged value | Its header. |
 | Native | Its payload when the payload is a Go pointer; the type and address when it is a non-nil Go map, channel or unsafe pointer; else its header (so distinct nil maps stay distinct). |
 
@@ -115,12 +128,47 @@ Numbers, strings, symbols, keywords, `()` and functions are not objects. They
 are written in full at each occurrence. Two symbols of one spelling are equal,
 and a function is restored by name.
 
-Two objects whose cells overlap without being the same cells are refused:
-a list and its tail (`rest`, `cdr`, a `slice` of the list), a `slice` of a
-vector, or a vector's data list held as a list. A write through one is seen
-through the other, and the format cannot express a view. Copy one of them
-before saving. The check is a yes or no over the address ranges of every
-list and array data, so its answer does not depend on address order.
+#### Views
+
+Lists and array data lists hold their cells in Go slices, and `rest`,
+`cdr` and `slice` return new headers over the same cells. `append!` grows a
+vector's data in place while its capacity allows. So two values can share
+storage without being one value: a write through one (`stable-sort`,
+`append!`) is seen through the other. The encoder keeps that sharing:
+
+1. A first walk (discovery) finds every holder of cells: each nonempty
+   list and each array data list. It also saves every native and names
+   every function, once.
+2. Holders are grouped by the address range their cells cover. A list
+   covers its length. An array data list covers its capacity, because
+   `append!` writes there. Holders whose ranges overlap form one group.
+3. A group of two or more holders is written as one storage object. Its
+   cells are the union of the ranges, in address order. A cell no holder's
+   length covers is dead: nothing can read it before an `append!` writes it,
+   so it is written as `null`.
+4. Each holder in the group is a `~#view` of the storage, with its offset,
+   length and capacity. A list view's capacity equals its length. Array data
+   keeps its capacity, so `append!` after a load writes in place exactly
+   when it did before the save.
+5. The counting pass and the output then walk the storage's cells once, at
+   the first view, in offset order.
+
+Addresses decide only which holders overlap and their offsets. Both are
+properties of the memory layout, not of address order, so the bytes are a
+function of the value graph alone. On load the storage is allocated once
+and each view becomes a list header over a slice of it.
+
+An array's data list is written in its own `DATA` form (above) when it is a
+view, or when another array or a list value shares it. Otherwise the array
+is written exactly as typed JSON writes it.
+
+`LoadDurable` rejects a view that is out of its storage's range, has
+`LEN > CAP` or `CAP == 0`, is a list view with spare capacity, or equals
+another list view of the same storage. It also rejects storage whose views
+do not form one run of overlapping ranges from its first cell to its last,
+storage with a dead cell that is not `null`, a storage object that only one
+view uses, a `~#ref` to storage outside a view, and `~#cells` anywhere but in
+a view.
 
 Restored values are fresh and mutable. A saved program literal, which raises
 `modify-literal-error` on `stable-sort`, restores as an ordinary list that
@@ -324,12 +372,10 @@ saved.
 |---|---|
 | Error (condition) value | `durable json: cannot encode an error` |
 | Anonymous or local function, or one no global of its package binds | `durable json: cannot encode an anonymous function` |
-| Lists or arrays whose cells overlap | `durable json: two values share storage (a list and its tail, or a slice of a vector); copy one of them before saving` |
 | A shared value in the payload of a codec without `WithSharedPayload` | `durable json: native "NAME" payload shares a value, and its codec does not keep sharing` |
 | Macro or special operator | `durable json: cannot encode a macro or special operator` |
 | Native with no codec | `durable json: no codec registered for native type T` |
 | Native that reaches itself or an enclosing object | `durable json: native "NAME" payload refers to a value that encloses the native` |
-| Two arrays over one data list with different dims | `durable json: two arrays share data with different dimensions` |
 | Nested quote, empty symbol, invalid UTF-8, malformed value | the typed JSON error |
 
 ## Limits and charges
@@ -372,6 +418,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Views | `durable_views_test.go` | A list with its tail and a middle slice, `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), arrays of different dims over one data list, a data list held as a list, views in a native payload, limits at the exact boundary, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |

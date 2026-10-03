@@ -14,12 +14,10 @@ package libjson
 // typedgolden/testdata/durable.txt freezes it.
 
 import (
-	"cmp"
 	"errors"
 	"fmt"
 	"math"
 	"reflect"
-	"slices"
 	"strconv"
 	"unicode/utf8"
 
@@ -54,7 +52,8 @@ type (
 		p **lisp.LVal
 		n int
 	}
-	arrayKey        struct{ p *lisp.LVal }
+	// arrayKey is an array's dims and data headers.
+	arrayKey        struct{ dims, data *lisp.LVal }
 	taggedKey       struct{ p *lisp.LVal }
 	nativeHeaderKey struct{ p *lisp.LVal }
 	nativeKey       struct{ p any }
@@ -77,10 +76,10 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 		}
 		return listKey{&v.Cells[0], len(v.Cells)}, true
 	case lisp.LArray:
-		if len(v.Cells) == 2 && v.Cells[1] != nil {
-			return arrayKey{v.Cells[1]}, true
+		if len(v.Cells) == 2 {
+			return arrayKey{v.Cells[0], v.Cells[1]}, true
 		}
-		return arrayKey{v}, true
+		return arrayKey{v, nil}, true
 	case lisp.LSortMap:
 		if m := v.Map(); m != nil {
 			return m, true
@@ -116,38 +115,6 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 	return nil, false
 }
 
-// cellSpan is the address range of a list's cells or an array's data, for
-// the overlap check.
-type cellSpan struct {
-	key        any
-	start, end uintptr
-}
-
-func spanOf(key any, cells []*lisp.LVal) cellSpan {
-	start := reflect.ValueOf(&cells[0]).Pointer()
-	return cellSpan{key: key, start: start, end: start + uintptr(len(cells))*reflect.TypeFor[*lisp.LVal]().Size()}
-}
-
-// checkOverlap refuses two distinct objects whose cells share storage: a
-// list and its tail (rest, cdr), a slice of a vector, or a vector's data list
-// held as a list.  A write through one (stable-sort, append!) is seen
-// through the other, and the format has no way to say so.  The answer is
-// yes or no; the sort by address only finds the pairs.
-func checkOverlap(spans []cellSpan) error {
-	slices.SortFunc(spans, func(a, b cellSpan) int { return cmp.Compare(a.start, b.start) })
-	var reach uintptr
-	var reachKey any
-	for i, s := range spans {
-		if i > 0 && s.start < reach && s.key != reachKey {
-			return errors.New("durable json: two values share storage (a list and its tail, or a slice of a vector); copy one of them before saving")
-		}
-		if s.end > reach {
-			reach, reachKey = s.end, s.key
-		}
-	}
-	return nil
-}
-
 // DumpDurable writes v as a durable typed JSON document:
 // ["~#durable",[1,VALUE]].  VALUE is v's typed JSON with four extension
 // tags.  An object (a nonempty list, a vector or array, a sorted map, a
@@ -163,9 +130,10 @@ func checkOverlap(spans []cellSpan) error {
 // ["~#fn","PKG:NAME"]: PKG is its defining package and NAME the first name,
 // in sorted order, under which PKG binds it.
 //
-// Lists and arrays whose cells overlap without being the same cells (a list
-// and its tail, a slice of a vector) are refused: the format cannot express
-// a view.  Restored values are always mutable, sealed literals included.
+// Lists and arrays whose cells share storage (a list and its tail, a slice
+// of a vector, arrays over one data list) keep that sharing: the storage is
+// written once and each value as a view of it (see durable_views.go).
+// Restored values are always mutable, sealed literals included.
 //
 // Refused with an error: errors (condition values), anonymous and local
 // functions, macros and special operators, natives with no codec, a native
@@ -186,14 +154,21 @@ func DumpDurable(env *lisp.LEnv, v *lisp.LVal, reg *DurableRegistry, opts ...Typ
 		return nil, err
 	}
 	e := newDurableEncoder(env, reg, durableConfig(env, opts))
-	e.scanning = true
+	// Discovery finds every holder of cells, so storage shared by several
+	// can be grouped before the counting pass walks it once.  It also
+	// saves every native and names every function, once.
+	e.discover, e.scanning = true, true
+	if err := e.scan(v, 0); err != nil {
+		return nil, err
+	}
+	if err := e.groupHolders(); err != nil {
+		return nil, err
+	}
+	e.resetScan()
 	if err := e.scan(v, 0); err != nil {
 		return nil, err
 	}
 	e.scanning = false
-	if err := checkOverlap(e.spans); err != nil {
-		return nil, err
-	}
 	e.buf = make([]byte, 0, 256)
 	e.buf = append(e.buf, durablePrefix...)
 	if err := e.value(v, 0); err != nil {
@@ -234,11 +209,6 @@ type durableEncoder struct {
 	refs map[any]int
 	// order is the first-visit index of each object scan has seen.
 	order map[any]int
-	// low holds, by first-visit index, for each object scan has finished,
-	// the smallest first-visit index of an object that was still open when
-	// it finished and that it reaches, or noLow.  An open object is one scan
-	// is inside.  resolve follows these links through finished objects.
-	low []int
 	// tree holds the objects scan first visited inside the payload of a
 	// codec that does not keep sharing, with that codec's name.
 	tree map[any]string
@@ -246,13 +216,18 @@ type durableEncoder struct {
 	ids map[any]int
 	// saved holds each native's codec and payload; scan fills it.
 	saved map[any]savedNative
-	// dims holds the dims header of each array data list scan has seen.
-	dims map[*lisp.LVal]*lisp.LVal
 	// funs maps a function's package and FID to its "PKG:NAME".
 	funs map[funKey]string
 	// funIndex holds, per package, the FID to first-name index read once
 	// per dump.
-	funIndex map[string]map[string]string
+	funIndex    map[string]map[string]string
+	dataHeaders map[*lisp.LVal]bool
+	views       map[any]viewInfo
+	// low holds, by first-visit index, for each object scan has finished,
+	// the smallest first-visit index of an object that was still open when
+	// it finished and that it reaches, or noLow.  An open object is one scan
+	// is inside.  resolve follows these links through finished objects.
+	low []int
 	// isOpen reports, by first-visit index, whether scan is inside that
 	// object.
 	isOpen []bool
@@ -262,10 +237,16 @@ type durableEncoder struct {
 	// treeNames is the stack of no-sharing codecs whose payloads scan is
 	// inside.
 	treeNames []string
-	spans     []cellSpan
+	// holders, dataHeaders, views and storages describe shared cell
+	// storage; see durable_views.go.
+	holders  []holderRec
+	storages []storageInfo
 	typedEncoder
 	scanned int
 	nextID  int
+	// discover marks the first walk, which only finds holders, saves
+	// natives and names functions.
+	discover bool
 }
 
 type funKey struct{ pkg, fid string }
@@ -283,9 +264,21 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		tree:         map[any]string{},
 		ids:          map[any]int{},
 		saved:        map[any]savedNative{},
-		dims:         map[*lisp.LVal]*lisp.LVal{},
 		funs:         map[funKey]string{},
+		dataHeaders:  map[*lisp.LVal]bool{},
+		views:        map[any]viewInfo{},
 	}
+}
+
+// resetScan clears the counting state discovery left, keeping its saved
+// natives, function names and holder groups.
+func (e *durableEncoder) resetScan() {
+	e.discover = false
+	clear(e.refs)
+	clear(e.order)
+	clear(e.tree)
+	e.low, e.isOpen, e.frames, e.treeNames = nil, nil, nil, nil
+	e.scanned, e.scanKeyBytes = 0, 0
 }
 
 type savedNative struct {
@@ -384,7 +377,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	if err := e.countScan(1); err != nil {
 		return err
 	}
-	key, shareable := durableIdentity(v)
+	key, shareable := e.identity(v)
 	if shareable {
 		e.refs[key]++
 		if e.refs[key] > 1 {
@@ -405,14 +398,10 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err := e.cfg.depthError(depth); err != nil {
 			return err
 		}
-		e.spans = append(e.spans, spanOf(key, v.Cells))
-		i := e.openObject(key)
-		for _, c := range v.Cells {
-			if err := e.scan(c, depth+1); err != nil {
-				return err
-			}
+		if e.discover {
+			e.recordList(key, v)
 		}
-		e.closeObject(key, i)
+		return e.scanHolder(key, v.Cells, depth)
 	case lisp.LArray:
 		dims, cells, err := checkArray(v)
 		if err != nil {
@@ -426,15 +415,13 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 				return err
 			}
 		}
-		e.dims[v.Cells[1]] = v.Cells[0]
-		if len(cells) > 0 {
-			e.spans = append(e.spans, spanOf(key, cells))
+		_ = cells
+		if e.discover {
+			e.recordData(v.Cells[1])
 		}
 		i := e.openObject(key)
-		for _, c := range cells {
-			if err := e.scan(c, depth+1); err != nil {
-				return err
-			}
+		if err := e.scanData(v.Cells[1], depth); err != nil {
+			return err
 		}
 		e.closeObject(key, i)
 	case lisp.LSortMap:
@@ -490,16 +477,17 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	return nil
 }
 
-// revisit handles a second or later reference to an object.
-func (e *durableEncoder) revisit(v *lisp.LVal, key any) error {
+// revisit handles a second or later reference to an object.  Discovery
+// only walks, so it checks nothing.
+func (e *durableEncoder) revisit(_ *lisp.LVal, key any) error {
+	if e.discover {
+		return nil
+	}
 	if len(e.treeNames) > 0 {
 		return treeSharingError(e.treeNames[len(e.treeNames)-1])
 	}
 	if name, ok := e.tree[key]; ok {
 		return treeSharingError(name)
-	}
-	if v.Type == lisp.LArray && len(v.Cells) == 2 && e.dims[v.Cells[1]] != v.Cells[0] {
-		return errors.New("durable json: two arrays share data with different dimensions")
 	}
 	if i, ok := e.order[key]; ok {
 		e.reach(i)
@@ -522,19 +510,23 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	if err := e.cfg.depthError(depth); err != nil {
 		return err
 	}
-	if err := e.cfg.chargeNative(entry); err != nil {
-		return err
+	// Discovery saves each native once; the counting pass reuses it.
+	if _, ok := e.saved[key]; !ok {
+		if err := e.cfg.chargeNative(entry); err != nil {
+			return err
+		}
+		payload, err := entry.codec.SaveNative(e.env, v)
+		switch {
+		case err != nil:
+			return fmt.Errorf("durable json: native %q: %w", entry.name, err)
+		case payload == nil:
+			return fmt.Errorf("durable json: native %q: SaveNative returned no payload", entry.name)
+		case payload.Type == lisp.LError:
+			return fmt.Errorf("durable json: native %q: %v", entry.name, payload)
+		}
+		e.saved[key] = savedNative{entry: entry, payload: payload}
 	}
-	payload, err := entry.codec.SaveNative(e.env, v)
-	switch {
-	case err != nil:
-		return fmt.Errorf("durable json: native %q: %w", entry.name, err)
-	case payload == nil:
-		return fmt.Errorf("durable json: native %q: SaveNative returned no payload", entry.name)
-	case payload.Type == lisp.LError:
-		return fmt.Errorf("durable json: native %q: %v", entry.name, payload)
-	}
-	e.saved[key] = savedNative{entry: entry, payload: payload}
+	payload := e.saved[key].payload
 	i := e.openObject(key)
 	if !entry.shared {
 		e.treeNames = append(e.treeNames, entry.name)
@@ -545,7 +537,7 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	if !entry.shared {
 		e.treeNames = e.treeNames[:len(e.treeNames)-1]
 	}
-	if e.frames[len(e.frames)-1] <= i {
+	if !e.discover && e.frames[len(e.frames)-1] <= i {
 		return fmt.Errorf("durable json: native %q payload refers to a value that encloses the native", entry.name)
 	}
 	e.closeObject(key, i)
@@ -639,30 +631,11 @@ func (e *durableEncoder) value(v *lisp.LVal, depth int) error {
 	if v == nil {
 		return errors.New("durable json: cannot encode a Go nil value")
 	}
-	key, shareable := durableIdentity(v)
+	key, shareable := e.identity(v)
 	if !shareable || e.refs[key] < 2 {
 		return e.body(v, key, depth)
 	}
-	if err := e.count(); err != nil {
-		return err
-	}
-	if id, ok := e.ids[key]; ok {
-		e.buf = append(e.buf, `["`+tagRef+`",`...)
-		e.buf = strconv.AppendInt(e.buf, int64(id), 10)
-		e.buf = append(e.buf, ']')
-		return e.grow()
-	}
-	id := e.nextID
-	e.nextID++
-	e.ids[key] = id
-	e.buf = append(e.buf, `["`+tagObj+`",[`...)
-	e.buf = strconv.AppendInt(e.buf, int64(id), 10)
-	e.buf = append(e.buf, ',')
-	if err := e.body(v, key, depth); err != nil {
-		return err
-	}
-	e.buf = append(e.buf, ']', ']')
-	return e.grow()
+	return e.object(key, depth, func() error { return e.body(v, key, depth) })
 }
 
 // body writes v without an object wrapper.  Leaves are written by the
@@ -675,14 +648,7 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, depth int) error {
 		if len(v.Cells) == 0 {
 			return e.typedEncoder.value(v, depth)
 		}
-		if err := e.container(depth); err != nil {
-			return err
-		}
-		e.buf = append(e.buf, `["`+tagList+`",`...)
-		if err := e.cells(v.Cells, depth); err != nil {
-			return err
-		}
-		e.buf = append(e.buf, ']')
+		return e.holderBody(key, v.Cells, depth)
 	case lisp.LArray:
 		dims, cells, err := checkArray(v)
 		if err != nil {
@@ -690,6 +656,18 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, depth int) error {
 		}
 		if err := e.container(depth); err != nil {
 			return err
+		}
+		if e.separateData(v.Cells[1]) {
+			// The data has an identity of its own: write it as a holder
+			// after the dimensions, whatever the rank.
+			if err := e.arrayDims(dims); err != nil {
+				return err
+			}
+			if err := e.holder(holderKey{v.Cells[1]}, cells, depth); err != nil {
+				return err
+			}
+			e.buf = append(e.buf, ']', ']')
+			return e.grow()
 		}
 		if len(dims) == 1 {
 			return e.cells(cells, depth)

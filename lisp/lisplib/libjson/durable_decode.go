@@ -52,6 +52,8 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 		env:          env,
 		reg:          reg,
 		pending:      -1,
+		storage:      map[int]*decStorage{},
+		views:        map[*lisp.LVal]*decView{},
 	}
 	if len(b) > d.cfg.maxBytes {
 		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, d.cfg.maxBytes)
@@ -84,12 +86,19 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 	if i := slices.Index(d.used, false); i >= 0 {
 		return nil, fmt.Errorf("durable json: object %d is defined but never referenced", i)
 	}
+	if err := d.checkViews(); err != nil {
+		return nil, err
+	}
 	return v, nil
 }
 
 type durableDecoder struct {
 	env *lisp.LEnv
 	reg *DurableRegistry
+	// storage holds each "~#cells" object by id, and views each view's
+	// header; see durable_views_decode.go.
+	storage map[int]*decStorage
+	views   map[*lisp.LVal]*decView
 	// objs holds each defined object.  A native's slot stays nil until its
 	// codec returns.
 	objs []*lisp.LVal
@@ -103,6 +112,9 @@ type durableDecoder struct {
 	// frames holds, for each object definition and native payload being
 	// read, the smallest id of an open object its contents reach so far.
 	frames []int
+	// storageObj marks objects that are "~#cells" storage, which only a
+	// view may refer to.
+	storageObj []bool
 	typedDecoder
 	// pending is the id of the "~#obj" whose value is being read, until
 	// that value's header is constructed; -1 when none.
@@ -110,6 +122,8 @@ type durableDecoder struct {
 	// tree counts the payloads being read of codecs that do not keep
 	// sharing; inside one, no "~#obj" or "~#ref" is allowed.
 	tree int
+	// dataPos marks that the next value is an array's data holder.
+	dataPos bool
 }
 
 // define gives the pending object id its value.  Every container calls it
@@ -237,7 +251,7 @@ func (d *durableDecoder) index() (int, error) {
 
 func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn} {
+	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -247,6 +261,11 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 		return nil, d.errorf("unknown tag")
 	}
 	d.i += len(tag) + 3
+	dataPos := d.dataPos
+	d.dataPos = false
+	if dataPos && tag != tagObj && tag != tagRef && tag != tagView {
+		return nil, d.errorf("array data in its own form must be a shared object, a reference or a view")
+	}
 	var v *lisp.LVal
 	var err error
 	switch tag {
@@ -255,7 +274,15 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	case tagFn:
 		v, err = d.function()
 	case tagObj:
-		v, err = d.objectDef(depth)
+		v, err = d.objectDef(depth, dataPos)
+	case tagView:
+		if err = d.depth(depth); err != nil {
+			return nil, err
+		}
+		if err = d.expect('['); err != nil {
+			return nil, err
+		}
+		v, err = d.view(depth, dataPos)
 	case tagList, tagArray, tagTagged, tagNative:
 		if err = d.depth(depth); err != nil {
 			return nil, err
@@ -335,9 +362,6 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	if len(dims) == 1 {
-		return nil, d.errorf("vector written as a tagged array")
-	}
 	total, zero := 1, false
 	for _, n := range dims {
 		if n.Type != lisp.LInt || n.Int < 0 {
@@ -357,6 +381,26 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	}
 	if err = d.expect(','); err != nil {
 		return nil, err
+	}
+	if bytes.HasPrefix(d.b[d.i:], []byte(`["~#`)) {
+		// Data with an identity of its own: a shared list, a reference to
+		// one, or a view of shared storage.  Any rank.
+		h, herr := d.dataHolder(depth)
+		if herr != nil {
+			return nil, herr
+		}
+		if len(h.Cells) != total {
+			return nil, d.errorf("array contents do not match its dimensions")
+		}
+		if err = d.expect(']'); err != nil {
+			return nil, err
+		}
+		dimList.Cells = dims
+		v.Cells[1] = h
+		return v, nil
+	}
+	if len(dims) == 1 {
+		return nil, d.errorf("vector written as a tagged array")
 	}
 	if err = d.expect('['); err != nil {
 		return nil, err
@@ -427,7 +471,7 @@ func (d *durableDecoder) dims() ([]*lisp.LVal, error) {
 
 // objectDef reads [ID,X] after "~#obj",.  ID must be the next id and X a
 // value that can be shared.
-func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
+func (d *durableDecoder) objectDef(depth int, dataPos bool) (*lisp.LVal, error) {
 	if d.tree > 0 {
 		return nil, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
 	}
@@ -451,10 +495,19 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 	d.open = append(d.open, true)
 	d.low = append(d.low, noLow)
 	d.used = append(d.used, false)
+	d.storageObj = append(d.storageObj, false)
 	d.frames = append(d.frames, noLow)
 	d.pending = id
-	v, err := d.value(depth)
-	if err != nil {
+	var v *lisp.LVal
+	if empty := `["` + tagList + `",[]]`; dataPos && bytes.HasPrefix(d.b[d.i:], []byte(empty)) {
+		// An array's shared data list may be empty; nowhere else.
+		if err = d.count(); err != nil {
+			return nil, err
+		}
+		d.i += len(empty)
+		v = lisp.QExpr([]*lisp.LVal{})
+		d.define(v)
+	} else if v, err = d.value(depth); err != nil {
 		return nil, err
 	}
 	if d.pending >= 0 {
@@ -486,6 +539,8 @@ func (d *durableDecoder) ref() (*lisp.LVal, error) {
 		return nil, d.errorf("reference to undefined object %d", id)
 	case id == d.pending:
 		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native, not a reference")
+	case d.storageObj[id]:
+		return nil, d.errorf("reference to storage object %d outside a view", id)
 	case d.objs[id] == nil:
 		return nil, d.errorf("native payload refers to object %d, which encloses the native", id)
 	}

@@ -60,36 +60,6 @@ func TestDurableFunctionNameIgnoresAliasHistory(t *testing.T) {
 	}())
 }
 
-func TestDurableRefusesOverlappingStorage(t *testing.T) {
-	env := newTypedTestEnv(t)
-	overlap := "durable json: two values share storage (a list and its tail, or a slice of a vector); copy one of them before saving"
-	for _, src := range []string{
-		`(let* ((xs (list 0 3 2 1)) (tail (rest xs))) (list xs tail))`,
-		`(let* ((xs (list 0 3 2 1)) (tail (cdr xs))) (vector tail xs))`,
-		`(let* ((v (vector 1 2 3)) (w (slice 'vector v 1 3))) (list v w))`,
-		`(let* ((xs (list 0 3 2 1))) (list xs (slice 'list xs 0 2)))`,
-	} {
-		v := env.LoadString("test", src)
-		require.NoError(t, lisp.GoError(v), src)
-		_, err := libjson.DumpDurable(env, v, nil)
-		require.EqualError(t, err, overlap, src)
-	}
-	// A vector's data list held as a list.
-	vec := lisp.Vector([]*lisp.LVal{lisp.Int(1)})
-	_, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{vec, vec.Cells[1]}), nil)
-	require.EqualError(t, err, overlap)
-	// Two headers over the same cells are one list, so they stay shared.
-	l := lisp.QExpr([]*lisp.LVal{lisp.Int(3), lisp.Int(1)})
-	alias := lisp.SExpr(l.Cells)
-	b, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{l, alias}), nil)
-	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#obj",[0,["~#list",[3,1]]]],["~#ref",0]]]]]`, string(b))
-	// Disjoint parts of one array are separate values.
-	cells := []*lisp.LVal{lisp.Int(1), lisp.Int(2)}
-	_, err = libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{lisp.QExpr(cells[:1]), lisp.QExpr(cells[1:])}), nil)
-	require.NoError(t, err)
-}
-
 func TestDurableMapLimitBeforeCopy(t *testing.T) {
 	env := newTypedTestEnv(t)
 	m := lisp.SortedMap()

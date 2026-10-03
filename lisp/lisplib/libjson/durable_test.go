@@ -297,19 +297,6 @@ func TestDurableRefusals(t *testing.T) {
 	}
 }
 
-func TestDurableArraysSharingDataNeedOneDims(t *testing.T) {
-	env := newTypedTestEnv(t)
-	v := lisp.Vector([]*lisp.LVal{lisp.Int(1)})
-	other := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Int(1)}), v.Cells[1]}}
-	_, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{v, other}), nil)
-	require.EqualError(t, err, "durable json: two arrays share data with different dimensions")
-	// Two headers over one dims and one data list are one vector.
-	alias := &lisp.LVal{Type: lisp.LArray, Cells: v.Cells}
-	b, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{v, alias}), nil)
-	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#obj",[0,[1]]],["~#ref",0]]]]]`, string(b))
-}
-
 func TestLoadDurableRejects(t *testing.T) {
 	env := newTypedTestEnv(t)
 	reg := durableTestRegistry(t)

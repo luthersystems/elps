@@ -19,8 +19,8 @@ func TestValWalkerAnalyzer(t *testing.T) {
 }
 
 func TestValueWalkerAllowlistReasons(t *testing.T) {
-	if len(valueWalkerFunctions) != 154 {
-		t.Fatalf("walker audit changed: have %d rows, want 154", len(valueWalkerFunctions))
+	if len(valueWalkerFunctions) != 155 {
+		t.Fatalf("walker audit changed: have %d rows, want 155", len(valueWalkerFunctions))
 	}
 	for _, name := range []string{
 		"lisp.copier.copy", "lisp.detacher.detach", "lisp.detacher.detachNode",
