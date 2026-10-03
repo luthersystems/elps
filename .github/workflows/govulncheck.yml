@@ -81,10 +81,9 @@ jobs:
       - uses: actions/setup-go@v7
         with:
           # EXACT, and identical in every workflow in this repo: setup-go
-          # installs go.mod's `toolchain` line. benchmark.yml keeps its own
-          # GO_VERSION (it builds two refs in one job), and
-          # scripts/go-pin-sync-test.py fails if that or the session hooks'
-          # pins differ from go.mod. govulncheck reports standard-library
+          # installs go.mod's `toolchain` line, the one statement of the Go
+          # version (scripts/go-pin-sync-test.py fails any second copy).
+          # govulncheck reports standard-library
           # advisories against whatever Go compiled the scan, so a scan on a
           # different toolchain than the build answers a question nobody
           # asked -- it can go green while the artifact you ship still carries

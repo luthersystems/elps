@@ -5,8 +5,8 @@ CI still performs the real install and queries the live vulnerability database.
 This contract detects floating/removed pins, not future scanner vulnerabilities.
 
 The scan's Go comes from go.mod's `toolchain` line (setup-go
-`go-version-file: go.mod`), so a toolchain bump there is what has to trigger a
-review of scanner compatibility.
+`go-version-file: go.mod`). The pinned scanner needs Go >= MIN_GO, so the test
+fails when that line drops below it; it does not restate the version itself.
 """
 
 import pathlib
@@ -16,7 +16,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 INSTALL = "go install golang.org/x/vuln/cmd/govulncheck@v1.8.0"
-GO_VERSION = "1.26.8"
+MIN_GO = (1, 26)  # golang.org/x/vuln v1.8.0 requires Go 1.26
 SETUP = "go-version-file: go.mod"
 
 
@@ -30,8 +30,11 @@ def check_workflow(source):
 
 
 def check_gomod(source):
-    if re.findall(r"^toolchain go(\S+)$", source, re.M) != [GO_VERSION]:
-        raise ValueError("review scanner compatibility when changing the build Go pin")
+    found = re.findall(r"^toolchain go(\d+)\.(\d+)", source, re.M)
+    if len(found) != 1:
+        raise ValueError("go.mod must have exactly one toolchain line")
+    if tuple(int(x) for x in found[0]) < MIN_GO:
+        raise ValueError("the pinned scanner needs a newer Go than go.mod's toolchain line")
 
 
 class ScannerToolchainContract(unittest.TestCase):
@@ -57,9 +60,9 @@ class ScannerToolchainContract(unittest.TestCase):
     def test_gomod_toolchain_and_negative_controls(self):
         source = (ROOT / "go.mod").read_text()
         check_gomod(source)
-        line = f"toolchain go{GO_VERSION}"
+        line = re.search(r"^toolchain go\S+$", source, re.M).group(0)
         for label, mutated in (
-            ("bumped", source.replace(line, "toolchain go1.27.0")),
+            ("below minimum", source.replace(line, "toolchain go1.25.13")),
             ("removed", source.replace(line + "\n", "")),
         ):
             with self.subTest(fault=label):

@@ -1618,7 +1618,7 @@ rm -rf "$docsonly_tmp"
 assert_exit 0 "govulncheck installs a pinned Go-compatible scanner (#634)" \
 	python3 "${SCRIPT_DIR}/govulncheck-toolchain-test.py"
 
-assert_exit 0 "every hand copy of the Go version matches go.mod's toolchain line" \
+assert_exit 0 "go.mod's toolchain line is the only statement of the Go version" \
 	python3 "${SCRIPT_DIR}/go-pin-sync-test.py"
 
 assert_exit 0 "manual Marketplace diagnostics cannot publish or receive secrets (#638)" \
