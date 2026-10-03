@@ -171,6 +171,17 @@ the cells of its range, not its whole storage. So a native's payload can
 hold a view of the storage that holds the native, as long as the view does
 not cover the native's cell (`TestDurableNativeInViewStorage`).
 
+The work is linear in the cells and views, up to a log factor, in both
+directions. Discovery walks each cell address once, however many holders
+cover it, and counts it once. A view finds its unclaimed cells through skip
+links (a union-find), and reaches the claimed ones through a minimum tree of
+their nodes: it takes the claimed cell of smallest node that still reaches
+an open node, and drops each cell that no longer does. That one is enough:
+if a later cell reaches an open node further out, the earlier cell's open
+node encloses the later cell, and already holds its reach. The liveness check is a
+union of the views' lengths. A list and all of its tails costs
+O(n log n), not n²/2 (`TestDurableAllTailsLinear`).
+
 An array's data list is written in its own `DATA` form (above) when it is a
 view, or when another array or a list value shares it. Otherwise the array
 is written exactly as typed JSON writes it. An array inside its own data
@@ -199,7 +210,8 @@ its first cell to its last, storage with a dead cell that is not `null`, a
 storage object that only one view uses, a `~#ref` to storage outside a view,
 `~#cells` anywhere but in a view, a shared empty list that is no array's
 data, and storage larger than the rest of the input or the value limit can
-hold (`ErrTypedLimit`).
+hold (`ErrTypedLimit`). A shared empty data list counts against the
+nesting limit like any container.
 
 Restored values are fresh and mutable. A saved program literal, which raises
 `modify-literal-error` on `stable-sort`, restores as an ordinary list that
@@ -449,7 +461,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
-| Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
+| Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |

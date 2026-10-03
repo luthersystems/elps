@@ -153,7 +153,11 @@ func DumpDurable(env *lisp.LEnv, v *lisp.LVal, reg *DurableRegistry, opts ...Typ
 	if err := reg.checkUsable(); err != nil {
 		return nil, err
 	}
-	e := newDurableEncoder(env, reg, durableConfig(env, opts))
+	return newDurableEncoder(env, reg, durableConfig(env, opts)).dump(v)
+}
+
+// dump writes the document for v.
+func (e *durableEncoder) dump(v *lisp.LVal) ([]byte, error) {
 	// Discovery finds every holder of cells, so storage shared by several
 	// can be grouped before the counting pass walks it once.  It also
 	// saves every native and names every function, once.
@@ -247,6 +251,9 @@ type durableEncoder struct {
 	// and storages each group's storage.
 	headers  []*lisp.LVal
 	storages []storageInfo
+	// walked links each cell address discovery walked to the next
+	// address; see unwalked.
+	walked map[uintptr]uintptr
 	typedEncoder
 	scanned int
 	nextID  int
@@ -274,6 +281,7 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		dataHeaders:  map[*lisp.LVal]bool{},
 		appendable:   map[*lisp.LVal]bool{},
 		recorded:     map[*lisp.LVal]bool{},
+		walked:       map[uintptr]uintptr{},
 		views:        map[any]viewInfo{},
 	}
 }

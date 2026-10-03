@@ -13,14 +13,14 @@ import (
 )
 
 // decStorage is one "~#cells" storage being read: its cells, which cells
-// were written as null, the node of each cell a view has claimed (-1 until
-// then), and the views of it.  id is its object id, -1 when inline.
+// were written as null, the cells views have claimed and their nodes, and
+// the views of it.  id is its object id, -1 when inline.
 type decStorage struct {
-	cells []*lisp.LVal
-	null  []bool
-	node  []int
-	views []*decView
-	id    int
+	claims *cellClaims
+	cells  []*lisp.LVal
+	null   []bool
+	views  []*decView
+	id     int
 }
 
 // decView is one view of a storage.  data is set once an array uses the
@@ -81,11 +81,8 @@ func (d *durableDecoder) view(depth int) (*lisp.LVal, error) {
 		return nil, err
 	}
 	first := true
-	for k := off; k < off+capacity; k++ {
-		if st.node[k] >= 0 {
-			d.reach(st.node[k])
-			continue
-		}
+	end := off + capacity
+	for k := st.claims.free(off); k < end; k = st.claims.free(k + 1) {
 		if !first {
 			if err := d.expect(','); err != nil {
 				return nil, err
@@ -93,7 +90,7 @@ func (d *durableDecoder) view(depth int) (*lisp.LVal, error) {
 		}
 		first = false
 		node := d.openNode(-1)
-		st.node[k] = node
+		st.claims.claim(k, node)
 		st.null[k] = bytes.HasPrefix(d.b[d.i:], []byte("null"))
 		c, err := d.value(depth + 1)
 		if err != nil {
@@ -101,6 +98,10 @@ func (d *durableDecoder) view(depth int) (*lisp.LVal, error) {
 		}
 		st.cells[k] = c
 		d.closeNode(node)
+	}
+	// The cells of the range earlier views claimed (see cellClaims).
+	if n := st.claims.reach(off, end, d.open, d.low); n != noLow {
+		d.reach(n)
 	}
 	if err := d.expect(']'); err != nil {
 		return nil, err
@@ -196,10 +197,7 @@ func (d *durableDecoder) newStorage(depth, id int) (*decStorage, error) {
 	if err := d.expect(']'); err != nil {
 		return nil, err
 	}
-	st := &decStorage{cells: make([]*lisp.LVal, n), null: make([]bool, n), node: make([]int, n), id: id}
-	for k := range st.node {
-		st.node[k] = -1
-	}
+	st := &decStorage{cells: make([]*lisp.LVal, n), null: make([]bool, n), claims: newCellClaims(n), id: id}
 	d.storages = append(d.storages, st)
 	if id >= 0 {
 		// The backing list is never returned; it holds the storage's slot
@@ -274,7 +272,7 @@ func (d *durableDecoder) checkStorage(st *decStorage) error {
 	}
 	type span struct{ start, end int }
 	spans := make([]span, 0, len(st.views))
-	live := make([]bool, len(st.cells))
+	lives := make([]span, 0, len(st.views))
 	lists := map[[2]int]bool{}
 	for _, v := range st.views {
 		if v.capacity != v.length && !v.vector {
@@ -287,9 +285,7 @@ func (d *durableDecoder) checkStorage(st *decStorage) error {
 			lists[[2]int{v.off, v.length}] = true
 		}
 		spans = append(spans, span{v.off, v.off + v.capacity})
-		for k := v.off; k < v.off+v.length; k++ {
-			live[k] = true
-		}
+		lives = append(lives, span{v.off, v.off + v.length})
 	}
 	slices.SortFunc(spans, func(a, b span) int { return cmp.Compare(a.start, b.start) })
 	reach := 0
@@ -302,10 +298,17 @@ func (d *durableDecoder) checkStorage(st *decStorage) error {
 	if reach != len(st.cells) {
 		return fmt.Errorf("durable json: %s has cells no view covers", name)
 	}
-	for k, l := range live {
-		if !l && !st.null[k] {
-			return fmt.Errorf("durable json: %s cell %d is dead but not null", name, k)
+	// The live cells are the union of the views' lengths; each dead cell,
+	// between and after them, is checked once.
+	slices.SortFunc(lives, func(a, b span) int { return cmp.Compare(a.start, b.start) })
+	dead := 0
+	for _, l := range append(lives, span{len(st.cells), len(st.cells)}) {
+		for k := dead; k < l.start; k++ {
+			if !st.null[k] {
+				return fmt.Errorf("durable json: %s cell %d is dead but not null", name, k)
+			}
 		}
+		dead = max(dead, l.end)
 	}
 	return nil
 }

@@ -323,37 +323,82 @@ func TestDurableViewsInNativePayload(t *testing.T) {
 }
 
 // Every cell of a storage counts once against the value limit, dead cells
-// included, and DumpDurable and LoadDurable agree at every limit.
+// included, and DumpDurable and LoadDurable agree at every limit: the
+// smallest value limit each accepts is the document's count.
 func TestDurableViewsAtExactLimit(t *testing.T) {
 	env := newTypedTestEnv(t)
-	for _, src := range []string{
-		`(let* ((xs (list 1 2 3)) (tail (rest xs))) (list xs tail))`,
-		`(let ((v (vector 4 3 2 1))) (append! v 0) (list v (slice 'vector v 1 3)))`,
-	} {
-		v := env.LoadString("test", src)
-		require.NoError(t, lisp.GoError(v))
-		requireExactLimit(t, env, v, src)
-		b, err := libjson.DumpDurable(env, v, nil)
-		require.NoError(t, err)
-		_, err = libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxBytes(len(b)-1))
-		require.ErrorIs(t, err, libjson.ErrTypedLimit)
-		ok := 0
-		for n := 1; n < 40; n++ {
-			_, derr := libjson.DumpDurable(env, v, nil, libjson.WithTypedMaxValues(n))
-			_, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxValues(n))
-			require.Equal(t, derr == nil, lerr == nil, "%s: value limit %d: dump %v, load %v", src, n, derr, lerr)
-			if derr == nil && ok == 0 {
-				ok = n
-			}
+	chain := func(n int) *lisp.LVal {
+		cells := make([]*lisp.LVal, n)
+		for i := range cells {
+			cells[i] = lisp.Int(i)
 		}
+		roots := []*lisp.LVal{lisp.QExpr(cells)}
+		for i := 1; i < n; i++ {
+			roots = append(roots, lisp.QExpr(cells[i:n:n]))
+		}
+		return lisp.QExpr(roots)
+	}
+	for _, c := range []struct {
+		name  string
+		src   string
+		v     *lisp.LVal
+		count int
+	}{
 		// list, view, storage object and cells, 3 cells, view, storage ref.
-		if src[6] == '*' {
-			assert.Equal(t, 9, ok, src)
-		}
+		{name: "three cells and a tail", src: `(let* ((xs (list 1 2 3)) (tail (rest xs))) (list xs tail))`, count: 9},
+		{name: "five cells and a tail", src: `(let* ((xs (list 1 2 3 4 5)) (tail (rest xs))) (list xs tail))`, count: 11},
+		{name: "a vector and its slice", src: `(let ((v (vector 4 3 2 1))) (append! v 0) (list v (slice 'vector v 1 3)))`},
+		// list, then per view one view and one storage value (the first
+		// two), and the 30 cells: 1 + 30*2 + 1 + 30.
+		{name: "thirty cells and every tail", v: chain(30), count: 92},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v := c.v
+			if v == nil {
+				v = env.LoadString("test", c.src)
+				require.NoError(t, lisp.GoError(v))
+			}
+			requireExactLimit(t, env, v, c.name)
+			b, err := libjson.DumpDurable(env, v, nil)
+			require.NoError(t, err)
+			_, err = libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxBytes(len(b)-1))
+			require.ErrorIs(t, err, libjson.ErrTypedLimit)
+			dumpAt, loadAt := 0, 0
+			for n := 1; n <= 200 && (dumpAt == 0 || loadAt == 0); n++ {
+				if _, derr := libjson.DumpDurable(env, v, nil, libjson.WithTypedMaxValues(n)); derr == nil && dumpAt == 0 {
+					dumpAt = n
+				}
+				if _, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxValues(n)); lerr == nil && loadAt == 0 {
+					loadAt = n
+				}
+			}
+			require.NotZero(t, loadAt, string(b))
+			assert.Equal(t, loadAt, dumpAt, "smallest accepted value limit, dump and load: %s", b)
+			if c.count > 0 {
+				assert.Equal(t, c.count, loadAt, string(b))
+			}
+		})
 	}
 	_, err := libjson.LoadDurable(env, []byte(`["~#durable",[1,["~#view",[["~#cells",9999],0,1,9999,[1]]]]]`), nil)
 	require.ErrorIs(t, err, libjson.ErrTypedLimit)
 	_, err = libjson.LoadDurable(env, []byte(`["~#durable",[1,["~#view",[["~#cells",3],0,3,3,[1,2,3]]]]]`), nil, libjson.WithTypedMaxValues(4))
+	require.ErrorIs(t, err, libjson.ErrTypedLimit)
+}
+
+// A shared empty data list is held to the nesting limit like any other
+// container, so a document LoadDurable accepts at a depth limit dumps at
+// that limit too.
+func TestDurableEmptyDataHolderDepth(t *testing.T) {
+	env := newTypedTestEnv(t)
+	doc := []byte(`["~#durable",[1,["~#list",[["~#list",[["~#obj",[0,["~#list",[]]]]]],["~#array",[[0],["~#ref",0]]]]]]]`)
+	back, err := libjson.LoadDurable(env, doc, nil)
+	require.NoError(t, err)
+	for depth := 1; depth <= 4; depth++ {
+		_, lerr := libjson.LoadDurable(env, doc, nil, libjson.WithTypedMaxDepth(depth))
+		_, derr := libjson.DumpDurable(env, back, nil, libjson.WithTypedMaxDepth(depth))
+		require.Equal(t, derr == nil, lerr == nil, "depth %d: dump %v, load %v", depth, derr, lerr)
+	}
+	_, err = libjson.LoadDurable(env, doc, nil, libjson.WithTypedMaxDepth(2))
 	require.ErrorIs(t, err, libjson.ErrTypedLimit)
 }
 

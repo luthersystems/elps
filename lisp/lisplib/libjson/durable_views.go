@@ -75,6 +75,10 @@ type viewInfo struct {
 
 // storageInfo is one group's storage.
 type storageInfo struct {
+	// scan tracks, during the counting pass, the cells views have claimed
+	// and their nodes; emit tracks, while writing, the cells views have
+	// written.
+	scan, emit *cellClaims
 	// tree is the no-sharing codec whose payload the storage was first
 	// used in, if any.
 	tree string
@@ -82,11 +86,6 @@ type storageInfo struct {
 	// which offsets are live.
 	cells []*lisp.LVal
 	live  []bool
-	// node holds, during the counting pass, the node index of each cell a
-	// view has claimed, or -1.  claimed marks, while writing, each cell a
-	// view has written.
-	node    []int
-	claimed []bool
 	// inline marks the storage of a single vector data holder.
 	inline, started bool
 }
@@ -163,17 +162,18 @@ func (e *durableEncoder) groupHolders() error {
 				return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 			}
 			g := len(e.storages)
-			st := storageInfo{cells: make([]*lisp.LVal, n), live: make([]bool, n), node: make([]int, n), claimed: make([]bool, n), inline: inline}
-			for k := range st.node {
-				st.node[k] = -1
-			}
+			st := storageInfo{cells: make([]*lisp.LVal, n), live: make([]bool, n), scan: newCellClaims(n), emit: newCellLinks(n), inline: inline}
+			// recs is sorted by start, so filled is how far the live
+			// cells are copied: each cell is copied once.
+			filled := 0
 			for _, h := range recs[i:j] {
 				off := int((h.start - recs[i].start) / cellSize)
 				e.views[h.key] = viewInfo{group: g, off: off, length: len(h.cells), capacity: h.capacity}
-				for k, c := range h.cells {
-					st.cells[off+k] = c
-					st.live[off+k] = true
+				for k := max(off, filled); k < off+len(h.cells); k++ {
+					st.cells[k] = h.cells[k-off]
+					st.live[k] = true
 				}
+				filled = max(filled, off+len(h.cells))
 			}
 			e.storages = append(e.storages, st)
 		}
@@ -216,13 +216,10 @@ func (e *durableEncoder) scanView(vi viewInfo, depth int) error {
 			return treeSharingError(st.tree)
 		}
 	}
-	for k := vi.off; k < vi.off+vi.capacity; k++ {
-		if st.node[k] >= 0 {
-			e.reach(st.node[k])
-			continue
-		}
+	end := vi.off + vi.capacity
+	for k := st.scan.free(vi.off); k < end; k = st.scan.free(k + 1) {
 		i := e.openNode()
-		st.node[k] = i
+		st.scan.claim(k, i)
 		if st.live[k] {
 			if err := e.scan(st.cells[k], depth+1); err != nil {
 				return err
@@ -231,6 +228,11 @@ func (e *durableEncoder) scanView(vi viewInfo, depth int) error {
 			return err
 		}
 		e.closeNode(i)
+	}
+	// The cells of the range earlier views claimed (and this view's own,
+	// which add nothing new).
+	if n := st.scan.reach(vi.off, end, e.isOpen, e.low); n != noLow {
+		e.reach(n)
 	}
 	return nil
 }
@@ -243,6 +245,18 @@ func (e *durableEncoder) scanHolder(key any, cells []*lisp.LVal, depth int) erro
 		if err := e.scanView(vi, depth); err != nil {
 			return err
 		}
+	} else if e.discover && len(cells) > 0 {
+		// Discovery walks each cell address once, however many holders
+		// cover it: a list and all of its tails is linear, and discovery
+		// counts no cell twice.
+		base := cellAddr(cells)
+		end := base + uintptr(len(cells))*cellSize
+		for a := e.unwalked(base); a < end; a = e.unwalked(a + cellSize) {
+			e.walked[a] = a + cellSize
+			if err := e.scan(cells[(a-base)/cellSize], depth+1); err != nil {
+				return err
+			}
+		}
 	} else {
 		for _, c := range cells {
 			if err := e.scan(c, depth+1); err != nil {
@@ -252,6 +266,25 @@ func (e *durableEncoder) scanHolder(key any, cells []*lisp.LVal, depth int) erro
 	}
 	e.closeNode(i)
 	return nil
+}
+
+// unwalked returns the first cell address at or after a that discovery has
+// not walked, following and compressing the skip links in e.walked.
+func (e *durableEncoder) unwalked(a uintptr) uintptr {
+	r := a
+	for {
+		next, ok := e.walked[r]
+		if !ok {
+			break
+		}
+		r = next
+	}
+	for a != r {
+		next := e.walked[a]
+		e.walked[a] = r
+		a = next
+	}
+	return r
 }
 
 // scanData visits an array's data list as a holder of its own.
@@ -301,11 +334,9 @@ func (e *durableEncoder) holderBody(key any, cells []*lisp.LVal, depth int) erro
 	e.buf = fmt.Appendf(e.buf, ",%d,%d,%d,[", vi.off, vi.length, vi.capacity)
 	st := &e.storages[vi.group]
 	first := true
-	for k := vi.off; k < vi.off+vi.capacity; k++ {
-		if st.claimed[k] {
-			continue
-		}
-		st.claimed[k] = true
+	end := vi.off + vi.capacity
+	for k := st.emit.free(vi.off); k < end; k = st.emit.free(k + 1) {
+		st.emit.claim(k, 0)
 		if !first {
 			e.buf = append(e.buf, ',')
 		}

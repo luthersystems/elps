@@ -99,3 +99,52 @@ func TestTypeShapeLinear(t *testing.T) {
 		t.Fatal("one shape for two nesting depths")
 	}
 }
+
+// A list and all of its tails is linear to save and to load: each view's
+// claimed cells are found through skip links and a minimum tree, not cell
+// by cell, and discovery walks each cell once.  Cell by cell, n tails cost
+// n*n/2 steps (200 million here) in each direction.
+func TestDurableAllTailsLinear(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	if err := lisp.GoError(lisp.InitializeUserEnv(env)); err != nil {
+		t.Fatal(err)
+	}
+	const n = 20000
+	cells := make([]*lisp.LVal, n)
+	for i := range cells {
+		cells[i] = lisp.Int(0)
+	}
+	roots := []*lisp.LVal{lisp.QExpr(cells)}
+	for i := 1; i < n; i++ {
+		roots = append(roots, lisp.QExpr(cells[i:n:n]))
+	}
+	const bound = 64 * n // about 2 log2(n) steps per view and per cell
+	e := newDurableEncoder(env, nil, durableConfig(env, nil))
+	b, err := e.dump(lisp.QExpr(roots))
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The root list's n cells and the storage's n cells.
+	if len(e.walked) != 2*n {
+		t.Fatalf("discovery walked %d cell addresses, want %d", len(e.walked), 2*n)
+	}
+	ops := 0
+	for _, st := range e.storages {
+		ops += st.scan.ops + st.emit.ops
+	}
+	if ops > bound {
+		t.Fatalf("dump took %d claim steps, want at most %d", ops, bound)
+	}
+	d := newDurableDecoder(env, b, nil, nil)
+	if _, err := d.load(); err != nil {
+		t.Fatal(err)
+	}
+	ops = 0
+	for _, st := range d.storages {
+		ops += st.claims.ops
+	}
+	if ops > bound {
+		t.Fatalf("load took %d claim steps, want at most %d", ops, bound)
+	}
+}

@@ -47,7 +47,12 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 	if err := reg.checkUsable(); err != nil {
 		return nil, err
 	}
-	d := durableDecoder{
+	d := newDurableDecoder(env, b, reg, opts)
+	return d.load()
+}
+
+func newDurableDecoder(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts []TypedOption) *durableDecoder {
+	return &durableDecoder{
 		typedDecoder: typedDecoder{cfg: durableConfig(env, opts), b: b},
 		env:          env,
 		reg:          reg,
@@ -56,6 +61,11 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 		views:        map[*lisp.LVal]*decView{},
 		dataUsed:     map[*lisp.LVal]bool{},
 	}
+}
+
+// load decodes the whole document.
+func (d *durableDecoder) load() (*lisp.LVal, error) {
+	b := d.b
 	if len(b) > d.cfg.maxBytes {
 		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, d.cfg.maxBytes)
 	}
@@ -540,6 +550,9 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 		// An array's shared data list may be empty; checkHolders checks
 		// that an array uses it.
 		if err = d.count(); err != nil {
+			return nil, err
+		}
+		if err = d.depth(depth); err != nil {
 			return nil, err
 		}
 		d.i += len(empty)
