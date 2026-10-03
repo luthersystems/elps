@@ -524,9 +524,14 @@ The dump finds each closure's frames through the chain of environments it
 captured, skipping frames with no bindings. It memoizes each
 environment's nearest frame for the whole dump, so a long chain of empty
 environments is walked once, not once per closure and pass. Each
-environment walked for the first time is a step (at most 16 per value of
-the value limit), and the dump charges ceil(n/4) units for the n new
-environments a closure's walk meets (`TestDurableClosureWorkBounded`).
+environment walked for the first time is a step. A dump takes at most 16
+steps per value of the value limit, plus 1024. The sum saturates at the
+largest int, so a large limit on a 32-bit platform does not wrap it. The
+dump charges one unit for every 4 steps, before the first step of the 4.
+Both checks run before each step, so a chain past the cap or the step
+budget is refused where the walk crosses it, not after it walks the whole
+chain (`TestDurableClosureWorkBounded`, `TestDurableClosureFrameWalkCapped`,
+`TestDurableClosureFrameWalkCharged`, `TestDurableFrameWalkCap`).
 
 The dump reads each frame's bindings once. Before it copies a frame's
 bindings it reserves them against the value limit, summed over every frame
@@ -646,7 +651,7 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read, and ceil(n/4) units for the n environments a closure's frame lookup walks for the first time. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read, and one unit before each 4 environments the frame lookups walk for the first time, counted over the whole dump. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 The two schedules differ in what they pay for. A dump does work the

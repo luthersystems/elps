@@ -4,6 +4,8 @@ package libjson
 
 import (
 	"errors"
+	"math"
+	"math/big"
 	"reflect"
 	"strconv"
 	"strings"
@@ -222,5 +224,115 @@ func TestDurableClosureWorkBounded(t *testing.T) {
 	// formals and the body.
 	if want := 2 * (body + 1); e.codeVisits != want {
 		t.Fatalf("scanned %d code nodes, want %d", e.codeVisits, want)
+	}
+}
+
+// emptyChain returns a closure at the end of depth empty frames under the
+// root, with an empty body.
+func emptyChain(t *testing.T, depth int) (*lisp.LEnv, *lisp.LVal) {
+	t.Helper()
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	if err := lisp.GoError(lisp.InitializeUserEnv(env)); err != nil {
+		t.Fatal(err)
+	}
+	root := env
+	for root.Parent() != nil {
+		root = root.Parent()
+	}
+	leaf := root
+	for range depth {
+		leaf = lisp.NewEnv(leaf)
+	}
+	code, lerr := env.NewLambdaCode(lisp.SExpr(nil), []*lisp.LVal{lisp.Int(1)})
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	return env, leaf.RestoreLambda(lisp.DefaultUserPackage, code)
+}
+
+// A frame chain longer than the cap is refused when the walk crosses the
+// cap, not after it walks the whole chain.
+func TestDurableClosureFrameWalkCapped(t *testing.T) {
+	const depth = 100000
+	env, f := emptyChain(t, depth)
+	cfg := durableConfig(env, []TypedOption{WithTypedMaxValues(10)})
+	limit := frameWalkCap(cfg.maxValues)
+	e := newDurableEncoder(env, nil, cfg)
+	_, err := e.dump(f)
+	if !errors.Is(err, ErrTypedLimit) {
+		t.Fatalf("dump: %v, want ErrTypedLimit", err)
+	}
+	if e.ancestorVisits > limit+1 {
+		t.Fatalf("walked %d environments, cap %d", e.ancestorVisits, limit)
+	}
+	if len(e.nearestFrame) > limit+1 {
+		t.Fatalf("memoized %d environments, cap %d", len(e.nearestFrame), limit)
+	}
+}
+
+// The frame walk is charged as it goes: a budget the walk crosses stops it
+// there, with the budget's error.
+func TestDurableClosureFrameWalkCharged(t *testing.T) {
+	const depth, budget = 100000, 100
+	env, f := emptyChain(t, depth)
+	errBudget := errors.New("budget")
+	used := 0
+	charge := WithTypedCharge(func(n int) error {
+		used += n
+		if used > budget {
+			return errBudget
+		}
+		return nil
+	})
+	e := newDurableEncoder(env, nil, durableConfig(env, []TypedOption{charge}))
+	_, err := e.dump(f)
+	if !errors.Is(err, errBudget) {
+		t.Fatalf("dump: %v, want the budget's error", err)
+	}
+	if most := (budget + 1) * bindingsPerUnit; e.ancestorVisits > most {
+		t.Fatalf("walked %d environments on a budget of %d units", e.ancestorVisits, budget)
+	}
+}
+
+// The cap saturates instead of wrapping: on 386, 16*(1<<27)+1024 does not
+// fit an int.
+func TestDurableFrameWalkCap(t *testing.T) {
+	maxInt := big.NewInt(math.MaxInt)
+	for _, in := range []int{
+		0, 10, 1 << 20, 1 << 26, 1 << 27, 1 << 30,
+		math.MaxInt32 / 16, math.MaxInt32/16 + 1,
+		(math.MaxInt - frameWalkSlack) / frameWalkFactor,
+		(math.MaxInt-frameWalkSlack)/frameWalkFactor + 1,
+		math.MaxInt,
+	} {
+		want := new(big.Int).Mul(big.NewInt(int64(in)), big.NewInt(frameWalkFactor))
+		want.Add(want, big.NewInt(frameWalkSlack))
+		if want.Cmp(maxInt) > 0 {
+			want = maxInt
+		}
+		if got := frameWalkCap(in); int64(got) != want.Int64() {
+			t.Errorf("frameWalkCap(%d) = %d, want %v", in, got, want)
+		}
+	}
+}
+
+// A large value limit does not wrap the cap and refuse a small closure
+// (on 386, before frameWalkCap saturated).
+func TestDurableClosureFrameWalkLargeLimit(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	env.Runtime.MaxAlloc = 1 << 30
+	if err := lisp.GoError(lisp.InitializeUserEnv(env)); err != nil {
+		t.Fatal(err)
+	}
+	f := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("let"),
+		lisp.SExpr([]*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("x"), lisp.Int(1)})}),
+		lisp.SExpr([]*lisp.LVal{lisp.Symbol("lambda"), lisp.SExpr(nil), lisp.Symbol("x")})}))
+	if err := lisp.GoError(f); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := DumpDurable(env, f, nil, WithTypedMaxValues(1<<27)); err != nil {
+		t.Fatal(err)
 	}
 }

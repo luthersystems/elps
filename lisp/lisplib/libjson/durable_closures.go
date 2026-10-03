@@ -41,6 +41,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"strings"
 	"unicode/utf8"
@@ -105,42 +106,59 @@ func codeKeyOf(f *lisp.LVal) codeKey {
 // or nil when there is none below the root.  Each environment's answer is
 // memoized for the whole dump, so a long chain of empty frames is walked
 // once, not once per closure or pass.  Each environment walked for the
-// first time is a step, bounded by the value limit's frameWalkFactor
-// multiple and charged ceil(n/4) units for the n new ones of a call.
+// first time is a step.  The steps are checked against frameWalkCap and
+// charged one unit per bindingsPerUnit of them, each before the step it
+// covers, so a chain past the cap or the budget stops where it crosses it.
 func (e *durableEncoder) frameOf(env *lisp.LEnv) (*lisp.LEnv, error) {
 	var walked []*lisp.LEnv
 	var found *lisp.LEnv
+	limit := frameWalkCap(e.cfg.maxValues)
 	for ; env != nil && env.Parent() != nil; env = env.Parent() {
 		if r, ok := e.nearestFrame[env]; ok {
 			found = r
 			break
 		}
+		if e.ancestorVisits >= limit {
+			return nil, fmt.Errorf("%w: captured frame chains longer than %d frames", ErrTypedLimit, limit)
+		}
+		if e.cfg.charge != nil && e.ancestorVisits%bindingsPerUnit == 0 {
+			if err := e.cfg.charge(1); err != nil {
+				return nil, fmt.Errorf("durable json: captured frame chain: %w", err)
+			}
+		}
+		e.ancestorVisits++
 		walked = append(walked, env)
 		if env.NumBindings() > 0 {
 			found = env
 			break
 		}
 	}
-	if n := len(walked); n > 0 {
-		e.ancestorVisits += n
-		if e.ancestorVisits > frameWalkFactor*e.cfg.maxValues+1024 {
-			return nil, fmt.Errorf("%w: captured frame chains longer than %d frames", ErrTypedLimit, frameWalkFactor*e.cfg.maxValues+1024)
-		}
-		if e.cfg.charge != nil {
-			if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
-				return nil, fmt.Errorf("durable json: captured frame chain: %w", err)
-			}
-		}
-		for _, w := range walked {
-			e.nearestFrame[w] = found
-		}
+	for _, w := range walked {
+		e.nearestFrame[w] = found
 	}
 	return found, nil
 }
 
 // frameWalkFactor bounds the environments a dump walks to find captured
-// frames: at most frameWalkFactor per value of the value limit.
-const frameWalkFactor = 16
+// frames: at most frameWalkFactor per value of the value limit, plus
+// frameWalkSlack.
+const (
+	frameWalkFactor = 16
+	frameWalkSlack  = 1024
+)
+
+// frameWalkCap returns frameWalkFactor*maxValues + frameWalkSlack,
+// saturated at math.MaxInt so a large value limit on a 32-bit platform
+// cannot wrap it negative.
+func frameWalkCap(maxValues int) int {
+	if maxValues <= 0 {
+		return frameWalkSlack
+	}
+	if maxValues > (math.MaxInt-frameWalkSlack)/frameWalkFactor {
+		return math.MaxInt
+	}
+	return frameWalkFactor*maxValues + frameWalkSlack
+}
 
 // bindings returns a frame's bindings in name order, read once per dump.
 // Before it copies them, it reserves them against the value limit, summed
