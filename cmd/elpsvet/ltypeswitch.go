@@ -42,6 +42,7 @@ var lTypeSwitchScope = map[string][]string{
 	libjsonPkgPath + "/canonize.go":               {"value"},
 	libjsonPkgPath + "/tag.go":                    {"value"},
 	libjsonPkgPath + "/untag.go":                  {"value"},
+	libjsonPkgPath + "/durable.go":                nil,
 }
 
 const libjsonPkgPath = "github.com/luthersystems/elps/lisp/lisplib/libjson"

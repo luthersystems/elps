@@ -19,8 +19,8 @@ func TestValWalkerAnalyzer(t *testing.T) {
 }
 
 func TestValueWalkerAllowlistReasons(t *testing.T) {
-	if len(valueWalkerFunctions) != 144 {
-		t.Fatalf("walker audit changed: have %d rows, want 144", len(valueWalkerFunctions))
+	if len(valueWalkerFunctions) != 153 {
+		t.Fatalf("walker audit changed: have %d rows, want 153", len(valueWalkerFunctions))
 	}
 	for _, name := range []string{
 		"lisp.copier.copy", "lisp.detacher.detach", "lisp.detacher.detachNode",
@@ -60,7 +60,8 @@ func TestValueWalkerAllowlistReasons(t *testing.T) {
 		"tagWalker.object", "tagWalker.value",
 		"canonWalker.nativeMap", "canonWalker.sortedMap", "canonWalker.value",
 		"untagWalker.object", "untagWalker.tagged", "untagWalker.value",
-		"typedEncoder.array", "typedEncoder.sortedMap", "typedEncoder.value",
+		"typedEncoder.array", "typedEncoder.mapMembers", "typedEncoder.sortedMap", "typedEncoder.value",
+		"durableEncoder.body", "durableEncoder.scan", "durableEncoder.scanNative",
 	} {
 		reason := valueWalkerFunctions["github.com/luthersystems/elps/lisp/lisplib/libjson."+name]
 		if !strings.HasPrefix(reason, "hand-rolled JSON walker:") || !strings.Contains(reason, "goldens") {
