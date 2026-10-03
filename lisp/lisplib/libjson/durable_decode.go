@@ -20,7 +20,9 @@ import (
 // none), and ["~#fn","PKG:NAME"] is the function env's registry binds to
 // that global now, which must be a regular function of package PKG.  An
 // ["~#error",...] is an error value with its condition and data, and no
-// call stack or source location; the result itself may be one.
+// call stack or source location; the result itself may be one.  A
+// ["~#closure",...] is rebuilt with LEnv.RestoreLambda over frames chained
+// to env's root, and nothing is evaluated.
 //
 // LoadDurable accepts only what DumpDurable writes.  It rejects every input
 // LoadTyped rejects inside the value, a missing header or another format
@@ -138,9 +140,9 @@ type durableDecoder struct {
 	// frames holds, for each node and native payload being read, the
 	// smallest open node its contents reach so far.
 	frames []int
-	// storageObj marks objects that are "~#cells" storage, which only a
-	// view may refer to.
-	storageObj []bool
+	// objKind holds each object's kind: a value, or storage, a frame or
+	// code, which only their own positions may refer to.
+	objKind []objKind
 	typedDecoder
 	// pending is the id of the "~#obj" whose value is being read, until
 	// that value's header is constructed; -1 when none.
@@ -148,8 +150,9 @@ type durableDecoder struct {
 	// tree counts the payloads being read of codecs that do not keep
 	// sharing; inside one, no "~#obj" or "~#ref" is allowed.
 	tree int
-	// dataPos marks that the next value is an array's data holder.
-	dataPos bool
+	// pos is the position of the next value: a plain value, an array's
+	// data holder, a closure's frame or its code.
+	pos position
 }
 
 // define gives the pending object id its value.  Every container calls it
@@ -300,7 +303,7 @@ func (d *durableDecoder) index() (int, error) {
 
 func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView, tagLit, tagError} {
+	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView, tagLit, tagError, tagClosure, tagEnv, tagCode} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -310,20 +313,20 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 		return nil, d.errorf("unknown tag")
 	}
 	d.i += len(tag) + 3
-	dataPos := d.dataPos
-	d.dataPos = false
-	if dataPos && tag != tagObj && tag != tagRef && tag != tagView && tag != tagLit {
-		return nil, d.errorf("array data in its own form must be a shared object, a reference or a view")
+	pos := d.pos
+	d.pos = posValue
+	if err := d.checkPosition(pos, tag); err != nil {
+		return nil, err
 	}
 	var v *lisp.LVal
 	var err error
 	switch tag {
 	case tagRef:
-		v, err = d.ref()
+		v, err = d.ref(pos)
 	case tagFn:
 		v, err = d.function()
 	case tagObj:
-		v, err = d.objectDef(depth)
+		v, err = d.objectDef(depth, pos)
 	case tagLit:
 		v, err = d.literal(depth)
 	case tagView:
@@ -334,7 +337,7 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		v, err = d.view(depth)
-	case tagList, tagArray, tagTagged, tagNative, tagError:
+	case tagList, tagArray, tagTagged, tagNative, tagError, tagClosure, tagEnv, tagCode:
 		if err = d.depth(depth); err != nil {
 			return nil, err
 		}
@@ -350,6 +353,12 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 			v, err = d.taggedValue(depth)
 		case tagError:
 			v, err = d.errorValue(depth)
+		case tagClosure:
+			v, err = d.closureValue(depth)
+		case tagEnv:
+			v, err = d.frameValue(depth)
+		case tagCode:
+			v, err = d.codeValue(depth)
 		default:
 			v, err = d.native(depth)
 		}
@@ -525,7 +534,7 @@ func (d *durableDecoder) dims() ([]*lisp.LVal, error) {
 
 // objectDef reads [ID,X] after "~#obj",.  ID must be the next id and X a
 // value that can be shared.
-func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
+func (d *durableDecoder) objectDef(depth int, pos position) (*lisp.LVal, error) {
 	if d.tree > 0 {
 		return nil, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
 	}
@@ -547,12 +556,12 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 	}
 	d.objs = append(d.objs, nil)
 	d.used = append(d.used, false)
-	d.storageObj = append(d.storageObj, false)
+	d.objKind = append(d.objKind, pos.kind())
 	node := d.openNode(id)
 	d.objNode = append(d.objNode, node)
 	d.pending = id
 	var v *lisp.LVal
-	if empty := `["` + tagList + `",[]]`; bytes.HasPrefix(d.b[d.i:], []byte(empty)) {
+	if empty := `["` + tagList + `",[]]`; pos.kind() == kindValue && bytes.HasPrefix(d.b[d.i:], []byte(empty)) {
 		// An array's shared data list may be empty; checkHolders checks
 		// that an array uses it.
 		if err = d.count(); err != nil {
@@ -565,8 +574,15 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 		v = lisp.QExpr([]*lisp.LVal{})
 		d.define(v)
 		d.emptyObjs = append(d.emptyObjs, v)
-	} else if v, err = d.value(depth); err != nil {
-		return nil, err
+	} else {
+		if pos == posFrame || pos == posCode {
+			d.pos = pos
+		}
+		v, err = d.value(depth)
+		d.pos = posValue
+		if err != nil {
+			return nil, err
+		}
 	}
 	if d.pending >= 0 {
 		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native")
@@ -578,8 +594,9 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 	return v, nil
 }
 
-// ref reads ID after "~#ref", (the ']' is left for the caller).
-func (d *durableDecoder) ref() (*lisp.LVal, error) {
+// ref reads ID after "~#ref", (the ']' is left for the caller) in
+// position pos.
+func (d *durableDecoder) ref(pos position) (*lisp.LVal, error) {
 	if d.tree > 0 {
 		return nil, d.errorf("a payload of a codec that does not keep sharing holds a reference")
 	}
@@ -592,8 +609,10 @@ func (d *durableDecoder) ref() (*lisp.LVal, error) {
 		return nil, d.errorf("reference to undefined object %d", id)
 	case id == d.pending:
 		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native, not a reference")
-	case d.storageObj[id]:
+	case d.objKind[id] == kindStorage:
 		return nil, d.errorf("reference to storage object %d outside a view", id)
+	case d.objKind[id] != pos.kind():
+		return nil, d.errorf("reference to %s object %d in the position of %s", d.objKind[id], id, pos.kind())
 	case d.objs[id] == nil:
 		return nil, d.errorf("native payload refers to object %d, which encloses the native", id)
 	}
@@ -777,4 +796,77 @@ func LoadDurableRoots(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...Ty
 		roots = append(roots, DurableRoot{Name: name.Str, Value: v.Cells[i+1]})
 	}
 	return roots, nil
+}
+
+// position is where the next value sits.
+type position uint8
+
+const (
+	posValue position = iota
+	posData
+	posFrame
+	posCode
+)
+
+// objKind is what an object is: a value, or a part only one position takes.
+type objKind uint8
+
+const (
+	kindValue objKind = iota
+	kindStorage
+	kindFrame
+	kindCode
+)
+
+func (k objKind) String() string {
+	switch k {
+	case kindValue:
+		return "a value"
+	case kindStorage:
+		return "storage"
+	case kindFrame:
+		return "a frame"
+	case kindCode:
+		return "code"
+	}
+	return "an unknown kind"
+}
+
+// kind is the kind of object position p takes.
+func (p position) kind() objKind {
+	switch p {
+	case posFrame:
+		return kindFrame
+	case posCode:
+		return kindCode
+	case posValue, posData:
+	}
+	return kindValue
+}
+
+// checkPosition refuses tag in position pos: array data takes a shared
+// object, a reference, a view or a literal; a frame position a frame or a
+// shared one; a code position code or shared code.  A frame and code are
+// valid nowhere else.
+func (d *durableDecoder) checkPosition(pos position, tag string) error {
+	shared := tag == tagObj || tag == tagRef
+	switch pos {
+	case posData:
+		if !shared && tag != tagView && tag != tagLit {
+			return d.errorf("array data in its own form must be a shared object, a reference or a view")
+		}
+	case posFrame:
+		if !shared && tag != tagEnv {
+			return d.errorf("a closure's frame must be null, a frame or a shared one")
+		}
+	case posCode:
+		if !shared && tag != tagCode {
+			return d.errorf("a closure's code must be code or shared code")
+		}
+	case posValue:
+		if tag == tagEnv || tag == tagCode {
+			return d.errorf("%s outside a closure", tag)
+		}
+	}
+	return nil
 }

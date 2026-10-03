@@ -249,9 +249,6 @@ func TestDurableFunctions(t *testing.T) {
 func TestDurableRefusals(t *testing.T) {
 	env := newTypedTestEnv(t)
 	reg := durableTestRegistry(t)
-	evalString(t, env, `(defun old-fn () 1)`)
-	stale := env.LoadString("test", `old-fn`)
-	evalString(t, env, `(defun old-fn () 2)`)
 	self := lisp.SortedMap()
 	reg2 := libjson.NewDurableRegistry()
 	require.NoError(t, libjson.RegisterNative[*lisp.LVal](reg2, "test:boxed", 1, libjson.NativeFuncs{
@@ -274,9 +271,8 @@ func TestDurableRefusals(t *testing.T) {
 		reg  *libjson.DurableRegistry
 		want string
 	}{
-		{"lambda", env.LoadString("test", `(lambda (x) x)`), reg, "durable json: cannot encode an anonymous function"},
-		{"flet function", env.LoadString("test", `(flet ((g (x) x)) g)`), reg, "durable json: cannot encode an anonymous function"},
-		{"function no global binds", stale, reg, "durable json: cannot encode an anonymous function"},
+		{"builtin no global binds", lisp.Fun("anon", lisp.Formals(), func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }), reg, "durable json: cannot encode an anonymous function"},
+		{"closure over a native", closureOver(t, env, lisp.Native(struct{}{})), reg, `durable json: captured variable "captured": no codec registered for native type struct {}`},
 		{"macro", env.LoadString("test", `defun`), reg, "durable json: cannot encode a macro or special operator"},
 		{"special operator", env.LoadString("test", `if`), reg, "durable json: cannot encode a macro or special operator"},
 		{"internal panic", &lisp.LVal{Type: lisp.LError, Str: lisp.CondInternalPanic}, reg, "durable json: cannot encode an internal panic"},

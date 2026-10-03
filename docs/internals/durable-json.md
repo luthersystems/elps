@@ -22,6 +22,8 @@ durable document of a tree holds the typed bytes of that tree unchanged.
 | A value that contains itself | Refused | Saved and restored |
 | Native values | Refused | Saved through a registered `NativeCodec` |
 | A named global function | Refused | Saved as its package-qualified name |
+| A closure (a lambda no global binds) | Refused | Saved with its code and the frames it captured |
+| An error value | Refused | Saved with its condition and data |
 | Format version | None (closed tag set) | A frozen version number at the top |
 
 ## Requirements and how they are met
@@ -87,6 +89,10 @@ under the earlier rules.
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
 | `~#lit` | `["~#lit",X]` | `X`, a `~#list` or `~#view`, is a program literal. |
 | `~#error` | `["~#error",["CONDITION",[DATA...]]]` | An error value: its condition type and its data. |
+| `~#closure` | `["~#closure",["PKG",ENV,CODE]]` | A lambda of package `PKG` with its captured frames and its code. See [Closures](#closures). |
+| `~#env` | `["~#env",[ENV,["NAME",VALUE,...]]]` | A captured frame: its parent and its bindings. Only in a closure's `ENV` position. |
+| `~#code` | `["~#code",[SEALED,FORMALS,BODY...]]` | A lambda's code. Only in a closure's `CODE` position. |
+| `~#quote` | `["~#quote",NODE]` | A quoted code node. Only inside `~#code`. |
 | `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP,[CELL...]]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. The cells are those of `OFF` to `OFF+CAP` that no earlier view wrote. |
 | `~#cells` | `["~#cells",N]` | Storage of `N` cells. It appears only as `STORAGE`: inline for one vector's data, else as `["~#obj",[ID,["~#cells",N]]]` at its first view and `["~#ref",ID]` after. |
 | `~#array` with data | `["~#array",[[DIMS...],DATA]]` | An array whose data list has an identity of its own. `DATA` is a `~#obj` of a list (empty allowed), a `~#ref` to one, or a `~#view`. Any rank. |
@@ -437,18 +443,74 @@ This belongs in the codec, not in a native hook. A B+-tree handle's payload
 then holds its `:compare` function as an ordinary value, and every native
 codec gets the same rule for free.
 
-These are refused:
+A function no global binds is a closure when it is a lambda: an anonymous
+lambda, a local `flet` or `labels` function, or a function whose global
+name now holds another definition. It is saved with its code and the
+frames it captured (see [Closures](#closures)). These are refused:
 
-- an anonymous lambda, and a local `flet` or `labels` function: no global
-  name holds them;
-- a function that no global of its package binds;
-- a macro or special operator.
+- a builtin no global binds;
+- a macro or special operator, also when a closure captured it (a
+  `macrolet` macro).
 
-A restored function is the current global binding. After a code upgrade it is
-the new definition of that name. This is what `defflow` wants: in-flight runs
-resume on the current code. A closure bound to a global restores as whatever
-that global holds when the document loads; the state it captured is not
-saved.
+A restored named function is the current global binding. After a code
+upgrade it is the new definition of that name. This is what `defflow`
+wants: in-flight runs resume on the current code. A closure bound to a
+global is saved by that name too, so it restores as whatever that global
+holds when the document loads, and the state it captured is not saved.
+
+### Closures
+
+```text
+CLOSURE = ["~#closure",["PKG",ENV,CODE]]
+ENV     = null | ["~#env",[ENV,["NAME",VALUE,...]]]      or its ~#obj / ~#ref
+CODE    = ["~#code",[SEALED,FORMALS,BODY...]]            or its ~#obj / ~#ref
+NODE    = INT | FLOAT | STRING | SYMBOL | null | ["~#list",[NODE,...]] | ["~#quote",NODE]
+```
+
+`PKG` is the package the lambda was defined in. Its body resolves globals
+there when it is called, exactly as a function restored by `~#fn` does.
+
+`ENV` is the innermost frame the lambda captured, and each frame names its
+parent. `null` is the root environment: its names are globals, resolved
+by name in `PKG` at call time. A frame is saved whole, with every binding
+in name order, because it is shared state: every closure over it sees each
+of its bindings. Frames with no bindings are left out of the chain. A
+frame is an object, so two closures over one frame still share it after a
+load, and a `set!` through one is seen by the other. A closure is an
+object too, so a closure in its own frame (a `labels` function, recursion)
+restores. A refused value in a frame is refused with the path to it:
+`durable json: captured variable "held": captured variable "captured": ...`.
+
+`CODE` is the formals and the body as code, not as data. Each node keeps
+whether it is quoted, which decides whether the evaluator evaluates it: a
+call form is `["~#list",[...]]`, `'(1 2)` is
+`["~#quote",["~#list",[1,2]]]` and `''x` is `["~#quote",["~#quote","~$x"]]`.
+Code holds only scalars, lists and quotes. `SEALED` is `true` when every
+top-level form is the reader's sealed program text, and the load seals the
+code again, so a quoted literal the closure returns still refuses
+`stable-sort`. Code is an object, so the closures one lambda form made share
+it. A quoted literal in the code and the same list held as data are two
+objects after a load: the literal's identity with the data is not kept
+(both are sealed, so no write can tell).
+
+A closure keeps the code it was saved with. A named function is the
+current definition of its name. So after an upgrade, a restored closure
+runs its old body, and any named function its body calls runs the new
+one (`TestDurableClosureUpgrade`).
+
+A load evaluates nothing. It builds each frame with `lisp.NewEnv` and
+`Put`, chained to the loading environment's root, and the lambda with
+`LEnv.RestoreLambda`, which validates the formals as `lambda` does. A
+restored closure has a fresh FID and no source location; the local name
+`flet` stamped on it is not saved. `LambdaEnv` and `RestoreLambda` are the
+runtime API this needs (new in luthersystems/elps#797).
+
+`LoadDurable` rejects a closure of an unknown package, a frame or code
+anywhere but its position, a reference to a frame or code object from
+another position, a frame with no bindings or with names out of order or
+repeated, a name `Put` refuses, code whose first item is not `true` or
+`false` or whose formals are not a list, code holding anything but
+scalars, lists and quotes, and formals `lambda` refuses.
 
 ## Refused values
 
@@ -456,7 +518,9 @@ saved.
 |---|---|
 | Internal panic | `durable json: cannot encode an internal panic` |
 | Error whose condition is empty or not UTF-8 | `durable json: cannot encode an error whose condition is empty or not UTF-8` |
-| Anonymous or local function, or one no global of its package binds | `durable json: cannot encode an anonymous function` |
+| Builtin no global binds | `durable json: cannot encode an anonymous function` |
+| Closure whose frame holds a refused value | `durable json: captured variable "NAME": ...` |
+| Closure whose code holds a value that is not a scalar, list or quote | `durable json: a closure's code holds a T` |
 | A shared value in the payload of a codec without `WithSharedPayload` | `durable json: native "NAME" payload shares a value, and its codec does not keep sharing` |
 | Macro or special operator | `durable json: cannot encode a macro or special operator` |
 | Native with no codec | `durable json: no codec registered for native type T` |
@@ -503,6 +567,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Closures | `durable_closures_test.go` | A counter pair over one binding (`set!` through one is seen by the other), a recursive `labels` function, a closure over a vector and its view, every kind of formal and quoted code, an upgrade (the closure keeps its code, a named function changes), refusal paths, shared code, limits that agree, and a rejection table. `FuzzDurableJSON` seeds closure documents. |
 | Error values | `durable_errors_test.go` | An error raised by `error` round-trips with its condition, message and data, and `handler-bind` matches it after the load; no stack or source; an error with no data; a shared error and an error in a cycle; a host error's text without its Go error; refusals; limits that agree; and a rejection table. `FuzzDurableJSON` seeds error documents. |
 | Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |

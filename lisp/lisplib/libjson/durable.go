@@ -144,9 +144,12 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 // restores as an error with the same condition and data, without its call
 // stack or source location (see durable_errors.go).
 //
+// A lambda no global binds (a closure) is written with its code and the
+// frames it captured (see durable_closures.go).
+//
 // Refused with an error: internal panics, errors whose condition is empty
-// or not UTF-8, anonymous and local functions, macros and special
-// operators, natives with no codec, a native whose payload reaches the
+// or not UTF-8, builtins no global binds, macros and special operators
+// (also when a closure captured one), natives with no codec, a native whose payload reaches the
 // native or an object that encloses it (directly or through finished
 // objects), a shared value in the payload of a codec registered without
 // WithSharedPayload, and every value DumpTyped refuses for a reason other
@@ -266,6 +269,9 @@ type durableEncoder struct {
 	// walked links each cell address discovery walked to the next
 	// address; see unwalked.
 	walked map[uintptr]uintptr
+	// frameBindings holds each captured frame's bindings in name order;
+	// see durable_closures.go.
+	frameBindings map[*lisp.LEnv][]binding
 	typedEncoder
 	scanned int
 	nextID  int
@@ -281,21 +287,22 @@ const noLow = math.MaxInt
 
 func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *durableEncoder {
 	return &durableEncoder{
-		typedEncoder: typedEncoder{cfg: cfg, durable: true},
-		env:          env,
-		reg:          reg,
-		refs:         map[any]int{},
-		order:        map[any]int{},
-		tree:         map[any]string{},
-		ids:          map[any]int{},
-		saved:        map[any]savedNative{},
-		funs:         map[funKey]string{},
-		dataHeaders:  map[*lisp.LVal]bool{},
-		appendable:   map[*lisp.LVal]bool{},
-		recorded:     map[*lisp.LVal]bool{},
-		walked:       map[uintptr]uintptr{},
-		views:        map[any]viewInfo{},
-		literal:      map[any]bool{},
+		typedEncoder:  typedEncoder{cfg: cfg, durable: true},
+		env:           env,
+		reg:           reg,
+		refs:          map[any]int{},
+		order:         map[any]int{},
+		tree:          map[any]string{},
+		ids:           map[any]int{},
+		saved:         map[any]savedNative{},
+		funs:          map[funKey]string{},
+		dataHeaders:   map[*lisp.LVal]bool{},
+		appendable:    map[*lisp.LVal]bool{},
+		recorded:      map[*lisp.LVal]bool{},
+		walked:        map[uintptr]uintptr{},
+		frameBindings: map[*lisp.LEnv][]binding{},
+		views:         map[any]viewInfo{},
+		literal:       map[any]bool{},
 	}
 }
 
@@ -503,7 +510,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	case lisp.LNative:
 		return e.scanNative(v, key, depth)
 	case lisp.LFun:
-		return e.scanFun(v)
+		return e.scanFunValue(v, depth)
 	case lisp.LError:
 		return e.scanError(v, key, depth)
 	case lisp.LQuote:
@@ -581,20 +588,6 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	return nil
 }
 
-// scanFun resolves and caches a function's global name.
-func (e *durableEncoder) scanFun(f *lisp.LVal) error {
-	k := funKey{f.Package(), f.FID()}
-	if _, ok := e.funs[k]; ok {
-		return nil
-	}
-	name, err := e.funName(f)
-	if err != nil {
-		return err
-	}
-	e.funs[k] = name
-	return nil
-}
-
 // bindingsPerUnit is how many bindings one charge unit pays for when a
 // package's function names are read.  One elps evaluation step costs about
 // 175 ns (BenchmarkDurableFunctionName's host: a dotimes loop of 50,004
@@ -618,7 +611,7 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 		return "", errors.New("durable json: cannot encode a macro or special operator")
 	}
 	fid, pkgName := f.FID(), f.Package()
-	anonymous := errors.New("durable json: cannot encode an anonymous function")
+	anonymous := errAnonymous
 	if fid == "" || pkgName == "" {
 		return "", anonymous
 	}
@@ -759,6 +752,9 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		name, ok := e.funs[funKey{v.Package(), v.FID()}]
 		if !ok {
 			return errors.New("durable json: function was not resolved")
+		}
+		if name == "" {
+			return e.closure(v, depth)
 		}
 		if err := e.count(); err != nil {
 			return err

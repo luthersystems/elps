@@ -973,6 +973,26 @@ func (env *LEnv) typedefFields(typ *LVal) (*LVal, *LVal, *LVal) {
 // any new holder of a live *LEnv must either go through Lambda or count
 // itself the same way.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
+	return env.lambdaIn(env.Runtime.Package.Name, env.loc, formals, body)
+}
+
+// RestoreLambda rebuilds a lambda of package pkg that captures env, from
+// its formals and body, as Lambda builds one, and evaluates nothing.  It is
+// how a serializer restores a closure: the caller rebuilds the captured
+// frames with NewEnv and Put, and pkg names the package the lambda was
+// defined in, whose globals its body resolves when it is called.  The
+// formals are validated as Lambda validates them.  The lambda has a fresh
+// FID and no source location.  RestoreLambda returns an error when no
+// package pkg is registered.
+func (env *LEnv) RestoreLambda(pkg string, formals *LVal, body []*LVal) *LVal {
+	if env.Runtime.Registry.Package(pkg) == nil {
+		return env.Errorf("unknown package: %q", pkg)
+	}
+	return env.lambdaIn(pkg, nil, formals, body)
+}
+
+// lambdaIn is Lambda for package pkg, located at loc.
+func (env *LEnv) lambdaIn(pkg string, loc *token.Location, formals *LVal, body []*LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
 	}
@@ -999,7 +1019,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
-		source: env.loc,
+		source: loc,
 		Native: &funData{
 			// The function captures its defining environment directly.  A
 			// call binds the formals in a fresh child of it (see bind), which
@@ -1009,10 +1029,10 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 			// still consumes exactly one environment ID, so generated names
 			// are unchanged.
 			fid: string(fid),
-			pkg: env.Runtime.Package.Name,
+			pkg: pkg,
 			env: env,
 			//elps:aliases deliberate in-runtime alias: the definition-site snapshot of the environment's location register, the same pointer NewEnv(env) froze into the per-function child environment this replaces, and the function value lives inside the same runtime as env.loc
-			loc: env.loc,
+			loc: loc,
 		},
 		Cells: cells,
 	}

@@ -133,7 +133,7 @@ func (d *durableDecoder) storageRef(depth int) (*decStorage, error) {
 		if err != nil {
 			return nil, err
 		}
-		if ref >= len(d.objs) || !d.storageObj[ref] {
+		if ref >= len(d.objs) || d.objKind[ref] != kindStorage {
 			return nil, d.errorf("view of object %d, which is not storage", ref)
 		}
 		if err := d.expect(']'); err != nil {
@@ -205,7 +205,7 @@ func (d *durableDecoder) newStorage(depth, id int) (*decStorage, error) {
 		d.objs = append(d.objs, lisp.QExpr(st.cells))
 		d.objNode = append(d.objNode, -1)
 		d.used = append(d.used, false)
-		d.storageObj = append(d.storageObj, true)
+		d.objKind = append(d.objKind, kindStorage)
 		d.storage[id] = st
 	}
 	return st, nil
@@ -215,9 +215,9 @@ func (d *durableDecoder) newStorage(depth, id int) (*decStorage, error) {
 // (which may be empty), a reference to a list, or a view.  vector marks a
 // vector's data.
 func (d *durableDecoder) dataHolder(depth int, vector bool) (*lisp.LVal, error) {
-	d.dataPos = true
+	d.pos = posData
 	h, err := d.value(depth)
-	d.dataPos = false
+	d.pos = posValue
 	if err != nil {
 		return nil, err
 	}
