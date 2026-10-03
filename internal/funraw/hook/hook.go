@@ -17,11 +17,6 @@ package hook
 // package lisp's init and consumed by package funraw's init.
 var Env any
 
-// Lookup holds a func(*lisp.LEnv, string) (*lisp.LVal, bool), with the same
-// initialization contract as Env: one binding of an environment's own
-// scope, read-only.
-var Lookup any
-
 // Captures holds a func(*lisp.LVal) *lisp.LVal, with the same initialization
 // contract as Env. The returned explicit builtin state is read-only.
 var Captures any

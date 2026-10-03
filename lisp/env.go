@@ -983,6 +983,9 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 // copied per lambda.
 type LambdaCode struct {
 	cells []*LVal
+	// legacy is the formal-validation policy the code was validated
+	// under (Runtime.LegacyKeywordFormals).
+	legacy bool
 }
 
 // NewLambdaCode validates a lambda's formals as Lambda does and returns
@@ -995,7 +998,7 @@ func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, *LVal)
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
 	cells = append(cells, body...)
-	return &LambdaCode{cells: cells}, nil
+	return &LambdaCode{cells: cells, legacy: env.Runtime.LegacyKeywordFormals}, nil
 }
 
 // RestoreLambda rebuilds a lambda of package pkg that captures env, from
@@ -1003,7 +1006,10 @@ func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, *LVal)
 // serializer restores a closure: the caller rebuilds the captured frames
 // with NewEnv and Put, and pkg names the package the lambda was defined
 // in, whose globals its body resolves when it is called.  The lambda
-// shares code's cells; it has a fresh FID and no source location.
+// shares code's cells; it has a fresh FID and no source location.  Code
+// validated in a runtime with another LegacyKeywordFormals setting is
+// validated again here, so RestoreLambda accepts exactly the formals this
+// runtime's lambda accepts.
 // RestoreLambda returns an error when no package pkg is registered.
 func (env *LEnv) RestoreLambda(pkg string, code *LambdaCode) *LVal {
 	if env.Runtime.Registry.Package(pkg) == nil {
@@ -1011,6 +1017,13 @@ func (env *LEnv) RestoreLambda(pkg string, code *LambdaCode) *LVal {
 	}
 	if code == nil || len(code.cells) == 0 {
 		return env.Errorf("no lambda code")
+	}
+	// Code validated under another formal-validation policy is validated
+	// again under this runtime's, as its own lambda would be.
+	if code.legacy != env.Runtime.LegacyKeywordFormals {
+		if lerr := env.validateLambdaFormals(code.cells[0]); lerr != nil {
+			return lerr
+		}
 	}
 	return env.newLambda(pkg, nil, code.cells)
 }

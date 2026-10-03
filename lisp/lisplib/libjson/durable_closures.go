@@ -12,17 +12,13 @@ package libjson
 // PKG is the package the lambda was defined in: its body resolves globals
 // there when it is called, as a function restored by ~#fn does.  ENV is the
 // innermost captured frame, and each frame names its parent; null is the
-// root environment, whose names are globals.  A frame holds, in name order,
-// the bindings the saved closures over it read (see durable_scope.go):
-// each name a closure's code names is saved in the innermost frame that
-// binds it, and a dynamic closure (one whose code calls eval or a macro
-// that is not audited) keeps its frames whole.  Discovery computes these
-// sets as a fixpoint before anything is counted, so the counting pass, the
-// output and the decoder all see the same frames.  Frames that save
-// nothing are left out of the chain.  A frame is an object, so two
-// closures over one frame share it after a load, and a set! through one is
-// seen by the other.  A closure is an object too, so a closure in its own
-// frame (recursion) restores.
+// root environment, whose names are globals.  A frame is saved whole, with
+// every binding in name order: which names a closure's code may reach
+// cannot be decided statically (eval and macros reach names the code does
+// not spell), so nothing is dropped.  Frames with no bindings are left out
+// of the chain.  A frame is an object, so two closures over one frame share
+// it after a load, and a set! through one is seen by the other.  A closure
+// is an object too, so a closure in its own frame (recursion) restores.
 //
 // CODE is the lambda's formals and body as code: each node keeps whether it
 // is quoted, which decides whether the evaluator evaluates it.  A node is a
@@ -43,9 +39,7 @@ import (
 	"cmp"
 	"errors"
 	"fmt"
-	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -70,12 +64,12 @@ type (
 	closureKey struct{ p any }
 	// frameKey identifies a captured frame.
 	frameKey struct{ p *lisp.LEnv }
-	// codeKey identifies a lambda's code: its formals header and the
-	// headers of its body forms, which every closure made by one lambda
-	// form shares.
+	// codeKey identifies a lambda's code by its cells: the closures
+	// restored from one code object share them.  A constant-size key, so
+	// a closure costs the same however long its body is.
 	codeKey struct {
-		formals *lisp.LVal
-		body    string
+		p **lisp.LVal
+		n int
 	}
 )
 
@@ -100,167 +94,45 @@ func lambdaEnv(v *lisp.LVal) *lisp.LEnv {
 	return funraw.Env(v)
 }
 
-// codeKeyOf returns a closure's code key, built once per closure.
-func (e *durableEncoder) codeKeyOf(f *lisp.LVal) codeKey {
-	ck := closureKey{f.Native}
-	if k, ok := e.codeKeys[ck]; ok {
-		return k
-	}
-	b := make([]byte, 0, 8*len(f.Cells))
-	for _, c := range f.Cells[1:] {
-		b = strconv.AppendUint(b, uint64(reflect.ValueOf(c).Pointer()), 16)
-		b = append(b, ' ')
-	}
-	k := codeKey{formals: f.Cells[0], body: string(b)}
-	e.codeKeys[ck] = k
-	return k
+// codeKeyOf returns a closure's code key.
+func codeKeyOf(f *lisp.LVal) codeKey {
+	return codeKey{p: &f.Cells[0], n: len(f.Cells)}
 }
 
-// chainOf returns the frames below the root a lambda captured, innermost
-// first.  The walk is bounded by the scope's work limit.
-func (e *durableEncoder) chainOf(env *lisp.LEnv) ([]*lisp.LEnv, error) {
-	var chain []*lisp.LEnv
+// frameOf returns the innermost frame at or above env that has bindings,
+// or nil when there is none below the root.
+func frameOf(env *lisp.LEnv) *lisp.LEnv {
 	for ; env != nil && env.Parent() != nil; env = env.Parent() {
-		if err := e.scope().step(); err != nil {
-			return nil, err
-		}
-		chain = append(chain, env)
-	}
-	return chain, nil
-}
-
-// frameOf returns the innermost frame at or above env that saves a
-// binding, or nil when there is none below the root.
-func (e *durableEncoder) frameOf(env *lisp.LEnv) *lisp.LEnv {
-	for ; env != nil && env.Parent() != nil; env = env.Parent() {
-		if len(e.marked[env]) > 0 {
+		if env.NumBindings() > 0 {
 			return env
 		}
 	}
 	return nil
 }
 
-// bindings returns the bindings a frame saves, in name order.
-func (e *durableEncoder) bindings(env *lisp.LEnv) []binding {
+// bindings returns a frame's bindings in name order, read once per dump.
+// Before it copies them, it reserves them against the value limit, summed
+// over every frame the dump reads: each binding is written, so a dump
+// that reads more than the limit allows cannot succeed.
+func (e *durableEncoder) bindings(env *lisp.LEnv) ([]binding, error) {
 	if bs, ok := e.frameBindings[env]; ok {
-		return bs
+		return bs, nil
 	}
-	bs := make([]binding, 0, len(e.marked[env]))
-	for name, v := range e.marked[env] {
+	n := env.NumBindings()
+	e.frameReserved += n
+	if e.frameReserved > e.cfg.maxValues {
+		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
+	}
+	bs := make([]binding, 0, n)
+	for name, v := range env.Bindings() {
+		if name == "" || !utf8.ValidString(name) {
+			return nil, errors.New("durable json: a captured variable's name is empty or not UTF-8")
+		}
 		bs = append(bs, binding{name: name, value: v})
 	}
 	slices.SortFunc(bs, func(a, b binding) int { return cmp.Compare(a.name, b.name) })
 	e.frameBindings[env] = bs
-	return bs
-}
-
-// scope returns the dump's name resolver.
-func (e *durableEncoder) scope() *closureScope {
-	if e.closureScope == nil {
-		e.closureScope = newClosureScope(e.env, e.cfg)
-	}
-	return e.closureScope
-}
-
-// markClosure records, during discovery, the frame bindings a closure
-// reads: each name its code names, in the innermost frame below the root
-// that binds it, or every binding of every frame for a dynamic closure.
-// A binding marked for the first time has its value walked, so the
-// closures it reaches mark theirs: the marks reach a fixpoint over the
-// closures and frames by the time discovery ends.
-func (e *durableEncoder) markClosure(v *lisp.LVal, depth int) error {
-	chain, err := e.chainOf(lambdaEnv(v))
-	if err != nil {
-		return err
-	}
-	sc := e.scope()
-	names := sc.codeNames(e.codeKeyOf(v), v.Cells)
-	reason, err := sc.dynamicReason(v.Cells, chain, v.Package())
-	if err != nil {
-		return err
-	}
-	mark := func(env *lisp.LEnv, name string, value *lisp.LVal) error {
-		if _, ok := e.marked[env][name]; ok {
-			return nil
-		}
-		if e.marked[env] == nil {
-			e.marked[env] = map[string]*lisp.LVal{}
-		}
-		if name == "" || !utf8.ValidString(name) {
-			return errors.New("durable json: a captured variable's name is empty or not UTF-8")
-		}
-		e.marked[env][name] = value
-		if err := e.scan(value, depth+1); err != nil {
-			if reason != "" {
-				return wholeFrameError(reason, name, err)
-			}
-			return capturedError(name, err)
-		}
-		return nil
-	}
-	if reason != "" {
-		for _, env := range chain {
-			if e.whole[env] {
-				continue
-			}
-			e.whole[env] = true
-			all, err := e.wholeFrame(env)
-			if err != nil {
-				return err
-			}
-			for _, b := range all {
-				if err := mark(env, b.name, b.value); err != nil {
-					return err
-				}
-			}
-		}
-		return nil
-	}
-	for _, name := range names {
-		for _, env := range chain {
-			if err := sc.step(); err != nil {
-				return err
-			}
-			if value, ok := funraw.Lookup(env, name); ok {
-				if err := mark(env, name, value); err != nil {
-					return err
-				}
-				break
-			}
-		}
-	}
-	return nil
-}
-
-// wholeFrame reads every binding of a frame a dynamic closure captured, in
-// name order.  The bindings are reserved against the value limit, and
-// charged as package names are (ceil(n/4)), before they are copied.
-func (e *durableEncoder) wholeFrame(env *lisp.LEnv) ([]binding, error) {
-	n := env.NumBindings()
-	if n > e.cfg.maxValues {
-		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
-	}
-	if e.cfg.charge != nil && n > 0 {
-		if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
-			return nil, fmt.Errorf("durable json: captured frame of %d bindings: %w", n, err)
-		}
-	}
-	all := make([]binding, 0, n)
-	for name, v := range env.Bindings() {
-		all = append(all, binding{name: name, value: v})
-	}
-	slices.SortFunc(all, func(a, b binding) int { return cmp.Compare(a.name, b.name) })
-	return all, nil
-}
-
-// wholeFrameError refuses a dynamic closure whose frame holds a value that
-// cannot be saved.
-func wholeFrameError(reason, name string, err error) error {
-	if errors.Is(err, ErrTypedLimit) {
-		return err
-	}
-	return fmt.Errorf("durable json: closure body %s; its frames must be saved whole; captured variable %q cannot be saved: %s",
-		reason, name, strings.TrimPrefix(err.Error(), "durable json: "))
+	return bs, nil
 }
 
 // scanFunValue resolves a function: a global name, or a closure.
@@ -298,22 +170,11 @@ func (e *durableEncoder) scanClosure(v *lisp.LVal, depth int) error {
 		return err
 	}
 	i := e.openObject(key)
-	// Discovery checks the code (its size and depth) before it reads the
-	// names in it.
-	if e.discover {
-		if err := e.scanCode(v, depth+1); err != nil {
-			return err
-		}
-		if err := e.markClosure(v, depth); err != nil {
-			return err
-		}
-	} else {
-		if err := e.scanFrame(e.frameOf(lambdaEnv(v)), depth+1); err != nil {
-			return err
-		}
-		if err := e.scanCode(v, depth+1); err != nil {
-			return err
-		}
+	if err := e.scanFrame(frameOf(lambdaEnv(v)), depth+1); err != nil {
+		return err
+	}
+	if err := e.scanCode(v, depth+1); err != nil {
+		return err
 	}
 	e.closeNode(i)
 	return nil
@@ -336,9 +197,12 @@ func (e *durableEncoder) scanFrame(env *lisp.LEnv, depth int) error {
 	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
-	bs := e.bindings(env)
+	bs, err := e.bindings(env)
+	if err != nil {
+		return err
+	}
 	i := e.openObject(key)
-	if err := e.scanFrame(e.frameOf(env.Parent()), depth+1); err != nil {
+	if err := e.scanFrame(frameOf(env.Parent()), depth+1); err != nil {
 		return err
 	}
 	for _, b := range bs {
@@ -367,7 +231,7 @@ func (e *durableEncoder) scanCode(f *lisp.LVal, depth int) error {
 	if err := e.countScan(1); err != nil {
 		return err
 	}
-	key := e.codeKeyOf(f)
+	key := codeKeyOf(f)
 	e.refs[key]++
 	if e.refs[key] > 1 {
 		return e.revisit(nil, key)
@@ -516,7 +380,7 @@ func (e *durableEncoder) closure(v *lisp.LVal, depth int) error {
 		e.buf = append(e.buf, `["`+tagClosure+`",[`...)
 		e.buf = appendJSONString(e.buf, pkg)
 		e.buf = append(e.buf, ',')
-		if err := e.frame(e.frameOf(lambdaEnv(v)), depth+1); err != nil {
+		if err := e.frame(frameOf(lambdaEnv(v)), depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',')
@@ -543,7 +407,7 @@ func (e *durableEncoder) frame(env *lisp.LEnv, depth int) error {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagEnv+`",[`...)
-		if err := e.frame(e.frameOf(env.Parent()), depth+1); err != nil {
+		if err := e.frame(frameOf(env.Parent()), depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',', '[')
@@ -574,7 +438,7 @@ func (e *durableEncoder) frame(env *lisp.LEnv, depth int) error {
 
 // code writes ["~#code",[FORMALS,BODY...]], shared or not.
 func (e *durableEncoder) code(f *lisp.LVal, depth int) error {
-	key := e.codeKeyOf(f)
+	key := codeKeyOf(f)
 	body := func() error {
 		if err := e.container(depth); err != nil {
 			return err

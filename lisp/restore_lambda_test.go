@@ -51,3 +51,18 @@ func TestRestoreLambda(t *testing.T) {
 	_, lerr = env.NewLambdaCode(lisp.Formals("x"), []*lisp.LVal{lisp.Symbol("x")})
 	assert.Nil(t, lerr)
 }
+
+// Code validated under legacy keyword formals is validated again in a
+// runtime without them, so RestoreLambda accepts only what that runtime's
+// lambda accepts.
+func TestRestoreLambdaValidationPolicy(t *testing.T) {
+	legacy := templateTestEnv(t)
+	legacy.Runtime.LegacyKeywordFormals = true
+	strict := templateTestEnv(t)
+	formals := lisp.QExpr([]*lisp.LVal{lisp.Symbol(":x")})
+	code, lerr := legacy.NewLambdaCode(formals, []*lisp.LVal{lisp.Int(1)})
+	require.Nil(t, lerr, "legacy runtimes accept a keyword formal")
+	assert.Equal(t, lisp.LFun, legacy.RestoreLambda(lisp.DefaultUserPackage, code).Type)
+	assert.Equal(t, lisp.LError, strict.RestoreLambda(lisp.DefaultUserPackage, code).Type)
+	assert.Equal(t, lisp.LError, strict.Lambda(formals, []*lisp.LVal{lisp.Int(1)}).Type)
+}

@@ -17,6 +17,8 @@ import (
 // the views of it.  id is its object id, -1 when inline.
 type decStorage struct {
 	claims *cellClaims
+	// sealed links past the cells a literal over the storage has sealed.
+	sealed *cellClaims
 	cells  []*lisp.LVal
 	null   []bool
 	views  []*decView
@@ -331,41 +333,35 @@ func (d *durableDecoder) literal(depth int) (*lisp.LVal, error) {
 	}
 	h.InheritSeal(lisp.Nil())
 	d.literals = append(d.literals, h)
+	d.sealAtoms(h)
 	return h, nil
 }
 
-// sealLiterals seals, once the document is read, the scalar cells of each
-// restored literal, as the reader seals a literal's atoms: template
-// publication admits a sealed list only when the atoms it holds are
-// sealed too.  A list or other container in a literal keeps its own
-// marker, so one built at run time stays mutable.  Literals that are views
-// seal the union of their ranges once per storage, so a literal and all of
-// its tails cost each cell once.
-func (d *durableDecoder) sealLiterals() {
-	type lspan struct{ start, end int }
-	ranges := map[*decStorage][]lspan{}
-	var order []*decStorage
-	for _, h := range d.literals {
-		if dv, ok := d.views[h]; ok {
-			if _, seen := ranges[dv.storage]; !seen {
-				order = append(order, dv.storage)
-			}
-			ranges[dv.storage] = append(ranges[dv.storage], lspan{dv.off, dv.off + dv.length})
-			continue
-		}
+// sealAtoms seals the atoms (ints, floats, strings, symbols) a restored
+// literal holds, as the reader seals a literal's atoms: template
+// publication admits a sealed list only when the atoms it holds are sealed
+// too.  It runs as each literal is read, so a native codec's LoadNative
+// sees its payload's literals sealed.  A list or other container in a
+// literal keeps its own marker, so one built at run time stays mutable.  A
+// literal that is a view seals only the cells of its storage no literal
+// sealed before (skip links), so a literal and all of its tails seal each
+// cell once.  Every cell of the range is read by then, except one whose
+// container value is still being read, which holds no atom to seal.
+func (d *durableDecoder) sealAtoms(h *lisp.LVal) {
+	d.sealOps++
+	dv, ok := d.views[h]
+	if !ok {
 		d.sealCells(h.Cells)
+		return
 	}
-	for _, st := range order {
-		rs := ranges[st]
-		slices.SortFunc(rs, func(a, b lspan) int { return cmp.Compare(a.start, b.start) })
-		done := 0
-		for _, r := range rs {
-			d.sealOps++
-			if start := max(r.start, done); start < r.end {
-				d.sealCells(st.cells[start:r.end])
-			}
-			done = max(done, r.end)
-		}
+	st := dv.storage
+	if st.sealed == nil {
+		st.sealed = newCellLinks(len(st.cells))
+	}
+	end := dv.off + dv.length
+	for k := st.sealed.free(dv.off); k < end; k = st.sealed.free(k + 1) {
+		st.sealed.claim(k, 0)
+		d.sealCells(st.cells[k : k+1])
 	}
 }
 
@@ -373,6 +369,9 @@ func (d *durableDecoder) sealLiterals() {
 func (d *durableDecoder) sealCells(cells []*lisp.LVal) {
 	for _, c := range cells {
 		d.sealOps++
+		if c == nil {
+			continue
+		}
 		switch c.Type {
 		case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol:
 			c.InheritSeal(lisp.Nil())

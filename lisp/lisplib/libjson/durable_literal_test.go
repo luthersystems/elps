@@ -3,6 +3,7 @@
 package libjson_test
 
 import (
+	"errors"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -157,4 +158,45 @@ func TestDurableRestoredLiteralsInTemplates(t *testing.T) {
 		}
 		assert.Equal(t, `'(1 2)`, vm.LoadString("test", `(stable-sort < (nth saved 2))`).String(), c.name)
 	}
+}
+
+// A native codec's LoadNative sees the literals in its payload sealed,
+// atoms included, also when another value read their cells first.
+func TestDurableLiteralsSealedBeforeLoadNative(t *testing.T) {
+	env := newTypedTestEnv(t)
+	reg := libjson.NewDurableRegistry()
+	allSealed := func(l *lisp.LVal) bool {
+		if !l.IsSealed() {
+			return false
+		}
+		for _, c := range l.Cells {
+			if !c.IsSealed() {
+				return false
+			}
+		}
+		return true
+	}
+	require.NoError(t, libjson.RegisterNative[*boxed](reg, "test:sealcheck", 1, libjson.NativeFuncs{
+		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*boxed](v).v, nil },
+		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) {
+			if !allSealed(p) {
+				return nil, errors.New("payload literal is not sealed")
+			}
+			return lisp.Native(&boxed{p}), nil
+		},
+	}, libjson.WithSharedPayload()))
+	reg.Freeze()
+	cells := []*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)}
+	for _, c := range cells {
+		c.InheritSeal(lisp.Nil())
+	}
+	tail := lisp.QExpr(cells[1:3:3])
+	tail.InheritSeal(lisp.Nil())
+	root := lisp.QExpr([]*lisp.LVal{lisp.QExpr(cells), lisp.Native(&boxed{tail})})
+	b, err := libjson.DumpDurable(env, root, reg)
+	require.NoError(t, err)
+	back, err := libjson.LoadDurable(env, b, reg)
+	require.NoError(t, err, string(b))
+	assert.True(t, allSealed(nativeOf[*boxed](back.Cells[1]).v))
+	assert.False(t, back.Cells[0].IsSealed(), "the plain list over the same cells stays mutable")
 }

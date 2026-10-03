@@ -4,10 +4,8 @@ package libjson
 
 import (
 	"bytes"
-	"fmt"
 	"unicode/utf8"
 
-	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -16,19 +14,6 @@ import (
 type decCode struct {
 	code  *lisp.LambdaCode
 	cells []*lisp.LVal
-}
-
-// decClosure is a restored closure, for the check at the end.
-type decClosure struct {
-	env  *lisp.LEnv
-	code *decCode
-	pkg  string
-}
-
-// decFrame is a restored frame and the names it binds, in order.
-type decFrame struct {
-	env   *lisp.LEnv
-	names []string
 }
 
 // closureValue reads ["PKG",ENV,CODE] after "~#closure",[ and rebuilds the
@@ -67,7 +52,6 @@ func (d *durableDecoder) closureValue(depth int) (*lisp.LVal, error) {
 		return nil, d.errorf("closure: %v", (*lisp.ErrorVal)(f).ErrorMessage())
 	}
 	*h = *f
-	d.closures = append(d.closures, decClosure{env: env, code: code, pkg: pkg})
 	return h, nil
 }
 
@@ -124,7 +108,6 @@ func (d *durableDecoder) frameValue(depth int) (*lisp.LVal, error) {
 	if err = d.expect('['); err != nil {
 		return nil, err
 	}
-	fr := decFrame{env: env}
 	var prev []byte
 	for first := true; ; first = false {
 		if d.peek() == ']' {
@@ -164,12 +147,10 @@ func (d *durableDecoder) frameValue(depth int) (*lisp.LVal, error) {
 		if r := env.Put(sym, v); r.Type == lisp.LError {
 			return nil, d.errorf("captured variable %q: %v", sym.Str, (*lisp.ErrorVal)(r).ErrorMessage())
 		}
-		fr.names = append(fr.names, sym.Str)
 	}
 	if err := d.expect(']'); err != nil {
 		return nil, err
 	}
-	d.restoredFrames = append(d.restoredFrames, fr)
 	return ph, nil
 }
 
@@ -263,6 +244,15 @@ func (d *durableDecoder) codeNode(depth int, inLit bool) (*lisp.LVal, error) {
 			return nil, err
 		}
 		d.i += len(tagQuote) + 4
+		// Quoting a sealed node copies its seal onto the quoted copy, so
+		// DumpDurable writes a quoted literal as ["~#lit",["~#quote",...]].
+		// A literal directly inside a quote is canonical only when it is
+		// itself a quote (a nested quote, ''x, whose outer quote is a new,
+		// unsealed node).
+		if bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagLit+`",`)) &&
+			!bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagLit+`",["`+tagQuote+`",`)) {
+			return nil, d.errorf("a literal inside a quote must be a quote")
+		}
 		inner, err := d.codeNode(depth+1, inLit)
 		if err != nil {
 			return nil, err
@@ -312,64 +302,4 @@ func (d *durableDecoder) codeNode(depth int, inLit bool) (*lisp.LVal, error) {
 		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 	}
 	return nil, d.errorf("code may hold only scalars, lists, quotes and literals")
-}
-
-// checkClosures checks, once the document is read, that each frame holds
-// exactly what DumpDurable saves: the names its closures read (see
-// durable_scope.go), or every binding when a dynamic closure captured it,
-// and nothing else.  A frame no closure reads from is rejected too.  It
-// decides without evaluating anything, with the same resolution the dump
-// uses, against the loading environment.
-func (d *durableDecoder) checkClosures() error {
-	if len(d.closures) == 0 {
-		return nil
-	}
-	sc := newClosureScope(d.env, d.cfg)
-	read := map[*lisp.LEnv]map[string]bool{}
-	whole := map[*lisp.LEnv]bool{}
-	for _, c := range d.closures {
-		var chain []*lisp.LEnv
-		for env := c.env; env != nil && env.Parent() != nil; env = env.Parent() {
-			if err := sc.step(); err != nil {
-				return err
-			}
-			chain = append(chain, env)
-		}
-		key := codeKey{formals: c.code.cells[0]}
-		reason, err := sc.dynamicReason(c.code.cells, chain, c.pkg)
-		if err != nil {
-			return err
-		}
-		if reason != "" {
-			for _, env := range chain {
-				whole[env] = true
-			}
-			continue
-		}
-		for _, name := range sc.codeNames(key, c.code.cells) {
-			for _, env := range chain {
-				if err := sc.step(); err != nil {
-					return err
-				}
-				if _, ok := funraw.Lookup(env, name); ok {
-					if read[env] == nil {
-						read[env] = map[string]bool{}
-					}
-					read[env][name] = true
-					break
-				}
-			}
-		}
-	}
-	for _, fr := range d.restoredFrames {
-		if whole[fr.env] {
-			continue
-		}
-		for _, name := range fr.names {
-			if !read[fr.env][name] {
-				return fmt.Errorf("durable json: captured variable %q is saved but no closure reads it", name)
-			}
-		}
-	}
-	return nil
 }

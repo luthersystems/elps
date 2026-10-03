@@ -251,6 +251,14 @@ type durableEncoder struct {
 	views       map[any]viewInfo
 	// literal holds the holders whose headers are program literals.
 	literal map[any]bool
+	// walked links each cell address discovery walked to the next
+	// address; see unwalked.
+	walked map[uintptr]uintptr
+	// frameBindings holds each captured frame's bindings in name order,
+	// and frameReserved how many bindings the dump has reserved against
+	// the value limit; codeRanges the cells of mutable code lists.  See
+	// durable_closures.go.
+	frameBindings map[*lisp.LEnv][]binding
 	// low holds, by first-visit index, for each object scan has finished,
 	// the smallest first-visit index of an object that was still open when
 	// it finished and that it reaches, or noLow.  An open object is one scan
@@ -267,25 +275,13 @@ type durableEncoder struct {
 	treeNames []string
 	// headers holds the holder headers discovery found, in walk order,
 	// and storages each group's storage.
-	headers  []*lisp.LVal
-	storages []storageInfo
-	// walked links each cell address discovery walked to the next
-	// address; see unwalked.
-	walked map[uintptr]uintptr
-	// marked holds, per captured frame, the bindings some saved closure
-	// reads; whole the frames a dynamic closure keeps whole;
-	// frameBindings the saved bindings in name order; codeKeys each
-	// closure's code key; codeRanges the cells of mutable code lists.
-	// See durable_closures.go.
-	marked        map[*lisp.LEnv]map[string]*lisp.LVal
-	whole         map[*lisp.LEnv]bool
-	frameBindings map[*lisp.LEnv][]binding
-	codeKeys      map[closureKey]codeKey
-	codeRanges    []span
-	closureScope  *closureScope
+	headers    []*lisp.LVal
+	storages   []storageInfo
+	codeRanges []span
 	typedEncoder
-	scanned int
-	nextID  int
+	frameReserved int
+	scanned       int
+	nextID        int
 	// discover marks the first walk, which only finds holders, saves
 	// natives and names functions.
 	discover bool
@@ -312,11 +308,9 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		recorded:      map[*lisp.LVal]bool{},
 		walked:        map[uintptr]uintptr{},
 		frameBindings: map[*lisp.LEnv][]binding{},
-		marked:        map[*lisp.LEnv]map[string]*lisp.LVal{},
-		whole:         map[*lisp.LEnv]bool{},
-		codeKeys:      map[closureKey]codeKey{},
-		views:         map[any]viewInfo{},
-		literal:       map[any]bool{},
+
+		views:   map[any]viewInfo{},
+		literal: map[any]bool{},
 	}
 }
 

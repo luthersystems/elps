@@ -275,6 +275,8 @@ func FuzzDurableJSON(f *testing.F) {
 		`["~#durable",[1,["~#list",[["~#closure",["user",["~#obj",[0,["~#env",[null,["n",0]]]]],["~#code",[null,["~#lit",["~#list",["~$set!","~$n",["~#list",["~$+","~$n",1]]]]]]]]],["~#closure",["user",["~#ref",0],["~#code",[null,"~$n"]]]]]]]]`,
 		`["~#durable",[1,["~#obj",[0,["~#closure",["user",["~#env",[null,["f",["~#ref",0]]]],["~#code",[["~#lit",["~#list",["~$n"]]],["~#lit",["~#list",["~$f",["~#quote",["~#list",[1,["~#quote","~$x"]]]]]]]]]]]]]]]`,
 		`["~#durable",[1,["~#closure",["user",null,["~#code",[null,["~#list",["~$progn",["~#lit",["~#quote",["~#list",[3,1,2]]]]]]]]]]]]`,
+		`["~#durable",[1,["~#closure",["user",null,["~#code",[null,["~#quote",["~#lit",["~#list",[1]]]]]]]]]]`,
+		`["~#durable",[1,["~#closure",["user",null,["~#code",[null,["~#quote",["~#lit",["~#quote",["~#list",[1]]]]]]]]]]]`,
 		`["~#durable",[1,["~#closure",["user",null,["~#code",[["~#lit",["~#list",["~$a","~$\u0026optional","~$b"]]],["~#lit",["~#quote",["~#quote",1]]],"~$a"]]]]]]`,
 		`["~#durable",[1,["~#error",["my-condition",["boom",42,["~#list",[1,"two"]]]]]]]`,
 		`["~#durable",[1,["~#obj",[0,["~#error",["c",[["~#list",[["~#ref",0]]]]]]]]]]`,

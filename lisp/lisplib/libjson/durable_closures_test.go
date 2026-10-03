@@ -8,7 +8,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 	"github.com/stretchr/testify/assert"
@@ -134,19 +133,20 @@ func TestDurableClosureRefusalPath(t *testing.T) {
 	_, err := libjson.DumpDurable(env, outer, nil)
 	require.EqualError(t, err, `durable json: captured variable "held": captured variable "captured": no codec registered for native type struct {}`)
 	_, err = libjson.DumpDurable(env, env.LoadString("test", `(macrolet ((m () 1)) (lambda () (m)))`), nil)
-	require.EqualError(t, err, `durable json: closure body calls macro m; its frames must be saved whole; captured variable "m" cannot be saved: cannot encode a macro or special operator`)
+	require.EqualError(t, err, `durable json: captured variable "m": cannot encode a macro or special operator`)
 }
 
-// Closures made by one lambda form share their code; the code and frames
-// are written once.
+// Each closure made by a lambda form holds its own copy of the form's
+// cells, so each writes its code; closures restored from one code object
+// share it, and re-encode sharing it.
 func TestDurableClosureSharedCode(t *testing.T) {
 	env := newTypedTestEnv(t)
 	fs := env.LoadString("test", `(map 'list (lambda (i) (lambda () i)) '(1 2))`)
 	require.NoError(t, lisp.GoError(fs))
 	doc := restore(t, env, "fs", fs)
 	assert.Equal(t, `["~#durable",[1,["~#list",[`+
-		`["~#closure",["user",["~#env",[null,["i",1]]],["~#obj",[0,["~#code",[null,"~$i"]]]]]],`+
-		`["~#closure",["user",["~#env",[null,["i",2]]],["~#ref",0]]]]]]]`, doc)
+		`["~#closure",["user",["~#env",[null,["i",1]]],["~#code",[null,"~$i"]]]],`+
+		`["~#closure",["user",["~#env",[null,["i",2]]],["~#code",[null,"~$i"]]]]]]]]`, doc)
 	assert.Equal(t, `'(1 2)`, evalString(t, env, `(map 'list #^(funcall %) fs)`))
 }
 
@@ -193,9 +193,7 @@ func TestLoadDurableRejectsClosures(t *testing.T) {
 		{pre + `["~#closure",["user",null,["~#code",[null,["~#lit",1]]]]]` + post, "a literal in code must be a nonempty list or a quote"},
 		{pre + `["~#closure",["user",null,["~#code",[null,["~#lit",null]]]]]` + post, "a literal in code must be a nonempty list or a quote"},
 		{pre + `["~#closure",["user",null,["~#code",[null,["~#lit",["~#list",[["~#lit",["~#list",[1]]]]]]]]]]` + post, "a literal inside a literal in code"},
-		{pre + `["~#closure",["user",["~#env",[null,["x",1]]],["~#code",[null,1]]]]` + post, `captured variable "x" is saved but no closure reads it`},
-		{pre + `["~#closure",["user",["~#env",[["~#env",[null,["x",1]]],["y",2]]],["~#code",[null,"~$y"]]]]` + post, `captured variable "x" is saved but no closure reads it`},
-		{pre + `["~#closure",["user",["~#env",[["~#env",[null,["y",1]]],["y",2]]],["~#code",[null,"~$y"]]]]` + post, `captured variable "y" is saved but no closure reads it`},
+		{pre + `["~#closure",["user",null,["~#code",[null,["~#quote",["~#lit",["~#list",[1]]]]]]]]` + post, "a literal inside a quote must be a quote"},
 		{pre + `["~#list",[["~#obj",[0,["~#env",[null,["a",1]]]]],["~#ref",0]]]` + post, "~#env outside a closure"},
 		{pre + `["~#list",[["~#closure",["user",["~#obj",[0,["~#env",[null,["a",1]]]]],` + code + `]],["~#ref",0]]]` + post, "reference to a frame object 0 in the position of a value"},
 		{pre + `["~#list",[["~#obj",[0,{}]],["~#closure",["user",["~#ref",0],` + code + `]]]]` + post, "reference to a value object 0 in the position of a frame"},
@@ -209,72 +207,12 @@ func TestLoadDurableRejectsClosures(t *testing.T) {
 	}
 }
 
-// A frame saves only the names its closures' code reads: a value a closure
-// never names, such as a flow's context, is left out, and is unbound after
-// a restore.
-func TestDurableClosureSavesReferencedNames(t *testing.T) {
-	env := newTypedTestEnv(t)
-	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("opaque"), lisp.Native(struct{}{}))))
-	f := env.LoadString("test", `(let ((ctx opaque) (big "unused") (n 1)) (lambda (x) (+ n x)))`)
-	require.NoError(t, lisp.GoError(f))
-	doc := restore(t, env, "f", f)
-	assert.Equal(t, `["~#durable",[1,["~#closure",["user",["~#env",[null,["n",1]]],["~#code",[["~#lit",["~#list",["~$x"]]],["~#lit",["~#list",["~$+","~$n","~$x"]]]]]]]]]`, doc)
-	assert.Equal(t, `42`, evalString(t, env, `(funcall f 41)`))
-	var names []string
-	for name := range funraw.Env(env.LoadString("test", `f`)).Bindings() {
-		names = append(names, name)
-	}
-	assert.Equal(t, []string{"n"}, names, "unreferenced captured names are not restored")
-
-	// Two closures over one frame that read different names save the
-	// union, and still share it.
-	pair := env.LoadString("test", `(let ((ctx opaque) (a 1) (b 2)) (list (lambda () (set! a (+ a b)) a) (lambda () b)))`)
-	require.NoError(t, lisp.GoError(pair))
-	doc = restore(t, env, "pair", pair)
-	assert.Contains(t, doc, `["~#env",[null,["a",1,"b",2]]]`)
-	assert.Equal(t, `5`, evalString(t, env, `(funcall (first pair)) (funcall (first pair))`))
-	requireExactLimit(t, env, pair, "pair")
-	b, err := libjson.DumpDurable(env, pair, nil)
-	require.NoError(t, err)
-	for n := 1; n <= 40; n++ {
-		_, derr := libjson.DumpDurable(env, pair, nil, libjson.WithTypedMaxValues(n))
-		_, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxValues(n))
-		require.Equal(t, derr == nil, lerr == nil, "values %d: dump %v, load %v", n, derr, lerr)
-	}
-	for n := 1; n <= 10; n++ {
-		_, derr := libjson.DumpDurable(env, pair, nil, libjson.WithTypedMaxDepth(n))
-		_, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxDepth(n))
-		require.Equal(t, derr == nil, lerr == nil, "depth %d: dump %v, load %v", n, derr, lerr)
-	}
-
-	// A name only a nested lambda reads is saved, and an outer frame's
-	// name shadowed by an inner one is read from the inner frame.
-	nested := env.LoadString("test", `(let ((ctx opaque) (k 3)) (let ((k 4) (j 5)) (lambda () (lambda () (list k j)))))`)
-	require.NoError(t, lisp.GoError(nested))
-	doc = restore(t, env, "nested", nested)
-	assert.Contains(t, doc, `["~#env",[null,["j",5,"k",4]]]`)
-	assert.Equal(t, `'(4 5)`, evalString(t, env, `(funcall (funcall nested))`))
-}
-
-// Code that names eval may read any captured name, so its frames are saved
-// whole, and a refused value in them is refused.
-func TestDurableClosureEvalKeepsWholeFrames(t *testing.T) {
-	env := newTypedTestEnv(t)
-	f := env.LoadString("test", `(let ((a 1) (b 2)) (lambda () (eval 'a)))`)
-	require.NoError(t, lisp.GoError(f))
-	doc := restore(t, env, "f", f)
-	assert.Contains(t, doc, `["~#env",[null,["a",1,"b",2]]]`)
-	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("opaque"), lisp.Native(struct{}{}))))
-	g := env.LoadString("test", `(let ((ctx opaque)) (lambda () (eval 'x)))`)
-	_, err := libjson.DumpDurable(env, g, nil)
-	require.EqualError(t, err, `durable json: closure body calls eval; its frames must be saved whole; captured variable "ctx" cannot be saved: no codec registered for native type struct {}`)
-}
-
-// Closures restored from one code object share one copy of it: 2,000
-// closures over a 2,000-form body hold one body, not 2,000.
+// Closures restored from one code object share one copy of it, and the
+// dump keys shared code by its cells, in constant size: 20,000 closures
+// over a 20,000-form body load and dump again in bounded work and memory.
 func TestDurableClosuresShareRestoredCode(t *testing.T) {
 	env := newTypedTestEnv(t)
-	const n = 2000
+	const n = 20000
 	var b strings.Builder
 	b.WriteString(`["~#durable",[1,["~#list",[["~#closure",["user",null,["~#obj",[0,["~#code",[null`)
 	for range n {
@@ -285,15 +223,24 @@ func TestDurableClosuresShareRestoredCode(t *testing.T) {
 		b.WriteString(`,["~#closure",["user",null,["~#ref",0]]]`)
 	}
 	b.WriteString(`]]]]`)
+	var m0, m1, m2 runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&m0)
 	back, err := libjson.LoadDurable(env, []byte(b.String()), nil)
 	require.NoError(t, err)
+	runtime.ReadMemStats(&m1)
+	again, err := libjson.DumpDurable(env, back, nil)
+	require.NoError(t, err)
+	runtime.ReadMemStats(&m2)
+	assert.Equal(t, b.String(), string(again))
 	require.Len(t, back.Cells, n)
 	for _, f := range back.Cells[1:] {
 		require.Same(t, &back.Cells[0].Cells[0], &f.Cells[0], "a restored closure copied its code")
 	}
-	again, err := libjson.DumpDurable(env, back, nil)
-	require.NoError(t, err)
-	assert.Equal(t, b.String(), string(again))
+	// One body is 20,000 cells; a copy per closure, or a body-sized key
+	// per closure, is gigabytes.
+	assert.Less(t, m1.TotalAlloc-m0.TotalAlloc, uint64(128<<20), "load")
+	assert.Less(t, m2.TotalAlloc-m1.TotalAlloc, uint64(128<<20), "dump")
 }
 
 // A literal a macro or quasiquote put inside new code stays protected:
@@ -328,62 +275,61 @@ func TestDurableClosureCodeSharingRefused(t *testing.T) {
 	require.EqualError(t, err, "durable json: a closure's code shares a mutable list with another value; code restores as its own copy, so the sharing cannot be kept")
 }
 
-// A closure that calls a macro outside the audited set, or eval by any
-// name, keeps its frames whole, and is refused with the reason when a
-// binding cannot be saved.
-func TestDurableClosureDynamic(t *testing.T) {
+// A frame is saved whole, so a value the closure never names is saved
+// too, and refused with its path when it cannot be.
+func TestDurableClosureSavesWholeFrames(t *testing.T) {
 	env := newTypedTestEnv(t)
+	f := env.LoadString("test", `(let ((big "unused") (n 1)) (lambda (x) (+ n x)))`)
+	require.NoError(t, lisp.GoError(f))
+	doc := restore(t, env, "f", f)
+	assert.Contains(t, doc, `["~#env",[null,["big","unused","n",1]]]`)
+	assert.Equal(t, `42`, evalString(t, env, `(funcall f 41)`))
+
+	// eval and macros may reach names the code does not spell; they work
+	// because nothing is dropped.
 	evalString(t, env, `(defmacro getx () (quote x))`)
 	for _, c := range []struct{ src, want string }{
 		{`(let ((x 7) (y 8)) (lambda () (getx)))`, `7`},
 		{`(let ((run eval) (name 'secret) (secret 42)) (lambda () (run name)))`, `42`},
+		{`(let ((m (sorted-map "e" eval)) (name 'secret) (secret 42)) (lambda () (apply (get m "e") (list name))))`, `42`},
 	} {
-		f := env.LoadString("test", c.src)
-		require.NoError(t, lisp.GoError(f))
-		restore(t, env, "f", f)
-		assert.Equal(t, c.want, evalString(t, env, `(funcall f)`), c.src)
+		g := env.LoadString("test", c.src)
+		require.NoError(t, lisp.GoError(g))
+		restore(t, env, "g", g)
+		assert.Equal(t, c.want, evalString(t, env, `(funcall g)`), c.src)
 	}
+
 	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("opaque"), lisp.Native(struct{}{}))))
-	for _, c := range []struct{ src, want string }{
-		{`(let ((ctx opaque) (x 1)) (lambda () (getx)))`, `durable json: closure body calls macro getx; its frames must be saved whole; captured variable "ctx" cannot be saved: no codec registered for native type struct {}`},
-		{`(let ((run eval) (ctx opaque)) (lambda () (run 'ctx)))`, `durable json: closure body calls eval via run; its frames must be saved whole; captured variable "ctx" cannot be saved: no codec registered for native type struct {}`},
-	} {
-		_, err := libjson.DumpDurable(env, env.LoadString("test", c.src), nil)
-		require.EqualError(t, err, c.want)
-	}
-	// The audited stdlib macros do not make a closure dynamic.
-	f := env.LoadString("test", `(let ((ctx opaque) (n 1)) (lambda () (get-default (sorted-map) "k" n)))`)
-	_, err := libjson.DumpDurable(env, f, nil)
-	require.NoError(t, err)
+	h := env.LoadString("test", `(let ((ctx opaque) (n 1)) (lambda () n))`)
+	_, err := libjson.DumpDurable(env, h, nil)
+	require.EqualError(t, err, `durable json: captured variable "ctx": no codec registered for native type struct {}`)
 }
 
-// A frame of many bindings costs only the names a closure reads; a dynamic
-// closure over it reserves them all against the limit before copying.
-func TestDurableClosureLargeFrame(t *testing.T) {
+// Whole frames are reserved against the value limit, summed over every
+// frame, before each is copied: 100 closures over 100 frames of 100,000
+// bindings each, chained through their first bindings, stop at the first
+// frame past the limit, not after copying them all.
+func TestDurableClosureFramesReservedCumulatively(t *testing.T) {
 	env := newTypedTestEnv(t)
 	root := env
 	for root.Parent() != nil {
 		root = root.Parent()
 	}
-	frame := lisp.NewEnv(root)
-	for i := range 100000 {
-		require.NoError(t, lisp.GoError(frame.Put(lisp.Symbol(fmt.Sprintf("v%d", i)), lisp.Int(i))))
+	const frames, size = 100, 100000
+	next := lisp.Int(0)
+	for range frames {
+		frame := lisp.NewEnv(root)
+		require.NoError(t, lisp.GoError(frame.Put(lisp.Symbol("a"), next)))
+		for i := 1; i < size; i++ {
+			require.NoError(t, lisp.GoError(frame.Put(lisp.Symbol(fmt.Sprintf("v%d", i)), lisp.Int(i))))
+		}
+		next = frame.Lambda(lisp.SExpr(nil), []*lisp.LVal{lisp.Symbol("a")})
 	}
-	f := frame.Lambda(lisp.SExpr(nil), []*lisp.LVal{lisp.Symbol("v7")})
 	var before, after runtime.MemStats
 	runtime.GC()
 	runtime.ReadMemStats(&before)
-	b, err := libjson.DumpDurable(env, f, nil, libjson.WithTypedMaxValues(8))
+	_, err := libjson.DumpDurable(env, next, nil, libjson.WithTypedMaxValues(size+10))
 	runtime.ReadMemStats(&after)
-	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#closure",["user",["~#env",[null,["v7",7]]],["~#code",[null,"~$v7"]]]]]]`, string(b))
-	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(1<<20), "the dump read the frame's other bindings")
-
-	g := frame.Lambda(lisp.SExpr(nil), []*lisp.LVal{lisp.SExpr([]*lisp.LVal{lisp.Symbol("eval"), lisp.Symbol("v7")})})
-	_, err = libjson.DumpDurable(env, g, nil, libjson.WithTypedMaxValues(8))
 	require.ErrorIs(t, err, libjson.ErrTypedLimit)
-	charged := 0
-	_, err = libjson.DumpDurable(env, g, nil, libjson.WithTypedCharge(func(n int) error { charged += n; return nil }))
-	require.NoError(t, err)
-	assert.GreaterOrEqual(t, charged, 25000, "the whole frame's bindings are charged")
+	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(64<<20), "the dump copied frames past the limit")
 }

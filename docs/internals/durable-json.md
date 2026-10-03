@@ -91,7 +91,7 @@ under the earlier rules.
 | `~#error` | `["~#error",["CONDITION",[DATA...]]]` | An error value: its condition type and its data. |
 | `~#closure` | `["~#closure",["PKG",ENV,CODE]]` | A lambda of package `PKG` with its captured frames and its code. See [Closures](#closures). |
 | `~#env` | `["~#env",[ENV,["NAME",VALUE,...]]]` | A captured frame: its parent and its bindings. Only in a closure's `ENV` position. |
-| `~#code` | `["~#code",[SEALED,FORMALS,BODY...]]` | A lambda's code. Only in a closure's `CODE` position. |
+| `~#code` | `["~#code",[FORMALS,BODY...]]` | A lambda's code. Only in a closure's `CODE` position. |
 | `~#quote` | `["~#quote",NODE]` | A quoted code node. Only inside `~#code`. |
 | `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP,[CELL...]]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. The cells are those of `OFF` to `OFF+CAP` that no earlier view wrote. |
 | `~#cells` | `["~#cells",N]` | Storage of `N` cells. It appears only as `STORAGE`: inline for one vector's data, else as `["~#obj",[ID,["~#cells",N]]]` at its first view and `["~#ref",ID]` after. |
@@ -245,13 +245,18 @@ its own form, `["~#lit",...]`.
 
 A restored literal is a protected copy: it is not the program's own cells,
 and its identity with the program text is not kept. Only list headers carry
-the marker. Once the document is read, the atoms in a restored literal's
-cells (ints, floats, strings, symbols) are sealed as the reader seals them,
-because template publication admits a sealed list only when its atoms are
-sealed too; a list inside the literal keeps its own marker, so one built at
-run time stays mutable (`TestDurableRestoredLiteralsInTemplates`, eager,
-lazy and prewarmed VMs). An empty list never carries the marker. When two headers over the same cells are one list and only one is
-sealed, the first the walk meets decides. `LoadDurable` rejects `~#lit`
+the marker. As each literal is read, the atoms in its cells (ints,
+floats, strings, symbols) are sealed as the reader seals them, because
+template publication admits a sealed list only when its atoms are sealed
+too. A list inside the literal keeps its own marker, so one built at run
+time stays mutable (`TestDurableRestoredLiteralsInTemplates`, eager, lazy
+and prewarmed VMs). Sealing happens before any codec runs, so a native's
+`LoadNative` sees the literals in its payload sealed
+(`TestDurableLiteralsSealedBeforeLoadNative`). A literal that is a view
+seals only the cells of its storage no literal sealed before (skip links),
+so a list and all of its sealed tails seal each cell once. An empty list
+never carries the marker. When two headers over the same cells are one
+list and only one is sealed, the first the walk meets decides. `LoadDurable` rejects `~#lit`
 around anything but a nonempty `~#list` or `~#view` (a scalar, a vector, a
 map, a `~#ref`, an `~#obj`, another `~#lit`, or an empty view of a vector's
 data). `LoadDurableRoots` takes only a plain root list, as
@@ -493,52 +498,34 @@ there when it is called, exactly as a function restored by `~#fn` does.
 parent. `null` is the root environment: its names are globals, resolved
 by name in `PKG` at call time.
 
-#### Which bindings a frame saves
+#### Frames are saved whole
 
-A frame saves only the bindings its closures read. The names a closure
-reads are every unqualified, non-keyword symbol anywhere in its code,
-quoted or not, nested lambdas included: a lexical over-approximation of its
-free variables. Each name is saved in the innermost captured frame that
-binds it, found by looking the name up in each frame, so the other
-bindings of a large frame are never read. A frame shared by several
-closures saves the union of their names, in name order. A value that no
-closure names, such as a flow's transaction context, is not saved, so it
-never makes a closure refused or large. A native a frame saves goes
-through the codec registry as usual.
+A frame is saved whole: every binding, in name order. Which captured names
+a closure's code may reach cannot be decided statically. `eval` reached
+through `apply`, a map or a parameter, `funcall` of a symbol, and macros
+all reach names the code does not spell, so nothing is dropped, and a
+restored closure sees exactly the bindings the original saw. A value in a
+frame that cannot be saved refuses the closure, with the path to it:
+`durable json: captured variable "held": captured variable "captured":
+...`. A flow's transaction context is saved through the codec its host
+registers for it, like any native.
 
-A closure is dynamic when its code may read a captured name it does not
-spell, and then its frames are saved whole. It is dynamic when a symbol
-in its code resolves to the `eval` builtin, by any name (`eval`, a
-qualified name, or an alias such as `(let ((run eval)) ...)`, recognized
-by function identity in the captured frames and the globals), or when a
-call form's head resolves to a macro outside the audited stdlib macros
-(`defun`, `defmacro`, `defconst`, `deftype`, `curry-function`,
-`get-default`, `trace`, `test-let`, `test-let*`, `benchmark-simple` and
-the `testing` assertions), whose expansion could read any name. A name
-resolves as the evaluator resolves it: in the captured frames, innermost
-first, then as a global of `PKG` (or of the package a qualified name
-names). A whole frame's bindings are reserved against the value limit,
-and charged ceil(n/4) units as package names are, before they are copied.
-When a binding of a whole frame cannot be saved, the dump fails with the
-reason: `durable json: closure body calls eval via run; its frames must be
-saved whole; captured variable "ctx" cannot be saved: ...`. A name is
-never dropped silently.
+The cost is size: a closure saves every binding of every frame it
+captured, including bindings its code never reads. A closure created deep
+inside a function with many locals saves all of them. Each frame is saved
+once however many closures capture it.
 
-Discovery computes the names as a fixpoint over the closures and frames
-(a saved value can hold another closure, which names more) before
-anything is counted, so the counting pass, the output and the decoder see
-the same frames and the limits agree. Name resolution takes at most 16
-steps per value of the value limit. Frames that save nothing are left out
-of the chain. A frame is an object, so two closures over one frame still
-share it after a load, and a `set!` through one is seen by the other. A
-closure is an object too, so a closure in its own frame (a `labels`
-function, recursion) restores. A refused value in a frame is refused with
-the path to it: `durable json: captured variable "held": captured variable
-"captured": ...`.
+Frames with no bindings are left out of the chain. A frame is an object,
+so two closures over one frame still share it after a load, and a `set!`
+through one is seen by the other. A closure is an object too, so a closure
+in its own frame (a `labels` function, recursion) restores.
 
-After a load, a binding that was not saved is unbound in its frame. Calling
-the closure behaves the same, because its code never names it and does
-not reach names dynamically. A debugger reading the frame does not see it.
+The dump reads each frame's bindings once. Before it copies a frame's
+bindings it reserves them against the value limit, summed over every frame
+the dump reads, so a graph of many large frames stops at the first frame
+past the limit instead of copying them all
+(`TestDurableClosureFramesReservedCumulatively`). Every binding read is
+written, so frames add no charge beyond the output's KiB.
 
 #### Code
 
@@ -554,11 +541,17 @@ refusing `stable-sort` (`TestDurableClosureCodeLiterals`). A sealed
 literal holding a mutable list is refused. Formals may be a quoted list,
 as `lambda` accepts.
 
-Code is an object, so the closures one lambda form made share it. A load
-validates the formals once per code object (`LEnv.NewLambdaCode`) and
-restores every closure over it with one copy of its cells
-(`LEnv.RestoreLambda`), so a document of many closures over one body costs
-one body (`TestDurableClosuresShareRestoredCode`). Code and data restore
+Code is an object identified by its cells. Closures restored from one
+code object share its cells, so they write one code object again; each
+closure `lambda` makes holds its own copy of the form's cells, so each
+writes its own (the dump costs what the graph holds). The key has constant
+size, and each code object is checked once. A load validates the formals
+once per code object (`LEnv.NewLambdaCode`, which records the runtime's
+keyword-formal policy; `RestoreLambda` validates again in a runtime with
+another one) and restores every closure over it with one copy of its
+cells (`LEnv.RestoreLambda`), so 20,000 closures over a 20,000-form body
+load and dump again in bounded memory
+(`TestDurableClosuresShareRestoredCode`). Code and data restore
 as separate objects. A sealed literal in the code and the same list held
 as data are two objects after a load (both are sealed, so no write can
 tell). A mutable code list that shares cells with anything else the dump
@@ -595,10 +588,11 @@ another position, a frame with no bindings or with names out of order or
 repeated, a name `Put` refuses, code holding anything but scalars, lists,
 quotes and literals, a literal that is not a nonempty list or a quote or
 that sits inside another literal, formals that are not a list or that
-`lambda` refuses, and a saved binding no closure reads (unless a dynamic
-closure keeps its frame whole). The last check uses the dump's own name
-resolution against the loading environment, without evaluating anything,
-so every accepted document re-encodes to itself.
+`lambda` refuses, and a literal directly inside a quote unless the
+literal is itself a quote (quoting a sealed node moves its seal onto the
+quote, so DumpDurable writes `["~#lit",["~#quote",...]]`). Nothing about
+the loading environment's globals decides whether a document loads, so a
+document that loaded before a code upgrade loads after it.
 
 ## Refused values
 
@@ -642,8 +636,14 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and ceil(n/4) units before a package of n bindings has its function names read. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and ceil(n/4) units before a package of n bindings has its function names read. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
+
+The two schedules differ in what they pay for. A dump does work the
+output does not show (it reads the package name tables and calls
+`SaveNative`), so it charges for that work before doing it. A load's work
+is bounded by its input, which it charges up front, plus the codecs'
+`LoadNative` calls.
 
 A charge error stops the call and is returned wrapped.
 
@@ -658,7 +658,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
-| Closures | `durable_closures_test.go`, `lisp/restore_lambda_test.go` | Frames that save only the names their closures read (an unsaveable context is left out; two closures over one frame save the union; nested lambdas and shadowing), dynamic closures (an unaudited macro, `eval` and an alias of it) keeping frames whole or refused with the reason, a large frame read name by name, restored closures sharing one copy of their code, literals inside macro-built and quasiquoted code, code sharing a mutable list refused, quoted and Go-built formals, a counter pair over one binding (`set!` through one is seen by the other), a recursive `labels` function, a closure over a vector and its view, every kind of formal and quoted code, an upgrade (the closure keeps its code, a named function changes), refusal paths, shared code, limits that agree, and a rejection table. `FuzzDurableJSON` seeds closure documents. |
+| Closures | `durable_closures_test.go`, `lisp/restore_lambda_test.go` | Whole frames (an unread binding is saved; a macro, an `eval` alias and `eval` through `apply` and a map work after a restore; a refused binding refuses with its path), frames reserved cumulatively against the value limit, 20,000 closures over a 20,000-form body in bounded memory both ways, restored closures sharing one copy of their code, the formal-validation policy across runtimes, literals inside macro-built and quasiquoted code, code sharing a mutable list refused, quoted and Go-built formals, a counter pair over one binding (`set!` through one is seen by the other), a recursive `labels` function, a closure over a vector and its view, every kind of formal and quoted code, an upgrade (the closure keeps its code, a named function changes), refusal paths, shared code, limits that agree, and a rejection table. `FuzzDurableJSON` seeds closure documents. |
 | Error values | `durable_errors_test.go` | An error raised by `error` round-trips with its condition, message and data, and `handler-bind` matches it after the load; no stack or source; an error with no data; a shared error and an error in a cycle; a host error's text without its Go error; refusals; limits that agree; and a rejection table. `FuzzDurableJSON` seeds error documents. |
 | Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |

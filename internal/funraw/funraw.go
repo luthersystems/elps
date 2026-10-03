@@ -34,12 +34,6 @@ import (
 // runs.
 var Env func(v *lisp.LVal) *lisp.LEnv
 
-// Lookup returns the binding of name in env's own scope (not its parents),
-// and whether there is one.  The value is read-only by contract.  The
-// durable JSON codec uses it to read the captured bindings a closure's
-// code names, one at a time.
-var Lookup func(env *lisp.LEnv, name string) (*lisp.LVal, bool)
-
 // Captures returns the explicit graph owned by a NewCapturedBuiltin function,
 // or nil when v has no declared captures. The graph and everything reachable
 // from it are read-only to tooling; this is not an embedder mutation API.
@@ -82,11 +76,6 @@ func init() {
 		panic("funraw: package lisp did not inject the Env accessor")
 	}
 	Env = fn
-	lookup, ok := hook.Lookup.(func(*lisp.LEnv, string) (*lisp.LVal, bool))
-	if !ok {
-		panic("funraw: package lisp did not inject the Lookup accessor")
-	}
-	Lookup = lookup
 	captures, ok := hook.Captures.(func(*lisp.LVal) *lisp.LVal)
 	if !ok {
 		panic("funraw: package lisp did not inject the Captures accessor")
