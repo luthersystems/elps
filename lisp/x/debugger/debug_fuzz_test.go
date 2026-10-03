@@ -275,18 +275,17 @@ func newDebugEnv(script, watch []byte) (*lisp.LEnv, *debugger.Engine, *lisp.LVal
 }
 
 // fatalf is the subset of *testing.T the harness needs, so the same code
-// serves the fuzz target and the ordinary corpus tests.
-type fatalf interface {
-	Helper()
-	Fatalf(format string, args ...any)
-	Skipf(format string, args ...any)
-}
+// serves the fuzz target and the ordinary corpus tests.  It is
+// fuzzwatch.T, so a starved watchdog can wait for a fixed input (see
+// fuzzwatch.AwaitStarved).
+type fatalf = fuzzwatch.T
 
 // debugEvalBudgeted parses and evaluates src with a debugger attached, on its
 // own goroutine, under the watchdog. Returns (result, true) when the source
 // evaluated and (nil, false) when it did not parse -- a parse error is the
-// parser targets' business.
-func debugEvalBudgeted(t fatalf, src, script, watch []byte) (*lisp.LVal, bool) {
+// parser targets' business. input decides what a starved watchdog does (see
+// fuzzwatch.AwaitStarved).
+func debugEvalBudgeted(t fatalf, src, script, watch []byte, input fuzzwatch.Input) (*lisp.LVal, bool) {
 	t.Helper()
 
 	// Ask the reader, rather than pattern-matching an error message: both a
@@ -312,40 +311,45 @@ func debugEvalBudgeted(t fatalf, src, script, watch []byte) (*lisp.LVal, bool) {
 		ch <- env.LoadStringContext(ctx, "fuzz", string(src))
 	}()
 
+	describe := fmt.Sprintf("\n--- source (%d bytes) ---\n%q"+
+		"\n--- action script (%d bytes) ---\n%q"+
+		"\n--- watch expression (%d bytes) ---\n%q",
+		len(src), src, len(script), script, len(watch), watch)
 	budget := fuzzwatch.New(watchdogTimeout)
 	wait := budget.Total()
-	for {
+	var res *lisp.LVal
+	for received := false; !received; {
 		select {
-		case res := <-ch:
-			if res == nil {
-				t.Fatalf("evaluation returned a nil LVal")
-				return nil, false
-			}
-			return res, true
+		case res = <-ch:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return nil, false
+				var ok bool
+				if res, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "debugged evaluation", describe); !ok {
+					return nil, false
+				}
+				received = true
 			default:
 				// A hang here is the most likely SHAPE of a debugger defect --
 				// a pause with nothing to resume it -- so say so, since the
 				// budgets that bound plain evaluation cannot end it.
 				t.Fatalf("debugged evaluation did not terminate within %s of SCHEDULED time"+
 					" despite a %s context deadline and a %d-step budget; a pause with no"+
-					" resume looks exactly like this (%s)"+
-					"\n--- source (%d bytes) ---\n%q"+
-					"\n--- action script (%d bytes) ---\n%q"+
-					"\n--- watch expression (%d bytes) ---\n%q",
-					budget.Total(), fuzzDeadline, int64(fuzzMaxSteps), report,
-					len(src), src, len(script), script, len(watch), watch)
+					" resume looks exactly like this (%s)%s",
+					budget.Total(), fuzzDeadline, int64(fuzzMaxSteps), report, describe)
 				return nil, false
 			}
 		}
 	}
+	if res == nil {
+		t.Fatalf("evaluation returned a nil LVal")
+		return nil, false
+	}
+	return res, true
 }
 
 // FuzzDebugEval fuzzes evaluation with a debugger attached, stepping and
@@ -411,7 +415,7 @@ func FuzzDebugEval(f *testing.F) {
 	add(`(+ 1 2)`, "\x01", `(`)
 
 	f.Fuzz(func(t *testing.T, src, script, watch []byte) {
-		res, ok := debugEvalBudgeted(t, src, script, watch)
+		res, ok := debugEvalBudgeted(t, src, script, watch, fuzzwatch.Fuzzed)
 		if !ok {
 			return
 		}
@@ -523,7 +527,7 @@ func TestDebugSeedsTerminate(t *testing.T) {
 	for name, src := range seeds {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
-			res, ok := debugEvalBudgeted(t, []byte(src), []byte("\x01\x02\x03\x00"), []byte("(+ 1 2)"))
+			res, ok := debugEvalBudgeted(t, []byte(src), []byte("\x01\x02\x03\x00"), []byte("(+ 1 2)"), fuzzwatch.Fixed)
 			if !ok {
 				return // did not parse; not this target's business
 			}

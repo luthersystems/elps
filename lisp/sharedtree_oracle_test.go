@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -524,7 +525,7 @@ func TestSharedTreeLiveResultIsConclusive(t *testing.T) {
 		t.Fatalf("the fixture parsed to %d expressions; it is meant to have several", len(exprs))
 	}
 
-	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), 0, fixedInput)
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), 0, fuzzwatch.Fixed)
 
 	if res.skipped != "" {
 		t.Fatalf("the live path skipped the fixture: %s", res.skipped)
@@ -587,7 +588,7 @@ func TestSharedTreeDeadlinePathIsConclusive(t *testing.T) {
 		t.Fatalf("the fixture does not parse:\n%s", liveConclusiveSrc)
 	}
 
-	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), controlDeadline, fixedInput)
+	res := sharedTreeProperty(t, []byte(liveConclusiveSrc), controlDeadline, fuzzwatch.Fixed)
 
 	if res.skipped != "" {
 		t.Fatalf("the deadline path skipped the fixture: %s", res.skipped)

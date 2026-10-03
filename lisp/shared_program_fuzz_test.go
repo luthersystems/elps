@@ -172,18 +172,18 @@ func FuzzSharedProgramMultiEnv(f *testing.F) {
 		// The baseline and the determinism control: two fresh parses, two
 		// virgin environments.  Their agreement is the precondition for
 		// every differential claim below.
-		baseline, ok := runProgramFresh(t, src, reps, fuzzDeadline)
+		baseline, ok := runProgramFresh(t, src, reps, fuzzDeadline, fuzzwatch.Fuzzed)
 		if !ok {
 			return
 		}
-		control, ok := runProgramFresh(t, src, reps, fuzzDeadline)
+		control, ok := runProgramFresh(t, src, reps, fuzzDeadline, fuzzwatch.Fuzzed)
 		if !ok {
 			return
 		}
 		deterministic := baseline.equal(control)
 
 		for i := range nenv {
-			got, ok := runProgramShared(t, shared, sealed, fpSealed, i, reps, fuzzDeadline)
+			got, ok := runProgramShared(t, shared, sealed, fpSealed, i, reps, fuzzDeadline, fuzzwatch.Fuzzed)
 			if !ok {
 				return
 			}
@@ -274,8 +274,9 @@ func (r programRun) String() string {
 // what makes this a baseline for "what a shared parse should have produced"
 // rather than a second sample of the same shared object.
 //
-// Each evaluation runs under deadline; 0 means none (see loadProgramBudgeted).
-func runProgramFresh(t *testing.T, src []byte, reps int, deadline time.Duration) (programRun, bool) {
+// Each evaluation runs under deadline; 0 means none.  input decides what a
+// starved watchdog does.  See loadProgramBudgeted for both.
+func runProgramFresh(t *testing.T, src []byte, reps int, deadline time.Duration, input fuzzwatch.Input) (programRun, bool) {
 	t.Helper()
 	prog, err := lisp.ReadProgram(parser.NewReader(), "fresh", bytes.NewReader(src))
 	if err != nil {
@@ -286,20 +287,20 @@ func runProgramFresh(t *testing.T, src []byte, reps int, deadline time.Duration)
 			"\n--- source (%d bytes) ---\n%q", err, len(src), src)
 		return programRun{}, false
 	}
-	return runProgramIn(t, prog, nil, 0, -1, reps, deadline)
+	return runProgramIn(t, prog, nil, 0, -1, reps, deadline, input)
 }
 
 // runProgramShared evaluates the SHARED program in a virgin environment,
 // re-checking the sealed fingerprint after every repetition.
-func runProgramShared(t *testing.T, shared lisp.Program, sealed []*lisp.LVal, fpSealed uint64, envIdx, reps int, deadline time.Duration) (programRun, bool) {
+func runProgramShared(t *testing.T, shared lisp.Program, sealed []*lisp.LVal, fpSealed uint64, envIdx, reps int, deadline time.Duration, input fuzzwatch.Input) (programRun, bool) {
 	t.Helper()
-	return runProgramIn(t, shared, sealed, fpSealed, envIdx, reps, deadline)
+	return runProgramIn(t, shared, sealed, fpSealed, envIdx, reps, deadline, input)
 }
 
 // runProgramIn is the shared body.  A nil sealed slice disables the seal
 // oracle, which is correct for the fresh-parse baseline: its Program is
 // private to the call and nothing else can observe it.
-func runProgramIn(t *testing.T, prog lisp.Program, sealed []*lisp.LVal, fpSealed uint64, envIdx, reps int, deadline time.Duration) (programRun, bool) {
+func runProgramIn(t *testing.T, prog lisp.Program, sealed []*lisp.LVal, fpSealed uint64, envIdx, reps int, deadline time.Duration, input fuzzwatch.Input) (programRun, bool) {
 	t.Helper()
 
 	env, _, rc := newFuzzEnv()
@@ -310,7 +311,7 @@ func runProgramIn(t *testing.T, prog lisp.Program, sealed []*lisp.LVal, fpSealed
 
 	run := programRun{results: make([]string, 0, reps)}
 	for rep := range reps {
-		result, ok := loadProgramBudgeted(t, env, prog, envIdx, rep, deadline)
+		result, ok := loadProgramBudgeted(t, env, prog, envIdx, rep, deadline, input)
 		if !ok {
 			return programRun{}, false
 		}
@@ -342,8 +343,9 @@ func runProgramIn(t *testing.T, prog lisp.Program, sealed []*lisp.LVal, fpSealed
 // The evaluation runs under a context deadline of deadline.  A deadline of 0
 // means no wall-clock deadline (see evalContext).  Fuzzed input passes
 // fuzzDeadline.  A fixed test passes 0, so its verdict does not depend on how
-// much CPU the process gets (luthersystems/elps#788).
-func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx, rep int, deadline time.Duration) (*lisp.LVal, bool) {
+// much CPU the process gets (luthersystems/elps#788).  input decides what a
+// starved watchdog does (see fuzzwatch.AwaitStarved).
+func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx, rep int, deadline time.Duration, input fuzzwatch.Input) (*lisp.LVal, bool) {
 	t.Helper()
 
 	ctx, cancel := evalContext(deadline)
@@ -356,44 +358,23 @@ func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx
 
 	budget := fuzzwatch.New(watchdogTimeout)
 	wait := budget.Total()
-	for {
+	var result *lisp.LVal
+	for received := false; !received; {
 		select {
-		case result := <-ch:
-			if result == nil {
-				t.Fatalf("evaluation %d in environment %d returned a nil LVal", rep+1, envIdx)
-				return nil, false
-			}
-			if lisp.IsInternalPanic(result) {
-				t.Fatalf("evaluation %d in environment %d recovered a Go panic"+
-					" (a host-code defect, not a lisp error)\n--- error ---\n%v",
-					rep+1, envIdx, result)
-				return nil, false
-			}
-			// Rendering runs the same walk every error path in the
-			// interpreter runs when it formats an operand — but only when
-			// the value can be rendered at all.  A program is free to build
-			// a self-referential container ((set 'v (vector)) (append! v v)),
-			// and LVal.String() has no cycle or depth bound, so rendering
-			// one exhausts the goroutine stack: a FATAL runtime error that
-			// recover() cannot intercept.  That is a separately-reported
-			// defect (see containerRenderable in lisp/containergen_test.go
-			// for the full note); reporting it from here as well would
-			// crash the worker before this target could say anything about
-			// the shared parse.  The differential assertions are unaffected
-			// — valueFingerprint terminates on cycles by construction.
-			if containerRenderable([]*lisp.LVal{result}) {
-				_ = result.String()
-			}
-			return result, true
+		case result = <-ch:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				// Starved throughout. Nothing can be said about this input.
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return nil, false
+				var ok bool
+				if result, ok = fuzzwatch.AwaitStarved(t, ch, input, report,
+					fmt.Sprintf("evaluation %d in environment %d", rep+1, envIdx), ""); !ok {
+					return nil, false
+				}
+				received = true
 			default:
 				t.Fatalf("evaluation %d in environment %d did not terminate within %s of SCHEDULED"+
 					" time despite %s (%s)",
@@ -402,6 +383,32 @@ func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx
 			}
 		}
 	}
+	if result == nil {
+		t.Fatalf("evaluation %d in environment %d returned a nil LVal", rep+1, envIdx)
+		return nil, false
+	}
+	if lisp.IsInternalPanic(result) {
+		t.Fatalf("evaluation %d in environment %d recovered a Go panic"+
+			" (a host-code defect, not a lisp error)\n--- error ---\n%v",
+			rep+1, envIdx, result)
+		return nil, false
+	}
+	// Rendering runs the same walk every error path in the
+	// interpreter runs when it formats an operand — but only when
+	// the value can be rendered at all.  A program is free to build
+	// a self-referential container ((set 'v (vector)) (append! v v)),
+	// and LVal.String() has no cycle or depth bound, so rendering
+	// one exhausts the goroutine stack: a FATAL runtime error that
+	// recover() cannot intercept.  That is a separately-reported
+	// defect (see containerRenderable in lisp/containergen_test.go
+	// for the full note); reporting it from here as well would
+	// crash the worker before this target could say anything about
+	// the shared parse.  The differential assertions are unaffected
+	// — valueFingerprint terminates on cycles by construction.
+	if containerRenderable([]*lisp.LVal{result}) {
+		_ = result.String()
+	}
+	return result, true
 }
 
 // confirmSharedDivergence re-runs the divergence with a matched pair — one
@@ -412,11 +419,11 @@ func loadProgramBudgeted(t *testing.T, env *lisp.LEnv, prog lisp.Program, envIdx
 // crasher it cannot attribute to the shared parse.
 func confirmSharedDivergence(t *testing.T, src []byte, shared lisp.Program, sealed []*lisp.LVal, fpSealed uint64, envIdx, reps int, baseline programRun) bool {
 	t.Helper()
-	fresh, ok := runProgramFresh(t, src, reps, fuzzDeadline)
+	fresh, ok := runProgramFresh(t, src, reps, fuzzDeadline, fuzzwatch.Fuzzed)
 	if !ok || !fresh.equal(baseline) {
 		return false
 	}
-	again, ok := runProgramShared(t, shared, sealed, fpSealed, envIdx, reps, fuzzDeadline)
+	again, ok := runProgramShared(t, shared, sealed, fpSealed, envIdx, reps, fuzzDeadline, fuzzwatch.Fuzzed)
 	return ok && !again.equal(baseline)
 }
 
@@ -498,11 +505,11 @@ func TestSharedProgramSeedsAreDeterministic(t *testing.T) {
 	for _, src := range sharedProgramSeeds {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			a, ok := runProgramFresh(t, []byte(src), 2, 0)
+			a, ok := runProgramFresh(t, []byte(src), 2, 0, fuzzwatch.Fixed)
 			if !ok {
 				t.Fatalf("seed did not evaluate")
 			}
-			b, ok := runProgramFresh(t, []byte(src), 2, 0)
+			b, ok := runProgramFresh(t, []byte(src), 2, 0, fuzzwatch.Fixed)
 			if !ok {
 				t.Fatalf("seed did not evaluate on the second run")
 			}
@@ -533,12 +540,12 @@ func TestSharedProgramSeedsAgreeWithSharedParse(t *testing.T) {
 			sealedExprs := astraw.Exprs(shared)
 			fpSealed := lisp.SealedASTFingerprint(sealedExprs)
 
-			baseline, ok := runProgramFresh(t, []byte(src), sharedMaxReps, 0)
+			baseline, ok := runProgramFresh(t, []byte(src), sharedMaxReps, 0, fuzzwatch.Fixed)
 			if !ok {
 				t.Fatalf("baseline did not evaluate")
 			}
 			for i := range sharedMaxEnvs {
-				got, ok := runProgramShared(t, shared, sealedExprs, fpSealed, i, sharedMaxReps, 0)
+				got, ok := runProgramShared(t, shared, sealedExprs, fpSealed, i, sharedMaxReps, 0, fuzzwatch.Fixed)
 				if !ok {
 					t.Fatalf("shared run %d did not evaluate", i)
 				}
@@ -600,11 +607,11 @@ func TestSharedProgramDeadlinePathCompares(t *testing.T) {
 	const src = `(defun double (x) (* x 2)) (double 21)`
 	const reps = 2
 
-	want, ok := runProgramFresh(t, []byte(src), reps, 0)
+	want, ok := runProgramFresh(t, []byte(src), reps, 0, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatal("the probe did not evaluate with no deadline")
 	}
-	fresh, ok := runProgramFresh(t, []byte(src), reps, controlDeadline)
+	fresh, ok := runProgramFresh(t, []byte(src), reps, controlDeadline, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatalf("the probe did not evaluate under a %v deadline", controlDeadline)
 	}
@@ -618,7 +625,7 @@ func TestSharedProgramDeadlinePathCompares(t *testing.T) {
 		t.Fatalf("the probe does not parse: %v", err)
 	}
 	sealed := astraw.Exprs(shared)
-	got, ok := runProgramShared(t, shared, sealed, lisp.SealedASTFingerprint(sealed), 0, reps, controlDeadline)
+	got, ok := runProgramShared(t, shared, sealed, lisp.SealedASTFingerprint(sealed), 0, reps, controlDeadline, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatalf("the shared probe did not evaluate under a %v deadline", controlDeadline)
 	}
@@ -641,11 +648,11 @@ func TestSharedProgramNondeterminismIsDetected(t *testing.T) {
 	t.Parallel()
 	const src = `(` + fuzzClockName + `)`
 	for range 5 {
-		a, ok := runProgramFresh(t, []byte(src), 2, 0)
+		a, ok := runProgramFresh(t, []byte(src), 2, 0, fuzzwatch.Fixed)
 		if !ok {
 			t.Fatalf("the nondeterministic probe did not evaluate")
 		}
-		b, ok := runProgramFresh(t, []byte(src), 2, 0)
+		b, ok := runProgramFresh(t, []byte(src), 2, 0, fuzzwatch.Fixed)
 		if !ok {
 			t.Fatalf("the nondeterministic probe did not evaluate twice")
 		}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -85,7 +86,7 @@ func FuzzSequenceOps(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
 		defer cancel()
-		runSequenceSequence(t, newContainerEnv(t, ctx), newContainerGen(data))
+		runSequenceSequence(t, newContainerEnv(t, ctx), newContainerGen(data), fuzzwatch.Fuzzed)
 	})
 }
 
@@ -117,7 +118,8 @@ var sequenceTypeSpecs = []string{"list", "vector", "bytes", "string", "nonsense"
 
 // runSequenceSequence executes one generated operation sequence.  Named,
 // not inline, so the coverage gate drives the identical code path.
-func runSequenceSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+// input decides what a starved watchdog does (see containerFunCall).
+func runSequenceSequence(t *testing.T, env *lisp.LEnv, g *containerGen, input fuzzwatch.Input) (int, int) {
 	var wanted int
 	var ran int
 	t.Helper()
@@ -146,7 +148,7 @@ func runSequenceSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, in
 		op := sequenceOps[g.intn(len(sequenceOps))]
 		args := g.sequenceArgs(env, op, pool)
 
-		result := containerCall(t, env, op, args, sealedRoots, fpSealed, step)
+		result := containerCall(t, env, op, args, sealedRoots, fpSealed, step, input)
 		if result == nil {
 			return wanted, ran // skipped, abandoned, or already failed
 		}
@@ -402,7 +404,7 @@ func TestSequenceSequencesRunToCompletion(t *testing.T) {
 	completed, wantedTotal, ranTotal := 0, 0, 0
 	for i := range samples {
 		g := newContainerGen(containerProbeBytes(i))
-		wanted, ran := runSequenceSequence(t, env, g)
+		wanted, ran := runSequenceSequence(t, env, g, fuzzwatch.Fixed)
 		wantedTotal += wanted
 		ranTotal += ran
 		if ran == wanted {

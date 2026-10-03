@@ -4,9 +4,14 @@ package testdeadline
 
 import (
 	"context"
-	"testing"
 	"time"
 )
+
+// TB is the part of *testing.T that Backstop reads.
+type TB interface {
+	Deadline() (time.Time, bool)
+	Context() context.Context
+}
 
 // backstopMargin is the most a Backstop context ends before the test binary's
 // -timeout.  It leaves time to report the failure and clean up.
@@ -25,7 +30,7 @@ const backstopMargin = 30 * time.Second
 // binary panicking with every goroutine's stack.  If the binary has no
 // -timeout, or its deadline has already passed, the context ends with the
 // test.
-func Backstop(t *testing.T) (context.Context, context.CancelFunc) {
+func Backstop(t TB) (context.Context, context.CancelFunc) {
 	deadline, ok := t.Deadline()
 	if !ok {
 		return context.WithCancel(t.Context())

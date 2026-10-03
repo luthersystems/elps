@@ -12,7 +12,6 @@ import (
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/internal/fuzzwatch"
-	"github.com/luthersystems/elps/internal/testdeadline"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser"
 )
@@ -394,18 +393,6 @@ func (r sharedTreeResult) conclusive() bool {
 	return true
 }
 
-// sharedTreeInput says where sharedTreeProperty's input came from.  It
-// decides what an Inconclusive watchdog does; see awaitSharedTree.
-type sharedTreeInput int
-
-const (
-	// fuzzedInput is a generated program.  An Inconclusive watchdog skips
-	// it: the fuzzer runs again and re-finds a real hang.
-	fuzzedInput sharedTreeInput = iota
-	// fixedInput is a regression test's own program.  It never skips.
-	fixedInput
-)
-
 // sharedTreeProperty is the body of the target, factored out so the corpus
 // tests below assert exactly what the fuzzer asserts.
 //
@@ -415,7 +402,7 @@ const (
 //
 // Every arm runs under deadline; 0 means none (see evalTreeOnce).  input
 // says what a starved watchdog does; see awaitSharedTree.
-func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration, input sharedTreeInput) sharedTreeResult {
+func sharedTreeProperty(t *testing.T, src []byte, deadline time.Duration, input fuzzwatch.Input) sharedTreeResult {
 	t.Helper()
 
 	shared, ok := readTree(src)
@@ -548,7 +535,7 @@ func FuzzSharedTreeEval(f *testing.F) {
 		// still reach a conclusive comparison is asserted on FIXED input
 		// instead, by TestSharedTreeLiveResultIsConclusive and
 		// TestSharedTreeSeedsAgree.
-		_ = sharedTreeProperty(t, src, fuzzDeadline, fuzzedInput)
+		_ = sharedTreeProperty(t, src, fuzzDeadline, fuzzwatch.Fuzzed)
 	})
 }
 
@@ -557,13 +544,10 @@ func FuzzSharedTreeEval(f *testing.F) {
 // It returns "" when done closed, or why the input has no verdict.
 //
 // A Hung verdict fails the test.  An Inconclusive verdict (the process was
-// starved throughout) skips a fuzzedInput: the fuzzer runs again.  A
-// fixedInput is a regression test, and a skip there would let it pass
-// without asserting anything (#791).  So it waits on for done, up to
-// testdeadline.Backstop, and fails if the evaluation has not finished by
-// then.  Starvation alone cannot fail it, because a run that reaches the
-// backstop would have hit the binary's -timeout anyway.
-func awaitSharedTree(t *testing.T, done <-chan struct{}, input sharedTreeInput,
+// starved throughout) goes to fuzzwatch.AwaitStarved: a fuzzed input skips,
+// and a fixed input waits for done up to testdeadline.Backstop
+// (luthersystems/elps#791).
+func awaitSharedTree(t *testing.T, done <-chan struct{}, input fuzzwatch.Input,
 	first time.Duration, check func() (fuzzwatch.Verdict, time.Duration, fuzzwatch.Report),
 	describe string) string {
 	t.Helper()
@@ -578,21 +562,13 @@ func awaitSharedTree(t *testing.T, done <-chan struct{}, input sharedTreeInput,
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				if input == fuzzedInput {
-					t.Skipf("no verdict: the process was starved throughout (%s)", report)
-					return "starved throughout"
-				}
-				t.Logf("the process was starved throughout (%s); a fixed input waits for the -timeout backstop", report)
-				backstop, stop := testdeadline.Backstop(t)
-				defer stop()
-				select {
-				case <-done:
+				if _, ok := fuzzwatch.AwaitStarved(t, done, input, report, "shared-tree evaluation", describe); ok {
 					return ""
-				case <-backstop.Done():
-					t.Fatalf("shared-tree evaluation did not terminate before the test's -timeout (%s)%s",
-						report, describe)
+				}
+				if input == fuzzwatch.Fixed {
 					return "evaluation did not terminate"
 				}
+				return "starved throughout"
 			default:
 				t.Fatalf("shared-tree evaluation did not terminate within %s of SCHEDULED time (%s)%s",
 					first, report, describe)
@@ -671,7 +647,7 @@ func TestSharedTreeSeedsAgree(t *testing.T) {
 	for _, src := range sharedTreeSeeds() {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			res := sharedTreeProperty(t, []byte(src), 0, fixedInput)
+			res := sharedTreeProperty(t, []byte(src), 0, fuzzwatch.Fixed)
 			if res.conclusive() {
 				conclusive.Add(1)
 			}

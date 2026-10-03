@@ -6,6 +6,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/luthersystems/elps/internal/fuzzwatch"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -56,7 +57,7 @@ func FuzzSortedMapOps(f *testing.F) {
 	f.Fuzz(func(t *testing.T, data []byte) {
 		ctx, cancel := context.WithTimeout(context.Background(), containerDeadline)
 		defer cancel()
-		runSortedMapSequence(t, newContainerEnv(t, ctx), newContainerGen(data))
+		runSortedMapSequence(t, newContainerEnv(t, ctx), newContainerGen(data), fuzzwatch.Fuzzed)
 	})
 }
 
@@ -68,7 +69,8 @@ func FuzzSortedMapOps(f *testing.F) {
 // It returns how many steps were requested and how many actually ran; the
 // two differ when a step produces a value the interpreter cannot render (see
 // containerRenderable) and the sequence is abandoned.
-func runSortedMapSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, int) {
+// input decides what a starved watchdog does (see containerFunCall).
+func runSortedMapSequence(t *testing.T, env *lisp.LEnv, g *containerGen, input fuzzwatch.Input) (int, int) {
 	var wanted int
 	var ran int
 	t.Helper()
@@ -96,7 +98,7 @@ func runSortedMapSequence(t *testing.T, env *lisp.LEnv, g *containerGen) (int, i
 			args = append(args, g.mapKey(target))
 		}
 
-		result := containerCall(t, env, op, args, sealedRoots, fpSealed, step)
+		result := containerCall(t, env, op, args, sealedRoots, fpSealed, step, input)
 		if result == nil {
 			return wanted, ran // skipped, abandoned, or already failed
 		}
@@ -197,7 +199,7 @@ func TestSortedMapSequencesRunToCompletion(t *testing.T) {
 	completed, wantedTotal, ranTotal := 0, 0, 0
 	for i := range samples {
 		g := newContainerGen(containerProbeBytes(i))
-		wanted, ran := runSortedMapSequence(t, env, g)
+		wanted, ran := runSortedMapSequence(t, env, g, fuzzwatch.Fixed)
 		wantedTotal += wanted
 		ranTotal += ran
 		if ran == wanted {

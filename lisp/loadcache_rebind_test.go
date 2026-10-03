@@ -8,10 +8,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/luthersystems/elps/lisp"
-	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+
+	"github.com/luthersystems/elps/internal/fuzzwatch"
+	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser"
 )
 
 // Issue #625 preserves PR #614's regression for issue #613: a literal bound by one load, captured by a second, and rebound
@@ -70,9 +72,9 @@ func TestLoadCacheRebindAcrossLoadsMatchesFreshParse(t *testing.T) {
 		for _, mode := range transparentReaderModes {
 			t.Run(fmt.Sprintf("%s/mode=%d", tc.name, mode), func(t *testing.T) {
 				t.Parallel()
-				baseline, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), nil, 0)
+				baseline, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), nil, 0, fuzzwatch.Fixed)
 				require.True(t, ok)
-				cached, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), newFuzzLoadCache(), 0)
+				cached, ok := runHostilePair(t, mode, []byte(tc.a), []byte(tc.b), newFuzzLoadCache(), 0, fuzzwatch.Fixed)
 				require.True(t, ok)
 				assert.Truef(t, cached.equal(baseline),
 					"A,B,A through a cache diverged from A,B,A without one\n--- baseline ---\n%s\n--- cached ---\n%s",

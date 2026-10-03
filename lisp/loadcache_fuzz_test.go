@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"bytes"
+	"fmt"
 	"sync"
 	"testing"
 	"time"
@@ -286,7 +287,7 @@ func runFileIn(t *testing.T, src []byte, cache *fuzzLoadCache, entry **lisp.Cach
 // that is not a finding.
 func loadFileBudgeted(t *testing.T, env *lisp.LEnv, src []byte, envIdx, rep int) (*lisp.LVal, bool) {
 	t.Helper()
-	return loadNamedFileBudgeted(t, env, loadCacheFuzzName, src, envIdx, rep, fuzzDeadline)
+	return loadNamedFileBudgeted(t, env, loadCacheFuzzName, src, envIdx, rep, fuzzDeadline, fuzzwatch.Fuzzed)
 }
 
 // loadNamedFileBudgeted is loadFileBudgeted for a caller-chosen file name.
@@ -296,8 +297,9 @@ func loadFileBudgeted(t *testing.T, env *lisp.LEnv, src []byte, envIdx, rep int)
 // The load runs under a context deadline of deadline.  A deadline of 0 means
 // no wall-clock deadline (see evalContext).  Fuzzed input passes
 // fuzzDeadline.  A fixed regression test passes 0, so its verdict does not
-// depend on how much CPU the process gets (luthersystems/elps#783).
-func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte, envIdx, rep int, deadline time.Duration) (*lisp.LVal, bool) {
+// depend on how much CPU the process gets (luthersystems/elps#783).  input
+// decides what a starved watchdog does (see fuzzwatch.AwaitStarved).
+func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte, envIdx, rep int, deadline time.Duration, input fuzzwatch.Input) (*lisp.LVal, bool) {
 	t.Helper()
 
 	ctx, cancel := evalContext(deadline)
@@ -310,31 +312,23 @@ func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte
 
 	budget := fuzzwatch.New(watchdogTimeout)
 	wait := budget.Total()
-	for {
+	var result *lisp.LVal
+	for received := false; !received; {
 		select {
-		case result := <-ch:
-			if result == nil {
-				t.Fatalf("load %d in environment %d returned a nil LVal", rep+1, envIdx)
-				return nil, false
-			}
-			if lisp.IsInternalPanic(result) {
-				t.Fatalf("load %d in environment %d recovered a Go panic"+
-					" (a host-code defect, not a lisp error)\n--- error ---\n%v",
-					rep+1, envIdx, result)
-				return nil, false
-			}
-			if containerRenderable([]*lisp.LVal{result}) {
-				_ = result.String()
-			}
-			return result, true
+		case result = <-ch:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return nil, false
+				var ok bool
+				if result, ok = fuzzwatch.AwaitStarved(t, ch, input, report,
+					fmt.Sprintf("load %d in environment %d", rep+1, envIdx), ""); !ok {
+					return nil, false
+				}
+				received = true
 			default:
 				t.Fatalf("load %d in environment %d did not terminate within %s of SCHEDULED"+
 					" time despite %s (%s)",
@@ -343,6 +337,20 @@ func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte
 			}
 		}
 	}
+	if result == nil {
+		t.Fatalf("load %d in environment %d returned a nil LVal", rep+1, envIdx)
+		return nil, false
+	}
+	if lisp.IsInternalPanic(result) {
+		t.Fatalf("load %d in environment %d recovered a Go panic"+
+			" (a host-code defect, not a lisp error)\n--- error ---\n%v",
+			rep+1, envIdx, result)
+		return nil, false
+	}
+	if containerRenderable([]*lisp.LVal{result}) {
+		_ = result.String()
+	}
+	return result, true
 }
 
 // confirmCachedDivergence re-runs the divergence with a matched pair — one

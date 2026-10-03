@@ -361,23 +361,20 @@ func (w *locationWatch) verify(t fatalf, src []byte) {
 	}
 }
 
-// fatalf is the subset of *testing.T and *testing.F the harness needs, so the
-// same code serves the fuzz target and the ordinary corpus tests.
-type fatalf interface {
-	Helper()
-	Fatalf(format string, args ...any)
-	// Skipf is how the harness declines to answer for one input when the
-	// process was starved throughout its watchdog window -- see
-	// internal/fuzzwatch. Both *testing.T and *testing.F have it.
-	Skipf(format string, args ...any)
-}
+// fatalf is the subset of *testing.T the harness needs, so the same code
+// serves the fuzz target and the ordinary corpus tests.  It is fuzzwatch.T:
+// Skipf is how the harness declines to answer for a fuzzed input when the
+// process was starved throughout its watchdog window, and Deadline and
+// Context let a fixed input wait instead (see fuzzwatch.AwaitStarved).
+type fatalf = fuzzwatch.T
 
-// evalBudgeted parses and evaluates FUZZED src under the full budget,
-// including the wall-clock fuzzDeadline.  See evalCorpusBudgeted for the
-// fixed corpora.
-func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
+// evalBudgeted parses and evaluates src under the full budget, including the
+// wall-clock fuzzDeadline.  input says whether src is fuzzed or a fixed
+// test's own program.  See evalCorpusBudgeted for the fixed corpora that
+// must not depend on a clock.
+func evalBudgeted(t fatalf, src []byte, input fuzzwatch.Input) (evalOutcome, bool) {
 	t.Helper()
-	return evalUnderBudget(t, src, fuzzDeadline)
+	return evalUnderBudget(t, src, fuzzDeadline, input)
 }
 
 // evalCorpusBudgeted parses and evaluates a FIXED corpus program under the
@@ -408,14 +405,16 @@ func evalBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 // the wall-clock one did.  The fix has to be a budget with no clock in it.
 func evalCorpusBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 	t.Helper()
-	return evalUnderBudget(t, src, 0)
+	return evalUnderBudget(t, src, 0, fuzzwatch.Fixed)
 }
 
 // evalUnderBudget parses and evaluates src under the budget, on its own
 // goroutine, with the watchdog running.  A deadline of 0 means no wall-clock
-// deadline at all.  It returns (outcome, true) when the source evaluated, and
-// (zero, false) when it did not parse -- a parse error is the parser targets'
-// business, not this one's.
+// deadline at all.  input decides what a starved watchdog does: a fuzzed
+// input skips, and a fixed input waits (see fuzzwatch.AwaitStarved).  It
+// returns (outcome, true) when the source evaluated, and (zero, false) when
+// it did not parse -- a parse error is the parser targets' business, not
+// this one's.
 //
 // The input is parsed ONCE, and the sealed parse tree that gets evaluated is
 // fingerprinted before and after the evaluation (lisp/sealfp.go).  That is
@@ -430,7 +429,7 @@ func evalCorpusBudgeted(t fatalf, src []byte) (evalOutcome, bool) {
 // nothing a caller could usefully do with it: the evaluation goroutine is
 // still running and cannot be stopped.  Leaking it is acceptable precisely
 // because the run has already failed.
-func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome, bool) {
+func evalUnderBudget(t fatalf, src []byte, deadline time.Duration, input fuzzwatch.Input) (evalOutcome, bool) {
 	t.Helper()
 
 	// Decide "did this parse?" with the reader itself rather than by pattern-
@@ -507,52 +506,25 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 	// is not being given the CPU, which is not the evaluator's fault.
 	budget := fuzzwatch.New(watchdogTimeout)
 	wait := budget.Total()
-	for {
+	var d done
+	for received := false; !received; {
 		select {
-		case d := <-ch:
-			if d.result == nil {
-				t.Fatalf("evaluation returned a nil LVal")
-				return evalOutcome{}, false
-			}
-			// Only once the evaluation goroutine has finished: both oracles
-			// below walk the same nodes it was writing to, and reading them
-			// while it runs is the race the property is about.  Deliberately
-			// not done on the watchdog branch below, where the goroutine is
-			// still live -- more so now that the corpus path carries no
-			// deadline and reaches that branch on budgets alone (#435).
-			watch.verify(t, src)
-			// The corruption oracle: the sealed parse must be bit-for-bit
-			// what it was before evaluation, error results included.  Any
-			// drift means a kernel mutation path wrote shared program
-			// storage instead of copying (see lisp/seal.go's guarded-site
-			// list) -- with a shared parse cache that is cross-environment
-			// corruption, whether or not this evaluation misbehaved
-			// observably.
-			if fpAfter := lisp.SealedASTFingerprint(sealed); fpAfter != fpBefore {
-				t.Fatalf("evaluation corrupted the sealed parse tree (fingerprint %016x -> %016x):"+
-					" a copy-on-write guard failed and shared program storage was written in place"+
-					" (the luthersystems/substrate#378 class)"+
-					"\n--- source (%d bytes) ---\n%q",
-					fpBefore, fpAfter, len(src), src)
-				return evalOutcome{}, false
-			}
-			return evalOutcome{
-				Result:  d.result,
-				Stderr:  stderr.String(),
-				Steps:   d.steps,
-				Elapsed: d.elapsed,
-				Expired: d.expired,
-			}, true
+		case d = <-ch:
+			received = true
 		case <-time.After(wait):
 			verdict, more, report := budget.Check()
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				// Starved throughout. Nothing can be said about this input,
-				// and saying it anyway is how a gate stops meaning anything.
-				t.Skipf("no verdict: the process was starved throughout (%s)", report)
-				return evalOutcome{}, false
+				// Starved throughout.  Nothing can be said about a fuzzed
+				// input; see fuzzwatch.AwaitStarved for a fixed one.
+				var ok bool
+				if d, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "evaluation",
+					fmt.Sprintf("\n--- source (%d bytes) ---\n%q", len(src), src)); !ok {
+					return evalOutcome{}, false
+				}
+				received = true
 			default:
 				// The evaluation goroutine is unstoppable by construction --
 				// if it were interruptible it would have honoured its step
@@ -568,6 +540,38 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration) (evalOutcome,
 			}
 		}
 	}
+	if d.result == nil {
+		t.Fatalf("evaluation returned a nil LVal")
+		return evalOutcome{}, false
+	}
+	// Only once the evaluation goroutine has finished: both oracles below
+	// walk the same nodes it was writing to, and reading them while it runs
+	// is the race the property is about.  Deliberately not done on the
+	// watchdog's failure branches above, where the goroutine is still live
+	// -- more so now that the corpus path carries no deadline and reaches
+	// them on budgets alone (#435).
+	watch.verify(t, src)
+	// The corruption oracle: the sealed parse must be bit-for-bit what it
+	// was before evaluation, error results included.  Any drift means a
+	// kernel mutation path wrote shared program storage instead of copying
+	// (see lisp/seal.go's guarded-site list) -- with a shared parse cache
+	// that is cross-environment corruption, whether or not this evaluation
+	// misbehaved observably.
+	if fpAfter := lisp.SealedASTFingerprint(sealed); fpAfter != fpBefore {
+		t.Fatalf("evaluation corrupted the sealed parse tree (fingerprint %016x -> %016x):"+
+			" a copy-on-write guard failed and shared program storage was written in place"+
+			" (the luthersystems/substrate#378 class)"+
+			"\n--- source (%d bytes) ---\n%q",
+			fpBefore, fpAfter, len(src), src)
+		return evalOutcome{}, false
+	}
+	return evalOutcome{
+		Result:  d.result,
+		Stderr:  stderr.String(),
+		Steps:   d.steps,
+		Elapsed: d.elapsed,
+		Expired: d.expired,
+	}, true
 }
 
 // evalContext builds the context an evaluation runs under.  A deadline of 0
@@ -669,7 +673,7 @@ func FuzzEval(f *testing.F) {
 	}
 
 	f.Fuzz(func(t *testing.T, src []byte) {
-		out, ok := evalBudgeted(t, src)
+		out, ok := evalBudgeted(t, src, fuzzwatch.Fuzzed)
 		if !ok {
 			return
 		}
@@ -813,7 +817,7 @@ func TestTerminatingSeedVerdictIsNotAFunctionOfTheClock(t *testing.T) {
 	// A wall clock that is already spent.  Under one, this seed reports an
 	// error -- the same verdict #435 saw against a 2s clock on a machine that
 	// was not running us, and for the same reason.
-	starved, ok := evalUnderBudget(t, src, expiredDeadline)
+	starved, ok := evalUnderBudget(t, src, expiredDeadline, fuzzwatch.Fixed)
 	if !ok {
 		t.Fatalf("terminating seed %q does not parse", seed)
 	}
@@ -894,7 +898,7 @@ func TestEvalAdversarialSeedsSurvive(t *testing.T) {
 	for _, src := range fuzzseed.EvalAdversarial() {
 		t.Run(src, func(t *testing.T) {
 			t.Parallel()
-			out, ok := evalBudgeted(t, []byte(src))
+			out, ok := evalBudgeted(t, []byte(src), fuzzwatch.Fixed)
 			if !ok {
 				return
 			}
