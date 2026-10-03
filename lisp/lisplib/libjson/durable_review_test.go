@@ -277,23 +277,6 @@ func TestLoadDurableDimsRunNoCodec(t *testing.T) {
 	assert.Zero(t, *calls)
 }
 
-// Restored values are fresh and mutable, even when the saved value was a
-// sealed program literal.
-func TestDurableRestoresLiteralsMutable(t *testing.T) {
-	env := newTypedTestEnv(t)
-	lit := env.LoadString("test", `(defun lit () '(3 2 1)) (lit)`)
-	require.True(t, lit.IsSealed())
-	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("before"), lit)))
-	assert.Contains(t, evalString(t, env, `(handler-bind ((condition (lambda (c &rest _) (to-string c)))) (stable-sort < before))`), "modify")
-	b, err := libjson.DumpDurable(env, lit, nil)
-	require.NoError(t, err)
-	back, err := libjson.LoadDurable(env, b, nil)
-	require.NoError(t, err)
-	assert.False(t, back.IsSealed())
-	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("after"), back)))
-	assert.Equal(t, `'(1 2 3)`, evalString(t, env, `(stable-sort < after)`))
-}
-
 // Independent expected counts: a limit one below the count fails, and no
 // codec runs before a limit error.
 func TestDurableLimitCountsPinned(t *testing.T) {

@@ -312,3 +312,17 @@ func (d *durableDecoder) checkStorage(st *decStorage) error {
 	}
 	return nil
 }
+
+// literal reads X after "~#lit", (a list or a view) and marks its header
+// as a program literal, so the mutators that refuse literals refuse it.
+func (d *durableDecoder) literal(depth int) (*lisp.LVal, error) {
+	if !bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagList+`",`)) && !bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagView+`",`)) {
+		return nil, d.errorf("a literal marker must wrap a list or a view")
+	}
+	h, err := d.value(depth)
+	if err != nil {
+		return nil, err
+	}
+	h.InheritSeal(lisp.Nil())
+	return h, nil
+}

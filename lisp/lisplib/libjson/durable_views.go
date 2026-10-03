@@ -46,10 +46,11 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// The view extension tags.
+// The view extension tags, and the literal marker.
 const (
 	tagView  = "~#view"
 	tagCells = "~#cells"
+	tagLit   = "~#lit"
 )
 
 // holderKey identifies an array's data list by its header: append! on the
@@ -294,7 +295,18 @@ func (e *durableEncoder) scanData(d *lisp.LVal, depth int) error {
 	if e.refs[key] > 1 {
 		return e.revisit(nil, key)
 	}
+	e.noteLiteral(key, d)
 	return e.scanHolder(key, d.Cells, depth)
+}
+
+// noteLiteral records, at a holder's first visit in the counting pass,
+// whether its header is a program literal (sealed).  Only a nonempty
+// header carries the marker: the mutators that refuse a literal
+// (stable-sort, append 'vector, slice 'vector) act on its cells.
+func (e *durableEncoder) noteLiteral(key any, h *lisp.LVal) {
+	if !e.discover && len(h.Cells) > 0 && h.IsSealed() {
+		e.literal[key] = true
+	}
 }
 
 // separateData reports whether array data d is written as a holder of its
@@ -302,7 +314,7 @@ func (e *durableEncoder) scanData(d *lisp.LVal, depth int) error {
 func (e *durableEncoder) separateData(d *lisp.LVal) bool {
 	key := holderKey{d}
 	_, view := e.views[key]
-	return view || e.refs[key] >= 2
+	return view || e.refs[key] >= 2 || e.literal[key]
 }
 
 // holder writes a holder (with its object wrapper when shared): a view, or
@@ -315,6 +327,22 @@ func (e *durableEncoder) holder(key any, cells []*lisp.LVal, depth int) error {
 }
 
 func (e *durableEncoder) holderBody(key any, cells []*lisp.LVal, depth int) error {
+	if e.literal[key] {
+		// ["~#lit",X]: the holder is a program literal.
+		if err := e.count(); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, `["`+tagLit+`",`...)
+		if err := e.plainHolderBody(key, cells, depth); err != nil {
+			return err
+		}
+		e.buf = append(e.buf, ']')
+		return e.grow()
+	}
+	return e.plainHolderBody(key, cells, depth)
+}
+
+func (e *durableEncoder) plainHolderBody(key any, cells []*lisp.LVal, depth int) error {
 	if err := e.container(depth); err != nil {
 		return err
 	}

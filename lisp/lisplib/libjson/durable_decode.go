@@ -298,7 +298,7 @@ func (d *durableDecoder) index() (int, error) {
 
 func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView} {
+	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView, tagLit} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -310,7 +310,7 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	d.i += len(tag) + 3
 	dataPos := d.dataPos
 	d.dataPos = false
-	if dataPos && tag != tagObj && tag != tagRef && tag != tagView {
+	if dataPos && tag != tagObj && tag != tagRef && tag != tagView && tag != tagLit {
 		return nil, d.errorf("array data in its own form must be a shared object, a reference or a view")
 	}
 	var v *lisp.LVal
@@ -322,6 +322,8 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 		v, err = d.function()
 	case tagObj:
 		v, err = d.objectDef(depth)
+	case tagLit:
+		v, err = d.literal(depth)
 	case tagView:
 		if err = d.depth(depth); err != nil {
 			return nil, err

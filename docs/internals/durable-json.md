@@ -85,6 +85,7 @@ under the earlier rules.
 | `~#ref` | `["~#ref",ID]` | The object `ID`, defined earlier in the document. |
 | `~#native` | `["~#native",["NAME",VERSION,PAYLOAD]]` | A native value, saved by the codec registered as `NAME`. |
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
+| `~#lit` | `["~#lit",X]` | `X`, a `~#list` or `~#view`, is a program literal. |
 | `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP,[CELL...]]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. The cells are those of `OFF` to `OFF+CAP` that no earlier view wrote. |
 | `~#cells` | `["~#cells",N]` | Storage of `N` cells. It appears only as `STORAGE`: inline for one vector's data, else as `["~#obj",[ID,["~#cells",N]]]` at its first view and `["~#ref",ID]` after. |
 | `~#array` with data | `["~#array",[[DIMS...],DATA]]` | An array whose data list has an identity of its own. `DATA` is a `~#obj` of a list (empty allowed), a `~#ref` to one, or a `~#view`. Any rank. |
@@ -213,10 +214,24 @@ data, and storage larger than the rest of the input or the value limit can
 hold (`ErrTypedLimit`). A shared empty data list counts against the
 nesting limit like any container.
 
-Restored values are fresh and mutable. A saved program literal, which raises
-`modify-literal-error` on `stable-sort`, restores as an ordinary list that
-sorts (`TestDurableRestoresLiteralsMutable`). A flow that relies on that
-error must copy the literal itself.
+#### Literals
+
+A program literal (a quoted list the reader sealed) restores as a literal.
+Its list is written as `["~#lit",X]`, where `X` is the list or view, once per
+object: inside the `~#obj` of a shared literal, never on a `~#ref`. After a
+load, `stable-sort`, `append 'vector` and `slice 'vector` raise
+`modify-literal-error` on it exactly as before, and `rest` and `cdr` of it
+are literals too. A list built at run time is written without the marker and
+stays mutable. An array whose data list is a literal writes that list in
+its own form, `["~#lit",...]`.
+
+A restored literal is a protected copy: it is not the program's own cells,
+and its identity with the program text is not kept. Only list headers carry
+the marker; atoms inside a literal have no mutable storage, so they restore
+unmarked. When two headers over the same cells are one list and only one is
+sealed, the first the walk meets decides. `LoadDurable` rejects `~#lit`
+around anything but a `~#list` or a `~#view` (a scalar, a vector, a map, a
+`~#ref`, an `~#obj` or another `~#lit`).
 
 ### Determinism
 
@@ -461,10 +476,11 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
 | Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |
-| Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims, mutable literals and pinned value and depth counts. |
+| Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims and pinned value and depth counts. |
 | `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, except for `~#fn` names: the bytes are compared with those names masked, each masked name must resolve to the same function (package and FID) as the name in its place, and the names alone must reach a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |

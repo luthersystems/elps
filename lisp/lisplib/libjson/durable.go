@@ -133,7 +133,8 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 // Lists and arrays whose cells share storage (a list and its tail, a slice
 // of a vector, arrays over one data list) keep that sharing: the storage is
 // written once and each value as a view of it (see durable_views.go).
-// Restored values are always mutable, sealed literals included.
+// A program literal (a sealed list) is written as ["~#lit",X] and restores
+// as a literal that the mutators refuse.
 //
 // Refused with an error: errors (condition values), anonymous and local
 // functions, macros and special operators, natives with no codec, a native
@@ -233,6 +234,8 @@ type durableEncoder struct {
 	appendable  map[*lisp.LVal]bool
 	recorded    map[*lisp.LVal]bool
 	views       map[any]viewInfo
+	// literal holds the holders whose headers are program literals.
+	literal map[any]bool
 	// low holds, by first-visit index, for each object scan has finished,
 	// the smallest first-visit index of an object that was still open when
 	// it finished and that it reaches, or noLow.  An open object is one scan
@@ -283,6 +286,7 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		recorded:     map[*lisp.LVal]bool{},
 		walked:       map[uintptr]uintptr{},
 		views:        map[any]viewInfo{},
+		literal:      map[any]bool{},
 	}
 }
 
@@ -424,6 +428,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err := e.cfg.depthError(depth); err != nil {
 			return err
 		}
+		e.noteLiteral(key, v)
 		return e.scanHolder(key, v.Cells, depth)
 	case lisp.LArray:
 		dims, cells, err := checkArray(v)
