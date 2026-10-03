@@ -508,3 +508,24 @@ func TestDurableCapacityParity(t *testing.T) {
 		assert.Equal(t, want, dump(vm), "%s: values the VM built", c.name)
 	}
 }
+
+// Discovery meets a container by another path than the output (a vector's
+// spare capacity holds a list another view makes live), so the nesting
+// limit is applied to the counting pass, not to discovery: dump and load
+// agree at every depth.
+func TestDurableViewsDepthAgreement(t *testing.T) {
+	env := newTypedTestEnv(t)
+	doc := []byte(`["~#durable",[1,["~#list",[["~#array",[[1],["~#view",[["~#obj",[0,["~#cells",2]]],0,1,2,[0,["~#list",[1]]]]]]],["~#list",[["~#view",[["~#ref",0],1,1,1,[]]]]]]]]]`)
+	back, err := libjson.LoadDurable(env, doc, nil)
+	require.NoError(t, err)
+	again, err := libjson.DumpDurable(env, back, nil)
+	require.NoError(t, err)
+	require.Equal(t, string(doc), string(again))
+	for depth := 1; depth <= 6; depth++ {
+		_, lerr := libjson.LoadDurable(env, doc, nil, libjson.WithTypedMaxDepth(depth))
+		_, derr := libjson.DumpDurable(env, back, nil, libjson.WithTypedMaxDepth(depth))
+		require.Equal(t, derr == nil, lerr == nil, "depth %d: dump %v, load %v", depth, derr, lerr)
+	}
+	_, err = libjson.DumpDurable(env, back, nil, libjson.WithTypedMaxDepth(3))
+	require.NoError(t, err)
+}

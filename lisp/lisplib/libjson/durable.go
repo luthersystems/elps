@@ -269,9 +269,14 @@ type durableEncoder struct {
 	// walked links each cell address discovery walked to the next
 	// address; see unwalked.
 	walked map[uintptr]uintptr
-	// frameBindings holds each captured frame's bindings in name order;
-	// see durable_closures.go.
+	// marked holds, per captured frame, the names some saved closure
+	// reads; frameVals each frame's bindings; frameBindings the saved
+	// bindings in name order; codeFree each code's names.  See
+	// durable_closures.go.
+	marked        map[*lisp.LEnv]map[string]bool
+	frameVals     map[*lisp.LEnv]map[string]*lisp.LVal
 	frameBindings map[*lisp.LEnv][]binding
+	codeFree      map[codeKey]freeNames
 	typedEncoder
 	scanned int
 	nextID  int
@@ -301,6 +306,9 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		recorded:      map[*lisp.LVal]bool{},
 		walked:        map[uintptr]uintptr{},
 		frameBindings: map[*lisp.LEnv][]binding{},
+		marked:        map[*lisp.LEnv]map[string]bool{},
+		frameVals:     map[*lisp.LEnv]map[string]*lisp.LVal{},
+		codeFree:      map[codeKey]freeNames{},
 		views:         map[any]viewInfo{},
 		literal:       map[any]bool{},
 	}
@@ -336,6 +344,24 @@ func (e *durableEncoder) countScan(n int) error {
 		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 	}
 	return nil
+}
+
+// discoveryMaxDepth bounds discovery's recursion when the nesting limit is
+// lower.  Discovery meets a container by a different path than the counting
+// pass and the output (it walks holders' lengths, before their storage is
+// grouped), so it may meet it deeper; the nesting limit is applied by the
+// counting pass, which walks exactly what is written.  This bound only
+// keeps discovery's recursion finite.
+const discoveryMaxDepth = 1 << 16
+
+// scanDepth checks a container's depth during a scan: against the nesting
+// limit in the counting pass, against discoveryMaxDepth (or the limit, if
+// higher) in discovery.
+func (e *durableEncoder) scanDepth(depth int) error {
+	if e.discover && depth < max(discoveryMaxDepth, e.cfg.maxDepth) {
+		return nil
+	}
+	return e.cfg.depthError(depth)
 }
 
 // depthError reports a container at depth past the nesting limit.
@@ -441,7 +467,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if !shareable {
 			return nil
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		e.noteLiteral(key, v)
@@ -451,7 +477,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err != nil {
 			return err
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		if len(dims) != 1 {
@@ -469,7 +495,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		}
 		e.closeNode(i)
 	case lisp.LSortMap:
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		// Keys count as values.  Check them before the members are copied.
@@ -499,7 +525,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err := checkTagged(v); err != nil {
 			return err
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		i := e.openObject(key)
@@ -551,7 +577,7 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	if entry == nil {
 		return fmt.Errorf("durable json: no codec registered for native type %T", v.Native)
 	}
-	if err := e.cfg.depthError(depth); err != nil {
+	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
 	// Discovery saves each native once; the counting pass reuses it.

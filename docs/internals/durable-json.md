@@ -179,6 +179,14 @@ the cells of its range, not its whole storage. So a native's payload can
 hold a view of the storage that holds the native, as long as the view does
 not cover the native's cell (`TestDurableNativeInViewStorage`).
 
+The nesting limit applies to the counting pass and the output, which walk
+exactly what is written. Discovery meets a container by another path (it
+walks holders' lengths before storage is grouped, so a vector's spare
+capacity that another view makes live is met later and deeper), so it is
+bounded only by a recursion safety bound, `discoveryMaxDepth` (65,536, or
+the nesting limit when higher), and dump and load agree at every nesting
+limit (`TestDurableViewsDepthAgreement`).
+
 The work is linear in the cells and views, up to a log factor, in both
 directions. Discovery walks each cell address once, however many holders
 cover it, and counts it once. A view finds its unclaimed cells through skip
@@ -187,8 +195,9 @@ their nodes: it takes the claimed cell of smallest node that still reaches
 an open node, and drops each cell that no longer does. That one is enough:
 if a later cell reaches an open node further out, the earlier cell's open
 node encloses the later cell, and already holds its reach. The liveness check is a
-union of the views' lengths. A list and all of its tails costs
-O(n log n), not n²/2 (`TestDurableAllTailsLinear`).
+union of the views' lengths: a step per view and per dead cell. A list and
+all of its tails costs O(n log n), not n²/2 (`TestDurableAllTailsLinear`
+bounds the claim steps and the liveness steps).
 
 An array's data list is written in its own `DATA` form (above) when it is a
 view, or when another array or a list value shares it. Otherwise the array
@@ -234,11 +243,18 @@ its own form, `["~#lit",...]`.
 
 A restored literal is a protected copy: it is not the program's own cells,
 and its identity with the program text is not kept. Only list headers carry
-the marker; atoms inside a literal have no mutable storage, so they restore
-unmarked. When two headers over the same cells are one list and only one is
+the marker. Once the document is read, the atoms in a restored literal's
+cells (ints, floats, strings, symbols) are sealed as the reader seals them,
+because template publication admits a sealed list only when its atoms are
+sealed too; a list inside the literal keeps its own marker, so one built at
+run time stays mutable (`TestDurableRestoredLiteralsInTemplates`, eager,
+lazy and prewarmed VMs). An empty list never carries the marker. When two headers over the same cells are one list and only one is
 sealed, the first the walk meets decides. `LoadDurable` rejects `~#lit`
-around anything but a `~#list` or a `~#view` (a scalar, a vector, a map, a
-`~#ref`, an `~#obj` or another `~#lit`).
+around anything but a nonempty `~#list` or `~#view` (a scalar, a vector, a
+map, a `~#ref`, an `~#obj`, another `~#lit`, or an empty view of a vector's
+data). `LoadDurableRoots` takes only a plain root list, as
+`DumpDurableRoots` writes it: it rejects a root list that is shared, a
+literal or a view.
 
 #### Error values
 
@@ -472,11 +488,32 @@ there when it is called, exactly as a function restored by `~#fn` does.
 
 `ENV` is the innermost frame the lambda captured, and each frame names its
 parent. `null` is the root environment: its names are globals, resolved
-by name in `PKG` at call time. A frame is saved whole, with every binding
-in name order, because it is shared state: every closure over it sees each
-of its bindings. Frames with no bindings are left out of the chain. A
-frame is an object, so two closures over one frame still share it after a
-load, and a `set!` through one is seen by the other. A closure is an
+by name in `PKG` at call time.
+
+A frame saves only the bindings its closures read. The names a closure
+reads are every unqualified, non-keyword symbol anywhere in its code,
+quoted or not, nested lambdas included: a lexical over-approximation of its
+free variables. Each name is saved in the innermost captured frame that
+binds it. A frame shared by several closures saves the union of their
+names, in name order. A value that no closure names, such as a flow's
+transaction context, is not saved, so it never makes a closure refused or
+large. Code that names `eval` may read any name, so its frames are saved
+whole. Discovery computes the names as a fixpoint over the closures and
+frames (a saved value can hold another closure, which names more) before
+anything is counted, so the counting pass, the output and the decoder see
+the same frames and the limits agree. A native a frame saves goes through
+the codec registry as usual. Frames that save nothing are left out of the
+chain. A frame is an object, so two closures over one frame still share it
+after a load, and a `set!` through one is seen by the other.
+
+After a load, a binding that was not saved is unbound in its frame. Calling
+the closure behaves the same, because its code never names it. Reaching it
+otherwise is not preserved: `eval` of a name built at run time (not
+written in the code) or a debugger reading the frame. One case is not
+covered by the rule: a macro whose expansion reads a captured variable
+that its call site does not spell (an unhygienic macro). The name is not
+in the code, so it is not saved, and the restored closure fails with an
+unbound symbol when it runs that expansion. A closure is an
 object too, so a closure in its own frame (a `labels` function, recursion)
 restores. A refused value in a frame is refused with the path to it:
 `durable json: captured variable "held": captured variable "captured": ...`.
@@ -567,7 +604,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
-| Closures | `durable_closures_test.go` | A counter pair over one binding (`set!` through one is seen by the other), a recursive `labels` function, a closure over a vector and its view, every kind of formal and quoted code, an upgrade (the closure keeps its code, a named function changes), refusal paths, shared code, limits that agree, and a rejection table. `FuzzDurableJSON` seeds closure documents. |
+| Closures | `durable_closures_test.go` | Frames that save only the names their closures read (an unsaveable context is left out; two closures over one frame save the union; nested lambdas and shadowing), `eval` keeping frames whole, a counter pair over one binding (`set!` through one is seen by the other), a recursive `labels` function, a closure over a vector and its view, every kind of formal and quoted code, an upgrade (the closure keeps its code, a named function changes), refusal paths, shared code, limits that agree, and a rejection table. `FuzzDurableJSON` seeds closure documents. |
 | Error values | `durable_errors_test.go` | An error raised by `error` round-trips with its condition, message and data, and `handler-bind` matches it after the load; no stack or source; an error with no data; a shared error and an error in a cycle; a host error's text without its Go error; refusals; limits that agree; and a rejection table. `FuzzDurableJSON` seeds error documents. |
 | Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |

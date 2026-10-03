@@ -47,7 +47,7 @@ func (e *durableEncoder) scanError(v *lisp.LVal, key any, depth int) error {
 	if err := checkError(v); err != nil {
 		return err
 	}
-	if err := e.cfg.depthError(depth); err != nil {
+	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
 	i := e.openObject(key)

@@ -303,7 +303,9 @@ func (d *durableDecoder) checkStorage(st *decStorage) error {
 	slices.SortFunc(lives, func(a, b span) int { return cmp.Compare(a.start, b.start) })
 	dead := 0
 	for _, l := range append(lives, span{len(st.cells), len(st.cells)}) {
+		d.liveOps++
 		for k := dead; k < l.start; k++ {
+			d.liveOps++
 			if !st.null[k] {
 				return fmt.Errorf("durable json: %s cell %d is dead but not null", name, k)
 			}
@@ -323,6 +325,29 @@ func (d *durableDecoder) literal(depth int) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(h.Cells) == 0 {
+		// DumpDurable marks only a literal with cells.
+		return nil, d.errorf("a literal marker around an empty list")
+	}
 	h.InheritSeal(lisp.Nil())
+	d.literals = append(d.literals, h)
 	return h, nil
+}
+
+// sealLiterals seals, once the document is read, the scalar cells of each
+// restored literal, as the reader seals a literal's atoms: template
+// publication admits a sealed list only when the atoms it holds are
+// sealed too.  A list or other container in a literal keeps its own
+// marker, so one built at run time stays mutable.
+func (d *durableDecoder) sealLiterals() {
+	for _, h := range d.literals {
+		for _, c := range h.Cells {
+			switch c.Type {
+			case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol:
+				c.InheritSeal(lisp.Nil())
+			case lisp.LSExpr, lisp.LArray, lisp.LSortMap, lisp.LBytes, lisp.LTaggedVal, lisp.LNative, lisp.LFun,
+				lisp.LError, lisp.LQuote, lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
+			}
+		}
+	}
 }

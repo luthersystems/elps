@@ -6,7 +6,9 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
+	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -91,11 +93,68 @@ func TestLoadDurableRejectsLiterals(t *testing.T) {
 		{`["~#durable",[1,["~#list",[["~#obj",[0,["~#list",[1]]]],["~#lit",["~#ref",0]]]]]]`, "a literal marker must wrap a list or a view"},
 		{`["~#durable",[1,["~#lit",["~#list",[]]]]]`, "empty list must be null"},
 		{`["~#durable",[1,["~#lit",["~#list",[1]]],2]]`, "expected ']'"},
+		{`["~#durable",[1,["~#array",[[0],["~#lit",["~#view",[["~#cells",1],0,0,1,[null]]]]]]]]`, "a literal marker around an empty list"},
 	} {
 		t.Run(c.doc, func(t *testing.T) {
 			_, err := libjson.LoadDurable(env, []byte(c.doc), nil)
 			require.Error(t, err)
 			assert.Contains(t, err.Error(), c.want)
 		})
+	}
+}
+
+// LoadDurableRoots takes only a plain root list: DumpDurableRoots builds it
+// fresh, so a marked, shared or view root list would not re-encode.
+func TestLoadDurableRootsRejectsMarkedRootList(t *testing.T) {
+	env := newTypedTestEnv(t)
+	for _, doc := range []string{
+		`["~#durable",[1,["~#lit",["~#list",["a",1]]]]]`,
+		`["~#durable",[1,["~#view",[["~#obj",[0,["~#cells",2]]],0,2,2,["a",["~#view",[["~#ref",0],1,1,1,[]]]]]]]]`,
+	} {
+		_, err := libjson.LoadDurable(env, []byte(doc), nil)
+		require.NoError(t, err, doc)
+		_, err = libjson.LoadDurableRoots(env, []byte(doc), nil)
+		require.EqualError(t, err, "durable json: the root list is not a plain list", doc)
+	}
+}
+
+// A restored literal can be published in a template, eager or lazy, and
+// stays a literal in every VM: its atoms are sealed as the reader seals
+// them, and a list inside it built at run time stays mutable.
+func TestDurableRestoredLiteralsInTemplates(t *testing.T) {
+	source := lisp.NewEnv(nil)
+	source.Runtime.Reader = parser.NewReader()
+	require.NoError(t, lisp.GoError(lisp.InitializeUserEnv(source)))
+	require.NoError(t, lisp.GoError(lisplib.LoadRuntimeLibrary(source)))
+	require.NoError(t, lisp.GoError(source.InPackage(lisp.String(lisp.DefaultUserPackage))))
+	v := source.LoadString("test", `(defun lit () '(3 "two" 1.5 sym (5 4))) (let ((l (lit))) (list l (rest l) (list 2 1)))`)
+	require.NoError(t, lisp.GoError(v))
+	b, err := libjson.DumpDurable(source, v, nil)
+	require.NoError(t, err)
+	back, err := libjson.LoadDurable(source, b, nil)
+	require.NoError(t, err)
+	require.NoError(t, lisp.GoError(source.PutGlobal(lisp.Symbol("saved"), back)))
+	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
+	eager, err := lisp.NewTemplate(source, policy, lisp.TemplateWithEagerInstantiation())
+	require.NoError(t, err)
+	lazy, err := lisp.NewTemplate(source, policy)
+	require.NoError(t, err)
+	for _, c := range []struct {
+		name string
+		tmpl *lisp.Template
+		opts []lisp.VMOption
+	}{
+		{"eager", eager, nil},
+		{"lazy", lazy, nil},
+		{"lazy prewarmed", lazy, []lisp.VMOption{lisp.VMWithPrewarm()}},
+	} {
+		vm, err := c.tmpl.NewVM(c.opts...)
+		require.NoError(t, err, c.name)
+		for _, expr := range []string{`(first saved)`, `(second saved)`, `(nth (first saved) 4)`} {
+			got := vm.LoadString("test", `(handler-bind ((condition (lambda (c &rest _) (to-string c)))) (stable-sort < `+expr+`) "")`)
+			require.NoError(t, lisp.GoError(got), c.name)
+			assert.Contains(t, got.String(), "modify-literal-error", "%s: %s", c.name, expr)
+		}
+		assert.Equal(t, `'(1 2)`, vm.LoadString("test", `(stable-sort < (nth saved 2))`).String(), c.name)
 	}
 }

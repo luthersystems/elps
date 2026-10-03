@@ -104,6 +104,7 @@ func (d *durableDecoder) load() (*lisp.LVal, error) {
 	if err := d.checkHolders(); err != nil {
 		return nil, err
 	}
+	d.sealLiterals()
 	return v, nil
 }
 
@@ -117,11 +118,14 @@ type durableDecoder struct {
 	// for the size check at the end.  emptyObjs holds each empty list
 	// defined as an object.  See durable_views_decode.go.
 	storage   map[int]*decStorage
-	storages  []*decStorage
 	views     map[*lisp.LVal]*decView
 	dataUsed  map[*lisp.LVal]bool
+	storages  []*decStorage
 	arrays    []holderArray
 	emptyObjs []*lisp.LVal
+	// literals holds each header a literal marker sealed; liveOps counts
+	// the liveness check's steps, for the tests' bound.
+	literals []*lisp.LVal
 	// objs holds each defined object.  A native's slot stays nil until its
 	// codec returns.
 	objs []*lisp.LVal
@@ -144,6 +148,7 @@ type durableDecoder struct {
 	// code, which only their own positions may refer to.
 	objKind []objKind
 	typedDecoder
+	liveOps int
 	// pending is the id of the "~#obj" whose value is being read, until
 	// that value's header is constructed; -1 when none.
 	pending int
@@ -768,12 +773,19 @@ func (d *durableDecoder) object(depth int) (*lisp.LVal, error) {
 
 // LoadDurableRoots decodes a document DumpDurableRoots wrote and returns its
 // roots in the order they were written.  It rejects a document whose value
-// is not a list of distinct names and values, and one whose root list is a
-// shared object (DumpDurableRoots builds that list fresh, so nothing can
-// refer to it).  See LoadDurable for the rest.
+// is not a list of distinct names and values, and one whose root list is
+// not a plain list (shared, a literal or a view): DumpDurableRoots builds
+// that list fresh.  See LoadDurable for the rest.
 func LoadDurableRoots(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOption) ([]DurableRoot, error) {
-	if bytes.HasPrefix(b, []byte(durablePrefix+`["`+tagObj+`",`)) {
-		return nil, errors.New("durable json: the root list is a shared object")
+	// DumpDurableRoots builds the root list fresh, so it is a plain list
+	// (or null for no roots): never shared, a literal or a view.
+	if rest := b[min(len(b), len(durablePrefix)):]; !bytes.HasPrefix(rest, []byte(`["`+tagList+`",[`)) && !bytes.HasPrefix(rest, []byte("null]]")) {
+		if bytes.HasPrefix(rest, []byte(`["`+tagObj+`",`)) {
+			return nil, errors.New("durable json: the root list is a shared object")
+		}
+		if bytes.HasPrefix(b, []byte(durablePrefix)) && bytes.HasPrefix(rest, []byte(`["~#`)) {
+			return nil, errors.New("durable json: the root list is not a plain list")
+		}
 	}
 	v, err := LoadDurable(env, b, reg, opts...)
 	if err != nil {

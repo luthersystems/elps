@@ -185,3 +185,64 @@ func TestLoadDurableRejectsClosures(t *testing.T) {
 		})
 	}
 }
+
+// A frame saves only the names its closures' code reads: a value a closure
+// never names, such as a flow's context, is left out, and is unbound after
+// a restore.
+func TestDurableClosureSavesReferencedNames(t *testing.T) {
+	env := newTypedTestEnv(t)
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("opaque"), lisp.Native(struct{}{}))))
+	f := env.LoadString("test", `(let ((ctx opaque) (big "unused") (n 1)) (lambda (x) (+ n x)))`)
+	require.NoError(t, lisp.GoError(f))
+	doc := restore(t, env, "f", f)
+	assert.Equal(t, `["~#durable",[1,["~#closure",["user",["~#env",[null,["n",1]]],["~#code",[true,["~#list",["~$x"]],["~#list",["~$+","~$n","~$x"]]]]]]]]`, doc)
+	assert.Equal(t, `42`, evalString(t, env, `(funcall f 41)`))
+	var names []string
+	for name := range env.LoadString("test", `f`).LambdaEnv().Bindings() {
+		names = append(names, name)
+	}
+	assert.Equal(t, []string{"n"}, names, "unreferenced captured names are not restored")
+
+	// Two closures over one frame that read different names save the
+	// union, and still share it.
+	pair := env.LoadString("test", `(let ((ctx opaque) (a 1) (b 2)) (list (lambda () (set! a (+ a b)) a) (lambda () b)))`)
+	require.NoError(t, lisp.GoError(pair))
+	doc = restore(t, env, "pair", pair)
+	assert.Contains(t, doc, `["~#env",[null,["a",1,"b",2]]]`)
+	assert.Equal(t, `5`, evalString(t, env, `(funcall (first pair)) (funcall (first pair))`))
+	requireExactLimit(t, env, pair, "pair")
+	b, err := libjson.DumpDurable(env, pair, nil)
+	require.NoError(t, err)
+	for n := 1; n <= 40; n++ {
+		_, derr := libjson.DumpDurable(env, pair, nil, libjson.WithTypedMaxValues(n))
+		_, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxValues(n))
+		require.Equal(t, derr == nil, lerr == nil, "values %d: dump %v, load %v", n, derr, lerr)
+	}
+	for n := 1; n <= 10; n++ {
+		_, derr := libjson.DumpDurable(env, pair, nil, libjson.WithTypedMaxDepth(n))
+		_, lerr := libjson.LoadDurable(env, b, nil, libjson.WithTypedMaxDepth(n))
+		require.Equal(t, derr == nil, lerr == nil, "depth %d: dump %v, load %v", n, derr, lerr)
+	}
+
+	// A name only a nested lambda reads is saved, and an outer frame's
+	// name shadowed by an inner one is read from the inner frame.
+	nested := env.LoadString("test", `(let ((ctx opaque) (k 3)) (let ((k 4) (j 5)) (lambda () (lambda () (list k j)))))`)
+	require.NoError(t, lisp.GoError(nested))
+	doc = restore(t, env, "nested", nested)
+	assert.Contains(t, doc, `["~#env",[null,["j",5,"k",4]]]`)
+	assert.Equal(t, `'(4 5)`, evalString(t, env, `(funcall (funcall nested))`))
+}
+
+// Code that names eval may read any captured name, so its frames are saved
+// whole, and a refused value in them is refused.
+func TestDurableClosureEvalKeepsWholeFrames(t *testing.T) {
+	env := newTypedTestEnv(t)
+	f := env.LoadString("test", `(let ((a 1) (b 2)) (lambda () (eval 'a)))`)
+	require.NoError(t, lisp.GoError(f))
+	doc := restore(t, env, "f", f)
+	assert.Contains(t, doc, `["~#env",[null,["a",1,"b",2]]]`)
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("opaque"), lisp.Native(struct{}{}))))
+	g := env.LoadString("test", `(let ((ctx opaque)) (lambda () (eval 'x)))`)
+	_, err := libjson.DumpDurable(env, g, nil)
+	require.EqualError(t, err, `durable json: captured variable "ctx": no codec registered for native type struct {}`)
+}

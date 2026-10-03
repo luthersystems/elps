@@ -12,11 +12,16 @@ package libjson
 // PKG is the package the lambda was defined in: its body resolves globals
 // there when it is called, as a function restored by ~#fn does.  ENV is the
 // innermost captured frame, and each frame names its parent; null is the
-// root environment, whose names are globals.  A frame holds all of its
-// bindings, in name order, and frames with no bindings are left out of the
-// chain.  A frame is an object, so two closures over one frame share it
-// after a load, and a set! through one is seen by the other.  A closure is
-// an object too, so a closure in its own frame (recursion) restores.
+// root environment, whose names are globals.  A frame holds, in name order,
+// the bindings the saved closures over it read: each name a closure's code
+// names (lexically, nested lambdas included) is saved in the innermost
+// frame that binds it, and code that names eval keeps its frames whole.
+// Discovery computes these sets as a fixpoint before anything is counted,
+// so the counting pass, the output and the decoder all see the same
+// frames.  Frames that save nothing are left out of the chain.  A frame is
+// an object, so two closures over one frame share it after a load, and a
+// set! through one is seen by the other.  A closure is an object too, so a
+// closure in its own frame (recursion) restores.
 //
 // CODE is the lambda's formals and body as code: each node keeps whether it
 // is quoted, which decides whether the evaluator evaluates it.  A node is a
@@ -86,35 +91,147 @@ func codeKeyOf(f *lisp.LVal) codeKey {
 	return codeKey{formals: f.Cells[0], body: string(b)}
 }
 
-// frameOf returns the innermost frame at or above env that has bindings,
-// or nil when there is none below the root.
-func frameOf(env *lisp.LEnv) *lisp.LEnv {
+// frameOf returns the innermost frame at or above env that saves a
+// binding, or nil when there is none below the root.
+func (e *durableEncoder) frameOf(env *lisp.LEnv) *lisp.LEnv {
 	for ; env != nil && env.Parent() != nil; env = env.Parent() {
-		if env.NumBindings() > 0 {
+		if len(e.marked[env]) > 0 {
 			return env
 		}
 	}
 	return nil
 }
 
-// bindings returns a frame's bindings in name order, read once per dump.
-func (e *durableEncoder) bindings(env *lisp.LEnv) ([]binding, error) {
-	if bs, ok := e.frameBindings[env]; ok {
-		return bs, nil
+// frameAll returns all of a frame's bindings by name, read once per dump.
+func (e *durableEncoder) frameAll(env *lisp.LEnv) map[string]*lisp.LVal {
+	if all, ok := e.frameVals[env]; ok {
+		return all
 	}
-	if n := env.NumBindings(); n > e.cfg.maxValues {
-		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
-	}
-	bs := make([]binding, 0, env.NumBindings())
+	all := make(map[string]*lisp.LVal, env.NumBindings())
 	for name, v := range env.Bindings() {
-		if name == "" || !utf8.ValidString(name) {
-			return nil, errors.New("durable json: a captured variable's name is empty or not UTF-8")
-		}
-		bs = append(bs, binding{name: name, value: v})
+		all[name] = v
+	}
+	e.frameVals[env] = all
+	return all
+}
+
+// bindings returns the bindings a frame saves, in name order.
+func (e *durableEncoder) bindings(env *lisp.LEnv) []binding {
+	if bs, ok := e.frameBindings[env]; ok {
+		return bs
+	}
+	bs := make([]binding, 0, len(e.marked[env]))
+	for name := range e.marked[env] {
+		bs = append(bs, binding{name: name, value: e.frameVals[env][name]})
 	}
 	slices.SortFunc(bs, func(a, b binding) int { return cmp.Compare(a.name, b.name) })
 	e.frameBindings[env] = bs
-	return bs, nil
+	return bs
+}
+
+// freeNames is what a closure's code may read from its frames.
+type freeNames struct {
+	names   []string
+	dynamic bool
+}
+
+// codeNames returns the names a closure's code may read lexically: every
+// unqualified, non-keyword symbol anywhere in its formals and body,
+// quoted or not, in nested lambdas too.  This over-approximates the free
+// variables, which keeps it sound for any special form or macro call that
+// names a variable in its arguments.  Code that names eval is dynamic: it
+// may evaluate any symbol in the frames, so it keeps them whole.
+func (e *durableEncoder) codeNames(f *lisp.LVal) freeNames {
+	key := codeKeyOf(f)
+	if fn, ok := e.codeFree[key]; ok {
+		return fn
+	}
+	seen := map[string]bool{}
+	var fn freeNames
+	var walk func(v *lisp.LVal)
+	walk = func(v *lisp.LVal) {
+		switch v.Type {
+		case lisp.LSymbol:
+			name := v.Str
+			if name == "eval" || name == "lisp:eval" {
+				fn.dynamic = true
+			}
+			if name != "" && !strings.Contains(name, ":") && !seen[name] {
+				seen[name] = true
+				fn.names = append(fn.names, name)
+			}
+		case lisp.LSExpr, lisp.LQuote:
+			for _, c := range v.Cells {
+				walk(c)
+			}
+		case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LBytes, lisp.LArray, lisp.LSortMap, lisp.LTaggedVal,
+			lisp.LNative, lisp.LFun, lisp.LError, lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand,
+			lisp.LInvalid, lisp.LTypeMax:
+		}
+	}
+	for _, c := range f.Cells {
+		walk(c)
+	}
+	slices.Sort(fn.names)
+	e.codeFree[key] = fn
+	return fn
+}
+
+// markClosure records, during discovery, the frame bindings a closure
+// reads: each name its code names, in the innermost frame below the root
+// that binds it, or every binding of every frame for dynamic code.  A
+// binding marked for the first time has its value walked, so the closures
+// it reaches mark theirs: the marks reach a fixpoint over the closures and
+// frames by the time discovery ends.
+func (e *durableEncoder) markClosure(v *lisp.LVal, depth int) error {
+	fn := e.codeNames(v)
+	var chain []*lisp.LEnv
+	for env := v.LambdaEnv(); env != nil && env.Parent() != nil; env = env.Parent() {
+		chain = append(chain, env)
+	}
+	mark := func(env *lisp.LEnv, name string, value *lisp.LVal) error {
+		if e.marked[env][name] {
+			return nil
+		}
+		if e.marked[env] == nil {
+			e.marked[env] = map[string]bool{}
+		}
+		if name == "" || !utf8.ValidString(name) {
+			return errors.New("durable json: a captured variable's name is empty or not UTF-8")
+		}
+		e.marked[env][name] = true
+		if err := e.scan(value, depth+1); err != nil {
+			return capturedError(name, err)
+		}
+		return nil
+	}
+	if fn.dynamic {
+		for _, env := range chain {
+			all := e.frameAll(env)
+			names := make([]string, 0, len(all))
+			for name := range all {
+				names = append(names, name)
+			}
+			slices.Sort(names)
+			for _, name := range names {
+				if err := mark(env, name, all[name]); err != nil {
+					return err
+				}
+			}
+		}
+		return nil
+	}
+	for _, name := range fn.names {
+		for _, env := range chain {
+			if value, ok := e.frameAll(env)[name]; ok {
+				if err := mark(env, name, value); err != nil {
+					return err
+				}
+				break
+			}
+		}
+	}
+	return nil
 }
 
 // scanFunValue resolves a function: a global name, or a closure.
@@ -148,15 +265,26 @@ func (e *durableEncoder) scanClosure(v *lisp.LVal, depth int) error {
 	if pkg := v.Package(); pkg == "" || !utf8.ValidString(pkg) || e.env.Runtime.Registry.Package(pkg) == nil {
 		return errAnonymous
 	}
-	if err := e.cfg.depthError(depth); err != nil {
+	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
 	i := e.openObject(key)
-	if err := e.scanFrame(frameOf(v.LambdaEnv()), depth+1); err != nil {
-		return err
-	}
-	if err := e.scanCode(v, depth+1); err != nil {
-		return err
+	// Discovery checks the code (its size and depth) before it reads the
+	// names in it.
+	if e.discover {
+		if err := e.scanCode(v, depth+1); err != nil {
+			return err
+		}
+		if err := e.markClosure(v, depth); err != nil {
+			return err
+		}
+	} else {
+		if err := e.scanFrame(e.frameOf(v.LambdaEnv()), depth+1); err != nil {
+			return err
+		}
+		if err := e.scanCode(v, depth+1); err != nil {
+			return err
+		}
 	}
 	e.closeNode(i)
 	return nil
@@ -176,15 +304,12 @@ func (e *durableEncoder) scanFrame(env *lisp.LEnv, depth int) error {
 	if e.refs[key] > 1 {
 		return e.revisit(nil, key)
 	}
-	if err := e.cfg.depthError(depth); err != nil {
+	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
-	bs, err := e.bindings(env)
-	if err != nil {
-		return err
-	}
+	bs := e.bindings(env)
 	i := e.openObject(key)
-	if err := e.scanFrame(frameOf(env.Parent()), depth+1); err != nil {
+	if err := e.scanFrame(e.frameOf(env.Parent()), depth+1); err != nil {
 		return err
 	}
 	for _, b := range bs {
@@ -218,7 +343,7 @@ func (e *durableEncoder) scanCode(f *lisp.LVal, depth int) error {
 	if e.refs[key] > 1 {
 		return e.revisit(nil, key)
 	}
-	if err := e.cfg.depthError(depth); err != nil {
+	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
 	i := e.openObject(key)
@@ -254,7 +379,7 @@ func (e *durableEncoder) scanCodeNode(v *lisp.LVal, depth int) error {
 		if err := e.countScan(1); err != nil {
 			return err
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		return e.scanCodeNode(v.Cells[0], depth+1)
@@ -262,7 +387,7 @@ func (e *durableEncoder) scanCodeNode(v *lisp.LVal, depth int) error {
 		if err := e.countScan(1); err != nil {
 			return err
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		return e.scanCodeBody(v, depth+1)
@@ -282,7 +407,7 @@ func (e *durableEncoder) scanCodeBody(v *lisp.LVal, depth int) error {
 		if len(v.Cells) == 0 {
 			return nil
 		}
-		if err := e.cfg.depthError(depth); err != nil {
+		if err := e.scanDepth(depth); err != nil {
 			return err
 		}
 		for _, c := range v.Cells {
@@ -311,7 +436,7 @@ func (e *durableEncoder) closure(v *lisp.LVal, depth int) error {
 		e.buf = append(e.buf, `["`+tagClosure+`",[`...)
 		e.buf = appendJSONString(e.buf, pkg)
 		e.buf = append(e.buf, ',')
-		if err := e.frame(frameOf(v.LambdaEnv()), depth+1); err != nil {
+		if err := e.frame(e.frameOf(v.LambdaEnv()), depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',')
@@ -338,7 +463,7 @@ func (e *durableEncoder) frame(env *lisp.LEnv, depth int) error {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagEnv+`",[`...)
-		if err := e.frame(frameOf(env.Parent()), depth+1); err != nil {
+		if err := e.frame(e.frameOf(env.Parent()), depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',', '[')

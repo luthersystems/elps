@@ -166,6 +166,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.frameRef":           "hand-rolled JSON walker: durable closure traversal, each object once, depth and value limits, pinned by closure tests",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.codeValue":          "specialized traversal: parses one closure's code from JSON bytes through codeNode and checks its formals header",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.frameValue":         "specialized traversal: parses one captured frame from JSON bytes, each binding value read once by value",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableEncoder.codeNames":          "specialized traversal: collects the symbols of one closure code, which scanCode has already bounded in size and depth, once per code object",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.dims":               "specialized traversal: parses one array's dimension list from JSON bytes, scalars only, no recursion",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.multiArray":         "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.native":             "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",

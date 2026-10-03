@@ -147,4 +147,9 @@ func TestDurableAllTailsLinear(t *testing.T) {
 	if ops > bound {
 		t.Fatalf("load took %d claim steps, want at most %d", ops, bound)
 	}
+	// The liveness check unions the views' lengths: a step per view and
+	// per dead cell, not per covered cell.
+	if d.liveOps > 2*n {
+		t.Fatalf("the liveness check took %d steps, want at most %d", d.liveOps, 2*n)
+	}
 }
