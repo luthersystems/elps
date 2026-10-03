@@ -241,11 +241,15 @@ the limits and the charges.
 - `Fingerprint` returns a JSON array of
   `{"name","type","shape","version","charge","shared"}` objects sorted by
   name. The type is the package-qualified name of a named type, with one
-  `*` per pointer level. The shape is its structure: kind, channel
-  direction, array length, struct fields and component types. Two types
-  declared inside different functions of one Go package can share a name,
-  and the shape tells them apart unless they also share their structure.
-  Declare codec types at package level. Peers compare it to confirm they hold the
+  `*` per pointer level. The shape is its complete structure: kind, channel
+  direction, array length, map key and element, struct fields (name,
+  package path, embedding, tag and type), function parameters, results and
+  variadic flag, and interface methods (name, package path and signature).
+  Named components appear by qualified name, so the description is finite
+  with no cutoff. Two types declared inside different functions of one Go
+  package can share a name; the only remaining collision is two such types
+  with one name and an identical complete structure. Declare codec types at
+  package level. Peers compare it to confirm they hold the
   same registry.
 - A frozen registry is read-only and safe for concurrent use.
 
@@ -335,7 +339,7 @@ intermediate grows past a limit:
 | Option | Default | Counts |
 |---|---|---|
 | `WithTypedMaxDepth` | 1024 | Container nesting. `~#obj` adds no level. A native payload adds one. |
-| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. During the first pass the key bytes of every map are summed (each key as its encoded text, Transit prefix and `~i` digits included, plus three bytes), and a key's largest possible text is checked before it is copied. A map of n members is refused before its members are collected when 4n bytes would pass the limit. |
+| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. During the first pass the key bytes of every map are summed (each key as its exact encoded text, Transit prefix and `~i` digits included, plus three bytes), and that exact length is checked before the key is copied, so a document of exactly the limit is written. A map of n members is refused before its members are collected when 4n bytes would pass the limit. |
 | `WithTypedMaxValues` | 2^20 | Every value position, map key and array dimension. `~#obj` counts one plus its object. `~#ref` and `~#fn` count one. The first pass counts a map's keys before it copies the map's members, and no codec runs past the limit. `DumpDurableRoots` checks the root count before it allocates. |
 | `WithTypedCharge` | none | See the charge order below. |
 
@@ -364,6 +368,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
 | Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |
 | Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims, mutable literals and pinned value and depth counts. |

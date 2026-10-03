@@ -511,6 +511,36 @@ func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) 
 	}
 }
 
+// typedKeyLen is the exact length of the key text appendTypedKey writes
+// for a valid key, before JSON escaping: an int is "~i" and its digits, a
+// string its bytes (one more for a leading "~"), true and false "~?t" and
+// "~?f", a keyword "~:" and its name, any other symbol "~$" and its name.
+// It is 0 for a key appendTypedKey refuses.
+func typedKeyLen(kind lisp.LType, s string, n int) int {
+	switch kind {
+	case lisp.LString:
+		if needsTilde(s) {
+			return len(s) + 1
+		}
+		return len(s)
+	case lisp.LSymbol:
+		switch {
+		case s == "":
+			return 0
+		case s == lisp.TrueSymbol, s == lisp.FalseSymbol:
+			return 3
+		case s[0] == ':':
+			return len(s) + 1
+		}
+		return len(s) + 2
+	case lisp.LInt:
+		var tmp [24]byte
+		return 2 + len(strconv.AppendInt(tmp[:0], int64(n), 10))
+	default:
+		return 0
+	}
+}
+
 // checkHostMapKeys rejects an embedder's map that has a string key and a
 // symbol key of one spelling. A built-in map holds them as one entry, so the
 // decoder rejects such output.
@@ -600,11 +630,9 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 		}
 		// During durable's first pass the output is empty, so the keys of
 		// every map are summed instead: each key will be written as at
-		// least its key text, two quotes and a colon.  The key text is at
-		// most len(Key)+2 (a Transit prefix) or 22 bytes for an int
-		// ("~i" and 20 digits); that bound is checked before the copy and
-		// the exact length is added after it.
-		if e.scanning && e.scanKeyBytes+max(len(p.Key)+2, 22)+3 > e.cfg.maxBytes {
+		// least its key text, two quotes and a colon.  The exact key text
+		// length is checked before the copy and added after it.
+		if e.scanning && e.scanKeyBytes+typedKeyLen(p.Kind, p.Key, p.Int)+3 > e.cfg.maxBytes {
 			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 		}
 		var err error

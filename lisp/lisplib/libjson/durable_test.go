@@ -522,10 +522,11 @@ func TestDurableRegistryFrozen(t *testing.T) {
 	a.Freeze()
 	b.Freeze()
 	// The fingerprint is compared byte for byte, not as JSON.
+	pkg := `\"github.com/luthersystems/elps/lisp/lisplib/libjson_test\"`
 	wantFingerprint := `[{"name":"test:counter","type":"*github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter",` +
-		`"shape":"ptr(github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter=struct(n int \"\"))","version":1,"charge":0,"shared":false},` +
+		`"shape":"ptr(github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter=struct(\"n\" ` + pkg + ` false \"\" int))","version":1,"charge":0,"shared":false},` +
 		`{"name":"test:point","type":"github.com/luthersystems/elps/lisp/lisplib/libjson_test.point",` +
-		`"shape":"struct(x int \"\",y int \"\")","version":3,"charge":0,"shared":false}]`
+		`"shape":"struct(\"x\" ` + pkg + ` false \"\" int,\"y\" ` + pkg + ` false \"\" int)","version":3,"charge":0,"shared":false}]`
 	assert.Equal(t, wantFingerprint, a.Fingerprint())
 	assert.Equal(t, a.Fingerprint(), b.Fingerprint())
 	v := lisp.QExpr([]*lisp.LVal{lisp.Native(point{}), lisp.Native(&counter{})})

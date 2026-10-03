@@ -192,12 +192,11 @@ func (r *DurableRegistry) Frozen() bool { return r != nil && r.frozen }
 // Fingerprint describes the registered codecs as JSON: an array of
 // {"name","type","shape","version","charge","shared"} objects sorted by
 // name.  type is the package-qualified Go type name.  shape is its
-// structure (kind, channel direction, length, fields and component types),
-// because two types declared inside functions of one Go package can share
-// a name.  Named components appear by name only, so two function-scope
-// types of one name and one structure are not told apart; declare codec
-// types at package level.  Peers compare it to check that
-// they hold the same registry.
+// complete structure (see typeShape), because two types declared inside
+// functions of one Go package can share a name.  Only two such types with
+// one name and an identical complete structure are not told apart; declare
+// codec types at package level.  Peers compare it to check that they hold
+// the same registry.
 func (r *DurableRegistry) Fingerprint() string {
 	if r == nil {
 		return "[]"
@@ -212,7 +211,7 @@ func (r *DurableRegistry) Fingerprint() string {
 	}
 	rows := make([]row, 0, len(r.byName))
 	for name, e := range r.byName {
-		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ), Shape: typeShape(e.typ, 0, true)})
+		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ), Shape: typeShape(e.typ, true)})
 	}
 	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.Name, b.Name) })
 	b, err := json.Marshal(rows)
@@ -233,28 +232,34 @@ func namedOrPointerToNamed(t reflect.Type) bool {
 	return t.Name() != ""
 }
 
-// typeShape describes t's structure: its kind and, by kind, channel
-// direction, array length, struct fields and component types.  An unnamed
-// component is described by its own shape.  A named component is described
-// by its qualified name, and, directly under the registered type (the
-// element of a registered pointer), by its shape too.  So the description
-// is finite.
-func typeShape(t reflect.Type, depth int, top bool) string {
-	if depth > 8 {
-		return "..."
-	}
+// typeShape describes t's complete structure: its kind and, by kind,
+// channel direction, array length, map key and element, struct fields
+// (name, package path, embedding, tag and type), function parameters,
+// results and variadic flag, and interface methods (name, package path and
+// signature).  An unnamed component is described by its own shape; unnamed
+// types cannot refer to themselves, so that recursion ends.  A named
+// component is described by its qualified name, except the named type
+// behind the registered type's pointers, which is expanded once.
+func typeShape(t reflect.Type, top bool) string {
 	// top stays true through the pointers of the registered type.
 	ptr := top && t.Kind() == reflect.Pointer
 	comp := func(c reflect.Type) string {
 		switch {
 		case c.Name() == "":
-			return typeShape(c, depth+1, ptr)
+			return typeShape(c, ptr)
 		case ptr && c.PkgPath() != "":
 			// The named type behind the registered pointers: expand it once.
-			return qualifiedTypeName(c) + "=" + typeShape(c, depth+1, false)
+			return qualifiedTypeName(c) + "=" + typeShape(c, false)
 		default:
 			return qualifiedTypeName(c)
 		}
+	}
+	list := func(n int, at func(int) string) string {
+		parts := make([]string, n)
+		for i := range parts {
+			parts[i] = at(i)
+		}
+		return strings.Join(parts, ",")
 	}
 	switch k := t.Kind(); k {
 	case reflect.Pointer:
@@ -268,17 +273,20 @@ func typeShape(t reflect.Type, depth int, top bool) string {
 	case reflect.Slice:
 		return "slice(" + comp(t.Elem()) + ")"
 	case reflect.Struct:
-		var b strings.Builder
-		b.WriteString("struct(")
-		for i := range t.NumField() {
+		return "struct(" + list(t.NumField(), func(i int) string {
 			f := t.Field(i)
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			fmt.Fprintf(&b, "%s %s %q", f.Name, comp(f.Type), string(f.Tag))
-		}
-		b.WriteByte(')')
-		return b.String()
+			return fmt.Sprintf("%q %q %t %q %s", f.Name, f.PkgPath, f.Anonymous, string(f.Tag), comp(f.Type))
+		}) + ")"
+	case reflect.Func:
+		return fmt.Sprintf("func(in(%s),out(%s),variadic=%t)",
+			list(t.NumIn(), func(i int) string { return comp(t.In(i)) }),
+			list(t.NumOut(), func(i int) string { return comp(t.Out(i)) }),
+			t.IsVariadic())
+	case reflect.Interface:
+		return "interface(" + list(t.NumMethod(), func(i int) string {
+			m := t.Method(i)
+			return fmt.Sprintf("%q %q %s", m.Name, m.PkgPath, comp(m.Type))
+		}) + ")"
 	default:
 		return k.String()
 	}
