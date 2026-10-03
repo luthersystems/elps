@@ -5,6 +5,8 @@ package libjson_test
 // Regression tests for the reviews of luthersystems/elps#797.
 
 import (
+	"errors"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -57,6 +59,37 @@ func TestDurableArrayDimsAbove2To53(t *testing.T) {
 	require.ErrorContains(t, err, "invalid array dimension")
 	_, err = libjson.LoadDurable(env, []byte(`["~#durable",[1,["~#array",[[0,{}],[]]]]]`), nil)
 	require.ErrorContains(t, err, "invalid array dimension")
+}
+
+// Integer keys are counted at their encoded length ("~i" and digits).
+func TestDurableIntegerKeyBytes(t *testing.T) {
+	if strconv.IntSize < 64 {
+		t.Skip("int is 32 bits")
+	}
+	env := newTypedTestEnv(t, lisp.WithMaxAlloc(65536))
+	m := lisp.SortedMap()
+	base := int64(1_000_000_000_000_000_000)
+	for i := range 20000 {
+		m.MapSetLVal(lisp.Int(int(base)+i), lisp.Int(0))
+	}
+	var err error
+	n := allocatedBy(func() { _, err = libjson.DumpDurable(env, m, nil) })
+	require.ErrorIs(t, err, libjson.ErrTypedLimit)
+	assert.Less(t, n, uint64(256<<10), "bytes allocated before the byte limit")
+}
+
+// A map's member scratch is bounded by the byte limit before the members
+// are collected: each member writes at least four bytes.
+func TestDurableMemberScratchBound(t *testing.T) {
+	env := newTypedTestEnv(t, lisp.WithMaxAlloc(65536))
+	m := lisp.SortedMap()
+	for i := range 20000 {
+		m.MapSetLVal(lisp.Int(i), lisp.Int(0))
+	}
+	var err error
+	n := allocatedBy(func() { _, err = libjson.DumpDurable(env, m, nil) })
+	require.ErrorIs(t, err, libjson.ErrTypedLimit)
+	assert.Less(t, n, uint64(128<<10), "bytes allocated before the byte limit")
 }
 
 // The keys of many maps are summed during the first pass.
@@ -116,6 +149,33 @@ func TestDurableRegisterNeedsNamedType(t *testing.T) {
 	assert.Contains(t, c, `"type":"**github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter"`)
 }
 
+// sendChanType and recvChanType declare one type name in two functions;
+// reflection gives both the same Name and PkgPath.
+func sendChanType() reflect.Type {
+	type C chan int
+	return reflect.TypeFor[C]()
+}
+
+func recvChanType() reflect.Type {
+	type C <-chan int
+	return reflect.TypeFor[C]()
+}
+
+// The fingerprint tells apart function-scope types that share a name.
+func TestDurableFingerprintFunctionScopeTypes(t *testing.T) {
+	send, recv := sendChanType(), recvChanType()
+	require.Equal(t, send.Name(), recv.Name())
+	require.Equal(t, send.PkgPath(), recv.PkgPath())
+	fp := func(typ reflect.Type) string {
+		r := libjson.NewDurableRegistry()
+		require.NoError(t, r.Register(typ, "c", 1, libjson.NativeFuncs{}))
+		r.Freeze()
+		return r.Fingerprint()
+	}
+	assert.NotEqual(t, fp(send), fp(recv))
+	assert.Contains(t, fp(recv), `"shape":"chan(\u003c-chan,int)"`)
+}
+
 // Distinct nil Go maps are distinct natives.
 func TestDurableNilReferenceNatives(t *testing.T) {
 	env := newTypedTestEnv(t)
@@ -132,27 +192,77 @@ func TestDurableNilReferenceNatives(t *testing.T) {
 }
 
 // Function names come from one index per package per dump, which reads no
-// lazy binding, and the read is charged.
-func TestDurableFunctionNamesLazyAndCharged(t *testing.T) {
-	env := newTypedTestEnv(t)
+// lazy binding.  The read is charged ceil(n/4) units for n bindings, the same
+// on a cold environment, an eager template VM and a lazy template VM.
+func TestDurableFunctionNamesChargeParity(t *testing.T) {
+	env := benchFunctionEnv(t)
 	evalString(t, env, `(defun my-fn () 1)`)
-	var charges []int
-	record := libjson.WithTypedCharge(func(n int) error {
-		charges = append(charges, n)
-		return nil
-	})
-	b, err := libjson.DumpDurable(env, env.LoadString("test", `(list my-fn my-fn lisp:not lisp:car)`), nil, record)
-	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#fn","lisp:not"],["~#fn","lisp:car"]]]]]`, string(b))
-	lispBindings := len(env.Runtime.Registry.Package("lisp").SymbolNames())
-	userBindings := len(env.Runtime.Registry.Package("user").SymbolNames())
-	kib := func(n int) int { return (n + 1023) / 1024 }
-	// One read per package (user, then lisp), then the output.
-	assert.Equal(t, []int{kib(userBindings), kib(lispBindings), 1}, charges)
+	tmpl := func(opts ...lisp.TemplateOption) *lisp.LEnv {
+		tp, err := lisp.NewTemplate(env, append([]lisp.TemplateOption{lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })}, opts...)...)
+		require.NoError(t, err)
+		vm, err := tp.NewVM()
+		require.NoError(t, err)
+		return vm
+	}
+	units := func(n int) int { return (n + 3) / 4 }
+	var want []int
+	var wantDoc string
+	for _, c := range []struct {
+		name string
+		vm   *lisp.LEnv
+	}{
+		{"cold", env},
+		{"eager-template", tmpl(lisp.TemplateWithEagerInstantiation())},
+		{"lazy-template", tmpl()},
+	} {
+		var charges []int
+		record := libjson.WithTypedCharge(func(n int) error {
+			charges = append(charges, n)
+			return nil
+		})
+		v := c.vm.LoadString("test", `(list my-fn my-fn lisp:not lisp:car)`)
+		require.NoError(t, lisp.GoError(v))
+		var b []byte
+		var err error
+		n := allocatedBy(func() { b, err = libjson.DumpDurable(c.vm, v, nil, record) })
+		require.NoError(t, err, c.name)
+		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#fn","lisp:not"],["~#fn","lisp:car"]]]]]`, string(b), c.name)
+		userN := c.vm.Runtime.Registry.Package("user").NumBindings()
+		lispN := c.vm.Runtime.Registry.Package("lisp").NumBindings()
+		// One read per package (user, then lisp), then the output.
+		assert.Equal(t, []int{units(userN), units(lispN), 1}, charges, c.name)
+		// 6000 unrelated user bindings are read, never built.
+		assert.Less(t, n, uint64(256<<10), "%s: bytes allocated", c.name)
+		if want == nil {
+			want, wantDoc = charges, string(b)
+		}
+		assert.Equal(t, want, charges, "%s: charges differ from a cold env", c.name)
+		assert.Equal(t, wantDoc, string(b))
+	}
 }
 
-// The closing bracket of a function is reserved with it.
-func TestDurableFunctionReserveIsExact(t *testing.T) {
+// The charge for reading a package's names is taken before the read, so a
+// failed charge stops it.
+func TestDurableFunctionNamesChargedBeforeScan(t *testing.T) {
+	env := newTypedTestEnv(t)
+	user := env.Runtime.Registry.Package("user")
+	for i := range 20000 {
+		user.Put(lisp.Symbol("f"+strconv.Itoa(i)), env.Lambda(lisp.Formals(), []*lisp.LVal{lisp.Int(i)}))
+	}
+	f := env.LoadString("test", `f0`)
+	stop := errors.New("budget")
+	var err error
+	n := allocatedBy(func() {
+		_, err = libjson.DumpDurable(env, f, nil, libjson.WithTypedCharge(func(int) error { return stop }))
+	})
+	require.ErrorIs(t, err, stop)
+	assert.Less(t, n, uint64(64<<10), "bytes allocated before the charge failed")
+}
+
+// A function document of exactly the byte limit is written; one byte less
+// is refused.  The reserve itself is pinned by
+// TestDurableFunctionReserveWritesNothing (durable_internal_test.go).
+func TestDurableFunctionAtByteLimit(t *testing.T) {
 	env := newTypedTestEnv(t)
 	evalString(t, env, `(defun my-fn () 1)`)
 	f := env.LoadString("test", `my-fn`)

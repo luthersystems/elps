@@ -2,6 +2,15 @@
 
 package lisp
 
+// NumBindings returns the number of names bound in pkg, without reading or
+// materializing any binding.
+func (pkg *Package) NumBindings() int {
+	if pkg.base != nil {
+		return pkg.base.index.Len()
+	}
+	return len(pkg.symbols)
+}
+
 // FunNamesByFID returns the canonical global name of every regular function
 // pkg defines and binds: for each FID, the first name in sorted order under
 // which pkg binds a function whose Package is pkg.Name and whose FunType is

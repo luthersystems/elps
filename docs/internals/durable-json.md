@@ -239,9 +239,13 @@ the limits and the charges.
   refuse a registry that is not frozen.
 - Registration order does not change a byte of output.
 - `Fingerprint` returns a JSON array of
-  `{"name","type","version","charge","shared"}` objects sorted by name. The
-  type is the package-qualified name of a named type, with one `*` per
-  pointer level. Peers compare it to confirm they hold the
+  `{"name","type","shape","version","charge","shared"}` objects sorted by
+  name. The type is the package-qualified name of a named type, with one
+  `*` per pointer level. The shape is its structure: kind, channel
+  direction, array length, struct fields and component types. Two types
+  declared inside different functions of one Go package can share a name,
+  and the shape tells them apart unless they also share their structure.
+  Declare codec types at package level. Peers compare it to confirm they hold the
   same registry.
 - A frozen registry is read-only and safe for concurrent use.
 
@@ -274,7 +278,12 @@ The encoder reads each package's names once per dump through
 `Package.FunNamesByFID`. It visits every binding in any order and keeps the
 smallest name per FID, so it neither sorts nor allocates per binding. It
 reads a binding a lazy template has not built from the template's plan, so
-it builds no value. The read is charged one unit per started 1024 bindings.
+it builds no value. The read is charged ceil(n/4) units for a package of n
+bindings (`Package.NumBindings`), before the read starts, so a step budget
+or a cancelled context stops it. The work and the charge scale with the
+package's size, not with the saved graph. One unit pays for four bindings:
+one elps step costs about 175 ns, and reading one binding costs 22 ns on a
+cold environment and up to 100 ns on a template VM.
 `BenchmarkDurableFunctionName` dumps one function from a package of 6000
 bindings:
 
@@ -326,7 +335,7 @@ intermediate grows past a limit:
 | Option | Default | Counts |
 |---|---|---|
 | `WithTypedMaxDepth` | 1024 | Container nesting. `~#obj` adds no level. A native payload adds one. |
-| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. During the first pass the key bytes of every map are summed (each key as its text plus three bytes), so the key copies stay under the limit. |
+| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. During the first pass the key bytes of every map are summed (each key as its encoded text, Transit prefix and `~i` digits included, plus three bytes), and a key's largest possible text is checked before it is copied. A map of n members is refused before its members are collected when 4n bytes would pass the limit. |
 | `WithTypedMaxValues` | 2^20 | Every value position, map key and array dimension. `~#obj` counts one plus its object. `~#ref` and `~#fn` count one. The first pass counts a map's keys before it copies the map's members, and no codec runs past the limit. `DumpDurableRoots` checks the root count before it allocates. |
 | `WithTypedCharge` | none | See the charge order below. |
 
@@ -339,7 +348,7 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and one unit per started 1024 bindings when a package's function names are first read. Then one unit per started KiB of output as the output grows. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and ceil(n/4) units before a package of n bindings has its function names read. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 A charge error stops the call and is returned wrapped.
@@ -355,6 +364,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
 | Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |
 | Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims, mutable literals and pinned value and depth counts. |
-| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, except for `~#fn` names: the bytes are compared with those names masked, and the names alone must reach a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |
+| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, except for `~#fn` names: the bytes are compared with those names masked, each masked name must resolve to the same function (package and FID) as the name in its place, and the names alone must reach a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |

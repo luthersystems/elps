@@ -190,8 +190,13 @@ func (r *DurableRegistry) Freeze() {
 func (r *DurableRegistry) Frozen() bool { return r != nil && r.frozen }
 
 // Fingerprint describes the registered codecs as JSON: an array of
-// {"name","version","charge","shared","type"} objects sorted by name, where
-// type is the package-qualified Go type.  Peers compare it to check that
+// {"name","type","shape","version","charge","shared"} objects sorted by
+// name.  type is the package-qualified Go type name.  shape is its
+// structure (kind, channel direction, length, fields and component types),
+// because two types declared inside functions of one Go package can share
+// a name.  Named components appear by name only, so two function-scope
+// types of one name and one structure are not told apart; declare codec
+// types at package level.  Peers compare it to check that
 // they hold the same registry.
 func (r *DurableRegistry) Fingerprint() string {
 	if r == nil {
@@ -200,13 +205,14 @@ func (r *DurableRegistry) Fingerprint() string {
 	type row struct {
 		Name    string `json:"name"`
 		Type    string `json:"type"`
+		Shape   string `json:"shape"`
 		Version int    `json:"version"`
 		Charge  int    `json:"charge"`
 		Shared  bool   `json:"shared"`
 	}
 	rows := make([]row, 0, len(r.byName))
 	for name, e := range r.byName {
-		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ)})
+		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ), Shape: typeShape(e.typ, 0, true)})
 	}
 	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.Name, b.Name) })
 	b, err := json.Marshal(rows)
@@ -225,6 +231,57 @@ func namedOrPointerToNamed(t reflect.Type) bool {
 		t = t.Elem()
 	}
 	return t.Name() != ""
+}
+
+// typeShape describes t's structure: its kind and, by kind, channel
+// direction, array length, struct fields and component types.  An unnamed
+// component is described by its own shape.  A named component is described
+// by its qualified name, and, directly under the registered type (the
+// element of a registered pointer), by its shape too.  So the description
+// is finite.
+func typeShape(t reflect.Type, depth int, top bool) string {
+	if depth > 8 {
+		return "..."
+	}
+	// top stays true through the pointers of the registered type.
+	ptr := top && t.Kind() == reflect.Pointer
+	comp := func(c reflect.Type) string {
+		switch {
+		case c.Name() == "":
+			return typeShape(c, depth+1, ptr)
+		case ptr && c.PkgPath() != "":
+			// The named type behind the registered pointers: expand it once.
+			return qualifiedTypeName(c) + "=" + typeShape(c, depth+1, false)
+		default:
+			return qualifiedTypeName(c)
+		}
+	}
+	switch k := t.Kind(); k {
+	case reflect.Pointer:
+		return "ptr(" + comp(t.Elem()) + ")"
+	case reflect.Chan:
+		return "chan(" + t.ChanDir().String() + "," + comp(t.Elem()) + ")"
+	case reflect.Map:
+		return "map(" + comp(t.Key()) + "," + comp(t.Elem()) + ")"
+	case reflect.Array:
+		return fmt.Sprintf("array(%d,%s)", t.Len(), comp(t.Elem()))
+	case reflect.Slice:
+		return "slice(" + comp(t.Elem()) + ")"
+	case reflect.Struct:
+		var b strings.Builder
+		b.WriteString("struct(")
+		for i := range t.NumField() {
+			f := t.Field(i)
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			fmt.Fprintf(&b, "%s %s %q", f.Name, comp(f.Type), string(f.Tag))
+		}
+		b.WriteByte(')')
+		return b.String()
+	default:
+		return k.String()
+	}
 }
 
 // qualifiedTypeName names a registered type with its full package path, so

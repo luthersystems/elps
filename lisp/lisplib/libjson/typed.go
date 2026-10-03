@@ -600,16 +600,19 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 		}
 		// During durable's first pass the output is empty, so the keys of
 		// every map are summed instead: each key will be written as at
-		// least its text, two quotes and a colon.
-		if e.scanning {
-			e.scanKeyBytes += len(p.Key) + 3
-			if e.scanKeyBytes > e.cfg.maxBytes {
-				return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
-			}
+		// least its key text, two quotes and a colon.  The key text is at
+		// most len(Key)+2 (a Transit prefix) or 22 bytes for an int
+		// ("~i" and 20 digits); that bound is checked before the copy and
+		// the exact length is added after it.
+		if e.scanning && e.scanKeyBytes+max(len(p.Key)+2, 22)+3 > e.cfg.maxBytes {
+			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 		}
 		var err error
 		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
 			return 0, 0, err
+		}
+		if e.scanning {
+			e.scanKeyBytes += len(e.keys) - ks + 3
 		}
 		e.pairs = append(e.pairs, typedPair{val: p.Val, ks: ks, ke: len(e.keys)})
 	}

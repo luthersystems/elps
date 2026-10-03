@@ -175,7 +175,7 @@ func TestDurableFingerprintIsUnambiguous(t *testing.T) {
 	})
 	assert.NotEqual(t, two, one)
 	// The fingerprint is compared byte for byte, not as JSON.
-	wantFingerprint := `[{"name":"a","type":"int","version":1,"charge":0,"shared":false},{"name":"b","type":"string","version":1,"charge":0,"shared":false}]`
+	wantFingerprint := `[{"name":"a","type":"int","shape":"int","version":1,"charge":0,"shared":false},{"name":"b","type":"string","shape":"string","version":1,"charge":0,"shared":false}]`
 	assert.Equal(t, wantFingerprint, two)
 }
 

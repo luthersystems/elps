@@ -14,7 +14,7 @@ import (
 
 // benchFunctionEnv is a user package with 6000 list bindings and a function
 // that sorts after them, as a large phylum package might hold.
-func benchFunctionEnv(b *testing.B) *lisp.LEnv {
+func benchFunctionEnv(b testing.TB) *lisp.LEnv {
 	b.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()

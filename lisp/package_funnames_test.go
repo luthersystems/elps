@@ -55,13 +55,25 @@ func TestFunNamesByFID(t *testing.T) {
 			}
 			// Rebinding the first name moves the function to the next.
 			pkg.Put(Symbol("bfn"), Int(0))
-			if got, _ := pkg.FunNamesByFID(); got[fid] != "zfn" {
-				t.Fatalf("after rebinding: %v", got)
+			if rebound, _ := pkg.FunNamesByFID(); rebound[fid] != "zfn" {
+				t.Fatalf("after rebinding: %v", rebound)
 			}
-			// A new, smaller alias is seen too (thaws a frozen package).
+			// A new, smaller alias is seen too (thaws a frozen package; the
+			// thawed table keeps unbuilt bindings pending).
 			pkg.Put(Symbol("aaa"), pkg.Get(Symbol("zfn")))
-			if got, _ := pkg.FunNamesByFID(); got[fid] != "aaa" {
+			if pkg.base != nil || pkg.lazy.inst == nil {
+				t.Fatal("expected a thawed package with pending bindings")
+			}
+			before = lazyInstanceOf(vm).count
+			got, _ = pkg.FunNamesByFID()
+			if after := lazyInstanceOf(vm).count; after != before {
+				t.Fatalf("FunNamesByFID materialized %d values after the thaw", after-before)
+			}
+			if got[fid] != "aaa" || got[pkg.Get(Symbol("other")).FID()] != "other" {
 				t.Fatalf("after aliasing: %v", got)
+			}
+			if n := pkg.NumBindings(); n != 205 {
+				t.Fatalf("NumBindings %d", n)
 			}
 		})
 	}

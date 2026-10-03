@@ -445,6 +445,11 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err := e.countScan(v.Len()); err != nil {
 			return err
 		}
+		// Each member writes at least four bytes ("":0 and a comma or
+		// brace), so the member scratch is bounded before it is collected.
+		if e.scanKeyBytes+4*v.Len() > e.cfg.maxBytes {
+			return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+		}
 		i := e.openObject(key)
 		pbase, keysMark, err := e.mapMembers(v)
 		if err != nil {
@@ -561,13 +566,24 @@ func (e *durableEncoder) scanFun(f *lisp.LVal) error {
 	return nil
 }
 
+// bindingsPerUnit is how many bindings one charge unit pays for when a
+// package's function names are read.  One elps evaluation step costs about
+// 175 ns (BenchmarkDurableFunctionName's host: a dotimes loop of 50,004
+// steps runs in 8.8 ms), and reading one binding costs 22 ns on a cold
+// environment and up to 100 ns on a template VM, so four bindings cost
+// about one step.
+const bindingsPerUnit = 4
+
+// funNameScanUnits is the charge for reading n bindings: ceil(n/4).
+func funNameScanUnits(n int) int { return (n + bindingsPerUnit - 1) / bindingsPerUnit }
+
 // funName returns "PKG:NAME" for a regular function: PKG is the function's
 // defining package, and NAME is the first name, in sorted order, that PKG
 // binds to a function with the same package and FID.  An FID is unique
 // within its package, so the package and FID identify the function.  Each
 // package's names are read once per dump (Package.FunNamesByFID, which
-// materializes no lazy binding), and the read is charged one unit per
-// started 1024 bindings.
+// materializes no lazy binding), and the read is charged ceil(n/4) units
+// for n bindings before it starts.
 func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if f.IsSpecialFun() {
 		return "", errors.New("durable json: cannot encode a macro or special operator")
@@ -583,17 +599,19 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 		if pkg == nil {
 			return "", anonymous
 		}
-		var read int
-		index, read = pkg.FunNamesByFID()
+		// Charged before the scan, so a step budget or a cancelled
+		// context stops it.  The work scales with the package's bindings,
+		// not with the saved graph.
+		if n := pkg.NumBindings(); e.cfg.charge != nil && n > 0 {
+			if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
+				return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
+			}
+		}
+		index, _ = pkg.FunNamesByFID()
 		if e.funIndex == nil {
 			e.funIndex = map[string]map[string]string{}
 		}
 		e.funIndex[pkgName] = index
-		if e.cfg.charge != nil && read > 0 {
-			if err := e.cfg.charge(startedKiB(read)); err != nil {
-				return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
-			}
-		}
 	}
 	name, ok := index[fid]
 	if !ok {
