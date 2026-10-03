@@ -23,6 +23,12 @@ type goldenCounter struct{ n int }
 
 type goldenPoint struct{ x, y int }
 
+// goldenBox holds any value; test:box keeps its payload, so it keeps
+// sharing.
+type goldenBox struct{ v *lisp.LVal }
+
+func box(v *lisp.LVal) *lisp.LVal { return lisp.Native(&goldenBox{v}) }
+
 func durableRegistry(t *testing.T) *libjson.DurableRegistry {
 	t.Helper()
 	reg := libjson.NewDurableRegistry()
@@ -50,10 +56,10 @@ func durableRegistry(t *testing.T) *libjson.DurableRegistry {
 		},
 	}))
 	// test:box saves the value it holds, which can be any value.
-	must(t, libjson.RegisterNative[*lisp.LVal](reg, "test:box", 1, libjson.NativeFuncs{
-		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*lisp.LVal](v), nil },
-		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(p), nil },
-	}))
+	must(t, libjson.RegisterNative[*goldenBox](reg, "test:box", 1, libjson.NativeFuncs{
+		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*goldenBox](v).v, nil },
+		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(&goldenBox{p}), nil },
+	}, libjson.WithSharedPayload()))
 	reg.Freeze()
 	return reg
 }
@@ -112,6 +118,12 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 	fn := env.LoadString("golden", `golden-cmp`)
 	less := env.LoadString("golden", `<`)
 	a, b2, c2 := smap(s("n"), lisp.Int(1)), smap(s("n"), lisp.Int(2)), smap(s("n"), lisp.Int(3))
+	xs := list(lisp.Int(1), lisp.Int(2), lisp.Int(3))
+	spare := vec(lisp.Int(1), lisp.Int(2))
+	spare.Cells[1].Cells = append(make([]*lisp.LVal, 0, 4), spare.Cells[1].Cells...)
+	lit := env.LoadString("golden", `(defun golden-lit () '(3 2 1)) (golden-lit)`)
+	litTail := env.LoadString("golden", `(rest (golden-lit))`)
+	cond := &lisp.LVal{Type: lisp.LError, Str: "golden-condition", Cells: []*lisp.LVal{s("boom"), lisp.Int(42)}}
 	return []struct {
 		name string
 		v    *lisp.LVal
@@ -130,11 +142,15 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 		{"id-order", list(a, b2, c2, c2, b2, a)},
 		{"native-pointer-shared", list(c, c)},
 		{"native-value", p},
-		{"native-in-native", lisp.Native(lisp.Native(goldenPoint{x: 3, y: 4}))},
-		{"native-payload-shares-sibling", list(shared, lisp.Native(shared))},
-		{"native-payload-cycle", lisp.Native(self)},
+		{"native-in-native", box(lisp.Native(goldenPoint{x: 3, y: 4}))},
+		{"native-payload-shares-sibling", list(shared, box(shared))},
+		{"native-payload-cycle", box(self)},
 		{"functions", list(fn, less, fn)},
-		{"bptree-shape", lisp.Native(list(sym(":prefix"), s("p"), sym(":compare"), fn))},
+		{"bptree-shape", box(list(sym(":prefix"), s("p"), sym(":compare"), fn))},
+		{"list-and-tail", list(xs, lisp.QExpr(xs.Cells[1:3:3]))},
+		{"vector-spare-capacity", spare},
+		{"literal-and-tail", list(lit, litTail)},
+		{"error-value", list(cond, cond)},
 	}
 }
 

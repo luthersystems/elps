@@ -603,8 +603,10 @@ func storeCells(in *lisp.LVal, vals []*lisp.LVal) {
 		// caller-owned array's cell storage (?del!, ?set! range splice).
 		// List inputs are rejected by errMutateList on the mutating entry
 		// points, and the non-mutating ones pass a private copy.
+		// A reworked array's capacity is its length, as for any new array
+		// (lisp.Array): the rework's Go appends chose it otherwise.
 		//elps:mutates the documented in-place rework of a caller-owned array's data cells (?del!, ?set! range splice); lists are refused by errMutateList and the copying ops pass a private copy
-		in.Cells[1].Cells = vals
+		in.Cells[1].Cells = vals[:len(vals):len(vals)]
 		dims := in.Cells[0]
 		//elps:mutates dims bookkeeping for the array rework immediately above, on the same caller-owned array
 		dims.Cells[0].Int = len(vals)
