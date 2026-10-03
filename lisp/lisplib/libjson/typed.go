@@ -146,6 +146,10 @@ type typedEncoder struct {
 	cfg     typedConfig
 	values  int
 	charged int
+	// scanKeyBytes sums the key bytes of every map durable's first pass
+	// has read, while scanning is set.
+	scanKeyBytes int
+	scanning     bool
 	// durable makes mapMembers refuse an oversized key before copying it.
 	durable bool
 }
@@ -593,6 +597,15 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 		// key.  Typed mode keeps its error precedence (walker goldens).
 		if e.durable && len(p.Key)+2 > e.cfg.maxBytes-len(e.buf) {
 			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+		}
+		// During durable's first pass the output is empty, so the keys of
+		// every map are summed instead: each key will be written as at
+		// least its text, two quotes and a colon.
+		if e.scanning {
+			e.scanKeyBytes += len(p.Key) + 3
+			if e.scanKeyBytes > e.cfg.maxBytes {
+				return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+			}
 		}
 		var err error
 		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {

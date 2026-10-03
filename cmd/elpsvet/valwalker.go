@@ -156,6 +156,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.Serializer.loadInterfaceOpts":      "specialized traversal: serializer adapters construct values and delegate encoding or conversion",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.encoder.encodeDeepValue":           "hot path: plain JSON encoding emits bytes with recursive traversal",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.LoadDurableRoots":                  "specialized traversal: checks the top-level cells of one decoded root list, with no recursion",
+	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.dims":               "specialized traversal: parses one array's dimension list from JSON bytes, scalars only, no recursion",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.multiArray":         "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.native":             "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.durableDecoder.object":             "specialized traversal: parses JSON bytes and constructs values rather than walking a value graph",

@@ -70,6 +70,13 @@ A durable document is one JSON array:
 `1` is the format version. It is frozen. A decoder rejects any other number.
 A change that reinterprets existing text needs a new version number.
 
+Version 1 was tightened before its first release (luthersystems/elps#797).
+Payload sharing is refused unless a codec registers `WithSharedPayload`. A
+native may not be part of any cycle. Overlapping lists and arrays are
+refused. A function is written under its first sorted name, and any of its
+package's names for it is accepted on load. No release wrote version 1
+under the earlier rules.
+
 `VALUE` uses every typed JSON spelling unchanged, plus four extension tags:
 
 | Tag | Form | Meaning |
@@ -102,7 +109,7 @@ An object is a value whose identity Lisp code can observe through mutation or
 | Bytes | Its buffer (`*[]byte`). |
 | Nonempty list | Its cells: the address of the first cell and the length. Two headers over the same cells are one list, because `stable-sort` through one is seen through the other. |
 | Tagged value | Its header. |
-| Native | Its payload when the payload is a Go pointer; the type and address when it is a Go map, channel or unsafe pointer; else its header. |
+| Native | Its payload when the payload is a Go pointer; the type and address when it is a non-nil Go map, channel or unsafe pointer; else its header (so distinct nil maps stay distinct). |
 
 Numbers, strings, symbols, keywords, `()` and functions are not objects. They
 are written in full at each occurrence. Two symbols of one spelling are equal,
@@ -160,8 +167,9 @@ function of the value graph alone.
   a codec result whose Go type is not the registered type;
 - a `~#fn` name that is unbound, not a regular function, or bound to a
   function of another package;
-- an array dimension that is not a JSON integer (dimensions are read on the
-  scalar path, so no codec runs there).
+- an array dimension that is not an integer: a JSON integer, or a `"~n"`
+  string past 2^53. Dimensions are read on the scalar path, so no tag and no
+  codec runs there.
 
 Two inputs are accepted that re-encode to other bytes:
 
@@ -218,7 +226,7 @@ agree byte for byte, and a codec runs inside a transaction.
 | Declared charge | `WithNativeCharge(units)` declares the fixed cost of one call. It is charged before every `SaveNative` and `LoadNative` call, through the dump's or load's charge function. Work that grows with the input past that is charged by the codec through `env.ChargeSteps`. A failed charge is returned as the error. |
 | Bounded output | The payload counts against the byte, value and depth limits like any value, so a codec cannot write past them. |
 | Versioned | `LoadNative` gets the document's version and reads every version from 1 to the registered one. Change the payload shape only with a new version, and keep the old reader. A version is at most 2^53, so it fits a JSON number. |
-| Identity-capable type | `Register` refuses a func, slice or interface type: such a payload has no identity. Value types (structs, numbers) are identified by their LVal header, so they must hold no shared mutable state; use a pointer type for one that does. |
+| Identity-capable type | `Register` refuses a func, slice or interface type: such a payload has no identity. It also refuses an unnamed type other than a pointer to a named one (`chan int`, `struct{...}`), so the fingerprint's qualified name always identifies the type. Value types (structs, numbers) are identified by their LVal header, so they must hold no shared mutable state; use a pointer type for one that does. |
 
 A codec that breaks a rule can make peers disagree. elps cannot check the
 rules at run time. It checks what it can: the result type, the version range,
@@ -231,8 +239,9 @@ the limits and the charges.
   refuse a registry that is not frozen.
 - Registration order does not change a byte of output.
 - `Fingerprint` returns a JSON array of
-  `{"name","type","version","charge","shared"}` objects sorted by name, with
-  the package-qualified Go type. Peers compare it to confirm they hold the
+  `{"name","type","version","charge","shared"}` objects sorted by name. The
+  type is the package-qualified name of a named type, with one `*` per
+  pointer level. Peers compare it to confirm they hold the
   same registry.
 - A frozen registry is read-only and safe for concurrent use.
 
@@ -241,8 +250,11 @@ the limits and the charges.
 A native cannot be part of a cycle. The encoder refuses a payload that
 reaches its own native, or any object that encloses the native, directly or
 through objects that are already finished. Each walk records, for every
-finished object, the outermost unfinished object it reaches (the same idea as
-Tarjan's low-link), so the check sees through finished objects. The decoder
+finished object, the outermost unfinished object it reached (Tarjan's
+low-link), and a reference to a finished object follows those links through
+every finished object on the way (with path compression) to the outermost
+object that is still unfinished. So the check sees through any chain of
+finished objects. The decoder
 refuses the same shapes. So `LoadNative` always receives a fully restored
 payload. Cycles of containers alone are allowed.
 
@@ -258,9 +270,19 @@ the same package and `FID`. Binding history does not change the name.
 `LoadDurable` accepts any `PKG:NAME` whose current global is a regular
 function of package `PKG`.
 
-Finding the name reads every binding of the package once per function and
-dump. On a lazily instantiated template VM this fills the package's
-bindings.
+The encoder reads each package's names once per dump through
+`Package.FunNamesByFID`. It visits every binding in any order and keeps the
+smallest name per FID, so it neither sorts nor allocates per binding. It
+reads a binding a lazy template has not built from the template's plan, so
+it builds no value. The read is charged one unit per started 1024 bindings.
+`BenchmarkDurableFunctionName` dumps one function from a package of 6000
+bindings:
+
+| Environment | Before (sort, materialize) | After (`FunNamesByFID`) |
+|---|---|---|
+| Cold env | 1.6 ms, 109 KB | 0.13 ms, 3.5 KB |
+| Eager template VM | 1.9 ms, 108 KB | 0.64 ms, 1.7 KB |
+| Lazy template VM | 15.8 ms, 5.87 MB, 72,612 allocs | 0.51 ms, 1.7 KB, 16 allocs |
 
 This belongs in the codec, not in a native hook. A B+-tree handle's payload
 then holds its `:compare` function as an ordinary value, and every native
@@ -304,7 +326,7 @@ intermediate grows past a limit:
 | Option | Default | Counts |
 |---|---|---|
 | `WithTypedMaxDepth` | 1024 | Container nesting. `~#obj` adds no level. A native payload adds one. |
-| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. A map key longer than the remaining bytes is refused before it is copied. |
+| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. During the first pass the key bytes of every map are summed (each key as its text plus three bytes), so the key copies stay under the limit. |
 | `WithTypedMaxValues` | 2^20 | Every value position, map key and array dimension. `~#obj` counts one plus its object. `~#ref` and `~#fn` count one. The first pass counts a map's keys before it copies the map's members, and no codec runs past the limit. `DumpDurableRoots` checks the root count before it allocates. |
 | `WithTypedCharge` | none | See the charge order below. |
 
@@ -317,7 +339,7 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | Each codec's declared charge before its `SaveNative`, in first-pass order. Then one unit per started KiB of output as the output grows. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and one unit per started 1024 bindings when a package's function names are first read. Then one unit per started KiB of output as the output grows. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 A charge error stops the call and is returned wrapped.
@@ -333,5 +355,6 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |
 | Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims, mutable literals and pinned value and depth counts. |
-| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, or (for a `~#fn` alias) to a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |
+| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, except for `~#fn` names: the bytes are compared with those names masked, and the names alone must reach a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |

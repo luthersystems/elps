@@ -72,6 +72,31 @@ func durableFuzzRegistry(t testing.TB) *libjson.DurableRegistry {
 	return reg
 }
 
+// maskFunctionNames replaces the name in every ["~#fn","…"] with "?".  A
+// "~#fn" token cannot occur inside a JSON string: its quotes would be
+// escaped there.
+func maskFunctionNames(b []byte) []byte {
+	const open = `["~#fn","`
+	var out []byte
+	for {
+		i := bytes.Index(b, []byte(open))
+		if i < 0 {
+			return append(out, b...)
+		}
+		out = append(out, b[:i+len(open)]...)
+		b = b[i+len(open):]
+		j := 0
+		for j < len(b) && b[j] != '"' {
+			if b[j] == '\\' {
+				j++
+			}
+			j++
+		}
+		out = append(out, '?')
+		b = b[min(j, len(b)):]
+	}
+}
+
 // FuzzDurableJSON feeds arbitrary bytes to LoadDurable, with strict test
 // native codecs registered and a global function defined.
 //
@@ -81,9 +106,10 @@ func durableFuzzRegistry(t testing.TB) *libjson.DurableRegistry {
 //  2. On error the value is nil; on success it is not.
 //  3. Canonicality: whatever decodes re-encodes to exactly the input bytes,
 //     sharing, cycles and natives included.  The one exception is a
-//     function: LoadDurable accepts any name its package binds the function
-//     to, and DumpDurable writes the first in sorted order.  An input with
-//     "~#fn" may re-encode to other bytes, which must then be a fixed point.
+//     function name: LoadDurable accepts any name its package binds the
+//     function to, and DumpDurable writes the first in sorted order.  So
+//     the bytes are compared with every ["~#fn","…"] name masked, and the
+//     names alone must reach a fixed point after one more round trip.
 //  4. Roots: LoadDurableRoots accepts a subset of what LoadDurable accepts,
 //     and DumpDurableRoots writes an accepted document back byte for byte.
 //  5. Charges: two decodes of one input charge the same units in the same
@@ -106,6 +132,10 @@ func FuzzDurableJSON(f *testing.F) {
 	for _, s := range []string{
 		`["~#durable",[1,1]]`,
 		`["~#durable",[1,["~#list",[["~#fn","lisp:not"],["~#fn","s:not"]]]]]`,
+		`["~#durable",[1,["~#list",[["~#fn","lisp:first"],1.5,"~d2"]]]]`,
+		`["~#durable",[1,["~#obj",[0,[["~#obj",[1,["~#list",[["~#obj",[2,["~#list",[["~#ref",1]]]]],["~#ref",0]]]]],["~#native",["test:box",1,["~#ref",2]]]]]]]]`,
+		`["~#durable",[1,["~#array",[[0,"~n9007199254740993"],[]]]]]`,
+		`["~#durable",[1,["~#array",[[0,"~bAA=="],[]]]]]`,
 		`["~#durable",[1,["~#fn","lisp:first"]]]`,
 		`["~#durable",[1,["~#fn","user:car"]]]`,
 		`["~#durable",[1,["~#obj",[0,[["~#obj",[1,["~#list",[["~#ref",0]]]]],["~#native",["test:box",1,["~#ref",1]]]]]]]]`,
@@ -164,7 +194,7 @@ func FuzzDurableJSON(f *testing.F) {
 				t.Fatalf("roots accepted input LoadDurable rejects: %v", err)
 			}
 			enc, derr := libjson.DumpDurableRoots(env, roots, reg)
-			if derr != nil || (!bytes.Equal(enc, data) && !bytes.Contains(data, []byte(`"~#fn"`))) {
+			if derr != nil || !bytes.Equal(maskFunctionNames(enc), maskFunctionNames(data)) {
 				t.Fatalf("roots do not re-encode:\n in  %q\n out %q (%v)", data, enc, derr)
 			}
 		}
@@ -182,7 +212,7 @@ func FuzzDurableJSON(f *testing.F) {
 			t.Fatalf("decoded value does not re-encode: %v", err)
 		}
 		if !bytes.Equal(enc, data) {
-			if !bytes.Contains(data, []byte(`"~#fn"`)) {
+			if !bytes.Equal(maskFunctionNames(enc), maskFunctionNames(data)) {
 				t.Fatalf("non-canonical input accepted:\n in  %q\n out %q", data, enc)
 			}
 			v2, lerr := libjson.LoadDurable(env, enc, reg)

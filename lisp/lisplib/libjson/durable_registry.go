@@ -152,6 +152,9 @@ func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c
 		return fmt.Errorf("durable json: native %q: a %v payload has no identity; register a pointer type", name, typ.Kind())
 	default:
 	}
+	if !namedOrPointerToNamed(typ) {
+		return fmt.Errorf("durable json: native %q: type %v is not named; declare a named type for it", name, typ)
+	}
 	if prev, ok := r.byType[typ]; ok {
 		return fmt.Errorf("durable json: type %v is already registered as %q", typ, prev.name)
 	}
@@ -214,32 +217,27 @@ func (r *DurableRegistry) Fingerprint() string {
 	return string(b)
 }
 
-// qualifiedTypeName names t with full package paths, so two types of one
-// short name in different packages differ.
-func qualifiedTypeName(t reflect.Type) string {
-	switch t.Kind() {
-	case reflect.Pointer:
-		if t.Name() == "" {
-			return "*" + qualifiedTypeName(t.Elem())
-		}
-	case reflect.Map:
-		if t.Name() == "" {
-			return "map[" + qualifiedTypeName(t.Key()) + "]" + qualifiedTypeName(t.Elem())
-		}
-	case reflect.Chan:
-		if t.Name() == "" {
-			return "chan " + qualifiedTypeName(t.Elem())
-		}
-	case reflect.Array:
-		if t.Name() == "" {
-			return fmt.Sprintf("[%d]%s", t.Len(), qualifiedTypeName(t.Elem()))
-		}
-	default:
+// namedOrPointerToNamed reports whether t is a named type or a chain of
+// pointers to one.  Only such types have a name that identifies them, so
+// only they are registered.
+func namedOrPointerToNamed(t reflect.Type) bool {
+	for t.Kind() == reflect.Pointer && t.Name() == "" {
+		t = t.Elem()
 	}
-	if t.Name() != "" && t.PkgPath() != "" {
+	return t.Name() != ""
+}
+
+// qualifiedTypeName names a registered type with its full package path, so
+// two types of one short name in different packages differ.  Register
+// admits only named types and pointers to them.
+func qualifiedTypeName(t reflect.Type) string {
+	if t.Kind() == reflect.Pointer && t.Name() == "" {
+		return "*" + qualifiedTypeName(t.Elem())
+	}
+	if t.PkgPath() != "" {
 		return t.PkgPath() + "." + t.Name()
 	}
-	return t.String()
+	return t.Name()
 }
 
 // checkUsable rejects a registry DumpDurable or LoadDurable cannot use.

@@ -101,7 +101,12 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 		case reflect.Pointer:
 			return nativeKey{v.Native}, true
 		case reflect.Map, reflect.Chan, reflect.UnsafePointer:
-			return nativeRefKey{t, reflect.ValueOf(v.Native).Pointer()}, true
+			// A nil map, channel or pointer has address 0; distinct nil
+			// natives are then distinct headers.
+			if p := reflect.ValueOf(v.Native).Pointer(); p != 0 {
+				return nativeRefKey{t, p}, true
+			}
+			return nativeHeaderKey{v}, true
 		default:
 			return nativeHeaderKey{v}, true
 		}
@@ -181,9 +186,11 @@ func DumpDurable(env *lisp.LEnv, v *lisp.LVal, reg *DurableRegistry, opts ...Typ
 		return nil, err
 	}
 	e := newDurableEncoder(env, reg, durableConfig(env, opts))
+	e.scanning = true
 	if err := e.scan(v, 0); err != nil {
 		return nil, err
 	}
+	e.scanning = false
 	if err := checkOverlap(e.spans); err != nil {
 		return nil, err
 	}
@@ -227,10 +234,11 @@ type durableEncoder struct {
 	refs map[any]int
 	// order is the first-visit index of each object scan has seen.
 	order map[any]int
-	// low holds, for each object scan has finished, the smallest
-	// first-visit index of an object that was still open when it finished
-	// and that it reaches, if any.  An open object is one scan is inside.
-	low map[any]int
+	// low holds, by first-visit index, for each object scan has finished,
+	// the smallest first-visit index of an object that was still open when
+	// it finished and that it reaches, or noLow.  An open object is one scan
+	// is inside.  resolve follows these links through finished objects.
+	low []int
 	// tree holds the objects scan first visited inside the payload of a
 	// codec that does not keep sharing, with that codec's name.
 	tree map[any]string
@@ -242,6 +250,9 @@ type durableEncoder struct {
 	dims map[*lisp.LVal]*lisp.LVal
 	// funs maps a function's package and FID to its "PKG:NAME".
 	funs map[funKey]string
+	// funIndex holds, per package, the FID to first-name index read once
+	// per dump.
+	funIndex map[string]map[string]string
 	// isOpen reports, by first-visit index, whether scan is inside that
 	// object.
 	isOpen []bool
@@ -269,7 +280,6 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		reg:          reg,
 		refs:         map[any]int{},
 		order:        map[any]int{},
-		low:          map[any]int{},
 		tree:         map[any]string{},
 		ids:          map[any]int{},
 		saved:        map[any]savedNative{},
@@ -307,10 +317,27 @@ func (c *typedConfig) depthError(depth int) error {
 	return nil
 }
 
-// reach records that the current contents reach the object with
-// first-visit index i, if that object is still open.
+// resolveLow follows low-links from object i through finished objects to
+// the outermost open object i reaches, or noLow.  Links only point to
+// objects visited earlier, so the walk ends.  It then points every finished
+// object on the way at the result (path compression), which stays correct:
+// if that object later finishes, the walk continues through its own link.
+func resolveLow(i int, open []bool, low []int) int {
+	r := i
+	for r != noLow && !open[r] {
+		r = low[r]
+	}
+	for i != noLow && !open[i] && low[i] != r {
+		i, low[i] = low[i], r
+	}
+	return r
+}
+
+// reach records that the current contents reach object i, or what i
+// reaches through finished objects, if that is still open.
 func (e *durableEncoder) reach(i int) {
-	if i != noLow && e.isOpen[i] && len(e.frames) > 0 && i < e.frames[len(e.frames)-1] {
+	i = resolveLow(i, e.isOpen, e.low)
+	if i != noLow && len(e.frames) > 0 && i < e.frames[len(e.frames)-1] {
 		e.frames[len(e.frames)-1] = i
 	}
 }
@@ -320,6 +347,7 @@ func (e *durableEncoder) openObject(key any) int {
 	i := len(e.isOpen)
 	e.order[key] = i
 	e.isOpen = append(e.isOpen, true)
+	e.low = append(e.low, noLow)
 	e.frames = append(e.frames, noLow)
 	if len(e.treeNames) > 0 {
 		e.tree[key] = e.treeNames[len(e.treeNames)-1]
@@ -336,7 +364,7 @@ func (e *durableEncoder) closeObject(key any, i int) int {
 	if low >= i {
 		low = noLow
 	}
-	e.low[key] = low
+	e.low[i] = low
 	e.reach(low)
 	return low
 }
@@ -469,11 +497,7 @@ func (e *durableEncoder) revisit(v *lisp.LVal, key any) error {
 		return errors.New("durable json: two arrays share data with different dimensions")
 	}
 	if i, ok := e.order[key]; ok {
-		if e.isOpen[i] {
-			e.reach(i)
-		} else {
-			e.reach(e.low[key])
-		}
+		e.reach(i)
 	}
 	return nil
 }
@@ -529,7 +553,7 @@ func (e *durableEncoder) scanFun(f *lisp.LVal) error {
 	if _, ok := e.funs[k]; ok {
 		return nil
 	}
-	name, err := durableFunName(e.env, f)
+	name, err := e.funName(f)
 	if err != nil {
 		return err
 	}
@@ -537,11 +561,14 @@ func (e *durableEncoder) scanFun(f *lisp.LVal) error {
 	return nil
 }
 
-// durableFunName returns "PKG:NAME" for a regular function: PKG is the
-// function's defining package, and NAME is the first name, in sorted order,
-// that PKG binds to a function with the same package and FID.  An FID is
-// unique within its package, so the package and FID identify the function.
-func durableFunName(env *lisp.LEnv, f *lisp.LVal) (string, error) {
+// funName returns "PKG:NAME" for a regular function: PKG is the function's
+// defining package, and NAME is the first name, in sorted order, that PKG
+// binds to a function with the same package and FID.  An FID is unique
+// within its package, so the package and FID identify the function.  Each
+// package's names are read once per dump (Package.FunNamesByFID, which
+// materializes no lazy binding), and the read is charged one unit per
+// started 1024 bindings.
+func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if f.IsSpecialFun() {
 		return "", errors.New("durable json: cannot encode a macro or special operator")
 	}
@@ -550,21 +577,32 @@ func durableFunName(env *lisp.LEnv, f *lisp.LVal) (string, error) {
 	if fid == "" || pkgName == "" {
 		return "", anonymous
 	}
-	pkg := env.Runtime.Registry.Package(pkgName)
-	if pkg == nil {
+	index, ok := e.funIndex[pkgName]
+	if !ok {
+		pkg := e.env.Runtime.Registry.Package(pkgName)
+		if pkg == nil {
+			return "", anonymous
+		}
+		var read int
+		index, read = pkg.FunNamesByFID()
+		if e.funIndex == nil {
+			e.funIndex = map[string]map[string]string{}
+		}
+		e.funIndex[pkgName] = index
+		if e.cfg.charge != nil && read > 0 {
+			if err := e.cfg.charge(startedKiB(read)); err != nil {
+				return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
+			}
+		}
+	}
+	name, ok := index[fid]
+	if !ok {
 		return "", anonymous
 	}
-	for _, name := range pkg.SymbolNames() {
-		g, ok := pkg.Symbol(name)
-		if !ok || g.Type != lisp.LFun || g.FID() != fid || g.Package() != pkgName || g.IsSpecialFun() {
-			continue
-		}
-		if !utf8.ValidString(pkgName) || !utf8.ValidString(name) {
-			return "", errors.New("durable json: cannot encode a function name that is not valid UTF-8")
-		}
-		return pkgName + ":" + name, nil
+	if !utf8.ValidString(pkgName) || !utf8.ValidString(name) {
+		return "", errors.New("durable json: cannot encode a function name that is not valid UTF-8")
 	}
-	return "", anonymous
+	return pkgName + ":" + name, nil
 }
 
 // checkTagged rejects a malformed tagged value, as DumpTyped does.
@@ -692,7 +730,7 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, depth int) error {
 		if err := e.count(); err != nil {
 			return err
 		}
-		if err := e.reserve(jsonStringLen(name) + len(tagFn) + 4); err != nil {
+		if err := e.reserve(jsonStringLen(name) + len(tagFn) + 5); err != nil { // ["…",…]
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagFn+`",`...)

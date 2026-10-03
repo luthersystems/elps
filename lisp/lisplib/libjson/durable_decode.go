@@ -122,9 +122,11 @@ func (d *durableDecoder) define(v *lisp.LVal) {
 	}
 }
 
-// reach records that the current contents reach object i, if it is open.
+// reach records that the current contents reach object i, or what i
+// reaches through finished objects, if that is still open.
 func (d *durableDecoder) reach(i int) {
-	if i != noLow && d.open[i] && len(d.frames) > 0 && i < d.frames[len(d.frames)-1] {
+	i = resolveLow(i, d.open, d.low)
+	if i != noLow && len(d.frames) > 0 && i < d.frames[len(d.frames)-1] {
 		d.frames[len(d.frames)-1] = i
 	}
 }
@@ -387,12 +389,28 @@ func (d *durableDecoder) dims() ([]*lisp.LVal, error) {
 		if err := d.count(); err != nil {
 			return nil, err
 		}
-		if c := d.peek(); c != '-' && (c < '0' || c > '9') {
+		var n *lisp.LVal
+		switch c := d.peek(); {
+		case c == '-' || c >= '0' && c <= '9':
+			var err error
+			if n, err = d.number(); err != nil {
+				return nil, err
+			}
+		case c == '"':
+			// A dimension past 2^53 is a "~n" string.  stringValue reads
+			// scalars only; anything but an int is refused below.
+			s, err := d.rawString()
+			if err != nil {
+				return nil, err
+			}
+			if n, err = d.stringValue(s); err != nil {
+				return nil, err
+			}
+		default:
 			return nil, d.errorf("invalid array dimension")
 		}
-		n, err := d.number()
-		if err != nil {
-			return nil, err
+		if n.Type != lisp.LInt {
+			return nil, d.errorf("invalid array dimension")
 		}
 		dims = append(dims, n)
 		switch d.peek() {
@@ -471,11 +489,7 @@ func (d *durableDecoder) ref() (*lisp.LVal, error) {
 	case d.objs[id] == nil:
 		return nil, d.errorf("native payload refers to object %d, which encloses the native", id)
 	}
-	if d.open[id] {
-		d.reach(id)
-	} else {
-		d.reach(d.low[id])
-	}
+	d.reach(id)
 	d.used[id] = true
 	return d.objs[id], nil
 }
