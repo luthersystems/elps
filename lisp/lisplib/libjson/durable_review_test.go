@@ -6,6 +6,7 @@ package libjson_test
 
 import (
 	"errors"
+	"math"
 	"runtime"
 	"strconv"
 	"strings"
@@ -201,14 +202,34 @@ func TestDurableReferenceKindNatives(t *testing.T) {
 }
 
 func TestDurableRegisterRejectsVersionAbove2To53(t *testing.T) {
-	if strconv.IntSize < 64 {
+	// The largest int version registers and round-trips on every platform;
+	// where int is 32 bits no version can pass 2^53.
+	env := newTypedTestEnv(t)
+	top := libjson.NewDurableRegistry()
+	require.NoError(t, libjson.RegisterNative[*counter](top, "c", math.MaxInt32, libjson.NativeFuncs{
+		Save: func(*lisp.LEnv, *lisp.LVal) (*lisp.LVal, error) { return lisp.Int(1), nil },
+		Load: func(_ *lisp.LEnv, version int, _ *lisp.LVal) (*lisp.LVal, error) {
+			if version != math.MaxInt32 {
+				return nil, errors.New("wrong version")
+			}
+			return lisp.Native(&counter{}), nil
+		},
+	}))
+	top.Freeze()
+	b, err := libjson.DumpDurable(env, lisp.Native(&counter{}), top)
+	require.NoError(t, err)
+	_, err = libjson.LoadDurable(env, b, top)
+	require.NoError(t, err)
+
+	const limit int64 = 1 << 53
+	v := limit + 1
+	if int64(int(v)) != v {
 		t.Skip("int is 32 bits")
 	}
 	reg := libjson.NewDurableRegistry()
-	v := 1<<53 + 1
-	require.EqualError(t, libjson.RegisterNative[*counter](reg, "c", v, libjson.NativeFuncs{}),
-		`durable json: native "c": version `+strconv.Itoa(v)+` is above 2^53`)
-	require.NoError(t, libjson.RegisterNative[*counter](reg, "c", 1<<53, libjson.NativeFuncs{}))
+	require.EqualError(t, libjson.RegisterNative[*counter](reg, "c", int(v), libjson.NativeFuncs{}),
+		`durable json: native "c": version `+strconv.FormatInt(v, 10)+` is above 2^53`)
+	require.NoError(t, libjson.RegisterNative[*counter](reg, "c", int(v-1), libjson.NativeFuncs{}))
 }
 
 // countingRegistry counts codec calls.
