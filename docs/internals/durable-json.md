@@ -520,6 +520,14 @@ so two closures over one frame still share it after a load, and a `set!`
 through one is seen by the other. A closure is an object too, so a closure
 in its own frame (a `labels` function, recursion) restores.
 
+The dump finds each closure's frames through the chain of environments it
+captured, skipping frames with no bindings. It memoizes each
+environment's nearest frame for the whole dump, so a long chain of empty
+environments is walked once, not once per closure and pass. Each
+environment walked for the first time is a step (at most 16 per value of
+the value limit), and the dump charges ceil(n/4) units for the n new
+environments a closure's walk meets (`TestDurableClosureWorkBounded`).
+
 The dump reads each frame's bindings once. Before it copies a frame's
 bindings it reserves them against the value limit, summed over every frame
 the dump reads, so a graph of many large frames stops at the first frame
@@ -590,9 +598,12 @@ quotes and literals, a literal that is not a nonempty list or a quote or
 that sits inside another literal, formals that are not a list or that
 `lambda` refuses, and a literal directly inside a quote unless the
 literal is itself a quote (quoting a sealed node moves its seal onto the
-quote, so DumpDurable writes `["~#lit",["~#quote",...]]`). Nothing about
-the loading environment's globals decides whether a document loads, so a
-document that loaded before a code upgrade loads after it.
+quote, so DumpDurable writes `["~#lit",["~#quote",...]]`). No frame is
+checked against the names a closure's code mentions, so the closure checks
+do not depend on the loading environment's globals, and a code upgrade
+cannot make them fail. Named functions still do: a `~#fn` anywhere in the
+document, a captured one included, must name a regular function of its
+package when the document loads (see Functions).
 
 ## Refused values
 
@@ -604,7 +615,6 @@ document that loaded before a code upgrade loads after it.
 | Closure whose frame holds a refused value | `durable json: captured variable "NAME": ...` |
 | Closure whose code holds a value that is not a scalar, list or quote | `durable json: a closure's code holds a T` |
 | Closure whose code shares a mutable list with a value or other code | `durable json: a closure's code shares a mutable list with another value; ...` |
-| Dynamic closure whose frame holds a refused value | `durable json: closure body calls eval via R; its frames must be saved whole; captured variable "V" cannot be saved: ...` |
 | Closure whose sealed literal holds a mutable list | `durable json: a closure's code holds a mutable list inside a sealed literal` |
 | A shared value in the payload of a codec without `WithSharedPayload` | `durable json: native "NAME" payload shares a value, and its codec does not keep sharing` |
 | Macro or special operator | `durable json: cannot encode a macro or special operator` |
@@ -636,12 +646,13 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, and ceil(n/4) units before a package of n bindings has its function names read. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read, and ceil(n/4) units for the n environments a closure's frame lookup walks for the first time. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 The two schedules differ in what they pay for. A dump does work the
 output does not show (it reads the package name tables and calls
-`SaveNative`), so it charges for that work before doing it. A load's work
+`SaveNative`, and walks captured environment chains), so it charges for
+that work before doing it. A load's work
 is bounded by its input, which it charges up front, plus the codecs'
 `LoadNative` calls.
 

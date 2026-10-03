@@ -259,6 +259,10 @@ type durableEncoder struct {
 	// the value limit; codeRanges the cells of mutable code lists.  See
 	// durable_closures.go.
 	frameBindings map[*lisp.LEnv][]binding
+	// nearestFrame memoizes frameOf; ancestorVisits and codeVisits count
+	// environments walked and code nodes scanned, for the bound and the
+	// tests.
+	nearestFrame map[*lisp.LEnv]*lisp.LEnv
 	// low holds, by first-visit index, for each object scan has finished,
 	// the smallest first-visit index of an object that was still open when
 	// it finished and that it reaches, or noLow.  An open object is one scan
@@ -279,9 +283,11 @@ type durableEncoder struct {
 	storages   []storageInfo
 	codeRanges []span
 	typedEncoder
-	frameReserved int
-	scanned       int
-	nextID        int
+	ancestorVisits int
+	codeVisits     int
+	frameReserved  int
+	scanned        int
+	nextID         int
 	// discover marks the first walk, which only finds holders, saves
 	// natives and names functions.
 	discover bool
@@ -308,6 +314,7 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		recorded:      map[*lisp.LVal]bool{},
 		walked:        map[uintptr]uintptr{},
 		frameBindings: map[*lisp.LEnv][]binding{},
+		nearestFrame:  map[*lisp.LEnv]*lisp.LEnv{},
 
 		views:   map[any]viewInfo{},
 		literal: map[any]bool{},

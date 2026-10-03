@@ -180,3 +180,47 @@ func TestDurableAllTailsLinear(t *testing.T) {
 		t.Fatalf("sealing %d literals took %d steps, want %d to %d", len(d.literals), d.sealOps, n, 2*n)
 	}
 }
+
+// A long chain of empty frames is walked once per dump, not once per
+// closure and pass: 20,000 closures at the end of 100,000 empty frames.
+// Closures over one code object scan it once per pass.
+func TestDurableClosureWorkBounded(t *testing.T) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	if err := lisp.GoError(lisp.InitializeUserEnv(env)); err != nil {
+		t.Fatal(err)
+	}
+	root := env
+	for root.Parent() != nil {
+		root = root.Parent()
+	}
+	const depth, closures, body = 100000, 20000, 2000
+	leaf := root
+	for range depth {
+		leaf = lisp.NewEnv(leaf)
+	}
+	forms := make([]*lisp.LVal, body)
+	for i := range forms {
+		forms[i] = lisp.Int(i)
+	}
+	code, lerr := env.NewLambdaCode(lisp.SExpr(nil), forms)
+	if lerr != nil {
+		t.Fatal(lerr)
+	}
+	fs := make([]*lisp.LVal, closures)
+	for i := range fs {
+		fs[i] = leaf.RestoreLambda(lisp.DefaultUserPackage, code)
+	}
+	e := newDurableEncoder(env, nil, durableConfig(env, nil))
+	if _, err := e.dump(lisp.QExpr(fs)); err != nil {
+		t.Fatal(err)
+	}
+	if e.ancestorVisits < depth || e.ancestorVisits > depth+10 {
+		t.Fatalf("walked %d environments, want %d", e.ancestorVisits, depth)
+	}
+	// Discovery and the counting pass each scan the code once: the
+	// formals and the body.
+	if want := 2 * (body + 1); e.codeVisits != want {
+		t.Fatalf("scanned %d code nodes, want %d", e.codeVisits, want)
+	}
+}

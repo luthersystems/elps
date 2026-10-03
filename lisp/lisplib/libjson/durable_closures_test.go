@@ -9,7 +9,9 @@ import (
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
+	"github.com/luthersystems/elps/parser"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -332,4 +334,50 @@ func TestDurableClosureFramesReservedCumulatively(t *testing.T) {
 	runtime.ReadMemStats(&after)
 	require.ErrorIs(t, err, libjson.ErrTypedLimit)
 	assert.Less(t, after.TotalAlloc-before.TotalAlloc, uint64(64<<20), "the dump copied frames past the limit")
+}
+
+// Closures dump to the same bytes and charges in a cold environment and in
+// eager, lazy and prewarmed template VMs.
+func TestDurableClosureParity(t *testing.T) {
+	const program = `
+(defun helper () 1)
+(set 'pair (let ((n 0) (m (list 1 2))) (list (lambda () (set! n (+ n 1))) (lambda () (list n m (helper))))))
+(set 'rec (labels ((f (k) (if (< k 1) '(done) (f (- k 1))))) f))`
+	dump := func(env *lisp.LEnv) (string, []int) {
+		t.Helper()
+		var charges []int
+		v := env.LoadString("test", `(list pair rec)`)
+		require.NoError(t, lisp.GoError(v))
+		b, err := libjson.DumpDurable(env, v, nil, libjson.WithTypedCharge(func(n int) error { charges = append(charges, n); return nil }))
+		require.NoError(t, err)
+		return string(b), charges
+	}
+	source := lisp.NewEnv(nil)
+	source.Runtime.Reader = parser.NewReader()
+	require.NoError(t, lisp.GoError(lisp.InitializeUserEnv(source)))
+	require.NoError(t, lisp.GoError(lisplib.LoadRuntimeLibrary(source)))
+	require.NoError(t, lisp.GoError(source.InPackage(lisp.String(lisp.DefaultUserPackage))))
+	require.NoError(t, lisp.GoError(source.LoadString("program", program)))
+	want, wantCharges := dump(source)
+	assert.Contains(t, want, `["~#closure",`)
+	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
+	eager, err := lisp.NewTemplate(source, policy, lisp.TemplateWithEagerInstantiation())
+	require.NoError(t, err)
+	lazy, err := lisp.NewTemplate(source, policy)
+	require.NoError(t, err)
+	for _, c := range []struct {
+		name string
+		tmpl *lisp.Template
+		opts []lisp.VMOption
+	}{
+		{"eager", eager, nil},
+		{"lazy", lazy, nil},
+		{"lazy prewarmed", lazy, []lisp.VMOption{lisp.VMWithPrewarm()}},
+	} {
+		vm, err := c.tmpl.NewVM(c.opts...)
+		require.NoError(t, err)
+		got, charges := dump(vm)
+		assert.Equal(t, want, got, c.name)
+		assert.Equal(t, wantCharges, charges, c.name)
+	}
 }

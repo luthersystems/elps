@@ -26,9 +26,11 @@ package libjson
 // list ["~#list",[NODE...]] (a call form), ["~#quote",NODE] (NODE quoted,
 // as the reader's ' quotes it), or ["~#lit",NODE]: a sealed program
 // literal, which the load seals again, node by node, so a literal a macro
-// or quasiquote put inside new code stays protected.  Code is an object,
-// so closures made by one lambda form share it, and a load restores them
-// over one copy of it.
+// or quasiquote put inside new code stays protected.  Code is an object
+// identified by its cells: closures restored from one code object share
+// them, so they write one code object again, and a load restores them over
+// one copy of it.  Each closure lambda makes holds its own copy of the
+// form's cells, so each writes its own code object.
 //
 // A load evaluates nothing: it builds the frames with NewEnv and Put, and
 // the lambda with LEnv.NewLambdaCode and LEnv.RestoreLambda.  A restored
@@ -100,15 +102,45 @@ func codeKeyOf(f *lisp.LVal) codeKey {
 }
 
 // frameOf returns the innermost frame at or above env that has bindings,
-// or nil when there is none below the root.
-func frameOf(env *lisp.LEnv) *lisp.LEnv {
+// or nil when there is none below the root.  Each environment's answer is
+// memoized for the whole dump, so a long chain of empty frames is walked
+// once, not once per closure or pass.  Each environment walked for the
+// first time is a step, bounded by the value limit's frameWalkFactor
+// multiple and charged ceil(n/4) units for the n new ones of a call.
+func (e *durableEncoder) frameOf(env *lisp.LEnv) (*lisp.LEnv, error) {
+	var walked []*lisp.LEnv
+	var found *lisp.LEnv
 	for ; env != nil && env.Parent() != nil; env = env.Parent() {
+		if r, ok := e.nearestFrame[env]; ok {
+			found = r
+			break
+		}
+		walked = append(walked, env)
 		if env.NumBindings() > 0 {
-			return env
+			found = env
+			break
 		}
 	}
-	return nil
+	if n := len(walked); n > 0 {
+		e.ancestorVisits += n
+		if e.ancestorVisits > frameWalkFactor*e.cfg.maxValues+1024 {
+			return nil, fmt.Errorf("%w: captured frame chains longer than %d frames", ErrTypedLimit, frameWalkFactor*e.cfg.maxValues+1024)
+		}
+		if e.cfg.charge != nil {
+			if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
+				return nil, fmt.Errorf("durable json: captured frame chain: %w", err)
+			}
+		}
+		for _, w := range walked {
+			e.nearestFrame[w] = found
+		}
+	}
+	return found, nil
 }
+
+// frameWalkFactor bounds the environments a dump walks to find captured
+// frames: at most frameWalkFactor per value of the value limit.
+const frameWalkFactor = 16
 
 // bindings returns a frame's bindings in name order, read once per dump.
 // Before it copies them, it reserves them against the value limit, summed
@@ -170,7 +202,11 @@ func (e *durableEncoder) scanClosure(v *lisp.LVal, depth int) error {
 		return err
 	}
 	i := e.openObject(key)
-	if err := e.scanFrame(frameOf(lambdaEnv(v)), depth+1); err != nil {
+	fr, err := e.frameOf(lambdaEnv(v))
+	if err != nil {
+		return err
+	}
+	if err := e.scanFrame(fr, depth+1); err != nil {
 		return err
 	}
 	if err := e.scanCode(v, depth+1); err != nil {
@@ -202,7 +238,11 @@ func (e *durableEncoder) scanFrame(env *lisp.LEnv, depth int) error {
 		return err
 	}
 	i := e.openObject(key)
-	if err := e.scanFrame(frameOf(env.Parent()), depth+1); err != nil {
+	parent, err := e.frameOf(env.Parent())
+	if err != nil {
+		return err
+	}
+	if err := e.scanFrame(parent, depth+1); err != nil {
 		return err
 	}
 	for _, b := range bs {
@@ -264,6 +304,7 @@ func litBoundary(v *lisp.LVal, inLit bool) bool {
 // cells of each mutable code list, which must share storage with nothing
 // else in the graph.
 func (e *durableEncoder) scanCodeNode(v *lisp.LVal, inLit bool, depth int) error {
+	e.codeVisits++
 	if v == nil {
 		return errors.New("durable json: cannot encode a Go nil value")
 	}
@@ -380,7 +421,11 @@ func (e *durableEncoder) closure(v *lisp.LVal, depth int) error {
 		e.buf = append(e.buf, `["`+tagClosure+`",[`...)
 		e.buf = appendJSONString(e.buf, pkg)
 		e.buf = append(e.buf, ',')
-		if err := e.frame(frameOf(lambdaEnv(v)), depth+1); err != nil {
+		fr, err := e.frameOf(lambdaEnv(v))
+		if err != nil {
+			return err
+		}
+		if err := e.frame(fr, depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',')
@@ -407,7 +452,11 @@ func (e *durableEncoder) frame(env *lisp.LEnv, depth int) error {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagEnv+`",[`...)
-		if err := e.frame(frameOf(env.Parent()), depth+1); err != nil {
+		parent, err := e.frameOf(env.Parent())
+		if err != nil {
+			return err
+		}
+		if err := e.frame(parent, depth+1); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, ',', '[')
