@@ -1285,23 +1285,6 @@ func (v *LVal) FID() string {
 // deepest aliasing channel into shared interpreter state, so external
 // packages cannot reach it at all; in-repo tooling goes through
 // internal/funraw.
-// LambdaEnv returns the environment a lambda captured: the innermost frame
-// of its lexical scope, whose Parent chain ends at the root environment.  It
-// returns nil for a value that is not a lambda (a builtin, or anything but
-// a function) and for a macro or special operator.  It is for reading a
-// closure's captured bindings (a serializer saving it); a caller must not
-// evaluate in the environment or keep it past that read.
-func (v *LVal) LambdaEnv() *LEnv {
-	if v == nil || v.Type != LFun || v.IsSpecialFun() {
-		return nil
-	}
-	fd, ok := v.Native.(*funData)
-	if !ok || fd.builtin != nil {
-		return nil
-	}
-	return fd.env
-}
-
 func (v *LVal) funEnv() *LEnv {
 	if fd := v.funData(); fd != nil {
 		return fd.env

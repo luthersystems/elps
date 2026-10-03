@@ -338,16 +338,46 @@ func (d *durableDecoder) literal(depth int) (*lisp.LVal, error) {
 // restored literal, as the reader seals a literal's atoms: template
 // publication admits a sealed list only when the atoms it holds are
 // sealed too.  A list or other container in a literal keeps its own
-// marker, so one built at run time stays mutable.
+// marker, so one built at run time stays mutable.  Literals that are views
+// seal the union of their ranges once per storage, so a literal and all of
+// its tails cost each cell once.
 func (d *durableDecoder) sealLiterals() {
+	type lspan struct{ start, end int }
+	ranges := map[*decStorage][]lspan{}
+	var order []*decStorage
 	for _, h := range d.literals {
-		for _, c := range h.Cells {
-			switch c.Type {
-			case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol:
-				c.InheritSeal(lisp.Nil())
-			case lisp.LSExpr, lisp.LArray, lisp.LSortMap, lisp.LBytes, lisp.LTaggedVal, lisp.LNative, lisp.LFun,
-				lisp.LError, lisp.LQuote, lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
+		if dv, ok := d.views[h]; ok {
+			if _, seen := ranges[dv.storage]; !seen {
+				order = append(order, dv.storage)
 			}
+			ranges[dv.storage] = append(ranges[dv.storage], lspan{dv.off, dv.off + dv.length})
+			continue
+		}
+		d.sealCells(h.Cells)
+	}
+	for _, st := range order {
+		rs := ranges[st]
+		slices.SortFunc(rs, func(a, b lspan) int { return cmp.Compare(a.start, b.start) })
+		done := 0
+		for _, r := range rs {
+			d.sealOps++
+			if start := max(r.start, done); start < r.end {
+				d.sealCells(st.cells[start:r.end])
+			}
+			done = max(done, r.end)
+		}
+	}
+}
+
+// sealCells seals the scalars among cells.
+func (d *durableDecoder) sealCells(cells []*lisp.LVal) {
+	for _, c := range cells {
+		d.sealOps++
+		switch c.Type {
+		case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol:
+			c.InheritSeal(lisp.Nil())
+		case lisp.LSExpr, lisp.LArray, lisp.LSortMap, lisp.LBytes, lisp.LTaggedVal, lisp.LNative, lisp.LFun,
+			lisp.LError, lisp.LQuote, lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 		}
 	}
 }

@@ -181,6 +181,9 @@ func (e *durableEncoder) dump(v *lisp.LVal) ([]byte, error) {
 	if err := e.groupHolders(); err != nil {
 		return nil, err
 	}
+	if err := e.checkCodeSharing(); err != nil {
+		return nil, err
+	}
 	e.resetScan()
 	if err := e.scan(v, 0); err != nil {
 		return nil, err
@@ -269,14 +272,17 @@ type durableEncoder struct {
 	// walked links each cell address discovery walked to the next
 	// address; see unwalked.
 	walked map[uintptr]uintptr
-	// marked holds, per captured frame, the names some saved closure
-	// reads; frameVals each frame's bindings; frameBindings the saved
-	// bindings in name order; codeFree each code's names.  See
-	// durable_closures.go.
-	marked        map[*lisp.LEnv]map[string]bool
-	frameVals     map[*lisp.LEnv]map[string]*lisp.LVal
+	// marked holds, per captured frame, the bindings some saved closure
+	// reads; whole the frames a dynamic closure keeps whole;
+	// frameBindings the saved bindings in name order; codeKeys each
+	// closure's code key; codeRanges the cells of mutable code lists.
+	// See durable_closures.go.
+	marked        map[*lisp.LEnv]map[string]*lisp.LVal
+	whole         map[*lisp.LEnv]bool
 	frameBindings map[*lisp.LEnv][]binding
-	codeFree      map[codeKey]freeNames
+	codeKeys      map[closureKey]codeKey
+	codeRanges    []span
+	closureScope  *closureScope
 	typedEncoder
 	scanned int
 	nextID  int
@@ -306,9 +312,9 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		recorded:      map[*lisp.LVal]bool{},
 		walked:        map[uintptr]uintptr{},
 		frameBindings: map[*lisp.LEnv][]binding{},
-		marked:        map[*lisp.LEnv]map[string]bool{},
-		frameVals:     map[*lisp.LEnv]map[string]*lisp.LVal{},
-		codeFree:      map[codeKey]freeNames{},
+		marked:        map[*lisp.LEnv]map[string]*lisp.LVal{},
+		whole:         map[*lisp.LEnv]bool{},
+		codeKeys:      map[closureKey]codeKey{},
 		views:         map[any]viewInfo{},
 		literal:       map[any]bool{},
 	}

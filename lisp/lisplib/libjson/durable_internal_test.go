@@ -137,7 +137,7 @@ func TestDurableAllTailsLinear(t *testing.T) {
 		t.Fatalf("dump took %d claim steps, want at most %d", ops, bound)
 	}
 	d := newDurableDecoder(env, b, nil, nil)
-	if _, err := d.load(); err != nil {
+	if _, err = d.load(); err != nil {
 		t.Fatal(err)
 	}
 	ops = 0
@@ -149,7 +149,34 @@ func TestDurableAllTailsLinear(t *testing.T) {
 	}
 	// The liveness check unions the views' lengths: a step per view and
 	// per dead cell, not per covered cell.
-	if d.liveOps > 2*n {
-		t.Fatalf("the liveness check took %d steps, want at most %d", d.liveOps, 2*n)
+	// At least a step per view: a check that counts nothing is not one.
+	if d.liveOps < n || d.liveOps > 2*n {
+		t.Fatalf("the liveness check took %d steps, want %d to %d", d.liveOps, n, 2*n)
+	}
+
+	// Sealed tails: each is a literal, and the load seals the union of
+	// their ranges once.
+	sealed := make([]*lisp.LVal, n)
+	for i := range sealed {
+		sealed[i] = lisp.Int(0)
+	}
+	head := lisp.QExpr(sealed)
+	head.InheritSeal(lisp.Nil())
+	roots = []*lisp.LVal{head}
+	for i := 1; i < n; i++ {
+		tail := lisp.QExpr(sealed[i:n:n])
+		tail.InheritSeal(lisp.Nil())
+		roots = append(roots, tail)
+	}
+	b, err = DumpDurable(env, lisp.QExpr(roots), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d = newDurableDecoder(env, b, nil, nil)
+	if _, err := d.load(); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.literals) != n || d.sealOps < n || d.sealOps > 2*n {
+		t.Fatalf("sealing %d literals took %d steps, want %d to %d", len(d.literals), d.sealOps, n, 2*n)
 	}
 }

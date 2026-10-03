@@ -104,6 +104,9 @@ func (d *durableDecoder) load() (*lisp.LVal, error) {
 	if err := d.checkHolders(); err != nil {
 		return nil, err
 	}
+	if err := d.checkClosures(); err != nil {
+		return nil, err
+	}
 	d.sealLiterals()
 	return v, nil
 }
@@ -126,6 +129,10 @@ type durableDecoder struct {
 	// literals holds each header a literal marker sealed; liveOps counts
 	// the liveness check's steps, for the tests' bound.
 	literals []*lisp.LVal
+	// closures and restoredFrames hold each restored closure and frame,
+	// for checkClosures.
+	closures       []decClosure
+	restoredFrames []decFrame
 	// objs holds each defined object.  A native's slot stays nil until its
 	// codec returns.
 	objs []*lisp.LVal
@@ -148,7 +155,7 @@ type durableDecoder struct {
 	// code, which only their own positions may refer to.
 	objKind []objKind
 	typedDecoder
-	liveOps int
+	liveOps, sealOps int
 	// pending is the id of the "~#obj" whose value is being read, until
 	// that value's header is constructed; -1 when none.
 	pending int

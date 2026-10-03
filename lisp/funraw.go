@@ -26,6 +26,12 @@ func init() {
 		}
 		return v.funEnv()
 	}
+	funrawhook.Lookup = func(env *LEnv, name string) (*LVal, bool) {
+		if env == nil {
+			return nil, false
+		}
+		return env.scope.get(name)
+	}
 	funrawhook.Captures = func(v *LVal) *LVal {
 		if v == nil || v.Type != LFun {
 			return nil

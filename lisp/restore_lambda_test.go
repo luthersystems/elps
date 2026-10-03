@@ -5,43 +5,49 @@ package lisp_test
 import (
 	"testing"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-// LambdaEnv returns a lambda's captured frame, and nil for builtins, macros
-// and special operators.  RestoreLambda rebuilds a lambda over a frame
-// chain without evaluating anything.
-func TestLambdaEnvAndRestoreLambda(t *testing.T) {
+// NewLambdaCode validates a lambda's code once; RestoreLambda rebuilds
+// lambdas over frame chains from it without evaluating anything, and the
+// lambdas share the code's cells.
+func TestRestoreLambda(t *testing.T) {
 	env := templateTestEnv(t)
 	f := env.LoadString("test", `(let ((n 41)) (lambda (x) (+ n x)))`)
 	require.NoError(t, lisp.GoError(f))
-	frame := f.LambdaEnv()
+	frame := funraw.Env(f)
 	require.NotNil(t, frame)
 	require.NotNil(t, frame.Parent())
-	assert.Equal(t, 1, frame.NumBindings())
-	for _, src := range []string{`+`, `defun`, `if`} {
-		assert.Nil(t, env.LoadString("test", src).LambdaEnv(), src)
-	}
-	assert.Nil(t, lisp.Int(1).LambdaEnv())
 
 	root := env
 	for root.Parent() != nil {
 		root = root.Parent()
 	}
-	restored := lisp.NewEnv(root)
-	require.NoError(t, lisp.GoError(restored.Put(lisp.Symbol("n"), lisp.Int(1))))
-	g := restored.RestoreLambda(lisp.DefaultUserPackage, f.Cells[0], f.Cells[1:])
-	require.NoError(t, lisp.GoError(g))
-	assert.Equal(t, lisp.DefaultUserPackage, g.Package())
-	assert.Same(t, restored, g.LambdaEnv())
-	_, located := g.Source()
-	assert.False(t, located)
-	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("g"), g)))
-	assert.Equal(t, "3", env.LoadString("test", `(g 2)`).String())
+	code, lerr := env.NewLambdaCode(f.Cells[0], f.Cells[1:])
+	require.Nil(t, lerr)
+	var restored []*lisp.LVal
+	for _, n := range []int{1, 2} {
+		fr := lisp.NewEnv(root)
+		require.NoError(t, lisp.GoError(fr.Put(lisp.Symbol("n"), lisp.Int(n))))
+		g := fr.RestoreLambda(lisp.DefaultUserPackage, code)
+		require.NoError(t, lisp.GoError(g))
+		assert.Equal(t, lisp.DefaultUserPackage, g.Package())
+		assert.Same(t, fr, funraw.Env(g))
+		_, located := g.Source()
+		assert.False(t, located)
+		restored = append(restored, g)
+	}
+	assert.Same(t, &restored[0].Cells[0], &restored[1].Cells[0], "the lambdas share the code's cells")
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("g"), restored[1])))
+	assert.Equal(t, "4", env.LoadString("test", `(g 2)`).String())
 
-	assert.Equal(t, lisp.LError, restored.RestoreLambda("no-such-package", f.Cells[0], f.Cells[1:]).Type)
-	bad := lisp.QExpr([]*lisp.LVal{lisp.Int(1)})
-	assert.Equal(t, lisp.LError, restored.RestoreLambda(lisp.DefaultUserPackage, bad, nil).Type)
+	assert.Equal(t, lisp.LError, root.RestoreLambda("no-such-package", code).Type)
+	_, lerr = env.NewLambdaCode(lisp.QExpr([]*lisp.LVal{lisp.Int(1)}), nil)
+	assert.NotNil(t, lerr)
+	// Quoted formals, which lambda accepts, are accepted.
+	_, lerr = env.NewLambdaCode(lisp.Formals("x"), []*lisp.LVal{lisp.Symbol("x")})
+	assert.Nil(t, lerr)
 }

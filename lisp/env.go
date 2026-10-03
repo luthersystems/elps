@@ -976,23 +976,58 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	return env.lambdaIn(env.Runtime.Package.Name, env.loc, formals, body)
 }
 
+// LambdaCode is a lambda's formals and body, validated once by
+// NewLambdaCode, for RestoreLambda.  Every lambda restored from one
+// LambdaCode shares its cells, as the closures one lambda form makes share
+// their formals and body forms: the code is immutable, so nothing is
+// copied per lambda.
+type LambdaCode struct {
+	cells []*LVal
+}
+
+// NewLambdaCode validates a lambda's formals as Lambda does and returns
+// its code for RestoreLambda.  It evaluates nothing.  A serializer that
+// restores many closures over one body calls it once for that body.
+func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, *LVal) {
+	if lerr := env.validateLambdaFormals(formals); lerr != nil {
+		return nil, lerr
+	}
+	cells := make([]*LVal, 0, len(body)+1)
+	cells = append(cells, formals)
+	cells = append(cells, body...)
+	return &LambdaCode{cells: cells}, nil
+}
+
 // RestoreLambda rebuilds a lambda of package pkg that captures env, from
-// its formals and body, as Lambda builds one, and evaluates nothing.  It is
-// how a serializer restores a closure: the caller rebuilds the captured
-// frames with NewEnv and Put, and pkg names the package the lambda was
-// defined in, whose globals its body resolves when it is called.  The
-// formals are validated as Lambda validates them.  The lambda has a fresh
-// FID and no source location.  RestoreLambda returns an error when no
-// package pkg is registered.
-func (env *LEnv) RestoreLambda(pkg string, formals *LVal, body []*LVal) *LVal {
+// code NewLambdaCode validated, and evaluates nothing.  It is how a
+// serializer restores a closure: the caller rebuilds the captured frames
+// with NewEnv and Put, and pkg names the package the lambda was defined
+// in, whose globals its body resolves when it is called.  The lambda
+// shares code's cells; it has a fresh FID and no source location.
+// RestoreLambda returns an error when no package pkg is registered.
+func (env *LEnv) RestoreLambda(pkg string, code *LambdaCode) *LVal {
 	if env.Runtime.Registry.Package(pkg) == nil {
 		return env.Errorf("unknown package: %q", pkg)
 	}
-	return env.lambdaIn(pkg, nil, formals, body)
+	if code == nil || len(code.cells) == 0 {
+		return env.Errorf("no lambda code")
+	}
+	return env.newLambda(pkg, nil, code.cells)
 }
 
 // lambdaIn is Lambda for package pkg, located at loc.
 func (env *LEnv) lambdaIn(pkg string, loc *token.Location, formals *LVal, body []*LVal) *LVal {
+	if lerr := env.validateLambdaFormals(formals); lerr != nil {
+		return lerr
+	}
+	cells := make([]*LVal, 0, len(body)+1)
+	cells = append(cells, formals)
+	cells = append(cells, body...)
+	return env.newLambda(pkg, loc, cells)
+}
+
+// validateLambdaFormals checks a lambda's formals, or returns the error.
+func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
 	}
@@ -1006,9 +1041,11 @@ func (env *LEnv) lambdaIn(pkg string, loc *token.Location, formals *LVal, body [
 	if message != "" {
 		return env.Errorf("%s", message)
 	}
-	cells := make([]*LVal, 0, len(body)+1)
-	cells = append(cells, formals)
-	cells = append(cells, body...)
+	return nil
+}
+
+// newLambda builds a lambda over validated cells (formals, then body).
+func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
 	// this counter is how opLetSeq learns that an initializer may have
 	// captured the let* scope (see closuresCreated).
