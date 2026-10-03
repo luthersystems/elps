@@ -18,14 +18,18 @@ import (
 // same value, so sharing and cycles come back as they were saved.  Natives
 // are rebuilt by the codecs reg holds (reg may be nil when the document holds
 // none), and ["~#fn","PKG:NAME"] is the function env's registry binds to
-// that global now.
+// that global now, which must be a regular function of package PKG.
 //
 // LoadDurable accepts only what DumpDurable writes.  It rejects every input
 // LoadTyped rejects inside the value, a missing header or another format
 // version, an object id out of sequence, an object no reference uses, a
-// reference to an object not yet defined, a reference from a native payload
-// to an object that encloses the native, an unknown native name or version,
-// and a function name that does not resolve to that function.  It never
+// reference to an object not yet defined or to the object being defined, a
+// native payload that reaches an unfinished object (directly or through
+// finished ones), sharing inside the payload of a codec registered without
+// WithSharedPayload, an unknown native name or version, and a function name
+// that does not resolve to a regular function of its package.  A function
+// may be named by any of its package's names for it, so such a document can
+// re-encode to other bytes.  It never
 // panics on malformed input; a native codec is called only with a fully
 // restored payload.
 //
@@ -89,17 +93,23 @@ type durableDecoder struct {
 	// objs holds each defined object.  A native's slot stays nil until its
 	// codec returns.
 	objs []*lisp.LVal
-	// building holds, for each object, the native depth at which its
-	// definition started, or -1 once the definition is complete.
-	building []int
+	// open reports whether each object's definition is still being read.
+	open []bool
+	// low holds, for each finished object, the smallest id of an object
+	// that was still open when it finished and that it reaches, or noLow.
+	low []int
 	// used reports whether a reference names each object.
 	used []bool
+	// frames holds, for each object definition and native payload being
+	// read, the smallest id of an open object its contents reach so far.
+	frames []int
 	typedDecoder
 	// pending is the id of the "~#obj" whose value is being read, until
 	// that value's header is constructed; -1 when none.
 	pending int
-	// natives is the number of native payloads being read.
-	natives int
+	// tree counts the payloads being read of codecs that do not keep
+	// sharing; inside one, no "~#obj" or "~#ref" is allowed.
+	tree int
 }
 
 // define gives the pending object id its value.  Every container calls it
@@ -110,6 +120,19 @@ func (d *durableDecoder) define(v *lisp.LVal) {
 		d.objs[d.pending] = v
 		d.pending = -1
 	}
+}
+
+// reach records that the current contents reach object i, if it is open.
+func (d *durableDecoder) reach(i int) {
+	if i != noLow && d.open[i] && len(d.frames) > 0 && i < d.frames[len(d.frames)-1] {
+		d.frames[len(d.frames)-1] = i
+	}
+}
+
+func (d *durableDecoder) popFrame() int {
+	low := d.frames[len(d.frames)-1]
+	d.frames = d.frames[:len(d.frames)-1]
+	return low
 }
 
 func (d *durableDecoder) depth(depth int) error {
@@ -306,7 +329,7 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	if err := d.expect('['); err != nil {
 		return nil, err
 	}
-	dims, err := d.elements(depth)
+	dims, err := d.dims()
 	if err != nil {
 		return nil, err
 	}
@@ -351,9 +374,45 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	return v, nil
 }
 
+// dims reads the dimension list of a tagged array, through its ']'.  Each
+// dimension is a counted JSON integer, read on the scalar path, so no tag
+// (and no codec) can run in a dimension.
+func (d *durableDecoder) dims() ([]*lisp.LVal, error) {
+	var dims []*lisp.LVal
+	if d.peek() == ']' {
+		d.i++
+		return []*lisp.LVal{}, nil
+	}
+	for {
+		if err := d.count(); err != nil {
+			return nil, err
+		}
+		if c := d.peek(); c != '-' && (c < '0' || c > '9') {
+			return nil, d.errorf("invalid array dimension")
+		}
+		n, err := d.number()
+		if err != nil {
+			return nil, err
+		}
+		dims = append(dims, n)
+		switch d.peek() {
+		case ',':
+			d.i++
+		case ']':
+			d.i++
+			return dims, nil
+		default:
+			return nil, d.errorf("expected ',' or ']'")
+		}
+	}
+}
+
 // objectDef reads [ID,X] after "~#obj",.  ID must be the next id and X a
 // value that can be shared.
 func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
+	if d.tree > 0 {
+		return nil, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
+	}
 	if d.pending >= 0 {
 		return nil, d.errorf("object definition inside another definition")
 	}
@@ -371,8 +430,10 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 		return nil, err
 	}
 	d.objs = append(d.objs, nil)
-	d.building = append(d.building, d.natives)
+	d.open = append(d.open, true)
+	d.low = append(d.low, noLow)
 	d.used = append(d.used, false)
+	d.frames = append(d.frames, noLow)
 	d.pending = id
 	v, err := d.value(depth)
 	if err != nil {
@@ -381,24 +442,39 @@ func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 	if d.pending >= 0 {
 		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native")
 	}
-	d.building[id] = -1
+	low := d.popFrame()
+	d.open[id] = false
+	if low < id {
+		d.low[id] = low
+		d.reach(low)
+	}
 	if err := d.expect(']'); err != nil {
 		return nil, err
 	}
 	return v, nil
 }
 
-// ref reads ID] after "~#ref", (the ']' is left for the caller).
+// ref reads ID after "~#ref", (the ']' is left for the caller).
 func (d *durableDecoder) ref() (*lisp.LVal, error) {
+	if d.tree > 0 {
+		return nil, d.errorf("a payload of a codec that does not keep sharing holds a reference")
+	}
 	id, err := d.index()
 	if err != nil {
 		return nil, err
 	}
-	if id >= len(d.objs) {
+	switch {
+	case id >= len(d.objs):
 		return nil, d.errorf("reference to undefined object %d", id)
-	}
-	if nd := d.building[id]; nd >= 0 && (d.objs[id] == nil || nd < d.natives) {
+	case id == d.pending:
+		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native, not a reference")
+	case d.objs[id] == nil:
 		return nil, d.errorf("native payload refers to object %d, which encloses the native", id)
+	}
+	if d.open[id] {
+		d.reach(id)
+	} else {
+		d.reach(d.low[id])
 	}
 	d.used[id] = true
 	return d.objs[id], nil
@@ -419,12 +495,12 @@ func (d *durableDecoder) function() (*lisp.LVal, error) {
 	if pkg == nil {
 		return nil, d.errorf("function %s: unknown package", name)
 	}
-	f := pkg.Get(lisp.Symbol(sym))
-	if f.Type != lisp.LFun {
-		return nil, d.errorf("function %s: the global is not a function", name)
+	f, ok := pkg.Symbol(sym)
+	if !ok || f.Type != lisp.LFun || f.IsSpecialFun() {
+		return nil, d.errorf("function %s: the global is not a regular function", name)
 	}
-	if canon, err := durableFunName(d.env, f); err != nil || canon != name {
-		return nil, d.errorf("function %s: not the name DumpDurable writes for it", name)
+	if f.Package() != pkgName {
+		return nil, d.errorf("function %s: the global holds a function of package %s", name, f.Package())
 	}
 	return f, nil
 }
@@ -455,11 +531,22 @@ func (d *durableDecoder) native(depth int) (*lisp.LVal, error) {
 	if err = d.expect(','); err != nil {
 		return nil, err
 	}
-	d.natives++
+	if !entry.shared {
+		d.tree++
+	}
+	d.frames = append(d.frames, noLow)
 	payload, err := d.value(depth + 1)
-	d.natives--
 	if err != nil {
 		return nil, err
+	}
+	if !entry.shared {
+		d.tree--
+	}
+	// The payload must reach no object that is still open: every such
+	// object encloses this native, and LoadNative must see a finished
+	// payload.
+	if low := d.popFrame(); low != noLow {
+		return nil, d.errorf("native %q payload refers to object %d, which encloses the native", name, low)
 	}
 	if err = d.expect(']'); err != nil {
 		return nil, err

@@ -23,6 +23,12 @@ type goldenCounter struct{ n int }
 
 type goldenPoint struct{ x, y int }
 
+// goldenBox holds any value; test:box keeps its payload, so it keeps
+// sharing.
+type goldenBox struct{ v *lisp.LVal }
+
+func box(v *lisp.LVal) *lisp.LVal { return lisp.Native(&goldenBox{v}) }
+
 func durableRegistry(t *testing.T) *libjson.DurableRegistry {
 	t.Helper()
 	reg := libjson.NewDurableRegistry()
@@ -50,10 +56,10 @@ func durableRegistry(t *testing.T) *libjson.DurableRegistry {
 		},
 	}))
 	// test:box saves the value it holds, which can be any value.
-	must(t, libjson.RegisterNative[*lisp.LVal](reg, "test:box", 1, libjson.NativeFuncs{
-		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*lisp.LVal](v), nil },
-		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(p), nil },
-	}))
+	must(t, libjson.RegisterNative[*goldenBox](reg, "test:box", 1, libjson.NativeFuncs{
+		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*goldenBox](v).v, nil },
+		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(&goldenBox{p}), nil },
+	}, libjson.WithSharedPayload()))
 	reg.Freeze()
 	return reg
 }
@@ -130,11 +136,11 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 		{"id-order", list(a, b2, c2, c2, b2, a)},
 		{"native-pointer-shared", list(c, c)},
 		{"native-value", p},
-		{"native-in-native", lisp.Native(lisp.Native(goldenPoint{x: 3, y: 4}))},
-		{"native-payload-shares-sibling", list(shared, lisp.Native(shared))},
-		{"native-payload-cycle", lisp.Native(self)},
+		{"native-in-native", box(lisp.Native(goldenPoint{x: 3, y: 4}))},
+		{"native-payload-shares-sibling", list(shared, box(shared))},
+		{"native-payload-cycle", box(self)},
 		{"functions", list(fn, less, fn)},
-		{"bptree-shape", lisp.Native(list(sym(":prefix"), s("p"), sym(":compare"), fn))},
+		{"bptree-shape", box(list(sym(":prefix"), s("p"), sym(":compare"), fn))},
 	}
 }
 

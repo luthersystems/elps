@@ -30,7 +30,7 @@ durable document of a tree holds the typed bytes of that tree unchanged.
 |---|---|
 | One encoding per value graph | Fixed root order, fixed traversal order, ids in first-visit order. See [Determinism](#determinism). |
 | Identity of mutable values, never pointer order | Pointers are map keys for identity only. Nothing is sorted or iterated by pointer. See [Objects and identity](#objects-and-identity). |
-| Full reference checks on decode | No forward reference, no dangling id, no unreferenced definition. A reference into an unfinished container is supported (a cycle), except across a native payload. See [Canonical decoding](#canonical-decoding). |
+| Full reference checks on decode | No forward reference, no dangling id, no unreferenced definition, no reference as an object's own value. A reference into an unfinished container is supported (a cycle of containers). A native payload may not reach an unfinished object, directly or through finished ones. See [Canonical decoding](#canonical-decoding). |
 | Same bytes whatever the codec registration order | The registry is looked up by type and by name only. `TestDurableRegistryFrozen` dumps through two registries built in opposite orders. |
 | Bounded before materialization | Byte, value and depth limits are checked as the walk goes, capped by the runtime's allocation cap. See [Limits and charges](#limits-and-charges). |
 | Deterministic charges, codecs included | Output or input KiB plus each codec's declared charge, in walk order. See [Limits and charges](#limits-and-charges). |
@@ -100,13 +100,25 @@ An object is a value whose identity Lisp code can observe through mutation or
 | Sorted map | Its map storage (`*lisp.MapData`). Two headers over one map are one object. |
 | Vector or array | Its data list header (`Cells[1]`). The dims header (`Cells[0]`) must be the same one too. |
 | Bytes | Its buffer (`*[]byte`). |
-| Nonempty list | Its header. |
+| Nonempty list | Its cells: the address of the first cell and the length. Two headers over the same cells are one list, because `stable-sort` through one is seen through the other. |
 | Tagged value | Its header. |
-| Native | Its payload when the payload is a Go pointer, else its header. |
+| Native | Its payload when the payload is a Go pointer; the type and address when it is a Go map, channel or unsafe pointer; else its header. |
 
 Numbers, strings, symbols, keywords, `()` and functions are not objects. They
 are written in full at each occurrence. Two symbols of one spelling are equal,
 and a function is restored by name.
+
+Two objects whose cells overlap without being the same cells are refused:
+a list and its tail (`rest`, `cdr`, a `slice` of the list), a `slice` of a
+vector, or a vector's data list held as a list. A write through one is seen
+through the other, and the format cannot express a view. Copy one of them
+before saving. The check is a yes or no over the address ranges of every
+list and array data, so its answer does not depend on address order.
+
+Restored values are fresh and mutable. A saved program literal, which raises
+`modify-literal-error` on `stable-sort`, restores as an ordinary list that
+sorts (`TestDurableRestoresLiteralsMutable`). A flow that relies on that
+error must copy the literal itself.
 
 ### Determinism
 
@@ -139,15 +151,25 @@ function of the value graph alone.
   `null`, `~#ref`, `~#fn` or another `~#obj`;
 - an `~#obj` with no `~#ref` to it;
 - a `~#ref` to an id not yet defined;
-- a `~#ref` from inside a native payload to an object that is still being
-  restored (an ancestor of that native);
+- a `~#ref` to the object being defined (`["~#obj",[0,["~#ref",0]]]`);
+- a native payload that reaches an object still being restored, directly or
+  through finished objects (see [Self-reference](#self-reference));
+- an `~#obj` or `~#ref` inside the payload of a codec that does not keep
+  sharing (see [Codec contract](#codec-contract));
 - an unknown native name, a version outside `1` to the registered version, or
   a codec result whose Go type is not the registered type;
-- a `~#fn` name that is unbound, not a regular function, or not the name the
-  encoder writes for that function.
+- a `~#fn` name that is unbound, not a regular function, or bound to a
+  function of another package;
+- an array dimension that is not a JSON integer (dimensions are read on the
+  scalar path, so no codec runs there).
 
-A native payload is canonical only when the codec is canonical: when
-`SaveNative(LoadNative(p))` gives `p` again. Each codec owns that property.
+Two inputs are accepted that re-encode to other bytes:
+
+- A `~#fn` may name the function by any name its package binds it to. The
+  encoder writes the first name in sorted order. Documents stay readable when
+  a package adds or drops an alias.
+- A native payload is canonical only when the codec is canonical: when
+  `SaveNative(LoadNative(p))` gives `p` again. Each codec owns that property.
 A document with an older native version loads, and a dump of the result
 writes the current version, so its bytes change. `FuzzDurableJSON` checks the
 canonical property with strict codecs.
@@ -191,10 +213,12 @@ agree byte for byte, and a codec runs inside a transaction.
 |---|---|
 | Deterministic | The result depends only on the arguments: no clock, random source, Go map iteration order or pointer value. |
 | No transaction context | No ledger read or write and no context value the arguments do not carry. A B+-tree codec saves the tree's open arguments and reopens it in `LoadNative`; it reads no tree content. |
-| No result-changing cache | `LoadNative` returns a new native on every call. |
+| No result-changing cache | `LoadNative` returns a new native on every call. A pointer payload of size zero can share one address with another, so it would be taken for one object; use a type with a field. |
+| Graph identity | By default a codec rebuilds its payload, so it cannot keep sharing. elps then refuses a payload that holds a shared object, in either direction. A codec whose `SaveNative` returns the exact payload values `LoadNative` received registers with `WithSharedPayload()`, and its payload may share. |
 | Declared charge | `WithNativeCharge(units)` declares the fixed cost of one call. It is charged before every `SaveNative` and `LoadNative` call, through the dump's or load's charge function. Work that grows with the input past that is charged by the codec through `env.ChargeSteps`. A failed charge is returned as the error. |
 | Bounded output | The payload counts against the byte, value and depth limits like any value, so a codec cannot write past them. |
-| Versioned | `LoadNative` gets the document's version and reads every version from 1 to the registered one. Change the payload shape only with a new version, and keep the old reader. |
+| Versioned | `LoadNative` gets the document's version and reads every version from 1 to the registered one. Change the payload shape only with a new version, and keep the old reader. A version is at most 2^53, so it fits a JSON number. |
+| Identity-capable type | `Register` refuses a func, slice or interface type: such a payload has no identity. Value types (structs, numbers) are identified by their LVal header, so they must hold no shared mutable state; use a pointer type for one that does. |
 
 A codec that breaks a rule can make peers disagree. elps cannot check the
 rules at run time. It checks what it can: the result type, the version range,
@@ -206,24 +230,37 @@ the limits and the charges.
 - `Register` on a frozen registry fails. `DumpDurable` and `LoadDurable`
   refuse a registry that is not frozen.
 - Registration order does not change a byte of output.
-- `Fingerprint` returns `name@version=type` for each codec, sorted by name.
-  Peers compare it to confirm they hold the same registry.
+- `Fingerprint` returns a JSON array of
+  `{"name","type","version","charge","shared"}` objects sorted by name, with
+  the package-qualified Go type. Peers compare it to confirm they hold the
+  same registry.
 - A frozen registry is read-only and safe for concurrent use.
 
 ### Self-reference
 
-A native cannot contain itself. The encoder refuses a payload that reaches its
-own native, or reaches any object that encloses the native. The decoder
+A native cannot be part of a cycle. The encoder refuses a payload that
+reaches its own native, or any object that encloses the native, directly or
+through objects that are already finished. Each walk records, for every
+finished object, the outermost unfinished object it reaches (the same idea as
+Tarjan's low-link), so the check sees through finished objects. The decoder
 refuses the same shapes. So `LoadNative` always receives a fully restored
-payload.
+payload. Cycles of containers alone are allowed.
 
 ## Functions
 
-A function value is saved by name when it is the current value of a global
-binding. The encoder takes the function's package and the name that package
-last bound it to (`Package.GetFunName`). It then checks that the global still
-holds this function (same `FID`). `LoadDurable` resolves `PKG:NAME` in the
-loading environment's registry.
+A function value is saved by name when its defining package binds it to a
+global. Its identity is its package and its `FID`; an `FID` is unique within
+its package, and builtins of one short name in two packages (`lisp:not`,
+`s:not`) share an `FID`. The encoder writes `PKG:NAME`, where `PKG` is the
+function's package and `NAME` is the first name, in sorted
+`Package.SymbolNames` order, under which `PKG` binds a regular function with
+the same package and `FID`. Binding history does not change the name.
+`LoadDurable` accepts any `PKG:NAME` whose current global is a regular
+function of package `PKG`.
+
+Finding the name reads every binding of the package once per function and
+dump. On a lazily instantiated template VM this fills the package's
+bindings.
 
 This belongs in the codec, not in a native hook. A B+-tree handle's payload
 then holds its `:compare` function as an ordinary value, and every native
@@ -233,20 +270,23 @@ These are refused:
 
 - an anonymous lambda, and a local `flet` or `labels` function: no global
   name holds them;
-- a function whose package now binds that name to another value;
+- a function that no global of its package binds;
 - a macro or special operator.
 
 A restored function is the current global binding. After a code upgrade it is
 the new definition of that name. This is what `defflow` wants: in-flight runs
-resume on the current code.
+resume on the current code. A closure bound to a global restores as whatever
+that global holds when the document loads; the state it captured is not
+saved.
 
 ## Refused values
 
 | Value | Error |
 |---|---|
 | Error (condition) value | `durable json: cannot encode an error` |
-| Anonymous or local function | `durable json: cannot encode an anonymous function` |
-| Function whose global changed | `durable json: cannot encode function PKG:NAME: the global holds another value` |
+| Anonymous or local function, or one no global of its package binds | `durable json: cannot encode an anonymous function` |
+| Lists or arrays whose cells overlap | `durable json: two values share storage (a list and its tail, or a slice of a vector); copy one of them before saving` |
+| A shared value in the payload of a codec without `WithSharedPayload` | `durable json: native "NAME" payload shares a value, and its codec does not keep sharing` |
 | Macro or special operator | `durable json: cannot encode a macro or special operator` |
 | Native with no codec | `durable json: no codec registered for native type T` |
 | Native that reaches itself or an enclosing object | `durable json: native "NAME" payload refers to a value that encloses the native` |
@@ -264,8 +304,8 @@ intermediate grows past a limit:
 | Option | Default | Counts |
 |---|---|---|
 | `WithTypedMaxDepth` | 1024 | Container nesting. `~#obj` adds no level. A native payload adds one. |
-| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. |
-| `WithTypedMaxValues` | 2^20 | Every value position, map key and array dimension. `~#obj` counts one plus its object. `~#ref` and `~#fn` count one. |
+| `WithTypedMaxBytes` | 16 MiB | Output bytes, or input bytes. Strings, symbols, keys and names are checked at their exact escaped size before they are written. A map key longer than the remaining bytes is refused before it is copied. |
+| `WithTypedMaxValues` | 2^20 | Every value position, map key and array dimension. `~#obj` counts one plus its object. `~#ref` and `~#fn` count one. The first pass counts a map's keys before it copies the map's members, and no codec runs past the limit. `DumpDurableRoots` checks the root count before it allocates. |
 | `WithTypedCharge` | none | See the charge order below. |
 
 The first pass is bounded by the same depth and value limits. Every object is
@@ -293,4 +333,5 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
-| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |
+| Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims, mutable literals and pinned value and depth counts. |
+| `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, or (for a `~#fn` alias) to a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |

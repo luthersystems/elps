@@ -3,6 +3,7 @@
 package libjson
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"reflect"
@@ -26,7 +27,12 @@ import (
 //     result depends on, and no context value that the arguments do not
 //     carry.  Everything a codec needs is in the native or the payload.
 //   - No caching that changes a result: LoadNative returns a new native on
-//     every call.
+//     every call.  A zero-size pointer payload can share an address with
+//     another, so give a pointer type a field.
+//   - Graph identity: a codec keeps the identity of its payload or refuses
+//     sharing.  By default elps refuses a payload that holds a shared
+//     object; a codec whose SaveNative returns the exact payload values
+//     LoadNative received registers with WithSharedPayload.
 //   - Charged: the declared charge (WithNativeCharge) is taken before each
 //     call.  Work that grows with the input beyond it is charged by the
 //     codec through env.ChargeSteps, and a failed charge is returned as the
@@ -81,10 +87,26 @@ type nativeEntry struct {
 	name    string
 	version int
 	charge  int
+	shared  bool
 }
 
 // NativeOption configures one registration.
 type NativeOption func(*nativeEntry)
+
+// WithSharedPayload declares that the codec keeps the identity of its
+// payload: SaveNative returns the same payload values LoadNative was given
+// (for example a native that holds its payload and returns it).  Only such a
+// codec may have a payload that shares an object with the rest of the
+// graph, or within itself.  Without this option, DumpDurable and LoadDurable
+// refuse a payload that holds a shared object, because the codec would
+// drop the sharing on the next save.
+func WithSharedPayload() NativeOption {
+	return func(e *nativeEntry) { e.shared = true }
+}
+
+// maxNativeVersion is the largest version a document can carry: versions
+// are written as plain JSON numbers.
+const maxNativeVersion = maxExactInt
 
 // WithNativeCharge declares the units charged before each SaveNative and
 // LoadNative call of the codec, through the WithTypedCharge function of the
@@ -122,6 +144,13 @@ func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c
 		return errors.New("durable json: a native name must be a nonempty UTF-8 string")
 	case version < 1:
 		return fmt.Errorf("durable json: native %q: version %d is below 1", name, version)
+	case int64(version) > maxNativeVersion:
+		return fmt.Errorf("durable json: native %q: version %d is above 2^53", name, version)
+	}
+	switch typ.Kind() {
+	case reflect.Func, reflect.Slice, reflect.Interface:
+		return fmt.Errorf("durable json: native %q: a %v payload has no identity; register a pointer type", name, typ.Kind())
+	default:
 	}
 	if prev, ok := r.byType[typ]; ok {
 		return fmt.Errorf("durable json: type %v is already registered as %q", typ, prev.name)
@@ -157,19 +186,60 @@ func (r *DurableRegistry) Freeze() {
 // Frozen reports whether Freeze was called.
 func (r *DurableRegistry) Frozen() bool { return r != nil && r.frozen }
 
-// Fingerprint describes the registered codecs, one "name@version=type"
-// entry per codec sorted by name, so peers can check that they hold the
-// same registry.
+// Fingerprint describes the registered codecs as JSON: an array of
+// {"name","version","charge","shared","type"} objects sorted by name, where
+// type is the package-qualified Go type.  Peers compare it to check that
+// they hold the same registry.
 func (r *DurableRegistry) Fingerprint() string {
 	if r == nil {
-		return ""
+		return "[]"
 	}
-	entries := make([]string, 0, len(r.byName))
+	type row struct {
+		Name    string `json:"name"`
+		Type    string `json:"type"`
+		Version int    `json:"version"`
+		Charge  int    `json:"charge"`
+		Shared  bool   `json:"shared"`
+	}
+	rows := make([]row, 0, len(r.byName))
 	for name, e := range r.byName {
-		entries = append(entries, fmt.Sprintf("%s@%d=%v", name, e.version, e.typ))
+		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ)})
 	}
-	slices.Sort(entries)
-	return strings.Join(entries, ";")
+	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.Name, b.Name) })
+	b, err := json.Marshal(rows)
+	if err != nil {
+		// Strings, ints and bools always marshal.
+		panic(err)
+	}
+	return string(b)
+}
+
+// qualifiedTypeName names t with full package paths, so two types of one
+// short name in different packages differ.
+func qualifiedTypeName(t reflect.Type) string {
+	switch t.Kind() {
+	case reflect.Pointer:
+		if t.Name() == "" {
+			return "*" + qualifiedTypeName(t.Elem())
+		}
+	case reflect.Map:
+		if t.Name() == "" {
+			return "map[" + qualifiedTypeName(t.Key()) + "]" + qualifiedTypeName(t.Elem())
+		}
+	case reflect.Chan:
+		if t.Name() == "" {
+			return "chan " + qualifiedTypeName(t.Elem())
+		}
+	case reflect.Array:
+		if t.Name() == "" {
+			return fmt.Sprintf("[%d]%s", t.Len(), qualifiedTypeName(t.Elem()))
+		}
+	default:
+	}
+	if t.Name() != "" && t.PkgPath() != "" {
+		return t.PkgPath() + "." + t.Name()
+	}
+	return t.String()
 }
 
 // checkUsable rejects a registry DumpDurable or LoadDurable cannot use.
