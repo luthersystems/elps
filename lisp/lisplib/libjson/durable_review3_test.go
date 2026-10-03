@@ -5,6 +5,8 @@ package libjson_test
 // Regression tests for the round-4 reviews of luthersystems/elps#797.
 
 import (
+	"go/ast"
+	"go/token"
 	"math"
 	"math/rand/v2"
 	"reflect"
@@ -130,6 +132,43 @@ func sliceFunc() reflect.Type {
 	return reflect.TypeFor[C]()
 }
 
+func intResult() reflect.Type {
+	type C chan func() int
+	return reflect.TypeFor[C]()
+}
+
+func stringResult() reflect.Type {
+	type C chan func() string
+	return reflect.TypeFor[C]()
+}
+
+func methodOfInt() reflect.Type {
+	type C chan interface{ M(int) }
+	return reflect.TypeFor[C]()
+}
+
+func methodOfString() reflect.Type {
+	type C chan interface{ M(string) }
+	return reflect.TypeFor[C]()
+}
+
+// astExprMethods embeds ast.Expr, whose unexported exprNode method has the
+// package path go/ast; localExprMethods declares the same names and
+// signatures here, so only that method's package path differs.
+func astExprMethods() reflect.Type {
+	type C chan interface{ ast.Expr }
+	return reflect.TypeFor[C]()
+}
+
+func localExprMethods() reflect.Type {
+	type C chan interface {
+		Pos() token.Pos
+		End() token.Pos
+		exprNode()
+	}
+	return reflect.TypeFor[C]()
+}
+
 func fingerprintOf(t *testing.T, typ reflect.Type) string {
 	t.Helper()
 	r := libjson.NewDurableRegistry()
@@ -149,6 +188,9 @@ func TestDurableFingerprintCompleteShape(t *testing.T) {
 		{"embedded field", anonymousField(), namedField()},
 		{"interface methods", readerIface(), writerIface()},
 		{"variadic", variadicFunc(), sliceFunc()},
+		{"func results", intResult(), stringResult()},
+		{"method signature", methodOfInt(), methodOfString()},
+		{"method package path", astExprMethods(), localExprMethods()},
 	} {
 		require.Equal(t, c.a.Name(), c.b.Name(), c.name)
 		require.Equal(t, c.a.PkgPath(), c.b.PkgPath(), c.name)

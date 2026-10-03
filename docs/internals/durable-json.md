@@ -245,11 +245,15 @@ the limits and the charges.
   direction, array length, map key and element, struct fields (name,
   package path, embedding, tag and type), function parameters, results and
   variadic flag, and interface methods (name, package path and signature).
-  Named components appear by qualified name, so the description is finite
-  with no cutoff. Two types declared inside different functions of one Go
-  package can share a name; the only remaining collision is two such types
-  with one name and an identical complete structure. Declare codec types at
-  package level. Peers compare it to confirm they hold the
+  A repeated unnamed component is written once and then as `#n`, so the
+  shape is linear in the number of distinct types and has no cutoff. A
+  named component appears by its qualified name only. Two types declared
+  inside different functions of one Go package can share a name, so a
+  collision remains possible when two function-scope types, or the named
+  components they contain, share qualified names: `C struct{ V Leaf }` with
+  a local `Leaf int` in one function and `Leaf string` in another gives one
+  fingerprint. Declare codec types, and the types they contain, at package
+  level. Peers compare it to confirm they hold the
   same registry.
 - A frozen registry is read-only and safe for concurrent use.
 
@@ -368,6 +372,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
 | Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |

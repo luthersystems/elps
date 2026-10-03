@@ -4,7 +4,9 @@ package libjson
 
 import (
 	"errors"
+	"reflect"
 	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -60,5 +62,40 @@ func TestDurableIntegerKeyText(t *testing.T) {
 	}
 	if len(e.keys) > limit {
 		t.Fatalf("key scratch holds %d bytes, past the %d-byte limit", len(e.keys), limit)
+	}
+}
+
+// nestedPairs returns struct{ L, R *A } nested n times over struct{ X int }:
+// a type with 2^n paths to its innermost struct but only n+1 unnamed types.
+func nestedPairs(n int) reflect.Type {
+	a := reflect.TypeFor[struct{ X int }]()
+	for range n {
+		p := reflect.PointerTo(a)
+		a = reflect.StructOf([]reflect.StructField{{Name: "L", Type: p}, {Name: "R", Type: p}})
+	}
+	return a
+}
+
+// TestTypeShapeLinear pins that a repeated unnamed subtype is written once
+// and referenced after, so the shape is linear in the distinct types.
+func TestTypeShapeLinear(t *testing.T) {
+	shape := typeShape(nestedPairs(20), false)
+	if len(shape) > 4096 {
+		t.Fatalf("shape of a 20-level repeated subtype is %d bytes", len(shape))
+	}
+	if strings.Contains(shape, "...") {
+		t.Fatalf("shape was cut short: %s", shape)
+	}
+	// Back-references keep different structures apart.
+	same := reflect.TypeFor[struct{ A, B *struct{ X int } }]()
+	diff := reflect.TypeFor[struct {
+		A *struct{ X int }
+		B *struct{ Y int }
+	}]()
+	if a, b := typeShape(same, false), typeShape(diff, false); a == b {
+		t.Fatalf("one shape for two structures: %s", a)
+	}
+	if typeShape(nestedPairs(3), false) == typeShape(nestedPairs(4), false) {
+		t.Fatal("one shape for two nesting depths")
 	}
 }
