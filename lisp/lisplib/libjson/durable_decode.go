@@ -18,7 +18,9 @@ import (
 // same value, so sharing and cycles come back as they were saved.  Natives
 // are rebuilt by the codecs reg holds (reg may be nil when the document holds
 // none), and ["~#fn","PKG:NAME"] is the function env's registry binds to
-// that global now, which must be a regular function of package PKG.
+// that global now, which must be a regular function of package PKG.  An
+// ["~#error",...] is an error value with its condition and data, and no
+// call stack or source location; the result itself may be one.
 //
 // LoadDurable accepts only what DumpDurable writes.  It rejects every input
 // LoadTyped rejects inside the value, a missing header or another format
@@ -27,10 +29,10 @@ import (
 // native payload that reaches an unfinished object (directly or through
 // finished ones), sharing inside the payload of a codec registered without
 // WithSharedPayload, an unknown native name or version, and a function name
-// that does not resolve to a regular function of its package.  A function
-// may be named by any of its package's names for it, so such a document can
-// re-encode to other bytes.  It never
-// panics on malformed input; a native codec is called only with a fully
+// that does not resolve to a regular function of its package, and an
+// error whose condition is empty or internal-panic.  A function may be
+// named by any of its package's names for it, so such a document can
+// re-encode to other bytes.  It never panics on malformed input; a native codec is called only with a fully
 // restored payload.
 //
 // Values are freshly allocated, except functions, which are the current
@@ -298,7 +300,7 @@ func (d *durableDecoder) index() (int, error) {
 
 func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	var tag string
-	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView, tagLit} {
+	for _, t := range [...]string{tagList, tagArray, tagTagged, tagObj, tagRef, tagNative, tagFn, tagView, tagLit, tagError} {
 		if bytes.HasPrefix(d.b[d.i:], []byte(`"`+t+`",`)) {
 			tag = t
 			break
@@ -332,7 +334,7 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 			return nil, err
 		}
 		v, err = d.view(depth)
-	case tagList, tagArray, tagTagged, tagNative:
+	case tagList, tagArray, tagTagged, tagNative, tagError:
 		if err = d.depth(depth); err != nil {
 			return nil, err
 		}
@@ -346,6 +348,8 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 			v, err = d.multiArray(depth)
 		case tagTagged:
 			v, err = d.taggedValue(depth)
+		case tagError:
+			v, err = d.errorValue(depth)
 		default:
 			v, err = d.native(depth)
 		}

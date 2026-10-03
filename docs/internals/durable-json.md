@@ -86,6 +86,7 @@ under the earlier rules.
 | `~#native` | `["~#native",["NAME",VERSION,PAYLOAD]]` | A native value, saved by the codec registered as `NAME`. |
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
 | `~#lit` | `["~#lit",X]` | `X`, a `~#list` or `~#view`, is a program literal. |
+| `~#error` | `["~#error",["CONDITION",[DATA...]]]` | An error value: its condition type and its data. |
 | `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP,[CELL...]]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. The cells are those of `OFF` to `OFF+CAP` that no earlier view wrote. |
 | `~#cells` | `["~#cells",N]` | Storage of `N` cells. It appears only as `STORAGE`: inline for one vector's data, else as `["~#obj",[ID,["~#cells",N]]]` at its first view and `["~#ref",ID]` after. |
 | `~#array` with data | `["~#array",[[DIMS...],DATA]]` | An array whose data list has an identity of its own. `DATA` is a `~#obj` of a list (empty allowed), a `~#ref` to one, or a `~#view`. Any rank. |
@@ -232,6 +233,31 @@ unmarked. When two headers over the same cells are one list and only one is
 sealed, the first the walk meets decides. `LoadDurable` rejects `~#lit`
 around anything but a `~#list` or a `~#view` (a scalar, a vector, a map, a
 `~#ref`, an `~#obj` or another `~#lit`).
+
+#### Error values
+
+An error (a condition value) is written as
+`["~#error",["CONDITION",[DATA...]]]`. `CONDITION` is its condition type,
+the name `handler-bind` matches. `DATA` is its data, each a durable value:
+for `(error 'c "message" x)`, the string and `x`. The message renders from
+the data, so it is the same after a load, and raising the restored error
+reaches the handler for its condition with the same data. An error is an
+object: shared, it is written once and referenced after, and it can sit in
+a cycle through its own data.
+
+Not saved, because each would make the bytes depend on where the error was
+raised or on host state:
+
+- the call stack (`error-stack` in a handler shows the stack of the new
+  raise, not the original one);
+- the source location (`ErrorVal.Source` reports none);
+- the Go error a host error wraps (`errors.Unwrap` and `errors.Is` no
+  longer reach it; its text is the message).
+
+An internal panic is never saved: its marker is evidence of a host fault,
+and a load must not forge one. `DumpDurable` refuses it, and an error whose
+condition is empty or not valid UTF-8. `LoadDurable` rejects the condition
+`internal-panic` and an empty condition.
 
 ### Determinism
 
@@ -428,7 +454,8 @@ saved.
 
 | Value | Error |
 |---|---|
-| Error (condition) value | `durable json: cannot encode an error` |
+| Internal panic | `durable json: cannot encode an internal panic` |
+| Error whose condition is empty or not UTF-8 | `durable json: cannot encode an error whose condition is empty or not UTF-8` |
 | Anonymous or local function, or one no global of its package binds | `durable json: cannot encode an anonymous function` |
 | A shared value in the payload of a codec without `WithSharedPayload` | `durable json: native "NAME" payload shares a value, and its codec does not keep sharing` |
 | Macro or special operator | `durable json: cannot encode a macro or special operator` |
@@ -476,6 +503,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
+| Error values | `durable_errors_test.go` | An error raised by `error` round-trips with its condition, message and data, and `handler-bind` matches it after the load; no stack or source; an error with no data; a shared error and an error in a cycle; a host error's text without its Go error; refusals; limits that agree; and a rejection table. `FuzzDurableJSON` seeds error documents. |
 | Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |

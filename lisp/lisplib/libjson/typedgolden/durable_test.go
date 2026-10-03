@@ -118,6 +118,12 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 	fn := env.LoadString("golden", `golden-cmp`)
 	less := env.LoadString("golden", `<`)
 	a, b2, c2 := smap(s("n"), lisp.Int(1)), smap(s("n"), lisp.Int(2)), smap(s("n"), lisp.Int(3))
+	xs := list(lisp.Int(1), lisp.Int(2), lisp.Int(3))
+	spare := vec(lisp.Int(1), lisp.Int(2))
+	spare.Cells[1].Cells = append(make([]*lisp.LVal, 0, 4), spare.Cells[1].Cells...)
+	lit := env.LoadString("golden", `(defun golden-lit () '(3 2 1)) (golden-lit)`)
+	litTail := env.LoadString("golden", `(rest (golden-lit))`)
+	cond := &lisp.LVal{Type: lisp.LError, Str: "golden-condition", Cells: []*lisp.LVal{s("boom"), lisp.Int(42)}}
 	return []struct {
 		name string
 		v    *lisp.LVal
@@ -141,6 +147,10 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 		{"native-payload-cycle", box(self)},
 		{"functions", list(fn, less, fn)},
 		{"bptree-shape", box(list(sym(":prefix"), s("p"), sym(":compare"), fn))},
+		{"list-and-tail", list(xs, lisp.QExpr(xs.Cells[1:3:3]))},
+		{"vector-spare-capacity", spare},
+		{"literal-and-tail", list(lit, litTail)},
+		{"error-value", list(cond, cond)},
 	}
 }
 

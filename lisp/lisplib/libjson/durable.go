@@ -4,11 +4,13 @@ package libjson
 
 // Durable typed JSON (luthersystems/substrate#683).
 //
-// DumpDurable writes a value graph as typed JSON plus four extension tags,
-// so that LoadDurable restores it with the same sharing: an object reached
+// DumpDurable writes a value graph as typed JSON plus extension tags, so
+// that LoadDurable restores it with the same sharing: an object reached
 // twice is written once and referenced after, a value that contains itself
-// round-trips, native values go through registered codecs, and a function
-// bound to a global is written by name.  The default typed JSON (DumpTyped,
+// round-trips, native values go through registered codecs, a function
+// bound to a global is written by name, lists and arrays over shared
+// storage are views of it, program literals stay literals and error values
+// keep their condition and data.  The default typed JSON (DumpTyped,
 // LoadTyped and the json: builtins) is not changed.
 // docs/internals/durable-json.md specifies the format; the golden corpus in
 // typedgolden/testdata/durable.txt freezes it.
@@ -109,16 +111,18 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 		default:
 			return nativeHeaderKey{v}, true
 		}
-	case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol, lisp.LFun, lisp.LError, lisp.LQuote,
+	case lisp.LError:
+		return errorKey{v}, true
+	case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LSymbol, lisp.LFun, lisp.LQuote,
 		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
 	}
 	return nil, false
 }
 
 // DumpDurable writes v as a durable typed JSON document:
-// ["~#durable",[1,VALUE]].  VALUE is v's typed JSON with four extension
-// tags.  An object (a nonempty list, a vector or array, a sorted map, a
-// tagged value, bytes or a native) that is reached more than once is
+// ["~#durable",[1,VALUE]].  VALUE is v's typed JSON with extension tags.
+// An object (a nonempty list, a vector or array, a sorted map, a tagged
+// value, bytes, an error or a native) that is reached more than once is
 // written once as ["~#obj",[ID,X]] and then as ["~#ref",ID], so LoadDurable
 // restores the sharing and any cycle.  An object reached once is written
 // exactly as DumpTyped writes it.  The same value graph always gives the
@@ -136,12 +140,17 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 // A program literal (a sealed list) is written as ["~#lit",X] and restores
 // as a literal that the mutators refuse.
 //
-// Refused with an error: errors (condition values), anonymous and local
-// functions, macros and special operators, natives with no codec, a native
-// whose payload reaches the native or an object that encloses it (directly
-// or through finished objects), a shared value in the payload of a codec
-// registered without WithSharedPayload, and every
-// value DumpTyped refuses for a reason other than sharing.
+// An error value is written as ["~#error",["CONDITION",[DATA...]]] and
+// restores as an error with the same condition and data, without its call
+// stack or source location (see durable_errors.go).
+//
+// Refused with an error: internal panics, errors whose condition is empty
+// or not UTF-8, anonymous and local functions, macros and special
+// operators, natives with no codec, a native whose payload reaches the
+// native or an object that encloses it (directly or through finished
+// objects), a shared value in the payload of a codec registered without
+// WithSharedPayload, and every value DumpTyped refuses for a reason other
+// than sharing.
 //
 // opts are typed JSON's limits and charge; see
 // docs/internals/durable-json.md for what each one counts.  The byte and
@@ -496,7 +505,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	case lisp.LFun:
 		return e.scanFun(v)
 	case lisp.LError:
-		return errors.New("durable json: cannot encode an error")
+		return e.scanError(v, key, depth)
 	case lisp.LQuote:
 		return errors.New("typed json: cannot encode a nested quote")
 	case lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
@@ -761,7 +770,9 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		e.buf = appendJSONString(e.buf, name)
 		e.buf = append(e.buf, ']')
 	case lisp.LError:
-		return errors.New("durable json: cannot encode an error")
+		if err := e.errorBody(v, depth); err != nil {
+			return err
+		}
 	case lisp.LQuote:
 		return errors.New("typed json: cannot encode a nested quote")
 	case lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LInvalid, lisp.LTypeMax:
