@@ -5,36 +5,50 @@ package libjson
 import (
 	"bytes"
 	"cmp"
+	"errors"
+	"fmt"
 	"slices"
 
 	"github.com/luthersystems/elps/lisp"
 )
 
-// decStorage is one "~#cells" object being read or read: its cells, which
-// cells were written as null, and the views of it.
+// decStorage is one "~#cells" storage being read: its cells, which cells
+// were written as null, the node of each cell a view has claimed (-1 until
+// then), and the views of it.  id is its object id, -1 when inline.
 type decStorage struct {
 	cells []*lisp.LVal
 	null  []bool
+	node  []int
 	views []*decView
+	id    int
 }
 
-// decView is one view of a storage object.  data is set once the view's
-// header is used as an array's data list.
+// decView is one view of a storage.  data is set once an array uses the
+// view's header as its data, vector once a vector does.
 type decView struct {
 	header                *lisp.LVal
+	storage               *decStorage
 	off, length, capacity int
-	storage               int
-	data, inline          bool
+	data, vector          bool
 }
 
-// view reads [STORAGE,OFF,LEN,CAP] after "~#view",[ and builds a list
-// header over the storage's cells.  The header is defined before the
-// storage is read, so a cell can refer to it.
-func (d *durableDecoder) view(depth int, dataPos bool) (*lisp.LVal, error) {
-	inline := d.pending < 0
+// holderArray is an array whose data is a holder of its own: the holder
+// must have size cells once the document is read.
+type holderArray struct {
+	data     *lisp.LVal
+	size, at int
+}
+
+// view reads [STORAGE,OFF,LEN,CAP,[CELLS...]] after "~#view",[ and builds
+// a list header over the storage's cells.  The header is defined before
+// anything else is read, so a cell can refer to it.  CELLS are the cells of
+// [OFF,OFF+CAP) that no earlier view claimed, in offset order; this view
+// claims them.  The cells earlier views claimed are reached through their
+// nodes, so the cycle check sees what this view's cells reach.
+func (d *durableDecoder) view(depth int) (*lisp.LVal, error) {
 	h := lisp.QExpr(nil)
 	d.define(h)
-	id, err := d.storageRef(depth)
+	st, err := d.storageRef(depth)
 	if err != nil {
 		return nil, err
 	}
@@ -47,11 +61,7 @@ func (d *durableDecoder) view(depth int, dataPos bool) (*lisp.LVal, error) {
 			return nil, err
 		}
 	}
-	if err := d.expect(']'); err != nil {
-		return nil, err
-	}
 	off, length, capacity := nums[0], nums[1], nums[2]
-	st := d.storage[id]
 	switch {
 	case length > capacity:
 		return nil, d.errorf("view length %d is past its capacity %d", length, capacity)
@@ -59,119 +69,154 @@ func (d *durableDecoder) view(depth int, dataPos bool) (*lisp.LVal, error) {
 		return nil, d.errorf("view [%d,%d) is past its storage of %d cells", off, off+capacity, len(st.cells))
 	case capacity == 0:
 		return nil, d.errorf("empty view")
-	case inline && !dataPos && capacity != length:
-		// A list holder never has spare capacity; only array data does.
-		return nil, d.errorf("list view with spare capacity")
 	}
 	h.Cells = st.cells[off : off+length : off+capacity]
-	dv := &decView{header: h, off: off, length: length, capacity: capacity, storage: id, data: dataPos, inline: inline}
+	dv := &decView{header: h, storage: st, off: off, length: length, capacity: capacity}
 	st.views = append(st.views, dv)
 	d.views[h] = dv
-	return h, nil
-}
-
-// storageRef reads a view's storage: ["~#obj",[ID,["~#cells",[N,[...]]]]]
-// at its first use, ["~#ref",ID] after.  It returns the storage's id.
-func (d *durableDecoder) storageRef(depth int) (int, error) {
-	if d.tree > 0 {
-		return 0, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
+	if err = d.expect(','); err != nil {
+		return nil, err
 	}
-	if err := d.count(); err != nil {
-		return 0, err
+	if err = d.expect('['); err != nil {
+		return nil, err
 	}
-	switch {
-	case bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagRef+`",`)):
-		d.i += len(tagRef) + 4
-		id, err := d.index()
-		if err != nil {
-			return 0, err
+	first := true
+	for k := off; k < off+capacity; k++ {
+		if st.node[k] >= 0 {
+			d.reach(st.node[k])
+			continue
 		}
-		if id >= len(d.objs) || !d.storageObj[id] {
-			return 0, d.errorf("view of object %d, which is not storage", id)
-		}
-		if err := d.expect(']'); err != nil {
-			return 0, err
-		}
-		d.reach(id)
-		d.used[id] = true
-		return id, nil
-	case bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagObj+`",[`)):
-		d.i += len(tagObj) + 5
-	default:
-		return 0, d.errorf("a view's storage must be a storage object or a reference to one")
-	}
-	id, err := d.index()
-	if err != nil {
-		return 0, err
-	}
-	if id != len(d.objs) {
-		return 0, d.errorf("object id %d out of sequence", id)
-	}
-	if !bytes.HasPrefix(d.b[d.i:], []byte(`,["`+tagCells+`",[`)) {
-		return 0, d.errorf("a view's storage must be a storage object or a reference to one")
-	}
-	d.i += len(tagCells) + 6
-	if err = d.count(); err != nil {
-		return 0, err
-	}
-	if err = d.depth(depth); err != nil {
-		return 0, err
-	}
-	n, err := d.index()
-	if err != nil {
-		return 0, err
-	}
-	// Each cell costs a value and at least two bytes of input ("0,"), so
-	// both bound the storage before it is allocated.
-	if n > d.cfg.maxValues-d.values || n > (len(d.b)-d.i)/2+1 {
-		return 0, d.errorf("storage of %d cells is larger than the input allows", n)
-	}
-	if err := d.expect(','); err != nil {
-		return 0, err
-	}
-	if err := d.expect('['); err != nil {
-		return 0, err
-	}
-	st := &decStorage{cells: make([]*lisp.LVal, n), null: make([]bool, n)}
-	backing := lisp.QExpr(st.cells) // never returned; holds the storage for d.objs
-	d.objs = append(d.objs, backing)
-	d.open = append(d.open, true)
-	d.low = append(d.low, noLow)
-	d.used = append(d.used, false)
-	d.storageObj = append(d.storageObj, true)
-	d.frames = append(d.frames, noLow)
-	d.storage[id] = st
-	for k := range n {
-		if k > 0 {
+		if !first {
 			if err := d.expect(','); err != nil {
-				return 0, err
+				return nil, err
 			}
 		}
+		first = false
+		node := d.openNode(-1)
+		st.node[k] = node
 		st.null[k] = bytes.HasPrefix(d.b[d.i:], []byte("null"))
 		c, err := d.value(depth + 1)
 		if err != nil {
-			return 0, err
+			return nil, err
 		}
 		st.cells[k] = c
+		d.closeNode(node)
 	}
-	// Close the cells, [N,…], "~#cells", [ID,…] and "~#obj".
-	for range 5 {
+	if err := d.expect(']'); err != nil {
+		return nil, err
+	}
+	if err := d.expect(']'); err != nil {
+		return nil, err
+	}
+	return h, nil
+}
+
+// storageRef reads a view's storage: ["~#cells",N] inline,
+// ["~#obj",[ID,["~#cells",N]]] at a shared storage's first use, and
+// ["~#ref",ID] after.
+func (d *durableDecoder) storageRef(depth int) (*decStorage, error) {
+	if err := d.count(); err != nil {
+		return nil, err
+	}
+	id := -1
+	switch {
+	case bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagCells+`",`)):
+		d.i += len(tagCells) + 4
+		return d.newStorage(depth, id)
+	case bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagRef+`",`)):
+		if d.tree > 0 {
+			return nil, d.errorf("a payload of a codec that does not keep sharing holds a reference")
+		}
+		d.i += len(tagRef) + 4
+		ref, err := d.index()
+		if err != nil {
+			return nil, err
+		}
+		if ref >= len(d.objs) || !d.storageObj[ref] {
+			return nil, d.errorf("view of object %d, which is not storage", ref)
+		}
 		if err := d.expect(']'); err != nil {
-			return 0, err
+			return nil, err
+		}
+		d.used[ref] = true
+		return d.storage[ref], nil
+	case bytes.HasPrefix(d.b[d.i:], []byte(`["`+tagObj+`",[`)):
+		if d.tree > 0 {
+			return nil, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
+		}
+		d.i += len(tagObj) + 5
+	default:
+		return nil, d.errorf("a view's storage must be storage, a storage object or a reference to one")
+	}
+	id, err := d.index()
+	if err != nil {
+		return nil, err
+	}
+	if id != len(d.objs) {
+		return nil, d.errorf("object id %d out of sequence", id)
+	}
+	if !bytes.HasPrefix(d.b[d.i:], []byte(`,["`+tagCells+`",`)) {
+		return nil, d.errorf("a view's storage must be storage, a storage object or a reference to one")
+	}
+	d.i += len(tagCells) + 5
+	if err = d.count(); err != nil {
+		return nil, err
+	}
+	st, err := d.newStorage(depth, id)
+	if err != nil {
+		return nil, err
+	}
+	// Close "~#obj",[ID,…].
+	for range 2 {
+		if err := d.expect(']'); err != nil {
+			return nil, err
 		}
 	}
-	low := d.popFrame()
-	d.open[id] = false
-	if low < id {
-		d.low[id] = low
-		d.reach(low)
+	return st, nil
+}
+
+// newStorage reads N] after "~#cells", and allocates the storage's cells.
+// Every cell is written later in the input, each as a value and with at
+// least a byte and a comma, so both limits bound the storage before it is
+// allocated.
+func (d *durableDecoder) newStorage(depth, id int) (*decStorage, error) {
+	if err := d.depth(depth); err != nil {
+		return nil, err
 	}
-	return id, nil
+	n, err := d.index()
+	if err != nil {
+		return nil, err
+	}
+	if n > d.cfg.maxValues-d.values {
+		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, d.cfg.maxValues)
+	}
+	if n > (len(d.b)-d.i)/2+1 {
+		return nil, fmt.Errorf("%w: storage of %d cells is larger than the input allows", ErrTypedLimit, n)
+	}
+	if err := d.expect(']'); err != nil {
+		return nil, err
+	}
+	st := &decStorage{cells: make([]*lisp.LVal, n), null: make([]bool, n), node: make([]int, n), id: id}
+	for k := range st.node {
+		st.node[k] = -1
+	}
+	d.storages = append(d.storages, st)
+	if id >= 0 {
+		// The backing list is never returned; it holds the storage's slot
+		// in d.objs.
+		d.objs = append(d.objs, lisp.QExpr(st.cells))
+		d.objNode = append(d.objNode, -1)
+		d.used = append(d.used, false)
+		d.storageObj = append(d.storageObj, true)
+		d.storage[id] = st
+	}
+	return st, nil
 }
 
 // dataHolder reads an array's data written in its own form: a shared list
-// (which may be empty), a reference to a list, or a view.
-func (d *durableDecoder) dataHolder(depth int) (*lisp.LVal, error) {
+// (which may be empty), a reference to a list, or a view.  vector marks a
+// vector's data.
+func (d *durableDecoder) dataHolder(depth int, vector bool) (*lisp.LVal, error) {
 	d.dataPos = true
 	h, err := d.value(depth)
 	d.dataPos = false
@@ -181,65 +226,85 @@ func (d *durableDecoder) dataHolder(depth int) (*lisp.LVal, error) {
 	if h.Type != lisp.LSExpr {
 		return nil, d.errorf("array data must be a list")
 	}
+	d.dataUsed[h] = d.dataUsed[h] || vector
 	if dv, ok := d.views[h]; ok {
 		dv.data = true
+		dv.vector = dv.vector || vector
 	}
 	return h, nil
 }
 
-// checkViews checks, after the whole document is read, that every storage
-// object is exactly what DumpDurable writes: its views' ranges (a list's
-// length, array data's capacity) overlap in one chain that covers it from
-// its first cell to its last, every cell no view's length covers is null,
-// a list view has no spare capacity, and no two list views are equal.
-func (d *durableDecoder) checkViews() error {
-	ids := make([]int, 0, len(d.storage))
-	for id := range d.storage {
-		ids = append(ids, id)
+// checkHolders checks, after the whole document is read, what can only be
+// checked then: each array's data has the size its dimensions give, each
+// empty list object is an array's data, and each storage is exactly what
+// DumpDurable writes.  A storage's views' ranges [OFF,OFF+CAP) overlap in
+// one chain that covers it from its first cell to its last; every cell no
+// view's length covers is null; only a vector's data has spare capacity;
+// no two list views are equal; and inline storage has one view, of a
+// vector's data with spare capacity, that covers it.
+func (d *durableDecoder) checkHolders() error {
+	for _, a := range d.arrays {
+		if len(a.data.Cells) != a.size {
+			return fmt.Errorf("typed json: offset %d: array contents do not match its dimensions", a.at)
+		}
 	}
-	slices.Sort(ids)
-	for _, id := range ids {
-		st := d.storage[id]
-		type span struct{ start, end int }
-		spans := make([]span, 0, len(st.views))
-		live := make([]bool, len(st.cells))
-		lists := map[[2]int]bool{}
-		for _, v := range st.views {
-			end := v.off + v.length
-			if v.data {
-				end = v.off + v.capacity
-			} else {
-				if v.capacity != v.length {
-					return d.errorf("list view of storage %d with spare capacity", id)
-				}
-				if lists[[2]int{v.off, v.length}] {
-					return d.errorf("two equal list views of storage %d", id)
-				}
-				lists[[2]int{v.off, v.length}] = true
-			}
-			if end == v.off {
-				return d.errorf("view of storage %d covers no cell", id)
-			}
-			spans = append(spans, span{v.off, end})
-			for k := v.off; k < v.off+v.length; k++ {
-				live[k] = true
-			}
+	for _, h := range d.emptyObjs {
+		if _, ok := d.dataUsed[h]; !ok {
+			return errors.New("durable json: a shared empty list that is no array's data")
 		}
-		slices.SortFunc(spans, func(a, b span) int { return cmp.Compare(a.start, b.start) })
-		reach := 0
-		for i, s := range spans {
-			if (i == 0 && s.start != 0) || (i > 0 && s.start >= reach) {
-				return d.errorf("storage %d is not one run of overlapping views", id)
-			}
-			reach = max(reach, s.end)
+	}
+	for _, st := range d.storages {
+		if err := d.checkStorage(st); err != nil {
+			return err
 		}
-		if reach != len(st.cells) {
-			return d.errorf("storage %d has cells no view covers", id)
+	}
+	return nil
+}
+
+func (d *durableDecoder) checkStorage(st *decStorage) error {
+	name := "inline storage"
+	if st.id >= 0 {
+		name = fmt.Sprintf("storage %d", st.id)
+	}
+	if st.id < 0 {
+		v := st.views[0]
+		if v.off != 0 || v.capacity != len(st.cells) || v.capacity == v.length {
+			return fmt.Errorf("durable json: %s is not one vector's data with spare capacity", name)
 		}
-		for k, l := range live {
-			if !l && !st.null[k] {
-				return d.errorf("storage %d cell %d is dead but not null", id, k)
+	}
+	type span struct{ start, end int }
+	spans := make([]span, 0, len(st.views))
+	live := make([]bool, len(st.cells))
+	lists := map[[2]int]bool{}
+	for _, v := range st.views {
+		if v.capacity != v.length && !v.vector {
+			return fmt.Errorf("durable json: view of %s with spare capacity is no vector's data", name)
+		}
+		if !v.data {
+			if lists[[2]int{v.off, v.length}] {
+				return fmt.Errorf("durable json: two equal list views of %s", name)
 			}
+			lists[[2]int{v.off, v.length}] = true
+		}
+		spans = append(spans, span{v.off, v.off + v.capacity})
+		for k := v.off; k < v.off+v.length; k++ {
+			live[k] = true
+		}
+	}
+	slices.SortFunc(spans, func(a, b span) int { return cmp.Compare(a.start, b.start) })
+	reach := 0
+	for i, s := range spans {
+		if (i == 0 && s.start != 0) || (i > 0 && s.start >= reach) {
+			return fmt.Errorf("durable json: %s is not one run of overlapping views", name)
+		}
+		reach = max(reach, s.end)
+	}
+	if reach != len(st.cells) {
+		return fmt.Errorf("durable json: %s has cells no view covers", name)
+	}
+	for k, l := range live {
+		if !l && !st.null[k] {
+			return fmt.Errorf("durable json: %s cell %d is dead but not null", name, k)
 		}
 	}
 	return nil

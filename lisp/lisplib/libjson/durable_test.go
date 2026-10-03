@@ -124,7 +124,7 @@ func TestDurableAliasing(t *testing.T) {
 		{
 			name: "a vector that holds itself",
 			src:  `(let ((v (vector 1))) (append! v v) v)`,
-			doc:  `["~#durable",[1,["~#obj",[0,[1,["~#ref",0]]]]]]`,
+			doc:  `["~#durable",[1,["~#obj",[0,["~#array",[[2],["~#view",[["~#cells",4],0,2,4,[1,["~#ref",0],null,null]]]]]]]]]`,
 			after: [][2]string{
 				{`(append! r 3)`, `(vector 1 #<cycle> 3)`},
 				{`(length (aref r 1))`, `3`},
@@ -318,7 +318,7 @@ func TestLoadDurableRejects(t *testing.T) {
 		{`["~#durable",[1,["~#obj",[0,["~#fn","user:g"]]]]]`, "an object must be"},
 		{`["~#durable",[1,["~#obj",[0,["~#obj",[1,{}]]]]]]`, "object definition inside another definition"},
 		{`["~#durable",[1,["~#obj",[0,["~#ref",0]]]]]`, "an object must be a list, vector, array, map, tagged value, bytes or native, not a reference"},
-		{`["~#durable",[1,["~#obj",[0,["~#list",[]]]]]]`, "empty list must be null"},
+		{`["~#durable",[1,["~#obj",[0,["~#list",[]]]]]]`, "object 0 is defined but never referenced"},
 		{`["~#durable",[1,["~#obj",[-1,{}]]]]`, "expected a nonnegative integer"},
 		{`["~#durable",[1,["~#obj",[0.5,{}]]]]`, "expected a nonnegative integer"},
 		{`["~#durable",[1,["~#ref","0"]]]`, "expected an integer"},

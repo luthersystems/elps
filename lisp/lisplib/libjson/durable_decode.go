@@ -54,6 +54,7 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 		pending:      -1,
 		storage:      map[int]*decStorage{},
 		views:        map[*lisp.LVal]*decView{},
+		dataUsed:     map[*lisp.LVal]bool{},
 	}
 	if len(b) > d.cfg.maxBytes {
 		return nil, fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, d.cfg.maxBytes)
@@ -86,7 +87,7 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 	if i := slices.Index(d.used, false); i >= 0 {
 		return nil, fmt.Errorf("durable json: object %d is defined but never referenced", i)
 	}
-	if err := d.checkViews(); err != nil {
+	if err := d.checkHolders(); err != nil {
 		return nil, err
 	}
 	return v, nil
@@ -95,22 +96,35 @@ func LoadDurable(env *lisp.LEnv, b []byte, reg *DurableRegistry, opts ...TypedOp
 type durableDecoder struct {
 	env *lisp.LEnv
 	reg *DurableRegistry
-	// storage holds each "~#cells" object by id, and views each view's
-	// header; see durable_views_decode.go.
-	storage map[int]*decStorage
-	views   map[*lisp.LVal]*decView
+	// storage holds each shared "~#cells" object by id, storages every
+	// storage in document order, and views each view's header.  dataUsed
+	// marks every header an array uses as its data, true when a vector
+	// does.  arrays holds each array whose data is a holder of its own,
+	// for the size check at the end.  emptyObjs holds each empty list
+	// defined as an object.  See durable_views_decode.go.
+	storage   map[int]*decStorage
+	storages  []*decStorage
+	views     map[*lisp.LVal]*decView
+	dataUsed  map[*lisp.LVal]bool
+	arrays    []holderArray
+	emptyObjs []*lisp.LVal
 	// objs holds each defined object.  A native's slot stays nil until its
 	// codec returns.
 	objs []*lisp.LVal
-	// open reports whether each object's definition is still being read.
+	// objNode holds each object's node in the cycle check, -1 for
+	// storage.  nodeObj holds each node's object id, -1 for a cell of a
+	// view.  A node is an object or a storage cell, numbered in the order
+	// they open.
+	objNode, nodeObj []int
+	// open reports whether each node is still being read.
 	open []bool
-	// low holds, for each finished object, the smallest id of an object
-	// that was still open when it finished and that it reaches, or noLow.
+	// low holds, for each finished node, the smallest node that was still
+	// open when it finished and that it reaches, or noLow.
 	low []int
 	// used reports whether a reference names each object.
 	used []bool
-	// frames holds, for each object definition and native payload being
-	// read, the smallest id of an open object its contents reach so far.
+	// frames holds, for each node and native payload being read, the
+	// smallest open node its contents reach so far.
 	frames []int
 	// storageObj marks objects that are "~#cells" storage, which only a
 	// view may refer to.
@@ -149,6 +163,27 @@ func (d *durableDecoder) popFrame() int {
 	low := d.frames[len(d.frames)-1]
 	d.frames = d.frames[:len(d.frames)-1]
 	return low
+}
+
+// openNode opens a node of the cycle check for object id, or for a
+// storage cell when id is -1.
+func (d *durableDecoder) openNode(id int) int {
+	n := len(d.open)
+	d.open = append(d.open, true)
+	d.low = append(d.low, noLow)
+	d.nodeObj = append(d.nodeObj, id)
+	d.frames = append(d.frames, noLow)
+	return n
+}
+
+// closeNode finishes node n and passes up the open nodes it reaches.
+func (d *durableDecoder) closeNode(n int) {
+	low := d.popFrame()
+	d.open[n] = false
+	if low < n {
+		d.low[n] = low
+		d.reach(low)
+	}
 }
 
 func (d *durableDecoder) depth(depth int) error {
@@ -199,7 +234,9 @@ func (d *durableDecoder) array(depth int) (*lisp.LVal, error) {
 	if err != nil {
 		return nil, err
 	}
-	data.Cells = cells
+	// A vector written inline has no spare capacity (DumpDurable writes
+	// one with spare capacity as a view).
+	data.Cells = cells[:len(cells):len(cells)]
 	n.Int = len(cells)
 	return v, nil
 }
@@ -274,7 +311,7 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 	case tagFn:
 		v, err = d.function()
 	case tagObj:
-		v, err = d.objectDef(depth, dataPos)
+		v, err = d.objectDef(depth)
 	case tagView:
 		if err = d.depth(depth); err != nil {
 			return nil, err
@@ -282,7 +319,7 @@ func (d *durableDecoder) tagged(depth int) (*lisp.LVal, error) {
 		if err = d.expect('['); err != nil {
 			return nil, err
 		}
-		v, err = d.view(depth, dataPos)
+		v, err = d.view(depth)
 	case tagList, tagArray, tagTagged, tagNative:
 		if err = d.depth(depth); err != nil {
 			return nil, err
@@ -321,7 +358,9 @@ func (d *durableDecoder) list(depth int) (*lisp.LVal, error) {
 	if len(cells) == 0 {
 		return nil, d.errorf("empty list must be null")
 	}
-	v.Cells = cells
+	// The list may be a vector's data, whose capacity DumpDurable writes:
+	// one written as a list has none to spare.
+	v.Cells = cells[:len(cells):len(cells)]
 	return v, nil
 }
 
@@ -384,14 +423,13 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	}
 	if bytes.HasPrefix(d.b[d.i:], []byte(`["~#`)) {
 		// Data with an identity of its own: a shared list, a reference to
-		// one, or a view of shared storage.  Any rank.
-		h, herr := d.dataHolder(depth)
+		// one, or a view.  Any rank.  The holder may still be open (an
+		// array inside its own data), so its size is checked at the end.
+		h, herr := d.dataHolder(depth, len(dims) == 1)
 		if herr != nil {
 			return nil, herr
 		}
-		if len(h.Cells) != total {
-			return nil, d.errorf("array contents do not match its dimensions")
-		}
+		d.arrays = append(d.arrays, holderArray{data: h, size: total, at: d.i})
 		if err = d.expect(']'); err != nil {
 			return nil, err
 		}
@@ -416,7 +454,7 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 		return nil, err
 	}
 	dimList.Cells = dims
-	data.Cells = cells
+	data.Cells = cells[:len(cells):len(cells)]
 	return v, nil
 }
 
@@ -471,7 +509,7 @@ func (d *durableDecoder) dims() ([]*lisp.LVal, error) {
 
 // objectDef reads [ID,X] after "~#obj",.  ID must be the next id and X a
 // value that can be shared.
-func (d *durableDecoder) objectDef(depth int, dataPos bool) (*lisp.LVal, error) {
+func (d *durableDecoder) objectDef(depth int) (*lisp.LVal, error) {
 	if d.tree > 0 {
 		return nil, d.errorf("a payload of a codec that does not keep sharing holds a shared object")
 	}
@@ -492,33 +530,29 @@ func (d *durableDecoder) objectDef(depth int, dataPos bool) (*lisp.LVal, error) 
 		return nil, err
 	}
 	d.objs = append(d.objs, nil)
-	d.open = append(d.open, true)
-	d.low = append(d.low, noLow)
 	d.used = append(d.used, false)
 	d.storageObj = append(d.storageObj, false)
-	d.frames = append(d.frames, noLow)
+	node := d.openNode(id)
+	d.objNode = append(d.objNode, node)
 	d.pending = id
 	var v *lisp.LVal
-	if empty := `["` + tagList + `",[]]`; dataPos && bytes.HasPrefix(d.b[d.i:], []byte(empty)) {
-		// An array's shared data list may be empty; nowhere else.
+	if empty := `["` + tagList + `",[]]`; bytes.HasPrefix(d.b[d.i:], []byte(empty)) {
+		// An array's shared data list may be empty; checkHolders checks
+		// that an array uses it.
 		if err = d.count(); err != nil {
 			return nil, err
 		}
 		d.i += len(empty)
 		v = lisp.QExpr([]*lisp.LVal{})
 		d.define(v)
+		d.emptyObjs = append(d.emptyObjs, v)
 	} else if v, err = d.value(depth); err != nil {
 		return nil, err
 	}
 	if d.pending >= 0 {
 		return nil, d.errorf("an object must be a list, vector, array, map, tagged value, bytes or native")
 	}
-	low := d.popFrame()
-	d.open[id] = false
-	if low < id {
-		d.low[id] = low
-		d.reach(low)
-	}
+	d.closeNode(node)
 	if err := d.expect(']'); err != nil {
 		return nil, err
 	}
@@ -544,7 +578,7 @@ func (d *durableDecoder) ref() (*lisp.LVal, error) {
 	case d.objs[id] == nil:
 		return nil, d.errorf("native payload refers to object %d, which encloses the native", id)
 	}
-	d.reach(id)
+	d.reach(d.objNode[id])
 	d.used[id] = true
 	return d.objs[id], nil
 }
@@ -615,7 +649,10 @@ func (d *durableDecoder) native(depth int) (*lisp.LVal, error) {
 	// object encloses this native, and LoadNative must see a finished
 	// payload.
 	if low := d.popFrame(); low != noLow {
-		return nil, d.errorf("native %q payload refers to object %d, which encloses the native", name, low)
+		if obj := d.nodeObj[low]; obj >= 0 {
+			return nil, d.errorf("native %q payload refers to object %d, which encloses the native", name, obj)
+		}
+		return nil, d.errorf("native %q payload refers to a view cell that encloses the native", name)
 	}
 	if err = d.expect(']'); err != nil {
 		return nil, err

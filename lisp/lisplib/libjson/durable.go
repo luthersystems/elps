@@ -220,8 +220,14 @@ type durableEncoder struct {
 	funs map[funKey]string
 	// funIndex holds, per package, the FID to first-name index read once
 	// per dump.
-	funIndex    map[string]map[string]string
+	funIndex map[string]map[string]string
+	// dataHeaders marks every array data header discovery found, and
+	// appendable those a vector uses.  recorded marks the holder headers
+	// in headers.  views places each grouped holder.  See
+	// durable_views.go.
 	dataHeaders map[*lisp.LVal]bool
+	appendable  map[*lisp.LVal]bool
+	recorded    map[*lisp.LVal]bool
 	views       map[any]viewInfo
 	// low holds, by first-visit index, for each object scan has finished,
 	// the smallest first-visit index of an object that was still open when
@@ -237,9 +243,9 @@ type durableEncoder struct {
 	// treeNames is the stack of no-sharing codecs whose payloads scan is
 	// inside.
 	treeNames []string
-	// holders, dataHeaders, views and storages describe shared cell
-	// storage; see durable_views.go.
-	holders  []holderRec
+	// headers holds the holder headers discovery found, in walk order,
+	// and storages each group's storage.
+	headers  []*lisp.LVal
 	storages []storageInfo
 	typedEncoder
 	scanned int
@@ -266,6 +272,8 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		saved:        map[any]savedNative{},
 		funs:         map[funKey]string{},
 		dataHeaders:  map[*lisp.LVal]bool{},
+		appendable:   map[*lisp.LVal]bool{},
+		recorded:     map[*lisp.LVal]bool{},
 		views:        map[any]viewInfo{},
 	}
 }
@@ -335,22 +343,29 @@ func (e *durableEncoder) reach(i int) {
 	}
 }
 
-// openObject marks a first-visited object open.
-func (e *durableEncoder) openObject(key any) int {
+// openNode opens a node of the cycle check: an object, or a cell of view
+// storage.
+func (e *durableEncoder) openNode() int {
 	i := len(e.isOpen)
-	e.order[key] = i
 	e.isOpen = append(e.isOpen, true)
 	e.low = append(e.low, noLow)
 	e.frames = append(e.frames, noLow)
+	return i
+}
+
+// openObject marks a first-visited object open.
+func (e *durableEncoder) openObject(key any) int {
+	i := e.openNode()
+	e.order[key] = i
 	if len(e.treeNames) > 0 {
 		e.tree[key] = e.treeNames[len(e.treeNames)-1]
 	}
 	return i
 }
 
-// closeObject finishes an object: it records the open objects the object
-// reaches, other than itself and its contents, and passes them up.
-func (e *durableEncoder) closeObject(key any, i int) int {
+// closeNode finishes a node: it records the open nodes the node reaches,
+// other than itself and its contents, and passes them up.
+func (e *durableEncoder) closeNode(i int) int {
 	low := e.frames[len(e.frames)-1]
 	e.frames = e.frames[:len(e.frames)-1]
 	e.isOpen[i] = false
@@ -377,6 +392,9 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	if err := e.countScan(1); err != nil {
 		return err
 	}
+	if e.discover && v.Type == lisp.LSExpr && len(v.Cells) > 0 {
+		e.recordHeader(v)
+	}
 	key, shareable := e.identity(v)
 	if shareable {
 		e.refs[key]++
@@ -389,17 +407,14 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		return nil
 	case lisp.LBytes:
 		e.openObject(key)
-		e.closeObject(key, e.order[key])
+		e.closeNode(e.order[key])
 		return nil
 	case lisp.LSExpr:
-		if len(v.Cells) == 0 {
+		if !shareable {
 			return nil
 		}
 		if err := e.cfg.depthError(depth); err != nil {
 			return err
-		}
-		if e.discover {
-			e.recordList(key, v)
 		}
 		return e.scanHolder(key, v.Cells, depth)
 	case lisp.LArray:
@@ -417,13 +432,13 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		}
 		_ = cells
 		if e.discover {
-			e.recordData(v.Cells[1])
+			e.recordData(v.Cells[1], len(dims) == 1)
 		}
 		i := e.openObject(key)
 		if err := e.scanData(v.Cells[1], depth); err != nil {
 			return err
 		}
-		e.closeObject(key, i)
+		e.closeNode(i)
 	case lisp.LSortMap:
 		if err := e.cfg.depthError(depth); err != nil {
 			return err
@@ -450,7 +465,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 			}
 		}
 		e.releaseMembers(pbase, keysMark)
-		e.closeObject(key, i)
+		e.closeNode(i)
 	case lisp.LTaggedVal:
 		if err := checkTagged(v); err != nil {
 			return err
@@ -462,7 +477,7 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		if err := e.scan(v.Cells[0], depth+1); err != nil {
 			return err
 		}
-		e.closeObject(key, i)
+		e.closeNode(i)
 	case lisp.LNative:
 		return e.scanNative(v, key, depth)
 	case lisp.LFun:
@@ -540,7 +555,7 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	if !e.discover && e.frames[len(e.frames)-1] <= i {
 		return fmt.Errorf("durable json: native %q payload refers to a value that encloses the native", entry.name)
 	}
-	e.closeObject(key, i)
+	e.closeNode(i)
 	return nil
 }
 
@@ -633,19 +648,19 @@ func (e *durableEncoder) value(v *lisp.LVal, depth int) error {
 	}
 	key, shareable := e.identity(v)
 	if !shareable || e.refs[key] < 2 {
-		return e.body(v, key, depth)
+		return e.body(v, key, shareable, depth)
 	}
-	return e.object(key, depth, func() error { return e.body(v, key, depth) })
+	return e.object(key, depth, func() error { return e.body(v, key, shareable, depth) })
 }
 
 // body writes v without an object wrapper.  Leaves are written by the
 // typed encoder, so their bytes are typed JSON's.
-func (e *durableEncoder) body(v *lisp.LVal, key any, depth int) error {
+func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) error {
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat, lisp.LString, lisp.LBytes, lisp.LSymbol:
 		return e.typedEncoder.value(v, depth)
 	case lisp.LSExpr:
-		if len(v.Cells) == 0 {
+		if !shareable {
 			return e.typedEncoder.value(v, depth)
 		}
 		return e.holderBody(key, v.Cells, depth)

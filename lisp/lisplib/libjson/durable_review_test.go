@@ -308,7 +308,7 @@ func TestDurableLimitCountsPinned(t *testing.T) {
 		{`(let ((m (sorted-map))) (list m m))`, 4, 2},    // list, obj wrapper, map, ref
 		{`(vector (vector (vector)))`, 3, 3},             // three vectors
 		{`(list 'a :b "c")`, 4, 1},                       // list and three leaves
-		{`(let ((v (vector 1))) (append! v v) v)`, 4, 1}, // obj, vector, 1, ref
+		{`(let ((v (vector 1))) (append! v v) v)`, 9, 1}, // obj, array, dim, view, storage, 1, ref, 2 dead
 	} {
 		v := env.LoadString("test", c.src)
 		require.NoError(t, lisp.GoError(v))

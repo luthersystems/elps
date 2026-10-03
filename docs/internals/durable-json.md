@@ -85,17 +85,19 @@ under the earlier rules.
 | `~#ref` | `["~#ref",ID]` | The object `ID`, defined earlier in the document. |
 | `~#native` | `["~#native",["NAME",VERSION,PAYLOAD]]` | A native value, saved by the codec registered as `NAME`. |
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
-| `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. |
-| `~#cells` | `["~#cells",[N,[CELL...]]]` | Storage of `N` cells. It appears only as `STORAGE`: as `["~#obj",[ID,["~#cells",...]]]` at its first view and `["~#ref",ID]` after. |
+| `~#view` | `["~#view",[STORAGE,OFF,LEN,CAP,[CELL...]]]` | A list header over cells `OFF` to `OFF+LEN` of `STORAGE`, with capacity `CAP`. The cells are those of `OFF` to `OFF+CAP` that no earlier view wrote. |
+| `~#cells` | `["~#cells",N]` | Storage of `N` cells. It appears only as `STORAGE`: inline for one vector's data, else as `["~#obj",[ID,["~#cells",N]]]` at its first view and `["~#ref",ID]` after. |
 | `~#array` with data | `["~#array",[[DIMS...],DATA]]` | An array whose data list has an identity of its own. `DATA` is a `~#obj` of a list (empty allowed), a `~#ref` to one, or a `~#view`. Any rank. |
 
 The grammar of the view forms:
 
 ```text
-VIEW    = ["~#view",[STORAGE,OFF,LEN,CAP]]        LEN <= CAP, OFF+CAP <= N, CAP > 0
-STORAGE = ["~#obj",[ID,["~#cells",[N,[CELL,...]]]]] | ["~#ref",ID]
-CELL    = VALUE                                    null where no view's LEN covers it
-ARRAY   = ["~#array",[[DIM,...],DATA]]             DATA as above, LEN = product of DIMs
+VIEW    = ["~#view",[STORAGE,OFF,LEN,CAP,[CELL,...]]]   LEN <= CAP, OFF+CAP <= N, CAP > 0
+STORAGE = ["~#cells",N]                                  one view, a vector's data, CAP > LEN
+        | ["~#obj",[ID,["~#cells",N]]] | ["~#ref",ID]     two or more views
+CELL    = VALUE                     each cell of [OFF,OFF+CAP) no earlier view wrote, in order;
+                                    null where no view's LEN covers it
+ARRAY   = ["~#array",[[DIM,...],DATA]]                   DATA as above, LEN = product of DIMs
 ```
 
 `X` is the typed spelling of a list, vector, array, sorted map, tagged value
@@ -118,7 +120,7 @@ An object is a value whose identity Lisp code can observe through mutation or
 |---|---|
 | Sorted map | Its map storage (`*lisp.MapData`). Two headers over one map are one object. |
 | Vector or array | Its dims header and its data list header together. Two arrays with different dims headers over one data list are two arrays that share the data list. |
-| Array data list | Its header, because `append!` replaces the header's cells and every array over that header sees it. A list value that is that header is the same object. |
+| Array data list | Its header, because `append!` replaces the header's cells and every array over that header sees it. A list value that is that header is the same object, even when it is empty. |
 | Bytes | Its buffer (`*[]byte`). |
 | Nonempty list | Its cells: the address of the first cell and the length. Two headers over the same cells are one list, because `stable-sort` through one is seen through the other. (A list header that is an array's data list is that data list.) |
 | Tagged value | Its header. |
@@ -136,39 +138,68 @@ vector's data in place while its capacity allows. So two values can share
 storage without being one value: a write through one (`stable-sort`,
 `append!`) is seen through the other. The encoder keeps that sharing:
 
-1. A first walk (discovery) finds every holder of cells: each nonempty
-   list and each array data list. It also saves every native and names
-   every function, once.
-2. Holders are grouped by the address range their cells cover. A list
-   covers its length. An array data list covers its capacity, because
-   `append!` writes there. Holders whose ranges overlap form one group.
-3. A group of two or more holders is written as one storage object. Its
-   cells are the union of the ranges, in address order. A cell no holder's
-   length covers is dead: nothing can read it before an `append!` writes it,
-   so it is written as `null`.
+1. A first walk (discovery) records every holder header it meets: each
+   nonempty list and each array data list. It records a header before it
+   skips an object it has walked, because a list header can turn out to be
+   an array's data list later in the walk. It also saves every native and
+   names every function, once.
+2. Once every data list is known, each header gets its final identity, and
+   holders are grouped by the address range their cells cover. A list
+   covers its length. A vector's data covers its capacity, because
+   `append!` writes there. Other array data (no vector in the graph uses
+   it) covers its length, and its capacity is written as its length:
+   nothing can append to it. Holders whose ranges overlap form one group.
+3. A group of two or more holders is one storage object. A vector's data
+   alone with spare capacity is a storage of its own, written inline.
 4. Each holder in the group is a `~#view` of the storage, with its offset,
-   length and capacity. A list view's capacity equals its length. Array data
-   keeps its capacity, so `append!` after a load writes in place exactly
-   when it did before the save.
-5. The counting pass and the output then walk the storage's cells once, at
-   the first view, in offset order.
+   length and capacity. A list view's capacity equals its length. A
+   vector's data keeps its capacity, so `append!` after a load writes in
+   place exactly when it did before the save.
+5. Each view writes the cells of its range `[OFF,OFF+CAP)` that no earlier
+   view wrote, in offset order, so every cell is written once, by the first
+   view the walk reaches that covers it. A cell no holder's length covers is
+   dead: nothing can read it before an `append!` writes it, so it is written
+   as `null`. Each written cell, dead ones included, counts as one value.
 
 Addresses decide only which holders overlap and their offsets. Both are
 properties of the memory layout, not of address order, so the bytes are a
 function of the value graph alone. On load the storage is allocated once
 and each view becomes a list header over a slice of it.
 
+Each storage cell is a node of the cycle check of its own. A view reaches
+the cells of its range, not its whole storage. So a native's payload can
+hold a view of the storage that holds the native, as long as the view does
+not cover the native's cell (`TestDurableNativeInViewStorage`).
+
 An array's data list is written in its own `DATA` form (above) when it is a
 view, or when another array or a list value shares it. Otherwise the array
-is written exactly as typed JSON writes it.
+is written exactly as typed JSON writes it. An array inside its own data
+list restores: its size is checked once the whole document is read.
+
+##### Capacity
+
+A vector's capacity is part of the language, not of the Go runtime. A new
+vector's capacity is its length (`lisp.Array`; `select` and `reject`, and
+the `?del!` and `?set!` reworks, set it the same way). `append!` writes in
+place while the values fit, and otherwise grows the capacity to
+`lisp.GrowCap(c, n)`, `max(2c, n, 4)` for capacity `c` and needed length
+`n`, lowered to the runtime's allocation cap but never below `n`. Go's
+own `append` growth rounds to allocation size classes, which differ between
+32-bit and 64-bit builds and between Go versions, so a capacity it chose
+would make the document depend on the machine. A template VM keeps
+each value's capacity, so a cold environment, an eager or lazy template VM
+and a prewarmed VM write the same bytes (`TestDurableCapacityParity`).
 
 `LoadDurable` rejects a view that is out of its storage's range, has
-`LEN > CAP` or `CAP == 0`, is a list view with spare capacity, or equals
-another list view of the same storage. It also rejects storage whose views
-do not form one run of overlapping ranges from its first cell to its last,
-storage with a dead cell that is not `null`, a storage object that only one
-view uses, a `~#ref` to storage outside a view, and `~#cells` anywhere but in
-a view.
+`LEN > CAP` or `CAP == 0`, has spare capacity but is no vector's data, or
+equals another list view of the same storage. It rejects inline storage
+that is not one vector's data with spare capacity covering it. It also
+rejects storage whose views do not form one run of overlapping ranges from
+its first cell to its last, storage with a dead cell that is not `null`, a
+storage object that only one view uses, a `~#ref` to storage outside a view,
+`~#cells` anywhere but in a view, a shared empty list that is no array's
+data, and storage larger than the rest of the input or the value limit can
+hold (`ErrTypedLimit`).
 
 Restored values are fresh and mutable. A saved program literal, which raises
 `modify-literal-error` on `stable-sort`, restores as an ordinary list that
@@ -418,7 +449,7 @@ A limit error wraps `ErrTypedLimit`.
 | `TestDurable*`, `TestLoadDurableRejects` | `durable_test.go` | Aliasing, cycles, natives, functions, refusals and limits that agree in both directions. |
 | `TestDurableLeavesTypedUnchanged` | `durable_test.go` | `DumpTyped` and `json:dump-string :typed true` still write shared values in full and refuse cycles. |
 | `TestDurableRegistryFrozen`, `TestDurableNativeCharge`, `TestDurableAllocationCap`, `TestDurableRoots` | `durable_test.go` | Freezing, registration order, charges, the allocation cap and roots. |
-| Views | `durable_views_test.go` | A list with its tail and a middle slice, `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), arrays of different dims over one data list, a data list held as a list, views in a native payload, limits at the exact boundary, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
+| Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
