@@ -53,11 +53,38 @@ func (e encodeInvalidNumberError) Error() string {
 // TestEncoderFitsItsSizeClass would catch it if that ever stopped being true.
 // A WORD is what the paragraph above is about, and a word is still charged in
 // full.
+//
+// The words that do sit here (luthersystems/elps#802) are paid for by the
+// 64-byte scratch array that used to: numbers and short base64 values are now
+// formatted straight into the output buffer's spare capacity, as strings
+// already were.
 type encoder struct {
+	// memo and memoMore hold the bytes of each native already written in
+	// this document, so a native that appears more than once is marshalled
+	// once (luthersystems/elps#802).  memo is one native, inline, because
+	// nearly every document holds at most one; memoMore is made for the
+	// second, and for any whose bytes keepNativeMemos had to copy out.  See
+	// encodeLNative.
+	memoMore map[*lisp.LVal]nativeMemo
+
+	// env and legacyNatives are the document's encodeMeter.  They sit here
+	// rather than in encodeBudget because they never change during a
+	// document, and the budget is copied into every frame of the walk.
+	env *lisp.LEnv
+
+	memo nativeSpan
+
 	buf bytes.Buffer
 
-	scratch    [64]byte
-	stringNums bool
+	// chargedKiB is how many KiB of this document's output have been charged
+	// to env as steps, and next is the output length at which charge
+	// must take its slow path: past the cap, or at the next KiB to charge.
+	// See chargeKiB.
+	chargedKiB int
+	next       int
+
+	stringNums    bool
+	legacyNatives bool
 
 	// nestedDeep and wroteNative record the two ways the bytes this encoder
 	// produces can fall outside what it is able to vouch for.  Both are read
@@ -201,6 +228,21 @@ type encodeBudget struct {
 	maxBytes int
 }
 
+// encodeMeter is what a document is charged to, beside its encodeBudget.
+//
+// env, when set, is charged one step per KiB of output as the output is
+// written (chargeKiB), so a step budget stops an encode partway rather than
+// after the whole document is built (luthersystems/elps#802).  The total is
+// floor(len/1024), the charge json:dump-* made after encoding before.
+//
+// legacyNatives selects the native encoder as it was before
+// luthersystems/elps#802, with no bound, no charge and no memo.  Only tests
+// set it, to compare the two.
+type encodeMeter struct {
+	env           *lisp.LEnv
+	legacyNatives bool
+}
+
 // encodeContextInterval is how many values are encoded between polls of the
 // context.  A poll is cheap but not free, and a thousand values is well below
 // a millisecond of work.
@@ -240,7 +282,20 @@ func (enc *encoder) charge(b encodeBudget) bool {
 		return false
 	}
 	enc.visits++
-	return len(enc.buf.Bytes()) > b.maxBytes || enc.visits%encodeContextInterval == 0
+	return enc.buf.Len() >= enc.next || enc.visits%encodeContextInterval == 0
+}
+
+// setNext sets the output length at which charge takes its slow path: one
+// byte past the cap, or the end of the next KiB to charge for steps,
+// whichever comes first.
+func (enc *encoder) setNext(b encodeBudget) {
+	enc.next = math.MaxInt
+	if b.maxBytes > 0 && b.maxBytes < math.MaxInt {
+		enc.next = b.maxBytes + 1
+	}
+	if enc.env != nil {
+		enc.next = min(enc.next, (enc.chargedKiB+1)<<10)
+	}
 }
 
 func (enc *encoder) chargeSlow(b encodeBudget) error {
@@ -249,11 +304,40 @@ func (enc *encoder) chargeSlow(b encodeBudget) error {
 			return encodeCancelledError{err}
 		}
 	}
+	if err := enc.chargeKiB(b, enc.buf.Len()); err != nil {
+		return err
+	}
 	if b.maxBytes > 0 && enc.buf.Len() > b.maxBytes {
 		return encodeSizeError(b.maxBytes)
 	}
 	return nil
 }
+
+// chargeKiB charges enc.env one step for each whole KiB of the first n bytes
+// of output not charged yet.  It is called as the output grows, and once
+// more when the document is finished, so the steps charged for a document
+// are floor(len/1024) however the charges fall.
+func (enc *encoder) chargeKiB(b encodeBudget, n int) error {
+	if enc.env == nil {
+		return nil
+	}
+	owed := n>>10 - enc.chargedKiB
+	if owed <= 0 {
+		return nil
+	}
+	enc.chargedKiB += owed
+	enc.setNext(b)
+	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.Type == lisp.LError {
+		return encodeStepError{lerr}
+	}
+	return nil
+}
+
+// encodeStepError carries the error lisp.LEnv.ChargeSteps returned: an
+// exhausted step budget or a cancelled context.  dumpError returns it as is.
+type encodeStepError struct{ lerr *lisp.LVal }
+
+func (e encodeStepError) Error() string { return lisp.GoError(e.lerr).Error() }
 
 // reserve refuses a leaf that will write at least n more bytes than the cap
 // allows, before it writes them.
@@ -333,10 +417,21 @@ func getEncoder(stringNums bool) *encoder {
 	enc.nestedDeep = false
 	enc.wroteNative = false
 	enc.visits = 0
+	enc.chargedKiB = 0
+	enc.next = 0
+	enc.memo = nativeSpan{}
+	enc.memoMore = nil
+	enc.env = nil
+	enc.legacyNatives = false
 	return enc
 }
 
 func putEncoder(enc *encoder) {
+	// Drop the document's natives and env so the pool does not keep them
+	// alive.
+	enc.memo = nativeSpan{}
+	enc.memoMore = nil
+	enc.env = nil
 	if enc.buf.Cap() > encoderBufferRetentionLimit {
 		// bytes.Buffer has no way to shrink in place; dropping the whole
 		// value is how the oversized backing array is released.
@@ -390,16 +485,19 @@ func (g encodeGuard) depthLimit() int {
 }
 
 func (enc *encoder) encode(v *lisp.LVal) error {
-	return enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{})
+	return enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{}, encodeMeter{})
 }
 
-func (enc *encoder) encodeLimit(v *lisp.LVal, limit int, budget encodeBudget) error {
+func (enc *encoder) encodeLimit(v *lisp.LVal, limit int, budget encodeBudget, meter encodeMeter) error {
+	enc.env, enc.legacyNatives = meter.env, meter.legacyNatives
+	enc.setNext(budget)
 	mark := enc.buf.Len()
 	err := enc.encodeValue(v, encodeGuard{limit: limit, budget: budget})
 	if errors.Is(err, errDeepValue) {
 		// The counting pass abandoned the document partway through, so its
 		// output is a fragment.  Drop it and start the value over.
 		enc.nestedDeep = true
+		enc.keepNativeMemos(mark)
 		enc.buf.Truncate(mark)
 		err = enc.encodeDeepValue(v, encodeGuard{path: make(map[*lisp.LVal]struct{}, encodeGuardDepth), limit: limit, budget: budget})
 	}
@@ -411,7 +509,7 @@ func (enc *encoder) encodeLimit(v *lisp.LVal, limit int, budget encodeBudget) er
 	if budget.maxBytes > 0 && enc.buf.Len() > budget.maxBytes {
 		return encodeSizeError(budget.maxBytes)
 	}
-	return nil
+	return enc.chargeKiB(budget, enc.buf.Len())
 }
 
 // encodeValue handles the shallow counting pass. Recursion stops before
@@ -732,8 +830,93 @@ func (enc *encoder) encodeSExpr(cells []*lisp.LVal, g encodeGuard) error {
 	return nil
 }
 
-func (enc *encoder) encodeLNative(v *lisp.LVal, _ encodeGuard) error {
-	return enc.encodeNative(v.Native)
+// nativeSpan records the range of the output buffer one native's bytes were
+// written to.
+type nativeSpan struct {
+	lv         *lisp.LVal
+	start, end int
+}
+
+// nativeMemo is a remembered native's bytes: a range of the output buffer,
+// or owned once that range has been truncated away.
+type nativeMemo struct {
+	owned      []byte
+	start, end int
+}
+
+func (m nativeMemo) bytes(buf []byte) []byte {
+	if m.owned != nil {
+		return m.owned
+	}
+	return buf[m.start:m.end]
+}
+
+// encodeLNative writes a native, marshalling it at most once per document
+// (luthersystems/elps#802).  A second occurrence of the same native LVal --
+// a value shared by two containers, or one inside a container that holds
+// itself -- copies the bytes the first one wrote.  So a costly or
+// side-effecting MarshalJSON runs once, and a document cannot multiply the
+// work of marshalling one native by referring to it many times.
+func (enc *encoder) encodeLNative(v *lisp.LVal, g encodeGuard) error {
+	if enc.legacyNatives {
+		return enc.encodeNativeLegacy(v.Native)
+	}
+	if m, ok := enc.lookupNative(v); ok {
+		b := m.bytes(enc.buf.Bytes())
+		if err := enc.reserve(g.budget, len(b)); err != nil {
+			return err
+		}
+		enc.wroteNative = true
+		enc.buf.Write(b)
+		return nil
+	}
+	if err := enc.boundNative(v.Native, g.budget); err != nil {
+		return err
+	}
+	start := enc.buf.Len()
+	if err := enc.encodeNative(v.Native); err != nil {
+		return err
+	}
+	enc.rememberNative(v, nativeMemo{start: start, end: enc.buf.Len()})
+	return nil
+}
+
+func (enc *encoder) lookupNative(v *lisp.LVal) (nativeMemo, bool) {
+	if enc.memo.lv == v {
+		return nativeMemo{start: enc.memo.start, end: enc.memo.end}, true
+	}
+	m, ok := enc.memoMore[v]
+	return m, ok
+}
+
+func (enc *encoder) rememberNative(v *lisp.LVal, m nativeMemo) {
+	if enc.memo.lv == nil {
+		enc.memo = nativeSpan{lv: v, start: m.start, end: m.end}
+		return
+	}
+	if enc.memoMore == nil {
+		enc.memoMore = make(map[*lisp.LVal]nativeMemo)
+	}
+	enc.memoMore[v] = m
+}
+
+// keepNativeMemos copies out the bytes of every remembered native written
+// after mark, before the output is truncated to mark.
+func (enc *encoder) keepNativeMemos(mark int) {
+	buf := enc.buf.Bytes()
+	for v, m := range enc.memoMore {
+		if m.owned == nil && m.end > mark {
+			m.owned = append([]byte{}, buf[m.start:m.end]...)
+			enc.memoMore[v] = m
+		}
+	}
+	if m := enc.memo; m.lv != nil && m.end > mark {
+		enc.memo = nativeSpan{}
+		if enc.memoMore == nil {
+			enc.memoMore = make(map[*lisp.LVal]nativeMemo)
+		}
+		enc.memoMore[m.lv] = nativeMemo{owned: append([]byte{}, buf[m.start:m.end]...)}
+	}
 }
 
 // encodeNative writes an embedder's Go value through encoding/json.
@@ -794,6 +977,13 @@ func (enc *encoder) encodeNative(v any) error {
 		}
 	}
 	return nil
+}
+
+// encodeNativeLegacy is encodeNative as encodeLNative called it before
+// luthersystems/elps#802: no bound before marshalling and no memo.  It exists
+// so FuzzNativeEncodeMatchesLegacy can compare the two; nothing else calls it.
+func (enc *encoder) encodeNativeLegacy(v any) error {
+	return enc.encodeNative(v)
 }
 
 // checkLoadable refuses native bytes this package would not read back.
@@ -911,17 +1101,21 @@ func (enc *encoder) encodeLInt(v *lisp.LVal, _ encodeGuard) error {
 	return enc.encodeInt(v.Int)
 }
 
+// encodeInt and encodeFloat format straight into the buffer's spare
+// capacity, as encodeString does: 32 bytes hold any int or float text and
+// its quotes, so Grow(32) means the appends below never reallocate.
 func (enc *encoder) encodeInt(x int) error {
-	var err error
-	b := strconv.AppendInt(enc.scratch[:0], int64(x), 10)
+	enc.buf.Grow(32)
+	b := enc.buf.AvailableBuffer()
 	if enc.stringNums {
-		enc.buf.WriteByte('"')
-		enc.buf.Write(b)
-		enc.buf.WriteByte('"')
+		b = append(b, '"')
+		b = strconv.AppendInt(b, int64(x), 10)
+		b = append(b, '"')
 	} else {
-		enc.buf.Write(b)
+		b = strconv.AppendInt(b, int64(x), 10)
 	}
-	return err
+	enc.buf.Write(b)
+	return nil
 }
 
 func (enc *encoder) encodeLFloat(v *lisp.LVal, _ encodeGuard) error {
@@ -932,20 +1126,17 @@ func (enc *encoder) encodeFloat(x float64) error {
 	if math.IsInf(x, 0) || math.IsNaN(x) {
 		return encodeInvalidNumberError(x)
 	}
-	b := enc.scratchFloat(x)
+	enc.buf.Grow(32)
+	b := enc.buf.AvailableBuffer()
 	if enc.stringNums {
-		enc.buf.WriteByte('"')
-		enc.buf.Write(b)
-		enc.buf.WriteByte('"')
+		b = append(b, '"')
+		b = appendJSONFloat(b, x)
+		b = append(b, '"')
 	} else {
-		enc.buf.Write(b)
+		b = appendJSONFloat(b, x)
 	}
+	enc.buf.Write(b)
 	return nil
-}
-
-// scratchFloat encodes x to enc.scratch and returns a slice of that array.
-func (enc *encoder) scratchFloat(x float64) []byte {
-	return appendJSONFloat(enc.scratch[:0], x)
 }
 
 // appendJSONFloat appends the canonical JSON text of x to b.
@@ -1008,14 +1199,11 @@ func (enc *encoder) encodeBytes(b []byte) error {
 	}
 	n := enc64.EncodedLen(len(b))
 	enc.buf.WriteByte('"')
-	if n < len(enc.scratch) {
-		dst := enc.scratch[:n]
-		enc64.Encode(dst, b)
-		enc.buf.Write(dst)
-	} else if n < 1024 {
-		// 1024 is the size of the internal buffer used by base64.NewEncoder so
-		// we allocate just that buffer size and avoid the extra overhead.
-		dst := make([]byte, n)
+	if n < 1024 {
+		// Encoded straight into the buffer's spare capacity.  1024 is the
+		// size of the internal buffer base64.NewEncoder uses.
+		enc.buf.Grow(n)
+		dst := enc.buf.AvailableBuffer()[:n]
 		enc64.Encode(dst, b)
 		enc.buf.Write(dst)
 	} else {
