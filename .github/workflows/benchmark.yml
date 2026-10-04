@@ -25,7 +25,6 @@ env:
   # pair arms of unequal sample count. Measuring both arms in this job
   # removes that coupling.
   BENCH_COUNT: "10"
-  GO_VERSION: "1.26.8"
   # Regression gates, applied per metric class by cmd/benchgate.
   # elps' allocation metrics are near-deterministic (worst-case noise measured on
   # identical code: 0.18%) while sec/op noise reaches ~1.5%, and far more on a
@@ -392,7 +391,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          # Both arms build with the PR arm's go.mod toolchain line.
+          go-version-file: pr/go.mod
           cache: true
           # Both trees are checked out into subdirectories, so there is no
           # go.sum at the workspace root for setup-go to key its cache on.
@@ -410,11 +410,11 @@ jobs:
 
       - name: Install benchstat
         # setup-go pins GOTOOLCHAIN=local, which is what keeps the benchmarks
-        # themselves on GO_VERSION rather than silently switching toolchains
+        # themselves on the PR arm's go.mod toolchain rather than silently switching toolchains
         # mid-run. benchstat is not the code under measurement -- it only
         # post-processes the text output -- so it does not need that pin, and
         # honouring it here breaks the job outright whenever x/perf@latest
-        # starts requiring a newer Go than GO_VERSION (x/perf began requiring
+        # starts requiring a newer Go than that (x/perf began requiring
         # go >= 1.26.0 on 2026-08-19). Build the tool with whatever toolchain
         # it asks for; every benchmark-running step below keeps the pin.
         env:
@@ -560,7 +560,8 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
         with:
-          go-version: ${{ env.GO_VERSION }}
+          # Both arms build with the PR arm's go.mod toolchain line.
+          go-version-file: pr/go.mod
           cache: true
           cache-dependency-path: pr/go.sum
 
