@@ -242,7 +242,7 @@ type templateInventory struct {
 	byteSeen    map[*[]byte]bool
 	runtime     *Runtime
 	valueQueue  []*LVal
-	builtins    []*LVal // the registered builtins, in key order
+	builtins    []*LVal // the current registered builtins, in registration order
 	envQueue    []*LEnv
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
@@ -292,11 +292,11 @@ func (s *templateInventory) scan(env *LEnv) error {
 	// Every registered builtin is published, also one whose name now holds
 	// another value, so RegisteredBuiltin answers the same in every VM.
 	// Each is admitted like any other builtin.
-	s.builtins = env.Runtime.Registry.builtins.all()
+	s.builtins = env.Runtime.Registry.builtins.current()
 	for _, fn := range s.builtins {
 		if err := s.val(fn); err != nil {
-			rec := fn.funData().reg
-			return fmt.Errorf("template: registered builtin %s:%s: %w", rec.pkg, rec.name, err)
+			key := registrationKey(fn.funData().reg)
+			return fmt.Errorf("template: registered builtin %s:%s: %w", key.pkg, key.name, err)
 		}
 	}
 	return s.checkSharedStorage()

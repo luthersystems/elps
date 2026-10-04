@@ -2,10 +2,7 @@
 
 package lisp
 
-import (
-	"cmp"
-	"slices"
-)
+import "sync"
 
 // The builtin registry (luthersystems/elps#800) records every function,
 // macro and special operator as LEnv.AddBuiltins, LEnv.BindBuiltins,
@@ -14,77 +11,166 @@ import (
 // use-package or Put); the registry entry cannot.  Only a later
 // registration of the same package and name replaces it.
 //
-// Identity is a registration record, not an *LVal.  registrationFunValue
-// allocates one builtinRegistration per registration and stores it in the
-// function's funData.  Every header of the function (FunRef, Copy) shares
-// that funData, and a template copies funData headers by value, so the
-// record pointer is the same in the source runtime and in every VM a
-// template mints: cold, eager, lazy or prewarmed.  The record holds only two
-// strings and is never written after construction, so VMs share it safely.
-
-// builtinRegistration is the record of one registration.  It is immutable.
-type builtinRegistration struct {
-	pkg, name string
-}
+// Identity is a registration record that forks share.  The record is the
+// function value registration built (its *LVal header), stored in the
+// function's own funData as reg.  The registered name is the record's Str,
+// which registration sets and nothing writes after, and the package is the
+// function's package, which registration sets and nothing changes.  Every
+// header of the function (FunRef, Copy) shares that funData, and a template
+// copies funData headers by value, so reg is the same pointer in the source
+// runtime and in every VM a template mints: cold, eager, lazy or
+// prewarmed.  A VM never evaluates the record or reads anything of it but
+// Str and its package; it uses its own copy of the function.  So a template
+// and its VMs keep the source runtime's registered headers alive, one small
+// header per registration, and nothing else of the source.
+//
+// Registration stores the value in a chunk of builtinChunkSize: 8 bytes
+// per definition and one allocation per chunk.  It builds no lookup
+// structure: lookups are rare, so the index is built on the first one.
 
 // builtinKey is a registry key.
 type builtinKey struct {
 	pkg, name string
 }
 
-// templateBuiltin is one registry entry in a template plan.  The plan is
-// sorted by package, then name.
+// builtinChunkSize is the number of registrations in one chunk.
+const builtinChunkSize = 64
+
+// builtinChunk holds registrations in order.  Chunks are linked newest
+// first.
+type builtinChunk struct {
+	prev *builtinChunk
+	vals [builtinChunkSize]*LVal
+	n    int
+}
+
+// registrationKey returns the key of a function registration built: its
+// package and its registered name.
+func registrationKey(fn *LVal) builtinKey {
+	return builtinKey{fn.funData().pkg, fn.Str}
+}
+
+// templateBuiltin is one registry entry in a template plan, in
+// registration order.  Only the current registration of each key is
+// published.
 type templateBuiltin struct {
-	rec   *builtinRegistration
+	rec   *LVal
 	value templateRef
+}
+
+// templateBuiltins is a plan's registry.  It is immutable after
+// publication and shared by every VM of the template.  index is built on
+// the first lookup in any VM, once, and only read after.
+type templateBuiltins struct {
+	index   map[builtinKey]int
+	entries []templateBuiltin
+	once    sync.Once
+}
+
+// lookupIndex returns the shared index of the plan's entries.
+func (p *templateBuiltins) lookupIndex() map[builtinKey]int {
+	p.once.Do(func() {
+		p.index = make(map[builtinKey]int, len(p.entries))
+		for i, e := range p.entries {
+			p.index[registrationKey(e.rec)] = i
+		}
+	})
+	return p.index
 }
 
 // builtinRegistry is a runtime's registry of builtins as registered.
 //
-//   - own holds the registrations made in this runtime: every one in a cold
-//     environment, and those made after NewVM in a template VM.  It is nil
-//     until the first registration.
+//   - last holds the registrations made in this runtime, in chunks: every
+//     one in a cold environment, and those made after NewVM in a template
+//     VM.  ownIndex maps each key to its current registration; it is built
+//     on the first lookup and kept up to date after.
 //   - plan holds the entries a template VM inherited.  It belongs to the
-//     template and is shared by every VM; nothing writes it.  An entry of own
-//     with the same key replaces the plan entry.
+//     template and is shared by every VM.  An own registration of the same
+//     key replaces the plan entry.
 //   - values holds this VM's value for each plan entry: all of them in an
 //     eager VM, and in a lazy VM each one built on its first lookup through
 //     lazy.
+//   - shadowed reports that some registration in this runtime replaced an
+//     earlier binding of its name, so the chunks may hold a displaced
+//     registration.
 type builtinRegistry struct {
-	own    map[builtinKey]*LVal
-	lazy   *lazyInstance
-	plan   []templateBuiltin
-	values []*LVal
+	ownIndex map[builtinKey]*LVal
+	lazy     *lazyInstance
+	plan     *templateBuiltins
+	last     *builtinChunk
+	values   []*LVal
+	shadowed bool
 }
 
-// register records fn, which registrationFunValue built, as the registered
-// builtin of its package and name.
-func (r *builtinRegistry) register(fn *LVal) {
-	rec := fn.funData().reg
-	if r.own == nil {
-		r.own = make(map[builtinKey]*LVal)
+// register records fn, which registrationFunValue built with fn as its own
+// record, as the registered builtin of its package and name.  shadows
+// reports that the name was already bound in the package.
+func (r *builtinRegistry) register(fn *LVal, shadows bool) {
+	if r.last == nil || r.last.n == builtinChunkSize {
+		r.last = &builtinChunk{prev: r.last}
 	}
-	r.own[builtinKey{rec.pkg, rec.name}] = fn
+	r.last.vals[r.last.n] = fn
+	r.last.n++
+	r.shadowed = r.shadowed || shadows
+	if r.ownIndex != nil {
+		r.ownIndex[registrationKey(fn)] = fn
+	}
 }
 
-// planIndex returns the index of the plan entry for pkg and name.
-func (r *builtinRegistry) planIndex(pkg, name string) (int, bool) {
-	return slices.BinarySearchFunc(r.plan, builtinKey{pkg, name}, func(e templateBuiltin, k builtinKey) int {
-		if c := cmp.Compare(e.rec.pkg, k.pkg); c != 0 {
-			return c
+// eachOwn calls f with each registration made in this runtime, in
+// registration order.
+func (r *builtinRegistry) eachOwn(f func(fn *LVal)) {
+	var stack [8]*builtinChunk
+	chunks := stack[:0]
+	for c := r.last; c != nil; c = c.prev {
+		chunks = append(chunks, c)
+	}
+	for i := len(chunks) - 1; i >= 0; i-- {
+		for _, fn := range chunks[i].vals[:chunks[i].n] {
+			f(fn)
 		}
-		return cmp.Compare(e.rec.name, k.name)
-	})
+	}
 }
 
-// record returns the registration record for pkg and name, or nil.  It
-// builds no value.
-func (r *builtinRegistry) record(pkg, name string) *builtinRegistration {
-	if fn, ok := r.own[builtinKey{pkg, name}]; ok {
+// numOwn returns the number of registrations made in this runtime.
+func (r *builtinRegistry) numOwn() int {
+	n := 0
+	for c := r.last; c != nil; c = c.prev {
+		n += c.n
+	}
+	return n
+}
+
+// ownLookup returns the current own registration of key.
+func (r *builtinRegistry) ownLookup(key builtinKey) *LVal {
+	if r.last == nil {
+		return nil
+	}
+	if r.ownIndex == nil {
+		r.ownIndex = make(map[builtinKey]*LVal, r.numOwn())
+		r.eachOwn(func(fn *LVal) { r.ownIndex[registrationKey(fn)] = fn })
+	}
+	return r.ownIndex[key]
+}
+
+// planLookup returns the index of the plan entry of key.
+func (r *builtinRegistry) planLookup(key builtinKey) (int, bool) {
+	if r.plan == nil {
+		return 0, false
+	}
+	i, ok := r.plan.lookupIndex()[key]
+	return i, ok
+}
+
+// currentRecord returns the record of the current registration of pkg and
+// name, or nil.  It builds no value.
+func (r *builtinRegistry) currentRecord(pkg, name string) *LVal {
+	key := builtinKey{pkg, name}
+	if fn := r.ownLookup(key); fn != nil {
 		return fn.funData().reg
 	}
-	if i, ok := r.planIndex(pkg, name); ok {
-		return r.plan[i].rec
+	if i, ok := r.planLookup(key); ok {
+		return r.plan.entries[i].rec
 	}
 	return nil
 }
@@ -92,53 +178,60 @@ func (r *builtinRegistry) record(pkg, name string) *builtinRegistration {
 // lookup returns this runtime's value of the registered builtin pkg:name,
 // or nil.  In a lazy VM the first lookup of a plan entry builds it.
 func (r *builtinRegistry) lookup(pkg, name string) *LVal {
-	if fn, ok := r.own[builtinKey{pkg, name}]; ok {
+	key := builtinKey{pkg, name}
+	if fn := r.ownLookup(key); fn != nil {
 		return fn
 	}
-	i, ok := r.planIndex(pkg, name)
-	if !ok {
-		return nil
+	if i, ok := r.planLookup(key); ok {
+		return r.planValue(i)
 	}
-	return r.planValue(i)
+	return nil
 }
 
 // planValue returns this VM's value of plan entry i, building it in a lazy
 // VM.
 func (r *builtinRegistry) planValue(i int) *LVal {
 	if r.values == nil {
-		r.values = make([]*LVal, len(r.plan))
+		r.values = make([]*LVal, len(r.plan.entries))
 	}
 	if v := r.values[i]; v != nil {
 		return v
 	}
-	v := r.lazy.ref(r.plan[i].value)
+	v := r.lazy.ref(r.plan.entries[i].value)
 	r.values[i] = v
 	return v
 }
 
-// all returns every entry in key order, building each one.  Template
-// publication uses it, so the registry of a template VM is published whole.
-func (r *builtinRegistry) all() []*LVal {
-	keys := make([]builtinKey, 0, len(r.own)+len(r.plan))
-	for k := range r.own {
-		keys = append(keys, k)
+// current returns this runtime's value of the current registration of
+// every key, building each value, in registration order: inherited plan
+// entries first, then own registrations.  Each value's funData.reg is its
+// record.  Template publication uses it.  A displaced registration is left
+// out, so a builtin policy is never asked about one; finding them needs the
+// index, which is built only when some registration replaced a binding.
+func (r *builtinRegistry) current() []*LVal {
+	n := r.numOwn()
+	if r.plan != nil {
+		n += len(r.plan.entries)
 	}
-	for _, e := range r.plan {
-		if _, ok := r.own[builtinKey{e.rec.pkg, e.rec.name}]; !ok {
-			keys = append(keys, builtinKey{e.rec.pkg, e.rec.name})
+	out := make([]*LVal, 0, n)
+	if r.plan != nil {
+		for i := range r.plan.entries {
+			out = append(out, r.planValue(i))
 		}
 	}
-	slices.SortFunc(keys, func(a, b builtinKey) int {
-		if c := cmp.Compare(a.pkg, b.pkg); c != 0 {
-			return c
-		}
-		return cmp.Compare(a.name, b.name)
-	})
-	out := make([]*LVal, len(keys))
-	for i, k := range keys {
-		out[i] = r.lookup(k.pkg, k.name)
+	r.eachOwn(func(fn *LVal) { out = append(out, fn) })
+	if !r.shadowed {
+		return out
 	}
-	return out
+	kept := out[:0]
+	for _, fn := range out {
+		rec := fn.funData().reg
+		k := registrationKey(rec)
+		if r.currentRecord(k.pkg, k.name) == rec {
+			kept = append(kept, fn)
+		}
+	}
+	return kept
 }
 
 // RegisteredBuiltin returns the function, macro or special operator
@@ -180,10 +273,11 @@ func (r *PackageRegistry) RegisteredBuiltinName(fn *LVal) (string, string, bool)
 	if fd == nil || fd.reg == nil {
 		return "", "", false
 	}
-	if r.builtins.record(fd.reg.pkg, fd.reg.name) != fd.reg {
+	name := fd.reg.Str
+	if r.builtins.currentRecord(fd.pkg, name) != fd.reg {
 		return "", "", false
 	}
-	return fd.reg.pkg, fd.reg.name, true
+	return fd.pkg, name, true
 }
 
 // builtinRegisteredBuiltin is lisp:builtin, the Lisp face of

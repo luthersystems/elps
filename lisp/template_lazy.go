@@ -375,7 +375,7 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
 			base: pkg.base, lazy: lazy, unfrozenBase: pkg.unfrozen}
 	}
-	if len(p.builtins) > 0 {
+	if p.builtins != nil {
 		// Each registered builtin is built on its first lookup.
 		rt.Registry.builtins.plan = p.builtins
 		rt.Registry.builtins.lazy = l

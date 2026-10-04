@@ -33,7 +33,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"fid": "scalar: function identifier", "pkg": "scalar: package name",
 			"name":     "scalar: most recently bound display name memo",
 			"freeKeys": "scalar: free-keyword key-section start, copied with the header (#745; TestFreeKeywordsTemplateParity)",
-			"reg":      "shared-immutable: registration record, two strings never written after construction; shared so identity survives forks (#800; TestRegisteredBuiltinParity)",
+			"reg":      "shared-immutable: registration record, the header registration built; VMs read only its Str and package; shared so identity survives forks (#800; TestRegisteredBuiltinParity)",
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",
@@ -62,13 +62,21 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"builtins": "remapped: plan entries shared read-only; per-VM values built at NewVM (eager) or on first lookup (lazy) (#800; TestRegisteredBuiltinParity)",
 		}},
 		{reflect.TypeFor[builtinRegistry](), map[string]string{
-			"own":    "reset: registrations made in this runtime; a VM starts with none",
-			"plan":   "shared-immutable: the plan's registry entries, sorted, never written after publication",
-			"values": "remapped: this VM's value per plan entry, built from plan references",
-			"lazy":   "remapped: this VM's lazy instance, built by NewVM and never published",
+			"last":     "reset: chunks of registrations made in this runtime; a VM starts with none, and its inherited records live in plan",
+			"ownIndex": "reset: index of the own chunks, built on the first lookup; a VM starts with none",
+			"shadowed": "reset: whether the own chunks may hold a displaced registration; a VM starts with no own registrations",
+			"plan":     "shared-immutable: the plan's current registry entries, never written after publication; its index is built once under sync.Once",
+			"values":   "remapped: this VM's value per plan entry, built from plan references",
+			"lazy":     "remapped: this VM's lazy instance, built by NewVM and never published",
 		}},
-		{reflect.TypeFor[builtinRegistration](), map[string]string{
-			"pkg": "scalar: registered package", "name": "scalar: registered name",
+		{reflect.TypeFor[templateBuiltins](), map[string]string{
+			"entries": "shared-immutable: one per current registration, written only at publication",
+			"index":   "shared-immutable: built once under once on the first lookup in any VM, only read after",
+			"once":    "shared-immutable: guards the one write of index",
+		}},
+		{reflect.TypeFor[templateBuiltin](), map[string]string{
+			"rec":   "shared-immutable: the registration record, the source's registered header; VMs read only its Str and package (#800; TestRegistrationRecordSharedByForks)",
+			"value": "remapped: plan reference to the registered function",
 		}},
 		{reflect.TypeFor[CallStack](), map[string]string{
 			"renderLimit":      "reset: per-error output cap; instantiated runtimes capture their own policy",

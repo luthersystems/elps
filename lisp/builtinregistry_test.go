@@ -393,3 +393,28 @@ func evalCtx(t *testing.T, env *lisp.LEnv, src string) string {
 	require.NoError(t, lisp.GoError(v), src)
 	return v.String()
 }
+
+// A registration a later one replaced is not published, so a builtin
+// policy is never asked about it, and a VM's registry holds only the
+// current one.
+func TestRegisteredBuiltinDisplacedNotPublished(t *testing.T) {
+	source := registryEnv(t)
+	old := source.Runtime.Registry.RegisteredBuiltin("regpkg", "reg-fn")
+	require.NoError(t, lisp.GoError(source.InPackage(lisp.String("regpkg"))))
+	require.NoError(t, lisp.GoError(source.BindBuiltins(lisp.BindOpts{Shadow: true}, constBuiltin("reg-fn", 8))))
+	require.NoError(t, lisp.GoError(source.InPackage(lisp.String(lisp.DefaultUserPackage))))
+	evalOK(t, source, `(set 'reg-fn 0)`) // user imported the old one
+	asked := false
+	tmpl, err := lisp.NewTemplate(source, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool {
+		if v.Native == old.Native {
+			asked = true
+			return false
+		}
+		return true
+	}))
+	require.NoError(t, err)
+	assert.False(t, asked, "the policy was asked about a displaced registration")
+	vm, err := tmpl.NewVM()
+	require.NoError(t, err)
+	assert.Equal(t, "8", evalOK(t, vm, `(funcall (builtin 'regpkg:reg-fn) 0)`))
+}

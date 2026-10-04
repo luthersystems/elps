@@ -1281,10 +1281,11 @@ func checkRegistrationFormals(kind, name string, formals *LVal) {
 // builtin return the binding itself instead of a copy.  Str is written at
 // construction, never onto a value a caller already holds.
 //
-// The value also carries a fresh registration record (builtinregistry.go),
-// and the caller records it in the runtime's builtin registry.
+// The value is its own registration record (funData.reg, see
+// builtinregistry.go), and the caller records it in the runtime's builtin
+// registry.
 func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
-	return &LVal{
+	v := &LVal{
 		Type:    LFun,
 		FunType: funType,
 		Str:     name,
@@ -1292,10 +1293,11 @@ func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *
 			fid:     fid,
 			builtin: fn,
 			pkg:     pkgName,
-			reg:     &builtinRegistration{pkg: pkgName, name: name},
 		},
 		Cells: []*LVal{formals, String(doc)},
 	}
+	v.funData().reg = v
+	return v
 }
 
 // AddMacros binds the given macros to their names in env.  When called with no
@@ -1325,11 +1327,13 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 	}
 	formals := newFormalsCopier(macs)
 	pkg := env.Runtime.Package
+	registry := &env.Runtime.Registry.builtins
 	for _, mac := range macs {
 		name := mac.Name()
 		// registrationBound replicates the probe pkg.Get used to answer,
 		// without Get's per-miss error construction; see its comment.
-		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		exist, bound := registrationBound(pkg, name)
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
@@ -1344,7 +1348,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
 			registrationFormals(&formals, macFormals), mac.Eval, builtinDocstring(mac))
 		pkg.putName(name, fn)
-		env.Runtime.Registry.builtins.register(fn)
+		registry.register(fn, bound)
 		if external {
 			pkg.appendExternal(name)
 		}
@@ -1363,9 +1367,11 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	}
 	formals := newFormalsCopier(ops)
 	pkg := env.Runtime.Package
+	registry := &env.Runtime.Registry.builtins
 	for _, op := range ops {
 		name := op.Name()
-		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		exist, bound := registrationBound(pkg, name)
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic(env.formatError("macro already defined: %v (= %v)", []any{name, exist}))
@@ -1376,7 +1382,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
 			registrationFormals(&formals, opFormals), op.Eval, builtinDocstring(op))
 		pkg.putName(name, fn)
-		env.Runtime.Registry.builtins.register(fn)
+		registry.register(fn, bound)
 		if external {
 			pkg.appendExternal(name)
 		}
@@ -1395,9 +1401,11 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	}
 	formals := newFormalsCopier(funs)
 	pkg := env.Runtime.Package
+	registry := &env.Runtime.Registry.builtins
 	for _, f := range funs {
 		name := f.Name()
-		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
+		exist, bound := registrationBound(pkg, name)
+		if bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + name)
@@ -1416,7 +1424,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			v.funData().freeKeys = freeKeys
 		}
 		pkg.putName(name, v)
-		env.Runtime.Registry.builtins.register(v)
+		registry.register(v, bound)
 		if external {
 			pkg.appendExternal(name)
 		}
