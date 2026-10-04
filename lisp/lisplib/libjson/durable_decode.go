@@ -664,21 +664,25 @@ func (d *durableDecoder) builtin() (*lisp.LVal, error) {
 	if err := d.expect('['); err != nil {
 		return nil, err
 	}
-	pkg, err := d.rawString()
+	// rawString returns scratch the next call overwrites, so each part is
+	// copied before the next one is read.
+	raw, err := d.rawString()
 	if err != nil {
 		return nil, err
 	}
+	pkg := string(raw)
 	if err = d.expect(','); err != nil {
 		return nil, err
 	}
-	name, err := d.rawString()
+	raw, err = d.rawString()
 	if err != nil {
 		return nil, err
 	}
+	name := string(raw)
 	if err = d.expect(']'); err != nil {
 		return nil, err
 	}
-	f := d.env.Runtime.Registry.RegisteredBuiltin(string(pkg), string(name))
+	f := d.env.Runtime.Registry.RegisteredBuiltin(pkg, name)
 	if f == nil {
 		return nil, d.errorf("builtin %s:%s: not registered", pkg, name)
 	}

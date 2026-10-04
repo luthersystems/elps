@@ -4,6 +4,7 @@ package libjson_test
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"os"
 	"slices"
@@ -137,9 +138,45 @@ func sameFunctions(t *testing.T, env *lisp.LEnv, in, out []byte) {
 	}
 	for i := range a {
 		ta, tb := in[a[i][0]:a[i][1]], out[b[i][0]:b[i][1]]
+		// A ~#builtin is canonical: only a ~#fn may be normalized.
+		if bytes.HasPrefix(ta, []byte(`["~#builtin",`)) && !bytes.Equal(ta, tb) {
+			t.Fatalf("builtin %q re-encoded as %q", ta, tb)
+		}
 		fa, fb := resolve(ta), resolve(tb)
 		if fa.Native != fb.Native {
 			t.Fatalf("function %q restored as %q", ta, tb)
+		}
+	}
+}
+
+// checkBuiltinTokens fails t unless every ["~#builtin",["PKG","NAME"]] in
+// an accepted document restores as the builtin the registry holds for that
+// pair.  The pair is read with encoding/json, not with the decoder under
+// test.
+func checkBuiltinTokens(t *testing.T, env *lisp.LEnv, data []byte) {
+	t.Helper()
+	for _, tok := range functionTokens(data) {
+		token := data[tok[0]:tok[1]]
+		if !bytes.HasPrefix(token, []byte(`["~#builtin",`)) {
+			continue
+		}
+		var form []any
+		if err := json.Unmarshal(token, &form); err != nil || len(form) != 2 {
+			t.Fatalf("accepted builtin form %q does not parse: %v", token, err)
+		}
+		pair, ok := form[1].([]any)
+		if !ok || len(pair) != 2 {
+			t.Fatalf("accepted builtin form %q is not a pair", token)
+		}
+		pkg, _ := pair[0].(string)
+		name, _ := pair[1].(string)
+		want := env.Runtime.Registry.RegisteredBuiltin(pkg, name)
+		if want == nil {
+			t.Fatalf("accepted builtin %q names no registration", token)
+		}
+		got, err := libjson.LoadDurable(env, append(append([]byte(`["~#durable",[1,`), token...), `]]`...), nil)
+		if err != nil || got.Native != want.Native {
+			t.Fatalf("builtin %q restored as another function (%v)", token, err)
 		}
 	}
 }
@@ -319,6 +356,8 @@ func FuzzDurableJSON(f *testing.F) {
 		`["~#durable",[1,["~#fn","user:f"]]]`,
 		`["~#durable",[1,["~#fn","lisp:\u003c"]]]`,
 		`["~#durable",[1,["~#builtin",["user","fuzz-native"]]]]`,
+		`["~#durable",[1,["~#builtin",["p\u003c","n\u003c"]]]]`,
+		`["~#durable",[1,["~#list",[["~#builtin",["n\u003c","n\u003c"]],["~#builtin",["p\u003c","n\u003c"]]]]]]`,
 		`["~#durable",[1,["~#list",[["~#builtin",["user","fuzz-native"]],["~#fn","lisp:car"],["~#builtin",["user","fuzz-native"]]]]]]`,
 		`["~#durable",[1,["~#fn","user:fuzz-held"]]]`,
 		`["~#durable",[1,["~#builtin",["lisp","car"]]]]`,
@@ -349,6 +388,20 @@ func FuzzDurableJSON(f *testing.F) {
 		f.Fatal(err)
 	}
 	if err := lisp.GoError(env.LoadString("fuzz", `(set 'fuzz-held fuzz-native) (set 'fuzz-native 0)`)); err != nil {
+		f.Fatal(err)
+	}
+	// p<:n< and n<:n< need escapes in both parts, and return different
+	// values, so a decoder that mixes up the parts restores the wrong one.
+	for _, pkg := range []string{"p<", "n<"} {
+		if err := lisp.GoError(elpsutil.ExtendPackage(env, pkg)); err != nil {
+			f.Fatal(err)
+		}
+		if err := lisp.GoError(env.BindBuiltins(lisp.BindOpts{Export: true}, elpsutil.Function("n<", lisp.Formals("x"),
+			func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.String(pkg) }))); err != nil {
+			f.Fatal(err)
+		}
+	}
+	if err := lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))); err != nil {
 		f.Fatal(err)
 	}
 	reg := durableFuzzRegistry(f)
@@ -392,6 +445,7 @@ func FuzzDurableJSON(f *testing.F) {
 		if v == nil {
 			t.Fatal("nil value without error")
 		}
+		checkBuiltinTokens(t, env, data)
 		enc, err := libjson.DumpDurable(env, v, reg)
 		if err != nil {
 			t.Fatalf("decoded value does not re-encode: %v", err)

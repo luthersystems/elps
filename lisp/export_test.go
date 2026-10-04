@@ -148,3 +148,18 @@ const CopierSmallMemo = copierSmallMemo
 // TextLoaderCopyHints runs TextLoader's admission walk over exprs and
 // returns the per-expression memo hints it records for the per-load copy.
 func TextLoaderCopyHints(exprs []*LVal) ([]int, error) { return admitTextLoaderStream(exprs) }
+
+// LazyMaterialized exposes the number of plan values a lazy template VM has
+// built, or -1 for a VM that is not lazy.  The builtin registry holds the
+// VM's lazy instance whenever the plan has a registry.
+func LazyMaterialized(vm *LEnv) int {
+	if l := vm.Runtime.Registry.builtins.lazy; l != nil {
+		return l.count
+	}
+	for _, pkg := range vm.Runtime.Registry.packages {
+		if pkg.lazy.inst != nil {
+			return pkg.lazy.inst.count
+		}
+	}
+	return -1
+}
