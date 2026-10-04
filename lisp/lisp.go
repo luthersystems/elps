@@ -72,8 +72,6 @@ const (
 	// pointed to may be nil though).
 	LBytes
 	// LSortMap value uses the LVal.Map field to store a map.
-	//
-	// TODO(#733): Support integer keys (e.g. with a tree-based map).
 	LSortMap
 	// LArray values use the LVal.Cells slice to store the following items:
 	//		[0] a list containing dimension cardinalities in index 0
