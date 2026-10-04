@@ -54,8 +54,10 @@ if [ "${CLAUDE_CODE_REMOTE:-}" != "true" ]; then
 	exit 0
 fi
 
-# Keep in sync with `go-version:` in .github/workflows/elps.yml.
-GO_TOOLCHAIN="go1.26.8"
+# go.mod's `toolchain` line, the one statement of the Go version; CI installs
+# it through setup-go's `go-version-file`.
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+GO_TOOLCHAIN="$(sed -n 's/^toolchain \(go[0-9][0-9.]*\).*$/\1/p' "${REPO_ROOT}/go.mod" | head -1)"
 # Keep in sync with the golangci-lint-action `version:` in the same file.  That
 # pin is a major.minor (the action resolves the newest patch); this one has to
 # name a release tarball, so it is the newest patch of that line.
@@ -71,7 +73,9 @@ mkdir -p "$TOOLS_BIN" || echo "session-start: WARNING could not create ${TOOLS_B
 # --- Go toolchain ---------------------------------------------------------
 # Fetching it here means the first build of the session is not also a
 # download, and the export makes every `go` invocation agree with CI.
-if GOTOOLCHAIN="$GO_TOOLCHAIN" go version >/dev/null 2>&1; then
+if [ -z "$GO_TOOLCHAIN" ]; then
+	echo "session-start: WARNING go.mod has no toolchain line; GOTOOLCHAIN left alone" >&2
+elif GOTOOLCHAIN="$GO_TOOLCHAIN" go version >/dev/null 2>&1; then
 	printf 'export GOTOOLCHAIN=%s\n' "$GO_TOOLCHAIN" >>"$ENV_FILE"
 	echo "session-start: GOTOOLCHAIN pinned to ${GO_TOOLCHAIN}"
 else

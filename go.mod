@@ -2,6 +2,8 @@ module github.com/luthersystems/elps
 
 go 1.26.0
 
+toolchain go1.26.8
+
 require (
 	github.com/ergochat/readline v0.1.3
 	github.com/google/go-dap v0.12.0
