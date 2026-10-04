@@ -6,6 +6,7 @@ import (
 	"context"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsutil"
@@ -396,14 +397,17 @@ func evalCtx(t *testing.T, env *lisp.LEnv, src string) string {
 
 // A registration a later one replaced is not published, so a builtin
 // policy is never asked about it, and a VM's registry holds only the
-// current one.
+// current one.  The replaced function is read through Package.Symbol, so
+// no index exists before the replacement.
 func TestRegisteredBuiltinDisplacedNotPublished(t *testing.T) {
 	source := registryEnv(t)
-	old := source.Runtime.Registry.RegisteredBuiltin("regpkg", "reg-fn")
+	old, ok := source.Runtime.Registry.Package("regpkg").Symbol("reg-fn")
+	require.True(t, ok)
 	require.NoError(t, lisp.GoError(source.InPackage(lisp.String("regpkg"))))
 	require.NoError(t, lisp.GoError(source.BindBuiltins(lisp.BindOpts{Shadow: true}, constBuiltin("reg-fn", 8))))
 	require.NoError(t, lisp.GoError(source.InPackage(lisp.String(lisp.DefaultUserPackage))))
 	evalOK(t, source, `(set 'reg-fn 0)`) // user imported the old one
+	assert.False(t, lisp.RegistryHolds(source, old), "the registry keeps the replaced function")
 	asked := false
 	tmpl, err := lisp.NewTemplate(source, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool {
 		if v.Native == old.Native {
@@ -417,4 +421,134 @@ func TestRegisteredBuiltinDisplacedNotPublished(t *testing.T) {
 	vm, err := tmpl.NewVM()
 	require.NoError(t, err)
 	assert.Equal(t, "8", evalOK(t, vm, `(funcall (builtin 'regpkg:reg-fn) 0)`))
+}
+
+// A replacement made inside an eager, lazy, prewarmed or republished VM,
+// before that VM's first lookup, wins there, and the replaced function is
+// neither registered nor published again.
+func TestRegisteredBuiltinDisplacedInVMs(t *testing.T) {
+	source := registryEnv(t)
+	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
+	eager, err := lisp.NewTemplate(source, policy, lisp.TemplateWithEagerInstantiation())
+	require.NoError(t, err)
+	lazy, err := lisp.NewTemplate(source, policy)
+	require.NoError(t, err)
+	newVM := func(tm *lisp.Template, opts ...lisp.VMOption) *lisp.LEnv {
+		vm, err := tm.NewVM(opts...)
+		require.NoError(t, err)
+		return vm
+	}
+	republished := func() *lisp.LEnv {
+		tm, err := lisp.NewTemplate(newVM(lazy), policy)
+		require.NoError(t, err)
+		return newVM(tm)
+	}
+	for _, c := range []struct {
+		vm   func() *lisp.LEnv
+		name string
+	}{
+		{func() *lisp.LEnv { return newVM(eager) }, "eager"},
+		{func() *lisp.LEnv { return newVM(lazy) }, "lazy"},
+		{func() *lisp.LEnv { return newVM(lazy, lisp.VMWithPrewarm()) }, "prewarmed"},
+		{republished, "republished"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			vm := c.vm()
+			reg := vm.Runtime.Registry
+			old, ok := reg.Package("regpkg").Symbol("reg-fn")
+			require.True(t, ok)
+			require.NoError(t, lisp.GoError(vm.InPackage(lisp.String("regpkg"))))
+			require.NoError(t, lisp.GoError(vm.BindBuiltins(lisp.BindOpts{Shadow: true}, constBuiltin("reg-fn", 8))))
+			require.NoError(t, lisp.GoError(vm.BindBuiltins(lisp.BindOpts{Shadow: true}, constBuiltin("reg-fn", 9))))
+			require.NoError(t, lisp.GoError(vm.InPackage(lisp.String(lisp.DefaultUserPackage))))
+			evalOK(t, vm, `(set 'reg-fn 0)`)
+			cur := reg.RegisteredBuiltin("regpkg", "reg-fn")
+			requireName(t, reg, cur, "regpkg", "reg-fn")
+			requireNotRegistered(t, reg, old)
+			assert.Equal(t, "9", evalOK(t, vm, `(funcall (builtin 'regpkg:reg-fn) 0)`))
+			asked := 0
+			_, err := lisp.NewTemplate(vm, lisp.TemplateWithBuiltinPolicy(func(v *lisp.LVal) bool {
+				if v.Native == old.Native {
+					asked++
+				}
+				return true
+			}))
+			require.NoError(t, err)
+			assert.Zero(t, asked, "the policy was asked about the replaced function")
+		})
+	}
+}
+
+// Repeated replacement of one name keeps only the current function in the
+// registry.
+func TestRegisteredBuiltinReplacementsReleased(t *testing.T) {
+	env := registryEnv(t)
+	require.NoError(t, lisp.GoError(env.InPackage(lisp.String("regpkg"))))
+	var gens []*lisp.LVal
+	for n := range 5 {
+		gens = append(gens, env.Runtime.Registry.RegisteredBuiltin("regpkg", "reg-fn"))
+		require.NoError(t, lisp.GoError(env.BindBuiltins(lisp.BindOpts{Shadow: true}, constBuiltin("reg-fn", 10+n))))
+	}
+	for i, g := range gens {
+		assert.False(t, lisp.RegistryHolds(env, g), "generation %d is still held", i)
+	}
+	assert.True(t, lisp.RegistryHolds(env, env.Runtime.Registry.RegisteredBuiltin("regpkg", "reg-fn")))
+}
+
+// First lookups may run concurrently in a cold runtime and in an eager VM,
+// which allow concurrent reads, and on own registrations in a lazy VM.  Run
+// with -race.
+func TestRegisteredBuiltinConcurrentFirstLookups(t *testing.T) {
+	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
+	tmpl, err := lisp.NewTemplate(registryEnv(t), policy, lisp.TemplateWithEagerInstantiation())
+	require.NoError(t, err)
+	lazyTmpl, err := lisp.NewTemplate(registryEnv(t), policy)
+	require.NoError(t, err)
+	withOwn := func(env *lisp.LEnv) *lisp.LEnv {
+		require.NoError(t, lisp.GoError(env.InPackage(lisp.String("regpkg"))))
+		require.NoError(t, lisp.GoError(env.BindBuiltins(lisp.BindOpts{}, constBuiltin("own-a", 1), constBuiltin("own-b", 2))))
+		require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
+		return env
+	}
+	vm := func(tm *lisp.Template) *lisp.LEnv {
+		v, err := tm.NewVM()
+		require.NoError(t, err)
+		return v
+	}
+	for _, c := range []struct {
+		env   *lisp.LEnv
+		name  string
+		names []string
+	}{
+		{withOwn(registryEnv(t)), "cold", []string{"own-a", "own-b", "reg-fn"}},
+		{withOwn(vm(tmpl)), "eager", []string{"own-a", "own-b", "reg-fn"}},
+		{withOwn(vm(lazyTmpl)), "lazy, own registrations", []string{"own-a", "own-b"}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			reg := c.env.Runtime.Registry
+			var wg sync.WaitGroup
+			results := make([][]*lisp.LVal, 8)
+			for g := range results {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					for _, name := range c.names {
+						fn := reg.RegisteredBuiltin("regpkg", name)
+						if _, _, ok := reg.RegisteredBuiltinName(fn); !ok {
+							fn = nil
+						}
+						results[g] = append(results[g], fn)
+					}
+				}()
+			}
+			wg.Wait()
+			for g := range results {
+				require.Len(t, results[g], len(c.names))
+				for i, fn := range results[g] {
+					require.NotNil(t, fn, "%s in goroutine %d", c.names[i], g)
+					assert.Same(t, results[0][i], fn)
+				}
+			}
+		})
+	}
 }

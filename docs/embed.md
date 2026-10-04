@@ -800,6 +800,8 @@ if pkg, name, ok := reg.RegisteredBuiltinName(fn); ok {
   validator, for one), a native and a non-function answer `ok == false`.
 - The answer comes from a registration record stored with the function,
   never from its `FID`. Any code can construct a function with any `FID`.
+- A registered function's header is immutable. Writing its fields from Go
+  (`Str` included) is undefined, as for any value elps owns.
 - A template publishes the whole registry, also a builtin no name binds
   any more, so a builtin policy is asked about it too. Cold environments,
   eager and lazy template VMs and prewarmed VMs give the same answers. Each

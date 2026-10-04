@@ -2,7 +2,10 @@
 
 package lisp
 
-import "sync"
+import (
+	"sync"
+	"sync/atomic"
+)
 
 // The builtin registry (luthersystems/elps#800) records every function,
 // macro and special operator as LEnv.AddBuiltins, LEnv.BindBuiltins,
@@ -83,7 +86,11 @@ func (p *templateBuiltins) lookupIndex() map[builtinKey]int {
 //   - last holds the registrations made in this runtime, in chunks: every
 //     one in a cold environment, and those made after NewVM in a template
 //     VM.  ownIndex maps each key to its current registration; it is built
-//     on the first lookup and kept up to date after.
+//     on the first lookup and kept up to date after.  It is published
+//     atomically once complete, because an eager VM and a cold runtime
+//     allow concurrent reads, and a first lookup is a read.  Two
+//     concurrent first lookups may both build it; each builds the same
+//     map, and one wins.
 //   - plan holds the entries a template VM inherited.  It belongs to the
 //     template and is shared by every VM.  An own registration of the same
 //     key replaces the plan entry.
@@ -91,10 +98,11 @@ func (p *templateBuiltins) lookupIndex() map[builtinKey]int {
 //     eager VM, and in a lazy VM each one built on its first lookup through
 //     lazy.
 //   - shadowed reports that some registration in this runtime replaced an
-//     earlier binding of its name, so the chunks may hold a displaced
-//     registration.
+//     earlier binding of its name, so a plan entry may be displaced.  A
+//     displaced own registration is dropped from the chunks when it is
+//     replaced, so the registry keeps no obsolete function alive.
 type builtinRegistry struct {
-	ownIndex map[builtinKey]*LVal
+	ownIndex atomic.Pointer[map[builtinKey]*LVal]
 	lazy     *lazyInstance
 	plan     *templateBuiltins
 	last     *builtinChunk
@@ -111,13 +119,31 @@ func (r *builtinRegistry) register(fn *LVal, shadows bool) {
 	}
 	r.last.vals[r.last.n] = fn
 	r.last.n++
-	r.shadowed = r.shadowed || shadows
-	if r.ownIndex != nil {
-		r.ownIndex[registrationKey(fn)] = fn
+	if shadows {
+		r.shadowed = true
+		r.dropDisplaced(fn)
+	}
+	if idx := r.ownIndex.Load(); idx != nil {
+		(*idx)[registrationKey(fn)] = fn
 	}
 }
 
-// eachOwn calls f with each registration made in this runtime, in
+// dropDisplaced removes every earlier own registration of fn's key from the
+// chunks, so the registry does not keep the replaced function alive.  It
+// runs only for a registration over a name already bound, which is rare,
+// and scans the chunks once.
+func (r *builtinRegistry) dropDisplaced(fn *LVal) {
+	key := registrationKey(fn)
+	for c := r.last; c != nil; c = c.prev {
+		for i, v := range c.vals[:c.n] {
+			if v != nil && v != fn && registrationKey(v) == key {
+				c.vals[i] = nil
+			}
+		}
+	}
+}
+
+// eachOwn calls f with each current registration made in this runtime, in
 // registration order.
 func (r *builtinRegistry) eachOwn(f func(fn *LVal)) {
 	var stack [8]*builtinChunk
@@ -127,12 +153,15 @@ func (r *builtinRegistry) eachOwn(f func(fn *LVal)) {
 	}
 	for i := len(chunks) - 1; i >= 0; i-- {
 		for _, fn := range chunks[i].vals[:chunks[i].n] {
-			f(fn)
+			if fn != nil {
+				f(fn)
+			}
 		}
 	}
 }
 
-// numOwn returns the number of registrations made in this runtime.
+// numOwn returns an upper bound on the number of registrations made in this
+// runtime: dropped ones are counted.
 func (r *builtinRegistry) numOwn() int {
 	n := 0
 	for c := r.last; c != nil; c = c.prev {
@@ -146,11 +175,17 @@ func (r *builtinRegistry) ownLookup(key builtinKey) *LVal {
 	if r.last == nil {
 		return nil
 	}
-	if r.ownIndex == nil {
-		r.ownIndex = make(map[builtinKey]*LVal, r.numOwn())
-		r.eachOwn(func(fn *LVal) { r.ownIndex[registrationKey(fn)] = fn })
+	idx := r.ownIndex.Load()
+	if idx == nil {
+		m := make(map[builtinKey]*LVal, r.numOwn())
+		r.eachOwn(func(fn *LVal) { m[registrationKey(fn)] = fn })
+		if !r.ownIndex.CompareAndSwap(nil, &m) {
+			idx = r.ownIndex.Load()
+		} else {
+			idx = &m
+		}
 	}
-	return r.ownIndex[key]
+	return (*idx)[key]
 }
 
 // planLookup returns the index of the plan entry of key.

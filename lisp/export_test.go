@@ -163,3 +163,15 @@ func LazyMaterialized(vm *LEnv) int {
 	}
 	return -1
 }
+
+// RegistryHolds reports whether the runtime's own registration chunks still
+// hold fn's function data.
+func RegistryHolds(env *LEnv, fn *LVal) bool {
+	held := false
+	env.Runtime.Registry.builtins.eachOwn(func(v *LVal) {
+		if v.Native == fn.Native {
+			held = true
+		}
+	})
+	return held
+}
