@@ -134,7 +134,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 // the writes are kernel-only.
 //
 // There used to be a fourth unexported field, `funName map[string]string`,
-// carrying a TODO(elps2) to remove it.  It was dead the whole time: no site
+// marked for removal in elps2.  It was dead the whole time: no site
 // in the repository ever wrote or read it, so every environment ever
 // created — one per function call, plus one per let/labels/dotimes scope —
 // allocated an empty map that nothing could observe, and Fork rebuilt one
