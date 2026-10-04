@@ -381,3 +381,41 @@ func TestDurableClosureParity(t *testing.T) {
 		assert.Equal(t, wantCharges, charges, c.name)
 	}
 }
+
+// A decoded closure's chain ends at the loading environment's root, so
+// lisp.CapturedNames lists the names that root's own scope binds.  The
+// root is never saved (it is null in the document): direction comes from
+// the loading root, not the dumping one.
+func TestDurableClosureCapturedNames(t *testing.T) {
+	src := newTypedTestEnv(t)
+	require.Nil(t, src.Parent())
+	require.NoError(t, lisp.GoError(src.Put(lisp.Symbol("direction"), lisp.Int(1))))
+	f := src.LoadString("test", `(let ((k 2)) (lambda (a b) (< (* direction k a) (* direction b))))`)
+	require.NoError(t, lisp.GoError(f))
+	names, ok := lisp.CapturedNames(f)
+	require.True(t, ok)
+	require.Equal(t, []string{"direction", "k"}, names)
+	doc, err := libjson.DumpDurable(src, f, nil)
+	require.NoError(t, err)
+	// The saved chain is the let frame alone; the root is null.
+	assert.Contains(t, string(doc), `["~#env",[null,["k",2]]]`)
+	assert.NotContains(t, string(doc), `"direction",`)
+
+	dst := newTypedTestEnv(t)
+	require.NoError(t, lisp.GoError(dst.Put(lisp.Symbol("direction"), lisp.Int(-1))))
+	back, err := libjson.LoadDurable(dst, doc, nil)
+	require.NoError(t, err)
+	names, ok = lisp.CapturedNames(back)
+	require.True(t, ok)
+	assert.Equal(t, []string{"direction", "k"}, names)
+	require.NoError(t, lisp.GoError(dst.PutGlobal(lisp.Symbol("cmp"), back)))
+	assert.Equal(t, `false`, evalString(t, dst, `(funcall cmp 1 2)`))
+
+	// A loading root that binds nothing lists only the saved frame.
+	bare := newTypedTestEnv(t)
+	back, err = libjson.LoadDurable(bare, doc, nil)
+	require.NoError(t, err)
+	names, ok = lisp.CapturedNames(back)
+	require.True(t, ok)
+	assert.Equal(t, []string{"k"}, names)
+}

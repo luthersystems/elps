@@ -495,8 +495,12 @@ NODE    = INT | FLOAT | STRING | SYMBOL | null | ["~#list",[NODE,...]]
 there when it is called, exactly as a function restored by `~#fn` does.
 
 `ENV` is the innermost frame the lambda captured, and each frame names its
-parent. `null` is the root environment: its names are globals, resolved
-by name in `PKG` at call time.
+parent. `null` is the root environment, which is never saved. A restored
+closure hangs off the loading environment's root. A name the code reads
+that no saved frame binds resolves there at call time: in the loading
+root's own scope (names a host bound with `Put`), then as a global in
+`PKG`. So `lisp.CapturedNames` on a restored closure lists the loading
+root's names, not the dumping root's (`TestDurableClosureCapturedNames`).
 
 #### Frames are saved whole
 

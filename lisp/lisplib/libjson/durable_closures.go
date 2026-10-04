@@ -12,7 +12,9 @@ package libjson
 // PKG is the package the lambda was defined in: its body resolves globals
 // there when it is called, as a function restored by ~#fn does.  ENV is the
 // innermost captured frame, and each frame names its parent; null is the
-// root environment, whose names are globals.  A frame is saved whole, with
+// root environment, which is never saved: a restored closure hangs off the
+// loading root, and resolves names no saved frame binds there (the root's
+// own scope, then PKG's globals).  A frame is saved whole, with
 // every binding in name order: which names a closure's code may reach
 // cannot be decided statically (eval and macros reach names the code does
 // not spell), so nothing is dropped.  Frames with no bindings are left out

@@ -11,13 +11,10 @@ import (
 )
 
 // CapturedNames lists the names a lambda's captured frames bind, sorted
-// and deduplicated, and stops before the root environment.
+// and deduplicated, up to and including the root environment's own scope
+// (empty here; TestCapturedNamesRootBindings binds names there).
 func TestCapturedNames(t *testing.T) {
 	env := templateTestEnv(t)
-	// A binding in the root environment is at the global level, not a
-	// captured frame, so no closure lists it.
-	require.Nil(t, env.Parent())
-	require.NoError(t, lisp.GoError(env.Put(lisp.Symbol("root-binding"), lisp.Int(0))))
 	require.NoError(t, lisp.GoError(env.LoadString("defs", `
 (set 'global-x 1)
 (defun top-level (a) (+ a global-x))
@@ -114,5 +111,55 @@ func TestCapturedNamesDeterministic(t *testing.T) {
 			require.True(t, ok)
 			require.Equal(t, want, names)
 		}
+	}
+}
+
+// rootComparatorEnv returns a root environment with direction bound in its
+// own scope, as a host binds it with Put, and a comparator closing over it.
+func rootComparatorEnv(t *testing.T, direction int) *lisp.LEnv {
+	t.Helper()
+	env := templateTestEnv(t)
+	require.Nil(t, env.Parent())
+	require.NoError(t, lisp.GoError(env.Put(lisp.Symbol("direction"), lisp.Int(direction))))
+	require.NoError(t, lisp.GoError(env.LoadString("defs", `
+(set 'global-scale 3)
+(set 'compare (lambda (a b) (< (* direction a) (* direction b))))
+(set 'scaled (let ((k 2)) (lambda (a b) (< (* direction k a) (* global-scale b)))))
+`)))
+	return env
+}
+
+// A name the root environment's own scope binds is captured: evaluation
+// finds it before package globals.  Package globals (global-scale) are not.
+func TestCapturedNamesRootBindings(t *testing.T) {
+	env := rootComparatorEnv(t, -1)
+	// The comparator reads the root binding: with direction -1, 1 sorts
+	// after 2.
+	got := env.LoadString("check", `(compare 1 2)`)
+	require.NoError(t, lisp.GoError(got))
+	assert.False(t, lisp.True(got))
+
+	names, ok := lisp.CapturedNames(env.Get(lisp.Symbol("compare")))
+	require.True(t, ok)
+	assert.Equal(t, []string{"direction"}, names)
+	names, ok = lisp.CapturedNames(env.Get(lisp.Symbol("scaled")))
+	require.True(t, ok)
+	assert.Equal(t, []string{"direction", "k"}, names)
+}
+
+// A template fork keeps the root's bindings, and so the captured names.
+func TestCapturedNamesTemplateFork(t *testing.T) {
+	env := rootComparatorEnv(t, -1)
+	tmpl, err := lisp.NewTemplate(env, templateCorePolicy())
+	require.NoError(t, err)
+	vm, err := tmpl.NewVM()
+	require.NoError(t, err)
+	for name, want := range map[string][]string{
+		"compare": {"direction"},
+		"scaled":  {"direction", "k"},
+	} {
+		names, ok := lisp.CapturedNames(vm.Get(lisp.Symbol(name)))
+		require.True(t, ok, name)
+		assert.Equal(t, want, names, name)
 	}
 }

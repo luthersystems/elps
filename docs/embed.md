@@ -739,9 +739,11 @@ The values are the live bound values, not copies: never mutate them, and
 ### Names a closure captured
 
 `lisp.CapturedNames(fn)` returns the names bound in the frames a lambda
-captured, sorted and with each name once. It walks the same frames as
-`Locals`, from the lambda's innermost captured frame up to, but not
-including, the root environment, so package globals are not included.
+captured, sorted and with each name once. It walks from the lambda's
+innermost captured frame up to and including the root environment's own
+scope. A host can bind a name in the root with `Put`, and evaluation finds
+it before a package global, so the lambda captures it. Package globals are
+not included: they live in package tables, not in any environment's scope.
 
 ```go
 names, ok := lisp.CapturedNames(env.Get(lisp.Symbol("f")))
@@ -751,8 +753,11 @@ names, ok := lisp.CapturedNames(env.Get(lisp.Symbol("f")))
 
 - It lists every name the frames bind, including names the lambda's code
   never reads.
-- A lambda with no captured bindings, such as a top-level `defun`, returns
-  an empty slice and `true`.
+- A lambda with no captured bindings, such as a top-level `defun` under a
+  root that binds nothing, returns an empty slice and `true`.
+- A template fork keeps the root's bindings. A closure restored by
+  `LoadDurable` hangs off the loading environment's root, so it lists that
+  root's names, not the dumping root's: the document never saves the root.
 - It returns `nil, false` for anything that is not a lambda: builtins,
   macros, special operators and non-function values.
 - It returns names only. The captured environment stays unexported

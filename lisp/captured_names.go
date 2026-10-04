@@ -6,9 +6,11 @@ import "slices"
 
 // CapturedNames returns the sorted, deduplicated names bound in the lexical
 // environment that the lambda fn captured: its innermost frame and each
-// frame above it, up to but not including the root environment.  Globals
-// are not included; they live in packages, not in captured frames.  A name
-// bound in more than one frame appears once.
+// frame above it, the root environment's own scope included.  A host can
+// bind lexical names in the root with Put, and evaluation finds them before
+// package globals, so they count as captured.  Package globals are not
+// included; they live in package tables, not in any environment's scope.
+// A name bound in more than one frame appears once.
 //
 // The second result is false, and the names nil, when fn is not a lambda:
 // a non-function value, a builtin, a macro, a special operator, or a
@@ -29,7 +31,7 @@ func CapturedNames(fn *LVal) ([]string, bool) {
 		return nil, false
 	}
 	names := []string{}
-	for env := fd.env; env != nil && env.parent != nil; env = env.parent {
+	for env := fd.env; env != nil; env = env.parent {
 		for name := range env.Bindings() {
 			names = append(names, name)
 		}
