@@ -53,7 +53,7 @@ func TestEncodeBudgetStopsEarly(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			enc := getEncoder(false)
 			defer putEncoder(enc)
-			err := enc.encodeLimit(tc.v, lisp.MaxValueDepth, encodeBudget{maxBytes: maxBytes})
+			err := enc.encodeLimit(tc.v, lisp.MaxValueDepth, encodeBudget{maxBytes: maxBytes}, encodeMeter{})
 			var size encodeSizeError
 			require.ErrorAs(t, err, &size)
 			assert.Equal(t, encodeSizeError(maxBytes), size)
@@ -72,7 +72,7 @@ func TestEncodeBudgetObservesCancelledContext(t *testing.T) {
 	dag := doublingDAG(lisp.Int(1), 20)
 	for _, v := range []*lisp.LVal{dag, wrapLists(dag, 2*encodeGuardDepth)} {
 		enc := getEncoder(false)
-		err := enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{maxBytes: 1 << 30, ctx: ctx})
+		err := enc.encodeLimit(v, lisp.MaxValueDepth, encodeBudget{maxBytes: 1 << 30, ctx: ctx}, encodeMeter{})
 		var cancelled encodeCancelledError
 		require.ErrorAs(t, err, &cancelled)
 		require.ErrorIs(t, err, context.Canceled)
@@ -86,6 +86,6 @@ func TestEncodeBudgetObservesCancelledContext(t *testing.T) {
 func TestEncodeZeroBudgetIsUnbounded(t *testing.T) {
 	enc := getEncoder(false)
 	defer putEncoder(enc)
-	require.NoError(t, enc.encodeLimit(doublingDAG(lisp.Int(1), 12), lisp.MaxValueDepth, encodeBudget{}))
+	require.NoError(t, enc.encodeLimit(doublingDAG(lisp.Int(1), 12), lisp.MaxValueDepth, encodeBudget{}, encodeMeter{}))
 	assert.Equal(t, 2*(1<<12)-1+2*((1<<12)-1), enc.buf.Len())
 }

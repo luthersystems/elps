@@ -236,7 +236,7 @@ func TestValueWalkerPlainBytesGolden(t *testing.T) {
 			r := goldenObserve(fmt.Sprintf("serializer/sn=%t/canonize=%t/typed=%t/%s", opts.StringNumbers, opts.Canonize, opts.Typed, f.name), in, func() (*lisp.LVal, []byte, error) {
 				s := DefaultSerializer()
 				if !opts.Canonize && !opts.Typed {
-					b, _, err := s.dumpLimit(v, opts.StringNumbers, 1024, encodeBudget{maxBytes: 8192})
+					b, _, err := s.dumpLimit(v, opts.StringNumbers, 1024, encodeBudget{maxBytes: 8192}, encodeMeter{})
 					return nil, b, err
 				}
 

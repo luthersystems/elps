@@ -475,22 +475,27 @@ func TestPooledEncoderCarriesNoStateBetweenDocuments(t *testing.T) {
 // written yet: it makes the struct's shape something the author has to come
 // here and change, with the reset rule in front of them when they do.
 //
-// "Reset it in getEncoder" is not the only acceptable answer.  scratch is not
-// reset and does not need to be, because every use site writes the bytes it
-// reads before it reads them.  That is an argument rather than an invariant
-// the compiler checks, and the point of this test is that it gets made for a
-// new field instead of assumed.
+// "Reset it in getEncoder" is not the only acceptable answer.  A scratch
+// array need not be reset when every use site writes the bytes it reads
+// before it reads them.  That is an argument rather than an invariant the
+// compiler checks, and the point of this test is that it gets made for a new
+// field instead of assumed.
 func TestEncoderFieldsAreAccountedForInGetEncoder(t *testing.T) {
 	// Every field of encoder, in declaration order, as of the last time
 	// someone checked the struct against getEncoder.  The trailing note on
 	// each is how that field is accounted for.
 	known := []string{
-		"buf",         // Reset() in getEncoder
-		"scratch",     // not reset: written before read at every use site
-		"stringNums",  // reset in getEncoder
-		"nestedDeep",  // reset in getEncoder
-		"wroteNative", // reset in getEncoder
-		"visits",      // reset in getEncoder
+		"memoMore",      // reset in getEncoder (and cleared in putEncoder)
+		"env",           // reset in getEncoder (and cleared in putEncoder)
+		"memo",          // reset in getEncoder (and cleared in putEncoder)
+		"buf",           // Reset() in getEncoder
+		"chargedKiB",    // reset in getEncoder
+		"next",          // reset in getEncoder, and set by encodeLimit before use
+		"stringNums",    // reset in getEncoder
+		"legacyNatives", // reset in getEncoder
+		"nestedDeep",    // reset in getEncoder
+		"wroteNative",   // reset in getEncoder
+		"visits",        // reset in getEncoder
 	}
 
 	typ := reflect.TypeOf(encoder{})
@@ -507,7 +512,7 @@ func TestEncoderFieldsAreAccountedForInGetEncoder(t *testing.T) {
 			"document must be reset there, or a pooled encoder carries the previous "+
 			"document's state into the next one -- silently, because a stale flag "+
 			"changes a verdict rather than crashing anything. A field left out of "+
-			"getEncoder needs the argument scratch has, that every use site writes "+
+			"getEncoder needs the argument a scratch array has, that every use site writes "+
 			"what it reads before reading it; buffer-like fields are exactly where "+
 			"that argument is easiest to get wrong. Then extend the list, with a "+
 			"note saying which of the two applies.",
