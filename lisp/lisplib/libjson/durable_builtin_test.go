@@ -178,3 +178,21 @@ func TestDurableBuiltinParity(t *testing.T) {
 		assert.Equal(t, kept.Native, back.Cells[0].Native, "%s: the restore is the VM's own builtin", c.name)
 	}
 }
+
+// A value lisp:builtin returns after a rebinding saves as ~#builtin and
+// restores to the original builtin after another rebinding.
+func TestDurableLispBuiltinAcrossRebind(t *testing.T) {
+	env := builtinEnv(t)
+	evalString(t, env, `(in-package 'math) (lisp:set 'floor (lisp:lambda (x) 0)) (lisp:in-package 'user)`)
+	v := env.LoadString("test", `(builtin 'math:floor)`)
+	require.NoError(t, lisp.GoError(v))
+	b, err := libjson.DumpDurable(env, v, nil)
+	require.NoError(t, err)
+	assert.Equal(t, `["~#durable",[1,["~#builtin",["math","floor"]]]]`, string(b))
+	evalString(t, env, `(in-package 'math) (lisp:set 'floor (lisp:lambda (x) 1)) (lisp:in-package 'user)`)
+	back, err := libjson.LoadDurable(env, b, nil)
+	require.NoError(t, err)
+	require.NoError(t, lisp.GoError(env.PutGlobal(lisp.Symbol("restored"), back)))
+	assert.Equal(t, "2", evalString(t, env, `(funcall restored 2.5)`))
+	assert.Equal(t, `"math:floor"`, evalString(t, env, `(builtin-name restored)`))
+}

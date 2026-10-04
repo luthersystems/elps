@@ -2309,6 +2309,49 @@ The consequences in practice:
   documents the `my-fn` your code sees, and a `test` body is written in your
   package like a `defun` body (see [Testing](#testing)).
 
+### Builtins as registered
+
+`(builtin 'PKG:NAME)` returns the builtin registered as `PKG:NAME`, whatever
+that name is bound to now. `(builtin-name f)` returns `"PKG:NAME"` when `f`
+is a registered builtin, and `()` otherwise. Both live in the sealed `lisp`
+package, so no program can rebind them.
+
+```lisp
+(in-package 'math)
+(lisp:set 'floor (lisp:lambda (x) 0))   ; rebind math:floor
+(lisp:in-package 'user)
+(math:floor 2.5)                        ; 0, the new binding
+(funcall (builtin 'math:floor) 2.5)     ; 2, the registered builtin
+(builtin-name (builtin 'math:floor))    ; "math:floor"
+(builtin-name math:floor)               ; (): a lambda is not registered
+(builtin-name car)                      ; "lisp:car"
+```
+
+- A builtin is registered when the host or a library installs it: every
+  builtin, macro and special operator of the standard library, and every Go
+  builtin of an embedder's packages. A `defun` registers nothing.
+- `set`, `set!`, `defun` and a shadowing definition in another package
+  never change what `builtin` returns.
+- `builtin` takes a quoted, qualified symbol. It raises an error for an
+  unqualified symbol (`name must be qualified (PKG:NAME)`), for a name no
+  builtin is registered under, and for any other argument. It never
+  returns `()`.
+- `builtin` finds only names their package exports. A registered name the
+  package does not export raises the same error as an unregistered name.
+- `builtin-name` names any registered builtin, exported or not: the caller
+  already holds the value.
+- One `builtin` call costs one evaluation step. Look a builtin up once at
+  load scope and reuse the value:
+
+  ```lisp
+  (set 'native-floor (builtin 'math:floor))   ; once, when the file loads
+  (defun round-down (x) (funcall native-floor x))
+  ```
+- `builtin-name` returns `()` for a lambda, a schema validator, a native, a
+  non-function, and any function whose printed name only looks like a
+  builtin's. The answer comes from the registration, never from how the
+  function prints.
+
 ## Documentation
 
 ELPS has built-in support for attaching documentation to functions, macros,

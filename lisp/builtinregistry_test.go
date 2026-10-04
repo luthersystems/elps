@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsutil"
@@ -216,4 +217,119 @@ func evalOK(t *testing.T, env *lisp.LEnv, src string) string {
 	v := env.LoadString("test", src)
 	require.NoError(t, lisp.GoError(v), src)
 	return v.String()
+}
+
+// lisp:builtin and lisp:builtin-name are the Lisp face of the registry.
+func TestLispBuiltinLookup(t *testing.T) {
+	env := registryEnv(t)
+	evalOK(t, env, `(in-package 'math)
+(lisp:set 'floor (lisp:lambda (x) 0))
+(lisp:in-package 'user)`)
+	assert.Equal(t, "0", evalOK(t, env, `(math:floor 2.5)`))
+	assert.Equal(t, "2", evalOK(t, env, `(funcall (builtin 'math:floor) 2.5)`))
+	assert.Equal(t, `"math:floor"`, evalOK(t, env, `(builtin-name (builtin 'math:floor))`))
+	assert.Equal(t, `"lisp:car"`, evalOK(t, env, `(builtin-name car)`))
+	assert.Equal(t, `"regpkg:reg-fn"`, evalOK(t, env, `(builtin-name (builtin 'regpkg:reg-fn))`))
+	assert.Equal(t, `"lisp:defun"`, evalOK(t, env, `(builtin-name (builtin 'lisp:defun))`))
+	for _, src := range []string{
+		`(builtin-name math:floor)`,
+		`(builtin-name (lambda (x) x))`,
+		`(builtin-name 3)`,
+		`(builtin-name "lisp:car")`,
+		`(builtin-name 'lisp:car)`,
+		`(builtin-name ())`,
+		`(builtin-name (s:make-validator "<builtin-function ` + "``<''" + `>" s:int))`,
+	} {
+		assert.Equal(t, "()", evalOK(t, env, src), src)
+	}
+	for _, c := range []struct{ src, want string }{
+		{`(builtin 'floor)`, "lisp:builtin: name must be qualified (PKG:NAME): floor"},
+		{`(builtin :floor)`, "lisp:builtin: name must be qualified (PKG:NAME): :floor"},
+		{`(builtin "math:floor")`, "lisp:builtin: name is not a symbol: string"},
+		{`(builtin 3)`, "lisp:builtin: name is not a symbol: int"},
+		{`(builtin ())`, "lisp:builtin: name is not a symbol"},
+		{`(builtin 'math:no-such)`, "lisp:builtin: no builtin is registered as math:no-such"},
+		{`(builtin 'no-such-pkg:floor)`, "lisp:builtin: no builtin is registered as no-such-pkg:floor"},
+		{`(progn (defun my-fn () 1) (builtin 'user:my-fn))`, "lisp:builtin: no builtin is registered as user:my-fn"},
+		{`(builtin 'user:car)`, "lisp:builtin: no builtin is registered as user:car"},
+	} {
+		v := env.LoadString("test", c.src)
+		require.Equal(t, lisp.LError, v.Type, c.src)
+		assert.Contains(t, v.String(), c.want, c.src)
+	}
+	// lisp is sealed: neither function can be rebound.
+	v := env.LoadString("test", `(lisp:set 'lisp:builtin (lambda (x) x))`)
+	assert.Equal(t, lisp.LError, v.Type)
+}
+
+// The Lisp functions answer the same in every kind of template VM.
+func TestLispBuiltinLookupParity(t *testing.T) {
+	source := registryEnv(t)
+	evalOK(t, source, `(in-package 'math) (lisp:set 'floor (lisp:lambda (x) 0)) (lisp:in-package 'user)`)
+	const probe = `(list (funcall (builtin 'math:floor) 2.5) (builtin-name (builtin 'math:floor)) (builtin-name math:floor) (builtin-name car))`
+	want := evalOK(t, source, probe)
+	assert.Equal(t, `'(2 "math:floor" () "lisp:car")`, want)
+	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
+	eager, err := lisp.NewTemplate(source, policy, lisp.TemplateWithEagerInstantiation())
+	require.NoError(t, err)
+	lazy, err := lisp.NewTemplate(source, policy)
+	require.NoError(t, err)
+	for _, c := range []struct {
+		tmpl *lisp.Template
+		name string
+		opts []lisp.VMOption
+	}{
+		{eager, "eager", nil},
+		{lazy, "lazy", nil},
+		{lazy, "lazy prewarmed", []lisp.VMOption{lisp.VMWithPrewarm()}},
+	} {
+		vm, vmErr := c.tmpl.NewVM(c.opts...)
+		require.NoError(t, vmErr)
+		assert.Equal(t, want, evalOK(t, vm, probe), c.name)
+	}
+}
+
+// lisp:builtin refuses a registered name its package does not export, with
+// the error of an unregistered name.  The Go registry and builtin-name see
+// it.  Once the package exports the name, builtin returns it.
+func TestLispBuiltinRequiresExport(t *testing.T) {
+	env := registryEnv(t)
+	require.NoError(t, lisp.GoError(env.InPackage(lisp.String("regpkg"))))
+	require.NoError(t, lisp.GoError(env.BindBuiltins(lisp.BindOpts{}, constBuiltin("hidden-fn", 5))))
+	evalOK(t, env, `(set 'hidden-held hidden-fn) (export 'hidden-held)`)
+	require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
+
+	hidden := env.LoadString("test", `(builtin 'regpkg:hidden-fn)`)
+	missing := env.LoadString("test", `(builtin 'regpkg:missing-fn)`)
+	require.Equal(t, lisp.LError, hidden.Type)
+	require.Equal(t, lisp.LError, missing.Type)
+	assert.Equal(t,
+		strings.ReplaceAll(missing.String(), "missing-fn", "X"),
+		strings.ReplaceAll(hidden.String(), "hidden-fn", "X"),
+		"an unexported name must look unregistered")
+	assert.NotNil(t, env.Runtime.Registry.RegisteredBuiltin("regpkg", "hidden-fn"))
+	assert.Equal(t, `"regpkg:hidden-fn"`, evalOK(t, env, `(builtin-name regpkg:hidden-held)`))
+
+	evalOK(t, env, `(in-package 'regpkg) (export 'hidden-fn) (in-package 'user)`)
+	assert.Equal(t, "5", evalOK(t, env, `(funcall (builtin 'regpkg:hidden-fn) 1)`))
+}
+
+// A builtin an embedder builds at run time, without registration, stays
+// unregistered, even when it is bound under a registered builtin's name.
+func TestRuntimeClosureBuiltinUnregistered(t *testing.T) {
+	env := registryEnv(t)
+	reg := env.Runtime.Registry
+	n := 0
+	closure := lisp.FunInPackage("regpkg", "runtime-fn", lisp.Formals("x"), func(*lisp.LEnv, *lisp.LVal) *lisp.LVal {
+		n++
+		return lisp.Int(n)
+	})
+	pkg := reg.Package("regpkg")
+	require.NoError(t, lisp.GoError(pkg.Put(lisp.Symbol("runtime-fn"), closure)))
+	require.NoError(t, lisp.GoError(pkg.Put(lisp.Symbol("reg-fn"), closure)))
+	requireNotRegistered(t, reg, closure)
+	assert.Nil(t, reg.RegisteredBuiltin("regpkg", "runtime-fn"))
+	assert.Equal(t, "()", evalOK(t, env, `(builtin-name regpkg:runtime-fn)`))
+	// The registration of reg-fn is unchanged by the Put.
+	requireName(t, reg, reg.RegisteredBuiltin("regpkg", "reg-fn"), "regpkg", "reg-fn")
 }

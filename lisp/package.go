@@ -655,6 +655,21 @@ func (pkg *Package) externalNames() iter.Seq[string] {
 	return slices.Values(pkg.externals)
 }
 
+// exports reports whether pkg exports name.  It scans the export list, so
+// it costs time linear in the number of exports.  A nil package exports
+// nothing.
+func (pkg *Package) exports(name string) bool {
+	if pkg == nil {
+		return false
+	}
+	for n := range pkg.externalNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Export appends names to the package's export list verbatim, preserving
 // existing order and without deduplicating (matching historical append
 // semantics on the package's export list).  Use Exports for the

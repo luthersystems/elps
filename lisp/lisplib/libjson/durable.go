@@ -762,7 +762,6 @@ func (e *durableEncoder) namedFunction(name string) error {
 	return e.grow()
 }
 
-
 // checkTagged rejects a malformed tagged value, as DumpTyped does.
 func checkTagged(v *lisp.LVal) error {
 	if len(v.Cells) != 1 || v.Cells[0] == nil || v.Str == "" || !utf8.ValidString(v.Str) {

@@ -139,6 +139,23 @@ var (
 			written with their bodies expanded. The input is not modified.
 			Nesting deeper than the evaluator's nesting limit, or a head that
 			keeps expanding past the macro expansion limit, is an error.`},
+		{"builtin", Formals("name"), builtinRegisteredBuiltin,
+			`Returns the builtin registered as name, a quoted qualified symbol
+			such as 'math:floor, whatever that name is bound to now.
+			Rebinding, shadowing or set never change the result. Raises an
+			error when name is not a qualified symbol, when no builtin is
+			registered under it (a defun is not registered), or when its
+			package does not export it; the last two raise the same error.
+			Never returns (). One call costs one step: look a builtin up once
+			at load scope and reuse the value.`},
+		{"builtin-name", Formals("value"), builtinRegisteredBuiltinName,
+			`Returns "PKG:NAME", a string, when value is the builtin
+			registered as PKG:NAME, whatever that name is bound to now.
+			Returns () for every other value: a lambda, a builtin no
+			registration created (such as a schema validator), a builtin a
+			later registration of its name replaced, a native and a
+			non-function. The answer comes from the registration, never from
+			how the function prints.`},
 		{"funcall", Formals("fun", VarArgSymbol, "args"), builtinFunCall,
 			`Calls fun with the given args and returns the result. fun may be
 			a function value or a quoted symbol resolved in the global package

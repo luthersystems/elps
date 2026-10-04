@@ -185,3 +185,34 @@ func (r *PackageRegistry) RegisteredBuiltinName(fn *LVal) (string, string, bool)
 	}
 	return fd.reg.pkg, fd.reg.name, true
 }
+
+// builtinRegisteredBuiltin is lisp:builtin, the Lisp face of
+// PackageRegistry.RegisteredBuiltin for exported names.
+func builtinRegisteredBuiltin(env *LEnv, args *LVal) *LVal {
+	sym := args.Cells[0]
+	if sym.Type != LSymbol {
+		return env.Errorf("name is not a symbol: %v", sym.Type)
+	}
+	pkg, name, n := splitSymbolParts(sym.Str)
+	if n != 2 || pkg == "" || name == "" {
+		return env.Errorf("name must be qualified (PKG:NAME): %v", sym.Str)
+	}
+	// A name its package does not export gets the error of an unregistered
+	// name, so the answer does not reveal which internals exist.
+	reg := env.Runtime.Registry
+	fn := reg.RegisteredBuiltin(pkg, name)
+	if fn == nil || !reg.Package(pkg).exports(name) {
+		return env.Errorf("no builtin is registered as %v", sym.Str)
+	}
+	return fn
+}
+
+// builtinRegisteredBuiltinName is lisp:builtin-name, the Lisp face of
+// PackageRegistry.RegisteredBuiltinName.
+func builtinRegisteredBuiltinName(env *LEnv, args *LVal) *LVal {
+	pkg, name, ok := env.Runtime.Registry.RegisteredBuiltinName(args.Cells[0])
+	if !ok {
+		return Nil()
+	}
+	return String(pkg + ":" + name)
+}

@@ -807,6 +807,17 @@ if pkg, name, ok := reg.RegisteredBuiltinName(fn); ok {
   VM, the first `RegisteredBuiltin` call for a name builds that value.
 - An unknown package or name returns nil, and a nil registry answers
   nothing. Neither method evaluates code or charges steps.
+- `RegisteredBuiltin` and `RegisteredBuiltinName` see every registration,
+  exported or not.
+- A builtin built at run time without registration, for example a Go
+  closure passed to `lisp.FunInPackage` and bound with `Put`, stays
+  unregistered: `RegisteredBuiltinName` answers `ok == false` for it.
+
+Lisp code reads the same registry through `(builtin 'PKG:NAME)` and
+`(builtin-name f)` in the `lisp` package (see the language reference).
+`builtin` finds only exported names, and refuses an unexported one with
+the error of an unregistered name. `builtin-name` names any registered
+builtin.
 
 `libjson.DumpDurable` uses the same record to save a builtin whose name no
 longer binds it. See [durable typed JSON](internals/durable-json.md#functions).
