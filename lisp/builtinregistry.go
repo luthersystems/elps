@@ -47,6 +47,15 @@ type builtinChunk struct {
 	n    int
 }
 
+// builtinSlotIndex tracks current slots only after the first shadowing.
+// last and n mark the indexed prefix; ordinary registration only appends.
+type builtinSlotIndex struct {
+	byKey   map[builtinKey]**LVal
+	last    *builtinChunk
+	n       int
+	cleared int
+}
+
 // registrationKey returns the key of a function registration built: its
 // package and its registered name.
 func registrationKey(fn *LVal) builtinKey {
@@ -97,17 +106,17 @@ func (p *templateBuiltins) lookupIndex() map[builtinKey]int {
 //   - values holds this VM's value for each plan entry: all of them in an
 //     eager VM, and in a lazy VM each one built on its first lookup through
 //     lazy.
-//   - shadowed reports that some registration in this runtime replaced an
-//     earlier binding of its name, so a plan entry may be displaced.  A
-//     displaced own registration is dropped from the chunks when it is
-//     replaced, so the registry keeps no obsolete function alive.
+//   - slots is built only on shadowing.  It indexes newly appended slots
+//     and clears displaced ones directly.  Compaction bounds cleared slots
+//     by live entries while preserving registration order.  A non-nil slots
+//     also reports that an inherited plan entry may be displaced.
 type builtinRegistry struct {
 	ownIndex atomic.Pointer[map[builtinKey]*LVal]
 	lazy     *lazyInstance
 	plan     *templateBuiltins
 	last     *builtinChunk
+	slots    *builtinSlotIndex
 	values   []*LVal
-	shadowed bool
 }
 
 // register records fn, which registrationFunValue built with fn as its own
@@ -120,27 +129,67 @@ func (r *builtinRegistry) register(fn *LVal, shadows bool) {
 	r.last.vals[r.last.n] = fn
 	r.last.n++
 	if shadows {
-		r.shadowed = true
-		r.dropDisplaced(fn)
+		r.dropDisplaced()
 	}
 	if idx := r.ownIndex.Load(); idx != nil {
 		(*idx)[registrationKey(fn)] = fn
 	}
 }
 
-// dropDisplaced removes every earlier own registration of fn's key from the
-// chunks, so the registry does not keep the replaced function alive.  It
-// runs only for a registration over a name already bound, which is rare,
-// and scans the chunks once.
-func (r *builtinRegistry) dropDisplaced(fn *LVal) {
-	key := registrationKey(fn)
+// dropDisplaced indexes new slots in registration order and clears each
+// displaced slot directly.  Each slot is indexed once between compactions.
+// Compaction runs only after cleared slots outnumber live entries, so the
+// work is amortized constant per registration, independent of history.
+func (r *builtinRegistry) dropDisplaced() {
+	if r.slots == nil {
+		r.slots = &builtinSlotIndex{byKey: make(map[builtinKey]**LVal)}
+	}
+	s := r.slots
+	var stack [8]*builtinChunk
+	chunks := stack[:0]
 	for c := r.last; c != nil; c = c.prev {
-		for i, v := range c.vals[:c.n] {
-			if v != nil && v != fn && registrationKey(v) == key {
-				c.vals[i] = nil
-			}
+		chunks = append(chunks, c)
+		if c == s.last {
+			break
 		}
 	}
+	for i := len(chunks) - 1; i >= 0; i-- {
+		c := chunks[i]
+		start := 0
+		if c == s.last {
+			start = s.n
+		}
+		for j := start; j < c.n; j++ {
+			slot := &c.vals[j]
+			key := registrationKey(*slot)
+			if old := s.byKey[key]; old != nil {
+				*old = nil
+				s.cleared++
+			}
+			s.byKey[key] = slot
+		}
+	}
+	s.last, s.n = r.last, r.last.n
+	if s.cleared > len(s.byKey) {
+		r.compactSlots()
+	}
+}
+
+// compactSlots copies live registrations into fresh chunks, in order, and
+// replaces every slot pointer so obsolete chunks can be released.
+func (r *builtinRegistry) compactSlots() {
+	var last *builtinChunk
+	r.eachOwn(func(fn *LVal) {
+		if last == nil || last.n == builtinChunkSize {
+			last = &builtinChunk{prev: last}
+		}
+		last.vals[last.n] = fn
+		r.slots.byKey[registrationKey(fn)] = &last.vals[last.n]
+		last.n++
+	})
+	r.last = last
+	r.slots.last, r.slots.n = last, last.n
+	r.slots.cleared = 0
 }
 
 // eachOwn calls f with each current registration made in this runtime, in
@@ -255,7 +304,7 @@ func (r *builtinRegistry) current() []*LVal {
 		}
 	}
 	r.eachOwn(func(fn *LVal) { out = append(out, fn) })
-	if !r.shadowed {
+	if r.slots == nil {
 		return out
 	}
 	kept := out[:0]

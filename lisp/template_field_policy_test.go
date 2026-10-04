@@ -63,8 +63,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		}},
 		{reflect.TypeFor[builtinRegistry](), map[string]string{
 			"last":     "reset: chunks of registrations made in this runtime; a VM starts with none, and its inherited records live in plan",
+			"slots":    "reset: slot index built only on shadowing; a VM starts with none",
 			"ownIndex": "reset: index of the own chunks, built on the first lookup; a VM starts with none",
-			"shadowed": "reset: whether the own chunks may hold a displaced registration; a VM starts with no own registrations",
 			"plan":     "shared-immutable: the plan's current registry entries, never written after publication; its index is built once under sync.Once",
 			"values":   "remapped: this VM's value per plan entry, built from plan references",
 			"lazy":     "remapped: this VM's lazy instance, built by NewVM and never published",
