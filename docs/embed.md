@@ -736,6 +736,31 @@ func builtinTraceLocals(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 The values are the live bound values, not copies: never mutate them, and
 `Copy` any value kept after the builtin returns.
 
+### Names a closure captured
+
+`lisp.CapturedNames(fn)` returns the names bound in the frames a lambda
+captured, sorted and with each name once. It walks the same frames as
+`Locals`, from the lambda's innermost captured frame up to, but not
+including, the root environment, so package globals are not included.
+
+```go
+names, ok := lisp.CapturedNames(env.Get(lisp.Symbol("f")))
+// (set 'f (let ((n 1) (b 2)) (lambda (x) (+ n b x))))
+// names = ["b" "n"], ok = true
+```
+
+- It lists every name the frames bind, including names the lambda's code
+  never reads.
+- A lambda with no captured bindings, such as a top-level `defun`, returns
+  an empty slice and `true`.
+- It returns `nil, false` for anything that is not a lambda: builtins,
+  macros, special operators and non-function values.
+- It returns names only. The captured environment stays unexported
+  (luthersystems/elps#382), so the result gives no way to read or rebind
+  the captured values.
+- It evaluates nothing and charges no steps, so a host can call it outside
+  any step budget, and the answer does not depend on one.
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package
