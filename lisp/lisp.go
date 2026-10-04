@@ -173,6 +173,14 @@ type funData struct {
 	builtin  LBuiltin
 	env      *LEnv
 	captures *builtinCaptures
+	// reg is the registration record of a function, macro or special
+	// operator that registration built: the function header registration
+	// built, whose Str is the registered name (see builtinregistry.go).
+	// It is nil for every other function.  It is immutable and shared by
+	// every template VM, so it identifies the registration across forks.
+	// A registered function's header is immutable: writing its fields
+	// (Str included) is undefined.
+	reg *LVal
 
 	// loc is the captured environment's location register as it stood when
 	// the function was defined.  bind gives the call environment this

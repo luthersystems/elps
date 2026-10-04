@@ -37,6 +37,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		return env.Errorf("no current package")
 	}
 	seen := make(map[string]bool, len(defs))
+	shadows := false // some name is already bound: the registry may hold a displaced entry
 	for i, def := range defs {
 		if def == nil {
 			return env.Errorf("definition %d is nil", i+1)
@@ -55,7 +56,9 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		if _, msg := freeKeysOf(def); msg != "" {
 			return env.Errorf("%s", msg)
 		}
-		if exist, bound := registrationBound(pkg, name); bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError {
+		exist, bound := registrationBound(pkg, name)
+		shadows = shadows || bound
+		if bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError {
 			if !opts.Shadow {
 				return env.Errorf("symbol already defined: %s", name)
 			}
@@ -65,6 +68,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		}
 	}
 	formals := newFormalsCopier(defs)
+	registry := &env.Runtime.Registry.builtins
 	for _, f := range defs {
 		name := f.Name()
 		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
@@ -73,6 +77,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 			v.funData().freeKeys = freeKeys
 		}
 		pkg.putName(name, v)
+		registry.register(v, shadows)
 		if opts.Export {
 			pkg.appendExternal(name)
 		}

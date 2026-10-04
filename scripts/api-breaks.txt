@@ -59,3 +59,4 @@
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
 go | lisp.ArgDecoder | 2027-01-01 | luthersystems/substrate#632 | Decoder type became a struct to avoid a per-call heap allocation; constructors unchanged (ValueArg, TypedArg, StringArg). A decoder written as a plain function now goes through lisp.CustomArg. Only known consumer: luthersystems/substrate#632 (unmerged).
+golden | durable.txt:functions | 2027-01-04 | luthersystems/elps#800 | Every registered builtin is now written as ["~#builtin",["PKG","NAME"]] and restored through the builtin registry, so lisp:< in this row changes from ~#fn. The durable format has not shipped (v1.74.0 predates luthersystems/elps#797), so no stored documents exist and no consumer migrates; substrate defflow adopts the form with the registry API.

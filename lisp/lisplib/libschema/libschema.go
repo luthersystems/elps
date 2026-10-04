@@ -518,14 +518,15 @@ func newValidator(env *lisp.LEnv, formals *lisp.LVal, fn func(*lisp.LEnv, *lisp.
 
 // newCapturedValidator preserves aliases between a validator's state and the
 // rest of its VM. Its callback must not retain LVals outside captures.
+//
+// The FID is always a fresh runtimeSymbol, so no two validators of one
+// runtime share it and none looks like a registered builtin's FID
+// (luthersystems/elps#800).  A caller's name, such as the first argument of
+// s:make-validator, appears only in messages.
 func newCapturedValidator(env *lisp.LEnv, formals, captures *lisp.LVal, fn func(*lisp.LEnv, *lisp.LVal, *lisp.LVal) *lisp.LVal) *lisp.LVal {
-	return newNamedCapturedValidator(runtimeSymbol(env), formals, captures, fn)
-}
-
-func newNamedCapturedValidator(name string, formals, captures *lisp.LVal, fn func(*lisp.LEnv, *lisp.LVal, *lisp.LVal) *lisp.LVal) *lisp.LVal {
 	return markValidator(funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
 		Package:  DefaultPackageName,
-		FID:      name,
+		FID:      runtimeSymbol(env),
 		Formals:  formals,
 		Captures: captures,
 		Eval:     fn,
@@ -1018,7 +1019,7 @@ func builtinNegative(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinCheckInt(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newNamedCapturedValidator(name, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LInt {
 			return lisp.ErrorConditionf(WrongType, "Input was not an integer for type %s", name)
 		}
@@ -1030,7 +1031,7 @@ func builtinCheckInt(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lis
 func builtinCheckFloat(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newNamedCapturedValidator(name, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LFloat {
 			return lisp.ErrorConditionf(WrongType, "Input was not a float for type %s", name)
 		}
@@ -1042,7 +1043,7 @@ func builtinCheckFloat(env *lisp.LEnv, name string, constraints []*lisp.LVal) *l
 func builtinCheckNumber(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	rest := builtinCheckAny(env, constraints)
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newNamedCapturedValidator(name, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LInt && input.Type != lisp.LFloat {
 			return lisp.ErrorConditionf(WrongType, "Input was not a number for type %s", name)
 		}

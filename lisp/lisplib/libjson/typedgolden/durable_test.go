@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
 	"github.com/luthersystems/elps/parser"
@@ -83,6 +84,11 @@ func durableEnv(t *testing.T) *lisp.LEnv {
 	env.Runtime.Reader = parser.NewReader()
 	must(t, lisp.GoError(lisp.InitializeUserEnv(env)))
 	must(t, lisp.GoError(env.LoadString("golden", `(defun golden-cmp (a b) (< a b))`)))
+	// golden-native is a registered builtin its name no longer binds; only
+	// golden-held holds it (luthersystems/elps#800).
+	must(t, lisp.GoError(env.BindBuiltins(lisp.BindOpts{}, elpsutil.Function("golden-native", lisp.Formals("x"),
+		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }))))
+	must(t, lisp.GoError(env.LoadString("golden", `(set 'golden-held golden-native) (set 'golden-native 0)`)))
 	return env
 }
 
@@ -123,6 +129,7 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 	spare.Cells[1].Cells = append(make([]*lisp.LVal, 0, 4), spare.Cells[1].Cells...)
 	lit := env.LoadString("golden", `(defun golden-lit () '(3 2 1)) (golden-lit)`)
 	litTail := env.LoadString("golden", `(rest (golden-lit))`)
+	held := env.LoadString("golden", `golden-held`)
 	cond := &lisp.LVal{Type: lisp.LError, Str: "golden-condition", Cells: []*lisp.LVal{s("boom"), lisp.Int(42)}}
 	return []struct {
 		name string
@@ -151,6 +158,7 @@ func durableCorpus(t *testing.T, env *lisp.LEnv) []struct {
 		{"vector-spare-capacity", spare},
 		{"literal-and-tail", list(lit, litTail)},
 		{"error-value", list(cond, cond)},
+		{"rebound-builtin", list(held, less)},
 	}
 }
 

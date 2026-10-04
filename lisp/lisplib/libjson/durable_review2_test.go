@@ -191,8 +191,8 @@ func TestDurableNilReferenceNatives(t *testing.T) {
 	assert.Equal(t, `["~#durable",[1,["~#list",[["~#native",["test:map",1,0]],["~#native",["test:map",1,0]]]]]]`, string(b))
 }
 
-// Function names come from one index per package per dump, which reads no
-// lazy binding.  The read is charged ceil(n/4) units for n bindings, the same
+// Lisp function names come from one index per package per dump, which reads
+// no lazy binding.  The read is charged ceil(n/4) units for n bindings, the same
 // on a cold environment, an eager template VM and a lazy template VM.
 func TestDurableFunctionNamesChargeParity(t *testing.T) {
 	env := benchFunctionEnv(t)
@@ -226,11 +226,12 @@ func TestDurableFunctionNamesChargeParity(t *testing.T) {
 		var err error
 		n := allocatedBy(func() { b, err = libjson.DumpDurable(c.vm, v, nil, record) })
 		require.NoError(t, err, c.name)
-		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#fn","lisp:not"],["~#fn","lisp:car"]]]]]`, string(b), c.name)
+		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#builtin",["lisp","not"]],["~#builtin",["lisp","car"]]]]]]`, string(b), c.name)
 		userN := c.vm.Runtime.Registry.Package("user").NumBindings()
-		lispN := c.vm.Runtime.Registry.Package("lisp").NumBindings()
-		// One read per package (user, then lisp), then the output.
-		assert.Equal(t, []int{units(userN), units(lispN), 1}, charges, c.name)
+		// One read of user's names for my-fn, then the output.  The
+		// builtins lisp:not and lisp:car are named by the builtin
+		// registry, so lisp's names are not read (luthersystems/elps#800).
+		assert.Equal(t, []int{units(userN), 1}, charges, c.name)
 		// 6000 unrelated user bindings are read, never built.
 		assert.Less(t, n, uint64(256<<10), "%s: bytes allocated", c.name)
 		if want == nil {

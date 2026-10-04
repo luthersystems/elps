@@ -76,6 +76,8 @@ type PackageRegistry struct {
 	// to and never a second owner of it.
 	runtime *Runtime
 	Lang    string // A default package used by all other packages
+	// builtins records every builtin as registered (luthersystems/elps#800).
+	builtins builtinRegistry
 }
 
 // bindRegistryRuntime attaches rt to its own registry so that package
@@ -651,6 +653,21 @@ func (pkg *Package) externalNames() iter.Seq[string] {
 		return pkg.base.externals.All()
 	}
 	return slices.Values(pkg.externals)
+}
+
+// exports reports whether pkg exports name.  It scans the export list, so
+// it costs time linear in the number of exports.  A nil package exports
+// nothing.
+func (pkg *Package) exports(name string) bool {
+	if pkg == nil {
+		return false
+	}
+	for n := range pkg.externalNames() {
+		if n == name {
+			return true
+		}
+	}
+	return false
 }
 
 // Export appends names to the package's export list verbatim, preserving
