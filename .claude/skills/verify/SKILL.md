@@ -26,6 +26,7 @@ Run in order. Stop and report on the first failure.
 | 9 | Lisp lint | `./elps lint --workspace=. --exclude 'grammar' --include '_examples' ./...` | Lint ELPS source |
 | 10 | Docstrings | `./elps doc -m` | Check missing documentation |
 | 11 | API break gate | `make api-break-gate` (`BASE=origin/main` default) | API break gate (job `api-break`) |
+| 12 | Work marker gate | `make work-marker-gate` | Work marker gate (job `work-markers`) |
 
 Notes:
 
@@ -48,6 +49,9 @@ Notes:
   fill the issue (and the substrate migration) and reason, and justify it in
   the PR. Otherwise restore compatibility (keep the old name/arity, add
   instead of change).
+- **Step 12**: fails on a work marker that `scripts/work-markers.txt` does
+  not cover, and on an entry that covers nothing. Do the work, or open an
+  issue and add an entry (format in the file header). Delete stale entries.
 - CI also builds and vets on Windows (`go build ./... && go vet ./...`); run
   `go vet ./...` if you touched OS-specific code.
 - Touched `scripts/`, `cmd/benchgate`, `benchmark.yml` or `fuzz.yml`? Also run

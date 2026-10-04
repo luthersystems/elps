@@ -75,6 +75,24 @@ jobs:
       - name: Confidentiality guard
         run: bash scripts/confidentiality-guard.sh
 
+  # Fails when a tracked file has a work marker that scripts/work-markers.txt
+  # does not allow. Its own job so it also runs on docs-only PRs: a marker in a
+  # README is as unfinished as one in a .go file.
+  work-markers:
+    name: Work marker gate
+    # ARM for the reason spelled out on lint-and-test below.
+    runs-on: ubuntu-24.04-arm
+    # 5 minutes against a checkout and one scan of the tracked tree.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      # Markers are assembled inside the script, so neither the script nor
+      # this workflow trips the gate. Allowlist rules and format are in the
+      # header of scripts/work-markers.txt.
+      - name: Work marker gate
+        run: bash scripts/work-marker-gate.sh
+
   lint-and-test:
     name: Lint & Test
     # THE RATIONALE FOR ubuntu-24.04-arm, ONCE. Every other Linux job in this
@@ -343,7 +361,7 @@ jobs:
     # 5 minutes against an observed 2s. This job's name is the one in
     # branch protection; wedged here means the PR is blocked with no red.
     timeout-minutes: 5
-    needs: [changes, confidentiality, lint-and-test, build-windows, json-386, api-break]
+    needs: [changes, confidentiality, work-markers, lint-and-test, build-windows, json-386, api-break]
     if: always()
     steps:
       # NOTE: this checkout is NEW, and is the one structural cost of moving
