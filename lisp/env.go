@@ -973,6 +973,74 @@ func (env *LEnv) typedefFields(typ *LVal) (*LVal, *LVal, *LVal) {
 // any new holder of a live *LEnv must either go through Lambda or count
 // itself the same way.
 func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
+	return env.lambdaIn(env.Runtime.Package.Name, env.loc, formals, body)
+}
+
+// LambdaCode is a lambda's formals and body, validated once by
+// NewLambdaCode, for RestoreLambda.  Every lambda restored from one
+// LambdaCode shares its cells, as the closures one lambda form makes share
+// their formals and body forms: the code is immutable, so nothing is
+// copied per lambda.
+type LambdaCode struct {
+	cells []*LVal
+	// legacy is the formal-validation policy the code was validated
+	// under (Runtime.LegacyKeywordFormals).
+	legacy bool
+}
+
+// NewLambdaCode validates a lambda's formals as Lambda does and returns
+// its code for RestoreLambda.  It evaluates nothing.  A serializer that
+// restores many closures over one body calls it once for that body.
+func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, *LVal) {
+	if lerr := env.validateLambdaFormals(formals); lerr != nil {
+		return nil, lerr
+	}
+	cells := make([]*LVal, 0, len(body)+1)
+	cells = append(cells, formals)
+	cells = append(cells, body...)
+	return &LambdaCode{cells: cells, legacy: env.Runtime.LegacyKeywordFormals}, nil
+}
+
+// RestoreLambda rebuilds a lambda of package pkg that captures env, from
+// code NewLambdaCode validated, and evaluates nothing.  It is how a
+// serializer restores a closure: the caller rebuilds the captured frames
+// with NewEnv and Put, and pkg names the package the lambda was defined
+// in, whose globals its body resolves when it is called.  The lambda
+// shares code's cells; it has a fresh FID and no source location.  Code
+// validated in a runtime with another LegacyKeywordFormals setting is
+// validated again here, so RestoreLambda accepts exactly the formals this
+// runtime's lambda accepts.
+// RestoreLambda returns an error when no package pkg is registered.
+func (env *LEnv) RestoreLambda(pkg string, code *LambdaCode) *LVal {
+	if env.Runtime.Registry.Package(pkg) == nil {
+		return env.Errorf("unknown package: %q", pkg)
+	}
+	if code == nil || len(code.cells) == 0 {
+		return env.Errorf("no lambda code")
+	}
+	// Code validated under another formal-validation policy is validated
+	// again under this runtime's, as its own lambda would be.
+	if code.legacy != env.Runtime.LegacyKeywordFormals {
+		if lerr := env.validateLambdaFormals(code.cells[0]); lerr != nil {
+			return lerr
+		}
+	}
+	return env.newLambda(pkg, nil, code.cells)
+}
+
+// lambdaIn is Lambda for package pkg, located at loc.
+func (env *LEnv) lambdaIn(pkg string, loc *token.Location, formals *LVal, body []*LVal) *LVal {
+	if lerr := env.validateLambdaFormals(formals); lerr != nil {
+		return lerr
+	}
+	cells := make([]*LVal, 0, len(body)+1)
+	cells = append(cells, formals)
+	cells = append(cells, body...)
+	return env.newLambda(pkg, loc, cells)
+}
+
+// validateLambdaFormals checks a lambda's formals, or returns the error.
+func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
 		return lerr
 	}
@@ -986,9 +1054,11 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	if message != "" {
 		return env.Errorf("%s", message)
 	}
-	cells := make([]*LVal, 0, len(body)+1)
-	cells = append(cells, formals)
-	cells = append(cells, body...)
+	return nil
+}
+
+// newLambda builds a lambda over validated cells (formals, then body).
+func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
 	// this counter is how opLetSeq learns that an initializer may have
 	// captured the let* scope (see closuresCreated).
@@ -999,7 +1069,7 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
-		source: env.loc,
+		source: loc,
 		Native: &funData{
 			// The function captures its defining environment directly.  A
 			// call binds the formals in a fresh child of it (see bind), which
@@ -1009,10 +1079,10 @@ func (env *LEnv) Lambda(formals *LVal, body []*LVal) *LVal {
 			// still consumes exactly one environment ID, so generated names
 			// are unchanged.
 			fid: string(fid),
-			pkg: env.Runtime.Package.Name,
+			pkg: pkg,
 			env: env,
 			//elps:aliases deliberate in-runtime alias: the definition-site snapshot of the environment's location register, the same pointer NewEnv(env) froze into the per-function child environment this replaces, and the function value lives inside the same runtime as env.loc
-			loc: env.loc,
+			loc: loc,
 		},
 		Cells: cells,
 	}

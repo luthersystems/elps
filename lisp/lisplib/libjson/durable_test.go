@@ -124,7 +124,7 @@ func TestDurableAliasing(t *testing.T) {
 		{
 			name: "a vector that holds itself",
 			src:  `(let ((v (vector 1))) (append! v v) v)`,
-			doc:  `["~#durable",[1,["~#obj",[0,[1,["~#ref",0]]]]]]`,
+			doc:  `["~#durable",[1,["~#obj",[0,["~#array",[[2],["~#view",[["~#cells",4],0,2,4,[1,["~#ref",0],null,null]]]]]]]]]`,
 			after: [][2]string{
 				{`(append! r 3)`, `(vector 1 #<cycle> 3)`},
 				{`(length (aref r 1))`, `3`},
@@ -220,7 +220,7 @@ func TestDurableNatives(t *testing.T) {
 		require.NoError(t, libjson.RegisterNative[*lisp.LVal](reg, "test:boxed", 1, libjson.NativeFuncs{
 			Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*lisp.LVal](v), nil },
 			Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(p), nil },
-		}))
+		}, libjson.WithSharedPayload()))
 	})
 	box := lisp.Native(nested)
 	b, err = libjson.DumpDurable(env, box, reg2)
@@ -249,15 +249,12 @@ func TestDurableFunctions(t *testing.T) {
 func TestDurableRefusals(t *testing.T) {
 	env := newTypedTestEnv(t)
 	reg := durableTestRegistry(t)
-	evalString(t, env, `(defun old-fn () 1)`)
-	stale := env.LoadString("test", `old-fn`)
-	evalString(t, env, `(defun old-fn () 2)`)
 	self := lisp.SortedMap()
 	reg2 := libjson.NewDurableRegistry()
 	require.NoError(t, libjson.RegisterNative[*lisp.LVal](reg2, "test:boxed", 1, libjson.NativeFuncs{
 		Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nativeOf[*lisp.LVal](v), nil },
 		Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(p), nil },
-	}))
+	}, libjson.WithSharedPayload()))
 	reg2.Freeze()
 	self.MapSetLVal(lisp.String("box"), lisp.Native(self))
 	ownBox := lisp.Native(nil)
@@ -274,13 +271,11 @@ func TestDurableRefusals(t *testing.T) {
 		reg  *libjson.DurableRegistry
 		want string
 	}{
-		{"lambda", env.LoadString("test", `(lambda (x) x)`), reg, "durable json: cannot encode an anonymous function"},
-		{"flet function", env.LoadString("test", `(flet ((g (x) x)) g)`), reg, "durable json: cannot encode an anonymous function"},
-		{"rebound global", stale, reg, "durable json: cannot encode function user:old-fn: the global holds another value"},
+		{"builtin no global binds", lisp.Fun("anon", lisp.Formals(), func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }), reg, "durable json: cannot encode an anonymous function"},
+		{"closure over a native", closureOver(t, env, lisp.Native(struct{}{})), reg, `durable json: captured variable "captured": no codec registered for native type struct {}`},
 		{"macro", env.LoadString("test", `defun`), reg, "durable json: cannot encode a macro or special operator"},
 		{"special operator", env.LoadString("test", `if`), reg, "durable json: cannot encode a macro or special operator"},
-		{"error", lisp.Errorf("boom"), reg, "durable json: cannot encode an error"},
-		{"error in a list", lisp.QExpr([]*lisp.LVal{lisp.Errorf("boom")}), reg, "durable json: cannot encode an error"},
+		{"internal panic", &lisp.LVal{Type: lisp.LError, Str: lisp.CondInternalPanic}, reg, "durable json: cannot encode an internal panic"},
 		{"unregistered native", lisp.Native(struct{}{}), reg, "durable json: no codec registered for native type struct {}"},
 		{"native with no registry", lisp.Native(&counter{}), nil, "durable json: no codec registered for native type *libjson_test.counter"},
 		{"native that holds its enclosing map", self, reg2, `durable json: native "test:boxed" payload refers to a value that encloses the native`},
@@ -295,19 +290,6 @@ func TestDurableRefusals(t *testing.T) {
 			assert.Equal(t, c.want, err.Error())
 		})
 	}
-}
-
-func TestDurableArraysSharingDataNeedOneDims(t *testing.T) {
-	env := newTypedTestEnv(t)
-	v := lisp.Vector([]*lisp.LVal{lisp.Int(1)})
-	other := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{lisp.Int(1)}), v.Cells[1]}}
-	_, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{v, other}), nil)
-	require.EqualError(t, err, "durable json: two arrays share data with different dimensions")
-	// Two headers over one dims and one data list are one vector.
-	alias := &lisp.LVal{Type: lisp.LArray, Cells: v.Cells}
-	b, err := libjson.DumpDurable(env, lisp.QExpr([]*lisp.LVal{v, alias}), nil)
-	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#obj",[0,[1]]],["~#ref",0]]]]]`, string(b))
 }
 
 func TestLoadDurableRejects(t *testing.T) {
@@ -330,8 +312,8 @@ func TestLoadDurableRejects(t *testing.T) {
 		{`["~#durable",[1,["~#obj",[0,null]]]]`, "an object must be"},
 		{`["~#durable",[1,["~#obj",[0,["~#fn","user:g"]]]]]`, "an object must be"},
 		{`["~#durable",[1,["~#obj",[0,["~#obj",[1,{}]]]]]]`, "object definition inside another definition"},
-		{`["~#durable",[1,["~#obj",[0,["~#ref",0]]]]]`, "encloses the native"},
-		{`["~#durable",[1,["~#obj",[0,["~#list",[]]]]]]`, "empty list must be null"},
+		{`["~#durable",[1,["~#obj",[0,["~#ref",0]]]]]`, "an object must be a list, vector, array, map, tagged value, bytes or native, not a reference"},
+		{`["~#durable",[1,["~#obj",[0,["~#list",[]]]]]]`, "object 0 is defined but never referenced"},
 		{`["~#durable",[1,["~#obj",[-1,{}]]]]`, "expected a nonnegative integer"},
 		{`["~#durable",[1,["~#obj",[0.5,{}]]]]`, "expected a nonnegative integer"},
 		{`["~#durable",[1,["~#ref","0"]]]`, "expected an integer"},
@@ -339,13 +321,16 @@ func TestLoadDurableRejects(t *testing.T) {
 		{`["~#durable",[1,["~#native",["test:counter",2,1]]]]`, `native "test:counter": unsupported version 2`},
 		{`["~#durable",[1,["~#native",["test:counter",0,1]]]]`, `native "test:counter": unsupported version 0`},
 		{`["~#durable",[1,["~#native",["test:counter",1,"x"]]]]`, `native "test:counter": counter payload is not an int`},
-		{`["~#durable",[1,["~#obj",[0,["~#native",["test:point",2,["~#list",[["~#ref",0],1]]]]]]]]`, "encloses the native"},
-		{`["~#durable",[1,["~#obj",[0,{"n":["~#native",["test:point",2,["~#list",[["~#ref",0],1]]]]}]]]]`, "encloses the native"},
-		{`["~#durable",[1,["~#fn","user:nope"]]]`, "the global is not a function"},
-		{`["~#durable",[1,["~#fn","user:not-fn"]]]`, "the global is not a function"},
+		{`["~#durable",[1,["~#obj",[0,["~#native",["test:point",2,["~#list",[["~#ref",0],1]]]]]]]]`, "does not keep sharing holds a reference"},
+		{`["~#durable",[1,["~#obj",[0,{"n":["~#native",["test:point",2,["~#list",[["~#ref",0],1]]]]}]]]]`, "does not keep sharing holds a reference"},
+		{`["~#durable",[1,["~#list",[["~#native",["test:point",2,["~#obj",[0,["~#list",[1,2]]]]]],["~#ref",0]]]]]`, "does not keep sharing holds a shared object"},
+		{`["~#durable",[1,["~#array",[[["~#native",["test:counter",1,1]],1],[1]]]]]`, "invalid array dimension"},
+		{`["~#durable",[1,["~#fn","lisp:defun"]]]`, "the global is not a regular function"},
+		{`["~#durable",[1,["~#fn","user:nope"]]]`, "the global is not a regular function"},
+		{`["~#durable",[1,["~#fn","user:not-fn"]]]`, "the global is not a regular function"},
 		{`["~#durable",[1,["~#fn","nopkg:f"]]]`, "unknown package"},
 		{`["~#durable",[1,["~#fn","f"]]]`, "invalid function name"},
-		{`["~#durable",[1,["~#fn","user:f"]]]`, "not the name DumpDurable writes"},
+		{`["~#durable",[1,["~#fn","user:car"]]]`, "the global holds a function of package lisp"},
 		{`["~#durable",[1,["~#durable",[1,1]]]]`, "unknown tag"},
 		{`["~#durable",[1, 1]]`, "invalid value"},
 		{`["~#durable",[1,1.0]]`, "whole float requires ~d"},
@@ -356,9 +341,9 @@ func TestLoadDurableRejects(t *testing.T) {
 			assert.Contains(t, err.Error(), c.want)
 		})
 	}
-	// g was set last, so g is the name DumpDurable writes for f's function.
-	doc := durableRoundTrip(t, env, nil, `f`)
-	assert.Equal(t, `["~#durable",[1,["~#fn","user:g"]]]`, doc)
+	// f and g bind one function; DumpDurable writes the first name.
+	doc := durableRoundTrip(t, env, nil, `g`)
+	assert.Equal(t, `["~#durable",[1,["~#fn","user:f"]]]`, doc)
 }
 
 func TestLoadDurableNativeResultType(t *testing.T) {
@@ -518,7 +503,13 @@ func TestDurableRegistryFrozen(t *testing.T) {
 	require.NoError(t, libjson.RegisterNative[*counter](b, "test:counter", 1, codec))
 	a.Freeze()
 	b.Freeze()
-	assert.Equal(t, "test:counter@1=*libjson_test.counter;test:point@3=libjson_test.point", a.Fingerprint())
+	// The fingerprint is compared byte for byte, not as JSON.
+	pkg := `\"github.com/luthersystems/elps/lisp/lisplib/libjson_test\"`
+	wantFingerprint := `[{"name":"test:counter","type":"*github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter",` +
+		`"shape":"ptr(github.com/luthersystems/elps/lisp/lisplib/libjson_test.counter=struct(\"n\" ` + pkg + ` false \"\" int))","version":1,"charge":0,"shared":false},` +
+		`{"name":"test:point","type":"github.com/luthersystems/elps/lisp/lisplib/libjson_test.point",` +
+		`"shape":"struct(\"x\" ` + pkg + ` false \"\" int,\"y\" ` + pkg + ` false \"\" int)","version":3,"charge":0,"shared":false}]`
+	assert.Equal(t, wantFingerprint, a.Fingerprint())
 	assert.Equal(t, a.Fingerprint(), b.Fingerprint())
 	v := lisp.QExpr([]*lisp.LVal{lisp.Native(point{}), lisp.Native(&counter{})})
 	da, err := libjson.DumpDurable(env, v, a)

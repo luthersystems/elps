@@ -62,6 +62,19 @@ func (m Map[V]) All() iter.Seq2[string, V] {
 	}
 }
 
+// Unordered visits entries in no fixed order, without allocating.  A
+// caller must compute a result that does not depend on the order, such as a
+// minimum.
+func (m Map[V]) Unordered() iter.Seq2[string, V] {
+	return func(yield func(string, V) bool) {
+		for key, v := range m.values {
+			if !yield(key, v) {
+				return
+			}
+		}
+	}
+}
+
 // Copy returns a mutable copy, never the backing map.
 func (m Map[V]) Copy() map[string]V { return maps.Clone(m.values) }
 
