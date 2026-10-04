@@ -3,6 +3,7 @@
 package libschema_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -71,5 +72,37 @@ func TestNewValidatorEnvNamesPerRuntime(t *testing.T) {
 	b := libschema.NewValidatorEnv(newSchemaEnv(t), lisp.Formals("input"), ok).FID()
 	if a != b {
 		t.Fatalf("NewValidatorEnv named %q then %q in two fresh envs", a, b)
+	}
+}
+
+// Issue #800: a validator's FID never comes from the caller.  A name chosen
+// to look like a registered builtin's FID stays in messages only, every
+// validator gets its own FID, and none is a registered builtin.
+func TestValidatorNameIsNotItsFID(t *testing.T) {
+	env := newSchemaEnv(t)
+	const name = "<builtin-function ``<''>"
+	lit := `"` + name + `"`
+	res := env.LoadString("names.lisp", "(list (s:make-validator "+lit+" s:int) (s:make-validator "+lit+
+		" s:float) (s:make-validator "+lit+" s:number) (s:make-validator "+lit+" s:int))")
+	if res.Type == lisp.LError {
+		t.Fatal(res)
+	}
+	seen := map[string]bool{}
+	for i, v := range res.Cells {
+		if v.FID() == name {
+			t.Errorf("validator %d took its FID from the caller's name", i)
+		}
+		if seen[v.FID()] {
+			t.Errorf("validator %d shares FID %q", i, v.FID())
+		}
+		seen[v.FID()] = true
+		if pkg, sym, ok := env.Runtime.Registry.RegisteredBuiltinName(v); ok {
+			t.Errorf("validator %d answered registered builtin %s:%s", i, pkg, sym)
+		}
+	}
+	// The name still appears in the message.
+	msg := env.LoadString("check.lisp", "(s:validate (s:make-validator "+lit+" s:int) \"x\")")
+	if msg.Type != lisp.LError || !strings.Contains(msg.String(), name) {
+		t.Errorf("message lost the validator's name: %v", msg)
 	}
 }

@@ -766,6 +766,51 @@ names, ok := lisp.CapturedNames(env.Get(lisp.Symbol("f")))
 - It evaluates nothing and charges no steps, so a host can call it outside
   any step budget, and the answer does not depend on one.
 
+### Builtins as registered
+
+Each runtime records every builtin as it was registered, keyed by package
+and name (luthersystems/elps#800). Rebinding the name does not change the
+record. Use it to ask whether a function value is a particular builtin:
+
+```go
+reg := env.Runtime.Registry
+
+// The builtin registered as lisp:car, whatever lisp:car holds now.
+car := reg.RegisteredBuiltin("lisp", "car")
+
+// Which registered builtin is fn?
+if pkg, name, ok := reg.RegisteredBuiltinName(fn); ok {
+	fmt.Println(pkg + ":" + name) // for example lisp:car
+}
+```
+
+| Method | Returns |
+|---|---|
+| `(*PackageRegistry).RegisteredBuiltin(pkg, name)` | The function, macro or special operator registered as `pkg:name`, or nil. |
+| `(*PackageRegistry).RegisteredBuiltinName(fn)` | The package and name `fn` was registered under, and `ok`. |
+
+- Registration is `LEnv.AddBuiltins`, `LEnv.BindBuiltins`, `LEnv.AddMacros`
+  and `LEnv.AddSpecialOps`, and the `elpsutil` loaders that call them.
+- `set`, `set!`, `defun`, `Put` and a shadowing binding in another package
+  change no entry. Only a later registration of the same package and name
+  replaces it. The replaced builtin then answers `ok == false`.
+- `ok` is true only for a value registration created, or a header that
+  shares its function data (a symbol lookup returns such a copy). A lambda,
+  a builtin made by `lisp.FunInPackage`, a captured builtin (a libschema
+  validator, for one), a native and a non-function answer `ok == false`.
+- The answer comes from a registration record stored with the function,
+  never from its `FID`. Any code can construct a function with any `FID`.
+- A template publishes the whole registry, also a builtin no name binds
+  any more, so a builtin policy is asked about it too. Cold environments,
+  eager and lazy template VMs and prewarmed VMs give the same answers. Each
+  VM shares the source's records and has its own function values. In a lazy
+  VM, the first `RegisteredBuiltin` call for a name builds that value.
+- An unknown package or name returns nil, and a nil registry answers
+  nothing. Neither method evaluates code or charges steps.
+
+`libjson.DumpDurable` uses the same record to save a builtin whose name no
+longer binds it. See [durable typed JSON](internals/durable-json.md#functions).
+
 ## Testing Functions
 
 Use go package github.com/luthersystems/elps/elpstest and the lisp package

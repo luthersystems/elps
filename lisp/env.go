@@ -1280,6 +1280,9 @@ func checkRegistrationFormals(kind, name string, formals *LVal) {
 // (see Get), so pre-stamping it here lets every unqualified lookup of a
 // builtin return the binding itself instead of a copy.  Str is written at
 // construction, never onto a value a caller already holds.
+//
+// The value also carries a fresh registration record (builtinregistry.go),
+// and the caller records it in the runtime's builtin registry.
 func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
 		Type:    LFun,
@@ -1289,6 +1292,7 @@ func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *
 			fid:     fid,
 			builtin: fn,
 			pkg:     pkgName,
+			reg:     &builtinRegistration{pkg: pkgName, name: name},
 		},
 		Cells: []*LVal{formals, String(doc)},
 	}
@@ -1340,6 +1344,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
 			registrationFormals(&formals, macFormals), mac.Eval, builtinDocstring(mac))
 		pkg.putName(name, fn)
+		env.Runtime.Registry.builtins.register(fn)
 		if external {
 			pkg.appendExternal(name)
 		}
@@ -1371,6 +1376,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
 			registrationFormals(&formals, opFormals), op.Eval, builtinDocstring(op))
 		pkg.putName(name, fn)
+		env.Runtime.Registry.builtins.register(fn)
 		if external {
 			pkg.appendExternal(name)
 		}
@@ -1410,6 +1416,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			v.funData().freeKeys = freeKeys
 		}
 		pkg.putName(name, v)
+		env.Runtime.Registry.builtins.register(v)
 		if external {
 			pkg.appendExternal(name)
 		}

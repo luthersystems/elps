@@ -76,6 +76,8 @@ type PackageRegistry struct {
 	// to and never a second owner of it.
 	runtime *Runtime
 	Lang    string // A default package used by all other packages
+	// builtins records every builtin as registered (luthersystems/elps#800).
+	builtins builtinRegistry
 }
 
 // bindRegistryRuntime attaches rt to its own registry so that package

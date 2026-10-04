@@ -187,8 +187,15 @@ func (e *durableEncoder) bindings(env *lisp.LEnv) ([]binding, error) {
 	return bs, nil
 }
 
-// scanFunValue resolves a function: a global name, or a closure.
+// scanFunValue resolves a function: a registered builtin, a global name,
+// or a closure.  An unregistered builtin is named by its package's
+// bindings, as a Lisp function is.
 func (e *durableEncoder) scanFunValue(v *lisp.LVal, depth int) error {
+	if v.Builtin() != nil {
+		if _, ok, err := e.classifyBuiltin(v); ok || err != nil {
+			return err
+		}
+	}
 	k := funKey{v.Package(), v.FID()}
 	name, ok := e.funs[k]
 	if !ok {

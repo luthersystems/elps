@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/internal/fuzzseed"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/libjson"
@@ -305,6 +306,11 @@ func FuzzDurableJSON(f *testing.F) {
 		`["~#durable",[1,["~#obj",[0,["~#native",["test:point",1,["~#list",[["~#ref",0],1]]]]]]]]`,
 		`["~#durable",[1,["~#fn","user:f"]]]`,
 		`["~#durable",[1,["~#fn","lisp:\u003c"]]]`,
+		`["~#durable",[1,["~#builtin",["user","fuzz-native"]]]]`,
+		`["~#durable",[1,["~#list",[["~#builtin",["user","fuzz-native"]],["~#fn","lisp:car"],["~#builtin",["user","fuzz-native"]]]]]]`,
+		`["~#durable",[1,["~#fn","user:fuzz-held"]]]`,
+		`["~#durable",[1,["~#builtin",["lisp","car"]]]]`,
+		`["~#durable",[1,["~#builtin",["lisp","defun"]]]]`,
 		`["~#durable",[1,["~#obj",[1,{}]]]]`,
 		`["~#durable",[1,["~#obj",[0,{}]]]]`,
 		`["~#durable",[1,["~#ref",0]]]`,
@@ -322,6 +328,15 @@ func FuzzDurableJSON(f *testing.F) {
 	}
 	env := newTypedTestEnv(f)
 	if err := lisp.GoError(env.LoadString("fuzz", `(defun f () 1)`)); err != nil {
+		f.Fatal(err)
+	}
+	// fuzz-native is a registered builtin that only fuzz-held binds, so
+	// it is written as ~#builtin (luthersystems/elps#800).
+	if err := lisp.GoError(env.BindBuiltins(lisp.BindOpts{}, elpsutil.Function("fuzz-native", lisp.Formals("x"),
+		func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }))); err != nil {
+		f.Fatal(err)
+	}
+	if err := lisp.GoError(env.LoadString("fuzz", `(set 'fuzz-held fuzz-native) (set 'fuzz-native 0)`)); err != nil {
 		f.Fatal(err)
 	}
 	reg := durableFuzzRegistry(f)

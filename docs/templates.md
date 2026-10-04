@@ -195,6 +195,13 @@ replacement from being admitted but does not prove that the approved callback
 has no mutable captures. Ownership analyzers and review of every changed host
 registration remain necessary; neither amounts to a whole-program proof.
 
+A template publishes the runtime's builtin registry whole
+(`PackageRegistry.RegisteredBuiltin`, luthersystems/elps#800). So the
+builtin policy is also asked about a registered builtin that no binding
+holds any more, and a refusal names it: `template: registered builtin
+PKG:NAME: ...`. Every VM shares the source's registration records, so
+`RegisteredBuiltinName` answers the same in the source and in each VM.
+
 ELPS's own libraries use an internal construction API for explicit Lisp captures:
 
 ```go

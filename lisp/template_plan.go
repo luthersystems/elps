@@ -126,6 +126,7 @@ type templatePlan struct {
 	natives           []any
 	cells             [][]templateRef
 	packages          []templatePackage
+	builtins          []templateBuiltin // the builtin registry, sorted by key
 	runtime           templateRuntime
 	root, numCaptures int
 	eager             bool // TemplateWithEagerInstantiation
@@ -171,6 +172,10 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	for _, name := range sortedTemplateKeys(env.Runtime.Registry.packages) {
 		pkg := env.Runtime.Registry.packages[name]
 		c.plan.packages = append(c.plan.packages, c.packageDescriptor(pkg, inventory.config.frozen[name]))
+	}
+	c.plan.builtins = make([]templateBuiltin, len(inventory.builtins))
+	for i, fn := range inventory.builtins {
+		c.plan.builtins[i] = templateBuiltin{rec: fn.funData().reg, value: c.ref(fn)}
 	}
 	for index, env := range inventory.envQueue {
 		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.scopeBindings(env.scope), scopeHint: env.scopeHint}
@@ -649,6 +654,13 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 			out.externals = append([]string(nil), pkg.externals...)
 		}
 		rt.Registry.packages[out.Name] = out
+	}
+	if len(p.builtins) > 0 {
+		rt.Registry.builtins.plan = p.builtins
+		rt.Registry.builtins.values = make([]*LVal, len(p.builtins))
+		for i, b := range p.builtins {
+			rt.Registry.builtins.values[i] = instance.ref(b.value)
+		}
 	}
 	if p.runtime.hasCurrentPackage {
 		rt.Package = rt.Registry.packages[p.runtime.currentPackage]

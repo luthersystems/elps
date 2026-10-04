@@ -73,6 +73,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 			v.funData().freeKeys = freeKeys
 		}
 		pkg.putName(name, v)
+		env.Runtime.Registry.builtins.register(v)
 		if opts.Export {
 			pkg.appendExternal(name)
 		}

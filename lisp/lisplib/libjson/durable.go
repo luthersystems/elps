@@ -37,6 +37,7 @@ const (
 	tagRef     = "~#ref"
 	tagNative  = "~#native"
 	tagFn      = "~#fn"
+	tagBuiltin = "~#builtin"
 )
 
 // durablePrefix opens every document of DurableFormatVersion.
@@ -130,9 +131,12 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 //
 // env resolves function names and is passed to the native codecs.  A
 // native value is written through the codec reg holds for its Go type; reg
-// may be nil when v holds no natives.  A function is written as
-// ["~#fn","PKG:NAME"]: PKG is its defining package and NAME the first name,
-// in sorted order, under which PKG binds it.
+// may be nil when v holds no natives.  A builtin is written as
+// ["~#builtin",["PKG","NAME"]], the package and name env's registry
+// registered it under (lisp.PackageRegistry.RegisteredBuiltinName).  A Lisp
+// function a global binds is written as ["~#fn","PKG:NAME"]: PKG is its
+// defining package and NAME the first name, in sorted order, under which
+// PKG binds it.
 //
 // Lists and arrays whose cells share storage (a list and its tail, a slice
 // of a vector, arrays over one data list) keep that sharing: the storage is
@@ -632,7 +636,8 @@ const bindingsPerUnit = 4
 // funNameScanUnits is the charge for reading n bindings: ceil(n/4).
 func funNameScanUnits(n int) int { return (n + bindingsPerUnit - 1) / bindingsPerUnit }
 
-// funName returns "PKG:NAME" for a regular function: PKG is the function's
+// funName returns "PKG:NAME" for a Lisp function or an unregistered
+// builtin (registered builtins go through classifyBuiltin): PKG is the function's
 // defining package, and NAME is the first name, in sorted order, that PKG
 // binds to a function with the same package and FID.  An FID is unique
 // within its package, so the package and FID identify the function.  Each
@@ -672,11 +677,91 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if !ok {
 		return "", anonymous
 	}
+	// An unregistered builtin whose FID matches a registered builtin's
+	// (lisp.FunInPackage can set any FID) is not that builtin, so the
+	// name does not restore it.
+	if f.Builtin() != nil {
+		reg := e.env.Runtime.Registry
+		if g, found := reg.Package(pkgName).Symbol(name); found {
+			if _, _, registered := reg.RegisteredBuiltinName(g); registered {
+				return "", anonymous
+			}
+		}
+	}
 	if !utf8.ValidString(pkgName) || !utf8.ValidString(name) {
 		return "", errors.New("durable json: cannot encode a function name that is not valid UTF-8")
 	}
 	return pkgName + ":" + name, nil
 }
+
+// builtinForm is how a registered builtin is written.
+type builtinForm struct {
+	pkg, name string
+	// bound is true when pkg binds name to the builtin now: it is written
+	// as ["~#fn","PKG:NAME"], and a load follows that name as it does for
+	// any named function.  Otherwise (the name was rebound) it is written
+	// as ["~#builtin",["PKG","NAME"]], which a load resolves through the
+	// registry.
+	bound bool
+}
+
+// classifyBuiltin decides how a builtin is written.  A builtin is registered
+// when env's registry names it (lisp.PackageRegistry.RegisteredBuiltinName).
+// ok is false for a builtin no registration names; funName then names it by
+// the bindings of its package.
+func (e *durableEncoder) classifyBuiltin(f *lisp.LVal) (builtinForm, bool, error) {
+	if f.IsSpecialFun() {
+		return builtinForm{}, false, errors.New("durable json: cannot encode a macro or special operator")
+	}
+	reg := e.env.Runtime.Registry
+	pkg, name, ok := reg.RegisteredBuiltinName(f)
+	if !ok {
+		return builtinForm{}, false, nil
+	}
+	if !utf8.ValidString(pkg) || !utf8.ValidString(name) {
+		return builtinForm{}, false, errors.New("durable json: cannot encode a function name that is not valid UTF-8")
+	}
+	form := builtinForm{pkg: pkg, name: name}
+	if p := reg.Package(pkg); p != nil {
+		if g, found := p.Symbol(name); found {
+			gp, gn, gok := reg.RegisteredBuiltinName(g)
+			form.bound = gok && gp == pkg && gn == name
+		}
+	}
+	return form, true, nil
+}
+
+// builtin writes ["~#builtin",["PKG","NAME"]].  It counts one value, as
+// ["~#fn",...] does.
+func (e *durableEncoder) builtin(pkg, name string) error {
+	if err := e.count(); err != nil {
+		return err
+	}
+	if err := e.reserve(jsonStringLen(pkg) + jsonStringLen(name) + len(tagBuiltin) + 8); err != nil { // ["…",[…,…]]
+		return err
+	}
+	e.buf = append(e.buf, `["`+tagBuiltin+`",[`...)
+	e.buf = appendJSONString(e.buf, pkg)
+	e.buf = append(e.buf, ',')
+	e.buf = appendJSONString(e.buf, name)
+	e.buf = append(e.buf, ']', ']')
+	return e.grow()
+}
+
+// namedFunction writes ["~#fn","PKG:NAME"].  It counts one value.
+func (e *durableEncoder) namedFunction(name string) error {
+	if err := e.count(); err != nil {
+		return err
+	}
+	if err := e.reserve(jsonStringLen(name) + len(tagFn) + 5); err != nil { // ["…",…]
+		return err
+	}
+	e.buf = append(e.buf, `["`+tagFn+`",`...)
+	e.buf = appendJSONString(e.buf, name)
+	e.buf = append(e.buf, ']')
+	return e.grow()
+}
+
 
 // checkTagged rejects a malformed tagged value, as DumpTyped does.
 func checkTagged(v *lisp.LVal) error {
@@ -782,6 +867,17 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		}
 		e.buf = append(e.buf, ']', ']')
 	case lisp.LFun:
+		if v.Builtin() != nil {
+			form, ok, err := e.classifyBuiltin(v)
+			switch {
+			case err != nil:
+				return err
+			case ok && !form.bound:
+				return e.builtin(form.pkg, form.name)
+			case ok:
+				return e.namedFunction(form.pkg + ":" + form.name)
+			}
+		}
 		name, ok := e.funs[funKey{v.Package(), v.FID()}]
 		if !ok {
 			return errors.New("durable json: function was not resolved")
@@ -789,15 +885,7 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		if name == "" {
 			return e.closure(v, depth)
 		}
-		if err := e.count(); err != nil {
-			return err
-		}
-		if err := e.reserve(jsonStringLen(name) + len(tagFn) + 5); err != nil { // ["…",…]
-			return err
-		}
-		e.buf = append(e.buf, `["`+tagFn+`",`...)
-		e.buf = appendJSONString(e.buf, name)
-		e.buf = append(e.buf, ']')
+		return e.namedFunction(name)
 	case lisp.LError:
 		if err := e.errorBody(v, depth); err != nil {
 			return err
