@@ -2340,8 +2340,9 @@ package, so no program can rebind them.
   package does not export raises the same error as an unregistered name.
 - `builtin-name` names any registered builtin, exported or not: the caller
   already holds the value.
-- One `builtin` call costs one evaluation step. Look a builtin up once at
-  load scope and reuse the value:
+- One `builtin` call costs one evaluation step, plus one step per started
+  64 names the package exports (the export check). Look a builtin up once
+  at load scope and reuse the value:
 
   ```lisp
   (set 'native-floor (builtin 'math:floor))   ; once, when the file loads

@@ -22,7 +22,7 @@ durable document of a tree holds the typed bytes of that tree unchanged.
 | A value that contains itself | Refused | Saved and restored |
 | Native values | Refused | Saved through a registered `NativeCodec` |
 | A named global function | Refused | Saved as its package-qualified name |
-| A registered builtin its name no longer binds | Refused | Saved by its registration |
+| A registered builtin | Saved by name while a global binds it | Saved by its registration, whatever its names bind |
 | A closure (a lambda no global binds) | Refused | Saved with its code and the frames it captured |
 | An error value | Refused | Saved with its condition and data |
 | Format version | None (closed tag set) | A frozen version number at the top |
@@ -77,8 +77,8 @@ Version 1 was tightened before its first release (luthersystems/elps#797).
 Payload sharing is refused unless a codec registers `WithSharedPayload`. A
 native may not be part of any cycle. Lists and arrays that share storage
 are written as views of one storage object. A Lisp function is written under its first sorted name, and any of its
-package's names for it is accepted on load. A builtin is written by its
-registration (luthersystems/elps#800). No release wrote version 1 under the
+package's names for it is accepted on load. A registered builtin is written
+by its registration (luthersystems/elps#800). No release wrote version 1 under the
 earlier rules.
 
 `VALUE` uses every typed JSON spelling unchanged, plus these extension tags:
@@ -89,7 +89,7 @@ earlier rules.
 | `~#ref` | `["~#ref",ID]` | The object `ID`, defined earlier in the document. |
 | `~#native` | `["~#native",["NAME",VERSION,PAYLOAD]]` | A native value, saved by the codec registered as `NAME`. |
 | `~#fn` | `["~#fn","PKG:NAME"]` | The function bound to the global `PKG:NAME`. |
-| `~#builtin` | `["~#builtin",["PKG","NAME"]]` | The builtin registered as `PKG:NAME`, whatever that global holds now. See [Functions](#functions). |
+| `~#builtin` | `["~#builtin",["PKG","NAME"]]` | The builtin registered as `PKG:NAME`, whatever that global holds. See [Functions](#functions). |
 | `~#lit` | `["~#lit",X]` | `X`, a `~#list` or `~#view`, is a program literal. |
 | `~#error` | `["~#error",["CONDITION",[DATA...]]]` | An error value: its condition type and its data. |
 | `~#closure` | `["~#closure",["PKG",ENV,CODE]]` | A lambda of package `PKG` with its captured frames and its code. See [Closures](#closures). |
@@ -330,11 +330,10 @@ function of the value graph alone.
 - an unknown native name, a version outside `1` to the registered version, or
   a codec result whose Go type is not the registered type;
 - a `~#fn` name that is unbound, not a regular function, bound to a
-  function of another package, or bound to a registered builtin under a
-  name other than its registered one;
+  or bound to a function of another package;
 - a `~#builtin` that is not `["PKG","NAME"]`, that no registration of the
-  loading environment names, that names a macro or special operator, or
-  whose registered name still binds it (that builtin is written as `~#fn`);
+  loading environment names, or that names a macro or special operator.
+  No binding is read;
 - an array dimension that is not an integer: a JSON integer, or a `"~n"`
   string past 2^53. Dimensions are read on the scalar path, so no tag and no
   codec runs there.
@@ -344,7 +343,10 @@ Two inputs are accepted that re-encode to other bytes:
 - A `~#fn` may name a Lisp function, or a builtin no registration names, by
   any name its package binds it to. The encoder writes the first name in
   sorted order. Documents stay readable when a package adds or drops an
-  alias. A registered builtin has one accepted name, its registered one.
+  alias.
+- A `~#fn` whose global holds a registered builtin loads that builtin, and
+  a dump writes it as `~#builtin`. A Lisp function that an upgrade moved
+  to Go therefore keeps loading.
 - A native payload is canonical only when the codec is canonical: when
   `SaveNative(LoadNative(p))` gives `p` again. Each codec owns that property.
 A document with an older native version loads, and a dump of the result
@@ -441,61 +443,65 @@ payload. Cycles of containers alone are allowed.
 
 ## Functions
 
-A function value is written in one of these forms:
+A function value is written in one of these forms. The form depends only
+on the value, never on what its names bind when it is saved:
 
 | Function | Form | Restored as |
 |---|---|---|
-| A registered builtin whose registered name its package still binds to it | `["~#fn","PKG:NAME"]` | The current global `PKG:NAME` |
-| A registered builtin whose registered name holds something else now | `["~#builtin",["PKG","NAME"]]` | The registered builtin, through `PackageRegistry.RegisteredBuiltin` |
+| A registered builtin | `["~#builtin",["PKG","NAME"]]` | The registered builtin, through `PackageRegistry.RegisteredBuiltin` |
 | A Lisp function, or a builtin no registration names, that a global of its package binds | `["~#fn","PKG:NAME"]` | The current global `PKG:NAME` |
 | A lambda no global binds | `["~#closure",...]` | A new lambda over the saved frames and code. See [Closures](#closures). |
 
 ### Builtins
 
 A registered builtin is one `PackageRegistry.RegisteredBuiltinName`
-identifies: `LEnv.AddBuiltins` or `LEnv.BindBuiltins` created it, and no
-later registration replaced it (see "Builtins as registered" in
-[embed.md](../embed.md)). The answer comes from a registration record
-elps stores with the function, never from its `FID`, so a function built
-with another builtin's `FID` is not that builtin. `PKG` and `NAME` are the
-registration's package and name. Aliases and binding history do not
-change them.
+identifies: registration (`LEnv.AddBuiltins`, `LEnv.BindBuiltins`) created
+it, and no later registration of its name replaced it (see "Builtins as
+registered" in [embed.md](../embed.md)). The answer comes from a
+registration record elps stores with the function, never from its `FID`,
+so a function built with another builtin's `FID` is not that builtin.
+`PKG` and `NAME` are the registration's package and name. Aliases,
+rebindings and binding history do not change them.
 
-The encoder writes `~#fn` when the package still binds `NAME` to the
-builtin. So the common case keeps the bytes of a named function, and a
-load follows the name as it does for any named function: after an upgrade
-that rebinds the name, the restore is the new definition. The encoder
-writes `~#builtin` only when the name holds something else, so no name can
-restore the builtin. A load resolves `~#builtin` through the loading
-environment's registry. The current binding plays no part, and a rebinding
-after the dump does not change the result.
+A load resolves `~#builtin` through the loading environment's registry and
+reads no binding. So a document saved after `PKG:NAME` was rebound loads
+in a fresh VM where the name binds the builtin again, and a rebinding
+after the dump does not change the result. A registered builtin is
+identified by registration, so a restored one can be checked with
+`RegisteredBuiltinName`.
 
-Why keep `~#fn` for a bound builtin instead of writing every builtin as
-`~#builtin`: every named function then follows its name on load, builtin or
-not. A Lisp function that an upgrade replaces with a Go builtin, or the
-reverse, keeps loading. The frozen corpus line `functions` keeps its bytes.
-A host that must know whether a restored function is a particular builtin
-asks `RegisteredBuiltinName` of the restored value.
+Upgrades: a document that names a builtin the loading environment no
+longer registers fails to load (`builtin PKG:NAME: not registered`), as a
+`~#fn` whose global no longer holds a function does. Keep a builtin
+registered under its name for as long as stored documents may name it.
 
-Registered builtins need no package name table, so a dump reads none for
-them and charges nothing for them beyond the output.
+The encoder and the decoder read no package table for a registered
+builtin, so in a lazy template VM they build no binding, and a dump charges
+nothing for one beyond its output (`TestDurableBuiltinBuildsNoBinding`).
 
 ### Named functions
 
-A Lisp function, or a builtin no registration names (one built by
-`lisp.FunInPackage` and bound with `Put`), is saved by name when its defining
-package binds it to a global. Its identity is its package and its `FID`; an
-`FID` is unique within its package, and builtins of one short name in two
-packages (`lisp:not`, `s:not`) share an `FID`. The encoder writes
-`PKG:NAME`, where `PKG` is the function's package and `NAME` is the first
-name, in sorted `Package.SymbolNames` order, under which `PKG` binds a
-regular function with the same package and `FID`. Binding history does not
-change the name. When that name binds a registered builtin, the function is
-another one with a copied `FID`, and it is refused. `LoadDurable` accepts any
-`PKG:NAME` whose current global is a regular function of package `PKG`.
+A Lisp function, or a builtin no registration names, is saved by name when
+its defining package binds it to a global. `PKG` is the function's
+package and `NAME` the first name, in sorted `Package.SymbolNames` order,
+under which `PKG` binds that function. Binding history does not change the
+name. `LoadDurable` accepts any `PKG:NAME` whose current global is a
+regular function of package `PKG`.
+
+- A Lisp function is found by its package and `FID`. Each lambda gets a
+  fresh `FID`, so the `FID` names one function of its package.
+- A builtin no registration names is found by identity
+  (`Package.FirstNameOf`): a binding that holds the function itself, with
+  its function data, matches; another function with the same `FID` does
+  not. Builtins can share an `FID`: every generation of a name a later
+  registration replaced has the same one, and `lisp.FunInPackage` takes
+  any `FID`. So each retained generation restores as itself
+  (`TestDurableBuiltinGenerations`). Each such function is looked up once
+  per dump, charged ceil(n/4) units for a package of n bindings, and the
+  lookup builds no lazy binding.
 
 The encoder reads each package's names once per dump through
-`Package.FunNamesByFID`. It visits every binding in any order and keeps the
+`Package.FunNamesByFID` for Lisp functions. It visits every binding in any order and keeps the
 smallest name per FID, so it neither sorts nor allocates per binding. It
 reads a binding a lazy template has not built from the template's plan, so
 it builds no value. The read is charged ceil(n/4) units for a package of n
@@ -671,7 +677,7 @@ package when the document loads (see Functions).
 |---|---|
 | Internal panic | `durable json: cannot encode an internal panic` |
 | Error whose condition is empty or not UTF-8 | `durable json: cannot encode an error whose condition is empty or not UTF-8` |
-| Builtin no registration names and no global binds, or one whose `FID` copies a registered builtin's | `durable json: cannot encode an anonymous function` |
+| Builtin no registration names that no global of its package holds | `durable json: cannot encode an anonymous function` |
 | Closure whose frame holds a refused value | `durable json: captured variable "NAME": ...` |
 | Closure whose code holds a value that is not a scalar, list or quote | `durable json: a closure's code holds a T` |
 | Closure whose code shares a mutable list with a value or other code | `durable json: a closure's code shares a mutable list with another value; ...` |
@@ -706,7 +712,7 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read (for a Lisp function or an unregistered builtin), and one unit before each 4 environments the frame lookups walk for the first time, counted over the whole dump. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read (once per package for Lisp functions, once per unregistered builtin), and one unit before each 4 environments the frame lookups walk for the first time, counted over the whole dump. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 The two schedules differ in what they pay for. A dump does work the
@@ -738,5 +744,5 @@ A limit error wraps `ErrTypedLimit`.
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |
 | Regression tests for the reviews of luthersystems/elps#797 | `durable_review2_test.go`, `lisp/package_funnames_test.go` | Chained low-links, `"~n"` dimensions, summed key bytes, named types and the fingerprint, nil reference natives, the function-name index (no materialization, rebinding, charge) and the `~#fn` reserve. |
 | Regression tests for the reviews of luthersystems/elps#796 | `durable_review_test.go` | Functions of one FID in two packages, alias history, overlapping storage, limits before allocation and codec calls, exact escaped sizes, the fingerprint, reference-kind natives, the version cap, indirect native cycles, payload sharing, dims and pinned value and depth counts. |
-| Builtins | `durable_builtin_test.go`, `lisp/builtinregistry_test.go` | A rebound builtin written as `~#builtin` and restored through the registry after another rebinding; a builtin shadowed in another package stays `~#fn`; a copied `FID` and a replaced registration are refused; rejected `~#builtin` and alias `~#fn` documents; equal bytes, charges and restored identity on cold, eager, lazy and prewarmed VMs. The golden line `rebound-builtin` pins the bytes. |
+| Builtins | `durable_builtin_test.go`, `lisp/builtinregistry_test.go` | Every registered builtin written as `~#builtin` and restored after another rebinding, after binding the name back, and in a fresh environment; retained generations of one name, with aliases before and after it, each restored as itself; an unregistered builtin with a copied `FID` named by identity; a `~#fn` holding a registered builtin; rejected `~#builtin` documents; no binding built in a lazy VM; equal bytes, dump and load charges, steps, restored identity and later gensym names on independently built cold, eager, lazy and prewarmed VMs, numeric validators included. The golden lines `functions` and `rebound-builtin` pin the bytes. |
 | `FuzzDurableJSON` | `durable_fuzz_test.go` | No panic on any input. An accepted input re-encodes to itself, through `LoadDurable` and `LoadDurableRoots`, except for `~#fn` names: the bytes are compared with those names masked, each masked name must resolve to the same function (package and FID) as the name in its place, and the names alone must reach a fixed point. Two decodes charge the same units. A decode under small limits fails with `ErrTypedLimit` or re-encodes under them. |

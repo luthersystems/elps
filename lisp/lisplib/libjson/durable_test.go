@@ -234,7 +234,7 @@ func TestDurableFunctions(t *testing.T) {
 	env := newTypedTestEnv(t)
 	evalString(t, env, `(defun my-cmp (a b) (< a b))`)
 	doc := durableRoundTrip(t, env, nil, `(list my-cmp string< 'my-cmp)`)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-cmp"],["~#fn","lisp:string\u003c"],"~$my-cmp"]]]]`, doc)
+	assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-cmp"],["~#builtin",["lisp","string\u003c"]],"~$my-cmp"]]]]`, doc)
 	assert.Equal(t, `true`, evalString(t, env, `(funcall (first r) 1 2)`))
 	assert.Equal(t, `true`, evalString(t, env, `(funcall (second r) "a" "b")`))
 

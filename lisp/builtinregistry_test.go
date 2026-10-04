@@ -3,6 +3,8 @@
 package lisp_test
 
 import (
+	"context"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -262,17 +264,46 @@ func TestLispBuiltinLookup(t *testing.T) {
 	assert.Equal(t, lisp.LError, v.Type)
 }
 
-// The Lisp functions answer the same in every kind of template VM.
+// lookupProbe is what consensus depends on after the Lisp lookups: the
+// result, the steps they took and the next gensym names.
+type lookupProbe struct {
+	result, gensyms string
+	steps           int64
+}
+
+func probeLookup(t *testing.T, env *lisp.LEnv) lookupProbe {
+	t.Helper()
+	before := env.Runtime.TotalSteps()
+	result := evalCtx(t, env, `(list (funcall (builtin 'math:floor) 2.5) (builtin-name (builtin 'math:floor))
+  (builtin-name math:floor) (builtin-name car)
+  (s:make-validator "n" s:int) (s:make-validator "f" s:float) (s:make-validator "x" s:number))`)
+	steps := env.Runtime.TotalSteps() - before
+	require.Positive(t, steps, "steps are counted")
+	gensyms := evalOK(t, env, `(list (gensym) (gensym) (gensym))`)
+	return lookupProbe{result: result, gensyms: gensyms, steps: steps}
+}
+
+func reboundFloorEnv(t *testing.T) *lisp.LEnv {
+	t.Helper()
+	env := registryEnv(t)
+	evalOK(t, env, `(in-package 'math) (lisp:set 'floor (lisp:lambda (x) 0)) (lisp:in-package 'user)`)
+	return env
+}
+
+// The Lisp functions answer the same, in the same steps and with the same
+// later gensym names, in independently built cold environments and in
+// eager, lazy and prewarmed template VMs.
 func TestLispBuiltinLookupParity(t *testing.T) {
-	source := registryEnv(t)
-	evalOK(t, source, `(in-package 'math) (lisp:set 'floor (lisp:lambda (x) 0)) (lisp:in-package 'user)`)
-	const probe = `(list (funcall (builtin 'math:floor) 2.5) (builtin-name (builtin 'math:floor)) (builtin-name math:floor) (builtin-name car))`
-	want := evalOK(t, source, probe)
-	assert.Equal(t, `'(2 "math:floor" () "lisp:car")`, want)
+	want := probeLookup(t, reboundFloorEnv(t))
+	assert.True(t, strings.HasPrefix(want.result, `'(2 "math:floor" () "lisp:car"`), want.result)
+	assert.Equal(t, want, probeLookup(t, reboundFloorEnv(t)), "a second cold environment")
+	source := reboundFloorEnv(t)
 	policy := lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })
 	eager, err := lisp.NewTemplate(source, policy, lisp.TemplateWithEagerInstantiation())
 	require.NoError(t, err)
 	lazy, err := lisp.NewTemplate(source, policy)
+	require.NoError(t, err)
+	coldPrewarm, err := lisp.NewTemplate(source, policy)
 	require.NoError(t, err)
 	for _, c := range []struct {
 		tmpl *lisp.Template
@@ -280,13 +311,34 @@ func TestLispBuiltinLookupParity(t *testing.T) {
 		opts []lisp.VMOption
 	}{
 		{eager, "eager", nil},
+		{coldPrewarm, "prewarmed, empty hot set", []lisp.VMOption{lisp.VMWithPrewarm()}},
 		{lazy, "lazy", nil},
-		{lazy, "lazy prewarmed", []lisp.VMOption{lisp.VMWithPrewarm()}},
+		{lazy, "prewarmed, warm hot set", []lisp.VMOption{lisp.VMWithPrewarm()}},
 	} {
 		vm, vmErr := c.tmpl.NewVM(c.opts...)
 		require.NoError(t, vmErr)
-		assert.Equal(t, want, evalOK(t, vm, probe), c.name)
+		assert.Equal(t, want, probeLookup(t, vm), c.name)
 	}
+}
+
+// builtin charges one step per started 64 exports of the package, for the
+// export check, on top of the call itself.
+func TestLispBuiltinChargesForExports(t *testing.T) {
+	env := registryEnv(t)
+	steps := func() int64 {
+		before := env.Runtime.TotalSteps()
+		evalCtx(t, env, `(builtin 'regpkg:reg-fn)`)
+		return env.Runtime.TotalSteps() - before
+	}
+	base := steps()
+	for i := range 64 {
+		env.Runtime.Registry.Package("regpkg").Exports("e" + strconv.Itoa(i))
+	}
+	assert.Equal(t, base+1, steps(), "65 exports take two units")
+	for i := range 64 {
+		env.Runtime.Registry.Package("regpkg").Exports("f" + strconv.Itoa(i))
+	}
+	assert.Equal(t, base+2, steps(), "129 exports take three units")
 }
 
 // lisp:builtin refuses a registered name its package does not export, with
@@ -332,4 +384,12 @@ func TestRuntimeClosureBuiltinUnregistered(t *testing.T) {
 	assert.Equal(t, "()", evalOK(t, env, `(builtin-name regpkg:runtime-fn)`))
 	// The registration of reg-fn is unchanged by the Put.
 	requireName(t, reg, reg.RegisteredBuiltin("regpkg", "reg-fn"), "regpkg", "reg-fn")
+}
+
+// evalCtx evaluates src under an evaluation context, so steps are counted.
+func evalCtx(t *testing.T, env *lisp.LEnv, src string) string {
+	t.Helper()
+	v := env.LoadStringContext(context.Background(), "test", src)
+	require.NoError(t, lisp.GoError(v), src)
+	return v.String()
 }

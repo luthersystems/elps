@@ -88,3 +88,72 @@ func (lazy *lazyPackage) peekFun(ref templateRef) (string, string, LFunType, boo
 	fd := &lazy.inst.p.functions[tv.payload].header
 	return fd.fid, fd.pkg, tv.header.FunType, true
 }
+
+// FirstNameOf returns the first name, in sorted order, under which pkg
+// binds fn itself: a binding whose function data is fn's, so any header
+// copy of fn (a FunRef or Copy) matches, and another function with the same
+// FID does not.  It returns false when no binding holds fn, or when fn is
+// not a function.  It also returns the number of bindings it read, so a
+// caller can charge for the work.
+//
+// Like FunNamesByFID it reads a binding a lazy template has not
+// materialized from the template's plan, so it builds no value.
+func (pkg *Package) FirstNameOf(fn *LVal) (string, bool, int) {
+	if fn == nil || fn.Type != LFun {
+		return "", false, 0
+	}
+	fd, _ := fn.Native.(*funData)
+	if fd == nil {
+		return "", false, 0
+	}
+	best, found, read := "", false, 0
+	visit := func(name string, same bool) {
+		read++
+		if same && (!found || name < best) {
+			best, found = name, true
+		}
+	}
+	if pkg.base != nil {
+		for name, i := range pkg.base.index.Unordered() {
+			v := pkg.slotValue(i)
+			if v == nil && pkg.lazy.inst != nil {
+				visit(name, pkg.lazy.peekSameFun(pkg.lazy.base.bindings[i].value, fd))
+				continue
+			}
+			visit(name, sameFun(v, fd))
+		}
+		return best, found, read
+	}
+	for name, v := range pkg.symbols {
+		if v == lazyPending {
+			i, _ := pkg.lazy.base.index.Lookup(name)
+			visit(name, pkg.lazy.peekSameFun(pkg.lazy.base.bindings[i].value, fd))
+			continue
+		}
+		visit(name, sameFun(v, fd))
+	}
+	return best, found, read
+}
+
+// sameFun reports whether v is a function whose data is fd.
+func sameFun(v *LVal, fd *funData) bool {
+	return v != nil && v.Type == LFun && v.Native == fd
+}
+
+// peekSameFun reports whether a binding the lazy plan has not materialized
+// is the function whose data is fd, reading the plan instead of building
+// the value.  A plan function this VM has not materialized cannot be fd,
+// which is materialized.
+func (lazy *lazyPackage) peekSameFun(ref templateRef, fd *funData) bool {
+	if ref.index == 0 {
+		return sameFun(ref.shared, fd)
+	}
+	if mv := lazy.inst.values[ref.index-1]; mv != nil {
+		return sameFun(mv, fd)
+	}
+	tv := &lazy.inst.p.values[ref.index-1]
+	if tv.header.Type != LFun || tv.kind != templateFunction {
+		return false
+	}
+	return lazy.inst.functions[tv.payload] == fd
+}

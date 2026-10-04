@@ -146,8 +146,9 @@ var (
 			error when name is not a qualified symbol, when no builtin is
 			registered under it (a defun is not registered), or when its
 			package does not export it; the last two raise the same error.
-			Never returns (). One call costs one step: look a builtin up once
-			at load scope and reuse the value.`},
+			Never returns (). One call costs one step plus one per started 64
+			exports of the package: look a builtin up once at load scope and
+			reuse the value.`},
 		{"builtin-name", Formals("value"), builtinRegisteredBuiltinName,
 			`Returns "PKG:NAME", a string, when value is the builtin
 			registered as PKG:NAME, whatever that name is bound to now.

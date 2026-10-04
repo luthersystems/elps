@@ -73,76 +73,87 @@ func durableFuzzRegistry(t testing.TB) *libjson.DurableRegistry {
 	return reg
 }
 
-// functionNames returns the raw (still escaped) name of every
-// ["~#fn","…"] in b, in order.
-func functionNames(b []byte) [][]byte {
-	const open = `["~#fn","`
-	var names [][]byte
-	for {
-		i := bytes.Index(b, []byte(open))
-		if i < 0 {
-			return names
-		}
-		b = b[i+len(open):]
-		j := 0
-		for j < len(b) && b[j] != '"' {
-			if b[j] == '\\' {
-				j++
-			}
+// skipJSONString returns the index just past the closing quote of the JSON
+// string whose body starts at b[0], or len(b).
+func skipJSONString(b []byte) int {
+	j := 0
+	for j < len(b) && b[j] != '"' {
+		if b[j] == '\\' {
 			j++
 		}
-		names = append(names, b[:min(j, len(b))])
-		b = b[min(j, len(b)):]
+		j++
 	}
+	return min(j+1, len(b))
 }
 
-// sameFunctions fails t unless the masked names of in and out resolve,
-// position by position, to one function: the same package and FID.
+// functionTokens returns the start and end of every function form in b, in
+// order: ["~#fn","…"] and ["~#builtin",["…","…"]].  Neither tag can occur
+// inside a JSON string: its quotes would be escaped there.
+func functionTokens(b []byte) [][2]int {
+	const fnOpen, builtinOpen = `["~#fn","`, `["~#builtin",["`
+	var out [][2]int
+	for i := 0; i < len(b); {
+		rest := b[i:]
+		fi, bi := bytes.Index(rest, []byte(fnOpen)), bytes.Index(rest, []byte(builtinOpen))
+		switch {
+		case fi < 0 && bi < 0:
+			return out
+		case bi < 0 || (fi >= 0 && fi < bi):
+			start := i + fi
+			end := start + len(fnOpen)
+			end += skipJSONString(b[end:])
+			end = min(end+1, len(b)) // ]
+			out = append(out, [2]int{start, end})
+			i = end
+		default:
+			start := i + bi
+			end := start + len(builtinOpen)
+			end += skipJSONString(b[end:])
+			end = min(end+2, len(b)) // ,"
+			end += skipJSONString(b[end:])
+			end = min(end+2, len(b)) // ]]
+			out = append(out, [2]int{start, end})
+			i = end
+		}
+	}
+	return out
+}
+
+// sameFunctions fails t unless the function forms of in and out resolve,
+// position by position, to one function value.
 func sameFunctions(t *testing.T, env *lisp.LEnv, in, out []byte) {
 	t.Helper()
-	a, b := functionNames(in), functionNames(out)
+	a, b := functionTokens(in), functionTokens(out)
 	if len(a) != len(b) {
 		t.Fatalf("function count differs: %q, %q", in, out)
 	}
-	resolve := func(name []byte) *lisp.LVal {
-		doc := append(append([]byte(`["~#durable",[1,["~#fn","`), name...), `"]]]`...)
+	resolve := func(token []byte) *lisp.LVal {
+		doc := append(append([]byte(`["~#durable",[1,`), token...), `]]`...)
 		f, err := libjson.LoadDurable(env, doc, nil)
 		if err != nil {
-			t.Fatalf("function %q does not resolve: %v", name, err)
+			t.Fatalf("function %q does not resolve: %v", token, err)
 		}
 		return f
 	}
 	for i := range a {
-		fa, fb := resolve(a[i]), resolve(b[i])
-		if fa.Package() != fb.Package() || fa.FID() != fb.FID() {
-			t.Fatalf("function %q restored as %q (%s:%s, %s:%s)", a[i], b[i], fa.Package(), fa.FID(), fb.Package(), fb.FID())
+		ta, tb := in[a[i][0]:a[i][1]], out[b[i][0]:b[i][1]]
+		fa, fb := resolve(ta), resolve(tb)
+		if fa.Native != fb.Native {
+			t.Fatalf("function %q restored as %q", ta, tb)
 		}
 	}
 }
 
-// maskFunctionNames replaces the name in every ["~#fn","…"] with "?".  A
-// "~#fn" token cannot occur inside a JSON string: its quotes would be
-// escaped there.
+// maskFunctionNames replaces every function form with "?".
 func maskFunctionNames(b []byte) []byte {
-	const open = `["~#fn","`
 	var out []byte
-	for {
-		i := bytes.Index(b, []byte(open))
-		if i < 0 {
-			return append(out, b...)
-		}
-		out = append(out, b[:i+len(open)]...)
-		b = b[i+len(open):]
-		j := 0
-		for j < len(b) && b[j] != '"' {
-			if b[j] == '\\' {
-				j++
-			}
-			j++
-		}
+	last := 0
+	for _, tok := range functionTokens(b) {
+		out = append(out, b[last:tok[0]]...)
 		out = append(out, '?')
-		b = b[min(j, len(b)):]
+		last = tok[1]
 	}
+	return append(out, b[last:]...)
 }
 
 // viewGraph builds, from fuzz bytes, a vector with spare capacity and up to
@@ -235,12 +246,13 @@ func checkViews(t *testing.T, env *lisp.LEnv, data []byte) {
 //  2. On error the value is nil; on success it is not.
 //  3. Canonicality: whatever decodes re-encodes to exactly the input bytes,
 //     sharing, cycles and natives included.  The one exception is a
-//     function name: LoadDurable accepts any name its package binds the
-//     function to, and DumpDurable writes the first in sorted order.  So
-//     the bytes are compared with every ["~#fn","…"] name masked, each
-//     masked name must resolve to the same function (package and FID) as
-//     the name in its place, and the names alone must reach a fixed point
-//     after one more round trip.
+//     function form: LoadDurable accepts any name its package binds the
+//     function to, and a ~#fn whose global holds a registered builtin,
+//     which DumpDurable writes as ~#builtin.  So the bytes are compared
+//     with every ["~#fn",…] and ["~#builtin",…] form masked, each masked
+//     form must resolve to the same function value as the form in its
+//     place, and the forms alone must reach a fixed point after one more
+//     round trip.
 //  4. Roots: LoadDurableRoots accepts a subset of what LoadDurable accepts,
 //     and DumpDurableRoots writes an accepted document back byte for byte.
 //  5. Charges: two decodes of one input charge the same units in the same

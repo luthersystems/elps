@@ -32,7 +32,7 @@ func allocatedBy(f func()) uint64 {
 func TestDurableFunctionsOfOneNameInTwoPackages(t *testing.T) {
 	env := newTypedTestEnv(t)
 	doc := durableRoundTrip(t, env, nil, `(list lisp:not s:not)`)
-	assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","lisp:not"],["~#fn","s:not"]]]]]`, doc)
+	assert.Equal(t, `["~#durable",[1,["~#list",[["~#builtin",["lisp","not"]],["~#builtin",["s","not"]]]]]]`, doc)
 	assert.Equal(t, `true`, evalString(t, env, `(funcall (first r) false)`))
 	r := env.LoadString("test", `r`)
 	assert.Equal(t, "lisp", r.Cells[0].Package())
@@ -328,7 +328,7 @@ func TestDurableFunctionNameNeedsDefiningPackage(t *testing.T) {
 	require.NoError(t, lisp.GoError(v))
 	b, err := libjson.DumpDurable(env, v, nil)
 	require.NoError(t, err)
-	assert.Equal(t, `["~#durable",[1,["~#fn","s:not"]]]`, string(b))
+	assert.Equal(t, `["~#durable",[1,["~#builtin",["s","not"]]]]`, string(b))
 	_, err = libjson.LoadDurable(env, []byte(`["~#durable",[1,["~#fn","s:aaa"]]]`), nil)
 	require.ErrorContains(t, err, "function s:aaa: the global holds a function of package lisp")
 }

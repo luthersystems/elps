@@ -198,10 +198,18 @@ func builtinRegisteredBuiltin(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("name must be qualified (PKG:NAME): %v", sym.Str)
 	}
 	// A name its package does not export gets the error of an unregistered
-	// name, so the answer does not reveal which internals exist.
+	// name, so the answer does not reveal which internals exist.  The export
+	// check scans the export list, so it charges one step per started 64
+	// exports before it starts.
 	reg := env.Runtime.Registry
+	p := reg.Package(pkg)
+	if p != nil {
+		if lerr := env.ChargeSteps(int64((p.NumExternals() + 63) / 64)); lerr.Type == LError {
+			return lerr
+		}
+	}
 	fn := reg.RegisteredBuiltin(pkg, name)
-	if fn == nil || !reg.Package(pkg).exports(name) {
+	if fn == nil || !p.exports(name) {
 		return env.Errorf("no builtin is registered as %v", sym.Str)
 	}
 	return fn

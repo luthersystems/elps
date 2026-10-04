@@ -37,8 +37,9 @@ import (
 // not registered as a regular function under its package and name, a
 // function name that does not resolve to a regular function of its
 // package, and an error whose condition is empty or internal-panic.  A
-// function may be named by any of its package's names for it, so such a
-// document can re-encode to other bytes.  It never panics on malformed
+// function may be named by any of its package's names for it, and a ~#fn
+// global may hold a registered builtin (one an upgrade moved to Go), so
+// such a document can re-encode to other bytes.  It never panics on malformed
 // input; a native codec is called only with a fully restored payload.
 //
 // Values are freshly allocated, except builtins, which are the registered
@@ -654,16 +655,11 @@ func (d *durableDecoder) function() (*lisp.LVal, error) {
 	if f.Package() != pkgName {
 		return nil, d.errorf("function %s: the global holds a function of package %s", name, f.Package())
 	}
-	// DumpDurable names a registered builtin only by its registered name,
-	// and only while that name binds it.
-	if _, regName, ok := d.env.Runtime.Registry.RegisteredBuiltinName(f); ok && regName != sym {
-		return nil, d.errorf("function %s: the global holds the builtin registered as %s:%s", name, pkgName, regName)
-	}
 	return f, nil
 }
 
 // builtin reads ["PKG","NAME"] after "~#builtin", and resolves it through
-// env's builtin registry.  The current binding of the name plays no part.
+// env's builtin registry.  No binding is read.
 func (d *durableDecoder) builtin() (*lisp.LVal, error) {
 	if err := d.expect('['); err != nil {
 		return nil, err
@@ -682,21 +678,12 @@ func (d *durableDecoder) builtin() (*lisp.LVal, error) {
 	if err = d.expect(']'); err != nil {
 		return nil, err
 	}
-	reg := d.env.Runtime.Registry
-	f := reg.RegisteredBuiltin(string(pkg), string(name))
+	f := d.env.Runtime.Registry.RegisteredBuiltin(string(pkg), string(name))
 	if f == nil {
 		return nil, d.errorf("builtin %s:%s: not registered", pkg, name)
 	}
 	if f.IsSpecialFun() {
 		return nil, d.errorf("builtin %s:%s: registered as a macro or special operator", pkg, name)
-	}
-	// DumpDurable writes a builtin its registered name binds as ~#fn.
-	if p := reg.Package(string(pkg)); p != nil {
-		if g, ok := p.Symbol(string(name)); ok {
-			if gp, gn, gok := reg.RegisteredBuiltinName(g); gok && gp == string(pkg) && gn == string(name) {
-				return nil, d.errorf("builtin %s:%s: its name binds it, so it is written as ~#fn", pkg, name)
-			}
-		}
 	}
 	return f, nil
 }

@@ -131,10 +131,11 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 //
 // env resolves function names and is passed to the native codecs.  A
 // native value is written through the codec reg holds for its Go type; reg
-// may be nil when v holds no natives.  A builtin is written as
+// may be nil when v holds no natives.  A registered builtin is written as
 // ["~#builtin",["PKG","NAME"]], the package and name env's registry
-// registered it under (lisp.PackageRegistry.RegisteredBuiltinName).  A Lisp
-// function a global binds is written as ["~#fn","PKG:NAME"]: PKG is its
+// registered it under (lisp.PackageRegistry.RegisteredBuiltinName),
+// whatever its names bind.  A Lisp function, or a builtin no registration
+// names, that a global binds is written as ["~#fn","PKG:NAME"]: PKG is its
 // defining package and NAME the first name, in sorted order, under which
 // PKG binds it.
 //
@@ -240,8 +241,12 @@ type durableEncoder struct {
 	ids map[any]int
 	// saved holds each native's codec and payload; scan fills it.
 	saved map[any]savedNative
-	// funs maps a function's package and FID to its "PKG:NAME".
+	// funs maps a Lisp function's package and FID to its "PKG:NAME".
 	funs map[funKey]string
+	// builtinNames maps an unregistered builtin's function data to its
+	// "PKG:NAME".  A builtin is named by identity, never by FID: two
+	// builtins of one package can share an FID.
+	builtinNames map[any]string
 	// funIndex holds, per package, the FID to first-name index read once
 	// per dump.
 	funIndex map[string]map[string]string
@@ -313,6 +318,7 @@ func newDurableEncoder(env *lisp.LEnv, reg *DurableRegistry, cfg typedConfig) *d
 		ids:           map[any]int{},
 		saved:         map[any]savedNative{},
 		funs:          map[funKey]string{},
+		builtinNames:  map[any]string{},
 		dataHeaders:   map[*lisp.LVal]bool{},
 		appendable:    map[*lisp.LVal]bool{},
 		recorded:      map[*lisp.LVal]bool{},
@@ -636,8 +642,8 @@ const bindingsPerUnit = 4
 // funNameScanUnits is the charge for reading n bindings: ceil(n/4).
 func funNameScanUnits(n int) int { return (n + bindingsPerUnit - 1) / bindingsPerUnit }
 
-// funName returns "PKG:NAME" for a Lisp function or an unregistered
-// builtin (registered builtins go through classifyBuiltin): PKG is the function's
+// funName returns "PKG:NAME" for a Lisp function (builtins go through
+// registeredBuiltin and unregisteredBuiltinName): PKG is the function's
 // defining package, and NAME is the first name, in sorted order, that PKG
 // binds to a function with the same package and FID.  An FID is unique
 // within its package, so the package and FID identify the function.  Each
@@ -677,58 +683,62 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if !ok {
 		return "", anonymous
 	}
-	// An unregistered builtin whose FID matches a registered builtin's
-	// (lisp.FunInPackage can set any FID) is not that builtin, so the
-	// name does not restore it.
-	if f.Builtin() != nil {
-		reg := e.env.Runtime.Registry
-		if g, found := reg.Package(pkgName).Symbol(name); found {
-			if _, _, registered := reg.RegisteredBuiltinName(g); registered {
-				return "", anonymous
-			}
-		}
-	}
 	if !utf8.ValidString(pkgName) || !utf8.ValidString(name) {
 		return "", errors.New("durable json: cannot encode a function name that is not valid UTF-8")
 	}
 	return pkgName + ":" + name, nil
 }
 
-// builtinForm is how a registered builtin is written.
-type builtinForm struct {
-	pkg, name string
-	// bound is true when pkg binds name to the builtin now: it is written
-	// as ["~#fn","PKG:NAME"], and a load follows that name as it does for
-	// any named function.  Otherwise (the name was rebound) it is written
-	// as ["~#builtin",["PKG","NAME"]], which a load resolves through the
-	// registry.
-	bound bool
-}
-
-// classifyBuiltin decides how a builtin is written.  A builtin is registered
-// when env's registry names it (lisp.PackageRegistry.RegisteredBuiltinName).
-// ok is false for a builtin no registration names; funName then names it by
-// the bindings of its package.
-func (e *durableEncoder) classifyBuiltin(f *lisp.LVal) (builtinForm, bool, error) {
+// registeredBuiltin returns the package and name of a registered builtin
+// (lisp.PackageRegistry.RegisteredBuiltinName), with ok true.  ok is false
+// for a builtin no registration names.  The form depends only on the value:
+// the bindings of its names play no part.
+func (e *durableEncoder) registeredBuiltin(f *lisp.LVal) (string, string, bool, error) {
 	if f.IsSpecialFun() {
-		return builtinForm{}, false, errors.New("durable json: cannot encode a macro or special operator")
+		return "", "", false, errors.New("durable json: cannot encode a macro or special operator")
 	}
-	reg := e.env.Runtime.Registry
-	pkg, name, ok := reg.RegisteredBuiltinName(f)
+	pkg, name, ok := e.env.Runtime.Registry.RegisteredBuiltinName(f)
 	if !ok {
-		return builtinForm{}, false, nil
+		return "", "", false, nil
 	}
 	if !utf8.ValidString(pkg) || !utf8.ValidString(name) {
-		return builtinForm{}, false, errors.New("durable json: cannot encode a function name that is not valid UTF-8")
+		return "", "", false, errors.New("durable json: cannot encode a function name that is not valid UTF-8")
 	}
-	form := builtinForm{pkg: pkg, name: name}
-	if p := reg.Package(pkg); p != nil {
-		if g, found := p.Symbol(name); found {
-			gp, gn, gok := reg.RegisteredBuiltinName(g)
-			form.bound = gok && gp == pkg && gn == name
+	return pkg, name, true, nil
+}
+
+// unregisteredBuiltinName returns "PKG:NAME" for a builtin no registration
+// names: PKG is its package and NAME the first name, in sorted order, under
+// which PKG binds this function itself (lisp.Package.FirstNameOf).  Each
+// such function is looked up once per dump, and the lookup is charged
+// ceil(n/4) units for n bindings before it starts.
+func (e *durableEncoder) unregisteredBuiltinName(f *lisp.LVal) (string, error) {
+	if name, ok := e.builtinNames[f.Native]; ok {
+		return name, nil
+	}
+	pkgName := f.Package()
+	if pkgName == "" {
+		return "", errAnonymous
+	}
+	pkg := e.env.Runtime.Registry.Package(pkgName)
+	if pkg == nil {
+		return "", errAnonymous
+	}
+	if n := pkg.NumBindings(); e.cfg.charge != nil && n > 0 {
+		if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
+			return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
 		}
 	}
-	return form, true, nil
+	name, ok, _ := pkg.FirstNameOf(f)
+	if !ok {
+		return "", errAnonymous
+	}
+	if !utf8.ValidString(pkgName) || !utf8.ValidString(name) {
+		return "", errors.New("durable json: cannot encode a function name that is not valid UTF-8")
+	}
+	full := pkgName + ":" + name
+	e.builtinNames[f.Native] = full
+	return full, nil
 }
 
 // builtin writes ["~#builtin",["PKG","NAME"]].  It counts one value, as
@@ -867,15 +877,18 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		e.buf = append(e.buf, ']', ']')
 	case lisp.LFun:
 		if v.Builtin() != nil {
-			form, ok, err := e.classifyBuiltin(v)
+			pkg, name, ok, err := e.registeredBuiltin(v)
 			switch {
 			case err != nil:
 				return err
-			case ok && !form.bound:
-				return e.builtin(form.pkg, form.name)
 			case ok:
-				return e.namedFunction(form.pkg + ":" + form.name)
+				return e.builtin(pkg, name)
 			}
+			full, ok := e.builtinNames[v.Native]
+			if !ok {
+				return errors.New("durable json: function was not resolved")
+			}
+			return e.namedFunction(full)
 		}
 		name, ok := e.funs[funKey{v.Package(), v.FID()}]
 		if !ok {

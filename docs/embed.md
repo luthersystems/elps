@@ -819,8 +819,12 @@ Lisp code reads the same registry through `(builtin 'PKG:NAME)` and
 the error of an unregistered name. `builtin-name` names any registered
 builtin.
 
-`libjson.DumpDurable` uses the same record to save a builtin whose name no
-longer binds it. See [durable typed JSON](internals/durable-json.md#functions).
+`(*Package).FirstNameOf(fn)` returns the first name, in sorted order, under
+which a package binds `fn` itself (its function data, not its `FID`), and
+builds no binding of a lazy template VM.
+
+`libjson.DumpDurable` uses the registration record to save every registered
+builtin by its registration, whatever its names bind. See [durable typed JSON](internals/durable-json.md#functions).
 
 ## Testing Functions
 

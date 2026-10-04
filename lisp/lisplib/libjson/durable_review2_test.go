@@ -226,7 +226,7 @@ func TestDurableFunctionNamesChargeParity(t *testing.T) {
 		var err error
 		n := allocatedBy(func() { b, err = libjson.DumpDurable(c.vm, v, nil, record) })
 		require.NoError(t, err, c.name)
-		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#fn","lisp:not"],["~#fn","lisp:car"]]]]]`, string(b), c.name)
+		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#builtin",["lisp","not"]],["~#builtin",["lisp","car"]]]]]]`, string(b), c.name)
 		userN := c.vm.Runtime.Registry.Package("user").NumBindings()
 		// One read of user's names for my-fn, then the output.  The
 		// builtins lisp:not and lisp:car are named by the builtin
