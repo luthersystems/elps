@@ -28,6 +28,7 @@ designed to be embedded within Go applications. Module:
 | `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make ci-gates-test` | Self-test for the CI gate scripts in `scripts/` |
 | `make api-break-gate` | API break gate vs `BASE` (default `origin/main`; CI runs it; see below) |
+| `make work-marker-gate` | Work marker gate over the tracked tree (CI runs it; see below) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
 | `./elps doc <query>` | Show function/package documentation |
@@ -72,6 +73,17 @@ line in `scripts/api-breaks.txt` -- `surface | symbol | expires | issue |
 reason`, validated like `scripts/benchstat-waivers.txt` -- which the gate
 prints ready to fill. Entries stay until the next release, whose notes list
 them (`scripts/api-breaks-since.sh`), then are deleted.
+
+### Work marker gate
+
+CI's `work-markers` job (`scripts/work-marker-gate.sh`) fails when a tracked
+file contains a work marker that `scripts/work-markers.txt` does not allow.
+The header of that file lists the five marker words and the entry format,
+`path | text | expires | issue | reason`. Do the work before you merge. Deferred
+work needs a tracking issue and an expiry date. A marker word that is data (a
+log prefix, third-party source) uses `never` and `-`. The gate also fails on an
+entry that covers nothing, so delete the entry when the marker goes. Never
+spell a marker in the gate script or its tests; assemble it at runtime.
 
 ## Architecture
 

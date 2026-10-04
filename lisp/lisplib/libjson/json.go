@@ -132,7 +132,10 @@ func Builtins(s *Serializer) []*libutil.Builtin {
 			Typed mode rejects functions, native values, errors, nested quotes,
 			invalid UTF-8 and cycles; typed/canonical modes enforce depth 1024,
 			value-count, allocation and step limits. Plain dumping retains its
-			configured value-depth and allocation limits.
+			configured value-depth and allocation limits, and charges one step
+			per KiB of output as it writes. It refuses a native value whose
+			output would pass the allocation limit, or that nests more than
+			50000 levels, before marshalling it.
 
 			If you hash an elps value or use it as a cache/state key, hash
 			(json:dump-string v :canonize true). Those bytes are frozen. For
@@ -782,14 +785,14 @@ func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
 func (s *Serializer) dump(v *lisp.LVal, stringNums bool) ([]byte, bool, error) {
-	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{})
+	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{}, encodeMeter{})
 }
 
-func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) ([]byte, bool, error) {
+func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget, meter encodeMeter) ([]byte, bool, error) {
 	var b []byte
 	var loadable bool
 	enc := getEncoder(stringNums)
-	if err := enc.encodeLimit(v, limit, budget); err != nil {
+	if err := enc.encodeLimit(v, limit, budget, meter); err != nil {
 		putEncoder(enc)
 		return nil, false, err
 	}
@@ -825,13 +828,13 @@ func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget 
 // caller asked for.  Measured on Package/dump-github, which is 1000
 // `json:dump-string` calls: 51.0 MiB/op -> 36.3 MiB/op.
 func (s *Serializer) dumpString(v *lisp.LVal, stringNums bool) (string, error) {
-	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{})
+	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{}, encodeMeter{})
 }
 
-func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget) (string, error) {
+func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget, meter encodeMeter) (string, error) {
 	enc := getEncoder(stringNums)
 	defer putEncoder(enc)
-	if err := enc.encodeLimit(v, limit, budget); err != nil {
+	if err := enc.encodeLimit(v, limit, budget, meter); err != nil {
 		return "", err
 	}
 	return string(enc.bytes()), nil
@@ -968,21 +971,19 @@ func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool,
 			return nil, false, stringNums
 		}
 	}
-	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env))
+	// Steps are charged while the output is written, one per KiB
+	// (envEncodeBudget), so a step budget stops the encode partway.
+	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env), encodeMeter{env: env})
 	if err != nil {
 		return nil, false, dumpError(env, err)
-	}
-	// Charged on the encoded size, after encoding: the value's size is not
-	// known before the walk, and the output length is a function of the value
-	// alone, so the charge is deterministic.
-	if lerr := libutil.ChargeKiB(env, len(b)); lerr != nil {
-		return nil, false, lerr
 	}
 	return b, loadable, nil
 }
 
 // envEncodeBudget is the output budget of a json:dump-* call: the runtime's
-// allocation cap and the evaluation context.
+// allocation cap and the evaluation context.  The builtins also pass
+// encodeMeter{env: env}, which charges env one step per KiB of output as it
+// is written.
 func envEncodeBudget(env *lisp.LEnv) encodeBudget {
 	b := encodeBudget{maxBytes: env.Runtime.MaxAllocBytes()}
 	// A context that can never be cancelled -- env.Context() returns
@@ -997,6 +998,10 @@ func envEncodeBudget(env *lisp.LEnv) encodeBudget {
 // raises.  An exhausted budget reads exactly as it does from format-string,
 // and a cancelled context raises the evaluator's context-cancelled condition.
 func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
+	var step encodeStepError
+	if errors.As(err, &step) {
+		return step.lerr
+	}
 	var size encodeSizeError
 	var cancelled encodeCancelledError
 	if errors.As(err, &size) || errors.As(err, &cancelled) {
@@ -1065,12 +1070,9 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env))
+	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env), encodeMeter{env: env})
 	if err != nil {
 		return dumpError(env, err)
-	}
-	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
-		return lerr
 	}
 	return lisp.String(str)
 }

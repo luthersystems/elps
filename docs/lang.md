@@ -1502,6 +1502,28 @@ does not preserve the distinction between the sentinel and `()`. The Lisp
 string `"json:null"` still encodes as a JSON string; use that string explicitly
 if you need the text instead of JSON `null`.
 
+### JSON dump limits and native values
+
+`json:dump-string`, `json:dump-bytes` and `json:dump-message` charge one step
+per whole KiB of output while they write it. So a step budget stops a large
+dump partway with `step-budget-exceeded`. The output also stops at
+`Runtime.MaxAlloc` with `allocation size exceeds maximum (N)`.
+
+A native Go value is written by Go's `encoding/json`. Before that runs, the
+dump walks the native and refuses it when:
+
+- its output cannot fit in what `MaxAlloc` leaves. The error is the
+  allocation error above. Nothing in the native is marshalled.
+- it nests more than 50,000 levels, counting each pointer, interface and
+  container. A native nested past the JSON decoder's limit of 10,000 levels
+  reports the decoder's error at any depth: `unable to encode native value:
+  invalid character '[' exceeded max depth` (`'{'` for an object).
+
+Walking a native that is not refused calls no `MarshalJSON` or `MarshalText`
+method. A `math/big` number whose decimal form cannot fit is refused before it
+is converted. Each native is marshalled at most once per dump, however many
+times the value refers to it.
+
 ### JSON object keys
 
 JSON objects decode to sorted maps, including nested objects. Their keys

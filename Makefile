@@ -280,6 +280,12 @@ fuzz-budget-check:
 ci-gates-test:
 	bash scripts/ci-gates-test.sh
 
+# Work marker gate: fails on a work marker that scripts/work-markers.txt does
+# not allow. CI runs it as the `work-markers` job.
+.PHONY: work-marker-gate
+work-marker-gate:
+	bash scripts/work-marker-gate.sh
+
 # API break gate (#761): Go API (apidiff) and Lisp surface (elps doc --json -l)
 # of this tree against BASE's merge base; intended breaks need a reviewed line
 # in scripts/api-breaks.txt.  CI runs it as the `api-break` job.

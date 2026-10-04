@@ -151,7 +151,7 @@ func guardCostDocs() map[string]*lisp.LVal {
 
 // BenchmarkCycleGuardCost is the guard-only comparison.  Run it as
 //
-//	go test -run=XXX -bench=BenchmarkCycleGuardCost -count=10 ./lisp/lisplib/libelpspath/
+//	go test -run='^$' -bench=BenchmarkCycleGuardCost -count=10 ./lisp/lisplib/libelpspath/
 //	benchstat -col /arm bench.txt
 //
 // The two arms alternate within a single process, so a machine that drifts
