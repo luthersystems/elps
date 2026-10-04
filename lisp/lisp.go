@@ -783,6 +783,10 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		// Deferred past every check above so the error paths stay copy-free.
 		stored = dims.Copy()
 	}
+	// A new array's capacity is its length.  Only append! grows it, by
+	// GrowCap, so an array's capacity depends on the program alone and not
+	// on how the Go runtime rounded the caller's allocation.
+	cells = cells[:len(cells):len(cells)]
 
 	return &LVal{
 		Type: LArray,

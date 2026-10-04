@@ -146,6 +146,12 @@ type typedEncoder struct {
 	cfg     typedConfig
 	values  int
 	charged int
+	// scanKeyBytes sums the key bytes of every map durable's first pass
+	// has read, while scanning is set.
+	scanKeyBytes int
+	scanning     bool
+	// durable makes mapMembers refuse an oversized key before copying it.
+	durable bool
 }
 
 // typedPair is one map member: its encoded key text is keys[ks:ke].
@@ -213,7 +219,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		if !utf8.ValidString(v.Str) {
 			return errors.New("typed json: cannot encode a string that is not valid UTF-8")
 		}
-		n := len(v.Str) + 2 // the quotes
+		n := jsonStringLen(v.Str)
 		if needsTilde(v.Str) {
 			n++
 		}
@@ -239,7 +245,11 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 			if !utf8.ValidString(v.Str) {
 				return errors.New("typed json: cannot encode a symbol that is not valid UTF-8")
 			}
-			if err := e.reserve(len(v.Str) + 3); err != nil {
+			n := jsonStringLen(v.Str) + 2 // "~$" or "~:" replacing ":"
+			if v.Str[0] == ':' {
+				n--
+			}
+			if err := e.reserve(n); err != nil {
 				return err
 			}
 			e.buf = appendTypedSymbol(e.buf, v.Str)
@@ -271,7 +281,7 @@ func (e *typedEncoder) value(v *lisp.LVal, depth int) error {
 		if err := e.enter(v, depth); err != nil {
 			return err
 		}
-		if err := e.reserve(len(v.Str) + len(tagTagged) + 8); err != nil {
+		if err := e.reserve(jsonStringLen(v.Str) + len(tagTagged) + 6); err != nil {
 			return err
 		}
 		e.buf = append(e.buf, `["`+tagTagged+`",[`...)
@@ -306,6 +316,39 @@ func (e *typedEncoder) reserve(n int) error {
 		return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 	}
 	return nil
+}
+
+// jsonStringLen is the exact length of appendJSONString(nil, s), quotes
+// included, for valid UTF-8.  Invalid UTF-8 counts six bytes per bad byte,
+// as appendJSONString writes \ufffd for it.
+func jsonStringLen[T string | []byte](s T) int {
+	n := 2
+	for i := 0; i < len(s); {
+		c := s[i]
+		if c < utf8.RuneSelf {
+			switch {
+			case htmlSafeSet[c]:
+				n++
+			case c == '\\', c == '"', c == '\b', c == '\f', c == '\n', c == '\r', c == '\t':
+				n += 2
+			default:
+				n += 6
+			}
+			i++
+			continue
+		}
+		r, size := utf8.DecodeRuneInString(string(s[i:min(i+utf8.UTFMax, len(s))]))
+		switch {
+		case r == utf8.RuneError && size == 1:
+			n += 6
+		case r == 0x2028 || r == 0x2029:
+			n += 6
+		default:
+			n += size
+		}
+		i += size
+	}
+	return n
 }
 
 // cells writes a JSON array of values.
@@ -468,6 +511,36 @@ func appendTypedKey(b []byte, kind lisp.LType, s string, n int) ([]byte, error) 
 	}
 }
 
+// typedKeyLen is the exact length of the key text appendTypedKey writes
+// for a valid key, before JSON escaping: an int is "~i" and its digits, a
+// string its bytes (one more for a leading "~"), true and false "~?t" and
+// "~?f", a keyword "~:" and its name, any other symbol "~$" and its name.
+// It is 0 for a key appendTypedKey refuses.
+func typedKeyLen(kind lisp.LType, s string, n int) int {
+	switch kind {
+	case lisp.LString:
+		if needsTilde(s) {
+			return len(s) + 1
+		}
+		return len(s)
+	case lisp.LSymbol:
+		switch {
+		case s == "":
+			return 0
+		case s == lisp.TrueSymbol, s == lisp.FalseSymbol:
+			return 3
+		case s[0] == ':':
+			return len(s) + 1
+		}
+		return len(s) + 2
+	case lisp.LInt:
+		var tmp [24]byte
+		return 2 + len(strconv.AppendInt(tmp[:0], int64(n), 10))
+	default:
+		return 0
+	}
+}
+
 // checkHostMapKeys rejects an embedder's map that has a string key and a
 // symbol key of one spelling. A built-in map holds them as one entry, so the
 // decoder rejects such output.
@@ -549,9 +622,25 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 	for i := kbase; i < len(e.kp); i++ {
 		p := e.kp[i]
 		ks := len(e.keys)
+		// In durable mode a key longer than the remaining output is refused
+		// before it is copied.  The key text is at least as long as the
+		// key.  Typed mode keeps its error precedence (walker goldens).
+		if e.durable && len(p.Key)+2 > e.cfg.maxBytes-len(e.buf) {
+			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+		}
+		// During durable's first pass the output is empty, so the keys of
+		// every map are summed instead: each key will be written as at
+		// least its key text, two quotes and a colon.  The exact key text
+		// length is checked before the copy and added after it.
+		if e.scanning && e.scanKeyBytes+typedKeyLen(p.Kind, p.Key, p.Int)+3 > e.cfg.maxBytes {
+			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+		}
 		var err error
 		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
 			return 0, 0, err
+		}
+		if e.scanning {
+			e.scanKeyBytes += len(e.keys) - ks + 3
 		}
 		e.pairs = append(e.pairs, typedPair{val: p.Val, ks: ks, ke: len(e.keys)})
 	}

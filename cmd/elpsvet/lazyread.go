@@ -77,6 +77,8 @@ var lazyTableFunctions = map[string]string{
 	"sortedmap.keysWithInts": "reads keys only; a pending entry is a present key",
 	"sortedmap.emptyLike":    "reads the length only, to size a fresh table",
 	"Package.SymbolNames":    "reads keys only; a pending binding is a present name",
+	"Package.NumBindings":    "reads the length of the table only; a pending binding is a present name",
+	"Package.FunNamesByFID":  "reads each binding without filling it: a pending one (nil slot or lazyPending) is read from the lazy plan by lazyPackage.peekFun, never returned or stored",
 	"Package.putName":        "writes a binding, settling the pending count when it overwrites lazyPending",
 	"Package.putSlot":        "writes this VM's slot, settling the pending count when it overwrites an unmaterialized one; reads no value",
 	"LVal.copyMapData":       "writes a fresh table it built (the StringKeyRanger arm); the sortedmap arm goes through clone",
