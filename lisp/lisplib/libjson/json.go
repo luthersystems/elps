@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"maps"
+	"slices"
 	"strconv"
 
 	"github.com/luthersystems/elps/internal/jsonraw"
@@ -649,8 +651,8 @@ func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 		if maxAlloc > 0 && len(x) > maxAlloc {
 			return lisp.Errorf("allocation size %d exceeds maximum (%d)", len(x), maxAlloc)
 		}
-		for k, v := range x {
-			lval := s.loadInterfaceOpts(v, opts)
+		for _, k := range slices.Sorted(maps.Keys(x)) {
+			lval := s.loadInterfaceOpts(x[k], opts)
 			if lval.Type == lisp.LError {
 				return lval
 			}

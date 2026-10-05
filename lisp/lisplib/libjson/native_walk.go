@@ -95,7 +95,7 @@ const (
 // nativeMapEntry is one entry of a map written by reflection.
 type nativeMapEntry struct {
 	key, val reflect.Value
-	name     string // the key's name; resolved only by the ordered walk
+	name     string // encoding/json's resolved key name
 }
 
 // nativeFrame is one container the walk is inside of.  levels and refs are
@@ -130,9 +130,8 @@ type nativeFrame struct {
 //
 // So a native is refused BEFORE encoding/json allocates its output or recurses
 // into it, when its output cannot fit the cap or its nesting could exhaust the
-// stack. Every other native, including every native encoding/json refuses
-// with an error of its own, goes to encoding/json as before, so its bytes and
-// error text do not change.
+// stack. Other natives go to encoding/json, preserving its bytes and error
+// text. The walk reports key-name errors directly, in deterministic key order.
 //
 // The walk does not recurse: it keeps the containers it is inside of on an
 // explicit stack, so its own stack does not grow with the native.  It charges
@@ -140,15 +139,15 @@ type nativeFrame struct {
 // a cancellation stops it partway.
 //
 // There are two walks, and both stop at nativeNestLimit.  The bounding walk
-// (ordered false) runs on every native.  It visits map entries in any order
-// and calls no marshaler.  When it finds a reason to refuse the native, the
-// ordered walk follows encoding/json's own order instead, to find what
-// encoding/json would have met first: an error of its own, which encoding/json
-// then reports, or the reason to refuse.
+// (ordered false) runs on every native. Both walks sort maps by their JSON
+// key names, which can call a key's MarshalText. The bounding walk calls no
+// value marshaler. On a refusal or key-name error, the ordered walk calls
+// value marshalers too. It finds which problem comes first in document order.
 type nativeWalker struct {
 	enc      *encoder
 	err      error
 	cycleErr error
+	keyErr   error // an error resolving a map key
 	budget   encodeBudget
 
 	// The containers the walk is inside of: the first len(framesArr) in
@@ -185,8 +184,7 @@ type nativeWalker struct {
 
 	event nativeWalkEvent
 
-	// ordered walks map keys in encoding/json's sorted order, calls the
-	// marshalers it passes, and stops at the first event.
+	// ordered calls value marshalers and stops at the first event.
 	ordered bool
 
 	// mayFailFirst records that the bounding walk passed a value encoding/json
@@ -328,11 +326,7 @@ func (w *nativeWalker) step() {
 		}
 		e := f.entries[f.i]
 		f.i++
-		if w.ordered {
-			w.add(jsonStringLen(e.name) + 1)
-		} else {
-			w.add(nativeKeyLen(e.key) + 1)
-		}
+		w.add(jsonStringLen(e.name) + 1)
 		if w.descend() {
 			w.value(e.val, false, 1, 0)
 		}
@@ -464,9 +458,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 		for k := range t {
 			keys = append(keys, k)
 		}
-		if w.ordered {
-			slices.Sort(keys)
-		}
+		slices.Sort(keys)
 		w.add(max(0, len(t)-1))
 		w.push(nativeFrame{kind: frameAnyMap, anyMap: t, keys: keys, levels: levels, refs: refs + 1}, '{')
 		return
@@ -642,27 +634,38 @@ func boolLen(b bool) int {
 	return 5
 }
 
-// mapEntries returns the entries of map v.  The ordered walk names each key,
-// which may call its MarshalText, and sorts them by name as encoding/json
-// does; it reports false at a key encoding/json cannot name.
+// mapEntries sorts entries by JSON key name in both walks.
+// TextMarshaler keys are resolved in key order, before visiting any value.
+// A key-name error therefore precedes every value error in that map.
 func (w *nativeWalker) mapEntries(v reflect.Value) ([]nativeMapEntry, bool) {
 	entries := make([]nativeMapEntry, 0, v.Len())
 	it := v.MapRange()
 	for it.Next() {
-		e := nativeMapEntry{key: it.Key(), val: it.Value()}
-		if w.ordered {
-			name, err := resolveNativeKeyName(e.key)
-			if err != nil {
-				w.jsonError()
+		entries = append(entries, nativeMapEntry{key: it.Key(), val: it.Value()})
+	}
+	textKeys := v.Type().Key().Kind() != reflect.String && v.Type().Key().Implements(textMarshalerType)
+	if textKeys {
+		// Sorting must not call user methods. Resolve each key only after
+		// this sort, so multiple failing key hooks choose the same error.
+		slices.SortFunc(entries, func(a, b nativeMapEntry) int { return compareNativeKeys(a.key, b.key) })
+		w.mayFailFirst = true
+	}
+	for i := range entries {
+		if i%encodeContextInterval == 0 {
+			w.pollContext()
+			if w.err != nil {
 				return nil, false
 			}
-			e.name = name
 		}
-		entries = append(entries, e)
+		name, err := resolveNativeKeyName(entries[i].key)
+		if err != nil {
+			w.keyErr = fmt.Errorf("json: encoding error for type %q: %q", v.Type().String(), err.Error())
+			w.jsonError()
+			return nil, false
+		}
+		entries[i].name = name
 	}
-	if w.ordered {
-		slices.SortFunc(entries, func(a, b nativeMapEntry) int { return strings.Compare(a.name, b.name) })
-	}
+	slices.SortStableFunc(entries, func(a, b nativeMapEntry) int { return strings.Compare(a.name, b.name) })
 	return entries, true
 }
 
@@ -683,24 +686,6 @@ func resolveNativeKeyName(k reflect.Value) (string, error) {
 		return strconv.FormatInt(k.Int(), 10), nil
 	default:
 		return strconv.FormatUint(k.Uint(), 10), nil
-	}
-}
-
-// nativeKeyLen is a lower bound on a map key's quoted name, without calling
-// MarshalText.
-func nativeKeyLen(k reflect.Value) int {
-	if k.Kind() == reflect.String {
-		return jsonStringLen(k.String())
-	}
-	if nativeInfo(k.Type()).textMarshaler {
-		return 2
-	}
-	var b [24]byte
-	switch k.Kind() {
-	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
-		return len(strconv.AppendInt(b[:0], k.Int(), 10)) + 2
-	default:
-		return len(strconv.AppendUint(b[:0], k.Uint(), 10)) + 2
 	}
 }
 
@@ -801,7 +786,7 @@ func (w *nativeWalker) cycle(i int) {
 // marshaler counts a value encoding/json hands to MarshalJSON (text false)
 // or MarshalText (text true), with v.Addr() as the receiver when addr is set.
 //
-// The bounding walk does not call marshalers.  Most marshalers' output is
+// The bounding walk does not call value marshalers. Most marshalers' output is
 // unknown until they run, so they count as their smallest output: one byte of
 // JSON, or an empty string.  The few whose size is known from the value --
 // this package's own messages, json.RawMessage and math/big's numbers --
@@ -1117,11 +1102,15 @@ func (enc *encoder) boundNative(native any, b encodeBudget) error {
 			return encodeSizeError(b.maxBytes)
 		}
 	case nativeWalkTooDeep, nativeWalkCycle:
+	case nativeWalkJSONError:
+		if w.keyErr == nil {
+			return nil
+		}
 	default:
 		return nil
 	}
-	// Too big, too deep, or a cycle encoding/json reports too late to run
-	// it.  When encoding/json would have stopped at an error of its own
+	// Resolve a refusal or key-name error in document order.
+	// When encoding/json would have stopped at an error of its own
 	// first, that error is the result, so walk again in encoding/json's own
 	// order to learn what it meets first.  The second walk charges only
 	// what the first one did not reach.
@@ -1135,6 +1124,8 @@ func (enc *encoder) boundNative(native any, b encodeBudget) error {
 		return encodeSizeError(b.maxBytes)
 	case ordered.event == nativeWalkCycle:
 		return ordered.cycleErr
+	case ordered.event == nativeWalkJSONError && ordered.keyErr != nil:
+		return ordered.keyErr
 	case ordered.event != nativeWalkTooDeep:
 		// encoding/json fails at an error of its own before it is too deep
 		// or too big, so it is safe to run, and it says how it fails.
