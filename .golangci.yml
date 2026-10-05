@@ -30,11 +30,18 @@ linters:
     - nonamedreturns
     - perfsprint
     - predeclared
+    - revive
     - testifylint
     - unconvert
     - usestdlibvars
     - wastedassign
   settings:
+    revive:
+      rules:
+        - name: function-result-limit
+          arguments: [2]
+        - name: argument-limit
+          arguments: [4]
     exhaustive:
       # The class of defect this guards is a switch over lisp.LType — the
       # interpreter's core value tag — that silently produces nothing for a
@@ -80,6 +87,10 @@ linters:
         - "-ST*"    # Preserve pre-existing style check behavior
   exclusions:
     rules:
+      - linters:
+          - revive
+        path: '_test\.go'
+
       # --- fieldalignment scope -------------------------------------------
       # Enforced across the whole interpreter (lisp/...) and the parser/lexer
       # (parser/...). The point of this check is to be a REGRESSION GUARD, not
