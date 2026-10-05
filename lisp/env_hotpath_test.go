@@ -19,7 +19,8 @@ func TestSplitSymbolParts(t *testing.T) {
 			sym := Quote(Symbol(s))
 			sym.source = &token.Location{File: "symbol", Line: 7}
 			pieces := strings.Split(s, ":") // pre-optimization oracle
-			ns, name, n := splitSymbolParts(s)
+			parts2 := splitSymbolParts(s)
+			ns, name, n := parts2.namespace, parts2.name, parts2.parts
 			require.Equal(t, len(pieces), n)
 			got := SplitSymbol(sym)
 			if n > 2 {

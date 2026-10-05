@@ -925,20 +925,24 @@ func TestURIConversion(t *testing.T) {
 }
 
 func TestSplitPackageQualified(t *testing.T) {
-	pkg, partial, ok := splitPackageQualified("math:abs")
+	parts, partsErr := splitPackageQualified("math:abs")
+	pkg, partial, ok := parts.pkg, parts.name, partsErr
 	assert.True(t, ok)
 	assert.Equal(t, "math", pkg)
 	assert.Equal(t, "abs", partial)
 
-	pkg, partial, ok = splitPackageQualified("math:")
+	parts2, partsErr2 := splitPackageQualified("math:")
+	pkg, partial, ok = parts2.pkg, parts2.name, partsErr2
 	assert.True(t, ok)
 	assert.Equal(t, "math", pkg)
 	assert.Empty(t, partial)
 
-	_, _, ok = splitPackageQualified(":keyword")
+	parts3, partsErr3 := splitPackageQualified(":keyword")
+	_, _, ok = parts3.pkg, parts3.name, partsErr3
 	assert.False(t, ok)
 
-	_, _, ok = splitPackageQualified("nocolon")
+	parts4, partsErr4 := splitPackageQualified("nocolon")
+	_, _, ok = parts4.pkg, parts4.name, partsErr4
 	assert.False(t, ok)
 }
 

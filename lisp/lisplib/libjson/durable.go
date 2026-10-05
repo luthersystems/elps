@@ -490,7 +490,8 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 		e.noteLiteral(key, v)
 		return e.scanHolder(key, v.Cells, depth)
 	case lisp.LArray:
-		dims, cells, err := checkArray(v)
+		array, arrayErr := checkArray(v)
+		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil {
 			return err
 		}
@@ -525,7 +526,8 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 			return fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 		}
 		i := e.openObject(key)
-		pbase, keysMark, err := e.mapMembers(v)
+		members, membersErr := e.mapMembers(v)
+		pbase, keysMark, err := members.pairs, members.keys, membersErr
 		if err != nil {
 			return err
 		}
@@ -689,22 +691,32 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	return pkgName + ":" + name, nil
 }
 
+// builtinRegistration holds a registered builtin name and its lookup status.
+type builtinRegistration struct {
+	// pkg is the registered builtin package name.
+	pkg string
+	// name is the unqualified name.
+	name string
+	// registered reports a registered builtin.
+	registered bool
+}
+
 // registeredBuiltin returns the package and name of a registered builtin
 // (lisp.PackageRegistry.RegisteredBuiltinName), with ok true.  ok is false
 // for a builtin no registration names.  The form depends only on the value:
 // the bindings of its names play no part.
-func (e *durableEncoder) registeredBuiltin(f *lisp.LVal) (string, string, bool, error) {
+func (e *durableEncoder) registeredBuiltin(f *lisp.LVal) (builtinRegistration, error) {
 	if f.IsSpecialFun() {
-		return "", "", false, errors.New("durable json: cannot encode a macro or special operator")
+		return builtinRegistration{pkg: "", name: "", registered: false}, errors.New("durable json: cannot encode a macro or special operator")
 	}
 	pkg, name, ok := e.env.Runtime.Registry.RegisteredBuiltinName(f)
 	if !ok {
-		return "", "", false, nil
+		return builtinRegistration{pkg: "", name: "", registered: false}, nil
 	}
 	if !utf8.ValidString(pkg) || !utf8.ValidString(name) {
-		return "", "", false, errors.New("durable json: cannot encode a function name that is not valid UTF-8")
+		return builtinRegistration{pkg: "", name: "", registered: false}, errors.New("durable json: cannot encode a function name that is not valid UTF-8")
 	}
-	return pkg, name, true, nil
+	return builtinRegistration{pkg: pkg, name: name, registered: true}, nil
 }
 
 // unregisteredBuiltinName returns "PKG:NAME" for a builtin no registration
@@ -807,7 +819,8 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		}
 		return e.holderBody(key, v.Cells, depth)
 	case lisp.LArray:
-		dims, cells, err := checkArray(v)
+		array, arrayErr := checkArray(v)
+		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil {
 			return err
 		}
@@ -877,7 +890,8 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		e.buf = append(e.buf, ']', ']')
 	case lisp.LFun:
 		if v.Builtin() != nil {
-			pkg, name, ok, err := e.registeredBuiltin(v)
+			registration, registrationErr := e.registeredBuiltin(v)
+			pkg, name, ok, err := registration.pkg, registration.name, registration.registered, registrationErr
 			switch {
 			case err != nil:
 				return err
@@ -941,7 +955,8 @@ func (e *durableEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	if v.Len() > e.cfg.maxValues-e.values {
 		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 	}
-	pbase, keysMark, err := e.mapMembers(v)
+	members, membersErr := e.mapMembers(v)
+	pbase, keysMark, err := members.pairs, members.keys, membersErr
 	if err != nil {
 		return err
 	}

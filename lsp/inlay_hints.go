@@ -121,7 +121,7 @@ func walkForHints(ctx *hintContext, node *lisp.LVal) {
 // processCallNode checks if a call node should produce inlay hints.
 func processCallNode(ctx *hintContext, node *lisp.LVal, name string) {
 	// Check that the call overlaps the requested range.
-	if !nodeOverlapsRange(node, ctx.startLine, ctx.startCol, ctx.endLine, ctx.endCol) {
+	if !nodeOverlapsRange(node, hintRange{startLine: ctx.startLine, startCol: ctx.startCol, endLine: ctx.endLine, endCol: ctx.endCol}) {
 		return
 	}
 
@@ -182,9 +182,23 @@ func countRequiredParams(sig *analysis.Signature) int {
 	return n
 }
 
+// hintRange holds inlay hint range bounds.
+type hintRange struct {
+	// startLine is the first range line.
+	startLine int
+	// startCol is the first range byte column.
+	startCol int
+	// endLine is the last range line.
+	endLine int
+	// endCol is the last range byte column.
+	endCol int
+}
+
 // nodeOverlapsRange checks if a node's source span overlaps the
 // given 1-based line:col range.
-func nodeOverlapsRange(node *lisp.LVal, startLine, startCol, endLine, endCol int) bool {
+func nodeOverlapsRange(node *lisp.LVal, opts hintRange) bool {
+	startLine, startCol, endLine, endCol := opts.startLine, opts.startCol, opts.endLine, opts.endCol
+
 	src, ok := node.Source()
 	if !ok || src.Line == 0 {
 		return false

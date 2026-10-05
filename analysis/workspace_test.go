@@ -406,14 +406,16 @@ func TestCollectLispFiles_IncludeDirs(t *testing.T) {
 	require.NoError(t, err)
 
 	// Without includes: only lib.lisp should be found.
-	paths, _, err := collectLispFilesWithConfig(dir, nil)
+	files, filesErr := collectLispFilesWithConfig(dir, nil)
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	require.Len(t, paths, 1, "without includes, skipped dirs should be excluded")
 	assert.Equal(t, "lib.lisp", filepath.Base(paths[0]), "only the normal file should be found")
 
 	// With includes: _examples should be included, build still skipped.
 	cfg := &ScanConfig{IncludeDirs: []string{"_examples"}}
-	paths, _, err = collectLispFilesWithConfig(dir, cfg)
+	files2, filesErr2 := collectLispFilesWithConfig(dir, cfg)
+	paths, _, err = files2.paths, files2.truncated, filesErr2
 	require.NoError(t, err)
 	assert.Len(t, paths, 2, "_examples should be included via IncludeDirs")
 
@@ -440,7 +442,8 @@ func TestCollectLispFiles_IncludeDirs_Nested(t *testing.T) {
 	require.NoError(t, os.WriteFile(filepath.Join(nestedDir, "deep.lisp"), []byte(`(defun deep () 2)`), 0600))
 
 	cfg := &ScanConfig{IncludeDirs: []string{"_examples"}}
-	paths, _, err := collectLispFilesWithConfig(dir, cfg)
+	files, filesErr := collectLispFilesWithConfig(dir, cfg)
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 
 	found := make(map[string]bool)
@@ -1170,7 +1173,8 @@ func TestCollectLispFilesWithConfig_MaxFiles(t *testing.T) {
 	}
 
 	// Limit to 3 files.
-	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 3})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 3})
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 3)
 	assert.True(t, truncated, "should be truncated when hitting MaxFiles limit")
@@ -1185,7 +1189,8 @@ func TestCollectLispFilesWithConfig_NoTruncation(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 10})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 10})
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 2)
 	assert.False(t, truncated, "should not be truncated when under limit")
@@ -1202,7 +1207,8 @@ func TestCollectLispFilesWithConfig_MaxFileBytes(t *testing.T) {
 	err = os.WriteFile(filepath.Join(dir, "large.lisp"), make([]byte, 200), 0600)
 	require.NoError(t, err)
 
-	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "only the small file should be collected")
 	assert.Contains(t, paths[0], "small.lisp")
@@ -1220,7 +1226,8 @@ func TestCollectLispFilesWithConfig_MaxFileBytesExactBoundary(t *testing.T) {
 	err = os.WriteFile(filepath.Join(dir, "over.lisp"), make([]byte, 101), 0600)
 	require.NoError(t, err)
 
-	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 100})
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "file exactly at limit should be included, over should be excluded")
 	assert.Contains(t, paths[0], "exact.lisp")
@@ -1233,7 +1240,8 @@ func TestCollectLispFilesWithConfig_Defaults(t *testing.T) {
 	require.NoError(t, err)
 
 	// nil config uses defaults.
-	paths, truncated, err := collectLispFilesWithConfig(dir, nil)
+	files, filesErr := collectLispFilesWithConfig(dir, nil)
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1)
 	assert.False(t, truncated)
@@ -1246,7 +1254,8 @@ func TestCollectLispFilesWithConfig_ZeroMaxFilesUsesDefault(t *testing.T) {
 	require.NoError(t, err)
 
 	// MaxFiles: 0 should use DefaultMaxWorkspaceFiles, not collect zero files.
-	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 0})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFiles: 0})
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "MaxFiles: 0 should use default, not collect zero files")
 	assert.False(t, truncated)
@@ -1259,7 +1268,8 @@ func TestCollectLispFilesWithConfig_ZeroMaxFileBytesUsesDefault(t *testing.T) {
 	err := os.WriteFile(filepath.Join(dir, "a.lisp"), []byte("()"), 0600)
 	require.NoError(t, err)
 
-	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 0})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{MaxFileBytes: 0})
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "MaxFileBytes: 0 should use default, not skip all files")
 }
@@ -1274,7 +1284,8 @@ func TestCollectLispFilesWithConfig_Excludes(t *testing.T) {
 	}
 
 	// Exclude "generated.lisp" by base name.
-	paths, truncated, err := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"generated.lisp"}})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"generated.lisp"}})
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.False(t, truncated)
 	assert.Len(t, paths, 2, "generated.lisp should be excluded")
@@ -1297,7 +1308,8 @@ func TestCollectLispFilesWithConfig_ExcludesDirectory(t *testing.T) {
 	err = os.WriteFile(filepath.Join(dir, "main.lisp"), []byte("()"), 0600)
 	require.NoError(t, err)
 
-	paths, _, err := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"build"}})
+	files, filesErr := collectLispFilesWithConfig(dir, &ScanConfig{Excludes: []string{"build"}})
+	paths, _, err := files.paths, files.truncated, filesErr
 	require.NoError(t, err)
 	assert.Len(t, paths, 1, "build directory files should be excluded")
 	assert.Contains(t, paths[0], "main.lisp")

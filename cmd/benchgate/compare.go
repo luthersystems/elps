@@ -46,8 +46,18 @@ type cellOrder struct {
 	seq int
 }
 
+// benchmarkArm holds benchmark samples and their reporting order.
+type benchmarkArm struct {
+	// values contains benchmark samples by cell.
+	values map[cellKey][]float64
+	// order preserves benchmark reporting order.
+	order []cellOrder
+	// packages records package names.
+	packages map[string]bool
+}
+
 // samples reads one arm.
-func readArm(r io.Reader, fileName string, stderr io.Writer) (map[cellKey][]float64, []cellOrder, map[string]bool, error) {
+func readArm(r io.Reader, fileName string, stderr io.Writer) (benchmarkArm, error) {
 	vals := map[cellKey][]float64{}
 	var order []cellOrder
 	pkgs := map[string]bool{}
@@ -76,9 +86,9 @@ func readArm(r io.Reader, fileName string, stderr io.Writer) (map[cellKey][]floa
 		}
 	}
 	if err := br.Err(); err != nil {
-		return nil, nil, nil, err
+		return benchmarkArm{values: nil, order: nil, packages: nil}, err
 	}
-	return vals, order, pkgs, nil
+	return benchmarkArm{values: vals, order: order, packages: pkgs}, nil
 }
 
 // pctRange is benchmath.Summary.PctRangeString as a number: the half-width of
@@ -108,31 +118,41 @@ func sign(v float64) int {
 	return 0
 }
 
+// armComparison holds a benchmark comparison and its unpaired cell count.
+type armComparison struct {
+	// comparison contains the paired benchmark comparison.
+	comparison *comparison
+	// unpaired counts cells present in only one arm.
+	unpaired int
+}
+
 // compareArms builds a comparison from two raw `go test -bench` outputs.
 // unpaired counts cells present in exactly one arm; they are not adjudicable
 // and the caller reports the count rather than letting them vanish.
-func compareArms(baseFile, headFile string, alpha float64, stderr io.Writer) (*comparison, int, error) {
+func compareArms(baseFile, headFile string, alpha float64, stderr io.Writer) (armComparison, error) {
 	var c *comparison
 	var unpaired int
 	var err error
 	bf, err := os.Open(baseFile) //#nosec G304 -- benchgate is a CLI given the arm file paths to read
 	if err != nil {
-		return nil, 0, err
+		return armComparison{comparison: nil, unpaired: 0}, err
 	}
 	defer func() { _ = bf.Close() }()
 	hf, err := os.Open(headFile) //#nosec G304 -- benchgate is a CLI given the arm file paths to read
 	if err != nil {
-		return nil, 0, err
+		return armComparison{comparison: nil, unpaired: 0}, err
 	}
 	defer func() { _ = hf.Close() }()
 
-	baseVals, _, basePkgs, err := readArm(bf, baseFile, stderr)
+	arm, armErr := readArm(bf, baseFile, stderr)
+	baseVals, _, basePkgs, err := arm.values, arm.order, arm.packages, armErr
 	if err != nil {
-		return nil, 0, err
+		return armComparison{comparison: nil, unpaired: 0}, err
 	}
-	headVals, headOrder, headPkgs, err := readArm(hf, headFile, stderr)
+	arm2, armErr2 := readArm(hf, headFile, stderr)
+	headVals, headOrder, headPkgs, err := arm2.values, arm2.order, arm2.packages, armErr2
 	if err != nil {
-		return nil, 0, err
+		return armComparison{comparison: nil, unpaired: 0}, err
 	}
 
 	c = &comparison{pkgSeen: map[string]bool{}}
@@ -208,5 +228,5 @@ func compareArms(baseFile, headFile string, alpha float64, stderr io.Writer) (*c
 		}
 	}
 
-	return c, unpaired, nil
+	return armComparison{comparison: c, unpaired: unpaired}, nil
 }

@@ -437,20 +437,30 @@ func (w *CodeWalker) bind(name *LVal, mac localMacroExpander) {
 	s.names[name.Str] = mac
 }
 
+// lexicalBinding holds a lexical binding and its macro expander.
+type lexicalBinding struct {
+	// expander expands the local macro.
+	expander localMacroExpander
+	// bound reports a lexical binding.
+	bound bool
+	// macro reports a macro binding.
+	macro bool
+}
+
 // lookup reports whether name is lexically bound, whether by a macrolet,
 // and the local macro's expander.
-func (w *CodeWalker) lookup(name string) (bool, bool, localMacroExpander) {
+func (w *CodeWalker) lookup(name string) lexicalBinding {
 	// As in LEnv.Get, a qualified symbol or keyword resolves in a package
 	// (or to itself), never in a lexical scope.
 	if len(w.scopes) == 0 || strings.IndexByte(name, ':') >= 0 {
-		return false, false, nil
+		return lexicalBinding{bound: false, macro: false, expander: nil}
 	}
 	for i := len(w.scopes) - 1; i >= 0; i-- {
 		if m, ok := w.scopes[i].names[name]; ok {
-			return true, w.scopes[i].macros, m
+			return lexicalBinding{bound: true, macro: w.scopes[i].macros, expander: m}
 		}
 	}
-	return false, false, nil
+	return lexicalBinding{bound: false, macro: false, expander: nil}
 }
 
 func (w *CodeWalker) isBound(sym *LVal) bool {
@@ -458,7 +468,8 @@ func (w *CodeWalker) isBound(sym *LVal) bool {
 		return false
 	}
 
-	bound, _, _ := w.lookup(sym.Str)
+	binding := w.lookup(sym.Str)
+	bound, _, _ := binding.bound, binding.macro, binding.expander
 	return bound
 }
 
@@ -568,37 +579,41 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 			break
 		}
 		var exp *LVal
-		if bound, macro, mac := w.lookup(head.Str); bound {
-			if !macro {
-				break
-			}
-			if mac == nil {
-				w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
-				return v
-			}
-			if n >= w.maxExpansions() {
-				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
-			}
-			if exp, _ = w.env.callMacro(mac, v); exp == nil {
-				w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
-				return v
-			}
-		} else {
-			if op, isOp = w.specialOp(head); isOp || w.Expand1 == nil {
-				break
-			}
-			// Only Expand1 knows whether the head is a macro, so the
-			// limit is checked once it has expanded: a chain of exactly
-			// MaxExpansions expansions ending in a function call is fine.
-			var ok bool
-			if exp, ok = w.Expand1(v); !ok {
-				break
-			}
-			if n >= w.maxExpansions() {
-				return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
-			}
-			if exp == nil {
-				exp = Nil()
+		{
+			binding := w.lookup(head.Str)
+			bound, macro, mac := binding.bound, binding.macro, binding.expander
+			if bound {
+				if !macro {
+					break
+				}
+				if mac == nil {
+					w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
+					return v
+				}
+				if n >= w.maxExpansions() {
+					return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
+				}
+				if exp, _ = w.env.callMacro(mac, v); exp == nil {
+					w.visit(&walkNode{Event: WalkForm, Node: v, Depth: depth})
+					return v
+				}
+			} else {
+				if op, isOp = w.specialOp(head); isOp || w.Expand1 == nil {
+					break
+				}
+				// Only Expand1 knows whether the head is a macro, so the
+				// limit is checked once it has expanded: a chain of exactly
+				// MaxExpansions expansions ending in a function call is fine.
+				var ok bool
+				if exp, ok = w.Expand1(v); !ok {
+					break
+				}
+				if n >= w.maxExpansions() {
+					return w.expansionFailed(v, depth, Errorf("macro expansion depth exceeds maximum: %d", w.maxExpansions()))
+				}
+				if exp == nil {
+					exp = Nil()
+				}
 			}
 		}
 		if exp.Type == LError {
@@ -824,11 +839,11 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			idx = 2
 		}
 		if len(cells) > idx && (!w.sourceAnalysis || cells[idx].Type == LSExpr) {
-			b.set(idx, w.let(cells[idx], v, op, kind == kindLetSeq || kind == kindTestLetSeq, d, func() { w.forms(b, idx+1, depth) }))
+			b.set(idx, w.let(cells[idx], v, letWalk{op: op, seq: kind == kindLetSeq || kind == kindTestLetSeq, depth: d}, func() { w.forms(b, idx+1, depth) }))
 		}
 	case kindFlet, kindLabels, kindMacrolet:
 		if len(cells) > 1 && (!w.sourceAnalysis || cells[1].Type == LSExpr) {
-			b.set(1, w.flet(cells[1], v, op, kind, d, func() { w.forms(b, 2, depth) }))
+			b.set(1, w.flet(cells[1], v, fletWalk{op: op, kind: kind, depth: d}, func() { w.forms(b, 2, depth) }))
 		}
 	case kindHandlerBind:
 		if len(cells) > 1 {
@@ -1016,8 +1031,20 @@ func (w *CodeWalker) pairs(list *LVal, depth int, fn func(pb *rebuild, pair *LVa
 	return lb.done()
 }
 
+// letWalk holds let traversal settings.
+type letWalk struct {
+	// op is the canonical operator name.
+	op string
+	// depth is the traversal depth.
+	depth int
+	// seq selects sequential bindings.
+	seq bool
+}
+
 // let walks a let or let* binding list and then the body.
-func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body func()) *LVal {
+func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVal {
+	op, seq, depth := opts.op, opts.seq, opts.depth
+
 	if w.sourceAnalysis {
 		w.push(false)
 		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
@@ -1082,8 +1109,20 @@ func (w *CodeWalker) let(list, form *LVal, op string, seq bool, depth int, body 
 	return out
 }
 
+// fletWalk holds local function traversal settings.
+type fletWalk struct {
+	// op is the canonical operator name.
+	op string
+	// depth is the traversal depth.
+	depth int
+	// kind selects local functions or macros.
+	kind formKind
+}
+
 // flet walks a flet, labels or macrolet binding list and then the body.
-func (w *CodeWalker) flet(list, form *LVal, op string, kind formKind, depth int, body func()) *LVal {
+func (w *CodeWalker) flet(list *LVal, form *LVal, opts fletWalk, body func()) *LVal {
+	op, kind, depth := opts.op, opts.kind, opts.depth
+
 	enter := func(macros bool) {
 		w.push(macros)
 		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
@@ -1243,7 +1282,8 @@ func (w *CodeWalker) templateList(v *LVal, depth int) *LVal {
 // exprFormalNames returns the formals (expr pattern) binds, as opExpr
 // computes them.  A pattern opExpr would reject binds nothing.
 func exprFormalNames(pattern *LVal) []*LVal {
-	n, short, nopt, vargs, err := countExprArgs(pattern)
+	counts, countsErr := countExprArgs(pattern)
+	n, short, nopt, vargs, err := counts.required, counts.short, counts.optional, counts.variadic, countsErr
 	if err != nil {
 		return nil
 	}
@@ -1270,7 +1310,8 @@ func exprFormalNames(pattern *LVal) []*LVal {
 // exprLambdaList returns the lambda list (expr pattern) builds, markers
 // included, as opExpr builds it, or nil when opExpr would reject pattern.
 func exprLambdaList(pattern *LVal) *LVal {
-	n, short, nopt, vargs, err := countExprArgs(pattern)
+	counts, countsErr := countExprArgs(pattern)
+	n, short, nopt, vargs, err := counts.required, counts.short, counts.optional, counts.variadic, countsErr
 	if err != nil || n > MaxExprFormals {
 		return nil
 	}

@@ -140,6 +140,8 @@ func ScanWorkspaceDefinitions(root string) ([]ExternalSymbol, error) {
 // Parsing is done concurrently using a bounded worker pool.
 //
 // Files that fail to parse are silently skipped (fault tolerant).
+//
+//nolint:revive // exported API; changing it breaks embedders
 func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, error) {
 	globals, pkgs, _, err := ScanWorkspaceAll(root)
 	return globals, pkgs, err
@@ -148,6 +150,8 @@ func ScanWorkspaceFull(root string) ([]ExternalSymbol, map[string][]ExternalSymb
 // ScanWorkspaceAll combines ScanWorkspaceFull and ScanWorkspaceDefinitions
 // into a single pass: each file is parsed once and all three results are
 // extracted from the same AST.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func ScanWorkspaceAll(root string) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, error) {
 	var globals []ExternalSymbol
 	var pkgs map[string][]ExternalSymbol
@@ -163,6 +167,8 @@ func ScanWorkspaceAll(root string) ([]ExternalSymbol, map[string][]ExternalSymbo
 //
 // Delegates to PrescanWorkspace internally to avoid duplicating the
 // concurrent worker pool logic.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, bool, error) {
 	var err error
 	prescan, err := PrescanWorkspace(root, scanCfg)
@@ -172,10 +178,18 @@ func ScanWorkspaceAllWithConfig(root string, scanCfg *ScanConfig) ([]ExternalSym
 	return prescan.ExportedGlobals, prescan.PkgExports, prescan.AllDefs, prescan.Truncated, nil
 }
 
+// collectedLispFiles holds workspace files and the collection limit status.
+type collectedLispFiles struct {
+	// paths contains collected file paths.
+	paths []string
+	// truncated reports that the file limit was reached.
+	truncated bool
+}
+
 // collectLispFilesWithConfig walks the directory tree and collects .lisp
 // file paths, respecting ScanConfig limits. Returns the collected paths,
 // whether the MaxFiles limit was reached (truncated), and any walk error.
-func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, bool, error) {
+func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) (collectedLispFiles, error) {
 	maxFiles := scanCfg.effectiveMaxFiles()
 	maxBytes := scanCfg.effectiveMaxFileBytes()
 
@@ -211,7 +225,7 @@ func collectLispFilesWithConfig(root string, scanCfg *ScanConfig) ([]string, boo
 		}
 		return nil
 	})
-	return paths, truncated, err
+	return collectedLispFiles{paths: paths, truncated: truncated}, err
 }
 
 // ShouldSkipDir returns true for directories that should not be walked.
@@ -298,15 +312,27 @@ func buildLoadTree(mainPath string) (map[string]string, []string) {
 	var loadOrder []string
 	pkgMap = make(map[string]string)
 	visited := make(map[string]bool)
-	walkLoadFile(mainPath, lisp.DefaultUserPackage, pkgMap, visited, &loadOrder)
+	walkLoadFile(mainPath, lisp.DefaultUserPackage, loadTreeState{result: pkgMap, visited: visited, order: &loadOrder})
 	return pkgMap, loadOrder
+}
+
+// loadTreeState holds the package map, visited files and load order.
+type loadTreeState struct {
+	// result maps each loaded file to its package.
+	result map[string]string
+	// visited records files already traversed.
+	visited map[string]bool
+	// order records file traversal order.
+	order *[]string
 }
 
 // walkLoadFile recursively parses a file and tracks package context through
 // in-package and load-file calls. It only tracks package *context* (which
 // package is active), not use-package imports — those are handled separately
 // by scanUsePackages and PackageImports.
-func walkLoadFile(filePath, currentPkg string, result map[string]string, visited map[string]bool, order *[]string) {
+func walkLoadFile(filePath string, currentPkg string, opts loadTreeState) {
+	result, visited, order := opts.result, opts.visited, opts.order
+
 	absPath, err := filepath.Abs(filePath)
 	if err != nil {
 		return
@@ -347,16 +373,36 @@ func walkLoadFile(filePath, currentPkg string, result map[string]string, visited
 					continue
 				}
 				result[absLoad] = currentPkg
-				walkLoadFile(absLoad, currentPkg, result, visited, order)
+				walkLoadFile(absLoad, currentPkg, loadTreeState{result: result, visited: visited, order: order})
 			}
 		}
 	}
 }
 
+// fileScan holds definitions and package declarations from one file.
+type fileScan struct {
+	// globals contains global symbol bindings.
+	globals []ExternalSymbol
+	// pkgs groups exported symbols by package.
+	pkgs map[string][]ExternalSymbol
+	// defs contains all definitions.
+	defs []ExternalSymbol
+	// pkgAll groups all definitions by package.
+	pkgAll map[string][]ExternalSymbol
+	// usePackages records imported package names.
+	usePackages map[string][]string
+	// preamble contains package setup and definition forms.
+	preamble []*lisp.LVal
+	// filePkg is the file's first declared package.
+	filePkg string
+	// firstInPkgLine is the first package declaration line.
+	firstInPkgLine int
+}
+
 // scanFileFull parses a file once and extracts exported globals, package-grouped
 // exports, all definitions, use-package declarations, raw defmacro AST nodes,
 // and the file's primary package ("" for bare files without in-package).
-func scanFileFull(source []byte, filename string) ([]ExternalSymbol, map[string][]ExternalSymbol, []ExternalSymbol, map[string][]ExternalSymbol, map[string][]string, []*lisp.LVal, string, int) {
+func scanFileFull(source []byte, filename string) fileScan {
 	var globals []ExternalSymbol
 	var pkgs map[string][]ExternalSymbol
 	var pkgAll map[string][]ExternalSymbol
@@ -369,7 +415,7 @@ func scanFileFull(source []byte, filename string) ([]ExternalSymbol, map[string]
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, "", 0
+		return fileScan{globals: nil, pkgs: nil, defs: nil, pkgAll: nil, usePackages: nil, preamble: nil, filePkg: "", firstInPkgLine: 0}
 	}
 
 	filePkg, firstInPkgLine = scanFilePackage(exprs)
@@ -400,7 +446,7 @@ func scanFileFull(source []byte, filename string) ([]ExternalSymbol, map[string]
 		}
 	}
 
-	return globals, pkgs, defs, pkgAll, usePackages, preamble, filePkg, firstInPkgLine
+	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine}
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -849,7 +895,8 @@ func scopeContainingAnalysis(scope *Scope, line, col int) *Scope {
 //
 // Returns a map from SymbolKey.String() to FileReference slices.
 func ScanWorkspaceRefs(root string, cfg *Config, scanCfg *ScanConfig) map[string][]FileReference {
-	paths, _, err := collectLispFilesWithConfig(root, scanCfg)
+	files, filesErr := collectLispFilesWithConfig(root, scanCfg)
+	paths, _, err := files.paths, files.truncated, filesErr
 	if err != nil || len(paths) == 0 {
 		return nil
 	}
@@ -954,7 +1001,8 @@ type WorkspacePrescan struct {
 // The result provides everything needed to build a Config for per-file
 // analysis, including macro-derived definition forms.
 func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, error) {
-	paths, truncated, err := collectLispFilesWithConfig(root, scanCfg)
+	files, filesErr := collectLispFilesWithConfig(root, scanCfg)
+	paths, truncated, err := files.paths, files.truncated, filesErr
 	if err != nil {
 		return nil, err
 	}
@@ -996,7 +1044,8 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				if readErr != nil {
 					continue
 				}
-				g, p, d, pa, up, md, fp, fpl := scanFileFull(fileSrc, paths[i])
+				scanned := scanFileFull(fileSrc, paths[i])
+				g, p, d, pa, up, md, fp, fpl := scanned.globals, scanned.pkgs, scanned.defs, scanned.pkgAll, scanned.usePackages, scanned.preamble, scanned.filePkg, scanned.firstInPkgLine
 				df := extractDefFormSpecs(d)
 				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, preamble: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
 			}

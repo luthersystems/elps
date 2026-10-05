@@ -414,7 +414,7 @@ func (h *debugHandler) doBacktrace() bool {
 		fmt.Fprintln(h.stderr, "not paused") //nolint:errcheck
 		return true
 	}
-	showBacktrace(h.stderr, env.Runtime.Stack, expr, h.sourceRoot, env)
+	showBacktrace(h.stderr, env.Runtime.Stack, backtraceSource{pausedExpr: expr, sourceRoot: h.sourceRoot}, env)
 	return true
 }
 

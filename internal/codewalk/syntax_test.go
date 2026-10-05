@@ -24,7 +24,7 @@ func TestSyntaxOperatorVocabulary(t *testing.T) {
 					head = lisp.Quote(head)
 				}
 				form := lisp.SExpr([]*lisp.LVal{head})
-				codewalk.Syntax(form, nil, 0, func(node, parent *lisp.LVal, op string, depth int) bool {
+				codewalk.Syntax(form, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(node, parent *lisp.LVal, op string, depth int) bool {
 					require.Same(t, form, node)
 					require.Nil(t, parent)
 					require.Zero(t, depth)
@@ -36,7 +36,7 @@ func TestSyntaxOperatorVocabulary(t *testing.T) {
 	}
 	for _, name := range []string{codewalk.OpUnquote, codewalk.OpUnquoteSplicing, "lisp:unquote", "other:lambda", "ordinary"} {
 		form := lisp.SExpr([]*lisp.LVal{lisp.Symbol(name)})
-		codewalk.Syntax(form, nil, 0, func(_, _ *lisp.LVal, op string, _ int) bool {
+		codewalk.Syntax(form, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(_, _ *lisp.LVal, op string, _ int) bool {
 			if name == codewalk.OpUnquote || name == codewalk.OpUnquoteSplicing {
 				require.Equal(t, name, op)
 			} else {
@@ -59,7 +59,7 @@ func TestSyntaxVisitsQuotedStructureAndPrunesChildren(t *testing.T) {
 	}
 	var got []event
 	before := quoted.String()
-	codewalk.Syntax(root, nil, 0, func(node, parent *lisp.LVal, op string, depth int) bool {
+	codewalk.Syntax(root, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(node, parent *lisp.LVal, op string, depth int) bool {
 		got = append(got, event{node, parent, op, depth})
 		return op != codewalk.OpQuasiquote
 	})
@@ -81,13 +81,13 @@ func TestSyntaxStopsBeforeLaterSiblings(t *testing.T) {
 	root := lisp.SExpr([]*lisp.LVal{first, later})
 	var stopped bool
 	var got []*lisp.LVal
-	codewalk.Syntax(root, nil, 0, func(node, _ *lisp.LVal, _ string, _ int) bool {
+	codewalk.Syntax(root, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(node, _ *lisp.LVal, _ string, _ int) bool {
 		got = append(got, node)
 		stopped = node == first
 		return true
 	}, &stopped)
 	require.Equal(t, []*lisp.LVal{root, first}, got)
-	codewalk.Syntax(later, nil, 0, func(_, _ *lisp.LVal, _ string, _ int) bool {
+	codewalk.Syntax(later, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(_, _ *lisp.LVal, _ string, _ int) bool {
 		t.Fatal("a stopped walk must not visit nodes")
 		return true
 	}, &stopped)

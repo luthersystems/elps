@@ -502,9 +502,19 @@ func (b *Budget) Report() Report {
 	return r
 }
 
-// Check interprets a fired watchdog timer. When it returns Continue, the
-// second value is how much longer to wait before checking again.
-func (b *Budget) Check() (Verdict, time.Duration, Report) {
+// CheckResult holds a watchdog verdict, wait duration and scheduling report.
+type CheckResult struct {
+	// Verdict is the watchdog decision.
+	Verdict Verdict
+	// Wait is the delay before the next check.
+	Wait time.Duration
+	// Report records scheduled time and wall time.
+	Report Report
+}
+
+// Check interprets a fired watchdog timer. A Continue verdict sets Wait
+// to the delay before the next check.
+func (b *Budget) Check() CheckResult {
 	r := b.Report()
 	// Two independent caps, one meaning. `spent` is the budget of scheduled
 	// time actually elapsing; `outOfWall` is the backstop that stops a
@@ -518,9 +528,9 @@ func (b *Budget) Check() (Verdict, time.Duration, Report) {
 		// Inconclusive unreachable above ~25% CPU share and reported a window
 		// that was 64% scheduler stall as a hang. See the package doc.
 		if r.Starved() {
-			return Inconclusive, 0, r
+			return CheckResult{Verdict: Inconclusive, Wait: 0, Report: r}
 		}
-		return Hung, 0, r
+		return CheckResult{Verdict: Hung, Wait: 0, Report: r}
 	}
 	remaining := b.total - r.Scheduled()
 	// Never re-arm for less than a heartbeat: a shorter timer cannot observe
@@ -528,5 +538,5 @@ func (b *Budget) Check() (Verdict, time.Duration, Report) {
 	if remaining < tick {
 		remaining = tick
 	}
-	return Continue, remaining, r
+	return CheckResult{Verdict: Continue, Wait: remaining, Report: r}
 }

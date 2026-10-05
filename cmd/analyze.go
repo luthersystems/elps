@@ -116,7 +116,7 @@ Examples:
   elps analyze --top=5 ./...                   # Show top 5 hottest functions
   elps analyze --config=my.yaml ./...          # Use custom config`,
 		Run: func(_ *cobra.Command, args []string) {
-			code, err := runAnalyze(args, os.Stdout, os.Stderr, analyzeRunConfig{
+			code, err := runAnalyze(args, commandWriters{stdout: os.Stdout, stderr: os.Stderr}, analyzeRunConfig{
 				jsonOutput:   jsonOutput,
 				configFile:   configFile,
 				excludes:     excludes,
@@ -153,7 +153,17 @@ Examples:
 	return cmd
 }
 
-func runAnalyze(args []string, stdout, stderr io.Writer, runCfg analyzeRunConfig, analyzeOpts ...AnalyzeOption) (int, error) {
+// commandWriters holds command output writers.
+type commandWriters struct {
+	// stdout receives command output.
+	stdout io.Writer
+	// stderr receives diagnostics.
+	stderr io.Writer
+}
+
+func runAnalyze(args []string, opts commandWriters, runCfg analyzeRunConfig, analyzeOpts ...AnalyzeOption) (int, error) {
+	stdout, stderr := opts.stdout, opts.stderr
+
 	if len(args) == 0 {
 		return 2, errors.New("no files specified")
 	}

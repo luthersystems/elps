@@ -217,7 +217,8 @@ func TestLintToolIsRaceFreeWithWorkspaceBuilds(t *testing.T) {
 				_, _, lintErr := srv.service.lintTool(ctx, nil, LintInput{Path: other, WorkspaceRoot: &root})
 				assert.NoError(t, lintErr)
 			case 2:
-				_, _, docErr := srv.service.loadDocument(cached, nil, &first)
+				loaded, loadedErr := srv.service.loadDocument(cached, nil, &first)
+				_, _, docErr := loaded.doc, loaded.state, loadedErr
 				assert.NoError(t, docErr)
 			default:
 				_, buildErr := srv.service.buildWorkspaceState(second, "fingerprint", time.Now())

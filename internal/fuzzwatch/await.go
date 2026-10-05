@@ -39,6 +39,18 @@ type T interface {
 	Context() context.Context
 }
 
+// StarvedInput holds watchdog input classification and failure text.
+type StarvedInput struct {
+	// Input classifies the test input.
+	Input Input
+	// Report records the watchdog scheduling verdict.
+	Report Report
+	// What names the work or diagnostic subject.
+	What string
+	// Describe contains the input description.
+	Describe string
+}
+
 // AwaitStarved is what a harness does when its watchdog returns Inconclusive.
 // ch is the channel that carries the result of the work.  report is the
 // verdict's Report.  what names the work at the start of a failure message,
@@ -52,7 +64,9 @@ type T interface {
 // The failure message contains [BackstopExpired].  Starvation alone almost
 // never fails it: the backstop ends at most 30 seconds before the binary's
 // -timeout, so a run that reaches it is all but certain to time out anyway.
-func AwaitStarved[V any](t T, ch <-chan V, input Input, report Report, what, describe string) (V, bool) {
+func AwaitStarved[V any](t T, ch <-chan V, opts StarvedInput) (V, bool) {
+	input, report, what, describe := opts.Input, opts.Report, opts.What, opts.Describe
+
 	t.Helper()
 	var zero V
 	if input != Fixed {

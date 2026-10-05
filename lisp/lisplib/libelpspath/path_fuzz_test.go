@@ -434,7 +434,8 @@ func namedPositions(n int, step *lisp.LVal) (map[int]bool, bool) {
 			}
 			hiInt, implicitTo = hi.Int, false
 		}
-		from, to, err := validateRange(n, lo.Int, hiInt, implicitTo)
+		bounds, boundsErr := validateRange(n, lo.Int, hiInt, implicitTo)
+		from, to, err := bounds.from, bounds.to, boundsErr
 		if err != nil {
 			// A range the engine refuses names nothing and must write nothing.
 			return out, true
@@ -524,7 +525,8 @@ func newSpliceOracle(doc *lisp.LVal, steps []*lisp.LVal) (spliceOracle, bool) {
 	if err != nil {
 		return spliceOracle{}, false
 	}
-	from, to, err := validateRange(len(cells), lo.Int, hiInt, implicitTo)
+	bounds, boundsErr := validateRange(len(cells), lo.Int, hiInt, implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		// A range the engine refuses is an error answer, not a splice.
 		return spliceOracle{}, false

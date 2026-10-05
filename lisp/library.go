@@ -78,6 +78,7 @@ type SourceLibrary interface {
 	// identifying the file, the file data, and any error that occurred while
 	// retrieving data.  An interpreter must use trueloc as an identifier for
 	// the requested source file anywhere the SourceContext ctx is unavailable.
+	// The exported interface signature preserves embedder compatibility.
 	LoadSource(ctx SourceContext, loc string) (name, trueloc string, data []byte, err error)
 }
 
@@ -98,6 +99,8 @@ type RelativeFileSystemLibrary struct {
 var _ SourceLibrary = (*RelativeFileSystemLibrary)(nil)
 
 // LoadSource attempts to open loc as a filepath.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func (lib *RelativeFileSystemLibrary) LoadSource(ctx SourceContext, loc string) (string, string, []byte, error) {
 	if !filepath.IsAbs(loc) && ctx.Location() != "" {
 		loc = filepath.Join(filepath.Dir(ctx.Location()), loc)
@@ -145,6 +148,8 @@ var _ SourceLibrary = (*FSLibrary)(nil)
 
 // LoadSource cleans loc relative to the calling file, strips a leading slash,
 // and reads it from FS. Access checks, including symlink handling, depend on FS.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func (lib *FSLibrary) LoadSource(ctx SourceContext, loc string) (string, string, []byte, error) {
 	// Make the path relative to the calling file's directory within the FS.
 	if ctx.Location() != "" {

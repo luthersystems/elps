@@ -34,7 +34,7 @@ import (
 
 // starvationGuard is the block whose removal reproduces #488: the arm that
 // asks whether the window was starved before calling it a hang.
-const starvationGuard = "\t\tif r.Starved() {\n\t\t\treturn Inconclusive, 0, r\n\t\t}\n"
+const starvationGuard = "\t\tif r.Starved() {\n\t\t\treturn CheckResult{Verdict: Inconclusive, Wait: 0, Report: r}\n\t\t}\n"
 
 // controlProbe is compiled against each copy. It replays the window #488
 // reported live -- a 30s budget, wall 1m24.561s, 54s of it lost -- and asserts
@@ -52,7 +52,8 @@ func TestControlWindowIsReportedHung(t *testing.T) {
 	b := New(30 * time.Second)
 	b.startedAt = time.Now().Add(-84561 * time.Millisecond)
 	b.lostAt = defaultMonitor.lost() - 54*time.Second
-	v, _, r := b.Check()
+	checked := b.Check()
+	v, r := checked.Verdict, checked.Report
 	if !r.Starved() {
 		t.Fatalf("rig broken: the control window is not starved (%s)", r)
 	}

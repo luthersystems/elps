@@ -300,11 +300,21 @@ func loaderName(fn Loader) string {
 	return fmt.Sprintf("%s (%s:%d)", f.Name(), filepath.Base(file), line)
 }
 
+// definitionKind holds the package and definition kind.
+type definitionKind struct {
+	// pkgName is the registration package name.
+	pkgName string
+	// kind is the definition kind.
+	kind string
+}
+
 // addDefs registers defs with add, rejecting the definitions that would make
 // lisp panic or defer a nil dereference to call time.  The checks mirror the
 // ones the LEnv methods make before panicking, so a definition that is
 // accepted today is still accepted.
-func addDefs(env *lisp.LEnv, pkgName string, kind string, defs []lisp.LBuiltinDef, add func(bool, ...lisp.LBuiltinDef)) *lisp.LVal {
+func addDefs(env *lisp.LEnv, opts definitionKind, defs []lisp.LBuiltinDef, add func(bool, ...lisp.LBuiltinDef)) *lisp.LVal {
+	pkgName, kind := opts.pkgName, opts.kind
+
 	for i, def := range defs {
 		if isNilDef(def) {
 			return lisp.Errorf("package %q: %s %d is nil", pkgName, kind, i)

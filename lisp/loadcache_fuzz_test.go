@@ -318,14 +318,14 @@ func loadNamedFileBudgeted(t *testing.T, env *lisp.LEnv, name string, src []byte
 		case result = <-ch:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
 				var ok bool
-				if result, ok = fuzzwatch.AwaitStarved(t, ch, input, report,
-					fmt.Sprintf("load %d in environment %d", rep+1, envIdx), ""); !ok {
+				if result, ok = fuzzwatch.AwaitStarved(t, ch, fuzzwatch.StarvedInput{Input: input, Report: report, What: fmt.Sprintf("load %d in environment %d", rep+1, envIdx), Describe: ""}); !ok {
 					return nil, false
 				}
 				received = true

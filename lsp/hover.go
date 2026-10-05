@@ -107,7 +107,8 @@ var keywordDocs = map[string]string{
 // qualifiedSymbolHover looks up a qualified symbol (e.g. "string:join") in
 // the workspace analysis config's PackageExports and builds hover content.
 func (s *Server) qualifiedSymbolHover(word string) string {
-	pkgName, symName, ok := splitPackageQualified(word)
+	parts, partsErr := splitPackageQualified(word)
+	pkgName, symName, ok := parts.pkg, parts.name, partsErr
 	if !ok || symName == "" {
 		return ""
 	}

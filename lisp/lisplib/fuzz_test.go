@@ -403,7 +403,8 @@ func applyWithWatchdog(t fuzzwatch.T, env *lisp.LEnv, name string, fun, args *li
 		case c = <-done:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
@@ -412,8 +413,7 @@ func applyWithWatchdog(t fuzzwatch.T, env *lisp.LEnv, name string, fun, args *li
 				// terminates is unknown: a fuzzed input declines to answer,
 				// and a fixed input waits (see fuzzwatch.AwaitStarved).
 				var ok bool
-				if c, ok = fuzzwatch.AwaitStarved(t, done, input, report, name,
-					fmt.Sprintf("\n--- args ---\n%s", args)); !ok {
+				if c, ok = fuzzwatch.AwaitStarved(t, done, fuzzwatch.StarvedInput{Input: input, Report: report, What: name, Describe: fmt.Sprintf("\n--- args ---\n%s", args)}); !ok {
 					return nil
 				}
 				received = true

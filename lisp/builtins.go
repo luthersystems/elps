@@ -3033,7 +3033,8 @@ func builtinIsType(env *LEnv, args *LVal) *LVal {
 		if typesym != env.Runtime.Registry.Lang+":typedef" {
 			return env.Errorf("first argument is not a valid type specifier: %v", typesym)
 		}
-		name, _, lerr := env.typedefFields(typespec)
+		descriptor, descriptorErr := env.typedefFields(typespec)
+		name, _, lerr := descriptor.name, descriptor.ctor, descriptorErr
 		if lerr != nil {
 			return lerr
 		}

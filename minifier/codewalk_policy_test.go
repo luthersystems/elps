@@ -22,7 +22,8 @@ func TestScanProgramSymbolsPreservesSyntacticPolicy(t *testing.T) {
 (quasiquote (unquote (defun hole ())))`
 	exprs, err := rdparser.New(token.NewScanner("syntax.lisp", strings.NewReader(source))).ParseProgram()
 	require.NoError(t, err)
-	globals, exports, packages := scanProgramSymbols(exprs, nil)
+	symbols := scanProgramSymbols(exprs, nil)
+	globals, exports, packages := symbols.globals, symbols.exports, symbols.packages
 	want := map[string]analysis.SymbolKind{
 		"f": analysis.SymFunction, "m": analysis.SymMacro, "ty": analysis.SymType,
 		"v": analysis.SymVariable, "nested": analysis.SymFunction,

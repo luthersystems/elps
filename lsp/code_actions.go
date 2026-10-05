@@ -96,7 +96,7 @@ func (s *Server) textDocumentCodeAction(_ *glsp.Context, params *protocol.CodeAc
 	// Also offer "add use-package" for unresolved refs from analysis
 	// that overlap with the requested range.
 	actions = append(actions,
-		unresolvedRefActions(params.TextDocument.URI, params.Range, docAnalysis, content, cfg)...)
+		unresolvedRefActions(params.TextDocument.URI, params.Range, referenceAction{res: docAnalysis, content: content, cfg: cfg})...)
 
 	if len(actions) == 0 {
 		return nil, nil
@@ -116,12 +116,24 @@ func fixUndefinedSymbol(uri string, diag protocol.Diagnostic, content string, cf
 		return nil
 	}
 
-	return usePackageActions(uri, diag.Range, symName, content, cfg, &diag)
+	return usePackageActions(uri, diag.Range, packageAction{symName: symName, content: content, cfg: cfg, diag: &diag})
+}
+
+// referenceAction holds reference analysis and source configuration.
+type referenceAction struct {
+	// res contains reference analysis.
+	res *analysis.Result
+	// content contains document text.
+	content string
+	// cfg contains analysis configuration.
+	cfg *analysis.Config
 }
 
 // unresolvedRefActions creates code actions for unresolved references that
 // overlap with the requested range.
-func unresolvedRefActions(uri string, rng protocol.Range, res *analysis.Result, content string, cfg *analysis.Config) []protocol.CodeAction {
+func unresolvedRefActions(uri string, rng protocol.Range, opts referenceAction) []protocol.CodeAction {
+	res, content, cfg := opts.res, opts.content, opts.cfg
+
 	if res == nil || cfg == nil {
 		return nil
 	}
@@ -135,14 +147,28 @@ func unresolvedRefActions(uri string, rng protocol.Range, res *analysis.Result, 
 			continue
 		}
 		actions = append(actions,
-			usePackageActions(uri, elpsToLSPRange(ref.Source, len(ref.Name)), ref.Name, content, cfg, nil)...)
+			usePackageActions(uri, elpsToLSPRange(ref.Source, len(ref.Name)), packageAction{symName: ref.Name, content: content, cfg: cfg, diag: nil})...)
 	}
 	return actions
 }
 
+// packageAction holds the unresolved symbol and package action context.
+type packageAction struct {
+	// symName is the unresolved symbol name.
+	symName string
+	// content contains document text.
+	content string
+	// cfg contains analysis configuration.
+	cfg *analysis.Config
+	// diag is the unresolved reference diagnostic.
+	diag *protocol.Diagnostic
+}
+
 // usePackageActions searches all package exports for a symbol name and returns
 // code actions that insert (use-package 'pkg) at the top of the file.
-func usePackageActions(uri string, _ protocol.Range, symName, content string, cfg *analysis.Config, diag *protocol.Diagnostic) []protocol.CodeAction {
+func usePackageActions(uri string, _ protocol.Range, opts packageAction) []protocol.CodeAction {
+	symName, content, cfg, diag := opts.symName, opts.content, opts.cfg, opts.diag
+
 	packages := make([]string, 0, len(cfg.PackageExports))
 	for pkg := range cfg.PackageExports {
 		packages = append(packages, pkg)

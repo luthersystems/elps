@@ -470,7 +470,9 @@ func copyListGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
 // either.
 //
 // from == to skips nothing and is the plain deep copy.
-func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, from, to int, op *copyOp) (*lisp.LVal, error) {
+func copySeqOffPath(in *lisp.LVal, cells []*lisp.LVal, opts rangeBounds, op *copyOp) (*lisp.LVal, error) {
+	from, to := opts.from, opts.to
+
 	// Under an iterator, the sequence and the cells copied are iterator
 	// work (budget.go), counted as copyContainer counts a container.
 	if err := op.charge(1 + len(cells)); err != nil {
@@ -1418,7 +1420,7 @@ func (s *indexPath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 		// A missed index changes nothing, including a list's quoting.
 		return copyLValOp(in, op)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, op)
+	cp, err := copySeqOffPath(in, cells, rangeBounds{from: from, to: to}, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1451,7 +1453,7 @@ func (s *indexPath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 		// A missed index changes nothing, including a list's quoting.
 		return copyLValOp(in, op)
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, op)
+	cp, err := copySeqOffPath(in, cells, rangeBounds{from: from, to: to}, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1580,7 +1582,8 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
@@ -1607,7 +1610,8 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
@@ -1659,12 +1663,13 @@ func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
 	// The range is about to be spliced out and replaced by newIn's cells.
-	cp, err := copySeqOffPath(in, cells, from, to, op)
+	cp, err := copySeqOffPath(in, cells, rangeBounds{from: from, to: to}, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1691,7 +1696,8 @@ func (s *rangePath) deleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
@@ -1726,12 +1732,13 @@ func (s *rangePath) deleteLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
 	// The range is about to be removed.
-	cp, err := copySeqOffPath(in, cells, from, to, op)
+	cp, err := copySeqOffPath(in, cells, rangeBounds{from: from, to: to}, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1753,7 +1760,8 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 		return nil, err
 	}
 	n := len(cells)
-	from, to, err := validateRange(n, s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(n, s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		return nil, err
 	}
@@ -1784,11 +1792,12 @@ func (s *rangePath) nilLimited(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	// nilMutate below overwrites the range with nils, so the values in it
 	// are copied out by being left out. A range this validate rejects skips
 	// nothing and nilMutate reports the same error it did before.
-	from, to, err := validateRange(len(cells), s.from, s.to, s.implicitTo)
+	bounds, boundsErr := validateRange(len(cells), s.from, s.to, s.implicitTo)
+	from, to, err := bounds.from, bounds.to, boundsErr
 	if err != nil {
 		from, to = 0, 0
 	}
-	cp, err := copySeqOffPath(in, cells, from, to, op)
+	cp, err := copySeqOffPath(in, cells, rangeBounds{from: from, to: to}, op)
 	if err != nil {
 		return nil, err
 	}
@@ -1813,7 +1822,15 @@ func (s *rangePath) appendString(sb *strings.Builder) {
 	sb.WriteString(s.String())
 }
 
-func validateRange(n int, from int, to int, implicitTo bool) (int, int, error) {
+// rangeBounds holds validated sequence bounds.
+type rangeBounds struct {
+	// from is the inclusive start index.
+	from int
+	// to is the exclusive end index.
+	to int
+}
+
+func validateRange(n int, from int, to int, implicitTo bool) (rangeBounds, error) {
 	if from < 0 {
 		from = n + from
 	}
@@ -1824,21 +1841,21 @@ func validateRange(n int, from int, to int, implicitTo bool) (int, int, error) {
 		to = n + to
 	}
 	if from < 0 {
-		return 0, 0, errors.New("index out of range")
+		return rangeBounds{from: 0, to: 0}, errors.New("index out of range")
 	}
 	if from > n {
-		return 0, 0, errors.New("index out of range")
+		return rangeBounds{from: 0, to: 0}, errors.New("index out of range")
 	}
 	if to < 0 {
-		return 0, 0, errors.New("index out of range")
+		return rangeBounds{from: 0, to: 0}, errors.New("index out of range")
 	}
 	if to > n {
-		return 0, 0, errors.New("index out of range")
+		return rangeBounds{from: 0, to: 0}, errors.New("index out of range")
 	}
 	if from > to {
-		return 0, 0, errors.New("end before start")
+		return rangeBounds{from: 0, to: 0}, errors.New("end before start")
 	}
-	return from, to, nil
+	return rangeBounds{from: from, to: to}, nil
 }
 
 // iterPath allows executing a path query on each element of na array.

@@ -211,7 +211,8 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		}
 		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
 	case lisp.ShapeArray:
-		dims, cells, err := typedArrayParts(v)
+		array, arrayErr := typedArrayParts(v)
+		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil {
 			return nil, err
 		}
@@ -401,17 +402,25 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	return out, nil
 }
 
-func typedArrayParts(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
+// arrayParts holds array dimensions and contents.
+type arrayParts struct {
+	// dims contains array dimensions.
+	dims []*lisp.LVal
+	// cells contains array elements.
+	cells []*lisp.LVal
+}
+
+func typedArrayParts(v *lisp.LVal) (arrayParts, error) {
 	var dims []*lisp.LVal
 	var cells []*lisp.LVal
 	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-		return nil, nil, errors.New("typed json: malformed array")
+		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array")
 	}
 	dims, cells = v.Cells[0].Cells, v.Cells[1].Cells
 	zero := false
 	for _, d := range dims {
 		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return nil, nil, errors.New("typed json: malformed array dimensions")
+			return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
 		}
 		zero = zero || d.Int == 0
 	}
@@ -421,15 +430,15 @@ func typedArrayParts(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
 	} else {
 		for _, d := range dims {
 			if total > math.MaxInt/d.Int {
-				return nil, nil, errors.New("typed json: malformed array dimensions")
+				return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
 			}
 			total *= d.Int
 		}
 	}
 	if total != len(cells) {
-		return nil, nil, errors.New("typed json: array contents do not match its dimensions")
+		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: array contents do not match its dimensions")
 	}
-	return dims, cells, nil
+	return arrayParts{dims: dims, cells: cells}, nil
 }
 
 // TagBuiltin returns a plain JSON value with type tags.

@@ -323,13 +323,14 @@ func debugEvalBudgeted(t fatalf, src, script, watch []byte, input fuzzwatch.Inpu
 		case res = <-ch:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
 				var ok bool
-				if res, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "debugged evaluation", describe); !ok {
+				if res, ok = fuzzwatch.AwaitStarved(t, ch, fuzzwatch.StarvedInput{Input: input, Report: report, What: "debugged evaluation", Describe: describe}); !ok {
 					return nil, false
 				}
 				received = true

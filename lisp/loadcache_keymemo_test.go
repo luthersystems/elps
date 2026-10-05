@@ -20,11 +20,11 @@ func TestLoadCacheKeyMemoAvoidsRehash(t *testing.T) {
 	resetLoadCacheKeyMemo()
 	src := []byte(strings.Repeat("(set 'x 1)\n", 1000))
 	before := loadCacheKeyDigests.Load()
-	k1 := memoLoadCacheKey("f.lisp", "f.lisp", "rid", true, append([]byte(nil), src...))
-	k2 := memoLoadCacheKey("f.lisp", "f.lisp", "rid", true, append([]byte(nil), src...))
+	k1 := memoLoadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: true, src: append([]byte(nil), src...)})
+	k2 := memoLoadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: true, src: append([]byte(nil), src...)})
 	assert.Equal(t, int64(1), loadCacheKeyDigests.Load()-before, "second load must not re-hash")
 	assert.Equal(t, k1, k2)
-	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", "rid", true, src), k1)
+	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: true, src: src}), k1)
 }
 
 // Same identity, same length, different content: never the same key.  The
@@ -34,22 +34,22 @@ func TestLoadCacheKeyMemoSameLengthDifferentContent(t *testing.T) {
 	a := []byte("(set 'x 1)")
 	b := []byte("(set 'x 2)")
 	require.Len(t, b, len(a))
-	ka := memoLoadCacheKey("f.lisp", "f.lisp", "rid", false, a)
+	ka := memoLoadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: false, src: a})
 	a[len(a)-2] = '2' // caller mutates its slice after the load
-	kb := memoLoadCacheKey("f.lisp", "f.lisp", "rid", false, b)
+	kb := memoLoadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: false, src: b})
 	assert.NotEqual(t, ka, kb)
-	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", "rid", false, b), kb)
+	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: false, src: b}), kb)
 	// Only the last byte differs: still a distinct, correct key.
 	c := bytes.Clone(b)
 	c[0] = '['
-	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", "rid", false, c),
-		memoLoadCacheKey("f.lisp", "f.lisp", "rid", false, c))
+	assert.Equal(t, loadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: false, src: c}),
+		memoLoadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: "rid", byLoc: false, src: c}))
 	// Every identity component still separates entries.
 	for _, tc := range []struct {
 		name, loc, rid string
 		byLoc          bool
 	}{{"g", "f.lisp", "rid", false}, {"f.lisp", "g", "rid", false}, {"f.lisp", "f.lisp", "r2", false}, {"f.lisp", "f.lisp", "rid", true}} {
-		assert.Equal(t, loadCacheKey(tc.name, tc.loc, tc.rid, tc.byLoc, b), memoLoadCacheKey(tc.name, tc.loc, tc.rid, tc.byLoc, b))
+		assert.Equal(t, loadCacheKey(tc.name, tc.loc, loadKeySource{readerID: tc.rid, byLoc: tc.byLoc, src: b}), memoLoadCacheKey(tc.name, tc.loc, loadKeySource{readerID: tc.rid, byLoc: tc.byLoc, src: b}))
 	}
 }
 
@@ -59,7 +59,7 @@ func BenchmarkLoadCacheKeyRepeat(b *testing.B) {
 	b.SetBytes(int64(len(src)))
 	b.ReportAllocs()
 	for range b.N {
-		memoLoadCacheKey("bench.lisp", "bench.lisp", "rid", true, src)
+		memoLoadCacheKey("bench.lisp", "bench.lisp", loadKeySource{readerID: "rid", byLoc: true, src: src})
 	}
 }
 
@@ -68,7 +68,7 @@ func BenchmarkLoadCacheKeyNoMemo(b *testing.B) {
 	b.SetBytes(int64(len(src)))
 	b.ReportAllocs()
 	for range b.N {
-		loadCacheKey("bench.lisp", "bench.lisp", "rid", true, src)
+		loadCacheKey("bench.lisp", "bench.lisp", loadKeySource{readerID: "rid", byLoc: true, src: src})
 	}
 }
 
@@ -92,7 +92,7 @@ func TestReadCachedReusesDigestAcrossEnvs(t *testing.T) {
 	load := func(src string) []*LVal {
 		env := NewEnv(nil)
 		env.Runtime.LoadCache = cache
-		exprs, err := env.readCached("f.lisp", "f.lisp", true, strings.NewReader(src), parse)
+		exprs, err := env.readCached("f.lisp", "f.lisp", cachedRead{byLoc: true, r: strings.NewReader(src)}, parse)
 		require.NoError(t, err)
 		return exprs
 	}
@@ -118,7 +118,7 @@ func TestLoadCacheKeyMemoBoundsEntryCount(t *testing.T) {
 	maxEntries := loadCacheKeyMemoMaxBytes / (len(rid) + loadCacheKeyMemoEntryOverhead)
 	for i := range maxEntries + 10 {
 		name := fmt.Sprintf("f%d.lisp", i)
-		memoLoadCacheKey(name, name, rid, true, nil)
+		memoLoadCacheKey(name, name, loadKeySource{readerID: rid, byLoc: true, src: nil})
 		if i%1024 != 0 && i < maxEntries {
 			continue
 		}
@@ -128,9 +128,9 @@ func TestLoadCacheKeyMemoBoundsEntryCount(t *testing.T) {
 	}
 	// Re-storing one identity replaces, never double-charges, its entry.
 	resetLoadCacheKeyMemo()
-	memoLoadCacheKey("a", "a", "rid", true, []byte("x"))
+	memoLoadCacheKey("a", "a", loadKeySource{readerID: "rid", byLoc: true, src: []byte("x")})
 	_, c1 := loadCacheKeyMemoUsage()
-	memoLoadCacheKey("a", "a", "rid", true, []byte("y"))
+	memoLoadCacheKey("a", "a", loadKeySource{readerID: "rid", byLoc: true, src: []byte("y")})
 	e2, c2 := loadCacheKeyMemoUsage()
 	assert.Equal(t, 1, e2)
 	assert.Equal(t, c1, c2)
@@ -149,8 +149,8 @@ func TestLoadCacheKeyMemoConcurrent(t *testing.T) {
 			for i := range 200 {
 				src := []byte(fmt.Sprintf("(set 'x %d)", (g+i)%3))
 				name := fmt.Sprintf("f%d.lisp", i%2)
-				want := loadCacheKey(name, name, "rid", false, src)
-				if got := memoLoadCacheKey(name, name, "rid", false, src); got != want {
+				want := loadCacheKey(name, name, loadKeySource{readerID: "rid", byLoc: false, src: src})
+				if got := memoLoadCacheKey(name, name, loadKeySource{readerID: "rid", byLoc: false, src: src}); got != want {
 					t.Errorf("key mismatch for %q", src)
 					return
 				}
@@ -167,8 +167,8 @@ func TestLoadCacheKeyMemoSkipsOversizedSource(t *testing.T) {
 	t.Cleanup(resetLoadCacheKeyMemo)
 	big := make([]byte, loadCacheKeyMemoMaxSource+1)
 	before := loadCacheKeyDigests.Load()
-	k1 := memoLoadCacheKey("big", "big", "rid", true, big)
-	k2 := memoLoadCacheKey("big", "big", "rid", true, big)
+	k1 := memoLoadCacheKey("big", "big", loadKeySource{readerID: "rid", byLoc: true, src: big})
+	k2 := memoLoadCacheKey("big", "big", loadKeySource{readerID: "rid", byLoc: true, src: big})
 	assert.Equal(t, k1, k2)
 	assert.Equal(t, int64(2), loadCacheKeyDigests.Load()-before, "oversized source must not be memoised")
 	entries, charged := loadCacheKeyMemoUsage()
@@ -176,7 +176,7 @@ func TestLoadCacheKeyMemoSkipsOversizedSource(t *testing.T) {
 	assert.Equal(t, 0, charged)
 	// Exactly at the limit is memoised.
 	atLimit := make([]byte, loadCacheKeyMemoMaxSource)
-	memoLoadCacheKey("edge", "edge", "rid", true, atLimit)
+	memoLoadCacheKey("edge", "edge", loadKeySource{readerID: "rid", byLoc: true, src: atLimit})
 	entries, _ = loadCacheKeyMemoUsage()
 	assert.Equal(t, 1, entries)
 }
@@ -190,7 +190,7 @@ func TestLoadCacheKeyMemoTotalCapClears(t *testing.T) {
 	perEntry := loadCacheKeyMemoMaxBytes / loadCacheKeyMemoMaxSource // entries that fit, minus overhead
 	for i := range perEntry + 2 {
 		name := fmt.Sprintf("s%d", i)
-		memoLoadCacheKey(name, name, "rid", true, src)
+		memoLoadCacheKey(name, name, loadKeySource{readerID: "rid", byLoc: true, src: src})
 		entries, charged := loadCacheKeyMemoUsage()
 		require.LessOrEqual(t, charged, loadCacheKeyMemoMaxBytes)
 		require.GreaterOrEqual(t, entries, 1)

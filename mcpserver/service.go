@@ -123,8 +123,10 @@ func newService(cfg serviceConfig) *service {
 	}
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) hoverTool(ctx context.Context, _ *mcp.CallToolRequest, in FileQueryInput) (*mcp.CallToolResult, HoverResponse, error) {
-	doc, state, err := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	loaded, loadedErr := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	doc, state, err := loaded.doc, loaded.state, loadedErr
 	if err != nil {
 		return nil, HoverResponse{}, err
 	}
@@ -159,8 +161,10 @@ func (s *service) hoverTool(ctx context.Context, _ *mcp.CallToolRequest, in File
 	return nil, HoverResponse{Found: false}, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) definitionTool(ctx context.Context, _ *mcp.CallToolRequest, in FileQueryInput) (*mcp.CallToolResult, DefinitionResponse, error) {
-	doc, state, err := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	loaded, loadedErr := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	doc, state, err := loaded.doc, loaded.state, loadedErr
 	if err != nil {
 		return nil, DefinitionResponse{}, err
 	}
@@ -189,8 +193,10 @@ func (s *service) definitionTool(ctx context.Context, _ *mcp.CallToolRequest, in
 	return nil, DefinitionResponse{Found: true, Location: loc}, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) referencesTool(ctx context.Context, _ *mcp.CallToolRequest, in ReferencesInput) (*mcp.CallToolResult, ReferencesResponse, error) {
-	doc, state, err := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	loaded, loadedErr := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	doc, state, err := loaded.doc, loaded.state, loadedErr
 	if err != nil {
 		return nil, ReferencesResponse{}, err
 	}
@@ -234,8 +240,10 @@ func (s *service) referencesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolRequest, in DocumentQueryInput) (*mcp.CallToolResult, DocumentSymbolsResponse, error) {
-	doc, _, err := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	loaded, loadedErr := s.loadDocument(in.Path, in.Content, in.WorkspaceRoot)
+	doc, _, err := loaded.doc, loaded.state, loadedErr
 	if err != nil {
 		return nil, DocumentSymbolsResponse{}, err
 	}
@@ -278,6 +286,7 @@ func (s *service) documentSymbolsTool(ctx context.Context, _ *mcp.CallToolReques
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolRequest, in WorkspaceSymbolsInput) (*mcp.CallToolResult, WorkspaceSymbolsResponse, error) {
 	start := time.Now()
 	root, err := s.resolveWorkspaceRoot(in.WorkspaceRoot, true)
@@ -331,6 +340,7 @@ func (s *service) workspaceSymbolsTool(ctx context.Context, _ *mcp.CallToolReque
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, in DiagnosticsInput) (*mcp.CallToolResult, DiagnosticsResponse, error) {
 	start := time.Now()
 	// Refuse an unknown severity before doing any work: filtering on one used
@@ -413,6 +423,7 @@ func (s *service) diagnosticsTool(ctx context.Context, _ *mcp.CallToolRequest, i
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, PerfIssuesResponse, error) {
 	start := time.Now()
 	result, err := s.runPerf(in)
@@ -438,6 +449,7 @@ func (s *service) perfIssuesTool(ctx context.Context, _ *mcp.CallToolRequest, in
 	return nil, out, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) callGraphTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, CallGraphResponse, error) {
 	start := time.Now()
 	result, err := s.runPerf(in)
@@ -453,6 +465,7 @@ func (s *service) callGraphTool(ctx context.Context, _ *mcp.CallToolRequest, in 
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) hotspotsTool(ctx context.Context, _ *mcp.CallToolRequest, in PerfSelectionInput) (*mcp.CallToolResult, HotspotsResponse, error) {
 	start := time.Now()
 	if in.Top <= 0 {
@@ -572,7 +585,8 @@ func (s *service) selectPerfFiles(in PerfSelectionInput) ([]string, error) {
 }
 
 func (s *service) collectFileDiagnostics(path string, content *string, workspaceRoot *string) (FileDiagnostics, error) {
-	doc, _, err := s.loadDocument(path, content, workspaceRoot)
+	loaded, loadedErr := s.loadDocument(path, content, workspaceRoot)
+	doc, _, err := loaded.doc, loaded.state, loadedErr
 	if err != nil {
 		return FileDiagnostics{}, err
 	}
@@ -592,31 +606,40 @@ func (s *service) collectFileDiagnostics(path string, content *string, workspace
 	return FileDiagnostics{Path: doc.Path, Diagnostics: diags}, nil
 }
 
-func (s *service) loadDocument(path string, content *string, workspaceRoot *string) (*document, *workspaceState, error) {
+// loadedDocument holds a parsed document and its workspace.
+type loadedDocument struct {
+	// doc contains the parsed document.
+	doc *document
+	// state contains the workspace index.
+	state *workspaceState
+}
+
+func (s *service) loadDocument(path string, content *string, workspaceRoot *string) (loadedDocument, error) {
 	if path == "" && content == nil {
-		return nil, nil, errors.New("path is required")
+		return loadedDocument{doc: nil, state: nil}, errors.New("path is required")
 	}
 	if path == "" {
 		path = "<stdin>"
 	}
 	root, err := s.resolveWorkspaceRoot(workspaceRoot, false)
 	if err != nil {
-		return nil, nil, err
+		return loadedDocument{doc: nil, state: nil}, err
 	}
 	resolvedPath, err := s.resolvePath(path, root)
 	if err != nil {
-		return nil, nil, err
+		return loadedDocument{doc: nil, state: nil}, err
 	}
-	_, contentString, err := s.readSource(resolvedPath, content)
+	source, sourceErr := s.readSource(resolvedPath, content)
+	_, contentString, err := source.bytes, source.text, sourceErr
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return nil, nil, newToolErr("file_not_found", "file not found: "+resolvedPath, resolvedPath)
+			return loadedDocument{doc: nil, state: nil}, newToolErr("file_not_found", "file not found: "+resolvedPath, resolvedPath)
 		}
-		return nil, nil, err
+		return loadedDocument{doc: nil, state: nil}, err
 	}
 	state, err := s.workspace(root)
 	if err != nil {
-		return nil, nil, err
+		return loadedDocument{doc: nil, state: nil}, err
 	}
 
 	scanner := token.NewScanner(resolvedPath, strings.NewReader(contentString))
@@ -629,12 +652,12 @@ func (s *service) loadDocument(path string, content *string, workspaceRoot *stri
 		result = analysis.Analyze(parsed.Exprs, cfg)
 	}
 
-	return &document{
+	return loadedDocument{doc: &document{
 		Path:        resolvedPath,
 		Content:     contentString,
 		Analysis:    result,
 		ParseErrors: parsed.Errors,
-	}, state, nil
+	}, state: state}, nil
 }
 
 func (s *service) workspace(root string) (*workspaceState, error) {
@@ -755,15 +778,23 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 	return state, nil
 }
 
-func (s *service) readSource(path string, content *string) ([]byte, string, error) {
+// sourceContent holds source bytes and their text representation.
+type sourceContent struct {
+	// bytes contains source bytes.
+	bytes []byte
+	// text preserves the source text.
+	text string
+}
+
+func (s *service) readSource(path string, content *string) (sourceContent, error) {
 	if content != nil {
-		return []byte(*content), *content, nil
+		return sourceContent{bytes: []byte(*content), text: *content}, nil
 	}
 	source, err := os.ReadFile(path) //nolint:gosec // tool reads user-selected paths
 	if err != nil {
-		return nil, "", err
+		return sourceContent{bytes: nil, text: ""}, err
 	}
-	return source, string(source), nil
+	return sourceContent{bytes: source, text: string(source)}, nil
 }
 
 func (s *service) resolveWorkspaceRoot(root *string, require bool) (string, error) {
@@ -1150,15 +1181,23 @@ func getWorkspaceRefs(state *workspaceState, key string, excludeFile string) []a
 	return filtered
 }
 
-func splitPackageQualified(prefix string) (string, string, bool) {
+// qualifiedParts holds the package and name of a qualified symbol.
+type qualifiedParts struct {
+	// pkg is the package qualifier.
+	pkg string
+	// name is the unqualified name.
+	name string
+}
+
+func splitPackageQualified(prefix string) (qualifiedParts, bool) {
 	if strings.HasPrefix(prefix, ":") {
-		return "", "", false
+		return qualifiedParts{pkg: "", name: ""}, false
 	}
 	idx := strings.LastIndex(prefix, ":")
 	if idx < 0 {
-		return "", "", false
+		return qualifiedParts{pkg: "", name: ""}, false
 	}
-	return prefix[:idx], prefix[idx+1:], true
+	return qualifiedParts{pkg: prefix[:idx], name: prefix[idx+1:]}, true
 }
 
 func symbolAtPosition(doc *document, line, character int) (*analysis.Symbol, *analysis.Reference) {
@@ -1213,7 +1252,8 @@ func wordAtPosition(content string, line, col int) string {
 }
 
 func qualifiedSymbolHover(state *workspaceState, word string) (string, *analysis.ExternalSymbol) {
-	pkgName, symName, ok := splitPackageQualified(word)
+	parts, partsErr := splitPackageQualified(word)
+	pkgName, symName, ok := parts.pkg, parts.name, partsErr
 	if !ok || symName == "" || state == nil || state.cfg == nil || state.cfg.PackageExports == nil {
 		return "", nil
 	}
@@ -1226,7 +1266,8 @@ func qualifiedSymbolHover(state *workspaceState, word string) (string, *analysis
 }
 
 func qualifiedSymbolDefinition(state *workspaceState, word string) *Location {
-	pkgName, symName, ok := splitPackageQualified(word)
+	parts, partsErr := splitPackageQualified(word)
+	pkgName, symName, ok := parts.pkg, parts.name, partsErr
 	if !ok || symName == "" || state == nil || state.cfg == nil || state.cfg.PackageExports == nil {
 		return nil
 	}
@@ -1432,8 +1473,12 @@ func builtinLocationForSymbolWord(sym *analysis.Symbol, word string) *Location {
 }
 
 func builtinPackageForWord(word string) string {
-	if pkgName, _, ok := splitPackageQualified(word); ok && pkgName != "" {
-		return pkgName
+	{
+		parts, partsErr := splitPackageQualified(word)
+		pkgName, _, ok := parts.pkg, parts.name, partsErr
+		if ok && pkgName != "" {
+			return pkgName
+		}
 	}
 	return "lisp"
 }
@@ -1714,12 +1759,14 @@ func paginateSlice[T any](items []T, offset, limit int) []T {
 	return items
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) docTool(ctx context.Context, _ *mcp.CallToolRequest, in DocInput) (*mcp.CallToolResult, DocResponse, error) {
 	start := time.Now()
 	if in.Query == "" && len(in.Queries) == 0 {
 		return nil, DocResponse{}, newToolErr("invalid_input", "query or queries is required", "")
 	}
-	env, release, err := s.docEnv(ctx)
+	request, requestErr := s.docEnv(ctx)
+	env, release, err := request.env, request.release, requestErr
 	if err != nil {
 		return nil, DocResponse{}, err
 	}
@@ -1786,49 +1833,58 @@ func docSymbolFromLib(sd libhelp.SymbolDoc) DocSymbol {
 // return no release handle.
 func noopRelease() {}
 
+// requestEnv holds a request environment and its release function.
+type requestEnv struct {
+	// env is the request environment.
+	env *lisp.LEnv
+	// release releases the environment.
+	release func()
+}
+
 // callEnvFactory invokes the embedder's request env factory and normalizes the
 // release handle so callers can always `defer release()`. A factory that
 // returns an error is assumed to have cleaned up after itself, per the
 // RequestEnvFactory contract.
-func (s *service) callEnvFactory(ctx context.Context) (*lisp.LEnv, func(), error) {
+func (s *service) callEnvFactory(ctx context.Context) (requestEnv, error) {
 	env, release, err := s.envFactory(ctx)
 	if err != nil {
-		return nil, noopRelease, err
+		return requestEnv{env: nil, release: noopRelease}, err
 	}
 	if release == nil {
 		release = noopRelease
 	}
-	return env, release, nil
+	return requestEnv{env: env, release: release}, nil
 }
 
 // docEnv resolves the environment backing the read-only doc tool. It returns a
 // release function that the caller must invoke when it is done with the
 // environment; for shared environments the release is a no-op.
-func (s *service) docEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
+func (s *service) docEnv(ctx context.Context) (requestEnv, error) {
 	// A doc-only shared env wins: doc is a symbol lookup that needs no
 	// isolation, so an embedder can opt out of per-request construction here
 	// without redirecting the diagnostics path the way WithEnv does.
 	if s.sharedDocEnv != nil {
-		return s.sharedDocEnv, noopRelease, nil
+		return requestEnv{env: s.sharedDocEnv, release: noopRelease}, nil
 	}
 	if s.env != nil {
-		return s.env, noopRelease, nil
+		return requestEnv{env: s.env, release: noopRelease}, nil
 	}
 	if s.envFactory != nil {
 		return s.callEnvFactory(ctx)
 	}
 	env, err := lisplib.NewDocEnv()
 	if err != nil {
-		return nil, noopRelease, err
+		return requestEnv{env: nil, release: noopRelease}, err
 	}
 	if s.registry != nil {
 		for _, name := range s.registry.PackageNames() {
 			env.Runtime.Registry.AddPackage(s.registry.Package(name))
 		}
 	}
-	return env, noopRelease, nil
+	return requestEnv{env: env, release: noopRelease}, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestInput) (*mcp.CallToolResult, TestResponse, error) {
 	start := time.Now()
 	if in.Path == "" && in.Content == nil {
@@ -1859,7 +1915,8 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 		}
 	}
 
-	env, release, testErr := s.newTestEnv(ctx)
+	request, requestErr := s.newTestEnv(ctx)
+	env, release, testErr := request.env, request.release, requestErr
 	if testErr != nil {
 		return nil, TestResponse{}, testErr
 	}
@@ -1944,7 +2001,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 // newTestEnv builds an isolated environment for the eval and test tools. It
 // returns a release function that the caller must invoke once it is done with
 // the environment.
-func (s *service) newTestEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
+func (s *service) newTestEnv(ctx context.Context) (requestEnv, error) {
 	if s.envFactory != nil {
 		return s.callEnvFactory(ctx)
 	}
@@ -1953,13 +2010,13 @@ func (s *service) newTestEnv(ctx context.Context) (*lisp.LEnv, func(), error) {
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	rc := lisp.InitializeUserEnv(env)
 	if lisp.GoError(rc) != nil {
-		return nil, noopRelease, fmt.Errorf("env init: %w", lisp.GoError(rc))
+		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("env init: %w", lisp.GoError(rc))
 	}
 	rc = lisplib.LoadLibrary(env)
 	if lisp.GoError(rc) != nil {
-		return nil, noopRelease, fmt.Errorf("load library: %w", lisp.GoError(rc))
+		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("load library: %w", lisp.GoError(rc))
 	}
-	return env, noopRelease, nil
+	return requestEnv{env: env, release: noopRelease}, nil
 }
 
 // evalOutput shares rendering work and bytes across the entire request, even
@@ -2002,6 +2059,7 @@ func (o *evalOutput) errorRenderer() *lisp.DiagnosticRenderer {
 	return o.renderer
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalInput) (*mcp.CallToolResult, EvalResponse, error) {
 	start := time.Now()
 	if in.Expression == "" && len(in.Expressions) == 0 {
@@ -2015,7 +2073,8 @@ func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalI
 		expressions = []string{in.Expression}
 	}
 	for _, expression := range expressions {
-		env, release, err := s.newTestEnv(ctx)
+		request, requestErr := s.newTestEnv(ctx)
+		env, release, err := request.env, request.release, requestErr
 		if err != nil {
 			return nil, EvalResponse{}, err
 		}
@@ -2036,7 +2095,7 @@ func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalI
 			output.text(strings.Repeat(" ", 32))
 			collect = !output.renderer.Exhausted()
 		}
-		result := s.evalSingle(ctx, env, expression, output, !batch)
+		result := s.evalSingle(ctx, env, singleEval{expression: expression, output: output, allResults: !batch})
 		release()
 		if batch {
 			if collect {
@@ -2062,7 +2121,19 @@ func (s *service) evalTool(ctx context.Context, _ *mcp.CallToolRequest, in EvalI
 	return nil, response, nil
 }
 
-func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression string, output *evalOutput, allResults bool) EvalResponse {
+// singleEval holds the expression and evaluation output settings.
+type singleEval struct {
+	// expression is the expression to evaluate.
+	expression string
+	// output shares output rendering state.
+	output *evalOutput
+	// allResults includes all evaluated results.
+	allResults bool
+}
+
+func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEval) EvalResponse {
+	expression, output, allResults := opts.expression, opts.output, opts.allResults
+
 	response := EvalResponse{}
 	fail := func(v *lisp.LVal) { response.Error = output.errorRenderer().Render(v) }
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
@@ -2105,6 +2176,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, expression str
 	return response
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) helpTool(_ context.Context, _ *mcp.CallToolRequest, _ HelpInput) (*mcp.CallToolResult, HelpResponse, error) {
 	return nil, HelpResponse{Content: helpContent}, nil
 }
@@ -2281,6 +2353,7 @@ func firstDocSentence(doc string) string {
 	return strings.ReplaceAll(strings.TrimSpace(doc), "|", "\\|")
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in FormatInput) (*mcp.CallToolResult, FormatResponse, error) {
 	start := time.Now()
 	if in.Path == "" && in.Content == nil {
@@ -2332,6 +2405,7 @@ func (s *service) formatTool(_ context.Context, _ *mcp.CallToolRequest, in Forma
 	return nil, resp, nil
 }
 
+//nolint:revive // MCP SDK handler signature requires three results
 func (s *service) lintTool(_ context.Context, _ *mcp.CallToolRequest, in LintInput) (*mcp.CallToolResult, LintResponse, error) {
 	start := time.Now()
 	if in.Path == "" && in.Content == nil {

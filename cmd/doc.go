@@ -126,7 +126,7 @@ Common packages to explore:
 				return
 			}
 			if jsonOutput {
-				if err := docJSON(makeEnv, sourceFile, pkgFlag, listPackages, args); err != nil {
+				if err := docJSON(makeEnv, docQuery{sourceFile: sourceFile, pkgFlag: pkgFlag, listPackages: listPackages}, args); err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					os.Exit(1)
 				}
@@ -175,7 +175,19 @@ Common packages to explore:
 	return cmd
 }
 
-func docJSON(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag, listPackages bool, args []string) error {
+// docQuery holds the source file and documentation flags.
+type docQuery struct {
+	// sourceFile is the documentation source path.
+	sourceFile string
+	// pkgFlag selects package documentation.
+	pkgFlag bool
+	// listPackages selects the package list.
+	listPackages bool
+}
+
+func docJSON(makeEnv func() (*lisp.LEnv, error), opts docQuery, args []string) error {
+	sourceFile, pkgFlag, listPackages := opts.sourceFile, opts.pkgFlag, opts.listPackages
+
 	env, err := makeEnv()
 	if err != nil {
 		return err

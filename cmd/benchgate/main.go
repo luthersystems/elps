@@ -10,22 +10,30 @@ import (
 	"time"
 )
 
+// envFloat holds a policy number and its original text.
+type envFloat struct {
+	// value is the parsed policy number.
+	value float64
+	// text preserves the source text.
+	text string
+}
+
 // envDefaultFloat reads a policy number from the environment, falling back to
 // def. Both repositories already declare these names as workflow-level `env:`
 // entries next to the prose explaining how each number was measured, so
 // honouring them is what makes this a migration rather than a policy change.
-func envDefaultFloat(name string, def float64) (float64, string, error) {
+func envDefaultFloat(name string, def float64) (envFloat, error) {
 	raw, ok := os.LookupEnv(name)
 	if !ok || raw == "" {
-		return def, trimFloat(def), nil
+		return envFloat{value: def, text: trimFloat(def)}, nil
 	}
 	v, err := strconv.ParseFloat(raw, 64)
 	if err != nil {
-		return 0, "", fmt.Errorf("%s=%q is not a number", name, raw)
+		return envFloat{value: 0, text: ""}, fmt.Errorf("%s=%q is not a number", name, raw)
 	}
 	// The raw string, not the parsed float, is what the report prints: a
 	// workflow that says 15 must not have its gate reported as 15.000000.
-	return v, raw, nil
+	return envFloat{value: v, text: raw}, nil
 }
 
 func trimFloat(v float64) string {
@@ -133,10 +141,14 @@ func run(args []string, stdout, stderr io.Writer) int {
 	fs.SetOutput(stderr)
 	fs.Usage = func() { pr(stderr, usage) }
 
-	thrDef, thrStr, err1 := envDefaultFloat("BENCH_REGRESSION_THRESHOLD_PCT", 15)
-	allocDef, allocStr, err2 := envDefaultFloat("BENCH_ALLOC_THRESHOLD_PCT", 5)
-	alphaDef, _, err3 := envDefaultFloat("BENCH_ALPHA", 0.05)
-	ceilDef, ceilStr, err4 := envDefaultFloat("BENCH_VARIANCE_CEILING_PCT", defaultVarianceCeiling)
+	policy2, policyErr := envDefaultFloat("BENCH_REGRESSION_THRESHOLD_PCT", 15)
+	thrDef, thrStr, err1 := policy2.value, policy2.text, policyErr
+	policy3, policyErr2 := envDefaultFloat("BENCH_ALLOC_THRESHOLD_PCT", 5)
+	allocDef, allocStr, err2 := policy3.value, policy3.text, policyErr2
+	policy4, policyErr3 := envDefaultFloat("BENCH_ALPHA", 0.05)
+	alphaDef, _, err3 := policy4.value, policy4.text, policyErr3
+	policy5, policyErr4 := envDefaultFloat("BENCH_VARIANCE_CEILING_PCT", defaultVarianceCeiling)
+	ceilDef, ceilStr, err4 := policy5.value, policy5.text, policyErr4
 	procsDef := 0
 	var err5 error
 	if v := os.Getenv("BENCH_GOMAXPROCS"); v != "" {
@@ -237,7 +249,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if !waiverExplicit {
 		waiverPath = *waiverDefault
 	}
-	ws, rc := loadWaivers(waiverPath, waiverExplicit, today, procsRule{n: *gomaxprocs}, stdout, stderr)
+	ws, rc := loadWaivers(waiverPath, waiverLoad{explicit: waiverExplicit, today: today, procs: procsRule{n: *gomaxprocs}, stdout: stdout, stderr: stderr})
 	if rc != 0 {
 		return rc
 	}
@@ -259,7 +271,8 @@ func run(args []string, stdout, stderr io.Writer) int {
 	if rawMode {
 		var unpaired int
 		var err error
-		c, unpaired, err = compareArms(*base, *head, *alpha, stderr)
+		compared, comparedErr := compareArms(*base, *head, *alpha, stderr)
+		c, unpaired, err = compared.comparison, compared.unpaired, comparedErr
 		if err != nil {
 			pf(stderr, "benchgate: %v\n", err)
 			return 2
@@ -295,11 +308,27 @@ func run(args []string, stdout, stderr io.Writer) int {
 	return v.report(stdout, stderr, p, inputDesc)
 }
 
+// waiverLoad holds waiver policy and output writers.
+type waiverLoad struct {
+	// explicit reports an explicit waiver path.
+	explicit bool
+	// today is the waiver validation date.
+	today string
+	// procs controls benchmark suffix handling.
+	procs procsRule
+	// stdout receives command output.
+	stdout io.Writer
+	// stderr receives diagnostics.
+	stderr io.Writer
+}
+
 // loadWaivers resolves the three-state waiver path. An EXPLICIT path pointing
 // at nothing is an error -- you asked for a specific file and it is not there.
 // The default file being absent is not: the gate still works, it just has no
 // waivers, which is the strict direction.
-func loadWaivers(path string, explicit bool, today string, procs procsRule, stdout, stderr io.Writer) (*waiverSet, int) {
+func loadWaivers(path string, opts waiverLoad) (*waiverSet, int) {
+	explicit, today, procs, stdout, stderr := opts.explicit, opts.today, opts.procs, opts.stdout, opts.stderr
+
 	if path == "" {
 		// No default is baked into the binary: the two consuming repositories
 		// keep their waiver lists in different places, and a tool that guessed

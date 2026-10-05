@@ -72,6 +72,14 @@ import (
 // selectors over 512 bytes are still skipped, and the cost is pinned by
 // TestNormalizePathsIsNotExponential, which names the defect if it returns.
 
+// selectorScan holds a selector step and its consumed byte count.
+type selectorScan struct {
+	// path is the parsed selector step.
+	path Path
+	// consumed counts consumed selector bytes.
+	consumed int
+}
+
 // scanStep reads the ONE step at the head of s, which the caller has already
 // trimmed, and returns the number of bytes it consumed.
 //
@@ -83,9 +91,9 @@ import (
 //
 // The dispatch is on a single byte and there is no fallback: a step begins
 // with "[" or ".", and nothing else can begin one.
-func scanStep(s string) (int, Path, error) {
+func scanStep(s string) (selectorScan, error) {
 	if s == "" {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	switch s[0] {
 	case '[':
@@ -93,7 +101,7 @@ func scanStep(s string) (int, Path, error) {
 	case '.':
 		return scanDotKey(s)
 	}
-	return 0, nil, nil
+	return selectorScan{consumed: 0, path: nil}, nil
 }
 
 // scanBracketStep reads the step in a bracket: a quoted key or a subscript.
@@ -105,7 +113,7 @@ func scanStep(s string) (int, Path, error) {
 // its closing "]" where a key has a quote, and the key needs its opening
 // quote -- so the dispatch is an optimisation over trying both, not the thing
 // that keeps them apart.
-func scanBracketStep(s string) (int, Path, error) {
+func scanBracketStep(s string) (selectorScan, error) {
 	if i := skipBlank(s, 1); i < len(s) && s[i] == '"' {
 		return scanQuotedKey(s)
 	}
@@ -130,9 +138,9 @@ func scanBracketStep(s string) (int, Path, error) {
 // digits are read here and converted only once the whole form has been
 // recognised, so "[99999999999999999999" -- unterminated -- stalls as a
 // parse failure rather than reporting an overflow it never got to.
-func scanSubscript(s string) (int, Path, error) {
+func scanSubscript(s string) (selectorScan, error) {
 	if s == "" || s[0] != '[' {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	i := skipBlank(s, 1)
 	fromText, i := scanIntText(s, i)
@@ -146,7 +154,7 @@ func scanSubscript(s string) (int, Path, error) {
 		i = skipBlank(s, i)
 	}
 	if i >= len(s) || s[i] != ']' {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	n := skipOptionMark(s, i+1)
 
@@ -156,15 +164,15 @@ func scanSubscript(s string) (int, Path, error) {
 		if err != nil {
 			// Reached by an index too large for an int, which the digit
 			// scan takes happily: "[99999999999999999999]".
-			return 0, nil, fmt.Errorf("fail to parse array index: %s", fromText)
+			return selectorScan{consumed: 0, path: nil}, fmt.Errorf("fail to parse array index: %s", fromText)
 		}
 		from = v
 	}
 	if !isRange {
 		if fromText == "" {
-			return n, Iter(), nil
+			return selectorScan{consumed: n, path: Iter()}, nil
 		}
-		return n, Index(from), nil
+		return selectorScan{consumed: n, path: Index(from)}, nil
 	}
 	// to is meaningless when implicitTo is set: validateRange overwrites it
 	// with the document length. Zero, not the from, so that a mis-set flag
@@ -174,11 +182,11 @@ func scanSubscript(s string) (int, Path, error) {
 	if toText != "" {
 		v, err := strconv.Atoi(toText)
 		if err != nil {
-			return 0, nil, fmt.Errorf("fail to parse second array index: %s", toText)
+			return selectorScan{consumed: 0, path: nil}, fmt.Errorf("fail to parse second array index: %s", toText)
 		}
 		to = v
 	}
-	return n, Range(from, to, toText == ""), nil
+	return selectorScan{consumed: n, path: Range(from, to, toText == "")}, nil
 }
 
 // scanQuotedKey reads a map key given as a quoted string inside brackets,
@@ -190,24 +198,24 @@ func scanSubscript(s string) (int, Path, error) {
 // Unquote runs only after the closing "]" has been found, so an unterminated
 // bracket stalls with the parser's own message rather than with a decoding
 // error about text that was never a key.
-func scanQuotedKey(s string) (int, Path, error) {
+func scanQuotedKey(s string) (selectorScan, error) {
 	if s == "" || s[0] != '[' {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	open := skipBlank(s, 1)
 	end := scanStringLiteral(s, open)
 	if end < 0 {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	i := skipBlank(s, end)
 	if i >= len(s) || s[i] != ']' {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	key, err := strconv.Unquote(s[open:end])
 	if err != nil {
-		return 0, nil, err
+		return selectorScan{consumed: 0, path: nil}, err
 	}
-	return skipOptionMark(s, i+1), Dot(key), nil
+	return selectorScan{consumed: skipOptionMark(s, i+1), path: Dot(key)}, nil
 }
 
 // scanStringLiteral returns the index just past the closing quote of the
@@ -249,19 +257,19 @@ func scanStringLiteral(s string, i int) int {
 // looser rule would swallow the leading dot of a following selector. Such
 // keys are reachable through the quoted form, which is what keySpellingHint
 // tells a caller who tried one.
-func scanDotKey(s string) (int, Path, error) {
+func scanDotKey(s string) (selectorScan, error) {
 	if s == "" || s[0] != '.' {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	i := skipBlank(s, 1)
 	if i >= len(s) || !isKeyStartByte(s[i]) {
-		return 0, nil, nil
+		return selectorScan{consumed: 0, path: nil}, nil
 	}
 	j := i + 1
 	for j < len(s) && isKeyByte(s[j]) {
 		j++
 	}
-	return skipOptionMark(s, j), Dot(s[i:j]), nil
+	return selectorScan{consumed: skipOptionMark(s, j), path: Dot(s[i:j])}, nil
 }
 
 // isKeyStartByte and isKeyByte spell [A-Za-z_] and [A-Za-z_0-9].
@@ -460,7 +468,8 @@ func selectorPaths(selector string) ([]Path, error) {
 		if rest == "" {
 			return paths, nil
 		}
-		n, path, err := scanStep(rest)
+		scanned, scannedErr := scanStep(rest)
+		n, path, err := scanned.consumed, scanned.path, scannedErr
 		if err != nil {
 			return nil, err
 		}

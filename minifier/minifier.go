@@ -153,7 +153,8 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 		}
 	}
 	preservePackageSurfaceSymbols(files, cfg, protected)
-	assignments, assignmentKeys, symMap := buildAssignments(files, cfg, protected)
+	assignments2 := buildAssignments(files, cfg, protected)
+	assignments, assignmentKeys, symMap := assignments2.symbols, assignments2.globals, assignments2.symbolMap
 	for i := range files {
 		applyAssignments(&files[i], assignments, assignmentKeys)
 	}
@@ -174,6 +175,8 @@ func Minify(inputs []InputFile, cfg *Config) (*Result, error) {
 }
 
 // MinifySource is a convenience wrapper for a single source unit.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func MinifySource(source []byte, filename string, cfg *Config) ([]byte, SymbolMap, error) {
 	result, err := Minify([]InputFile{{Path: filename, Source: source}}, cfg)
 	if err != nil {
@@ -284,7 +287,8 @@ func scanInputSymbols(files []parsedFile, cfg *Config) (map[string]fileSymbols, 
 	perFile := make(map[string]fileSymbols, len(files))
 	pkgExports := make(map[string][]analysis.ExternalSymbol)
 	for _, file := range files {
-		globals, exports, packages := scanProgramSymbols(file.exprs, cfg)
+		symbols := scanProgramSymbols(file.exprs, cfg)
+		globals, exports, packages := symbols.globals, symbols.exports, symbols.packages
 		perFile[file.path] = fileSymbols{globals: globals, packages: packages}
 		for pkg, syms := range exports {
 			pkgExports[pkg] = append(pkgExports[pkg], syms...)
@@ -293,7 +297,17 @@ func scanInputSymbols(files []parsedFile, cfg *Config) (map[string]fileSymbols, 
 	return perFile, pkgExports
 }
 
-func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSymbol, map[string][]analysis.ExternalSymbol, map[string]bool) {
+// programSymbols holds global symbols, exports and package names.
+type programSymbols struct {
+	// globals contains global symbol bindings.
+	globals []analysis.ExternalSymbol
+	// exports groups exported symbols by package.
+	exports map[string][]analysis.ExternalSymbol
+	// packages records package names.
+	packages map[string]bool
+}
+
+func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) programSymbols {
 	exprs = astutil.PackageForms(exprs)
 	defs := make(map[string]analysis.ExternalSymbol)
 	exported := make(map[string]map[string]bool)
@@ -346,7 +360,7 @@ func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSym
 		return false // only top-level forms declare program symbols
 	}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, visit)
+		codewalk.Syntax(expr, codewalk.SyntaxContext{Parent: nil, Depth: 0}, visit)
 	}
 
 	globals := make([]analysis.ExternalSymbol, 0, len(defs))
@@ -358,7 +372,7 @@ func scanProgramSymbols(exprs []*lisp.LVal, cfg *Config) ([]analysis.ExternalSym
 			pkgExports[pkg] = append(pkgExports[pkg], sym)
 		}
 	}
-	return globals, pkgExports, packages
+	return programSymbols{globals: globals, exports: pkgExports, packages: packages}
 }
 
 func topLevelDef(expr *lisp.LVal, kind analysis.SymbolKind, pkg string) *analysis.ExternalSymbol {
@@ -451,7 +465,17 @@ func setSymbolNode(arg *lisp.LVal) *lisp.LVal {
 	return nil
 }
 
-func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSet) (map[*analysis.Symbol]string, map[string]string, SymbolMap) {
+// nameAssignments holds symbol replacements and their output map.
+type nameAssignments struct {
+	// symbols maps definitions to replacement names.
+	symbols map[*analysis.Symbol]string
+	// globals maps package bindings to replacement names.
+	globals map[string]string
+	// symbolMap records output symbol mappings.
+	symbolMap SymbolMap
+}
+
+func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSet) nameAssignments {
 	type symbolRecord struct {
 		sym *analysis.Symbol
 	}
@@ -558,12 +582,12 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		excluded = append(excluded, SymbolExclusion{Original: name, Reason: reason})
 	}
 	sort.Slice(excluded, func(i, j int) bool { return excluded[i].Original < excluded[j].Original })
-	return assignments, assignmentKeys, SymbolMap{
+	return nameAssignments{symbols: assignments, globals: assignmentKeys, symbolMap: SymbolMap{
 		Excluded:           excluded,
 		Entries:            entries,
 		MinifiedToOriginal: minToOrig,
 		OriginalToMinified: origToMin,
-	}
+	}}
 }
 
 func packageBindingKey(sym *analysis.Symbol) string {
@@ -878,9 +902,13 @@ func collectQuotedSymbols(node *lisp.LVal, quoted bool, protected *preservationS
 	if node.Type == lisp.LSymbol && quoted {
 		protected.names[node.Str] = true
 		protected.quoted[node.Str] = true
-		if _, name, ok := splitQualifiedSymbol(node.Str); ok {
-			protected.names[name] = true
-			protected.quoted[name] = true
+		{
+			parts, partsErr := splitQualifiedSymbol(node.Str)
+			_, name, ok := parts.pkg, parts.name, partsErr
+			if ok {
+				protected.names[name] = true
+				protected.quoted[name] = true
+			}
 		}
 	}
 	head := astutil.HeadSymbol(node)
@@ -898,8 +926,12 @@ func recordQualifiedReferences(node *lisp.LVal, refs map[string]bool) {
 	}
 	switch node.Type {
 	case lisp.LSymbol:
-		if pkg, name, ok := splitQualifiedSymbol(node.Str); ok {
-			refs[pkg+"/"+name] = true
+		{
+			parts, partsErr := splitQualifiedSymbol(node.Str)
+			pkg, name, ok := parts.pkg, parts.name, partsErr
+			if ok {
+				refs[pkg+"/"+name] = true
+			}
 		}
 	case lisp.LSExpr:
 		if node.IsQuoted() {
@@ -922,26 +954,38 @@ func rewriteReferenceNode(node *lisp.LVal, newName string) {
 	if node == nil || node.Type != lisp.LSymbol {
 		return
 	}
-	if pkg, _, ok := splitQualifiedSymbol(node.Str); ok {
-		node.Str = pkg + ":" + newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
-		return
+	{
+		parts, partsErr := splitQualifiedSymbol(node.Str)
+		pkg, _, ok := parts.pkg, parts.name, partsErr
+		if ok {
+			node.Str = pkg + ":" + newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
+			return
+		}
 	}
 	node.Str = newName //elps:mutates the minifier renames symbols in the AST it parsed for this run; the tree is tool-owned and never shared with an evaluator
 }
 
-func splitQualifiedSymbol(name string) (string, string, bool) {
+// qualifiedParts holds the package and name of a qualified symbol.
+type qualifiedParts struct {
+	// pkg is the package qualifier.
+	pkg string
+	// name is the unqualified name.
+	name string
+}
+
+func splitQualifiedSymbol(name string) (qualifiedParts, bool) {
 	if name == "" || strings.HasPrefix(name, ":") {
-		return "", "", false
+		return qualifiedParts{pkg: "", name: ""}, false
 	}
 	for i := 1; i < len(name); i++ {
 		if name[i] == ':' {
 			if i+1 >= len(name) {
-				return "", "", false
+				return qualifiedParts{pkg: "", name: ""}, false
 			}
-			return name[:i], name[i+1:], true
+			return qualifiedParts{pkg: name[:i], name: name[i+1:]}, true
 		}
 	}
-	return "", "", false
+	return qualifiedParts{pkg: "", name: ""}, false
 }
 
 func compareSymbols(a, b *analysis.Symbol) int {

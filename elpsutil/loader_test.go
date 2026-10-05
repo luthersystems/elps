@@ -181,7 +181,19 @@ func TestPackageLoaderKindsAreCovered(t *testing.T) {
 			if !ok || id.Name != "addDefs" || len(call.Args) < 3 {
 				return true
 			}
-			if kind, ok := call.Args[2].(*ast.Ident); ok {
+			opts, ok := call.Args[1].(*ast.CompositeLit)
+			require.True(t, ok, "addDefs must pass a definitionKind literal")
+			for _, field := range opts.Elts {
+				kv, ok := field.(*ast.KeyValueExpr)
+				if !ok {
+					continue
+				}
+				key, ok := kv.Key.(*ast.Ident)
+				if !ok || key.Name != "kind" {
+					continue
+				}
+				kind, ok := kv.Value.(*ast.Ident)
+				require.True(t, ok, "definitionKind.kind must name a definition kind")
 				kinds[kind.Name] = true
 			}
 			return true

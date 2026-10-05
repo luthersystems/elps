@@ -73,7 +73,7 @@ Examples:
 
 			exitCode := 0
 			for _, path := range expanded {
-				changed, err := fmtFile(path, fmtCfg, fmtWrite, fmtDiff, fmtList)
+				changed, err := fmtFile(path, fmtCfg, fmtOptions{write: fmtWrite, diff: fmtDiff, list: fmtList})
 				if err != nil {
 					fmt.Fprintln(os.Stderr, err)
 					exitCode = 1
@@ -112,7 +112,19 @@ func fmtStdin(cfg *formatter.Config) error {
 	return err
 }
 
-func fmtFile(path string, cfg *formatter.Config, write, diff, list bool) (bool, error) {
+// fmtOptions holds formatter output flags.
+type fmtOptions struct {
+	// write writes formatted files.
+	write bool
+	// diff prints formatting differences.
+	diff bool
+	// list lists changed files.
+	list bool
+}
+
+func fmtFile(path string, cfg *formatter.Config, opts fmtOptions) (bool, error) {
+	write, diff, list := opts.write, opts.diff, opts.list
+
 	src, err := os.ReadFile(path) //nolint:gosec // CLI tool reads user-specified files
 	if err != nil {
 		return false, fmt.Errorf("%s: %w", path, err)

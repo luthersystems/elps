@@ -78,8 +78,12 @@ func builtinLocation(pkg, name string) protocol.Location {
 // Falls back to "lisp" for unqualified symbols.
 func builtinLocationForWord(word, symName string) protocol.Location {
 	pkg := "lisp"
-	if pkgName, _, ok := splitPackageQualified(word); ok && pkgName != "" {
-		pkg = pkgName
+	{
+		parts, partsErr := splitPackageQualified(word)
+		pkgName, _, ok := parts.pkg, parts.name, partsErr
+		if ok && pkgName != "" {
+			pkg = pkgName
+		}
 	}
 	return builtinLocation(pkg, symName)
 }
@@ -87,7 +91,8 @@ func builtinLocationForWord(word, symName string) protocol.Location {
 // qualifiedSymbolDefinition looks up a qualified symbol (e.g. "math:sin")
 // in the workspace config and returns its definition location.
 func (s *Server) qualifiedSymbolDefinition(word string) *protocol.Location {
-	pkgName, symName, ok := splitPackageQualified(word)
+	parts, partsErr := splitPackageQualified(word)
+	pkgName, symName, ok := parts.pkg, parts.name, partsErr
 	if !ok || symName == "" {
 		return nil
 	}

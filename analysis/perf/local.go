@@ -74,20 +74,32 @@ func ScanFile(exprs []*lisp.LVal, filename string, cfg *Config) []*FunctionSumma
 		}
 
 		body := sexpr.Cells[bodyStart:]
-		scanBody(body, funcName, 0, ctx, summary)
+		scanBody(body, funcName, bodyScan{loopDepth: 0, ctx: ctx, summary: summary})
 
 		summaries = append(summaries, summary)
 		return true
 	}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, visit)
+		codewalk.Syntax(expr, codewalk.SyntaxContext{Parent: nil, Depth: 0}, visit)
 	}
 	return summaries
 }
 
+// bodyScan holds loop context and the function summary.
+type bodyScan struct {
+	// loopDepth is the enclosing loop depth.
+	loopDepth int
+	// ctx contains traversal context.
+	ctx *scanContext
+	// summary receives the function summary.
+	summary *FunctionSummary
+}
+
 // scanBody recursively walks body expressions, tracking loop depth and
 // collecting call edges and cost.
-func scanBody(exprs []*lisp.LVal, caller string, loopDepth int, ctx *scanContext, summary *FunctionSummary) {
+func scanBody(exprs []*lisp.LVal, caller string, opts bodyScan) {
+	loopDepth, ctx, summary := opts.loopDepth, opts.ctx, opts.summary
+
 	s := bodyScanner{caller: caller, loopDepth: loopDepth, ctx: ctx, summary: summary}
 	for _, expr := range exprs {
 		s.walk(expr, loopDepth)
@@ -104,7 +116,7 @@ type bodyScanner struct {
 func (s *bodyScanner) walk(expr *lisp.LVal, loopDepth int) {
 	previous := s.loopDepth
 	s.loopDepth = loopDepth
-	codewalk.Syntax(expr, nil, 0, s.scanExpr)
+	codewalk.Syntax(expr, codewalk.SyntaxContext{Parent: nil, Depth: 0}, s.scanExpr)
 	s.loopDepth = previous
 }
 
@@ -219,7 +231,7 @@ func isCallable(name string) bool {
 	cells := [1]*lisp.LVal{&head}
 	form := lisp.LVal{Type: lisp.LSExpr, Cells: cells[:]}
 	callable := true
-	codewalk.Syntax(&form, nil, 0, func(_, _ *lisp.LVal, op string, _ int) bool {
+	codewalk.Syntax(&form, codewalk.SyntaxContext{Parent: nil, Depth: 0}, func(_, _ *lisp.LVal, op string, _ int) bool {
 		callable = callableOperator(name, op)
 		return false
 	})

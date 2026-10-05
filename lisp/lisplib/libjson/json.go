@@ -777,24 +777,45 @@ func (s *Serializer) loadOpts(env *lisp.LEnv, stringNums, exactInts *lisp.LVal) 
 
 // Dump serializes v as JSON and returns any error.
 func (s *Serializer) Dump(v *lisp.LVal, stringNums bool) ([]byte, error) {
-	b, _, err := s.dump(v, stringNums)
+	dumped, dumpedErr := s.dump(v, stringNums)
+	b, _, err := dumped.bytes, dumped.loadable, dumpedErr
 	return b, err
+}
+
+// dumpResult holds JSON bytes and their loadability status.
+type dumpResult struct {
+	// bytes contains encoded JSON bytes.
+	bytes []byte
+	// loadable reports that the bytes load back.
+	loadable bool
 }
 
 // dump serializes v and reports, alongside the bytes, whether this package can
 // vouch that they load back -- see encoder.loadableBytes.  It is the only
 // producer of that verdict, and DumpMessageBuiltin is its only consumer.
-func (s *Serializer) dump(v *lisp.LVal, stringNums bool) ([]byte, bool, error) {
-	return s.dumpLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{}, encodeMeter{})
+func (s *Serializer) dump(v *lisp.LVal, stringNums bool) (dumpResult, error) {
+	return s.dumpLimit(v, stringNums, dumpOptions{limit: lisp.MaxValueDepth, budget: encodeBudget{}, meter: encodeMeter{}})
 }
 
-func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget, meter encodeMeter) ([]byte, bool, error) {
+// dumpOptions holds JSON encoding limits and the step meter.
+type dumpOptions struct {
+	// budget limits encoded output size.
+	budget encodeBudget
+	// meter charges encoding steps.
+	meter encodeMeter
+	// limit is the value depth limit.
+	limit int
+}
+
+func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, opts dumpOptions) (dumpResult, error) {
+	limit, budget, meter := opts.limit, opts.budget, opts.meter
+
 	var b []byte
 	var loadable bool
 	enc := getEncoder(stringNums)
 	if err := enc.encodeLimit(v, limit, budget, meter); err != nil {
 		putEncoder(enc)
-		return nil, false, err
+		return dumpResult{bytes: nil, loadable: false}, err
 	}
 	// The bytes escape to the caller, so this path DONATES the buffer rather
 	// than recycling it: the encoder goes back to the pool with an empty one
@@ -810,7 +831,7 @@ func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget 
 	// is donated.
 	b, loadable = enc.donateBuffer(), enc.loadableBytes()
 	putEncoder(enc)
-	return b, loadable, nil
+	return dumpResult{bytes: b, loadable: loadable}, nil
 }
 
 // dumpString serializes v straight to a string.
@@ -828,10 +849,12 @@ func (s *Serializer) dumpLimit(v *lisp.LVal, stringNums bool, limit int, budget 
 // caller asked for.  Measured on Package/dump-github, which is 1000
 // `json:dump-string` calls: 51.0 MiB/op -> 36.3 MiB/op.
 func (s *Serializer) dumpString(v *lisp.LVal, stringNums bool) (string, error) {
-	return s.dumpStringLimit(v, stringNums, lisp.MaxValueDepth, encodeBudget{}, encodeMeter{})
+	return s.dumpStringLimit(v, stringNums, dumpOptions{limit: lisp.MaxValueDepth, budget: encodeBudget{}, meter: encodeMeter{}})
 }
 
-func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, limit int, budget encodeBudget, meter encodeMeter) (string, error) {
+func (s *Serializer) dumpStringLimit(v *lisp.LVal, stringNums bool, opts dumpOptions) (string, error) {
+	limit, budget, meter := opts.limit, opts.budget, opts.meter
+
 	enc := getEncoder(stringNums)
 	defer putEncoder(enc)
 	if err := enc.encodeLimit(v, limit, budget, meter); err != nil {
@@ -934,7 +957,8 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 		b, loadable = result.Bytes(), true
 	} else {
 		var lerr *lisp.LVal
-		b, loadable, lerr = s.dumpBuiltin(env, args)
+		dumped, dumpedErr := s.dumpBuiltin(env, args)
+		b, loadable, lerr = dumped.bytes, dumped.loadable, dumpedErr
 		if lerr != nil {
 			return lerr
 		}
@@ -950,7 +974,8 @@ func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 	if lisp.True(args.KeyArg(2)) || lisp.True(args.KeyArg(3)) {
 		return s.dumpModeBuiltin(env, args, false)
 	}
-	b, _, lerr := s.dumpBuiltin(env, args)
+	dumped, dumpedErr := s.dumpBuiltin(env, args)
+	b, _, lerr := dumped.bytes, dumped.loadable, dumpedErr
 	if lerr != nil {
 		return lerr
 	}
@@ -959,25 +984,26 @@ func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 
 // dumpBuiltin is the argument handling `json:dump-bytes` and
 // `json:dump-message` share, returning the loadable verdict only the latter
-// uses.  A non-nil third result is the error LVal to return.
-func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) ([]byte, bool, *lisp.LVal) {
+// uses. A non-nil second result is the error LVal to return.
+func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) (dumpResult, *lisp.LVal) {
 	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
 	if obj.Type == lisp.LError {
-		return nil, false, obj
+		return dumpResult{bytes: nil, loadable: false}, obj
 	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
 		if stringNums.Type == lisp.LError {
-			return nil, false, stringNums
+			return dumpResult{bytes: nil, loadable: false}, stringNums
 		}
 	}
 	// Steps are charged while the output is written, one per KiB
 	// (envEncodeBudget), so a step budget stops the encode partway.
-	b, loadable, err := s.dumpLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env), encodeMeter{env: env})
+	dumped, dumpedErr := s.dumpLimit(obj, lisp.True(stringNums), dumpOptions{limit: env.Runtime.ValueDepthLimit(), budget: envEncodeBudget(env), meter: encodeMeter{env: env}})
+	b, loadable, err := dumped.bytes, dumped.loadable, dumpedErr
 	if err != nil {
-		return nil, false, dumpError(env, err)
+		return dumpResult{bytes: nil, loadable: false}, dumpError(env, err)
 	}
-	return b, loadable, nil
+	return dumpResult{bytes: b, loadable: loadable}, nil
 }
 
 // envEncodeBudget is the output budget of a json:dump-* call: the runtime's
@@ -1070,7 +1096,7 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 			return stringNums
 		}
 	}
-	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), env.Runtime.ValueDepthLimit(), envEncodeBudget(env), encodeMeter{env: env})
+	str, err := s.dumpStringLimit(obj, lisp.True(stringNums), dumpOptions{limit: env.Runtime.ValueDepthLimit(), budget: envEncodeBudget(env), meter: encodeMeter{env: env}})
 	if err != nil {
 		return dumpError(env, err)
 	}

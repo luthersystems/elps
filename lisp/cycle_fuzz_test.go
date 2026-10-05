@@ -94,7 +94,8 @@ func FuzzCyclicValueWalks(f *testing.F) {
 			case r := <-panicked:
 				panic(r)
 			case <-time.After(wait):
-				verdict, more, report := budget.Check()
+				checked := budget.Check()
+				verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 				switch verdict {
 				case fuzzwatch.Continue:
 					wait = more
