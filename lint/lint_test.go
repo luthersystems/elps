@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"testing"
@@ -4706,6 +4707,97 @@ func TestLintFiles_UnusedFunction_CrossFileBareFile(t *testing.T) {
 	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{helpers})
 	require.NoError(t, err)
 	assertNoDiags(t, diags)
+}
+
+// TestLintFiles_UndefinedSymbol_BareFileLoadContext covers #811: a file
+// without in-package runs in the package of the file that loads it, so its
+// definitions must resolve there. Each case runs with relative paths (as
+// "elps lint --workspace=. main.lisp b.lisp" gives them) and with absolute
+// paths, and both must give the same result.
+func TestLintFiles_UndefinedSymbol_BareFileLoadContext(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+		// undefined lists the names that must be reported as undefined.
+		undefined []string
+	}{
+		{
+			name: "bare file used from loader",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(load-file \"b.lisp\")\n(defun f () (g))\n",
+				"b.lisp":    "(defun g () 1)\n",
+			},
+		},
+		{
+			name: "loader used from bare file",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(defun f () 1)\n(load-file \"b.lisp\")\n",
+				"b.lisp":    "(defun g () (f))\n",
+			},
+		},
+		{
+			name: "nested load of bare files",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(load-file \"b.lisp\")\n(defun f () (h))\n",
+				"b.lisp":    "(load-file \"c.lisp\")\n(defun g () (h))\n",
+				"c.lisp":    "(defun h () 1)\n",
+			},
+		},
+		{
+			name: "own in-package overrides loader",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(load-file \"b.lisp\")\n(defun f () (g))\n",
+				"b.lisp":    "(in-package 'other)\n(defun g () 1)\n",
+			},
+			undefined: []string{"g"},
+		},
+		{
+			name: "bare file not in load tree falls back to main package",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(defun f () (g))\n",
+				"b.lisp":    "(defun g () 1)\n",
+			},
+		},
+		{
+			name: "unknown name is still reported",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(load-file \"b.lisp\")\n(defun f () (missing))\n",
+				"b.lisp":    "(defun g () 1)\n",
+			},
+			undefined: []string{"missing"},
+		},
+	}
+	for _, tc := range tests {
+		for _, relative := range []bool{true, false} {
+			t.Run(fmt.Sprintf("%s/relative=%v", tc.name, relative), func(t *testing.T) {
+				dir := t.TempDir()
+				var files []string
+				for name, src := range tc.files {
+					writeTempLisp(t, dir, name, src)
+					files = append(files, name)
+				}
+				sort.Strings(files)
+				workspace := "."
+				if relative {
+					t.Chdir(dir)
+				} else {
+					workspace = dir
+					for i, f := range files {
+						files[i] = filepath.Join(dir, f)
+					}
+				}
+
+				l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+				diags, err := l.LintFiles(&LintConfig{Workspace: workspace}, files)
+				require.NoError(t, err)
+				var got []string
+				for _, d := range diags {
+					got = append(got, strings.TrimPrefix(d.Message, "undefined symbol: "))
+				}
+				assert.ElementsMatch(t, tc.undefined, got, "diagnostics: %v", diags)
+			})
+		}
+	}
 }
 
 func TestBuildAnalysisConfig_Basic(t *testing.T) {

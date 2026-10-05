@@ -1537,6 +1537,33 @@ func TestPrescanWorkspace_SetInBareFileRemapped(t *testing.T) {
 	}
 }
 
+func TestPrescanWorkspace_BareFileRemappedWithRelativeRoot(t *testing.T) {
+	// #811: with a relative root the file paths are relative, but the load
+	// tree is keyed by absolute path. The remap must still find bare files.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'app)
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`
+(defun g () 1)
+`), 0600))
+	t.Chdir(dir)
+
+	prescan, err := PrescanWorkspace(".", nil)
+	require.NoError(t, err)
+
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "g" {
+			assert.Equal(t, "app", d.Package,
+				"bare file def should be remapped to the loader's package")
+			found = true
+		}
+	}
+	assert.True(t, found, "g should be in AllDefs")
+}
+
 func TestPrescanWorkspace_SetInBareFileNotInLoadTree(t *testing.T) {
 	// Bare files not explicitly loaded via load-file should still have
 	// their definitions remapped to DefaultPackage (not left in user).
