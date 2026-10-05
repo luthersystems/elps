@@ -90,7 +90,7 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 	var tokens []rawToken
 	src := &sourceText{content: content}
 	for _, expr := range ast {
-		collectSemanticTokens(expr, symbolDefs, symbolRefs, src, &tokens)
+		collectSemanticTokens(expr, semanticTokenContext{defs: symbolDefs, refs: symbolRefs, src: src, tokens: &tokens})
 	}
 
 	// Sort by position (line, then character).
@@ -107,14 +107,22 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 	return &protocol.SemanticTokens{Data: data}, nil
 }
 
+// semanticTokenContext holds symbol indexes, source text and token output.
+type semanticTokenContext struct {
+	// defs indexes symbol definitions.
+	defs map[symbolKey]*analysis.Symbol
+	// refs indexes symbol references.
+	refs map[symbolKey]*analysis.Symbol
+	// src provides source text by line.
+	src *sourceText
+	// tokens receives semantic tokens.
+	tokens *[]rawToken
+}
+
 // collectSemanticTokens recursively walks the AST and collects semantic tokens.
-func collectSemanticTokens(
-	v *lisp.LVal,
-	defs map[symbolKey]*analysis.Symbol,
-	refs map[symbolKey]*analysis.Symbol,
-	src *sourceText,
-	tokens *[]rawToken,
-) {
+func collectSemanticTokens(v *lisp.LVal, opts semanticTokenContext) {
+	defs, refs, src, tokens := opts.defs, opts.refs, opts.src, opts.tokens
+
 	vLoc, ok := v.Source()
 	if !ok || vLoc.Line == 0 {
 		return
@@ -122,7 +130,8 @@ func collectSemanticTokens(
 
 	switch v.Type {
 	case lisp.LInt, lisp.LFloat:
-		tokLine, tokCol, length := atomSpan(v, src, 1)
+		span := atomSpan(v, src, 1)
+		tokLine, tokCol, length := span.line, span.col, span.length
 		*tokens = append(*tokens, rawToken{
 			line: tokLine, startChar: tokCol, length: length,
 			tokenType: semTokenNumber,
@@ -134,7 +143,8 @@ func collectSemanticTokens(
 		// "x\ty" is six characters of source and three of value, and the token
 		// came out one short (elps#449).  The span is the source, escapes and
 		// all, and it is also what makes a raw literal's """ delimiters count.
-		tokLine, tokCol, length := atomSpan(v, src, len(v.Str)+2)
+		span2 := atomSpan(v, src, len(v.Str)+2)
+		tokLine, tokCol, length := span2.line, span2.col, span2.length
 		*tokens = append(*tokens, rawToken{
 			line: tokLine, startChar: tokCol, length: length,
 			tokenType: semTokenString,
@@ -147,7 +157,8 @@ func collectSemanticTokens(
 			return
 		}
 		name := v.Str
-		tokLine, tokCol, length := atomSpan(v, src, len(name))
+		span3 := atomSpan(v, src, len(name))
+		tokLine, tokCol, length := span3.line, span3.col, span3.length
 		// The ATOM's position, which is both where this token starts and what
 		// the analysis result is keyed by: buildSymbolDefsMap and
 		// buildSymbolRefsMap index analysis.Symbol.Source, and astutil.SymbolLoc
@@ -156,7 +167,7 @@ func collectSemanticTokens(
 		// -- so this call had to be passed a different position from the token
 		// it classifies; the two agree now, and a quoted symbol matches its own
 		// analysis entry at the column its token occupies.
-		tokType, mods := classifySymbol(name, tokLine, tokCol, defs, refs)
+		tokType, mods := classifySymbol(name, tokLine, tokCol, symbolIndexes{defs: defs, refs: refs})
 		*tokens = append(*tokens, rawToken{
 			line: tokLine, startChar: tokCol, length: length,
 			tokenType: tokType, modifiers: mods,
@@ -165,7 +176,7 @@ func collectSemanticTokens(
 	case lisp.LSExpr:
 		// For quoted lists like '(a b c), just recurse into children.
 		for _, child := range v.Cells {
-			collectSemanticTokens(child, defs, refs, src, tokens)
+			collectSemanticTokens(child, semanticTokenContext{defs: defs, refs: refs, src: src, tokens: tokens})
 		}
 		return
 
@@ -288,14 +299,19 @@ var specialOps = map[string]bool{
 	"macrolet": true, "assert": true,
 }
 
+// symbolIndexes holds definition and reference indexes.
+type symbolIndexes struct {
+	// defs indexes symbol definitions.
+	defs map[symbolKey]*analysis.Symbol
+	// refs indexes symbol references.
+	refs map[symbolKey]*analysis.Symbol
+}
+
 // classifySymbol determines the semantic token type for a symbol based on
 // analysis results and built-in knowledge.
-func classifySymbol(
-	name string,
-	line, col int,
-	defs map[symbolKey]*analysis.Symbol,
-	refs map[symbolKey]*analysis.Symbol,
-) (int, int) {
+func classifySymbol(name string, line int, col int, opts symbolIndexes) (int, int) {
+	defs, refs := opts.defs, opts.refs
+
 	// Check if this is a keyword symbol (starts with :).
 	if strings.HasPrefix(name, ":") {
 		return semTokenVariable, 0
@@ -390,6 +406,16 @@ func (s *sourceText) byteAt(l, c int) (byte, bool) {
 	return lines[l][c], true
 }
 
+// tokenSpan holds a semantic token's byte position and length.
+type tokenSpan struct {
+	// line is the zero-based line.
+	line int
+	// col is the byte column.
+	col int
+	// length is the token byte length.
+	length int
+}
+
 // atomSpan locates the source text an ATOM occupies: its 0-based line, its
 // 0-based start column, and its length in bytes.
 //
@@ -438,7 +464,7 @@ func (s *sourceText) byteAt(l, c int) (byte, bool) {
 // fallbackLen is used when the node has no usable end position, which the
 // fault-tolerant parser can in principle produce; it is the length the case in
 // question computed before this function existed.
-func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (int, int, int) {
+func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) tokenSpan {
 	var line int
 	var col int
 	loc, _ := v.Source()
@@ -447,22 +473,33 @@ func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (int, int, int) {
 
 	skipped := 0
 	if v.IsQuoted() {
-		line, col, skipped = skipReaderQuote(src, line, col)
+		skippedQuote := skipReaderQuote(src, line, col)
+		line, col, skipped = skippedQuote.line, skippedQuote.col, skippedQuote.skipped
 	}
 
 	switch {
 	case loc.EndPos > loc.Pos && loc.EndLine-1 == line:
 		if n := loc.EndPos - loc.Pos - skipped; n > 0 {
-			return line, col, n
+			return tokenSpan{line: line, col: col, length: n}
 		}
 	case loc.EndLine-1 > line:
 		// The atom continues onto a later line, which only a multi-line
 		// literal does.  Highlight its first line.
 		if n := src.lineLen(line) - col; n > 0 {
-			return line, col, n
+			return tokenSpan{line: line, col: col, length: n}
 		}
 	}
-	return line, col, fallbackLen
+	return tokenSpan{line: line, col: col, length: fallbackLen}
+}
+
+// readerQuoteSkip holds an atom's position after its reader quote.
+type readerQuoteSkip struct {
+	// line is the zero-based line.
+	line int
+	// col is the byte column.
+	col int
+	// skipped counts bytes before the atom.
+	skipped int
 }
 
 // skipReaderQuote advances past a ' prefix that applyPrefixLocation folded into
@@ -475,9 +512,9 @@ func atomSpan(v *lisp.LVal, src *sourceText, fallbackLen int) (int, int, int) {
 // It moves nothing unless the position really is a quote, so a node that is
 // Quoted for some other reason, or whose column does not line up with the text
 // the request was computed against, is left exactly where it was.
-func skipReaderQuote(src *sourceText, line, col int) (int, int, int) {
+func skipReaderQuote(src *sourceText, line, col int) readerQuoteSkip {
 	if c, ok := src.byteAt(line, col); !ok || c != '\'' {
-		return line, col, 0
+		return readerQuoteSkip{line: line, col: col, skipped: 0}
 	}
 	startLine, startCol := line, col
 	skipped := 1
@@ -493,12 +530,12 @@ func skipReaderQuote(src *sourceText, line, col int) (int, int, int) {
 		case c == ' ' || c == '\t' || c == '\r' || c == '\f' || c == '\v':
 			col, skipped = col+1, skipped+1
 		default:
-			return line, col, skipped
+			return readerQuoteSkip{line: line, col: col, skipped: skipped}
 		}
 	}
 	// Nothing but space after the quote, so there is no atom to point at.
 	// Leave the caller where it started rather than off the end of the file.
-	return startLine, startCol, 0
+	return readerQuoteSkip{line: startLine, col: startCol, skipped: 0}
 }
 
 // deltaEncode converts sorted raw tokens into the LSP delta-encoded format.

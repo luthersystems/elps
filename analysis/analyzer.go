@@ -62,7 +62,8 @@ func (a *analyzer) prescan(exprs []*lisp.LVal, scope *Scope) {
 	// forms of their expansion, so generated definitions are forward
 	// referenceable too. generatedBy records each occurrence's macro call;
 	// different expansions may share the same form nodes.
-	exprs, generatedBy, _ := a.expandPackageForms(exprs, scope, a.defaultPackage(), nil)
+	expanded := a.expandPackageForms(exprs, scope, a.defaultPackage(), nil)
+	exprs, generatedBy, _ := expanded.forms, expanded.origins, expanded.pkg
 	currentPkg := a.defaultPackage()
 	// Phase 1: Register all definitions.
 	for i, expr := range exprs {

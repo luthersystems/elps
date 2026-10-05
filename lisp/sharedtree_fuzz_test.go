@@ -548,7 +548,7 @@ func FuzzSharedTreeEval(f *testing.F) {
 // and a fixed input waits for done up to testdeadline.Backstop
 // (luthersystems/elps#791).
 func awaitSharedTree(t *testing.T, done <-chan struct{}, input fuzzwatch.Input,
-	first time.Duration, check func() (fuzzwatch.Verdict, time.Duration, fuzzwatch.Report),
+	first time.Duration, check func() fuzzwatch.CheckResult,
 	describe string) string {
 	t.Helper()
 	wait := first
@@ -557,12 +557,13 @@ func awaitSharedTree(t *testing.T, done <-chan struct{}, input fuzzwatch.Input,
 		case <-done:
 			return ""
 		case <-time.After(wait):
-			verdict, more, report := check()
+			checked := check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
-				if _, ok := fuzzwatch.AwaitStarved(t, done, input, report, "shared-tree evaluation", describe); ok {
+				if _, ok := fuzzwatch.AwaitStarved(t, done, fuzzwatch.StarvedInput{Input: input, Report: report, What: "shared-tree evaluation", Describe: describe}); ok {
 					return ""
 				}
 				if input == fuzzwatch.Fixed {

@@ -90,7 +90,8 @@ func inPlaceViewDelete(step *lisp.LVal, in *lisp.LVal) (*lisp.LVal, error) {
 		storeCells(in, vals)
 		return in, nil
 	case *rangePath:
-		from, to, err := validateRange(n, p.from, p.to, p.implicitTo)
+		bounds, boundsErr := validateRange(n, p.from, p.to, p.implicitTo)
+		from, to, err := bounds.from, bounds.to, boundsErr
 		if err != nil {
 			return nil, err
 		}

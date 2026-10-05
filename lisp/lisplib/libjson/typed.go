@@ -398,10 +398,10 @@ func appendTypedSymbol(b []byte, name string) []byte {
 
 // checkArray returns an array's dims and cells, or an error when the array
 // is malformed or its cells do not match its dimensions.
-func checkArray(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
+func checkArray(v *lisp.LVal) (arrayParts, error) {
 	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil ||
 		v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-		return nil, nil, errors.New("typed json: malformed array")
+		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array")
 	}
 	dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
 	// A zero dimension makes the array empty however large the others are,
@@ -409,7 +409,7 @@ func checkArray(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
 	zero := false
 	for _, d := range dims {
 		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return nil, nil, errors.New("typed json: malformed array dimensions")
+			return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
 		}
 		zero = zero || d.Int == 0
 	}
@@ -419,21 +419,22 @@ func checkArray(v *lisp.LVal) ([]*lisp.LVal, []*lisp.LVal, error) {
 	} else {
 		for _, d := range dims {
 			if total > math.MaxInt/d.Int {
-				return nil, nil, errors.New("typed json: malformed array dimensions")
+				return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
 			}
 			total *= d.Int
 		}
 	}
 	if total != len(cells) {
-		return nil, nil, errors.New("typed json: array contents do not match its dimensions")
+		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: array contents do not match its dimensions")
 	}
-	return dims, cells, nil
+	return arrayParts{dims: dims, cells: cells}, nil
 }
 
 // array writes a vector (rank 1) as a plain JSON array and any other
 // rank as ["~#array",[[dims...],[cells...]]], cells in row-major order.
 func (e *typedEncoder) array(v *lisp.LVal, depth int) error {
-	dims, cells, err := checkArray(v)
+	array2, arrayErr := checkArray(v)
+	dims, cells, err := array2.dims, array2.cells, arrayErr
 	if err != nil {
 		return err
 	}
@@ -565,7 +566,8 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	if v.Len() > e.cfg.maxValues-e.values {
 		return fmt.Errorf("%w: more than %d values", ErrTypedLimit, e.cfg.maxValues)
 	}
-	pbase, keysMark, err := e.mapMembers(v)
+	members, membersErr := e.mapMembers(v)
+	pbase, keysMark, err := members.pairs, members.keys, membersErr
 	if err != nil {
 		return err
 	}
@@ -593,11 +595,19 @@ func (e *typedEncoder) sortedMap(v *lisp.LVal, depth int) error {
 	return e.grow()
 }
 
+// memberMark holds the start offsets of a map's temporary members.
+type memberMark struct {
+	// pairs is the first temporary member index.
+	pairs int
+	// keys is the first temporary key byte offset.
+	keys int
+}
+
 // mapMembers pushes the members of map v onto e.pairs, with their key text
 // on e.keys, in canonical member order.  The members are e.pairs[pbase:].
 // The caller releases them with releaseMembers(pbase, keysMark) once it has
 // written them; a nested map pushes and releases past them meanwhile.
-func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
+func (e *typedEncoder) mapMembers(v *lisp.LVal) (memberMark, error) {
 	kbase := len(e.kp)
 	pbase, keysMark := len(e.pairs), len(e.keys)
 	var ok bool
@@ -606,17 +616,17 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 		// An embedder's own map backing: read it through MapEntries.
 		ents := v.MapEntries()
 		if ents.Type == lisp.LError {
-			return 0, 0, fmt.Errorf("typed json: %s", ents.Str)
+			return memberMark{pairs: 0, keys: 0}, fmt.Errorf("typed json: %s", ents.Str)
 		}
 		for _, p := range ents.Cells {
 			if p == nil || len(p.Cells) != 2 || p.Cells[0] == nil {
-				return 0, 0, errors.New("typed json: malformed map entry")
+				return memberMark{pairs: 0, keys: 0}, errors.New("typed json: malformed map entry")
 			}
 			k := p.Cells[0]
 			e.kp = append(e.kp, lisp.MapKeyPair{Val: p.Cells[1], Key: k.Str, Int: k.Int, Kind: k.Type})
 		}
 		if err := checkHostMapKeys(e.kp[kbase:]); err != nil {
-			return 0, 0, err
+			return memberMark{pairs: 0, keys: 0}, err
 		}
 	}
 	for i := kbase; i < len(e.kp); i++ {
@@ -626,18 +636,18 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 		// before it is copied.  The key text is at least as long as the
 		// key.  Typed mode keeps its error precedence (walker goldens).
 		if e.durable && len(p.Key)+2 > e.cfg.maxBytes-len(e.buf) {
-			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+			return memberMark{pairs: 0, keys: 0}, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 		}
 		// During durable's first pass the output is empty, so the keys of
 		// every map are summed instead: each key will be written as at
 		// least its key text, two quotes and a colon.  The exact key text
 		// length is checked before the copy and added after it.
 		if e.scanning && e.scanKeyBytes+typedKeyLen(p.Kind, p.Key, p.Int)+3 > e.cfg.maxBytes {
-			return 0, 0, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
+			return memberMark{pairs: 0, keys: 0}, fmt.Errorf("%w: encoding exceeds %d bytes", ErrTypedLimit, e.cfg.maxBytes)
 		}
 		var err error
 		if e.keys, err = appendTypedKey(e.keys, p.Kind, p.Key, p.Int); err != nil {
-			return 0, 0, err
+			return memberMark{pairs: 0, keys: 0}, err
 		}
 		if e.scanning {
 			e.scanKeyBytes += len(e.keys) - ks + 3
@@ -653,10 +663,10 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (int, int, error) {
 	slices.SortFunc(members, func(a, b typedPair) int { return bytes.Compare(keys[a.ks:a.ke], keys[b.ks:b.ke]) })
 	for i := 1; i < len(members); i++ {
 		if bytes.Equal(keys[members[i-1].ks:members[i-1].ke], keys[members[i].ks:members[i].ke]) {
-			return 0, 0, errors.New("typed json: map has two keys with one encoding")
+			return memberMark{pairs: 0, keys: 0}, errors.New("typed json: map has two keys with one encoding")
 		}
 	}
-	return pbase, keysMark, nil
+	return memberMark{pairs: pbase, keys: keysMark}, nil
 }
 
 // releaseMembers drops the members mapMembers pushed.

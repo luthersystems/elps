@@ -1007,15 +1007,15 @@ func runBudgeted(t fatalf, spec, src []byte, input fuzzwatch.Input) *install {
 		select {
 		case out = <-ch:
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
 				var ok bool
-				if out, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "the install",
-					fmt.Sprintf("\n--- spec (%d bytes) ---\n%q\n--- src (%d bytes) ---\n%q",
-						len(spec), spec, len(src), src)); !ok {
+				if out, ok = fuzzwatch.AwaitStarved(t, ch, fuzzwatch.StarvedInput{Input: input, Report: report, What: "the install", Describe: fmt.Sprintf("\n--- spec (%d bytes) ---\n%q\n--- src (%d bytes) ---\n%q",
+					len(spec), spec, len(src), src)}); !ok {
 					return nil
 				}
 			default:

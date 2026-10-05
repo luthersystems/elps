@@ -53,7 +53,8 @@ func TestSplitSymbolPartsAllocations(t *testing.T) {
 	for _, s := range []string{"name", "pkg:name", ":keyword", "", "a:b:c"} {
 		t.Run(s, func(t *testing.T) {
 			if got := testing.AllocsPerRun(200, func() {
-				_, hotpathString, _ = splitSymbolParts(s)
+				parts2 := splitSymbolParts(s)
+				_, hotpathString, _ = parts2.namespace, parts2.name, parts2.parts
 			}); got != 0 {
 				t.Errorf("allocated %v times, want zero", got)
 			}

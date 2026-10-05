@@ -150,7 +150,7 @@ func checkMarkedTypeSpec(pass *analysis.Pass, allowed map[*types.Var]bool, gd *a
 		return
 	}
 	_, literal := ts.Type.(*ast.StructType)
-	reportMarkedStruct(pass, allowed, ts.Name.Name, ts.Name.Pos(), literal, obj.Type())
+	reportMarkedStruct(pass, allowed, markedStructReport{name: ts.Name.Name, pos: ts.Name.Pos(), atFields: literal, t: obj.Type()})
 }
 
 // checkAnonymousMarked checks a struct type literal that is not the
@@ -161,10 +161,24 @@ func checkAnonymousMarked(pass *analysis.Pass, allowed map[*types.Var]bool, st *
 	if t == nil || !declaresTemplateImmutable(t) {
 		return
 	}
-	reportMarkedStruct(pass, allowed, "struct literal", st.Pos(), true, t)
+	reportMarkedStruct(pass, allowed, markedStructReport{name: "struct literal", pos: st.Pos(), atFields: true, t: t})
 }
 
-func reportMarkedStruct(pass *analysis.Pass, allowed map[*types.Var]bool, name string, pos token.Pos, atFields bool, t types.Type) {
+// markedStructReport holds the marked type and diagnostic location.
+type markedStructReport struct {
+	// name is the unqualified name.
+	name string
+	// pos is the diagnostic location.
+	pos token.Pos
+	// atFields selects field diagnostic locations.
+	atFields bool
+	// t is the marked type.
+	t types.Type
+}
+
+func reportMarkedStruct(pass *analysis.Pass, allowed map[*types.Var]bool, opts markedStructReport) {
+	name, pos, atFields, t := opts.name, opts.pos, opts.atFields, opts.t
+
 	// atFields reports at each field's declaration; it holds when the
 	// struct literal is written at this declaration.
 	st, ok := t.Underlying().(*types.Struct)

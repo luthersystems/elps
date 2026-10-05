@@ -41,7 +41,8 @@ func TestWordPositionBoundaries(t *testing.T) {
 							break
 						}
 					}
-					gotStart, gotEnd, gotOK := wordBoundsAtPosition(content, line, col)
+					bounds, boundsErr := wordBoundsAtPosition(content, line, col)
+					gotStart, gotEnd, gotOK := bounds.Start, bounds.End, boundsErr
 					require.Equal(t, start, gotStart, "line %d col %d", line, col)
 					require.Equal(t, end, gotEnd, "line %d col %d", line, col)
 					require.Equal(t, ok, gotOK, "line %d col %d", line, col)
@@ -96,7 +97,10 @@ func TestWordPositionAllocations(t *testing.T) {
 		assert.Zero(t, allocs, "word lookup must not allocate a document-sized line slice")
 		var start, end int
 		var ok bool
-		allocs = testing.AllocsPerRun(10, func() { start, end, ok = wordBoundsAtPosition(content, line, 3) })
+		allocs = testing.AllocsPerRun(10, func() {
+			bounds, boundsErr := wordBoundsAtPosition(content, line, 3)
+			start, end, ok = bounds.Start, bounds.End, boundsErr
+		})
 		require.Equal(t, 0, start)
 		require.Equal(t, 6, end)
 		require.True(t, ok)
@@ -142,7 +146,8 @@ func BenchmarkWordPosition(b *testing.B) {
 			b.Run(doc.name+"/"+pos.name+"/bounds", func(b *testing.B) {
 				b.ReportAllocs()
 				for b.Loop() {
-					start, end, ok := wordBoundsAtPosition(content, pos.line, 0)
+					bounds, boundsErr := wordBoundsAtPosition(content, pos.line, 0)
+					start, end, ok := bounds.Start, bounds.End, boundsErr
 					if start != 0 || end != 1 || !ok {
 						b.Fatal("incorrect bounds")
 					}

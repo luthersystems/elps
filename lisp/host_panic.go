@@ -116,7 +116,17 @@ func (env *LEnv) sourceReadError(err error) *LVal {
 	return env.Error(err)
 }
 
-func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (string, string, []byte, *LVal) {
+// librarySource holds source text and its library locations.
+type librarySource struct {
+	// name is the source name.
+	name string
+	// path is the resolved source location.
+	path string
+	// src contains source bytes.
+	src []byte
+}
+
+func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (librarySource, *LVal) {
 	var name string
 	var path string
 	var src []byte
@@ -131,5 +141,5 @@ func (env *LEnv) readLibrarySource(ctx SourceContext, loc string) (string, strin
 			lerr = env.Errorf("library error: %v", err)
 		}
 	}()
-	return name, path, src, lerr
+	return librarySource{name: name, path: path, src: src}, lerr
 }

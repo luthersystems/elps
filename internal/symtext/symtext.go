@@ -60,17 +60,25 @@ func LineAt(content string, line int) string {
 	return content
 }
 
+// WordBounds holds the byte bounds of a word.
+type WordBounds struct {
+	// Start is the first byte column.
+	Start int
+	// End is the byte column after the word.
+	End int
+}
+
 // WordBoundsInLine returns the byte bounds of the symbol-like word containing
 // the 0-based byte column col within ln, and whether there is one. The cursor
 // may sit inside the word or immediately after its last byte; both name the
 // whole word.
 //
 // A missing line and an empty line both contain no word.
-func WordBoundsInLine(ln string, col int) (int, int, bool) {
+func WordBoundsInLine(ln string, col int) (WordBounds, bool) {
 	var start int
 	var end int
 	if col < 0 || col > len(ln) {
-		return 0, 0, false
+		return WordBounds{Start: 0, End: 0}, false
 	}
 	// Clamp col to the line length (cursor can be at end of line).
 	if col >= len(ln) {
@@ -87,16 +95,17 @@ func WordBoundsInLine(ln string, col int) (int, int, bool) {
 		end++
 	}
 	if start == end {
-		return 0, 0, false
+		return WordBounds{Start: 0, End: 0}, false
 	}
-	return start, end, true
+	return WordBounds{Start: start, End: end}, true
 }
 
 // WordAt extracts the symbol-like word at the given 0-based line and 0-based
 // byte column of content, or "" when there is none.
 func WordAt(content string, line, col int) string {
 	ln := LineAt(content, line)
-	start, end, ok := WordBoundsInLine(ln, col)
+	bounds, boundsErr := WordBoundsInLine(ln, col)
+	start, end, ok := bounds.Start, bounds.End, boundsErr
 	if !ok {
 		return ""
 	}

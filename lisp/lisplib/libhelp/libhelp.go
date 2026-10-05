@@ -507,12 +507,12 @@ func RenderPkgExported(w io.Writer, env *lisp.LEnv, query string) error {
 		case lisp.LError:
 			fmt.Fprintln(w, env.Render(v)) //nolint:errcheck // best-effort error display
 		case lisp.LFun:
-			err := renderFun(w, env, exsym, v, pkg.SymbolDoc(exsym))
+			err := renderFun(w, env, functionDoc{sym: exsym, v: v, symbolDoc: pkg.SymbolDoc(exsym)})
 			if err != nil {
 				return fmt.Errorf("function %s: %w", exsym, err)
 			}
 		default:
-			err := renderVal(w, env, exsym, v, pkg.SymbolDoc(exsym))
+			err := renderVal(w, env, valueDoc{sym: exsym, v: v, doc: pkg.SymbolDoc(exsym)})
 			if err != nil {
 				return fmt.Errorf("variable %s: %w", exsym, err)
 			}
@@ -531,9 +531,9 @@ func RenderVar(w io.Writer, env *lisp.LEnv, sym string) error {
 		return err
 	}
 	if v.Type != lisp.LFun {
-		return renderVal(w, env, sym, v, LookupSymbolDoc(env, sym))
+		return renderVal(w, env, valueDoc{sym: sym, v: v, doc: LookupSymbolDoc(env, sym)})
 	}
-	return renderFun(w, env, sym, v, LookupSymbolDoc(env, sym))
+	return renderFun(w, env, functionDoc{sym: sym, v: v, symbolDoc: LookupSymbolDoc(env, sym)})
 }
 
 // LookupSymbolDoc resolves a symbol's documentation from its package.
@@ -555,16 +555,40 @@ func LookupSymbolDoc(env *lisp.LEnv, sym string) string {
 	return env.Runtime.Package.SymbolDoc(sym)
 }
 
-func renderVal(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, doc string) error {
-	return helpdoc.WriteVal(w, lisp.GetType(v).Str, sym, env.Render(v), doc)
+// valueDoc holds the symbol, value and documentation.
+type valueDoc struct {
+	// v is the documented value.
+	v *lisp.LVal
+	// sym is the symbol display name.
+	sym string
+	// doc contains the symbol documentation.
+	doc string
 }
 
-func renderFun(w io.Writer, env *lisp.LEnv, sym string, v *lisp.LVal, symbolDoc string) error {
+func renderVal(w io.Writer, env *lisp.LEnv, opts valueDoc) error {
+	sym, v, doc := opts.sym, opts.v, opts.doc
+
+	return helpdoc.WriteVal(w, helpdoc.ValueDoc{TypeName: lisp.GetType(v).Str, Name: sym, Rendered: env.Render(v), Doc: doc})
+}
+
+// functionDoc holds the symbol, function and binding documentation.
+type functionDoc struct {
+	// v is the documented function.
+	v *lisp.LVal
+	// sym is the function display name.
+	sym string
+	// symbolDoc contains binding documentation.
+	symbolDoc string
+}
+
+func renderFun(w io.Writer, env *lisp.LEnv, opts functionDoc) error {
+	sym, v, symbolDoc := opts.sym, opts.v, opts.symbolDoc
+
 	args := v.Cells[0]
 	siglist := lisp.SExpr(make([]*lisp.LVal, 1+args.Len()))
 	siglist.Cells[0] = lisp.Symbol(sym)
 	copy(siglist.Cells[1:], args.Cells)
-	return helpdoc.WriteFun(w, v.FunType.String(), env.Render(siglist), v.Docstring(), symbolDoc)
+	return helpdoc.WriteFun(w, helpdoc.FunctionDoc{FunType: v.FunType.String(), Signature: env.Render(siglist), Docstring: v.Docstring(), SymbolDoc: symbolDoc})
 }
 
 func cleanDocstring(doc string) string { return helpdoc.CleanDocstring(doc) }

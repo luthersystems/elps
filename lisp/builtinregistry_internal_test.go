@@ -12,8 +12,7 @@ func TestRegisteredBuiltinReplacementOrder(t *testing.T) {
 	var want []*LVal
 	register := func(pkg, name string, shadows bool) {
 		t.Helper()
-		fn := registrationFunValue(pkg, name, name, LFunNone, Formals(),
-			func(*LEnv, *LVal) *LVal { return Nil() }, "")
+		fn := registrationFunValue(pkg, name, registrationFunction{fid: name, funType: LFunNone, formals: Formals(), fn: func(*LEnv, *LVal) *LVal { return Nil() }, doc: ""})
 		for i, old := range want {
 			if registrationKey(old) == registrationKey(fn) {
 				want = append(want[:i], want[i+1:]...)

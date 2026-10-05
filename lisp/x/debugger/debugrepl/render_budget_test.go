@@ -57,7 +57,7 @@ func TestDebuggerDisplayCancellation(t *testing.T) {
 		require.Contains(t, out.String(), "truncated")
 		require.LessOrEqual(t, out.Len(), 4096)
 		out.Reset()
-		showBacktrace(&out, &lisp.CallStack{Frames: []lisp.CallFrame{{Name: name}}}, nil, "", local)
+		showBacktrace(&out, &lisp.CallStack{Frames: []lisp.CallFrame{{Name: name}}}, backtraceSource{pausedExpr: nil, sourceRoot: ""}, local)
 		require.Contains(t, out.String(), "truncated")
 		require.LessOrEqual(t, out.Len(), 4096)
 		return lisp.Nil()
@@ -72,7 +72,7 @@ func TestBacktraceNamesBudget(t *testing.T) {
 		stack.Frames[i] = lisp.CallFrame{Name: name, Package: name, Source: &token.Location{File: name}}
 	}
 	var out bytes.Buffer
-	showBacktrace(&out, stack, nil, "")
+	showBacktrace(&out, stack, backtraceSource{pausedExpr: nil, sourceRoot: ""})
 	require.LessOrEqual(t, out.Len(), lisp.DefaultMaxAlloc)
 	require.Contains(t, out.String(), "truncated")
 }

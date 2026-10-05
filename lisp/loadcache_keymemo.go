@@ -67,12 +67,13 @@ var (
 	loadCacheKeyDigests atomic.Int64
 )
 
-// memoLoadCacheKey returns exactly loadCacheKey(name, loc, readerID, byLoc,
-// src), skipping the digest when src equals the bytes last hashed for the
-// same identity.
-func memoLoadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
+// memoLoadCacheKey returns loadCacheKey(name, loc, opts), skipping the digest
+// when the source bytes and identity match the last cached entry.
+func memoLoadCacheKey(name string, loc string, opts loadKeySource) string {
+	readerID, byLoc, src := opts.readerID, opts.byLoc, opts.src
+
 	if len(src) > loadCacheKeyMemoMaxSource {
-		return loadCacheKey(name, loc, readerID, byLoc, src)
+		return loadCacheKey(name, loc, loadKeySource{readerID: readerID, byLoc: byLoc, src: src})
 	}
 	id := loadCacheKeyMemoID{name: name, loc: loc, readerID: readerID, byLoc: byLoc}
 	loadCacheKeyMemoMu.Lock()
@@ -81,7 +82,7 @@ func memoLoadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string
 	if ok && bytes.Equal(e.src, src) {
 		return e.key
 	}
-	key := loadCacheKey(name, loc, readerID, byLoc, src)
+	key := loadCacheKey(name, loc, loadKeySource{readerID: readerID, byLoc: byLoc, src: src})
 	cp := bytes.Clone(src)
 	if cp == nil {
 		cp = []byte{}

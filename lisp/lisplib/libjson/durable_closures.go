@@ -192,8 +192,12 @@ func (e *durableEncoder) bindings(env *lisp.LEnv) ([]binding, error) {
 // package that hold it.
 func (e *durableEncoder) scanFunValue(v *lisp.LVal, depth int) error {
 	if v.Builtin() != nil {
-		if _, _, ok, err := e.registeredBuiltin(v); ok || err != nil {
-			return err
+		{
+			registration, registrationErr := e.registeredBuiltin(v)
+			_, _, ok, err := registration.pkg, registration.name, registration.registered, registrationErr
+			if ok || err != nil {
+				return err
+			}
 		}
 		_, err := e.unregisteredBuiltinName(v)
 		return err

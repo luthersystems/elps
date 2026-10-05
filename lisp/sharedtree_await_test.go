@@ -4,7 +4,6 @@ package lisp_test
 
 import (
 	"testing"
-	"time"
 
 	"github.com/luthersystems/elps/internal/fuzzwatch"
 )
@@ -22,10 +21,10 @@ func TestAwaitSharedTreeFixedInputNeverSkips(t *testing.T) {
 	t.Parallel()
 	done := make(chan struct{})
 	checks := 0
-	inconclusive := func() (fuzzwatch.Verdict, time.Duration, fuzzwatch.Report) {
+	inconclusive := func() fuzzwatch.CheckResult {
 		checks++
 		close(done)
-		return fuzzwatch.Inconclusive, 0, fuzzwatch.Report{}
+		return fuzzwatch.CheckResult{Verdict: fuzzwatch.Inconclusive}
 	}
 
 	var sub *testing.T

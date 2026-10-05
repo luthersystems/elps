@@ -93,7 +93,8 @@ func (s *Server) textDocumentSignatureHelp(_ *glsp.Context, params *protocol.Sig
 // lookupQualifiedCallable looks up a qualified symbol (e.g. "string:join")
 // in the workspace package exports and returns it if it has a signature.
 func (s *Server) lookupQualifiedCallable(name string) *analysis.ExternalSymbol {
-	pkgName, symName, ok := splitPackageQualified(name)
+	parts, partsErr := splitPackageQualified(name)
+	pkgName, symName, ok := parts.pkg, parts.name, partsErr
 	if !ok || symName == "" {
 		return nil
 	}
@@ -261,7 +262,7 @@ func enclosingCall(exprs []*lisp.LVal, line, col int) (string, int) {
 	var bestArgIdx int
 	var bestDepth int
 
-	walkForCall(exprs, line, col, 0, func(name string, argIdx, depth int) {
+	walkForCall(exprs, callPosition{line: line, col: col, depth: 0}, func(name string, argIdx, depth int) {
 		if depth >= bestDepth {
 			bestName = name
 			bestArgIdx = argIdx
@@ -272,16 +273,30 @@ func enclosingCall(exprs []*lisp.LVal, line, col int) (string, int) {
 	return bestName, bestArgIdx
 }
 
+// callPosition holds the cursor position and call nesting depth.
+type callPosition struct {
+	// line is the one-based cursor line.
+	line int
+	// col is the one-based cursor byte column.
+	col int
+	// depth is the traversal depth.
+	depth int
+}
+
 // walkForCall recursively walks the AST looking for s-expressions
 // containing the given position. For each matching call, it invokes fn
 // with the head symbol name, argument index, and nesting depth.
-func walkForCall(exprs []*lisp.LVal, line, col, depth int, fn func(name string, argIdx, depth int)) {
+func walkForCall(exprs []*lisp.LVal, opts callPosition, fn func(name string, argIdx, depth int)) {
+	line, col, depth := opts.line, opts.col, opts.depth
+
 	for _, expr := range exprs {
-		walkNodeForCall(expr, line, col, depth, fn)
+		walkNodeForCall(expr, callPosition{line: line, col: col, depth: depth}, fn)
 	}
 }
 
-func walkNodeForCall(node *lisp.LVal, line, col, depth int, fn func(name string, argIdx, depth int)) {
+func walkNodeForCall(node *lisp.LVal, opts callPosition, fn func(name string, argIdx, depth int)) {
+	line, col, depth := opts.line, opts.col, opts.depth
+
 	if node == nil || node.Type != lisp.LSExpr || node.IsQuoted() || len(node.Cells) == 0 {
 		return
 	}
@@ -301,7 +316,7 @@ func walkNodeForCall(node *lisp.LVal, line, col, depth int, fn func(name string,
 
 	// Recurse into children for tighter matches.
 	for _, child := range node.Cells {
-		walkNodeForCall(child, line, col, depth+1, fn)
+		walkNodeForCall(child, callPosition{line: line, col: col, depth: depth + 1}, fn)
 	}
 }
 

@@ -29,14 +29,14 @@ func TestCleanDocRaw(t *testing.T) {
 
 func TestWriteValAndFun(t *testing.T) {
 	var buf bytes.Buffer
-	require.NoError(t, WriteVal(&buf, "int", "x", "42", "The answer."))
+	require.NoError(t, WriteVal(&buf, ValueDoc{TypeName: "int", Name: "x", Rendered: "42", Doc: "The answer."}))
 	assert.Equal(t, "int x 42\n  The answer.\n", buf.String())
 
 	buf.Reset()
-	require.NoError(t, WriteFun(&buf, "function", "(f a)", "", "Symbol doc."))
+	require.NoError(t, WriteFun(&buf, FunctionDoc{FunType: "function", Signature: "(f a)", Docstring: "", SymbolDoc: "Symbol doc."}))
 	assert.Equal(t, "function (f a)\n  Symbol doc.\n", buf.String())
 
 	buf.Reset()
-	require.NoError(t, WriteFun(&buf, "macro", "(m)", "", ""))
+	require.NoError(t, WriteFun(&buf, FunctionDoc{FunType: "macro", Signature: "(m)", Docstring: "", SymbolDoc: ""}))
 	assert.Equal(t, "macro (m)\n", buf.String())
 }

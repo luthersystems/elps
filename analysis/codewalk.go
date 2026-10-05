@@ -174,7 +174,8 @@ func (r *sourceResolver) form(node *lisp.LVal, op string, depth int) bool {
 			return true
 		}
 	}
-	descend, opaque, pkg := r.a.visitCall(node, r.scope, r.pkg)
+	visit := r.a.visitCall(node, r.scope, r.pkg)
+	descend, opaque, pkg := visit.walk, visit.opaque, visit.pkg
 	if depth == r.packageDepth {
 		r.pkg = pkg
 	}
@@ -309,11 +310,21 @@ func (a *analyzer) defineWalkSymbol(n *codewalk.Node, scope *Scope, pkg string) 
 	a.result.Symbols = append(a.result.Symbols, sym)
 }
 
+// callVisit holds call traversal and package state.
+type callVisit struct {
+	// walk allows traversal of the call.
+	walk bool
+	// opaque marks an opaque macro call.
+	opaque bool
+	// pkg is the active package name.
+	pkg string
+}
+
 // visitCall keeps expansion and opacity as resolution policy. Expansions are
 // walked with another CodeWalker so the depth cap counts all nested expansions,
 // not just a chain of heads. Prescan shares the expansion cache, and opaque
 // calls retain the original double reference to an unexpanded user macro.
-func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (bool, bool, string) {
+func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) callVisit {
 	if node.Cells[0].Type == lisp.LSymbol {
 		sym := scope.Lookup(node.Cells[0].Str)
 		isMacro := sym != nil && sym.Kind == SymMacro && isUserMacro(sym)
@@ -331,7 +342,7 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 			a.result.References = append(a.result.References, newReference(sym, node.Cells[0]))
 		}
 		if pkg, ok := a.analyzeExpansion(node, scope, currentPkg); ok {
-			return false, false, pkg
+			return callVisit{walk: false, opaque: false, pkg: pkg}
 		}
 		if importedOnly {
 			// analyzeExpansion analyzed nothing, so the reference just
@@ -341,10 +352,10 @@ func (a *analyzer) visitCall(node *lisp.LVal, scope *Scope, currentPkg string) (
 		}
 		if isMacro {
 			a.insideMacroCall++
-			return true, true, currentPkg
+			return callVisit{walk: true, opaque: true, pkg: currentPkg}
 		}
 	}
-	return true, false, currentPkg
+	return callVisit{walk: true, opaque: false, pkg: currentPkg}
 }
 
 // analyzeExpansion analyzes node's macro expansion in its place, recording

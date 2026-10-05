@@ -14,7 +14,7 @@ import (
 func Calls(exprs []*lisp.LVal, visit func(*lisp.LVal), formals func(Node)) {
 	calls := callVisitor{visit: visit, formals: formals}
 	for _, expr := range exprs {
-		syntax(expr, nil, 0, nil, nil, &calls)
+		syntax(expr, nil, 0, syntaxVisitors{visit: nil, stop: nil, calls: &calls})
 	}
 }
 
@@ -23,7 +23,25 @@ type callVisitor struct {
 	formals func(Node)
 }
 
-func emitCallFormals(visit func(Node), owner, formals, binding *lisp.LVal, op string, depth int, role FormalsRole) {
+// callFormals holds the formals owner, binding and traversal context.
+type callFormals struct {
+	// owner is the form that owns the formals.
+	owner *lisp.LVal
+	// formals contains the argument symbols.
+	formals *lisp.LVal
+	// binding is the local function binding.
+	binding *lisp.LVal
+	// op is the canonical operator name.
+	op string
+	// depth is the traversal depth.
+	depth int
+	// role is the formals role.
+	role FormalsRole
+}
+
+func emitCallFormals(visit func(Node), opts callFormals) {
+	owner, formals, binding, op, depth, role := opts.owner, opts.formals, opts.binding, opts.op, opts.depth, opts.role
+
 	visit(Node{Event: FormalsOccurrence, Node: formals, Formals: formals,
 		Owner: owner, Binding: binding, Op: op, Depth: depth, Role: role})
 }

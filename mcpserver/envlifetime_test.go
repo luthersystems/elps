@@ -324,7 +324,8 @@ func TestWithDocEnvTakesPrecedenceOverWithEnv(t *testing.T) {
 	require.NoError(t, err)
 
 	srv := New(WithEnv(diagnostics), WithDocEnv(docOnly))
-	env, release, err := srv.service.docEnv(context.Background())
+	request, requestErr := srv.service.docEnv(context.Background())
+	env, release, err := request.env, request.release, requestErr
 	require.NoError(t, err)
 	require.NotNil(t, release)
 	release()
@@ -341,7 +342,8 @@ func TestRequestEnvFactoryErrorSkipsRelease(t *testing.T) {
 		return nil, func() { released++ }, boom
 	}))
 
-	_, release, err := srv.service.newTestEnv(context.Background())
+	request, requestErr := srv.service.newTestEnv(context.Background())
+	_, release, err := request.env, request.release, requestErr
 	require.ErrorIs(t, err, boom)
 	require.NotNil(t, release, "release must be safe to defer even on error")
 	release()

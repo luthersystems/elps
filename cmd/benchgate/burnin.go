@@ -282,7 +282,8 @@ func runBurnin(args []string, stdout, stderr io.Writer, sampler func(rounds int)
 	runsDef, err1 := envDefaultInt("BENCH_BURNIN_RUNS", defaultBurninRuns)
 	warmDef, err2 := envDefaultInt("BENCH_BURNIN_WARMUP", defaultBurninWarmup)
 	roundsDef, err3 := envDefaultInt("BENCH_BURNIN_ROUNDS", referenceRounds)
-	spreadDef, spreadStr, err4 := envDefaultFloat("BENCH_BURNIN_SPREAD_PCT", defaultBurninSpread)
+	policy, policyErr := envDefaultFloat("BENCH_BURNIN_SPREAD_PCT", defaultBurninSpread)
+	spreadDef, spreadStr, err4 := policy.value, policy.text, policyErr
 	for _, err := range []error{err1, err2, err3, err4} {
 		if err != nil {
 			pf(stderr, "benchgate burnin: %v.\n", err)

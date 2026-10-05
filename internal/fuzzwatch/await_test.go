@@ -38,7 +38,7 @@ func TestAwaitStarvedSkipsAFuzzedInput(t *testing.T) {
 	// A result that is ready must not be taken: a fuzzed input does not wait.
 	ch := make(chan int, 1)
 	ch <- 1
-	if _, ok := AwaitStarved(rt, ch, Fuzzed, Report{}, "the work", ""); ok {
+	if _, ok := AwaitStarved(rt, ch, StarvedInput{Input: Fuzzed, Report: Report{}, What: "the work", Describe: ""}); ok {
 		t.Fatal("a fuzzed input returned a result after an Inconclusive verdict")
 	}
 	if rt.skipped == "" || rt.failed != "" {
@@ -53,7 +53,7 @@ func TestAwaitStarvedFixedInputWaitsForTheResult(t *testing.T) {
 	rt := &recordT{ctx: t.Context()}
 	ch := make(chan int, 1)
 	go func() { ch <- 42 }()
-	got, ok := AwaitStarved(rt, ch, Fixed, Report{}, "the work", "")
+	got, ok := AwaitStarved(rt, ch, StarvedInput{Input: Fixed, Report: Report{}, What: "the work", Describe: ""})
 	if !ok || got != 42 {
 		t.Fatalf("AwaitStarved returned (%d, %v), want (42, true)", got, ok)
 	}
@@ -68,7 +68,7 @@ func TestAwaitStarvedFixedInputWaitsForTheResult(t *testing.T) {
 func TestAwaitStarvedFixedInputFailsAtTheBackstop(t *testing.T) {
 	t.Parallel()
 	rt := &recordT{ctx: t.Context(), deadline: time.Now().Add(200 * time.Millisecond)}
-	if _, ok := AwaitStarved(rt, make(chan int), Fixed, Report{}, "the work", ""); ok {
+	if _, ok := AwaitStarved(rt, make(chan int), StarvedInput{Input: Fixed, Report: Report{}, What: "the work", Describe: ""}); ok {
 		t.Fatal("AwaitStarved returned a result from a channel that never sends")
 	}
 	if rt.skipped != "" {
@@ -91,7 +91,7 @@ func TestAwaitStarvedFixedInputPrefersAReadyResult(t *testing.T) {
 		rt := &recordT{ctx: ctx}
 		ch := make(chan int, 1)
 		ch <- i
-		got, ok := AwaitStarved(rt, ch, Fixed, Report{}, "the work", "")
+		got, ok := AwaitStarved(rt, ch, StarvedInput{Input: Fixed, Report: Report{}, What: "the work", Describe: ""})
 		if !ok || got != i || rt.failed != "" {
 			t.Fatalf("iteration %d: AwaitStarved returned (%d, %v), failed %q; want (%d, true) and no failure",
 				i, got, ok, rt.failed, i)

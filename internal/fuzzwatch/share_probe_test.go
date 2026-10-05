@@ -48,7 +48,8 @@ func TestCPUShareProbe(t *testing.T) {
 	c0 := cpuSeconds(t)
 	time.Sleep(window)
 	cpu := cpuSeconds(t) - c0
-	verdict, _, rep := b.Check()
+	checked := b.Check()
+	verdict, _, rep := checked.Verdict, checked.Wait, checked.Report
 	t.Logf("A sleep-window probe: %s", rep)
 	t.Logf("A verdict=%v starved=%v; process consumed %.3fs of CPU over the window",
 		verdict, rep.Starved(), cpu)
@@ -66,7 +67,8 @@ func TestCPUShareProbe(t *testing.T) {
 	took := time.Since(t0)
 	cpu2 := cpuSeconds(t) - c2
 	_ = x
-	_, _, rep2 := b2.Check()
+	checked2 := b2.Check()
+	_, _, rep2 := checked2.Verdict, checked2.Wait, checked2.Report
 	t.Logf("B cpu-bound probe: %d iterations took %v using %.3fs of CPU (share %.1f%%)",
 		workIters, took.Round(time.Millisecond), cpu2, 100*cpu2/took.Seconds())
 	t.Logf("B fuzzwatch says: %s", rep2)

@@ -71,8 +71,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 	registry := &env.Runtime.Registry.builtins
 	for _, f := range defs {
 		name := f.Name()
-		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
-			registrationFormals(&formals, f.Formals()), f.Eval, builtinDocstring(f))
+		v := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<builtin-function ``" + name + "''>", funType: LFunNone, formals: registrationFormals(&formals, f.Formals()), fn: f.Eval, doc: builtinDocstring(f)})
 		if freeKeys, _ := freeKeysOf(f); freeKeys != 0 {
 			v.funData().freeKeys = freeKeys
 		}

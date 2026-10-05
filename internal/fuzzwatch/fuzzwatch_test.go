@@ -143,7 +143,8 @@ func TestReportScheduled(t *testing.T) {
 func checkAt(b *Budget, wall, lost time.Duration) (Verdict, time.Duration, Report) {
 	b.startedAt = time.Now().Add(-wall)
 	b.lostAt = defaultMonitor.lost() - lost
-	return b.Check()
+	checked := b.Check()
+	return checked.Verdict, checked.Wait, checked.Report
 }
 
 func TestCheckHungOnAHealthyMachine(t *testing.T) {
@@ -305,7 +306,8 @@ func TestCheckNeverRearmsBelowAHeartbeat(t *testing.T) {
 func TestBudgetExpiresOnAnIdleMachine(t *testing.T) {
 	b := New(150 * time.Millisecond)
 	time.Sleep(b.Total() + 50*time.Millisecond)
-	v, _, r := b.Check()
+	checked := b.Check()
+	v, _, r := checked.Verdict, checked.Wait, checked.Report
 	if v != Hung {
 		t.Fatalf("verdict = %v, want Hung on an idle machine (%s)", v, r)
 	}

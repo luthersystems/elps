@@ -994,7 +994,8 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		}
 		if !memoised {
 			var dup int
-			result, list, quotes, quoteEdges, dup, evaluated = prepareUnquote(env, v, depth, valueDepth, seen)
+			prepared := prepareUnquote(env, v, unquoteContext{depth: depth, valueDepth: valueDepth}, seen)
+			result, list, quotes, quoteEdges, dup, evaluated = prepared.result, prepared.list, prepared.quotes, prepared.quoteEdges, prepared.dup, prepared.evaluated
 			need = quoteEdges
 			// The work this visit did: the quote wrappers it unwrapped, and
 			// a list's cells.  start is the work before it, for the grain.
@@ -1048,7 +1049,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				valueDepth = f.valueDepth + 1
 				continue
 			}
-			result = finishUnquote(list, f.cells, quotes, false, 0)
+			result = finishUnquote(list, f.cells, unquoteAssembly{quoteLevel: quotes, hasSplices: false, newlen: 0})
 			if memo != nil && quoteEdges > 0 {
 				// An empty list behind quote wrappers: pure, like a leaf.
 				memo[v] = quasiquoteMemo{result: result, need: quoteEdges, allocLimit: env.Runtime.MaxAllocBytes(), depthLimit: env.Runtime.ValueDepthLimit()}
@@ -1095,7 +1096,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				valueDepth = f.valueDepth + 1
 				break
 			}
-			rebuiltList := finishUnquote(f.v, f.cells, 0, f.splices, f.total)
+			rebuiltList := finishUnquote(f.v, f.cells, unquoteAssembly{quoteLevel: 0, hasSplices: f.splices, newlen: f.total})
 			result = requote(rebuiltList, f.quotes)
 			evaluated, need = f.impure, f.need
 			if memo != nil {
@@ -1116,6 +1117,30 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 	}
 }
 
+// unquoteContext holds quasiquote traversal and value depths.
+type unquoteContext struct {
+	// depth is the traversal depth.
+	depth int
+	// valueDepth is the current value depth.
+	valueDepth int
+}
+
+// unquotePreparation holds one quasiquote node's traversal state.
+type unquotePreparation struct {
+	// result is the value when no traversal is needed.
+	result *LVal
+	// list is the list to traverse.
+	list *LVal
+	// quotes is the quote level to restore.
+	quotes int
+	// quoteEdges counts unwrapped quote wrappers.
+	quoteEdges int
+	// dup counts previously visited wrappers.
+	dup int
+	// evaluated reports an evaluated unquote.
+	evaluated bool
+}
+
 // prepareUnquote examines one node of a quasiquote template.
 //
 // result is the node's value when it needs no walk: the node itself (a
@@ -1126,7 +1151,9 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 // error.  seen, when non-nil, is the set of wrappers the walk has unwrapped
 // before; dup counts those among this node's.  evaluated reports that
 // result is the value of an unquoted expression.
-func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]struct{}) (*LVal, *LVal, int, int, int, bool) {
+func prepareUnquote(env *LEnv, v *LVal, opts unquoteContext, seen map[*LVal]struct{}) unquotePreparation {
+	depth, valueDepth := opts.depth, opts.valueDepth
+
 	var quoteEdges int
 	var dup int
 	// Read the depth limit once per call.  The boundary is this function:
@@ -1139,7 +1166,7 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]st
 	// the next element.
 	depthLimit := env.Runtime.ValueDepthLimit()
 	if valueDepth >= depthLimit {
-		return env.Error(ValueDepthError(depthLimit)), nil, 0, 0, 0, false
+		return unquotePreparation{result: env.Error(ValueDepthError(depthLimit)), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 	}
 	// Traverse nested quasiquote/quote wrappers too; they do not delay an
 	// unquote in ELPS. See docs/lang.md#quasiquote-traversal. depth tracks
@@ -1153,7 +1180,7 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]st
 	for inner.Type == LQuote {
 		quoteEdges++
 		if valueDepth+quoteEdges >= depthLimit {
-			return env.Error(ValueDepthError(depthLimit)), nil, 0, 0, 0, false
+			return unquotePreparation{result: env.Error(ValueDepthError(depthLimit)), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 		}
 		if seen != nil {
 			if _, again := seen[inner]; again {
@@ -1168,29 +1195,29 @@ func prepareUnquote(env *LEnv, v *LVal, depth, valueDepth int, seen map[*LVal]st
 	if inner.Type != LSExpr {
 		// back out of the entire quote chain and return v to leave the value
 		// unchanged in the quasiquote.
-		return v, nil, 0, quoteEdges, dup, false
+		return unquotePreparation{result: v, list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: false}
 	}
 	v = inner
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
 		env.loc = v.source
-		return env.Error(err), nil, 0, 0, 0, false
+		return unquotePreparation{result: env.Error(err), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
 			env.loc = v.source
-			return env.Errorf("unquote-splicing used in an invalid context"), nil, 0, 0, 0, false
+			return unquotePreparation{result: env.Errorf("unquote-splicing used in an invalid context"), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 		}
-		return doUnquoteSpliced(env, expr), nil, 0, quoteEdges, dup, true
+		return unquotePreparation{result: doUnquoteSpliced(env, expr), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return doUnquoteValue(env, v.Cells[1], quoteLevel), nil, 0, quoteEdges, dup, true
+		return unquotePreparation{result: doUnquoteValue(env, v.Cells[1], quoteLevel), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
 	}
-	return nil, v, quoteLevel, quoteEdges, dup, false
+	return unquotePreparation{result: nil, list: v, quotes: quoteLevel, quoteEdges: quoteEdges, dup: dup, evaluated: false}
 }
 
 func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
@@ -1213,7 +1240,19 @@ func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
 	return x
 }
 
-func finishUnquote(v *LVal, cells []*LVal, quoteLevel int, hasSplices bool, newlen int) *LVal {
+// unquoteAssembly holds quote and splice settings for the rebuilt list.
+type unquoteAssembly struct {
+	// quoteLevel is the quote level to restore.
+	quoteLevel int
+	// newlen is the rebuilt list length.
+	newlen int
+	// hasSplices reports spliced child lists.
+	hasSplices bool
+}
+
+func finishUnquote(v *LVal, cells []*LVal, opts unquoteAssembly) *LVal {
+	quoteLevel, hasSplices, newlen := opts.quoteLevel, opts.hasSplices, opts.newlen
+
 	// splice in children of children that were unquoted with
 	// ``unquote-splicing''
 	if hasSplices {

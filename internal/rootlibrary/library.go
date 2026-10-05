@@ -41,6 +41,8 @@ func (lib *Library) Close() error { return lib.root.Close() }
 
 // LoadSource anchors initial loads at the root and nested loads at the calling
 // source's directory. The root handle enforces confinement at read time.
+//
+//nolint:revive // implements lisp.SourceLibrary; the interface requires four results
 func (lib *Library) LoadSource(ctx lisp.SourceContext, loc string) (string, string, []byte, error) {
 	requested := loc
 	if !filepath.IsAbs(loc) && ctx.Location() != "" {

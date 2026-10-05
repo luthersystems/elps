@@ -94,7 +94,8 @@ func TestStallProbeChildProcess(t *testing.T) {
 		}
 		time.Sleep(stallPoll)
 	}
-	v, _, r := b.Check()
+	checked := b.Check()
+	v, _, r := checked.Verdict, checked.Wait, checked.Report
 	fmt.Printf("FUZZWATCH-CHILD RESULT verdict=%s wall=%d lost=%d scheduled=%d starved=%t hardwall=%d\n",
 		v, r.Wall, r.Lost, r.Scheduled(), r.Starved(), b.hardWall)
 }
@@ -129,7 +130,8 @@ func TestStallResumeProbeChildProcess(t *testing.T) {
 		// up: this read is the measurement. Whether the sleep was the ordinary
 		// one or the one the freeze swallowed is decided afterwards, from the
 		// same instant.
-		v, _, r := b.Check()
+		checked := b.Check()
+		v, _, r := checked.Verdict, checked.Wait, checked.Report
 		if time.Since(before) < stallFreeze/2 {
 			if time.Now().After(deadline) {
 				fmt.Println("FUZZWATCH-CHILD ABORT never observed a freeze")

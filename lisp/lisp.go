@@ -573,24 +573,35 @@ func Bytes(b []byte) *LVal {
 	}
 }
 
+// symbolParts holds a symbol namespace, name and part count.
+type symbolParts struct {
+	// namespace is the symbol namespace.
+	namespace string
+	// name is the unqualified name.
+	name string
+	// parts counts colon-separated symbol parts.
+	parts int
+}
+
 // splitSymbolParts returns the namespace, name and number of colon-separated
 // parts without allocating. An unqualified symbol has an empty namespace.
-func splitSymbolParts(s string) (string, string, int) {
+func splitSymbolParts(s string) symbolParts {
 	var ns string
 	var name string
 	i := strings.IndexByte(s, ':')
 	if i < 0 {
-		return "", s, 1
+		return symbolParts{namespace: "", name: s, parts: 1}
 	}
 	ns, name = s[:i], s[i+1:]
-	return ns, name, 2 + strings.Count(name, ":")
+	return symbolParts{namespace: ns, name: name, parts: 2 + strings.Count(name, ":")}
 }
 
 func SplitSymbol(sym *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return Errorf("not a symbol")
 	}
-	ns, name, n := splitSymbolParts(sym.Str)
+	parts2 := splitSymbolParts(sym.Str)
+	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	switch n {
 	case 1:
 		return QExpr([]*LVal{sym})

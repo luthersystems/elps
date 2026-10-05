@@ -18,9 +18,23 @@ import (
 	"github.com/muesli/reflow/wordwrap"
 )
 
+// ValueDoc holds a value's name, representation and documentation.
+type ValueDoc struct {
+	// TypeName is the value type name.
+	TypeName string
+	// Name is the display name.
+	Name string
+	// Rendered is the rendered value.
+	Rendered string
+	// Doc contains the symbol documentation.
+	Doc string
+}
+
 // WriteVal writes the entry for a variable: its type name, its display name
 // and its rendered value on one line, then its cleaned doc, if any.
-func WriteVal(w io.Writer, typeName, name, rendered, doc string) error {
+func WriteVal(w io.Writer, opts ValueDoc) error {
+	typeName, name, rendered, doc := opts.TypeName, opts.Name, opts.Rendered, opts.Doc
+
 	_, err := fmt.Fprintf(w, "%v %s %v\n", typeName, name, rendered)
 	if err != nil {
 		return err
@@ -31,10 +45,24 @@ func WriteVal(w io.Writer, typeName, name, rendered, doc string) error {
 	return err
 }
 
+// FunctionDoc holds a function's signature and documentation.
+type FunctionDoc struct {
+	// FunType is the function kind.
+	FunType string
+	// Signature is the rendered function signature.
+	Signature string
+	// Docstring contains the function documentation.
+	Docstring string
+	// SymbolDoc contains binding documentation.
+	SymbolDoc string
+}
+
 // WriteFun writes the entry for a function: its kind and rendered signature
 // on one line, then its docstring, or symbolDoc when the function carries
 // no docstring of its own.
-func WriteFun(w io.Writer, funType, signature, docstring, symbolDoc string) error {
+func WriteFun(w io.Writer, opts FunctionDoc) error {
+	funType, signature, docstring, symbolDoc := opts.FunType, opts.Signature, opts.Docstring, opts.SymbolDoc
+
 	_, err := fmt.Fprintf(w, "%s ", funType)
 	if err != nil {
 		return fmt.Errorf("rendering function type: %w", err)

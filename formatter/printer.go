@@ -469,7 +469,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	for i := 1; i < len(v.Cells); i++ {
 		child := v.Cells[i]
 		onNewLine := hasNewlineBefore(child)
-		childIndent := p.computeChildIndent(rule, i, firstArgCol, bracketCol, onNewLine)
+		childIndent := p.computeChildIndent(rule, childIndent{childIdx: i, firstArgCol: firstArgCol, bracketCol: bracketCol, onNewLine: onNewLine})
 
 		if onNewLine {
 			p.newline()
@@ -489,7 +489,7 @@ func (p *printer) writeSExpr(v *lisp.LVal, indent int) {
 	}
 
 	// Write comments between last child and closing bracket
-	commentIndent := p.computeChildIndent(rule, len(v.Cells), firstArgCol, bracketCol, true)
+	commentIndent := p.computeChildIndent(rule, childIndent{childIdx: len(v.Cells), firstArgCol: firstArgCol, bracketCol: bracketCol, onNewLine: true})
 	p.writeInnerTrailingComments(v, commentIndent)
 
 	m := fmtraw.Meta(v)
@@ -657,10 +657,24 @@ func canWriteUnbound(inner *lisp.LVal) bool {
 	return true
 }
 
+// childIndent holds the child position and indentation columns.
+type childIndent struct {
+	// childIdx is the child argument index.
+	childIdx int
+	// firstArgCol is the first argument column.
+	firstArgCol int
+	// bracketCol is the opening bracket column.
+	bracketCol int
+	// onNewLine reports a child on a new line.
+	onNewLine bool
+}
+
 // computeChildIndent determines the indentation for child at index i.
 // For IndentSpecial header args, if the child wraps to a new line, body indent
 // is used instead of first-arg alignment to avoid rightward drift.
-func (p *printer) computeChildIndent(rule *IndentRule, childIdx int, firstArgCol int, bracketCol int, onNewLine bool) int {
+func (p *printer) computeChildIndent(rule *IndentRule, opts childIndent) int {
+	childIdx, firstArgCol, bracketCol, onNewLine := opts.childIdx, opts.firstArgCol, opts.bracketCol, opts.onNewLine
+
 	switch rule.Style {
 	case IndentBody:
 		return bracketCol + p.cfg.IndentSize

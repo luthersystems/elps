@@ -64,7 +64,7 @@ func TestRunDiagnosticSmallBudget(t *testing.T) {
 	expr := "(defun " + name + " (n) (if (= n 0) (error 'boom) (+ 1 (" + name + " (- n 1))))) (" + name + " 20)"
 	for _, limit := range []int{128 << 10, 256 << 10} {
 		var out bytes.Buffer
-		require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(limit)), errRendered)
+		require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, commandWriters{stdout: io.Discard, stderr: &out}, lisp.WithMaxAlloc(limit)), errRendered)
 		require.LessOrEqual(t, out.Len(), limit)
 		require.Contains(t, out.String(), "#<truncated>")
 	}
@@ -78,7 +78,7 @@ func TestRunDiagnosticFloorsTinyBudget(t *testing.T) {
 	name := strings.Repeat("x", 2048)
 	expr := "(defun " + name + " (n) (if (= n 0) (error 'boom) (+ 1 (" + name + " (- n 1))))) (" + name + " 20)"
 	var out bytes.Buffer
-	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(5)), errRendered)
+	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, commandWriters{stdout: io.Discard, stderr: &out}, lisp.WithMaxAlloc(5)), errRendered)
 	require.Contains(t, out.String(), "boom")
 	require.NotContains(t, out.String(), "#<truncated>")
 }
@@ -91,7 +91,7 @@ func TestRunDiagnosticCancelWriting(t *testing.T) {
 		out := &cancelDiagnosticWriter{cancel: cancel, after: after}
 		name := strings.Repeat("x", 50000)
 		expr := "(defun " + name + " (n) (if (= n 0) (error 'boom) (+ 1 (" + name + " (- n 1))))) (" + name + " 20)"
-		err := runElpsReport(ctx, []string{expr}, io.Discard, out, lisp.WithMaxAlloc(32768))
+		err := runElpsReport(ctx, []string{expr}, commandWriters{stdout: io.Discard, stderr: out}, lisp.WithMaxAlloc(32768))
 		cancel()
 		require.ErrorIs(t, err, errRendered)
 		require.LessOrEqual(t, out.Len(), after+4096+len("#<truncated>"))
@@ -106,7 +106,7 @@ func TestRunDiagnosticConditionBudget(t *testing.T) {
 	var out bytes.Buffer
 	const limit = 128 << 10
 	expr := "(error '" + strings.Repeat("condition", 12000) + ")"
-	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, io.Discard, &out, lisp.WithMaxAlloc(limit)), errRendered)
+	require.ErrorIs(t, runElpsReport(t.Context(), []string{expr}, commandWriters{stdout: io.Discard, stderr: &out}, lisp.WithMaxAlloc(limit)), errRendered)
 	require.LessOrEqual(t, out.Len(), limit)
 	require.True(t, strings.HasSuffix(out.String(), "#<truncated>"))
 }

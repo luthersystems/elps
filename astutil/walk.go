@@ -121,7 +121,7 @@ func UserDefined(exprs []*lisp.LVal) map[string]bool {
 		return true
 	}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, visit)
+		codewalk.Syntax(expr, codewalk.SyntaxContext{Parent: nil, Depth: 0}, visit)
 	}
 	return defs
 }
