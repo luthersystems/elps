@@ -102,7 +102,7 @@ func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 	// The envs below install refusingReader and reach the funnel through
 	// LoadLocation (byLoc == true); the key must be derived under the same
 	// reader identity and method or every hit turns into a miss.
-	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, loadKeySource{readerID: mustReaderIdentity(refusingReader{}), byLoc: true, src: []byte(src)})
 	entry, err := newCachedSource(key, name, loc, loadCacheSharedExprs())
 	if err != nil {
 		t.Fatalf("admission refused an ordinary parse: %v", err)
@@ -127,7 +127,7 @@ func TestLoadCacheSealedEntryIsExemptFromOwnership(t *testing.T) {
 // elpscheck, naming both runtimes.
 func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 	const name, loc, src = "smuggled.lisp", "smuggled.lisp", "'(1 2 3)"
-	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, loadKeySource{readerID: mustReaderIdentity(refusingReader{}), byLoc: true, src: []byte(src)})
 	// CachedSourceForTest deliberately skips the admission walk, so the
 	// entry carries exactly the unsealed, mutable tree newCachedSource
 	// would have copied and sealed.
@@ -166,7 +166,7 @@ func TestLoadCacheUnsealedEntryTripsOwnership(t *testing.T) {
 // not sealable, so the closure is checked and runtime B's load panics.
 func TestLoadCacheLaunderedClosureTripsOwnership(t *testing.T) {
 	const name, loc, src = "laundered.lisp", "laundered.lisp", "(a closure)"
-	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, loadKeySource{readerID: mustReaderIdentity(refusingReader{}), byLoc: true, src: []byte(src)})
 
 	fn := mintClosure(t)
 	forceSealAll(fn) // launder: seal flag on the non-sealable closure node
@@ -207,7 +207,7 @@ func TestLoadCacheLaunderedClosureTripsOwnership(t *testing.T) {
 // "the entry-level check did not fire".
 func TestVerifyCachedSourceOnHitCatchesSubstitutedRoots(t *testing.T) {
 	const name, loc, src = "a.lisp", "a.lisp", "'(1 2 3)"
-	key := loadCacheKey(name, loc, mustReaderIdentity(refusingReader{}), true, []byte(src))
+	key := loadCacheKey(name, loc, loadKeySource{readerID: mustReaderIdentity(refusingReader{}), byLoc: true, src: []byte(src)})
 	entry, err := newCachedSource(key, name, loc, loadCacheSharedExprs())
 	if err != nil {
 		t.Fatalf("admission refused an ordinary parse: %v", err)

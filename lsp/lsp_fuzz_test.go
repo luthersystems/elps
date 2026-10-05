@@ -1231,13 +1231,14 @@ func runSessionBudgeted(t fatalf, srcA, srcB, script []byte, input fuzzwatch.Inp
 		case err = <-done:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
 			case fuzzwatch.Inconclusive:
 				var ok bool
-				if err, ok = fuzzwatch.AwaitStarved(t, done, input, report, "the LSP session", describe); !ok {
+				if err, ok = fuzzwatch.AwaitStarved(t, done, fuzzwatch.StarvedInput{Input: input, Report: report, What: "the LSP session", Describe: describe}); !ok {
 					return
 				}
 				received = true

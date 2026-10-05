@@ -180,7 +180,8 @@ func TestWorkspaceIndexBuildsAreRaceFree(t *testing.T) {
 			defer wg.Done()
 			switch i % 3 {
 			case 0:
-				_, _, docErr := srv.service.loadDocument(cached, nil, &first)
+				loaded, loadedErr := srv.service.loadDocument(cached, nil, &first)
+				_, _, docErr := loaded.doc, loaded.state, loadedErr
 				assert.NoError(t, docErr)
 			case 1:
 				_, buildErr := srv.service.buildWorkspaceState(first, "fingerprint", time.Now())

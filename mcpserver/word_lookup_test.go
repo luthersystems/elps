@@ -187,7 +187,8 @@ func TestHoverAmpersandQualifiedSymbol(t *testing.T) {
 	col := strings.Index(mainContent, "a&b")
 	require.GreaterOrEqual(t, col, 0)
 
-	doc, _, err := srv.service.loadDocument(mainPath, nil, &tmp)
+	loaded, loadedErr := srv.service.loadDocument(mainPath, nil, &tmp)
+	doc, _, err := loaded.doc, loaded.state, loadedErr
 	require.NoError(t, err)
 	sym, _ := symbolAtPosition(doc, 0, col)
 	require.Nil(t, sym, "the test is only meaningful when the textual fallback is reached")

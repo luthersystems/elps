@@ -26,9 +26,16 @@ func (pkg *Package) FunNamesByFID() (map[string]string, int) {
 	read := 0
 	// The first name in sorted order is the minimum, which needs no sort:
 	// the bindings are read in any order.
-	visit := func(name, fid, fpkg string, ft LFunType, ok bool) {
+	visit := func(name string, identity functionIdentity) {
 		read++
-		if !ok || fpkg != pkg.Name || ft != LFunNone {
+		if !identity.ok || identity.funType != LFunNone {
+			return
+		}
+		fid, fpkg := "", ""
+		if identity.data != nil {
+			fid, fpkg = identity.data.fid, identity.data.pkg
+		}
+		if fpkg != pkg.Name {
 			return
 		}
 		if prev, seen := out[fid]; !seen || name < prev {
@@ -39,40 +46,46 @@ func (pkg *Package) FunNamesByFID() (map[string]string, int) {
 		for name, i := range pkg.base.index.Unordered() {
 			v := pkg.slotValue(i)
 			if v == nil && pkg.lazy.inst != nil {
-				fid, fpkg, ft, ok := pkg.lazy.peekFun(pkg.lazy.base.bindings[i].value)
-				visit(name, fid, fpkg, ft, ok)
+				visit(name, pkg.lazy.peekFun(pkg.lazy.base.bindings[i].value))
 				continue
 			}
-			fid, fpkg, ft, ok := funIdentity(v)
-			visit(name, fid, fpkg, ft, ok)
+			visit(name, funIdentity(v))
 		}
 		return out, read
 	}
 	for name, v := range pkg.symbols {
 		if v == lazyPending {
 			i, _ := pkg.lazy.base.index.Lookup(name)
-			fid, fpkg, ft, ok := pkg.lazy.peekFun(pkg.lazy.base.bindings[i].value)
-			visit(name, fid, fpkg, ft, ok)
+			visit(name, pkg.lazy.peekFun(pkg.lazy.base.bindings[i].value))
 			continue
 		}
-		fid, fpkg, ft, ok := funIdentity(v)
-		visit(name, fid, fpkg, ft, ok)
+		visit(name, funIdentity(v))
 	}
 	return out, read
 }
 
+// functionIdentity holds a function identity and its lookup status.
+type functionIdentity struct {
+	// data contains the function identifier and package name.
+	data *funData
+	// funType is the function kind.
+	funType LFunType
+	// ok reports a valid function identity.
+	ok bool
+}
+
 // funIdentity reports the FID, package and function type of a function
 // value; ok is false for anything else.
-func funIdentity(v *LVal) (string, string, LFunType, bool) {
+func funIdentity(v *LVal) functionIdentity {
 	if v == nil || v.Type != LFun {
-		return "", "", LFunNone, false
+		return functionIdentity{}
 	}
-	return v.FID(), v.Package(), v.FunType, true
+	return functionIdentity{data: v.funData(), funType: v.FunType, ok: true}
 }
 
 // peekFun reports the function identity of a binding the lazy plan has not
 // materialized, reading the plan instead of building the value.
-func (lazy *lazyPackage) peekFun(ref templateRef) (string, string, LFunType, bool) {
+func (lazy *lazyPackage) peekFun(ref templateRef) functionIdentity {
 	if ref.index == 0 {
 		return funIdentity(ref.shared)
 	}
@@ -83,10 +96,10 @@ func (lazy *lazyPackage) peekFun(ref templateRef) (string, string, LFunType, boo
 	}
 	tv := &lazy.inst.p.values[ref.index-1]
 	if tv.header.Type != LFun || tv.kind != templateFunction {
-		return "", "", LFunNone, false
+		return functionIdentity{}
 	}
 	fd := &lazy.inst.p.functions[tv.payload].header
-	return fd.fid, fd.pkg, tv.header.FunType, true
+	return functionIdentity{data: fd, funType: tv.header.FunType, ok: true}
 }
 
 // FirstNameOf returns the first name, in sorted order, under which pkg
@@ -98,6 +111,8 @@ func (lazy *lazyPackage) peekFun(ref templateRef) (string, string, LFunType, boo
 //
 // Like FunNamesByFID it reads a binding a lazy template has not
 // materialized from the template's plan, so it builds no value.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func (pkg *Package) FirstNameOf(fn *LVal) (string, bool, int) {
 	if fn == nil || fn.Type != LFun {
 		return "", false, 0

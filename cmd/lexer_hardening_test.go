@@ -100,7 +100,7 @@ func TestBOMToolPipeline(t *testing.T) {
 			t.Run("analyze", func(t *testing.T) {
 				var out, stderr bytes.Buffer
 				config := writeAnalyzeFixture(t, filepath.Join(dir, ".elps-analyze.yaml"), "{}\n")
-				code, err := runAnalyze([]string{path}, &out, &stderr, analyzeRunConfig{configFile: config, failOn: "error"})
+				code, err := runAnalyze([]string{path}, commandWriters{stdout: &out, stderr: &stderr}, analyzeRunConfig{configFile: config, failOn: "error"})
 				require.NoError(t, err)
 				require.Equal(t, 0, code, stderr.String())
 			})

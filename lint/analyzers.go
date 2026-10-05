@@ -734,7 +734,7 @@ func aritySkipNodes(exprs []*lisp.LVal) map[*lisp.LVal]bool {
 		return true
 	}
 	for _, expr := range exprs {
-		codewalk.Syntax(expr, nil, 0, visit)
+		codewalk.Syntax(expr, codewalk.SyntaxContext{Parent: nil, Depth: 0}, visit)
 	}
 	return skip
 }
@@ -3130,7 +3130,7 @@ func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
 	var visit func(s *analysis.Scope)
 	visit = func(s *analysis.Scope) {
 		if s.Kind == analysis.ScopeDotimes && s.Node != nil && len(s.Node.Cells) > 2 {
-			checkLoop(pass, sem, s, refAt, passFile)
+			checkLoop(pass, sem, loopCheck{loop: s, refAt: refAt, passFile: passFile})
 		}
 		for _, c := range s.Children {
 			visit(c)
@@ -3139,7 +3139,19 @@ func reportLoopCaptures(pass *Pass, sem *analysis.Result) {
 	visit(sem.RootScope)
 }
 
-func checkLoop(pass *Pass, sem *analysis.Result, loop *analysis.Scope, refAt map[*lisp.LVal]*analysis.Reference, passFile string) {
+// loopCheck holds the loop, reference index and source path.
+type loopCheck struct {
+	// loop is the loop scope.
+	loop *analysis.Scope
+	// refAt indexes references by node.
+	refAt map[*lisp.LVal]*analysis.Reference
+	// passFile is the analyzed file path.
+	passFile string
+}
+
+func checkLoop(pass *Pass, sem *analysis.Result, opts loopCheck) {
+	loop, refAt, passFile := opts.loop, opts.refAt, opts.passFile
+
 	// The loop variable is the first name of the control list; other
 	// names defined in the loop scope (a deftype in the body) are not it.
 	ctrl := loop.Node.Cells[1]

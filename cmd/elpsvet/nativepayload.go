@@ -466,8 +466,7 @@ func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool
 	default:
 		return
 	}
-	reportNativePayload(pass, call.Pos(), pass.TypesInfo.TypeOf(arg), "lisp."+fn.Name(),
-		payloadSite{kind: siteConstructor, inKernel: inKernelPkg(pass)}, allow)
+	reportNativePayload(pass, call.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(arg), what: "lisp." + fn.Name(), site: payloadSite{kind: siteConstructor, inKernel: inKernelPkg(pass)}, allow: allow})
 }
 
 // checkNativeLiteral handles a keyed literal setting the lisp.LVal.Native
@@ -501,8 +500,7 @@ func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[in
 		hasTypeKey: hasTypeKey,
 	}
 	for _, kv := range native {
-		reportNativePayload(pass, lit.Pos(), pass.TypesInfo.TypeOf(kv.Value), "LVal.Native literal", site, allow,
-			kv.Key.Pos(), kv.Value.Pos())
+		reportNativePayload(pass, lit.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(kv.Value), what: "LVal.Native literal", site: site, allow: allow}, kv.Key.Pos(), kv.Value.Pos())
 	}
 }
 
@@ -648,8 +646,7 @@ func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]
 		if !ok || !selectsNativeField(pass, sel) {
 			continue
 		}
-		reportNativePayload(pass, stmt.Pos(), pass.TypesInfo.TypeOf(stmt.Rhs[i]), "LVal.Native assignment",
-			payloadSite{kind: siteFieldWrite, inKernel: inKernelPkg(pass)}, allow)
+		reportNativePayload(pass, stmt.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(stmt.Rhs[i]), what: "LVal.Native assignment", site: payloadSite{kind: siteFieldWrite, inKernel: inKernelPkg(pass)}, allow: allow})
 	}
 }
 
@@ -673,10 +670,24 @@ func checkNativeAddress(pass *analysis.Pass, expr *ast.UnaryExpr, allow map[int]
 		nativeAllowMarker)
 }
 
+// nativePayloadReport holds the payload type, site and allowed lines.
+type nativePayloadReport struct {
+	// payload is the native payload type.
+	payload types.Type
+	// what names the work or diagnostic subject.
+	what string
+	// site describes the native payload site.
+	site payloadSite
+	// allow records allowed payload lines.
+	allow map[int]bool
+}
+
 // reportNativePayload classifies payload and reports at pos unless a
 // justified marker covers pos's line or any of the also lines (a literal's
 // key and value positions).
-func reportNativePayload(pass *analysis.Pass, pos token.Pos, payload types.Type, what string, site payloadSite, allow map[int]bool, also ...token.Pos) {
+func reportNativePayload(pass *analysis.Pass, pos token.Pos, opts nativePayloadReport, also ...token.Pos) {
+	payload, what, site, allow := opts.payload, opts.what, opts.site, opts.allow
+
 	if allow[pass.Fset.Position(pos).Line] {
 		return
 	}

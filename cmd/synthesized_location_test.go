@@ -49,7 +49,7 @@ func renderRunError(t *testing.T, name, src string) string {
 	res := env.LoadFile(file)
 	require.Equal(t, lisp.LError, res.Type, "the program was expected to fail: %v", res)
 	var buf bytes.Buffer
-	renderLispErrorTo(t.Context(), &buf, env.Runtime, res, file)
+	renderLispErrorTo(t.Context(), &buf, lispErrorSource{runtime: env.Runtime, lerr: res}, file)
 	return genFunName.ReplaceAllString(buf.String(), "_funN")
 }
 

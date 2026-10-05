@@ -229,7 +229,7 @@ func checkFreshness(pass *analysis.Pass, body *ast.BlockStmt, ann map[int]bool) 
 			handleAssign(pass, stmt, fresh, ann)
 			aliases.handleAssign(stmt)
 		case *ast.IncDecStmt:
-			checkWrite(pass, stmt.X, stmt.Pos(), fresh, ann)
+			checkWrite(pass, stmt.X, stmt.Pos(), freshnessState{fresh: fresh, ann: ann})
 			aliases.handleIncDec(stmt)
 		case *ast.CallExpr:
 			aliases.checkCall(stmt)
@@ -245,7 +245,7 @@ func handleAssign(pass *analysis.Pass, stmt *ast.AssignStmt, fresh map[types.Obj
 	if len(stmt.Rhs) == 1 && len(stmt.Lhs) > 1 {
 		rhsFresh := isFreshExpr(pass, stmt.Rhs[0], fresh)
 		for _, lhs := range stmt.Lhs {
-			trackOrCheck(pass, stmt, lhs, rhsFresh, fresh, ann)
+			trackOrCheck(pass, stmt, lhs, freshnessAssignment{rhsFresh: rhsFresh, fresh: fresh, ann: ann})
 		}
 		return
 	}
@@ -254,11 +254,23 @@ func handleAssign(pass *analysis.Pass, stmt *ast.AssignStmt, fresh map[types.Obj
 		if i < len(stmt.Rhs) {
 			rhsFresh = isFreshExpr(pass, stmt.Rhs[i], fresh)
 		}
-		trackOrCheck(pass, stmt, lhs, rhsFresh, fresh, ann)
+		trackOrCheck(pass, stmt, lhs, freshnessAssignment{rhsFresh: rhsFresh, fresh: fresh, ann: ann})
 	}
 }
 
-func trackOrCheck(pass *analysis.Pass, stmt *ast.AssignStmt, lhs ast.Expr, rhsFresh bool, fresh map[types.Object]bool, ann map[int]bool) {
+// freshnessAssignment holds assignment freshness and allowed write lines.
+type freshnessAssignment struct {
+	// rhsFresh reports a fresh assignment value.
+	rhsFresh bool
+	// fresh records known fresh values.
+	fresh map[types.Object]bool
+	// ann records allowed write lines.
+	ann map[int]bool
+}
+
+func trackOrCheck(pass *analysis.Pass, stmt *ast.AssignStmt, lhs ast.Expr, opts freshnessAssignment) {
+	rhsFresh, fresh, ann := opts.rhsFresh, opts.fresh, opts.ann
+
 	lhs = ast.Unparen(lhs)
 	if id, ok := lhs.(*ast.Ident); ok {
 		if id.Name == "_" {
@@ -273,12 +285,22 @@ func trackOrCheck(pass *analysis.Pass, stmt *ast.AssignStmt, lhs ast.Expr, rhsFr
 		}
 		return
 	}
-	checkWrite(pass, lhs, stmt.Pos(), fresh, ann)
+	checkWrite(pass, lhs, stmt.Pos(), freshnessState{fresh: fresh, ann: ann})
+}
+
+// freshnessState holds known fresh values and allowed write lines.
+type freshnessState struct {
+	// fresh records known fresh values.
+	fresh map[types.Object]bool
+	// ann records allowed write lines.
+	ann map[int]bool
 }
 
 // checkWrite reports lhs when it is a write into lisp.LVal storage whose
 // receiver chain does not root at a fresh value and no annotation covers it.
-func checkWrite(pass *analysis.Pass, lhs ast.Expr, stmtPos token.Pos, fresh map[types.Object]bool, ann map[int]bool) {
+func checkWrite(pass *analysis.Pass, lhs ast.Expr, stmtPos token.Pos, opts freshnessState) {
+	fresh, ann := opts.fresh, opts.ann
+
 	kind, recv := classifyLValWrite(pass, lhs)
 	if kind == "" {
 		return

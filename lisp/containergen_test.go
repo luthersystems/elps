@@ -564,7 +564,8 @@ func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp
 		case c = <-done:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
@@ -573,8 +574,7 @@ func containerFunCall(t *testing.T, env *lisp.LEnv, name string, fun, args *lisp
 				// terminates is unknown: a fuzzed input declines to answer,
 				// and a fixed input waits (see fuzzwatch.AwaitStarved).
 				var ok bool
-				if c, ok = fuzzwatch.AwaitStarved(t, done, input, report, name,
-					"\n"+renderContainerArgs(args.Cells)); !ok {
+				if c, ok = fuzzwatch.AwaitStarved(t, done, fuzzwatch.StarvedInput{Input: input, Report: report, What: name, Describe: "\n" + renderContainerArgs(args.Cells)}); !ok {
 					return nil
 				}
 				received = true

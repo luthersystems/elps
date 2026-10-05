@@ -63,7 +63,8 @@ func TestScanSubscript(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanSubscript(tc.In)
+			scanned, scannedErr := scanSubscript(tc.In)
+			n, step, err := scanned.consumed, scanned.path, scannedErr
 			if err != nil {
 				t.Fatalf("scanSubscript(%q): unexpected error: %v", tc.In, err)
 			}
@@ -91,7 +92,8 @@ func TestScanSubscriptRejects(t *testing.T) {
 	} {
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanSubscript(in)
+			scanned, scannedErr := scanSubscript(in)
+			n, step, err := scanned.consumed, scanned.path, scannedErr
 			if n != 0 || step != nil || err != nil {
 				t.Errorf("scanSubscript(%q) = (%d, %v, %v), want (0, nil, nil)",
 					in, n, step, err)
@@ -104,7 +106,8 @@ func TestScanSubscriptRejects(t *testing.T) {
 	} {
 		t.Run(tc.in, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanSubscript(tc.in)
+			scanned2, scannedErr2 := scanSubscript(tc.in)
+			n, step, err := scanned2.consumed, scanned2.path, scannedErr2
 			if err == nil {
 				t.Fatalf("scanSubscript(%q) = (%d, %v, nil), want an error", tc.in, n, step)
 			}
@@ -116,8 +119,12 @@ func TestScanSubscriptRejects(t *testing.T) {
 	// An overflowing bound in an UNTERMINATED bracket is a stall, not an
 	// overflow: the digits are converted only once the form is recognised, so
 	// the message names what is actually wrong.
-	if n, _, err := scanSubscript(`[99999999999999999999`); n != 0 || err != nil {
-		t.Errorf("an unterminated bracket must stall, got (%d, %v)", n, err)
+	{
+		scanned3, scannedErr3 := scanSubscript(`[99999999999999999999`)
+		n, _, err := scanned3.consumed, scanned3.path, scannedErr3
+		if n != 0 || err != nil {
+			t.Errorf("an unterminated bracket must stall, got (%d, %v)", n, err)
+		}
 	}
 }
 
@@ -154,7 +161,8 @@ func TestScanQuotedKey(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanQuotedKey(tc.In)
+			scanned, scannedErr := scanQuotedKey(tc.In)
+			n, step, err := scanned.consumed, scanned.path, scannedErr
 			if err != nil {
 				t.Fatalf("scanQuotedKey(%q): unexpected error: %v", tc.In, err)
 			}
@@ -186,15 +194,20 @@ func TestScanQuotedKeyRejects(t *testing.T) {
 	} {
 		t.Run(in, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanQuotedKey(in)
+			scanned, scannedErr := scanQuotedKey(in)
+			n, step, err := scanned.consumed, scanned.path, scannedErr
 			if n != 0 || step != nil || err != nil {
 				t.Errorf("scanQuotedKey(%q) = (%d, %v, %v), want (0, nil, nil)",
 					in, n, step, err)
 			}
 		})
 	}
-	if _, _, err := scanQuotedKey(`["\q"]`); err == nil {
-		t.Error(`scanQuotedKey(["\q"]) accepted an invalid escape`)
+	{
+		scanned2, scannedErr2 := scanQuotedKey(`["\q"]`)
+		_, _, err := scanned2.consumed, scanned2.path, scannedErr2
+		if err == nil {
+			t.Error(`scanQuotedKey(["\q"]) accepted an invalid escape`)
+		}
 	}
 }
 
@@ -222,7 +235,8 @@ func TestScanDotKey(t *testing.T) {
 	for _, tc := range testCases {
 		t.Run(tc.Name, func(t *testing.T) {
 			t.Parallel()
-			n, step, err := scanDotKey(tc.In)
+			scanned, scannedErr := scanDotKey(tc.In)
+			n, step, err := scanned.consumed, scanned.path, scannedErr
 			if err != nil {
 				t.Fatalf("scanDotKey(%q): unexpected error: %v", tc.In, err)
 			}
@@ -240,8 +254,12 @@ func TestScanDotKey(t *testing.T) {
 	// The narrow identifier rule, which is what keeps a key from swallowing
 	// the dot of the step after it.
 	for _, in := range []string{`.0`, `.$private`, `.`, `.-x`, `.9`, `[0]`, ``} {
-		if n, step, err := scanDotKey(in); n != 0 || step != nil || err != nil {
-			t.Errorf("scanDotKey(%q) = (%d, %v, %v), want (0, nil, nil)", in, n, step, err)
+		{
+			scanned2, scannedErr2 := scanDotKey(in)
+			n, step, err := scanned2.consumed, scanned2.path, scannedErr2
+			if n != 0 || step != nil || err != nil {
+				t.Errorf("scanDotKey(%q) = (%d, %v, %v), want (0, nil, nil)", in, n, step, err)
+			}
 		}
 	}
 }
@@ -264,26 +282,46 @@ func TestSelectorStepFormsAreDisjoint(t *testing.T) {
 	dots := []string{`.foo`, `._p`, `.a.b`, `.  wut`}
 
 	for _, in := range keys {
-		if n, _, err := scanSubscript(in); n != 0 || err != nil {
-			t.Errorf("scanSubscript must not claim the quoted key %q (got %d, %v)", in, n, err)
+		{
+			scanned, scannedErr := scanSubscript(in)
+			n, _, err := scanned.consumed, scanned.path, scannedErr
+			if n != 0 || err != nil {
+				t.Errorf("scanSubscript must not claim the quoted key %q (got %d, %v)", in, n, err)
+			}
 		}
 	}
 	for _, in := range subscripts {
-		if n, _, err := scanQuotedKey(in); n != 0 || err != nil {
-			t.Errorf("scanQuotedKey must not claim the subscript %q (got %d, %v)", in, n, err)
+		{
+			scanned2, scannedErr2 := scanQuotedKey(in)
+			n, _, err := scanned2.consumed, scanned2.path, scannedErr2
+			if n != 0 || err != nil {
+				t.Errorf("scanQuotedKey must not claim the subscript %q (got %d, %v)", in, n, err)
+			}
 		}
 	}
 	for _, in := range append(append([]string{}, subscripts...), keys...) {
-		if n, _, err := scanDotKey(in); n != 0 || err != nil {
-			t.Errorf("scanDotKey must not claim the bracket form %q (got %d, %v)", in, n, err)
+		{
+			scanned3, scannedErr3 := scanDotKey(in)
+			n, _, err := scanned3.consumed, scanned3.path, scannedErr3
+			if n != 0 || err != nil {
+				t.Errorf("scanDotKey must not claim the bracket form %q (got %d, %v)", in, n, err)
+			}
 		}
 	}
 	for _, in := range dots {
-		if n, _, err := scanSubscript(in); n != 0 || err != nil {
-			t.Errorf("scanSubscript must not claim the dot key %q (got %d, %v)", in, n, err)
+		{
+			scanned4, scannedErr4 := scanSubscript(in)
+			n, _, err := scanned4.consumed, scanned4.path, scannedErr4
+			if n != 0 || err != nil {
+				t.Errorf("scanSubscript must not claim the dot key %q (got %d, %v)", in, n, err)
+			}
 		}
-		if n, _, err := scanQuotedKey(in); n != 0 || err != nil {
-			t.Errorf("scanQuotedKey must not claim the dot key %q (got %d, %v)", in, n, err)
+		{
+			scanned5, scannedErr5 := scanQuotedKey(in)
+			n, _, err := scanned5.consumed, scanned5.path, scannedErr5
+			if n != 0 || err != nil {
+				t.Errorf("scanQuotedKey must not claim the dot key %q (got %d, %v)", in, n, err)
+			}
 		}
 	}
 
@@ -292,7 +330,8 @@ func TestSelectorStepFormsAreDisjoint(t *testing.T) {
 		{`[0]`, `[0]`}, {`[]`, `[]`}, {`[1:3]`, `[1:3]`},
 		{`["a"]`, `["a"]`}, {`[ "x" ]`, `["x"]`}, {`.foo`, `["foo"]`},
 	} {
-		n, step, err := scanStep(tc.in)
+		scanned6, scannedErr6 := scanStep(tc.in)
+		n, step, err := scanned6.consumed, scanned6.path, scannedErr6
 		if err != nil || step == nil {
 			t.Errorf("scanStep(%q) = (%d, %v, %v), want a step", tc.in, n, step, err)
 			continue
@@ -303,8 +342,12 @@ func TestSelectorStepFormsAreDisjoint(t *testing.T) {
 	}
 	// Nothing else begins a step.
 	for _, in := range []string{``, `foo`, `0`, `"a"`, `:`, `]`, `?`} {
-		if n, step, err := scanStep(in); n != 0 || step != nil || err != nil {
-			t.Errorf("scanStep(%q) = (%d, %v, %v), want (0, nil, nil)", in, n, step, err)
+		{
+			scanned7, scannedErr7 := scanStep(in)
+			n, step, err := scanned7.consumed, scanned7.path, scannedErr7
+			if n != 0 || step != nil || err != nil {
+				t.Errorf("scanStep(%q) = (%d, %v, %v), want (0, nil, nil)", in, n, step, err)
+			}
 		}
 	}
 }

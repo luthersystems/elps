@@ -152,7 +152,8 @@ func TestOwnOutputLoadsWithExactIntegers(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			// The document is the value inside the native message that
 			// json:dump-message produces.
-			b, loadable, err := s.dump(tc.v, false)
+			dumped, dumpedErr := s.dump(tc.v, false)
+			b, loadable, err := dumped.bytes, dumped.loadable, dumpedErr
 			require.NoError(t, err)
 			require.True(t, loadable,
 				"the encoder declined to vouch for %s, so this row proves nothing", b)

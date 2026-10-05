@@ -81,12 +81,14 @@ func runElps(args []string, stdout io.Writer) error {
 }
 
 func runElpsContext(ctx context.Context, args []string, stdout io.Writer) error {
-	return runElpsReport(ctx, args, stdout, os.Stderr)
+	return runElpsReport(ctx, args, commandWriters{stdout: stdout, stderr: os.Stderr})
 }
 
 // runElpsReport runs the command with explicit diagnostic output and runtime
 // configuration so tests exercise the same evaluation and reporting path.
-func runElpsReport(parent context.Context, args []string, stdout, stderr io.Writer, configs ...lisp.Config) error {
+func runElpsReport(parent context.Context, args []string, opts commandWriters, configs ...lisp.Config) error {
+	stdout, stderr := opts.stdout, opts.stderr
+
 	if runTimeout < 0 {
 		return errors.New("timeout must be non-negative")
 	}
@@ -157,7 +159,7 @@ func runElpsReport(parent context.Context, args []string, stdout, stderr io.Writ
 			return errRendered
 		}
 		if res.Type == lisp.LError {
-			renderLispErrorTo(ctx, stderr, env.Runtime, res, name)
+			renderLispErrorTo(ctx, stderr, lispErrorSource{runtime: env.Runtime, lerr: res}, name)
 			return errRendered
 		}
 		if runPrint {

@@ -58,10 +58,20 @@ func lintDiagToDiagnostic(ld lintpkg.Diagnostic) diagnostic.Diagnostic {
 // renderLispErrorContext renders a lisp error with diagnostic formatting to stderr.
 // If sourceFile is non-empty, a hint to run elps lint is appended.
 func renderLispErrorContext(ctx context.Context, runtime *lisp.Runtime, lerr *lisp.LVal, sourceFiles ...string) {
-	renderLispErrorTo(ctx, os.Stderr, runtime, lerr, sourceFiles...)
+	renderLispErrorTo(ctx, os.Stderr, lispErrorSource{runtime: runtime, lerr: lerr}, sourceFiles...)
 }
 
-func renderLispErrorTo(ctx context.Context, w io.Writer, runtime *lisp.Runtime, lerr *lisp.LVal, sourceFiles ...string) {
+// lispErrorSource holds the runtime and Lisp error to render.
+type lispErrorSource struct {
+	// runtime provides error rendering context.
+	runtime *lisp.Runtime
+	// lerr is the Lisp error to render.
+	lerr *lisp.LVal
+}
+
+func renderLispErrorTo(ctx context.Context, w io.Writer, opts lispErrorSource, sourceFiles ...string) {
+	runtime, lerr := opts.runtime, opts.lerr
+
 	var hint []string
 	if len(sourceFiles) > 0 && sourceFiles[0] != "" {
 		hint = []string{"try: elps lint ", sourceFiles[0]}

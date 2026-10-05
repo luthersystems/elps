@@ -145,15 +145,27 @@ func expandVariable(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.E
 		return []dap.Variable{}
 	}
 	formatter := debugger.NewProtocolValueFormatter(nil, eng)
-	vars := expandChildren(v, allocRef, eng, mapKeyFilter, formatter)
+	vars := expandChildren(v, allocRef, childExpansion{eng: eng, mapKeyFilter: mapKeyFilter, formatter: formatter})
 	if formatter.Exhausted() {
 		vars = append(vars, dap.Variable{Name: "#<truncated>"})
 	}
 	return vars
 }
 
+// childExpansion holds debugger child filtering and formatting settings.
+type childExpansion struct {
+	// eng provides debugger evaluation context.
+	eng *debugger.Engine
+	// mapKeyFilter filters displayed map keys.
+	mapKeyFilter *regexp.Regexp
+	// formatter renders debugger values.
+	formatter *debugger.ValueFormatter
+}
+
 // expandChildren formats the children of v until formatter's budget is exhausted.
-func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, eng *debugger.Engine, mapKeyFilter *regexp.Regexp, formatter *debugger.ValueFormatter) []dap.Variable {
+func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, opts childExpansion) []dap.Variable {
+	eng, mapKeyFilter, formatter := opts.eng, opts.mapKeyFilter, opts.formatter
+
 	switch v.Type {
 	case lisp.LSExpr:
 		vars := make([]dap.Variable, len(v.Cells))

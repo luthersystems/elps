@@ -151,15 +151,25 @@ func (a *analyzer) withOrigin(call *lisp.LVal, pkg string, fn func()) {
 	}
 }
 
+// packageExpansion holds expanded forms and their package state.
+type packageExpansion struct {
+	// forms contains expanded package forms.
+	forms []*lisp.LVal
+	// origins records each form's expansion origin.
+	origins []*expansionKey
+	// pkg is the active package name.
+	pkg string
+}
+
 // expandPackageForms replaces each top-level macro call among forms with the
 // package forms of its expansion, recursively, so prescan registers
 // definitions a macro generates. The parallel origins slice records each
 // occurrence's outermost call and its original package, even when expansions
 // share form nodes. The returned package is the one in effect after all forms,
 // including expanded ones.
-func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg string, origin *expansionKey) ([]*lisp.LVal, []*expansionKey, string) {
+func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg string, origin *expansionKey) packageExpansion {
 	if a.cfg == nil || a.cfg.MacroExpander == nil {
-		return forms, nil, pkg
+		return packageExpansion{forms: forms, origins: nil, pkg: pkg}
 	}
 	if origin == nil && a.fileNonMacros == nil {
 		// Prescan runs before the file's own definitions are registered, so
@@ -231,10 +241,11 @@ func (a *analyzer) expandPackageForms(forms []*lisp.LVal, scope *Scope, pkg stri
 		a.expansionDepth++
 		var expandedForms []*lisp.LVal
 		var expandedOrigins []*expansionKey
-		expandedForms, expandedOrigins, pkg = a.expandPackageForms(expansionPackageForms([]*lisp.LVal{expanded}), scope, pkg, o)
+		expanded2 := a.expandPackageForms(expansionPackageForms([]*lisp.LVal{expanded}), scope, pkg, o)
+		expandedForms, expandedOrigins, pkg = expanded2.forms, expanded2.origins, expanded2.pkg
 		out = append(out, expandedForms...)
 		origins = append(origins, expandedOrigins...)
 		a.expansionDepth--
 	}
-	return out, origins, pkg
+	return packageExpansion{forms: out, origins: origins, pkg: pkg}
 }

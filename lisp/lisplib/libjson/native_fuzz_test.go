@@ -45,8 +45,10 @@ func FuzzNativeEncodeMatchesLegacy(f *testing.F) {
 		for _, sn := range []bool{false, true} {
 			for _, b := range []encodeBudget{{}, {maxBytes: 1 << 30}, {maxBytes: 24}, {maxBytes: 96}} {
 				legacy := encodeMeter{legacyNatives: true}
-				wantB, wantLoadable, wantErr := DefaultSerializer().dumpLimit(v, sn, lisp.MaxValueDepth, b, legacy)
-				gotB, gotLoadable, gotErr := DefaultSerializer().dumpLimit(v, sn, lisp.MaxValueDepth, b, encodeMeter{})
+				dumped, dumpedErr := DefaultSerializer().dumpLimit(v, sn, dumpOptions{limit: lisp.MaxValueDepth, budget: b, meter: legacy})
+				wantB, wantLoadable, wantErr := dumped.bytes, dumped.loadable, dumpedErr
+				dumped2, dumpedErr2 := DefaultSerializer().dumpLimit(v, sn, dumpOptions{limit: lisp.MaxValueDepth, budget: b, meter: encodeMeter{}})
+				gotB, gotLoadable, gotErr := dumped2.bytes, dumped2.loadable, dumpedErr2
 				var size encodeSizeError
 				if wantErr != nil && gotErr != nil && errors.As(gotErr, &size) {
 					continue

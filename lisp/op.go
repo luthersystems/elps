@@ -411,7 +411,8 @@ func opExpr(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("one argument expected (got %d)", args.Len())
 	}
 	body := args.Cells[0]
-	n, short, nopt, vargs, err := countExprArgs(body)
+	counts, countsErr := countExprArgs(body)
+	n, short, nopt, vargs, err := counts.required, counts.short, counts.optional, counts.variadic, countsErr
 	if err != nil {
 		return env.Error(err)
 	}
@@ -490,34 +491,46 @@ func parseExprArgIndex(numStr string) (int, error) {
 	return num, nil
 }
 
-func countExprArgs(expr *LVal) (int, bool, int, bool, error) {
+// exprArgCounts holds an expression's required, optional and rest arguments.
+type exprArgCounts struct {
+	// required counts required arguments.
+	required int
+	// optional counts optional arguments.
+	optional int
+	// short reports the short argument spelling.
+	short bool
+	// variadic reports a rest argument.
+	variadic bool
+}
+
+func countExprArgs(expr *LVal) (exprArgCounts, error) {
 	var nargs int
 	var nopt int
 	var vargs bool
 	if expr.quoted {
-		return 0, false, 0, false, nil
+		return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, nil
 	}
 	switch expr.Type {
 	case LSymbol:
 		if !strings.HasPrefix(expr.Str, "%") {
-			return 0, false, 0, false, nil
+			return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, nil
 		}
 		numStr := expr.Str[1:]
 		if numStr == "" {
-			return 1, true, 0, false, nil
+			return exprArgCounts{required: 1, short: true, optional: 0, variadic: false}, nil
 		}
 		if numStr == VarArgSymbol {
-			return 0, false, 0, true, nil
+			return exprArgCounts{required: 0, short: false, optional: 0, variadic: true}, nil
 		}
 		if numStr == OptArgSymbol {
 			// multple optional args aren't supported currently
-			return 0, false, 1, false, nil
+			return exprArgCounts{required: 0, short: false, optional: 1, variadic: false}, nil
 		}
 		num, err := parseExprArgIndex(numStr)
 		if err != nil {
-			return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol %s: %w", expr.Str, err)
+			return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, fmt.Errorf("invalid expr argument symbol %s: %w", expr.Str, err)
 		}
-		return num, false, 0, false, nil
+		return exprArgCounts{required: num, short: false, optional: 0, variadic: false}, nil
 	case LSExpr:
 		short := false
 		for _, cell := range expr.Cells {
@@ -534,7 +547,7 @@ func countExprArgs(expr *LVal) (int, bool, int, bool, error) {
 						err := fmt.Errorf("invalid mixing of expr argument symbols: %s and %s",
 							fmt.Sprintf("%%%d", nargs),
 							cell.Str)
-						return 0, false, 0, false, err
+						return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, err
 					}
 					short = true
 				}
@@ -550,21 +563,21 @@ func countExprArgs(expr *LVal) (int, bool, int, bool, error) {
 			}
 			num, err := parseExprArgIndex(numStr)
 			if err != nil {
-				return 0, false, 0, false, fmt.Errorf("invalid expr argument symbol %s: %w", cell.Str, err)
+				return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, fmt.Errorf("invalid expr argument symbol %s: %w", cell.Str, err)
 			}
 			if short {
 				err := fmt.Errorf("invalid mix of expr argument symbols: %s and %s", "%", cell.Str)
-				return 0, false, 0, false, err
+				return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, err
 			}
 			if num > nargs {
 				nargs = num
 			}
 		}
-		return nargs, short, nopt, vargs, nil
+		return exprArgCounts{required: nargs, short: short, optional: nopt, variadic: vargs}, nil
 	case LInt, LFloat, LString:
-		return 0, false, 0, false, nil
+		return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, nil
 	default:
-		return 0, false, 0, false, fmt.Errorf("invalid internal expression type: %s", expr.Type)
+		return exprArgCounts{required: 0, short: false, optional: 0, variadic: false}, fmt.Errorf("invalid internal expression type: %s", expr.Type)
 	}
 }
 
@@ -1357,7 +1370,8 @@ func opQualifiedSymbol(env *LEnv, args *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return env.Errorf("argument is not a symbol: %v", GetType(sym))
 	}
-	_, _, n := splitSymbolParts(sym.Str)
+	parts2 := splitSymbolParts(sym.Str)
+	_, _, n := parts2.namespace, parts2.name, parts2.parts
 	if n > 2 {
 		pieces := SplitSymbol(sym)
 		if err := env.ErrorAssociate(pieces); err != nil {

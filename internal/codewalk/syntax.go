@@ -37,21 +37,43 @@ const (
 // events include quoted data, structural lists, empty lists and every leaf.
 type SyntaxVisitor = func(node, parent *lisp.LVal, op string, depth int) bool
 
+// SyntaxContext holds a syntax node's parent and depth.
+type SyntaxContext struct {
+	// Parent is the parent syntax node.
+	Parent *lisp.LVal
+	// Depth is the traversal depth.
+	Depth int
+}
+
 // Syntax visits raw syntax without expansion, lexical tracking, memoization
 // or a depth cap. It uses CodeWalker's operator registry, but leaves traversal
 // policy to its visitor. Tools that intentionally inspect malformed forms or
 // quoted structure can preserve that policy without decoding operator names.
 // A visitor may recursively call Syntax to select particular children.
 // An optional stop flag ends the walk when the visitor sets it to true.
-func Syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop ...*bool) {
+func Syntax(node *lisp.LVal, opts SyntaxContext, visit SyntaxVisitor, stop ...*bool) {
+	parent, depth := opts.Parent, opts.Depth
+
 	var stopped *bool
 	if len(stop) > 0 {
 		stopped = stop[0]
 	}
-	syntax(node, parent, depth, visit, stopped, nil)
+	syntax(node, parent, depth, syntaxVisitors{visit: visit, stop: stopped, calls: nil})
 }
 
-func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool, calls *callVisitor) {
+// syntaxVisitors holds syntax visitors and the stop flag.
+type syntaxVisitors struct {
+	// visit receives syntax nodes.
+	visit SyntaxVisitor
+	// stop ends traversal when set.
+	stop *bool
+	// calls receives evaluated call nodes.
+	calls *callVisitor
+}
+
+func syntax(node *lisp.LVal, parent *lisp.LVal, depth int, opts syntaxVisitors) {
+	visit, stop, calls := opts.visit, opts.stop, opts.calls
+
 	if node == nil || (stop != nil && *stop) {
 		return
 	}
@@ -72,12 +94,12 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool,
 		if policy != nil {
 			if formals != nil {
 				if i := policy.FormalsIndex; i > 0 && len(v.Cells) > i {
-					emitCallFormals(formals, v, v.Cells[i], nil, op, depth+1, policy.Role)
+					emitCallFormals(formals, callFormals{owner: v, formals: v.Cells[i], binding: nil, op: op, depth: depth + 1, role: policy.Role})
 				}
 				if policy.BindingFormals && len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
 					for _, binding := range v.Cells[1].Cells {
 						if binding.Type == lisp.LSExpr && len(binding.Cells) > 1 {
-							emitCallFormals(formals, v, binding.Cells[1], binding, op, depth+2, policy.Role)
+							emitCallFormals(formals, callFormals{owner: v, formals: binding.Cells[1], binding: binding, op: op, depth: depth + 2, role: policy.Role})
 						}
 					}
 				}
@@ -86,7 +108,7 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool,
 				for _, binding := range v.Cells[1].Cells {
 					if binding.Type == lisp.LSExpr {
 						for _, child := range binding.Cells[min(policy.BindingStart, len(binding.Cells)):] {
-							syntax(child, v, depth+3, nil, nil, calls)
+							syntax(child, v, depth+3, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 						}
 					}
 				}
@@ -95,7 +117,7 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool,
 				for _, clause := range v.Cells[1:] {
 					if clause.Type == lisp.LSExpr {
 						for _, child := range clause.Cells {
-							syntax(child, v, depth+2, nil, nil, calls)
+							syntax(child, v, depth+2, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 						}
 					}
 				}
@@ -104,7 +126,7 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool,
 			start = policy.CallsStart
 		}
 		for _, child := range v.Cells[min(start, len(v.Cells)):] {
-			syntax(child, v, depth+1, nil, nil, calls)
+			syntax(child, v, depth+1, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 		}
 		return
 	}
@@ -119,7 +141,7 @@ func syntax(node, parent *lisp.LVal, depth int, visit SyntaxVisitor, stop *bool,
 		if stop != nil && *stop {
 			return
 		}
-		syntax(child, node, depth+1, visit, stop, nil)
+		syntax(child, node, depth+1, syntaxVisitors{visit: visit, stop: stop, calls: nil})
 	}
 }
 

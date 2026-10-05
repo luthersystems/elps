@@ -38,11 +38,10 @@ func TestRunReportCancellation(t *testing.T) {
 			}
 			var stdout, stderr bytes.Buffer
 			var env *lisp.LEnv
-			err := runElpsReport(parent, []string{runEndlessProgram}, &stdout, &stderr,
-				lisp.WithMaxAlloc(256), func(e *lisp.LEnv) *lisp.LVal {
-					env = e
-					return lisp.Nil()
-				})
+			err := runElpsReport(parent, []string{runEndlessProgram}, commandWriters{stdout: &stdout, stderr: &stderr}, lisp.WithMaxAlloc(256), func(e *lisp.LEnv) *lisp.LVal {
+				env = e
+				return lisp.Nil()
+			})
 			require.ErrorIs(t, err, errRendered)
 			require.Equal(t, want, stderr.String())
 			require.Empty(t, stdout.String())

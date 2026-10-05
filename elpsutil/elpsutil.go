@@ -290,15 +290,15 @@ func PackageLoader(p Package) Loader {
 		if !e.IsNil() {
 			return e
 		}
-		e = addDefs(env, pkgName, kindBuiltin, packageBuiltins(p), env.AddBuiltins)
+		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindBuiltin}, packageBuiltins(p), env.AddBuiltins)
 		if e.Type == lisp.LError {
 			return e
 		}
-		e = addDefs(env, pkgName, kindSpecialOp, packageSpecialOps(p), env.AddSpecialOps)
+		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindSpecialOp}, packageSpecialOps(p), env.AddSpecialOps)
 		if e.Type == lisp.LError {
 			return e
 		}
-		e = addDefs(env, pkgName, kindMacro, packageMacros(p), env.AddMacros)
+		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindMacro}, packageMacros(p), env.AddMacros)
 		if e.Type == lisp.LError {
 			return e
 		}

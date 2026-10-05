@@ -67,7 +67,7 @@ func TestRunAnalyze_DefaultExcludesTestFiles(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		jsonOutput: true,
 		configFile: configPath,
 		failOn:     "error",
@@ -89,7 +89,7 @@ func TestRunAnalyze_IncludeTestsFlagIncludesTestFiles(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		jsonOutput:   true,
 		configFile:   configPath,
 		includeTests: true,
@@ -117,7 +117,7 @@ func TestRunAnalyze_ConfigCanIncludeTests(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		jsonOutput: true,
 		configFile: configPath,
 		failOn:     "error",
@@ -144,7 +144,7 @@ func TestRunAnalyze_IncludeTestsPreservesExplicitConfigTestExclude(t *testing.T)
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		jsonOutput:   true,
 		configFile:   configPath,
 		includeTests: true,
@@ -171,7 +171,7 @@ func TestRunAnalyze_IncludeTestsStillHonorsSpecificTestExcludes(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		jsonOutput: true,
 		configFile: configPath,
 		failOn:     "error",
@@ -198,7 +198,7 @@ func TestRunAnalyze_NoFilesRemainAfterDefaultTestExclusion(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, &stdout, &stderr, analyzeRunConfig{
+	code, err := runAnalyze([]string{filepath.Join(dir, "...")}, commandWriters{stdout: &stdout, stderr: &stderr}, analyzeRunConfig{
 		configFile: configPath,
 	})
 	require.Error(t, err)

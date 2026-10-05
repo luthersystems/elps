@@ -512,7 +512,8 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration, input fuzzwat
 		case d = <-ch:
 			received = true
 		case <-time.After(wait):
-			verdict, more, report := budget.Check()
+			checked := budget.Check()
+			verdict, more, report := checked.Verdict, checked.Wait, checked.Report
 			switch verdict {
 			case fuzzwatch.Continue:
 				wait = more
@@ -520,8 +521,7 @@ func evalUnderBudget(t fatalf, src []byte, deadline time.Duration, input fuzzwat
 				// Starved throughout.  Nothing can be said about a fuzzed
 				// input; see fuzzwatch.AwaitStarved for a fixed one.
 				var ok bool
-				if d, ok = fuzzwatch.AwaitStarved(t, ch, input, report, "evaluation",
-					fmt.Sprintf("\n--- source (%d bytes) ---\n%q", len(src), src)); !ok {
+				if d, ok = fuzzwatch.AwaitStarved(t, ch, fuzzwatch.StarvedInput{Input: input, Report: report, What: "evaluation", Describe: fmt.Sprintf("\n--- source (%d bytes) ---\n%q", len(src), src)}); !ok {
 					return evalOutcome{}, false
 				}
 				received = true

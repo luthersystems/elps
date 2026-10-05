@@ -287,9 +287,10 @@ func TestScannerAndAnalysisAgreeOnDefinitionSource(t *testing.T) {
 		token.NewScanner("drift.lisp", bytes.NewReader([]byte(src)))).ParseProgram()
 	require.NoError(t, err)
 
-	globals, _, _ := scanProgramSymbols(exprs, &Config{
+	symbols := scanProgramSymbols(exprs, &Config{
 		Analysis: &analysis.Config{DefForms: defForms},
 	})
+	globals, _, _ := symbols.globals, symbols.exports, symbols.packages
 	require.NotEmpty(t, globals)
 
 	res := analysis.Analyze(exprs, &analysis.Config{

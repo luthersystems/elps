@@ -363,7 +363,8 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	ctx := env.Runtime.sourceContext()
-	name, loc, src, lerr := env.readLibrarySource(ctx, loc)
+	source, sourceErr := env.readLibrarySource(ctx, loc)
+	name, loc, src, lerr := source.name, source.path, source.src, sourceErr
 	if lerr != nil {
 		return lerr
 	}
@@ -383,7 +384,7 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 	}
 
 	reader := env.Runtime.Reader
-	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
+	exprs, err := env.readCached(name, "", cachedRead{byLoc: false, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
@@ -414,7 +415,7 @@ func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
 	if !ok {
 		return env.Load(loc, r)
 	}
-	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
+	exprs, err := env.readCached(name, loc, cachedRead{byLoc: true, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
@@ -758,7 +759,8 @@ func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
 			return err
 		}
 	}
-	ns, name, n := splitSymbolParts(k.Str)
+	parts2 := splitSymbolParts(k.Str)
+	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	if k.Type != LSymbol || n > 2 {
 		// Keep SplitSymbol's error construction and association unchanged.
 		pieces := SplitSymbol(k)
@@ -791,7 +793,8 @@ func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
 // GetGlobal takes LSymbol k and returns the value it is bound to in the
 // current package.
 func (env *LEnv) GetGlobal(k *LVal) *LVal {
-	ns, name, n := splitSymbolParts(k.Str)
+	parts2 := splitSymbolParts(k.Str)
+	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	if k.Type != LSymbol || n > 2 {
 		// Keep SplitSymbol's error construction and association unchanged.
 		pieces := SplitSymbol(k)
@@ -844,7 +847,8 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	// write funnels through here first.
 	checkOwnership(env.Runtime, k)
 	checkOwnership(env.Runtime, v)
-	ns, name, n := splitSymbolParts(k.Str)
+	parts2 := splitSymbolParts(k.Str)
+	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	if k.Type != LSymbol || n > 2 {
 		// Keep SplitSymbol's error construction and association unchanged.
 		pieces := SplitSymbol(k)
@@ -931,7 +935,8 @@ func (env *LEnv) newUnchecked(typ *LVal, args *LVal) *LVal {
 	if args.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %v", GetType(args))
 	}
-	tname, ctor, lerr := env.typedefFields(typ)
+	descriptor, descriptorErr := env.typedefFields(typ)
+	tname, ctor, lerr := descriptor.name, descriptor.ctor, descriptorErr
 	if lerr != nil {
 		return lerr
 	}
@@ -942,24 +947,32 @@ func (env *LEnv) newUnchecked(typ *LVal, args *LVal) *LVal {
 	return env.TaggedValue(tname, v)
 }
 
+// typedefDescriptor holds a validated type name and constructor.
+type typedefDescriptor struct {
+	// name is the type name symbol.
+	name *LVal
+	// ctor is the type constructor.
+	ctor *LVal
+}
+
 // typedefFields checks the descriptor before indexing or invoking it.
 // Lisp can construct a value tagged lisp:typedef with arbitrary user data,
 // or mutate an existing descriptor through user-data. The tag alone is not
 // proof that the value is a usable type definition (docs/lang.md#user-defined-types).
-func (env *LEnv) typedefFields(typ *LVal) (*LVal, *LVal, *LVal) {
+func (env *LEnv) typedefFields(typ *LVal) (typedefDescriptor, *LVal) {
 	var name *LVal
 	var ctor *LVal
 	if len(typ.Cells) != 1 || typ.Cells[0] == nil || typ.Cells[0].Type != LSExpr || len(typ.Cells[0].Cells) != 2 {
-		return nil, nil, env.Errorf("invalid typedef: expected a name and constructor")
+		return typedefDescriptor{name: nil, ctor: nil}, env.Errorf("invalid typedef: expected a name and constructor")
 	}
 	name, ctor = typ.Cells[0].Cells[0], typ.Cells[0].Cells[1]
 	if name == nil || name.Type != LSymbol {
-		return nil, nil, env.Errorf("invalid typedef: name is not a symbol")
+		return typedefDescriptor{name: nil, ctor: nil}, env.Errorf("invalid typedef: name is not a symbol")
 	}
 	if ctor == nil || ctor.Type != LFun || ctor.IsSpecialFun() {
-		return nil, nil, env.Errorf("invalid typedef: constructor is not a regular function")
+		return typedefDescriptor{name: nil, ctor: nil}, env.Errorf("invalid typedef: constructor is not a regular function")
 	}
-	return name, ctor, nil
+	return typedefDescriptor{name: name, ctor: ctor}, nil
 }
 
 // Lambda returns a new Lambda with fun.Env and fun.Package set automatically.
@@ -1268,6 +1281,20 @@ func checkRegistrationFormals(kind, name string, formals *LVal) {
 	}
 }
 
+// registrationFunction holds registered function metadata and implementation.
+type registrationFunction struct {
+	// formals contains the argument symbols.
+	formals *LVal
+	// fn is the builtin implementation.
+	fn LBuiltin
+	// fid is the function identifier.
+	fid string
+	// doc contains the symbol documentation.
+	doc string
+	// funType is the function kind.
+	funType LFunType
+}
+
 // registrationFunValue builds the function value the Add* methods install: a
 // fresh LFun header over the (possibly shared, sealed) formals and the
 // documentation string.  It is FunInPackage/MacroInPackage/SpecialOpInPackage
@@ -1284,7 +1311,9 @@ func checkRegistrationFormals(kind, name string, formals *LVal) {
 // The value is its own registration record (funData.reg, see
 // builtinregistry.go), and the caller records it in the runtime's builtin
 // registry.
-func registrationFunValue(pkgName, name, fid string, funType LFunType, formals *LVal, fn LBuiltin, doc string) *LVal {
+func registrationFunValue(pkgName string, name string, opts registrationFunction) *LVal {
+	fid, funType, formals, fn, doc := opts.fid, opts.funType, opts.formals, opts.fn, opts.doc
+
 	v := &LVal{
 		Type:    LFun,
 		FunType: funType,
@@ -1345,8 +1374,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		// list that is registered.
 		macFormals := mac.Formals()
 		checkRegistrationFormals("macro", name, macFormals)
-		fn := registrationFunValue(pkg.Name, name, "<builtin-macro ``"+name+"''>", LFunMacro,
-			registrationFormals(&formals, macFormals), mac.Eval, builtinDocstring(mac))
+		fn := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<builtin-macro ``" + name + "''>", funType: LFunMacro, formals: registrationFormals(&formals, macFormals), fn: mac.Eval, doc: builtinDocstring(mac)})
 		pkg.putName(name, fn)
 		registry.register(fn, bound)
 		if external {
@@ -1379,8 +1407,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		// One read of Formals(); see AddMacros.
 		opFormals := op.Formals()
 		checkRegistrationFormals("special operator", name, opFormals)
-		fn := registrationFunValue(pkg.Name, name, "<special-op ``"+name+"''>", LFunSpecialOp,
-			registrationFormals(&formals, opFormals), op.Eval, builtinDocstring(op))
+		fn := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<special-op ``" + name + "''>", funType: LFunSpecialOp, formals: registrationFormals(&formals, opFormals), fn: op.Eval, doc: builtinDocstring(op)})
 		pkg.putName(name, fn)
 		registry.register(fn, bound)
 		if external {
@@ -1418,8 +1445,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 			// NOT LISP-REACHABLE (#367): registration is Go API.
 			panic(msg)
 		}
-		v := registrationFunValue(pkg.Name, name, "<builtin-function ``"+name+"''>", LFunNone,
-			registrationFormals(&formals, funFormals), f.Eval, builtinDocstring(f))
+		v := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<builtin-function ``" + name + "''>", funType: LFunNone, formals: registrationFormals(&formals, funFormals), fn: f.Eval, doc: builtinDocstring(f)})
 		if freeKeys != 0 {
 			v.funData().freeKeys = freeKeys
 		}
@@ -2192,7 +2218,7 @@ func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVa
 		return env.Errorf("no reader for environment runtime")
 	}
 	reader := env.Runtime.Reader
-	exprs, err := env.readCached(name, "", false, r, func(rd io.Reader) ([]*LVal, error) {
+	exprs, err := env.readCached(name, "", cachedRead{byLoc: false, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
@@ -2207,7 +2233,8 @@ func (env *LEnv) LoadFileContext(ctx context.Context, loc string) *LVal {
 		return env.Errorf("no source library in environment runtime")
 	}
 	sctx := env.Runtime.sourceContext()
-	name, loc, src, lerr := env.readLibrarySource(sctx, loc)
+	source, sourceErr := env.readLibrarySource(sctx, loc)
+	name, loc, src, lerr := source.name, source.path, source.src, sourceErr
 	if lerr != nil {
 		return lerr
 	}
@@ -2229,7 +2256,7 @@ func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io
 	if !ok {
 		return env.LoadContext(ctx, loc, r)
 	}
-	exprs, err := env.readCached(name, loc, true, r, func(rd io.Reader) ([]*LVal, error) {
+	exprs, err := env.readCached(name, loc, cachedRead{byLoc: true, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
@@ -2456,7 +2483,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		fn = fd.builtin
 	}
 	if fn != nil {
-		return env.callBuiltin(ctx, fun, fd, fn, list)
+		return env.callBuiltin(ctx, fun, builtinCall{fd: fd, fn: fn, list: list})
 	}
 
 	// With formal arguments bound, we can switch into the function's package
@@ -2512,11 +2539,23 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	return fenv.eval(ctx, body[len(body)-1])
 }
 
+// builtinCall holds the builtin implementation and argument list.
+type builtinCall struct {
+	// fd contains builtin function data.
+	fd *funData
+	// fn is the builtin implementation.
+	fn LBuiltin
+	// list contains the bound arguments.
+	list *LVal
+}
+
 // callBuiltin is call's native branch: it invokes fn, fun's Go
 // implementation, with the bound argument list.  It is a function of its own
 // so that its few defers are open-coded; in call, whose many returns rule
 // that out, every builtin call paid for a heap-style defer record.
-func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, fd *funData, fn LBuiltin, list *LVal) *LVal {
+func (env *LEnv) callBuiltin(ctx context.Context, fun *LVal, opts builtinCall) *LVal {
+	fd, fn, list := opts.fd, opts.fn, opts.list
+
 	// Bridge ctx onto env so builtins that call env.Eval() pick it up.
 	// Save and restore to prevent stale ctx from leaking after the
 	// builtin returns.
@@ -2683,7 +2722,7 @@ func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 	}
 	nformal := formals.Pos()
 	for !formals.IsEOF() {
-		ret := env.bindFormalNext(fun, &formals, &argsp, putArg, putVarArg)
+		ret := env.bindFormalNext(fun, &formals, &argsp, formalBindings{put: putArg, putVarArgs: putVarArg})
 		if ret.Type == LError {
 			return nil, ret
 		}
@@ -2760,7 +2799,17 @@ func bindNativePositional(formals, args []*LVal) *LVal {
 
 type bindfunc func(k, v *LVal) *LVal
 
-func (env *LEnv) bindFormalNext(fun *LVal, formals, args *argParser, put, putVarArgs bindfunc) *LVal {
+// formalBindings holds the fixed and rest argument binders.
+type formalBindings struct {
+	// put binds fixed arguments.
+	put bindfunc
+	// putVarArgs binds rest arguments.
+	putVarArgs bindfunc
+}
+
+func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, opts formalBindings) *LVal {
+	put, putVarArgs := opts.put, opts.putVarArgs
+
 	argSym := formals.Advance()
 	switch {
 	case argSym.Str == KeyArgSymbol:

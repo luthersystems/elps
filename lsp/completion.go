@@ -34,27 +34,39 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 	var items []protocol.CompletionItem
 
 	// Check for package-qualified completion (prefix contains ':').
-	if pkgName, partial, ok := splitPackageQualified(prefix); ok {
-		items = s.packageCompletions(doc, pkgName, partial)
-	} else {
-		items = s.scopeCompletions(doc, line, col, prefix)
+	{
+		parts, partsErr := splitPackageQualified(prefix)
+		pkgName, partial, ok := parts.pkg, parts.name, partsErr
+		if ok {
+			items = s.packageCompletions(doc, pkgName, partial)
+		} else {
+			items = s.scopeCompletions(doc, line, col, prefix)
+		}
 	}
 
 	return items, nil
 }
 
+// qualifiedParts holds the package and name of a qualified symbol.
+type qualifiedParts struct {
+	// pkg is the package qualifier.
+	pkg string
+	// name is the unqualified name.
+	name string
+}
+
 // splitPackageQualified checks if a prefix looks like "pkg:partial" and
 // splits it. Returns false if there's no package qualifier.
-func splitPackageQualified(prefix string) (string, string, bool) {
+func splitPackageQualified(prefix string) (qualifiedParts, bool) {
 	// Keywords start with ':' — don't treat as package qualifier.
 	if strings.HasPrefix(prefix, ":") {
-		return "", "", false
+		return qualifiedParts{pkg: "", name: ""}, false
 	}
 	idx := strings.LastIndex(prefix, ":")
 	if idx < 0 {
-		return "", "", false
+		return qualifiedParts{pkg: "", name: ""}, false
 	}
-	return prefix[:idx], prefix[idx+1:], true
+	return qualifiedParts{pkg: prefix[:idx], name: prefix[idx+1:]}, true
 }
 
 // packageCompletions returns completion items from a package's symbols.

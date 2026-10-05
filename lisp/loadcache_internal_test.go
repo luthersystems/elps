@@ -73,11 +73,11 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 		return exprs, nil
 	}
 
-	first, err := env.readCached("f.lisp", "f.lisp", false, strings.NewReader(src), parse)
+	first, err := env.readCached("f.lisp", "f.lisp", cachedRead{byLoc: false, r: strings.NewReader(src)}, parse)
 	if err != nil {
 		t.Fatalf("first read failed: %v", err)
 	}
-	second, err := env.readCached("f.lisp", "f.lisp", false, strings.NewReader(src), parse)
+	second, err := env.readCached("f.lisp", "f.lisp", cachedRead{byLoc: false, r: strings.NewReader(src)}, parse)
 	if err != nil {
 		t.Fatalf("second read failed: %v", err)
 	}
@@ -99,7 +99,7 @@ func TestReadCachedHandsOutTheCachedNodes(t *testing.T) {
 	// And the entry the cache holds is that same storage again — the miss
 	// path must not keep a pristine copy back, or the cache never serves
 	// what it stored (that copy is exactly the cost this hook removes).
-	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", mustReaderIdentity(env.Runtime.Reader), false, []byte(src)))
+	entry, ok := cache.Load(loadCacheKey("f.lisp", "f.lisp", loadKeySource{readerID: mustReaderIdentity(env.Runtime.Reader), byLoc: false, src: []byte(src)}))
 	if !ok {
 		t.Fatal("the miss path did not store an entry under the derived key")
 	}
@@ -189,7 +189,7 @@ func TestReadCachedRejectsLaunderedNonSealableNode(t *testing.T) {
 		return []*LVal{fn}, nil
 	}
 
-	exprs, err := env.readCached("laundered.lisp", "laundered.lisp", false, strings.NewReader("x"), parse)
+	exprs, err := env.readCached("laundered.lisp", "laundered.lisp", cachedRead{byLoc: false, r: strings.NewReader("x")}, parse)
 	if err != nil {
 		t.Fatalf("the load must still succeed uncached, got: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestReadCachedNilCacheDoesNotInterpose(t *testing.T) {
 	env := NewEnv(nil)
 	stream := strings.NewReader("()")
 	var got io.Reader
-	_, err := env.readCached("n.lisp", "n.lisp", false, stream, func(r io.Reader) ([]*LVal, error) {
+	_, err := env.readCached("n.lisp", "n.lisp", cachedRead{byLoc: false, r: stream}, func(r io.Reader) ([]*LVal, error) {
 		got = r
 		return nil, nil
 	})
@@ -243,7 +243,7 @@ func TestReadCachedNilCacheAllocatesNothing(t *testing.T) {
 	parse := func(io.Reader) ([]*LVal, error) { return nil, nil }
 	stream := strings.NewReader("")
 	got := testing.AllocsPerRun(200, func() {
-		_, _ = env.readCached("n.lisp", "n.lisp", false, stream, parse)
+		_, _ = env.readCached("n.lisp", "n.lisp", cachedRead{byLoc: false, r: stream}, parse)
 	})
 	if got != 0 {
 		t.Errorf("the nil-cache path allocated %v times per load; it must allocate nothing", got)

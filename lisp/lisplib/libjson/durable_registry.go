@@ -130,6 +130,8 @@ func NewDurableRegistry() *DurableRegistry {
 // payload version DumpDurable writes, starting at 1.  Register returns an
 // error for an empty or invalid name, a version below 1, a nil type or
 // codec, and a type or name that is already registered.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c NativeCodec, opts ...NativeOption) error {
 	switch {
 	case r == nil || r.byType == nil:
@@ -175,6 +177,8 @@ func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c
 
 // RegisterNative registers codec c for native payloads of Go type T.  See
 // DurableRegistry.Register.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func RegisterNative[T any](r *DurableRegistry, name string, version int, c NativeCodec, opts ...NativeOption) error {
 	return r.Register(reflect.TypeFor[T](), name, version, c, opts...)
 }

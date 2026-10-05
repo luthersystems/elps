@@ -30,12 +30,12 @@ func opHelp(env *LEnv, args *LVal) *LVal {
 	doc := helpSymbolDoc(env, name.Str)
 	var err error
 	if v.Type != LFun {
-		err = helpdoc.WriteVal(env.Runtime.getStderr(), GetType(v).Str, name.Str, env.Render(v), doc)
+		err = helpdoc.WriteVal(env.Runtime.getStderr(), helpdoc.ValueDoc{TypeName: GetType(v).Str, Name: name.Str, Rendered: env.Render(v), Doc: doc})
 	} else {
 		sig := SExpr(make([]*LVal, 1+v.Cells[0].Len()))
 		sig.Cells[0] = Symbol(name.Str)
 		copy(sig.Cells[1:], v.Cells[0].Cells)
-		err = helpdoc.WriteFun(env.Runtime.getStderr(), v.FunType.String(), env.Render(sig), v.Docstring(), doc)
+		err = helpdoc.WriteFun(env.Runtime.getStderr(), helpdoc.FunctionDoc{FunType: v.FunType.String(), Signature: env.Render(sig), Docstring: v.Docstring(), SymbolDoc: doc})
 	}
 	if err != nil {
 		return env.Error(err)

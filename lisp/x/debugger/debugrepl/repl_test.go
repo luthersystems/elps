@@ -109,7 +109,7 @@ func TestShowBacktrace_EmptyStack(t *testing.T) {
 	dbg := debugger.New()
 	env := newTestEnv(t, dbg)
 	var buf bytes.Buffer
-	showBacktrace(&buf, env.Runtime.Stack, nil, "")
+	showBacktrace(&buf, env.Runtime.Stack, backtraceSource{pausedExpr: nil, sourceRoot: ""})
 	assert.Contains(t, buf.String(), "(empty stack)")
 }
 

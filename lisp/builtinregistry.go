@@ -349,6 +349,8 @@ func (r *PackageRegistry) RegisteredBuiltin(pkg, name string) *LVal {
 // registration of the same name replaced.  Rebinding or shadowing the name
 // does not change the answer.  The record is shared by every VM a template
 // mints, so the answer is the same in the source and in each VM.
+//
+//nolint:revive // exported API; changing it breaks embedders
 func (r *PackageRegistry) RegisteredBuiltinName(fn *LVal) (string, string, bool) {
 	if r == nil || fn == nil || fn.Type != LFun {
 		return "", "", false
@@ -371,7 +373,8 @@ func builtinRegisteredBuiltin(env *LEnv, args *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return env.Errorf("name is not a symbol: %v", sym.Type)
 	}
-	pkg, name, n := splitSymbolParts(sym.Str)
+	parts2 := splitSymbolParts(sym.Str)
+	pkg, name, n := parts2.namespace, parts2.name, parts2.parts
 	if n != 2 || pkg == "" || name == "" {
 		return env.Errorf("name must be qualified (PKG:NAME): %v", sym.Str)
 	}

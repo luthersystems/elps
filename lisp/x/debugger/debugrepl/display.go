@@ -55,8 +55,18 @@ func showSourceContext(w io.Writer, file string, line int, lib lisp.SourceLibrar
 	}
 }
 
+// backtraceSource holds the paused expression and source root.
+type backtraceSource struct {
+	// pausedExpr is the paused expression.
+	pausedExpr *lisp.LVal
+	// sourceRoot anchors source locations.
+	sourceRoot string
+}
+
 // showBacktrace prints the call stack in a human-readable format.
-func showBacktrace(w io.Writer, stack *lisp.CallStack, pausedExpr *lisp.LVal, sourceRoot string, envs ...*lisp.LEnv) {
+func showBacktrace(w io.Writer, stack *lisp.CallStack, opts backtraceSource, envs ...*lisp.LEnv) {
+	pausedExpr := opts.pausedExpr
+
 	var env *lisp.LEnv
 	if len(envs) > 0 {
 		env = envs[0]

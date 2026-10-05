@@ -383,6 +383,16 @@ func readerIdentity(r Reader) (string, bool) {
 	return "go:" + star + t.String(), true
 }
 
+// loadKeySource holds the reader identity and source bytes.
+type loadKeySource struct {
+	// readerID identifies the source parser.
+	readerID string
+	// src contains source bytes.
+	src []byte
+	// byLoc selects location-based cache keys.
+	byLoc bool
+}
+
 // loadCacheKey derives the cache key for a source stream.  The digest covers
 // the bytes, both identity strings, the identity of the READER that will parse
 // them, and which reader METHOD (Read vs ReadLocation) is in use — each
@@ -405,7 +415,9 @@ func readerIdentity(r Reader) (string, bool) {
 // PROGRAM RUNS, and on a collision the wrong program runs silently.  The
 // cost is one pass over a source file per load — nanoseconds per kilobyte,
 // against the milliseconds of parsing it replaces.
-func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
+func loadCacheKey(name string, loc string, opts loadKeySource) string {
+	readerID, byLoc, src := opts.readerID, opts.byLoc, opts.src
+
 	loadCacheKeyDigests.Add(1)
 	h := sha256.New()
 	var n [8]byte
@@ -424,6 +436,15 @@ func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
 	}
 	write(src)
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// cachedRead holds the source reader and location mode.
+// Keep the parser callback separate so it does not escape with the reader.
+type cachedRead struct {
+	// r reads the source.
+	r io.Reader
+	// byLoc selects location-based cache keys.
+	byLoc bool
 }
 
 // readCached is the single point where every Load* entry point turns a byte
@@ -507,7 +528,9 @@ func loadCacheKey(name, loc, readerID string, byLoc bool, src []byte) string {
 // whose file load-files another re-enters only AFTER this function has
 // returned and (*LEnv).load begins evaluating, by which point the guard is
 // already cleared — so nested loads still cache normally.
-func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse func(io.Reader) ([]*LVal, error)) ([]*LVal, error) {
+func (env *LEnv) readCached(name string, loc string, opts cachedRead, parse func(io.Reader) ([]*LVal, error)) ([]*LVal, error) {
+	byLoc, r := opts.byLoc, opts.r
+
 	cache := env.Runtime.LoadCache
 	if cache == nil || env.Runtime.loadCacheActive {
 		return parse(r)
@@ -527,7 +550,7 @@ func (env *LEnv) readCached(name, loc string, byLoc bool, r io.Reader, parse fun
 	if err != nil {
 		return nil, err
 	}
-	key := memoLoadCacheKey(name, loc, readerID, byLoc, src)
+	key := memoLoadCacheKey(name, loc, loadKeySource{readerID: readerID, byLoc: byLoc, src: src})
 	if entry, ok := env.cacheLoad(cache, key); ok && entry != nil && entry.key == key {
 		// Checked builds re-verify the entry against the fingerprint taken at
 		// ADMISSION, not against a per-root seal-time record: the entry

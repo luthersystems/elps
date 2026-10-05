@@ -16,6 +16,7 @@ type handlerWrapper struct {
 	server *Server
 }
 
+//nolint:revive // implements glsp.Handler; the interface requires four results
 func (w *handlerWrapper) Handle(ctx *glsp.Context) (any, bool, bool, error) {
 	switch ctx.Method {
 	case "textDocument/inlayHint":

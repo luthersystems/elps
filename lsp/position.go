@@ -140,7 +140,8 @@ func wordAtPosition(content string, line, col int) string {
 // wordRangeAtPosition returns the LSP range for the symbol-like word at the
 // given 0-based position. Returns nil if there is no word at that location.
 func wordRangeAtPosition(content string, line, col int) *protocol.Range {
-	start, end, ok := wordBoundsAtPosition(content, line, col)
+	bounds, boundsErr := wordBoundsAtPosition(content, line, col)
+	start, end, ok := bounds.Start, bounds.End, boundsErr
 	if !ok {
 		return nil
 	}
@@ -151,7 +152,7 @@ func wordRangeAtPosition(content string, line, col int) *protocol.Range {
 	return &rng
 }
 
-func wordBoundsAtPosition(content string, line, col int) (int, int, bool) {
+func wordBoundsAtPosition(content string, line, col int) (symtext.WordBounds, bool) {
 	return wordBoundsInLine(lineOf(content, line), col)
 }
 
@@ -159,7 +160,7 @@ func wordBoundsAtPosition(content string, line, col int) (int, int, bool) {
 // selected line: splitting the document here allocated a line slice on every
 // completion/definition/hover request (#641). The scan lives in
 // internal/symtext, which the MCP server shares (#654).
-func wordBoundsInLine(ln string, col int) (int, int, bool) {
+func wordBoundsInLine(ln string, col int) (symtext.WordBounds, bool) {
 	return symtext.WordBoundsInLine(ln, col)
 }
 
