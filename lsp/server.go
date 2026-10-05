@@ -358,6 +358,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var defForms []analysis.DefFormSpec
 	var packageImports map[string][]string
 	var defaultPackage string
+	var filePackages map[string]string
 
 	scanCfg := s.scanConfig()
 
@@ -372,6 +373,7 @@ func (s *Server) buildWorkspaceIndex() {
 			defForms = prescan.DefForms
 			packageImports = prescan.PackageImports
 			defaultPackage = prescan.DefaultPackage
+			filePackages = prescan.FilePackages
 			preamble = prescan.Preamble
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
@@ -417,6 +419,7 @@ func (s *Server) buildWorkspaceIndex() {
 		DefForms:       defForms,
 		PackageImports: packageImports,
 		DefaultPackage: defaultPackage,
+		FilePackages:   filePackages,
 	}
 
 	// Enable macro expansion at analysis time if an environment is available.

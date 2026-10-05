@@ -631,12 +631,21 @@ func scanUsePackages(exprs []*lisp.LVal) map[string][]string {
 // rebuild was written and was never added to it (issue #353). Copying carries
 // new Config fields through automatically, so the omission cannot recur.
 // Use this anywhere a workspace-wide Config is specialised for one file.
+//
+// When cfg.FilePackages names the file, its package replaces DefaultPackage.
 func ConfigForFile(cfg *Config, filename string) *Config {
 	fileCfg := &Config{}
 	if cfg != nil {
 		*fileCfg = *cfg
 	}
 	fileCfg.Filename = filename
+	if len(fileCfg.FilePackages) > 0 {
+		if abs, err := filepath.Abs(filename); err == nil {
+			if pkg, ok := fileCfg.FilePackages[abs]; ok {
+				fileCfg.DefaultPackage = pkg
+			}
+		}
+	}
 	return fileCfg
 }
 
@@ -994,6 +1003,11 @@ type WorkspacePrescan struct {
 	// resolution works in projects where files inherit the package from
 	// load order.
 	DefaultPackage string
+	// FilePackages maps the absolute path of each file in main.lisp's
+	// load-file tree to the package active at its load-file call. Copy it
+	// to Config.FilePackages. It is set only when DefaultPackage is set,
+	// the same condition under which definitions are remapped.
+	FilePackages map[string]string
 }
 
 // PrescanWorkspace performs a single-pass workspace scan that collects
@@ -1165,6 +1179,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 	// (3) Non-bare files: only remap user-package defs that appear before
 	//     the first in-package (they inherit the load context, not "user").
 	if defaultPkg != "" {
+		prescan.FilePackages = loadTree
 		bareFiles := make(map[string]bool)
 		firstPkgLine := make(map[string]int) // file → line of first in-package
 		for i, r := range results {
@@ -1185,12 +1200,18 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 			if sym.Package != userPkg || sym.Source == nil {
 				return "", false
 			}
-			pkg, inTree := loadTree[sym.Source.File]
+			// The maps are keyed by absolute path, but Source.File holds
+			// the path as the caller gave it, which can be relative.
+			file := sym.Source.File
+			if abs, absErr := filepath.Abs(file); absErr == nil {
+				file = abs
+			}
+			pkg, inTree := loadTree[file]
 			// Bare file: remap to load-tree package, or defaultPkg if not
 			// in the load tree. At runtime, bare files always inherit their
 			// caller's package — defaultPkg is the best approximation when
 			// the file isn't explicitly loaded via load-file.
-			if bareFiles[sym.Source.File] {
+			if bareFiles[file] {
 				if !inTree {
 					pkg = defaultPkg
 				}
@@ -1200,7 +1221,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				return "", false
 			}
 			// Non-bare file: remap user-package defs before the first in-package.
-			if line, ok := firstPkgLine[sym.Source.File]; ok && sym.Source.Line < line {
+			if line, ok := firstPkgLine[file]; ok && sym.Source.Line < line {
 				return pkg, true
 			}
 			return "", false

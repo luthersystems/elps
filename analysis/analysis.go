@@ -44,6 +44,12 @@ type Config struct {
 	// (no in-package declaration). Derived from main.lisp's in-package.
 	DefaultPackage string
 
+	// FilePackages maps the absolute path of a file to the package that is
+	// active when the file starts to run: the package at its load-file call.
+	// ConfigForFile uses it in place of DefaultPackage for a file it names,
+	// so a file without in-package resolves in the package that loads it.
+	FilePackages map[string]string
+
 	// WorkspaceRefs maps SymbolKey.String() to cross-file references.
 	// When set, analyzers can check whether a symbol is referenced from
 	// other files in the workspace.

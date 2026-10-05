@@ -3606,6 +3606,29 @@ func TestHover_AllKeywords(t *testing.T) {
 	}
 }
 
+func TestBareFileLoadedFromOtherPackage_Issue811(t *testing.T) {
+	// c.lisp has no in-package and sub.lisp loads it in 'other, so k
+	// (defined in 'other) must resolve in c.lisp.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(
+		"(in-package 'app)\n(load-file \"sub.lisp\")\n"), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub.lisp"), []byte(
+		"(in-package 'other)\n(defun k () 1)\n(load-file \"c.lisp\")\n"), 0600))
+	cSrc := "(defun h () (k))\n"
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "c.lisp"), []byte(cSrc), 0600))
+
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+
+	doc := openDoc(s, pathToURI(filepath.Join(dir, "c.lisp")), cSrc)
+	s.ensureAnalysis(doc)
+	require.NotNil(t, doc.analysis)
+	for _, u := range doc.analysis.Unresolved {
+		assert.NotEqual(t, "k", u.Name, "k should resolve in the package that loads c.lisp")
+	}
+}
+
 // --- Diagnostic position tests (issue #251) ---
 
 func TestDiagnosticPositions_Issue251_Repro(t *testing.T) {

@@ -1537,6 +1537,77 @@ func TestPrescanWorkspace_SetInBareFileRemapped(t *testing.T) {
 	}
 }
 
+func TestPrescanWorkspace_BareFileRemappedWithRelativeRoot(t *testing.T) {
+	// #811: with a relative root the file paths are relative, but the load
+	// tree is keyed by absolute path. The remap must still find bare files.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'app)
+(load-file "b.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "b.lisp"), []byte(`
+(defun g () 1)
+`), 0600))
+	t.Chdir(dir)
+
+	prescan, err := PrescanWorkspace(".", nil)
+	require.NoError(t, err)
+
+	found := false
+	for _, d := range prescan.AllDefs {
+		if d.Name == "g" {
+			assert.Equal(t, "app", d.Package,
+				"bare file def should be remapped to the loader's package")
+			found = true
+		}
+	}
+	assert.True(t, found, "g should be in AllDefs")
+}
+
+func TestConfigForFile_FilePackages(t *testing.T) {
+	dir := t.TempDir()
+	cPath := filepath.Join(dir, "c.lisp")
+	base := &Config{
+		DefaultPackage: "app",
+		FilePackages:   map[string]string{cPath: "other"},
+	}
+
+	// A file in FilePackages starts in its own package.
+	assert.Equal(t, "other", ConfigForFile(base, cPath).DefaultPackage)
+
+	// The lookup uses the absolute path, so a relative name also matches.
+	t.Chdir(dir)
+	assert.Equal(t, "other", ConfigForFile(base, "c.lisp").DefaultPackage)
+
+	// Other files keep DefaultPackage.
+	assert.Equal(t, "app", ConfigForFile(base, filepath.Join(dir, "x.lisp")).DefaultPackage)
+
+	// The base Config does not change.
+	assert.Equal(t, "app", base.DefaultPackage)
+}
+
+func TestPrescanWorkspace_FilePackages(t *testing.T) {
+	// #811: a bare file loaded from a file in another package starts in that
+	// package, not in main.lisp's package.
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "main.lisp"), []byte(`
+(in-package 'app)
+(load-file "sub.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "sub.lisp"), []byte(`
+(in-package 'other)
+(load-file "c.lisp")
+`), 0600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "c.lisp"), []byte(`
+(defun h () 1)
+`), 0600))
+
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	assert.Equal(t, "app", prescan.FilePackages[filepath.Join(dir, "sub.lisp")])
+	assert.Equal(t, "other", prescan.FilePackages[filepath.Join(dir, "c.lisp")])
+}
+
 func TestPrescanWorkspace_SetInBareFileNotInLoadTree(t *testing.T) {
 	// Bare files not explicitly loaded via load-file should still have
 	// their definitions remapped to DefaultPackage (not left in user).
@@ -1968,9 +2039,11 @@ func TestConfigForFile_CarriesEveryField(t *testing.T) {
 		DefForms:       []DefFormSpec{{Head: "defthing"}},
 		PackageImports: map[string][]string{"p": {"q"}},
 		DefaultPackage: "svc",
-		WorkspaceRefs:  map[string][]FileReference{"k": {{File: "a.lisp"}}},
-		MacroExpander:  &countingStubExpander{},
-		Filename:       "original.lisp",
+		// No entry for other.lisp, so DefaultPackage is copied unchanged.
+		FilePackages:  map[string]string{"/elsewhere.lisp": "pkg"},
+		WorkspaceRefs: map[string][]FileReference{"k": {{File: "a.lisp"}}},
+		MacroExpander: &countingStubExpander{},
+		Filename:      "original.lisp",
 	}
 
 	// Every field must be non-zero above, or the test proves nothing.
