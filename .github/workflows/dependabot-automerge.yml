@@ -1,0 +1,52 @@
+name: Dependabot auto-merge
+
+# Turns on GitHub auto-merge for Dependabot minor and patch updates. GitHub
+# then merges the PR only after every required check passes; this workflow
+# merges nothing itself. A major update, or a group with any major update in
+# it, waits for a person.
+#
+# WHY pull_request_target. A Dependabot `pull_request` run gets a read-only
+# GITHUB_TOKEN, which cannot enable auto-merge. `pull_request_target` runs
+# this file as it is on the base branch, with a write token, so a PR cannot
+# change the rule that merges it. That is safe only because this job never
+# checks out or runs code from the PR: it reads PR metadata and calls the
+# GitHub API. Do NOT add a checkout of the PR head here.
+#
+# fetch-metadata also checks that every commit on the PR is a Dependabot
+# commit. If a person pushes to the branch, its outputs are empty, the
+# update-type check below fails, and the PR needs a manual merge.
+#
+# Not a required check: no `Required: *` aggregate, since it is not a
+# `pull_request` workflow (scripts/ci-gates-test.sh scopes that rule to
+# `pull_request`).
+#
+# KNOWN LIMIT. The merge is done by GITHUB_TOKEN, and GitHub starts no
+# workflow runs for events that GITHUB_TOKEN causes. So the `push` runs on
+# main (elps.yml, fuzz.yml, tree-sitter.yml) do not run for an auto-merged
+# commit. The PR's own checks ran against the merge commit, and the next
+# merge by a person runs main's push checks again.
+
+on: pull_request_target
+
+permissions:
+  contents: write      # merge the PR
+  pull-requests: write # enable auto-merge on the PR
+
+jobs:
+  automerge:
+    name: Enable auto-merge
+    if: github.event.pull_request.user.login == 'dependabot[bot]'
+    runs-on: ubuntu-24.04-arm
+    # A metadata lookup and one API call; a few seconds when healthy.
+    timeout-minutes: 5
+    steps:
+      - id: meta
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+      - name: Enable auto-merge (minor and patch only)
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr merge --auto --merge "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
