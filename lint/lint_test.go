@@ -4752,6 +4752,23 @@ func TestLintFiles_UndefinedSymbol_BareFileLoadContext(t *testing.T) {
 			undefined: []string{"g"},
 		},
 		{
+			name: "bare file loaded from another package",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(load-file \"sub.lisp\")\n",
+				"sub.lisp":  "(in-package 'other)\n(defun k () 1)\n(load-file \"c.lisp\")\n(defun s () (h))\n",
+				"c.lisp":    "(defun h () (k))\n",
+			},
+		},
+		{
+			name: "bare file loaded from another package does not see main package",
+			files: map[string]string{
+				"main.lisp": "(in-package 'app)\n(defun f () 1)\n(load-file \"sub.lisp\")\n",
+				"sub.lisp":  "(in-package 'other)\n(load-file \"c.lisp\")\n",
+				"c.lisp":    "(defun h () (f))\n",
+			},
+			undefined: []string{"f"},
+		},
+		{
 			name: "bare file not in load tree falls back to main package",
 			files: map[string]string{
 				"main.lisp": "(in-package 'app)\n(defun f () (g))\n",

@@ -727,6 +727,37 @@ func TestDiagnostics_CrossFileSymbolResolution(t *testing.T) {
 	}
 }
 
+func TestDiagnostics_BareFileLoadedFromOtherPackage(t *testing.T) {
+	// #811: c.lisp has no in-package and sub.lisp loads it in 'other, so k
+	// (defined in 'other) must resolve in c.lisp.
+	tmp := t.TempDir()
+	writeTestFile(t, filepath.Join(tmp, "main.lisp"), "(in-package 'app)\n(load-file \"sub.lisp\")\n")
+	writeTestFile(t, filepath.Join(tmp, "sub.lisp"), "(in-package 'other)\n(defun k () 1)\n(load-file \"c.lisp\")\n")
+	writeTestFile(t, filepath.Join(tmp, "c.lisp"), "(defun h () (k))\n")
+
+	session, serverSession := connectTestServer(t, New(WithWorkspaceRoot(tmp)))
+	defer closeClientSession(t, session)
+	defer closeServerSession(t, serverSession)
+
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{
+		Name: "diagnostics",
+		Arguments: map[string]any{
+			"path":           filepath.Join(tmp, "c.lisp"),
+			"workspace_root": tmp,
+		},
+	})
+	require.NoError(t, err)
+	require.False(t, res.IsError)
+
+	diagnostics := decodeStructured[DiagnosticsResponse](t, res)
+	for _, fd := range diagnostics.Files {
+		for _, d := range fd.Diagnostics {
+			assert.NotContains(t, d.Message, "undefined symbol: k",
+				"k should resolve in the package that loads c.lisp")
+		}
+	}
+}
+
 func TestDiagnostics_CrossFileSymbolResolution_WithoutWorkspace(t *testing.T) {
 	// Negative test: without workspace_root, cross-file symbols are NOT resolved.
 	// This proves the workspace_root fix is actually needed.
