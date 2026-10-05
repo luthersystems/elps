@@ -574,8 +574,17 @@ func nativeJSONMapKey(t reflect.Type) bool {
 
 func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.LVal, error) {
 	if v.Type().Key().Kind() != reflect.String {
+		switch v.Type().Key().Kind() {
+		case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		default:
+			return nil, canonizeFailure("key-type", path, fmt.Sprintf("unsupported native map key %s", v.Type().Key()), nil)
+		}
 		iter := v.MapRange()
-		if iter.Next() {
+		// Integer keys are refused at the smallest decimal name, matching
+		// encoding/json's lexical order without calling key marshalers.
+		var first string
+		for iter.Next() {
 			k := iter.Key()
 			var text string
 			switch k.Kind() {
@@ -584,9 +593,13 @@ func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.
 			case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 				text = strconv.FormatUint(k.Uint(), 10)
 			default:
-				return nil, canonizeFailure("key-type", path, fmt.Sprintf("unsupported native map key %v (%s)", k, k.Type()), nil)
 			}
-			return nil, canonizeFailure("key-type", path+"[key "+text+"]", "int map key "+text, nil)
+			if first == "" || text < first {
+				first = text
+			}
+		}
+		if first != "" {
+			return nil, canonizeFailure("key-type", path+"[key "+first+"]", "int map key "+first, nil)
 		}
 		return nil, canonizeFailure("key-type", path, fmt.Sprintf("unsupported native map key %s", v.Type().Key()), nil)
 	}
