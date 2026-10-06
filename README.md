@@ -121,6 +121,35 @@ fmt.Println(res) // "hello, world"
 - [Object-Oriented Dispatch](_examples/oop) — a small method system built on `deftype`
 - [WASM Playground](https://luthersystems.github.io/elps/) ([source](_examples/wasm/))
 
+## Known Issues
+
+### `thread-first` / `thread-last` refuse a macro or special operator step
+
+| | Versions |
+|---|---|
+| **Affected** | **v1.62.0 – v1.75.2** |
+| **Fixed** | v1.75.3 ([#821](https://github.com/luthersystems/elps/pull/821)) |
+
+On an affected version, a thread step whose head is a macro or special
+operator, such as `default`, `when`, `and`, `or` or your own macro, fails at
+run time:
+
+```lisp
+(thread-last x (default 0) (+ 1))
+;; error: lisp:thread-last: thread step is not a regular function: #<builtin>
+```
+
+v1.61 and earlier accept these steps. **Remedy:** upgrade to v1.75.3 or later.
+On an affected version, use a regular function as the step instead, for
+example `(defun default-to (v d) (if (nil? v) d v))` and
+`(thread-last x (default-to 0) (+ 1))`.
+
+From v1.75.3, a macro or operator step gets the value as a quoted datum (nil
+stays nil), so a macro that reads its argument as syntax sees a quoted value,
+not the expression that made it. See the
+[language guide](docs/lang.md#thread-first-thread-last) and
+[#820](https://github.com/luthersystems/elps/issues/820).
+
 ## Community
 
 - [Discord](https://insideout.luthersystems.com/discord)
