@@ -321,6 +321,10 @@ func TestThreadMacroAndOperatorSteps(t *testing.T) {
 		{`(thread-first '(1 2) (default 0))`, "'(1 2)"},
 		{`(thread-first ''a (default 0))`, "''a"},
 		{`(thread-first 'a (default 0))`, "'a"},
+		// Nil stays unquoted nil.
+		{`(thread-last () (default ()) (default ()))`, "()"},
+		{`(thread-first () (when true))`, "()"},
+		{`(thread-first () (my-default ()))`, "()"},
 	} {
 		t.Run(tc.expr, func(t *testing.T) {
 			env := newCallSemanticsEnv(t)

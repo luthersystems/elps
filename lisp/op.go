@@ -681,12 +681,12 @@ func threadSpecialForm(fun, expr, val *LVal, last bool) *LVal {
 }
 
 // threadDatum returns an expression that evaluates to val without running
-// it as code.  A quoted value and a self-evaluating value are their own
-// expression.  An unquoted symbol or list gets a quoted copy, like a datum
-// written with '.  A value that is quoted already is not quoted again, so
-// its quote depth does not change.
+// it as code.  A quoted value, nil and a self-evaluating value are their
+// own expression.  An unquoted symbol or non-empty list gets a quoted copy,
+// like a datum written with '.  A value that is quoted already is not
+// quoted again, so its quote depth does not change.
 func threadDatum(val *LVal) *LVal {
-	if val.quoted {
+	if val.quoted || val.IsNil() {
 		return val
 	}
 	switch val.Type {

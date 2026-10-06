@@ -893,8 +893,8 @@ stay unevaluated, as in a direct call:
 When a macro or operator evaluates the datum, it gets the value itself. The
 fallback of `default` runs only when the value is nil. A macro that reads its
 argument as syntax sees a quoted datum, not the expression that made the
-value. A symbol or list that is not quoted, such as an element taken from a
-list, is quoted for the step. If the step returns that value, the value is
+value. Nil stays nil. A symbol or non-empty list that is not quoted, such as
+an element taken from a list, is quoted for the step. If the step returns that value, the value is
 quoted data.
 
 ```lisp
