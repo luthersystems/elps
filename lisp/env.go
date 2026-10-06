@@ -1812,7 +1812,11 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 //
 // eval includes a recover() safety net that converts any Go panic during
 // evaluation into an LError, preventing panics from crashing the host process
-// when ELPS is embedded.
+// when ELPS is embedded.  The deferred recover writes the named result, so
+// eval carries a nolint for nonamedreturns.  Keep the defer and the body in
+// this one frame.  A func literal around the body, or a separate helper for
+// the body, adds Go calls to every evaluation: about 2% more instructions on
+// BenchmarkWorkload (luthersystems/elps#818).
 //
 // eval also carries the evaluator's recursion-depth guard.  Every nested
 // evaluation passes through here, so incrementing a counter on entry and
@@ -1827,28 +1831,20 @@ func (env *LEnv) Eval(v *LVal) *LVal {
 // NOTE:  eval shouldn't unquote v during evaluation -- a difference between
 // Eval and the "eval" builtin function, but it does.  For some reason macros
 // won't work without this unquoting.
-func (env *LEnv) eval(ctx context.Context, v *LVal) *LVal {
-	var result *LVal
-	func() {
-		env.Runtime.evalNesting++
-		defer func() {
-			env.Runtime.evalNesting--
-			if r := recover(); r != nil {
-				result = env.panicError(r)
-			}
-		}()
-		result = env.evalUnchecked(ctx, v)
+func (env *LEnv) eval(ctx context.Context, v *LVal) (result *LVal) { //nolint:nonamedreturns // the deferred recover sets the result in this frame (luthersystems/elps#818)
+	env.Runtime.evalNesting++
+	defer func() {
+		env.Runtime.evalNesting--
+		if r := recover(); r != nil {
+			result = env.panicError(r)
+		}
 	}()
-	return result
-}
-
-// evalUnchecked is eval without the nesting count and the panic recovery.
-func (env *LEnv) evalUnchecked(ctx context.Context, v *LVal) *LVal {
 	// Ownership check (elpscheck builds only; no-op otherwise): eval is the
 	// funnel every expression passes through, so the first evaluation of a
 	// value adopts it for this Runtime and any later evaluation under a
-	// different Runtime panics.  It runs inside eval's deferred recover so
-	// the evalNesting counter stays balanced when the check panics.
+	// different Runtime panics.  It runs after the deferred recover is
+	// installed, so the evalNesting counter stays balanced when the check
+	// panics.
 	checkOwnership(env.Runtime, v)
 	if env.Runtime.evalNestingExceeded() {
 		return env.ErrorConditionf(CondEvalNestingExceeded,
@@ -1869,16 +1865,7 @@ eval:
 	env.loc = v.source
 	if v.source != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
-			func() {
-				// Protocol renderers inspect Context while this environment is
-				// paused, including outside a builtin's context bridge.
-				previous := env.evalCtx
-				env.evalCtx = ctx
-				defer func() { env.evalCtx = previous }()
-				if d.OnEval(env, v) {
-					d.WaitIfPaused(env, v)
-				}
-			}()
+			env.debugOnEval(ctx, d, v)
 		}
 	}
 	if v.quoted {
@@ -1945,6 +1932,19 @@ eval:
 		goto eval
 	default:
 		return v
+	}
+}
+
+// debugOnEval notifies the debugger that eval reached v and waits while it
+// is paused.  Protocol renderers inspect Context while this environment is
+// paused, including outside a builtin's context bridge, so env.evalCtx is ctx
+// for the duration.
+func (env *LEnv) debugOnEval(ctx context.Context, d Debugger, v *LVal) {
+	previous := env.evalCtx
+	env.evalCtx = ctx
+	defer func() { env.evalCtx = previous }()
+	if d.OnEval(env, v) {
+		d.WaitIfPaused(env, v)
 	}
 }
 
