@@ -1,9 +1,17 @@
 name: Dependabot auto-merge
 
-# Turns on GitHub auto-merge for Dependabot minor and patch updates. GitHub
-# then merges the PR only after every required check passes; this workflow
-# merges nothing itself. A major update, or a group with any major update in
-# it, waits for a person.
+# Approves Dependabot minor and patch updates and turns on GitHub auto-merge
+# for them. GitHub then merges the PR only after every required check passes;
+# this workflow merges nothing itself. A major update, or a group with any
+# major update in it, waits for a person.
+#
+# WHY it approves. Branch protection on main requires one approval. Without
+# this step, auto-merge waits for a person to approve. The approval needs
+# "Allow GitHub Actions to create and approve pull requests" on in the
+# organization's and the repository's Actions settings; without it the
+# approve step fails and the PR waits for a person. "Dismiss stale approvals"
+# removes the approval when Dependabot rebases; the rebase starts this
+# workflow again (synchronize), which approves the new head.
 #
 # WHY pull_request_target. A Dependabot `pull_request` run gets a read-only
 # GITHUB_TOKEN, which cannot enable auto-merge. `pull_request_target` runs
@@ -30,7 +38,7 @@ on: pull_request_target
 
 permissions:
   contents: write      # merge the PR
-  pull-requests: write # enable auto-merge on the PR
+  pull-requests: write # approve the PR and enable auto-merge on it
 
 jobs:
   automerge:
@@ -42,6 +50,14 @@ jobs:
     steps:
       - id: meta
         uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98  # v3.1.0
+      - name: Approve (minor and patch only)
+        if: >-
+          steps.meta.outputs.update-type == 'version-update:semver-minor' ||
+          steps.meta.outputs.update-type == 'version-update:semver-patch'
+        run: gh pr review --approve "$PR_URL"
+        env:
+          PR_URL: ${{ github.event.pull_request.html_url }}
+          GH_TOKEN: ${{ github.token }}
       - name: Enable auto-merge (minor and patch only)
         if: >-
           steps.meta.outputs.update-type == 'version-update:semver-minor' ||
