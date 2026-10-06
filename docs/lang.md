@@ -868,15 +868,34 @@ arguments or steps do not run after that error.
 
 The intermediate result is passed as data without another evaluation. A
 returned symbol stays a symbol; a returned list is not executed as code, and
-its quote depth is preserved. Steps must call ordinary functions: macros,
-special operators such as `if` and `quote`, and non-functions are rejected
-before their arguments are evaluated. With no steps, the initial result is
-returned. A final ordinary function call remains eligible for tail-call
-optimization.
+its quote depth is preserved. A step whose head is not a function is an
+error, and its arguments are not evaluated. With no steps, the initial result
+is returned. The final step remains eligible for tail-call optimization.
 
 ```lisp
 (thread-first '(unbound-name) (car) (symbol?))  ; true, no name lookup
 ```
+
+A step can be a macro or a special operator, such as `default`, `when`, `and`
+or `or`. The step gets the value as a quoted datum, and its other arguments
+stay unevaluated, as in a direct call:
+
+| Form | Step that runs |
+|------|----------------|
+| `(thread-first v (default 0))` | `(default 'v 0)` |
+| `(thread-last v (or ()))` | `(or () 'v)` |
+
+```lisp
+(thread-first () (default 0) (+ 1))                ; 1
+(thread-first '(unbound-name) (default 0) (car))   ; unbound-name, no lookup
+```
+
+When a macro or operator evaluates the datum, it gets the value itself. The
+fallback of `default` runs only when the value is nil. A macro that reads its
+argument as syntax sees a quoted datum, not the expression that made the
+value. A symbol or list that is not quoted, such as an element taken from a
+list, is quoted for the step. If the step returns that value, the value is
+quoted data.
 
 ```lisp
 (defun add1 (x) (+ x 1))
