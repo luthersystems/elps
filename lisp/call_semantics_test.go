@@ -255,13 +255,12 @@ func TestThreadEmptyAndTailCalls(t *testing.T) {
 	}
 }
 
-func TestThreadRejectsSpecialFunctions(t *testing.T) {
+func TestThreadRejectsNonFunctions(t *testing.T) {
 	for _, thread := range []string{"thread-first", "thread-last"} {
 		for _, step := range []string{
-			`(if (set! ran true) (set! ran true))`,
-			`(quote)`,
-			`(get-default (sorted-map) (set! ran true))`,
 			`(42 (set! ran true))`,
+			`("f" (set! ran true))`,
+			`((quote f) (set! ran true))`,
 		} {
 			t.Run(thread+"/"+step, func(t *testing.T) {
 				env := newCallSemanticsEnv(t)
@@ -269,11 +268,120 @@ func TestThreadRejectsSpecialFunctions(t *testing.T) {
 				result := env.LoadString("thread.lisp", fmt.Sprintf(`(%s true %s)`, thread, step))
 				assert.Equal(t, "false", env.LoadString("thread.lisp", "ran").String(), "invalid steps must be rejected before evaluating their arguments")
 				require.Equal(t, lisp.LError, result.Type)
-				assert.Contains(t, result.String(), "not a regular function")
+				assert.Contains(t, result.String(), "thread step is not a function")
 				assert.False(t, lisp.IsInternalPanic(result))
 			})
 		}
 	}
+}
+
+// Macro and special operator steps work as they did before v1.62
+// (luthersystems/elps#820).  The step gets the value as a quoted datum, so
+// the value is evaluated once and never runs as code.
+func TestThreadMacroAndOperatorSteps(t *testing.T) {
+	const defs = `
+		(defmacro my-default (x d)
+		  (quasiquote (if (nil? (unquote x)) (unquote d) (unquote x))))
+		(defmacro last-default (d x)
+		  (quasiquote (if (nil? (unquote x)) (unquote d) (unquote x))))
+		(defun add1 (x) (+ x 1))`
+	for _, tc := range []struct{ expr, want string }{
+		// The examples of the issue.
+		{`(thread-first () (my-default 0) (+ 1))`, "1"},
+		{`(thread-last () (default 0) (+ 1))`, "1"},
+		{`(thread-first () (default 0) (+ 1))`, "1"},
+		{`(thread-last () (my-default 0) (+ 1))`, "1"},
+		// A macro or operator step at the first, a middle and the last
+		// position.
+		{`(thread-first () (my-default 1) (add1) (add1))`, "3"},
+		{`(thread-first 1 (add1) (my-default 0) (add1))`, "3"},
+		{`(thread-first 1 (add1) (add1) (my-default 0))`, "3"},
+		{`(thread-last () (last-default 1) (add1) (add1))`, "3"},
+		{`(thread-last 1 (add1) (last-default 0) (add1))`, "3"},
+		{`(thread-last 1 (add1) (add1) (last-default 0))`, "3"},
+		{`(thread-last 1 (add1) (default 0) (add1))`, "1"},
+		{`(thread-last () (default 1) (add1) (add1))`, "3"},
+		{`(thread-last 1 (add1) (add1) (default ()))`, "3"},
+		{`(thread-first () (default 2) (my-default 0) (default 9))`, "2"},
+		// The argument position of the value.
+		{`(thread-first 10 (if 'yes 'no))`, "'yes"},
+		{`(thread-last () (if 'yes 'no))`, "'no"},
+		{`(thread-first 1 (and 2))`, "2"},
+		{`(thread-last 1 (or ()))`, "1"},
+		{`(thread-first 3 (when))`, "()"},
+		// A list or symbol value is data: it is not executed or looked up.
+		{`(thread-first '(unbound-name) (default 0) (car))`, "unbound-name"},
+		{`(thread-last '(unbound-name) (last-default 0) (car))`, "unbound-name"},
+		{`(thread-last '(unbound-name) (default ()) (car))`, "unbound-name"},
+		{`(thread-first '(unbound-name) (car) (default 0) (symbol?))`, "true"},
+		{`(thread-first '(unbound-name) (car) (my-default 0) (symbol?))`, "true"},
+		{`(thread-first '((no-such-fn 1)) (car) (default 0) (car))`, "no-such-fn"},
+		{`(thread-last '(1 2) (last-default 0) (map 'list add1))`, "'(2 3)"},
+		// A quoted value keeps its quote depth.
+		{`(thread-first '(1 2) (default 0))`, "'(1 2)"},
+		{`(thread-first ''a (default 0))`, "''a"},
+		{`(thread-first 'a (default 0))`, "'a"},
+		// Nil stays unquoted nil.
+		{`(thread-last () (default ()) (default ()))`, "()"},
+		{`(thread-first () (when true))`, "()"},
+		{`(thread-first () (my-default ()))`, "()"},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			env := newCallSemanticsEnv(t)
+			require.NoError(t, lisp.GoError(env.LoadString("thread.lisp", defs)))
+			result := env.LoadString("thread.lisp", tc.expr)
+			assert.Equal(t, tc.want, result.String())
+		})
+	}
+}
+
+func TestThreadMacroStepEvaluatesOnce(t *testing.T) {
+	for _, thread := range []string{"thread-first", "thread-last"} {
+		t.Run(thread, func(t *testing.T) {
+			env := newCallSemanticsEnv(t)
+			step := "default"
+			if thread == "thread-last" {
+				step = "last-default"
+			}
+			result := env.LoadString("thread.lisp", fmt.Sprintf(`
+				(defmacro last-default (d x)
+				  (quasiquote (default (unquote x) (unquote d))))
+				(set 'calls 0)
+				(set 'fallback false)
+				(%s (progn (set! calls (+ calls 1)) 5)
+				    (%s (set! fallback true))
+				    (+ 1))`, thread, step))
+			assert.Equal(t, "6", result.String())
+			assert.Equal(t, "1", env.LoadString("thread.lisp", "calls").String(), "the initial expression must be evaluated once")
+			assert.Equal(t, "false", env.LoadString("thread.lisp", "fallback").String(), "the default fallback must not run for a non-nil value")
+		})
+	}
+}
+
+func TestThreadMacroStepErrorStopsPipeline(t *testing.T) {
+	for _, thread := range []string{"thread-first", "thread-last"} {
+		t.Run(thread, func(t *testing.T) {
+			env := newCallSemanticsEnv(t)
+			result := env.LoadString("thread.lisp", fmt.Sprintf(`
+				(set 'ran false)
+				(%s () (default (error 'boom "fallback")) ((progn (set! ran true) identity)))`, thread))
+			require.Equal(t, lisp.LError, result.Type)
+			assert.Equal(t, "boom", result.Str)
+			assert.Equal(t, "false", env.LoadString("thread.lisp", "ran").String(), "an error must stop the pipeline")
+		})
+	}
+}
+
+func TestThreadOperatorFinalStepIsTailCall(t *testing.T) {
+	env := newCallSemanticsEnv(t)
+	// A small stack bound makes loss of final-step tail-call optimization
+	// visible without a large or expensive recursion.
+	env.Runtime.Stack.MaxHeightPhysical = 40
+	result := env.LoadString("thread.lisp", `
+		(defun countdown (n)
+		  (thread-last 'done (if (> n 0) (countdown (- n 1)))))
+		(countdown 100)`)
+	assert.Equal(t, "'done", result.String())
 }
 
 func TestLambdaListCreationValidation(t *testing.T) {
@@ -374,6 +482,25 @@ func TestLambdaListCallBackstop(t *testing.T) {
 			require.Equal(t, lisp.LError, result.Type)
 			assert.Equal(t, tc.message, result.Cells[0].Str)
 			assert.False(t, called)
+		})
+	}
+}
+
+// Function-only pipelines keep their step count (luthersystems/elps#820).
+// The counts were measured before macro and operator steps were accepted.
+func TestThreadFunctionStepCount(t *testing.T) {
+	for _, tc := range []struct {
+		expr  string
+		steps int64
+	}{
+		{`(thread-first 1 (+ 2) (* 3) (- 1))`, 12},
+		{`(thread-last 1 (+ 2) (* 3) (- 1))`, 12},
+	} {
+		t.Run(tc.expr, func(t *testing.T) {
+			env := newLimitTestEnv(t, lisp.WithMaxSteps(1<<40))
+			result := env.LoadString("thread.lisp", tc.expr)
+			require.NoError(t, lisp.GoError(result))
+			assert.Equal(t, tc.steps, env.Runtime.Steps())
 		})
 	}
 }

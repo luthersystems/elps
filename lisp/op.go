@@ -61,15 +61,16 @@ var langSpecialOps = []*langBuiltin{
 		it as the first argument after the function name in each form.
 		Evaluates the initial value once, before any step's function or
 		arguments, then passes each result as data to the next step.
-		Steps must call regular functions; macros and special operators
-		are rejected. Returns the result of the final form.`},
+		A macro or special operator step gets the value as a quoted
+		datum, as in (step 'value args...). Returns the result of the
+		final form.`},
 	{"thread-last", Formals("value", VarArgSymbol, "exprs"), opThreadLast,
 		`Threads a value through a series of function calls by inserting
 		it as the last argument in each form. Evaluates the initial value
 		once, before any step's function or arguments, then passes each
-		result as data to the next step. Steps must call regular functions;
-		macros and special operators are rejected. Returns the result of
-		the final form.`},
+		result as data to the next step. A macro or special operator step
+		gets the value as a quoted datum, as in (step args... 'value).
+		Returns the result of the final form.`},
 	{"dotimes", Formals("control-sequence", VarArgSymbol, "exprs"), opDoTimes,
 		`Iterates a body a fixed number of times. The control-sequence is
 		(symbol count [result]) where count evaluates to an integer. The
@@ -611,8 +612,22 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		if fun.Type == LError {
 			return fun
 		}
-		if fun.Type != LFun || fun.IsSpecialFun() {
-			return env.Errorf("thread step is not a regular function: %v", fun)
+		if fun.Type != LFun {
+			return env.Errorf("thread step is not a function: %v", fun)
+		}
+		if fun.IsSpecialFun() {
+			// A macro or special operator receives syntax, so the step
+			// becomes a form with the value as a quoted datum.  Evaluating
+			// that datum gives the value without running it as code.
+			form := threadSpecialForm(fun, expr, val, last)
+			if i == len(exprs)-1 {
+				return env.Terminal(form)
+			}
+			val = env.Eval(form)
+			if val.Type == LError {
+				return val
+			}
+			continue
 		}
 		// FunCall accepts values directly. Substituting val into an
 		// evaluated expression would execute unquoted list or symbol data;
@@ -642,6 +657,44 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		}
 	}
 	return val
+}
+
+// threadSpecialForm builds the form for a thread step whose head evaluated
+// to the macro or special operator fun: (fun 'val args...) for
+// thread-first and (fun args... 'val) for thread-last.  The step arguments
+// stay unevaluated syntax, as they are in a direct call.  The form carries
+// the location of the step.
+func threadSpecialForm(fun, expr, val *LVal, last bool) *LVal {
+	datum := threadDatum(val)
+	cells := make([]*LVal, 0, len(expr.Cells)+1)
+	cells = append(cells, fun)
+	if !last {
+		cells = append(cells, datum)
+	}
+	cells = append(cells, expr.Cells[1:]...)
+	if last {
+		cells = append(cells, datum)
+	}
+	form := SExpr(cells)
+	form.SetSource(copyLocation(expr.source))
+	return form
+}
+
+// threadDatum returns an expression that evaluates to val without running
+// it as code.  A quoted value, nil and a self-evaluating value are their
+// own expression.  An unquoted symbol or non-empty list gets a quoted copy,
+// like a datum written with '.  A value that is quoted already is not
+// quoted again, so its quote depth does not change.
+func threadDatum(val *LVal) *LVal {
+	if val.quoted || val.IsNil() {
+		return val
+	}
+	switch val.Type {
+	case LSymbol, LSExpr, LQuote:
+		return Quote(val)
+	default:
+		return val
+	}
 }
 
 func opFlet(env *LEnv, args *LVal) *LVal {
