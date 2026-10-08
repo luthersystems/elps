@@ -18,6 +18,11 @@ type DurableCodec[T any] struct {
 
 func (c DurableCodec[T]) registerDurable() error { return nil }
 
+func (c DurableCodec[T]) WithName(name string) DurableCodec[T] {
+	c.Name = name
+	return c
+}
+
 type ForeignCodec struct {
 	Type    reflect.Type
 	Name    string

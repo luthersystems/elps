@@ -264,7 +264,7 @@ run time to the build. Each native payload type is one of:
 
 | Class | How |
 |---|---|
-| Durable | A package-level `libjson.DurableCodec[T]` value (not a pointer), declared in the package or exported by an import. Example: `libtime.DurableTimeCodec`. |
+| Durable | A package-level `libjson.DurableCodec[T]` value (not a pointer) of the analysed module, declared in the package or exported by an import. A codec of another module counts only when the module re-declares it (`var C = libtime.DurableTimeCodec.WithName("m:time")`), because its registry lists only its own codecs. Example: `libtime.DurableTimeCodec`. |
 | Transient | A `TransientNative()` method declared on the type itself, with a doc comment that says why it is never saved. A value receiver marks `T` and `*T`; a pointer receiver marks only `*T`. A promoted method does not count. Example: `libregexp.compiledRegexp`. |
 | Transient at one site | `//elpsvet:transient <reason>`, trailing or on the line after the comment block above the construction. Only for a type declared outside the module (`time.Time`, `string`, `json.RawMessage`). One marker covers exactly one construction. Example: `internal/fuzzval`. |
 

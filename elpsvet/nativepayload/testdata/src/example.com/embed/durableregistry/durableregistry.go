@@ -15,13 +15,17 @@ type local struct{ n int }
 // registry.
 var localCodec = libjson.DurableCodec[*local]{Name: "test:local", Version: 1}
 
+// thingCodec re-declares a codec of another module in this one, under
+// this module's name, which makes *durableelps.Thing durable here.
+var thingCodec = durableelps.Codec.WithName("embed:thing")
+
 // A codec of another module (durableelps.Codec) need not be listed.
 func complete() {
-	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec)
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec)
 }
 
 func missing() {
-	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec) // want `libjson\.NewFrozenDurableRegistry does not list the durable codec durablecodecs\.ForeignCodec`
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec) // want `libjson\.NewFrozenDurableRegistry does not list the durable codec durablecodecs\.ForeignCodec`
 }
 
 // A spread list is not checked.
@@ -29,8 +33,9 @@ func spread(codecs []libjson.DurableEntry) {
 	_, _ = libjson.NewFrozenDurableRegistry(codecs...)
 }
 
-// A codec exported by an imported package makes its type durable here,
-// in this module or another.
+// A codec exported by an imported package of this module makes its type
+// durable here, and so does a codec of another module that this module
+// re-declares (thingCodec).
 func builtImported() (*lisp.LVal, *lisp.LVal) {
 	return lisp.Native(durablecodecs.NewHandle()), lisp.Native(durableelps.NewThing())
 }

@@ -376,8 +376,11 @@ analyzers := []*analysis.Analyzer{
 | `New` (`elpsnativepayload`) | A native payload that a template cannot publish safely | Extra audited types, calls that exempt a builtin, the allow marker (justification of `AllowMinWords` words, default 3), the fix text, and whether interface-typed payloads are reported (`-anypayload`) |
 | `NewDurable` (`elpsdurablenative`) | A native payload type with no `libjson.DurableCodec[T]` value and no transient mark, and a `libjson.NewFrozenDurableRegistry` call that leaves out a codec of your module | The module path and the site marker |
 
-Mark a type transient with a documented `TransientNative()` method on the
-type. For a type of another module, put `//<TransientMarker> <reason>` at
+A codec counts only when your module declares it. To use an elps codec,
+re-declare it in your module, for example
+`var TimeCodec = libtime.DurableTimeCodec.WithName("m:time")`, and list it in
+your registry. Mark a type transient with a documented `TransientNative()`
+method on the type. For a type of another module, put `//<TransientMarker> <reason>` at
 the construction. Each analyzer sees only the natives your module builds.
 
 ### Per-VM settings

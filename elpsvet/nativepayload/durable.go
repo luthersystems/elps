@@ -13,7 +13,10 @@
 //
 //  1. durable: a package-level value of type libjson.DurableCodec[T], with T
 //     identical to the payload type, is declared in the analysed package or
-//     exported by a package it imports;
+//     exported by a package it imports, in the analysed module.  The
+//     module's registry lists only its own codecs, so a codec of another
+//     module counts only when the module re-declares it, for example
+//     `var TimeCodec = libtime.DurableTimeCodec.WithName("m:time")`;
 //  2. transient: the payload type's named type declares a documented
 //     TransientNative() method (the libjson.TransientNative interface).  A
 //     value receiver marks T and *T; a pointer receiver marks only *T.  A
@@ -228,7 +231,10 @@ func (d *durable) check(pass *analysis.Pass, s nativeSite, marker *ast.Comment, 
 	}
 	isDurable := false
 	for _, c := range codecs {
-		if c.payload != nil && types.Identical(c.payload, s.payload) {
+		// Only a codec of this module counts: its registry lists that
+		// module's codecs, so a codec of another module is not in it
+		// unless the module re-declares it (WithName).
+		if c.payload != nil && d.inModule(c.obj.Pkg().Path()) && types.Identical(c.payload, s.payload) {
 			isDurable = true
 			break
 		}

@@ -19,7 +19,8 @@ func TestEmbedderDurableNative(t *testing.T) {
 		TransientMarker: "embedvet:transient",
 	})
 	analysistest.Run(t, analysistest.TestData(), a,
-		"example.com/embed/durablecodecs", "example.com/embed/durableregistry", "example.com/embed/durablespread")
+		"example.com/embed/durablecodecs", "example.com/embed/durableregistry", "example.com/embed/durablespread",
+		"example.com/embed/durableforeign")
 }
 
 // TestElpsDurableNative runs elps's own configuration over a fixture and
