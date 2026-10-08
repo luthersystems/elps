@@ -405,8 +405,11 @@ reg, err := libjson.NewFrozenDurableRegistry(HandleCodec, libtime.DurableTimeCod
 
 elps declares `libtime.DurableTimeCodec` (`elps:time`: the instant in UTC,
 RFC 3339 with nanoseconds) and `libtime.DurableDurationCodec`
-(`elps:duration`: integer nanoseconds). The regexp, schema tag, JSON
-message and test suite natives are transient.
+(`elps:duration`: integer nanoseconds). `libregexp.DurableRegexpCodec`
+(`elps:regexp`) saves a compiled regexp as its pattern string. Its load
+compiles the pattern again and charges the compile as `regexp-compile` does:
+one step per complete KiB of the pattern. A host `*regexp.Regexp` has no
+codec. The schema tag, JSON message and test suite natives are transient.
 
 ### Codec contract
 

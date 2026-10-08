@@ -89,9 +89,8 @@ func TestRuntimeLibraryRegexpOwnsPrivateImmutablePayload(t *testing.T) {
 	// Private named storage must not promote regexp's public mutation methods.
 	typ := reflect.TypeOf(payload)
 	require.Equal(t, reflect.Struct, typ.Kind(), "compiled payload must not expose a writable pointer")
-	require.Equal(t, 2, typ.NumMethod(), "only the read-only text marshaler and the no-op transient mark may be exported")
+	require.Equal(t, 1, typ.NumMethod(), "only the read-only text marshaler may be exported")
 	require.Equal(t, "MarshalText", typ.Method(0).Name)
-	require.Equal(t, "TransientNative", typ.Method(1).Name)
 	require.Equal(t, 2, typ.NumField(), "new immutable payload state requires an ownership audit")
 	marker := typ.Field(0)
 	require.True(t, marker.Anonymous)
