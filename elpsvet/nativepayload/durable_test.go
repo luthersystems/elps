@@ -25,6 +25,17 @@ func TestEmbedderDurableNative(t *testing.T) {
 		"example.com/embed/durableforeign")
 }
 
+// TestEmbedderDurableRegistryText runs a configuration that names its own
+// registry, so the diagnostic says where the embedder lists a codec.
+func TestEmbedderDurableRegistryText(t *testing.T) {
+	a := nativepayload.NewDurable(nativepayload.DurableConfig{
+		Module:          "example.com/embed",
+		TransientMarker: "embedvet:transient",
+		Registry:        "list it in the embed codec table",
+	})
+	analysistest.Run(t, analysistest.TestData(), a, "example.com/embed/registrytext")
+}
+
 // TestElpsDurableNative runs elps's own configuration over a fixture and
 // over the lisp stub, whose kernel slot literals and interface-typed
 // constructor are not natives the rule classifies.

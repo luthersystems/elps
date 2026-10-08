@@ -40,6 +40,14 @@ func TestEmbedderNativePayloadDynamic(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), a, "example.com/embed/anypayload")
 }
 
+// TestEmbedderAllowMinWords runs a configuration that asks for five words
+// after the allow marker, so a four-word justification is reported.
+func TestEmbedderAllowMinWords(t *testing.T) {
+	cfg := embedderConfig
+	cfg.AllowMinWords = 5
+	analysistest.Run(t, analysistest.TestData(), nativepayload.New(cfg), "example.com/embed/minwords")
+}
+
 // TestNewDefaults pins the names and the flag default of each
 // configuration.
 func TestNewDefaults(t *testing.T) {
