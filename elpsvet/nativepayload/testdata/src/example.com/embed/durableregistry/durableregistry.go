@@ -43,3 +43,8 @@ func builtImported() (*lisp.LVal, *lisp.LVal) {
 func builtLocal() *lisp.LVal {
 	return lisp.Native(&local{})
 }
+
+// A codec renamed in the call (Codec.WithName) counts as listed.
+func renamed() {
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec.WithName("test:renamed"), durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec)
+}

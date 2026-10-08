@@ -45,8 +45,9 @@
 //     is never saved, and a site marker needs a reason;
 //   - a call of libjson.NewFrozenDurableRegistry must list every
 //     DurableCodec and ForeignCodec value of the analysed module that the
-//     calling package declares or that a package it imports exports.  A
-//     call that spreads a slice (codecs...) is not checked;
+//     calling package declares or that a package it imports exports.  An
+//     argument `Codec.WithName("x")` lists Codec.  A call that spreads a
+//     slice (codecs...) is not checked;
 //   - an unexported codec value is reported, unless its package has a
 //     NewFrozenDurableRegistry call that lists codecs one by one, because
 //     no registry outside the package can list it;
@@ -406,7 +407,7 @@ func (d *durable) checkRegistryCalls(pass *analysis.Pass, codecs []codecVar) boo
 			listed := map[types.Object]bool{}
 			for _, arg := range call.Args {
 				var id *ast.Ident
-				switch a := ast.Unparen(arg).(type) {
+				switch a := withNameReceiver(pass, ast.Unparen(arg)).(type) {
 				case *ast.Ident:
 					id = a
 				case *ast.SelectorExpr:
@@ -426,6 +427,24 @@ func (d *durable) checkRegistryCalls(pass *analysis.Pass, codecs []codecVar) boo
 		})
 	}
 	return found
+}
+
+// withNameReceiver returns the codec a registry argument renames,
+// `Codec.WithName("x")` listing Codec, or the argument itself.
+func withNameReceiver(pass *analysis.Pass, arg ast.Expr) ast.Expr {
+	call, ok := arg.(*ast.CallExpr)
+	if !ok {
+		return arg
+	}
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "WithName" {
+		return arg
+	}
+	fn := calleeFunc(pass, call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != libjsonPkgPath {
+		return arg
+	}
+	return ast.Unparen(sel.X)
 }
 
 // transientKind is how a payload type relates to TransientNative.
