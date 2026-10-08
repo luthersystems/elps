@@ -207,7 +207,9 @@
 package nativepayload
 
 import (
+	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"strings"
 
@@ -278,7 +280,8 @@ type Config struct {
 	// Default: elps's own fixes, which name templatepolicy.Marker,
 	// lisp.TemplateWithNativePolicy and AllowMarker.
 	Fix string
-	// ExemptCalls names functions as "import/path.Func".  A function
+	// ExemptCalls names package-level functions as "import/path.Func";
+	// New panics on an entry of another shape.  A function
 	// declaration whose body calls one of them is exempt, closures
 	// included.  A call that a host makes to declare that a builtin cannot
 	// run while a template is built, such as substrate's
@@ -311,10 +314,8 @@ func New(cfg Config) *analysis.Analyzer {
 	if c.AllowMinWords == 0 {
 		c.AllowMinWords = nativeAllowMinWords
 	}
-	for _, name := range c.ExemptCalls {
-		if i := strings.LastIndexByte(name, '.'); i > 0 {
-			c.exempt = append(c.exempt, funcName{pkg: name[:i], name: name[i+1:]})
-		}
+	for _, entry := range c.ExemptCalls {
+		c.exempt = append(c.exempt, parseExemptCall(entry))
 	}
 	a := &analysis.Analyzer{
 		Name: c.Name,
@@ -338,6 +339,20 @@ type config struct {
 
 // funcName is a function an ExemptCalls entry names.
 type funcName struct{ pkg, name string }
+
+// parseExemptCall parses an ExemptCalls entry, "import/path.Func".  The
+// last path element holds exactly one dot, and Func is a Go identifier: a
+// method (pkg.T.M) is not supported.  It panics on any other entry,
+// because a malformed entry would exempt nothing without a word.
+func parseExemptCall(entry string) funcName {
+	last := entry[strings.LastIndexByte(entry, '/')+1:]
+	i := strings.LastIndexByte(entry, '.')
+	if strings.Count(last, ".") != 1 || i <= 0 || i < len(entry)-len(last) || !token.IsIdentifier(entry[i+1:]) ||
+		strings.HasSuffix(entry[:i], "/") {
+		panic(fmt.Sprintf("nativepayload.New: Config.ExemptCalls entry %q is not \"import/path.Func\" (a package-level function)", entry))
+	}
+	return funcName{pkg: entry[:i], name: entry[i+1:]}
+}
 
 // payloadRow is one audited allowlist entry.  A row is a claim about a
 // HEADER, not about a type in the abstract: LVal.Native doubles as the

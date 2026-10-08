@@ -3,6 +3,8 @@
 package nativepayload_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsvet/nativepayload"
@@ -51,4 +53,29 @@ func TestNewDefaults(t *testing.T) {
 	if a.Name != "embednativepayload" || a.Flags.Lookup("anypayload").DefValue != "false" {
 		t.Errorf("embedder analyzer: name %q, -anypayload default %s", a.Name, a.Flags.Lookup("anypayload").DefValue)
 	}
+}
+
+// TestNewRefusesMalformedExemptCalls pins that an ExemptCalls entry that
+// does not name a package-level function fails at construction.
+func TestNewRefusesMalformedExemptCalls(t *testing.T) {
+	for _, entry := range []string{
+		"Capture",                          // no package
+		".Capture",                         // empty package
+		"example.com/embed/probe.",         // empty function
+		"example.com/embed/probe.T.Method", // a method
+		"example.com/embed/probe.not-a-name",
+		"example.com/embed/",
+	} {
+		t.Run(entry, func(t *testing.T) {
+			defer func() {
+				r := recover()
+				if r == nil || !strings.Contains(fmt.Sprint(r), "ExemptCalls") {
+					t.Fatalf("New with ExemptCalls %q recovered %v, want a panic naming ExemptCalls", entry, r)
+				}
+			}()
+			nativepayload.New(nativepayload.Config{ExemptCalls: []string{entry}})
+		})
+	}
+	// Well-formed entries, a dotted module path included.
+	nativepayload.New(nativepayload.Config{ExemptCalls: []string{"example.com/embed/probe.Capture", "fmt.Println"}})
 }
