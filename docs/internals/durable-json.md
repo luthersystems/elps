@@ -383,6 +383,34 @@ reg.Freeze()
   one pointer payload are one object, so a dump writes them as one.
 - A native with no registered codec is refused. The error names its Go type.
 
+Declare a codec as a package-level value and build the registry from the
+values. The `elpsdurablenative` analyzer (`elpsvet/nativepayload`) reads
+these values, so it can report a native payload type that has none:
+
+```go
+var HandleCodec = libjson.DurableCodec[*bptree.Handle]{
+	Name: "substrate:bptree", Version: 1, Charge: 10,
+	Save: saveHandle, Load: loadHandle,
+}
+
+reg, err := libjson.NewFrozenDurableRegistry(HandleCodec, libtime.DurableTimeCodec)
+```
+
+| Type | Use |
+|---|---|
+| `DurableCodec[T]` | The codec of payload type `T`. `Charge` and `SharedPayload` are `WithNativeCharge` and `WithSharedPayload`. `WithName` registers a copy under another name. |
+| `ForeignCodec` | The codec of a payload type the package cannot name, by `reflect.Type`. The analyzer cannot read it. |
+| `NewFrozenDurableRegistry` | Registers the values and freezes the registry. It refuses a codec with no `Save` or no `Load`. The `Fingerprint` equals that of the same codecs registered with `RegisterNative`. |
+| `TransientNative` | A payload type that is never saved declares this no-op method, with a doc comment that says why. |
+
+elps declares `libtime.DurableTimeCodec` (`elps:time`: the instant in UTC,
+RFC 3339 with nanoseconds) and `libtime.DurableDurationCodec`
+(`elps:duration`: integer nanoseconds). `libregexp.DurableRegexpCodec`
+(`elps:regexp`) saves a compiled regexp as its pattern string. Its load
+compiles the pattern again and charges the compile as `regexp-compile` does:
+one step per complete KiB of the pattern. A host `*regexp.Regexp` has no
+codec. The schema tag, JSON message and test suite natives are transient.
+
 ### Codec contract
 
 A codec must follow these rules. Peers that save or restore one value must

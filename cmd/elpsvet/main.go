@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs eleven Go analysis rules over this module.
+// Command elpsvet runs twelve Go analysis rules over this module.
 // Package variables must not retain runtime values (elpsownership).
 // LVal writes require ownership (elpsfreshness).
 // Escaping source locations require a copy (elpsescape).
@@ -12,7 +12,10 @@
 // Audited value switches must name every LType (elpsltypeswitch).
 // New value walkers must have an audited traversal contract (elpsvalwalker).
 // Marked immutable structs must hold only value fields (elpsmarkerfields).
-// Other modules can import elpsownpkg from elpsvet/ownpkg.
+// Native payload types need a durable codec or a transient mark (elpsdurablenative).
+// Other modules can import elpsownpkg from elpsvet/ownpkg, and
+// elpsnativepayload and elpsdurablenative from elpsvet/nativepayload
+// (configured with New and NewDurable).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -55,6 +58,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/elpsvet/nativepayload"
 	"github.com/luthersystems/elps/elpsvet/ownpkg"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/multichecker"
@@ -76,7 +80,7 @@ var analyzers = []*analysis.Analyzer{
 	analyzer,
 	freshnessAnalyzer,
 	escapeAnalyzer,
-	nativePayloadAnalyzer,
+	nativepayload.Analyzer,
 	builtinStateAnalyzer,
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
@@ -84,6 +88,7 @@ var analyzers = []*analysis.Analyzer{
 	lTypeSwitchAnalyzer,
 	valWalkerAnalyzer,
 	markerFieldsAnalyzer,
+	nativepayload.DurableAnalyzer,
 }
 
 func main() { multichecker.Main(analyzers...) }

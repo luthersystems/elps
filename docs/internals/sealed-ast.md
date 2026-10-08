@@ -616,7 +616,7 @@ Four `go/analysis` rules, run in CI by `make elpsvet` for both normal and
   keeps the conservative treatment, so the fact can only ever retire a
   proven false positive. Suppression: `//elps:aliases` with a
   justification.
-- **elpsnativepayload** (`nativepayload.go`): no native payload type may be
+- **elpsnativepayload** (`elpsvet/nativepayload/nativepayload.go`): no native payload type may be
   minted without being classified as safe for a template to publish. An
   admitted payload is NOT rebuilt per VM — `instantiate` stores
   `p.natives[...]` straight into each fresh header — so one Go value is

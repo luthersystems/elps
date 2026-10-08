@@ -9,7 +9,8 @@ every PR (`Seal contract (elpsvet)` in `.github/workflows/elps.yml`).
 Use when:
 - `make elpsvet` (or the CI step) reports a diagnostic;
 - you add a native payload (`lisp.Native`, `lisp.NativeOf`, a `.Native`
-  write) or a new payload type;
+  write) or a new payload type (it needs a durable codec or a transient
+  mark, see "Durable natives");
 - you add a package-level table holding `*lisp.LVal` (e.g. a stdlib
   `builtins` slice), write `LVal` fields, or store a `*token.Location`;
 - you register a builtin as a method value or closure, or give one package-level state;
@@ -19,14 +20,14 @@ Use when:
   or resolves a symbol it was handed (`elpsownpkg`: take a value, qualify the
   name, or turn it into a macro over core forms).
 
-## The eleven rules
+## The twelve rules
 
 | Analyzer | File | Flags | Suppression marker |
 |----------|------|-------|--------------------|
 | `elpsownership` | `main.go` | package-level var whose type reaches `*lisp.LVal` (#363) | `//elpsvet:allow <reason>` |
 | `elpsfreshness` | `freshness.go`, `alias.go` | `LVal` field write on a value the function did not construct, incl. via a local slice alias (#333/#334, #369/#371) | `//elps:mutates <reason>` |
 | `elpsescape` | `escape.go` | runtime-owned `*token.Location` stored uncopied into an escaping value (#375) | `//elps:aliases <reason>` |
-| `elpsnativepayload` | `nativepayload.go` | native payload whose type a template could not publish safely | `//elpsvet:allow-native <≥3-word reason>` |
+| `elpsnativepayload` | `elpsvet/nativepayload/nativepayload.go` (importable) | native payload whose type a template could not publish safely | `//elpsvet:allow-native <≥3-word reason>` |
 | `elpsbuiltinstate` | `builtinstate.go` | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
 | `elpsfrozenpackage` | `frozenpackage.go` | a write to `Package` tables or a `packageBase` field outside the audited write paths | allowlist row in `packageWriteFunctions` (no marker) |
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
@@ -34,9 +35,10 @@ Use when:
 | `elpsltypeswitch` | `ltypeswitch.go` | an audited `lisp.LType` switch has a default arm or misses a constant | scope list in the analyzer (no marker) |
 | `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | in elps: audited `pkgpath.FuncName` row in `valueWalkerFunctions`; in another module: `//elpsvet:allow-valwalker <≥3-word reason>` in the declared function's doc comment (ignored inside elps) |
 | `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays; covers types in function bodies, `type T U` and anonymous struct literals (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, or on a field line or the line above (any nesting depth) |
+| `elpsdurablenative` | `elpsvet/nativepayload/durable.go` (importable) | a native payload type with no visible package-level `libjson.DurableCodec[T]` value and no transient mark; a type-parameter payload; a pointer or unlisted codec value | a documented `TransientNative()` method on the type; for a type of another module, `//elpsvet:transient <reason>` at one construction |
 
 The header comment of each file is the full design rationale — read it before
-changing a rule. `nativepayload.go`'s header is the authority on the payload
+changing a rule. `elpsvet/nativepayload/nativepayload.go`'s header is the authority on the payload
 tiers; this skill only condenses it.
 
 ## Value walker contracts
@@ -71,7 +73,7 @@ table, whose rows `TestValueWalkerAllowlistReasons` classifies and counts.
 
 ```bash
 make elpsvet                     # what CI runs: two passes, see below
-go test ./cmd/elpsvet/           # the analyzers' own tests and fixtures
+go test ./cmd/elpsvet/ ./elpsvet/...  # the analyzers' own tests and fixtures
 
 # one analyzer, one subtree, while iterating:
 go run ./cmd/elpsvet -test=false -elpsnativepayload ./lisp/...
@@ -254,15 +256,56 @@ v := lisp.Native(h) //elpsvet:allow-native host handle is never published throug
 - `//elpsvet:allow` (the ownership marker) does **not** satisfy this rule, and
   vice versa.
 
+## Durable natives (`elpsdurablenative`)
+
+A durable dump (`libjson.DumpDurable`) saves a native only when its registry
+has a codec for the payload's Go type. This rule moves a missing codec from
+run time to the build. Each native payload type is one of:
+
+| Class | How |
+|---|---|
+| Durable | A package-level `libjson.DurableCodec[T]` value (not a pointer) of the analysed module, declared in the package or exported by an import. A codec of another module counts only when the module re-declares it (`var C = libtime.DurableTimeCodec.WithName("m:time")`), because its registry lists only its own codecs. Examples: `libtime.DurableTimeCodec`, `libregexp.DurableRegexpCodec`. |
+| Transient | A `TransientNative()` method declared on the type itself, with a doc comment that says why it is never saved. A value receiver marks `T` and `*T`; a pointer receiver marks only `*T`. A promoted method does not count. Example: `libschema.validatorTag`. |
+| Transient at one site | `//elpsvet:transient <reason>`, trailing or on the line after the comment block above the construction. Only for a type declared outside the module (`time.Time`, `string`, `json.RawMessage`). One marker covers exactly one construction. Example: `internal/fuzzval`. |
+
+- Not reported: interface-typed payloads, untyped nil, a retained call
+  stack, and in package `lisp` the kernel slots (`*[]byte`, `*MapData`,
+  `*funData`), a literal of another header and the generic `NativeOf`.
+- Reported too: a type-parameter payload, a type that is durable and
+  transient, a pointer codec value, an unexported codec with no
+  `NewFrozenDurableRegistry` call in its package, and a
+  `NewFrozenDurableRegistry` call that leaves out a codec of the module.
+- Never change a codec's `Name`, `Version` or payload type: registries of
+  embedders pin their `Fingerprint`.
+- Fixtures: `elpsvet/nativepayload/testdata` (`durableelps`, the lisp stub,
+  and the embedder packages under `example.com/embed`).
+
+## Embedder configuration
+
+`elpsvet/nativepayload` is importable. `New(Config)` and
+`NewDurable(DurableConfig)` build the two rules for another module. A zero
+`Config` is elps's (`Analyzer`); `DurableConfig.Module` is required, and elps's
+`DurableAnalyzer` sets it to `github.com/luthersystems/elps`. Embedder fixtures:
+`elpsvet/nativepayload/testdata/src/example.com/embed`.
+
+| Setting | Effect |
+|---|---|
+| `Config.AllowedTypes` | Audited rows, true at every site |
+| `Config.ExemptCalls` | A function declaration that calls one is exempt |
+| `Config.AllowMarker`, `AllowMinWords`, `Fix` | The module's marker, its minimum justification and the fix text |
+| `Config.HideDynamic` | Interface-typed payloads are reported only with `-anypayload` |
+| `DurableConfig.Module`, `TransientMarker`, `Registry` | The module path, the site marker and the fix text |
+
 ## Change a rule or a tier
 
 A rule and its `analysistest` fixtures can drift away from runtime admission
 together and stay green, so a tier change is checked against the runtime:
 
-1. Edit the rule (and its header comment) in `cmd/elpsvet/<rule>.go`.
+1. Edit the rule (and its header comment) in `cmd/elpsvet/<rule>.go`, or in
+   `elpsvet/nativepayload/` for the two payload rules.
 2. Allowlist row added, removed, or moved to another header → update
    `allowedPayloadTypes` **and** the audited inventory in
-   `cmd/elpsvet/nativepayload_test.go` (each row needs a readable
+   `elpsvet/nativepayload/nativepayload_internal_test.go` (each row needs a readable
    justification and its `LType` header; dropped rows must stay dropped).
 3. Add fixture cases with `// want` comments:
    - `testdata/src/nativepayload/` — spellings, allowlist, marker placements;
@@ -282,7 +325,7 @@ together and stay green, so a tier change is checked against the runtime:
 5. Adding or removing an analyzer → update the `analyzers` slice in `main.go`
    and `TestRegisteredAnalyzers`; `scripts/ci-gates-test.sh` also checks the
    gate.
-6. Run `go test ./cmd/elpsvet/ && make elpsvet`, then `/verify`.
+6. Run `go test ./cmd/elpsvet/ ./elpsvet/... && make elpsvet`, then `/verify`.
 
 ## Checklist
 
@@ -290,4 +333,5 @@ together and stay green, so a tier change is checked against the runtime:
 - [ ] Every new marker carries a reason a reviewer can audit (≥3 words for `allow-native`, `allow-shared`, `allow-marker` and `allow-valwalker`)
 - [ ] New `packageWriteFunctions` / `lazyTableFunctions` rows carry a justification
 - [ ] Tier/allowlist change: inventory test, fixtures, and a paired runtime case updated
-- [ ] `go test ./cmd/elpsvet/` passes
+- [ ] New native payload type: a durable codec or a transient mark
+- [ ] `go test ./cmd/elpsvet/ ./elpsvet/...` passes

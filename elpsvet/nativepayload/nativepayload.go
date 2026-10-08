@@ -1,8 +1,15 @@
 // Copyright © 2026 The ELPS authors
 
-// The elpsnativepayload analyzer is the fourth elpsvet rule: nothing
-// plausibly MUTABLE may become a native payload unless a human has written
-// down why sharing it is safe.
+// Package nativepayload holds two analyzers over the native constructions
+// of a module: elpsnativepayload (this file), which checks that a template
+// may publish each native payload, and elpsdurablenative (durable.go), which
+// checks that each native payload type has a durable codec or is marked
+// transient.  cmd/elpsvet runs both over elps with the default
+// configuration.  Another module imports this package and builds its own
+// analyzers with New and NewDurable (see Config and DurableConfig).
+//
+// The elpsnativepayload analyzer: nothing plausibly MUTABLE may become a
+// native payload unless a human has written down why sharing it is safe.
 //
 // # The invariant
 //
@@ -33,7 +40,10 @@
 // `type ErrorVal LVal`, the same struct and the same field object), or a
 // write to that field however it is reached (`v.Native`, `e.Native` on an
 // ErrorVal, `(*lisp.ErrorVal)(v).Native`, a promoted `w.Native` through an
-// embedding struct) -- is REPORTED unless one of:
+// embedding struct) -- is REPORTED unless one of the tiers below applies.
+// An embedder's Config adds two more: a row of Config.AllowedTypes, true at
+// every site, and an enclosing function declaration that calls one of
+// Config.ExemptCalls.  The tiers are:
 //
 //  1. the payload's static type has a basic underlying type that is on
 //     runtimeScalarKinds -- the kind-for-kind mirror of the scalar
@@ -194,17 +204,24 @@
 //     the rule those guards, not tightening the site test; tightening it
 //     alone would report all seven kernel writes and force seven
 //     annotations onto code publication already routes correctly.
-package main
+package nativepayload
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strings"
 
+	"github.com/luthersystems/elps/internal/vetpolicy"
 	"golang.org/x/tools/go/analysis"
 )
 
 const (
+	// lispPkgPath is the elps package whose Native, NativeOf and Value
+	// constructors and LVal.Native field the analyzers track.
+	lispPkgPath = "github.com/luthersystems/elps/lisp"
+
 	// nativeAllowMarker is this rule's audited suppression.  It is NOT the
 	// ownership rule's //elpsvet:allow (see the file comment) and is held to
 	// a stricter standard: see justifiedNativeAllow.
@@ -215,42 +232,109 @@ const (
 	// punctuation ("//elpsvet:allow-native .") rather than a sentence.
 	nativeAllowMinWords = 3
 
-	// templateImmutableMethod is the one method of
-	// internal/templatepolicy.Immutable.  It is UNEXPORTED, which is the
-	// point: only a type embedding templatepolicy.Marker can have it, and
-	// only this module can embed that.
-	templateImmutableMethod = "templateImmutable"
-
 	// nativeFieldName is the lisp.LVal field this rule tracks.  The field
 	// OBJECT is what is matched (isNativeField), never the receiver's
 	// spelled type, so ErrorVal, conversions and embedding all resolve to
 	// the same field.
 	nativeFieldName = "Native"
-
-	// lTypeFieldName is the lisp.LVal field naming the HEADER a value is,
-	// and the discriminant (*templateInventory).val switches on.  A keyed
-	// literal that sets Native alongside it says which of val's arms the
-	// payload will take, which is what makes the allowlist tier checkable
-	// (payloadSite.exemptsRow).  Matched by object, like Native.
-	lTypeFieldName = "Type"
 )
-
-// templatePolicyPkgPath is the internal package declaring the Immutable
-// marker contract.  The method is matched together with this path so that a
-// downstream type with a same-named method of its own cannot claim the tier.
-const templatePolicyPkgPath = "github.com/luthersystems/elps/internal/templatepolicy"
 
 // callStackTypeName is the payload type publication refuses outright, by
 // name, in (*templateInventory).checkDiagnosticPayload.
 const callStackTypeName = "CallStack"
 
-var nativePayloadAnalyzer = &analysis.Analyzer{
-	Name: "elpsnativepayload",
-	Doc: "flag lisp.LVal native payloads whose type is not provably safe for a template to publish" +
-		" (an admitted payload is shared by every VM the template mints) unless the type is a struct" +
-		" value embedding internal/templatepolicy.Marker, is on the audited allowlist, or" +
-		" //elpsvet:allow-native <justification> covers the site",
-	Run: runNativePayload,
+// Config configures an elpsnativepayload analyzer.  The zero value is
+// elps's own configuration, which Analyzer uses.  An embedder that runs
+// the rule over its own module sets the fields it needs.
+type Config struct {
+	// AllowedTypes adds audited allowlist rows.  A key is the payload type
+	// as types.TypeString spells it with full import paths (for example
+	// "github.com/shopspring/decimal.Decimal" or "*example.com/m/pkg.T").
+	// A value is the reason a human gave for why a template may share the
+	// payload.  An embedder row is true at every site.
+	AllowedTypes map[string]string
+	// Name is the analyzer's name.  Default "elpsnativepayload".
+	Name string
+	// AllowMarker is the audited suppression marker without the leading
+	// "//".  Default "elpsvet:allow-native".
+	AllowMarker string
+	// Fix replaces the list of fixes at the end of the ordinary report
+	// ("... so publication admits only audited immutable payloads; FIX").
+	// Default: elps's own fixes, which name templatepolicy.Marker,
+	// lisp.TemplateWithNativePolicy and AllowMarker.
+	Fix string
+	// ExemptCalls names package-level functions as "import/path.Func";
+	// New panics on an entry of another shape.  A function
+	// declaration whose body calls one of them is exempt, closures
+	// included.  A call that a host makes to declare that a builtin cannot
+	// run while a template is built, such as substrate's
+	// shirorpc.ProbeContextCapture, belongs here.  The exemption does not
+	// see branches: keep the call ahead of every construction.
+	ExemptCalls []string
+	// AllowMinWords is the least number of words a justification after
+	// AllowMarker may have.  Default 3.
+	AllowMinWords int
+	// HideDynamic stops the report of interface-typed and type-parameter
+	// payloads.  The -anypayload flag turns the report back on.
+	HideDynamic bool
+}
+
+// Analyzer is elps's own elpsnativepayload analyzer: New(Config{}).
+var Analyzer = New(Config{})
+
+// New returns an elpsnativepayload analyzer with the given configuration.
+// It registers one flag, -anypayload, that reports interface-typed and
+// type-parameter payloads.  Its default is the opposite of
+// cfg.HideDynamic.
+func New(cfg Config) *analysis.Analyzer {
+	c := &config{Config: cfg}
+	if c.Name == "" {
+		c.Name = "elpsnativepayload"
+	}
+	if c.AllowMarker == "" {
+		c.AllowMarker = nativeAllowMarker
+	}
+	if c.AllowMinWords == 0 {
+		c.AllowMinWords = nativeAllowMinWords
+	}
+	for _, entry := range c.ExemptCalls {
+		c.exempt = append(c.exempt, parseExemptCall(entry))
+	}
+	a := &analysis.Analyzer{
+		Name: c.Name,
+		Doc: "flag lisp.LVal native payloads whose type is not provably safe for a template to publish" +
+			" (an admitted payload is shared by every VM the template mints) unless the type is a struct" +
+			" value embedding internal/templatepolicy.Marker, is on the audited allowlist, or" +
+			" //" + c.AllowMarker + " <justification> covers the site",
+		Run: c.run,
+	}
+	a.Flags.BoolVar(&c.dynamic, "anypayload", !cfg.HideDynamic,
+		"report native payloads that are interface-typed or a type parameter")
+	return a
+}
+
+// config is a Config with its defaults applied.
+type config struct {
+	Config
+	exempt  []funcName
+	dynamic bool
+}
+
+// funcName is a function an ExemptCalls entry names.
+type funcName struct{ pkg, name string }
+
+// parseExemptCall parses an ExemptCalls entry, "import/path.Func".  The
+// last path element holds exactly one dot, and Func is a Go identifier: a
+// method (pkg.T.M) is not supported.  It panics on any other entry,
+// because a malformed entry would exempt nothing without a word.
+func parseExemptCall(entry string) funcName {
+	last := entry[strings.LastIndexByte(entry, '/')+1:]
+	i := strings.LastIndexByte(entry, '.')
+	if strings.Count(last, ".") != 1 || i <= 0 || i < len(entry)-len(last) || !token.IsIdentifier(entry[i+1:]) ||
+		strings.HasSuffix(entry[:i], "/") {
+		panic(fmt.Sprintf("nativepayload.New: Config.ExemptCalls entry %q is not \"import/path.Func\" (a package-level function)", entry))
+	}
+	return funcName{pkg: entry[:i], name: entry[i+1:]}
 }
 
 // payloadRow is one audited allowlist entry.  A row is a claim about a
@@ -398,129 +482,73 @@ func (s payloadSite) exemptsRow(row payloadRow) bool {
 	}
 }
 
-func runNativePayload(pass *analysis.Pass) (any, error) {
-	for _, file := range pass.Files {
-		allow := markerLinesMatching(pass.Fset, file, justifiedNativeAllow)
-		for _, decl := range file.Decls {
-			switch d := decl.(type) {
-			case *ast.FuncDecl:
-				if d.Body == nil || hasJustifiedNativeAllow(d.Doc) {
-					continue
-				}
-				checkNativeConstructions(pass, d.Body, allow)
-			case *ast.GenDecl:
-				// Package-level var/const initializers, including function
-				// literals inside them.  A native built at package scope is
-				// shared by every Runtime in the process before a template
-				// is even involved -- the ownership rule's territory,
-				// reached from the payload side.
-				checkNativeConstructions(pass, d, allow)
+func (c *config) run(pass *analysis.Pass) (any, error) {
+	allow := map[*ast.File]map[int]bool{}
+	exempt := map[*ast.FuncDecl]bool{}
+	walkNatives(pass, func(s nativeSite) {
+		if s.fn != nil {
+			if c.hasJustifiedAllow(s.fn.Doc) {
+				return
+			}
+			ex, ok := exempt[s.fn]
+			if !ok {
+				ex = c.callsExempt(pass, s.fn.Body)
+				exempt[s.fn] = ex
+			}
+			if ex {
+				return
 			}
 		}
-	}
+		lines, ok := allow[s.file]
+		if !ok {
+			lines = markerLinesMatching(pass.Fset, s.file, c.justifiedAllow)
+			allow[s.file] = lines
+		}
+		for _, p := range s.lines() {
+			if lines[pass.Fset.Position(p).Line] {
+				return
+			}
+		}
+		if s.address {
+			pass.Reportf(s.pos,
+				"address of LVal.Native taken: whatever is later stored through the pointer is a native payload"+
+					" this rule cannot see the type of; store through the field directly so the payload is"+
+					" checked at the store, or annotate //%s with a justification",
+				c.AllowMarker)
+			return
+		}
+		c.report(pass, s)
+	})
 	return nil, nil
 }
 
-// checkNativeConstructions reports every native construction under n.
-func checkNativeConstructions(pass *analysis.Pass, n ast.Node, allow map[int]bool) {
-	ast.Inspect(n, func(n ast.Node) bool {
-		switch x := n.(type) {
-		case *ast.CallExpr:
-			checkNativeCall(pass, x, allow)
-		case *ast.CompositeLit:
-			checkNativeLiteral(pass, x, allow)
-		case *ast.AssignStmt:
-			checkNativeAssign(pass, x, allow)
-		case *ast.UnaryExpr:
-			checkNativeAddress(pass, x, allow)
+// callsExempt reports whether body calls a function of ExemptCalls.
+func (c *config) callsExempt(pass *analysis.Pass, body *ast.BlockStmt) bool {
+	if len(c.exempt) == 0 {
+		return false
+	}
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fn := calleeFunc(pass, call)
+		if fn == nil || fn.Pkg() == nil {
+			return true
+		}
+		for _, e := range c.exempt {
+			if fn.Name() == e.name && fn.Pkg().Path() == e.pkg {
+				found = true
+				return false
+			}
 		}
 		return true
 	})
-}
-
-// checkNativeCall handles lisp.Native(x), the typed lisp.NativeOf[T](x), and
-// the lisp.Value(x) calls the compiler can see falling through to Native.
-func checkNativeCall(pass *analysis.Pass, call *ast.CallExpr, allow map[int]bool) {
-	if len(call.Args) != 1 {
-		return
-	}
-	fn := calleeFunc(pass, call)
-	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath {
-		return
-	}
-	arg := call.Args[0]
-	switch fn.Name() {
-	case "Native":
-	case "NativeOf":
-		// Implemented as a call to Native, so it constructs exactly the
-		// same value.  A generic instantiation still resolves to the
-		// generic *types.Func, whose name is NativeOf and never Native, so
-		// it needs its own arm -- without one the typed constructor is a
-		// spelling the rule cannot see, and a rule that cannot see a
-		// spelling fails open.
-	case "Value":
-		if directlyRepresentable(pass.TypesInfo.TypeOf(arg)) {
-			// Value's type switch handles it without a Native.
-			return
-		}
-	default:
-		return
-	}
-	reportNativePayload(pass, call.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(arg), what: "lisp." + fn.Name(), site: payloadSite{kind: siteConstructor, inKernel: inKernelPkg(pass)}, allow: allow})
-}
-
-// checkNativeLiteral handles a keyed literal setting the lisp.LVal.Native
-// field -- `lisp.LVal{Native: x}`, and equally `lisp.ErrorVal{Native: x}`,
-// since ErrorVal is a defined type over LVal and its keys resolve to the
-// same field objects.  The literal's TYPE is not consulted; the key's
-// object is.
-//
-// The SIBLING `Type:` key of the same literal IS consulted, because it is
-// the header the kernel is building and the allowlist rows are claims about
-// headers (payloadSite.exemptsRow).  The whole element list is read before
-// anything is reported, so a literal that spells Native first is treated the
-// same as one that spells Type first.
-//
-// The report sits on the literal's opening line, where a call would be
-// reported, so a trailing marker on `&lisp.LVal{` covers a payload two
-// lines down; a marker on the `Native:` line itself is honoured as well.
-func checkNativeLiteral(pass *analysis.Pass, lit *ast.CompositeLit, allow map[int]bool) {
-	native := nativeKeyValues(pass, lit)
-	if len(native) == 0 {
-		// Much the commonest case, and the reason the header type is
-		// resolved only after it: every composite literal in the tree
-		// reaches this function.
-		return
-	}
-	header, hasTypeKey := literalHeader(pass, lit)
-	site := payloadSite{
-		kind:       siteHeaderLiteral,
-		inKernel:   inKernelPkg(pass),
-		headerType: header,
-		hasTypeKey: hasTypeKey,
-	}
-	for _, kv := range native {
-		reportNativePayload(pass, lit.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(kv.Value), what: "LVal.Native literal", site: site, allow: allow}, kv.Key.Pos(), kv.Value.Pos())
-	}
-}
-
-// nativeKeyValues collects the literal's elements that set the
-// lisp.LVal.Native FIELD, matched by the key's object rather than by the
-// literal's spelled type.
-func nativeKeyValues(pass *analysis.Pass, lit *ast.CompositeLit) []*ast.KeyValueExpr {
-	var out []*ast.KeyValueExpr
-	for _, elt := range lit.Elts {
-		kv, ok := elt.(*ast.KeyValueExpr)
-		if !ok {
-			continue
-		}
-		key, ok := kv.Key.(*ast.Ident)
-		if !ok || !isNativeField(pass.TypesInfo.Uses[key]) {
-			continue
-		}
-		out = append(out, kv)
-	}
-	return out
+	return found
 }
 
 // literalHeader returns the NAME of the lisp.LType constant the literal's
@@ -545,7 +573,7 @@ func literalHeader(pass *analysis.Pass, lit *ast.CompositeLit) (string, bool) {
 			continue
 		}
 		key, ok := kv.Key.(*ast.Ident)
-		if !ok || !isLValTypeField(pass.TypesInfo.Uses[key]) {
+		if !ok || !vetpolicy.IsLValTypeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
 		return headerTypeNamed(pass, kv.Value), true
@@ -616,15 +644,6 @@ func headerTypeNamed(pass *analysis.Pass, expr ast.Expr) string {
 	return konst.Name()
 }
 
-// isLValTypeField reports whether obj is the lisp.LVal.Type field object --
-// the header discriminant templateInventory.val switches on.  Matched the
-// same way as the Native field, by object rather than by the receiver's
-// spelled type.
-func isLValTypeField(obj types.Object) bool {
-	v, ok := obj.(*types.Var)
-	return ok && v.IsField() && v.Name() == lTypeFieldName && v.Pkg() != nil && v.Pkg().Path() == lispPkgPath
-}
-
 // inKernelPkg reports whether the package under analysis IS package lisp.
 // The allowlist rows describe the kernel's own representation slots, so a
 // row is only true of a site the kernel wrote.
@@ -632,106 +651,64 @@ func inKernelPkg(pass *analysis.Pass) bool {
 	return pass.Pkg != nil && pass.Pkg.Path() == lispPkgPath
 }
 
-// checkNativeAssign handles a write to the lisp.LVal.Native field on an
-// existing value -- the bypass that can put a payload into a value the
-// assigning function does not own -- however the field is reached.
-func checkNativeAssign(pass *analysis.Pass, stmt *ast.AssignStmt, allow map[int]bool) {
-	if len(stmt.Lhs) != len(stmt.Rhs) {
-		// Multi-value RHS: the payload type is a tuple element, not an
-		// expression type.  Documented blind spot (file comment).
-		return
-	}
-	for i, lhs := range stmt.Lhs {
-		sel, ok := ast.Unparen(lhs).(*ast.SelectorExpr)
-		if !ok || !selectsNativeField(pass, sel) {
-			continue
-		}
-		reportNativePayload(pass, stmt.Pos(), nativePayloadReport{payload: pass.TypesInfo.TypeOf(stmt.Rhs[i]), what: "LVal.Native assignment", site: payloadSite{kind: siteFieldWrite, inKernel: inKernelPkg(pass)}, allow: allow})
-	}
-}
-
-// checkNativeAddress handles `&v.Native`: a pointer through which any
-// payload can later be stored, with no type at this site to classify.
-func checkNativeAddress(pass *analysis.Pass, expr *ast.UnaryExpr, allow map[int]bool) {
-	if expr.Op != token.AND {
-		return
-	}
-	sel, ok := ast.Unparen(expr.X).(*ast.SelectorExpr)
-	if !ok || !selectsNativeField(pass, sel) {
-		return
-	}
-	if allow[pass.Fset.Position(expr.Pos()).Line] {
-		return
-	}
-	pass.Reportf(expr.Pos(),
-		"address of LVal.Native taken: whatever is later stored through the pointer is a native payload"+
-			" this rule cannot see the type of; store through the field directly so the payload is"+
-			" checked at the store, or annotate //%s with a justification",
-		nativeAllowMarker)
-}
-
-// nativePayloadReport holds the payload type, site and allowed lines.
-type nativePayloadReport struct {
-	// payload is the native payload type.
-	payload types.Type
-	// what names the work or diagnostic subject.
-	what string
-	// site describes the native payload site.
-	site payloadSite
-	// allow records allowed payload lines.
-	allow map[int]bool
-}
-
-// reportNativePayload classifies payload and reports at pos unless a
-// justified marker covers pos's line or any of the also lines (a literal's
-// key and value positions).
-func reportNativePayload(pass *analysis.Pass, pos token.Pos, opts nativePayloadReport, also ...token.Pos) {
-	payload, what, site, allow := opts.payload, opts.what, opts.site, opts.allow
-
-	if allow[pass.Fset.Position(pos).Line] {
-		return
-	}
-	for _, p := range also {
-		if allow[pass.Fset.Position(p).Line] {
-			return
-		}
-	}
-	switch classifyPayload(payload, site) {
+// report classifies a site's payload and reports it.
+func (c *config) report(pass *analysis.Pass, s nativeSite) {
+	payload, what, site := s.payload, s.what, s.site
+	switch c.classify(payload, site) {
 	case payloadSafe:
 		return
 	case payloadDynamic:
-		pass.Reportf(pos,
+		if !c.dynamic {
+			return
+		}
+		pass.Reportf(s.pos,
 			"%s payload type %s is not statically known (an interface or type parameter), so whether a"+
 				" template may publish it cannot be checked here; construct the native from a concrete"+
 				" type, or annotate //%s with a justification naming the contract the payload is held to",
-			what, payloadTypeString(payload), nativeAllowMarker)
+			what, payloadTypeString(payload), c.AllowMarker)
 	case payloadDiagnostic:
-		pass.Reportf(pos,
+		pass.Reportf(s.pos,
 			"%s payload type %s is a retained diagnostic stack, which"+
 				" (*templateInventory).checkDiagnosticPayload in lisp/template.go refuses at publication"+
 				" before any sharing policy runs, so no marker, allowlist row or native policy can make it"+
 				" publishable; keep the stack out of the payload, or annotate //%s with a justification"+
 				" that the value never reaches a template",
-			what, payloadTypeString(payload), nativeAllowMarker)
+			what, payloadTypeString(payload), c.AllowMarker)
 	case payloadKernelSlotMisuse:
 		row := allowedPayloadTypes[types.TypeString(types.Unalias(payload), nil)]
-		pass.Reportf(pos,
+		pass.Reportf(s.pos,
 			"%s payload type %s is a kernel representation slot, and the allowlist row for it is a claim"+
 				" about a HEADER, not about the type: it is true only of package lisp building an %s"+
 				" header, which (*templateInventory).val routes to its own arm (lisp/template.go)."+
 				" %s Every other header is an LNative, whose payload val hands to native(), and native()"+
 				" refuses this type; build the header the kernel builds, or annotate //%s with a"+
 				" justification that the value provably never reaches a template",
-			what, payloadTypeString(payload), row.headerType, site.misuseReason(row), nativeAllowMarker)
+			what, payloadTypeString(payload), row.headerType, site.misuseReason(row), c.AllowMarker)
 	case payloadReport:
-		pass.Reportf(pos,
+		fix := c.Fix
+		if fix == "" {
+			fix = "embed internal/templatepolicy.Marker on an immutable STRUCT" +
+				" VALUE, have the embedder approve the payload with lisp.TemplateWithNativePolicy, or" +
+				" annotate //" + c.AllowMarker + " with a justification that the payload provably never reaches a template"
+		}
+		pass.Reportf(s.pos,
 			"%s payload type %s is not a known-safe value type: a template publishes one value graph and"+
 				" shares an admitted native payload with every VM it mints, so publication admits only"+
-				" audited immutable payloads; embed internal/templatepolicy.Marker on an immutable STRUCT"+
-				" VALUE, have the embedder approve the payload with lisp.TemplateWithNativePolicy, or"+
-				" annotate //%s with a justification that the payload provably never reaches a template",
-			what, payloadTypeString(payload), nativeAllowMarker)
+				" audited immutable payloads; %s",
+			what, payloadTypeString(payload), fix)
 	}
+}
+
+// classify is classifyPayload with the embedder's AllowedTypes rows: a
+// type the base rule reports is safe when a row names it.
+func (c *config) classify(t types.Type, site payloadSite) payloadVerdict {
+	v := classifyPayload(t, site)
+	if v == payloadReport && len(c.AllowedTypes) > 0 {
+		if _, ok := c.AllowedTypes[types.TypeString(types.Unalias(t), nil)]; ok {
+			return payloadSafe
+		}
+	}
+	return v
 }
 
 // misuseReason says which of exemptsRow's conditions this site failed, so
@@ -816,7 +793,7 @@ func classifyPayload(t types.Type, site payloadSite) payloadVerdict {
 		}
 		return payloadKernelSlotMisuse
 	}
-	if declaresTemplateImmutable(t) {
+	if vetpolicy.DeclaresTemplateImmutable(t) {
 		return payloadSafe
 	}
 	switch u := t.Underlying().(type) {
@@ -878,40 +855,6 @@ var runtimeScalarKinds = map[types.BasicKind]bool{
 	types.UntypedComplex: true,
 	types.UntypedString:  true,
 	types.UntypedNil:     true,
-}
-
-// declaresTemplateImmutable reports whether t is admitted by the marker tier
-// of (*templateInventory).native: a STRUCT VALUE whose method set carries
-// internal/templatepolicy.Immutable's unexported templateImmutable().
-//
-// Both halves are the runtime's.  The method is matched by name AND by
-// declaring package, which is how the runtime's type assertion behaves --
-// an unexported method is only satisfiable by embedding templatepolicy.Marker,
-// which nothing outside this module can import.  The struct-value half is the
-// half that is easy to lose: a *T inherits T's method set and so would pass
-// an assertion, but the runtime additionally requires
-// reflect.TypeOf(payload).Kind() == reflect.Struct, because a caller holding
-// the pointer can replace the whole pointee no matter how private its fields
-// are.  A pointer form needs TemplateWithNativePolicy approval instead.
-func declaresTemplateImmutable(t types.Type) bool {
-	if _, ok := t.Underlying().(*types.Struct); !ok {
-		return false
-	}
-	ms := types.NewMethodSet(t)
-	for i := range ms.Len() {
-		fn, ok := ms.At(i).Obj().(*types.Func)
-		if !ok || fn.Name() != templateImmutableMethod {
-			continue
-		}
-		if fn.Pkg() == nil || fn.Pkg().Path() != templatePolicyPkgPath {
-			continue
-		}
-		sig, ok := fn.Type().(*types.Signature)
-		if ok && sig.Params().Len() == 0 && sig.Results().Len() == 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // isRetainedCallStack reports whether t is lisp.CallStack or *lisp.CallStack
@@ -1016,49 +959,20 @@ func selectsNativeField(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
 	return ok && s.Kind() == types.FieldVal && isNativeField(s.Obj())
 }
 
-// calleeFunc resolves a call's callee to its *types.Func, so package aliases
-// and dot imports resolve like the compiler resolves them rather than by
-// matching the source text "lisp.Native".  An EXPLICITLY instantiated
-// generic -- lisp.NativeOf[*Handle](h) -- wraps the callee in an index
-// expression (IndexExpr for one type argument, IndexListExpr for several),
-// which is unwrapped first; missing that would leave a spelling the rule
-// cannot see.
-func calleeFunc(pass *analysis.Pass, call *ast.CallExpr) *types.Func {
-	fun := ast.Unparen(call.Fun)
-	switch idx := fun.(type) {
-	case *ast.IndexExpr:
-		fun = ast.Unparen(idx.X)
-	case *ast.IndexListExpr:
-		fun = ast.Unparen(idx.X)
-	}
-	var id *ast.Ident
-	switch fun := fun.(type) {
-	case *ast.Ident:
-		id = fun
-	case *ast.SelectorExpr:
-		id = fun.Sel
-	default:
-		return nil
-	}
-	fn, _ := pass.TypesInfo.Uses[id].(*types.Func)
-	return fn
+// justifiedAllow reports whether a comment's text is the configured allow
+// marker THAT CARRIES A JUSTIFICATION: the marker, whitespace, and at least
+// AllowMinWords words.  The rule cannot check that the words are true, only
+// that somebody wrote a sentence down where the next reader will see it.
+func (c *config) justifiedAllow(text string) bool {
+	return justifiedAllow(text, c.AllowMarker, c.AllowMinWords)
 }
 
-// justifiedNativeAllow reports whether a comment's text is an
-// //elpsvet:allow-native marker THAT CARRIES A JUSTIFICATION: the marker,
-// whitespace, and at least nativeAllowMinWords words.  The rule cannot check
-// that the words are true, only that somebody wrote a sentence down where
-// the next reader will see it.
-func justifiedNativeAllow(text string) bool {
-	return justifiedAllow(text, nativeAllowMarker, nativeAllowMinWords)
-}
-
-func hasJustifiedNativeAllow(cg *ast.CommentGroup) bool {
+func (c *config) hasJustifiedAllow(cg *ast.CommentGroup) bool {
 	if cg == nil {
 		return false
 	}
-	for _, c := range cg.List {
-		if justifiedNativeAllow(c.Text) {
+	for _, cm := range cg.List {
+		if c.justifiedAllow(cm.Text) {
 			return true
 		}
 	}

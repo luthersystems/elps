@@ -348,6 +348,41 @@ library builtin: `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, reads
 of `Runtime.Package`, and symbol lookups that are not literal qualified names.
 Suppress an intended one with `//elpsvet:allow-ownpkg <justification>`.
 
+### Native payload analyzers
+
+Package `github.com/luthersystems/elps/elpsvet/nativepayload` holds two
+analyzers for your own `go/analysis` multichecker. Build them with your
+module's settings:
+
+```go
+analyzers := []*analysis.Analyzer{
+	nativepayload.New(nativepayload.Config{
+		Name:         "nativepayload",
+		AllowMarker:  "mytool:allow",
+		AllowedTypes: map[string]string{"example.com/dec.Decimal": "<audited reason>"},
+		ExemptCalls:  []string{"example.com/m/rpc.ProbeContextCapture"},
+		HideDynamic:  true,
+	}),
+	nativepayload.NewDurable(nativepayload.DurableConfig{
+		Name:            "durablenative",
+		Module:          "example.com/m",
+		TransientMarker: "mytool:transient",
+	}),
+}
+```
+
+| Analyzer | Reports | Your settings |
+|---|---|---|
+| `New` (`elpsnativepayload`) | A native payload that a template cannot publish safely | Extra audited types, calls that exempt a builtin, the allow marker (justification of `AllowMinWords` words, default 3), the fix text, and whether interface-typed payloads are reported (`-anypayload`) |
+| `NewDurable` (`elpsdurablenative`) | A native payload type with no `libjson.DurableCodec[T]` value and no transient mark, and a `libjson.NewFrozenDurableRegistry` call that leaves out a codec of your module | The module path and the site marker |
+
+A codec counts only when your module declares it. To use an elps codec,
+re-declare it in your module, for example
+`var TimeCodec = libtime.DurableTimeCodec.WithName("m:time")`, and list it in
+your registry. Mark a type transient with a documented `TransientNative()`
+method on the type. For a type of another module, put `//<TransientMarker> <reason>` at
+the construction. Each analyzer sees only the natives your module builds.
+
 ### Per-VM settings
 
 A builtin keeps Lisp-controlled modes and per-VM metadata in runtime

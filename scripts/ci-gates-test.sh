@@ -5121,7 +5121,7 @@ else
 	bad "elpsvet main() no longer runs the analyzers slice — TestRegisteredAnalyzers pins a set nothing executes"
 fi
 
-for _rule in analyzer freshnessAnalyzer escapeAnalyzer nativePayloadAnalyzer; do
+for _rule in analyzer freshnessAnalyzer escapeAnalyzer nativepayload\.Analyzer nativepayload\.DurableAnalyzer; do
 	if grep -qE "^\s+${_rule},\s*$" "$ELPSVET_MAIN"; then
 		ok "elpsvet registers ${_rule}"
 	else

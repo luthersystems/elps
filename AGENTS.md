@@ -102,11 +102,18 @@ spell a marker in the gate script or its tests; assemble it at runtime.
   `minify`, `analyze`, `debug`, `mcp`.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,
   freshness, escape, native payload, builtin shared state, frozen packages,
-  lazy reads, own package, exhaustive value switches, new value walkers, marker fields).
+  lazy reads, own package, exhaustive value switches, new value walkers, marker fields,
+  durable natives).
   See the `elpsvet` skill.
 - **`elpsvet/ownpkg/`** — The importable `elpsownpkg` analyzer: a library
   builtin runs in its own package (#736), so it must not evaluate code, build
   lambdas, read `Runtime.Package` or resolve a symbol it was handed.
+- **`elpsvet/nativepayload/`** — The importable `elpsnativepayload` and
+  `elpsdurablenative` analyzers. Each native payload must be safe for a
+  template to publish, and each native payload type needs a durable codec
+  (`libjson.DurableCodec[T]`) or a transient mark (`TransientNative`).
+  Another module builds its own with `New(Config)` and
+  `NewDurable(DurableConfig)`.
 - **`repl/`** — Interactive REPL using readline.
 - **`elpstest/`** — Test framework (`Runner`, `TestSuite`) for executing lisp
   test files as Go subtests.

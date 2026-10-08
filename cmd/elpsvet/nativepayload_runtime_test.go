@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/luthersystems/elps/elpsvet/nativepayload"
 	"golang.org/x/tools/go/analysis/analysistest"
 
 	"github.com/luthersystems/elps/lisp"
@@ -279,7 +280,7 @@ func TestNativePayloadAnalyzerMirrorsTemplateAdmission(t *testing.T) {
 // returns what it said, so the two roots are read the same way.
 func pairedDiagnostics(t *testing.T, dir, pkg string) []string {
 	t.Helper()
-	results := analysistest.Run(t, dir, nativePayloadAnalyzer, pkg)
+	results := analysistest.Run(t, dir, nativepayload.Analyzer, pkg)
 	if len(results) != 1 {
 		t.Fatalf("analysistest returned %d results for %s, want 1", len(results), pkg)
 	}
