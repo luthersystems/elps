@@ -90,14 +90,16 @@ const (
 	elpsModule = "github.com/luthersystems/elps"
 )
 
-// DurableConfig configures an elpsdurablenative analyzer.  The zero value
-// is elps's own configuration, which DurableAnalyzer uses.
+// DurableConfig configures an elpsdurablenative analyzer.  Module is
+// required; the other fields have defaults.
 type DurableConfig struct {
 	// Name is the analyzer's name.  Default "elpsdurablenative".
 	Name string
-	// Module is the analysed module's path.  The site marker cannot mark
-	// a type declared in it, and a NewFrozenDurableRegistry call must list
-	// every codec value it declares.  Default "github.com/luthersystems/elps".
+	// Module is the analysed module's path, and it is required.  The
+	// analyzer checks only packages of this module.  Only a codec declared
+	// in it makes a type durable, the site marker cannot mark a type
+	// declared in it, and a NewFrozenDurableRegistry call must list every
+	// codec value it declares.
 	Module string
 	// TransientMarker is the site marker without the leading "//".
 	// Default "elpsvet:transient".
@@ -107,18 +109,18 @@ type DurableConfig struct {
 	Registry string
 }
 
-// DurableAnalyzer is elps's own elpsdurablenative analyzer:
-// NewDurable(DurableConfig{}).
-var DurableAnalyzer = NewDurable(DurableConfig{})
+// DurableAnalyzer is elps's own elpsdurablenative analyzer, for the module
+// github.com/luthersystems/elps.
+var DurableAnalyzer = NewDurable(DurableConfig{Module: elpsModule})
 
 // NewDurable returns an elpsdurablenative analyzer with the given
-// configuration.
+// configuration.  It panics when cfg.Module is empty.
 func NewDurable(cfg DurableConfig) *analysis.Analyzer {
+	if cfg.Module == "" {
+		panic("nativepayload.NewDurable: DurableConfig.Module is empty; set it to the module path the rule checks")
+	}
 	if cfg.Name == "" {
 		cfg.Name = "elpsdurablenative"
-	}
-	if cfg.Module == "" {
-		cfg.Module = elpsModule
 	}
 	if cfg.TransientMarker == "" {
 		cfg.TransientMarker = "elpsvet:transient"

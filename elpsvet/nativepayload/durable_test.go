@@ -3,6 +3,8 @@
 package nativepayload_test
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsvet/nativepayload"
@@ -43,4 +45,16 @@ func TestDurableDefaults(t *testing.T) {
 // over its tree.  Nothing is reported.
 func TestElpsDurableNativeSkipsOtherModules(t *testing.T) {
 	analysistest.Run(t, analysistest.TestData(), nativepayload.DurableAnalyzer, "example.com/outside")
+}
+
+// TestNewDurableNeedsModule pins that a configuration without a module
+// path fails at construction: the rule checks only that module.
+func TestNewDurableNeedsModule(t *testing.T) {
+	defer func() {
+		r := recover()
+		if r == nil || !strings.Contains(fmt.Sprint(r), "DurableConfig.Module") {
+			t.Fatalf("NewDurable(DurableConfig{}) recovered %v, want a panic naming DurableConfig.Module", r)
+		}
+	}()
+	nativepayload.NewDurable(nativepayload.DurableConfig{})
 }

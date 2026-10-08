@@ -283,8 +283,9 @@ run time to the build. Each native payload type is one of:
 ## Embedder configuration
 
 `elpsvet/nativepayload` is importable. `New(Config)` and
-`NewDurable(DurableConfig)` build the two rules for another module; the zero
-values are elps's (`Analyzer`, `DurableAnalyzer`). Embedder fixtures:
+`NewDurable(DurableConfig)` build the two rules for another module. A zero
+`Config` is elps's (`Analyzer`); `DurableConfig.Module` is required, and elps's
+`DurableAnalyzer` sets it to `github.com/luthersystems/elps`. Embedder fixtures:
 `elpsvet/nativepayload/testdata/src/example.com/embed`.
 
 | Setting | Effect |
