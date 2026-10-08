@@ -12,7 +12,8 @@
 // Audited value switches must name every LType (elpsltypeswitch).
 // New value walkers must have an audited traversal contract (elpsvalwalker).
 // Marked immutable structs must hold only value fields (elpsmarkerfields).
-// Other modules can import elpsownpkg from elpsvet/ownpkg.
+// Other modules can import elpsownpkg from elpsvet/ownpkg, and
+// elpsnativepayload from elpsvet/nativepayload (configured with New).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
 // producer pattern behind issue #363 — `var builtins = []*libutil.Builtin{...}`
@@ -55,6 +56,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/elpsvet/nativepayload"
 	"github.com/luthersystems/elps/elpsvet/ownpkg"
 	"golang.org/x/tools/go/analysis"
 	"golang.org/x/tools/go/analysis/multichecker"
@@ -76,7 +78,7 @@ var analyzers = []*analysis.Analyzer{
 	analyzer,
 	freshnessAnalyzer,
 	escapeAnalyzer,
-	nativePayloadAnalyzer,
+	nativepayload.Analyzer,
 	builtinStateAnalyzer,
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
