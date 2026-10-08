@@ -213,6 +213,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/vetpolicy"
 	"golang.org/x/tools/go/analysis"
 )
 
@@ -231,30 +232,12 @@ const (
 	// punctuation ("//elpsvet:allow-native .") rather than a sentence.
 	nativeAllowMinWords = 3
 
-	// templateImmutableMethod is the one method of
-	// internal/templatepolicy.Immutable.  It is UNEXPORTED, which is the
-	// point: only a type embedding templatepolicy.Marker can have it, and
-	// only this module can embed that.
-	templateImmutableMethod = "templateImmutable"
-
 	// nativeFieldName is the lisp.LVal field this rule tracks.  The field
 	// OBJECT is what is matched (isNativeField), never the receiver's
 	// spelled type, so ErrorVal, conversions and embedding all resolve to
 	// the same field.
 	nativeFieldName = "Native"
-
-	// lTypeFieldName is the lisp.LVal field naming the HEADER a value is,
-	// and the discriminant (*templateInventory).val switches on.  A keyed
-	// literal that sets Native alongside it says which of val's arms the
-	// payload will take, which is what makes the allowlist tier checkable
-	// (payloadSite.exemptsRow).  Matched by object, like Native.
-	lTypeFieldName = "Type"
 )
-
-// templatePolicyPkgPath is the internal package declaring the Immutable
-// marker contract.  The method is matched together with this path so that a
-// downstream type with a same-named method of its own cannot claim the tier.
-const templatePolicyPkgPath = "github.com/luthersystems/elps/internal/templatepolicy"
 
 // callStackTypeName is the payload type publication refuses outright, by
 // name, in (*templateInventory).checkDiagnosticPayload.
@@ -590,7 +573,7 @@ func literalHeader(pass *analysis.Pass, lit *ast.CompositeLit) (string, bool) {
 			continue
 		}
 		key, ok := kv.Key.(*ast.Ident)
-		if !ok || !isLValTypeField(pass.TypesInfo.Uses[key]) {
+		if !ok || !vetpolicy.IsLValTypeField(pass.TypesInfo.Uses[key]) {
 			continue
 		}
 		return headerTypeNamed(pass, kv.Value), true
@@ -659,15 +642,6 @@ func headerTypeNamed(pass *analysis.Pass, expr ast.Expr) string {
 		return ""
 	}
 	return konst.Name()
-}
-
-// isLValTypeField reports whether obj is the lisp.LVal.Type field object --
-// the header discriminant templateInventory.val switches on.  Matched the
-// same way as the Native field, by object rather than by the receiver's
-// spelled type.
-func isLValTypeField(obj types.Object) bool {
-	v, ok := obj.(*types.Var)
-	return ok && v.IsField() && v.Name() == lTypeFieldName && v.Pkg() != nil && v.Pkg().Path() == lispPkgPath
 }
 
 // inKernelPkg reports whether the package under analysis IS package lisp.
@@ -819,7 +793,7 @@ func classifyPayload(t types.Type, site payloadSite) payloadVerdict {
 		}
 		return payloadKernelSlotMisuse
 	}
-	if declaresTemplateImmutable(t) {
+	if vetpolicy.DeclaresTemplateImmutable(t) {
 		return payloadSafe
 	}
 	switch u := t.Underlying().(type) {
@@ -881,40 +855,6 @@ var runtimeScalarKinds = map[types.BasicKind]bool{
 	types.UntypedComplex: true,
 	types.UntypedString:  true,
 	types.UntypedNil:     true,
-}
-
-// declaresTemplateImmutable reports whether t is admitted by the marker tier
-// of (*templateInventory).native: a STRUCT VALUE whose method set carries
-// internal/templatepolicy.Immutable's unexported templateImmutable().
-//
-// Both halves are the runtime's.  The method is matched by name AND by
-// declaring package, which is how the runtime's type assertion behaves --
-// an unexported method is only satisfiable by embedding templatepolicy.Marker,
-// which nothing outside this module can import.  The struct-value half is the
-// half that is easy to lose: a *T inherits T's method set and so would pass
-// an assertion, but the runtime additionally requires
-// reflect.TypeOf(payload).Kind() == reflect.Struct, because a caller holding
-// the pointer can replace the whole pointee no matter how private its fields
-// are.  A pointer form needs TemplateWithNativePolicy approval instead.
-func declaresTemplateImmutable(t types.Type) bool {
-	if _, ok := t.Underlying().(*types.Struct); !ok {
-		return false
-	}
-	ms := types.NewMethodSet(t)
-	for i := range ms.Len() {
-		fn, ok := ms.At(i).Obj().(*types.Func)
-		if !ok || fn.Name() != templateImmutableMethod {
-			continue
-		}
-		if fn.Pkg() == nil || fn.Pkg().Path() != templatePolicyPkgPath {
-			continue
-		}
-		sig, ok := fn.Type().(*types.Signature)
-		if ok && sig.Params().Len() == 0 && sig.Results().Len() == 0 {
-			return true
-		}
-	}
-	return false
 }
 
 // isRetainedCallStack reports whether t is lisp.CallStack or *lisp.CallStack

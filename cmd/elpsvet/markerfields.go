@@ -33,6 +33,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/vetpolicy"
 	"golang.org/x/tools/go/analysis"
 )
 
@@ -136,10 +137,10 @@ func checkMarkedTypeSpec(pass *analysis.Pass, allowed map[*types.Var]bool, gd *a
 	if !ok || obj.Pkg() == nil || ts.Assign.IsValid() {
 		return
 	}
-	if obj.Pkg().Path() == templatePolicyPkgPath && obj.Name() == "Marker" {
+	if obj.Pkg().Path() == vetpolicy.TemplatePolicyPkgPath && obj.Name() == "Marker" {
 		return
 	}
-	if !declaresTemplateImmutable(obj.Type()) {
+	if !vetpolicy.DeclaresTemplateImmutable(obj.Type()) {
 		return
 	}
 	var docs []*ast.CommentGroup
@@ -158,7 +159,7 @@ func checkMarkedTypeSpec(pass *analysis.Pass, allowed map[*types.Var]bool, gd *a
 // templateImmutable, so a template shares its values.
 func checkAnonymousMarked(pass *analysis.Pass, allowed map[*types.Var]bool, st *ast.StructType) {
 	t := pass.TypesInfo.TypeOf(st)
-	if t == nil || !declaresTemplateImmutable(t) {
+	if t == nil || !vetpolicy.DeclaresTemplateImmutable(t) {
 		return
 	}
 	reportMarkedStruct(pass, allowed, markedStructReport{name: "struct literal", pos: st.Pos(), atFields: true, t: t})

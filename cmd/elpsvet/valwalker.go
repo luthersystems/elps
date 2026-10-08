@@ -8,6 +8,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/vetpolicy"
 	"golang.org/x/tools/go/analysis"
 )
 
@@ -397,7 +398,7 @@ func (g *valueWalkGraph) scan(node *valueWalkFunc) {
 			ast.Inspect(n.Cond, func(expr ast.Node) bool {
 				sel, ok := expr.(*ast.SelectorExpr)
 				if ok {
-					if selection := pass.TypesInfo.Selections[sel]; selection != nil && isLValTypeField(selection.Obj()) {
+					if selection := pass.TypesInfo.Selections[sel]; selection != nil && vetpolicy.IsLValTypeField(selection.Obj()) {
 						node.dispatch = true
 					}
 				}
