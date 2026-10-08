@@ -16,6 +16,20 @@ type decCode struct {
 	cells []*lisp.LVal
 }
 
+// TransientNative marks *decCode as never saved: it is the decoder's
+// placeholder for a code object and never leaves one LoadDurable call.
+func (*decCode) TransientNative() {}
+
+// decFrame is a frame object being read: the environment its bindings go
+// into.
+type decFrame struct {
+	env *lisp.LEnv
+}
+
+// TransientNative marks *decFrame as never saved: it is the decoder's
+// placeholder for a frame object and never leaves one LoadDurable call.
+func (*decFrame) TransientNative() {}
+
 // closureValue reads ["PKG",ENV,CODE] after "~#closure",[ and rebuilds the
 // closure.  Its header is defined first, so a captured frame can refer to
 // it.
@@ -83,11 +97,11 @@ func (d *durableDecoder) frameRef(depth int) (*lisp.LEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	env, ok := v.Native.(*lisp.LEnv)
-	if !ok || v.Type != lisp.LNative || env == nil {
+	f, ok := v.Native.(*decFrame)
+	if !ok || v.Type != lisp.LNative || f == nil || f.env == nil {
 		return nil, d.errorf("a frame that is its own ancestor")
 	}
-	return env, nil
+	return f.env, nil
 }
 
 // frameValue reads [PARENT,["NAME",VALUE,...]] after "~#env",[.  The frame
@@ -101,7 +115,7 @@ func (d *durableDecoder) frameValue(depth int) (*lisp.LVal, error) {
 		return nil, err
 	}
 	env := lisp.NewEnv(parent)
-	ph.Native = env //elpsvet:allow-native the decoder's own placeholder for a frame object: it lives only in d.objs and is unwrapped by frameRef, so it never reaches a value LoadDurable returns, let alone a template
+	ph.Native = &decFrame{env: env} //elpsvet:allow-native the decoder's own placeholder for a frame object: it lives only in d.objs and is unwrapped by frameRef, so it never reaches a value LoadDurable returns, let alone a template
 	if err = d.expect(','); err != nil {
 		return nil, err
 	}

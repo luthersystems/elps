@@ -153,6 +153,10 @@ type TestSuite struct {
 	mu sync.RWMutex
 }
 
+// TransientNative marks *TestSuite as never saved by a durable dump: a
+// suite holds the tests of one test run and its VM.
+func (*TestSuite) TransientNative() {}
+
 // A within-VM copy receives independent registry bookkeeping. Template
 // publication rejects this mutable native; load testing separately in each VM.
 var _ lisp.NativeCloner = (*TestSuite)(nil)

@@ -32,6 +32,11 @@ type compiledRegexp struct {
 	re *regexp.Regexp
 }
 
+// TransientNative marks compiledRegexp as never saved by a durable dump: a
+// compiled program is rebuilt from its pattern, so save the pattern string
+// and compile it again after a load.
+func (compiledRegexp) TransientNative() {}
+
 var _ templatepolicy.Immutable = compiledRegexp{}
 
 // MarshalText preserves regexp's JSON/text representation without exposing

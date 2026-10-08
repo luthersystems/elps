@@ -626,15 +626,15 @@ func (g *Gen) native() *lisp.LVal {
 	case 0:
 		return lisp.Native(nil)
 	case 1:
-		return lisp.Native(struct{}{})
+		return lisp.Native(struct{}{}) //elpsvet:transient fuzz input: an unnamed type no codec can register
 	case 2:
-		return lisp.Native(g.pickString())
+		return lisp.Native(g.pickString()) //elpsvet:transient fuzz input: a raw host string with no codec
 	case 3:
-		return lisp.Native(g.pickInt())
+		return lisp.Native(g.pickInt()) //elpsvet:transient fuzz input: a raw host int with no codec
 	case 4:
-		return lisp.Native([]byte(g.pickString()))
+		return lisp.Native([]byte(g.pickString())) //elpsvet:transient fuzz input: a mutable byte slice with no codec
 	case 5:
-		return lisp.Native(map[string]int{"a": 1})
+		return lisp.Native(map[string]int{"a": 1}) //elpsvet:transient fuzz input: a mutable map with no codec
 	case 6:
 		// Deterministic instants only: time.Now() would make a saved crasher
 		// irreproducible, which is the one property a regression corpus has to
@@ -658,7 +658,7 @@ func (g *Gen) native() *lisp.LVal {
 		if selector == nativeLispTime {
 			return libtime.Time(stamp)
 		}
-		return lisp.Native(stamp)
+		return lisp.Native(stamp) //elpsvet:transient fuzz input: a raw host time.Time; libtime.Time is the durable form
 	case 7:
 		return lisp.Native(fuzzDurations[g.Intn(len(fuzzDurations))])
 	case 8:
@@ -677,9 +677,9 @@ func (g *Gen) native() *lisp.LVal {
 		if err != nil {
 			return lisp.Native(nil)
 		}
-		return lisp.Native(re)
+		return lisp.Native(re) //elpsvet:transient fuzz input: a raw host *regexp.Regexp with no codec
 	default:
-		return lisp.Native(json.RawMessage(g.pickString()))
+		return lisp.Native(json.RawMessage(g.pickString())) //elpsvet:transient fuzz input: a raw json.RawMessage with no codec
 	}
 }
 

@@ -427,6 +427,11 @@ type validatorTag struct{ templatepolicy.Marker }
 
 var _ templatepolicy.Immutable = validatorTag{}
 
+// TransientNative marks validatorTag as never saved by a durable dump: it
+// marks a validator that this package builds, and nothing saves the tag on
+// its own.
+func (validatorTag) TransientNative() {}
+
 // validatorMarkerCell mints the marker cell markValidator stamps into
 // Cells[validatorMarkerIndex].  The HEADER is FRESH per validator: nothing
 // compares it by identity any more, so there is no reason to keep a

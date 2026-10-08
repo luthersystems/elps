@@ -893,6 +893,11 @@ type ownMessage struct {
 	loadable bool
 }
 
+// TransientNative marks *ownMessage as never saved by a durable dump: a
+// message is encoded JSON bytes, so save json:message-bytes and make a
+// message again after a load.
+func (*ownMessage) TransientNative() {}
+
 // MarshalJSON returns the message verbatim, as json.RawMessage does.  The
 // method is what makes json.Marshal emit the bytes rather than a struct, and
 // it hands out the slice the same way json.RawMessage.MarshalJSON does -- the
