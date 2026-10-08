@@ -36,3 +36,10 @@ func TestDurableDefaults(t *testing.T) {
 		t.Errorf("DurableAnalyzer.Name = %q", got)
 	}
 }
+
+// TestElpsDurableNativeSkipsOtherModules runs elps's own configuration over
+// a package of another module, as cmd/elpsvet does when an embedder runs it
+// over its tree.  Nothing is reported.
+func TestElpsDurableNativeSkipsOtherModules(t *testing.T) {
+	analysistest.Run(t, analysistest.TestData(), nativepayload.DurableAnalyzer, "example.com/outside")
+}

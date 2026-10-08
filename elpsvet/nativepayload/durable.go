@@ -51,8 +51,9 @@
 //
 // # Limits
 //
-// The analyzer sees only the natives that the analysed packages build.  A
-// native built in another module is that module's to check.  The codecs it
+// The analyzer checks only the packages of its Module: run over another
+// module's tree, it reports nothing there.  A native built in another
+// module is that module's to check, with its own DurableConfig.  The codecs it
 // sees depend on the packages a run loads: under go vet -vettool
 // (unitchecker), imports come from export data, which can leave out an
 // indirect import.  A ForeignCodec makes no payload type durable, because
@@ -142,6 +143,11 @@ type codecVar struct {
 }
 
 func (d *durable) run(pass *analysis.Pass) (any, error) {
+	if !d.inModule(pass.Pkg.Path()) {
+		// cmd/elpsvet runs over other modules' trees too; each module
+		// checks its own natives with its own configuration.
+		return nil, nil
+	}
 	codecs := visibleCodecs(pass.Pkg)
 	if !d.checkRegistryCalls(pass, codecs) {
 		for _, c := range codecs {
