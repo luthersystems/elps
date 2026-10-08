@@ -268,9 +268,9 @@ run time to the build. Each native payload type is one of:
 | Transient | A `TransientNative()` method declared on the type itself, with a doc comment that says why it is never saved. A value receiver marks `T` and `*T`; a pointer receiver marks only `*T`. A promoted method does not count. Example: `libregexp.compiledRegexp`. |
 | Transient at one site | `//elpsvet:transient <reason>`, trailing or on the line after the comment block above the construction. Only for a type declared outside the module (`time.Time`, `string`, `json.RawMessage`). One marker covers exactly one construction. Example: `internal/fuzzval`. |
 
-- Not reported: interface-typed payloads, untyped nil, kernel slots
-  (`*[]byte`, `*MapData`, `*funData`), a retained call stack, and in package
-  `lisp` a literal of another header or the generic `NativeOf`.
+- Not reported: interface-typed payloads, untyped nil, a retained call
+  stack, and in package `lisp` the kernel slots (`*[]byte`, `*MapData`,
+  `*funData`), a literal of another header and the generic `NativeOf`.
 - Reported too: a type-parameter payload, a type that is durable and
   transient, a pointer codec value, an unexported codec with no
   `NewFrozenDurableRegistry` call in its package, and a

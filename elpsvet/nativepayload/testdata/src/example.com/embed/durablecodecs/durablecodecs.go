@@ -233,3 +233,9 @@ func builtString() *lisp.LVal {
 type widget struct{ n int }
 
 var unlisted = libjson.DurableCodec[*widget]{Name: "test:unlisted", Version: 1} // want `durable codec unlisted is unexported, so no registry can list it`
+
+// A kernel slot type built outside package lisp is an ordinary native
+// payload here, as it is for elpsnativepayload.
+func builtKernelSlot(b []byte) *lisp.LVal {
+	return &lisp.LVal{Type: lisp.LBytes, Native: &b} // want `LVal\.Native literal payload type \*\[\]byte has no durable codec`
+}

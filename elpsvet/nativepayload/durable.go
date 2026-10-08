@@ -32,9 +32,10 @@
 // A type that is both durable and transient is reported.  A payload that
 // is a type parameter (a generic wrapper) is reported: build the native
 // where the type is concrete.  An interface-typed payload is not reported:
-// its runtime type is not known here.  A kernel representation slot
-// (*[]byte, *lisp.MapData, *lisp.funData, the elpsnativepayload allowlist)
-// is not a native and is not reported.  In package lisp, a retained call
+// its runtime type is not known here.  In package lisp, a kernel
+// representation slot (*[]byte, *lisp.MapData, *lisp.funData, the
+// elpsnativepayload allowlist) is not a native and is not reported;
+// outside package lisp it is an ordinary payload.  In package lisp, a retained call
 // stack, a literal whose Type key names a header other than LNative, and a
 // type-parameter payload (the generic constructor NativeOf) are not
 // reported either: none of them is an LNative payload a dump can meet.
@@ -221,8 +222,10 @@ func (d *durable) check(pass *analysis.Pass, s nativeSite, marker *ast.Comment, 
 			return
 		}
 	}
-	if _, ok := allowedPayloadTypes[types.TypeString(types.Unalias(s.payload), nil)]; ok {
-		// A kernel representation slot; elpsnativepayload reports a misuse.
+	if _, ok := allowedPayloadTypes[types.TypeString(types.Unalias(s.payload), nil)]; ok && s.site.inKernel {
+		// A kernel representation slot of package lisp; elpsnativepayload
+		// reports a misuse.  Outside package lisp the type is an ordinary
+		// payload, as it is for elpsnativepayload.
 		return
 	}
 	if marker != nil && d.ownedByModule(s.payload) {
