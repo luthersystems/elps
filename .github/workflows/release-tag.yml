@@ -123,6 +123,7 @@ jobs:
             --allowedTools Bash,Read,Grep,Glob
             --max-turns 30
             --model us.anthropic.claude-opus-5-5
+            --fallback-model us.anthropic.claude-sonnet-5-5
       # Capture the agent's stream-json conversation so a deliberate STOP
       # (validation refusal) is explainable after the fact — the action hides
       # the transcript from the job log. Mirrors buildenv's release-patch.yml.
