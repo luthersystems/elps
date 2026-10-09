@@ -1670,14 +1670,42 @@ func builtinIsKey(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinSortedMap(env *LEnv, args *LVal) *LVal {
-	m := SortedMap()
-	if len(args.Cells)%2 != 0 {
-		return env.Errorf("uneven number of arguments: %d", len(args.Cells))
+	return sortedMapFromPairs(env, args.Cells)
+}
+
+// SortedMapOf returns a new sorted map built from kv, which holds alternating
+// keys and values.  It returns what env.CallBuiltin(BuiltinFunc("sorted-map"),
+// kv...) returns for every input: the same value, or the same error condition
+// and message from the same check.
+//
+// It checks the evaluation's context first, as CallBuiltin does.  Then it
+// refuses an odd number of arguments ("uneven number of arguments: N").  For
+// each key that is not yet in the map it checks the allocation cap
+// (Runtime.MaxAlloc) before the insert.  A key the map refuses (a float, for
+// example) returns the map's own error.  A later duplicate key replaces the
+// value and needs no new entry.
+//
+// It charges no evaluation step, pushes no stack frame and does not write kv.
+// Use it from a Go builtin in place of lisp.SortedMap and MapSet, which skip
+// the allocation and context checks.
+func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.Type == LError {
+		return lerr
 	}
+	return sortedMapFromPairs(env, kv)
+}
+
+// sortedMapFromPairs is the body of the sorted-map builtin and of
+// LEnv.SortedMapOf, so the two cannot differ.  It reads kv and does not write
+// it.
+func sortedMapFromPairs(env *LEnv, kv []*LVal) *LVal {
+	if len(kv)%2 != 0 {
+		return env.Errorf("uneven number of arguments: %d", len(kv))
+	}
+	m := SortedMap()
 	data := m.Map()
-	for len(args.Cells) >= 2 {
-		k := args.Cells[0]
-		v := args.Cells[1]
+	for i := 0; i+1 < len(kv); i += 2 {
+		k, v := kv[i], kv[i+1]
 		if lerr := checkMapInsertAlloc(env, data, k); lerr != nil {
 			return lerr
 		}
@@ -1685,7 +1713,6 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 		if !err.IsNil() {
 			return err
 		}
-		args.Cells = args.Cells[2:] //elps:mutates decap of the per-call arglist header (evalSExprCells builds fresh backing per call) to walk the key/value pairs
 	}
 	return m
 }
