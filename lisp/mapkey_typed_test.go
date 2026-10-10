@@ -8,8 +8,7 @@ import (
 	"github.com/luthersystems/elps/lisp"
 )
 
-// TestMapTypedKeys pins the typed map accessors (elps#691) to the
-// deprecated interface{} forms they replace.
+// TestMapTypedKeys pins the typed map setters (elps#691) and Lookup.
 func TestMapTypedKeys(t *testing.T) {
 	m := lisp.SortedMap()
 	if rc := m.MapSetString("a", lisp.Int(1)); rc.Type == lisp.LError {
@@ -18,29 +17,30 @@ func TestMapTypedKeys(t *testing.T) {
 	if rc := m.MapSetLVal(lisp.Symbol("b"), lisp.Int(2)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
-	if got := m.MapGetString("a"); got.Int != 1 {
-		t.Fatalf("MapGetString(a) = %v", got)
+	mv, ok := lisp.AsMap(m)
+	if !ok {
+		t.Fatal("AsMap(SortedMap()) = false")
 	}
-	if got := m.MapGetLVal(lisp.String("a")); got.Int != 1 {
-		t.Fatalf("MapGetLVal(a) = %v", got)
+	if got, ok := lisp.Lookup[int](mv, "a"); !ok || got != 1 {
+		t.Fatalf("Lookup(a) = %v, %v", got, ok)
+	}
+	if got, ok := lisp.Lookup[int](mv, lisp.String("a")); !ok || got != 1 {
+		t.Fatalf("Lookup(String(a)) = %v, %v", got, ok)
 	}
 	// Symbol and string keys are coerced alike, as MapSet documents.
-	if got := m.MapGetString("b"); got.Int != 2 {
-		t.Fatalf("MapGetString(b) = %v", got)
+	if got, ok := lisp.Lookup[int](mv, "b"); !ok || got != 2 {
+		t.Fatalf("Lookup(b) = %v, %v", got, ok)
 	}
-	if a, b := m.MapGet("a"), m.MapGetString("a"); a != b {
-		t.Fatalf("MapGet and MapGetString disagree: %v vs %v", a, b)
-	}
-	if a, b := m.MapGet("missing"), m.MapGetString("missing"); a.Type != b.Type {
-		t.Fatalf("missing key: MapGet = %v, MapGetString = %v", a, b)
+	if got, ok := lisp.Lookup[*lisp.LVal](mv, "missing"); ok || got != nil {
+		t.Fatalf("Lookup(missing) = %v, %v; want nil, false", got, ok)
 	}
 	if rc := lisp.Int(1).MapSetString("a", lisp.Nil()); rc.Type != lisp.LError {
 		t.Fatalf("MapSetString on a non-map = %v, want an error", rc)
 	}
 }
 
-// BenchmarkMapKeyAPI compares the typed accessors with the deprecated
-// interface{} forms in one binary; compare with benchstat -col /api.
+// BenchmarkMapKeyAPI measures Lookup and compares the typed setters with
+// the deprecated interface{} form; compare with benchstat -col /api.
 func BenchmarkMapKeyAPI(b *testing.B) {
 	m := lisp.SortedMap()
 	for _, k := range []string{"alpha", "beta", "gamma", "delta", "epsilon"} {
@@ -48,26 +48,17 @@ func BenchmarkMapKeyAPI(b *testing.B) {
 	}
 	lk := lisp.String("gamma")
 	var sink *lisp.LVal
-	b.Run("op=get/key=lval/api=untyped", func(b *testing.B) {
-		for range b.N {
-			sink = m.MapGet(lk)
-		}
-	})
-	b.Run("op=get/key=lval/api=typed", func(b *testing.B) {
-		for range b.N {
-			sink = m.MapGetLVal(lk)
-		}
-	})
-	b.Run("op=get/key=string/api=untyped", func(b *testing.B) {
+	mv, _ := lisp.AsMap(m)
+	b.Run("op=get/key=lval/api=lookup", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			sink = m.MapGet("gamma")
+			sink, _ = lisp.Lookup[*lisp.LVal](mv, lk)
 		}
 	})
-	b.Run("op=get/key=string/api=typed", func(b *testing.B) {
+	b.Run("op=get/key=string/api=lookup", func(b *testing.B) {
 		b.ReportAllocs()
 		for range b.N {
-			sink = m.MapGetString("gamma")
+			sink, _ = lisp.Lookup[*lisp.LVal](mv, "gamma")
 		}
 	})
 	v := lisp.Int(7)

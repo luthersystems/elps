@@ -50,6 +50,7 @@ var lazyTableFunctions = map[string]string{
 	"Package.fillBaseValue":      "the out-of-line fill behind Package.baseValue: materializes one nil base slot",
 	"sortedmap.Get":              "inlines the lazyPending check and calls sortedmap.entry to fill before returning",
 	"Package.materializeSymbols": "the forcing sweep over thawed bindings; each pending entry goes through Package.symbol",
+	"sortedmap.getString":        "Get's string-key arm: the same inlined lazyPending check and sortedmap.entry fill",
 	"sortedmap.entry":            "the filling accessor for sorted-map entries: replaces a lazyPending entry before returning it",
 	"sortedmap.forceAll":         "the forcing sweep over sorted-map entries; each pending entry goes through sortedmap.entry",
 	"sortedmap.discardPending":   "compares an entry against lazyPending to keep the pending count exact before a write or delete",

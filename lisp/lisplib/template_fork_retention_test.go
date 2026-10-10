@@ -123,7 +123,7 @@ func escapedTemplateLeaf(t *testing.T, template *lisp.Template, shape string) an
 	t.Helper()
 	env := forkTemplateFixture(t, template)
 	bulk := env.GetGlobal(lisp.Symbol("bulk"))
-	if len(bulk.Cells) != 4096 || bulk.Cells[4095].MapGetString("number").Int != 4095 {
+	if len(bulk.Cells) != 4096 || mapGet(bulk.Cells[4095], "number").Int != 4095 {
 		t.Fatal("fork did not construct the full graph")
 	}
 	switch shape {

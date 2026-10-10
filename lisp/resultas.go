@@ -24,6 +24,7 @@ import "reflect"
 //	Text          a string (copied) or bytes
 //	Name          a string or a symbol, its text
 //	*LVal         any value, as is
+//	MapView       a sorted-map
 //	any other T   the payload of a native value, through NativeValue[T]
 //
 // A named type such as `type Status string` is "any other T": it reads a
@@ -46,27 +47,8 @@ func ResultAs[T any](v *LVal) (T, error) {
 	return out, nil
 }
 
-// Field reads the value of key k in the sorted-map m as a T, with the
-// conversions of ResultAs.  It returns ok=false when m is not a sorted-map,
-// when m has no key k, and when the value does not convert to T.
-//
-//	status, _ := lisp.Field[string](desc, "status")
-//
-// Field makes no check and charges no step.  A string or symbol key k
-// matches, as MapGetString does.
-func Field[T any](m *LVal, k string) (T, bool) {
-	var zero T
-	if m == nil || m.Type != LSortMap {
-		return zero, false
-	}
-	v, ok := m.Map().Get(String(k))
-	if !ok || v == nil || v.IsError() {
-		return zero, false
-	}
-	return valueAs[T](v)
-}
-
-// valueAs converts v to a T for ResultAs, Field and SeqOf.  The switch is on
+// valueAs converts v to a T for ResultAs, Lookup, SeqOf, the Func*E
+// arguments and CellReader.  The switch is on
 // a pointer to the result, so each call is one type compare and no
 // reflection.
 func valueAs[T any](v *LVal) (T, bool) {
@@ -124,6 +106,11 @@ func valueAs[T any](v *LVal) (T, bool) {
 		}
 	case **LVal:
 		*p = v
+	case *MapView:
+		if v.Type != LSortMap {
+			return out, false
+		}
+		*p = MapView{v: v}
 	default:
 		return NativeValue[T](v)
 	}
@@ -149,6 +136,8 @@ func typeNoun[T any]() string {
 		return "a list"
 	case **LVal:
 		return "a value"
+	case *MapView:
+		return "a sorted-map"
 	case *Text:
 		return textNoun
 	case *Name:

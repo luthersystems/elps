@@ -33,7 +33,7 @@ func TestCellReader(t *testing.T) {
 	assert.Equal(t, 3, r.Int())
 	assert.InDelta(t, 1.5, r.Float(), 0)
 	assert.Equal(t, []byte("b"), r.Bytes())
-	assert.Same(t, m, r.Map())
+	assert.Same(t, m, r.Map().LVal())
 	assert.Same(t, fn, r.Fun())
 	assert.Len(t, r.Seq(), 1)
 	assert.Equal(t, "dflt", r.OptStr("dflt"), "a nil cell is absent")
@@ -90,7 +90,7 @@ func TestCellReaderMessages(t *testing.T) {
 		{func(r *lisp.CellReader) { r.Text() }, "argument is not a string or bytes: int"},
 		{func(r *lisp.CellReader) { r.Bytes() }, "argument is not bytes: int"},
 		{func(r *lisp.CellReader) { r.Float() }, "argument is not a number: string"},
-		{func(r *lisp.CellReader) { r.Map() }, "argument is not a map: int"},
+		{func(r *lisp.CellReader) { r.Map() }, "argument is not a sorted-map: int"},
 		{func(r *lisp.CellReader) { r.Fun() }, "argument is not a function: int"},
 		{func(r *lisp.CellReader) { r.Seq() }, "argument is not a proper sequence: int"},
 		{func(r *lisp.CellReader) { r.OptName("") }, "argument is not a string or symbol: int"},

@@ -186,8 +186,15 @@ func (r *CellReader) Bytes() []byte {
 	return x
 }
 
-// Map returns the next argument, which must be a sorted-map.
-func (r *CellReader) Map() *LVal { return r.typed(LSortMap, "a map") }
+// Map returns the next argument, which must be a sorted-map, as a MapView.
+// After a failure it returns the zero MapView.
+func (r *CellReader) Map() MapView {
+	v := r.typed(LSortMap, "a sorted-map")
+	if v.Type != LSortMap {
+		return MapView{}
+	}
+	return MapView{v: v}
+}
 
 // Fun returns the next argument, which must be a function.
 func (r *CellReader) Fun() *LVal { return r.typed(LFun, "a function") }
