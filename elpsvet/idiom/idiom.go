@@ -49,6 +49,8 @@
 //	a switch or if-else chain on v.Type with an LSExpr arm that reads
 //	v.Cells and an LArray arm that loops over v.ArrayIndex(lisp.Int(i))
 //	                                   v.SeqCells() or lisp.SeqOf[T]  (hint)
+//	three or more if err != nil { return env.Error(err) } in a function
+//	                                   a lisp.FuncE body              (hint)
 //	v.Native.(T) where a v.Type == lisp.LNative test guards it
 //	                                   lisp.NativeValue[T](v)         (hint)
 //
@@ -444,6 +446,12 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkNativeAssert(x, stack)
 		case *ast.FuncType:
 			s.checkErrorValResult(x)
+		case *ast.FuncDecl:
+			if x.Body != nil {
+				s.checkErrorReturns(x.Name, x.Body)
+			}
+		case *ast.FuncLit:
+			s.checkErrorReturns(x, x.Body)
 		case *ast.BlockStmt:
 			s.checkArgCells(x)
 			s.checkMapGetString(x, stack)
@@ -1826,4 +1834,66 @@ func isNilIdent(s *state, e ast.Expr) bool {
 	}
 	_, isNil := s.pass.TypesInfo.Uses[id].(*types.Nil)
 	return isNil
+}
+
+// minErrorReturns is the count of env.Error(err) returns that makes a
+// function a FuncE candidate.
+const minErrorReturns = 3
+
+// checkErrorReturns: a function with minErrorReturns or more statements of
+// the form if err != nil { return ..., env.Error(err) }.  A FuncE body
+// returns nil, err instead, and FuncE makes the Lisp error.
+func (s *state) checkErrorReturns(at ast.Node, body *ast.BlockStmt) {
+	n := 0
+	ast.Inspect(body, func(node ast.Node) bool {
+		switch x := node.(type) {
+		case *ast.FuncLit:
+			return false // counted on its own
+		case *ast.IfStmt:
+			if s.isErrorReturn(x) {
+				n++
+			}
+		}
+		return true
+	})
+	if n < minErrorReturns {
+		return
+	}
+	s.report(at, CategoryInfo, fmt.Sprintf("%d returns of env.Error(err): a lisp.FuncE body returns nil, err, and FuncE "+
+		"makes the Lisp error; FuncE returns a bare *lisp.ErrorVal as is, with its condition, and does not tell the "+
+		"debugger about it a second time, so this is a hint, not a fix", n))
+}
+
+// isErrorReturn reports whether ifs is if err != nil { return ...,
+// env.Error(err) } for an err of type error.
+func (s *state) isErrorReturn(ifs *ast.IfStmt) bool {
+	cond, ok := ifs.Cond.(*ast.BinaryExpr)
+	if !ok || cond.Op != token.NEQ || !isNilIdent(s, cond.Y) || ifs.Else != nil || len(ifs.Body.List) != 1 {
+		return false
+	}
+	errID, ok := ast.Unparen(cond.X).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	errObj := s.pass.TypesInfo.Uses[errID]
+	if errObj == nil || !types.Identical(errObj.Type(), types.Universe.Lookup("error").Type()) {
+		return false
+	}
+	ret, ok := ifs.Body.List[0].(*ast.ReturnStmt)
+	if !ok {
+		return false
+	}
+	for _, r := range ret.Results {
+		c, ok := ast.Unparen(r).(*ast.CallExpr)
+		if !ok || len(c.Args) != 1 {
+			continue
+		}
+		if m := s.lispMethod(c, "LEnv"); m == nil || m.Name() != "Error" {
+			continue
+		}
+		if id, ok := ast.Unparen(c.Args[0]).(*ast.Ident); ok && s.pass.TypesInfo.Uses[id] == errObj {
+			return true
+		}
+	}
+	return false
 }

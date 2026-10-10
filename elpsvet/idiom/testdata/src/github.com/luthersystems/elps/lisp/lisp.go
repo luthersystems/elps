@@ -87,6 +87,7 @@ func SeqOf[T any](v *LVal) ([]T, bool)     { return nil, false }
 func NativeValue[T any](v *LVal) (T, bool) { var z T; return z, false }
 
 func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
+func (env *LEnv) Error(msg ...any) *LVal                        { return nil }
 func (env *LEnv) CheckAlloc(n int) *LVal                        { return nil }
 func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal { return nil }
 func (env *LEnv) MapLookup(m, k *LVal) *LVal                    { return nil }
