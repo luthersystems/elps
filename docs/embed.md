@@ -870,6 +870,10 @@ building a list.
 and `true`, or `nil, false` for any other value, a multi-dimensional array
 included. The cells are the value's own storage, so treat them as read-only.
 
+**`lisp.FunInPackageDoc(pkg, fid, formals, fn, doc)`** is `FunInPackage`
+with a docstring, in the layout registered builtins use, so `Docstring`
+returns `doc`. Do not write `fun.Cells[1]` after `FunInPackage`.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

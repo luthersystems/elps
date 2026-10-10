@@ -865,6 +865,13 @@ func FunRef(symbol, fun *LVal) *LVal {
 // package-less LFun reaching funCall / MacroCall / SpecialOpCall
 // produces "BUG: GetFunName" log spam (issue #271).
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
+	return FunInPackageDoc(pkg, fid, formals, fn, "")
+}
+
+// FunInPackageDoc is FunInPackage with the docstring doc.  The function value
+// holds its formals and docstring in the layout registered builtins use, so
+// Docstring returns doc.
+func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
 		Type: LFun,
 		Native: &funData{
@@ -872,7 +879,7 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: []*LVal{formals, String(doc)},
 	}
 }
 

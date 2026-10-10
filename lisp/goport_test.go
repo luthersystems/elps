@@ -483,3 +483,14 @@ func TestSeqCells(t *testing.T) {
 		assert.Nil(t, cells)
 	}
 }
+
+func TestFunInPackageDoc(t *testing.T) {
+	env := testEnv(t)
+	body := func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Int(7) }
+	fun := lisp.FunInPackageDoc(lisp.DefaultUserPackage, "run-phylum", lisp.Formals(), body, "@trace{run-phylum}")
+	assert.Equal(t, "@trace{run-phylum}", fun.Docstring())
+	assert.Equal(t, "", lisp.FunInPackage(lisp.DefaultUserPackage, "f", lisp.Formals(), body).Docstring())
+
+	env.PutGlobal(lisp.Symbol("run-phylum"), fun)
+	assert.Equal(t, "7", env.LoadString("t", `(run-phylum)`).String())
+}

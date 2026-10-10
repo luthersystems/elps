@@ -64,7 +64,7 @@ var freshConstructors = map[string]bool{
 	"Symbol": true, "Native": true, "Value": true,
 	"SExpr": true, "QExpr": true, "Vector": true, "MakeVector": true,
 	"Array": true, "SortedMap": true, "SortedMapFromData": true,
-	"FunRef": true, "Fun": true, "FunInPackage": true,
+	"FunRef": true, "Fun": true, "FunInPackage": true, "FunInPackageDoc": true,
 	"Macro": true, "MacroInPackage": true,
 	"SpecialOp": true, "SpecialOpInPackage": true,
 	"Error": true, "ErrorCondition": true,
