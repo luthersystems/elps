@@ -120,7 +120,9 @@ var langSpecialOps = []*langBuiltin{
 		name rather than being reclassified. Go errors supply message strings. Source parse
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
-		Handlers must be regular functions. Use the symbol
+		Handlers must be regular functions. A condition type also matches
+		its descendants: 'error matches 'argument-error, which builtins
+		raise for a bad argument. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when

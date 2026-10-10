@@ -816,6 +816,62 @@ methods. `lisp.Cells{a, b}.List()` is `lisp.QExpr([]*lisp.LVal{a, b})`,
 counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
 returns a fresh list of strings.
 
+Four more methods return `Cells`, so a call chains into `List`, `SExpr` or
+`Vector`. Each returns fresh storage whose length and capacity are equal, so
+a later `append` to it always copies:
+
+| Method | Result |
+|---|---|
+| `c.Map(f)` | `f(x)` for each cell. `nil` gives `nil`. |
+| `c.MapIfChanged(f)` | `(c, false)` with no allocation when `f` returns every cell itself; otherwise a fresh mapped slice and `true`. The input is never written. |
+| `c.Clone()` | A copy of the cell pointers. `nil` gives `nil`; an empty slice gives an empty one. |
+| `c.Append(xs...)` | `c` followed by `xs`, in one allocation. It never writes `c`'s spare capacity. |
+
+```go
+out, changed := lisp.Cells(form.Cells).MapIfChanged(rewrite)
+if !changed {
+	return form
+}
+return out.SExpr()
+```
+
+`slices.Clone` and `append([]*lisp.LVal(nil), s...)` may round the capacity
+up; `Clone` does not. `elpsidiom` rewrites the hand-written loops into these
+methods (see [lint checks](lint-checks.md)).
+
+**Reading arguments in order: `Cells.Read`.** `lisp.Cells(args.Cells).Read(env)`
+returns a `CellReader`. Each read takes the next argument, with no index and
+no subject string. The subject of a failure comes from the position, as
+`Func*E` names it. The first failure sticks, and later reads return zero
+values:
+
+```go
+r := lisp.Cells(args.Cells).Read(env)
+collection, key := r.Name(), r.Name()
+limit := r.OptInt(100)
+if lerr := r.Err(); lerr.IsError() {
+	return lerr
+}
+```
+
+| Read | Accepts | Returns |
+|---|---|---|
+| `Str()` | a string | `string` |
+| `Name()` | a string or a symbol | `string` |
+| `Text()` | a string (copied) or bytes | `[]byte` |
+| `Int()`, `Float()` | an integer; any number | `int`, `float64` |
+| `Bytes()`, `Map()`, `Fun()`, `Seq()` | bytes; a sorted-map; a function; a list or vector | `[]byte`, `*LVal`, `*LVal`, `Cells` |
+| `Value()` | anything | `*LVal` |
+| `OptStr(d)`, `OptName(d)`, `OptInt(d)`, `OptFloat(d)`, `OptValue()` | the type, or an absent or `()` argument | the value, or `d` |
+| `Rest()` | what is left | `Cells` |
+
+The string read is `Str`, not `String`, so a `CellReader` is not a
+`fmt.Stringer`: printing one must not consume an argument. A read allocates
+nothing and charges no step unless it fails. Use `Func1E`..`Func3E` for one
+to three required typed arguments, `Cells.Read` for optional or rest
+arguments, a raw `*LVal` or a receiver method, and `ArgReader` when each
+argument needs its own message.
+
 **Arrays from Go: `ArrayParts`, `SetArrayData` and `SetArrayCells`.** An
 array stores a dimension list and a data list. Read them with
 `dims, data := v.ArrayParts()`. It returns the stored lists, not copies;
@@ -849,13 +905,29 @@ var builtinEncode = lisp.Func1E(func(env *lisp.LEnv, in lisp.Text) ([]byte, erro
 | `float64` | any number | "is not a number" |
 | `bool` | any value, by truthiness | never fails |
 | `lisp.Text` | a string (copied, one allocation) or bytes (shared) | "is not a string or bytes" |
+| `lisp.Name` | a string or a symbol, its text | "is not a string or symbol" |
 | `*lisp.LVal` | any value | never fails |
 | any other type | a native payload, through `NativeValue[T]` | "is not a native <type>" |
 
 The position is "argument" for a builtin of one argument, else "first
 argument", "second argument" or "third argument". These messages are for
-ports that keep only the error condition of the Lisp they replace. elps's own
-builtins keep their messages and do not use `Func*E`.
+ports that keep only the error condition of the Lisp they replace. A few elps
+builtins use them too (`math:sqrt`, `math:log`, `base64:encode`, ...).
+
+**Argument failures raise `argument-error`.** Every argument failure found by
+these helpers (`ArgReader`'s reads and `Check`, `Cells.Read`, and `Func*E`'s
+decoding and arity check) raises condition `argument-error`
+(`lisp.CondArgumentError`), a child of `error`. A Lisp `handler-bind` on
+`error` still catches it. A builtin that checks by hand with `env.Errorf`
+raises `error`. Go code that must react to an argument failure tests
+`lisp.ConditionIsA(lisp.ConditionOf(err), lisp.CondArgumentError)`.
+
+**Error text is not a stable API.** An error's message may change in any
+elps release. Its condition is stable: changing it is a documented breaking
+change. A new child condition is not a break for a handler on its parent,
+but a handler that reads the condition symbol sees the child. Code that must
+react to an error catches or tests its condition and does not compare its
+text.
 
 The result type is one of `*lisp.LVal`, `string`, `int`, `float64`, `bool`,
 `[]byte`, `[]*lisp.LVal` or `lisp.Cells`; any other type does not compile. A

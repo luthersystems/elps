@@ -2946,12 +2946,23 @@ change.
    cleanup forms after the body (innermost `with-cleanup` first, before any
    enclosing handler), and lets the error keep propagating. A signalling
    cleanup form replaces an ordinary error.
-8. **`internal-panic` is never swallowed by accident.** The catch-all
+8. **Conditions have parents.** A handler for a condition also catches its
+   descendants. elps defines one: `argument-error`, a child of `error`, which
+   elps raises when a builtin gets an argument of the wrong type or the wrong
+   number of arguments. A handler for `error` catches it, and the handler
+   receives `'argument-error`. A condition a program names with `error` has
+   no parent. `condition` stays the catch-all.
+9. **Error text is not stable.** An error's message may change in any
+   release. Its condition is stable, and changing it is a documented breaking
+   change. A new child condition does not break a handler on its parent, but
+   a handler that reads the condition symbol sees the child. Code that must
+   react to an error catches its condition and never compares its text.
+10. **`internal-panic` is never swallowed by accident.** The catch-all
    `condition` does not match it, `ignore-errors` does not suppress it, and
    `with-cleanup` never masks it. Only a handler that names `internal-panic`
    explicitly intercepts it. A condition forged with
    `(error 'internal-panic ...)` is ordinary.
-9. **Deterministic.** Signalling and handling a condition gives the same value
+11. **Deterministic.** Signalling and handling a condition gives the same value
    and the same step count in every fresh environment.
 
 A macro can rely on these rules. For example, this one substitutes a default value for any ordinary error:
