@@ -14,6 +14,7 @@
 //
 //	x.Type == lisp.LError              x.IsError()                    (fix)
 //	lisp.QExpr([]*lisp.LVal{...})      lisp.Cells{...}.List()         (fix)
+//	lisp.SExpr([]*lisp.LVal{...})      lisp.Cells{...}.SExpr()        (fix)
 //	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 //		return env.Errorf("%s", msg)
 //	}                                  env.CheckAlloc(n)              (fix)
@@ -458,10 +459,18 @@ func (s *state) checkIsError(b *ast.BinaryExpr) {
 	s.report(b, CategoryInfo, "use "+text+", which is the same compare", replace(b, "Use IsError", text))
 }
 
-// checkQExpr: lisp.QExpr([]*lisp.LVal{...}).
+// cellsMethods maps a constructor that takes a cell slice to the lisp.Cells
+// method that calls it on the receiver.
+var cellsMethods = map[string]string{"QExpr": "List", "SExpr": "SExpr"}
+
+// checkQExpr: lisp.QExpr([]*lisp.LVal{...}) and lisp.SExpr([]*lisp.LVal{...}).
 func (s *state) checkQExpr(call *ast.CallExpr) {
 	fn := s.lispFunc(call)
-	if fn == nil || fn.Name() != "QExpr" || len(call.Args) != 1 {
+	if fn == nil || len(call.Args) != 1 {
+		return
+	}
+	method, ok := cellsMethods[fn.Name()]
+	if !ok {
 		return
 	}
 	lit, ok := ast.Unparen(call.Args[0]).(*ast.CompositeLit)
@@ -480,10 +489,12 @@ func (s *state) checkQExpr(call *ast.CallExpr) {
 	if !ok {
 		return
 	}
-	text := qual + "Cells{" + elts + "}.List()"
-	s.report(call, CategoryInfo, "use "+qual+"Cells{...}.List(), which builds the same list",
+	text := qual + "Cells{" + elts + "}." + method + "()"
+	s.report(call, CategoryInfo, "use "+qual+"Cells{...}."+method+"(), which builds the same "+cellsNoun[method],
 		replace(call, "Use lisp.Cells", text))
 }
+
+var cellsNoun = map[string]string{"List": "list", "SExpr": "s-expression", "Vector": "vector"}
 
 // lispQualifier returns "lisp." (or the file's name for the lisp import)
 // from a qualified call target.

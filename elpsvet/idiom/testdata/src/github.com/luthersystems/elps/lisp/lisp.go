@@ -40,7 +40,13 @@ type BuiltinRef struct{ idx int }
 
 type Cells []*LVal
 
-func (c Cells) List() *LVal { return QExpr(c) }
+func (c Cells) List() *LVal   { return QExpr(c) }
+func (c Cells) SExpr() *LVal  { return SExpr(c) }
+func (c Cells) Vector() *LVal { return Vector(c) }
+
+func SExpr(cells []*LVal) *LVal             { return &LVal{Cells: cells} }
+func Vector(cells []*LVal) *LVal            { return Array(nil, cells) }
+func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} }
 
 func BuiltinFunc(name string) BuiltinRef                             { return BuiltinRef{} }
 func QExpr(cells []*LVal) *LVal                                      { return &LVal{Cells: cells} }
