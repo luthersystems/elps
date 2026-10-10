@@ -1266,17 +1266,20 @@ func (w *CodeWalker) template(v *LVal, depth int) *LVal {
 }
 
 func (w *CodeWalker) templateList(v *LVal, depth int) *LVal {
-	b := newRebuild(v)
 	if h := v.Cells[0]; v.Type == LSExpr && h.Type == LSymbol &&
 		((!w.sourceAnalysis && len(v.Cells) == 2) || (w.sourceAnalysis && !v.quoted)) &&
 		(h.Str == "unquote" || h.Str == "unquote-splicing") {
+		b := newRebuild(v)
 		w.forms(b, 1, depth)
 		return b.done()
 	}
-	for i, c := range v.Cells {
-		b.set(i, w.template(c, depth+1))
+	cells, changed := Cells(v.Cells).MapIfChanged(func(c *LVal) *LVal {
+		return w.template(c, depth+1)
+	})
+	if !changed {
+		return v
 	}
-	return b.done()
+	return rebuiltList(v, cells)
 }
 
 // exprFormalNames returns the formals (expr pattern) binds, as opExpr
@@ -1363,11 +1366,17 @@ func (b *rebuild) done() *LVal {
 	if b.cells == nil {
 		return b.orig
 	}
+	return rebuiltList(b.orig, b.cells)
+}
+
+// rebuiltList returns a fresh, unsealed list over cells with orig's type,
+// quoting and (a copy of its) source location, as rebuild.done does.
+func rebuiltList(orig *LVal, cells []*LVal) *LVal {
 	return &LVal{
-		Type:   b.orig.Type,
-		Cells:  b.cells,
-		quoted: b.orig.quoted,
-		source: copyLocation(b.orig.source),
+		Type:   orig.Type,
+		Cells:  cells,
+		quoted: orig.quoted,
+		source: copyLocation(orig.source),
 	}
 }
 
