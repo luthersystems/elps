@@ -32,7 +32,8 @@
 //	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
 //	after an m.Type == lisp.LSortMap check
 //	                                   lisp.Field[string](m, k)       (hint)
-//	v := args.Cells[i] followed by a v.Type check that returns Errorf
+//	v := args.Cells[i] (or a, b := args.Cells[0], args.Cells[1]) followed
+//	by a v.Type check that returns Errorf
 //	                                   an ArgReader read              (hint)
 //	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
 //	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
@@ -728,41 +729,55 @@ func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
 	}
 }
 
-// checkArgCells: v := args.Cells[i] followed by an if statement that tests
-// v.Type and returns an Errorf call.
+// checkArgCells: v := args.Cells[i], or a tuple a, b := args.Cells[0],
+// args.Cells[1], followed by an if statement that tests the Type of one of
+// the variables and returns an Errorf call.
 func (s *state) checkArgCells(block *ast.BlockStmt) {
 	for i, st := range block.List {
 		assign, ok := st.(*ast.AssignStmt)
-		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != len(assign.Rhs) {
 			continue
 		}
-		id, ok := assign.Lhs[0].(*ast.Ident)
-		if !ok {
+		var names []string
+		for j, l := range assign.Lhs {
+			id, ok := l.(*ast.Ident)
+			if !ok || id.Name == "_" || !s.isArgCell(assign.Rhs[j]) {
+				continue
+			}
+			names = append(names, id.Name)
+		}
+		if len(names) == 0 {
 			continue
 		}
-		idx, ok := ast.Unparen(assign.Rhs[0]).(*ast.IndexExpr)
-		if !ok {
-			continue
-		}
-		sel, ok := ast.Unparen(idx.X).(*ast.SelectorExpr)
-		if !ok || sel.Sel.Name != "Cells" || s.typeFieldOwner(sel) == nil {
-			continue
-		}
-		if _, ok := ast.Unparen(idx.Index).(*ast.BasicLit); !ok {
-			continue
-		}
+	next:
 		for _, next := range block.List[i+1:] {
 			ifs, ok := next.(*ast.IfStmt)
 			if !ok {
 				continue
 			}
-			if s.testsType(ifs.Cond, id.Name) && returnsErrorf(s, ifs.Body) {
-				s.report(assign, CategoryInfo, "an ArgReader read (lisp.ReadArgs, then String, Int, Map, ...) decodes "+
-					id.Name+" and records the type error; check a.Err() once")
-				break
+			for _, name := range names {
+				if s.testsType(ifs.Cond, name) && returnsErrorf(s, ifs.Body) {
+					s.report(assign, CategoryInfo, "an ArgReader read (lisp.ReadArgs, then String, Int, Map, ...) decodes "+
+						name+" and records the type error; check a.Err() once")
+					break next
+				}
 			}
 		}
 	}
+}
+
+// isArgCell reports whether e is x.Cells[n] for an LVal x and a literal n.
+func (s *state) isArgCell(e ast.Expr) bool {
+	idx, ok := ast.Unparen(e).(*ast.IndexExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := ast.Unparen(idx.X).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Cells" || s.typeFieldOwner(sel) == nil {
+		return false
+	}
+	_, ok = ast.Unparen(idx.Index).(*ast.BasicLit)
+	return ok
 }
 
 // typeFieldOwner returns x when sel is x.Cells for an LVal x.

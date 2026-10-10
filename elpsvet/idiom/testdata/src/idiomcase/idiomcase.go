@@ -154,3 +154,20 @@ var builtinGoErr = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal,
 	err := errors.New("plain")
 	return nil, fmt.Errorf("context: %w", err)
 })
+
+func argCellsTuple(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	m, k := args.Cells[0], args.Cells[1] // want `an ArgReader read \(lisp.ReadArgs, then String, Int, Map, ...\) decodes k`
+	if k.Type != lisp.LString {
+		return env.Errorf("second argument is not a string: %v", k.Type)
+	}
+	return m
+}
+
+// A tuple without a type check that returns Errorf is not reported.
+func argCellsTupleNoCheck(args *lisp.LVal) *lisp.LVal {
+	m, k := args.Cells[0], args.Cells[1]
+	if k.Type != lisp.LString {
+		return m
+	}
+	return k
+}
