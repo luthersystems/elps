@@ -136,3 +136,29 @@ func typeNoun[T any]() string {
 	}
 	return "a native " + reflect.TypeFor[T]().String()
 }
+
+// SeqOf converts a list or a one-dimensional vector to a Go slice of T, with
+// the conversions of ResultAs for each element.  It returns ok=false when v
+// is not such a sequence and when any element does not convert to T; there
+// is no partial result.
+//
+//	names, ok := lisp.SeqOf[string](methodArgs)
+//
+// SeqOf allocates the slice it returns and nothing else.  It makes no check
+// and charges no step.  It reads one level only: GoSliceOf converts nested
+// values and reads lists only.
+func SeqOf[T any](v *LVal) ([]T, bool) {
+	cells, ok := v.SeqCells()
+	if !ok {
+		return nil, false
+	}
+	out := make([]T, len(cells))
+	for i, c := range cells {
+		x, ok := valueAs[T](c)
+		if !ok {
+			return nil, false
+		}
+		out[i] = x
+	}
+	return out, true
+}

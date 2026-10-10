@@ -560,3 +560,30 @@ func TestMapIterators(t *testing.T) {
 	_, ok = keys[0].Name()
 	assert.False(t, ok, "an int key has no name")
 }
+
+func TestSeqOf(t *testing.T) {
+	names, ok := lisp.SeqOf[string](lisp.Cells{lisp.String("a"), lisp.String("b")}.List())
+	assert.True(t, ok)
+	assert.Equal(t, []string{"a", "b"}, names)
+
+	ids, ok := lisp.SeqOf[int](lisp.Cells{lisp.Int(1), lisp.Int(2)}.Vector())
+	assert.True(t, ok)
+	assert.Equal(t, []int{1, 2}, ids)
+
+	empty, ok := lisp.SeqOf[string](lisp.Nil())
+	assert.True(t, ok)
+	assert.Empty(t, empty)
+
+	_, ok = lisp.SeqOf[string](lisp.Cells{lisp.String("a"), lisp.Symbol("b")}.List())
+	assert.False(t, ok, "a symbol is not a string")
+	_, ok = lisp.SeqOf[string](lisp.String("a"))
+	assert.False(t, ok, "not a sequence")
+	grid := lisp.Array(lisp.Cells{lisp.Int(1), lisp.Int(1)}.List(), []*lisp.LVal{lisp.String("a")})
+	_, ok = lisp.SeqOf[string](grid)
+	assert.False(t, ok, "a multi-dimensional array")
+
+	h := &goportHandle{}
+	hs, ok := lisp.SeqOf[*goportHandle](lisp.Cells{lisp.NativeOf(h)}.List())
+	assert.True(t, ok)
+	assert.Same(t, h, hs[0])
+}

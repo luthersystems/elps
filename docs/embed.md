@@ -832,6 +832,11 @@ as read-only. Use `ResultAs` only where the value always has type `T`. A
 mismatch returns an error with condition `error`. Both make no check, charge
 no step and use no reflection.
 
+`lisp.SeqOf[T](v)` converts a list or a one-dimensional vector to a `[]T`
+with the same conversions, and returns `ok=false` when any element has
+another type. It allocates the slice it returns. It reads one level only,
+unlike `GoSliceOf`, which converts nested values and reads lists only.
+
 **The allocation check as a value: `env.CheckAlloc(n)`.** It returns the
 error builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
 maximum (M)"), and `()` otherwise. `Runtime.CheckAlloc` returns the message
