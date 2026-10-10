@@ -48,6 +48,23 @@ func (env *LEnv) Step() *LVal {
 	return env.ChargeSteps(1)
 }
 
+// CheckAlloc returns an error when n exceeds the runtime's allocation cap
+// (Runtime.MaxAlloc), and Nil() otherwise.  The error is the one builtins
+// raise for that check: env.Errorf("%s", env.Runtime.CheckAlloc(n)), with
+// condition "error" and the message "allocation size N exceeds maximum (M)".
+// Runtime.CheckAlloc returns the message as a string instead.  CheckAlloc
+// makes no context check and charges no step.
+//
+//	if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
+//		return nil, err
+//	}
+func (env *LEnv) CheckAlloc(n int) *LVal {
+	if msg := env.Runtime.CheckAlloc(n); msg != "" {
+		return env.Errorf("%s", msg)
+	}
+	return Nil()
+}
+
 // CheckContext returns the standard context-cancelled condition
 // (CondContextCancelled, "context cancelled: <cause>") when the evaluation's
 // context is done, and Nil() otherwise.  It charges no step.  It is the check

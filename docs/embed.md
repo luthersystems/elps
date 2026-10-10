@@ -832,6 +832,17 @@ as read-only. Use `ResultAs` only where the value always has type `T`. A
 mismatch returns an error with condition `error`. Both make no check, charge
 no step and use no reflection.
 
+**The allocation check as a value: `env.CheckAlloc(n)`.** It returns the
+error builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
+maximum (M)"), and `()` otherwise. `Runtime.CheckAlloc` returns the message
+as a string instead. `env.CheckAlloc` makes no context check.
+
+```go
+if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
+	return nil, err
+}
+```
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

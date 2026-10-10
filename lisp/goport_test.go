@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -264,4 +265,51 @@ func TestArgReaderTypedReads(t *testing.T) {
 	a = lisp.ReadArgs(env, lisp.Cells{grid}.List())
 	assert.Nil(t, a.Seq(0, "argument"))
 	assert.Equal(t, "argument is not a proper sequence: array", errMessage(t, lisp.GoError(a.Err())))
+}
+
+var goportKeys = lisp.BuiltinFunc("keys")
+
+// TestCheckAllocParity compares env.CheckAlloc with the allocation check of
+// the keys builtin.
+func TestCheckAllocParity(t *testing.T) {
+	env := testEnv(t)
+	env.Runtime.MaxAlloc = 2
+	m := lisp.SortedMap()
+	for _, k := range []string{"a", "b", "c"} {
+		m.MapSetString(k, lisp.Int(1))
+	}
+	assert.Equal(t, lisp.LSExpr, env.CheckAlloc(2).Type)
+	assert.True(t, env.CheckAlloc(2).IsNil())
+
+	want := env.CallBuiltin(goportKeys, m)
+	got := env.CheckAlloc(m.Len())
+	require.True(t, want.IsError())
+	require.True(t, got.IsError())
+	assert.Equal(t, want.Str, got.Str, "condition")
+	assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage())
+	assert.Equal(t, "allocation size 3 exceeds maximum (2)", (*lisp.ErrorVal)(got).ErrorMessage())
+
+	// No context check: a cancelled context does not change the result.
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		assert.True(t, env.CheckContext().IsError(), "the context is cancelled")
+		assert.True(t, env.CheckAlloc(1).IsNil())
+	})
+}
+
+// inCancelledBuiltin runs fn inside a builtin call under a context that is
+// cancelled when fn starts, so fn sees what a builtin sees after a cancel.
+func inCancelledBuiltin(t *testing.T, env *lisp.LEnv, fn func(env *lisp.LEnv)) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ran := false
+	env.PutGlobal(lisp.Symbol("goport-probe"), lisp.FunInPackage(lisp.DefaultUserPackage, "goport-probe", lisp.Formals(),
+		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+			cancel()
+			ran = true
+			fn(env)
+			return lisp.Nil()
+		}))
+	env.EvalContext(ctx, lisp.SExpr([]*lisp.LVal{lisp.Symbol("goport-probe")}))
+	require.True(t, ran, "the probe builtin did not run")
 }
