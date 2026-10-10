@@ -108,3 +108,11 @@ func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal   { return nil }
 func (env *LEnv) MapOf(kv ...any) *LVal         { return nil }
 func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal { return nil }
 func Int(n int) *LVal                           { return &LVal{Int: n} }
+
+func (v *LVal) MapSetString(k string, val *LVal) *LVal { return v }
+func (v *LVal) MapSet(k any, val *LVal) *LVal          { return v }
+func (v *LVal) MapSetLVal(k, val *LVal) *LVal          { return v }
+
+func SortedMap() *LVal      { return &LVal{} }
+func MapOf(kv ...any) *LVal { return &LVal{} }
+func Bool(b bool) *LVal { return &LVal{} }

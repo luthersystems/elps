@@ -1,0 +1,57 @@
+package idiomcase
+
+import "github.com/luthersystems/elps/lisp"
+
+func chain2(id *lisp.LVal, name string, n int) *lisp.LVal {
+	m := lisp.MapOf("id", id, "name", name, "n", n) // want `use lisp.MapOf with the 3 keys, which builds the same map`
+	return m
+}
+
+func chain4(a, b, c, d *lisp.LVal) (m *lisp.LVal) {
+	m = lisp.MapOf(
+		"a", a,
+		"b", b,
+		"c", c,
+		"d", d,
+	) // want `use lisp.MapOf with the 4 keys`
+	m.MapSetString(c.Str, d)
+	return m
+}
+
+type myString string
+
+func chainKeep(a *lisp.LVal, s myString, n int64, ok bool) *lisp.LVal {
+	m := lisp.MapOf(
+		"s", string(s),
+		"a", a,
+		"ok", ok,
+		"n", int(n),
+	) // want `use lisp.MapOf with the 4 keys`
+	return m
+}
+
+// Not a chain: one set, a key that is not constant, a value that reads the
+// map, a used result, a comment, or another use in between.
+func chainNo(a *lisp.LVal, k string) *lisp.LVal {
+	m1 := lisp.SortedMap()
+	m1.MapSetString("a", a)
+	m2 := lisp.SortedMap()
+	m2.MapSetString(k, a)
+	m2.MapSetString("b", a)
+	m3 := lisp.SortedMap()
+	m3.MapSetString("a", a)
+	m3.MapSetString("b", m3)
+	m4 := lisp.SortedMap()
+	_ = m4.MapSetString("a", a)
+	m4.MapSetString("b", a)
+	m5 := lisp.SortedMap()
+	m5.MapSetString("a", a)
+	// the second key
+	m5.MapSetString("b", a)
+	return lisp.Cells{m1, m2, m3, m4, m5}.List() // want `use lisp.Cells`
+}
+
+func mapOfTypes(id *lisp.LVal) {
+	_ = lisp.MapOf("id", id)
+	_ = lisp.MapOf("i", int64(1)) // want `MapOf value of type int64 panics at run time`
+}

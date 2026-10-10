@@ -45,6 +45,9 @@
 //	                                   an ArgReader read              (hint)
 //	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
 //	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
+//	m := lisp.SortedMap() followed by two or more m.MapSetString("k", v)
+//	statements (or MapSet or MapSetLVal with a lisp.String("k") key)
+//	                                   m := lisp.MapOf("k", v, ...)   (fix)
 //	env.CallBuiltin(ref, m, k, v), where ref is lisp.BuiltinFunc("assoc!")
 //	                                   env.MapPut(m, k, v)            (fix)
 //	env.CallBuiltin(ref, m, k) for "get"
@@ -70,6 +73,14 @@
 // call with a different argument count, a spread argument list or a
 // format-string format that is not lisp.String(f): the helper would not make
 // the arity check or the check that the format is a string.
+//
+// The lisp.MapOf fix keeps the order of the sets, so a duplicate key
+// resolves the same.  It drops a lisp.String, lisp.Int, lisp.Float or
+// lisp.Bool wrapper on a value of exactly that Go type, which MapOf converts
+// the same way.  A nil *LVal value becomes (), as in env.MapOf; the chain
+// stores the nil pointer.  The rule does not report a chain whose value reads
+// the map, whose key is not a constant string or that has a comment after
+// its first line.
 //
 // A hint has no fix, because the rewrite changes the code's shape.  Keys
 // yields a lisp.MapKey, not an *LVal.  SeqCells refuses a multi-dimensional
@@ -466,6 +477,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkArgCells(x)
 			s.checkKeysLoop(x)
 			s.checkStringListLoop(x)
+			s.checkMapSetChain(x)
 			s.checkMapGetString(x, stack)
 		}
 		return true
@@ -1134,6 +1146,9 @@ func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
 // checkMapOf: the static types of LEnv.MapOf's keys and values.
 func (s *state) checkMapOf(call *ast.CallExpr) {
 	m := s.lispMethod(call, "LEnv")
+	if m == nil {
+		m = s.lispFunc(call)
+	}
 	if m == nil || m.Name() != "MapOf" || call.Ellipsis.IsValid() {
 		return
 	}
@@ -2140,4 +2155,181 @@ func (s *state) listedLater(stmts []ast.Stmt, obj types.Object) bool {
 		}
 	}
 	return false
+}
+
+// minMapSets is the count of MapSetString calls that makes a chain.
+const minMapSets = 2
+
+// mapSetPair returns the key text and value text of m.MapSetString("k", v),
+// m.MapSet("k", v), m.MapSet(lisp.String("k"), v) or
+// m.MapSetLVal(lisp.String("k"), v) as a statement, for the map variable
+// obj.  The value must not read obj.
+func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (string, string, bool) {
+	es, ok := st.(*ast.ExprStmt)
+	if !ok {
+		return "", "", false
+	}
+	call, ok := ast.Unparen(es.X).(*ast.CallExpr)
+	if !ok || len(call.Args) != 2 {
+		return "", "", false
+	}
+	fn := s.lispMethod(call, "LVal")
+	if fn == nil {
+		return "", "", false
+	}
+	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return "", "", false
+	}
+	if id, ok := ast.Unparen(sel.X).(*ast.Ident); !ok || s.pass.TypesInfo.Uses[id] != obj {
+		return "", "", false
+	}
+	key := call.Args[0]
+	switch fn.Name() {
+	case "MapSetString":
+	case "MapSet", "MapSetLVal":
+		if c, ok := ast.Unparen(key).(*ast.CallExpr); ok && len(c.Args) == 1 {
+			if f := s.lispFunc(c); f != nil && f.Name() == "String" {
+				key = c.Args[0]
+			}
+		}
+	default:
+		return "", "", false
+	}
+	if _, ok := s.constString(key); !ok {
+		return "", "", false
+	}
+	val := call.Args[1]
+	readsMap := false
+	ast.Inspect(val, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && s.pass.TypesInfo.Uses[id] == obj {
+			readsMap = true
+		}
+		return !readsMap
+	})
+	if readsMap {
+		return "", "", false
+	}
+	// MapOf converts a string, int, float64 or bool as lisp.String,
+	// lisp.Int, lisp.Float and lisp.Bool do.
+	if c, ok := ast.Unparen(val).(*ast.CallExpr); ok && len(c.Args) == 1 && !c.Ellipsis.IsValid() {
+		if f := s.lispFunc(c); f != nil {
+			t := s.pass.TypesInfo.TypeOf(c.Args[0])
+			if (f.Name() == "String" && isBasic(t, types.String, types.UntypedString)) ||
+				(f.Name() == "Int" && isBasic(t, types.Int, types.UntypedInt)) ||
+				(f.Name() == "Float" && isBasic(t, types.Float64, types.UntypedFloat)) ||
+				(f.Name() == "Bool" && isBasic(t, types.Bool, types.UntypedBool)) {
+				val = c.Args[0]
+			}
+		}
+	}
+	return s.text(key), s.text(val), true
+}
+
+// checkMapSetChain: m := lisp.SortedMap() followed directly by two or more
+// m.MapSetString("k", v) statements whose results are ignored.
+func (s *state) checkMapSetChain(block *ast.BlockStmt) {
+	for i := 0; i < len(block.List); i++ {
+		assign, ok := block.List[i].(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 || (assign.Tok != token.DEFINE && assign.Tok != token.ASSIGN) {
+			continue
+		}
+		id, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+		if !ok || len(call.Args) != 0 {
+			continue
+		}
+		if fn := s.lispFunc(call); fn == nil || fn.Name() != "SortedMap" {
+			continue
+		}
+		qual, ok := lispQualifier(call.Fun)
+		if !ok {
+			continue
+		}
+		obj := s.pass.TypesInfo.ObjectOf(id)
+		var pairs []string
+		last := i
+		for j := i + 1; j < len(block.List); j++ {
+			k, v, ok := s.mapSetPair(block.List[j], obj)
+			if !ok {
+				break
+			}
+			pairs = append(pairs, k+", "+v)
+			last = j
+		}
+		if len(pairs) < minMapSets {
+			continue
+		}
+		// A comment on the first line moves to the end of the new
+		// statement; a comment anywhere else would be lost.
+		trailing, ok := s.firstLineComment(assign, block.List[last].End())
+		if !ok {
+			continue
+		}
+		indent := s.indent(assign.Pos())
+		var text string
+		if len(pairs) <= 3 {
+			text = fmt.Sprintf("%s %s %sMapOf(%s)", id.Name, assign.Tok, qual, strings.Join(pairs, ", "))
+		} else {
+			text = fmt.Sprintf("%s %s %sMapOf(\n%s\t%s,\n%s)", id.Name, assign.Tok, qual,
+				indent, strings.Join(pairs, ",\n"+indent+"\t"), indent)
+		}
+		if trailing != "" {
+			text += " " + trailing
+		}
+		s.pass.Report(analysis.Diagnostic{
+			Pos:      assign.Pos(),
+			End:      block.List[last].End(),
+			Category: CategoryInfo,
+			Message: fmt.Sprintf("use %sMapOf with the %d keys, which builds the same map; a nil *LVal value becomes (), "+
+				"as in env.MapOf", qual, len(pairs)),
+			SuggestedFixes: []analysis.SuggestedFix{{
+				Message:   "Use lisp.MapOf",
+				TextEdits: []analysis.TextEdit{{Pos: assign.Pos(), End: block.List[last].End(), NewText: []byte(text)}},
+			}},
+		})
+		i = last
+	}
+}
+
+// firstLineComment returns the text of the comments between assign and to.
+// It returns false when one of them is not on the line of assign.
+func (s *state) firstLineComment(assign ast.Node, to token.Pos) (string, bool) {
+	line := s.pass.Fset.Position(assign.Pos()).Line
+	var texts []string
+	for _, f := range s.pass.Files {
+		if f.FileStart > assign.Pos() || f.FileEnd < to {
+			continue
+		}
+		for _, cg := range f.Comments {
+			if cg.Pos() >= to || cg.End() <= assign.Pos() {
+				continue
+			}
+			if s.pass.Fset.Position(cg.Pos()).Line != line || s.pass.Fset.Position(cg.End()).Line != line {
+				return "", false
+			}
+			text, ok := s.source(cg.Pos(), cg.End())
+			if !ok {
+				return "", false
+			}
+			texts = append(texts, text)
+		}
+	}
+	return strings.Join(texts, " "), true
+}
+
+// indent returns the leading white space of the line that holds pos.
+func (s *state) indent(pos token.Pos) string {
+	file := s.pass.Fset.File(pos)
+	if file == nil {
+		return ""
+	}
+	line, ok := s.source(file.LineStart(file.Line(pos)), pos)
+	if !ok || strings.TrimLeft(line, " \t") != "" {
+		return ""
+	}
+	return line
 }
