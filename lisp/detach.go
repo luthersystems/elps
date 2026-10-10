@@ -384,8 +384,7 @@ func (d *detacher) detachCells(cells []*LVal) ([]*LVal, error) {
 	if len(cells) == 0 {
 		return nil, nil
 	}
-	out := make([]*LVal, len(cells))
-	copy(out, cells)
+	out := Cells(cells).Clone()
 	d.next.cells, d.next.copied = out, out
 
 	return out, nil

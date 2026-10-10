@@ -25,7 +25,7 @@ func importedMacroCall(node *lisp.LVal, sym *Symbol, pkg string) *lisp.LVal {
 	head := node.Cells[0].Copy()
 	head.Str = sym.Package + ":" + sym.Name
 	call := *node
-	call.Cells = append([]*lisp.LVal(nil), node.Cells...)
+	call.Cells = lisp.Cells(node.Cells).Clone()
 	call.Cells[0] = head
 	return &call
 }

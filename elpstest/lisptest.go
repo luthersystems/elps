@@ -627,10 +627,9 @@ func RunBenchmark(b *testing.B, source string) {
 		}
 		iterExprs := exprs
 		if !allSealed {
-			iterExprs = make([]*lisp.LVal, len(exprs))
-			for i, expr := range exprs {
-				iterExprs[i] = expr.Copy()
-			}
+			iterExprs = lisp.Cells(exprs).Map(func(expr *lisp.LVal) *lisp.LVal {
+				return expr.Copy()
+			})
 		}
 		b.StartTimer()
 		for i, expr := range iterExprs {
