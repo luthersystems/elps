@@ -17,6 +17,8 @@
 //	lisp.GoError(x) == nil             !x.IsError()                   (fix)
 //	lisp.QExpr([]*lisp.LVal{...})      lisp.Cells{...}.List()         (fix)
 //	lisp.SExpr([]*lisp.LVal{...})      lisp.Cells{...}.SExpr()        (fix)
+//	lisp.Vector([]*lisp.LVal{...})     lisp.Cells{...}.Vector()       (fix)
+//	lisp.Array(nil, x)                 lisp.Vector(x)                 (fix)
 //	x.Type == lisp.LSymbol && x.Str == name, where x and name read a
 //	value with no side effect (an identifier, a selector, a constant
 //	index, or a constant name)         x.IsSymbol(name)               (fix)
@@ -472,11 +474,20 @@ func (s *state) checkIsError(b *ast.BinaryExpr) {
 
 // cellsMethods maps a constructor that takes a cell slice to the lisp.Cells
 // method that calls it on the receiver.
-var cellsMethods = map[string]string{"QExpr": "List", "SExpr": "SExpr"}
+var cellsMethods = map[string]string{"QExpr": "List", "SExpr": "SExpr", "Vector": "Vector"}
 
-// checkQExpr: lisp.QExpr([]*lisp.LVal{...}) and lisp.SExpr([]*lisp.LVal{...}).
+// checkQExpr: lisp.QExpr, lisp.SExpr and lisp.Vector over a slice literal,
+// and lisp.Array(nil, x).
 func (s *state) checkQExpr(call *ast.CallExpr) {
 	fn := s.lispFunc(call)
+	if fn != nil && fn.Name() == "Array" && len(call.Args) == 2 && isNilIdent(s, call.Args[0]) {
+		// Vector(cells) is Array(nil, cells) (lisp/lisp.go).
+		if qual, ok := lispQualifier(call.Fun); ok {
+			text := qual + "Vector(" + s.text(call.Args[1]) + ")"
+			s.report(call, CategoryInfo, "use "+text+", which is Array(nil, ...)", replace(call, "Use lisp.Vector", text))
+		}
+		return
+	}
 	if fn == nil || len(call.Args) != 1 {
 		return
 	}
