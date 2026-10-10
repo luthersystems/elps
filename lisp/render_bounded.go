@@ -936,7 +936,7 @@ func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
 	// Context lines from WrapError come first, outermost first, as nested %w
 	// wrapping reads in Go.
 	if stack, ok := e.Native.(*CallStack); ok && stack != nil {
-		for _, line := range stack.context {
+		for _, line := range stack.wraps {
 			r.text(line)
 			r.text(": ")
 		}

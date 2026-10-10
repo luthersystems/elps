@@ -27,10 +27,10 @@ func (e *ErrorVal) ErrorContext() []string {
 		return nil
 	}
 	stack, ok := e.Native.(*CallStack)
-	if !ok || stack == nil || len(stack.context) == 0 {
+	if !ok || stack == nil || len(stack.wraps) == 0 {
 		return nil
 	}
-	return append([]string(nil), stack.context...)
+	return append([]string(nil), stack.wraps...)
 }
 
 func wrapError(lerr *LVal, line string) *LVal {
@@ -41,15 +41,15 @@ func wrapError(lerr *LVal, line string) *LVal {
 	if old := lerr.CallStack(); old != nil {
 		stack = old
 	}
-	lines := make([]string, 0, len(stack.context)+1)
+	lines := make([]string, 0, len(stack.wraps)+1)
 	lines = append(lines, line)
-	lines = append(lines, stack.context...)
+	lines = append(lines, stack.wraps...)
 	// A header copy shares lerr's data, which is never written in place
 	// once raised (rethrow hands out the same value); only the stack, which
 	// carries the context, is new.
 	cp := *lerr
 	stack = stack.Copy()
-	stack.context = lines
+	stack.wraps = lines
 	cp.SetCallStack(stack)
 	return &cp
 }

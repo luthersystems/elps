@@ -508,7 +508,7 @@ func detachCallStack(s *CallStack) *CallStack {
 		return nil
 	}
 	cp := s.Copy()
-	cp.context = slices.Clone(s.context)
+	cp.wraps = slices.Clone(s.wraps)
 	if s.GoStack != nil {
 		cp.GoStack = append([]byte(nil), s.GoStack...)
 	}

@@ -25,15 +25,15 @@ type CallStack struct {
 	Frames  []CallFrame
 	GoStack []byte
 
+	// wraps holds the lines WrapError added in front of the error's
+	// message, outermost first (luthersystems/elps#831).  A wrap builds a new
+	// slice and never writes one in place, so copies may share it.
+	wraps []string
+
 	// Captured only for error reporting; ordinary live stacks leave this zero.
 	// The stack deliberately retains no context: an error outlives the request
 	// that produced it, so every renderer is handed a context by its caller.
 	renderLimit int
-
-	// context holds the lines WrapError added in front of the error's
-	// message, outermost first (luthersystems/elps#831).  A wrap builds a new
-	// slice and never writes one in place, so copies may share it.
-	context []string
 
 	// MaxHeightLogical bounds CallFrame.HeightLogical, which accumulates
 	// every frame elided by tail-call optimization.  Its unit is *elided
@@ -155,7 +155,7 @@ func (s *CallStack) Copy() *CallStack {
 	copy(frames, s.Frames)
 	return &CallStack{
 		renderLimit:       s.renderLimit,
-		context:           s.context,
+		wraps:             s.wraps,
 		MaxHeightLogical:  s.MaxHeightLogical,
 		MaxHeightPhysical: s.MaxHeightPhysical,
 		MaxTailIterations: s.MaxTailIterations,
