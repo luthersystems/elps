@@ -21,7 +21,11 @@ func sortedMap(env *lisp.LEnv, id, desc *lisp.LVal) *lisp.LVal {
 		lisp.String("description"), desc)
 }
 
-// A key that is not a literal string is not rewritten.
-func sortedMapComputed(env *lisp.LEnv, k, v *lisp.LVal) *lisp.LVal {
-	return env.CallBuiltin(coreSortedMap, k, v)
+// A key that is not a literal string gets SortedMapOf.
+func sortedMapComputed(env *lisp.LEnv, k, v *lisp.LVal, kv []*lisp.LVal) []*lisp.LVal {
+	return []*lisp.LVal{
+		env.CallBuiltin(coreSortedMap, k, v),  // want `use env.SortedMapOf, which returns the same map or error from the same checks`
+		env.CallBuiltin(coreSortedMap),        // want `use env.SortedMapOf`
+		env.CallBuiltin(coreSortedMap, kv...), // want `use env.SortedMapOf`
+	}
 }

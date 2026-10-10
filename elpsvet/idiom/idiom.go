@@ -45,6 +45,8 @@
 //	                                   an ArgReader read              (hint)
 //	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
 //	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
+//	any other env.CallBuiltin(sortedMap, kv...)
+//	                                   env.SortedMapOf(kv...)         (fix)
 //	m := lisp.SortedMap() followed by two or more m.MapSetString("k", v)
 //	statements (or MapSet or MapSetLVal with a lisp.String("k") key)
 //	                                   m := lisp.MapOf("k", v, ...)   (fix)
@@ -1226,40 +1228,62 @@ func isBasic(t types.Type, kinds ...types.BasicKind) bool {
 // with literal string keys.
 func (s *state) checkSortedMapCall(call *ast.CallExpr) {
 	m := s.lispMethod(call, "LEnv")
-	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) < 3 || len(call.Args)%2 == 0 || call.Ellipsis.IsValid() {
-		return
-	}
-	if s.builtinName(call.Args[0]) != "sorted-map" {
+	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) == 0 || s.builtinName(call.Args[0]) != "sorted-map" {
 		return
 	}
 	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok {
 		return
 	}
+	if parts, ok := s.mapOfParts(call); ok {
+		text := s.operand(recv.X) + ".MapOf(" + strings.Join(parts, ", ") + ")"
+		s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".MapOf with Go string keys, which returns the same map or error",
+			replace(call, "Use LEnv.MapOf", text))
+		return
+	}
+	// SortedMapOf runs the body of sorted-map after the context check, as
+	// CallBuiltin does (TestSortedMapOfMatchesBuiltin).
+	args := make([]string, 0, len(call.Args)-1)
+	for _, a := range call.Args[1:] {
+		args = append(args, s.text(a))
+	}
+	text := s.operand(recv.X) + ".SortedMapOf(" + strings.Join(args, ", ")
+	if call.Ellipsis.IsValid() {
+		text += "..."
+	}
+	text += ")"
+	s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".SortedMapOf, which returns the same map or error from the same checks",
+		replace(call, "Use LEnv.SortedMapOf", text))
+}
+
+// mapOfParts returns the MapOf arguments for a sorted-map call whose keys
+// are all lisp.String of a constant and whose values MapOf accepts.
+func (s *state) mapOfParts(call *ast.CallExpr) ([]string, bool) {
+	if len(call.Args) < 3 || len(call.Args)%2 == 0 || call.Ellipsis.IsValid() {
+		return nil, false
+	}
 	parts := make([]string, 0, len(call.Args)-1)
 	for i, arg := range call.Args[1:] {
 		if i%2 == 0 {
 			k, ok := ast.Unparen(arg).(*ast.CallExpr)
 			if !ok || len(k.Args) != 1 {
-				return
+				return nil, false
 			}
 			if fn := s.lispFunc(k); fn == nil || fn.Name() != "String" {
-				return
+				return nil, false
 			}
 			if _, ok := s.constString(k.Args[0]); !ok {
-				return
+				return nil, false
 			}
 			parts = append(parts, s.text(k.Args[0]))
 			continue
 		}
 		if !s.mapOfValueType(s.pass.TypesInfo.TypeOf(arg)) {
-			return
+			return nil, false
 		}
 		parts = append(parts, s.text(arg))
 	}
-	text := s.operand(recv.X) + ".MapOf(" + strings.Join(parts, ", ") + ")"
-	s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".MapOf with Go string keys, which returns the same map or error",
-		replace(call, "Use LEnv.MapOf", text))
+	return parts, true
 }
 
 // builtinHelpers maps a builtin name to the LEnv helper that returns the
