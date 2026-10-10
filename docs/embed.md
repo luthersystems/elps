@@ -975,11 +975,19 @@ value, as `MapRange` does. Breaking out of the loop early is safe.
 **Static checks for ports: `elpsvet/idiom`.** Add `idiom.Analyzer`
 (`elpsidiom`) to your module's vet tool. With category `info` it reports
 code that a helper above states more plainly, and `-fix` applies the
-mechanical rewrites (`v.Type == lisp.LError` to `v.IsError()`,
-`lisp.QExpr([]*lisp.LVal{...})` to `lisp.Cells{...}.List()`, the
-`Runtime.CheckAlloc` pattern to `env.CheckAlloc`, a `sorted-map` call with
-literal string keys to `env.MapOf`). Each rewrite keeps
-behaviour identical. With category `error` it reports these mistakes:
+mechanical rewrites: `v.Type == lisp.LError` and `lisp.GoError(v) != nil`
+to `v.IsError()`, a symbol compare to `v.IsSymbol(name)`,
+`lisp.QExpr`, `lisp.SExpr` and `lisp.Vector` over a slice literal to
+`lisp.Cells{...}.List()`, `.SExpr()` and `.Vector()`, `lisp.Array(nil, x)`
+to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
+a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string` or
+`format-string` to `env.MapOf` or `env.SortedMapOf`, `env.MapPut`,
+`env.MapLookup`, `env.ToString` or `env.FormatString`, and a
+`lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
+keeps behaviour identical; the package doc of `elpsvet/idiom` lists the
+limits. The hints, which have no fix, suggest `Keys`, `All`, `Field`, an
+`ArgReader` read, `FunInPackageDoc`, `SeqCells`, `NativeValue`, `FuncE`,
+`Func1E`..`Func3E`, `MapRange` and `StringList`. With category `error` it reports these mistakes:
 
 - `fmt.Errorf` or `errors.New(err.Error())` over a Lisp error in a `FuncE` or
   `Func*E` body, or in a function whose error such a body returns.

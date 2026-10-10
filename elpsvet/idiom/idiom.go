@@ -5,12 +5,13 @@
 // the helpers.  It is for code outside elps, such as a port of Lisp code to
 // Go: other modules run it with their own vet tool.  elps's own gate (make
 // elpsvet) runs it with -fixonly, which reports only the idioms that carry a
-// suggested fix.  The hints stay out of elps's gate, because elps's builtins
-// keep their error messages.
+// suggested fix.  The hints stay out of elps's gate, because a hint rewrite
+// needs a person to review it.
 //
-// IDIOMS, reported with category "info".  Each one keeps behaviour
-// identical; where the rewrite is mechanical, the diagnostic carries a
-// suggested fix, so `-fix` applies it:
+// IDIOMS, reported with category "info".  Where the rewrite is mechanical,
+// the diagnostic carries a suggested fix, so `-fix` applies it.  Each fix
+// keeps behaviour identical, with one exception for a nil *LVal in the
+// lisp.MapOf fix (below):
 //
 //	x.Type == lisp.LError              x.IsError()                    (fix)
 //	lisp.GoError(x) != nil             x.IsError()                    (fix)
@@ -111,7 +112,7 @@
 //   - A Func1E, Func2E or Func3E builtin registered with formals that are not
 //     exactly its count of required arguments.  The builtin takes required
 //     positional arguments only.
-//   - An LEnv.MapOf key that is not a string or an *LVal, or a value that is
+//   - An LEnv.MapOf or lisp.MapOf key that is not a string or an *LVal, or a value that is
 //     not one of *LVal, string, int, float64, bool, []byte, []*LVal or Cells.
 //     MapOf panics on one at run time.
 //
@@ -160,9 +161,11 @@ func init() {
 // Analyzer is the elpsidiom analyzer.
 var Analyzer = &analysis.Analyzer{
 	Name: "elpsidiom",
-	Doc: "report Go builtin code that an elps helper states more plainly (IsError, Cells, CheckAlloc, Keys, Field, " +
-		"ArgReader, MapOf, MapPut, MapLookup, ToString, FormatString, FunInPackageDoc, SeqCells, NativeValue), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
-		"result, ResultAs over a result of varying type, and a Func*E builtin registered with the wrong formals",
+	Doc: "report Go builtin code that an elps helper states more plainly (IsError, IsSymbol, Cells, Vector, " +
+		"CheckAlloc, MapOf, SortedMapOf, MapPut, MapLookup, ToString, FormatString, Keys, All, Field, ArgReader, " +
+		"FunInPackageDoc, SeqCells, NativeValue, FuncE, Func*E, MapRange, StringList), and mistakes in code that uses " +
+		"the helpers: an error wrap that hides a Lisp condition, a *ErrorVal result, ResultAs over a result of varying " +
+		"type, a Func*E builtin registered with the wrong formals and a MapOf argument of a type it does not take",
 	Run: run,
 }
 

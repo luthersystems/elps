@@ -36,7 +36,7 @@ Use when:
 | `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | in elps: audited `pkgpath.FuncName` row in `valueWalkerFunctions`; in another module: `//elpsvet:allow-valwalker <≥3-word reason>` in the declared function's doc comment (ignored inside elps) |
 | `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays; covers types in function bodies, `type T U` and anonymous struct literals (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, or on a field line or the line above (any nesting depth) |
 | `elpsdurablenative` | `elpsvet/nativepayload/durable.go` (importable) | a native payload type with no visible package-level `libjson.DurableCodec[T]` value and no transient mark; a type-parameter payload; a pointer or unlisted codec value | a documented `TransientNative()` method on the type; for a type of another module, `//elpsvet:transient <reason>` at one construction |
-| `elpsidiom` | `elpsvet/idiom/idiom.go` (importable) | outside package `lisp`, an idiom with a suggested fix (`IsError`, `Cells.List`, `CheckAlloc`, `MapOf`, `MapPut`, `MapLookup`, `ToString`, `FormatString`); elpsvet sets `-elpsidiom.fixonly`, so hints and mistakes are not reported | none: apply the fix with `go run ./cmd/elpsvet -test=false -fix ./...` |
+| `elpsidiom` | `elpsvet/idiom/idiom.go` (importable) | outside package `lisp`, an idiom with a suggested fix (the "(fix)" rows of the IDIOMS list in the package doc); elpsvet sets `-elpsidiom.fixonly`, so hints and mistakes are not reported | none: apply the fix with `go run ./cmd/elpsvet -test=false -fix ./...` |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `elpsvet/nativepayload/nativepayload.go`'s header is the authority on the payload
@@ -288,9 +288,11 @@ run time to the build. Each native payload type is one of:
 
 `elpsvet/idiom` holds `elpsidiom`, an analyzer for Go ports of Lisp code.
 It reports, with category `info`, code that a Go-style helper states more
-plainly. Fixes: `IsError`, `Cells`, `env.CheckAlloc`, `MapOf`, `MapPut`,
-`MapLookup`, `ToString`, `FormatString`. Hints: `Keys`, `Field`, `ArgReader`,
-`FunInPackageDoc`, `SeqCells`, `NativeValue`.
+plainly. Fixes: `IsError`, `IsSymbol`, `Cells` (`List`, `SExpr`,
+`Vector`), `Vector`, `env.CheckAlloc`, `env.MapOf`, `lisp.MapOf`,
+`SortedMapOf`, `MapPut`, `MapLookup`, `ToString`, `FormatString`. Hints:
+`Keys`, `All`, `Field`, `ArgReader`, `FunInPackageDoc`, `SeqCells`,
+`NativeValue`, `FuncE`, `Func1E`..`Func3E`, `MapRange`, `StringList`.
 It reports, with category `error`, an error wrap that hides a Lisp
 condition, a `*lisp.ErrorVal` result, `ResultAs` over a result of varying
 type, a `Func*E` builtin registered with the wrong formals and an
