@@ -3,6 +3,10 @@
 The elps project is intended to be used as an embedded language, allowing
 programs to be extended easily and dynamically.
 
+**API stability.** elps keeps a Go or Lisp API backward compatible once a
+tagged release (`vX.Y.Z`) contains it. An API on `main` that no tag contains
+can still change or be removed without notice, so pin a tagged release.
+
 ## Usage
 
 To initialize a new environment set its Reader and load the packages you that
@@ -839,6 +843,17 @@ return out.SExpr()
 up; `Clone` does not. `elpsidiom` rewrites the hand-written loops into these
 methods (see [lint checks](lint-checks.md)).
 
+`c.Strings()` returns the text of every cell as a `[]string` of exact
+length, or `nil` and the first cell that is not a string, so the caller
+writes its own message:
+
+```go
+parts, bad := lisp.Cells(args.Cells[1:]).Strings()
+if bad != nil {
+	return env.Errorf("docstring argument is not a string: %v", bad.Type)
+}
+```
+
 **Reading arguments in order: `Cells.Read`.** `lisp.Cells(args.Cells).Read(env)`
 returns a `CellReader`. Each read takes the next argument, with no index and
 no subject string. The subject of a failure comes from the position, as
@@ -944,17 +959,32 @@ For `&optional` or `&key`, keep `Func1`, `Func2` or `Func3` with the `Opt`
 decoders; for `&rest`, keep a plain `LBuiltin`. A call allocates nothing
 beyond the body, except the copy of a string into a `lisp.Text`.
 
-**Values as Go types: `lisp.ResultAs[T]` and `lisp.Field[T]`.**
+**Values as Go types: `lisp.ResultAs[T]`, `lisp.AsMap` and `lisp.Lookup[T]`.**
 `lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.
-`lisp.Field[T](m, "key")` reads one sorted-map value with the same
-conversions, and returns `ok=false` for a value that is not a map, a missing
-key or a value of another type.
+`lisp.AsMap(v)` checks once that `v` is a sorted-map and returns it as a
+`lisp.MapView`, a struct that holds one pointer. A function that takes a
+`MapView` needs no type check of its own. `lisp.Lookup[T](m, key)` reads one
+value of a `MapView` with the conversions below, and returns `ok=false` for
+a missing key, an error value or a value of another type. The key is a
+`string` (which also finds a symbol key with that spelling), an `int`, a
+`lisp.MapKey` from `Keys` or `All`, or an `*LVal`. A string or int key
+allocates nothing. `Lookup[lisp.MapView]` reads a nested map, and
+`Lookup[*lisp.LVal]` reads the value as it is.
 
 ```go
 keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
-status, _ := lisp.Field[string](desc, "status")
-def, ok := lisp.Field[*flowdef.Def](state, "def") // a native payload
+desc, ok := lisp.AsMap(v)
+if !ok {
+	return env.Errorf("argument is not a sorted-map: %v", v.Type)
+}
+status, _ := lisp.Lookup[string](desc, "status")
+def, ok := lisp.Lookup[*flowdef.Def](desc, "def") // a native payload
+inner, ok := lisp.Lookup[lisp.MapView](desc, "response")
 ```
+
+A `MapView` also has `Len`, `Keys`, `All` and `LVal`, which returns the
+sorted-map value it views. `lisp.MapView` is also an argument type for
+`Func1E`..`Func3E` and a `CellReader` read (`r.Map()`).
 
 | T | Accepts |
 |---|---|
@@ -965,12 +995,14 @@ def, ok := lisp.Field[*flowdef.Def](state, "def") // a native payload
 | `[]byte` | bytes |
 | `[]*LVal`, `Cells` | a list's cells |
 | `*LVal` | any value |
+| `MapView` | a sorted-map |
 | any other type | a native payload, through `lisp.NativeValue[T]` |
 
 A named type such as `type Status string` reads a native, not a string. A
 `[]byte`, `[]*LVal` or `Cells` result shares the value's storage, so treat it
 as read-only. Use `ResultAs` only where the value always has type `T`. A
-mismatch returns an error with condition `error`. Both make no check, charge
+mismatch returns an error with condition `error`. Both `ResultAs` and
+`Lookup` make no check, charge
 no step and use no reflection.
 
 `lisp.SeqOf[T](v)` converts a list or a one-dimensional vector to a `[]T`
@@ -1074,7 +1106,7 @@ a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string` or
 `env.MapLookup`, `env.ToString` or `env.FormatString`, and a
 `lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
 keeps behaviour identical for a non-nil value; the package doc of
-`elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `Field`, an
+`elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `AsMap` and `Lookup`, an
 `ArgReader` read, `FunInPackageDoc`, `SeqCells`, `NativeValue`, `FuncE`,
 `Func1E`..`Func3E`, `MapRange`, `StringList`, and `ArrayParts`,
 `lisp.Vector(nil)` and `SetArrayCells` for code that indexes an array's
@@ -1369,11 +1401,13 @@ code can observe changed when int keys were added:
 Use `l.MapSetString(k,v)` (string key) or `l.MapSetLVal(k,v)` (LVal key) to
 set keys on the map, which returns the mutated map. `v` must be an LVal.
 
-Use `l.MapGetString(k)` or `l.MapGetLVal(k)` to return the LVal corresponding
-to `k`.
+Use `lisp.AsMap(l)` and then `lisp.Lookup[T](m, k)` to read the value of `k`
+(see "Values as Go types" above). `MapGetString`, `MapGetLVal` and `MapGet`
+are gone: `MapGetString` read as if it returned a string, and all three
+returned an error value for a missing key.
 
-`MapSet` and `MapGet`, which take the key as `interface{}` and reject any other
-key type only at run time, are deprecated in favour of the typed forms.
+`MapSet`, which takes the key as `interface{}` and rejects any other key type
+only at run time, is deprecated in favour of the typed forms.
 
 Use `l.MapKeys()` to return the LVal list of keys in hte map.
 
