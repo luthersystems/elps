@@ -9,15 +9,19 @@ const (
 	LString
 	LSortMap
 	LError
+	LSExpr
+	LArray
+	LNative
 )
 
 const OptArgSymbol = "&optional"
 
 type LVal struct {
-	Type  LType
-	Str   string
-	Int   int
-	Cells []*LVal
+	Type   LType
+	Str    string
+	Int    int
+	Cells  []*LVal
+	Native any
 }
 
 type ErrorVal LVal
@@ -62,6 +66,12 @@ func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
 func (v *LVal) MapKeys() *LVal              { return v }
 func (v *LVal) MapGetString(k string) *LVal { return v }
 func (v *LVal) IsError() bool               { return v.Type == LError }
+func (v *LVal) Len() int                    { return len(v.Cells) }
+func (v *LVal) ArrayIndex(i ...*LVal) *LVal { return v }
+func (v *LVal) SeqCells() ([]*LVal, bool)   { return v.Cells, true }
+
+func SeqOf[T any](v *LVal) ([]T, bool)     { return nil, false }
+func NativeValue[T any](v *LVal) (T, bool) { var z T; return z, false }
 
 func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
 func (env *LEnv) CheckAlloc(n int) *LVal                        { return nil }

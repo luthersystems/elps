@@ -34,6 +34,9 @@
 //	                                   env.FormatString(f, v, ...)    (fix)
 //	fn.Cells[1] = doc or fn.Cells[1].Str = doc, where every value of fn
 //	is a lisp.FunInPackage result      lisp.FunInPackageDoc(..., doc) (hint)
+//	a switch or if-else chain on v.Type with an LSExpr arm that reads
+//	v.Cells and an LArray arm that loops over v.ArrayIndex(lisp.Int(i))
+//	                                   v.SeqCells() or lisp.SeqOf[T]  (hint)
 //
 // A ref is a lisp.BuiltinFunc call or a package-level variable that one
 // initializes.  MapPut, MapLookup, ToString and FormatString check the
@@ -44,7 +47,8 @@
 // the arity check or the check that the format is a string.
 //
 // A hint has no fix, because the rewrite changes the code's shape: Keys
-// yields a lisp.MapKey, not an *LVal.  No idiom suggests a checked helper
+// yields a lisp.MapKey, not an *LVal, and SeqCells refuses a
+// multi-dimensional array and returns the value's own cells.  No idiom suggests a checked helper
 // (MapPut, MapLookup, CheckAlloc) where the old code made no check.
 //
 // MISTAKES, reported with category "error":
@@ -81,6 +85,7 @@ import (
 	"go/format"
 	"go/token"
 	"go/types"
+	"sort"
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
@@ -393,6 +398,11 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkBuiltinHelper(x)
 		case *ast.IfStmt:
 			s.checkCheckAlloc(x)
+			if len(stack) < 2 || !isElseOf(stack[len(stack)-2], x) {
+				s.checkSeqBranches(x, ifBranches(x))
+			}
+		case *ast.SwitchStmt:
+			s.checkSeqBranches(x, s.switchBranches(x))
 		case *ast.AssignStmt:
 			s.checkFunDocWrite(x)
 		case *ast.RangeStmt:
@@ -1283,4 +1293,186 @@ func (s *state) checkFunDocWrite(assign *ast.AssignStmt) {
 		s.report(l, CategoryInfo, "lisp.FunInPackageDoc(pkg, fid, formals, fn, doc) sets the docstring when it builds "+
 			id.Name+"; the doc is a Go string, so this is a hint, not a fix")
 	}
+}
+
+// branch is one arm of a switch statement or an if-else chain: the tests
+// that select it and its body.
+type branch struct {
+	conds []ast.Expr // boolean tests; nil for a tag switch
+	types []ast.Expr // the case values of a switch on x.Type
+	body  []ast.Stmt
+}
+
+func isElseOf(parent ast.Node, ifs *ast.IfStmt) bool {
+	p, ok := parent.(*ast.IfStmt)
+	return ok && p.Else == ifs
+}
+
+// ifBranches returns the arms of an if-else chain.
+func ifBranches(ifs *ast.IfStmt) []branch {
+	var out []branch
+	for ifs != nil {
+		out = append(out, branch{conds: []ast.Expr{ifs.Cond}, body: ifs.Body.List})
+		switch e := ifs.Else.(type) {
+		case *ast.IfStmt:
+			ifs = e
+		case *ast.BlockStmt:
+			out = append(out, branch{body: e.List})
+			ifs = nil
+		default:
+			ifs = nil
+		}
+	}
+	return out
+}
+
+// switchBranches returns the arms of a switch statement.  For a switch on
+// x.Type it also returns x as the tag.
+func (s *state) switchBranches(sw *ast.SwitchStmt) []branch {
+	var out []branch
+	tag := sw.Tag != nil && s.typeField(sw.Tag) != nil
+	for _, st := range sw.Body.List {
+		cc, ok := st.(*ast.CaseClause)
+		if !ok {
+			continue
+		}
+		if tag {
+			out = append(out, branch{types: cc.List, body: cc.Body})
+			continue
+		}
+		out = append(out, branch{conds: cc.List, body: cc.Body})
+	}
+	return out
+}
+
+// typeTests returns, for a test of the form x.Type == lisp.C (alone or as a
+// term of an && chain), the text of x and the constant expression C.
+func (s *state) typeTests(e ast.Expr, add func(x string, c ast.Expr)) {
+	b, ok := ast.Unparen(e).(*ast.BinaryExpr)
+	if !ok {
+		return
+	}
+	switch b.Op {
+	case token.LAND:
+		s.typeTests(b.X, add)
+		s.typeTests(b.Y, add)
+	case token.EQL:
+		x, other := s.typeField(b.X), b.Y
+		if x == nil {
+			x, other = s.typeField(b.Y), b.X
+		}
+		if x != nil {
+			add(s.text(x), other)
+		}
+	}
+}
+
+// checkSeqBranches: a switch or an if-else chain on v.Type with an LSExpr
+// arm that reads v.Cells and an LArray arm that loops over
+// v.ArrayIndex(lisp.Int(i)).  v.SeqCells() returns both.
+func (s *state) checkSeqBranches(stmt ast.Node, branches []branch) {
+	tagX := ""
+	if sw, ok := stmt.(*ast.SwitchStmt); ok && sw.Tag != nil {
+		if x := s.typeField(sw.Tag); x != nil {
+			tagX = s.text(x)
+		}
+	}
+	listArm := make(map[string]bool)
+	arrayArm := make(map[string]bool)
+	for _, br := range branches {
+		tested := make(map[string]map[string]bool)
+		add := func(x string, c ast.Expr) {
+			for _, name := range []string{"LSExpr", "LArray"} {
+				if s.isLispConst(c, name) {
+					if tested[x] == nil {
+						tested[x] = make(map[string]bool)
+					}
+					tested[x][name] = true
+				}
+			}
+		}
+		for _, c := range br.types {
+			add(tagX, c)
+		}
+		for _, c := range br.conds {
+			s.typeTests(c, add)
+		}
+		for x, names := range tested {
+			if x == "" {
+				continue
+			}
+			body := &ast.BlockStmt{List: br.body}
+			if names["LSExpr"] && !names["LArray"] && s.readsCells(body, x) {
+				listArm[x] = true
+			}
+			if names["LArray"] && !names["LSExpr"] && s.loopsArrayIndex(body, x) {
+				arrayArm[x] = true
+			}
+		}
+	}
+	xs := make([]string, 0, len(listArm))
+	for x := range listArm {
+		xs = append(xs, x)
+	}
+	sort.Strings(xs)
+	for _, x := range xs {
+		if arrayArm[x] {
+			s.report(stmt, CategoryInfo, fmt.Sprintf("%s.SeqCells() (or lisp.SeqOf[T](%s)) returns the cells of a list or a "+
+				"one-dimensional vector; it refuses a multi-dimensional array, and the cells are %s's own storage, so this "+
+				"is a hint, not a fix", x, x, x))
+			return
+		}
+	}
+}
+
+// readsCells reports whether body reads x.Cells for an LVal x printed as x.
+func (s *state) readsCells(body ast.Node, x string) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok && sel.Sel.Name == "Cells" {
+			if owner := s.typeFieldOwner(sel); owner != nil && s.text(owner) == x {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// loopsArrayIndex reports whether body holds a loop that calls
+// x.ArrayIndex(lisp.Int(...)).
+func (s *state) loopsArrayIndex(body ast.Node, x string) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		var loop ast.Node
+		switch l := n.(type) {
+		case *ast.ForStmt:
+			loop = l.Body
+		case *ast.RangeStmt:
+			loop = l.Body
+		default:
+			return !found
+		}
+		ast.Inspect(loop, func(m ast.Node) bool {
+			call, ok := m.(*ast.CallExpr)
+			if !ok || len(call.Args) != 1 {
+				return !found
+			}
+			if fn := s.lispMethod(call, "LVal"); fn == nil || fn.Name() != "ArrayIndex" {
+				return !found
+			}
+			fsel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+			if !ok || s.text(fsel.X) != x {
+				return !found
+			}
+			if arg, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr); ok {
+				if fn := s.lispFunc(arg); fn != nil && fn.Name() == "Int" {
+					found = true
+				}
+			}
+			return !found
+		})
+		return !found
+	})
+	return found
 }
