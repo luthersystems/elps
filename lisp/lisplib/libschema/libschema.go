@@ -480,11 +480,7 @@ func isValidator(v *lisp.LVal) bool {
 	if v == nil || v.Type != lisp.LFun || len(v.Cells) != validatorCellCount {
 		return false
 	}
-	marker := v.Cells[validatorMarkerIndex]
-	if marker == nil || marker.Type != lisp.LNative {
-		return false
-	}
-	if _, ok := marker.Native.(validatorTag); !ok {
+	if _, ok := lisp.NativeValue[validatorTag](v.Cells[validatorMarkerIndex]); !ok {
 		return false
 	}
 	return v.Builtin() != nil

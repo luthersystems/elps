@@ -163,12 +163,7 @@ func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
 	if lerr := env.CheckAlloc(count); lerr.IsError() {
 		return lerr
 	}
-	slice := strings.Split(str, sep)
-	cells := make([]*lisp.LVal, len(slice))
-	for i, s := range slice {
-		cells[i] = lisp.String(s)
-	}
-	return lisp.QExpr(cells)
+	return lisp.StringList(strings.Split(str, sep))
 }
 
 var builtinJoin = lisp.Func2(

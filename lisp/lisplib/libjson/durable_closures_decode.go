@@ -97,8 +97,8 @@ func (d *durableDecoder) frameRef(depth int) (*lisp.LEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, ok := v.Native.(*decFrame)
-	if !ok || v.Type != lisp.LNative || f == nil || f.env == nil {
+	f, ok := lisp.NativeValue[*decFrame](v)
+	if !ok || f == nil || f.env == nil {
 		return nil, d.errorf("a frame that is its own ancestor")
 	}
 	return f.env, nil

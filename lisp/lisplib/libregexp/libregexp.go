@@ -99,14 +99,15 @@ func BuiltinIsRegexp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func BuiltinCompile(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	patt := args.Cells[0]
-	if patt.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", patt.Type)
-	}
-	if lerr := libutil.ChargeKiB(env, len(patt.Str)); lerr != nil {
+	a := lisp.ReadArgs(env, args)
+	patt := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
 		return lerr
 	}
-	re, err := regexp.Compile(patt.Str)
+	if lerr := libutil.ChargeKiB(env, len(patt)); lerr != nil {
+		return lerr
+	}
+	re, err := regexp.Compile(patt)
 	if err != nil {
 		return invalidPatternError(env, err)
 	}

@@ -167,11 +167,12 @@ func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
 }
 
 func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	stamp := args.Cells[0]
-	if stamp.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", stamp.Type)
+	a := lisp.ReadArgs(env, args)
+	stamp := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	t, err := time.Parse(time.RFC3339, stamp.Str)
+	t, err := time.Parse(time.RFC3339, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -179,11 +180,12 @@ func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func BuiltinParseRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	stamp := args.Cells[0]
-	if stamp.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", stamp.Type)
+	a := lisp.ReadArgs(env, args)
+	stamp := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	t, err := time.Parse(time.RFC3339Nano, stamp.Str)
+	t, err := time.Parse(time.RFC3339Nano, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -252,11 +254,12 @@ func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	v := args.Cells[0]
-	if v.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", v.Type)
+	a := lisp.ReadArgs(env, args)
+	s := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	d, err := time.ParseDuration(v.Str)
+	d, err := time.ParseDuration(s)
 	if err != nil {
 		return env.Error(err)
 	}

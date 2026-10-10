@@ -463,10 +463,6 @@ func EnvTestSuite(env *lisp.LEnv) *TestSuite {
 	if pkg == nil {
 		return nil
 	}
-	lsuite := pkg.Get(lisp.Symbol(DefaultSuiteSymbol))
-	if lsuite.Type != lisp.LNative {
-		return nil
-	}
-	suite, _ := lsuite.Native.(*TestSuite)
+	suite, _ := lisp.NativeValue[*TestSuite](pkg.Get(lisp.Symbol(DefaultSuiteSymbol)))
 	return suite
 }
