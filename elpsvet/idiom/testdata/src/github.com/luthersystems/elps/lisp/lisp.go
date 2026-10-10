@@ -64,3 +64,7 @@ func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
 func (env *LEnv) CheckAlloc(n int) *LVal                        { return nil }
 func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal { return nil }
 func (env *LEnv) MapLookup(m, k *LVal) *LVal                    { return nil }
+
+func (env *LEnv) MapOf(kv ...any) *LVal         { return nil }
+func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal { return nil }
+func Int(n int) *LVal                           { return &LVal{Int: n} }

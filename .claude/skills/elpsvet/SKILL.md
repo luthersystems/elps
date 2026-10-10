@@ -288,10 +288,11 @@ run time to the build. Each native payload type is one of:
 `elpsvet/idiom` holds `elpsidiom`, an analyzer for other modules only (Go
 ports of Lisp code). It reports, with category `info`, code that a Go-style
 helper states more plainly (`IsError`, `Cells`, `env.CheckAlloc`, `Keys`,
-`Field`, `ArgReader`), with a suggested fix where the rewrite is mechanical.
+`Field`, `ArgReader`, `MapOf`), with a suggested fix where the rewrite is mechanical.
 It reports, with category `error`, an error wrap that hides a Lisp
 condition, a `*lisp.ErrorVal` result, `ResultAs` over a result of varying
-type and a `Func*E` builtin registered with the wrong formals. `make
+type, a `Func*E` builtin registered with the wrong formals and an
+`env.MapOf` argument of a type that `MapOf` does not accept. `make
 elpsvet` does not run it: elps's own code keeps its style.
 
 `elpsvet/nativepayload` is importable. `New(Config)` and

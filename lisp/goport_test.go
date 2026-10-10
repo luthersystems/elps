@@ -695,3 +695,70 @@ func TestFunc2EAllocations(t *testing.T) {
 	})
 	assert.InDelta(t, 1, allocs, 0, "only the result value is allocated")
 }
+
+var goportSortedMap = lisp.BuiltinFunc("sorted-map")
+
+func TestMapOfParity(t *testing.T) {
+	env := testEnv(t)
+	id := lisp.String("id-1")
+	cases := []struct {
+		name string
+		kv   []any
+		lv   []*lisp.LVal
+	}{
+		{"empty", nil, nil},
+		{"mixed values", []any{"id", id, "n", 3, "f", 1.5, "ok", true, "b", []byte("x"), "l", lisp.Cells{lisp.Int(1)}, "s", "str", "nil", (*lisp.LVal)(nil)},
+			[]*lisp.LVal{lisp.String("id"), id, lisp.String("n"), lisp.Int(3), lisp.String("f"), lisp.Float(1.5), lisp.String("ok"), lisp.Bool(true),
+				lisp.String("b"), lisp.Bytes([]byte("x")), lisp.String("l"), lisp.Cells{lisp.Int(1)}.List(), lisp.String("s"), lisp.String("str"), lisp.String("nil"), lisp.Nil()}},
+		{"lval keys", []any{lisp.Symbol("a"), 1, lisp.Int(2), 2}, []*lisp.LVal{lisp.Symbol("a"), lisp.Int(1), lisp.Int(2), lisp.Int(2)}},
+		{"duplicate key", []any{"a", 1, "a", 2}, []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("a"), lisp.Int(2)}},
+		{"odd count", []any{"a", 1, "b"}, []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b")}},
+		{"float key", []any{lisp.Float(1.5), 1}, []*lisp.LVal{lisp.Float(1.5), lisp.Int(1)}},
+	}
+	many := make([]any, 0, 40)
+	manyLV := make([]*lisp.LVal, 0, 40)
+	for i := range 20 {
+		many = append(many, fmt.Sprintf("k%02d", i), i)
+		manyLV = append(manyLV, lisp.String(fmt.Sprintf("k%02d", i)), lisp.Int(i))
+	}
+	cases = append(cases, struct {
+		name string
+		kv   []any
+		lv   []*lisp.LVal
+	}{"more than the stack array", many, manyLV})
+	for _, limit := range []int{0, 2} {
+		env.Runtime.MaxAlloc = limit
+		for _, tc := range cases {
+			want := env.CallBuiltin(goportSortedMap, tc.lv...)
+			assertSameResult(t, want, env.MapOf(tc.kv...), "limit %d, %s", limit, tc.name)
+		}
+	}
+	env.Runtime.MaxAlloc = 0
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		got := env.MapOf("a", 1)
+		assertSameResult(t, env.CallBuiltin(goportSortedMap, lisp.String("a"), lisp.Int(1)), got)
+		assert.Equal(t, lisp.CondContextCancelled, got.Str)
+	})
+}
+
+func TestMapOfPanicsOnBadTypes(t *testing.T) {
+	env := testEnv(t)
+	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { env.MapOf(1, 2) })
+	assert.PanicsWithValue(t, "lisp.MapOf: value of type []string; a value is *LVal, string, int, float64, bool, []byte, []*LVal or Cells",
+		func() { env.MapOf("a", []string{"x"}) })
+	assert.Panics(t, func() { env.MapOf("a", &goportHandle{}) }, "MapOf never makes a native")
+}
+
+// TestMapOfAllocations checks that MapOf allocates what SortedMapOf with
+// lisp.String keys allocates: the converted slice stays on the stack.
+func TestMapOfAllocations(t *testing.T) {
+	env := testEnv(t)
+	id, typ, desc := lisp.String("id"), "kind", lisp.String("d")
+	want := testing.AllocsPerRun(100, func() {
+		env.SortedMapOf(lisp.String("id"), id, lisp.String("type"), lisp.String(typ), lisp.String("description"), desc)
+	})
+	got := testing.AllocsPerRun(100, func() {
+		env.MapOf("id", id, "type", typ, "description", desc)
+	})
+	assert.InDelta(t, want, got, 0)
+}

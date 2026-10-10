@@ -922,6 +922,19 @@ where the Lisp called `assoc!` or `get`. Code that fills a map it just built
 keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
 building a list.
 
+**`env.MapOf(kv ...)`** is `SortedMapOf` with Go keys and values. A key is a
+`string` or an `*LVal`. A value is an `*LVal` (a nil `*LVal` becomes `()`), a
+`string`, `int`, `float64`, `bool`, `[]byte`, `[]*LVal` (a list) or `Cells`
+(a list). It converts each pair and returns what `SortedMapOf` returns for
+the converted arguments, so the checks, the map and the error are the same.
+It panics on a key or value of another type, because that is a programming
+error; `elpsidiom` reports one at build time. Use `lisp.NativeOf` for a
+native value and `lisp.StringList` for a `[]string`.
+
+```go
+return env.MapOf("id", id, "type", typ, "count", n)
+```
+
 **`v.SeqCells()`** returns the cells of a list or a one-dimensional vector
 and `true`, or `nil, false` for any other value, a multi-dimensional array
 included. The cells are the value's own storage, so treat them as read-only.
@@ -954,7 +967,8 @@ value, as `MapRange` does. Breaking out of the loop early is safe.
 code that a helper above states more plainly, and `-fix` applies the
 mechanical rewrites (`v.Type == lisp.LError` to `v.IsError()`,
 `lisp.QExpr([]*lisp.LVal{...})` to `lisp.Cells{...}.List()`, the
-`Runtime.CheckAlloc` pattern to `env.CheckAlloc`). Each rewrite keeps
+`Runtime.CheckAlloc` pattern to `env.CheckAlloc`, a `sorted-map` call with
+literal string keys to `env.MapOf`). Each rewrite keeps
 behaviour identical. With category `error` it reports these mistakes:
 
 - `fmt.Errorf` or `errors.New(err.Error())` over a Lisp error in a `FuncE` or
@@ -964,6 +978,7 @@ behaviour identical. With category `error` it reports these mistakes:
   `second`, `aref` or `env.MapLookup`, whose result type varies.
 - A `Func*E` builtin registered with formals other than its required
   arguments.
+- An `env.MapOf` key or value of a type that `MapOf` does not accept.
 
 `elpsvet/builtinstate` and `elpsvet/ownpkg` read `FuncE`, `Func1`..`Func3`
 and `Func1E`..`Func3E` bodies, so add them too.

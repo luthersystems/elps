@@ -22,6 +22,8 @@
 //	                                   lisp.Field[string](m, k)       (hint)
 //	v := args.Cells[i] followed by a v.Type check that returns Errorf
 //	                                   an ArgReader read              (hint)
+//	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
+//	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
 //
 // A hint has no fix, because the rewrite changes the code's shape: Keys
 // yields a lisp.MapKey, not an *LVal.  No idiom suggests a checked helper
@@ -43,6 +45,9 @@
 //   - A Func1E, Func2E or Func3E builtin registered with formals that are not
 //     exactly its count of required arguments.  The builtin takes required
 //     positional arguments only.
+//   - An LEnv.MapOf key that is not a string or an *LVal, or a value that is
+//     not one of *LVal, string, int, float64, bool, []byte, []*LVal or Cells.
+//     MapOf panics on one at run time.
 //
 // INVISIBLE: code built through variables the rule does not trace (a
 // BuiltinRef or formals list held in a local variable, a builtin passed
@@ -338,6 +343,8 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkQExpr(x)
 			s.checkResultAs(x)
 			s.checkRegistration(x)
+			s.checkMapOf(x)
+			s.checkSortedMapCall(x)
 		case *ast.IfStmt:
 			s.checkCheckAlloc(x)
 		case *ast.RangeStmt:
@@ -977,4 +984,120 @@ func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
 		}
 		return true
 	})
+}
+
+// checkMapOf: the static types of LEnv.MapOf's keys and values.
+func (s *state) checkMapOf(call *ast.CallExpr) {
+	m := s.lispMethod(call, "LEnv")
+	if m == nil || m.Name() != "MapOf" || call.Ellipsis.IsValid() {
+		return
+	}
+	for i, arg := range call.Args {
+		t := s.pass.TypesInfo.TypeOf(arg)
+		if t == nil {
+			continue
+		}
+		if i%2 == 0 {
+			if !s.mapOfKeyType(t) {
+				s.report(arg, CategoryError, fmt.Sprintf("MapOf key of type %s panics at run time; a key is a string or an *LVal", t))
+			}
+			continue
+		}
+		if !s.mapOfValueType(t) {
+			s.report(arg, CategoryError, fmt.Sprintf("MapOf value of type %s panics at run time; a value is *LVal, string, int, "+
+				"float64, bool, []byte, []*LVal or Cells (use lisp.NativeOf for a native, lisp.StringList for a []string)", t))
+		}
+	}
+}
+
+func (s *state) mapOfKeyType(t types.Type) bool {
+	if isBasic(t, types.String, types.UntypedString) {
+		return true
+	}
+	p, ok := types.Unalias(t).(*types.Pointer)
+	return ok && isLispNamed(p.Elem(), "LVal")
+}
+
+func (s *state) mapOfValueType(t types.Type) bool {
+	if isBasic(t, types.String, types.UntypedString, types.Int, types.UntypedInt, types.Float64,
+		types.UntypedFloat, types.Bool, types.UntypedBool, types.UntypedNil) {
+		return true
+	}
+	if isLispNamed(t, "Cells") {
+		return true
+	}
+	if p, ok := types.Unalias(t).(*types.Pointer); ok && isLispNamed(p.Elem(), "LVal") {
+		return true
+	}
+	if sl, ok := types.Unalias(t).(*types.Slice); ok {
+		if b, ok := sl.Elem().(*types.Basic); ok && b.Kind() == types.Byte {
+			return true
+		}
+		if p, ok := types.Unalias(sl.Elem()).(*types.Pointer); ok && isLispNamed(p.Elem(), "LVal") {
+			return true
+		}
+	}
+	return false
+}
+
+// isBasic reports whether t is exactly one of the basic kinds; a named type
+// over one is not.
+func isBasic(t types.Type, kinds ...types.BasicKind) bool {
+	b, ok := types.Unalias(t).(*types.Basic)
+	if !ok {
+		return false
+	}
+	for _, k := range kinds {
+		if b.Kind() == k {
+			return true
+		}
+	}
+	return false
+}
+
+// checkSortedMapCall: env.CallBuiltin(sortedMap, lisp.String("k"), v, ...)
+// with literal string keys.
+func (s *state) checkSortedMapCall(call *ast.CallExpr) {
+	m := s.lispMethod(call, "LEnv")
+	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) < 3 || len(call.Args)%2 == 0 || call.Ellipsis.IsValid() {
+		return
+	}
+	var id *ast.Ident
+	switch r := ast.Unparen(call.Args[0]).(type) {
+	case *ast.Ident:
+		id = r
+	case *ast.SelectorExpr:
+		id = r.Sel
+	}
+	if id == nil || s.builtinRefs[s.pass.TypesInfo.Uses[id]] != "sorted-map" {
+		return
+	}
+	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	parts := make([]string, 0, len(call.Args)-1)
+	for i, arg := range call.Args[1:] {
+		if i%2 == 0 {
+			k, ok := ast.Unparen(arg).(*ast.CallExpr)
+			if !ok || len(k.Args) != 1 {
+				return
+			}
+			if fn := s.lispFunc(k); fn == nil || fn.Name() != "String" {
+				return
+			}
+			if _, ok := s.constString(k.Args[0]); !ok {
+				return
+			}
+			parts = append(parts, s.text(k.Args[0]))
+			continue
+		}
+		if !s.mapOfValueType(s.pass.TypesInfo.TypeOf(arg)) {
+			return
+		}
+		parts = append(parts, s.text(arg))
+	}
+	text := s.operand(recv.X) + ".MapOf(" + strings.Join(parts, ", ") + ")"
+	s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".MapOf with Go string keys, which returns the same map or error",
+		replace(call, "Use LEnv.MapOf", text))
 }

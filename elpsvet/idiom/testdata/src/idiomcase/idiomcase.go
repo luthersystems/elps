@@ -111,7 +111,7 @@ var builtinPad = lisp.Func2E(func(env *lisp.LEnv, s string, n int) (string, erro
 func register() []*lisp.LVal {
 	return []*lisp.LVal{
 		lisp.FunInPackage("p", "pad", lisp.Formals("s", "n"), builtinPad),
-		lisp.FunInPackage("p", "pad1", lisp.Formals("s"), builtinPad),                      // want `builtinPad takes exactly 2 arguments, but its formals declare 1`
+		lisp.FunInPackage("p", "pad1", lisp.Formals("s"), builtinPad),                         // want `builtinPad takes exactly 2 arguments, but its formals declare 1`
 		lisp.FunInPackage("p", "pad2", lisp.Formals("s", lisp.OptArgSymbol, "n"), builtinPad), // want `builtinPad is a Func\*E builtin, which takes 2 required arguments only`
 		lisp.FunInPackage("p", "one", lisp.Formals("a", "b"), lisp.Func1E(func(env *lisp.LEnv, s string) (string, error) { // want `takes exactly 1 arguments, but its formals declare 2`
 			return s, nil
