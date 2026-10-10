@@ -37,9 +37,41 @@ jobs:
 
   # The diagnostics above intentionally cannot use a PAT or publish
   # (background: #638).
+
+  # A tag publishes to the Marketplace, so it must point to a commit on main
+  # (luthersystems/common-infrastructure#143). release-tag.yml tags main's
+  # validated tip; this also refuses a tag pushed by hand on another branch.
+  # Every publish job depends on it through build-binaries.
+  tag-on-main:
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    name: Require tag on main
+    permissions:
+      contents: read
+    # ARM for the reason spelled out on elps.yml's lint-and-test job.
+    runs-on: ubuntu-24.04-arm
+    # A checkout and a fetch.
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0
+      - name: Require the tagged commit to be on main
+        run: |
+          set -eu
+          # Harmless on this runner. A job that runs in a container as root
+          # over the runner user's workspace needs it, or git refuses the repo
+          # ("dubious ownership") and the check fails closed.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          git fetch origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
+            echo "::error::Release tag $GITHUB_REF_NAME must point to a commit on main"
+            exit 1
+          }
+
   build-binaries:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Build elps (${{ matrix.target }})
+    needs: tag-on-main
     # ARM for the reason spelled out on elps.yml's lint-and-test job -- this
     # is the HOST the cross-compile runs on, and nothing else.
     #

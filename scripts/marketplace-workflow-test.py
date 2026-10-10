@@ -20,14 +20,33 @@ def validate(doc):
     events = doc.get("on", doc.get(True))  # PyYAML's YAML 1.1 parses on as True.
     assert events == {"push": {"tags": ["v*"]}, "workflow_dispatch": None}
     jobs = doc["jobs"]
-    assert set(jobs) == {"build-binaries", "publish-platform", "publish-universal", "diagnose-marketplace"}
-    for name in ("build-binaries", "publish-platform", "publish-universal"):
+    assert set(jobs) == {"tag-on-main", "build-binaries", "publish-platform", "publish-universal",
+                         "diagnose-marketplace"}
+    for name in ("tag-on-main", "build-binaries", "publish-platform", "publish-universal"):
         assert jobs[name]["if"] == TAG_ONLY
         assert jobs[name]["runs-on"] == "ubuntu-24.04-arm"
         assert "concurrency" not in jobs[name]
     assert "env" not in doc
     assert "concurrency" not in doc
+    validate_tag_on_main(jobs)
     validate_diagnostic(jobs["diagnose-marketplace"])
+
+
+def validate_tag_on_main(jobs):
+    # A tag publishes only if its commit is on main (common-infrastructure#143):
+    # every publish job reaches the ancestry gate through build-binaries.
+    gate = jobs["tag-on-main"]
+    assert gate["permissions"] == {"contents": "read"}
+    assert "secrets." not in yaml.safe_dump(gate)
+    steps = gate["steps"]
+    assert steps[0]["uses"].startswith("actions/checkout@")
+    assert steps[0]["with"]["fetch-depth"] == 0
+    script = steps[-1]["run"]
+    assert 'git fetch origin main' in script
+    assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in script
+    assert jobs["build-binaries"].get("needs") == "tag-on-main"
+    assert jobs["publish-platform"].get("needs") == "build-binaries"
+    assert jobs["publish-universal"].get("needs") == "build-binaries"
 
 
 def validate_diagnostic(job):
@@ -58,7 +77,7 @@ class PublicationIsolation(unittest.TestCase):
         source = (ROOT / ".github/workflows/vscode-publish.yml").read_text()
         doc = yaml.safe_load(source)
         validate(doc)
-        for name in ("build-binaries", "publish-platform", "publish-universal"):
+        for name in ("tag-on-main", "build-binaries", "publish-platform", "publish-universal"):
             for condition in (None, "always()", "startsWith(github.ref, 'refs/tags/v')"):
                 with self.subTest(job=name, condition=condition):
                     changed = copy.deepcopy(doc)
@@ -73,6 +92,21 @@ class PublicationIsolation(unittest.TestCase):
                 changed["jobs"]["diagnose-marketplace"][field] = value
                 with self.assertRaises(AssertionError):
                     validate(changed)
+        # The publish must stay behind the tag-on-main ancestry gate.
+        for name, needs in (("build-binaries", None), ("publish-platform", "tag-on-main"),
+                            ("publish-universal", "tag-on-main")):
+            with self.subTest(gate_bypass=name):
+                changed = copy.deepcopy(doc)
+                if needs is None:
+                    del changed["jobs"][name]["needs"]
+                else:
+                    changed["jobs"][name]["needs"] = needs
+                with self.assertRaises(AssertionError):
+                    validate(changed)
+        changed = copy.deepcopy(doc)
+        changed["jobs"]["tag-on-main"]["steps"][-1]["run"] = "true"
+        with self.assertRaises(AssertionError):
+            validate(changed)
         changed = copy.deepcopy(doc)
         changed["jobs"]["diagnose-marketplace"]["steps"][4]["run"] = "npx vsce publish"
         with self.assertRaises(AssertionError):
@@ -95,7 +129,7 @@ class PublicationIsolation(unittest.TestCase):
                 changed["jobs"]["diagnose-marketplace"]["concurrency"] = concurrency
                 with self.assertRaises(AssertionError):
                     validate(changed)
-        for location in ("workflow", "build-binaries", "publish-platform", "publish-universal"):
+        for location in ("workflow", "tag-on-main", "build-binaries", "publish-platform", "publish-universal"):
             with self.subTest(cancellation_leak=location):
                 changed = copy.deepcopy(doc)
                 destination = changed if location == "workflow" else changed["jobs"][location]
