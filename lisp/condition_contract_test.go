@@ -61,12 +61,19 @@ func TestConditionContractHandlerBind(t *testing.T) {
 		requireContractValue(t, env,
 			`(handler-bind ((condition (lambda (&rest _) 'unused))) 1 2 3)`, `3`)
 	})
-	t.Run("first matching binding in order wins", func(t *testing.T) {
+	t.Run("most specific binding wins, whatever the order", func(t *testing.T) {
 		env := contractEnv(t)
+		// luthersystems/elps#831: the catch-all runs only when nothing more
+		// specific matches.  Before #831 the first match in source order ran,
+		// so this returned 'catch-all.
 		requireContractValue(t, env,
 			`(handler-bind ((condition (lambda (&rest _) 'catch-all))
 			                (boom (lambda (&rest _) 'specific)))
-			   (error 'boom))`, `'catch-all`)
+			   (error 'boom))`, `'specific`)
+		requireContractValue(t, env,
+			`(handler-bind ((boom (lambda (&rest _) 'first))
+			                (boom (lambda (&rest _) 'second)))
+			   (error 'boom))`, `'first`)
 		requireContractValue(t, env,
 			`(handler-bind ((boom (lambda (&rest _) 'specific))
 			                (condition (lambda (&rest _) 'catch-all)))

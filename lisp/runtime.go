@@ -46,8 +46,9 @@ type Runtime struct {
 	Registry               *PackageRegistry
 	Package                *Package
 	Stack                  *CallStack
-	settings               map[string]bool // Per-VM library flags; see Setting.
-	values                 map[string]any  // Per-VM value settings; see SetSettingValue.
+	settings               map[string]bool   // Per-VM library flags; see Setting.
+	values                 map[string]any    // Per-VM value settings; see SetSettingValue.
+	conditionParents       map[string]string // Parents from DefineCondition; replaced, never written, so VMs share it.
 	conditionStack         []*LVal
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.

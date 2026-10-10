@@ -196,6 +196,24 @@ var (
 			within a handler-bind handler. Use this instead of (apply error
 			condition args) when you want to perform side effects (such as
 			logging) but still propagate the original error unchanged.`},
+		{"define-condition", Formals("child", "parent"), builtinDefineCondition,
+			`Makes condition parent the parent of condition child, so a
+			handler-bind binding for parent, or for an ancestor of parent,
+			catches child, and condition-is? sees the link. Both arguments
+			are symbols or strings. A condition has at most one parent:
+			defining the parent it already has does nothing, and any other
+			parent is an error. Defining a cycle, a chain more than 64
+			deep, or a definition that names condition or internal-panic is
+			an error. The hierarchy belongs to the runtime: a template
+			publishes it and every VM forked from it starts with it. A
+			definition does not change how an error renders. Returns
+			child as a symbol.`},
+		{"condition-is?", Formals("condition", "ancestor"), builtinConditionIsP,
+			`Returns true when condition is ancestor or one of its
+			descendants, walking the parents define-condition and elps
+			declare, as Go's errors.Is does. Both arguments are symbols or
+			strings, such as the condition symbol a handler-bind handler
+			receives. Every condition is a 'condition.`},
 		{"error-stack", Formals(), builtinErrorStack,
 			`Returns the call stack recorded when the error being handled by
 			handler-bind was raised, as a list of sorted-maps ordered
@@ -1138,6 +1156,27 @@ func builtinError(env *LEnv, args *LVal) *LVal {
 		iargs[i] = arg
 	}
 	return env.ErrorCondition(condition.Str, iargs...)
+}
+
+func builtinDefineCondition(env *LEnv, args *LVal) *LVal {
+	r := Cells(args.Cells).Read(env)
+	child, parent := r.Name(), r.Name()
+	if lerr := r.Err(); lerr.IsError() {
+		return lerr
+	}
+	if err := env.Runtime.DefineCondition(child, parent); err != nil {
+		return env.Error(err)
+	}
+	return Symbol(child)
+}
+
+func builtinConditionIsP(env *LEnv, args *LVal) *LVal {
+	r := Cells(args.Cells).Read(env)
+	c, ancestor := r.Name(), r.Name()
+	if lerr := r.Err(); lerr.IsError() {
+		return lerr
+	}
+	return Bool(ancestor == CondCatchAll || env.Runtime.ConditionIsA(c, ancestor))
 }
 
 func builtinRethrow(env *LEnv, args *LVal) *LVal {
