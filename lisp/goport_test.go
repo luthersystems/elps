@@ -387,3 +387,76 @@ func TestFormatStringParity(t *testing.T) {
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
+
+var (
+	goportAssocMutate = lisp.BuiltinFunc("assoc!")
+	goportGet         = lisp.BuiltinFunc("get")
+)
+
+func goportMap(n int) *lisp.LVal {
+	m := lisp.SortedMap()
+	for i := range n {
+		m.MapSetString(fmt.Sprintf("k%d", i), lisp.Int(i))
+	}
+	return m
+}
+
+func TestMapPutParity(t *testing.T) {
+	env := testEnv(t)
+	type input struct {
+		m    func() *lisp.LVal
+		k, v *lisp.LVal
+		name string
+	}
+	inputs := []input{
+		{func() *lisp.LVal { return lisp.Nil() }, lisp.String("a"), lisp.Int(1), "nil map"},
+		{func() *lisp.LVal { return lisp.Int(3) }, lisp.String("a"), lisp.Int(1), "not a map"},
+		{func() *lisp.LVal { return goportMap(2) }, lisp.String("new"), lisp.Int(1), "new key"},
+		{func() *lisp.LVal { return goportMap(2) }, lisp.String("k1"), lisp.Int(9), "existing key"},
+		{func() *lisp.LVal { return goportMap(2) }, lisp.Symbol("k0"), lisp.Int(9), "symbol key"},
+		{func() *lisp.LVal { return goportMap(2) }, lisp.Int(5), lisp.Int(9), "int key"},
+		{func() *lisp.LVal { return goportMap(2) }, lisp.Float(1.5), lisp.Int(9), "float key"},
+	}
+	for _, limit := range []int{0, 2} {
+		env.Runtime.MaxAlloc = limit
+		for _, in := range inputs {
+			want := env.CallBuiltin(goportAssocMutate, in.m(), in.k, in.v)
+			got := env.MapPut(in.m(), in.k, in.v)
+			assertSameResult(t, want, got, "limit %d, %s", limit, in.name)
+		}
+	}
+	env.Runtime.MaxAlloc = 0
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		m := goportMap(1)
+		got := env.MapPut(m, lisp.String("x"), lisp.Int(1))
+		assertSameResult(t, env.CallBuiltin(goportAssocMutate, m, lisp.String("x"), lisp.Int(1)), got)
+		assert.Equal(t, lisp.CondContextCancelled, got.Str)
+		assert.Equal(t, 1, m.Len(), "a cancelled MapPut writes nothing")
+	})
+}
+
+func TestMapLookupParity(t *testing.T) {
+	env := testEnv(t)
+	m := goportMap(3)
+	for _, tc := range []struct {
+		m, k *lisp.LVal
+	}{
+		{lisp.Nil(), lisp.String("k0")},
+		{lisp.Int(1), lisp.String("k0")},
+		{m, lisp.String("k1")},
+		{m, lisp.Symbol("k2")},
+		{m, lisp.String("missing")},
+		{m, lisp.Float(1.5)},
+		{m, lisp.Int(1)},
+	} {
+		assertSameResult(t, env.CallBuiltin(goportGet, tc.m, tc.k), env.MapLookup(tc.m, tc.k), "%v %v", tc.m, tc.k)
+	}
+	env.Runtime.MaxAlloc = 1
+	assertSameResult(t, env.CallBuiltin(goportGet, m, lisp.String("k0")), env.MapLookup(m, lisp.String("k0")), "get makes no allocation check")
+	env.Runtime.MaxAlloc = 0
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		got := env.MapLookup(m, lisp.String("k0"))
+		assertSameResult(t, env.CallBuiltin(goportGet, m, lisp.String("k0")), got)
+		assert.Equal(t, lisp.CondContextCancelled, got.Str)
+	})
+}

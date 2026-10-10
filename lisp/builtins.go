@@ -1563,9 +1563,27 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
-	v := args.Cells[2]
+	return assocMutate(env, args.Cells[0], args.Cells[1], args.Cells[2])
+}
+
+// MapPut returns what the assoc! builtin returns for (assoc! m k v): m after
+// it sets k to v, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does.  Then it refuses a nil or
+// non-map m, makes assoc!'s allocation check for a new key, and returns the
+// map's own error for a key the map refuses.  It charges no step.
+//
+// Use it where the Lisp called assoc!.  A Go builtin that fills a map it
+// just built keeps MapSetLVal, which makes none of these checks.
+func (env *LEnv) MapPut(m, k, v *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.Type == LError {
+		return lerr
+	}
+	return assocMutate(env, m, k, v)
+}
+
+// assocMutate is the body of the assoc! builtin and of LEnv.MapPut, so the
+// two cannot differ.
+func assocMutate(env *LEnv, m, k, v *LVal) *LVal {
 	if m.IsNil() {
 		return env.Errorf("first argument is nil: %v", m.Type)
 	} else if m.Type != LSortMap {
@@ -1650,7 +1668,26 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinGet(env *LEnv, args *LVal) *LVal {
-	m, k := args.Cells[0], args.Cells[1]
+	return mapGet(env, args.Cells[0], args.Cells[1])
+}
+
+// MapLookup returns what the get builtin returns for (get m k): the value,
+// () for a missing key or a nil m, or the same error from the same check.
+// It checks the evaluation's context first, as CallBuiltin does.  A non-map
+// m raises "first argument is not a map: <type>", and a key the map refuses
+// returns the map's own error.  It charges no step.
+//
+// Use it where the Lisp called get.  MapGetLVal makes none of these checks.
+func (env *LEnv) MapLookup(m, k *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.Type == LError {
+		return lerr
+	}
+	return mapGet(env, m, k)
+}
+
+// mapGet is the body of the get builtin and of LEnv.MapLookup, so the two
+// cannot differ.
+func mapGet(env *LEnv, m, k *LVal) *LVal {
 	if m.IsNil() {
 		return Nil()
 	}

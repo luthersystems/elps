@@ -857,6 +857,15 @@ shares the builtin's body after the element type check, so it makes the same
 allocation check, raises the same error and charges the same steps (one per
 complete KiB of the result). It checks the context first.
 
+**`env.MapPut(m, k, v)` and `env.MapLookup(m, k)`** share the bodies of
+`assoc!` and `get`. `MapPut` refuses a nil or non-map `m`, makes `assoc!`'s
+allocation check for a new key and returns the map's error for a refused key.
+`MapLookup` returns `()` for a missing key or a nil map and raises "first
+argument is not a map" otherwise. Both check the context first. Use them only
+where the Lisp called `assoc!` or `get`. Code that fills a map it just built
+keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
+building a list.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
