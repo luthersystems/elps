@@ -1,6 +1,6 @@
 // Copyright © 2026 The ELPS authors
 
-// Command elpsvet runs twelve Go analysis rules over this module.
+// Command elpsvet runs thirteen Go analysis rules over this module.
 // Package variables must not retain runtime values (elpsownership).
 // LVal writes require ownership (elpsfreshness).
 // Escaping source locations require a copy (elpsescape).
@@ -13,8 +13,11 @@
 // New value walkers must have an audited traversal contract (elpsvalwalker).
 // Marked immutable structs must hold only value fields (elpsmarkerfields).
 // Native payload types need a durable codec or a transient mark (elpsdurablenative).
-// Other modules can import elpsownpkg from elpsvet/ownpkg, and
-// elpsnativepayload and elpsdurablenative from elpsvet/nativepayload
+// Code in every package, package lisp included, uses the helper an elpsidiom
+// fix names (elpsidiom).
+// Other modules can import elpsownpkg from elpsvet/ownpkg, elpsbuiltinstate
+// from elpsvet/builtinstate, and elpsnativepayload and elpsdurablenative
+// from elpsvet/nativepayload
 // (configured with New and NewDurable).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
@@ -58,6 +61,8 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/elpsvet/builtinstate"
+	"github.com/luthersystems/elps/elpsvet/idiom"
 	"github.com/luthersystems/elps/elpsvet/nativepayload"
 	"github.com/luthersystems/elps/elpsvet/ownpkg"
 	"golang.org/x/tools/go/analysis"
@@ -81,7 +86,7 @@ var analyzers = []*analysis.Analyzer{
 	freshnessAnalyzer,
 	escapeAnalyzer,
 	nativepayload.Analyzer,
-	builtinStateAnalyzer,
+	builtinstate.Analyzer,
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
 	ownpkg.Analyzer,
@@ -89,6 +94,16 @@ var analyzers = []*analysis.Analyzer{
 	valWalkerAnalyzer,
 	markerFieldsAnalyzer,
 	nativepayload.DurableAnalyzer,
+	idiom.Analyzer,
+}
+
+// init makes elpsidiom report only the idioms that carry a fix.  The hints
+// stay out of the gate, because a hint rewrite needs a person to review it.
+// -elpsidiom.fixonly=false on the command line shows the hints too.
+func init() {
+	if err := idiom.Analyzer.Flags.Set("fixonly", "true"); err != nil {
+		panic(err)
+	}
 }
 
 func main() { multichecker.Main(analyzers...) }

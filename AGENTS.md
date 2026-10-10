@@ -103,11 +103,21 @@ spell a marker in the gate script or its tests; assemble it at runtime.
 - **`cmd/elpsvet/`** — Go analyzers over elps's *own* Go source (ownership,
   freshness, escape, native payload, builtin shared state, frozen packages,
   lazy reads, own package, exhaustive value switches, new value walkers, marker fields,
-  durable natives).
+  durable natives, elpsidiom fixes).
   See the `elpsvet` skill.
 - **`elpsvet/ownpkg/`** — The importable `elpsownpkg` analyzer: a library
   builtin runs in its own package (#736), so it must not evaluate code, build
   lambdas, read `Runtime.Package` or resolve a symbol it was handed.
+- **`elpsvet/builtinstate/`** — The importable `elpsbuiltinstate` analyzer:
+  a builtin must not write its receiver, a captured variable or a
+  package-level var, because a template shares the builtin with every VM.
+- **`elpsvet/idiom/`** — The importable `elpsidiom` analyzer for Go ports
+  of Lisp code: it suggests the Go-style helpers and reports mistakes in
+  their use. `make elpsvet` runs it over all of elps, package `lisp`
+  included, with `-elpsidiom.fixonly`, so only the idioms with a suggested
+  fix fail the gate (the "(fix)" rows of the IDIOMS list in
+  `elpsvet/idiom/idiom.go`). Fix a finding with
+  `go run ./cmd/elpsvet -test=false -fix ./...`.
 - **`elpsvet/nativepayload/`** — The importable `elpsnativepayload` and
   `elpsdurablenative` analyzers. Each native payload must be safe for a
   template to publish, and each native payload type needs a durable codec

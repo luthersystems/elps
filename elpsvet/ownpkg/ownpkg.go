@@ -21,7 +21,10 @@
 // func(*lisp.LEnv, *lisp.LVal) *lisp.LVal (a method matches on its explicit
 // parameters), or the captured-builtin shape func(*lisp.LEnv, *lisp.LVal,
 // *lisp.LVal) *lisp.LVal.  The match is by type, not by registration, like
-// elpsvet's elpsbuiltinstate.  From a builtin's body, a direct call to a
+// elpsvet's elpsbuiltinstate.  The function passed to a typed binding
+// (lisp.FuncE, Func1, Func2 and their siblings, see typedBindings) is a
+// builtin body too, whatever its signature: a function literal, or a
+// function declared in the same package.  From a builtin's body, a direct call to a
 // function or concrete method declared in the same package is followed into
 // that callee's body, transitively.  Registration code (a package's
 // LoadPackage, which runs with its package current on purpose) has a
@@ -157,6 +160,51 @@ func Justified(text string) bool {
 	return len(strings.Fields(rest)) >= allowMinWords
 }
 
+// typedBindings are the lisp functions that turn their last argument, a Go
+// function with typed arguments or a (value, error) result, into an
+// LBuiltin.  That argument is a builtin body.
+var typedBindings = map[string]bool{
+	"FuncE":  true,
+	"Func1":  true,
+	"Func2":  true,
+	"Func3":  true,
+	"Func1E": true,
+	"Func2E": true,
+	"Func3E": true,
+}
+
+// typedBindingBody returns the builtin body that call passes to a typed
+// binding (see typedBindings), or nil when call is not such a call.
+func typedBindingBody(info *types.Info, call *ast.CallExpr) ast.Expr {
+	if len(call.Args) == 0 {
+		return nil
+	}
+	fun := ast.Unparen(call.Fun)
+	switch idx := fun.(type) {
+	case *ast.IndexExpr:
+		fun = ast.Unparen(idx.X)
+	case *ast.IndexListExpr:
+		fun = ast.Unparen(idx.X)
+	}
+	var id *ast.Ident
+	switch f := fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return nil
+	}
+	fn, ok := info.Uses[id].(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != LispPkgPath || !typedBindings[fn.Name()] {
+		return nil
+	}
+	if fn.Signature().Recv() != nil {
+		return nil
+	}
+	return ast.Unparen(call.Args[len(call.Args)-1])
+}
+
 type lineKey struct {
 	file string
 	line int
@@ -167,6 +215,8 @@ type runState struct {
 	allow   map[lineKey]bool
 	decls   map[*types.Func]*ast.FuncDecl
 	visited map[*types.Func]bool
+	// bodies are the function literals passed to a typed binding.
+	bodies map[*ast.FuncLit]bool
 }
 
 func run(pass *analysis.Pass) (any, error) {
@@ -178,6 +228,21 @@ func run(pass *analysis.Pass) (any, error) {
 		allow:   make(map[lineKey]bool),
 		decls:   make(map[*types.Func]*ast.FuncDecl),
 		visited: make(map[*types.Func]bool),
+		bodies:  make(map[*ast.FuncLit]bool),
+	}
+	var bindings []ast.Expr
+	for _, file := range pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			if call, ok := n.(*ast.CallExpr); ok {
+				if body := typedBindingBody(pass.TypesInfo, call); body != nil {
+					bindings = append(bindings, body)
+					if lit, ok := body.(*ast.FuncLit); ok {
+						r.bodies[lit] = true
+					}
+				}
+			}
+			return true
+		})
 	}
 	for _, file := range pass.Files {
 		name := pass.Fset.Position(file.Pos()).Filename
@@ -204,6 +269,9 @@ func run(pass *analysis.Pass) (any, error) {
 					r.checkBody(x.Body, x.Name.Name, justifiedDoc(x.Doc))
 				}
 			case *ast.FuncLit:
+				if r.bodies[x] {
+					return true // checked below, as a typed binding's body
+				}
 				if tv, ok := pass.TypesInfo.Types[x]; ok {
 					if sig, ok := types.Unalias(tv.Type).(*types.Signature); ok && isBuiltinSignature(sig) {
 						r.checkBody(x.Body, "builtin", false)
@@ -213,7 +281,41 @@ func run(pass *analysis.Pass) (any, error) {
 			return true
 		})
 	}
+	for _, body := range bindings {
+		r.checkBinding(body)
+	}
 	return nil, nil
+}
+
+// checkBinding reads the body passed to a typed binding: a function literal,
+// or a function declared in this package.
+func (r *runState) checkBinding(body ast.Expr) {
+	switch b := body.(type) {
+	case *ast.FuncLit:
+		r.checkBody(b.Body, "builtin", false)
+	case *ast.Ident, *ast.SelectorExpr:
+		var id *ast.Ident
+		switch b := b.(type) {
+		case *ast.SelectorExpr:
+			id = b.Sel
+		case *ast.Ident:
+			id = b
+		}
+		fn, ok := r.pass.TypesInfo.Uses[id].(*types.Func)
+		if !ok || fn.Pkg() != r.pass.Pkg {
+			return
+		}
+		fn = fn.Origin()
+		if r.visited[fn] || isBuiltinSignature(fn.Signature()) {
+			return // already read as a builtin or a helper
+		}
+		fd := r.decls[fn]
+		if fd == nil || fd.Body == nil {
+			return
+		}
+		r.visited[fn] = true
+		r.checkBody(fd.Body, fd.Name.Name, justifiedDoc(fd.Doc))
+	}
 }
 
 func justifiedDoc(cg *ast.CommentGroup) bool {
@@ -270,8 +372,12 @@ func (r *runState) checkBody(body *ast.BlockStmt, root string, rootAllowed bool)
 	ast.Inspect(body, func(n ast.Node) bool {
 		switch x := n.(type) {
 		case *ast.FuncLit:
-			// A nested literal of builtin shape is checked on its own
-			// (run visits it); any other closure is part of this body.
+			// A nested literal of builtin shape, or a typed binding's
+			// body, is checked on its own (run visits it); any other
+			// closure is part of this body.
+			if r.bodies[x] {
+				return false
+			}
 			if tv, ok := r.pass.TypesInfo.Types[x]; ok {
 				if sig, ok := types.Unalias(tv.Type).(*types.Signature); ok && isBuiltinSignature(sig) {
 					return false

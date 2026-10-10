@@ -1,0 +1,15 @@
+package idiomcase
+
+import "github.com/luthersystems/elps/lisp"
+
+func sexpr(a, b *lisp.LVal) *lisp.LVal {
+	return lisp.Cells{a, b}.SExpr() // want `use lisp.Cells\{...\}.SExpr\(\), which builds the same s-expression`
+}
+
+func sexprVar(cells []*lisp.LVal) *lisp.LVal {
+	return lisp.SExpr(cells)
+}
+
+func sexprSlice(args *lisp.LVal) *lisp.LVal {
+	return lisp.SExpr(args.Cells[1:])
+}

@@ -99,7 +99,7 @@ func TextLoader(r Reader, name string, stream io.Reader) (Loader, error) {
 		var lval *LVal
 		for i, expr := range exprs {
 			lval = env.Eval(expr.copyWithHint(hints[i]))
-			if lval.Type == LError {
+			if lval.IsError() {
 				return lval
 			}
 		}

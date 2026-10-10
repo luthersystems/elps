@@ -1,9 +1,8 @@
 // Copyright © 2026 The ELPS authors
 
-package main
-
-// elpsbuiltinstate: no builtin may write state that outlives the call
-// (issue #680, the class behind #678).
+// Package builtinstate is the elpsbuiltinstate analyzer: no builtin may write
+// state that outlives the call (issue #680, the class behind #678).  Other
+// modules import it to run the rule over their own builtins.
 //
 // A Template approves a builtin by IDENTITY -- the Go function value it
 // wraps -- and shares that one function value with every VM it mints, for
@@ -24,7 +23,9 @@ package main
 // builtin tables), a map value or slice/array element typed lisp.LBuiltin,
 // an assignment or var declaration whose static type is lisp.LBuiltin, or
 // the operand of a lisp.LBuiltin(f) conversion; an explicitly instantiated
-// generic (F[int]) is unwrapped first.  Of
+// generic (F[int]) is unwrapped first.  The last argument of a typed binding
+// (lisp.FuncE, Func1, Func2 and their siblings, see typedBindings) is a
+// builtin too: it is the body the binding wraps, whatever its signature.  Of
 // those expressions three shapes are analysed:
 //
 //   - a function literal: its body, with every variable declared OUTSIDE the
@@ -70,6 +71,7 @@ package main
 // proof, that no builtin shares state; the runtime half of #680
 // (an opt-in shareability contract on TemplateWithBuiltinPolicy) is what
 // would close the rest.
+package builtinstate
 
 import (
 	"go/ast"
@@ -80,6 +82,9 @@ import (
 	"golang.org/x/tools/go/analysis"
 )
 
+// lispPkgPath is the import path of the core language package.
+const lispPkgPath = "github.com/luthersystems/elps/lisp"
+
 const (
 	sharedAllowMarker   = "elpsvet:allow-shared"
 	lBuiltinTypeName    = "LBuiltin"
@@ -87,7 +92,8 @@ const (
 	sharedAllowMinWords = 3
 )
 
-var builtinStateAnalyzer = &analysis.Analyzer{
+// Analyzer reports builtins that write shared state.
+var Analyzer = &analysis.Analyzer{
 	Name: "elpsbuiltinstate",
 	Doc: "flag builtins (function values registered through a lisp.LBuiltin slot) that write their" +
 		" receiver, captured variables or package-level variables -- state a template shares with" +
@@ -112,7 +118,9 @@ func justifiedAllow(text, marker string, minWords int) bool {
 	return len(strings.Fields(rest)) >= minWords
 }
 
-func justifiedSharedAllow(text string) bool {
+// JustifiedSharedAllow reports whether a comment's text is an
+// //elpsvet:allow-shared marker with a justification of at least three words.
+func JustifiedSharedAllow(text string) bool {
 	return justifiedAllow(text, sharedAllowMarker, sharedAllowMinWords)
 }
 
@@ -121,7 +129,7 @@ func hasJustifiedSharedAllow(cg *ast.CommentGroup) bool {
 		return false
 	}
 	for _, c := range cg.List {
-		if justifiedSharedAllow(c.Text) {
+		if JustifiedSharedAllow(c.Text) {
 			return true
 		}
 	}
@@ -149,7 +157,7 @@ func runBuiltinState(pass *analysis.Pass) (any, error) {
 	}
 	for _, file := range pass.Files {
 		name := pass.Fset.Position(file.Pos()).Filename
-		for line := range markerLinesMatching(pass.Fset, file, justifiedSharedAllow) {
+		for line := range markerLinesMatching(pass.Fset, file, JustifiedSharedAllow) {
 			r.allow[lineKey{name, line}] = true
 		}
 		for _, decl := range file.Decls {
@@ -187,7 +195,52 @@ func isLBuiltin(t types.Type) bool {
 	return obj.Name() == lBuiltinTypeName && obj.Pkg() != nil && obj.Pkg().Path() == lispPkgPath
 }
 
+// typedBindings are the lisp functions that turn their last argument, a Go
+// function with typed arguments or a (value, error) result, into an
+// LBuiltin.
+var typedBindings = map[string]bool{
+	"FuncE":  true,
+	"Func1":  true,
+	"Func2":  true,
+	"Func3":  true,
+	"Func1E": true,
+	"Func2E": true,
+	"Func3E": true,
+}
+
+// typedBindingBody returns the body call passes to a typed binding, or nil.
+func typedBindingBody(info *types.Info, call *ast.CallExpr) ast.Expr {
+	if len(call.Args) == 0 {
+		return nil
+	}
+	fun := ast.Unparen(call.Fun)
+	switch idx := fun.(type) {
+	case *ast.IndexExpr:
+		fun = ast.Unparen(idx.X)
+	case *ast.IndexListExpr:
+		fun = ast.Unparen(idx.X)
+	}
+	var id *ast.Ident
+	switch f := fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return nil
+	}
+	fn, ok := info.Uses[id].(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath || !typedBindings[fn.Name()] || fn.Signature().Recv() != nil {
+		return nil
+	}
+	return call.Args[len(call.Args)-1]
+}
+
 func (r *builtinStateRun) checkCall(call *ast.CallExpr) {
+	if body := typedBindingBody(r.pass.TypesInfo, call); body != nil {
+		r.checkBuiltin(body)
+		return
+	}
 	if tv, ok := r.pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() {
 		if isLBuiltin(tv.Type) && len(call.Args) == 1 {
 			r.checkBuiltin(call.Args[0]) // lisp.LBuiltin(f)
@@ -480,4 +533,43 @@ func fromSyncAtomic(t types.Type) bool {
 	}
 	named, ok := types.Unalias(t).(*types.Named)
 	return ok && named.Obj().Pkg() != nil && named.Obj().Pkg().Path() == syncAtomicPkgPath
+}
+
+// markerLinesMatching returns the lines a matching marker comment covers:
+// its own line, and the next line when the comment stands alone.  A trailing
+// marker covers only the line it trails.
+func markerLinesMatching(fset *token.FileSet, file *ast.File, match func(text string) bool) map[int]bool {
+	code := codeLines(fset, file)
+	lines := make(map[int]bool)
+	for _, cg := range file.Comments {
+		for _, c := range cg.List {
+			if !match(c.Text) {
+				continue
+			}
+			line := fset.Position(c.Pos()).Line
+			lines[line] = true
+			if !code[line] {
+				lines[line+1] = true
+			}
+		}
+	}
+	return lines
+}
+
+// codeLines reports which lines of file carry a non-comment token.
+func codeLines(fset *token.FileSet, file *ast.File) map[int]bool {
+	lines := make(map[int]bool)
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		switch n.(type) {
+		case *ast.CommentGroup, *ast.Comment:
+			return false
+		}
+		lines[fset.Position(n.Pos()).Line] = true
+		lines[fset.Position(n.End()).Line] = true
+		return true
+	})
+	return lines
 }

@@ -589,7 +589,7 @@ func comparePairKeyStr(a, b *LVal) int {
 func sortedMapEntries(m Map) *LVal {
 	cells := make([]*LVal, m.Len())
 	lerr := m.Entries(cells)
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return QExpr(cells)

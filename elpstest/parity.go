@@ -218,7 +218,7 @@ func (p ParityCheck) side(t testing.TB, legacy bool, c ParityCase) parityOutcome
 }
 
 func compareOutcome(what string, legacy, native *lisp.LVal) string {
-	if (legacy.Type == lisp.LError) != (native.Type == lisp.LError) {
+	if (legacy.IsError()) != (native.IsError()) {
 		return fmt.Sprintf("%s: legacy %s, native %s", what, renderOutcome(legacy), renderOutcome(native))
 	}
 	if renderOutcome(legacy) != renderOutcome(native) {
@@ -230,7 +230,7 @@ func compareOutcome(what string, legacy, native *lisp.LVal) string {
 // renderOutcome renders a value, or an error as its condition and message
 // (not its stack, which names different functions on each side).
 func renderOutcome(v *lisp.LVal) string {
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return fmt.Sprintf("error[%s] %q", v.Str, (*lisp.ErrorVal)(v).ErrorMessage())
 	}
 	return v.String()

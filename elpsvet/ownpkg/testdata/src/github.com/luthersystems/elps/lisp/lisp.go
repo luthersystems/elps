@@ -31,3 +31,21 @@ func builtinEval(env *LEnv, args *LVal) *LVal {
 	_ = env.Runtime.Package.Name
 	return env.Eval(args)
 }
+
+type ArgDecoder[T any] struct{}
+
+func StringArg(what string) ArgDecoder[string] { return ArgDecoder[string]{} }
+func ValueArg() ArgDecoder[*LVal]              { return ArgDecoder[*LVal]{} }
+
+func FuncE(f func(env *LEnv, args *LVal) (*LVal, error)) LBuiltin { return nil }
+func Func1[A any](da ArgDecoder[A], f func(env *LEnv, a A) *LVal) LBuiltin {
+	return nil
+}
+func Func2[A, B any](da ArgDecoder[A], db ArgDecoder[B], f func(env *LEnv, a A, b B) *LVal) LBuiltin {
+	return nil
+}
+
+func Func1E[A any, R any](f func(env *LEnv, a A) (R, error)) LBuiltin { return nil }
+func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
+	return nil
+}

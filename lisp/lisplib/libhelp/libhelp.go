@@ -96,7 +96,7 @@ func QuerySymbol(env *lisp.LEnv, sym string) (*SymbolDoc, error) {
 			}
 		}
 		v := pkg.Get(lisp.Symbol(symName))
-		if v.Type == lisp.LError {
+		if v.IsError() {
 			return nil, fmt.Errorf("symbol not found: %s", sym)
 		}
 		return symbolDocFromLVal(symName, v, pkg.SymbolDoc(symName)), nil
@@ -232,7 +232,7 @@ func queryPackageSymbols(pkg *lisp.Package) []SymbolDoc {
 	var syms []SymbolDoc
 	for _, exsym := range pkg.Externals() {
 		v := pkg.Get(lisp.Symbol(exsym))
-		if v.Type == lisp.LError {
+		if v.IsError() {
 			continue
 		}
 		syms = append(syms, *symbolDocFromLVal(exsym, v, pkg.SymbolDoc(exsym)))
@@ -315,7 +315,7 @@ func CheckMissing(env *lisp.LEnv) []MissingDoc {
 			if v.Type == lisp.LFun && v.Docstring() == "" && pkg.SymbolDoc(sym) == "" {
 				missing = append(missing, MissingDoc{Kind: v.FunType.String(), Name: qualName})
 			}
-			if v.Type != lisp.LFun && v.Type != lisp.LError {
+			if v.Type != lisp.LFun && !v.IsError() {
 				if pkg.SymbolDoc(sym) == "" {
 					missing = append(missing, MissingDoc{Kind: lisp.GetType(v).Str, Name: qualName})
 				}
@@ -418,7 +418,7 @@ func builtinHelpPackage(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func builtinPackageSymbols(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	arg := args.ReqArg(env, 0)
-	if arg.Type == lisp.LError {
+	if arg.IsError() {
 		return arg
 	}
 	name, lerr := packageNameArg(env, arg)

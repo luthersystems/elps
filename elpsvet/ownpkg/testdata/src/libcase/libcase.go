@@ -115,3 +115,52 @@ func builtinDocAllowed(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func notBuiltin(env *lisp.LEnv) {
 	env.Eval(lisp.Nil())
 }
+
+// The body passed to a typed binding is a builtin body, whatever its
+// signature.
+var builtinFuncE = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	return env.Eval(args), nil // want `builtin calls env.Eval`
+})
+
+var builtinFunc1 = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, s string) *lisp.LVal {
+	return env.CallGlobal(s) // want `builtin calls env.CallGlobal on a name`
+})
+
+var builtinFunc1Value = lisp.Func1(lisp.ValueArg(), func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
+	return env.GetFun(v) // want `builtin calls env.GetFun on a symbol`
+})
+
+var builtinFunc2Decl = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), typedBody)
+
+func typedBody(env *lisp.LEnv, a, b string) *lisp.LVal {
+	return env.Get(lisp.Symbol(a)) // want `typedBody calls env.Get on a symbol`
+}
+
+var builtinFuncEDecl = lisp.FuncE(errorBody)
+
+func errorBody(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	return env.InPackage(args), nil // want `errorBody calls env.InPackage`
+}
+
+// A clean typed body reports nothing.
+var builtinFuncEClean = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	return env.Get(lisp.Symbol("json:null")), nil
+})
+
+// A FuncE body nested in a builtin is reported once.
+func builtinNested(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	inner := lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+		return env.Eval(args), nil // want `builtin calls env.Eval`
+	})
+	return inner(env, args)
+}
+
+var builtinFunc1E = lisp.Func1E(func(env *lisp.LEnv, s string) (string, error) {
+	return env.CallGlobal(s).Str, nil // want `builtin calls env.CallGlobal on a name`
+})
+
+var builtinFunc2E = lisp.Func2E(twoArgs)
+
+func twoArgs(env *lisp.LEnv, a string, n int) (*lisp.LVal, error) {
+	return env.Lambda(lisp.Nil(), nil), nil // want `twoArgs calls env.Lambda`
+}

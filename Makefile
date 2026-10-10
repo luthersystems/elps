@@ -173,11 +173,15 @@ static-checks: check-golangci-version check-golangci-config
 # no native payload is minted without a type a template may publish
 # (cmd/elpsvet/nativepayload.go -- an admitted payload is shared by every VM
 # the template mints), and no registered builtin writes its receiver,
-# captured variables or package-level state (cmd/elpsvet/builtinstate.go,
+# captured variables or package-level state (elpsvet/builtinstate/builtinstate.go,
 # issue #680 -- a template shares the builtin's function value too). Package
 # table writes must go through the frozen-package gate (elpsfrozenpackage),
 # and lazily filled tables are read only through their accessors (elpslazyread).
 # No library builtin depends on which package is current (elpsownpkg, #736).
+# Code in every package, package lisp included, uses the helper an elpsidiom
+# fix names: elpsvet sets -elpsidiom.fixonly, so the hints (ArgReader,
+# NativeValue, ...) do not fail the gate.  In package lisp the analyzer
+# reports only the fixes, and it leaves a helper's own body unchanged.
 # The package list is ./..., so there is no hand-scoped
 # list for native construction sites to drift out of.
 #

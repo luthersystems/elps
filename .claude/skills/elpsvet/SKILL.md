@@ -20,7 +20,7 @@ Use when:
   or resolves a symbol it was handed (`elpsownpkg`: take a value, qualify the
   name, or turn it into a macro over core forms).
 
-## The twelve rules
+## The thirteen rules
 
 | Analyzer | File | Flags | Suppression marker |
 |----------|------|-------|--------------------|
@@ -28,7 +28,7 @@ Use when:
 | `elpsfreshness` | `freshness.go`, `alias.go` | `LVal` field write on a value the function did not construct, incl. via a local slice alias (#333/#334, #369/#371) | `//elps:mutates <reason>` |
 | `elpsescape` | `escape.go` | runtime-owned `*token.Location` stored uncopied into an escaping value (#375) | `//elps:aliases <reason>` |
 | `elpsnativepayload` | `elpsvet/nativepayload/nativepayload.go` (importable) | native payload whose type a template could not publish safely | `//elpsvet:allow-native <≥3-word reason>` |
-| `elpsbuiltinstate` | `builtinstate.go` | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
+| `elpsbuiltinstate` | `elpsvet/builtinstate/builtinstate.go` (importable) | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
 | `elpsfrozenpackage` | `frozenpackage.go` | a write to `Package` tables or a `packageBase` field outside the audited write paths | allowlist row in `packageWriteFunctions` (no marker) |
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
@@ -36,6 +36,7 @@ Use when:
 | `elpsvalwalker` | `valwalker.go` | a function dispatches on `lisp.LType` and recurs or pushes child values in a loop | in elps: audited `pkgpath.FuncName` row in `valueWalkerFunctions`; in another module: `//elpsvet:allow-valwalker <≥3-word reason>` in the declared function's doc comment (ignored inside elps) |
 | `elpsmarkerfields` | `markerfields.go` | a struct carrying `templatepolicy.Marker` whose fields reach a map, slice, pointer, func, chan, interface, `uintptr`, `unsafe.Pointer` or type parameter, through nested structs and arrays; covers types in function bodies, `type T U` and anonymous struct literals (luthersystems/elps#778) | `//elpsvet:allow-marker <≥3-word reason>` on the type doc, or on a field line or the line above (any nesting depth) |
 | `elpsdurablenative` | `elpsvet/nativepayload/durable.go` (importable) | a native payload type with no visible package-level `libjson.DurableCodec[T]` value and no transient mark; a type-parameter payload; a pointer or unlisted codec value | a documented `TransientNative()` method on the type; for a type of another module, `//elpsvet:transient <reason>` at one construction |
+| `elpsidiom` | `elpsvet/idiom/idiom.go` (importable) | in every package, package `lisp` included, an idiom with a suggested fix (the "(fix)" rows of the IDIOMS list in the package doc); elpsvet sets `-elpsidiom.fixonly`, so hints and mistakes are not reported. In package `lisp` a fix is not made in a function that the new helper reaches, so a helper does not call itself | `//elpsvet:keep-idiom <reason>` on the line or the line above, for a hot site where the helper measures slower; otherwise apply the fix with `go run ./cmd/elpsvet -test=false -fix ./...` |
 
 The header comment of each file is the full design rationale — read it before
 changing a rule. `elpsvet/nativepayload/nativepayload.go`'s header is the authority on the payload
@@ -124,7 +125,10 @@ closure captures. #678 was a setter builtin registered as a method value
   `lisp.Fun`, `FunInPackage`, `Macro*`, `SpecialOp*`, `RegisterDefault*`,
   `libschema.NewValidator*`), a struct field (keyed or positional), a map value
   or slice element, a variable of that type, or a `lisp.LBuiltin(f)` conversion.
-  It matches by type, so there's no constructor-name list to drift.
+  It matches by type, so there's no constructor-name list to drift. The
+  last argument of a typed binding (`lisp.FuncE`, `Func1`, `Func2`, `Func3`,
+  `Func1E`, `Func2E`, `Func3E`) is a builtin too, whatever its signature;
+  `elpsownpkg` reads it the same way.
 - **What it reads:** a function literal's body (anything declared outside it is
   captured), a same-package method value's body with the receiver tracked, or a
   plain function's body for package-level writes.
@@ -145,7 +149,7 @@ closure captures. #678 was a setter builtin registered as a method value
   `elpsvet:allow` nor `allow-native` collides with it.
 - The runtime half of #680 (an opt-in shareability contract on
   `TemplateWithBuiltinPolicy`) isn't built. Fixtures:
-  `testdata/src/builtinstate`.
+  `elpsvet/builtinstate/testdata/src/builtinstate`.
 
 ## Frozen packages (`elpsfrozenpackage`)
 
@@ -281,6 +285,23 @@ run time to the build. Each native payload type is one of:
   and the embedder packages under `example.com/embed`).
 
 ## Embedder configuration
+
+`elpsvet/idiom` holds `elpsidiom`, an analyzer for Go ports of Lisp code.
+It reports, with category `info`, code that a Go-style helper states more
+plainly. Fixes: `IsError`, `IsSymbol` (a `x != nil` test before the
+compare joins the call), `Cells` (`List`, `SExpr`, `Vector`, and the
+`Cells` field in package `lisp`), `Vector`, `env.CheckAlloc`, `env.MapOf`, `lisp.MapOf`,
+`SortedMapOf`, `MapPut`, `MapLookup`, `ToString`, `FormatString`. Hints:
+`Keys`, `All`, `Field`, `ArgReader`, `FunInPackageDoc`, `SeqCells`,
+`NativeValue`, `FuncE`, `Func1E`..`Func3E`, `MapRange`, `StringList`,
+`ArrayParts` and `SetArrayCells` (array layout outside package `lisp`).
+It reports, with category `error`, an error wrap that hides a Lisp
+condition, a `*lisp.ErrorVal` result, `ResultAs` over a result of varying
+type, a `Func*E` builtin registered with the wrong formals and an
+`env.MapOf` argument of a type that `MapOf` does not accept. `make
+elpsvet` runs it with `-elpsidiom.fixonly`: only the fixes fail elps's gate,
+because elps's builtins keep their error messages. Another module runs it
+without the flag to see the hints and mistakes too.
 
 `elpsvet/nativepayload` is importable. `New(Config)` and
 `NewDurable(DurableConfig)` build the two rules for another module. A zero

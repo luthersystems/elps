@@ -78,3 +78,33 @@ func BenchmarkDurableFunctionName(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkDurableDecodeVectors loads a list of 1000 small vectors and 100
+// 2x3 arrays, so allocs/op shows the cost of each decoded array.
+func BenchmarkDurableDecodeVectors(b *testing.B) {
+	env := lisp.NewEnv(nil)
+	env.Runtime.Reader = parser.NewReader()
+	for _, r := range []*lisp.LVal{lisp.InitializeUserEnv(env), lisplib.LoadRuntimeLibrary(env), env.InPackage(lisp.String(lisp.DefaultUserPackage))} {
+		if r.Type == lisp.LError {
+			b.Fatal(r)
+		}
+	}
+	cells := make([]*lisp.LVal, 0, 1100)
+	for i := range 1000 {
+		cells = append(cells, lisp.Vector([]*lisp.LVal{lisp.Int(i), lisp.Int(i + 1), lisp.Int(i + 2)}))
+	}
+	for i := range 100 {
+		six := []*lisp.LVal{lisp.Int(i), lisp.Int(1), lisp.Int(2), lisp.Int(3), lisp.Int(4), lisp.Int(5)}
+		cells = append(cells, lisp.Array(lisp.QExpr([]*lisp.LVal{lisp.Int(2), lisp.Int(3)}), six))
+	}
+	data, err := libjson.DumpDurable(env, lisp.QExpr(cells), nil)
+	if err != nil {
+		b.Fatal(err)
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		if _, err := libjson.LoadDurable(env, data, nil); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

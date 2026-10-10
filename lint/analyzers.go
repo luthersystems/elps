@@ -2663,7 +2663,7 @@ func validPackageLiteral(v *lisp.LVal) bool {
 		return false
 	}
 	exprs, err := rdparser.New(token.NewScannerString("", v.Str)).ParseProgram()
-	return err == nil && len(exprs) == 1 && exprs[0].Type == lisp.LSymbol && exprs[0].Str == v.Str
+	return err == nil && len(exprs) == 1 && exprs[0].IsSymbol(v.Str)
 }
 
 // AnalyzerLispPackageSeal diagnoses statically recognizable writes to the

@@ -64,7 +64,8 @@ var freshConstructors = map[string]bool{
 	"Symbol": true, "Native": true, "Value": true,
 	"SExpr": true, "QExpr": true, "Vector": true, "MakeVector": true,
 	"Array": true, "SortedMap": true, "SortedMapFromData": true,
-	"FunRef": true, "Fun": true, "FunInPackage": true,
+	"StringList": true,
+	"FunRef": true, "Fun": true, "FunInPackage": true, "FunInPackageDoc": true,
 	"Macro": true, "MacroInPackage": true,
 	"SpecialOp": true, "SpecialOpInPackage": true,
 	"Error": true, "ErrorCondition": true,
@@ -84,6 +85,13 @@ var freshLValMethods = map[string]bool{
 	"detach": true,
 }
 
+// freshCellsMethods are methods on lisp.Cells whose result is a freshly
+// allocated LVal header (lisp/cells.go: QExpr, SExpr and Vector of the
+// receiver).
+var freshCellsMethods = map[string]bool{
+	"List": true, "SExpr": true, "Vector": true,
+}
+
 // freshLEnvMethods are methods on *lisp.LEnv whose result is a freshly
 // allocated error LVal (lisp/env.go builds a new &LVal{} in each).
 var freshLEnvMethods = map[string]bool{
@@ -94,6 +102,7 @@ var freshLEnvMethods = map[string]bool{
 const mutatesMarker = "elps:mutates"
 
 func runFreshness(pass *analysis.Pass) (any, error) {
+	checkTypedResults(pass)
 	for _, file := range pass.Files {
 		ann := mutatesLines(pass.Fset, file)
 		for _, decl := range file.Decls {
@@ -170,6 +179,23 @@ func markerLinesMatching(fset *token.FileSet, file *ast.File, match func(text st
 		}
 	}
 	return lines
+}
+
+// justifiedAllow reports whether a comment's text is marker followed by
+// whitespace and at least minWords words.
+func justifiedAllow(text, marker string, minWords int) bool {
+	text = strings.TrimPrefix(text, "//")
+	text = strings.TrimPrefix(text, "/*")
+	text = strings.TrimSuffix(text, "*/")
+	text = strings.TrimSpace(text)
+	rest, ok := strings.CutPrefix(text, marker)
+	if !ok || rest == "" {
+		return false
+	}
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return false // a different marker sharing the prefix
+	}
+	return len(strings.Fields(rest)) >= minWords
 }
 
 // codeLines reports which lines of file carry a non-comment token, so a
@@ -458,6 +484,9 @@ func isFreshCall(pass *analysis.Pass, call *ast.CallExpr) bool {
 	}
 	if recvIsLisp(fn, "LEnv") {
 		return freshLEnvMethods[fn.Name()]
+	}
+	if recvIsLisp(fn, "Cells") {
+		return freshCellsMethods[fn.Name()]
 	}
 	return false
 }

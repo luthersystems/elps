@@ -63,3 +63,12 @@ func TestOwnershipCachedSourceBoundaryDrift(t *testing.T) {
 		})
 	}
 }
+
+// TestOwnershipMarkerIgnoresAllowShared checks that the ownership rule does
+// not read elpsbuiltinstate's //elpsvet:allow-shared as its own marker.
+func TestOwnershipMarkerIgnoresAllowShared(t *testing.T) {
+	cg := &ast.CommentGroup{List: []*ast.Comment{{Text: "//elpsvet:allow-shared guarded by the mutex"}}}
+	if allowed(cg) {
+		t.Error("ownership marker matched allow-shared")
+	}
+}

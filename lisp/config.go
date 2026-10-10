@@ -120,7 +120,7 @@ func WithLoader(fn Loader) Config {
 		func() {
 			defer func() {
 				e := env.InPackage(Symbol(pkg))
-				if e.Type == LError && lerr.Type != LError {
+				if e.IsError() && !lerr.IsError() {
 					lerr = e
 				}
 			}()

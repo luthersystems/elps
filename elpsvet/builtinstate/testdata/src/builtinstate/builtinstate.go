@@ -212,3 +212,43 @@ func RegisterMore() {
 	}
 	_, _ = b, b2
 }
+
+var hits int
+
+// The body passed to a typed binding is a builtin, whatever its signature.
+var typedFuncE = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	hits++ // want `builtin writes package-level var hits`
+	return args, nil
+})
+
+var typedFunc1 = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, s string) *lisp.LVal {
+	registry[s] = 1 // want `builtin writes package-level var registry`
+	return nil
+})
+
+var typedFunc2 = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), typedDecl)
+
+func typedDecl(env *lisp.LEnv, a, b string) *lisp.LVal {
+	calls = len(a) // want `typedDecl writes package-level var calls`
+	return nil
+}
+
+func RegisterTyped(s *Service) lisp.LBuiltin {
+	n := 0
+	return lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+		n++ // want `builtin writes captured var n`
+		return args, nil
+	})
+}
+
+var typedMethod = lisp.FuncE((&Service{}).ErrorMethod)
+
+func (s *Service) ErrorMethod(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	s.n = 1 // want `ErrorMethod writes receiver s`
+	return args, nil
+}
+
+var typedFunc1E = lisp.Func1E(func(env *lisp.LEnv, s string) (int, error) {
+	calls = len(s) // want `builtin writes package-level var calls`
+	return calls, nil
+})

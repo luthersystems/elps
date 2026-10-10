@@ -31,3 +31,22 @@ func BenchmarkJoin(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkJoinStrings is Join over n short Go strings.
+func BenchmarkJoinStrings(b *testing.B) {
+	for _, n := range []int{10, 100, 1000} {
+		b.Run(strconv.Itoa(n), func(b *testing.B) {
+			env := lisp.NewEnv(nil)
+			parts := make([]string, n)
+			for i := range parts {
+				parts[i] = fmt.Sprintf("item%d", i)
+			}
+			b.ReportAllocs()
+			for b.Loop() {
+				if v := Join(env, parts, ", "); v.IsError() {
+					b.Fatal(v)
+				}
+			}
+		})
+	}
+}

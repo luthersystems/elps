@@ -6,9 +6,12 @@ package lisp
 // same "<what> is not a <type>: <actual type>" errors builtins write by hand
 // (luthersystems/elps#745).  Error text is program output -- a phylum can
 // catch and return it, and every endorsing peer must produce the same bytes
-// -- so ArgReader never picks a message: the caller passes the subject
+// -- so an ArgReader read never picks a subject: the caller passes it
 // ("first argument", "name") exactly as its hand-written Errorf spelled it,
-// or a whole format to Typed.
+// or a whole format to Typed.  Func1E, Func2E and Func3E pass the standard
+// subject for the argument's position ("argument", "first argument", ...),
+// for ports that keep only the error condition; elps's own builtins do not
+// use them.
 //
 // The first failure is recorded and every later read returns a zero value
 // without checking, so a builtin reads all its arguments and then checks Err
@@ -52,7 +55,7 @@ func (a *ArgReader) Value(i int) *LVal {
 		return Nil()
 	}
 	v := a.args.ReqArg(a.env, i)
-	if v.Type == LError {
+	if v.IsError() {
 		a.err = v
 		return Nil()
 	}
@@ -105,6 +108,51 @@ func (a *ArgReader) optNamed(i int, t LType, what, noun string) *LVal {
 // records "<what> is not a string: <type>".
 func (a *ArgReader) String(i int, what string) string {
 	return a.named(i, LString, what, "a string").Str
+}
+
+// Int returns required argument i, which must be an integer; otherwise it
+// records "<what> is not an integer: <type>".
+func (a *ArgReader) Int(i int, what string) int {
+	return a.named(i, LInt, what, "an integer").Int
+}
+
+// Bytes returns required argument i, which must be bytes; otherwise it
+// records "<what> is not bytes: <type>".  The result shares the argument's
+// storage, so treat it as read-only.
+func (a *ArgReader) Bytes(i int, what string) []byte {
+	v := a.named(i, LBytes, what, "bytes")
+	if v.Type != LBytes {
+		return nil
+	}
+	return v.Bytes()
+}
+
+// Map returns required argument i, which must be a sorted-map; otherwise it
+// records "<what> is not a map: <type>".
+func (a *ArgReader) Map(i int, what string) *LVal {
+	return a.named(i, LSortMap, what, "a map")
+}
+
+// Fun returns required argument i, which must be a function; otherwise it
+// records "<what> is not a function: <type>".
+func (a *ArgReader) Fun(i int, what string) *LVal {
+	return a.named(i, LFun, what, "a function")
+}
+
+// Seq returns the cells of required argument i, which must be a list or a
+// one-dimensional vector; otherwise it records "<what> is not a proper
+// sequence: <type>".  The cells share the argument's storage, so treat them
+// as read-only.
+func (a *ArgReader) Seq(i int, what string) []*LVal {
+	v := a.Value(i)
+	if a.err != nil {
+		return nil
+	}
+	if !isSeq(v) {
+		a.err = a.env.Errorf("%s is not a proper sequence: %v", what, v.Type)
+		return nil
+	}
+	return seqCells(v)
 }
 
 // Opt returns &optional or &key argument i, or nil when it was not supplied

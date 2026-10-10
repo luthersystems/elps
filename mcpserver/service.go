@@ -1925,7 +1925,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 
 	// Load and evaluate the test file.
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lisp.GoError(lerr) != nil {
+	if lerr.IsError() {
 		return nil, TestResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
 	}
 	autoImportTesting(env)
@@ -1947,7 +1947,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			continue
 		}
 		result := env.Eval(expr)
-		if result.Type == lisp.LError {
+		if result.IsError() {
 			return nil, TestResponse{
 				Path:  path,
 				Tests: []TestResult{{Name: "<load>", Passed: false, Error: lvalErrorString(result)}},
@@ -1975,8 +1975,8 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			results = append(results, tr)
 			continue
 		}
-		result := env.Eval(lisp.SExpr([]*lisp.LVal{test.Fun}))
-		if result == nil || result.Type == lisp.LError {
+		result := env.Eval(lisp.Cells{test.Fun}.SExpr())
+		if result == nil || result.IsError() {
 			tr.Passed = false
 			if result != nil {
 				tr.Error = lvalErrorString(result)
@@ -2010,11 +2010,11 @@ func (s *service) newTestEnv(ctx context.Context) (requestEnv, error) {
 	env.Runtime.Reader = parser.NewReader()
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	rc := lisp.InitializeUserEnv(env)
-	if lisp.GoError(rc) != nil {
+	if rc.IsError() {
 		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("env init: %w", lisp.GoError(rc))
 	}
 	rc = lisplib.LoadLibrary(env)
-	if lisp.GoError(rc) != nil {
+	if rc.IsError() {
 		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("load library: %w", lisp.GoError(rc))
 	}
 	return requestEnv{env: env, release: noopRelease}, nil
@@ -2138,7 +2138,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 	response := EvalResponse{}
 	fail := func(v *lisp.LVal) { response.Error = output.errorRenderer().Render(v) }
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		fail(lerr)
 		return response
 	}
@@ -2149,7 +2149,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 		var last *lisp.LVal
 		for _, expr := range exprs {
 			last = env.EvalContext(ctx, expr)
-			if last == nil || last.Type == lisp.LError {
+			if last == nil || last.IsError() {
 				fail(last)
 				break
 			}
@@ -2584,14 +2584,14 @@ func isInPackageExpr(expr *lisp.LVal) bool {
 		return false
 	}
 	head := expr.Cells[0]
-	return head.Type == lisp.LSymbol && head.Str == "in-package"
+	return head.IsSymbol("in-package")
 }
 
 func autoImportTesting(env *lisp.LEnv) {
-	env.Eval(lisp.SExpr([]*lisp.LVal{
+	env.Eval(lisp.Cells{
 		lisp.Symbol("use-package"),
 		lisp.String("testing"),
-	}))
+	}.SExpr())
 }
 
 func lvalErrorString(v *lisp.LVal) string {

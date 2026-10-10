@@ -135,7 +135,7 @@ func (d *directDecoder) array() *lisp.LVal {
 	d.skipSpace()
 	if d.b[d.i] == ']' {
 		d.i++
-		return lisp.Array(nil, []*lisp.LVal{})
+		return lisp.Cells{}.Vector()
 	}
 	for {
 		v := d.value()
@@ -159,7 +159,7 @@ func (d *directDecoder) array() *lisp.LVal {
 	copy(cells, d.stack[base:])
 	clear(d.stack[base:])
 	d.stack = d.stack[:base]
-	return lisp.Array(nil, cells)
+	return lisp.Vector(cells)
 }
 
 func (d *directDecoder) reject(err error) {
@@ -255,7 +255,7 @@ func (d *directDecoder) number() *lisp.LVal {
 	}
 	if d.opts.ExactIntegers {
 		v := loadNumber(text)
-		if v.Type == lisp.LError {
+		if v.IsError() {
 			d.reject(lisp.GoError(v))
 			return nil
 		}

@@ -669,7 +669,7 @@ func (e *Engine) WaitIfPaused(env *lisp.LEnv, expr *lisp.LVal) lisp.DebugAction 
 	if bp != nil {
 		reason = StopBreakpoint
 	}
-	if expr.Type == lisp.LError {
+	if expr.IsError() {
 		reason = StopException
 	}
 

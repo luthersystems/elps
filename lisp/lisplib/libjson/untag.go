@@ -116,7 +116,7 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if v.Type == lisp.LSortMap {
 			return w.object(v, depth)
 		}
-		array, arrayErr := typedArrayParts(v)
+		array, arrayErr := checkArray(v)
 		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil || len(dims) != 1 {
 			return nil, errors.New("typed json: input is not a vector")
@@ -149,7 +149,7 @@ func vectorCells(v *lisp.LVal) ([]*lisp.LVal, error) {
 	if v == nil || v.Type != lisp.LArray {
 		return nil, errors.New("typed json: tag payload is not a vector")
 	}
-	array, arrayErr := typedArrayParts(v)
+	array, arrayErr := checkArray(v)
 	dims, cells, err := array.dims, array.cells, arrayErr
 	if err != nil || len(dims) != 1 {
 		return nil, errors.New("typed json: tag payload is not a vector")
@@ -235,16 +235,11 @@ func restoreArray(dims, cells []*lisp.LVal) (*lisp.LVal, error) {
 	if len(dims) == 1 {
 		return nil, errors.New("typed json: vector written as a tagged array")
 	}
-	shape := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr(dims), lisp.QExpr(cells)}}
-	{
-		array, arrayErr := typedArrayParts(shape)
-		_, _, err := array.dims, array.cells, arrayErr
-		if err != nil {
-			return nil, err
-		}
+	if err := checkArrayShape(dims, cells); err != nil {
+		return nil, err
 	}
 	v := lisp.Array(lisp.QExpr(dims), cells)
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return nil, errors.New("typed json: invalid array dimensions")
 	}
 	return v, nil
@@ -252,7 +247,7 @@ func restoreArray(dims, cells []*lisp.LVal) (*lisp.LVal, error) {
 
 func (w *untagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	entries := v.MapEntries()
-	if entries.Type == lisp.LError {
+	if entries.IsError() {
 		return nil, lisp.GoError(entries)
 	}
 	if err := w.add(2 + max(0, len(entries.Cells)-1)); err != nil {
@@ -284,7 +279,7 @@ func (w *untagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if rc := out.MapSetLVal(k, inner); rc.Type == lisp.LError {
+		if rc := out.MapSetLVal(k, inner); rc.IsError() {
 			return nil, lisp.GoError(rc)
 		}
 	}

@@ -4,6 +4,7 @@ package lisp
 
 import (
 	"cmp"
+	"iter"
 	"slices"
 	"sync"
 )
@@ -15,6 +16,15 @@ type MapKey struct {
 	Str  string
 	Int  int
 	Type LType
+}
+
+// Name returns the spelling of a string or symbol key and true, and "" and
+// false for an int key.
+func (k MapKey) Name() (string, bool) {
+	if k.Type == LString || k.Type == LSymbol {
+		return k.Str, true
+	}
+	return "", false
 }
 
 type mapRangeEntry struct {
@@ -51,8 +61,8 @@ func (env *LEnv) MapRange(m *LVal, fn func(key MapKey, val *LVal) bool) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
-		return env.Errorf("%s", msg)
+	if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
+		return lerr
 	}
 	return m.mapRange(fn)
 }
@@ -93,7 +103,7 @@ func (v *LVal) mapRange(fn func(key MapKey, val *LVal) bool) *LVal {
 	default:
 		n := md.Len()
 		entries := make([]*LVal, n)
-		if r := md.Entries(entries); r.Type == LError {
+		if r := md.Entries(entries); r.IsError() {
 			return r
 		}
 		for _, e := range entries[:n] {
@@ -118,17 +128,126 @@ func (v *LVal) mapRange(fn func(key MapKey, val *LVal) bool) *LVal {
 }
 
 func compareMapRangeEntries(a, b mapRangeEntry) int {
-	ai, bi := a.key.Type == LInt, b.key.Type == LInt
+	return compareMapKeyValues(a.key, b.key)
+}
+
+// compareMapKeyValues orders keys as MapKeys does: int keys first by value, then
+// string and symbol keys by spelling.
+func compareMapKeyValues(a, b MapKey) int {
+	ai, bi := a.Type == LInt, b.Type == LInt
 	switch {
 	case ai && bi:
-		return cmp.Compare(a.key.Int, b.key.Int)
+		return cmp.Compare(a.Int, b.Int)
 	case ai:
 		return -1
 	case bi:
 		return 1
 	}
-	if c := cmp.Compare(a.key.Str, b.key.Str); c != 0 {
+	if c := cmp.Compare(a.Str, b.Str); c != 0 {
 		return c
 	}
-	return cmp.Compare(a.key.Type, b.key.Type)
+	return cmp.Compare(a.Type, b.Type)
+}
+
+// All returns an iterator over the entries of the sorted-map v, in the order
+// of MapRange: int keys first by value, then string and symbol keys by
+// spelling.  For any other value it yields nothing.  Breaking out of the
+// loop early is safe.
+//
+//	for k, val := range m.All() { ... }
+//
+// All makes no check and charges no step.  Use it after a check that v is a
+// map, or where the Lisp made none; where the Lisp called keys, use
+// LEnv.MapRange, which makes keys' checks.  It shares MapRange's recycled
+// buffer, and it loads every lazy value of a map a template built.  A
+// custom backing (NewMapData) that fails ends the loop.
+func (v *LVal) All() iter.Seq2[MapKey, *LVal] {
+	return func(yield func(MapKey, *LVal) bool) {
+		if v == nil || v.Type != LSortMap {
+			return
+		}
+		v.mapRange(yield)
+	}
+}
+
+// Keys returns an iterator over the keys of the sorted-map v, in the order of
+// All.  For any other value it yields nothing, where MapKeys panics.
+//
+//	for k := range m.Keys() {
+//		if name, ok := k.Name(); ok && strings.HasPrefix(name, "$") { ... }
+//	}
+//
+// Keys reads keys only: it loads no lazy value and builds no list.  It
+// makes no check and charges no step.  Breaking out of the loop early is
+// safe.  A custom backing (NewMapData) that fails ends the loop.
+func (v *LVal) Keys() iter.Seq[MapKey] {
+	return func(yield func(MapKey) bool) {
+		if v == nil || v.Type != LSortMap {
+			return
+		}
+		v.mapKeyRange(yield)
+	}
+}
+
+// mapKeyPool recycles mapKeyRange's ordering buffers.  A buffer holds
+// nothing between uses.
+var mapKeyPool = sync.Pool{New: func() any { return new([]MapKey) }}
+
+// mapKeyRange is Keys's walk over a sorted-map v.  It reads the keys of the
+// interpreter's backings without their values.
+func (v *LVal) mapKeyRange(fn func(key MapKey) bool) {
+	md := v.Map()
+	if md == nil || md.mapBacking == nil {
+		return
+	}
+	bufp, ok := mapKeyPool.Get().(*[]MapKey)
+	if !ok {
+		bufp = new([]MapKey)
+	}
+	buf := (*bufp)[:0]
+	defer func() {
+		clear(buf)
+		*bufp = buf[:0]
+		mapKeyPool.Put(bufp)
+	}()
+	switch b := md.mapBacking.(type) {
+	case sortedmap:
+		for k := range b.ints() {
+			buf = append(buf, MapKey{Type: LInt, Int: k})
+		}
+		for ks := range b.m {
+			t := LString
+			if b.keytype(ks) != stringkey {
+				t = LSymbol
+			}
+			buf = append(buf, MapKey{Type: t, Str: ks})
+		}
+	case jsonMap:
+		for ks := range b {
+			buf = append(buf, MapKey{Type: LString, Str: ks})
+		}
+	default:
+		n := md.Len()
+		entries := make([]*LVal, n)
+		if r := md.Entries(entries); r.IsError() {
+			return
+		}
+		for _, e := range entries[:n] {
+			if e == nil || len(e.Cells) < 2 {
+				continue
+			}
+			k := e.Cells[0]
+			key := MapKey{Type: k.Type, Str: k.Str}
+			if k.Type == LInt {
+				key = MapKey{Type: LInt, Int: k.Int}
+			}
+			buf = append(buf, key)
+		}
+	}
+	slices.SortFunc(buf, compareMapKeyValues)
+	for _, k := range buf {
+		if !fn(k) {
+			break
+		}
+	}
 }

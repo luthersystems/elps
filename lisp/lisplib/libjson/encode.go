@@ -327,7 +327,7 @@ func (enc *encoder) chargeKiB(b encodeBudget, n int) error {
 	}
 	enc.chargedKiB += owed
 	enc.setNext(b)
-	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.Type == lisp.LError {
+	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.IsError() {
 		return encodeStepError{lerr}
 	}
 	return nil
@@ -608,16 +608,17 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			f.cells = v.Cells[:1]
 			f.token = ' '
 		case lisp.LArray:
-			switch v.Cells[0].Len() {
+			dims, data := v.ArrayParts()
+			switch dims.Len() {
 			case 0:
-				f.cells = v.Cells[1].Cells[:1]
+				f.cells = data.Cells[:1]
 				f.token = ' '
 			case 1:
 				enc.buf.WriteByte('[')
-				f.cells = v.Cells[1].Cells
+				f.cells = data.Cells
 				f.token = ']'
 			default:
-				return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+				return fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 			}
 		case lisp.LSExpr:
 			enc.buf.WriteByte('[')
@@ -625,7 +626,7 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			f.token = ']'
 		case lisp.LSortMap:
 			entries := v.MapEntries()
-			if entries.Type == lisp.LError {
+			if entries.IsError() {
 				return lisp.GoError(entries)
 			}
 			if err := checkIntKeyCollisions(entries.Cells); err != nil {
@@ -653,13 +654,14 @@ func (enc *encoder) encodeLQuote(v *lisp.LVal, g encodeGuard) error {
 }
 
 func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) error {
-	switch v.Cells[0].Len() {
+	dims, data := v.ArrayParts()
+	switch dims.Len() {
 	case 0:
-		return enc.encodeValue(v.Cells[1].Cells[0], g)
+		return enc.encodeValue(data.Cells[0], g)
 	case 1:
-		return enc.encodeSExpr(v.Cells[1].Cells, g)
+		return enc.encodeSExpr(data.Cells, g)
 	default:
-		return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+		return fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 	}
 }
 
@@ -722,7 +724,7 @@ func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) error {
 func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) error {
 	var err error
 	ents := v.MapEntries()
-	if ents.Type == lisp.LError {
+	if ents.IsError() {
 		return lisp.GoError(ents)
 	}
 	if err = checkIntKeyCollisions(ents.Cells); err != nil {

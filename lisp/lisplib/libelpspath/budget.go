@@ -151,14 +151,14 @@ func (op *copyOp) chargeIter(n int) error {
 	// of this charge past the allowance costs steps.
 	if excess := op.iterWork - max(before, iterWorkAllowance); excess > 0 {
 		// ChargeSteps also polls the context when there is one.
-		if lerr := env.ChargeSteps(int64(excess)); lerr.Type == lisp.LError {
+		if lerr := env.ChargeSteps(int64(excess)); lerr.IsError() {
 			op.stop = lerr
 			return errIterStopped
 		}
 		return nil
 	}
 	if op.iterWork/iterPollGrain != before/iterPollGrain {
-		if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+		if lerr := env.CheckContext(); lerr.IsError() {
 			op.stop = lerr
 			return errIterStopped
 		}
@@ -253,7 +253,7 @@ func nilMutatePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 // always has.
 func hasIterStep(steps []*lisp.LVal) bool {
 	for _, s := range steps {
-		if s.Type == lisp.LSymbol && s.Str == "*" {
+		if s.IsSymbol("*") {
 			return true
 		}
 	}

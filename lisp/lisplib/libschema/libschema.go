@@ -271,7 +271,7 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // data, and is reported here rather than when a value is validated (#737).
 func checkConstraints(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
 	for _, c := range constraints {
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		if !isValidator(c) {
@@ -480,11 +480,7 @@ func isValidator(v *lisp.LVal) bool {
 	if v == nil || v.Type != lisp.LFun || len(v.Cells) != validatorCellCount {
 		return false
 	}
-	marker := v.Cells[validatorMarkerIndex]
-	if marker == nil || marker.Type != lisp.LNative {
-		return false
-	}
-	if _, ok := marker.Native.(validatorTag); !ok {
+	if _, ok := lisp.NativeValue[validatorTag](v.Cells[validatorMarkerIndex]); !ok {
 		return false
 	}
 	return v.Builtin() != nil
@@ -503,7 +499,7 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 	}
 	// A constructor that already failed propagates its own error unchanged;
 	// re-wrapping it as "not a constraint" would hide the real cause.
-	if constraint.Type == lisp.LError {
+	if constraint.IsError() {
 		return constraint
 	}
 	if !isValidator(constraint) {
@@ -655,7 +651,7 @@ func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal
 		subtype := constraints[0]
 		constraints = constraints[1:]
 		rest = getHandler(env, subtype, name, constraints)
-		if rest.Type == lisp.LError {
+		if rest.IsError() {
 			return rest
 		}
 	}
@@ -673,7 +669,7 @@ func builtinCheckAny(env *lisp.LEnv, constraints []*lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(env, lisp.Formals("input"), lisp.QExpr(constraints), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		for _, constraint := range captures.Cells {
-			if v := applyConstraint(env, constraint, input); v.Type == lisp.LError {
+			if v := applyConstraint(env, constraint, input); v.IsError() {
 				return v
 			}
 		}
@@ -735,7 +731,7 @@ func builtinAllowedValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return newCapturedValidator(env, lisp.Formals("input"), args, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		for _, v := range captures.Cells {
 			eq := input.EqualWithEnv(v, env)
-			if eq.Type == lisp.LError {
+			if eq.IsError() {
 				return eq
 			}
 			if lisp.True(eq) {
@@ -871,7 +867,8 @@ func numericInput(input *lisp.LVal) (float64, *lisp.LVal) {
 // arrayHasElements reports whether an array holds at least one element: every
 // dimension is non-zero.  A zero-dimensional array holds exactly one.
 func arrayHasElements(v *lisp.LVal) bool {
-	for _, dim := range v.Cells[0].Cells {
+	dims, _ := v.ArrayParts()
+	for _, dim := range dims.Cells {
 		if dim.Int <= 0 {
 			return false
 		}
@@ -964,7 +961,7 @@ func builtinArrayOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		// time the error is swallowed by the "did any allowed type match?"
 		// loop below and reported as "Item N was of wrong type" -- a
 		// misconfigured schema masquerading as bad data.
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		compares = append(compares, c)
@@ -974,7 +971,8 @@ func builtinArrayOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LArray {
 			return lisp.ErrorConditionf(WrongType, "Invalid input for 'of' - need an array")
 		}
-		for k, v := range input.Cells[1].Cells {
+		_, data := input.ArrayParts()
+		for k, v := range data.Cells {
 			matched := false
 			for _, compare := range captures.Cells {
 				if applyConstraint(env, compare, v).IsNil() {
@@ -1094,7 +1092,7 @@ func builtinHasKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	for _, v := range args.Cells[1:] {
 		c := getHandler(env, v, "x", []*lisp.LVal{})
 		// Propagate at CONSTRUCTION -- see builtinArrayOf.
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		compares = append(compares, c)
@@ -1136,7 +1134,7 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	for _, v := range args.Cells[1:] {
 		c := getHandler(env, v, "x", []*lisp.LVal{})
 		// Propagate at CONSTRUCTION -- see builtinArrayOf.
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		compares = append(compares, c)
@@ -1157,7 +1155,7 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			// in-tree Map reaches this branch now that the key is always an
 			// LString; it is here so a future strict Map implementation
 			// cannot silently reproduce the same no-op.
-			if val != nil && val.Type == lisp.LError {
+			if val.IsError() {
 				return env.ErrorConditionf(WrongType,
 					"Map cannot be searched for key %s: %v", key, val)
 			}
@@ -1182,7 +1180,7 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	for _, v := range args.Cells {
 		c := getHandler(env, v, "x", []*lisp.LVal{})
 		// Propagate at CONSTRUCTION -- see builtinArrayOf.
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		constraints = append(constraints, c)
@@ -1192,7 +1190,7 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		allowedKeys := make(map[string]bool)
 		for _, c := range captures.Cells {
 			val := applyConstraint(env, c, input)
-			if val.Type == lisp.LError { //nolint:staticcheck // not a tagged switch context
+			if val.IsError() {
 				return val
 			} else if val.Type == lisp.LString {
 				allowedKeys[val.Str] = true
@@ -1244,7 +1242,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lisp.ErrorConditionf(FailedConstraint, "You must specify a match key")
 	}
 	whenConstraint := getHandler(env, args.Cells[1], "x", []*lisp.LVal{})
-	if whenConstraint.Type == lisp.LError {
+	if whenConstraint.IsError() {
 		return whenConstraint
 	}
 	if !isValidator(whenConstraint) {
@@ -1253,13 +1251,13 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	constraints := make([]*lisp.LVal, 0)
 	for _, v := range args.Cells[3:] {
 		c := getHandler(env, v, "x", []*lisp.LVal{})
-		if c.Type == lisp.LError {
+		if c.IsError() {
 			return c
 		}
 		constraints = append(constraints, c)
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
-	captures := lisp.QExpr([]*lisp.LVal{whenConstraint, lisp.QExpr(constraints)})
+	captures := lisp.Cells{whenConstraint, lisp.QExpr(constraints)}.List()
 	return newCapturedValidator(env, lisp.Formals("input"), captures, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		// input.Map() panics ("not sorted-map: int") on anything else. s:when
 		// is reachable under s:any, where no earlier constraint has checked
@@ -1272,7 +1270,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		whenVal, _ := lMap.Get(schemaKey(whenKey))
 		testVal, _ := lMap.Get(schemaKey(matchKey))
 		val := applyConstraint(env, captures.Cells[0], whenVal)
-		if val.Type == lisp.LError {
+		if val.IsError() {
 			// Guard not satisfied: this clause does not apply. Safe only
 			// because whenConstraint was proven to be a real constraint at
 			// construction -- see the doc comment.
@@ -1280,7 +1278,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 		for _, c := range captures.Cells[1].Cells {
 			val := applyConstraint(env, c, testVal)
-			if val.Type == lisp.LError {
+			if val.IsError() {
 				return val
 			}
 		}
@@ -1292,7 +1290,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type != lisp.LSymbol || input.Str != lisp.FalseSymbol {
+		if !input.IsSymbol(lisp.FalseSymbol) {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not false", input)
 		}
 		return lisp.Nil()
@@ -1303,7 +1301,7 @@ func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTrue(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type != lisp.LSymbol || input.Str != lisp.TrueSymbol {
+		if !input.IsSymbol(lisp.TrueSymbol) {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not true", input)
 		}
 		return lisp.Nil()
@@ -1315,7 +1313,7 @@ func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
 		val := applyConstraint(env, builtinIsTruthy(env, nil), input)
-		if val.Type == lisp.LError {
+		if val.IsError() {
 			return lisp.Nil()
 		}
 		return env.ErrorConditionf(FailedConstraint, "Value %v is not falsy", input)
@@ -1326,7 +1324,7 @@ func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTruthy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type == lisp.LSymbol && input.Str == lisp.TrueSymbol {
+		if input.IsSymbol(lisp.TrueSymbol) {
 			return lisp.Nil()
 		}
 		switch input.Type {
@@ -1379,7 +1377,7 @@ func builtinIsNot(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(env, lisp.Formals(), constraint, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		val := applyConstraint(env, captures, input)
-		if val.Type == lisp.LError {
+		if val.IsError() {
 			return lisp.Nil()
 		}
 		return lisp.ErrorConditionf(FailedConstraint, "Inner constraint did not return an error")

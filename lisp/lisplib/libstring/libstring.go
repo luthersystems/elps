@@ -160,15 +160,10 @@ func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
 		}
 		count++
 	}
-	if msg := env.Runtime.CheckAlloc(count); msg != "" {
-		return env.Errorf("%s", msg)
+	if lerr := env.CheckAlloc(count); lerr.IsError() {
+		return lerr
 	}
-	slice := strings.Split(str, sep)
-	cells := make([]*lisp.LVal, len(slice))
-	for i, s := range slice {
-		cells[i] = lisp.String(s)
-	}
-	return lisp.QExpr(cells)
+	return lisp.StringList(strings.Split(str, sep))
 }
 
 var builtinJoin = lisp.Func2(
@@ -184,32 +179,66 @@ func join(env *lisp.LEnv, list *lisp.LVal, sep string) *lisp.LVal {
 			return env.Errorf("first argument is not a list of strings: %v", cell.Type)
 		}
 	}
-	size := 0
-	limit := env.Runtime.MaxAllocBytes()
-	for _, cell := range list.Cells {
-		if len(cell.Str) > limit-size {
-			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
-		}
-		size += len(cell.Str)
+	return joinParts(env, nil, list.Cells, sep)
+}
+
+// Join returns what string:join returns for a list of the strings parts and
+// the separator sep: the same string, or the same error from the same check.
+// It checks the evaluation's context first, as LEnv.CallBuiltin does.  Then
+// it makes string:join's allocation check ("join would exceed maximum
+// allocation size (N bytes)") and charges its steps: one per complete KiB of
+// the result.  The caller has no element type to check: every part is a
+// string.
+func Join(env *lisp.LEnv, parts []string, sep string) *lisp.LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
 	}
-	if len(list.Cells) > 1 {
-		if len(sep) > (limit-size)/(len(list.Cells)-1) {
+	return joinParts(env, parts, nil, sep)
+}
+
+// joinParts is the body of string:join and of Join, after the element type
+// check.  The parts are strs when cells is nil, and the strings in cells
+// otherwise.  The checks, the errors and the step charge exist once.
+func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *lisp.LVal {
+	limit := env.Runtime.MaxAllocBytes()
+	n := len(strs)
+	if cells != nil {
+		n = len(cells)
+	}
+	size := 0
+	for i := range n {
+		p := joinPart(strs, cells, i)
+		if len(p) > limit-size {
 			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
 		}
-		size += len(sep) * (len(list.Cells) - 1)
+		size += len(p)
+	}
+	if n > 1 {
+		if len(sep) > (limit-size)/(n-1) {
+			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+		}
+		size += len(sep) * (n - 1)
 	}
 	if lerr := libutil.ChargeKiB(env, size); lerr != nil {
 		return lerr
 	}
 	var buf strings.Builder
 	buf.Grow(size)
-	for i, cell := range list.Cells {
-		buf.WriteString(cell.Str)
-		if i < len(list.Cells)-1 {
+	for i := range n {
+		if i > 0 {
 			buf.WriteString(sep)
 		}
+		buf.WriteString(joinPart(strs, cells, i))
 	}
 	return lisp.String(buf.String())
+}
+
+// joinPart returns part i: cells[i].Str when cells is not nil, else strs[i].
+func joinPart(strs []string, cells []*lisp.LVal, i int) string {
+	if cells != nil {
+		return cells[i].Str
+	}
+	return strs[i]
 }
 
 // builtinRepeat checks its arguments through typed decoders, with the

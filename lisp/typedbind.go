@@ -28,9 +28,9 @@ package lisp
 // a copy of the ArgReader.  Nothing here charges a step; the body charges
 // what it charges today.
 //
-// Func1 and Func2 cover one and two positional arguments.  A builtin with
-// more, or one that needs &rest, keeps the LBuiltin signature and uses
-// ArgReader directly; that is where generics stop, because Go has no
+// Func1, Func2 and Func3 cover one, two and three positional arguments.  A
+// builtin with more, or one that needs &rest, keeps the LBuiltin signature
+// and uses ArgReader directly; that is where generics stop, because Go has no
 // variadic type parameters.  An &optional or &key argument is a position
 // with an OptArg, OptStringArg or OptIntArg decoder: the evaluator hands a
 // builtin one cell per formal, in formal order, so the decoder for position
@@ -206,5 +206,33 @@ func Func2[A, B any](da ArgDecoder[A], db ArgDecoder[B], f func(env *LEnv, a A, 
 			return r.err
 		}
 		return f(env, a, b)
+	}
+}
+
+// Func3 returns an LBuiltin that decodes three arguments, in order, and calls
+// f.
+func Func3[A, B, C any](da ArgDecoder[A], db ArgDecoder[B], dc ArgDecoder[C], f func(env *LEnv, a A, b B, c C) *LVal) LBuiltin {
+	if da.kind == argCustom || db.kind == argCustom || dc.kind == argCustom {
+		return func(env *LEnv, args *LVal) *LVal {
+			r := new(ArgReader)
+			*r = ReadArgs(env, args)
+			a := da.decodeShared(r, 0)
+			b := db.decodeShared(r, 1)
+			c := dc.decodeShared(r, 2)
+			if r.err != nil {
+				return r.err
+			}
+			return f(env, a, b, c)
+		}
+	}
+	return func(env *LEnv, args *LVal) *LVal {
+		r := ReadArgs(env, args)
+		a := da.decode(&r, 0)
+		b := db.decode(&r, 1)
+		c := dc.decode(&r, 2)
+		if r.err != nil {
+			return r.err
+		}
+		return f(env, a, b, c)
 	}
 }

@@ -656,7 +656,13 @@ if lerr := a.Err(); lerr.Type == lisp.LError {
 ```
 
 It does not allocate unless a check fails. The reads are `Value`, `String`,
-`Typed`, `Opt`, `OptString` and `OptInt`. For a check that is not a type
+`Int`, `Bytes`, `Map`, `Fun`, `Seq`, `Typed`, `Opt`, `OptString` and
+`OptInt`. `Int`, `Bytes`, `Map` and `Fun` record "<what> is not an integer",
+"is not bytes", "is not a map" or "is not a function". `Seq` returns the
+cells of a list or a one-dimensional vector and records "<what> is not a
+proper sequence". The `[]byte` and cells results share the argument's
+storage. In a `FuncE` body, `lisp.GoError(a.Err())` gives the failure as an
+`error`. For a check that is not a type
 test, `a.Check(ok, format, args...)` records a failure (and reports whether
 the reader is still clean) and keeps the first failure, so a decoder of your
 own is ordinary Go:
@@ -689,8 +695,8 @@ Decoders: `ValueArg`, `TypedArg` and `StringArg` for required arguments, and
 Each one is the `ArgReader` read of the same name. For a function of your own
 like `dateArg` above, use `lisp.CustomArg(dateArg)`. A custom decoder is an
 indirect call, so each call of the builtin allocates one `ArgReader` copy.
-Beyond two arguments, or with `&rest`, use
-`ArgReader` directly: Go has no variadic type parameters, which is where
+`lisp.Func3` takes three decoders. Beyond three arguments, or with `&rest`,
+use `ArgReader` directly: Go has no variadic type parameters, which is where
 generics stop. `string:split` and `string:repeat`
 are written this way.
 
@@ -747,6 +753,272 @@ The rules are exact, so step counts stay deterministic:
   of every program that calls it with keywords. For a host that meters steps,
   that is a coordinated upgrade like any other step change. A new builtin can
   adopt it freely.
+
+### Go-style helpers for ports
+
+These helpers let a Go builtin read like ordinary Go. Each helper that
+mirrors a builtin makes that builtin's checks: the allocation cap, the
+context check and the same error condition. None of them charges a step.
+
+**`v.IsError()`** reports whether `v` is an `LError`. It is the same compare
+as `v != nil && v.Type == lisp.LError`. **`v.IsSymbol(name)`** reports whether
+`v` is the symbol `name`. It is the same compare as
+`v != nil && v.Type == lisp.LSymbol && v.Str == name`. Both return false for a
+nil `v`.
+
+**Errors as Go errors: `lisp.Result`, `lisp.GoError` and `lisp.ConditionOf`.**
+Every elps helper returns `*LVal`. Code that returns `error` wraps the call:
+
+```go
+v, err := lisp.Result(env.CallBuiltin(coreFuncall, h)) // (v, nil) or (nil, *ErrorVal)
+if err := lisp.GoError(env.CheckContext()); err != nil { // nil unless an error
+	return nil, err
+}
+```
+
+The error is the `*ErrorVal` itself, so `return nil, err` keeps the
+condition, the data and the stack. A wrap changes what Lisp sees:
+
+| Code | What Lisp sees |
+|---|---|
+| `return nil, err` | The same value: condition, data and stack. |
+| `fmt.Errorf("load: %w", err)` | A new error with condition `error` and the full text. `handler-bind` no longer catches the inner condition. `errors.As` still finds the inner value. |
+| `fmt.Errorf("load: %v", err)` | The same as `%w`, and the inner value is gone. |
+
+To add context, raise a new error with `env.Errorf`. `lisp.ConditionOf(err)`
+returns the condition Lisp sees for `err`: the condition of a bare
+`*ErrorVal`, the condition of a wrapped internal panic, and `error` for any
+other error. It does not look through wraps, because `handler-bind` does not.
+
+**A builtin body in (value, error) form: `lisp.FuncE`.**
+
+```go
+var builtinMerge = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	keys, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+})
+```
+
+A `*ErrorVal` error is returned as itself, so the debugger does not see it a
+second time. Any other error becomes `env.Error(err)`, with condition
+`error`. A nil value with a nil error becomes `()`. elpsvet's `elpsownpkg` and
+`elpsbuiltinstate` read the body like any other builtin, and so do the bodies
+passed to `Func1` and `Func2`.
+
+**Lists from Go: `lisp.Cells`.** `lisp.Cells` is `[]*LVal` with three
+methods. `lisp.Cells{a, b}.List()` is `lisp.QExpr([]*lisp.LVal{a, b})`,
+`SExpr()` is `lisp.SExpr` and `Vector()` is `lisp.Vector`. Go assigns
+`Cells` to and from `[]*lisp.LVal` with no conversion. The three methods use the receiver as the new value's storage, so
+`lisp.Cells(v.Cells).List()` shares `v`'s cells. elpsvet's `elpsfreshness`
+counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
+returns a fresh list of strings.
+
+**Arrays from Go: `ArrayParts`, `SetArrayData` and `SetArrayCells`.** An
+array stores a dimension list and a data list. Read them with
+`dims, data := v.ArrayParts()`. It returns the stored lists, not copies;
+`v.ArrayDims()` returns a copy of the dimension list. `v.SetArrayData(data,
+dims...)` replaces the data list and sets the dimensions in place, and `v`
+keeps its pointer. With no dims, `v` becomes a vector of `len(data.Cells)`
+cells. `v.SetArrayCells(cells, dims...)` does the same, but writes `cells`
+into `v`'s own data list, so it builds no new list. Use `SetArrayData` when
+the data list is shared with another value. None of these methods makes a
+check; `lisp.Array` is the checked constructor. `lisp.Vector(nil)` is an
+empty vector, the same value as `lisp.Array(nil, nil)`. A decoder that must
+give out an array before it reads the contents (a back-reference) builds
+`lisp.Vector(nil)` first and calls `SetArrayCells` last. Code outside package `lisp` does not index an
+array's `Cells`.
+
+**Typed builtins in (value, error) form: `lisp.Func1E`, `Func2E` and
+`Func3E`.** Go infers the argument and result types from the body, and elps
+picks each argument's decoder from its type:
+
+```go
+var builtinEncode = lisp.Func1E(func(env *lisp.LEnv, in lisp.Text) ([]byte, error) {
+	return hex.AppendEncode(nil, in), nil
+})
+// (encode 3) raises "argument is not a string or bytes: int"
+```
+
+| Argument type | Accepts | Message on a mismatch |
+|---|---|---|
+| `string` | a string | "<position> is not a string: <type>" |
+| `int` | an integer | "is not an integer" |
+| `float64` | any number | "is not a number" |
+| `bool` | any value, by truthiness | never fails |
+| `lisp.Text` | a string (copied, one allocation) or bytes (shared) | "is not a string or bytes" |
+| `*lisp.LVal` | any value | never fails |
+| any other type | a native payload, through `NativeValue[T]` | "is not a native <type>" |
+
+The position is "argument" for a builtin of one argument, else "first
+argument", "second argument" or "third argument". These messages are for
+ports that keep only the error condition of the Lisp they replace. elps's own
+builtins keep their messages and do not use `Func*E`.
+
+The result type is one of `*lisp.LVal`, `string`, `int`, `float64`, `bool`,
+`[]byte`, `[]*lisp.LVal` or `lisp.Cells`; any other type does not compile. A
+nil `*LVal` becomes `()`. A `[]byte`, `[]*LVal` or `Cells` result becomes the
+new value's storage, so it must be fresh: `elpsfreshness` reports a body that
+returns an argument's storage. A native goes out as an `*LVal` from
+`lisp.NativeOf`. An error is returned as `FuncE` returns it.
+
+`Func*E` checks types only. Limits, steps and context checks stay the body's
+job. It takes required positional arguments only: register a `Func2E` builtin
+with exactly two required formals. With other formals the call fails with
+"invalid number of arguments: N", and `elpsidiom` reports the registration.
+For `&optional` or `&key`, keep `Func1`, `Func2` or `Func3` with the `Opt`
+decoders; for `&rest`, keep a plain `LBuiltin`. A call allocates nothing
+beyond the body, except the copy of a string into a `lisp.Text`.
+
+**Values as Go types: `lisp.ResultAs[T]` and `lisp.Field[T]`.**
+`lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.
+`lisp.Field[T](m, "key")` reads one sorted-map value with the same
+conversions, and returns `ok=false` for a value that is not a map, a missing
+key or a value of another type.
+
+```go
+keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+status, _ := lisp.Field[string](desc, "status")
+def, ok := lisp.Field[*flowdef.Def](state, "def") // a native payload
+```
+
+| T | Accepts |
+|---|---|
+| `string` | a string only (use `lisp.SymbolName` for a symbol) |
+| `int` | an integer only; a float is not truncated |
+| `float64` | any number |
+| `bool` | any value, by truthiness; it never fails |
+| `[]byte` | bytes |
+| `[]*LVal`, `Cells` | a list's cells |
+| `*LVal` | any value |
+| any other type | a native payload, through `lisp.NativeValue[T]` |
+
+A named type such as `type Status string` reads a native, not a string. A
+`[]byte`, `[]*LVal` or `Cells` result shares the value's storage, so treat it
+as read-only. Use `ResultAs` only where the value always has type `T`. A
+mismatch returns an error with condition `error`. Both make no check, charge
+no step and use no reflection.
+
+`lisp.SeqOf[T](v)` converts a list or a one-dimensional vector to a `[]T`
+with the same conversions, and returns `ok=false` when any element has
+another type. It allocates the slice it returns. It reads one level only,
+unlike `GoSliceOf`, which converts nested values and reads lists only.
+
+**The allocation check as a value: `env.CheckAlloc(n)`.** It returns the
+error builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
+maximum (M)"), and `()` otherwise. `Runtime.CheckAlloc` returns the message
+as a string instead. `env.CheckAlloc` makes no context check.
+
+```go
+if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
+	return nil, err
+}
+```
+
+**`env.ToString(v)` and `env.FormatString(format, values...)`** share the
+bodies of the `to-string` and `format-string` builtins, so they return the
+same value or the same error, the `MaxAlloc` checks included. Each checks the
+context first, as `CallBuiltin` does. The format is a Go string:
+
+```go
+msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
+```
+
+**`libstring.Join(env, parts, sep)`** is `string:join` for a `[]string`. It
+shares the builtin's body after the element type check, so it makes the same
+allocation check, raises the same error and charges the same steps (one per
+complete KiB of the result). It checks the context first.
+
+**`env.MapPut(m, k, v)` and `env.MapLookup(m, k)`** share the bodies of
+`assoc!` and `get`. `MapPut` refuses a nil or non-map `m`, makes `assoc!`'s
+allocation check for a new key and returns the map's error for a refused key.
+`MapLookup` returns `()` for a missing key or a nil map and raises "first
+argument is not a map" otherwise. Both check the context first. Use them only
+where the Lisp called `assoc!` or `get`. Code that fills a map it just built
+keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
+building a list.
+
+**`env.MapOf(kv ...)`** is `SortedMapOf` with Go keys and values. A key is a
+`string` or an `*LVal`. A value is an `*LVal` (a nil `*LVal` becomes `()`), a
+`string`, `int`, `float64`, `bool`, `[]byte`, `[]*LVal` (a list) or `Cells`
+(a list). It converts each pair and returns what `SortedMapOf` returns for
+the converted arguments, so the checks, the map and the error are the same.
+It panics on a key or value of another type, because that is a programming
+error; `elpsidiom` reports one at build time. Use `lisp.NativeOf` for a
+native value and `lisp.StringList` for a `[]string`.
+
+```go
+return env.MapOf("id", id, "type", typ, "count", n)
+```
+
+**`lisp.MapOf(kv ...)`** builds the same map with no checks: no context
+check and no allocation check. `env.MapOf` is the checked form; use it where
+the Lisp called `sorted-map`. `lisp.MapOf` converts keys and values as
+`env.MapOf` does and panics on an odd count. Its result is the result of
+`lisp.SortedMap()` followed by `MapSetLVal` for each pair, so a later
+duplicate key replaces an earlier one. Use it where Go code fills a map it
+just built.
+
+**`v.SeqCells()`** returns the cells of a list or a one-dimensional vector
+and `true`, or `nil, false` for any other value, a multi-dimensional array
+included. The cells are the value's own storage, so treat them as read-only.
+
+**`lisp.FunInPackageDoc(pkg, fid, formals, fn, doc)`** is `FunInPackage`
+with a docstring, in the layout registered builtins use, so `Docstring`
+returns `doc`. Do not write `fun.Cells[1]` after `FunInPackage`.
+
+**Iterating a map: `m.All()`, `m.Keys()` and `k.Name()`.** `All` is an
+`iter.Seq2[lisp.MapKey, *lisp.LVal]` and `Keys` an `iter.Seq[lisp.MapKey]`,
+in `MapRange`'s order. `k.Name()` returns the spelling of a string or symbol
+key.
+
+```go
+for k := range in.Keys() {
+	if name, ok := k.Name(); ok && strings.HasPrefix(name, "$") {
+		return nil, reject(name)
+	}
+}
+```
+
+Both yield nothing for a value that is not a map, where `MapKeys` panics, so
+use them after a map check. Neither makes a check or charges a step; where
+the Lisp called `keys`, use `env.MapRange`. `Keys` reads keys only: it loads
+no lazy value of a template map and builds no list. `All` loads every lazy
+value, as `MapRange` does. Breaking out of the loop early is safe.
+
+**Static checks for ports: `elpsvet/idiom`.** Add `idiom.Analyzer`
+(`elpsidiom`) to your module's vet tool. With category `info` it reports
+code that a helper above states more plainly, and `-fix` applies the
+mechanical rewrites: `v.Type == lisp.LError`, `lisp.GoError(v) != nil` and
+`v != nil && v.Type == lisp.LError` to `v.IsError()`, a symbol compare (with
+or without a `v != nil` test before it) to `v.IsSymbol(name)`,
+`lisp.QExpr`, `lisp.SExpr` and `lisp.Vector` over a slice literal to
+`lisp.Cells{...}.List()`, `.SExpr()` and `.Vector()`, `lisp.Array(nil, x)`
+to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
+a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string` or
+`format-string` to `env.MapOf` or `env.SortedMapOf`, `env.MapPut`,
+`env.MapLookup`, `env.ToString` or `env.FormatString`, and a
+`lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
+keeps behaviour identical for a non-nil value; the package doc of
+`elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `Field`, an
+`ArgReader` read, `FunInPackageDoc`, `SeqCells`, `NativeValue`, `FuncE`,
+`Func1E`..`Func3E`, `MapRange`, `StringList`, and `ArrayParts`,
+`lisp.Vector(nil)` and `SetArrayCells` for code that indexes an array's
+`Cells`. With category `error` it reports these mistakes:
+
+- `fmt.Errorf` or `errors.New(err.Error())` over a Lisp error in a `FuncE` or
+  `Func*E` body, or in a function whose error such a body returns.
+- A `*lisp.ErrorVal` in a result list, which makes a typed nil.
+- `lisp.ResultAs[T]` over `get`, `funcall`, `apply`, `nth`, `first`,
+  `second`, `aref` or `env.MapLookup`, whose result type varies.
+- A `Func*E` builtin registered with formals other than its required
+  arguments.
+- An `env.MapOf` key or value of a type that `MapOf` does not accept.
+
+`elpsvet/builtinstate` and `elpsvet/ownpkg` read `FuncE`, `Func1`..`Func3`
+and `Func1E`..`Func3E` bodies, so add them too.
 
 ### Inspecting local variables
 

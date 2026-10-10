@@ -62,7 +62,7 @@ func reexportCoreForms(env *lisp.LEnv) *lisp.LVal {
 	for _, form := range CoreForms {
 		if lang != nil {
 			if v := lang.Get(lisp.Symbol(form)); v.Type == lisp.LFun {
-				if e := env.PutGlobal(lisp.Symbol(form), v); e.Type == lisp.LError {
+				if e := env.PutGlobal(lisp.Symbol(form), v); e.IsError() {
 					return e
 				}
 				env.Runtime.Package.Exports(form)
@@ -463,10 +463,6 @@ func EnvTestSuite(env *lisp.LEnv) *TestSuite {
 	if pkg == nil {
 		return nil
 	}
-	lsuite := pkg.Get(lisp.Symbol(DefaultSuiteSymbol))
-	if lsuite.Type != lisp.LNative {
-		return nil
-	}
-	suite, _ := lsuite.Native.(*TestSuite)
+	suite, _ := lisp.NativeValue[*TestSuite](pkg.Get(lisp.Symbol(DefaultSuiteSymbol)))
 	return suite
 }

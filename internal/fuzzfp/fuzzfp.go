@@ -161,7 +161,7 @@ func (g *Guard) walk(v *lisp.LVal, path string, seen map[*lisp.LVal]bool) {
 		// Keys() is documented sorted, so the traversal order is stable and a
 		// report names the same cell on every run.
 		keys := m.Keys()
-		if keys == nil || keys.Type == lisp.LError {
+		if keys == nil || keys.IsError() {
 			return
 		}
 		for _, k := range keys.Cells {

@@ -653,7 +653,7 @@ func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 		}
 		for _, k := range slices.Sorted(maps.Keys(x)) {
 			lval := s.loadInterfaceOpts(x[k], opts)
-			if lval.Type == lisp.LError {
+			if lval.IsError() {
 				return lval
 			}
 			x[k] = lval
@@ -666,11 +666,11 @@ func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 		cells := make([]*lisp.LVal, len(x))
 		for i := range x {
 			cells[i] = s.loadInterfaceOpts(x[i], opts)
-			if cells[i].Type == lisp.LError {
+			if cells[i].IsError() {
 				return cells[i]
 			}
 		}
-		return lisp.Array(nil, cells)
+		return lisp.Vector(cells)
 	case bool:
 		return lisp.Bool(x)
 	case float64:
@@ -691,7 +691,7 @@ func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 }
 
 func (s *Serializer) attachStack(env *lisp.LEnv, lerr *lisp.LVal) *lisp.LVal {
-	if lerr.Type != lisp.LError {
+	if !lerr.IsError() {
 		return lerr
 	}
 	lerr.SetCallStack(env.Runtime.Stack.Copy())
@@ -733,7 +733,7 @@ func (s *Serializer) setMode(env *lisp.LEnv, name string, on bool, field *bool) 
 
 func (s *Serializer) UseStringNumbersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	confirm := args.Cells[0]
-	if r := s.setMode(env, stringNumbersModeSetting, lisp.True(confirm), &s.UseStringNumbers); r.Type == lisp.LError {
+	if r := s.setMode(env, stringNumbersModeSetting, lisp.True(confirm), &s.UseStringNumbers); r.IsError() {
 		return r
 	}
 	return lisp.Nil()
@@ -750,10 +750,10 @@ func (s *Serializer) useStringNumbers(env *lisp.LEnv) *lisp.LVal {
 
 func (s *Serializer) UseExactIntegersBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	confirm := args.ReqArg(env, 0)
-	if confirm.Type == lisp.LError {
+	if confirm.IsError() {
 		return confirm
 	}
-	if r := s.setMode(env, exactIntegersModeSetting, lisp.True(confirm), &s.UseExactIntegers); r.Type == lisp.LError {
+	if r := s.setMode(env, exactIntegersModeSetting, lisp.True(confirm), &s.UseExactIntegers); r.IsError() {
 		return r
 	}
 	return lisp.Nil()
@@ -958,7 +958,7 @@ func (s *Serializer) DumpMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	var loadable bool
 	if lisp.True(args.KeyArg(2)) || lisp.True(args.KeyArg(3)) {
 		result := s.dumpModeBuiltin(env, args, false)
-		if result.Type == lisp.LError {
+		if result.IsError() {
 			return result
 		}
 		b, loadable = result.Bytes(), true
@@ -994,12 +994,12 @@ func (s *Serializer) DumpBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 // uses. A non-nil second result is the error LVal to return.
 func (s *Serializer) dumpBuiltin(env *lisp.LEnv, args *lisp.LVal) (dumpResult, *lisp.LVal) {
 	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
-	if obj.Type == lisp.LError {
+	if obj.IsError() {
 		return dumpResult{bytes: nil, loadable: false}, obj
 	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
-		if stringNums.Type == lisp.LError {
+		if stringNums.IsError() {
 			return dumpResult{bytes: nil, loadable: false}, stringNums
 		}
 	}
@@ -1039,7 +1039,7 @@ func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
 	var cancelled encodeCancelledError
 	if errors.As(err, &size) || errors.As(err, &cancelled) {
 		// Cancellation wins when both apply, as it does for format-string.
-		if cerr := env.CheckContext(); cerr.Type == lisp.LError {
+		if cerr := env.CheckContext(); cerr.IsError() {
 			return cerr
 		}
 	}
@@ -1054,7 +1054,7 @@ func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
 
 func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	lmsg, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
-	if lmsg.Type == lisp.LError {
+	if lmsg.IsError() {
 		return lmsg
 	}
 	if lmsg.Type != lisp.LNative {
@@ -1064,12 +1064,12 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if !ok {
 		return errNotAMessage(env)
 	}
-	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3), args.KeyArg(4)}))
+	return s.LoadBytesBuiltin(env, lisp.Cells{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3), args.KeyArg(4)}.SExpr())
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	js, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
-	if js.Type == lisp.LError {
+	if js.IsError() {
 		return js
 	}
 	if js.Type != lisp.LBytes {
@@ -1079,7 +1079,7 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 		if !stringNums.IsNil() {
 			return env.Errorf("string-numbers is incompatible with typed")
 		}
-		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
+		return LoadTypedBuiltin(env, lisp.Cells{js}.SExpr())
 	}
 	if lerr := libutil.ChargeKiB(env, len(js.Bytes())); lerr != nil {
 		return lerr
@@ -1094,12 +1094,12 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 		return s.dumpModeBuiltin(env, args, true)
 	}
 	obj, stringNums := args.ReqArg(env, 0), args.KeyArg(1)
-	if obj.Type == lisp.LError {
+	if obj.IsError() {
 		return obj
 	}
 	if stringNums.IsNil() {
 		stringNums = s.useStringNumbers(env)
-		if stringNums.Type == lisp.LError {
+		if stringNums.IsError() {
 			return stringNums
 		}
 	}
@@ -1112,7 +1112,7 @@ func (s *Serializer) DumpStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 
 func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	js, stringNums, exactInts := args.ReqArg(env, 0), args.KeyArg(1), args.KeyArg(2)
-	if js.Type == lisp.LError {
+	if js.IsError() {
 		return js
 	}
 	if js.Type != lisp.LString {
@@ -1122,7 +1122,7 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 		if !stringNums.IsNil() {
 			return env.Errorf("string-numbers is incompatible with typed")
 		}
-		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
+		return LoadTypedBuiltin(env, lisp.Cells{js}.SExpr())
 	}
 	if lerr := libutil.ChargeKiB(env, len(js.Str)); lerr != nil {
 		return lerr
@@ -1276,11 +1276,12 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 		case lisp.LSExpr:
 			children = v.Cells
 		case lisp.LArray:
-			if v.Cells[0].Len() > 1 {
-				*f.dst = fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+			dims, data := v.ArrayParts()
+			if dims.Len() > 1 {
+				*f.dst = fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 				continue
 			}
-			children = v.Cells[1].Cells
+			children = data.Cells
 		case lisp.LSortMap:
 		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
 			lisp.LFun, lisp.LString, lisp.LBytes, lisp.LNative, lisp.LTaggedVal,
@@ -1307,7 +1308,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 		deepest = f.depth
 		if v.Type == lisp.LSortMap {
 			entries := v.MapEntries()
-			if entries.Type == lisp.LError {
+			if entries.IsError() {
 				return (*lisp.ErrorVal)(entries), true
 			}
 			count(2 * len(entries.Cells))
@@ -1345,7 +1346,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			continue
 		}
 		count(len(children))
-		if v.Type == lisp.LQuote || (v.Type == lisp.LArray && v.Cells[0].Len() == 0) {
+		if v.Type == lisp.LQuote || (v.Type == lisp.LArray && arrayRank(v) == 0) {
 			pending = append(pending, frame{v: children[0], dst: f.dst, depth: f.depth + 1})
 			continue
 		}
@@ -1405,7 +1406,7 @@ func (s *Serializer) conversionLeaf(v *lisp.LVal, stringNums bool) any {
 // Deprecated:  GoError is no longer used internally for serialization and
 // should be avoided.
 func (s *Serializer) GoError(v *lisp.LVal) error {
-	if v.Type != lisp.LError {
+	if !v.IsError() {
 		return nil
 	}
 	return (*lisp.ErrorVal)(v)
@@ -1504,4 +1505,10 @@ func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (map[string]any, bool)
 	}
 	values, ok := out.(map[string]any)
 	return values, ok
+}
+
+// arrayRank returns the count of dimensions of the array v.
+func arrayRank(v *lisp.LVal) int {
+	dims, _ := v.ArrayParts()
+	return dims.Len()
 }

@@ -39,7 +39,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.AddSpecialOps(true)
 	env.AddBuiltins(true)
 	rc := InitializeTypedef(env)
-	if GoError(rc) != nil {
+	if rc.IsError() {
 		return rc
 	}
 	// All default and host-registered core macros, operators, builtins, and
@@ -49,12 +49,12 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
 	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
-	if GoError(rc) != nil {
+	if rc.IsError() {
 		return rc
 	}
 	for _, fn := range config {
 		lerr := fn(env)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -102,18 +102,18 @@ func InitializeTypedef(env *LEnv) *LVal {
 			if ctor.IsSpecialFun() {
 				return env.Errorf("second argument is not a regular function")
 			}
-			return QExpr([]*LVal{sym, ctor})
+			return Cells{sym, ctor}.List()
 		},
 	})
-	if ctor.Type == LError {
+	if ctor.IsError() {
 		return ctor
 	}
 	// Create a typedef for the typedef type that will use ctor to create new
 	// typedefs. Pretty simple, really. *brain explosion*
 	pkg := env.Runtime.Registry.Lang
 	fqname := Symbol(pkg + ":typedef")
-	typedef := env.TaggedValue(fqname, QExpr([]*LVal{fqname, ctor}))
-	if typedef.Type == LError {
+	typedef := env.TaggedValue(fqname, Cells{fqname, ctor}.List())
+	if typedef.IsError() {
 		return typedef
 	}
 	env.Runtime.Registry.packages[pkg].Put(Symbol("typedef"), typedef)
@@ -446,7 +446,7 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	ret := Nil()
 	for _, expr := range exprs {
 		ret = env.eval(ctx, expr)
-		if ret.Type == LError {
+		if ret.IsError() {
 			break
 		}
 	}
@@ -505,7 +505,7 @@ func (env *LEnv) Get(k *LVal) *LVal {
 func (env *LEnv) GetFun(fun *LVal) *LVal {
 	if fun.Type == LSymbol {
 		f := env.Get(fun)
-		if f.Type == LError {
+		if f.IsError() {
 			return f
 		}
 		if f.Type != LFun {
@@ -522,7 +522,7 @@ func (env *LEnv) GetFun(fun *LVal) *LVal {
 func (env *LEnv) GetFunGlobal(fun *LVal) *LVal {
 	if fun.Type == LSymbol {
 		f := env.GetGlobal(fun)
-		if f.Type == LError {
+		if f.IsError() {
 			return f
 		}
 		if f.Type != LFun {
@@ -570,7 +570,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 		return env.Errorf("unknown package: %q", ns)
 	}
 	lerr := pkg.Get(Symbol(name))
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		if err := env.ErrorAssociate(lerr); err != nil {
 			return err
 		}
@@ -593,7 +593,7 @@ func (env *LEnv) getSimple(k *LVal) *LVal {
 
 func (env *LEnv) packageGet(k *LVal) *LVal {
 	lerr := env.Runtime.Package.Get(k)
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		if err := env.ErrorAssociate(lerr); err != nil {
 			return err
 		}
@@ -732,7 +732,7 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 				}
 			}
 			lerr := env.Runtime.Package.Update(k, v)
-			if lerr.Type == LError {
+			if lerr.IsError() {
 				if err := env.ErrorAssociate(lerr); err != nil {
 					return err
 				}
@@ -781,7 +781,7 @@ func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
 		}
 	}
 	lerr := pkg.Update(Symbol(name), v)
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		if err := env.ErrorAssociate(lerr); err != nil {
 			return err
 		}
@@ -813,7 +813,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 			return env.Errorf("unknown package: %q", ns)
 		}
 		lerr := pkg.Get(Symbol(name))
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
 			}
@@ -866,7 +866,7 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 			return env.Errorf("unknown package: %q", ns)
 		}
 		lerr := pkg.Put(Symbol(name), v)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
 			}
@@ -875,7 +875,7 @@ func (env *LEnv) PutGlobal(k, v *LVal) *LVal {
 	}
 
 	lerr := env.Runtime.Package.Put(k, v)
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		if err := env.ErrorAssociate(lerr); err != nil {
 			return err
 		}
@@ -901,7 +901,7 @@ func (env *LEnv) TaggedValue(typ *LVal, val *LVal) *LVal {
 		source: env.loc,
 		Type:   LTaggedVal,
 		Str:    typ.Str,
-		Cells:  []*LVal{val},
+		Cells:  Cells{val},
 	}
 }
 
@@ -941,7 +941,7 @@ func (env *LEnv) newUnchecked(typ *LVal, args *LVal) *LVal {
 		return lerr
 	}
 	v := env.FunCall(ctor, args)
-	if v.Type == LError {
+	if v.IsError() {
 		return v
 	}
 	return env.TaggedValue(tname, v)
@@ -1054,7 +1054,7 @@ func (env *LEnv) lambdaIn(pkg string, loc *token.Location, formals *LVal, body [
 
 // validateLambdaFormals checks a lambda's formals, or returns the error.
 func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
-	if lerr := env.validateFormalSymbols(formals); lerr.Type == LError {
+	if lerr := env.validateFormalSymbols(formals); lerr.IsError() {
 		return lerr
 	}
 	formalName := func(i int) string { return formals.Cells[i].Str }
@@ -1323,7 +1323,7 @@ func registrationFunValue(pkgName string, name string, opts registrationFunction
 			builtin: fn,
 			pkg:     pkgName,
 		},
-		Cells: []*LVal{formals, String(doc)},
+		Cells: Cells{formals, String(doc)},
 	}
 	v.funData().reg = v
 	return v
@@ -1362,7 +1362,7 @@ func (env *LEnv) AddMacros(external bool, macs ...LBuiltinDef) {
 		// registrationBound replicates the probe pkg.Get used to answer,
 		// without Get's per-miss error construction; see its comment.
 		exist, bound := registrationBound(pkg, name)
-		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && !exist.IsError() { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): AddMacros is registration-time Go
 			// API.  No builtin, operator or macro calls it, so the only way to
 			// bind one name twice is an embedder registering it twice.  The
@@ -1399,7 +1399,7 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 	for _, op := range ops {
 		name := op.Name()
 		exist, bound := registrationBound(pkg, name)
-		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && exist.Type != LError { // LError is a stored error value, not a binding conflict
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsNil() && !exist.IsError() { // LError is a stored error value, not a binding conflict
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic(env.formatError("macro already defined: %v (= %v)", []any{name, exist}))
@@ -1432,7 +1432,7 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	for _, f := range funs {
 		name := f.Name()
 		exist, bound := registrationBound(pkg, name)
-		if bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError { // a stored LError value is overwritten, as pkg.Get's probe allowed
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsError() { // a stored LError value is overwritten, as pkg.Get's probe allowed
 			// NOT LISP-REACHABLE (#367): see AddMacros above -- registration
 			// is Go API an embedder drives, never lisp source.
 			panic("symbol already defined: " + name)
@@ -1608,7 +1608,7 @@ func (env *LEnv) newErrorConditionf(condition string, format string, v ...any) *
 		Type:   LError,
 		Str:    condition,
 		Native: env.errorStack(), //elpsvet:allow-native the error's own captured stack, stamped at the capture point: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so an error never reaches a template with this payload
-		Cells:  []*LVal{String(env.formatError(format, v))},
+		Cells:  Cells{String(env.formatError(format, v))},
 	}
 	return lerr
 }
@@ -1638,7 +1638,7 @@ func (env *LEnv) notifyErrorUnchecked(lerr *LVal) *LVal {
 // stack and source location.  ErrorAssociate returns an LError if lerr is
 // not an error value (indicating a bug in the caller), or nil on success.
 func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
-	if lerr.Type != LError {
+	if !lerr.IsError() {
 		return env.Errorf("internal error: ErrorAssociate called with non-error: %v", lerr.Type)
 	}
 	if stack := lerr.CallStack(); stack == nil {
@@ -1893,7 +1893,7 @@ eval:
 			return env.Errorf("unknown package: %q", ns)
 		}
 		lerr := pkg.Get(Symbol(name))
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
 			}
@@ -1920,7 +1920,7 @@ eval:
 			v = res.Cells[0]
 			goto eval
 		}
-		if res.Type == LError {
+		if res.IsError() {
 			if err := env.ErrorAssociate(res); err != nil {
 				return err
 			}
@@ -1967,7 +1967,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 		return Nil()
 	}
 	call := env.evalSExprCells(ctx, s)
-	if call.Type == LError {
+	if call.IsError() {
 		if err := env.ErrorAssociate(call); err != nil {
 			return err
 		}
@@ -2056,7 +2056,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	if r == nil {
 		return env.Errorf("internal error: macro %s returned nil", env.GetFunName(fun))
 	}
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 
@@ -2154,7 +2154,7 @@ callf:
 	if r == nil {
 		return env.Errorf("internal error: special operator %s returned nil", env.GetFunName(fun))
 	}
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 
@@ -2324,7 +2324,7 @@ callf:
 	if r == nil {
 		return env.Errorf("internal error: function %s returned nil", env.GetFunName(fun))
 	}
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 
@@ -2393,7 +2393,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	}
 	f := env.eval(ctx, cells[0])
 	cells = cells[1:]
-	if f.Type == LError {
+	if f.IsError() {
 		return f
 	}
 	if f.Type != LFun {
@@ -2434,7 +2434,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 			continue
 		}
 		v := env.eval(ctx, expr)
-		if v.Type == LError {
+		if v.IsError() {
 			return v
 		}
 		if v.Type == LMarkTailRec {
@@ -2463,7 +2463,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 		}
 	}
 	fenv, list := env.bind(fun, args)
-	if list != nil && list.Type == LError {
+	if list.IsError() {
 		return list
 	}
 	if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
@@ -2529,7 +2529,7 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 	var ret *LVal
 	for i := range len(body) - 1 {
 		ret = fenv.eval(ctx, body[i])
-		if ret.Type == LError {
+		if ret.IsError() {
 			return ret
 		}
 	}
@@ -2723,7 +2723,7 @@ func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 	nformal := formals.Pos()
 	for !formals.IsEOF() {
 		ret := env.bindFormalNext(fun, &formals, &argsp, formalBindings{put: putArg, putVarArgs: putVarArg})
-		if ret.Type == LError {
+		if ret.IsError() {
 			return nil, ret
 		}
 		if ret.Type == LFun {
@@ -2828,7 +2828,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, 
 				if strings.HasPrefix(key.Str, MetaArgPrefix) {
 					return env.Errorf("function formal argument list contains a control symbol at an invalid location: %v", argSym.Str)
 				}
-				if lerr := put(key, Nil()); lerr.Type == LError {
+				if lerr := put(key, Nil()); lerr.IsError() {
 					return lerr
 				}
 			}
@@ -2854,13 +2854,13 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, 
 			}
 			val, ok := keymap[key.Str]
 			if !ok {
-				if lerr := put(key, Nil()); lerr.Type == LError {
+				if lerr := put(key, Nil()); lerr.IsError() {
 					return lerr
 				}
 				continue
 			}
 			delete(keymap, key.Str)
-			if lerr := put(key, val); lerr.Type == LError {
+			if lerr := put(key, val); lerr.IsError() {
 				return lerr
 			}
 		}
@@ -2892,7 +2892,7 @@ func (env *LEnv) bindFormalNext(fun *LVal, formals *argParser, args *argParser, 
 			} else {
 				val = args.Advance()
 			}
-			if lerr := put(argSym, val); lerr.Type == LError {
+			if lerr := put(argSym, val); lerr.IsError() {
 				return lerr
 			}
 		}

@@ -209,9 +209,9 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
+		return lisp.Cells{lisp.String(tagList), inner}.Vector(), nil
 	case lisp.ShapeArray:
-		array, arrayErr := typedArrayParts(v)
+		array, arrayErr := checkArray(v)
 		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil {
 			return nil, err
@@ -236,7 +236,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
+		return lisp.Cells{lisp.String(tagArray), lisp.Cells{ds, cs}.Vector()}.Vector(), nil
 	case lisp.ShapeTagged:
 		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
 			return nil, errors.New("typed json: malformed tagged value")
@@ -257,7 +257,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
+		return lisp.Cells{lisp.String(tagTagged), lisp.Cells{lisp.String(v.Str), inner}.Vector()}.Vector(), nil
 	case lisp.ShapeMap:
 		return w.object(v, depth)
 	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
@@ -322,7 +322,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	}()
 	if !ok {
 		entries := v.MapEntries()
-		if entries.Type == lisp.LError {
+		if entries.IsError() {
 			return nil, lisp.GoError(entries)
 		}
 		for _, p := range entries.Cells {
@@ -410,37 +410,6 @@ type arrayParts struct {
 	cells []*lisp.LVal
 }
 
-func typedArrayParts(v *lisp.LVal) (arrayParts, error) {
-	var dims []*lisp.LVal
-	var cells []*lisp.LVal
-	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array")
-	}
-	dims, cells = v.Cells[0].Cells, v.Cells[1].Cells
-	zero := false
-	for _, d := range dims {
-		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
-		}
-		zero = zero || d.Int == 0
-	}
-	total := 1
-	if zero {
-		total = 0
-	} else {
-		for _, d := range dims {
-			if total > math.MaxInt/d.Int {
-				return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
-			}
-			total *= d.Int
-		}
-	}
-	if total != len(cells) {
-		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: array contents do not match its dimensions")
-	}
-	return arrayParts{dims: dims, cells: cells}, nil
-}
-
 // TagBuiltin returns a plain JSON value with type tags.
 func TagBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return transformBuiltin(env, args, Tag)
@@ -453,12 +422,12 @@ func UntagBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func transformBuiltin(env *lisp.LEnv, args *lisp.LVal, transform func(*lisp.LVal, ...TypedOption) (*lisp.LVal, error)) *lisp.LVal {
 	in := args.ReqArg(env, 0)
-	if in.Type == lisp.LError {
+	if in.IsError() {
 		return in
 	}
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if rc := env.ChargeSteps(int64(kib)); rc.Type == lisp.LError {
+		if rc := env.ChargeSteps(int64(kib)); rc.IsError() {
 			lerr = rc
 			return errTypedCharge
 		}

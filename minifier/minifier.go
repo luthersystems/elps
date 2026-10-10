@@ -754,7 +754,7 @@ func preservePackageSurfaceSymbols(files []parsedFile, cfg *Config, protected *p
 			if expr.Type != lisp.LSExpr || expr.IsQuoted() || len(expr.Cells) == 0 {
 				continue
 			}
-			if expr.Cells[0].Type == lisp.LSymbol && expr.Cells[0].Str == "in-package" {
+			if expr.Cells[0].IsSymbol("in-package") {
 				if pkg := packageName(expr.Cells[1:]); pkg != "" {
 					currentPkg = pkg
 				}

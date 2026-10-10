@@ -167,11 +167,12 @@ func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
 }
 
 func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	stamp := args.Cells[0]
-	if stamp.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", stamp.Type)
+	a := lisp.ReadArgs(env, args)
+	stamp := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	t, err := time.Parse(time.RFC3339, stamp.Str)
+	t, err := time.Parse(time.RFC3339, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -179,11 +180,12 @@ func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 
 func BuiltinParseRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	stamp := args.Cells[0]
-	if stamp.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", stamp.Type)
+	a := lisp.ReadArgs(env, args)
+	stamp := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	t, err := time.Parse(time.RFC3339Nano, stamp.Str)
+	t, err := time.Parse(time.RFC3339Nano, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -192,7 +194,7 @@ func BuiltinParseRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinFormatRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 1)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.String(t[0].Format(time.RFC3339))
@@ -200,7 +202,7 @@ func BuiltinFormatRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinFormatRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 1)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.String(t[0].Format(time.RFC3339Nano))
@@ -208,7 +210,7 @@ func BuiltinFormatRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinTimeEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 2)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.Bool(t[0].Equal(t[1]))
@@ -216,7 +218,7 @@ func BuiltinTimeEq(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinTimeLT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 2)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.Bool(t[1].After(t[0]))
@@ -224,7 +226,7 @@ func BuiltinTimeLT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinTimeGT(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 2)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.Bool(t[0].After(t[1]))
@@ -237,7 +239,7 @@ func BuiltinTimeAdd(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, ok := borrowTime(lt)
 	a.Check(ok, notTime, lt)
 	d := durationOf(&a, ld)
-	if lerr := a.Err(); lerr.Type == lisp.LError {
+	if lerr := a.Err(); lerr.IsError() {
 		return lerr
 	}
 	return Time(t.Add(d))
@@ -245,18 +247,19 @@ func BuiltinTimeAdd(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	t, lerr := timeArgs(env, args, 2)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return Duration(t[1].Sub(t[0]))
 }
 
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	v := args.Cells[0]
-	if v.Type != lisp.LString {
-		return env.Errorf("argument is not a string: %v", v.Type)
+	a := lisp.ReadArgs(env, args)
+	s := a.String(0, "argument")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
 	}
-	d, err := time.ParseDuration(v.Str)
+	d, err := time.ParseDuration(s)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -267,7 +270,7 @@ func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // the given duration.
 func BuiltinDurationSeconds(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	d, lerr := durationArg(env, args)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.Float(float64(d) / float64(time.Second))
@@ -277,7 +280,7 @@ func BuiltinDurationSeconds(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // the given duration.
 func BuiltinDurationMS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	d, lerr := durationArg(env, args)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.Float(float64(d) / float64(time.Millisecond))
@@ -287,7 +290,7 @@ func BuiltinDurationMS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // in the given duration.
 func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	d, lerr := durationArg(env, args)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	if int64(int(d)) != int64(d) {
@@ -308,7 +311,7 @@ func BuiltinDurationNS(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // context's deadline.  See sleepContext for the full rationale.
 func BuiltinSleep(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	d, lerr := durationArg(env, args)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	limit, lerr := sleepCap(env, args.KeyArg(1))
@@ -410,7 +413,7 @@ func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 		time.Sleep(d)
 		return lisp.Nil()
 	}
-	if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
 	// FAIL FAST rather than sleeping out a doomed wait.  When the deadline is
@@ -437,7 +440,7 @@ func sleepContext(env *lisp.LEnv, d time.Duration) *lisp.LVal {
 	case <-timer.C:
 	case <-done:
 	}
-	if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
 	return lisp.Nil()

@@ -251,9 +251,9 @@ func (d *durableDecoder) array(depth int) (*lisp.LVal, error) {
 	if err := d.depth(depth); err != nil {
 		return nil, err
 	}
-	n := lisp.Int(0)
-	data := lisp.QExpr(nil)
-	v := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{n}), data}}
+	// The vector exists before its elements, so an element can refer back
+	// to it.  Only v is reachable until SetArrayCells fills it.
+	v := lisp.Vector(nil)
 	d.define(v)
 	cells, err := d.elements(depth)
 	if err != nil {
@@ -261,8 +261,7 @@ func (d *durableDecoder) array(depth int) (*lisp.LVal, error) {
 	}
 	// A vector written inline has no spare capacity (DumpDurable writes
 	// one with spare capacity as a view).
-	data.Cells = cells[:len(cells):len(cells)]
-	n.Int = len(cells)
+	v.SetArrayCells(cells[:len(cells):len(cells)])
 	return v, nil
 }
 
@@ -428,8 +427,11 @@ func (d *durableDecoder) taggedValue(depth int) (*lisp.LVal, error) {
 
 // multiArray reads [[dims...],[cells...]] after its '['; rank is not 1.
 func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
-	dimList, data := lisp.QExpr(nil), lisp.QExpr(nil)
-	v := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{dimList, data}}
+	// The array exists before its contents, so a cell can refer back to
+	// it.  Only v is reachable until SetArrayData or SetArrayCells fills
+	// it.
+	//elpsvet:keep-idiom the shell becomes an N-D array, so Array names it better than Vector
+	v := lisp.Array(nil, nil)
 	d.define(v)
 	if err := d.expect('['); err != nil {
 		return nil, err
@@ -470,8 +472,8 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 		if err = d.expect(']'); err != nil {
 			return nil, err
 		}
-		dimList.Cells = dims
-		v.Cells[1] = h
+		var buf [4]int
+		v.SetArrayData(h, dimInts(buf[:0], dims)...)
 		return v, nil
 	}
 	if len(dims) == 1 {
@@ -490,9 +492,17 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	if err := d.expect(']'); err != nil {
 		return nil, err
 	}
-	dimList.Cells = dims
-	data.Cells = cells[:len(cells):len(cells)]
+	var buf [4]int
+	v.SetArrayCells(cells[:len(cells):len(cells)], dimInts(buf[:0], dims)...)
 	return v, nil
+}
+
+// dimInts appends the values of the dimensions that dims read to ns.
+func dimInts(ns []int, dims []*lisp.LVal) []int {
+	for _, n := range dims {
+		ns = append(ns, n.Int)
+	}
+	return ns
 }
 
 // dims reads the dimension list of a tagged array, through its ']'.  Each
@@ -583,7 +593,7 @@ func (d *durableDecoder) objectDef(depth int, pos position) (*lisp.LVal, error) 
 			return nil, err
 		}
 		d.i += len(empty)
-		v = lisp.QExpr([]*lisp.LVal{})
+		v = lisp.Cells{}.List()
 		d.define(v)
 		d.emptyObjs = append(d.emptyObjs, v)
 	} else {
@@ -792,7 +802,7 @@ func (d *durableDecoder) object(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r := m.MapSetLVal(k, v); r.Type == lisp.LError {
+		if r := m.MapSetLVal(k, v); r.IsError() {
 			return nil, d.errorf("%s", r.Str)
 		}
 		size++

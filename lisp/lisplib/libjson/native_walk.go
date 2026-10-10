@@ -15,8 +15,6 @@ import (
 	"strconv"
 	"strings"
 	"sync"
-
-	"github.com/luthersystems/elps/lisp"
 )
 
 // nativeNestLimit is the deepest encoding/json may recurse into a native,
@@ -911,7 +909,7 @@ func (w *nativeWalker) convert(n int) {
 		return
 	}
 	if n >= 1024 && w.enc.env != nil {
-		if lerr := w.enc.env.ChargeSteps(int64(n >> 10)); lerr.Type == lisp.LError {
+		if lerr := w.enc.env.ChargeSteps(int64(n >> 10)); lerr.IsError() {
 			w.err = encodeStepError{lerr}
 		}
 	}

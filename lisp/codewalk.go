@@ -616,7 +616,7 @@ func (w *CodeWalker) compound(v *LVal, depth int) *LVal {
 				}
 			}
 		}
-		if exp.Type == LError {
+		if exp.IsError() {
 			return w.expansionFailed(v, depth, exp)
 		}
 		if exp.Type != LSExpr || exp.quoted || len(exp.Cells) == 0 {
@@ -934,7 +934,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			// lowered to a lambda with the originally inferred formals.
 			if out := b.done(); out != v && len(cells) == 2 {
 				if formals := exprLambdaList(cells[1]); formals != nil {
-					lowered := SExpr([]*LVal{Symbol(DefaultLangPackage + ":lambda"), formals, out.Cells[1]})
+					lowered := Cells{Symbol(DefaultLangPackage + ":lambda"), formals, out.Cells[1]}.SExpr()
 					lowered.source = copyLocation(v.source)
 					return lowered
 				}
@@ -991,7 +991,7 @@ func (w *CodeWalker) formals(formals *LVal, op string, depth int) *LVal {
 				// The analyzer has always located duplicate parameters at
 				// their first occurrence (ParseFormals keeps the duplicates).
 				for _, first := range formals.Cells {
-					if first.Type == LSymbol && first.Str == f.Str {
+					if first.IsSymbol(f.Str) {
 						f = first
 						break
 					}
@@ -1189,7 +1189,7 @@ func (w *CodeWalker) flet(list *LVal, form *LVal, opts fletWalk, body func()) *L
 			for i, bind := range list.Cells {
 				if bind.Type == LSExpr && len(bind.Cells) >= 2 && bind.Cells[0].Type == LSymbol {
 					fn := NewEnv(menv).Lambda(bind.Cells[1], bind.Cells[2:])
-					if fn.Type == LError {
+					if fn.IsError() {
 						w.fail(fn)
 						return
 					}
@@ -1460,7 +1460,7 @@ func (env *LEnv) callMacro(mac, form *LVal) (*LVal, bool) {
 		return lerr, true
 	}
 	mark := env.MacroCall(mac, macroArgList(form))
-	if mark.Type == LError {
+	if mark.IsError() {
 		return mark, true
 	}
 	if mark.Type != LMarkMacExpand {
@@ -1510,7 +1510,7 @@ func builtinMacroExpandAll(env *LEnv, args *LVal) *LVal {
 		code = shallowUnquote(form)
 	}
 	r := env.MacroExpandAll(code)
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 	if r == code {

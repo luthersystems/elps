@@ -62,7 +62,7 @@ func (d *durableDecoder) closureValue(depth int) (*lisp.LVal, error) {
 		return nil, err
 	}
 	f := env.RestoreLambda(pkg, code.code)
-	if f.Type == lisp.LError {
+	if f.IsError() {
 		return nil, d.errorf("closure: %v", (*lisp.ErrorVal)(f).ErrorMessage())
 	}
 	*h = *f
@@ -97,8 +97,8 @@ func (d *durableDecoder) frameRef(depth int) (*lisp.LEnv, error) {
 	if err != nil {
 		return nil, err
 	}
-	f, ok := v.Native.(*decFrame)
-	if !ok || v.Type != lisp.LNative || f == nil || f.env == nil {
+	f, ok := lisp.NativeValue[*decFrame](v)
+	if !ok || f == nil || f.env == nil {
 		return nil, d.errorf("a frame that is its own ancestor")
 	}
 	return f.env, nil
@@ -158,7 +158,7 @@ func (d *durableDecoder) frameValue(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r := env.Put(sym, v); r.Type == lisp.LError {
+		if r := env.Put(sym, v); r.IsError() {
 			return nil, d.errorf("captured variable %q: %v", sym.Str, (*lisp.ErrorVal)(r).ErrorMessage())
 		}
 	}

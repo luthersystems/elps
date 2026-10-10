@@ -1,0 +1,12 @@
+package idiomcase
+
+import "github.com/luthersystems/elps/lisp"
+
+func vector(a, b *lisp.LVal, cells []*lisp.LVal) []*lisp.LVal {
+	return []*lisp.LVal{
+		lisp.Cells{a, b}.Vector(), // want `use lisp.Cells\{...\}.Vector\(\), which builds the same vector`
+		lisp.Vector(cells),        // want `use lisp.Vector\(cells\), which is Array\(nil, ...\)`
+		lisp.Vector(cells),
+		lisp.Array(a, cells),
+	}
+}

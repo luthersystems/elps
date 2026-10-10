@@ -604,9 +604,9 @@ func SplitSymbol(sym *LVal) *LVal {
 	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	switch n {
 	case 1:
-		return QExpr([]*LVal{sym})
+		return Cells{sym}.List()
 	case 2:
-		return QExpr([]*LVal{Symbol(ns), Symbol(name)})
+		return Cells{Symbol(ns), Symbol(name)}.List()
 	default:
 		return Errorf("illegal symbol: %q", sym.Str)
 	}
@@ -703,7 +703,10 @@ func QExpr(cells []*LVal) *LVal {
 
 // Vector returns an LVal representing a vector, a 1-dimensional array.
 // Provided cells are used as backing storage for the returned vector and are
-// not copied.
+// not copied.  Vector(nil) is an empty vector: its length is 0 and its
+// dimensions are (0), the same value as Array(nil, nil).  A vector is an
+// LArray with one dimension; the Array* methods (ArrayDims, ArrayIndex,
+// ArrayParts, SetArrayData) work on it.
 func Vector(cells []*LVal) *LVal {
 	return Array(nil, cells)
 }
@@ -759,7 +762,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		// A self-built dims list is exactly [len(cells)], so its product
 		// needs no loop and cannot overflow.
 		totalSize = len(cells)
-		stored = QExpr([]*LVal{Int(len(cells))})
+		stored = Cells{Int(len(cells))}.List()
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
@@ -809,7 +812,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 
 	return &LVal{
 		Type: LArray,
-		Cells: []*LVal{
+		Cells: Cells{
 			stored,
 			QExpr(cells),
 		},
@@ -865,6 +868,15 @@ func FunRef(symbol, fun *LVal) *LVal {
 // package-less LFun reaching funCall / MacroCall / SpecialOpCall
 // produces "BUG: GetFunName" log spam (issue #271).
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
+	return FunInPackageDoc(pkg, fid, formals, fn, "")
+}
+
+// FunInPackageDoc is FunInPackage with the docstring doc.  The function value
+// holds its formals and docstring in the layout registered builtins use, so
+// Docstring returns doc.
+//
+//nolint:revive // FunInPackage plus its docstring; the design fixes the five arguments
+func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
 		Type: LFun,
 		Native: &funData{
@@ -872,7 +884,7 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: Cells{formals, String(doc)},
 	}
 }
 
@@ -911,7 +923,7 @@ func newCapturedBuiltin(spec capturedBuiltin) *LVal {
 	data.value = LVal{
 		Type:   LFun,
 		Native: &data.function, //elps:aliases the fresh coallocation owns this payload; its env and location are nil, with no borrowed runtime location
-		Cells:  []*LVal{spec.Formals, String("")},
+		Cells:  Cells{spec.Formals, String("")},
 	}
 	return &data.value
 }
@@ -956,7 +968,7 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: Cells{formals, String("")},
 	}
 }
 
@@ -983,7 +995,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: Cells{formals, String("")},
 	}
 }
 
@@ -1044,7 +1056,7 @@ func ErrorCondition(condition string, err error) *LVal {
 	return &LVal{
 		Type: LError,
 		Str:  condition,
-		Cells: []*LVal{{
+		Cells: Cells{{
 			Type: LString,
 			Str:  message,
 			// Keep host identity without exposing a native value to Lisp.
@@ -1077,7 +1089,7 @@ func ErrorConditionf(condition string, format string, v ...any) *LVal {
 	return &LVal{
 		Type:  LError,
 		Str:   condition,
-		Cells: []*LVal{String(fmt.Sprintf(format, v...))},
+		Cells: Cells{String(fmt.Sprintf(format, v...))},
 	}
 }
 
@@ -1092,7 +1104,7 @@ func Quote(v *LVal) *LVal {
 	quote := &LVal{
 		Type:   LQuote,
 		quoted: true,
-		Cells:  []*LVal{v},
+		Cells:  Cells{v},
 	}
 	return quote
 }
@@ -1200,7 +1212,7 @@ func markMacExpand(expr *LVal) *LVal {
 // `error` builtin always copies a nil GoStack.  A forged 'internal-panic is
 // therefore treated as an ordinary condition and stays containable.
 func IsInternalPanic(v *LVal) bool {
-	if v == nil || v.Type != LError || v.Str != CondInternalPanic {
+	if !v.IsError() || v.Str != CondInternalPanic {
 		return false
 	}
 	stack, ok := v.Native.(*CallStack)
@@ -1221,7 +1233,7 @@ func IsInternalPanic(v *LVal) bool {
 // accessor that answered nil would be reporting "no stack recorded" for a
 // value that can never have one.
 func (v *LVal) CallStack() *CallStack {
-	if v.Type != LError {
+	if !v.IsError() {
 		panic("not an error: " + v.Type.String())
 	}
 	stack, ok := v.Native.(*CallStack)
@@ -1237,7 +1249,7 @@ func (v *LVal) CallStack() *CallStack {
 // NOT LISP-REACHABLE (#367): same argument as CallStack above -- every
 // in-tree caller guards on v.Type == LError.
 func (v *LVal) SetCallStack(stack *CallStack) {
-	if v.Type != LError {
+	if !v.IsError() {
 		panic("not an error: " + v.Type.String())
 	}
 	//elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
@@ -1456,6 +1468,101 @@ func (v *LVal) ArrayDims() *LVal {
 	return v.Cells[0].Copy()
 }
 
+// ArrayParts returns the dimension list (dims) and the data list (data) that
+// the array v stores, in that order:
+//
+//	dims, data := v.ArrayParts()
+//
+// It does not copy them, so a write to either list changes v; use
+// ArrayDims for a copy of the dimension list.  ArrayParts makes no check of
+// the lists.  For an LArray value that does not hold two cells (a malformed
+// value built by hand), it returns nil, nil.  ArrayParts panics if v.Type is
+// not LArray, as Map and MapEntries panic for a value that is not a
+// sorted-map.
+func (v *LVal) ArrayParts() (*LVal, *LVal) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	if len(v.Cells) != 2 {
+		return nil, nil
+	}
+	return v.Cells[0], v.Cells[1]
+}
+
+// SetArrayData makes data the data list of the array v and sets its
+// dimensions, in place.  v keeps its pointer, so a value that holds v sees
+// the new contents.  With no dims, v becomes a vector of len(data.Cells)
+// cells.  With dims, they are v's dimensions.  data is kept, not copied.
+// SetArrayData makes no check that data is a list or that the dimensions
+// match its length; Array is the checked form.  When the new rank equals
+// the old rank, SetArrayData writes the dimensions into v's own dimension
+// list, as append! does.  SetArrayData panics if v.Type is not LArray.
+//
+// Use SetArrayData when data has an identity of its own (a list that
+// another value shares).  Use SetArrayCells to fill v's own data list.
+func (v *LVal) SetArrayData(data *LVal, dims ...int) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	//elps:mutates SetArrayData fills the caller's array in place by contract, so a value that holds v sees it
+	v.Cells[1] = data
+	v.setArrayDims(len(data.Cells), dims)
+}
+
+// SetArrayCells makes cells the cells of the data list of the array v and
+// sets its dimensions, in place, as SetArrayData does.  It writes into v's
+// own data list, so it builds no new list; a value that shares that list
+// sees the new cells.  cells is kept, not copied.  SetArrayCells makes no
+// check that the dimensions match len(cells).  It panics if v.Type is not
+// LArray.
+//
+// A decoder that must give out an array before it reads the contents (a
+// back-reference to the array from inside it) builds the empty array first
+// and fills it last:
+//
+//	v := lisp.Vector(nil)
+//	define(v)
+//	cells := readElements()
+//	v.SetArrayCells(cells)
+func (v *LVal) SetArrayCells(cells []*LVal, dims ...int) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	//elps:mutates SetArrayCells fills the caller's array's own data list in place by contract
+	v.Cells[1].Cells = cells
+	v.setArrayDims(len(cells), dims)
+}
+
+// setArrayDims sets the dimensions of the array v: dims, or a vector of n
+// cells when dims is empty.  When the rank does not change, it writes into
+// v's own dimension list.
+func (v *LVal) setArrayDims(n int, dims []int) {
+	d := v.Cells[0]
+	if len(dims) == 0 {
+		if len(d.Cells) == 1 {
+			//elps:mutates an array owns its dimension list, which append! writes in place too
+			d.Cells[0].Int = n
+			return
+		}
+		//elps:mutates the caller's array takes a new dimension list for the new rank
+		v.Cells[0] = Cells{Int(n)}.List()
+		return
+	}
+	if len(d.Cells) != len(dims) {
+		cells := make([]*LVal, len(dims))
+		for i, k := range dims {
+			cells[i] = Int(k)
+		}
+		//elps:mutates the caller's array takes a new dimension list for the new rank
+		v.Cells[0] = QExpr(cells)
+		return
+	}
+	for i, k := range dims {
+		//elps:mutates an array owns its dimension list, which append! writes in place too
+		d.Cells[i].Int = k
+	}
+}
+
 // ArrayIndex returns the value at the given index in an array.
 func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 	if v.Type != LArray {
@@ -1595,6 +1702,20 @@ func (v *LVal) IsSpecialOp() bool {
 // other seventeen LTypes to say nothing about them.
 func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
+}
+
+// IsError reports whether v is an error value (LError).  It is the same
+// compare as v != nil && v.Type == LError.  A nil v is not an error.
+func (v *LVal) IsError() bool {
+	return v != nil && v.Type == LError
+}
+
+// IsSymbol reports whether v is the symbol name.  It is the same compare as
+// v != nil && v.Type == LSymbol && v.Str == name.  A nil v is not a symbol.
+//
+//	if v.IsSymbol(lisp.TrueSymbol) { ... }
+func (v *LVal) IsSymbol(name string) bool {
+	return v != nil && v.Type == LSymbol && v.Str == name
 }
 
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
@@ -1748,10 +1869,10 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 		}
 		*budget -= 1 + 2*v.Map().Len()
 		ae, be := sortedMapEntries(v.Map()), sortedMapEntries(other.Map())
-		if ae.Type == LError {
+		if ae.IsError() {
 			return ae
 		}
-		if be.Type == LError {
+		if be.IsError() {
 			return be
 		}
 		if len(ae.Cells) != len(be.Cells) {
@@ -1935,10 +2056,10 @@ walk:
 				}
 				if a.Type == LSortMap {
 					ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
-					if ae.Type == LError {
+					if ae.IsError() {
 						return ae, false
 					}
-					if be.Type == LError {
+					if be.IsError() {
 						return be, false
 					}
 					if len(ae.Cells) != len(be.Cells) {
@@ -2128,12 +2249,12 @@ func (v *LVal) copyMapData() (*MapData, error) {
 	}
 	m := &MapData{newmap()}
 	entries := sortedMapEntries(m0)
-	if entries.Type == LError {
+	if entries.IsError() {
 		return nil, fmt.Errorf("failed to copy map: %v", entries)
 	}
 	for _, pair := range entries.Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return nil, fmt.Errorf("failed to copy map: %v", lerr)
 		}
 	}
@@ -2149,6 +2270,7 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // boundary still render in full. Output and work are bounded by DefaultMaxAlloc;
 // exhausted output is replaced by #<truncated>. Use LEnv.Render for runtime limits. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
+	//elpsvet:keep-idiom IsError's nil test costs 13% on BenchmarkString/int, and v is not nil here
 	if v.Type == LError && !v.quoted {
 		return (*ErrorVal)(v).Error()
 	}
@@ -2218,6 +2340,22 @@ func isVec(v *LVal) bool {
 
 func isSeq(v *LVal) bool {
 	return v.Type == LSExpr || isVec(v)
+}
+
+// SeqCells returns the cells of a list or of a one-dimensional vector and
+// true.  For any other value, a multi-dimensional array included, it returns
+// nil and false.  The cells are the value's own storage, so treat them as
+// read-only.  SeqCells makes no check and allocates nothing.
+//
+//	cells, ok := methodArgs.SeqCells()
+//	if !ok {
+//		return env.Errorf("argument is not a proper sequence: %v", methodArgs.Type)
+//	}
+func (v *LVal) SeqCells() ([]*LVal, bool) {
+	if !isSeq(v) {
+		return nil, false
+	}
+	return seqCells(v), true
 }
 
 func seqCells(v *LVal) []*LVal {

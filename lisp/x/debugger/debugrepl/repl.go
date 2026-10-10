@@ -71,7 +71,7 @@ func Run(engine *debugger.Engine, env *lisp.LEnv, file string, opts ...Option) e
 	go func() {
 		res := env.LoadFile(relFile)
 		exitCode := 0
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			exitCode = 1
 		}
 		engine.NotifyExit(exitCode)
@@ -94,7 +94,7 @@ func Run(engine *debugger.Engine, env *lisp.LEnv, file string, opts ...Option) e
 
 	// Wait for eval to finish.
 	res := <-evalDone
-	if res.Type == lisp.LError {
+	if res.IsError() {
 		return fmt.Errorf("%v", res)
 	}
 	return nil

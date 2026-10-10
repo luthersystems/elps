@@ -24,7 +24,7 @@ func opHelp(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("argument is not a symbol: %v", GetType(name))
 	}
 	v := env.Get(Symbol(name.Str))
-	if v.Type == LError {
+	if v.IsError() {
 		return env.Error(GoError(v))
 	}
 	doc := helpSymbolDoc(env, name.Str)

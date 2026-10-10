@@ -317,7 +317,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 		return
 	}
 	ltest := suite.Test(i)
-	err = lisp.GoError(env.Eval(lisp.SExpr([]*lisp.LVal{ltest.Fun})))
+	err = lisp.GoError(env.Eval(lisp.Cells{ltest.Fun}.SExpr()))
 	if err != nil {
 		r.LispError(t, err)
 		return
@@ -422,7 +422,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	}
 	ltest := suite.Benchmark(i)
 	b.StartTimer()
-	err = lisp.GoError(env.Eval(lisp.SExpr([]*lisp.LVal{ltest.Fun, lisp.Int(b.N)})))
+	err = lisp.GoError(env.Eval(lisp.Cells{ltest.Fun, lisp.Int(b.N)}.SExpr()))
 	// The measured region ends HERE, before any deferred work.  Unstopped,
 	// the timer ran on through the teardown defer's restart and through the
 	// log flush, adding a fixed charge to every RunBenchmark call that grows
@@ -635,7 +635,7 @@ func RunBenchmark(b *testing.B, source string) {
 		b.StartTimer()
 		for i, expr := range iterExprs {
 			lerr := env.Eval(expr)
-			if lerr.Type == lisp.LError {
+			if lerr.IsError() {
 				b.Fatalf("expr %d: %v", i, lerr)
 			}
 		}

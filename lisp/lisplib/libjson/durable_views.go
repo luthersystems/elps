@@ -190,8 +190,10 @@ func (e *durableEncoder) identity(v *lisp.LVal) (any, bool) {
 	if v.Type == lisp.LSExpr && e.dataHeaders[v] {
 		return holderKey{v}, true
 	}
-	if v.Type == lisp.LArray && len(v.Cells) == 2 {
-		return arrayKey{v.Cells[0], v.Cells[1]}, true
+	if v.Type == lisp.LArray {
+		if dims, data := v.ArrayParts(); dims != nil || data != nil {
+			return arrayKey{dims, data}, true
+		}
 	}
 	return durableIdentity(v)
 }

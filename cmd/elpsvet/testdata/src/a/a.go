@@ -52,6 +52,18 @@ func freshComposite() *lisp.LVal {
 	return w
 }
 
+// freshCells roots a write at a list, s-expression or vector that
+// lisp.Cells built.
+func freshCells(x *lisp.LVal) *lisp.LVal {
+	l := lisp.Cells{x}.List()
+	l.Quoted = false
+	v := lisp.Cells{x}.Vector()
+	v.Str = "v"
+	sx := lisp.Cells{x}.SExpr()
+	sx.Str = "s"
+	return l
+}
+
 // freshChain roots a deep write at a fresh constructor result.
 func freshChain() *lisp.LVal {
 	v := lisp.QExpr([]*lisp.LVal{lisp.Symbol("a")})

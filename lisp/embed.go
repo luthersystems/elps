@@ -204,7 +204,7 @@ walk:
 					break
 				}
 				entries := sortedMapEntries(md)
-				if entries.Type == LError {
+				if entries.IsError() {
 					return (*ErrorVal)(entries), true
 				}
 				for _, pair := range entries.Cells {
@@ -365,7 +365,7 @@ func conversionLeaf(v *LVal) any {
 // GoError returns an error that represents v.  If v is not LError then nil is
 // returned.
 func GoError(v *LVal) error {
-	if v.Type != LError {
+	if !v.IsError() {
 		return nil
 	}
 	return (*ErrorVal)(v)

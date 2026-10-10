@@ -296,7 +296,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", key.Type)
 	}
 	val := env.Eval(expr)
-	if val.Type == LError {
+	if val.IsError() {
 		return val
 	}
 	env.loc = key.source
@@ -308,7 +308,7 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 	// Evaluate the original expression (docs/lang.md#assert). Copying would
 	// redirect mutations to private runtime data and clear literal protection.
 	ok := env.Eval(test)
-	if ok.Type == LError {
+	if ok.IsError() {
 		return ok
 	}
 	if True(ok) {
@@ -320,7 +320,7 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 	// The message is an expression too. Its evaluation and type check are
 	// deferred until failure, before any formatting argument is evaluated.
 	formatStr := env.Eval(args.Cells[1])
-	if formatStr.Type == LError {
+	if formatStr.IsError() {
 		return formatStr
 	}
 	if formatStr.Type != LString {
@@ -330,12 +330,12 @@ func opAssert(env *LEnv, args *LVal) *LVal {
 	formatArgs := args.Cells[2:]
 	for i := range formatArgs {
 		formatArgs[i] = env.Eval(formatArgs[i]) //elps:mutates writes evaluated results into this call's arglist backing, which evalSExprCells allocates fresh per call
-		if formatArgs[i].Type == LError {
+		if formatArgs[i].IsError() {
 			return formatArgs[i]
 		}
 	}
 	msg := builtinFormatString(env, SExpr(args.Cells[1:]))
-	if msg.Type == LError {
+	if msg.IsError() {
 		return msg
 	}
 	return env.Error(errors.New(msg.Str))
@@ -359,7 +359,7 @@ func opQuasiquote(env *LEnv, args *LVal) *LVal {
 	expr := args.Cells[0]
 
 	result := findAndUnquote(env, expr, 0)
-	if result.Type == LError {
+	if result.IsError() {
 		return result
 	}
 
@@ -373,7 +373,7 @@ func opLambda(env *LEnv, args *LVal) *LVal {
 	// Construct the LVal and add env to the LEnv chain to get lexical scoping
 	// (I think... -bmatsuo)
 	lval := env.Lambda(formals, body)
-	if lval.Type == LError {
+	if lval.IsError() {
 		lval.SetCallStack(env.Runtime.Stack.Copy())
 	}
 	return lval
@@ -604,12 +604,12 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		return env.Terminal(val)
 	}
 	val = env.Eval(val)
-	if val.Type == LError {
+	if val.IsError() {
 		return val
 	}
 	for i, expr := range exprs {
 		fun := env.Eval(expr.Cells[0])
-		if fun.Type == LError {
+		if fun.IsError() {
 			return fun
 		}
 		if fun.Type != LFun {
@@ -624,7 +624,7 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 				return env.Terminal(form)
 			}
 			val = env.Eval(form)
-			if val.Type == LError {
+			if val.IsError() {
 				return val
 			}
 			continue
@@ -638,7 +638,7 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 		}
 		for _, arg := range expr.Cells[1:] {
 			argval := env.Eval(arg)
-			if argval.Type == LError {
+			if argval.IsError() {
 				return argval
 			}
 			cells = append(cells, argval)
@@ -652,7 +652,7 @@ func threadValue(env *LEnv, args *LVal, last bool) *LVal {
 			env.Runtime.Stack.Top().Terminal = true
 		}
 		val = env.callValueFunction(fun, SExpr(cells))
-		if val.Type == LError {
+		if val.IsError() {
 			return val
 		}
 	}
@@ -714,11 +714,11 @@ func opFlet(env *LEnv, args *LVal) *LVal {
 		fenv := NewEnv(env) // lambdas in a flet get their own little environment
 		name, formals, body := bind.Cells[0], bind.Cells[1], bind.Cells[2:]
 		lval := fenv.Lambda(formals, body)
-		if lval.Type == LError {
+		if lval.IsError() {
 			return lval
 		}
 		lerr := fletenv.Put(name, lval)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -751,7 +751,7 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 	}
 
 	count := env.Eval(countexpr)
-	if count.Type == LError {
+	if count.IsError() {
 		return count
 	}
 	if count.Type != LInt {
@@ -807,18 +807,18 @@ func opDoTimes(env *LEnv, args *LVal) *LVal {
 		}
 		n++
 		lerr := loopenv.Put(symbol, Int(i))
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 		for _, expr := range body {
 			result := loopenv.Eval(expr)
-			if result.Type == LError {
+			if result.IsError() {
 				return result
 			}
 		}
 	}
 	lerr := loopenv.Put(symbol, Int(n))
-	if lerr.Type == LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return loopenv.Terminal(returnexpr)
@@ -848,13 +848,13 @@ func opLabels(env *LEnv, args *LVal) *LVal {
 		name, formals, body := bind.Cells[0], bind.Cells[1], bind.Cells[2:]
 		// The lambda's lexical scope includes all lambdas that labels defines.
 		lval := fletenv.Lambda(formals, body)
-		if lval.Type == LError {
+		if lval.IsError() {
 			return lval
 		}
 		// Bind name for the function body and to allow cross-references
 		// between label lambdas.
 		lerr := fletenv.Put(name, lval)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -886,12 +886,12 @@ func opMacrolet(env *LEnv, args *LVal) *LVal {
 		fenv := NewEnv(env) // lambdas in a macrolet get their own little environment
 		name, formals, body := bind.Cells[0], bind.Cells[1], bind.Cells[2:]
 		lval := fenv.Lambda(formals, body)
-		if lval.Type == LError {
+		if lval.IsError() {
 			return lval
 		}
 		lval.FunType = LFunMacro //elps:mutates evaluate as a macro: lval is the closure fenv.Lambda freshly allocated above
 		lerr := fletenv.Put(name, lval)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -916,13 +916,13 @@ func opLet(env *LEnv, args *LVal) *LVal {
 		// Initializers run outside the new bindings, including closures
 		// they return. Capturing letenv here would expose later bindings.
 		vals[i] = env.Eval(bind.Cells[1])
-		if vals[i].Type == LError {
+		if vals[i].IsError() {
 			return vals[i]
 		}
 	}
 	for i, bind := range bindlist.Cells {
 		lerr := letenv.Put(bind.Cells[0], vals[i])
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -945,7 +945,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		}
 		before := env.Runtime.closuresCreated()
 		val := letenv.Eval(bind.Cells[1])
-		if val.Type == LError {
+		if val.IsError() {
 			return val
 		}
 		// Semantically each binding is a nested scope: a closure created by
@@ -964,7 +964,7 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 			letenv = newEnvN(letenv, len(bindlist.Cells)-i)
 		}
 		lerr := letenv.Put(bind.Cells[0], val)
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return lerr
 		}
 	}
@@ -979,7 +979,7 @@ func opProgn(env *LEnv, args *LVal) *LVal {
 	var val *LVal
 	for _, c := range args.Cells[:len(args.Cells)-1] {
 		val = env.Eval(c)
-		if val.Type == LError {
+		if val.IsError() {
 			return val
 		}
 	}
@@ -1013,7 +1013,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 	env.Runtime.Stack.Top().TROBlock = true
 	for _, c := range forms {
 		val = env.Eval(c)
-		if val.Type == LError {
+		if val.IsError() {
 			for _, bind := range lbinds.Cells {
 				sym, handler := bind.Cells[0], bind.Cells[1]
 				// Compare the error condition to the handler type specifier.
@@ -1030,7 +1030,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// The condition matches so we evaluate the handler and then
 				// call it, passing the error.
 				hval := env.Eval(handler)
-				if hval.Type == LError {
+				if hval.IsError() {
 					// Handler evaluation errors propagate to an outer handler-bind.
 					return hval
 				}
@@ -1123,7 +1123,7 @@ func opWithCleanup(env *LEnv, args *LVal) *LVal {
 	val := Nil()
 	for _, c := range body {
 		val = env.Eval(c)
-		if val.Type == LError {
+		if val.IsError() {
 			break
 		}
 	}
@@ -1165,7 +1165,7 @@ func opWithCleanup(env *LEnv, args *LVal) *LVal {
 	// written down instead of asserted away.
 	for _, c := range cleanup.Cells {
 		cval := env.Eval(c)
-		if cval.Type != LError {
+		if !cval.IsError() {
 			continue
 		}
 		if panicked {
@@ -1195,7 +1195,7 @@ func opIgnoreErrors(env *LEnv, args *LVal) *LVal {
 	env.Runtime.Stack.Top().TROBlock = true
 	for _, c := range args.Cells {
 		val = env.Eval(c)
-		if val.Type == LError {
+		if val.IsError() {
 			if IsInternalPanic(val) {
 				// A recovered Go panic is a host-code bug, not a program
 				// condition.  Swallowing it would hide the defect and let
@@ -1229,7 +1229,7 @@ func opCond(env *LEnv, args *LVal) *LVal {
 		} else {
 			test = env.Eval(branch.Cells[0])
 		}
-		if test.Type == LError {
+		if test.IsError() {
 			return test
 		}
 		if Not(test) {
@@ -1246,7 +1246,7 @@ func opIf(env *LEnv, s *LVal) *LVal {
 		return env.Errorf("three arguments expected (got %d)", len(s.Cells))
 	}
 	r := env.Eval(s.Cells[0])
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 	if Not(r) {
@@ -1275,7 +1275,7 @@ func opWhenUnless(env *LEnv, s *LVal, name string, negate bool) *LVal {
 		return env.Errorf("%s: condition argument expected", name)
 	}
 	r := env.Eval(s.Cells[0])
-	if r.Type == LError {
+	if r.IsError() {
 		return r
 	}
 	if Not(r) != negate {
@@ -1286,7 +1286,7 @@ func opWhenUnless(env *LEnv, s *LVal, name string, negate bool) *LVal {
 		return Nil()
 	}
 	for _, c := range body[:len(body)-1] {
-		if v := env.Eval(c); v.Type == LError {
+		if v := env.Eval(c); v.IsError() {
 			return v
 		}
 	}
@@ -1299,7 +1299,7 @@ func opDefault(env *LEnv, s *LVal) *LVal {
 		return env.Errorf("two arguments expected (got %d)", len(s.Cells))
 	}
 	v := env.Eval(s.Cells[0])
-	if v.Type == LError {
+	if v.IsError() {
 		return v
 	}
 	if !v.IsNil() {
@@ -1359,14 +1359,14 @@ func opWhile(env *LEnv, s *LVal) *LVal {
 			return lerr
 		}
 		r := env.Eval(cond)
-		if r.Type == LError {
+		if r.IsError() {
 			return r
 		}
 		if Not(r) {
 			return Nil()
 		}
 		for _, c := range body {
-			if v := env.Eval(c); v.Type == LError {
+			if v := env.Eval(c); v.IsError() {
 				return v
 			}
 		}
@@ -1383,7 +1383,7 @@ func opOr(env *LEnv, s *LVal) *LVal {
 	term := s.Cells[len(s.Cells)-1]
 	for _, c := range s.Cells[:len(s.Cells)-1] {
 		r := env.Eval(c)
-		if r.Type == LError {
+		if r.IsError() {
 			return r
 		}
 		if True(r) {
@@ -1406,7 +1406,7 @@ func opAnd(env *LEnv, s *LVal) *LVal {
 	term := s.Cells[len(s.Cells)-1]
 	for _, c := range s.Cells[:len(s.Cells)-1] {
 		r := env.Eval(c)
-		if r.Type == LError {
+		if r.IsError() {
 			return r
 		}
 		if !True(r) {

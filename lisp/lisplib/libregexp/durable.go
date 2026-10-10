@@ -27,8 +27,8 @@ var DurableRegexpCodec = libjson.DurableCodec[compiledRegexp]{
 	Name:    DurableRegexpName,
 	Version: 1,
 	Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) {
-		re, ok := v.Native.(compiledRegexp)
-		if v.Type != lisp.LNative || !ok || re.re == nil {
+		re, ok := lisp.NativeValue[compiledRegexp](v)
+		if !ok || re.re == nil {
 			return nil, fmt.Errorf("%s: not a compiled regexp", DurableRegexpName)
 		}
 		return lisp.String(re.re.String()), nil
