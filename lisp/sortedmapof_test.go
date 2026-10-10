@@ -46,24 +46,39 @@ func callInEval(t *testing.T, env *lisp.LEnv, cancel bool, f func(env *lisp.LEnv
 // the same value, or the same error condition and message.  Neither charges a
 // step, and neither writes the caller's slice.
 func TestSortedMapOfMatchesBuiltin(t *testing.T) {
+	// want is the printed map and msg is the error message.  Both are
+	// literals, because the builtin shares the helper's body and so cannot
+	// be the only reference.  The last spelling of a key wins, so a symbol
+	// key prints as a symbol.
 	cases := []struct {
 		name     string
+		want     string
+		msg      string
 		kv       []*lisp.LVal
 		maxAlloc int
 		cancel   bool
-		wantErr  bool
 	}{
-		{name: "pairs", kv: []*lisp.LVal{lisp.String("b"), lisp.Int(2), lisp.Int(7), lisp.Int(1), lisp.Symbol("a"), lisp.String("x")}},
-		{name: "empty", kv: nil},
-		{name: "odd arguments", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b")}, wantErr: true},
-		{name: "one argument", kv: []*lisp.LVal{lisp.String("a")}, wantErr: true},
-		{name: "allocation cap on insert", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2), lisp.String("c"), lisp.Int(3)}, maxAlloc: 2, wantErr: true},
-		{name: "allocation cap replacement", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2), lisp.Symbol("a"), lisp.Int(3)}, maxAlloc: 2},
-		{name: "cancelled context", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1)}, cancel: true, wantErr: true},
-		{name: "cancelled context odd arguments", kv: []*lisp.LVal{lisp.String("a")}, cancel: true, wantErr: true},
-		{name: "refused key", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Float(1.5), lisp.Int(2)}, wantErr: true},
-		{name: "refused key at allocation cap", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Float(1.5), lisp.Int(2)}, maxAlloc: 1, wantErr: true},
-		{name: "duplicate keys", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Symbol("a"), lisp.Int(2), lisp.Int(1), lisp.Int(3), lisp.Int(1), lisp.Int(4)}},
+		{name: "pairs", kv: []*lisp.LVal{lisp.String("b"), lisp.Int(2), lisp.Int(7), lisp.Int(1), lisp.Symbol("a"), lisp.String("x")},
+			want: `(sorted-map 7 1 'a "x" "b" 2)`},
+		{name: "empty", kv: nil, want: `(sorted-map)`},
+		{name: "odd arguments", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b")},
+			msg: "uneven number of arguments: 3"},
+		{name: "one argument", kv: []*lisp.LVal{lisp.String("a")},
+			msg: "uneven number of arguments: 1"},
+		{name: "allocation cap on insert", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2), lisp.String("c"), lisp.Int(3)}, maxAlloc: 2,
+			msg: "allocation size 3 exceeds maximum (2)"},
+		{name: "allocation cap replacement", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2), lisp.Symbol("a"), lisp.Int(3)}, maxAlloc: 2,
+			want: `(sorted-map 'a 3 "b" 2)`},
+		{name: "cancelled context", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1)}, cancel: true,
+			msg: "context cancelled: context canceled"},
+		{name: "cancelled context odd arguments", kv: []*lisp.LVal{lisp.String("a")}, cancel: true,
+			msg: "context cancelled: context canceled"},
+		{name: "refused key", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Float(1.5), lisp.Int(2)},
+			msg: "unhashable type: float"},
+		{name: "refused key at allocation cap", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Float(1.5), lisp.Int(2)}, maxAlloc: 1,
+			msg: "unhashable type: float"},
+		{name: "duplicate keys", kv: []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.Symbol("a"), lisp.Int(2), lisp.Int(1), lisp.Int(3), lisp.Int(1), lisp.Int(4)},
+			want: `(sorted-map 1 4 'a 2)`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -86,10 +101,11 @@ func TestSortedMapOfMatchesBuiltin(t *testing.T) {
 			}
 
 			require.Equal(t, want.Type, got.Type, "%v vs %v", want, got)
-			if tc.wantErr {
+			if tc.msg != "" {
 				require.Equal(t, lisp.LError, got.Type, "%v", got)
 				assert.Equal(t, want.Str, got.Str, "error condition")
 				assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage())
+				assert.Equal(t, tc.msg, (*lisp.ErrorVal)(got).ErrorMessage())
 				if tc.cancel {
 					assert.Equal(t, lisp.CondContextCancelled, got.Str)
 				}
@@ -97,6 +113,7 @@ func TestSortedMapOfMatchesBuiltin(t *testing.T) {
 			}
 			require.Equal(t, lisp.LSortMap, got.Type, "%v", got)
 			assert.Equal(t, want.String(), got.String())
+			assert.Equal(t, tc.want, got.String())
 			assert.Equal(t, want.Len(), got.Len())
 		})
 	}
