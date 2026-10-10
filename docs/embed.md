@@ -843,6 +843,15 @@ if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
 }
 ```
 
+**`env.ToString(v)` and `env.FormatString(format, values...)`** share the
+bodies of the `to-string` and `format-string` builtins, so they return the
+same value or the same error, the `MaxAlloc` checks included. Each checks the
+context first, as `CallBuiltin` does. The format is a Go string:
+
+```go
+msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
+```
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -312,4 +313,77 @@ func inCancelledBuiltin(t *testing.T, env *lisp.LEnv, fn func(env *lisp.LEnv)) {
 		}))
 	env.EvalContext(ctx, lisp.SExpr([]*lisp.LVal{lisp.Symbol("goport-probe")}))
 	require.True(t, ran, "the probe builtin did not run")
+}
+
+// assertSameResult checks that got is what the builtin call want returned:
+// the same printed value, or an error with the same condition and message.
+func assertSameResult(t *testing.T, want, got *lisp.LVal, msgAndArgs ...any) {
+	t.Helper()
+	require.Equal(t, want.Type, got.Type, msgAndArgs...)
+	if want.IsError() {
+		assert.Equal(t, want.Str, got.Str, msgAndArgs...)
+		assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage(), msgAndArgs...)
+		return
+	}
+	assert.Equal(t, want.String(), got.String(), msgAndArgs...)
+}
+
+var (
+	goportToString     = lisp.BuiltinFunc("to-string")
+	goportFormatString = lisp.BuiltinFunc("format-string")
+)
+
+func TestToStringParity(t *testing.T) {
+	env := testEnv(t)
+	values := []*lisp.LVal{
+		lisp.Int(42), lisp.Float(1.5), lisp.String("s"), lisp.Symbol("sym"),
+		lisp.Bytes([]byte("bytes")), lisp.SortedMap(), lisp.Nil(),
+		lisp.Bytes(make([]byte, 64)), lisp.Int(123456789),
+	}
+	for _, limit := range []int{0, 4} {
+		env.Runtime.MaxAlloc = limit
+		for _, v := range values {
+			assertSameResult(t, env.CallBuiltin(goportToString, v), env.ToString(v), "limit %d, %v", limit, v)
+		}
+	}
+	env.Runtime.MaxAlloc = 0
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		got := env.ToString(lisp.Int(1))
+		assertSameResult(t, env.CallBuiltin(goportToString, lisp.Int(1)), got)
+		assert.Equal(t, lisp.CondContextCancelled, got.Str)
+	})
+}
+
+func TestFormatStringParity(t *testing.T) {
+	env := testEnv(t)
+	long := lisp.String(strings.Repeat("x", 100))
+	cases := []struct {
+		format string
+		vals   []*lisp.LVal
+	}{
+		{"plain", nil},
+		{"{} and {}", []*lisp.LVal{lisp.Int(1), lisp.String("two")}},
+		{"{1} {0}", []*lisp.LVal{lisp.Int(1), lisp.Symbol("b")}},
+		{"{{literal}}", nil},
+		{"unclosed {", nil},
+		{"{} {}", []*lisp.LVal{lisp.Int(1)}},
+		{"{0} {}", []*lisp.LVal{lisp.Int(1), lisp.Int(2)}},
+		{"stray }", nil},
+		{"{}", []*lisp.LVal{long}},
+		{"{}", []*lisp.LVal{lisp.Cells{long, long}.List()}},
+	}
+	for _, limit := range []int{0, 16} {
+		env.Runtime.MaxAlloc = limit
+		for _, tc := range cases {
+			args := append([]*lisp.LVal{lisp.String(tc.format)}, tc.vals...)
+			want := env.CallBuiltin(goportFormatString, args...)
+			assertSameResult(t, want, env.FormatString(tc.format, tc.vals...), "limit %d, %q", limit, tc.format)
+		}
+	}
+	env.Runtime.MaxAlloc = 0
+	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
+		got := env.FormatString("{}", lisp.Int(1))
+		assertSameResult(t, env.CallBuiltin(goportFormatString, lisp.String("{}"), lisp.Int(1)), got)
+		assert.Equal(t, lisp.CondContextCancelled, got.Str)
+	})
 }

@@ -1006,7 +1006,23 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinToString(env *LEnv, args *LVal) *LVal {
-	val := args.Cells[0]
+	return toStringValue(env, args.Cells[0])
+}
+
+// ToString returns what the to-string builtin returns for val: the same
+// string, or the same error from the same check, the allocation check
+// included.  It checks the evaluation's context first, as CallBuiltin does.
+// It charges no step.
+func (env *LEnv) ToString(val *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.Type == LError {
+		return lerr
+	}
+	return toStringValue(env, val)
+}
+
+// toStringValue is the body of the to-string builtin and of LEnv.ToString,
+// so the two cannot differ.
+func toStringValue(env *LEnv, val *LVal) *LVal {
 	if val.Type == LBytes {
 		if msg := env.Runtime.CheckAlloc(val.Len()); msg != "" {
 			return env.Errorf("%s", msg)
@@ -3737,12 +3753,29 @@ func toFloat(x *LVal) float64 {
 
 func builtinFormatString(env *LEnv, args *LVal) *LVal {
 	format := args.Cells[0]
-	fvals := args.Cells[1:]
 	if format.Type != LString {
 		return env.Errorf("first argument is not a string")
 	}
-	f := format.Str
+	return formatString(env, format.Str, args.Cells[1:])
+}
 
+// FormatString returns what the format-string builtin returns for the format
+// f and the values fvals: the same string, or the same error from the same
+// check.  It checks the evaluation's context first, as CallBuiltin does.  It
+// bounds the result by MaxAlloc and stops when the context ends, as the
+// builtin does.  It charges no step and does not write fvals.
+//
+//	msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
+func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.Type == LError {
+		return lerr
+	}
+	return formatString(env, f, fvals)
+}
+
+// formatString is the body of the format-string builtin and of
+// LEnv.FormatString, so the two cannot differ.
+func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 	// Fast path: no braces at all.
 	if strings.IndexByte(f, '{') < 0 && strings.IndexByte(f, '}') < 0 {
 		return String(f)
