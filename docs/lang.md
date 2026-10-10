@@ -2765,7 +2765,7 @@ original stack trace and condition data.
 ```
 
 The `rethrow` function can only be called from within a handler-bind handler.
-It takes no arguments.  Calling `rethrow` outside a handler signals an error.
+Calling `rethrow` outside a handler signals an error.
 
 Rethrown errors can be caught by outer handler-bind forms, allowing layered
 error handling:
@@ -2778,6 +2778,43 @@ error handling:
         (error 'my-error "data")))
 ; Evaluates to '('recovered 'my-error)
 ```
+
+#### Adding context to an error
+
+`(rethrow :context string)` re-raises the error with `string` and `": "` in
+front of its message, as Go's `fmt.Errorf("...: %w", err)` adds context. The
+condition, the data and the stack are unchanged, so every handler that would
+have matched the error still matches it, and a handler still receives the
+original data.  Each wrap goes in front of the earlier ones.  Inside a
+handler, `error-message` returns the error's message as a string, context
+included:
+
+```lisp
+(defun load-user (id) (error 'not-found "no user" id))
+
+(defun get-profile (id)
+  (handler-bind ((not-found
+                   (lambda (c &rest _)
+                     (rethrow :context (format-string "loading user {}" id)))))
+    (load-user id)))
+
+(handler-bind ((not-found (lambda (c &rest data) (list data (error-message)))))
+  (get-profile 42))
+; returns '('("no user" 42) "loading user 42: no user 42")
+
+(handler-bind ((condition (lambda (c &rest _) (error-message))))
+  (handler-bind ((not-found (lambda (c &rest _) (rethrow :context "rendering page"))))
+    (get-profile 7)))
+; returns "rendering page: loading user 7: no user 7"
+```
+
+Uncaught, the error renders with the context too:
+`not-found: loading user 9: no user 9`.  `:context` must be a string;
+anything else raises `argument-error`.  To place the original message
+somewhere other than the end, raise a new condition with it, as in
+`(error 'profile-error (format-string "profile failed ({})" (error-message)))`;
+that error has a new condition and stack.  Go code wraps an error with
+`lisp.WrapError` (see docs/embed.md).
 
 ### Inspecting an Error's Call Stack
 
@@ -2971,13 +3008,16 @@ change.
    becomes the value of the `handler-bind` form. With no error, the last body
    value is returned.
 2. **Matching order.** Inner `handler-bind` forms are searched before outer
-   ones. Within one form, bindings are tried in the order written and the
-   first match wins, so put `condition` last.
+   ones. Within one form, the binding nearest the raised condition in the
+   hierarchy runs: the condition itself, then its parent and so on, with
+   `condition` last; bindings for the same type run in the order written (see
+   "Condition hierarchy").
 3. **Handler arguments.** A handler receives the condition symbol followed by
    copies of the values passed to `error`. `error` evaluates its arguments
    like any function; the handler receives the resulting values and does not
    evaluate them again. Mutating those copies
-   never changes the error, so `rethrow` always re-raises the original data.
+   never changes the error, so `rethrow` always re-raises the original data,
+   with or without `:context`.
 4. **Handler errors escape.** An error raised by a handler is not caught by the
    same `handler-bind`, only by an enclosing one.
 5. **Custom conditions carry data.** Any symbol names a condition, and any

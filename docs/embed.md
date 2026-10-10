@@ -947,6 +947,14 @@ every VM forked from it starts with it. `handler-bind` runs the binding
 nearest the raised condition in the hierarchy (see "Condition hierarchy" in
 lang.md).
 
+**Adding context to an error.** `lisp.WrapError(lerr, "loading user %d",
+id)` returns a copy of `lerr` whose message has that line and `": "` in front,
+as `fmt.Errorf("...: %w", err)` does for a Go error. The copy keeps `lerr`'s
+condition, data, source and stack, so every handler that matched `lerr`
+matches it; `lerr` is not changed. An error with no stack yet gets one when the
+evaluator associates it. `(*lisp.ErrorVal).ErrorContext()` returns the lines,
+outermost first. Lisp code does the same with `(rethrow :context ...)`.
+
 **Error text is not a stable API.** An error's message may change in any
 elps release. Its condition is stable: changing it is a documented breaking
 change. A new child condition is not a break for a handler on its parent,

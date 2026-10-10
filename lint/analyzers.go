@@ -818,21 +818,21 @@ func buildArityTable() map[string]aritySpec {
 }
 
 // AnalyzerRethrowContext warns when `rethrow` is used outside of a
-// `handler-bind` form, and when `error-stack` is used outside both a
-// `handler-bind` form and any function body (a function may be called from
-// a handler). At runtime, both read the error a
-// handler-bind handler is handling and can only be called from within one;
-// calling them elsewhere always produces an error.
+// `handler-bind` form, and when `error-stack` or `error-message` is used
+// outside both a `handler-bind` form and any function body (a function may be
+// called from a handler). At runtime, all three read the error a handler-bind
+// handler is handling and can only be called from within one; calling them
+// elsewhere always produces an error.
 var AnalyzerRethrowContext = &Analyzer{
 	Name:     "rethrow-context",
 	Severity: SeverityError,
-	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` returns that error's call stack. Calling either outside any handler-bind always produces an error at runtime.",
+	Doc:      "Warn when `rethrow` is used outside a `handler-bind` form, or `error-stack` or `error-message` outside both a `handler-bind` form and any function body.\n\n`rethrow` re-raises the current error being handled by handler-bind, preserving the original stack trace, and `error-stack` and `error-message` return that error's call stack and message. Calling either outside any handler-bind always produces an error at runtime.",
 	Run: func(pass *Pass) error {
 		walkRethrowContext(pass, func(sexpr *lisp.LVal, incomplete bool) {
 			src := SourceOf(sexpr)
 			if incomplete {
 				pass.Report(Diagnostic{
-					Message: "too many rethrow or error-stack calls in this form to check",
+					Message: "too many rethrow, error-stack or error-message calls in this form to check",
 					Pos:     posFromSource(astutil.SourceLoc(src)),
 					EndPos:  endPosFromNode(src),
 					Notes:   []string{"the form shares or repeats calls past the checker's budget, so a call outside handler-bind cannot be ruled out; split the form"},
@@ -901,7 +901,7 @@ func walkRethrowContext(pass *Pass, report func(form *lisp.LVal, incomplete bool
 		if !mentionsRethrowContext([]*lisp.LVal{code}) {
 			return
 		}
-		sites, complete := astutil.FindCallSites(code, "rethrow", "error-stack")
+		sites, complete := astutil.FindCallSites(code, "rethrow", "error-stack", "error-message")
 		if !complete {
 			// Sites past the budget were dropped; one may be a violation.
 			reportOnce(code, true)
@@ -917,7 +917,7 @@ func walkRethrowContext(pass *Pass, report func(form *lisp.LVal, incomplete bool
 					inHandler = true
 				}
 			}
-			if inHandler || (name == "error-stack" && inFunction) {
+			if inHandler || (name != "rethrow" && inFunction) {
 				continue
 			}
 			reportOnce(site.Form, false)
@@ -959,7 +959,7 @@ func scanMacroTemplates(macro *lisp.LVal, report func(*lisp.LVal)) {
 }
 
 // mentionsRethrowContext reports whether any symbol in exprs is spelled
-// rethrow or error-stack.  A file that never names either cannot contain a
+// rethrow, error-stack or error-message.  A file that never names one cannot contain a
 // call written in it, so the check skips expanding it.
 func mentionsRethrowContext(exprs []*lisp.LVal) bool {
 	for _, e := range exprs {
@@ -975,8 +975,11 @@ func nodeMentionsRethrowContext(v *lisp.LVal) bool {
 		return false
 	}
 	if v.Type == lisp.LSymbol {
-		return v.Str == "rethrow" || v.Str == "error-stack" ||
-			v.Str == "lisp:rethrow" || v.Str == "lisp:error-stack"
+		switch strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":") {
+		case "rethrow", "error-stack", "error-message":
+			return true
+		}
+		return false
 	}
 	for _, c := range v.Cells {
 		if nodeMentionsRethrowContext(c) {
@@ -999,7 +1002,7 @@ func walkRethrowTemplate(node *lisp.LVal, handlerDepth int, inFunction bool, rep
 	}
 	head := strings.TrimPrefix(HeadSymbol(node), lisp.DefaultLangPackage+":")
 	if node.Type == lisp.LSExpr && !node.IsQuoted() {
-		if handlerDepth == 0 && (head == "rethrow" || (head == "error-stack" && !inFunction)) {
+		if handlerDepth == 0 && (head == "rethrow" || ((head == "error-stack" || head == "error-message") && !inFunction)) {
 			report(node)
 			return
 		}

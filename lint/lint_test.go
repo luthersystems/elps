@@ -923,6 +923,17 @@ func TestRethrowContext_ErrorStack(t *testing.T) {
 	})
 }
 
+// error-message is checked as error-stack is (luthersystems/elps#831).
+func TestRethrowContext_ErrorMessage(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRethrowContext, `(error-message)`)
+	require.Len(t, diags, 1)
+	assertDiagOnLine(t, diags, 1, "error-message used outside handler-bind")
+	assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext, "(defun msg () (error-message))"))
+	assertNoDiags(t, lintCheck(t, AnalyzerRethrowContext,
+		`(handler-bind ((condition (lambda (c &rest _) (rethrow :context (error-message))))) (error 'boom "x"))`))
+	require.Len(t, lintCheck(t, AnalyzerRethrowContext, `(rethrow :context "x")`), 1)
+}
+
 func TestRethrowContext_Positive_HasNotes(t *testing.T) {
 	diags := lintCheck(t, AnalyzerRethrowContext, `(rethrow)`)
 	require.Len(t, diags, 1)

@@ -304,13 +304,14 @@ branch matches. While sometimes intentional, this is often an oversight.
 
 ### `rethrow-context`
 
-**Flags `(rethrow)` and `(error-stack)` calls outside a `handler-bind` handler.**
+**Flags `(rethrow)`, `(error-stack)` and `(error-message)` calls outside a `handler-bind` handler.**
 
-`rethrow` re-signals the currently active error, and `error-stack` returns
-its call stack; both only work inside a `handler-bind` handler. Using either
-outside causes a runtime error. An `(error-stack)` inside a function body
-(`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
-that function; `rethrow` is reported there as before.
+`rethrow` re-signals the currently active error, and `error-stack` and
+`error-message` return its call stack and message; all three only work inside
+a `handler-bind` handler. Using one outside causes a runtime error. An
+`(error-stack)` or `(error-message)` inside a function body (`defun`,
+`lambda`, `flet`, ...) is not reported, since a handler may call that
+function; `rethrow` is reported there as before.
 
 The check walks code with the shared code walker (`astutil.ExpandAll`), so
 quoted data and quasiquote templates are not searched, a local function or

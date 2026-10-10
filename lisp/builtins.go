@@ -189,12 +189,25 @@ var (
 			by handler-bind. Rendering error data and stack-trace messages honours
 			the runtime output/work limit and cancellation, using #<truncated>
 			on exhaustion without changing the condition data.`},
-		{"rethrow", Formals(), builtinRethrow,
+		{"rethrow", Formals(KeyArgSymbol, "context"), builtinRethrow,
 			`Re-throws the current error being handled by handler-bind,
 			preserving the original stack trace. Can only be called from
 			within a handler-bind handler. Use this instead of (apply error
 			condition args) when you want to perform side effects (such as
-			logging) but still propagate the original error unchanged.`},
+			logging) but still propagate the original error unchanged.
+
+			With :context, a string, the error is re-thrown with that string
+			and ": " in front of its message, as Go's fmt.Errorf with %w
+			adds context: (rethrow :context (format-string "loading user {}"
+			id)) turns "no user 42" into "loading user 42: no user 42". The
+			condition, data and stack are unchanged, so every handler that
+			matched the error still matches it. Each wrap puts its context in
+			front of the earlier ones.`},
+		{"error-message", Formals(), builtinErrorMessage,
+			`Returns the message of the error being handled by handler-bind,
+			as a string, with any context added by (rethrow :context ...).
+			It is the text an uncaught error renders after its condition.
+			Can only be called from within a handler-bind handler.`},
 		{"define-condition", Formals("child", "parent"), builtinDefineCondition,
 			`Makes condition parent the parent of condition child, so a
 			handler-bind binding for parent, or for an ancestor of parent,
@@ -1173,11 +1186,32 @@ func builtinConditionIsP(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinRethrow(env *LEnv, args *LVal) *LVal {
+	a := ReadArgs(env, args)
+	line := a.OptString(0, "context", "")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
+	}
 	cond := env.Runtime.CurrentCondition()
 	if cond == nil {
 		return env.Errorf("rethrow: not inside a handler-bind handler")
 	}
-	return cond
+	if len(args.Cells) == 0 || args.Cells[0].IsNil() {
+		return cond
+	}
+	return wrapError(cond, line)
+}
+
+func builtinErrorMessage(env *LEnv, args *LVal) *LVal {
+	cond := env.Runtime.CurrentCondition()
+	if cond == nil {
+		return env.Errorf("not inside a handler-bind handler")
+	}
+	msg := (*ErrorVal)(cond).ErrorMessageContext(env.evalCtx)
+	// One step per complete KiB, as the stdlib's string builtins charge.
+	if lerr := env.ChargeSteps(int64(len(msg) / 1024)); lerr.IsError() {
+		return lerr
+	}
+	return String(msg)
 }
 
 func builtinErrorStack(env *LEnv, args *LVal) *LVal {
