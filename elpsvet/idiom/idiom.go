@@ -37,6 +37,8 @@
 //	a switch or if-else chain on v.Type with an LSExpr arm that reads
 //	v.Cells and an LArray arm that loops over v.ArrayIndex(lisp.Int(i))
 //	                                   v.SeqCells() or lisp.SeqOf[T]  (hint)
+//	v.Native.(T) where a v.Type == lisp.LNative test guards it
+//	                                   lisp.NativeValue[T](v)         (hint)
 //
 // A ref is a lisp.BuiltinFunc call or a package-level variable that one
 // initializes.  MapPut, MapLookup, ToString and FormatString check the
@@ -46,10 +48,13 @@
 // format-string format that is not lisp.String(f): the helper would not make
 // the arity check or the check that the format is a string.
 //
-// A hint has no fix, because the rewrite changes the code's shape: Keys
-// yields a lisp.MapKey, not an *LVal, and SeqCells refuses a
-// multi-dimensional array and returns the value's own cells.  No idiom suggests a checked helper
-// (MapPut, MapLookup, CheckAlloc) where the old code made no check.
+// A hint has no fix, because the rewrite changes the code's shape.  Keys
+// yields a lisp.MapKey, not an *LVal.  SeqCells refuses a multi-dimensional
+// array and returns the value's own cells.  NativeValue makes the type test
+// that the old code makes apart from the assertion.  No idiom suggests a
+// checked helper (MapPut, MapLookup, CheckAlloc) where the old code made no
+// check, and no idiom suggests NativeValue where the old code made no type
+// test.
 //
 // MISTAKES, reported with category "error":
 //
@@ -73,8 +78,8 @@
 //
 // INVISIBLE: code built through variables the rule does not trace (a
 // BuiltinRef held in a local variable or a struct field, a formals list held
-// in a local variable, a builtin passed through a slice), helpers in other
-// packages, and reflection.  A clean run is evidence, not proof.
+// in a local variable, a builtin passed through a slice), a type test that
+// a called function makes, helpers in other packages, and reflection.  A clean run is evidence, not proof.
 package idiom
 
 import (
@@ -105,7 +110,7 @@ const (
 var Analyzer = &analysis.Analyzer{
 	Name: "elpsidiom",
 	Doc: "report Go builtin code that an elps helper states more plainly (IsError, Cells, CheckAlloc, Keys, Field, " +
-		"ArgReader, MapOf, MapPut, MapLookup, ToString, FormatString), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
+		"ArgReader, MapOf, MapPut, MapLookup, ToString, FormatString, FunInPackageDoc, SeqCells, NativeValue), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
 		"result, ResultAs over a result of varying type, and a Func*E builtin registered with the wrong formals",
 	Run: run,
 }
@@ -407,6 +412,8 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkFunDocWrite(x)
 		case *ast.RangeStmt:
 			s.checkMapKeysRange(x, stack)
+		case *ast.TypeAssertExpr:
+			s.checkNativeAssert(x, stack)
 		case *ast.FuncType:
 			s.checkErrorValResult(x)
 		case *ast.BlockStmt:
@@ -1475,4 +1482,150 @@ func (s *state) loopsArrayIndex(body ast.Node, x string) bool {
 		return !found
 	})
 	return found
+}
+
+// checkNativeAssert: v.Native.(T) where a test of v.Type == lisp.LNative
+// guards it.  lisp.NativeValue[T](v) makes both tests.
+func (s *state) checkNativeAssert(ta *ast.TypeAssertExpr, stack []ast.Node) {
+	if ta.Type == nil {
+		return // a type switch
+	}
+	sel, ok := ast.Unparen(ta.X).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Native" {
+		return
+	}
+	selection := s.pass.TypesInfo.Selections[sel]
+	if selection == nil || selection.Kind() != types.FieldVal || !isLispNamed(derefType(selection.Recv()), "LVal") {
+		return
+	}
+	x := s.text(sel.X)
+	if !s.nativeGuarded(stack, x) {
+		return
+	}
+	s.report(ta, CategoryInfo, fmt.Sprintf("lisp.NativeValue[%s](%s) tests %s.Type == lisp.LNative and the payload's type "+
+		"in one call, so the separate type test can go; this is a hint, not a fix", s.text(ta.Type), x, x))
+}
+
+// nativeGuarded reports whether a test of x.Type against lisp.LNative
+// guards the top node of stack: an enclosing if body or case clause that
+// selects x.Type == lisp.LNative, an earlier if statement that returns when
+// x.Type != lisp.LNative, or such an if statement right after the statement
+// that holds the node.
+func (s *state) nativeGuarded(stack []ast.Node, x string) bool {
+	for i := len(stack) - 2; i >= 0; i-- {
+		child := stack[i+1]
+		switch p := stack[i].(type) {
+		case *ast.FuncLit, *ast.FuncDecl:
+			return false // a test outside the function does not guard it when it runs
+		case *ast.IfStmt:
+			if child == p.Body && s.selectsNative(p.Cond, x) {
+				return true
+			}
+		case *ast.CaseClause:
+			if s.caseSelectsNative(stack[:i], p, x) {
+				return true
+			}
+			if s.listGuards(p.Body, child, x) {
+				return true
+			}
+		case *ast.BlockStmt:
+			if s.listGuards(p.List, child, x) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// selectsNative reports whether cond, alone or as a term of an && chain,
+// tests x.Type == lisp.LNative.
+func (s *state) selectsNative(cond ast.Expr, x string) bool {
+	found := false
+	s.typeTests(cond, func(v string, c ast.Expr) {
+		if v == x && s.isLispConst(c, "LNative") {
+			found = true
+		}
+	})
+	return found
+}
+
+// caseSelectsNative reports whether cc is "case lisp.LNative:" of a switch
+// on x.Type, or a case of a tagless switch whose one test selects
+// x.Type == lisp.LNative.  outer is the stack above cc.
+func (s *state) caseSelectsNative(outer []ast.Node, cc *ast.CaseClause, x string) bool {
+	if len(cc.List) != 1 {
+		return false
+	}
+	for i := len(outer) - 1; i >= 0; i-- {
+		sw, ok := outer[i].(*ast.SwitchStmt)
+		if !ok {
+			continue
+		}
+		if sw.Tag == nil {
+			return s.selectsNative(cc.List[0], x)
+		}
+		v := s.typeField(sw.Tag)
+		return v != nil && s.text(v) == x && s.isLispConst(cc.List[0], "LNative")
+	}
+	return false
+}
+
+// listGuards reports whether, in the statement list, an if statement before
+// child returns when x.Type != lisp.LNative.  It also accepts such an if
+// statement right after child when child is an assignment.
+func (s *state) listGuards(list []ast.Stmt, child ast.Node, x string) bool {
+	at := -1
+	for j, st := range list {
+		if st == child {
+			at = j
+			break
+		}
+	}
+	if at < 0 {
+		return false
+	}
+	for j := 0; j < at; j++ {
+		if s.returnsUnlessNative(list[j], x) {
+			return true
+		}
+	}
+	// A test right after the assertion guards it only when the statement
+	// just stores the result.
+	switch child.(type) {
+	case *ast.AssignStmt, *ast.DeclStmt:
+		return at+1 < len(list) && s.returnsUnlessNative(list[at+1], x)
+	}
+	return false
+}
+
+// returnsUnlessNative reports whether st is an if statement with no else
+// whose body ends in a return and whose test, alone or as a term of an ||
+// chain, is x.Type != lisp.LNative.
+func (s *state) returnsUnlessNative(st ast.Stmt, x string) bool {
+	ifs, ok := st.(*ast.IfStmt)
+	if !ok || ifs.Else != nil || len(ifs.Body.List) == 0 {
+		return false
+	}
+	if _, ok := ifs.Body.List[len(ifs.Body.List)-1].(*ast.ReturnStmt); !ok {
+		return false
+	}
+	var walk func(e ast.Expr) bool
+	walk = func(e ast.Expr) bool {
+		b, ok := ast.Unparen(e).(*ast.BinaryExpr)
+		if !ok {
+			return false
+		}
+		switch b.Op {
+		case token.LOR:
+			return walk(b.X) || walk(b.Y)
+		case token.NEQ:
+			v, other := s.typeField(b.X), b.Y
+			if v == nil {
+				v, other = s.typeField(b.Y), b.X
+			}
+			return v != nil && s.text(v) == x && s.isLispConst(other, "LNative")
+		}
+		return false
+	}
+	return walk(ifs.Cond)
 }
