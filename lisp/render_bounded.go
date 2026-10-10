@@ -880,7 +880,7 @@ func (r *valueRenderer) errorValue(e *ErrorVal, g cycleGuard) {
 		}
 	}
 	r.text(": ")
-	if e.Str != "error" {
+	if !rendersAsError(e.Str) {
 		r.text(e.Str)
 		r.text(": ")
 	} else if stack := (*LVal)(e).CallStack(); stack != nil && stack.Top() != nil {
@@ -933,6 +933,18 @@ func (r *valueRenderer) errorMessage(e *ErrorVal, g cycleGuard) {
 			log.Printf("elps: ErrorVal.ErrorMessage recovered panic during Cells[0].Native type switch: %v; returning sentinel %q", recovered, corruptedNativeMessage)
 		}
 	}()
+	// Context lines from WrapError come first, outermost first, as nested %w
+	// wrapping reads in Go.
+	if stack, ok := e.Native.(*CallStack); ok && stack != nil {
+		for w := stack.wraps; w != nil && !r.full; w = w.next {
+			if !r.budget.step() {
+				r.full = true
+				return
+			}
+			r.text(w.text)
+			r.text(": ")
+		}
+	}
 	if msg, ok := nativeErrorText(e); ok {
 		r.text(msg)
 		return

@@ -877,5 +877,6 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerDuplicateDefinition,
 		AnalyzerDeprecated,
 		AnalyzerRemovedBuiltin,
+		AnalyzerHandlerOrder,
 	}
 }

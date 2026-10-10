@@ -189,12 +189,48 @@ var (
 			by handler-bind. Rendering error data and stack-trace messages honours
 			the runtime output/work limit and cancellation, using #<truncated>
 			on exhaustion without changing the condition data.`},
-		{"rethrow", Formals(), builtinRethrow,
+		{"rethrow", Formals(KeyArgSymbol, "context"), builtinRethrow,
 			`Re-throws the current error being handled by handler-bind,
 			preserving the original stack trace. Can only be called from
 			within a handler-bind handler. Use this instead of (apply error
 			condition args) when you want to perform side effects (such as
-			logging) but still propagate the original error unchanged.`},
+			logging) but still propagate the original error unchanged.
+
+			With :context, a string, the error is re-thrown with that string
+			and ": " in front of its message, as Go's fmt.Errorf with %w
+			adds context: (rethrow :context (format-string "loading user {}"
+			id)) turns "no user 42" into "loading user 42: no user 42". The
+			condition, data and stack are unchanged, so every handler that
+			matched the error still matches it. Each wrap puts its context in
+			front of the earlier ones. An empty string or () re-throws the
+			error unchanged.`},
+		{"error-message", Formals(), builtinErrorMessage,
+			`Returns the message of the error being handled by handler-bind,
+			as a string, with any context added by (rethrow :context ...).
+			It is the text an uncaught error renders after its condition.
+			Can only be called from within a handler-bind handler.`},
+		{"define-condition", Formals("child", "parent"), builtinDefineCondition,
+			`Makes condition parent the parent of condition child, so a
+			handler-bind binding for parent, or for an ancestor of parent,
+			catches child, and condition-is? sees the link. Both arguments
+			are symbols or strings. A condition has at most one parent, and
+			gets it before its children, so define a hierarchy from the root
+			down: defining the parent it already has does nothing, and any
+			other parent is an error. Giving a parent to a condition that
+			has children (error has argument-error), a chain more than 64
+			deep, or a definition that names condition or internal-panic is
+			an error. The hierarchy belongs to the runtime: a template
+			publishes it and every VM forked from it starts with it. A
+			definition does not change how an error renders. Returns
+			child as a symbol.`},
+		{"condition-is?", Formals("condition", "ancestor"), builtinConditionIsP,
+			`Returns true when condition is ancestor or one of its
+			descendants, walking the parents define-condition and elps
+			declare, as Go's errors.Is does. Both arguments are symbols or
+			strings, such as the condition symbol a handler-bind handler
+			receives. Every condition is a 'condition, internal-panic
+			included, though a handler-bind binding for 'condition never
+			catches a recovered Go panic: condition-is? sees only the name.`},
 		{"error-stack", Formals(), builtinErrorStack,
 			`Returns the call stack recorded when the error being handled by
 			handler-bind was raised, as a list of sorted-maps ordered
@@ -1133,12 +1169,52 @@ func builtinError(env *LEnv, args *LVal) *LVal {
 	return env.ErrorCondition(condition.Str, iargs...)
 }
 
+func builtinDefineCondition(env *LEnv, args *LVal) *LVal {
+	r := Cells(args.Cells).Read(env)
+	child, parent := r.Name(), r.Name()
+	if lerr := r.Err(); lerr.IsError() {
+		return lerr
+	}
+	if err := env.Runtime.DefineCondition(child, parent); err != nil {
+		return env.Error(err)
+	}
+	return Symbol(child)
+}
+
+func builtinConditionIsP(env *LEnv, args *LVal) *LVal {
+	r := Cells(args.Cells).Read(env)
+	c, ancestor := r.Name(), r.Name()
+	if lerr := r.Err(); lerr.IsError() {
+		return lerr
+	}
+	return Bool(ancestor == CondCatchAll || env.Runtime.ConditionIsA(c, ancestor))
+}
+
 func builtinRethrow(env *LEnv, args *LVal) *LVal {
+	a := ReadArgs(env, args)
+	line := a.OptString(0, "context", "")
+	if lerr := a.Err(); lerr.IsError() {
+		return lerr
+	}
 	cond := env.Runtime.CurrentCondition()
 	if cond == nil {
 		return env.Errorf("rethrow: not inside a handler-bind handler")
 	}
-	return cond
+	return wrapError(cond, line)
+}
+
+func builtinErrorMessage(env *LEnv, args *LVal) *LVal {
+	cond := env.Runtime.CurrentCondition()
+	if cond == nil {
+		return env.Errorf("not inside a handler-bind handler")
+	}
+	// No context: the text must not depend on when a cancellation lands.
+	msg := (*ErrorVal)(cond).ErrorMessage()
+	// One step per complete KiB, as the stdlib's string builtins charge.
+	if lerr := env.ChargeSteps(int64(len(msg) / 1024)); lerr.IsError() {
+		return lerr
+	}
+	return String(msg)
 }
 
 func builtinErrorStack(env *LEnv, args *LVal) *LVal {

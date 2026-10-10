@@ -5,6 +5,7 @@ package lisp
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -120,8 +121,13 @@ var langSpecialOps = []*langBuiltin{
 		name rather than being reclassified. Go errors supply message strings. Source parse
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
-		Handlers must be regular functions. Use the symbol
-		'condition' to match any error. The internal-panic condition — a
+		Handlers must be regular functions. A condition type also matches
+		its descendants: 'error matches 'argument-error, which Go
+		argument helpers raise for a bad argument, and define-condition adds parents. When
+		several bindings match, the most specific one runs: the binding
+		for the condition itself, else the one for its nearest ancestor,
+		with 'condition last; bindings for the same type run in source
+		order. Use the symbol 'condition to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when
 		there are no body forms, after validating the bindings. Like
@@ -1014,19 +1020,9 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 	for _, c := range forms {
 		val = env.Eval(c)
 		if val.IsError() {
-			for _, bind := range lbinds.Cells {
+			bind := selectHandler(env.Runtime, lbinds.Cells, val)
+			if bind != nil {
 				sym, handler := bind.Cells[0], bind.Cells[1]
-				// Compare the error condition to the handler type specifier.
-				// The catch-all "condition" specifier deliberately does not
-				// match a recovered Go panic — that is a host defect and
-				// must be named explicitly to be intercepted.  The test is
-				// IsInternalPanic rather than a name comparison so a
-				// lisp-forged 'internal-panic remains an ordinary,
-				// containable condition.
-				if sym.Str != val.Str &&
-					(sym.Str != "condition" || IsInternalPanic(val)) {
-					continue
-				}
 				// The condition matches so we evaluate the handler and then
 				// call it, passing the error.
 				hval := env.Eval(handler)
@@ -1071,6 +1067,45 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	return val
+}
+
+// selectHandler returns the handler-bind binding that handles error val, or
+// nil when none does (luthersystems/elps#831).  A binding matches when its
+// type is val's condition or an ancestor of it in the runtime's hierarchy,
+// or when it is the catch-all condition.  Of the matching bindings, the one
+// whose type is nearest val's condition wins: the condition itself, then its
+// parent, and so on, with the catch-all last.  Bindings at the same distance
+// (the same type listed twice) go in source order.
+//
+// The catch-all deliberately does not match a recovered Go panic: that is a
+// host defect and must be named explicitly to be intercepted.  The test is
+// IsInternalPanic rather than a name comparison, so a Lisp-forged
+// 'internal-panic remains an ordinary, containable condition.
+//
+// The walk charges no step.  Each binding walks at most MaxConditionDepth
+// parent links.
+func selectHandler(rt *Runtime, binds []*LVal, val *LVal) *LVal {
+	// The catch-all ranks after every ancestor, however far.
+	const catchAll = math.MaxInt - 1
+	var best *LVal
+	bestDist := math.MaxInt
+	for _, bind := range binds {
+		sym := bind.Cells[0]
+		d := rt.conditionDistance(val.Str, sym.Str)
+		if d < 0 {
+			if sym.Str != CondCatchAll || IsInternalPanic(val) {
+				continue
+			}
+			d = catchAll
+		}
+		if d < bestDist {
+			best, bestDist = bind, d
+			if d == 0 {
+				break
+			}
+		}
+	}
+	return best
 }
 
 // (with-cleanup (cleanup-form*) body-form*)

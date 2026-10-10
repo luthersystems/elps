@@ -2654,6 +2654,58 @@ In the above code double-not-number is handled by replacing the `(double x)`
 function call with the value 0, while any other error (like an unbound symbol)
 will be replaced with the string "ERROR DETECTED".
 
+#### Condition hierarchy
+
+A condition can have a parent. A `handler-bind` binding for the parent then
+catches the child, as a Go `errors.Is` check matches a wrapped error. elps
+gives one built-in condition a parent: `argument-error`, which a builtin built
+with elps's Go argument helpers raises for a bad argument, is a child of
+`error`, and renders as `error` does. `define-condition` adds more:
+
+```lisp
+(define-condition 'storage-error 'error)
+(define-condition 'not-found 'storage-error)
+
+(condition-is? 'not-found 'error)          ; true
+(condition-is? 'not-found 'argument-error) ; false
+(condition-is? 'not-found 'condition)      ; true: every condition is one
+```
+
+`condition-is?` sees only names, so it answers true for `internal-panic` and
+`condition` too, though a `condition` binding never catches a recovered Go
+panic (see "Host Panics").
+
+When several bindings of one `handler-bind` match, **the most specific one
+runs**: the binding for the condition itself, else the binding for its
+nearest ancestor, with the catch-all `condition` last. The order the bindings
+are written in decides only between bindings for the same type, where the
+first one runs.
+
+```lisp
+(handler-bind ((condition     (lambda (c &rest _) 'any))
+               (error         (lambda (c &rest _) 'error))
+               (storage-error (lambda (c &rest _) 'storage)))
+  (error 'not-found "no such key"))
+; returns 'storage
+```
+
+A condition has at most one parent, and gets it before its children, so
+define a hierarchy from the root down: `(define-condition 'storage-error
+'error)` before `(define-condition 'not-found 'storage-error)`. Defining the
+parent a condition already has does nothing. Giving it a different one is an
+error, as are giving a parent to a condition that already has children
+(`error` has `argument-error`), a chain more than 64 deep, and any definition
+that names `condition` or `internal-panic`. The hierarchy belongs to the runtime: a definition made
+while a template is built is in every VM forked from the template, and one
+made in a VM is seen by no other VM. A definition does not change how an
+error renders.
+
+Before luthersystems/elps#831, the first matching binding in source order ran.
+The two rules differ only for a `handler-bind` that lists a binding before a
+more specific one, such as `condition` before `error`, or `error` before
+`argument-error`. The later binding used to be dead code and now runs for its
+conditions. The `handler-order` lint check reports these.
+
 An error raised while evaluating or calling a handler propagates past that
 `handler-bind`. Its other bindings do not catch the new error. An outer
 `handler-bind` can catch it:
@@ -2720,7 +2772,7 @@ original stack trace and condition data.
 ```
 
 The `rethrow` function can only be called from within a handler-bind handler.
-It takes no arguments.  Calling `rethrow` outside a handler signals an error.
+Calling `rethrow` outside a handler signals an error.
 
 Rethrown errors can be caught by outer handler-bind forms, allowing layered
 error handling:
@@ -2733,6 +2785,63 @@ error handling:
         (error 'my-error "data")))
 ; Evaluates to '('recovered 'my-error)
 ```
+
+#### Adding context to an error
+
+`(rethrow :context string)` re-raises the error with `string` and `": "` in
+front of its message, as Go's `fmt.Errorf("...: %w", err)` adds context. The
+condition, the data and the stack are unchanged, so every handler that would
+have matched the error still matches it, and a handler still receives the
+original data.  Each wrap goes in front of the earlier ones.  Inside a
+handler, `error-message` returns the error's message as a string, context
+included:
+
+```lisp
+(defun load-user (id) (error 'not-found "no user" id))
+
+(defun get-profile (id)
+  (handler-bind ((not-found
+                   (lambda (c &rest _)
+                     (rethrow :context (format-string "loading user {}" id)))))
+    (load-user id)))
+
+(handler-bind ((not-found (lambda (c &rest data) (list data (error-message)))))
+  (get-profile 42))
+; returns '('("no user" 42) "loading user 42: no user 42")
+
+(handler-bind ((condition (lambda (c &rest _) (error-message))))
+  (handler-bind ((not-found (lambda (c &rest _) (rethrow :context "rendering page"))))
+    (get-profile 7)))
+; returns "rendering page: loading user 7: no user 7"
+```
+
+Uncaught, the error renders with the context too:
+`not-found: loading user 9: no user 9`.  `:context` must be a string;
+anything else raises `argument-error`, and an empty string or `()` re-throws
+the error unchanged.  Go code wraps an error with
+`lisp.WrapError` (see docs/embed.md).
+
+`:context` never changes the condition.  To give the error a new type, or to
+place the original message somewhere other than the end, raise a new
+condition explicitly with the old message:
+
+```lisp
+(define-condition 'profile-error 'error)
+
+(handler-bind ((not-found
+                 (lambda (c &rest _)
+                   (error 'profile-error
+                          (format-string "profile failed ({})" (error-message))))))
+  (get-profile 5))
+; raises profile-error with "profile failed (loading user 5: no user 5)"
+```
+
+The new error has its own condition, data and stack and keeps no link to the
+original: a `not-found` handler outside does not catch it.  elps has no cause
+chain, unlike Go's `errors.As` through a custom wrapper type, because a
+handler would then match through two hierarchies at once with no single most
+specific binding.  Use the hierarchy instead when callers should catch a
+family of errors: a handler on a parent catches every child.
 
 ### Inspecting an Error's Call Stack
 
@@ -2926,13 +3035,16 @@ change.
    becomes the value of the `handler-bind` form. With no error, the last body
    value is returned.
 2. **Matching order.** Inner `handler-bind` forms are searched before outer
-   ones. Within one form, bindings are tried in the order written and the
-   first match wins, so put `condition` last.
+   ones. Within one form, the binding nearest the raised condition in the
+   hierarchy runs: the condition itself, then its parent and so on, with
+   `condition` last; bindings for the same type run in the order written (see
+   "Condition hierarchy").
 3. **Handler arguments.** A handler receives the condition symbol followed by
    copies of the values passed to `error`. `error` evaluates its arguments
    like any function; the handler receives the resulting values and does not
    evaluate them again. Mutating those copies
-   never changes the error, so `rethrow` always re-raises the original data.
+   never changes the error, so `rethrow` always re-raises the original data,
+   with or without `:context`.
 4. **Handler errors escape.** An error raised by a handler is not caught by the
    same `handler-bind`, only by an enclosing one.
 5. **Custom conditions carry data.** Any symbol names a condition, and any

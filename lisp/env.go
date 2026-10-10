@@ -1643,6 +1643,12 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	}
 	if stack := lerr.CallStack(); stack == nil {
 		lerr.SetCallStack(env.errorStack())
+	} else if stack.renderLimit == 0 && len(stack.Frames) == 0 && stack.wraps != nil {
+		// WrapError gave an error that had no stack one that holds only its
+		// context: take this env's frames and keep the context.
+		fresh := env.errorStack()
+		fresh.wraps = stack.wraps
+		lerr.SetCallStack(fresh)
 	} else if stack.renderLimit == 0 {
 		// Preserve a producer's frames while adding the policy at association.
 		stack = stack.Copy()

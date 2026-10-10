@@ -304,13 +304,14 @@ branch matches. While sometimes intentional, this is often an oversight.
 
 ### `rethrow-context`
 
-**Flags `(rethrow)` and `(error-stack)` calls outside a `handler-bind` handler.**
+**Flags `(rethrow)`, `(error-stack)` and `(error-message)` calls outside a `handler-bind` handler.**
 
-`rethrow` re-signals the currently active error, and `error-stack` returns
-its call stack; both only work inside a `handler-bind` handler. Using either
-outside causes a runtime error. An `(error-stack)` inside a function body
-(`defun`, `lambda`, `flet`, ...) is not reported, since a handler may call
-that function; `rethrow` is reported there as before.
+`rethrow` re-signals the currently active error, and `error-stack` and
+`error-message` return its call stack and message; all three only work inside
+a `handler-bind` handler. Using one outside causes a runtime error. An
+`(error-stack)` or `(error-message)` inside a function body (`defun`,
+`lambda`, `flet`, ...) is not reported, since a handler may call that
+function; `rethrow` is reported there as before.
 
 The check walks code with the shared code walker (`astutil.ExpandAll`), so
 quoted data and quasiquote templates are not searched, a local function or
@@ -489,6 +490,36 @@ bare names, and the diagnostic names the canonical one. And as with
 `comparator-mutation`, a same-file rebinding of `quote`, `quasiquote` or a
 builtin name (for example `(defun quote (x) x)`) is not tracked, so the check
 then reads the shadowed meaning.
+
+### `handler-order`
+
+**Flags a `handler-bind` binding written after a binding for one of its
+ancestors, or for its own type.** (Severity: warning)
+
+`handler-bind` runs the most specific matching binding: the one for the
+raised condition, else the one for its nearest ancestor, with the catch-all
+`condition` last (luthersystems/elps#831). Before that change it ran the
+first match in source order, so the second binding below never ran. It now
+runs for `boom`:
+
+```lisp
+;; WARNING — the boom handler used to be dead code; it now runs for boom
+(handler-bind ((condition (lambda (&rest _) 'any))
+               (boom (lambda (&rest _) 'boom)))
+  (work))
+
+;; GOOD — reads the way it runs
+(handler-bind ((boom (lambda (&rest _) 'boom))
+               (condition (lambda (&rest _) 'any)))
+  (work))
+```
+
+The same applies to `error` before `argument-error`, and to a parent named
+by a `define-condition` call in the same file whose arguments are a quoted
+symbol or a string. A second binding for the same type is reported as one
+that never runs. The check cannot see a parent defined in another file, by
+Go code (`Runtime.DefineCondition`), or by a computed `define-condition`
+call.
 
 ### `with-cleanup-forms`
 

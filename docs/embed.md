@@ -929,10 +929,38 @@ argument", "second argument" or "third argument". These messages are for
 ports that keep only the error condition of the Lisp they replace. A few elps
 builtins use them too (`math:sqrt`, `math:log`, `base64:encode`, ...).
 
+**Argument failures raise `argument-error`.** Every argument failure found by
+these helpers (`ArgReader`'s reads, `Typed` and `Check`, `Cells.Read`, and
+`Func*E`'s decoding and arity check) raises condition `argument-error`
+(`lisp.CondArgumentError`), a child of `error`. A Lisp `handler-bind` on
+`error` still catches it, and it renders as an `error` does, so its message
+text is unchanged. A builtin that checks by hand with `env.Errorf` raises
+`error`. Go code that must react to an argument failure tests
+`lisp.ConditionIsA(lisp.ConditionOf(err), lisp.CondArgumentError)`.
+
+**A program can define its own hierarchy.** `Runtime.DefineCondition(child,
+parent)` is the Go form of Lisp's `define-condition`, and
+`Runtime.ConditionIsA(c, ancestor)` tests a condition against the runtime's
+built-in and defined parents. The package function `lisp.ConditionIsA` sees
+only the built-in parents. A template publishes the runtime's hierarchy, and
+every VM forked from it starts with it. `handler-bind` runs the binding
+nearest the raised condition in the hierarchy (see "Condition hierarchy" in
+lang.md).
+
+**Adding context to an error.** `lisp.WrapError(lerr, "loading user %d",
+id)` returns a copy of `lerr` whose message has that line and `": "` in front,
+as `fmt.Errorf("...: %w", err)` does for a Go error. The copy keeps `lerr`'s
+condition, data, source and stack, so every handler that matched `lerr`
+matches it; `lerr` is not changed. An error with no stack yet gets one when the
+evaluator associates it. `(*lisp.ErrorVal).ErrorContext()` returns the lines,
+outermost first. Lisp code does the same with `(rethrow :context ...)`.
+
 **Error text is not a stable API.** An error's message may change in any
 elps release. Its condition is stable: changing it is a documented breaking
-change. Code that must react to an error catches or tests its condition and
-does not compare its text.
+change. A new child condition is not a break for a handler on its parent,
+but a handler that reads the condition symbol sees the child. Code that must
+react to an error catches or tests its condition and does not compare its
+text.
 
 The result type is one of `*lisp.LVal`, `string`, `int`, `float64`, `bool`,
 `[]byte`, `[]*lisp.LVal` or `lisp.Cells`; any other type does not compile. A

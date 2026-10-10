@@ -22,6 +22,11 @@ import (
 //
 // Keep slice headers before scalars.
 type CallStack struct {
+	// wraps holds the lines WrapError added in front of the error's
+	// message, outermost first (luthersystems/elps#831).  A wrap prepends a
+	// new node and never writes one, so copies share the list.
+	wraps *wrapLine
+
 	Frames  []CallFrame
 	GoStack []byte
 
@@ -150,6 +155,7 @@ func (s *CallStack) Copy() *CallStack {
 	copy(frames, s.Frames)
 	return &CallStack{
 		renderLimit:       s.renderLimit,
+		wraps:             s.wraps,
 		MaxHeightLogical:  s.MaxHeightLogical,
 		MaxHeightPhysical: s.MaxHeightPhysical,
 		MaxTailIterations: s.MaxTailIterations,

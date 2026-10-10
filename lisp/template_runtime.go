@@ -61,6 +61,7 @@ type templateRuntime struct {
 	loadCache              LoadCache
 	settings               map[string]bool
 	values                 map[string]any
+	conditionParents       map[string]conditionEntry
 	stderr                 io.Writer
 	currentPackage         string
 	languagePackage        string
@@ -93,6 +94,9 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 	if len(rt.values) > 0 {
 		c.values = maps.Clone(rt.values)
 	}
+	if len(rt.conditionParents) > 0 {
+		c.conditionParents = maps.Clone(rt.conditionParents)
+	}
 	if rt.Package != nil {
 		c.currentPackage = rt.Package.Name
 		c.hasCurrentPackage = true
@@ -120,6 +124,10 @@ func (c templateRuntime) newRuntime(opts vmConfig, packages int) *Runtime {
 	if c.values != nil {
 		rt.values = c.values
 		rt.valuesShared = true
+	}
+	if c.conditionParents != nil {
+		rt.conditionParents = c.conditionParents
+		rt.conditionParentsShared = true
 	}
 	// The VM's environments are built by the planner rather than by
 	// NewEnvRuntime, so bind the fresh registry to the fresh runtime here:
