@@ -332,16 +332,16 @@
 	=> 2
 	steps 3
 (math:log "a" 2)
-	=> error error in math:log: argument is not a number: string @golden
+	=> error argument-error in math:log: first argument is not a number: string @golden
 	steps 4
 (math:log 2 "a")
-	=> error error in math:log: argument is not a number: string @golden
+	=> error argument-error in math:log: second argument is not a number: string @golden
 	steps 4
 (math:log 2 8)
 	=> 3
 	steps 4
 (math:sqrt "a")
-	=> error error in math:sqrt: argument is not a number: string @golden
+	=> error argument-error in math:sqrt: argument is not a number: string @golden
 	steps 3
 (math:sqrt 4)
 	=> 2

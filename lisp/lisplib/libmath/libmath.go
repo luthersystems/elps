@@ -156,42 +156,35 @@ func builtinFloor(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Float(math.Floor(x.Float))
 }
 
-func builtinLog(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	b, x := args.Cells[0], args.Cells[1]
-	if !b.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", b.Type)
-	}
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
-	return lisp.Float(math.Log(toFloat(x)) / math.Log(toFloat(b)))
-}
+var builtinLog = lisp.Func2E(func(_ *lisp.LEnv, b, x float64) (float64, error) {
+	return math.Log(x) / math.Log(b), nil
+})
 
-var builtinSqrt = realFunc(math.Sqrt).builtin
+var builtinSqrt = realFunc(math.Sqrt).builtin()
 
-var builtinExp = realFunc(math.Exp).builtin
+var builtinExp = realFunc(math.Exp).builtin()
 
-var builtinLn = realFunc(math.Log).builtin
+var builtinLn = realFunc(math.Log).builtin()
 
-var builtinSin = realFunc(math.Sin).builtin
+var builtinSin = realFunc(math.Sin).builtin()
 
-var builtinSinh = realFunc(math.Sinh).builtin
+var builtinSinh = realFunc(math.Sinh).builtin()
 
-var builtinAsin = realFunc(math.Asin).builtin
+var builtinAsin = realFunc(math.Asin).builtin()
 
-var builtinAsinh = realFunc(math.Asinh).builtin
+var builtinAsinh = realFunc(math.Asinh).builtin()
 
-var builtinCos = realFunc(math.Cos).builtin
+var builtinCos = realFunc(math.Cos).builtin()
 
-var builtinCosh = realFunc(math.Cosh).builtin
+var builtinCosh = realFunc(math.Cosh).builtin()
 
-var builtinAcos = realFunc(math.Acos).builtin
+var builtinAcos = realFunc(math.Acos).builtin()
 
-var builtinAcosh = realFunc(math.Acosh).builtin
+var builtinAcosh = realFunc(math.Acosh).builtin()
 
-var builtinTan = realFunc(math.Tan).builtin
+var builtinTan = realFunc(math.Tan).builtin()
 
-var builtinTanh = realFunc(math.Tanh).builtin
+var builtinTanh = realFunc(math.Tanh).builtin()
 
 // builtinAtan does not have the same signature as other trigonometric
 // functions and must be implemented specially.
@@ -212,19 +205,18 @@ func builtinAtan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return lisp.Float(math.Atan2(toFloat(x), toFloat(q)))
 }
 
-var builtinAtanh = realFunc(math.Atanh).builtin
+var builtinAtanh = realFunc(math.Atanh).builtin()
 
 // realFunc is a function of the real number line (potentially with special
 // cases for NaN and -Inf/+Inf)
 type realFunc func(float64) float64
 
-func (fn realFunc) builtin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	x := args.Cells[0]
-	if !x.IsNumeric() {
-		return env.Errorf("argument is not a number: %v", x.Type)
-	}
-	y := fn(toFloat(x))
-	return lisp.Float(y)
+// builtin returns fn as a builtin of one number.  An integer argument is
+// converted to a float.
+func (fn realFunc) builtin() lisp.LBuiltin {
+	return lisp.Func1E(func(_ *lisp.LEnv, x float64) (float64, error) {
+		return fn(x), nil
+	})
 }
 
 func toFloat(x *lisp.LVal) float64 {
