@@ -61,6 +61,9 @@
 //	a switch or if-else chain on v.Type with an LSExpr arm that reads
 //	v.Cells and an LArray arm that loops over v.ArrayIndex(lisp.Int(i))
 //	                                   v.SeqCells() or lisp.SeqOf[T]  (hint)
+//	a plain LBuiltin registered with 1, 2 or 3 required formals that reads
+//	only args.Cells[i] for a constant i below the count
+//	                                   lisp.Func1E, Func2E or Func3E  (hint)
 //	three or more if err != nil { return env.Error(err) } in a function
 //	                                   a lisp.FuncE body              (hint)
 //	v.Native.(T) where a v.Type == lisp.LNative test guards it
@@ -113,7 +116,10 @@
 // INVISIBLE: code built through variables the rule does not trace (a
 // BuiltinRef held in a local variable or a struct field, a formals list held
 // in a local variable, a builtin passed through a slice), a type test that
-// a called function makes, helpers in other packages, and reflection.  A clean run is evidence, not proof.
+// a called function makes, a builtin registered in another package or
+// through a slice or table (the Func*E hint links a builtin to its formals
+// only within one registration call), helpers in other packages, and
+// reflection.  A clean run is evidence, not proof.
 package idiom
 
 import (
@@ -448,6 +454,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkQExpr(x)
 			s.checkResultAs(x)
 			s.checkRegistration(x)
+			s.checkFixedArity(x)
 			s.checkMapOf(x)
 			s.checkSortedMapCall(x)
 			s.checkBuiltinHelper(x)
@@ -2332,4 +2339,133 @@ func (s *state) indent(pos token.Pos) string {
 		return ""
 	}
 	return line
+}
+
+// checkFixedArity: a plain LBuiltin registered with 1, 2 or 3 required
+// formals and nothing else, whose body reads its argument list only as
+// args.Cells[i] with a constant i below the count.  Func1E, Func2E or
+// Func3E decodes and checks the arguments.
+func (s *state) checkFixedArity(call *ast.CallExpr) {
+	var formals *ast.CallExpr
+	for _, arg := range call.Args {
+		if c, ok := ast.Unparen(arg).(*ast.CallExpr); ok {
+			if fn := s.lispFunc(c); fn != nil && fn.Name() == "Formals" {
+				formals = c
+			}
+		}
+	}
+	if formals == nil || formals.Ellipsis.IsValid() || len(formals.Args) < 1 || len(formals.Args) > 3 {
+		return
+	}
+	for _, a := range formals.Args {
+		name, ok := s.constString(a)
+		if !ok || strings.HasPrefix(name, "&") {
+			return
+		}
+	}
+	n := len(formals.Args)
+	for _, arg := range call.Args {
+		var ft *ast.FuncType
+		var body *ast.BlockStmt
+		var sig *types.Signature
+		name := ""
+		switch x := ast.Unparen(arg).(type) {
+		case *ast.FuncLit:
+			ft, body, name = x.Type, x.Body, "the builtin"
+			sig, _ = s.pass.TypesInfo.TypeOf(x).(*types.Signature)
+		case *ast.Ident, *ast.SelectorExpr:
+			id, ok := x.(*ast.Ident)
+			if !ok {
+				id = x.(*ast.SelectorExpr).Sel
+			}
+			fn, ok := s.pass.TypesInfo.Uses[id].(*types.Func)
+			if !ok {
+				continue
+			}
+			fd := s.decls[fn]
+			if fd == nil || fd.Body == nil || fd.Recv != nil {
+				continue
+			}
+			ft, body, name, sig = fd.Type, fd.Body, fd.Name.Name, fn.Signature()
+		default:
+			continue
+		}
+		if !isLBuiltinSig(sig) || !s.readsOnlyArgCells(ft, body, n) {
+			continue
+		}
+		s.report(arg, CategoryInfo, fmt.Sprintf("%s takes %d required arguments; lisp.Func%dE with Go types (string, int, "+
+			"float64, bool, []byte, lisp.Text, *lisp.LVal or a native) decodes and checks them; the error text changes, so "+
+			"this is a hint, not a fix", name, n, n))
+	}
+}
+
+// isLBuiltinSig reports whether sig is func(*lisp.LEnv, *lisp.LVal) *lisp.LVal.
+func isLBuiltinSig(sig *types.Signature) bool {
+	if sig == nil || sig.Params().Len() != 2 || sig.Results().Len() != 1 || sig.Variadic() {
+		return false
+	}
+	isPtr := func(t types.Type, name string) bool {
+		p, ok := types.Unalias(t).(*types.Pointer)
+		return ok && isLispNamed(p.Elem(), name)
+	}
+	return isPtr(sig.Params().At(0).Type(), "LEnv") && isPtr(sig.Params().At(1).Type(), "LVal") &&
+		isPtr(sig.Results().At(0).Type(), "LVal")
+}
+
+// readsOnlyArgCells reports whether every use of the second parameter in
+// body is args.Cells[i] with a constant i in [0, n).
+func (s *state) readsOnlyArgCells(ft *ast.FuncType, body *ast.BlockStmt, n int) bool {
+	if len(ft.Params.List) == 0 {
+		return false
+	}
+	last := ft.Params.List[len(ft.Params.List)-1]
+	if len(last.Names) == 0 {
+		return false
+	}
+	argsObj := s.pass.TypesInfo.Defs[last.Names[len(last.Names)-1]]
+	if argsObj == nil || last.Names[len(last.Names)-1].Name == "_" {
+		return false
+	}
+	ok := true
+	allowed := make(map[*ast.Ident]bool)
+	ast.Inspect(body, func(node ast.Node) bool {
+		idx, isIdx := node.(*ast.IndexExpr)
+		if !isIdx {
+			return ok
+		}
+		sel, isSel := ast.Unparen(idx.X).(*ast.SelectorExpr)
+		if !isSel || sel.Sel.Name != "Cells" {
+			return ok
+		}
+		id, isID := ast.Unparen(sel.X).(*ast.Ident)
+		if !isID || s.pass.TypesInfo.Uses[id] != argsObj {
+			return ok
+		}
+		tv, has := s.pass.TypesInfo.Types[idx.Index]
+		if !has || tv.Value == nil {
+			ok = false
+			return false
+		}
+		i, exact := constant.Int64Val(constant.ToInt(tv.Value))
+		if !exact || i < 0 || int(i) >= n {
+			ok = false
+			return false
+		}
+		allowed[id] = true
+		return ok
+	})
+	if !ok {
+		return false
+	}
+	used := false
+	ast.Inspect(body, func(node ast.Node) bool {
+		if id, isID := node.(*ast.Ident); isID && s.pass.TypesInfo.Uses[id] == argsObj {
+			used = true
+			if !allowed[id] {
+				ok = false
+			}
+		}
+		return ok
+	})
+	return ok && used
 }

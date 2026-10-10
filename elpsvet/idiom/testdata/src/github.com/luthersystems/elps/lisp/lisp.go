@@ -115,4 +115,4 @@ func (v *LVal) MapSetLVal(k, val *LVal) *LVal          { return v }
 
 func SortedMap() *LVal      { return &LVal{} }
 func MapOf(kv ...any) *LVal { return &LVal{} }
-func Bool(b bool) *LVal { return &LVal{} }
+func Bool(b bool) *LVal     { return &LVal{} }
