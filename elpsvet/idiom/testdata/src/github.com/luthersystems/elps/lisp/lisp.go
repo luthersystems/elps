@@ -12,6 +12,12 @@ const (
 	LSExpr
 	LArray
 	LNative
+	LSymbol
+)
+
+const (
+	TrueSymbol  = "true"
+	FalseSymbol = "false"
 )
 
 const OptArgSymbol = "&optional"
@@ -72,6 +78,7 @@ func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
 func (v *LVal) MapKeys() *LVal              { return v }
 func (v *LVal) MapGetString(k string) *LVal { return v }
 func (v *LVal) IsError() bool               { return v.Type == LError }
+func (v *LVal) IsSymbol(name string) bool   { return v.Type == LSymbol && v.Str == name }
 func (v *LVal) Len() int                    { return len(v.Cells) }
 func (v *LVal) ArrayIndex(i ...*LVal) *LVal { return v }
 func (v *LVal) SeqCells() ([]*LVal, bool)   { return v.Cells, true }

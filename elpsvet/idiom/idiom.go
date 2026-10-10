@@ -15,6 +15,11 @@
 //	x.Type == lisp.LError              x.IsError()                    (fix)
 //	lisp.QExpr([]*lisp.LVal{...})      lisp.Cells{...}.List()         (fix)
 //	lisp.SExpr([]*lisp.LVal{...})      lisp.Cells{...}.SExpr()        (fix)
+//	x.Type == lisp.LSymbol && x.Str == name, where x and name read a
+//	value with no side effect (an identifier, a selector, a constant
+//	index, or a constant name)         x.IsSymbol(name)               (fix)
+//	x.Type != lisp.LSymbol || x.Str != name
+//	                                   !x.IsSymbol(name)              (fix)
 //	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 //		return env.Errorf("%s", msg)
 //	}                                  env.CheckAlloc(n)              (fix)
@@ -409,6 +414,9 @@ func (s *state) checkFile(file *ast.File) {
 		switch x := n.(type) {
 		case *ast.BinaryExpr:
 			s.checkIsError(x)
+			if len(stack) < 2 || !sameChain(stack[len(stack)-2], x) {
+				s.checkIsSymbol(x)
+			}
 		case *ast.CallExpr:
 			s.checkQExpr(x)
 			s.checkResultAs(x)
@@ -1653,4 +1661,121 @@ func (s *state) returnsUnlessNative(st ast.Stmt, x string) bool {
 		return false
 	}
 	return walk(ifs.Cond)
+}
+
+// boolChain reports whether n is an && or || expression.
+func boolChain(n ast.Node) bool {
+	b, ok := n.(*ast.BinaryExpr)
+	return ok && (b.Op == token.LAND || b.Op == token.LOR)
+}
+
+// chainTerms returns the terms of an op chain (&& or ||) in source order.
+// It does not look inside parentheses, so adjacent terms are adjacent in the
+// source.
+func chainTerms(e ast.Expr, op token.Token) []ast.Expr {
+	b, ok := e.(*ast.BinaryExpr)
+	if !ok || b.Op != op {
+		return []ast.Expr{e}
+	}
+	return append(chainTerms(b.X, op), chainTerms(b.Y, op)...)
+}
+
+// pure reports whether e reads a value with no side effect: an identifier,
+// or a selector or a constant index over one.  Reading it twice or once is
+// the same.
+func (s *state) pure(e ast.Expr) bool {
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		return true
+	case *ast.SelectorExpr:
+		return s.pure(x.X)
+	case *ast.IndexExpr:
+		tv, ok := s.pass.TypesInfo.Types[x.Index]
+		return ok && tv.Value != nil && s.pure(x.X)
+	}
+	return false
+}
+
+// symbolTypeTest returns x for x.Type cmp lisp.LSymbol.
+func (s *state) symbolTypeTest(e ast.Expr, cmp token.Token) ast.Expr {
+	b, ok := e.(*ast.BinaryExpr)
+	if !ok || b.Op != cmp {
+		return nil
+	}
+	x, other := s.typeField(b.X), b.Y
+	if x == nil {
+		x, other = s.typeField(b.Y), b.X
+	}
+	if x == nil || !s.isLispConst(other, "LSymbol") {
+		return nil
+	}
+	return x
+}
+
+// symbolNameTest returns x and name for x.Str cmp name, where name is a
+// string constant or a pure string expression.
+func (s *state) symbolNameTest(e ast.Expr, cmp token.Token) (ast.Expr, ast.Expr) {
+	b, ok := e.(*ast.BinaryExpr)
+	if !ok || b.Op != cmp {
+		return nil, nil
+	}
+	for _, pair := range [][2]ast.Expr{{b.X, b.Y}, {b.Y, b.X}} {
+		sel, ok := ast.Unparen(pair[0]).(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Str" || s.typeFieldOwner(sel) == nil {
+			continue
+		}
+		if _, ok := s.constString(pair[1]); ok {
+			return sel.X, pair[1]
+		}
+		if s.pure(pair[1]) && isBasic(s.pass.TypesInfo.TypeOf(pair[1]), types.String) {
+			return sel.X, pair[1]
+		}
+	}
+	return nil, nil
+}
+
+// checkIsSymbol: x.Type == lisp.LSymbol && x.Str == name, as two adjacent
+// terms of an && chain, and x.Type != lisp.LSymbol || x.Str != name, as two
+// adjacent terms of an || chain.  x and name must be pure, so that the
+// rewrite reads each one once with no change.
+func (s *state) checkIsSymbol(b *ast.BinaryExpr) {
+	cmp, neg := token.EQL, ""
+	switch b.Op {
+	case token.LAND:
+	case token.LOR:
+		cmp, neg = token.NEQ, "!"
+	default:
+		return
+	}
+	terms := chainTerms(b, b.Op)
+	for i := 0; i+1 < len(terms); i++ {
+		t1, t2 := terms[i], terms[i+1]
+		x := s.symbolTypeTest(t1, cmp)
+		nx, name := s.symbolNameTest(t2, cmp)
+		if x == nil || nx == nil {
+			nx, name = s.symbolNameTest(t1, cmp)
+			x = s.symbolTypeTest(t2, cmp)
+		}
+		if x == nil || nx == nil || s.text(x) != s.text(nx) || !s.pure(x) {
+			continue
+		}
+		text := neg + s.operand(x) + ".IsSymbol(" + s.text(name) + ")"
+		s.pass.Report(analysis.Diagnostic{
+			Pos:      t1.Pos(),
+			End:      t2.End(),
+			Category: CategoryInfo,
+			Message:  "use " + text + ", which is the same compare",
+			SuggestedFixes: []analysis.SuggestedFix{{
+				Message:   "Use IsSymbol",
+				TextEdits: []analysis.TextEdit{{Pos: t1.Pos(), End: t2.End(), NewText: []byte(text)}},
+			}},
+		})
+		i++
+	}
+}
+
+// sameChain reports whether parent continues the && or || chain of b.
+func sameChain(parent ast.Node, b *ast.BinaryExpr) bool {
+	p, ok := parent.(*ast.BinaryExpr)
+	return ok && p.Op == b.Op && boolChain(p)
 }
