@@ -96,15 +96,16 @@ var analyzers = []*analysis.Analyzer{
 	idiom.Analyzer,
 }
 
-func main() {
-	// The gate reports only the elpsidiom idioms that carry a fix.  The
-	// hints stay out, because elps's builtins keep their error messages.
-	// -elpsidiom.fixonly=false on the command line shows the hints too.
+// init makes elpsidiom report only the idioms that carry a fix.  The hints
+// stay out of the gate, because a hint rewrite needs a person to review it.
+// -elpsidiom.fixonly=false on the command line shows the hints too.
+func init() {
 	if err := idiom.Analyzer.Flags.Set("fixonly", "true"); err != nil {
 		panic(err)
 	}
-	multichecker.Main(analyzers...)
 }
+
+func main() { multichecker.Main(analyzers...) }
 
 func run(pass *analysis.Pass) (any, error) {
 	for _, file := range pass.Files {
