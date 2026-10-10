@@ -772,6 +772,24 @@ returns the condition Lisp sees for `err`: the condition of a bare
 `*ErrorVal`, the condition of a wrapped internal panic, and `error` for any
 other error. It does not look through wraps, because `handler-bind` does not.
 
+**A builtin body in (value, error) form: `lisp.FuncE`.**
+
+```go
+var builtinMerge = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+	keys, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+})
+```
+
+A `*ErrorVal` error is returned as itself, so the debugger does not see it a
+second time. Any other error becomes `env.Error(err)`, with condition
+`error`. A nil value with a nil error becomes `()`. elpsvet's `elpsownpkg` and
+`elpsbuiltinstate` read the body like any other builtin, and so do the bodies
+passed to `Func1` and `Func2`.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

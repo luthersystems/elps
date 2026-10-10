@@ -23,7 +23,9 @@
 // builtin tables), a map value or slice/array element typed lisp.LBuiltin,
 // an assignment or var declaration whose static type is lisp.LBuiltin, or
 // the operand of a lisp.LBuiltin(f) conversion; an explicitly instantiated
-// generic (F[int]) is unwrapped first.  Of
+// generic (F[int]) is unwrapped first.  The last argument of a typed binding
+// (lisp.FuncE, Func1, Func2 and their siblings, see typedBindings) is a
+// builtin too: it is the body the binding wraps, whatever its signature.  Of
 // those expressions three shapes are analysed:
 //
 //   - a function literal: its body, with every variable declared OUTSIDE the
@@ -193,7 +195,48 @@ func isLBuiltin(t types.Type) bool {
 	return obj.Name() == lBuiltinTypeName && obj.Pkg() != nil && obj.Pkg().Path() == lispPkgPath
 }
 
+// typedBindings are the lisp functions that turn their last argument, a Go
+// function with typed arguments or a (value, error) result, into an
+// LBuiltin.
+var typedBindings = map[string]bool{
+	"FuncE": true,
+	"Func1": true,
+	"Func2": true,
+}
+
+// typedBindingBody returns the body call passes to a typed binding, or nil.
+func typedBindingBody(info *types.Info, call *ast.CallExpr) ast.Expr {
+	if len(call.Args) == 0 {
+		return nil
+	}
+	fun := ast.Unparen(call.Fun)
+	switch idx := fun.(type) {
+	case *ast.IndexExpr:
+		fun = ast.Unparen(idx.X)
+	case *ast.IndexListExpr:
+		fun = ast.Unparen(idx.X)
+	}
+	var id *ast.Ident
+	switch f := fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return nil
+	}
+	fn, ok := info.Uses[id].(*types.Func)
+	if !ok || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath || !typedBindings[fn.Name()] || fn.Signature().Recv() != nil {
+		return nil
+	}
+	return call.Args[len(call.Args)-1]
+}
+
 func (r *builtinStateRun) checkCall(call *ast.CallExpr) {
+	if body := typedBindingBody(r.pass.TypesInfo, call); body != nil {
+		r.checkBuiltin(body)
+		return
+	}
 	if tv, ok := r.pass.TypesInfo.Types[call.Fun]; ok && tv.IsType() {
 		if isLBuiltin(tv.Type) && len(call.Args) == 1 {
 			r.checkBuiltin(call.Args[0]) // lisp.LBuiltin(f)

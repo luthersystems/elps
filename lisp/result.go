@@ -53,3 +53,46 @@ func ConditionOf(err error) string {
 	}
 	return "error"
 }
+
+// FuncE returns an LBuiltin whose body f is written in (value, error) form.
+//
+//	var builtinLoad = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
+//		v, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+//		if err != nil {
+//			return nil, err
+//		}
+//		return v, nil
+//	})
+//
+// The builtin converts f's result to the *LVal a builtin returns:
+//
+//   - A non-nil error that is a *ErrorVal is returned as itself.  It keeps
+//     its condition, data and stack, and the debugger is not told about it
+//     a second time.
+//   - Any other non-nil error becomes env.Error(err), with condition
+//     "error" (see ConditionOf).  The value is ignored.
+//   - A nil value with a nil error becomes Nil().
+//
+// elpsvet's elpsownpkg and elpsbuiltinstate rules check f like any other
+// builtin body.  FuncE adds one call and no allocation to the body's cost.
+func FuncE(f func(env *LEnv, args *LVal) (*LVal, error)) LBuiltin {
+	return func(env *LEnv, args *LVal) *LVal {
+		v, err := f(env, args)
+		return builtinResult(env, v, err)
+	}
+}
+
+// builtinResult converts the (value, error) result of a FuncE or Func*E body
+// to the value its builtin returns.
+func builtinResult(env *LEnv, v *LVal, err error) *LVal {
+	if err != nil {
+		if e, ok := err.(*ErrorVal); ok && e != nil { //nolint:errorlint // only a bare *ErrorVal keeps its identity, as in ErrorCondition
+			return (*LVal)(e)
+		}
+		return env.Error(err)
+	}
+	if v == nil {
+		return Nil()
+	}
+	return v
+}

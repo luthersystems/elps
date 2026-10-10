@@ -124,7 +124,10 @@ closure captures. #678 was a setter builtin registered as a method value
   `lisp.Fun`, `FunInPackage`, `Macro*`, `SpecialOp*`, `RegisterDefault*`,
   `libschema.NewValidator*`), a struct field (keyed or positional), a map value
   or slice element, a variable of that type, or a `lisp.LBuiltin(f)` conversion.
-  It matches by type, so there's no constructor-name list to drift.
+  It matches by type, so there's no constructor-name list to drift. The
+  last argument of a typed binding (`lisp.FuncE`, `Func1`, `Func2`, `Func3`,
+  `Func1E`, `Func2E`, `Func3E`) is a builtin too, whatever its signature;
+  `elpsownpkg` reads it the same way.
 - **What it reads:** a function literal's body (anything declared outside it is
   captured), a same-package method value's body with the receiver tracked, or a
   plain function's body for package-level writes.
