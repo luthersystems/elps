@@ -43,3 +43,13 @@ func shadowed(v *LVal) *LVal {
 func hintsOff(v *LVal) (*ErrorVal, bool) {
 	return nil, v.Type == LNative
 }
+
+// The Cells fixes write Cells without a qualifier.
+func cellsInLisp(v *LVal) *LVal {
+	out := make([]*LVal, len(v.Cells)) // want `use Cells\(v.Cells\).Map, which builds the same slice`
+	for i, x := range v.Cells {
+		out[i] = String(x.Str)
+	}
+	c := append([]*LVal{}, v.Cells...) // want `use Cells\(v.Cells\).Clone\(\), which makes the same copy`
+	return SExpr(append(out, c...))
+}
