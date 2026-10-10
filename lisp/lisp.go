@@ -871,6 +871,7 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 // FunInPackageDoc is FunInPackage with the docstring doc.  The function value
 // holds its formals and docstring in the layout registered builtins use, so
 // Docstring returns doc.
+//nolint:revive // FunInPackage plus its docstring; the design fixes the five arguments
 func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
 		Type: LFun,

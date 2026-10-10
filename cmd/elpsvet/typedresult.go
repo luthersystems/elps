@@ -73,6 +73,7 @@ func checkTypedResults(pass *analysis.Pass) {
 	}
 }
 
+//nolint:revive // each argument is a separate fact about one binding
 func checkTypedResultBody(pass *analysis.Pass, binding string, ftype *ast.FuncType, body *ast.BlockStmt, allow map[int]bool) {
 	if ftype.Results == nil || len(ftype.Results.List) == 0 || !storageResult(pass.TypesInfo.TypeOf(ftype.Results.List[0].Type)) {
 		return

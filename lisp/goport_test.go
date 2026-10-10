@@ -24,7 +24,7 @@ func TestIsError(t *testing.T) {
 
 func TestResult(t *testing.T) {
 	v, err := lisp.Result(lisp.Int(3))
-	assert.NoError(t, err)
+	require.NoError(t, err)
 	assert.Equal(t, 3, v.Int)
 
 	lerr := lisp.ErrorConditionf("my-condition", "boom")
@@ -32,7 +32,7 @@ func TestResult(t *testing.T) {
 	assert.Nil(t, v)
 	var ev *lisp.ErrorVal
 	if assert.ErrorAs(t, err, &ev) {
-		assert.Same(t, lerr, (*lisp.LVal)(ev), "Result returns the error value itself")
+		assert.Same(t, (*lisp.LVal)(ev), lerr, "Result returns the error value itself")
 	}
 }
 
@@ -48,7 +48,7 @@ func TestConditionOfMatchesLisp(t *testing.T) {
 	for name, err := range map[string]error{
 		"bare":           lisp.GoError(budget),
 		"wrapped %w":     fmt.Errorf("load: %w", lisp.GoError(budget)),
-		"wrapped %v":     fmt.Errorf("load: %v", lisp.GoError(budget)),
+		"wrapped %v":     fmt.Errorf("load: %v", lisp.GoError(budget)), //nolint:errorlint // the case checks a wrap that hides the condition
 		"plain":          errors.New("plain"),
 		"typed nil":      (*lisp.ErrorVal)(nil),
 		"step limit":     lisp.GoError(lisp.ErrorConditionf(lisp.CondStepLimitExceeded, "x")),
@@ -60,7 +60,7 @@ func TestConditionOfMatchesLisp(t *testing.T) {
 			assert.Equal(t, raised.Str, lisp.ConditionOf(err))
 		})
 	}
-	assert.Equal(t, "", lisp.ConditionOf(nil))
+	assert.Empty(t, lisp.ConditionOf(nil))
 }
 
 func TestFuncE(t *testing.T) {
@@ -170,13 +170,13 @@ func TestResultAs(t *testing.T) {
 
 	// A named type reads a native, not a string.
 	_, err = lisp.ResultAs[goportStatus](lisp.String("ok"))
-	assert.Error(t, err)
+	require.Error(t, err)
 
 	lerr := lisp.Errorf("boom")
 	_, err = lisp.ResultAs[string](lerr)
 	var ev *lisp.ErrorVal
 	require.ErrorAs(t, err, &ev)
-	assert.Same(t, lerr, (*lisp.LVal)(ev))
+	assert.Same(t, (*lisp.LVal)(ev), lerr)
 }
 
 func TestField(t *testing.T) {
@@ -255,9 +255,9 @@ func TestArgReaderTypedReads(t *testing.T) {
 		{func(a *lisp.ArgReader) { a.Seq(0, "first argument") }, "first argument is not a proper sequence: int"},
 		{func(a *lisp.ArgReader) { a.Seq(2, "first argument") }, "first argument is not a proper sequence: sorted-map"},
 	} {
-		a := lisp.ReadArgs(env, args)
-		tc.read(&a)
-		err := lisp.GoError(a.Err())
+		r := lisp.ReadArgs(env, args)
+		tc.read(&r)
+		err := lisp.GoError(r.Err())
 		require.Error(t, err, tc.want)
 		assert.Equal(t, tc.want, errMessage(t, err))
 	}
@@ -490,7 +490,7 @@ func TestFunInPackageDoc(t *testing.T) {
 	body := func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal { return lisp.Int(7) }
 	fun := lisp.FunInPackageDoc(lisp.DefaultUserPackage, "run-phylum", lisp.Formals(), body, "@trace{run-phylum}")
 	assert.Equal(t, "@trace{run-phylum}", fun.Docstring())
-	assert.Equal(t, "", lisp.FunInPackage(lisp.DefaultUserPackage, "f", lisp.Formals(), body).Docstring())
+	assert.Empty(t, lisp.FunInPackage(lisp.DefaultUserPackage, "f", lisp.Formals(), body).Docstring())
 
 	env.PutGlobal(lisp.Symbol("run-phylum"), fun)
 	assert.Equal(t, "7", env.LoadString("t", `(run-phylum)`).String())

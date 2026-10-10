@@ -448,10 +448,10 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 	if !ok || cond.Op != token.NEQ {
 		return
 	}
-	if id, ok := ast.Unparen(cond.X).(*ast.Ident); !ok || id.Name != msgID.Name {
+	if id, isID := ast.Unparen(cond.X).(*ast.Ident); !isID || id.Name != msgID.Name {
 		return
 	}
-	if lit, ok := ast.Unparen(cond.Y).(*ast.BasicLit); !ok || lit.Value != `""` {
+	if lit, isLit := ast.Unparen(cond.Y).(*ast.BasicLit); !isLit || lit.Value != `""` {
 		return
 	}
 	if len(stmt.Body.List) != 1 {
@@ -467,10 +467,10 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 		if !ok || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
 			continue
 		}
-		if f, ok := s.constString(rc.Args[0]); !ok || f != "%s" {
+		if f, isConst := s.constString(rc.Args[0]); !isConst || f != "%s" {
 			continue
 		}
-		if id, ok := ast.Unparen(rc.Args[1]).(*ast.Ident); !ok || id.Name != msgID.Name {
+		if id, isID := ast.Unparen(rc.Args[1]).(*ast.Ident); !isID || id.Name != msgID.Name {
 			continue
 		}
 		recv, ok := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
@@ -540,7 +540,11 @@ func (s *state) checkMapKeysRange(r *ast.RangeStmt, stack []ast.Node) {
 	if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapKeys" {
 		return
 	}
-	m := ast.Unparen(call.Fun).(*ast.SelectorExpr).X
+	fsel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	m := fsel.X
 	if !s.mapChecked(stack, s.text(m)) {
 		return
 	}
@@ -563,7 +567,11 @@ func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
 		if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapGetString" {
 			return
 		}
-		m := ast.Unparen(call.Fun).(*ast.SelectorExpr).X
+		fsel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+		if !ok {
+			return
+		}
+		m := fsel.X
 		if !s.mapChecked(stack, s.text(m)) {
 			return
 		}
@@ -843,7 +851,7 @@ func (s *state) checkErrorWraps() {
 		})
 	}
 	// Close the set over the functions whose errors a scoped body returns.
-	for i := 0; i < len(work); i++ {
+	for i := 0; i < len(work); i++ { //nolint:intrange // add appends to work inside the loop, and a range over len(work) reads the length once
 		for _, f := range s.returnedCallees(work[i].body) {
 			add(f)
 		}

@@ -295,10 +295,11 @@ func (r *runState) checkBinding(body ast.Expr) {
 		r.checkBody(b.Body, "builtin", false)
 	case *ast.Ident, *ast.SelectorExpr:
 		var id *ast.Ident
-		if sel, ok := b.(*ast.SelectorExpr); ok {
-			id = sel.Sel
-		} else {
-			id = b.(*ast.Ident)
+		switch b := b.(type) {
+		case *ast.SelectorExpr:
+			id = b.Sel
+		case *ast.Ident:
+			id = b
 		}
 		fn, ok := r.pass.TypesInfo.Uses[id].(*types.Func)
 		if !ok || fn.Pkg() != r.pass.Pkg {
