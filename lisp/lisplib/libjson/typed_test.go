@@ -445,9 +445,9 @@ func TestTypedDecodeFresh(t *testing.T) {
 	for i := range in {
 		in[i] = 'z'
 	}
-	assert.Equal(t, []byte{1, 2, 3}, v.MapGet(lisp.String("a")).Bytes())
-	assert.Equal(t, "text", v.MapGet(lisp.String("b")).Str)
-	assert.Equal(t, lisp.LArray, v.MapGet(lisp.String("c")).Type)
+	assert.Equal(t, []byte{1, 2, 3}, mapGet(v, lisp.String("a")).Bytes())
+	assert.Equal(t, "text", mapGet(v, lisp.String("b")).Str)
+	assert.Equal(t, lisp.LArray, mapGet(v, lisp.String("c")).Type)
 
 	nil1, err := LoadTyped([]byte(`null`))
 	require.NoError(t, err)

@@ -782,3 +782,37 @@ func (m sortedmap) discardPending(k string) {
 		m.lz.inst, m.lz.entries = nil, nil
 	}
 }
+
+// getString reads the entry of the string or symbol key k without building
+// a key value on the interpreter's own backing.  A custom backing
+// (NewMapData) is asked through Get.
+func (md *MapData) getString(k string) (*LVal, bool) {
+	if md == nil || md.mapBacking == nil {
+		return nil, false
+	}
+	if m, ok := md.mapBacking.(sortedmap); ok {
+		return m.getString(k)
+	}
+	return md.mapBacking.Get(String(k))
+}
+
+// getString is Get for a string or symbol key given as its spelling.
+func (m sortedmap) getString(k string) (*LVal, bool) {
+	v := m.m[k]
+	if v == lazyPending {
+		v = m.entry(k)
+	}
+	return v, v != nil
+}
+
+// getInt is getString for an int key.
+func (md *MapData) getInt(k int) (*LVal, bool) {
+	if md == nil || md.mapBacking == nil {
+		return nil, false
+	}
+	if m, ok := md.mapBacking.(sortedmap); ok {
+		v, ok := m.ints()[k]
+		return v, ok
+	}
+	return md.mapBacking.Get(Int(k))
+}

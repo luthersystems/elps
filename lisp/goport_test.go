@@ -197,34 +197,88 @@ func TestResultAs(t *testing.T) {
 	assert.Same(t, (*lisp.LVal)(ev), lerr)
 }
 
-func TestField(t *testing.T) {
+func TestLookup(t *testing.T) {
 	m := lisp.SortedMap()
 	m.MapSetString("status", lisp.String("in-service"))
 	m.MapSetString("count", lisp.Int(3))
 	m.MapSetLVal(lisp.Symbol("sym"), lisp.String("s"))
+	m.MapSetLVal(lisp.Int(7), lisp.String("seven"))
+	inner := lisp.SortedMap()
+	inner.MapSetString("z", lisp.Int(26))
+	m.MapSetString("inner", inner)
 	h := &goportHandle{}
 	m.MapSetString("def", lisp.NativeOf(h))
 
-	s, ok := lisp.Field[string](m, "status")
+	_, ok := lisp.AsMap(lisp.Int(1))
+	assert.False(t, ok, "not a map")
+	_, ok = lisp.AsMap(nil)
+	assert.False(t, ok, "nil")
+	mv, ok := lisp.AsMap(m)
+	require.True(t, ok)
+	assert.Same(t, m, mv.LVal())
+	assert.Equal(t, 6, mv.Len())
+
+	s, ok := lisp.Lookup[string](mv, "status")
 	assert.True(t, ok)
 	assert.Equal(t, "in-service", s)
-	_, ok = lisp.Field[int](m, "status")
+	_, ok = lisp.Lookup[int](mv, "status")
 	assert.False(t, ok, "wrong type")
-	_, ok = lisp.Field[string](m, "missing")
+	_, ok = lisp.Lookup[string](mv, "missing")
 	assert.False(t, ok, "missing key")
-	_, ok = lisp.Field[string](lisp.Int(1), "status")
-	assert.False(t, ok, "not a map")
-	_, ok = lisp.Field[string](lisp.Nil(), "status")
-	assert.False(t, ok, "nil")
-	n, ok := lisp.Field[int](m, "count")
+	_, ok = lisp.Lookup[string](lisp.MapView{}, "status")
+	assert.False(t, ok, "zero MapView")
+	n, ok := lisp.Lookup[int](mv, "count")
 	assert.True(t, ok)
 	assert.Equal(t, 3, n)
-	sym, ok := lisp.Field[string](m, "sym")
-	assert.True(t, ok)
+	sym, ok := lisp.Lookup[string](mv, "sym")
+	assert.True(t, ok, "a string key finds a symbol key")
 	assert.Equal(t, "s", sym)
-	def, ok := lisp.Field[*goportHandle](m, "def")
+	seven, ok := lisp.Lookup[string](mv, 7)
+	assert.True(t, ok, "int key")
+	assert.Equal(t, "seven", seven)
+	_, ok = lisp.Lookup[string](mv, 8)
+	assert.False(t, ok, "missing int key")
+	def, ok := lisp.Lookup[*goportHandle](mv, "def")
 	assert.True(t, ok)
 	assert.Same(t, h, def)
+	in, ok := lisp.Lookup[lisp.MapView](mv, "inner")
+	require.True(t, ok)
+	z, ok := lisp.Lookup[int](in, "z")
+	assert.True(t, ok)
+	assert.Equal(t, 26, z)
+	_, ok = lisp.Lookup[lisp.MapView](mv, "count")
+	assert.False(t, ok, "not a nested map")
+	raw, ok := lisp.Lookup[*lisp.LVal](mv, lisp.Symbol("status"))
+	assert.True(t, ok, "*LVal key")
+	assert.Equal(t, "in-service", raw.Str)
+	_, ok = lisp.Lookup[*lisp.LVal](mv, (*lisp.LVal)(nil))
+	assert.False(t, ok, "nil *LVal key")
+
+	var keys []string
+	for k := range mv.Keys() {
+		if name, ok := k.Name(); ok {
+			keys = append(keys, name)
+		}
+		v, ok := lisp.Lookup[*lisp.LVal](mv, k)
+		assert.True(t, ok, "MapKey %v", k)
+		assert.NotNil(t, v)
+	}
+	assert.Contains(t, keys, "sym")
+}
+
+func TestLookupAllocations(t *testing.T) {
+	m := lisp.SortedMap()
+	m.MapSetString("status", lisp.String("in-service"))
+	m.MapSetLVal(lisp.Int(7), lisp.String("seven"))
+	mv, _ := lisp.AsMap(m)
+	var sink string
+	allocs := testing.AllocsPerRun(100, func() {
+		sink, _ = lisp.Lookup[string](mv, "status")
+		sink, _ = lisp.Lookup[string](mv, 7)
+		sink, _ = lisp.Lookup[string](mv, "missing")
+	})
+	assert.Zero(t, allocs)
+	_ = sink
 }
 
 func TestResultAsAllocations(t *testing.T) {

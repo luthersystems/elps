@@ -50,6 +50,37 @@ func (c Cells) List() *LVal   { return QExpr(c) }
 func (c Cells) SExpr() *LVal  { return SExpr(c) }
 func (c Cells) Vector() *LVal { return Vector(c) }
 
+// The Cells methods keep their own loops: a rewrite would make them call
+// themselves.
+func (c Cells) Map(f func(*LVal) *LVal) Cells {
+	if c == nil {
+		return nil
+	}
+	out := make(Cells, len(c))
+	for i, x := range c {
+		out[i] = f(x)
+	}
+	return out
+}
+
+func (c Cells) Clone() Cells {
+	if c == nil {
+		return nil
+	}
+	out := make(Cells, len(c))
+	copy(out, c)
+	return out
+}
+
+func (c Cells) Append(xs ...*LVal) Cells {
+	out := make(Cells, len(c)+len(xs))
+	copy(out, c)
+	copy(out[len(c):], xs)
+	return out
+}
+
+func (c Cells) MapIfChanged(f func(*LVal) *LVal) (Cells, bool) { return c, false }
+
 func SExpr(cells []*LVal) *LVal             { return &LVal{Cells: cells} }
 func Vector(cells []*LVal) *LVal            { return Array(nil, cells) }
 func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} }
@@ -85,8 +116,8 @@ const (
 	ShapeMap
 )
 
-func ShapeOf(t LType) Shape                 { return ShapeAtom }
-func (v *LVal) MapGetString(k string) *LVal { return v }
+func ShapeOf(t LType) Shape { return ShapeAtom }
+
 func (v *LVal) IsSymbol(name string) bool   { return v != nil && v.Type == LSymbol && v.Str == name }
 func (v *LVal) Len() int                    { return len(v.Cells) }
 func (v *LVal) ArrayIndex(i ...*LVal) *LVal { return v }

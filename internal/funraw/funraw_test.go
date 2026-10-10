@@ -57,7 +57,7 @@ func TestCapturesReturnsDeclaredGraphWithoutExposingOtherState(t *testing.T) {
 		Package: "user", FID: "captured", Formals: lisp.Formals(), Captures: state,
 		Eval: func(_ *lisp.LEnv, _ *lisp.LVal, captures *lisp.LVal) *lisp.LVal { return captures },
 	})
-	if got := funraw.Captures(fn); got != state || got.MapGetString("n").Int != 7 {
+	if got := funraw.Captures(fn); got != state || mapGet(got, "n").Int != 7 {
 		t.Fatalf("capture graph: got %v want exact declared graph", got)
 	}
 	plain := lisp.Fun("plain", lisp.Formals(), func(_ *lisp.LEnv, _ *lisp.LVal) *lisp.LVal { return lisp.Nil() })

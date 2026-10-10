@@ -75,18 +75,8 @@ func keysNoCheck(m *lisp.LVal) int {
 	return n
 }
 
-func field(desc *lisp.LVal) bool {
-	in := false
-	if desc.Type == lisp.LSortMap {
-		if s := desc.MapGetString("status"); s.Type == lisp.LString && s.Str == "ok" { // want `lisp.Field\[string\]\(desc, "status"\) reads a string field`
-			in = true
-		}
-	}
-	return in
-}
-
 func argCells(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	v := args.Cells[0] // want `an ArgReader read`
+	v := args.Cells[0] // want `a cell reader decodes v: r := lisp.Cells\(args.Cells\).Read\(env\), then r.Str\(\)`
 	if v.Type != lisp.LString {
 		return env.Errorf("first argument is not a string: %v", v.Type)
 	}
@@ -156,7 +146,7 @@ var builtinGoErr = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal,
 })
 
 func argCellsTuple(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	m, k := args.Cells[0], args.Cells[1] // want `an ArgReader read \(lisp.ReadArgs, then String, Int, Map, ...\) decodes k`
+	m, k := args.Cells[0], args.Cells[1] // want `a cell reader decodes k: .*use an ArgReader \(lisp.ReadArgs\) when an argument needs its own message`
 	if k.Type != lisp.LString {
 		return env.Errorf("second argument is not a string: %v", k.Type)
 	}

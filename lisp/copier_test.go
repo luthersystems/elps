@@ -163,7 +163,7 @@ func (p *copierProbe) walk(v *lisp.LVal) {
 	case lisp.LSortMap:
 		p.maps[v.Map()] = true
 		for _, k := range v.MapKeys().Cells {
-			p.walk(v.MapGetLVal(k))
+			p.walk(mapGet(v, k))
 		}
 	case lisp.LBytes:
 		if buf, ok := v.Native.(*[]byte); ok {
@@ -628,7 +628,7 @@ func copierSafeWalk(v *lisp.LVal, seen map[*lisp.LVal]bool) {
 		func() {
 			defer func() { _ = recover() }()
 			for _, k := range v.MapKeys().Cells {
-				copierSafeWalk(v.MapGetLVal(k), seen)
+				copierSafeWalk(mapGet(v, k), seen)
 			}
 		}()
 	}
@@ -799,9 +799,9 @@ func copierCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		c, ok := cp.MapGetLVal(k).Native.(copierSeqCloner)
+		c, ok := mapGet(cp, k).Native.(copierSeqCloner)
 		if !ok {
-			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGetLVal(k).Native)
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, mapGet(cp, k).Native)
 		}
 		got[k.Str] = c.seq
 	}
@@ -936,7 +936,7 @@ func copierNestedCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		v := cp.MapGetLVal(k)
+		v := mapGet(cp, k)
 		if len(v.Cells) == 0 {
 			continue // one of the scalar values
 		}

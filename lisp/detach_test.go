@@ -921,9 +921,9 @@ func detachCloneAssignment(t *testing.T, m *lisp.LVal) map[string]int {
 	}
 	got := make(map[string]int)
 	for _, k := range cp.MapKeys().Cells {
-		c, ok := cp.MapGetLVal(k).Native.(copierSeqCloner)
+		c, ok := mapGet(cp, k).Native.(copierSeqCloner)
 		if !ok {
-			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, cp.MapGetLVal(k).Native)
+			t.Fatalf("key %v: value is %T, want a copierSeqCloner clone", k, mapGet(cp, k).Native)
 		}
 		got[k.Str] = c.seq
 	}

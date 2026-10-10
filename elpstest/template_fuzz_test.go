@@ -319,11 +319,11 @@ func buildTemplateParity(g templateParityCase) (*lisp.LEnv, templateParityTrust,
 			Formals: formals, Captures: capture,
 			Eval: func(_ *lisp.LEnv, args, values *lisp.LVal) *lisp.LVal {
 				if len(args.Cells) != 0 {
-					if rc := values.MapSetString("n", lisp.Int(values.MapGetString("n").Int+args.Cells[0].Int)); rc.Type == lisp.LError {
+					if rc := values.MapSetString("n", lisp.Int(mapGet(values, "n").Int+args.Cells[0].Int)); rc.Type == lisp.LError {
 						return rc
 					}
 				}
-				return values.MapGetString("n")
+				return mapGet(values, "n")
 			}})
 		if err := put(name, fn); err != nil {
 			return nil, nil, err
@@ -748,7 +748,7 @@ func TestTemplateParityInputReallyChangesGraphEdges(t *testing.T) {
 				for node, target := range edges {
 					from := env.Get(lisp.Symbol(fmt.Sprintf("graph%d", node)))
 					to := env.Get(lisp.Symbol(fmt.Sprintf("graph%d", target)))
-					if from.MapGetString("edge").Map() != to.Map() {
+					if mapGet(from, "edge").Map() != to.Map() {
 						t.Fatalf("input edges=%v: emitted edge %d does not reach node %d's actual storage", edges, node, target)
 					}
 				}
@@ -766,7 +766,7 @@ func TestTemplateParityInputReallyChangesGraphEdges(t *testing.T) {
 				if got := env.LoadString("graph-rewire.lisp", g.tx[0][1].source); got.Type == lisp.LError {
 					t.Fatal(got)
 				}
-				if env.Get(lisp.Symbol("graph1")).MapGetString("edge").Map() != env.Get(lisp.Symbol("graph2")).Map() {
+				if mapGet(env.Get(lisp.Symbol("graph1")), "edge").Map() != env.Get(lisp.Symbol("graph2")).Map() {
 					t.Fatalf("input edges=%v: transaction did not rewire graph1 to graph2", edges)
 				}
 			}

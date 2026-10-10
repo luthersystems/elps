@@ -239,7 +239,7 @@ func TestDurableMapHeldDataHolder(t *testing.T) {
 	m.MapSetLVal(lisp.String("a"), v.Cells[1])
 	m.MapSetLVal(lisp.String("b"), v)
 	_, back := roundTrip(t, env, m, nil)
-	data, vec := back.MapGet(lisp.String("a")), back.MapGet(lisp.String("b"))
+	data, vec := mapGet(back, lisp.String("a")), mapGet(back, lisp.String("b"))
 	assert.Same(t, vec.Cells[1], data)
 	assert.Equal(t, cap(v.Cells[1].Cells), cap(data.Cells))
 }

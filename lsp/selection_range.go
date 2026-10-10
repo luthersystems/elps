@@ -132,7 +132,7 @@ func nodeChainAt(node *lisp.LVal, line, col int) []*lisp.LVal {
 	if node.Type == lisp.LSExpr && len(node.Cells) > 0 {
 		for _, child := range node.Cells {
 			if childChain := nodeChainAt(child, line, col); childChain != nil {
-				return append([]*lisp.LVal{node}, childChain...)
+				return lisp.Cells{node}.Append(childChain...)
 			}
 		}
 	}
