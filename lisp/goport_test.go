@@ -22,6 +22,14 @@ func TestIsError(t *testing.T) {
 	}
 }
 
+func TestIsSymbol(t *testing.T) {
+	assert.True(t, lisp.Symbol("true").IsSymbol(lisp.TrueSymbol))
+	assert.True(t, lisp.Symbol("x").IsSymbol("x"))
+	assert.False(t, lisp.Symbol("x").IsSymbol("y"))
+	assert.False(t, lisp.String("x").IsSymbol("x"), "a string is not a symbol")
+	assert.False(t, lisp.Nil().IsSymbol(""))
+}
+
 func TestResult(t *testing.T) {
 	v, err := lisp.Result(lisp.Int(3))
 	require.NoError(t, err)

@@ -1611,6 +1611,14 @@ func (v *LVal) IsError() bool {
 	return v.Type == LError
 }
 
+// IsSymbol reports whether v is the symbol name.  It is the same compare as
+// v.Type == LSymbol && v.Str == name.
+//
+//	if v.IsSymbol(lisp.TrueSymbol) { ... }
+func (v *LVal) IsSymbol(name string) bool {
+	return v.Type == LSymbol && v.Str == name
+}
+
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
