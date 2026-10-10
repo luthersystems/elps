@@ -13,6 +13,8 @@
 // suggested fix, so `-fix` applies it:
 //
 //	x.Type == lisp.LError              x.IsError()                    (fix)
+//	lisp.GoError(x) != nil             x.IsError()                    (fix)
+//	lisp.GoError(x) == nil             !x.IsError()                   (fix)
 //	lisp.QExpr([]*lisp.LVal{...})      lisp.Cells{...}.List()         (fix)
 //	lisp.SExpr([]*lisp.LVal{...})      lisp.Cells{...}.SExpr()        (fix)
 //	x.Type == lisp.LSymbol && x.Str == name, where x and name read a
@@ -414,6 +416,7 @@ func (s *state) checkFile(file *ast.File) {
 		switch x := n.(type) {
 		case *ast.BinaryExpr:
 			s.checkIsError(x)
+			s.checkGoErrorNil(x)
 			if len(stack) < 2 || !sameChain(stack[len(stack)-2], x) {
 				s.checkIsSymbol(x)
 			}
@@ -1778,4 +1781,38 @@ func (s *state) checkIsSymbol(b *ast.BinaryExpr) {
 func sameChain(parent ast.Node, b *ast.BinaryExpr) bool {
 	p, ok := parent.(*ast.BinaryExpr)
 	return ok && p.Op == b.Op && boolChain(p)
+}
+
+// checkGoErrorNil: lisp.GoError(x) != nil and lisp.GoError(x) == nil.
+// GoError returns a non-nil error exactly when x.Type == lisp.LError.
+func (s *state) checkGoErrorNil(b *ast.BinaryExpr) {
+	if b.Op != token.EQL && b.Op != token.NEQ {
+		return
+	}
+	call, other := ast.Unparen(b.X), b.Y
+	if isNilIdent(s, call) {
+		call, other = ast.Unparen(b.Y), b.X
+	}
+	c, ok := call.(*ast.CallExpr)
+	if !ok || len(c.Args) != 1 || !isNilIdent(s, other) {
+		return
+	}
+	if fn := s.lispFunc(c); fn == nil || fn.Name() != "GoError" {
+		return
+	}
+	text := s.operand(c.Args[0]) + ".IsError()"
+	if b.Op == token.EQL {
+		text = "!" + text
+	}
+	s.report(b, CategoryInfo, "use "+text+", which is the same test: GoError returns nil exactly when the value is not an error",
+		replace(b, "Use IsError", text))
+}
+
+func isNilIdent(s *state, e ast.Expr) bool {
+	id, ok := ast.Unparen(e).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, isNil := s.pass.TypesInfo.Uses[id].(*types.Nil)
+	return isNil
 }
