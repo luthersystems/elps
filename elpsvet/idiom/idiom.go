@@ -35,6 +35,9 @@
 //	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
 //	after an m.Type == lisp.LSortMap check
 //	                                   lisp.Field[string](m, k)       (hint)
+//	for _, v := range ss { cells = append(cells, lisp.String(v)) }, then
+//	lisp.QExpr(cells), for a []string ss
+//	                                   lisp.StringList(ss)            (hint)
 //	keys := env.CallBuiltin(ref, m) for "keys", then a range over keys.Cells
 //	                                   env.MapRange or ResultAs[lisp.Cells] (hint)
 //	v := args.Cells[i] (or a, b := args.Cells[0], args.Cells[1]) followed
@@ -462,6 +465,7 @@ func (s *state) checkFile(file *ast.File) {
 		case *ast.BlockStmt:
 			s.checkArgCells(x)
 			s.checkKeysLoop(x)
+			s.checkStringListLoop(x)
 			s.checkMapGetString(x, stack)
 		}
 		return true
@@ -2035,4 +2039,105 @@ func (s *state) checkKeysLoop(block *ast.BlockStmt) {
 			"and builds no list, but makes no context check; lisp.ResultAs[lisp.Cells] reads the keys as a slice with every "+
 			"check; this is a hint, not a fix", s.text(m)))
 	}
+}
+
+// checkStringListLoop: a range over a []string whose body only stores
+// lisp.String(v) into a slice (append, or an index store at the range key),
+// when a later statement of the block passes that slice to lisp.QExpr.
+func (s *state) checkStringListLoop(block *ast.BlockStmt) {
+	for i, st := range block.List {
+		r, ok := st.(*ast.RangeStmt)
+		if !ok || len(r.Body.List) != 1 {
+			continue
+		}
+		sl, ok := types.Unalias(s.pass.TypesInfo.TypeOf(r.X)).(*types.Slice)
+		if !ok || !isBasic(sl.Elem(), types.String) {
+			continue
+		}
+		val, ok := r.Value.(*ast.Ident)
+		if !ok {
+			continue
+		}
+		assign, ok := r.Body.List[0].(*ast.AssignStmt)
+		if !ok || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			continue
+		}
+		var target types.Object
+		isStringOf := func(e ast.Expr) bool {
+			c, ok := ast.Unparen(e).(*ast.CallExpr)
+			if !ok || len(c.Args) != 1 {
+				return false
+			}
+			if fn := s.lispFunc(c); fn == nil || fn.Name() != "String" {
+				return false
+			}
+			id, ok := ast.Unparen(c.Args[0]).(*ast.Ident)
+			return ok && s.pass.TypesInfo.Uses[id] == s.pass.TypesInfo.ObjectOf(val)
+		}
+		switch l := assign.Lhs[0].(type) {
+		case *ast.Ident: // cells = append(cells, lisp.String(v))
+			c, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+			if !ok || len(c.Args) != 2 || !isBuiltinAppend(s, c) || !isStringOf(c.Args[1]) {
+				continue
+			}
+			if id, ok := ast.Unparen(c.Args[0]).(*ast.Ident); !ok || s.pass.TypesInfo.Uses[id] != s.pass.TypesInfo.ObjectOf(l) {
+				continue
+			}
+			target = s.pass.TypesInfo.ObjectOf(l)
+		case *ast.IndexExpr: // cells[i] = lisp.String(v)
+			x, ok := ast.Unparen(l.X).(*ast.Ident)
+			key, kok := r.Key.(*ast.Ident)
+			idx, iok := ast.Unparen(l.Index).(*ast.Ident)
+			if !ok || !kok || !iok || s.pass.TypesInfo.Uses[idx] != s.pass.TypesInfo.ObjectOf(key) || !isStringOf(assign.Rhs[0]) {
+				continue
+			}
+			target = s.pass.TypesInfo.Uses[x]
+		}
+		if target == nil || !s.listedLater(block.List[i+1:], target) {
+			continue
+		}
+		s.report(r, CategoryInfo, "lisp.StringList("+s.text(r.X)+") builds the same list of strings in one call; "+
+			"it makes no allocation check, so this is a hint, not a fix")
+	}
+}
+
+func isBuiltinAppend(s *state, c *ast.CallExpr) bool {
+	id, ok := ast.Unparen(c.Fun).(*ast.Ident)
+	if !ok {
+		return false
+	}
+	_, ok = s.pass.TypesInfo.Uses[id].(*types.Builtin)
+	return ok && id.Name == "append"
+}
+
+// listedLater reports whether a statement passes the slice obj to
+// lisp.QExpr or calls List on lisp.Cells(obj).
+func (s *state) listedLater(stmts []ast.Stmt, obj types.Object) bool {
+	found := false
+	isObj := func(e ast.Expr) bool {
+		id, ok := ast.Unparen(e).(*ast.Ident)
+		return ok && s.pass.TypesInfo.Uses[id] == obj
+	}
+	for _, st := range stmts {
+		ast.Inspect(st, func(n ast.Node) bool {
+			c, ok := n.(*ast.CallExpr)
+			if !ok {
+				return !found
+			}
+			if fn := s.lispFunc(c); fn != nil && fn.Name() == "QExpr" && len(c.Args) == 1 && isObj(c.Args[0]) {
+				found = true
+			}
+			if sel, ok := ast.Unparen(c.Fun).(*ast.SelectorExpr); ok && sel.Sel.Name == "List" {
+				if conv, ok := ast.Unparen(sel.X).(*ast.CallExpr); ok && len(conv.Args) == 1 && isObj(conv.Args[0]) &&
+					isLispNamed(s.pass.TypesInfo.TypeOf(conv), "Cells") {
+					found = true
+				}
+			}
+			return !found
+		})
+		if found {
+			return true
+		}
+	}
+	return false
 }
