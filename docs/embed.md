@@ -761,9 +761,10 @@ mirrors a builtin makes that builtin's checks: the allocation cap, the
 context check and the same error condition. None of them charges a step.
 
 **`v.IsError()`** reports whether `v` is an `LError`. It is the same compare
-as `v.Type == lisp.LError`. **`v.IsSymbol(name)`** reports whether `v` is the
-symbol `name`. It is the same compare as
-`v.Type == lisp.LSymbol && v.Str == name`.
+as `v != nil && v.Type == lisp.LError`. **`v.IsSymbol(name)`** reports whether
+`v` is the symbol `name`. It is the same compare as
+`v != nil && v.Type == lisp.LSymbol && v.Str == name`. Both return false for a
+nil `v`.
 
 **Errors as Go errors: `lisp.Result`, `lisp.GoError` and `lisp.ConditionOf`.**
 Every elps helper returns `*LVal`. Code that returns `error` wraps the call:

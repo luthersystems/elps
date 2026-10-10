@@ -1606,17 +1606,17 @@ func (v *LVal) IsNil() bool {
 }
 
 // IsError reports whether v is an error value (LError).  It is the same
-// compare as v.Type == LError.
+// compare as v != nil && v.Type == LError.  A nil v is not an error.
 func (v *LVal) IsError() bool {
-	return v.Type == LError
+	return v != nil && v.Type == LError
 }
 
 // IsSymbol reports whether v is the symbol name.  It is the same compare as
-// v.Type == LSymbol && v.Str == name.
+// v != nil && v.Type == LSymbol && v.Str == name.  A nil v is not a symbol.
 //
 //	if v.IsSymbol(lisp.TrueSymbol) { ... }
 func (v *LVal) IsSymbol(name string) bool {
-	return v.Type == LSymbol && v.Str == name
+	return v != nil && v.Type == LSymbol && v.Str == name
 }
 
 // IsNumeric returns true if v has a primitive numeric type (int, float64).

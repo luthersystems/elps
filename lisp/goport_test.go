@@ -20,6 +20,8 @@ func TestIsError(t *testing.T) {
 	for _, v := range []*lisp.LVal{lisp.Nil(), lisp.Int(1), lisp.String("x"), lisp.SortedMap()} {
 		assert.False(t, v.IsError(), v.Type.String())
 	}
+	var nilVal *lisp.LVal
+	assert.False(t, nilVal.IsError(), "a nil *LVal is not an error")
 }
 
 func TestIsSymbol(t *testing.T) {
@@ -28,6 +30,9 @@ func TestIsSymbol(t *testing.T) {
 	assert.False(t, lisp.Symbol("x").IsSymbol("y"))
 	assert.False(t, lisp.String("x").IsSymbol("x"), "a string is not a symbol")
 	assert.False(t, lisp.Nil().IsSymbol(""))
+	var nilVal *lisp.LVal
+	assert.False(t, nilVal.IsSymbol(""), "a nil *LVal is not a symbol")
+	assert.False(t, nilVal.IsSymbol(lisp.TrueSymbol), "a nil *LVal is not a symbol")
 }
 
 func TestResult(t *testing.T) {
