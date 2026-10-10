@@ -1,0 +1,980 @@
+// Copyright © 2026 The ELPS authors
+
+// Package idiom is the elpsidiom analyzer.  It reports Go builtin code that
+// an elps helper states more plainly, and a few mistakes in code that uses
+// the helpers.  It is for code outside elps, such as a port of Lisp code to
+// Go: other modules run it with their own vet tool.  elps's own gate does not
+// run it, because elps's own code keeps its style.
+//
+// IDIOMS, reported with category "info".  Each one keeps behaviour
+// identical; where the rewrite is mechanical, the diagnostic carries a
+// suggested fix, so `-fix` applies it:
+//
+//	x.Type == lisp.LError              x.IsError()                    (fix)
+//	lisp.QExpr([]*lisp.LVal{...})      lisp.Cells{...}.List()         (fix)
+//	if msg := env.Runtime.CheckAlloc(n); msg != "" {
+//		return env.Errorf("%s", msg)
+//	}                                  env.CheckAlloc(n)              (fix)
+//	range m.MapKeys().Cells, after an m.Type == lisp.LSortMap check
+//	                                   range m.Keys()                 (hint)
+//	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
+//	after an m.Type == lisp.LSortMap check
+//	                                   lisp.Field[string](m, k)       (hint)
+//	v := args.Cells[i] followed by a v.Type check that returns Errorf
+//	                                   an ArgReader read              (hint)
+//
+// A hint has no fix, because the rewrite changes the code's shape: Keys
+// yields a lisp.MapKey, not an *LVal.  No idiom suggests a checked helper
+// (MapPut, MapLookup, CheckAlloc) where the old code made no check.
+//
+// MISTAKES, reported with category "error":
+//
+//   - In a FuncE or Func*E body, and in a function of the same package that
+//     such a body returns the error of, fmt.Errorf or errors.New(err.Error())
+//     over an error that came from lisp.Result, lisp.ResultAs, lisp.GoError
+//     or such a function.  The wrap gives the error condition "error", so
+//     Lisp's handler-bind no longer sees the inner condition.  Raise a new
+//     error with env.Errorf instead.
+//   - A *lisp.ErrorVal in a function's result list.  A nil *ErrorVal
+//     returned as an error is a non-nil error.  Return error.
+//   - lisp.ResultAs[T] over a call whose result type varies (get, funcall,
+//     apply, nth, first, second, aref, and LEnv.MapLookup), for a T other
+//     than *lisp.LVal.  A value of another type is then a run-time error.
+//   - A Func1E, Func2E or Func3E builtin registered with formals that are not
+//     exactly its count of required arguments.  The builtin takes required
+//     positional arguments only.
+//
+// INVISIBLE: code built through variables the rule does not trace (a
+// BuiltinRef or formals list held in a local variable, a builtin passed
+// through a slice), helpers in other packages, and reflection.  A clean run
+// is evidence, not proof.
+package idiom
+
+import (
+	"bytes"
+	"fmt"
+	"go/ast"
+	"go/constant"
+	"go/format"
+	"go/token"
+	"go/types"
+	"strings"
+
+	"golang.org/x/tools/go/analysis"
+)
+
+const lispPkgPath = "github.com/luthersystems/elps/lisp"
+
+// Categories of the diagnostics.
+const (
+	// CategoryInfo marks an idiom: code an elps helper states more plainly.
+	CategoryInfo = "info"
+	// CategoryError marks a mistake.
+	CategoryError = "error"
+)
+
+// Analyzer is the elpsidiom analyzer.
+var Analyzer = &analysis.Analyzer{
+	Name: "elpsidiom",
+	Doc: "report Go builtin code that an elps helper states more plainly (IsError, Cells, CheckAlloc, Keys, Field, " +
+		"ArgReader), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
+		"result, ResultAs over a result of varying type, and a Func*E builtin registered with the wrong formals",
+	Run: run,
+}
+
+// varyingBuiltins are the builtins whose result type depends on the data.
+var varyingBuiltins = map[string]bool{
+	"get": true, "funcall": true, "apply": true, "nth": true,
+	"first": true, "second": true, "aref": true,
+}
+
+// errorBindings are the typed bindings whose body returns an error.
+var errorBindings = map[string]int{"FuncE": -1, "Func1E": 1, "Func2E": 2, "Func3E": 3}
+
+type state struct {
+	pass  *analysis.Pass
+	decls map[*types.Func]*ast.FuncDecl
+	// builtinRefs maps a package-level BuiltinRef variable to the builtin
+	// name its lisp.BuiltinFunc initializer names.
+	builtinRefs map[types.Object]string
+	// arities maps a package-level LBuiltin variable to the argument count
+	// of the Func*E call that initializes it.
+	arities map[types.Object]int
+	src     map[string][]byte
+}
+
+func run(pass *analysis.Pass) (any, error) {
+	if pass.Pkg.Path() == lispPkgPath {
+		return nil, nil
+	}
+	s := &state{
+		pass:        pass,
+		decls:       make(map[*types.Func]*ast.FuncDecl),
+		builtinRefs: make(map[types.Object]string),
+		arities:     make(map[types.Object]int),
+		src:         make(map[string][]byte),
+	}
+	s.collect()
+	for _, file := range pass.Files {
+		s.checkFile(file)
+	}
+	s.checkErrorWraps()
+	return nil, nil
+}
+
+// collect records the package's function declarations, BuiltinRef variables
+// and Func*E variables.
+func (s *state) collect() {
+	for _, file := range s.pass.Files {
+		for _, decl := range file.Decls {
+			switch d := decl.(type) {
+			case *ast.FuncDecl:
+				if fn, ok := s.pass.TypesInfo.Defs[d.Name].(*types.Func); ok {
+					s.decls[fn] = d
+				}
+			case *ast.GenDecl:
+				if d.Tok != token.VAR {
+					continue
+				}
+				for _, spec := range d.Specs {
+					vs, ok := spec.(*ast.ValueSpec)
+					if !ok || len(vs.Names) != len(vs.Values) {
+						continue
+					}
+					for i, name := range vs.Names {
+						obj := s.pass.TypesInfo.Defs[name]
+						if obj == nil {
+							continue
+						}
+						call, ok := ast.Unparen(vs.Values[i]).(*ast.CallExpr)
+						if !ok {
+							continue
+						}
+						switch fn := s.lispFunc(call); {
+						case fn == nil:
+						case fn.Name() == "BuiltinFunc" && len(call.Args) == 1:
+							if name, ok := s.constString(call.Args[0]); ok {
+								s.builtinRefs[obj] = name
+							}
+						case errorBindings[fn.Name()] > 0:
+							s.arities[obj] = errorBindings[fn.Name()]
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
+// lispFunc returns the package-level lisp function call calls, or nil.
+func (s *state) lispFunc(call *ast.CallExpr) *types.Func {
+	fn := s.callee(call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath || fn.Signature().Recv() != nil {
+		return nil
+	}
+	return fn
+}
+
+// lispMethod returns the lisp method call calls (such as LEnv.CallBuiltin),
+// or nil.
+func (s *state) lispMethod(call *ast.CallExpr, recv string) *types.Func {
+	fn := s.callee(call)
+	if fn == nil || fn.Pkg() == nil || fn.Pkg().Path() != lispPkgPath {
+		return nil
+	}
+	r := fn.Signature().Recv()
+	if r == nil || !isLispNamed(derefType(r.Type()), recv) {
+		return nil
+	}
+	return fn
+}
+
+func (s *state) callee(call *ast.CallExpr) *types.Func {
+	fun := ast.Unparen(call.Fun)
+	switch idx := fun.(type) {
+	case *ast.IndexExpr:
+		fun = ast.Unparen(idx.X)
+	case *ast.IndexListExpr:
+		fun = ast.Unparen(idx.X)
+	}
+	var id *ast.Ident
+	switch f := fun.(type) {
+	case *ast.Ident:
+		id = f
+	case *ast.SelectorExpr:
+		id = f.Sel
+	default:
+		return nil
+	}
+	fn, _ := s.pass.TypesInfo.Uses[id].(*types.Func)
+	return fn
+}
+
+func (s *state) constString(e ast.Expr) (string, bool) {
+	tv, ok := s.pass.TypesInfo.Types[e]
+	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
+		return "", false
+	}
+	return constant.StringVal(tv.Value), true
+}
+
+func derefType(t types.Type) types.Type {
+	if p, ok := types.Unalias(t).(*types.Pointer); ok {
+		return p.Elem()
+	}
+	return t
+}
+
+func isLispNamed(t types.Type, name string) bool {
+	named, ok := types.Unalias(t).(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	return obj.Name() == name && obj.Pkg() != nil && obj.Pkg().Path() == lispPkgPath
+}
+
+// isLispConst reports whether e names the lisp constant name (lisp.LError).
+func (s *state) isLispConst(e ast.Expr, name string) bool {
+	var id *ast.Ident
+	switch x := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		id = x
+	case *ast.SelectorExpr:
+		id = x.Sel
+	default:
+		return false
+	}
+	c, ok := s.pass.TypesInfo.Uses[id].(*types.Const)
+	return ok && c.Name() == name && c.Pkg() != nil && c.Pkg().Path() == lispPkgPath
+}
+
+// typeField returns x when e is x.Type for an LVal x, else nil.
+func (s *state) typeField(e ast.Expr) ast.Expr {
+	sel, ok := ast.Unparen(e).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Type" {
+		return nil
+	}
+	selection := s.pass.TypesInfo.Selections[sel]
+	if selection == nil || selection.Kind() != types.FieldVal || !isLispNamed(derefType(selection.Recv()), "LVal") {
+		return nil
+	}
+	return sel.X
+}
+
+func (s *state) text(n ast.Node) string {
+	var buf bytes.Buffer
+	if err := format.Node(&buf, s.pass.Fset, n); err != nil {
+		return ""
+	}
+	return buf.String()
+}
+
+// source returns the bytes of the file between two positions.
+func (s *state) source(from, to token.Pos) (string, bool) {
+	file := s.pass.Fset.File(from)
+	if file == nil {
+		return "", false
+	}
+	data, ok := s.src[file.Name()]
+	if !ok {
+		var err error
+		read := s.pass.ReadFile
+		if read == nil {
+			return "", false
+		}
+		data, err = read(file.Name())
+		if err != nil {
+			return "", false
+		}
+		s.src[file.Name()] = data
+	}
+	start, end := file.Offset(from), file.Offset(to)
+	if start < 0 || end > len(data) || start > end {
+		return "", false
+	}
+	return string(data[start:end]), true
+}
+
+// operand wraps x in parentheses when a method call on it needs them.
+func (s *state) operand(x ast.Expr) string {
+	t := s.text(x)
+	switch ast.Unparen(x).(type) {
+	case *ast.Ident, *ast.SelectorExpr, *ast.CallExpr, *ast.IndexExpr, *ast.ParenExpr:
+		return t
+	}
+	return "(" + t + ")"
+}
+
+func (s *state) report(n ast.Node, category, msg string, fixes ...analysis.SuggestedFix) {
+	s.pass.Report(analysis.Diagnostic{
+		Pos:            n.Pos(),
+		End:            n.End(),
+		Category:       category,
+		Message:        msg,
+		SuggestedFixes: fixes,
+	})
+}
+
+func replace(n ast.Node, msg, text string) analysis.SuggestedFix {
+	return analysis.SuggestedFix{
+		Message:   msg,
+		TextEdits: []analysis.TextEdit{{Pos: n.Pos(), End: n.End(), NewText: []byte(text)}},
+	}
+}
+
+func (s *state) checkFile(file *ast.File) {
+	var stack []ast.Node
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			stack = stack[:len(stack)-1]
+			return false
+		}
+		stack = append(stack, n)
+		switch x := n.(type) {
+		case *ast.BinaryExpr:
+			s.checkIsError(x)
+		case *ast.CallExpr:
+			s.checkQExpr(x)
+			s.checkResultAs(x)
+			s.checkRegistration(x)
+		case *ast.IfStmt:
+			s.checkCheckAlloc(x)
+		case *ast.RangeStmt:
+			s.checkMapKeysRange(x, stack)
+		case *ast.FuncType:
+			s.checkErrorValResult(x)
+		case *ast.BlockStmt:
+			s.checkArgCells(x)
+			s.checkMapGetString(x, stack)
+		}
+		return true
+	})
+}
+
+// checkIsError: x.Type == lisp.LError and x.Type != lisp.LError.
+func (s *state) checkIsError(b *ast.BinaryExpr) {
+	if b.Op != token.EQL && b.Op != token.NEQ {
+		return
+	}
+	x := s.typeField(b.X)
+	other := b.Y
+	if x == nil {
+		x, other = s.typeField(b.Y), b.X
+	}
+	if x == nil || !s.isLispConst(other, "LError") {
+		return
+	}
+	text := s.operand(x) + ".IsError()"
+	if b.Op == token.NEQ {
+		text = "!" + text
+	}
+	s.report(b, CategoryInfo, "use "+text+", which is the same compare", replace(b, "Use IsError", text))
+}
+
+// checkQExpr: lisp.QExpr([]*lisp.LVal{...}).
+func (s *state) checkQExpr(call *ast.CallExpr) {
+	fn := s.lispFunc(call)
+	if fn == nil || fn.Name() != "QExpr" || len(call.Args) != 1 {
+		return
+	}
+	lit, ok := ast.Unparen(call.Args[0]).(*ast.CompositeLit)
+	if !ok {
+		return
+	}
+	at, ok := lit.Type.(*ast.ArrayType)
+	if !ok || at.Len != nil {
+		return
+	}
+	qual, ok := lispQualifier(call.Fun)
+	if !ok {
+		return
+	}
+	elts, ok := s.source(lit.Lbrace+1, lit.Rbrace)
+	if !ok {
+		return
+	}
+	text := qual + "Cells{" + elts + "}.List()"
+	s.report(call, CategoryInfo, "use "+qual+"Cells{...}.List(), which builds the same list",
+		replace(call, "Use lisp.Cells", text))
+}
+
+// lispQualifier returns "lisp." (or the file's name for the lisp import)
+// from a qualified call target.
+func lispQualifier(fun ast.Expr) (string, bool) {
+	sel, ok := ast.Unparen(fun).(*ast.SelectorExpr)
+	if !ok {
+		return "", false
+	}
+	id, ok := sel.X.(*ast.Ident)
+	if !ok {
+		return "", false
+	}
+	return id.Name + ".", true
+}
+
+// checkCheckAlloc: if msg := env.Runtime.CheckAlloc(n); msg != "" {
+// return ..., env.Errorf("%s", msg) }.
+func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
+	init, ok := stmt.Init.(*ast.AssignStmt)
+	if !ok || init.Tok != token.DEFINE || len(init.Lhs) != 1 || len(init.Rhs) != 1 || stmt.Else != nil {
+		return
+	}
+	msgID, ok := init.Lhs[0].(*ast.Ident)
+	if !ok {
+		return
+	}
+	call, ok := ast.Unparen(init.Rhs[0]).(*ast.CallExpr)
+	if !ok || s.lispMethod(call, "Runtime") == nil || s.callee(call).Name() != "CheckAlloc" || len(call.Args) != 1 {
+		return
+	}
+	rtSel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	runtimeSel, ok := ast.Unparen(rtSel.X).(*ast.SelectorExpr)
+	if !ok || runtimeSel.Sel.Name != "Runtime" {
+		return
+	}
+	env := runtimeSel.X
+	cond, ok := stmt.Cond.(*ast.BinaryExpr)
+	if !ok || cond.Op != token.NEQ {
+		return
+	}
+	if id, ok := ast.Unparen(cond.X).(*ast.Ident); !ok || id.Name != msgID.Name {
+		return
+	}
+	if lit, ok := ast.Unparen(cond.Y).(*ast.BasicLit); !ok || lit.Value != `""` {
+		return
+	}
+	if len(stmt.Body.List) != 1 {
+		return
+	}
+	ret, ok := stmt.Body.List[0].(*ast.ReturnStmt)
+	if !ok {
+		return
+	}
+	errIdx := -1
+	for i, r := range ret.Results {
+		rc, ok := ast.Unparen(r).(*ast.CallExpr)
+		if !ok || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
+			continue
+		}
+		if f, ok := s.constString(rc.Args[0]); !ok || f != "%s" {
+			continue
+		}
+		if id, ok := ast.Unparen(rc.Args[1]).(*ast.Ident); !ok || id.Name != msgID.Name {
+			continue
+		}
+		recv, ok := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
+		if !ok || s.text(recv.X) != s.text(env) {
+			continue
+		}
+		errIdx = i
+	}
+	if errIdx < 0 {
+		return
+	}
+	results := make([]string, len(ret.Results))
+	for i, r := range ret.Results {
+		if i == errIdx {
+			results[i] = "lerr"
+			continue
+		}
+		results[i] = s.text(r)
+	}
+	text := fmt.Sprintf("if lerr := %s.CheckAlloc(%s); lerr.IsError() {\n\treturn %s\n}",
+		s.operand(env), s.text(call.Args[0]), strings.Join(results, ", "))
+	s.report(stmt, CategoryInfo, "use "+s.operand(env)+".CheckAlloc, which returns the same error",
+		replace(stmt, "Use LEnv.CheckAlloc", text))
+}
+
+// mapChecked reports whether an enclosing if statement in stack tests
+// m.Type == lisp.LSortMap for an m printed as name.
+func (s *state) mapChecked(stack []ast.Node, name string) bool {
+	for i := len(stack) - 1; i >= 0; i-- {
+		ifs, ok := stack[i].(*ast.IfStmt)
+		if !ok {
+			continue
+		}
+		found := false
+		ast.Inspect(ifs.Cond, func(n ast.Node) bool {
+			b, ok := n.(*ast.BinaryExpr)
+			if !ok || b.Op != token.EQL {
+				return true
+			}
+			x := s.typeField(b.X)
+			other := b.Y
+			if x == nil {
+				x, other = s.typeField(b.Y), b.X
+			}
+			if x != nil && s.isLispConst(other, "LSortMap") && s.text(x) == name {
+				found = true
+			}
+			return !found
+		})
+		if found {
+			// The check guards the body only.
+			if i+1 < len(stack) && stack[i+1] == ifs.Body {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// checkMapKeysRange: range m.MapKeys().Cells after a map check.
+func (s *state) checkMapKeysRange(r *ast.RangeStmt, stack []ast.Node) {
+	sel, ok := ast.Unparen(r.X).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Cells" {
+		return
+	}
+	call, ok := ast.Unparen(sel.X).(*ast.CallExpr)
+	if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapKeys" {
+		return
+	}
+	m := ast.Unparen(call.Fun).(*ast.SelectorExpr).X
+	if !s.mapChecked(stack, s.text(m)) {
+		return
+	}
+	s.report(r.X, CategoryInfo, "range "+s.operand(m)+".Keys() walks the keys without building a list; "+
+		"the key becomes a lisp.MapKey, so this is a hint, not a fix")
+}
+
+// checkMapGetString: v := m.MapGetString(k) (or the if-init form), then
+// v.Type == lisp.LString and v.Str, after a map check.
+func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
+	check := func(assign *ast.AssignStmt, uses ast.Node) {
+		if assign == nil || assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			return
+		}
+		id, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok {
+			return
+		}
+		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+		if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapGetString" {
+			return
+		}
+		m := ast.Unparen(call.Fun).(*ast.SelectorExpr).X
+		if !s.mapChecked(stack, s.text(m)) {
+			return
+		}
+		typed, str := false, false
+		ast.Inspect(uses, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.BinaryExpr:
+				if v := s.typeField(x.X); v != nil && s.text(v) == id.Name && s.isLispConst(x.Y, "LString") {
+					typed = true
+				}
+			case *ast.SelectorExpr:
+				if v, ok := x.X.(*ast.Ident); ok && v.Name == id.Name && x.Sel.Name == "Str" {
+					str = true
+				}
+			}
+			return true
+		})
+		if typed && str {
+			s.report(call, CategoryInfo, fmt.Sprintf("lisp.Field[string](%s, %s) reads a string field in one call; "+
+				"it returns ok=false for a missing key or another type", s.text(m), s.text(call.Args[0])))
+		}
+	}
+	for i, st := range block.List {
+		switch x := st.(type) {
+		case *ast.IfStmt:
+			if a, ok := x.Init.(*ast.AssignStmt); ok {
+				check(a, x)
+			}
+		case *ast.AssignStmt:
+			if i+1 < len(block.List) {
+				check(x, &ast.BlockStmt{List: block.List[i+1:]})
+			}
+		}
+	}
+}
+
+// checkArgCells: v := args.Cells[i] followed by an if statement that tests
+// v.Type and returns an Errorf call.
+func (s *state) checkArgCells(block *ast.BlockStmt) {
+	for i, st := range block.List {
+		assign, ok := st.(*ast.AssignStmt)
+		if !ok || assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
+			continue
+		}
+		id, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok {
+			continue
+		}
+		idx, ok := ast.Unparen(assign.Rhs[0]).(*ast.IndexExpr)
+		if !ok {
+			continue
+		}
+		sel, ok := ast.Unparen(idx.X).(*ast.SelectorExpr)
+		if !ok || sel.Sel.Name != "Cells" || s.typeFieldOwner(sel) == nil {
+			continue
+		}
+		if _, ok := ast.Unparen(idx.Index).(*ast.BasicLit); !ok {
+			continue
+		}
+		for _, next := range block.List[i+1:] {
+			ifs, ok := next.(*ast.IfStmt)
+			if !ok {
+				continue
+			}
+			if s.testsType(ifs.Cond, id.Name) && returnsErrorf(s, ifs.Body) {
+				s.report(assign, CategoryInfo, "an ArgReader read (lisp.ReadArgs, then String, Int, Map, ...) decodes "+
+					id.Name+" and records the type error; check a.Err() once")
+				break
+			}
+		}
+	}
+}
+
+// typeFieldOwner returns x when sel is x.Cells for an LVal x.
+func (s *state) typeFieldOwner(sel *ast.SelectorExpr) ast.Expr {
+	selection := s.pass.TypesInfo.Selections[sel]
+	if selection == nil || selection.Kind() != types.FieldVal || !isLispNamed(derefType(selection.Recv()), "LVal") {
+		return nil
+	}
+	return sel.X
+}
+
+func (s *state) testsType(cond ast.Expr, name string) bool {
+	found := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BinaryExpr); ok && (b.Op == token.NEQ || b.Op == token.EQL) {
+			if v := s.typeField(b.X); v != nil && s.text(v) == name {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func returnsErrorf(s *state, body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if ret, ok := n.(*ast.ReturnStmt); ok {
+			for _, r := range ret.Results {
+				if c, ok := ast.Unparen(r).(*ast.CallExpr); ok {
+					if fn := s.callee(c); fn != nil && (fn.Name() == "Errorf" || fn.Name() == "ErrorConditionf") {
+						found = true
+					}
+				}
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// checkErrorValResult: a *lisp.ErrorVal in a result list.
+func (s *state) checkErrorValResult(ft *ast.FuncType) {
+	if ft.Results == nil {
+		return
+	}
+	for _, field := range ft.Results.List {
+		t := s.pass.TypesInfo.TypeOf(field.Type)
+		if p, ok := types.Unalias(t).(*types.Pointer); ok && isLispNamed(p.Elem(), "ErrorVal") {
+			s.report(field.Type, CategoryError, "a *lisp.ErrorVal result is a typed nil when it is nil, which is a non-nil error; "+
+				"return error, and use lisp.GoError or lisp.Result to make one")
+		}
+	}
+}
+
+// checkResultAs: lisp.ResultAs[T](env.CallBuiltin(ref, ...)) for a builtin
+// whose result type varies, and lisp.ResultAs[T](env.MapLookup(...)).
+func (s *state) checkResultAs(call *ast.CallExpr) {
+	fn := s.lispFunc(call)
+	if fn == nil || fn.Name() != "ResultAs" || len(call.Args) != 1 {
+		return
+	}
+	if t := s.pass.TypesInfo.TypeOf(call); t != nil {
+		if tuple, ok := t.(*types.Tuple); ok && tuple.Len() == 2 {
+			if p, ok := types.Unalias(tuple.At(0).Type()).(*types.Pointer); ok && isLispNamed(p.Elem(), "LVal") {
+				return // ResultAs[*lisp.LVal] accepts every value
+			}
+		}
+	}
+	inner, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr)
+	if !ok {
+		return
+	}
+	m := s.lispMethod(inner, "LEnv")
+	if m == nil {
+		return
+	}
+	name := ""
+	switch m.Name() {
+	case "MapLookup":
+		name = "get"
+	case "CallBuiltin":
+		if len(inner.Args) == 0 {
+			return
+		}
+		var id *ast.Ident
+		switch r := ast.Unparen(inner.Args[0]).(type) {
+		case *ast.Ident:
+			id = r
+		case *ast.SelectorExpr:
+			id = r.Sel
+		}
+		if id != nil {
+			name = s.builtinRefs[s.pass.TypesInfo.Uses[id]]
+		}
+	}
+	if !varyingBuiltins[name] {
+		return
+	}
+	s.report(call, CategoryError, fmt.Sprintf("the result type of %s varies with the data, so lisp.ResultAs fails at run time on "+
+		"another type; use lisp.Result and test the type", name))
+}
+
+// checkRegistration: a call that passes lisp.Formals(...) and a Func*E
+// builtin whose argument count the formals do not match.
+func (s *state) checkRegistration(call *ast.CallExpr) {
+	var formals *ast.CallExpr
+	arity := 0
+	var builtinArg ast.Expr
+	for _, arg := range call.Args {
+		c, ok := ast.Unparen(arg).(*ast.CallExpr)
+		if ok {
+			if fn := s.lispFunc(c); fn != nil && fn.Name() == "Formals" {
+				formals = c
+				continue
+			}
+			if fn := s.lispFunc(c); fn != nil && errorBindings[fn.Name()] > 0 {
+				arity, builtinArg = errorBindings[fn.Name()], arg
+				continue
+			}
+		}
+		var id *ast.Ident
+		switch x := ast.Unparen(arg).(type) {
+		case *ast.Ident:
+			id = x
+		case *ast.SelectorExpr:
+			id = x.Sel
+		}
+		if id != nil {
+			if n, ok := s.arities[s.pass.TypesInfo.Uses[id]]; ok {
+				arity, builtinArg = n, arg
+			}
+		}
+	}
+	if formals == nil || arity == 0 {
+		return
+	}
+	required := 0
+	for _, a := range formals.Args {
+		name, ok := s.constString(a)
+		if !ok {
+			return // not a constant: unknown
+		}
+		if strings.HasPrefix(name, "&") {
+			s.report(formals, CategoryError, fmt.Sprintf("%s is a Func*E builtin, which takes %d required arguments only; "+
+				"its formals declare %s: use Func1, Func2 or Func3 with Opt decoders, or a plain LBuiltin", s.text(builtinArg), arity, name))
+			return
+		}
+		required++
+	}
+	if required != arity {
+		s.report(formals, CategoryError, fmt.Sprintf("%s takes exactly %d arguments, but its formals declare %d", s.text(builtinArg), arity, required))
+	}
+}
+
+// funcBody is a function literal or declaration the wrap rule reads.
+type funcBody struct {
+	body *ast.BlockStmt
+	fn   *types.Func // nil for a literal
+}
+
+// checkErrorWraps reports fmt.Errorf and errors.New(err.Error()) over a Lisp
+// error, inside FuncE and Func*E bodies and the functions they return the
+// errors of.
+func (s *state) checkErrorWraps() {
+	var work []funcBody
+	scoped := make(map[*types.Func]bool)
+	add := func(fn *types.Func) {
+		fn = fn.Origin()
+		if scoped[fn] {
+			return
+		}
+		fd := s.decls[fn]
+		if fd == nil || fd.Body == nil {
+			return
+		}
+		scoped[fn] = true
+		work = append(work, funcBody{body: fd.Body, fn: fn})
+	}
+	for _, file := range s.pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			call, ok := n.(*ast.CallExpr)
+			if !ok || len(call.Args) == 0 {
+				return true
+			}
+			fn := s.lispFunc(call)
+			if fn == nil {
+				return true
+			}
+			if _, ok := errorBindings[fn.Name()]; !ok {
+				return true
+			}
+			switch b := ast.Unparen(call.Args[len(call.Args)-1]).(type) {
+			case *ast.FuncLit:
+				work = append(work, funcBody{body: b.Body})
+			case *ast.Ident:
+				if f, ok := s.pass.TypesInfo.Uses[b].(*types.Func); ok {
+					add(f)
+				}
+			case *ast.SelectorExpr:
+				if f, ok := s.pass.TypesInfo.Uses[b.Sel].(*types.Func); ok {
+					add(f)
+				}
+			}
+			return true
+		})
+	}
+	// Close the set over the functions whose errors a scoped body returns.
+	for i := 0; i < len(work); i++ {
+		for _, f := range s.returnedCallees(work[i].body) {
+			add(f)
+		}
+	}
+	for _, w := range work {
+		s.checkWrapsIn(w.body, scoped)
+	}
+}
+
+// returnedCallees returns the same-package functions whose results body
+// returns: called in a return statement, or assigned to a variable that a
+// return statement names.
+func (s *state) returnedCallees(body *ast.BlockStmt) []*types.Func {
+	returned := make(map[types.Object]bool)
+	var out []*types.Func
+	ast.Inspect(body, func(n ast.Node) bool {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return true
+		}
+		for _, r := range ret.Results {
+			switch x := ast.Unparen(r).(type) {
+			case *ast.Ident:
+				if obj := s.pass.TypesInfo.Uses[x]; obj != nil {
+					returned[obj] = true
+				}
+			case *ast.CallExpr:
+				if fn := s.callee(x); fn != nil && fn.Pkg() == s.pass.Pkg {
+					out = append(out, fn)
+				}
+			}
+		}
+		return true
+	})
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 {
+			return true
+		}
+		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fn := s.callee(call)
+		if fn == nil || fn.Pkg() != s.pass.Pkg {
+			return true
+		}
+		for _, l := range assign.Lhs {
+			if id, ok := l.(*ast.Ident); ok {
+				obj := s.pass.TypesInfo.ObjectOf(id)
+				if obj != nil && returned[obj] {
+					out = append(out, fn)
+				}
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// lispErrorCall reports whether call returns a Lisp error as its error
+// result: lisp.Result, lisp.ResultAs, lisp.GoError, or a scoped function.
+func (s *state) lispErrorCall(call *ast.CallExpr, scoped map[*types.Func]bool) bool {
+	fn := s.callee(call)
+	if fn == nil {
+		return false
+	}
+	if fn.Pkg() != nil && fn.Pkg().Path() == lispPkgPath && fn.Signature().Recv() == nil {
+		switch fn.Name() {
+		case "Result", "ResultAs", "GoError":
+			return true
+		}
+	}
+	return scoped[fn.Origin()]
+}
+
+func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
+	lispErrs := make(map[types.Object]bool)
+	ast.Inspect(body, func(n ast.Node) bool {
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 {
+			return true
+		}
+		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
+		if !ok || !s.lispErrorCall(call, scoped) {
+			return true
+		}
+		for _, l := range assign.Lhs {
+			id, ok := l.(*ast.Ident)
+			if !ok {
+				continue
+			}
+			obj := s.pass.TypesInfo.ObjectOf(id)
+			if obj == nil || !types.Identical(obj.Type(), types.Universe.Lookup("error").Type()) {
+				continue
+			}
+			lispErrs[obj] = true
+		}
+		return true
+	})
+	isLispErr := func(e ast.Expr) bool {
+		switch x := ast.Unparen(e).(type) {
+		case *ast.Ident:
+			return lispErrs[s.pass.TypesInfo.Uses[x]]
+		case *ast.CallExpr:
+			return s.lispErrorCall(x, scoped)
+		}
+		return false
+	}
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		fn := s.callee(call)
+		if fn == nil || fn.Pkg() == nil {
+			return true
+		}
+		switch {
+		case fn.Pkg().Path() == "fmt" && fn.Name() == "Errorf":
+			for _, a := range call.Args[1:] {
+				if isLispErr(a) {
+					s.report(call, CategoryError, "fmt.Errorf over a Lisp error gives the error condition \"error\", so "+
+						"handler-bind no longer sees the inner condition; return the error as is, or raise a new one with env.Errorf")
+					return true
+				}
+			}
+		case fn.Pkg().Path() == "errors" && fn.Name() == "New" && len(call.Args) == 1:
+			inner, ok := ast.Unparen(call.Args[0]).(*ast.CallExpr)
+			if !ok {
+				return true
+			}
+			sel, ok := ast.Unparen(inner.Fun).(*ast.SelectorExpr)
+			if ok && sel.Sel.Name == "Error" && isLispErr(sel.X) {
+				s.report(call, CategoryError, "errors.New(err.Error()) over a Lisp error drops its condition, data and stack; "+
+					"return the error as is, or raise a new one with env.Errorf")
+			}
+		}
+		return true
+	})
+}

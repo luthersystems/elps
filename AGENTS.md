@@ -111,6 +111,9 @@ spell a marker in the gate script or its tests; assemble it at runtime.
 - **`elpsvet/builtinstate/`** — The importable `elpsbuiltinstate` analyzer:
   a builtin must not write its receiver, a captured variable or a
   package-level var, because a template shares the builtin with every VM.
+- **`elpsvet/idiom/`** — The importable `elpsidiom` analyzer for code
+  outside elps (Go ports of Lisp code): it suggests the Go-style helpers and
+  reports mistakes in their use. elps's own gate does not run it.
 - **`elpsvet/nativepayload/`** — The importable `elpsnativepayload` and
   `elpsdurablenative` analyzers. Each native payload must be safe for a
   template to publish, and each native payload type needs a durable codec

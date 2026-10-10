@@ -940,6 +940,25 @@ the Lisp called `keys`, use `env.MapRange`. `Keys` reads keys only: it loads
 no lazy value of a template map and builds no list. `All` loads every lazy
 value, as `MapRange` does. Breaking out of the loop early is safe.
 
+**Static checks for ports: `elpsvet/idiom`.** Add `idiom.Analyzer`
+(`elpsidiom`) to your module's vet tool. With category `info` it reports
+code that a helper above states more plainly, and `-fix` applies the
+mechanical rewrites (`v.Type == lisp.LError` to `v.IsError()`,
+`lisp.QExpr([]*lisp.LVal{...})` to `lisp.Cells{...}.List()`, the
+`Runtime.CheckAlloc` pattern to `env.CheckAlloc`). Each rewrite keeps
+behaviour identical. With category `error` it reports these mistakes:
+
+- `fmt.Errorf` or `errors.New(err.Error())` over a Lisp error in a `FuncE` or
+  `Func*E` body, or in a function whose error such a body returns.
+- A `*lisp.ErrorVal` in a result list, which makes a typed nil.
+- `lisp.ResultAs[T]` over `get`, `funcall`, `apply`, `nth`, `first`,
+  `second`, `aref` or `env.MapLookup`, whose result type varies.
+- A `Func*E` builtin registered with formals other than its required
+  arguments.
+
+`elpsvet/builtinstate` and `elpsvet/ownpkg` read `FuncE`, `Func1`..`Func3`
+and `Func1E`..`Func3E` bodies, so add them too.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

@@ -285,6 +285,15 @@ run time to the build. Each native payload type is one of:
 
 ## Embedder configuration
 
+`elpsvet/idiom` holds `elpsidiom`, an analyzer for other modules only (Go
+ports of Lisp code). It reports, with category `info`, code that a Go-style
+helper states more plainly (`IsError`, `Cells`, `env.CheckAlloc`, `Keys`,
+`Field`, `ArgReader`), with a suggested fix where the rewrite is mechanical.
+It reports, with category `error`, an error wrap that hides a Lisp
+condition, a `*lisp.ErrorVal` result, `ResultAs` over a result of varying
+type and a `Func*E` builtin registered with the wrong formals. `make
+elpsvet` does not run it: elps's own code keeps its style.
+
 `elpsvet/nativepayload` is importable. `New(Config)` and
 `NewDurable(DurableConfig)` build the two rules for another module. A zero
 `Config` is elps's (`Analyzer`); `DurableConfig.Module` is required, and elps's
