@@ -22,9 +22,10 @@
 //
 // IDIOMS, reported with category "info".  Where the rewrite is mechanical,
 // the diagnostic carries a suggested fix, so `-fix` applies it.  Each fix
-// keeps behaviour identical, with two exceptions for a nil *LVal: the
+// keeps behaviour identical, with these exceptions: for a nil *LVal, the
 // lisp.MapOf fix (below), and IsError and IsSymbol, which return false for
-// a nil value where x.Type panics:
+// a nil value where x.Type panics; and the capacity and nil differences of
+// the Cells fixes (below):
 //
 //	x.Type == lisp.LError              x.IsError()                    (fix)
 //	lisp.GoError(x) != nil             x.IsError()                    (fix)
@@ -49,6 +50,17 @@
 //	in package lisp only, a []*LVal{...} literal in the Cells field of
 //	an LVal literal or assigned to x.Cells
 //	                                   Cells{...}                     (fix)
+//	out := make([]*lisp.LVal, len(xs)), then
+//	for i, x := range xs { out[i] = expr }, where expr names neither
+//	out nor i                          out := lisp.Cells(xs).Map(f)   (fix)
+//	slices.Clone(s), append([]*lisp.LVal(nil), s...),
+//	append([]*lisp.LVal{}, s...), or x := make([]*lisp.LVal, len(s))
+//	then copy(x, s)                    lisp.Cells(s).Clone()          (fix)
+//	append(c, xs...), where c is one of the clones above
+//	                                   lisp.Cells(s).Append(xs...)    (fix)
+//	append([]*lisp.LVal{a, b}, s...)   lisp.Cells{a, b}.Append(s...)  (fix)
+//	a loop over xs that leaves out nil until a cell changes, then
+//	copies xs[:i] into out             lisp.Cells(xs).MapIfChanged(f) (hint)
 //	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 //		return env.Errorf("%s", msg)
 //	}                                  env.CheckAlloc(n)              (fix)
@@ -57,9 +69,10 @@
 //	range m.MapEntries().Cells, after an m.Type == lisp.LSortMap check,
 //	or in case lisp.LSortMap or case lisp.ShapeMap of a switch on m's type
 //	                                   for k, v := range m.All()      (hint)
-//	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
-//	after an m.Type == lisp.LSortMap check
-//	                                   lisp.Field[string](m, k)       (hint)
+//	v := m.MapGetString(k), then a v.Type == lisp.LString check and a
+//	read of v.Str, or a v.Type == lisp.LInt check and a read of v.Int
+//	                                   lisp.Field[string](m, k) or
+//	                                   lisp.Field[int](m, k)          (hint)
 //	for _, v := range ss { cells = append(cells, lisp.String(v)) }, then
 //	lisp.QExpr(cells), for a []string ss
 //	                                   lisp.StringList(ss)            (hint)
@@ -67,7 +80,11 @@
 //	                                   env.MapRange or ResultAs[lisp.Cells] (hint)
 //	v := args.Cells[i] (or a, b := args.Cells[0], args.Cells[1]) followed
 //	by a v.Type check that returns Errorf
-//	                                   an ArgReader read              (hint)
+//	                                   r := lisp.Cells(args.Cells).Read(env),
+//	                                   then r.Str(), r.Int(), ...;
+//	                                   r.Name() for a check of both
+//	                                   LString and LSymbol; an
+//	                                   ArgReader for a custom message (hint)
 //	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
 //	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
 //	any other env.CallBuiltin(sortedMap, kv...)
@@ -117,6 +134,26 @@
 // the map, whose key is not a constant string or that has a comment after
 // its first line.
 //
+// The Cells fixes (Map, Clone, Append) change the static type of the
+// result from []*lisp.LVal to lisp.Cells.  Go assigns one to the other with
+// no conversion.  A fix is not made where the result, or the variable that
+// holds it, reaches an interface or a type parameter, because there the
+// dynamic type would change.  The results differ in two ways:
+//
+//   - Capacity.  Map, Clone and Append return a slice whose capacity is its
+//     length.  append and slices.Clone may round the capacity up, so a later
+//     append to their result may write in place where the helper's result
+//     copies.
+//   - nil.  Map, and Clone after make and copy, return nil for a nil source,
+//     where make returns an empty slice.  Clone after append([]*lisp.LVal{},
+//     s...) returns nil for a nil s, and Clone after append([]*lisp.LVal(nil),
+//     s...) returns an empty slice for an empty s, where append returns nil.
+//     Append returns an empty slice where an append to a clone of a nil
+//     slice with nothing to add returns nil.
+//
+// Review a fixed site that tests the result for nil or relies on the
+// capacity.
+//
 // A hint has no fix, because the rewrite changes the code's shape.  Keys
 // yields a lisp.MapKey, not an *LVal.  SeqCells refuses a multi-dimensional
 // array and returns the value's own cells.  NativeValue makes the type test
@@ -130,9 +167,12 @@
 //   - In a FuncE or Func*E body, and in a function of the same package that
 //     such a body returns the error of, fmt.Errorf or errors.New(err.Error())
 //     over an error that came from lisp.Result, lisp.ResultAs, lisp.GoError
-//     or such a function.  The wrap gives the error condition "error", so
-//     Lisp's handler-bind no longer sees the inner condition.  Raise a new
-//     error with env.Errorf instead.
+//     or such a function.  Such a function counts only when it returns, as
+//     its error, one of those calls, a *lisp.ErrorVal, the error of another
+//     function that counts, or a variable one of those calls assigns.  A
+//     function that returns only Go errors does not count.  The wrap gives
+//     the error condition "error", so Lisp's handler-bind no longer sees the
+//     inner condition.  Raise a new error with env.Errorf instead.
 //   - A *lisp.ErrorVal in a function's result list.  A nil *ErrorVal
 //     returned as an error is a non-nil error.  Return error.
 //   - lisp.ResultAs[T] over a call whose result type varies (get, funcall,
@@ -191,7 +231,8 @@ func init() {
 var Analyzer = &analysis.Analyzer{
 	Name: "elpsidiom",
 	Doc: "report Go builtin code that an elps helper states more plainly (IsError, IsSymbol, Cells, Vector, " +
-		"CheckAlloc, MapOf, SortedMapOf, MapPut, MapLookup, ToString, FormatString, Keys, All, Field, ArgReader, " +
+		"CheckAlloc, MapOf, SortedMapOf, MapPut, MapLookup, ToString, FormatString, Cells.Map, Cells.Clone, Cells.Append, " +
+		"Cells.MapIfChanged, Cells.Read, Keys, All, Field, ArgReader, " +
 		"FunInPackageDoc, SeqCells, NativeValue, FuncE, Func*E, MapRange, StringList, ArrayParts), and mistakes in code that uses " +
 		"the helpers: an error wrap that hides a Lisp condition, a *ErrorVal result, ResultAs over a result of varying " +
 		"type, a Func*E builtin registered with the wrong formals and a MapOf argument of a type it does not take",
@@ -237,6 +278,9 @@ type state struct {
 	covered map[ast.Node]bool
 	// keepLines maps a file name to the lines that a keepMarker covers.
 	keepLines map[string]map[int]bool
+	// parents maps each node of the package's files to the node that
+	// holds it.  It is built on first use.
+	parents map[ast.Node]ast.Node
 }
 
 // unit is a function body of package lisp: a declaration, or a function
@@ -526,6 +570,8 @@ func (s *state) checkFile(file *ast.File) {
 				s.checkIsSymbol(x)
 			}
 		case *ast.CallExpr:
+			s.checkAppendCall(x)
+			s.checkCloneCall(x)
 			s.checkQExpr(x)
 			s.checkResultAs(x)
 			s.checkRegistration(x)
@@ -551,6 +597,7 @@ func (s *state) checkFile(file *ast.File) {
 		case *ast.RangeStmt:
 			s.checkMapKeysRange(x, stack)
 			s.checkMapEntriesRange(x, stack)
+			s.checkCopyOnChange(x)
 		case *ast.TypeAssertExpr:
 			s.checkNativeAssert(x, stack)
 		case *ast.FuncType:
@@ -566,7 +613,9 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkKeysLoop(x)
 			s.checkStringListLoop(x)
 			s.checkMapSetChain(x)
-			s.checkMapGetString(x, stack)
+			s.checkMapGetString(x)
+			s.checkMapLoop(x)
+			s.checkMakeCopy(x)
 		}
 		return true
 	})
@@ -770,9 +819,16 @@ func (s *state) checkMapKeysRange(r *ast.RangeStmt, stack []ast.Node) {
 		"the key becomes a lisp.MapKey, so this is a hint, not a fix")
 }
 
+// fieldReads maps the type constant a MapGetString result is tested
+// against to the LVal field that reads it and the Field type argument.
+var fieldReads = map[string]struct{ field, goType string }{
+	"LString": {"Str", "string"},
+	"LInt":    {"Int", "int"},
+}
+
 // checkMapGetString: v := m.MapGetString(k) (or the if-init form), then
-// v.Type == lisp.LString and v.Str, after a map check.
-func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
+// v.Type == lisp.LString and v.Str, or v.Type == lisp.LInt and v.Int.
+func (s *state) checkMapGetString(block *ast.BlockStmt) {
 	check := func(assign *ast.AssignStmt, uses ast.Node) {
 		if assign == nil || assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
 			return
@@ -790,26 +846,33 @@ func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
 			return
 		}
 		m := fsel.X
-		if !s.mapChecked(stack, s.text(m)) {
-			return
-		}
-		typed, str := false, false
+		typed := make(map[string]bool)
+		read := make(map[string]bool)
 		ast.Inspect(uses, func(n ast.Node) bool {
 			switch x := n.(type) {
 			case *ast.BinaryExpr:
-				if v := s.typeField(x.X); v != nil && s.text(v) == id.Name && s.isLispConst(x.Y, "LString") {
-					typed = true
+				if v := s.typeField(x.X); v != nil && s.text(v) == id.Name {
+					for c := range fieldReads {
+						if s.isLispConst(x.Y, c) {
+							typed[c] = true
+						}
+					}
 				}
 			case *ast.SelectorExpr:
-				if v, ok := x.X.(*ast.Ident); ok && v.Name == id.Name && x.Sel.Name == "Str" {
-					str = true
+				if v, ok := x.X.(*ast.Ident); ok && v.Name == id.Name {
+					read[x.Sel.Name] = true
 				}
 			}
 			return true
 		})
-		if typed && str {
-			s.report(call, CategoryInfo, fmt.Sprintf("lisp.Field[string](%s, %s) reads a string field in one call; "+
-				"it returns ok=false for a missing key or another type", s.text(m), s.text(call.Args[0])))
+		for _, c := range []string{"LString", "LInt"} {
+			f := fieldReads[c]
+			if typed[c] && read[f.field] {
+				s.report(call, CategoryInfo, fmt.Sprintf("lisp.Field[%s](%s, %s) reads %s field in one call; "+
+					"it returns ok=false for a value that is not a map, a missing key or another type",
+					f.goType, s.text(m), s.text(call.Args[0]), article(f.goType)))
+				return
+			}
 		}
 	}
 	for i, st := range block.List {
@@ -824,6 +887,13 @@ func (s *state) checkMapGetString(block *ast.BlockStmt, stack []ast.Node) {
 			}
 		}
 	}
+}
+
+func article(goType string) string {
+	if goType == "int" {
+		return "an int"
+	}
+	return "a " + goType
 }
 
 // checkArgCells: v := args.Cells[i], or a tuple a, b := args.Cells[0],
@@ -854,8 +924,13 @@ func (s *state) checkArgCells(block *ast.BlockStmt) {
 			}
 			for _, name := range names {
 				if s.testsType(ifs.Cond, name) && returnsErrorf(s, ifs.Body) {
-					s.report(assign, CategoryInfo, "an ArgReader read (lisp.ReadArgs, then String, Int, Map, ...) decodes "+
-						name+" and records the type error; check a.Err() once")
+					read := "r.Str(), r.Int(), r.Map(), ..."
+					if s.testsTypeConst(ifs.Cond, name, "LString") && s.testsTypeConst(ifs.Cond, name, "LSymbol") {
+						read = "r.Name(), which takes a string or a symbol,"
+					}
+					s.report(assign, CategoryInfo, "a cell reader decodes "+name+": r := lisp.Cells(args.Cells).Read(env), "+
+						"then "+read+" in argument order, and check r.Err() once; a failure raises argument-error with a "+
+						"positional subject; use an ArgReader (lisp.ReadArgs) when an argument needs its own message")
 					break next
 				}
 			}
@@ -891,6 +966,21 @@ func (s *state) testsType(cond ast.Expr, name string) bool {
 	ast.Inspect(cond, func(n ast.Node) bool {
 		if b, ok := n.(*ast.BinaryExpr); ok && (b.Op == token.NEQ || b.Op == token.EQL) {
 			if v := s.typeField(b.X); v != nil && s.text(v) == name {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+// testsTypeConst reports whether cond compares name.Type with the lisp
+// constant c.
+func (s *state) testsTypeConst(cond ast.Expr, name, c string) bool {
+	found := false
+	ast.Inspect(cond, func(n ast.Node) bool {
+		if b, ok := n.(*ast.BinaryExpr); ok && (b.Op == token.NEQ || b.Op == token.EQL) {
+			if v := s.typeField(b.X); v != nil && s.text(v) == name && s.isLispConst(b.Y, c) {
 				found = true
 			}
 		}
@@ -1079,9 +1169,59 @@ func (s *state) checkErrorWraps() {
 			add(f)
 		}
 	}
+	sources := s.lispErrorSources(work)
 	for _, w := range work {
-		s.checkWrapsIn(w.body, scoped)
+		s.checkWrapsIn(w.body, sources)
 	}
+}
+
+// lispErrorSources returns the scoped functions whose error result is a
+// Lisp error: a return statement of each returns, as its error, a call of
+// lisp.Result, lisp.ResultAs or lisp.GoError, a *lisp.ErrorVal, a call of
+// another such function, or a variable that one of those calls assigns.  A
+// function that only wraps or makes Go errors is not a source, so a wrap of
+// its error is not reported.
+func (s *state) lispErrorSources(work []funcBody) map[*types.Func]bool {
+	sources := make(map[*types.Func]bool)
+	for changed := true; changed; {
+		changed = false
+		for _, w := range work {
+			if w.fn == nil || sources[w.fn] {
+				continue
+			}
+			if s.returnsLispError(w.body, sources) {
+				sources[w.fn] = true
+				changed = true
+			}
+		}
+	}
+	return sources
+}
+
+// returnsLispError reports whether a return statement of body, outside its
+// function literals, returns a Lisp error.
+func (s *state) returnsLispError(body *ast.BlockStmt, sources map[*types.Func]bool) bool {
+	isLispErr := s.lispErrorTest(body, sources)
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		switch x := n.(type) {
+		case *ast.FuncLit:
+			return false
+		case *ast.ReturnStmt:
+			for _, r := range x.Results {
+				if isLispErr(r) || isErrorValPtr(s.pass.TypesInfo.TypeOf(r)) {
+					found = true
+				}
+			}
+		}
+		return !found
+	})
+	return found
+}
+
+func isErrorValPtr(t types.Type) bool {
+	p, ok := types.Unalias(t).(*types.Pointer)
+	return ok && isLispNamed(p.Elem(), "ErrorVal")
 }
 
 // returnedCallees returns the same-package functions whose results body
@@ -1136,8 +1276,9 @@ func (s *state) returnedCallees(body *ast.BlockStmt) []*types.Func {
 }
 
 // lispErrorCall reports whether call returns a Lisp error as its error
-// result: lisp.Result, lisp.ResultAs, lisp.GoError, or a scoped function.
-func (s *state) lispErrorCall(call *ast.CallExpr, scoped map[*types.Func]bool) bool {
+// result: lisp.Result, lisp.ResultAs, lisp.GoError, or a function in
+// sources.
+func (s *state) lispErrorCall(call *ast.CallExpr, sources map[*types.Func]bool) bool {
 	fn := s.callee(call)
 	if fn == nil {
 		return false
@@ -1148,10 +1289,13 @@ func (s *state) lispErrorCall(call *ast.CallExpr, scoped map[*types.Func]bool) b
 			return true
 		}
 	}
-	return scoped[fn.Origin()]
+	return sources[fn.Origin()]
 }
 
-func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
+// lispErrorTest returns a test of whether an expression of body is a Lisp
+// error: a call that lispErrorCall accepts, or a variable of type error
+// that such a call assigns.
+func (s *state) lispErrorTest(body *ast.BlockStmt, sources map[*types.Func]bool) func(ast.Expr) bool {
 	lispErrs := make(map[types.Object]bool)
 	ast.Inspect(body, func(n ast.Node) bool {
 		assign, ok := n.(*ast.AssignStmt)
@@ -1159,7 +1303,7 @@ func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
 			return true
 		}
 		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
-		if !ok || !s.lispErrorCall(call, scoped) {
+		if !ok || !s.lispErrorCall(call, sources) {
 			return true
 		}
 		for _, l := range assign.Lhs {
@@ -1175,15 +1319,19 @@ func (s *state) checkWrapsIn(body *ast.BlockStmt, scoped map[*types.Func]bool) {
 		}
 		return true
 	})
-	isLispErr := func(e ast.Expr) bool {
+	return func(e ast.Expr) bool {
 		switch x := ast.Unparen(e).(type) {
 		case *ast.Ident:
 			return lispErrs[s.pass.TypesInfo.Uses[x]]
 		case *ast.CallExpr:
-			return s.lispErrorCall(x, scoped)
+			return s.lispErrorCall(x, sources)
 		}
 		return false
 	}
+}
+
+func (s *state) checkWrapsIn(body *ast.BlockStmt, sources map[*types.Func]bool) {
+	isLispErr := s.lispErrorTest(body, sources)
 	ast.Inspect(body, func(n ast.Node) bool {
 		call, ok := n.(*ast.CallExpr)
 		if !ok {

@@ -23,3 +23,17 @@ func keys(m *lisp.LVal) int {
 func errorVal() *lisp.ErrorVal {
 	return nil
 }
+
+// A Cells fix is reported under -fixonly; the copy-on-change hint is not.
+func cells(form *lisp.LVal) *lisp.LVal {
+	out := lisp.Cells(form.Cells).Map(func(x *lisp.LVal) *lisp.LVal {
+		return lisp.String(x.Str)
+	}) // want `use lisp.Cells\(form.Cells\).Map`
+	var changed []*lisp.LVal
+	for i, x := range out {
+		if x != form && changed == nil {
+			changed = lisp.Cells(out[:i]).Clone() // want `use lisp.Cells\(out\[:i\]\).Clone\(\)`
+		}
+	}
+	return lisp.SExpr(changed)
+}
