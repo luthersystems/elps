@@ -75,6 +75,7 @@ var lazyTableFunctions = map[string]string{
 	"sortedmap.Len":          "reads the length only; a pending entry is a present key",
 	"sortedmap.Keys":         "reads keys only; a pending entry is a present key",
 	"sortedmap.keysWithInts": "reads keys only; a pending entry is a present key",
+	"LVal.mapKeyRange":       "reads keys only, for LVal.Keys; a pending entry is a present key",
 	"sortedmap.emptyLike":    "reads the length only, to size a fresh table",
 	"Package.SymbolNames":    "reads keys only; a pending binding is a present name",
 	"Package.NumBindings":    "reads the length of the table only; a pending binding is a present name",

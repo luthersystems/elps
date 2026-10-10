@@ -494,3 +494,69 @@ func TestFunInPackageDoc(t *testing.T) {
 	env.PutGlobal(lisp.Symbol("run-phylum"), fun)
 	assert.Equal(t, "7", env.LoadString("t", `(run-phylum)`).String())
 }
+
+func TestMapIterators(t *testing.T) {
+	env := testEnv(t)
+	m := lisp.SortedMap()
+	m.MapSetString("b", lisp.Int(2))
+	m.MapSetLVal(lisp.Symbol("a"), lisp.Int(1))
+	m.MapSetLVal(lisp.Int(10), lisp.Int(10))
+	m.MapSetLVal(lisp.Int(-1), lisp.Int(-1))
+
+	var want []lisp.MapKey
+	var wantVals []int
+	require.True(t, env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
+		want = append(want, k)
+		wantVals = append(wantVals, v.Int)
+		return true
+	}).IsNil())
+
+	var keys []lisp.MapKey
+	for k := range m.Keys() {
+		keys = append(keys, k)
+	}
+	assert.Equal(t, want, keys)
+
+	var all []lisp.MapKey
+	var vals []int
+	for k, v := range m.All() {
+		all = append(all, k)
+		vals = append(vals, v.Int)
+	}
+	assert.Equal(t, want, all)
+	assert.Equal(t, wantVals, vals)
+
+	// The same order as MapKeys.
+	for i, k := range m.MapKeys().Cells {
+		if k.Type == lisp.LInt {
+			assert.Equal(t, k.Int, keys[i].Int)
+		} else {
+			assert.Equal(t, k.Str, keys[i].Str)
+		}
+	}
+
+	// Early break.
+	n := 0
+	for range m.Keys() {
+		n++
+		break
+	}
+	assert.Equal(t, 1, n)
+
+	// A non-map yields nothing.
+	for _, v := range []*lisp.LVal{lisp.Nil(), lisp.Int(1), lisp.String("x")} {
+		for range v.Keys() {
+			t.Fatal("Keys yielded for a non-map")
+		}
+		for range v.All() {
+			t.Fatal("All yielded for a non-map")
+		}
+	}
+
+	name, ok := keys[2].Name()
+	assert.True(t, ok)
+	assert.Equal(t, "a", name)
+	assert.Equal(t, lisp.LSymbol, keys[2].Type)
+	_, ok = keys[0].Name()
+	assert.False(t, ok, "an int key has no name")
+}

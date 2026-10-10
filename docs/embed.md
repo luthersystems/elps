@@ -874,6 +874,25 @@ included. The cells are the value's own storage, so treat them as read-only.
 with a docstring, in the layout registered builtins use, so `Docstring`
 returns `doc`. Do not write `fun.Cells[1]` after `FunInPackage`.
 
+**Iterating a map: `m.All()`, `m.Keys()` and `k.Name()`.** `All` is an
+`iter.Seq2[lisp.MapKey, *lisp.LVal]` and `Keys` an `iter.Seq[lisp.MapKey]`,
+in `MapRange`'s order. `k.Name()` returns the spelling of a string or symbol
+key.
+
+```go
+for k := range in.Keys() {
+	if name, ok := k.Name(); ok && strings.HasPrefix(name, "$") {
+		return nil, reject(name)
+	}
+}
+```
+
+Both yield nothing for a value that is not a map, where `MapKeys` panics, so
+use them after a map check. Neither makes a check or charges a step; where
+the Lisp called `keys`, use `env.MapRange`. `Keys` reads keys only: it loads
+no lazy value of a template map and builds no list. `All` loads every lazy
+value, as `MapRange` does. Breaking out of the loop early is safe.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
