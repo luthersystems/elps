@@ -415,6 +415,14 @@ var lvalCopyExemptions = []lvalCopyExemption{
 			"symbol list with no payload, and both sites already carry //elps:mutates annotations saying so.",
 	},
 	{
+		Func:  "wrapError",
+		Sites: 1,
+		Reason: "a second header over a RAISED error's data, the way rethrow already hands out the error " +
+			"itself: a raised error's Cells are never written (handler-bind gives each handler a copy), and " +
+			"the copy's Native is replaced at once by SetCallStack with a fresh stack carrying the context, " +
+			"so the only storage the two headers share is that read-only data (luthersystems/elps#831).",
+	},
+	{
 		Func:  "(*templateCompiler).value",
 		Sites: 2,
 		Reason: "the plan's header, STRIPPED before publication: the copy exists to take v's scalar fields, " +
