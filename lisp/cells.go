@@ -128,3 +128,30 @@ func (c Cells) Append(xs ...*LVal) Cells {
 	copy(out[len(c):], xs)
 	return out
 }
+
+// Strings returns the text of every cell of c, which must all be strings,
+// in a fresh slice of exact length and capacity.  When a cell is not a
+// string it returns nil and that cell, so the caller writes its own message:
+//
+//	parts, bad := lisp.Cells(args.Cells[1:]).Strings()
+//	if bad != nil {
+//		return env.Errorf("docstring argument is not a string: %v", bad.Type)
+//	}
+//
+// A symbol is not a string here.  An empty c gives nil and nil.  It makes
+// no check beyond the types and charges no step.
+func (c Cells) Strings() ([]string, *LVal) {
+	if len(c) == 0 {
+		return nil, nil
+	}
+	for _, x := range c {
+		if x.Type != LString {
+			return nil, x
+		}
+	}
+	out := make([]string, len(c))
+	for i, x := range c {
+		out[i] = x.Str
+	}
+	return out, nil
+}

@@ -170,3 +170,19 @@ func BenchmarkCellsMap(b *testing.B) {
 		}
 	})
 }
+
+func TestCellsStrings(t *testing.T) {
+	got, bad := lisp.Cells{lisp.String("a"), lisp.String("b")}.Strings()
+	assert.Nil(t, bad)
+	assert.Equal(t, []string{"a", "b"}, got)
+	assert.Equal(t, 2, cap(got))
+
+	sym := lisp.Symbol("c")
+	got, bad = lisp.Cells{lisp.String("a"), sym, lisp.Int(1)}.Strings()
+	assert.Nil(t, got)
+	assert.Same(t, sym, bad, "the first cell that is not a string")
+
+	got, bad = lisp.Cells(nil).Strings()
+	assert.Nil(t, got)
+	assert.Nil(t, bad)
+}

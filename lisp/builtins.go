@@ -682,12 +682,9 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", name)
 	}
 	// Validate every argument before changing the registry, package, or docs.
-	var parts []string
-	for _, arg := range args.Cells[1:] {
-		if arg.Type != LString {
-			return env.Errorf("docstring argument is not a string: %v", arg.Type)
-		}
-		parts = append(parts, arg.Str)
+	parts, bad := Cells(args.Cells[1:]).Strings()
+	if bad != nil {
+		return env.Errorf("docstring argument is not a string: %v", bad.Type)
 	}
 	pkg := env.Runtime.Registry.packages[name]
 	newpkg := false
@@ -792,12 +789,9 @@ func builtinSet(env *LEnv, v *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %v", v.Cells[0].Type)
 	}
 	// Validate every docstring before anything is written.
-	var parts []string
-	for _, arg := range v.Cells[min(2, len(v.Cells)):] {
-		if arg.Type != LString {
-			return env.Errorf("docstring argument is not a string: %v", arg.Type)
-		}
-		parts = append(parts, arg.Str)
+	parts, bad := Cells(v.Cells[min(2, len(v.Cells)):]).Strings()
+	if bad != nil {
+		return env.Errorf("docstring argument is not a string: %v", bad.Type)
 	}
 	lerr := env.PutGlobalFromLisp(v.Cells[0], v.Cells[1])
 	if lerr.IsError() {
@@ -1676,7 +1670,7 @@ func builtinGet(env *LEnv, args *LVal) *LVal {
 // m raises "first argument is not a map: <type>", and a key the map refuses
 // returns the map's own error.  It charges no step.
 //
-// Use it where the Lisp called get.  MapGetLVal makes none of these checks.
+// Use it where the Lisp called get.  Lookup makes none of these checks.
 func (env *LEnv) MapLookup(m, k *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
