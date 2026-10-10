@@ -754,6 +754,41 @@ func TestMapOfParity(t *testing.T) {
 	})
 }
 
+// TestPackageMapOf checks lisp.MapOf against lisp.SortedMap followed by one
+// MapSetString or MapSetLVal per pair, with the results ignored.
+func TestPackageMapOf(t *testing.T) {
+	id := lisp.String("id-1")
+	list := lisp.Cells{lisp.Int(1)}.List()
+	cases := []struct {
+		name string
+		kv   []any
+		lv   []*lisp.LVal
+	}{
+		{"empty", nil, nil},
+		{"mixed values", []any{"id", id, "n", 3, "f", 1.5, "ok", true, "b", []byte("x"), "s", "str"},
+			[]*lisp.LVal{lisp.String("id"), id, lisp.String("n"), lisp.Int(3), lisp.String("f"), lisp.Float(1.5),
+				lisp.String("ok"), lisp.Bool(true), lisp.String("b"), lisp.Bytes([]byte("x")), lisp.String("s"), lisp.String("str")}},
+		{"lval keys", []any{lisp.Symbol("a"), 1, lisp.Int(2), 2}, []*lisp.LVal{lisp.Symbol("a"), lisp.Int(1), lisp.Int(2), lisp.Int(2)}},
+		{"duplicate key", []any{"a", 1, "b", 2, "a", 3}, []*lisp.LVal{lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2), lisp.String("a"), lisp.Int(3)}},
+		{"symbol then string key", []any{lisp.Symbol("a"), 1, "a", 2}, []*lisp.LVal{lisp.Symbol("a"), lisp.Int(1), lisp.String("a"), lisp.Int(2)}},
+		{"refused key", []any{"a", 1, list, 2, "b", 3}, []*lisp.LVal{lisp.String("a"), lisp.Int(1), list, lisp.Int(2), lisp.String("b"), lisp.Int(3)}},
+	}
+	for _, tc := range cases {
+		want := lisp.SortedMap()
+		for i := 0; i+1 < len(tc.lv); i += 2 {
+			if k := tc.lv[i]; k.Type == lisp.LString {
+				want.MapSetString(k.Str, tc.lv[i+1])
+			} else {
+				want.MapSetLVal(k, tc.lv[i+1])
+			}
+		}
+		assertSameResult(t, want, lisp.MapOf(tc.kv...), tc.name)
+	}
+	assert.PanicsWithValue(t, "lisp.MapOf: uneven number of arguments: 3", func() { lisp.MapOf("a", 1, "b") })
+	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { lisp.MapOf(1, 2) })
+	assert.Panics(t, func() { lisp.MapOf("a", []string{"x"}) })
+}
+
 func TestMapOfPanicsOnBadTypes(t *testing.T) {
 	env := testEnv(t)
 	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { env.MapOf(1, 2) })

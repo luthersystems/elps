@@ -937,6 +937,14 @@ native value and `lisp.StringList` for a `[]string`.
 return env.MapOf("id", id, "type", typ, "count", n)
 ```
 
+**`lisp.MapOf(kv ...)`** builds the same map with no checks: no context
+check and no allocation check. `env.MapOf` is the checked form; use it where
+the Lisp called `sorted-map`. `lisp.MapOf` converts keys and values as
+`env.MapOf` does and panics on an odd count. Its result is the result of
+`lisp.SortedMap()` followed by `MapSetLVal` for each pair, so a later
+duplicate key replaces an earlier one. Use it where Go code fills a map it
+just built.
+
 **`v.SeqCells()`** returns the cells of a list or a one-dimensional vector
 and `true`, or `nil, false` for any other value, a multi-dimensional array
 included. The cells are the value's own storage, so treat them as read-only.

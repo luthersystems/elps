@@ -29,7 +29,8 @@ const mapOfStack = 16
 // MapOf uses a type switch, not reflection.  A string key or value becomes a
 // new string value, as lisp.String does.  The converted keys and values sit
 // in a fixed array on the stack for up to 16 of them, else in one allocated
-// slice.  MapOf charges no step.
+// slice.  MapOf charges no step.  The package-level MapOf is the unchecked
+// form, for Go code that fills a map it just built.
 func (env *LEnv) MapOf(kv ...any) *LVal {
 	var buf [mapOfStack]*LVal
 	var cells []*LVal
@@ -46,6 +47,30 @@ func (env *LEnv) MapOf(kv ...any) *LVal {
 		}
 	}
 	return env.SortedMapOf(cells...)
+}
+
+// MapOf returns a new sorted map built from kv, which holds alternating Go
+// keys and values.  It makes no checks: no context check and no allocation
+// check.  LEnv.MapOf is the checked form; use it in a builtin where the Lisp
+// called sorted-map.
+//
+//	m := lisp.MapOf("id", id, "type", typ)
+//
+// MapOf converts the keys and values as LEnv.MapOf does, with the same
+// panic on a type it does not accept.  It panics on an odd count of
+// arguments.  The result is the result of lisp.SortedMap() followed by
+// MapSetLVal for each pair, in order: a later duplicate key replaces an
+// earlier one, and a key the map refuses is skipped, as the ignored result
+// of MapSetLVal skips it.  MapOf charges no step.
+func MapOf(kv ...any) *LVal {
+	if len(kv)%2 != 0 {
+		panic(fmt.Sprintf("lisp.MapOf: uneven number of arguments: %d", len(kv)))
+	}
+	m := SortedMap()
+	for i := 0; i+1 < len(kv); i += 2 {
+		m.MapSetLVal(mapOfKey(kv[i]), mapOfValue(kv[i+1]))
+	}
+	return m
 }
 
 // mapOfKey converts a MapOf key.
