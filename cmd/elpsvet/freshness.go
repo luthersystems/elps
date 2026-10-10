@@ -84,6 +84,12 @@ var freshLValMethods = map[string]bool{
 	"detach": true,
 }
 
+// freshCellsMethods are methods on lisp.Cells whose result is a freshly
+// allocated LVal header (lisp/cells.go: QExpr and Vector of the receiver).
+var freshCellsMethods = map[string]bool{
+	"List": true, "Vector": true,
+}
+
 // freshLEnvMethods are methods on *lisp.LEnv whose result is a freshly
 // allocated error LVal (lisp/env.go builds a new &LVal{} in each).
 var freshLEnvMethods = map[string]bool{
@@ -475,6 +481,9 @@ func isFreshCall(pass *analysis.Pass, call *ast.CallExpr) bool {
 	}
 	if recvIsLisp(fn, "LEnv") {
 		return freshLEnvMethods[fn.Name()]
+	}
+	if recvIsLisp(fn, "Cells") {
+		return freshCellsMethods[fn.Name()]
 	}
 	return false
 }

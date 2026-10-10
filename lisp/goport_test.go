@@ -93,3 +93,22 @@ func TestFuncE(t *testing.T) {
 	caught := env.LoadString("t", `(handler-bind ((my-condition (lambda (c &rest _) "caught"))) (bare 1))`)
 	assert.Equal(t, `"caught"`, caught.String())
 }
+
+func TestCells(t *testing.T) {
+	a, b := lisp.String("a"), lisp.Int(2)
+	l := lisp.Cells{a, b}.List()
+	assert.Equal(t, lisp.QExpr([]*lisp.LVal{a, b}).String(), l.String())
+	assert.Equal(t, `'("a" 2)`, l.String())
+	assert.Equal(t, `(vector "a" 2)`, lisp.Cells{a, b}.Vector().String())
+
+	// Cells and []*lisp.LVal assign to each other with no conversion.
+	var plain []*lisp.LVal = lisp.Cells{a}
+	var cells lisp.Cells = plain
+	assert.Len(t, cells, 1)
+
+	// List uses the receiver as storage.
+	src := lisp.QExpr([]*lisp.LVal{a, b})
+	shared := lisp.Cells(src.Cells).List()
+	assert.Same(t, src.Cells[0], shared.Cells[0])
+	assert.True(t, lisp.Cells(nil).List().IsNil())
+}

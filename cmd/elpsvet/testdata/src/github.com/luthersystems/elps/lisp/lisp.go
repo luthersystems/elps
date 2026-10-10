@@ -193,6 +193,11 @@ func QExpr(cells []*LVal) *LVal { return &LVal{Cells: cells, Quoted: true} }
 
 func Array(dims *LVal, cells []*LVal) *LVal { return &LVal{Cells: cells} }
 
+type Cells []*LVal
+
+func (c Cells) List() *LVal   { return QExpr(c) }
+func (c Cells) Vector() *LVal { return Array(nil, c) }
+
 func Fun(fid string, formals *LVal, fn LBuiltin) *LVal { return &LVal{Str: fid} }
 
 func Formals(argSymbols ...string) *LVal { return &LVal{} }
