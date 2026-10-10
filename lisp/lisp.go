@@ -304,7 +304,7 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 		m.DefSite = &loc
 	}
 	if len(ctx.Args) > 0 {
-		m.Args = append([]*LVal(nil), ctx.Args...)
+		m.Args = Cells(ctx.Args).Clone()
 	}
 	return m, true
 }

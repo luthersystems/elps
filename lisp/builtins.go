@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"fmt"
 	"math"
-	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -2953,7 +2952,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		// Appending zero values never reallocates, even at cap == len.
 		// append promises independent storage for mutable inputs too.
 		if len(vals) == 0 {
-			return Vector(slices.Clone(cells))
+			return Vector(Cells(cells).Clone())
 		}
 		// For nonempty vals, clampCap makes this append non-aliasing: it returns a
 		// three-index reslice whose cap equals its len, so append cannot

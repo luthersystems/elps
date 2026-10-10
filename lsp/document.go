@@ -62,7 +62,7 @@ func (d *Document) Snapshot() DocumentSnapshot {
 		URI:         d.URI,
 		Version:     d.Version,
 		Content:     d.Content,
-		AST:         slices.Clone(d.ast),
+		AST:         lisp.Cells(d.ast).Clone(),
 		ParseErrors: slices.Clone(d.parseErrors),
 	}
 }

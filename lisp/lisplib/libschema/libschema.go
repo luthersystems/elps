@@ -338,7 +338,7 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 			}
 			// A validator used as the type keeps its extra constraints;
 			// they used to be dropped without a word.
-			return builtinCheckAny(env, append([]*lisp.LVal{in}, constraints...))
+			return builtinCheckAny(env, lisp.Cells{in}.Append(constraints...))
 		}
 		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
 	}

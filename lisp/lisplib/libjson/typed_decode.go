@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"slices"
 	"strconv"
 	"unicode/utf8"
 
@@ -474,7 +473,7 @@ func (d *typedDecoder) elements(depth int) ([]*lisp.LVal, error) {
 			d.i++
 		case ']':
 			d.i++
-			return slices.Clone(d.stack[base:]), nil
+			return lisp.Cells(d.stack[base:]).Clone(), nil
 		default:
 			return nil, d.errorf("expected ',' or ']'")
 		}

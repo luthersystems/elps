@@ -274,12 +274,10 @@ func newProgramAdmitted(exprs []*LVal, w *loaderWalk) (Program, error) {
 		// file's entry serving another file's program, with every root still
 		// legitimately sealed so -tags elpscheck saw nothing wrong.  The
 		// clone is len(exprs) pointer copies on a path that has just parsed a
-		// file; the three-index form additionally clamps capacity so no later
-		// append can write through the Reader's spare capacity (the #373
-		// discipline, applied here too).
-		cp := make([]*LVal, len(exprs))
-		copy(cp, exprs)
-		return Program{exprs: cp[:len(cp):len(cp)]}, nil
+		// file.  Clone's capacity equals its length, so no later append can
+		// write through spare capacity (the #373 discipline, applied here
+		// too).
+		return Program{exprs: Cells(exprs).Clone()}, nil
 	}
 	sealed := make([]*LVal, len(exprs))
 	for i, expr := range exprs {
