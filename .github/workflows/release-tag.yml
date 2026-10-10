@@ -1,16 +1,28 @@
 name: Release (tag)
 
-# On-demand release, dispatched by an operator (or an agent the operator
-# directed) with an explicit version. Pattern copied from
-# lutherauth/.github/workflows/release-tag.yml (itself from reliable/buildenv):
-# the release is cut by the official Claude App via claude-code-action, NOT the
-# default GITHUB_TOKEN, because GitHub suppresses workflow->workflow events for
-# GITHUB_TOKEN — a GITHUB_TOKEN-created tag would never trigger
+# On-demand release, dispatched from main by an operator (or an agent the
+# operator directed) with an explicit version. Hardened per
+# luthersystems/common-infrastructure#143, from luthersystems/metrics'
+# release-tag.yml (metrics#41, #43):
+#
+# - A plain shell step, not the model, checks the version, that the run's
+#   commit is GitHub's LIVE main, and that the CI Tests workflow (elps.yml)
+#   succeeded on a push run for that commit.
+# - A trusted shell step writes the release notes.
+# - Claude may run exactly one Bash command, `gh release create` with
+#   `--target $GITHUB_SHA`, and a PreToolUse hook denies anything else.
+# - The GITHUB_TOKEN is read-only; a last step checks that the release exists
+#   and that its tag points to exactly the validated commit.
+#
+# The release is cut by the official Claude App via claude-code-action, NOT
+# the default GITHUB_TOKEN, because GitHub suppresses workflow->workflow events
+# for GITHUB_TOKEN: a GITHUB_TOKEN-created tag would never trigger
 # vscode-publish.yml's tag run (the platform elps binaries + VS Code
 # Marketplace extension publish). The App-token release creates the tag
 # server-side; the tag-push event then runs the publish exactly as a human
-# `git push origin vX.Y.Z` would. Direct tag pushes are blocked from agent
-# sandboxes, hence this action.
+# `git push origin vX.Y.Z` would. vscode-publish.yml also refuses a tag whose
+# commit is not on main. Direct tag pushes are blocked from agent sandboxes,
+# hence this action.
 #
 # NOTE: cutting a tag here PUBLISHES the VS Code extension to the
 # Marketplace — treat a release as externally visible immediately.
@@ -32,7 +44,8 @@ on:
         default: false
 
 permissions:
-  contents: write # gh release create (creates the tag + release)
+  actions: read # read the CI Tests runs for the release commit
+  contents: read # checkout only; the Claude App token creates the release
   id-token: write # AWS role for Bedrock (OIDC), and lets claude-code-action mint the official Claude App token, so the tag triggers vscode-publish.yml
 
 concurrency:
@@ -42,6 +55,8 @@ concurrency:
 jobs:
   release:
     name: Cut release ${{ inputs.version }}
+    # The Bedrock role also refuses other refs.
+    if: github.ref == 'refs/heads/main'
     # ARM for the reason spelled out on elps.yml's lint-and-test job. This job
     # builds nothing and ships nothing -- it validates a version string and
     # calls `gh release create` -- so the architecture is about fleet
@@ -53,82 +68,265 @@ jobs:
     # naming is claude-code-action, which installs the CLI for the host
     # platform; linux-arm64 is a supported target. It is also the one job here
     # that cannot be exercised by a PR, so VALIDATE IT WITH A dry_run=true
-    # DISPATCH before relying on it for a real release -- dry_run stops before
-    # `gh release create`, so the run proves the toolchain came up without
-    # publishing anything.
+    # DISPATCH before relying on it for a real release. dry_run runs the
+    # validation, the CI wait, the notes and the pinned CLI install, then
+    # stops before AWS credentials and Claude, so it publishes nothing.
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 20
+    # The CI wait below allows 30 minutes (a push run of CI Tests takes about
+    # 16), plus the install and the release itself.
+    timeout-minutes: 45
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
         with:
           fetch-depth: 0 # all tags + history for validation and release notes
+          persist-credentials: false
+      - name: Validate version, commit and CI
+        id: validate
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+
+          [[ "$GITHUB_REF" == refs/heads/main ]] || fail "release must be dispatched from main"
+          # No leading zeros: v1.08.0 would compare equal to v1.8.0 yet be a
+          # different tag, and npm (vscode-publish.yml) refuses it.
+          [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "release version must be vMAJOR.MINOR.PATCH without leading zeros"
+          [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "release target must be a full lowercase commit SHA"
+
+          # Compare normalized decimal components, including arbitrarily large
+          # values. Leading-zero spellings must not bypass version ordering.
+          # Pre-release tags (with a suffix) are ignored.
+          latest=$(git tag --list 'v*' | python3 -c '
+          import re, sys
+          pattern = re.compile(r"v[0-9]+\.[0-9]+\.[0-9]+")
+          def key(tag):
+              parts = (part.lstrip("0") or "0" for part in tag[1:].split("."))
+              return tuple((len(part), part) for part in parts)
+          tags = [line.rstrip("\n") for line in sys.stdin]
+          stable = [tag for tag in tags if pattern.fullmatch(tag)]
+          print(max(stable, key=key) if stable else "")
+          ')
+          if [[ -n "$latest" ]]; then
+            python3 - "$latest" "$RELEASE_VERSION" <<'PY' || fail "$RELEASE_VERSION is not newer than $latest"
+          import sys
+
+          def key(tag):
+              parts = (part.lstrip("0") or "0" for part in tag[1:].split("."))
+              return tuple((len(part), part) for part in parts)
+
+          sys.exit(0 if key(sys.argv[2]) > key(sys.argv[1]) else 1)
+          PY
+          fi
+          head=$(git rev-parse HEAD)
+          [[ "$head" == "$GITHUB_SHA" ]] || fail "checkout does not match the dispatched commit"
+          # Compare with GitHub's LIVE main, not the checkout's origin/main: a
+          # queued dispatch or a rerun checks out the old SHA and rewrites the
+          # local origin/main to match it.
+          live_main=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/main" --jq .object.sha) || fail "could not read the live main ref"
+          [[ "$live_main" =~ ^[0-9a-f]{40}$ ]] || fail "live main ref is not a commit SHA"
+          [[ "$live_main" == "$GITHUB_SHA" ]] || fail "main moved to $live_main since this run's commit $GITHUB_SHA; dispatch again"
+          # Trust the workflow identity (its path), not a check-run name that
+          # can be forged. CI Tests (elps.yml) runs on every push to main.
+          deadline=$(( $(date +%s) + 1800 ))
+          while :; do
+            ci_run=$(gh api "repos/$GITHUB_REPOSITORY/actions/workflows/elps.yml/runs?head_sha=$GITHUB_SHA&event=push&branch=main" --paginate | \
+              jq -sc --arg sha "$GITHUB_SHA" '[.[].workflow_runs[] | select(
+                .path == ".github/workflows/elps.yml" and .head_sha == $sha and
+                .event == "push" and .head_branch == "main"
+              )] | sort_by([.created_at, .run_attempt, .id]) | last') || fail "could not query CI Tests workflow runs"
+            [[ "$ci_run" != null ]] || fail "release target has no matching CI Tests push run"
+            status=$(jq -r '.status' <<< "$ci_run")
+            conclusion=$(jq -r '.conclusion' <<< "$ci_run")
+            if [[ "$status" == completed ]]; then
+              [[ "$conclusion" == success ]] || fail "latest CI Tests run did not succeed ($conclusion)"
+              break
+            fi
+            [[ "$status" == queued || "$status" == in_progress || "$status" == waiting || "$status" == pending || "$status" == requested ]] || fail "latest CI Tests run has unacceptable status ($status)"
+            (( $(date +%s) < deadline )) || fail "timed out waiting 30 minutes for the latest CI Tests run"
+            sleep 20
+          done
+
+          notes_path="$RUNNER_TEMP/release-notes-$RELEASE_VERSION.md"
+          # Keep all inlined command values literal: no spaces, shell operators,
+          # quotes, wildcards or Claude permission-pattern delimiters in the path.
+          [[ "$notes_path" =~ ^/[A-Za-z0-9_./-]+$ ]] || fail "unsafe release notes path"
+          release_command="gh release create $RELEASE_VERSION --target $GITHUB_SHA --title $RELEASE_VERSION --notes-file $notes_path"
+          printf '%s' "$release_command" > "$RUNNER_TEMP/release-command.txt"
+          chmod 400 "$RUNNER_TEMP/release-command.txt"
+          {
+            echo "latest_stable_tag=$latest"
+            echo "notes_path=$notes_path"
+            echo "release_command=$release_command"
+            echo "claude_args=--tools Bash --allowedTools 'Bash($release_command)' --disallowedTools Read,Grep,Glob,LS,Edit,Write,WebFetch,WebSearch,Task --max-turns 30 --model us.anthropic.claude-opus-5-5 --fallback-model us.anthropic.claude-sonnet-5-5"
+          } >> "$GITHUB_OUTPUT"
+          echo "Release $RELEASE_VERSION at $GITHUB_SHA (previous stable: ${latest:-none})"
+      - name: Generate release notes
+        env:
+          LAST_STABLE_TAG: ${{ steps.validate.outputs.latest_stable_tag }}
+          NOTES_PATH: ${{ steps.validate.outputs.notes_path }}
+        run: |
+          set -euo pipefail
+          notes_range="$GITHUB_SHA"
+          if [[ -n "$LAST_STABLE_TAG" ]]; then
+            notes_range="$LAST_STABLE_TAG..$GITHUB_SHA"
+          fi
+          {
+            echo "## Changes"
+            echo
+            # One bullet per change on main: the PR title (and number) for a
+            # merge commit, the subject otherwise.
+            git log --first-parent --format='%H' -200 "$notes_range" | while read -r commit; do
+              subject=$(git log -1 --format=%s "$commit")
+              parents=$(git rev-list --parents -n 1 "$commit" | wc -w)
+              if (( parents > 2 )) && [[ "$subject" =~ ^Merge\ pull\ request\ (#[0-9]+)\  ]]; then
+                pr="${BASH_REMATCH[1]}"
+                title=$(git log -1 --format=%b "$commit" | awk 'NF { print; exit }')
+                echo "- ${title:-$subject} ($pr)"
+              else
+                echo "- $subject"
+              fi
+            done
+            # The waived API breaks (scripts/api-breaks.txt) added since the
+            # last stable tag. Every one must be listed; never omit one.
+            breaks=$(bash scripts/api-breaks-since.sh "${LAST_STABLE_TAG:-none}")
+            if [[ "$breaks" != "(none)" ]]; then
+              echo
+              echo "## Breaking changes"
+              echo
+              echo "API break overrides added since ${LAST_STABLE_TAG:-the first release} (surface | symbol | expires | issue | reason):"
+              echo
+              while IFS= read -r line; do
+                echo "- $line"
+              done <<< "$breaks"
+            fi
+          } > "$NOTES_PATH"
+      - name: Print dry-run plan and notes
+        if: inputs.dry_run
+        env:
+          RELEASE_COMMAND: ${{ steps.validate.outputs.release_command }}
+          NOTES_PATH: ${{ steps.validate.outputs.notes_path }}
+        run: |
+          set -euo pipefail
+          printf 'Dry run: %s\n\nRelease notes:\n' "$RELEASE_COMMAND"
+          # The notes hold PR titles and scripts/api-breaks.txt text. Stop the
+          # runner from reading a line of them as a workflow command
+          # (::add-mask:: and so on).
+          token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          echo "::stop-commands::$token"
+          cat "$NOTES_PATH"
+          echo "::$token::"
       # claude-code-action@v1 installs its own Claude Code CLI, and that build
       # can lag the model pinned below: claude-opus-5-5 needs Claude Code
       # >= 2.1.280, and the bundled 2.1.278 refused it with
       # claude_code_version_too_old (run 35825136056). Install an exact,
       # pinned CLI and hand its path to the action instead. Bump this pin when
-      # the model pin moves.
+      # the model pin moves. It also runs on a dry run, to prove the CLI
+      # installs on this runner.
       - name: Install pinned Claude Code CLI
         id: claude_cli
         run: |
           npm install -g @anthropic-ai/claude-code@2.1.280
           echo "path=$(command -v claude)" >> "$GITHUB_OUTPUT"
       - name: Configure AWS credentials for Bedrock (OIDC)
+        if: ${{ !inputs.dry_run }}
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: arn:aws:iam::637423319757:role/github-actions-claude-bedrock
           aws-region: us-west-2
+      - name: Install exact-command guard and clear checkout credentials
+        id: guard
+        if: ${{ !inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          # Checkout does not persist credentials. Remove any remaining local
+          # header/helper before the action, which writes its own App token.
+          for key in http.https://github.com/.extraheader credential.helper; do
+            if git config --local --unset-all "$key"; then
+              :
+            else
+              code=$?
+              [[ "$code" == 5 ]] || exit "$code" # 5 means the key is absent
+            fi
+          done
+          hook_path="$RUNNER_TEMP/release-tool-guard.py"
+          cat > "$hook_path" <<'PY'
+          import json
+          from pathlib import Path
+          import sys
+
+          try:
+              expected = Path(__file__).with_name("release-command.txt").read_text()
+              payload = json.load(sys.stdin)
+              permitted = (
+                  bool(expected) and isinstance(payload, dict) and
+                  payload.get("tool_name") == "Bash" and
+                  isinstance(payload.get("tool_input"), dict) and
+                  payload["tool_input"].get("command") == expected
+              )
+          except (OSError, ValueError, TypeError, RecursionError):
+              permitted = False
+          if not permitted:
+              print("Deny: only Bash with the exact validated release command is permitted.", file=sys.stderr)
+              sys.exit(2)
+          PY
+          chmod 500 "$hook_path"
+          settings=$(jq -cn --arg command "python3 $hook_path" '{
+            includeGitInstructions: false,
+            hooks: {PreToolUse: [{matcher: "*", hooks: [{type: "command", command: $command}]}]}
+          }')
+          echo "claude_settings=$settings" >> "$GITHUB_OUTPUT"
       - name: Cut the release via Claude
+        if: ${{ !inputs.dry_run }}
         uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
-        env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          DRY_RUN: ${{ inputs.dry_run }}
         with:
           # Official-app auth (minted via OIDC using `id-token: write`). Do NOT
           # add a `github_token:` here — a default GITHUB_TOKEN tag does not
           # trigger vscode-publish.yml, which this release depends on.
           use_bedrock: "true"
           path_to_claude_code_executable: ${{ steps.claude_cli.outputs.path }}
+          settings: ${{ steps.guard.outputs.claude_settings }}
           prompt: |
-            Cut a release of elps at the version in the RELEASE_VERSION env
-            var. Do exactly this and nothing else — no source changes, no
-            PRs, no branch pushes.
-
-            1. Validate, STOPPING with a clear explanation on any failure:
-               - RELEASE_VERSION matches ^v[0-9]+\.[0-9]+\.[0-9]+$ exactly.
-               - It is STRICTLY newer (semver ordering) than the latest
-                 existing STABLE v* tag — ignore pre-release tags carrying a
-                 suffix when finding the latest
-                 (`git tag --list 'v*' | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1`).
-               - The checkout is on the latest main
-                 (`git rev-parse HEAD` == `git rev-parse origin/main`).
-            2. Notes: summarize the merged PRs / commits since that latest
-               stable tag (`git log <lasttag>..HEAD --oneline`). Concise
-               plain-Markdown bullets; omit noise. Then run
-               `bash scripts/api-breaks-since.sh <lasttag>`: if it prints any
-               override lines, add a "Breaking changes" section listing EVERY
-               one (surface, symbol, issue, reason) verbatim-faithfully; never
-               omit one.
-            3. Ship: if the env var DRY_RUN is "true", PRINT the version and
-               notes, then STOP — create nothing. Otherwise run
-               `gh release create "$RELEASE_VERSION" --title "$RELEASE_VERSION" --notes "<notes>"`.
-               The tag-push event triggers vscode-publish.yml, which builds
-               the platform elps binaries and publishes the VS Code
-               extension to the Marketplace.
-
-            Never invent a different version, never force anything, never
-            touch branches or files. If anything is ambiguous, STOP and
-            explain rather than guessing.
-          claude_args: |
-            --allowedTools Bash,Read,Grep,Glob
-            --max-turns 30
-            --model us.anthropic.claude-opus-5-5
-            --fallback-model us.anthropic.claude-sonnet-5-5
-      # Capture the agent's stream-json conversation so a deliberate STOP
-      # (validation refusal) is explainable after the fact — the action hides
-      # the transcript from the job log. Mirrors buildenv's release-patch.yml.
+            Cut the release of elps. The version, main commit and CI Tests
+            run were validated; a trusted shell step already generated the
+            release notes. The tag push triggers vscode-publish.yml, which
+            publishes the VS Code extension.
+            Run exactly this command once, with no changes:
+            ${{ steps.validate.outputs.release_command }}
+            Run no other commands and do not change any files or branches.
+          claude_args: ${{ steps.validate.outputs.claude_args }}
+      - name: Verify release and tag target
+        if: ${{ !inputs.dry_run }}
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          fail() { echo "::error::$*"; exit 1; }
+          release=$(gh release view "$RELEASE_VERSION" --json tagName,isDraft,isPrerelease) || fail "release does not exist"
+          jq -e --arg version "$RELEASE_VERSION" '
+            .tagName == $version and .isDraft == false and .isPrerelease == false
+          ' <<< "$release" >/dev/null || fail "release must match the validated version and must not be a draft or prerelease"
+          object=$(gh api "repos/$GITHUB_REPOSITORY/git/ref/tags/$RELEASE_VERSION" | jq -ce '.object') || fail "release tag does not exist"
+          # Peel annotated tags, including nested tag objects, to a commit.
+          for (( depth=0; depth<100; depth++ )); do
+            type=$(jq -r '.type' <<< "$object")
+            sha=$(jq -r '.sha' <<< "$object")
+            if [[ "$type" == commit ]]; then
+              [[ "$sha" == "$GITHUB_SHA" ]] || fail "release tag resolves to a different commit"
+              echo "Verified release $RELEASE_VERSION at $GITHUB_SHA"
+              exit 0
+            fi
+            [[ "$type" == tag ]] || fail "release tag does not resolve to a commit"
+            object=$(gh api "repos/$GITHUB_REPOSITORY/git/tags/$sha" | jq -ce '.object') || fail "could not dereference annotated release tag"
+          done
+          fail "release tag exceeded the annotated-tag dereference limit"
+      # Capture the agent's stream-json conversation so a refusal or a failed
+      # command is explainable after the fact — the action hides the
+      # transcript from the job log. Mirrors buildenv's release-patch.yml.
       - name: Capture agent trace (conversation log)
-        if: always()
+        if: ${{ always() && !inputs.dry_run }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: release-tag-trace-${{ github.run_id }}
