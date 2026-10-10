@@ -69,7 +69,7 @@
 {"name":"corpus/tagged-invalid-name","same_as":"corpus/quote"},
 {"error":"invalid quote wrapper: expected one value","error_type":"*errors.errorString","name":"corpus/quote-no-cell","state":"work=0,valid=0,path=0"},
 {"name":"corpus/quote-nil-cell","same_as":"corpus/quote-no-cell"},
-{"name":"corpus/array-no-cells","panic":"runtime.boundsError: runtime error: index out of range [0] with length 0","state":"work=0,valid=0,path=0"},
+{"name":"corpus/array-no-cells","same_as":"corpus/go-nil"},
 {"name":"corpus/array-nil-dims","same_as":"corpus/go-nil"},
 {"name":"corpus/array-nil-data","same_as":"corpus/go-nil"},
 {"name":"corpus/array-data-not-list","same_as":"corpus/empty-vector"},

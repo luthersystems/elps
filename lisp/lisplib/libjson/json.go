@@ -1276,11 +1276,12 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 		case lisp.LSExpr:
 			children = v.Cells
 		case lisp.LArray:
-			if v.Cells[0].Len() > 1 {
-				*f.dst = fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+			dims, data := v.ArrayParts()
+			if dims.Len() > 1 {
+				*f.dst = fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 				continue
 			}
-			children = v.Cells[1].Cells
+			children = data.Cells
 		case lisp.LSortMap:
 		case lisp.LInvalid, lisp.LInt, lisp.LFloat, lisp.LError, lisp.LSymbol,
 			lisp.LFun, lisp.LString, lisp.LBytes, lisp.LNative, lisp.LTaggedVal,
@@ -1345,7 +1346,7 @@ func (s *Serializer) convertValue(root *lisp.LVal, stringNums bool) (any, bool) 
 			continue
 		}
 		count(len(children))
-		if v.Type == lisp.LQuote || (v.Type == lisp.LArray && v.Cells[0].Len() == 0) {
+		if v.Type == lisp.LQuote || (v.Type == lisp.LArray && arrayRank(v) == 0) {
 			pending = append(pending, frame{v: children[0], dst: f.dst, depth: f.depth + 1})
 			continue
 		}
@@ -1504,4 +1505,10 @@ func (s *Serializer) GoMap(v *lisp.LVal, stringNums bool) (map[string]any, bool)
 	}
 	values, ok := out.(map[string]any)
 	return values, ok
+}
+
+// arrayRank returns the count of dimensions of the array v.
+func arrayRank(v *lisp.LVal) int {
+	dims, _ := v.ArrayParts()
+	return dims.Len()
 }

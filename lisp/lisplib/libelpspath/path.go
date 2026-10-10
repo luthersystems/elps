@@ -194,7 +194,8 @@ walk:
 				f.cells = entries.Cells
 				f.cp = lisp.SortedMapSized(len(f.cells))
 			case lisp.LArray:
-				n := v.Cells[0].Len()
+				dims, data := v.ArrayParts()
+				n := dims.Len()
 				if n > 1 {
 					out = lisp.Nil()
 					if next.tracking() {
@@ -205,7 +206,7 @@ walk:
 				if n == 0 {
 					return nil, errors.New("cannot index zero-dimensional array")
 				}
-				f.cells = v.Cells[1].Cells
+				f.cells = data.Cells
 				f.copied = make([]*lisp.LVal, len(f.cells))
 				f.cp = toVector(f.copied)
 			case lisp.LQuote, lisp.LTaggedVal:
@@ -421,7 +422,8 @@ func copyVector(v *lisp.LVal, limit int) (*lisp.LVal, error) {
 
 // copyVectorGuarded is copyVector continuing a walk already in progress.
 func copyVectorGuarded(v *lisp.LVal, g cycleGuard) (*lisp.LVal, error) {
-	cells := v.Cells[1].Cells
+	_, data := v.ArrayParts()
+	cells := data.Cells
 	cellsCopy := make([]*lisp.LVal, len(cells))
 	for i := range cells {
 		// IMPORTANT: vectors may contain containers, in which case we need to copy
@@ -548,14 +550,14 @@ func toCells(in *lisp.LVal) ([]*lisp.LVal, error) {
 	}
 	switch in.Type {
 	case lisp.LArray:
-		if n := in.Cells[0].Len(); n != 1 {
+		dims, data := in.ArrayParts()
+		if n := dims.Len(); n != 1 {
 			if n > 1 {
 				return nil, errors.New("cannot index multi-dimensional array")
 			}
 			return nil, errors.New("cannot index zero-dimensional array")
 		}
-		cells := in.Cells[1].Cells
-		return cells, nil
+		return data.Cells, nil
 	case lisp.LSExpr:
 		cells := in.Cells
 		return cells, nil
@@ -607,11 +609,9 @@ func storeCells(in *lisp.LVal, vals []*lisp.LVal) {
 		// points, and the non-mutating ones pass a private copy.
 		// A reworked array's capacity is its length, as for any new array
 		// (lisp.Array): the rework's Go appends chose it otherwise.
-		//elps:mutates the documented in-place rework of a caller-owned array's data cells (?del!, ?set! range splice); lists are refused by errMutateList and the copying ops pass a private copy
-		in.Cells[1].Cells = vals[:len(vals):len(vals)]
-		dims := in.Cells[0]
-		//elps:mutates dims bookkeeping for the array rework immediately above, on the same caller-owned array
-		dims.Cells[0].Int = len(vals)
+		// SetArrayCells writes the cells into the array's own data list
+		// and its length into the one dimension, in place.
+		in.SetArrayCells(vals[:len(vals):len(vals)])
 		return
 	}
 	// IMPORTANT: this writes list cell storage, and is reachable only from

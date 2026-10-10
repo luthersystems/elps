@@ -211,7 +211,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		}
 		return lisp.Cells{lisp.String(tagList), inner}.Vector(), nil
 	case lisp.ShapeArray:
-		array, arrayErr := typedArrayParts(v)
+		array, arrayErr := checkArray(v)
 		dims, cells, err := array.dims, array.cells, arrayErr
 		if err != nil {
 			return nil, err
@@ -408,37 +408,6 @@ type arrayParts struct {
 	dims []*lisp.LVal
 	// cells contains array elements.
 	cells []*lisp.LVal
-}
-
-func typedArrayParts(v *lisp.LVal) (arrayParts, error) {
-	var dims []*lisp.LVal
-	var cells []*lisp.LVal
-	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
-		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array")
-	}
-	dims, cells = v.Cells[0].Cells, v.Cells[1].Cells
-	zero := false
-	for _, d := range dims {
-		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
-		}
-		zero = zero || d.Int == 0
-	}
-	total := 1
-	if zero {
-		total = 0
-	} else {
-		for _, d := range dims {
-			if total > math.MaxInt/d.Int {
-				return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
-			}
-			total *= d.Int
-		}
-	}
-	if total != len(cells) {
-		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: array contents do not match its dimensions")
-	}
-	return arrayParts{dims: dims, cells: cells}, nil
 }
 
 // TagBuiltin returns a plain JSON value with type tags.

@@ -79,8 +79,8 @@ func durableIdentity(v *lisp.LVal) (any, bool) {
 		}
 		return listKey{&v.Cells[0], len(v.Cells)}, true
 	case lisp.LArray:
-		if len(v.Cells) == 2 {
-			return arrayKey{v.Cells[0], v.Cells[1]}, true
+		if dims, data := v.ArrayParts(); dims != nil || data != nil {
+			return arrayKey{dims, data}, true
 		}
 		return arrayKey{v, nil}, true
 	case lisp.LSortMap:
@@ -504,11 +504,12 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 			}
 		}
 		_ = cells
+		_, data := v.ArrayParts()
 		if e.discover {
-			e.recordData(v.Cells[1], len(dims) == 1)
+			e.recordData(data, len(dims) == 1)
 		}
 		i := e.openObject(key)
-		if err := e.scanData(v.Cells[1], depth); err != nil {
+		if err := e.scanData(data, depth); err != nil {
 			return err
 		}
 		e.closeNode(i)
@@ -827,13 +828,14 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		if err := e.container(depth); err != nil {
 			return err
 		}
-		if e.separateData(v.Cells[1]) {
+		_, data := v.ArrayParts()
+		if e.separateData(data) {
 			// The data has an identity of its own: write it as a holder
 			// after the dimensions, whatever the rank.
 			if err := e.arrayDims(dims); err != nil {
 				return err
 			}
-			if err := e.holder(holderKey{v.Cells[1]}, cells, depth); err != nil {
+			if err := e.holder(holderKey{data}, cells, depth); err != nil {
 				return err
 			}
 			e.buf = append(e.buf, ']', ']')

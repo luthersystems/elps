@@ -399,17 +399,26 @@ func appendTypedSymbol(b []byte, name string) []byte {
 // checkArray returns an array's dims and cells, or an error when the array
 // is malformed or its cells do not match its dimensions.
 func checkArray(v *lisp.LVal) (arrayParts, error) {
-	if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil ||
-		v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
+	dimList, data := v.ArrayParts()
+	if dimList == nil || data == nil || dimList.Type != lisp.LSExpr || data.Type != lisp.LSExpr {
 		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array")
 	}
-	dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
+	dims, cells := dimList.Cells, data.Cells
+	if err := checkArrayShape(dims, cells); err != nil {
+		return arrayParts{dims: nil, cells: nil}, err
+	}
+	return arrayParts{dims: dims, cells: cells}, nil
+}
+
+// checkArrayShape returns an error when dims are not array dimensions or
+// cells do not match them.
+func checkArrayShape(dims, cells []*lisp.LVal) error {
 	// A zero dimension makes the array empty however large the others are,
 	// so the product is checked for overflow only when none is zero.
 	zero := false
 	for _, d := range dims {
 		if d == nil || d.Type != lisp.LInt || d.Int < 0 {
-			return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
+			return errors.New("typed json: malformed array dimensions")
 		}
 		zero = zero || d.Int == 0
 	}
@@ -419,15 +428,15 @@ func checkArray(v *lisp.LVal) (arrayParts, error) {
 	} else {
 		for _, d := range dims {
 			if total > math.MaxInt/d.Int {
-				return arrayParts{dims: nil, cells: nil}, errors.New("typed json: malformed array dimensions")
+				return errors.New("typed json: malformed array dimensions")
 			}
 			total *= d.Int
 		}
 	}
 	if total != len(cells) {
-		return arrayParts{dims: nil, cells: nil}, errors.New("typed json: array contents do not match its dimensions")
+		return errors.New("typed json: array contents do not match its dimensions")
 	}
-	return arrayParts{dims: dims, cells: cells}, nil
+	return nil
 }
 
 // array writes a vector (rank 1) as a plain JSON array and any other

@@ -281,10 +281,11 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 		case lisp.LSExpr:
 			return w.cells(v.Cells, depth, path)
 		case lisp.LArray:
-			if len(v.Cells) != 2 || v.Cells[0] == nil || v.Cells[1] == nil || v.Cells[0].Type != lisp.LSExpr || v.Cells[1].Type != lisp.LSExpr {
+			dimList, data := v.ArrayParts()
+			if dimList == nil || data == nil || dimList.Type != lisp.LSExpr || data.Type != lisp.LSExpr {
 				return nil, w.fail(path, "unsupported", "malformed array", v)
 			}
-			dims, cells := v.Cells[0].Cells, v.Cells[1].Cells
+			dims, cells := dimList.Cells, data.Cells
 			if len(dims) == 0 && len(cells) == 1 {
 				return w.value(cells[0], depth+1, path)
 			}

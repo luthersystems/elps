@@ -867,7 +867,8 @@ func numericInput(input *lisp.LVal) (float64, *lisp.LVal) {
 // arrayHasElements reports whether an array holds at least one element: every
 // dimension is non-zero.  A zero-dimensional array holds exactly one.
 func arrayHasElements(v *lisp.LVal) bool {
-	for _, dim := range v.Cells[0].Cells {
+	dims, _ := v.ArrayParts()
+	for _, dim := range dims.Cells {
 		if dim.Int <= 0 {
 			return false
 		}
@@ -970,7 +971,8 @@ func builtinArrayOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LArray {
 			return lisp.ErrorConditionf(WrongType, "Invalid input for 'of' - need an array")
 		}
-		for k, v := range input.Cells[1].Cells {
+		_, data := input.ArrayParts()
+		for k, v := range data.Cells {
 			matched := false
 			for _, compare := range captures.Cells {
 				if applyConstraint(env, compare, v).IsNil() {

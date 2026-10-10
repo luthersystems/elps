@@ -214,8 +214,8 @@ func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, opts childExpan
 		}
 		return vars
 	case lisp.LArray:
-		// Cells[0] = dimensions, Cells[1] = flat data.
-		data := v.Cells[1]
+		// The data list holds the cells in row-major order.
+		_, data := v.ArrayParts()
 		vars := make([]dap.Variable, len(data.Cells))
 		for i, cell := range data.Cells {
 			if formatter.Exhausted() {
@@ -281,8 +281,8 @@ func childInfo(v *lisp.LVal) (int, int) {
 	case lisp.LSExpr:
 		return len(v.Cells), 0
 	case lisp.LArray:
-		if len(v.Cells) > 1 {
-			return len(v.Cells[1].Cells), 0
+		if _, data := v.ArrayParts(); data != nil {
+			return len(data.Cells), 0
 		}
 		return 0, 0
 	case lisp.LSortMap:

@@ -608,16 +608,17 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			f.cells = v.Cells[:1]
 			f.token = ' '
 		case lisp.LArray:
-			switch v.Cells[0].Len() {
+			dims, data := v.ArrayParts()
+			switch dims.Len() {
 			case 0:
-				f.cells = v.Cells[1].Cells[:1]
+				f.cells = data.Cells[:1]
 				f.token = ' '
 			case 1:
 				enc.buf.WriteByte('[')
-				f.cells = v.Cells[1].Cells
+				f.cells = data.Cells
 				f.token = ']'
 			default:
-				return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+				return fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 			}
 		case lisp.LSExpr:
 			enc.buf.WriteByte('[')
@@ -653,13 +654,14 @@ func (enc *encoder) encodeLQuote(v *lisp.LVal, g encodeGuard) error {
 }
 
 func (enc *encoder) encodeArray(v *lisp.LVal, g encodeGuard) error {
-	switch v.Cells[0].Len() {
+	dims, data := v.ArrayParts()
+	switch dims.Len() {
 	case 0:
-		return enc.encodeValue(v.Cells[1].Cells[0], g)
+		return enc.encodeValue(data.Cells[0], g)
 	case 1:
-		return enc.encodeSExpr(v.Cells[1].Cells, g)
+		return enc.encodeSExpr(data.Cells, g)
 	default:
-		return fmt.Errorf("cannot serialize array with dimensions: %v", v.Cells[0])
+		return fmt.Errorf("cannot serialize array with dimensions: %v", dims)
 	}
 }
 
