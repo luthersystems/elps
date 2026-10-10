@@ -929,14 +929,9 @@ argument", "second argument" or "third argument". These messages are for
 ports that keep only the error condition of the Lisp they replace. A few elps
 builtins use them too (`math:sqrt`, `math:log`, `base64:encode`, ...).
 
-**Error text is not a stable API.** An error's message may change in any
-elps release. Its condition is stable: changing it is a documented breaking
-change. Code that must react to an error catches or tests its condition and
-does not compare its text.
-
 **Argument failures raise `argument-error`.** Every argument failure found by
-these helpers (`ArgReader`'s reads, `Typed` and `Check`, and `Func*E`'s
-decoding and arity check) raises condition `argument-error`
+these helpers (`ArgReader`'s reads, `Typed` and `Check`, `Cells.Read`, and
+`Func*E`'s decoding and arity check) raises condition `argument-error`
 (`lisp.CondArgumentError`), a child of `error`. A Lisp `handler-bind` on
 `error` still catches it, and it renders as an `error` does, so its message
 text is unchanged. A builtin that checks by hand with `env.Errorf` raises
