@@ -253,7 +253,7 @@ func nilMutatePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 // always has.
 func hasIterStep(steps []*lisp.LVal) bool {
 	for _, s := range steps {
-		if s.Type == lisp.LSymbol && s.Str == "*" {
+		if s.IsSymbol("*") {
 			return true
 		}
 	}

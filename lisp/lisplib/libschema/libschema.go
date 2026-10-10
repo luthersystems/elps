@@ -1292,7 +1292,7 @@ func builtinWhen(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type != lisp.LSymbol || input.Str != lisp.FalseSymbol {
+		if !input.IsSymbol(lisp.FalseSymbol) {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not false", input)
 		}
 		return lisp.Nil()
@@ -1303,7 +1303,7 @@ func builtinIsFalse(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTrue(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type != lisp.LSymbol || input.Str != lisp.TrueSymbol {
+		if !input.IsSymbol(lisp.TrueSymbol) {
 			return env.ErrorConditionf(FailedConstraint, "Value %v is not true", input)
 		}
 		return lisp.Nil()
@@ -1326,7 +1326,7 @@ func builtinIsFalsy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 func builtinIsTruthy(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newValidator(env, lisp.Formals(), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
-		if input.Type == lisp.LSymbol && input.Str == lisp.TrueSymbol {
+		if input.IsSymbol(lisp.TrueSymbol) {
 			return lisp.Nil()
 		}
 		switch input.Type {

@@ -1925,7 +1925,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 
 	// Load and evaluate the test file.
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lisp.GoError(lerr) != nil {
+	if lerr.IsError() {
 		return nil, TestResponse{}, fmt.Errorf("package error: %w", lisp.GoError(lerr))
 	}
 	autoImportTesting(env)
@@ -1975,7 +1975,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			results = append(results, tr)
 			continue
 		}
-		result := env.Eval(lisp.SExpr([]*lisp.LVal{test.Fun}))
+		result := env.Eval(lisp.Cells{test.Fun}.SExpr())
 		if result == nil || result.IsError() {
 			tr.Passed = false
 			if result != nil {
@@ -2010,11 +2010,11 @@ func (s *service) newTestEnv(ctx context.Context) (requestEnv, error) {
 	env.Runtime.Reader = parser.NewReader()
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	rc := lisp.InitializeUserEnv(env)
-	if lisp.GoError(rc) != nil {
+	if rc.IsError() {
 		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("env init: %w", lisp.GoError(rc))
 	}
 	rc = lisplib.LoadLibrary(env)
-	if lisp.GoError(rc) != nil {
+	if rc.IsError() {
 		return requestEnv{env: nil, release: noopRelease}, fmt.Errorf("load library: %w", lisp.GoError(rc))
 	}
 	return requestEnv{env: env, release: noopRelease}, nil
@@ -2584,14 +2584,14 @@ func isInPackageExpr(expr *lisp.LVal) bool {
 		return false
 	}
 	head := expr.Cells[0]
-	return head.Type == lisp.LSymbol && head.Str == "in-package"
+	return head.IsSymbol("in-package")
 }
 
 func autoImportTesting(env *lisp.LEnv) {
-	env.Eval(lisp.SExpr([]*lisp.LVal{
+	env.Eval(lisp.Cells{
 		lisp.Symbol("use-package"),
 		lisp.String("testing"),
-	}))
+	}.SExpr())
 }
 
 func lvalErrorString(v *lisp.LVal) string {

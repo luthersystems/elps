@@ -359,7 +359,7 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	case lisp.LSortMap:
 		m0 := in.Map()
 		entries := sortedMapEntries(m0)
-		if lisp.GoError(entries) != nil {
+		if entries.IsError() {
 			return lisp.GoError(entries)
 		}
 		for _, ent := range entries.Cells {

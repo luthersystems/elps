@@ -670,7 +670,7 @@ func (s *Serializer) loadInterfaceOpts(x any, opts LoadOpts) *lisp.LVal {
 				return cells[i]
 			}
 		}
-		return lisp.Array(nil, cells)
+		return lisp.Vector(cells)
 	case bool:
 		return lisp.Bool(x)
 	case float64:
@@ -1064,7 +1064,7 @@ func (s *Serializer) LoadMessageBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.L
 	if !ok {
 		return errNotAMessage(env)
 	}
-	return s.LoadBytesBuiltin(env, lisp.SExpr([]*lisp.LVal{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3), args.KeyArg(4)}))
+	return s.LoadBytesBuiltin(env, lisp.Cells{lisp.Bytes([]byte(msg)), stringNums, exactInts, args.KeyArg(3), args.KeyArg(4)}.SExpr())
 }
 
 func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -1079,7 +1079,7 @@ func (s *Serializer) LoadBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVa
 		if !stringNums.IsNil() {
 			return env.Errorf("string-numbers is incompatible with typed")
 		}
-		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
+		return LoadTypedBuiltin(env, lisp.Cells{js}.SExpr())
 	}
 	if lerr := libutil.ChargeKiB(env, len(js.Bytes())); lerr != nil {
 		return lerr
@@ -1122,7 +1122,7 @@ func (s *Serializer) LoadStringBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LV
 		if !stringNums.IsNil() {
 			return env.Errorf("string-numbers is incompatible with typed")
 		}
-		return LoadTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{js}))
+		return LoadTypedBuiltin(env, lisp.Cells{js}.SExpr())
 	}
 	if lerr := libutil.ChargeKiB(env, len(js.Str)); lerr != nil {
 		return lerr

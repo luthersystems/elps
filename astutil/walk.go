@@ -299,8 +299,7 @@ func quotedSymbolName(v *lisp.LVal) string {
 	switch {
 	case v.Type == lisp.LSymbol && v.IsQuoted():
 		return v.Str
-	case v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].Type == lisp.LSymbol &&
-		v.Cells[0].Str == "quote" && v.Cells[1].Type == lisp.LSymbol:
+	case v.Type == lisp.LSExpr && len(v.Cells) == 2 && v.Cells[0].IsSymbol("quote") && v.Cells[1].Type == lisp.LSymbol:
 		return v.Cells[1].Str
 	}
 	return ""

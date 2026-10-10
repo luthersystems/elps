@@ -336,7 +336,7 @@ func EvalCondition(env *lisp.LEnv, condition string) bool {
 	if result.IsNil() || result.IsError() {
 		return false
 	}
-	if result.Type == lisp.LSymbol && result.Str == lisp.FalseSymbol {
+	if result.IsSymbol(lisp.FalseSymbol) {
 		return false
 	}
 	return true

@@ -189,7 +189,7 @@ func usedPackagesAtLine(ast []*lisp.LVal, line int) []string {
 			break
 		}
 		head := expr.Cells[0]
-		if head.Type != lisp.LSymbol || head.Str != "use-package" || len(expr.Cells) < 2 {
+		if !head.IsSymbol("use-package") || len(expr.Cells) < 2 {
 			continue
 		}
 		if name := astutil.PackageNameArg(expr.Cells[1]); name != "" {

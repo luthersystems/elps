@@ -1115,10 +1115,10 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				inheritedPkg = defaultPkg
 			}
 			if inheritedPkg != "" {
-				syntheticInPkg := lisp.SExpr([]*lisp.LVal{
+				syntheticInPkg := lisp.Cells{
 					lisp.Symbol("in-package"),
 					lisp.Quote(lisp.Symbol(inheritedPkg)),
-				})
+				}.SExpr()
 				prescan.Preamble = append(prescan.Preamble, syntheticInPkg)
 			}
 		}

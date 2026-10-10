@@ -633,7 +633,7 @@ func storeCells(in *lisp.LVal, vals []*lisp.LVal) {
 // BORROWED from an existing sequence, call alias, which carries the source's
 // seal across.
 func toVector(cells []*lisp.LVal) *lisp.LVal {
-	return lisp.Array(nil, cells)
+	return lisp.Vector(cells)
 }
 
 // toList converts a slice of LVal cells into an elps list.

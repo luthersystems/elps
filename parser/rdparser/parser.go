@@ -1265,5 +1265,5 @@ func readsBackAsSymbol(s string) bool {
 	if err != nil || len(exprs) != 1 {
 		return false
 	}
-	return exprs[0].Type == lisp.LSymbol && exprs[0].Str == s
+	return exprs[0].IsSymbol(s)
 }

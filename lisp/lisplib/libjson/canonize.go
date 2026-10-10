@@ -381,7 +381,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		})
 	} else {
 		entries := v.MapEntries()
-		if lisp.GoError(entries) != nil {
+		if entries.IsError() {
 			return nil, w.fail(path, "unsupported", "cannot read map entries", v)
 		}
 		for _, p := range entries.Cells {
@@ -427,7 +427,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 		if err != nil {
 			return nil, err
 		}
-		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
+		if out.MapSetLVal(key, c).IsError() {
 			return nil, w.fail(kp, "unsupported", "cannot construct map", k)
 		}
 	}
@@ -625,7 +625,7 @@ func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.
 		if err != nil {
 			return nil, err
 		}
-		if lisp.GoError(out.MapSetLVal(key, c)) != nil {
+		if out.MapSetLVal(key, c).IsError() {
 			return nil, canonizeFailure("unsupported", kp, "invalid native map key "+strconv.Quote(k.String()), nil)
 		}
 	}
@@ -676,13 +676,13 @@ func (s *Serializer) dumpModeBuiltin(env *lisp.LEnv, args *lisp.LVal, asString b
 		return env.Errorf("string-numbers is incompatible with typed")
 	}
 	if lisp.True(args.KeyArg(2)) {
-		v = CanonizeBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
+		v = CanonizeBuiltin(env, lisp.Cells{v}.SExpr())
 		if v.IsError() {
 			return v
 		}
 	}
 	if typed {
-		b := DumpTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
+		b := DumpTypedBuiltin(env, lisp.Cells{v}.SExpr())
 		if b.IsError() {
 			return b
 		}
@@ -691,7 +691,7 @@ func (s *Serializer) dumpModeBuiltin(env *lisp.LEnv, args *lisp.LVal, asString b
 		}
 		return b
 	}
-	plainArgs := lisp.SExpr([]*lisp.LVal{v, lisp.Bool(lisp.True(sn))})
+	plainArgs := lisp.Cells{v, lisp.Bool(lisp.True(sn))}.SExpr()
 	if asString {
 		return s.DumpStringBuiltin(env, plainArgs)
 	}

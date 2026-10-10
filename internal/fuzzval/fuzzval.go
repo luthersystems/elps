@@ -671,7 +671,7 @@ func (g *Gen) native() *lisp.LVal {
 		if selector == nativeLispRegexp {
 			// Exercise the real Lisp constructor without exposing or
 			// duplicating its private immutable representation (#632).
-			return libregexp.BuiltinCompile(g.env, lisp.SExpr([]*lisp.LVal{lisp.String(pattern)}))
+			return libregexp.BuiltinCompile(g.env, lisp.Cells{lisp.String(pattern)}.SExpr())
 		}
 		re, err := regexp.Compile(pattern)
 		if err != nil {

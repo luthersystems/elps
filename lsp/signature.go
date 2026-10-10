@@ -423,7 +423,7 @@ func packageAtLine(ast []*lisp.LVal, line int) string {
 			break
 		}
 		head := expr.Cells[0]
-		if head.Type != lisp.LSymbol || head.Str != "in-package" || len(expr.Cells) < 2 {
+		if !head.IsSymbol("in-package") || len(expr.Cells) < 2 {
 			continue
 		}
 		if name := packageNameArg(expr.Cells[1]); name != "" {

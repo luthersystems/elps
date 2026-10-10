@@ -209,7 +209,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagList), inner}), nil
+		return lisp.Cells{lisp.String(tagList), inner}.Vector(), nil
 	case lisp.ShapeArray:
 		array, arrayErr := typedArrayParts(v)
 		dims, cells, err := array.dims, array.cells, arrayErr
@@ -236,7 +236,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagArray), lisp.Vector([]*lisp.LVal{ds, cs})}), nil
+		return lisp.Cells{lisp.String(tagArray), lisp.Cells{ds, cs}.Vector()}.Vector(), nil
 	case lisp.ShapeTagged:
 		if len(v.Cells) != 1 || v.Str == "" || !utf8.ValidString(v.Str) {
 			return nil, errors.New("typed json: malformed tagged value")
@@ -257,7 +257,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err = w.write("]]"); err != nil {
 			return nil, err
 		}
-		return lisp.Vector([]*lisp.LVal{lisp.String(tagTagged), lisp.Vector([]*lisp.LVal{lisp.String(v.Str), inner})}), nil
+		return lisp.Cells{lisp.String(tagTagged), lisp.Cells{lisp.String(v.Str), inner}.Vector()}.Vector(), nil
 	case lisp.ShapeMap:
 		return w.object(v, depth)
 	case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeFun, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
