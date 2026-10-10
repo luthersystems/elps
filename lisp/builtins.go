@@ -1159,9 +1159,12 @@ func builtinError(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinDefineCondition(env *LEnv, args *LVal) *LVal {
-	r := Cells(args.Cells).Read(env)
-	child, parent := r.Name(), r.Name()
-	if lerr := r.Err(); lerr.IsError() {
+	child, lerr := conditionNameArg(env, args.Cells[0], "first argument")
+	if lerr != nil {
+		return lerr
+	}
+	parent, lerr := conditionNameArg(env, args.Cells[1], "second argument")
+	if lerr != nil {
 		return lerr
 	}
 	if err := env.Runtime.DefineCondition(child, parent); err != nil {
@@ -1171,12 +1174,24 @@ func builtinDefineCondition(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinConditionIsP(env *LEnv, args *LVal) *LVal {
-	r := Cells(args.Cells).Read(env)
-	c, ancestor := r.Name(), r.Name()
-	if lerr := r.Err(); lerr.IsError() {
+	c, lerr := conditionNameArg(env, args.Cells[0], "first argument")
+	if lerr != nil {
+		return lerr
+	}
+	ancestor, lerr := conditionNameArg(env, args.Cells[1], "second argument")
+	if lerr != nil {
 		return lerr
 	}
 	return Bool(ancestor == CondCatchAll || env.Runtime.ConditionIsA(c, ancestor))
+}
+
+// conditionNameArg reads a condition name argument: a symbol or a string.
+// Any other value raises argument-error.
+func conditionNameArg(env *LEnv, v *LVal, what string) (string, *LVal) {
+	if v.Type != LSymbol && v.Type != LString {
+		return "", env.ErrorConditionf(CondArgumentError, "%s is not a symbol or string: %v", what, v.Type)
+	}
+	return v.Str, nil
 }
 
 func builtinRethrow(env *LEnv, args *LVal) *LVal {

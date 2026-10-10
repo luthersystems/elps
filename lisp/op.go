@@ -121,8 +121,8 @@ var langSpecialOps = []*langBuiltin{
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
 		Handlers must be regular functions. A condition type also matches
-		its descendants: 'error matches 'argument-error, which builtins
-		raise for a bad argument, and define-condition adds parents. When
+		its descendants: 'error matches 'argument-error, which Go
+		argument helpers raise for a bad argument, and define-condition adds parents. When
 		several bindings match, the most specific one runs: the binding
 		for the condition itself, else the one for its nearest ancestor,
 		with 'condition last; bindings for the same type run in source

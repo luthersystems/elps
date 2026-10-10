@@ -2658,8 +2658,9 @@ will be replaced with the string "ERROR DETECTED".
 
 A condition can have a parent. A `handler-bind` binding for the parent then
 catches the child, as a Go `errors.Is` check matches a wrapped error. elps
-gives one built-in condition a parent: `argument-error`, which builtins raise
-for a bad argument, is a child of `error`. `define-condition` adds more:
+gives one built-in condition a parent: `argument-error`, which a builtin built
+with elps's Go argument helpers raises for a bad argument, is a child of
+`error`, and renders as `error` does. `define-condition` adds more:
 
 ```lisp
 (define-condition 'storage-error 'error)
