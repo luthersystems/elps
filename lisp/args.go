@@ -3,8 +3,9 @@
 package lisp
 
 // ArgReader decodes a Go builtin's argument list into Go values, raising the
-// same "<what> is not a <type>: <actual type>" errors builtins write by hand
-// (luthersystems/elps#745).  Error text is program output -- a phylum can
+// same "<what> is not a <type>: <actual type>" messages builtins write by
+// hand (luthersystems/elps#745), under condition argument-error
+// (CondArgumentError), a child of error.  Error text is program output -- a phylum can
 // catch and return it, and every endorsing peer must produce the same bytes
 // -- so an ArgReader read never picks a subject: the caller passes it
 // ("first argument", "name") exactly as its hand-written Errorf spelled it,
@@ -63,15 +64,16 @@ func (a *ArgReader) Value(i int) *LVal {
 }
 
 // Typed returns required argument i when it has type t.  Otherwise it records
-// env.Errorf(format, actualType): format must contain exactly one verb, for
-// the argument's type, e.g. "first argument is not a map: %s".
+// env.ErrorConditionf(CondArgumentError, format, actualType): format must
+// contain exactly one verb, for the argument's type, e.g. "first argument is
+// not a map: %s".
 func (a *ArgReader) Typed(i int, t LType, format string) *LVal {
 	v := a.Value(i)
 	if a.err != nil {
 		return v
 	}
 	if v.Type != t {
-		a.err = a.env.Errorf(format, v.Type)
+		a.err = a.env.ErrorConditionf(CondArgumentError, format, v.Type)
 		return Nil()
 	}
 	return v
@@ -85,7 +87,7 @@ func (a *ArgReader) named(i int, t LType, what, noun string) *LVal {
 		return v
 	}
 	if v.Type != t {
-		a.err = a.env.Errorf("%s is not %s: %v", what, noun, v.Type)
+		a.err = a.env.ErrorConditionf(CondArgumentError, "%s is not %s: %v", what, noun, v.Type)
 		return Nil()
 	}
 	return v
@@ -98,7 +100,7 @@ func (a *ArgReader) optNamed(i int, t LType, what, noun string) *LVal {
 		return Nil()
 	}
 	if v.Type != t {
-		a.err = a.env.Errorf("%s is not %s: %v", what, noun, v.Type)
+		a.err = a.env.ErrorConditionf(CondArgumentError, "%s is not %s: %v", what, noun, v.Type)
 		return Nil()
 	}
 	return v
@@ -149,7 +151,7 @@ func (a *ArgReader) Seq(i int, what string) []*LVal {
 		return nil
 	}
 	if !isSeq(v) {
-		a.err = a.env.Errorf("%s is not a proper sequence: %v", what, v.Type)
+		a.err = a.env.ErrorConditionf(CondArgumentError, "%s is not a proper sequence: %v", what, v.Type)
 		return nil
 	}
 	return seqCells(v)
@@ -184,9 +186,10 @@ func (a *ArgReader) OptInt(i int, what string, def int) int {
 	return v.Int
 }
 
-// Check records env.Errorf(format, args...) when ok is false and no earlier
-// read failed.  It reports whether the reader is still free of failures, so a
-// custom decoder can stop at the first problem:
+// Check records env.ErrorConditionf(CondArgumentError, format, args...)
+// when ok is false and no earlier read failed.  It reports whether the
+// reader is still free of failures, so a custom decoder can stop at the
+// first problem:
 //
 //	v := a.Value(i)
 //	if !a.Check(v.Type == lisp.LString, "argument is not a date: %v", v.Type) {
@@ -197,7 +200,7 @@ func (a *ArgReader) Check(ok bool, format string, args ...any) bool {
 		return false
 	}
 	if !ok {
-		a.err = a.env.Errorf(format, args...)
+		a.err = a.env.ErrorConditionf(CondArgumentError, format, args...)
 		return false
 	}
 	return true

@@ -107,7 +107,7 @@ func Func3E[A, B, C any, R funcResult](f func(env *LEnv, a A, b B, c C) (R, erro
 // message is the evaluator's arity message.
 func checkArgCount(env *LEnv, args *LVal, n int) *LVal {
 	if len(args.Cells) != n {
-		return env.Errorf("invalid number of arguments: %d", len(args.Cells))
+		return env.ErrorConditionf(CondArgumentError, "invalid number of arguments: %d", len(args.Cells))
 	}
 	return nil
 }
@@ -123,7 +123,7 @@ func decodeArg[T any](r *ArgReader, i int, what, noun string) T {
 	}
 	x, ok := valueAs[T](v)
 	if !ok {
-		r.err = r.env.Errorf("%s is not %s: %v", what, noun, v.Type)
+		r.err = r.env.ErrorConditionf(CondArgumentError, "%s is not %s: %v", what, noun, v.Type)
 		return out
 	}
 	return x
