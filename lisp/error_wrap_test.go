@@ -3,6 +3,7 @@
 package lisp_test
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/elpsutil"
@@ -47,6 +48,11 @@ func TestRethrowContext(t *testing.T) {
 		load(`(handler-bind ((error (lambda (&rest _) (error-message))))
 		        (handler-bind ((not-found (lambda (&rest _) (rethrow))))
 		          (load-user 3)))`))
+	// An empty context re-throws the error unchanged.
+	assert.Equal(t, `"no user 3"`,
+		load(`(handler-bind ((error (lambda (&rest _) (error-message))))
+		        (handler-bind ((not-found (lambda (&rest _) (rethrow :context ""))))
+		          (load-user 3)))`))
 	// :context must be a string.
 	assert.Equal(t, `'('argument-error "context is not a string: int")`,
 		load(`(handler-bind ((error (lambda (c &rest _) (list c (error-message)))))
@@ -79,6 +85,7 @@ func TestWrapError(t *testing.T) {
 	assert.Equal(t, []string{"outer", "loading user 42"}, (*lisp.ErrorVal)(twice).ErrorContext())
 	assert.Equal(t, "not-found", twice.Str)
 	assert.Same(t, inner.Cells[0], twice.Cells[0], "the data is shared, not copied")
+	assert.Same(t, inner, lisp.WrapError(inner, ""), "an empty line wraps nothing")
 	notErr := lisp.Int(1)
 	assert.Same(t, notErr, lisp.WrapError(notErr, "x"))
 
@@ -93,4 +100,23 @@ func TestWrapError(t *testing.T) {
 	                                     (fail-wrapped))`)
 	require.NotEqual(t, lisp.LError, v.Type, "%v", v)
 	assert.Equal(t, `'("in builtin: no user" true)`, v.String())
+}
+
+// Wrapping an error many times costs the same per wrap however many lines
+// it already has, and the lines render in order (luthersystems/elps#831).
+func TestWrapErrorManyLines(t *testing.T) {
+	env := newCallSemanticsEnv(t)
+	v := env.LoadString("wrap.lisp", `(defun wrap-n (n)
+	  (if (= n 0)
+	    (error 'boom "base")
+	    (handler-bind ((boom (lambda (&rest _) (rethrow :context (to-string n)))))
+	      (wrap-n (- n 1)))))
+	(handler-bind ((boom (lambda (&rest _) (error-message)))) (wrap-n 3000))`)
+	require.Equal(t, lisp.LString, v.Type, "%v", v)
+	assert.True(t, strings.HasPrefix(v.Str, "3000: 2999: 2998: "), v.Str[:40])
+	assert.True(t, strings.HasSuffix(v.Str, "2: 1: base"))
+
+	// ErrorContext reads the lines outermost first.
+	lerr := lisp.WrapError(lisp.WrapError(lisp.ErrorConditionf("boom", "base"), "inner"), "outer")
+	assert.Equal(t, []string{"outer", "inner"}, (*lisp.ErrorVal)(lerr).ErrorContext())
 }

@@ -61,7 +61,7 @@ type templateRuntime struct {
 	loadCache              LoadCache
 	settings               map[string]bool
 	values                 map[string]any
-	conditionParents       map[string]string
+	conditionParents       map[string]conditionEntry
 	stderr                 io.Writer
 	currentPackage         string
 	languagePackage        string
@@ -94,9 +94,9 @@ func snapshotTemplateRuntime(rt *Runtime) templateRuntime {
 	if len(rt.values) > 0 {
 		c.values = maps.Clone(rt.values)
 	}
-	// DefineCondition never writes the map in place, so the template and
-	// its VMs can share it with no copy.
-	c.conditionParents = rt.conditionParents
+	if len(rt.conditionParents) > 0 {
+		c.conditionParents = maps.Clone(rt.conditionParents)
+	}
 	if rt.Package != nil {
 		c.currentPackage = rt.Package.Name
 		c.hasCurrentPackage = true
@@ -125,7 +125,10 @@ func (c templateRuntime) newRuntime(opts vmConfig, packages int) *Runtime {
 		rt.values = c.values
 		rt.valuesShared = true
 	}
-	rt.conditionParents = c.conditionParents
+	if c.conditionParents != nil {
+		rt.conditionParents = c.conditionParents
+		rt.conditionParentsShared = true
+	}
 	// The VM's environments are built by the planner rather than by
 	// NewEnvRuntime, so bind the fresh registry to the fresh runtime here:
 	// admission into this VM must read THIS runtime's value-depth limit, and

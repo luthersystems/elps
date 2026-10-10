@@ -3288,7 +3288,7 @@ var AnalyzerHandlerOrder = &Analyzer{
 	Run: func(pass *Pass) error {
 		rt := &lisp.Runtime{}
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if HeadSymbol(sexpr) != "define-condition" || ArgCount(sexpr) != 2 {
+			if langHead(sexpr) != "define-condition" || ArgCount(sexpr) != 2 {
 				return
 			}
 			child, parent := conditionLiteral(sexpr.Cells[1]), conditionLiteral(sexpr.Cells[2])
@@ -3297,7 +3297,7 @@ var AnalyzerHandlerOrder = &Analyzer{
 			}
 		})
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
-			if HeadSymbol(sexpr) != "handler-bind" || ArgCount(sexpr) < 1 {
+			if langHead(sexpr) != "handler-bind" || ArgCount(sexpr) < 1 {
 				return
 			}
 			binds := sexpr.Cells[1]
@@ -3315,6 +3315,10 @@ var AnalyzerHandlerOrder = &Analyzer{
 					switch {
 					case prev == typ:
 						msg = fmt.Sprintf("handler for %s never runs: an earlier binding handles %s", typ, typ)
+					case prev == lisp.CondCatchAll && typ == lisp.CondInternalPanic:
+						// condition never catches a recovered panic, so an
+						// internal-panic binding has always run.
+						continue
 					case prev == lisp.CondCatchAll || rt.ConditionIsA(typ, prev):
 						msg = fmt.Sprintf("handler for %s follows a handler for its ancestor %s;"+
 							" the most specific handler runs, so this one runs for %s", typ, prev, typ)
@@ -3342,6 +3346,12 @@ var AnalyzerHandlerOrder = &Analyzer{
 
 // conditionLiteral returns the condition a define-condition argument names
 // when it is a literal: a quoted symbol or a string.  Otherwise it returns "".
+// langHead returns the head symbol of sexpr without a lisp: qualifier, so
+// lisp:handler-bind reads as handler-bind.
+func langHead(sexpr *lisp.LVal) string {
+	return strings.TrimPrefix(HeadSymbol(sexpr), lisp.DefaultLangPackage+":")
+}
+
 func conditionLiteral(v *lisp.LVal) string {
 	switch {
 	case v.Type == lisp.LString:

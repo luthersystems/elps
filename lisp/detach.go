@@ -5,7 +5,6 @@ package lisp
 import (
 	"fmt"
 	"reflect"
-	"slices"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/fmtmeta"
@@ -508,7 +507,7 @@ func detachCallStack(s *CallStack) *CallStack {
 		return nil
 	}
 	cp := s.Copy()
-	cp.wraps = slices.Clone(s.wraps)
+	cp.wraps = s.wraps.clone()
 	if s.GoStack != nil {
 		cp.GoStack = append([]byte(nil), s.GoStack...)
 	}

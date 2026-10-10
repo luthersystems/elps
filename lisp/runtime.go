@@ -35,7 +35,7 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 144 bytes. Add scalars below conditionStack.
+// extent stops at 152 bytes. Add scalars below conditionStack.
 type Runtime struct {
 	Stderr                 io.Writer
 	Reader                 Reader
@@ -46,9 +46,9 @@ type Runtime struct {
 	Registry               *PackageRegistry
 	Package                *Package
 	Stack                  *CallStack
-	settings               map[string]bool   // Per-VM library flags; see Setting.
-	values                 map[string]any    // Per-VM value settings; see SetSettingValue.
-	conditionParents       map[string]string // Parents from DefineCondition; replaced, never written, so VMs share it.
+	settings               map[string]bool           // Per-VM library flags; see Setting.
+	values                 map[string]any            // Per-VM value settings; see SetSettingValue.
+	conditionParents       map[string]conditionEntry // The hierarchy from DefineCondition; see conditionParentsShared.
 	conditionStack         []*LVal
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
@@ -73,6 +73,7 @@ type Runtime struct {
 	stepsOverflowed        bool          // steps saturated: the true count exceeds math.MaxInt64, so it exceeds any budget.
 	stepBudgetOverflowed   bool          // stepBudgetUsed saturated; it exceeds any budget.
 	valuesShared           bool          // values is a template's map: copy it before a write.
+	conditionParentsShared bool          // conditionParents is a template's map: copy it before a write.
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.

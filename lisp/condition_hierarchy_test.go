@@ -41,7 +41,7 @@ func TestDefineCondition(t *testing.T) {
 		{"x", lisp.CondInternalPanic, "internal-panic"},
 		{"not-found", "error", "already has parent storage-error"},
 		{lisp.CondArgumentError, "storage-error", "already has parent error"},
-		{"error", "not-found", "cycle"},
+		{"error", "not-found", "already has children"},
 		{"storage-error", "not-found", "already has parent"},
 	} {
 		err := rt.DefineCondition(tc.child, tc.parent)
@@ -65,6 +65,25 @@ func TestDefineConditionDepth(t *testing.T) {
 	require.Error(t, err)
 	assert.Contains(t, err.Error(), "more than 64 ancestors")
 	assert.True(t, rt.ConditionIsA(name(lisp.MaxConditionDepth), name(0)))
+
+	// A chain built from the bottom up is refused at its second link: a
+	// condition that has children cannot get a parent, so no chain can grow
+	// past the limit from below.
+	up := lisp.NewEnv(nil).Runtime
+	require.NoError(t, up.DefineCondition("b0", "b1"))
+	err = up.DefineCondition("b1", "b2")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "b1 already has children")
+
+	// handler-bind catches a condition through its deepest ancestor.
+	env := newCallSemanticsEnv(t)
+	for i := 1; i <= lisp.MaxConditionDepth; i++ {
+		require.NoError(t, env.Runtime.DefineCondition(name(i), name(i-1)))
+	}
+	v := env.LoadString("depth.lisp", fmt.Sprintf(`(handler-bind ((condition (lambda (&rest _) 'any))
+	                                                              (c0 (lambda (&rest _) 'root)))
+	                                                (error 'c%d))`, lisp.MaxConditionDepth))
+	assert.Equal(t, `'root`, v.String())
 }
 
 func TestHandlerBindMostSpecific(t *testing.T) {

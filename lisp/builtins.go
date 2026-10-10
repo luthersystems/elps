@@ -202,7 +202,8 @@ var (
 			id)) turns "no user 42" into "loading user 42: no user 42". The
 			condition, data and stack are unchanged, so every handler that
 			matched the error still matches it. Each wrap puts its context in
-			front of the earlier ones.`},
+			front of the earlier ones. An empty string or () re-throws the
+			error unchanged.`},
 		{"error-message", Formals(), builtinErrorMessage,
 			`Returns the message of the error being handled by handler-bind,
 			as a string, with any context added by (rethrow :context ...).
@@ -212,9 +213,11 @@ var (
 			`Makes condition parent the parent of condition child, so a
 			handler-bind binding for parent, or for an ancestor of parent,
 			catches child, and condition-is? sees the link. Both arguments
-			are symbols or strings. A condition has at most one parent:
-			defining the parent it already has does nothing, and any other
-			parent is an error. Defining a cycle, a chain more than 64
+			are symbols or strings. A condition has at most one parent, and
+			gets it before its children, so define a hierarchy from the root
+			down: defining the parent it already has does nothing, and any
+			other parent is an error. Giving a parent to a condition that
+			has children (error has argument-error), a chain more than 64
 			deep, or a definition that names condition or internal-panic is
 			an error. The hierarchy belongs to the runtime: a template
 			publishes it and every VM forked from it starts with it. A
@@ -225,7 +228,9 @@ var (
 			descendants, walking the parents define-condition and elps
 			declare, as Go's errors.Is does. Both arguments are symbols or
 			strings, such as the condition symbol a handler-bind handler
-			receives. Every condition is a 'condition.`},
+			receives. Every condition is a 'condition, internal-panic
+			included, though a handler-bind binding for 'condition never
+			catches a recovered Go panic: condition-is? sees only the name.`},
 		{"error-stack", Formals(), builtinErrorStack,
 			`Returns the call stack recorded when the error being handled by
 			handler-bind was raised, as a list of sorted-maps ordered
@@ -1195,9 +1200,6 @@ func builtinRethrow(env *LEnv, args *LVal) *LVal {
 	if cond == nil {
 		return env.Errorf("rethrow: not inside a handler-bind handler")
 	}
-	if len(args.Cells) == 0 || args.Cells[0].IsNil() {
-		return cond
-	}
 	return wrapError(cond, line)
 }
 
@@ -1206,7 +1208,8 @@ func builtinErrorMessage(env *LEnv, args *LVal) *LVal {
 	if cond == nil {
 		return env.Errorf("not inside a handler-bind handler")
 	}
-	msg := (*ErrorVal)(cond).ErrorMessageContext(env.evalCtx)
+	// No context: the text must not depend on when a cancellation lands.
+	msg := (*ErrorVal)(cond).ErrorMessage()
 	// One step per complete KiB, as the stdlib's string builtins charge.
 	if lerr := env.ChargeSteps(int64(len(msg) / 1024)); lerr.IsError() {
 		return lerr

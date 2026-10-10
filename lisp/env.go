@@ -1643,7 +1643,7 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	}
 	if stack := lerr.CallStack(); stack == nil {
 		lerr.SetCallStack(env.errorStack())
-	} else if stack.renderLimit == 0 && len(stack.Frames) == 0 && len(stack.wraps) > 0 {
+	} else if stack.renderLimit == 0 && len(stack.Frames) == 0 && stack.wraps != nil {
 		// WrapError gave an error that had no stack one that holds only its
 		// context: take this env's frames and keep the context.
 		fresh := env.errorStack()

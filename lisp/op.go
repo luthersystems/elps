@@ -5,6 +5,7 @@ package lisp
 import (
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 )
@@ -1084,9 +1085,10 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 // The walk charges no step.  Each binding walks at most MaxConditionDepth
 // parent links.
 func selectHandler(rt *Runtime, binds []*LVal, val *LVal) *LVal {
-	const catchAll = MaxConditionDepth + 1
+	// The catch-all ranks after every ancestor, however far.
+	const catchAll = math.MaxInt - 1
 	var best *LVal
-	bestDist := catchAll + 1
+	bestDist := math.MaxInt
 	for _, bind := range binds {
 		sym := bind.Cells[0]
 		d := rt.conditionDistance(val.Str, sym.Str)

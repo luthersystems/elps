@@ -67,3 +67,21 @@ func TestHandlerOrder_Nolint(t *testing.T) {
   (error 'boom))`)
 	assertNoDiags(t, diags)
 }
+
+// A binding for internal-panic after condition is not reported: condition
+// never catches a recovered panic, so the binding has always run.
+func TestHandlerOrder_InternalPanicAfterCatchAll(t *testing.T) {
+	assertNoDiags(t, lintCheck(t, AnalyzerHandlerOrder, `(handler-bind ((condition (lambda (&rest _) 1))
+               (internal-panic (lambda (&rest _) 2)))
+  (f))`))
+}
+
+// lisp:handler-bind and lisp:define-condition are checked like the bare names.
+func TestHandlerOrder_QualifiedHeads(t *testing.T) {
+	diags := lintCheck(t, AnalyzerHandlerOrder, `(lisp:define-condition 'storage-error 'error)
+(lisp:handler-bind ((error (lambda (&rest _) 1))
+                    (storage-error (lambda (&rest _) 2)))
+  (f))`)
+	assert.Len(t, diags, 1)
+	assertHasDiag(t, diags, "handler for storage-error follows a handler for its ancestor error")
+}

@@ -4,6 +4,24 @@ package lisp
 
 import "fmt"
 
+// wrapLine is one line of context WrapError added to an error, in a list
+// from the outermost line in.  Nodes are never written once built, so every
+// copy of an error's stack shares them.
+type wrapLine struct {
+	next *wrapLine
+	text string
+}
+
+// clone returns a copy of the list that shares no node with it.
+func (w *wrapLine) clone() *wrapLine {
+	var head *wrapLine
+	for tail := &head; w != nil; w = w.next {
+		*tail = &wrapLine{text: w.text}
+		tail = &(*tail).next
+	}
+	return head
+}
+
 // WrapError returns a copy of the error lerr with a line of context, built
 // like fmt.Sprintf(format, v...), in front of its message
 // (luthersystems/elps#831).  It is Go's fmt.Errorf("...: %w", err) for a
@@ -14,8 +32,10 @@ import "fmt"
 // the error it is handling with (rethrow :context ...).
 //
 // lerr is not changed.  WrapError returns lerr itself when it is not an
-// error.  An error with no call stack yet gets its stack when the evaluator
-// associates it, as any error a builtin returns does, and keeps its context.
+// error or when the line is empty.  An error with no call stack yet gets its
+// stack when the evaluator associates it, as any error a builtin returns
+// does, and keeps its context.  A wrap costs the same however many lines
+// the error has.
 func WrapError(lerr *LVal, format string, v ...any) *LVal {
 	return wrapError(lerr, fmt.Sprintf(format, v...))
 }
@@ -27,29 +47,32 @@ func (e *ErrorVal) ErrorContext() []string {
 		return nil
 	}
 	stack, ok := e.Native.(*CallStack)
-	if !ok || stack == nil || len(stack.wraps) == 0 {
+	if !ok || stack == nil {
 		return nil
 	}
-	return append([]string(nil), stack.wraps...)
+	var lines []string
+	for w := stack.wraps; w != nil; w = w.next {
+		lines = append(lines, w.text)
+	}
+	return lines
 }
 
 func wrapError(lerr *LVal, line string) *LVal {
-	if !lerr.IsError() {
+	if !lerr.IsError() || line == "" {
 		return lerr
 	}
-	stack := &CallStack{}
+	// The new stack shares the old one's frames and lines: neither is
+	// written once the error is raised.
+	var stack CallStack
 	if old := lerr.CallStack(); old != nil {
-		stack = old
+		stack = *old
 	}
-	lines := make([]string, 0, len(stack.wraps)+1)
-	lines = append(lines, line)
-	lines = append(lines, stack.wraps...)
+	stack.wraps = &wrapLine{text: line, next: stack.wraps}
 	// A header copy shares lerr's data, which is never written in place
 	// once raised (rethrow hands out the same value); only the stack, which
 	// carries the context, is new.
 	cp := *lerr
-	stack = stack.Copy()
-	stack.wraps = lines
-	cp.SetCallStack(stack)
+	//elps:mutates the private header copy made on the line above, stamped with its own new stack before anything else can see it
+	cp.Native = &stack //elpsvet:allow-native a stack stamped onto an in-flight error, as SetCallStack does: checkDiagnosticPayload (lisp/template.go) refuses to publish any value carrying a CallStack, so this payload never becomes shared template state
 	return &cp
 }

@@ -56,9 +56,10 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"values": "copied",
 	// Each VM rebuilds the flag from the presence of a published map.
 	"valuesShared": "rebuilt",
-	// The condition hierarchy (#831) is shared: DefineCondition replaces
-	// the map rather than writing it, so a VM's definition is its own.
-	"conditionParents": "shared",
+	// The condition hierarchy (#831) is copied at publication and borrowed
+	// until a VM's first definition, as values are.
+	"conditionParents":       "copied",
+	"conditionParentsShared": "rebuilt",
 
 	// Deliberately NOT carried: an observer the embedder attaches itself, or
 	// state about an evaluation/load in progress (the template is quiescent,

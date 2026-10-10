@@ -22,13 +22,13 @@ import (
 //
 // Keep slice headers before scalars.
 type CallStack struct {
+	// wraps holds the lines WrapError added in front of the error's
+	// message, outermost first (luthersystems/elps#831).  A wrap prepends a
+	// new node and never writes one, so copies share the list.
+	wraps *wrapLine
+
 	Frames  []CallFrame
 	GoStack []byte
-
-	// wraps holds the lines WrapError added in front of the error's
-	// message, outermost first (luthersystems/elps#831).  A wrap builds a new
-	// slice and never writes one in place, so copies may share it.
-	wraps []string
 
 	// Captured only for error reporting; ordinary live stacks leave this zero.
 	// The stack deliberately retains no context: an error outlives the request

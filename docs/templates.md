@@ -101,7 +101,7 @@ lookup table, native clone callback, or foreign map factory.
 | Other natives and foreign map implementations | Rejected at publication |
 | Limits and identifier counters | Copied; counters continue past published definitions |
 | Runtime settings (boolean and value) | Copied; a VM reads the template's value map until its first value write |
-| Condition hierarchy (`DefineCondition`) | Shared; a definition replaces the map, so it is seen only by the VM that made it |
+| Condition hierarchy (`DefineCondition`) | Copied at publication and borrowed until a VM's first definition, which copies it; a definition is seen only by the VM that made it |
 | Reader, source library, sealed load cache, source metadata | Shared under their read-only/concurrency contracts |
 | Context, current evaluation location, active stacks, step accounting, debugger and profiler | Not inherited |
 | Stderr | Shared unless replaced with `VMWithStderr` |

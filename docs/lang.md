@@ -2671,6 +2671,10 @@ with elps's Go argument helpers raises for a bad argument, is a child of
 (condition-is? 'not-found 'condition)      ; true: every condition is one
 ```
 
+`condition-is?` sees only names, so it answers true for `internal-panic` and
+`condition` too, though a `condition` binding never catches a recovered Go
+panic (see "Host Panics").
+
 When several bindings of one `handler-bind` match, **the most specific one
 runs**: the binding for the condition itself, else the binding for its
 nearest ancestor, with the catch-all `condition` last. The order the bindings
@@ -2685,10 +2689,13 @@ first one runs.
 ; returns 'storage
 ```
 
-A condition has at most one parent. Defining the parent a condition already
-has does nothing, and giving it a different one is an error, as are a cycle,
-a chain more than 64 deep, and any definition that names `condition` or
-`internal-panic`. The hierarchy belongs to the runtime: a definition made
+A condition has at most one parent, and gets it before its children, so
+define a hierarchy from the root down: `(define-condition 'storage-error
+'error)` before `(define-condition 'not-found 'storage-error)`. Defining the
+parent a condition already has does nothing. Giving it a different one is an
+error, as are giving a parent to a condition that already has children
+(`error` has `argument-error`), a chain more than 64 deep, and any definition
+that names `condition` or `internal-panic`. The hierarchy belongs to the runtime: a definition made
 while a template is built is in every VM forked from the template, and one
 made in a VM is seen by no other VM. A definition does not change how an
 error renders.
@@ -2810,7 +2817,8 @@ included:
 
 Uncaught, the error renders with the context too:
 `not-found: loading user 9: no user 9`.  `:context` must be a string;
-anything else raises `argument-error`.  Go code wraps an error with
+anything else raises `argument-error`, and an empty string or `()` re-throws
+the error unchanged.  Go code wraps an error with
 `lisp.WrapError` (see docs/embed.md).
 
 `:context` never changes the condition.  To give the error a new type, or to
