@@ -198,28 +198,20 @@ func Join(env *lisp.LEnv, parts []string, sep string) *lisp.LVal {
 
 // joinParts is the body of string:join and of Join, after the element type
 // check.  The parts are strs when cells is nil, and the strings in cells
-// otherwise.  Each walk has one loop per part type, so neither caller pays
-// for a per-part dispatch, and the checks, the errors and the step charge
-// exist once.
+// otherwise.  The checks, the errors and the step charge exist once.
 func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *lisp.LVal {
 	limit := env.Runtime.MaxAllocBytes()
-	n, size, fits := len(strs), 0, true
+	n := len(strs)
 	if cells != nil {
 		n = len(cells)
-		for _, c := range cells {
-			if size, fits = joinGrow(size, len(c.Str), limit); !fits {
-				break
-			}
-		}
-	} else {
-		for _, p := range strs {
-			if size, fits = joinGrow(size, len(p), limit); !fits {
-				break
-			}
-		}
 	}
-	if !fits {
-		return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+	size := 0
+	for i := range n {
+		p := joinPart(strs, cells, i)
+		if len(p) > limit-size {
+			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+		}
+		size += len(p)
 	}
 	if n > 1 {
 		if len(sep) > (limit-size)/(n-1) {
@@ -232,31 +224,21 @@ func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *l
 	}
 	var buf strings.Builder
 	buf.Grow(size)
-	if cells != nil {
-		for i, c := range cells {
-			buf.WriteString(c.Str)
-			if i < n-1 {
-				buf.WriteString(sep)
-			}
+	for i := range n {
+		if i > 0 {
+			buf.WriteString(sep)
 		}
-	} else {
-		for i, p := range strs {
-			buf.WriteString(p)
-			if i < n-1 {
-				buf.WriteString(sep)
-			}
-		}
+		buf.WriteString(joinPart(strs, cells, i))
 	}
 	return lisp.String(buf.String())
 }
 
-// joinGrow adds a part of length n to size, and reports false when the sum
-// would exceed limit.
-func joinGrow(size, n, limit int) (int, bool) {
-	if n > limit-size {
-		return size, false
+// joinPart returns part i: cells[i].Str when cells is not nil, else strs[i].
+func joinPart(strs []string, cells []*lisp.LVal, i int) string {
+	if cells != nil {
+		return cells[i].Str
 	}
-	return size + n, true
+	return strs[i]
 }
 
 // builtinRepeat checks its arguments through typed decoders, with the
