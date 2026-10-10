@@ -1188,7 +1188,7 @@ func builtinNoOtherKeys(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		allowedKeys := make(map[string]bool)
 		for _, c := range captures.Cells {
 			val := applyConstraint(env, c, input)
-			if val.IsError() { //nolint:staticcheck // not a tagged switch context
+			if val.IsError() {
 				return val
 			} else if val.Type == lisp.LString {
 				allowedKeys[val.Str] = true

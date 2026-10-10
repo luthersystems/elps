@@ -1311,8 +1311,8 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) == 0 || call.Ellipsis.IsValid() {
 		return
 	}
-	h, ok := builtinHelpers[s.builtinName(call.Args[0])]
-	if !ok {
+	h, known := builtinHelpers[s.builtinName(call.Args[0])]
+	if !known {
 		return
 	}
 	args := call.Args[1:]
@@ -1332,8 +1332,8 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 		if len(args) == 0 {
 			return
 		}
-		f, ok := ast.Unparen(args[0]).(*ast.CallExpr)
-		if !ok || len(f.Args) != 1 || f.Ellipsis.IsValid() {
+		f, isCall := ast.Unparen(args[0]).(*ast.CallExpr)
+		if !isCall || len(f.Args) != 1 || f.Ellipsis.IsValid() {
 			return
 		}
 		if fn := s.lispFunc(f); fn == nil || fn.Name() != "String" {
@@ -1416,7 +1416,7 @@ func (s *state) checkFunDocWrite(assign *ast.AssignStmt) {
 		if !ok {
 			continue
 		}
-		if tv, ok := s.pass.TypesInfo.Types[idx.Index]; !ok || tv.Value == nil || tv.Value.String() != "1" {
+		if tv, known := s.pass.TypesInfo.Types[idx.Index]; !known || tv.Value == nil || tv.Value.String() != "1" {
 			continue
 		}
 		cells, ok := ast.Unparen(idx.X).(*ast.SelectorExpr)
@@ -1501,6 +1501,7 @@ func (s *state) typeTests(e ast.Expr, add func(x string, c ast.Expr)) {
 		if x != nil {
 			add(s.text(x), other)
 		}
+	default:
 	}
 }
 
@@ -1714,7 +1715,7 @@ func (s *state) listGuards(list []ast.Stmt, child ast.Node, x string) bool {
 	if at < 0 {
 		return false
 	}
-	for j := 0; j < at; j++ {
+	for j := range at {
 		if s.returnsUnlessNative(list[j], x) {
 			return true
 		}
@@ -1754,8 +1755,9 @@ func (s *state) returnsUnlessNative(st ast.Stmt, x string) bool {
 				v, other = s.typeField(b.Y), b.X
 			}
 			return v != nil && s.text(v) == x && s.isLispConst(other, "LNative")
+		default:
+			return false
 		}
-		return false
 	}
 	return walk(ifs.Cond)
 }
@@ -2194,29 +2196,32 @@ func (s *state) listedLater(stmts []ast.Stmt, obj types.Object) bool {
 // minMapSets is the count of MapSetString calls that makes a chain.
 const minMapSets = 2
 
+// mapPair is the key text and the value text of one MapOf pair.
+type mapPair struct{ key, val string }
+
 // mapSetPair returns the key text and value text of m.MapSetString("k", v),
 // m.MapSet("k", v), m.MapSet(lisp.String("k"), v) or
 // m.MapSetLVal(lisp.String("k"), v) as a statement, for the map variable
 // obj.  The value must not read obj.
-func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (string, string, bool) {
-	es, ok := st.(*ast.ExprStmt)
-	if !ok {
-		return "", "", false
+func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (mapPair, bool) {
+	es, isExpr := st.(*ast.ExprStmt)
+	if !isExpr {
+		return mapPair{}, false
 	}
 	call, ok := ast.Unparen(es.X).(*ast.CallExpr)
 	if !ok || len(call.Args) != 2 {
-		return "", "", false
+		return mapPair{}, false
 	}
 	fn := s.lispMethod(call, "LVal")
 	if fn == nil {
-		return "", "", false
+		return mapPair{}, false
 	}
 	sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok {
-		return "", "", false
+		return mapPair{}, false
 	}
 	if id, ok := ast.Unparen(sel.X).(*ast.Ident); !ok || s.pass.TypesInfo.Uses[id] != obj {
-		return "", "", false
+		return mapPair{}, false
 	}
 	key := call.Args[0]
 	switch fn.Name() {
@@ -2228,10 +2233,10 @@ func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (string, string, bool)
 			}
 		}
 	default:
-		return "", "", false
+		return mapPair{}, false
 	}
 	if _, ok := s.constString(key); !ok {
-		return "", "", false
+		return mapPair{}, false
 	}
 	val := call.Args[1]
 	readsMap := false
@@ -2242,7 +2247,7 @@ func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (string, string, bool)
 		return !readsMap
 	})
 	if readsMap {
-		return "", "", false
+		return mapPair{}, false
 	}
 	// MapOf converts a string, int, float64 or bool as lisp.String,
 	// lisp.Int, lisp.Float and lisp.Bool do.
@@ -2257,7 +2262,7 @@ func (s *state) mapSetPair(st ast.Stmt, obj types.Object) (string, string, bool)
 			}
 		}
 	}
-	return s.text(key), s.text(val), true
+	return mapPair{key: s.text(key), val: s.text(val)}, true
 }
 
 // checkMapSetChain: m := lisp.SortedMap() followed directly by two or more
@@ -2287,11 +2292,11 @@ func (s *state) checkMapSetChain(block *ast.BlockStmt) {
 		var pairs []string
 		last := i
 		for j := i + 1; j < len(block.List); j++ {
-			k, v, ok := s.mapSetPair(block.List[j], obj)
-			if !ok {
+			pair, isPair := s.mapSetPair(block.List[j], obj)
+			if !isPair {
 				break
 			}
-			pairs = append(pairs, k+", "+v)
+			pairs = append(pairs, pair.key+", "+pair.val)
 			last = j
 		}
 		if len(pairs) < minMapSets {
@@ -2395,15 +2400,15 @@ func (s *state) checkFixedArity(call *ast.CallExpr) {
 		var ft *ast.FuncType
 		var body *ast.BlockStmt
 		var sig *types.Signature
-		name := ""
+		var name string
 		switch x := ast.Unparen(arg).(type) {
 		case *ast.FuncLit:
 			ft, body, name = x.Type, x.Body, "the builtin"
 			sig, _ = s.pass.TypesInfo.TypeOf(x).(*types.Signature)
 		case *ast.Ident, *ast.SelectorExpr:
-			id, ok := x.(*ast.Ident)
-			if !ok {
-				id = x.(*ast.SelectorExpr).Sel
+			id, isID := x.(*ast.Ident)
+			if sel, isSel := x.(*ast.SelectorExpr); !isID && isSel {
+				id = sel.Sel
 			}
 			fn, ok := s.pass.TypesInfo.Uses[id].(*types.Func)
 			if !ok {

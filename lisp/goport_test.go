@@ -784,7 +784,7 @@ func TestPackageMapOf(t *testing.T) {
 		}
 		assertSameResult(t, want, lisp.MapOf(tc.kv...), tc.name)
 	}
-	assert.PanicsWithValue(t, "lisp.MapOf: uneven number of arguments: 3", func() { lisp.MapOf("a", 1, "b") })
+	assert.PanicsWithValue(t, "lisp.MapOf: uneven number of arguments: 3", func() { lisp.MapOf("a", 1, "b") }) //nolint:staticcheck // SA5012: the odd count is the case under test
 	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { lisp.MapOf(1, 2) })
 	assert.Panics(t, func() { lisp.MapOf("a", []string{"x"}) })
 }
