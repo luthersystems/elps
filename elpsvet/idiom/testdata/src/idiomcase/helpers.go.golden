@@ -1,0 +1,33 @@
+package idiomcase
+
+import "github.com/luthersystems/elps/lisp"
+
+var (
+	coreAssoc        = lisp.BuiltinFunc("assoc!")
+	coreToString     = lisp.BuiltinFunc("to-string")
+	coreFormatString = lisp.BuiltinFunc("format-string")
+	coreAssocCopy    = lisp.BuiltinFunc("assoc")
+)
+
+func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {
+	_ = env.MapPut(m, k, v)                 // want `use env.MapPut, which returns the same value or error from the same checks`
+	_ = env.MapPut(m, k, v)                 // want `use env.MapPut`
+	_ = env.MapLookup(m, k)                 // want `use env.MapLookup`
+	_ = env.ToString(v)                     // want `use env.ToString`
+	_ = env.FormatString("{}: {}", k, v)    // want `use env.FormatString`
+	_ = env.FormatString("unknown " + name) // want `use env.FormatString`
+}
+
+// Same checks: no idiom drops a check that the CallBuiltin call makes.
+func helpersNoFix(env *lisp.LEnv, m, k, v, f *lisp.LVal, args []*lisp.LVal) {
+	// An arity error is CallBuiltin's; the helper has fixed arguments.
+	_ = env.CallBuiltin(coreAssoc, m, k)
+	_ = env.CallBuiltin(coreGet, m, k, v)
+	// A format that is not lisp.String(...) may not be a string, and
+	// format-string checks that.
+	_ = env.CallBuiltin(coreFormatString, f, v)
+	// A spread argument list has an unknown count.
+	_ = env.CallBuiltin(coreFormatString, args...)
+	// assoc copies the map; MapPut is assoc!.
+	_ = env.CallBuiltin(coreAssocCopy, m, k, v)
+}

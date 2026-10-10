@@ -98,9 +98,9 @@ func errorValResult() *lisp.ErrorVal { // want `a \*lisp.ErrorVal result is a ty
 }
 
 func resultAsVarying(env *lisp.LEnv, m, k *lisp.LVal) {
-	_, _ = lisp.ResultAs[string](env.CallBuiltin(coreGet, m, k)) // want `the result type of get varies with the data`
-	_, _ = lisp.ResultAs[string](env.MapLookup(m, k))            // want `the result type of get varies with the data`
-	_, _ = lisp.ResultAs[*lisp.LVal](env.CallBuiltin(coreGet, m, k))
+	_, _ = lisp.ResultAs[string](env.CallBuiltin(coreGet, m, k))     // want `the result type of get varies with the data` `use env.MapLookup`
+	_, _ = lisp.ResultAs[string](env.MapLookup(m, k))                // want `the result type of get varies with the data`
+	_, _ = lisp.ResultAs[*lisp.LVal](env.CallBuiltin(coreGet, m, k)) // want `use env.MapLookup`
 	_, _ = lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
 }
 

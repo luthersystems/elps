@@ -24,6 +24,22 @@
 //	                                   an ArgReader read              (hint)
 //	env.CallBuiltin(sortedMap, lisp.String("k"), v, ...), where sortedMap
 //	is lisp.BuiltinFunc("sorted-map")  env.MapOf("k", v, ...)         (fix)
+//	env.CallBuiltin(ref, m, k, v), where ref is lisp.BuiltinFunc("assoc!")
+//	                                   env.MapPut(m, k, v)            (fix)
+//	env.CallBuiltin(ref, m, k) for "get"
+//	                                   env.MapLookup(m, k)            (fix)
+//	env.CallBuiltin(ref, v) for "to-string"
+//	                                   env.ToString(v)                (fix)
+//	env.CallBuiltin(ref, lisp.String(f), v, ...) for "format-string"
+//	                                   env.FormatString(f, v, ...)    (fix)
+//
+// A ref is a lisp.BuiltinFunc call or a package-level variable that one
+// initializes.  MapPut, MapLookup, ToString and FormatString check the
+// context, as CallBuiltin does, and then run the builtin's own body, so the
+// allocation checks and the errors are the same.  The rule does not report a
+// call with a different argument count, a spread argument list or a
+// format-string format that is not lisp.String(f): the helper would not make
+// the arity check or the check that the format is a string.
 //
 // A hint has no fix, because the rewrite changes the code's shape: Keys
 // yields a lisp.MapKey, not an *LVal.  No idiom suggests a checked helper
@@ -50,9 +66,9 @@
 //     MapOf panics on one at run time.
 //
 // INVISIBLE: code built through variables the rule does not trace (a
-// BuiltinRef or formals list held in a local variable, a builtin passed
-// through a slice), helpers in other packages, and reflection.  A clean run
-// is evidence, not proof.
+// BuiltinRef held in a local variable or a struct field, a formals list held
+// in a local variable, a builtin passed through a slice), helpers in other
+// packages, and reflection.  A clean run is evidence, not proof.
 package idiom
 
 import (
@@ -82,7 +98,7 @@ const (
 var Analyzer = &analysis.Analyzer{
 	Name: "elpsidiom",
 	Doc: "report Go builtin code that an elps helper states more plainly (IsError, Cells, CheckAlloc, Keys, Field, " +
-		"ArgReader), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
+		"ArgReader, MapOf, MapPut, MapLookup, ToString, FormatString), and mistakes in code that uses the helpers: an error wrap that hides a Lisp condition, a *ErrorVal " +
 		"result, ResultAs over a result of varying type, and a Func*E builtin registered with the wrong formals",
 	Run: run,
 }
@@ -215,6 +231,28 @@ func (s *state) callee(call *ast.CallExpr) *types.Func {
 	return fn
 }
 
+// builtinName returns the builtin name that a BuiltinRef expression names:
+// a lisp.BuiltinFunc call with a constant name, or a package-level variable
+// that such a call initializes.  It returns "" for any other expression.
+func (s *state) builtinName(e ast.Expr) string {
+	var id *ast.Ident
+	switch r := ast.Unparen(e).(type) {
+	case *ast.Ident:
+		id = r
+	case *ast.SelectorExpr:
+		id = r.Sel
+	case *ast.CallExpr:
+		if fn := s.lispFunc(r); fn != nil && fn.Name() == "BuiltinFunc" && len(r.Args) == 1 {
+			name, _ := s.constString(r.Args[0])
+			return name
+		}
+	}
+	if id == nil {
+		return ""
+	}
+	return s.builtinRefs[s.pass.TypesInfo.Uses[id]]
+}
+
 func (s *state) constString(e ast.Expr) (string, bool) {
 	tv, ok := s.pass.TypesInfo.Types[e]
 	if !ok || tv.Value == nil || tv.Value.Kind() != constant.String {
@@ -345,6 +383,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkRegistration(x)
 			s.checkMapOf(x)
 			s.checkSortedMapCall(x)
+			s.checkBuiltinHelper(x)
 		case *ast.IfStmt:
 			s.checkCheckAlloc(x)
 		case *ast.RangeStmt:
@@ -728,16 +767,7 @@ func (s *state) checkResultAs(call *ast.CallExpr) {
 		if len(inner.Args) == 0 {
 			return
 		}
-		var id *ast.Ident
-		switch r := ast.Unparen(inner.Args[0]).(type) {
-		case *ast.Ident:
-			id = r
-		case *ast.SelectorExpr:
-			id = r.Sel
-		}
-		if id != nil {
-			name = s.builtinRefs[s.pass.TypesInfo.Uses[id]]
-		}
+		name = s.builtinName(inner.Args[0])
 	}
 	if !varyingBuiltins[name] {
 		return
@@ -1070,14 +1100,7 @@ func (s *state) checkSortedMapCall(call *ast.CallExpr) {
 	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) < 3 || len(call.Args)%2 == 0 || call.Ellipsis.IsValid() {
 		return
 	}
-	var id *ast.Ident
-	switch r := ast.Unparen(call.Args[0]).(type) {
-	case *ast.Ident:
-		id = r
-	case *ast.SelectorExpr:
-		id = r.Sel
-	}
-	if id == nil || s.builtinRefs[s.pass.TypesInfo.Uses[id]] != "sorted-map" {
+	if s.builtinName(call.Args[0]) != "sorted-map" {
 		return
 	}
 	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
@@ -1108,4 +1131,68 @@ func (s *state) checkSortedMapCall(call *ast.CallExpr) {
 	text := s.operand(recv.X) + ".MapOf(" + strings.Join(parts, ", ") + ")"
 	s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".MapOf with Go string keys, which returns the same map or error",
 		replace(call, "Use LEnv.MapOf", text))
+}
+
+// builtinHelpers maps a builtin name to the LEnv helper that returns the
+// same value or error from the same checks, and to the argument count that
+// CallBuiltin must pass.  A count of -1 is format-string's: one or more.
+var builtinHelpers = map[string]struct {
+	helper string
+	nargs  int
+}{
+	"assoc!":        {"MapPut", 3},
+	"get":           {"MapLookup", 2},
+	"to-string":     {"ToString", 1},
+	"format-string": {"FormatString", -1},
+}
+
+// checkBuiltinHelper: env.CallBuiltin(ref, ...) for assoc!, get, to-string
+// and format-string.  Each helper checks the context first, as CallBuiltin
+// does, and then runs the builtin's own body, so the result and the error
+// are the same (lisp/goport_test.go, TestMapPutParity and its siblings).
+func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
+	m := s.lispMethod(call, "LEnv")
+	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) == 0 || call.Ellipsis.IsValid() {
+		return
+	}
+	h, ok := builtinHelpers[s.builtinName(call.Args[0])]
+	if !ok {
+		return
+	}
+	args := call.Args[1:]
+	parts := make([]string, 0, len(args))
+	switch {
+	case h.nargs >= 0:
+		if len(args) != h.nargs {
+			return // a different count is an arity error that the helper does not make
+		}
+		for _, a := range args {
+			parts = append(parts, s.text(a))
+		}
+	default:
+		// FormatString takes the format as a Go string.  Only a
+		// lisp.String(f) format is surely a string; for any other value,
+		// the helper would drop format-string's check of the format's type.
+		if len(args) == 0 {
+			return
+		}
+		f, ok := ast.Unparen(args[0]).(*ast.CallExpr)
+		if !ok || len(f.Args) != 1 || f.Ellipsis.IsValid() {
+			return
+		}
+		if fn := s.lispFunc(f); fn == nil || fn.Name() != "String" {
+			return
+		}
+		parts = append(parts, s.text(f.Args[0]))
+		for _, a := range args[1:] {
+			parts = append(parts, s.text(a))
+		}
+	}
+	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	helper := s.operand(recv.X) + "." + h.helper
+	s.report(call, CategoryInfo, "use "+helper+", which returns the same value or error from the same checks",
+		replace(call, "Use LEnv."+h.helper, helper+"("+strings.Join(parts, ", ")+")"))
 }
