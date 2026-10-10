@@ -28,7 +28,7 @@ Use when:
 | `elpsfreshness` | `freshness.go`, `alias.go` | `LVal` field write on a value the function did not construct, incl. via a local slice alias (#333/#334, #369/#371) | `//elps:mutates <reason>` |
 | `elpsescape` | `escape.go` | runtime-owned `*token.Location` stored uncopied into an escaping value (#375) | `//elps:aliases <reason>` |
 | `elpsnativepayload` | `elpsvet/nativepayload/nativepayload.go` (importable) | native payload whose type a template could not publish safely | `//elpsvet:allow-native <≥3-word reason>` |
-| `elpsbuiltinstate` | `builtinstate.go` | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
+| `elpsbuiltinstate` | `elpsvet/builtinstate/builtinstate.go` (importable) | a builtin that writes state outliving the call: its receiver, a captured variable, or a package-level var (#680, the class behind #678) | `//elpsvet:allow-shared <≥3-word reason>` |
 | `elpsfrozenpackage` | `frozenpackage.go` | a write to `Package` tables or a `packageBase` field outside the audited write paths | allowlist row in `packageWriteFunctions` (no marker) |
 | `elpslazyread` | `lazyread.go` | a direct read of `Package.symbols`, `Package.baseValues` or `sortedmap.m` that bypasses the lazy-filling accessor | allowlist row in `lazyTableFunctions` (no marker) |
 | `elpsownpkg` | `elpsvet/ownpkg/ownpkg.go` (importable) | inside a library builtin (LBuiltin shape, outside package `lisp`): `Eval*`, `Load*`, `Lambda`, `Terminal`, `InPackage`, a `Runtime.Package` read, or a symbol lookup that is not a literal qualified name -- a library builtin runs in its own package (#736) | `//elpsvet:allow-ownpkg <≥3-word reason>` |
@@ -145,7 +145,7 @@ closure captures. #678 was a setter builtin registered as a method value
   `elpsvet:allow` nor `allow-native` collides with it.
 - The runtime half of #680 (an opt-in shareability contract on
   `TemplateWithBuiltinPolicy`) isn't built. Fixtures:
-  `testdata/src/builtinstate`.
+  `elpsvet/builtinstate/testdata/src/builtinstate`.
 
 ## Frozen packages (`elpsfrozenpackage`)
 

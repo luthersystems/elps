@@ -173,7 +173,7 @@ static-checks: check-golangci-version check-golangci-config
 # no native payload is minted without a type a template may publish
 # (cmd/elpsvet/nativepayload.go -- an admitted payload is shared by every VM
 # the template mints), and no registered builtin writes its receiver,
-# captured variables or package-level state (cmd/elpsvet/builtinstate.go,
+# captured variables or package-level state (elpsvet/builtinstate/builtinstate.go,
 # issue #680 -- a template shares the builtin's function value too). Package
 # table writes must go through the frozen-package gate (elpsfrozenpackage),
 # and lazily filled tables are read only through their accessors (elpslazyread).

@@ -13,8 +13,9 @@
 // New value walkers must have an audited traversal contract (elpsvalwalker).
 // Marked immutable structs must hold only value fields (elpsmarkerfields).
 // Native payload types need a durable codec or a transient mark (elpsdurablenative).
-// Other modules can import elpsownpkg from elpsvet/ownpkg, and
-// elpsnativepayload and elpsdurablenative from elpsvet/nativepayload
+// Other modules can import elpsownpkg from elpsvet/ownpkg, elpsbuiltinstate
+// from elpsvet/builtinstate, and elpsnativepayload and elpsdurablenative
+// from elpsvet/nativepayload
 // (configured with New and NewDurable).
 //
 // A package-level var whose type transitively contains *lisp.LVal is the
@@ -58,6 +59,7 @@ import (
 	"go/types"
 	"strings"
 
+	"github.com/luthersystems/elps/elpsvet/builtinstate"
 	"github.com/luthersystems/elps/elpsvet/nativepayload"
 	"github.com/luthersystems/elps/elpsvet/ownpkg"
 	"golang.org/x/tools/go/analysis"
@@ -81,7 +83,7 @@ var analyzers = []*analysis.Analyzer{
 	freshnessAnalyzer,
 	escapeAnalyzer,
 	nativepayload.Analyzer,
-	builtinStateAnalyzer,
+	builtinstate.Analyzer,
 	frozenPackageAnalyzer,
 	lazyReadAnalyzer,
 	ownpkg.Analyzer,

@@ -172,6 +172,23 @@ func markerLinesMatching(fset *token.FileSet, file *ast.File, match func(text st
 	return lines
 }
 
+// justifiedAllow reports whether a comment's text is marker followed by
+// whitespace and at least minWords words.
+func justifiedAllow(text, marker string, minWords int) bool {
+	text = strings.TrimPrefix(text, "//")
+	text = strings.TrimPrefix(text, "/*")
+	text = strings.TrimSuffix(text, "*/")
+	text = strings.TrimSpace(text)
+	rest, ok := strings.CutPrefix(text, marker)
+	if !ok || rest == "" {
+		return false
+	}
+	if rest[0] != ' ' && rest[0] != '\t' {
+		return false // a different marker sharing the prefix
+	}
+	return len(strings.Fields(rest)) >= minWords
+}
+
 // codeLines reports which lines of file carry a non-comment token, so a
 // marker comment can be classified as trailing (shares its line with code)
 // or standalone.  A node's Pos and End lines are exactly the lines where
