@@ -327,7 +327,7 @@ func (enc *encoder) chargeKiB(b encodeBudget, n int) error {
 	}
 	enc.chargedKiB += owed
 	enc.setNext(b)
-	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.Type == lisp.LError {
+	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.IsError() {
 		return encodeStepError{lerr}
 	}
 	return nil
@@ -625,7 +625,7 @@ func (enc *encoder) encodeDeepValue(v *lisp.LVal, g encodeGuard) error {
 			f.token = ']'
 		case lisp.LSortMap:
 			entries := v.MapEntries()
-			if entries.Type == lisp.LError {
+			if entries.IsError() {
 				return lisp.GoError(entries)
 			}
 			if err := checkIntKeyCollisions(entries.Cells); err != nil {
@@ -722,7 +722,7 @@ func (enc *encoder) encodeSortMap(v *lisp.LVal, g encodeGuard) error {
 func (enc *encoder) encodeSortMapEntries(v *lisp.LVal, g encodeGuard) error {
 	var err error
 	ents := v.MapEntries()
-	if ents.Type == lisp.LError {
+	if ents.IsError() {
 		return lisp.GoError(ents)
 	}
 	if err = checkIntKeyCollisions(ents.Cells); err != nil {

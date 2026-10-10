@@ -408,7 +408,7 @@ func (g *Gen) fun(depth int) *lisp.LVal {
 		}
 		// A user lambda: Builtin is nil.
 		fn := g.env.Lambda(lisp.Formals("x"), []*lisp.LVal{g.value(depth + 1)})
-		if fn.Type == lisp.LError {
+		if fn.IsError() {
 			return lisp.Nil()
 		}
 		return fn
@@ -504,7 +504,7 @@ func (g *Gen) arrayND(depth int) *lisp.LVal {
 		cells = append(cells, g.value(depth+1))
 	}
 	arr := lisp.Array(lisp.QExpr(dims), cells)
-	if arr.Type == lisp.LError {
+	if arr.IsError() {
 		// Fall back rather than smuggling an LError in under an array tag:
 		// the caller asked for an array-shaped value.
 		return lisp.Vector(nil)
@@ -533,7 +533,7 @@ func (g *Gen) sortMap(depth int) *lisp.LVal {
 		default:
 			key = lisp.Int(g.pickInt())
 		}
-		if lerr := m.Map().Set(key, g.value(depth+1)); lerr.Type == lisp.LError {
+		if lerr := m.Map().Set(key, g.value(depth+1)); lerr.IsError() {
 			continue
 		}
 	}
@@ -552,7 +552,7 @@ func (g *Gen) tagged(depth int) *lisp.LVal {
 		typ = "user:fuzz-type"
 	}
 	v := g.env.TaggedValue(lisp.Symbol(typ), g.value(depth+1))
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return lisp.Nil()
 	}
 	return v

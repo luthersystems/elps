@@ -188,7 +188,7 @@ walk:
 			switch v.Type {
 			case lisp.LSortMap:
 				entries := sortedMapEntries(v.Map())
-				if entries.Type == lisp.LError {
+				if entries.IsError() {
 					return nil, lisp.GoError(entries)
 				}
 				f.cells = entries.Cells
@@ -372,7 +372,7 @@ func copyMapExcept(v *lisp.LVal, skip *lisp.LVal, g cycleGuard) (*lisp.LVal, err
 			return nil, err
 		}
 		lerr := m.Set(pair.Cells[0], val)
-		if lerr.Type == lisp.LError {
+		if lerr.IsError() {
 			return nil, lisp.GoError(lerr)
 		}
 	}
@@ -406,7 +406,7 @@ func hashableMapKey(k *lisp.LVal) bool {
 func sortedMapEntries(m lisp.Map) *lisp.LVal {
 	cells := make([]*lisp.LVal, m.Len())
 	lerr := m.Entries(cells)
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
 	return lisp.QExpr(cells)

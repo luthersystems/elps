@@ -327,7 +327,7 @@ func (e *EnvMacroExpander) expand(form *lisp.LVal, pkg string) *lisp.LVal {
 	copy(margs, form.Cells[1:])
 	args := lisp.SExpr(margs)
 	mark := e.Env.MacroCall(mac, args)
-	if mark.Type == lisp.LError || mark.Type != lisp.LMarkMacExpand {
+	if mark.IsError() || mark.Type != lisp.LMarkMacExpand {
 		return nil
 	}
 
@@ -414,7 +414,7 @@ func evalPreambleFormUnchecked(env *lisp.LEnv, form *lisp.LVal) error {
 		}
 	}
 	result := env.Eval(form)
-	if result.Type == lisp.LError {
+	if result.IsError() {
 		if head == "defmacro" {
 			return fmt.Errorf("error loading macro %s: %v", preambleDefName(form), result)
 		}

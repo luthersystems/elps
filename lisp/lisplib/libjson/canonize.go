@@ -636,12 +636,12 @@ func (w *canonWalker) nativeMap(v reflect.Value, depth int, path string) (*lisp.
 // conditions unchanged, while charging each started KiB during the walk.
 func CanonizeBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	v := args.ReqArg(env, 0)
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return v
 	}
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if r := env.ChargeSteps(int64(kib)); r.Type == lisp.LError {
+		if r := env.ChargeSteps(int64(kib)); r.IsError() {
 			lerr = r
 			return errTypedCharge
 		}
@@ -668,7 +668,7 @@ func CanonizeBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // flags keep the plain serializer's argument handling.
 func (s *Serializer) dumpModeBuiltin(env *lisp.LEnv, args *lisp.LVal, asString bool) *lisp.LVal {
 	v, sn := args.ReqArg(env, 0), args.KeyArg(1)
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return v
 	}
 	typed := lisp.True(args.KeyArg(3))
@@ -677,13 +677,13 @@ func (s *Serializer) dumpModeBuiltin(env *lisp.LEnv, args *lisp.LVal, asString b
 	}
 	if lisp.True(args.KeyArg(2)) {
 		v = CanonizeBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
-		if v.Type == lisp.LError {
+		if v.IsError() {
 			return v
 		}
 	}
 	if typed {
 		b := DumpTypedBuiltin(env, lisp.SExpr([]*lisp.LVal{v}))
-		if b.Type == lisp.LError {
+		if b.IsError() {
 			return b
 		}
 		if asString {

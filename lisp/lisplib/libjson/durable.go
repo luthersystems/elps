@@ -610,7 +610,7 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 			return fmt.Errorf("durable json: native %q: %w", entry.name, err)
 		case payload == nil:
 			return fmt.Errorf("durable json: native %q: SaveNative returned no payload", entry.name)
-		case payload.Type == lisp.LError:
+		case payload.IsError():
 			return fmt.Errorf("durable json: native %q: %v", entry.name, payload)
 		}
 		e.saved[key] = savedNative{entry: entry, payload: payload}

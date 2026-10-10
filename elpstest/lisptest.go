@@ -635,7 +635,7 @@ func RunBenchmark(b *testing.B, source string) {
 		b.StartTimer()
 		for i, expr := range iterExprs {
 			lerr := env.Eval(expr)
-			if lerr.Type == lisp.LError {
+			if lerr.IsError() {
 				b.Fatalf("expr %d: %v", i, lerr)
 			}
 		}

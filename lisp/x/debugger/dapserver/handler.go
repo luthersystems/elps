@@ -483,7 +483,7 @@ func (h *handler) onVariables(req *dap.VariablesRequest) {
 			var bindings []debugger.ScopeBinding
 			for _, name := range pkg.SymbolNames() {
 				v := pkg.Get(lisp.Symbol(name))
-				if v.Type != lisp.LError {
+				if !v.IsError() {
 					bindings = append(bindings, debugger.ScopeBinding{Name: name, Value: v})
 				}
 			}
@@ -709,7 +709,7 @@ func (h *handler) onEvaluate(req *dap.EvaluateRequest) {
 		result = h.engine.EvalInContext(env, req.Arguments.Expression)
 	}
 
-	if result != nil && result.Type == lisp.LError {
+	if result != nil && result.IsError() {
 		resp.Success = false
 		resp.Message = debugger.FormatValueWith(result, h.engine)
 	} else {
@@ -762,7 +762,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 
 	// Parse and evaluate the new value expression.
 	result := h.engine.EvalSingleInContext(env, valueExpr)
-	if result != nil && result.Type == lisp.LError {
+	if result != nil && result.IsError() {
 		resp.Success = false
 		resp.Message = "failed to evaluate value: " + debugger.FormatValueWith(result, h.engine)
 		h.send(resp)
@@ -801,7 +801,7 @@ func (h *handler) onSetVariable(req *dap.SetVariableRequest) {
 		return
 	}
 
-	if updateErr != nil && updateErr.Type == lisp.LError {
+	if updateErr != nil && updateErr.IsError() {
 		resp.Success = false
 		resp.Message = "failed to update variable: " + debugger.FormatValueWith(updateErr, h.engine)
 		h.send(resp)

@@ -1947,7 +1947,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			continue
 		}
 		result := env.Eval(expr)
-		if result.Type == lisp.LError {
+		if result.IsError() {
 			return nil, TestResponse{
 				Path:  path,
 				Tests: []TestResult{{Name: "<load>", Passed: false, Error: lvalErrorString(result)}},
@@ -1976,7 +1976,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			continue
 		}
 		result := env.Eval(lisp.SExpr([]*lisp.LVal{test.Fun}))
-		if result == nil || result.Type == lisp.LError {
+		if result == nil || result.IsError() {
 			tr.Passed = false
 			if result != nil {
 				tr.Error = lvalErrorString(result)
@@ -2138,7 +2138,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 	response := EvalResponse{}
 	fail := func(v *lisp.LVal) { response.Error = output.errorRenderer().Render(v) }
 	lerr := env.InPackage(lisp.String(lisp.DefaultUserPackage))
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		fail(lerr)
 		return response
 	}
@@ -2149,7 +2149,7 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 		var last *lisp.LVal
 		for _, expr := range exprs {
 			last = env.EvalContext(ctx, expr)
-			if last == nil || last.Type == lisp.LError {
+			if last == nil || last.IsError() {
 				fail(last)
 				break
 			}

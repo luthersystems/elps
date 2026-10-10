@@ -244,7 +244,7 @@ func restoreArray(dims, cells []*lisp.LVal) (*lisp.LVal, error) {
 		}
 	}
 	v := lisp.Array(lisp.QExpr(dims), cells)
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return nil, errors.New("typed json: invalid array dimensions")
 	}
 	return v, nil
@@ -252,7 +252,7 @@ func restoreArray(dims, cells []*lisp.LVal) (*lisp.LVal, error) {
 
 func (w *untagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	entries := v.MapEntries()
-	if entries.Type == lisp.LError {
+	if entries.IsError() {
 		return nil, lisp.GoError(entries)
 	}
 	if err := w.add(2 + max(0, len(entries.Cells)-1)); err != nil {
@@ -284,7 +284,7 @@ func (w *untagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if rc := out.MapSetLVal(k, inner); rc.Type == lisp.LError {
+		if rc := out.MapSetLVal(k, inner); rc.IsError() {
 			return nil, lisp.GoError(rc)
 		}
 	}

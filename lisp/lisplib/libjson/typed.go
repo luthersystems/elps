@@ -615,7 +615,7 @@ func (e *typedEncoder) mapMembers(v *lisp.LVal) (memberMark, error) {
 	if !ok {
 		// An embedder's own map backing: read it through MapEntries.
 		ents := v.MapEntries()
-		if ents.Type == lisp.LError {
+		if ents.IsError() {
 			return memberMark{pairs: 0, keys: 0}, fmt.Errorf("typed json: %s", ents.Str)
 		}
 		for _, p := range ents.Cells {
@@ -694,7 +694,7 @@ func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// cancelled context stops a large encode part way.
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if r := env.ChargeSteps(int64(kib)); r.Type == lisp.LError {
+		if r := env.ChargeSteps(int64(kib)); r.IsError() {
 			lerr = r
 			return errTypedCharge
 		}
@@ -721,7 +721,7 @@ func LoadTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	default:
 		return env.Errorf("argument is not bytes or a string: %v", lisp.GetType(in))
 	}
-	if lerr := lisp.ChargeStartedKiB(env, len(b)); lerr.Type == lisp.LError {
+	if lerr := lisp.ChargeStartedKiB(env, len(b)); lerr.IsError() {
 		return lerr
 	}
 	v, err := LoadTyped(b, typedOptions(env)...)

@@ -126,7 +126,7 @@ func checkFormals(formals *lisp.LVal) string {
 	if formals == nil {
 		return "formals are nil (use lisp.Formals() to declare a function that takes no arguments)"
 	}
-	if formals.Type == lisp.LError {
+	if formals.IsError() {
 		return fmt.Sprintf("formals are an error value: %v", formals)
 	}
 	if formals.Type != lisp.LSExpr {

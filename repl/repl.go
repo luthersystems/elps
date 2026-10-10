@@ -421,7 +421,7 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		}
 		if cfg.json {
 			emitResultContext(cfg.ctx, os.Stdout, val, env)
-		} else if val.Type == lisp.LError {
+		} else if val.IsError() {
 			renderErrorContext(cfg.ctx, env.Runtime.Stderr, env.Runtime, val)
 		} else {
 			fmt.Fprintln(env.Runtime.Stderr, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort REPL output
@@ -461,7 +461,7 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 		if reportCancellation(ctx, cfg, stdout, errw) {
 			return 1
 		}
-		if last.Type == lisp.LError {
+		if last.IsError() {
 			if cfg.json {
 				emitResultContext(cfg.ctx, stdout, last, env)
 			} else {
@@ -551,7 +551,7 @@ func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 		}
 		if cfg.json {
 			emitResultContext(cfg.ctx, stdout, val, env)
-		} else if val.Type == lisp.LError {
+		} else if val.IsError() {
 			renderErrorContext(cfg.ctx, errw, env.Runtime, val)
 		} else {
 			fmt.Fprintln(stdout, env.RenderContext(cfg.ctx, val)) //nolint:errcheck // best-effort output
@@ -571,7 +571,7 @@ func emitResult(w io.Writer, val *lisp.LVal, envs ...*lisp.LEnv) {
 func emitResultContext(ctx context.Context, w io.Writer, val *lisp.LVal, env *lisp.LEnv) {
 	s := env.RenderContext(ctx, val)
 	limit := env.Runtime.MaxAllocBytes()
-	if val.Type == lisp.LError {
+	if val.IsError() {
 		fields := []jsonField{{"type", []string{"error"}}, {"message", []string{s}}}
 		if ctx == nil || ctx.Err() == nil {
 			if loc, ok := val.Source(); ok && loc.Pos >= 0 {

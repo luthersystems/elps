@@ -184,7 +184,7 @@ func expandChildren(v *lisp.LVal, allocRef func(*lisp.LVal) int, opts childExpan
 		return vars
 	case lisp.LSortMap:
 		entries := v.MapEntries()
-		if entries.Type == lisp.LError {
+		if entries.IsError() {
 			return []dap.Variable{}
 		}
 		var vars []dap.Variable

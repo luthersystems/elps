@@ -160,8 +160,8 @@ func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
 		}
 		count++
 	}
-	if msg := env.Runtime.CheckAlloc(count); msg != "" {
-		return env.Errorf("%s", msg)
+	if lerr := env.CheckAlloc(count); lerr.IsError() {
+		return lerr
 	}
 	slice := strings.Split(str, sep)
 	cells := make([]*lisp.LVal, len(slice))
@@ -195,7 +195,7 @@ func join(env *lisp.LEnv, list *lisp.LVal, sep string) *lisp.LVal {
 // the result.  The caller has no element type to check: every part is a
 // string.
 func Join(env *lisp.LEnv, parts []string, sep string) *lisp.LVal {
-	if lerr := env.CheckContext(); lerr.Type == lisp.LError {
+	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
 	return joinParts(env, parts, nil, sep)

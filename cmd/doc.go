@@ -194,7 +194,7 @@ func docJSON(makeEnv func() (*lisp.LEnv, error), opts docQuery, args []string) e
 	}
 	if sourceFile != "" {
 		res := env.LoadFile(sourceFile)
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
 		}
@@ -236,7 +236,7 @@ func docListPkgs(makeEnv func() (*lisp.LEnv, error), sourceFile string) error {
 	}
 	if sourceFile != "" {
 		res := env.LoadFile(sourceFile)
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
 		}
@@ -253,7 +253,7 @@ func docExec(makeEnv func() (*lisp.LEnv, error), sourceFile string, pkgFlag bool
 	}
 	if sourceFile != "" {
 		res := env.LoadFile(sourceFile)
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			_, _ = (*lisp.ErrorVal)(res).WriteTrace(os.Stderr)
 			os.Exit(1)
 		}

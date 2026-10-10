@@ -62,7 +62,7 @@ func reexportCoreForms(env *lisp.LEnv) *lisp.LVal {
 	for _, form := range CoreForms {
 		if lang != nil {
 			if v := lang.Get(lisp.Symbol(form)); v.Type == lisp.LFun {
-				if e := env.PutGlobal(lisp.Symbol(form), v); e.Type == lisp.LError {
+				if e := env.PutGlobal(lisp.Symbol(form), v); e.IsError() {
 					return e
 				}
 				env.Runtime.Package.Exports(form)

@@ -174,10 +174,10 @@ func runLoader(env *lisp.LEnv, fn Loader, what string) *lisp.LVal {
 	}
 	lerr := loaderResult(fn(env), what)
 	rerr := env.InPackage(lisp.String(prevPkg))
-	if lerr.Type == lisp.LError {
+	if lerr.IsError() {
 		return lerr
 	}
-	if rerr.Type == lisp.LError {
+	if rerr.IsError() {
 		return rerr
 	}
 	return lisp.Nil()
@@ -210,7 +210,7 @@ func LoadAll(fns ...Loader) Loader {
 			if fn == nil {
 				return lisp.Errorf("%s is nil", what)
 			}
-			if lerr := runLoader(env, fn, what); lerr.Type == lisp.LError {
+			if lerr := runLoader(env, fn, what); lerr.IsError() {
 				return lerr
 			}
 		}
@@ -226,7 +226,7 @@ func LibraryLoader(ps ...Package) Loader {
 				return lisp.Errorf("package %d of %d is nil", i+1, len(ps))
 			}
 			lerr := Load(env, PackageLoader(p))
-			if lerr.Type == lisp.LError {
+			if lerr.IsError() {
 				return lerr
 			}
 		}
@@ -280,7 +280,7 @@ func PackageLoader(p Package) Loader {
 		}
 		initLoader := packageInit(p)
 		e = loaderResult(initLoader(env), fmt.Sprintf("package %q: PackageInit", pkgName))
-		if e.Type == lisp.LError {
+		if e.IsError() {
 			return e
 		}
 		// PackageInit may have switched packages -- the Loader convention
@@ -291,15 +291,15 @@ func PackageLoader(p Package) Loader {
 			return e
 		}
 		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindBuiltin}, packageBuiltins(p), env.AddBuiltins)
-		if e.Type == lisp.LError {
+		if e.IsError() {
 			return e
 		}
 		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindSpecialOp}, packageSpecialOps(p), env.AddSpecialOps)
-		if e.Type == lisp.LError {
+		if e.IsError() {
 			return e
 		}
 		e = addDefs(env, definitionKind{pkgName: pkgName, kind: kindMacro}, packageMacros(p), env.AddMacros)
-		if e.Type == lisp.LError {
+		if e.IsError() {
 			return e
 		}
 		return lisp.Nil()

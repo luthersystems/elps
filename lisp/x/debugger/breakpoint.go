@@ -42,7 +42,7 @@ type Breakpoint struct {
 	LogMessage   string // optional: log point message template with {expr} interpolation
 	Enabled      bool
 
-	hitCount     int    // number of times this breakpoint has been reached
+	hitCount     int // number of times this breakpoint has been reached
 	parsedHitOp  hitOp
 	parsedHitVal int
 }
@@ -333,7 +333,7 @@ func EvalCondition(env *lisp.LEnv, condition string) bool {
 	}
 	result := env.Eval(exprs[0])
 	// ELPS falsiness: nil, errors, and the false symbol are all falsey.
-	if result.IsNil() || result.Type == lisp.LError {
+	if result.IsNil() || result.IsError() {
 		return false
 	}
 	if result.Type == lisp.LSymbol && result.Str == lisp.FalseSymbol {

@@ -253,7 +253,7 @@ func (d *durableDecoder) array(depth int) (*lisp.LVal, error) {
 	}
 	n := lisp.Int(0)
 	data := lisp.QExpr(nil)
-	v := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.QExpr([]*lisp.LVal{n}), data}}
+	v := &lisp.LVal{Type: lisp.LArray, Cells: []*lisp.LVal{lisp.Cells{n}.List(), data}}
 	d.define(v)
 	cells, err := d.elements(depth)
 	if err != nil {
@@ -583,7 +583,7 @@ func (d *durableDecoder) objectDef(depth int, pos position) (*lisp.LVal, error) 
 			return nil, err
 		}
 		d.i += len(empty)
-		v = lisp.QExpr([]*lisp.LVal{})
+		v = lisp.Cells{}.List()
 		d.define(v)
 		d.emptyObjs = append(d.emptyObjs, v)
 	} else {
@@ -792,7 +792,7 @@ func (d *durableDecoder) object(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r := m.MapSetLVal(k, v); r.Type == lisp.LError {
+		if r := m.MapSetLVal(k, v); r.IsError() {
 			return nil, d.errorf("%s", r.Str)
 		}
 		size++

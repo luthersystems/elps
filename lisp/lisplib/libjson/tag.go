@@ -322,7 +322,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 	}()
 	if !ok {
 		entries := v.MapEntries()
-		if entries.Type == lisp.LError {
+		if entries.IsError() {
 			return nil, lisp.GoError(entries)
 		}
 		for _, p := range entries.Cells {
@@ -453,12 +453,12 @@ func UntagBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 func transformBuiltin(env *lisp.LEnv, args *lisp.LVal, transform func(*lisp.LVal, ...TypedOption) (*lisp.LVal, error)) *lisp.LVal {
 	in := args.ReqArg(env, 0)
-	if in.Type == lisp.LError {
+	if in.IsError() {
 		return in
 	}
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if rc := env.ChargeSteps(int64(kib)); rc.Type == lisp.LError {
+		if rc := env.ChargeSteps(int64(kib)); rc.IsError() {
 			lerr = rc
 			return errTypedCharge
 		}

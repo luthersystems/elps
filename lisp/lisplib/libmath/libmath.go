@@ -197,7 +197,7 @@ var builtinTanh = realFunc(math.Tanh).builtin
 // functions and must be implemented specially.
 func builtinAtan(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	x, q := args.ReqArg(env, 0), args.KeyArg(1)
-	if x.Type == lisp.LError {
+	if x.IsError() {
 		return x
 	}
 	if !x.IsNumeric() {

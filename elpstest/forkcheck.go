@@ -95,13 +95,13 @@ type ForkCheck struct {
 func NewForkCheckEnv() (*lisp.LEnv, error) {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
-	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {
+	if rc := lisp.InitializeUserEnv(env); rc.IsError() {
 		return nil, lisp.GoError(rc)
 	}
-	if rc := stdlib.Load(env, false); rc.Type == lisp.LError {
+	if rc := stdlib.Load(env, false); rc.IsError() {
 		return nil, lisp.GoError(rc)
 	}
-	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.Type == lisp.LError {
+	if rc := env.InPackage(lisp.String(lisp.DefaultUserPackage)); rc.IsError() {
 		return nil, lisp.GoError(rc)
 	}
 	return env, nil
@@ -137,7 +137,7 @@ func RunForkCheck(t testing.TB, c ForkCheck) {
 		if err != nil {
 			t.Fatalf("%s: new env: %v", what, err)
 		}
-		if rc := env.LoadString("program.lisp", c.Program); rc.Type == lisp.LError {
+		if rc := env.LoadString("program.lisp", c.Program); rc.IsError() {
 			t.Fatalf("%s: program: %v", what, rc)
 		}
 		return env

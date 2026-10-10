@@ -93,7 +93,7 @@ func (p *Parser) Parse() (*lisp.LVal, error) {
 		return nil, io.EOF
 	}
 	expr := p.ParseExpression()
-	if expr.Type == lisp.LError {
+	if expr.IsError() {
 		return nil, lisp.GoError(expr)
 	}
 	// In formatting mode, check for a trailing comment on the same line
@@ -355,7 +355,7 @@ func (p *Parser) ParseQuote() *lisp.LVal {
 	quoteLoc := p.Location() // save ' location before parsing inner expression
 	inner := p.ParseExpression()
 	result := p.Quote(inner)
-	if inner.Type == lisp.LError {
+	if inner.IsError() {
 		// p.Quote returns errors untouched, so the historical in-place
 		// position fixups rewrote the error's own location to start at the
 		// quote token.  Replicate that on a private copy of the location —
@@ -385,7 +385,7 @@ func (p *Parser) ParseUnbound() *lisp.LVal {
 	prefixLoc := p.Location() // save #^ location before parsing inner expression
 	sym := p.locateSynthesized(lisp.Symbol("lisp:expr"))
 	expr := p.ParseExpression()
-	if expr.Type == lisp.LError {
+	if expr.IsError() {
 		return expr
 	}
 	// The head keeps the location locateSynthesized gave it -- the #^ token's
@@ -430,7 +430,7 @@ func (p *Parser) ParseFunRef() *lisp.LVal {
 	prefixLoc := p.Location() // save #' location before parsing inner expression
 	op := p.locateSynthesized(lisp.Symbol("lisp:function"))
 	name := p.ParseSymbol()
-	if name.Type == lisp.LError {
+	if name.IsError() {
 		return name
 	}
 	// The operand has to be a name the reader gives back as a symbol. #' is
@@ -599,7 +599,7 @@ func applyPrefixLocation(dst, loc *token.Location) {
 // Must run BEFORE applyPrefixNewlines, which reads LeadingComments to decide
 // which gap the node's newline metadata describes.
 func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
-	if !p.preserveFormat || outer.Type == lisp.LError || inner == nil {
+	if !p.preserveFormat || outer.IsError() || inner == nil {
 		return
 	}
 	im := fmtraw.Meta(inner)
@@ -620,7 +620,7 @@ func (p *Parser) hoistOperandComments(outer, inner *lisp.LVal) {
 // (quote, #', #^) using the prefix token's values, which would otherwise be
 // lost because tokenLVal reads from the inner expression's token.
 func (p *Parser) applyPrefixNewlines(v *lisp.LVal, newlines int, spaces int) {
-	if !p.preserveFormat || v.Type == lisp.LError {
+	if !p.preserveFormat || v.IsError() {
 		return
 	}
 	m := fmtraw.EnsureMeta(v)
@@ -784,7 +784,7 @@ func (p *Parser) ParseConsExpression() *lisp.LVal {
 			break
 		}
 		x := p.ParseExpression()
-		if x.Type == lisp.LError {
+		if x.IsError() {
 			return x
 		}
 		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
@@ -827,7 +827,7 @@ func (p *Parser) ParseList() *lisp.LVal {
 			break
 		}
 		x := p.ParseExpression()
-		if x.Type == lisp.LError {
+		if x.IsError() {
 			return x
 		}
 		expr.Cells = append(expr.Cells, x) //elps:mutates children accumulate onto this parse's own node (p.SExpr/p.QExpr above) while the tree is parser-owned
@@ -1032,7 +1032,7 @@ func (p *Parser) Float(x float64) *lisp.LVal {
 }
 
 func (p *Parser) Quote(v *lisp.LVal) *lisp.LVal {
-	if v.Type == lisp.LError {
+	if v.IsError() {
 		return v
 	}
 	return p.tokenLVal(lisp.Quote(v))

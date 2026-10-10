@@ -133,7 +133,7 @@ Examples:
 		go func() {
 			res := env.LoadFile(relFile)
 			exitCode := 0
-			if res.Type == lisp.LError {
+			if res.IsError() {
 				exitCode = 1
 			}
 			dbg.NotifyExit(exitCode)
@@ -169,7 +169,7 @@ Examples:
 
 		// Wait for eval to finish and report any errors.
 		res := <-evalDone
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			renderLispErrorContext(cmd.Context(), env.Runtime, res, file)
 			os.Exit(1)
 		}

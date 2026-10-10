@@ -621,7 +621,7 @@ func (d *typedDecoder) object(depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		if r := m.MapSetLVal(k, v); r.Type == lisp.LError {
+		if r := m.MapSetLVal(k, v); r.IsError() {
 			return nil, d.errorf("%s", r.Str)
 		}
 		size++

@@ -158,7 +158,7 @@ func runElpsReport(parent context.Context, args []string, opts commandWriters, c
 			fmt.Fprintf(stderr, "context-cancelled: %v\n", err) //nolint:errcheck // best-effort error display
 			return errRendered
 		}
-		if res.Type == lisp.LError {
+		if res.IsError() {
 			renderLispErrorTo(ctx, stderr, lispErrorSource{runtime: env.Runtime, lerr: res}, name)
 			return errRendered
 		}

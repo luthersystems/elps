@@ -244,7 +244,7 @@ func EvalInContext(env *lisp.LEnv, source string) *lisp.LVal {
 	var result *lisp.LVal
 	for _, expr := range exprs {
 		result = env.Eval(expr)
-		if result.Type == lisp.LError {
+		if result.IsError() {
 			return result
 		}
 	}

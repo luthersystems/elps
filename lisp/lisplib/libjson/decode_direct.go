@@ -255,7 +255,7 @@ func (d *directDecoder) number() *lisp.LVal {
 	}
 	if d.opts.ExactIntegers {
 		v := loadNumber(text)
-		if v.Type == lisp.LError {
+		if v.IsError() {
 			d.reject(lisp.GoError(v))
 			return nil
 		}
