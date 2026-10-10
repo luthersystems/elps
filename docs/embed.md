@@ -647,7 +647,13 @@ if lerr := a.Err(); lerr.Type == lisp.LError {
 ```
 
 It does not allocate unless a check fails. The reads are `Value`, `String`,
-`Typed`, `Opt`, `OptString` and `OptInt`. For a check that is not a type
+`Int`, `Bytes`, `Map`, `Fun`, `Seq`, `Typed`, `Opt`, `OptString` and
+`OptInt`. `Int`, `Bytes`, `Map` and `Fun` record "<what> is not an integer",
+"is not bytes", "is not a map" or "is not a function". `Seq` returns the
+cells of a list or a one-dimensional vector and records "<what> is not a
+proper sequence". The `[]byte` and cells results share the argument's
+storage. In a `FuncE` body, `lisp.GoError(a.Err())` gives the failure as an
+`error`. For a check that is not a type
 test, `a.Check(ok, format, args...)` records a failure (and reports whether
 the reader is still clean) and keeps the first failure, so a decoder of your
 own is ordinary Go:

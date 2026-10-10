@@ -107,6 +107,51 @@ func (a *ArgReader) String(i int, what string) string {
 	return a.named(i, LString, what, "a string").Str
 }
 
+// Int returns required argument i, which must be an integer; otherwise it
+// records "<what> is not an integer: <type>".
+func (a *ArgReader) Int(i int, what string) int {
+	return a.named(i, LInt, what, "an integer").Int
+}
+
+// Bytes returns required argument i, which must be bytes; otherwise it
+// records "<what> is not bytes: <type>".  The result shares the argument's
+// storage, so treat it as read-only.
+func (a *ArgReader) Bytes(i int, what string) []byte {
+	v := a.named(i, LBytes, what, "bytes")
+	if v.Type != LBytes {
+		return nil
+	}
+	return v.Bytes()
+}
+
+// Map returns required argument i, which must be a sorted-map; otherwise it
+// records "<what> is not a map: <type>".
+func (a *ArgReader) Map(i int, what string) *LVal {
+	return a.named(i, LSortMap, what, "a map")
+}
+
+// Fun returns required argument i, which must be a function; otherwise it
+// records "<what> is not a function: <type>".
+func (a *ArgReader) Fun(i int, what string) *LVal {
+	return a.named(i, LFun, what, "a function")
+}
+
+// Seq returns the cells of required argument i, which must be a list or a
+// one-dimensional vector; otherwise it records "<what> is not a proper
+// sequence: <type>".  The cells share the argument's storage, so treat them
+// as read-only.
+func (a *ArgReader) Seq(i int, what string) []*LVal {
+	v := a.Value(i)
+	if a.err != nil {
+		return nil
+	}
+	if !isSeq(v) {
+		a.err = a.env.Errorf("%s is not a proper sequence: %v", what, v.Type)
+		return nil
+	}
+	return seqCells(v)
+}
+
 // Opt returns &optional or &key argument i, or nil when it was not supplied
 // (LVal.KeyArg).
 func (a *ArgReader) Opt(i int) *LVal {

@@ -223,3 +223,45 @@ func errMessage(t *testing.T, err error) string {
 	require.ErrorAs(t, err, &ev)
 	return ev.ErrorMessage()
 }
+
+func TestArgReaderTypedReads(t *testing.T) {
+	env := testEnv(t)
+	fn := lisp.FunInPackage(lisp.DefaultUserPackage, "f", lisp.Formals(), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+		return args
+	})
+	m := lisp.SortedMap()
+	vec := lisp.Cells{lisp.Int(7)}.Vector()
+	args := lisp.Cells{lisp.Int(3), lisp.Bytes([]byte("b")), m, fn, vec}.List()
+
+	a := lisp.ReadArgs(env, args)
+	assert.Equal(t, 3, a.Int(0, "first argument"))
+	assert.Equal(t, []byte("b"), a.Bytes(1, "second argument"))
+	assert.Same(t, m, a.Map(2, "third argument"))
+	assert.Same(t, fn, a.Fun(3, "fourth argument"))
+	assert.Len(t, a.Seq(4, "fifth argument"), 1)
+	assert.Equal(t, lisp.LSExpr, a.Err().Type)
+
+	for _, tc := range []struct {
+		read func(a *lisp.ArgReader)
+		want string
+	}{
+		{func(a *lisp.ArgReader) { a.Int(1, "first argument") }, "first argument is not an integer: bytes"},
+		{func(a *lisp.ArgReader) { a.Bytes(0, "first argument") }, "first argument is not bytes: int"},
+		{func(a *lisp.ArgReader) { a.Map(0, "first argument") }, "first argument is not a map: int"},
+		{func(a *lisp.ArgReader) { a.Fun(0, "first argument") }, "first argument is not a function: int"},
+		{func(a *lisp.ArgReader) { a.Seq(0, "first argument") }, "first argument is not a proper sequence: int"},
+		{func(a *lisp.ArgReader) { a.Seq(2, "first argument") }, "first argument is not a proper sequence: sorted-map"},
+	} {
+		a := lisp.ReadArgs(env, args)
+		tc.read(&a)
+		err := lisp.GoError(a.Err())
+		require.Error(t, err, tc.want)
+		assert.Equal(t, tc.want, errMessage(t, err))
+	}
+
+	// A multi-dimensional array is not a sequence.
+	grid := lisp.Array(lisp.Cells{lisp.Int(1), lisp.Int(1)}.List(), []*lisp.LVal{lisp.Int(1)})
+	a = lisp.ReadArgs(env, lisp.Cells{grid}.List())
+	assert.Nil(t, a.Seq(0, "argument"))
+	assert.Equal(t, "argument is not a proper sequence: array", errMessage(t, lisp.GoError(a.Err())))
+}
