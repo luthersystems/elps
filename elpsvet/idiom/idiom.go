@@ -35,6 +35,8 @@
 //	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
 //	after an m.Type == lisp.LSortMap check
 //	                                   lisp.Field[string](m, k)       (hint)
+//	keys := env.CallBuiltin(ref, m) for "keys", then a range over keys.Cells
+//	                                   env.MapRange or ResultAs[lisp.Cells] (hint)
 //	v := args.Cells[i] (or a, b := args.Cells[0], args.Cells[1]) followed
 //	by a v.Type check that returns Errorf
 //	                                   an ArgReader read              (hint)
@@ -459,6 +461,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkErrorReturns(x, x.Body)
 		case *ast.BlockStmt:
 			s.checkArgCells(x)
+			s.checkKeysLoop(x)
 			s.checkMapGetString(x, stack)
 		}
 		return true
@@ -1968,4 +1971,68 @@ func (s *state) mapCase(stack []ast.Node, m string) bool {
 		}
 	}
 	return false
+}
+
+// keysCall returns the map argument when e is env.CallBuiltin(ref, m) for
+// the keys builtin, alone or inside lisp.Result.
+func (s *state) keysCall(e ast.Expr) ast.Expr {
+	call, ok := ast.Unparen(e).(*ast.CallExpr)
+	if !ok {
+		return nil
+	}
+	if fn := s.lispFunc(call); fn != nil && fn.Name() == "Result" && len(call.Args) == 1 {
+		return s.keysCall(call.Args[0])
+	}
+	if m := s.lispMethod(call, "LEnv"); m == nil || m.Name() != "CallBuiltin" || len(call.Args) != 2 || call.Ellipsis.IsValid() {
+		return nil
+	}
+	if s.builtinName(call.Args[0]) != "keys" {
+		return nil
+	}
+	return call.Args[1]
+}
+
+// checkKeysLoop: keys := env.CallBuiltin(coreKeys, m) (or through
+// lisp.Result), then a later range over keys.Cells in the same block.
+func (s *state) checkKeysLoop(block *ast.BlockStmt) {
+	for i, st := range block.List {
+		assign, ok := st.(*ast.AssignStmt)
+		if !ok || len(assign.Rhs) != 1 || len(assign.Lhs) == 0 {
+			continue
+		}
+		m := s.keysCall(assign.Rhs[0])
+		if m == nil {
+			continue
+		}
+		id, ok := assign.Lhs[0].(*ast.Ident)
+		if !ok || id.Name == "_" {
+			continue
+		}
+		obj := s.pass.TypesInfo.ObjectOf(id)
+		found := false
+		for _, next := range block.List[i+1:] {
+			ast.Inspect(next, func(n ast.Node) bool {
+				r, ok := n.(*ast.RangeStmt)
+				if !ok {
+					return !found
+				}
+				sel, ok := ast.Unparen(r.X).(*ast.SelectorExpr)
+				if ok && sel.Sel.Name == "Cells" {
+					if x, ok := ast.Unparen(sel.X).(*ast.Ident); ok && s.pass.TypesInfo.Uses[x] == obj {
+						found = true
+					}
+				}
+				return !found
+			})
+			if found {
+				break
+			}
+		}
+		if !found {
+			continue
+		}
+		s.report(assign.Rhs[0], CategoryInfo, fmt.Sprintf("env.MapRange(%s, fn) walks the entries with the checks of keys "+
+			"and builds no list, but makes no context check; lisp.ResultAs[lisp.Cells] reads the keys as a slice with every "+
+			"check; this is a hint, not a fix", s.text(m)))
+	}
 }
