@@ -44,3 +44,8 @@ func Func1[A any](da ArgDecoder[A], f func(env *LEnv, a A) *LVal) LBuiltin {
 func Func2[A, B any](da ArgDecoder[A], db ArgDecoder[B], f func(env *LEnv, a A, b B) *LVal) LBuiltin {
 	return nil
 }
+
+func Func1E[A any, R any](f func(env *LEnv, a A) (R, error)) LBuiltin { return nil }
+func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
+	return nil
+}

@@ -101,6 +101,7 @@ var freshLEnvMethods = map[string]bool{
 const mutatesMarker = "elps:mutates"
 
 func runFreshness(pass *analysis.Pass) (any, error) {
+	checkTypedResults(pass)
 	for _, file := range pass.Files {
 		ann := mutatesLines(pass.Fset, file)
 		for _, decl := range file.Decls {

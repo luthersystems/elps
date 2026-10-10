@@ -164,9 +164,13 @@ func Justified(text string) bool {
 // function with typed arguments or a (value, error) result, into an
 // LBuiltin.  That argument is a builtin body.
 var typedBindings = map[string]bool{
-	"FuncE": true,
-	"Func1": true,
-	"Func2": true,
+	"FuncE":  true,
+	"Func1":  true,
+	"Func2":  true,
+	"Func3":  true,
+	"Func1E": true,
+	"Func2E": true,
+	"Func3E": true,
 }
 
 // typedBindingBody returns the builtin body that call passes to a typed

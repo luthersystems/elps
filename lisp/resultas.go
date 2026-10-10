@@ -21,6 +21,7 @@ import "reflect"
 //	[]byte        bytes
 //	[]*LVal       the cells of a list
 //	Cells         the cells of a list
+//	Text          a string (copied) or bytes
 //	*LVal         any value, as is
 //	any other T   the payload of a native value, through NativeValue[T]
 //
@@ -106,6 +107,15 @@ func valueAs[T any](v *LVal) (T, bool) {
 			return out, false
 		}
 		*p = v.Cells
+	case *Text:
+		switch v.Type {
+		case LString:
+			*p = Text(v.Str)
+		case LBytes:
+			*p = v.Bytes()
+		default:
+			return out, false
+		}
 	case **LVal:
 		*p = v
 	default:
@@ -133,6 +143,8 @@ func typeNoun[T any]() string {
 		return "a list"
 	case **LVal:
 		return "a value"
+	case *Text:
+		return textNoun
 	}
 	return "a native " + reflect.TypeFor[T]().String()
 }

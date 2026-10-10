@@ -6,9 +6,12 @@ package lisp
 // same "<what> is not a <type>: <actual type>" errors builtins write by hand
 // (luthersystems/elps#745).  Error text is program output -- a phylum can
 // catch and return it, and every endorsing peer must produce the same bytes
-// -- so ArgReader never picks a message: the caller passes the subject
+// -- so an ArgReader read never picks a subject: the caller passes it
 // ("first argument", "name") exactly as its hand-written Errorf spelled it,
-// or a whole format to Typed.
+// or a whole format to Typed.  Func1E, Func2E and Func3E pass the standard
+// subject for the argument's position ("argument", "first argument", ...),
+// for ports that keep only the error condition; elps's own builtins do not
+// use them.
 //
 // The first failure is recorded and every later read returns a zero value
 // without checking, so a builtin reads all its arguments and then checks Err

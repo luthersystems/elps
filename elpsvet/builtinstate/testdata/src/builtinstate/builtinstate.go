@@ -247,3 +247,8 @@ func (s *Service) ErrorMethod(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, erro
 	s.n = 1 // want `ErrorMethod writes receiver s`
 	return args, nil
 }
+
+var typedFunc1E = lisp.Func1E(func(env *lisp.LEnv, s string) (int, error) {
+	calls = len(s) // want `builtin writes package-level var calls`
+	return calls, nil
+})

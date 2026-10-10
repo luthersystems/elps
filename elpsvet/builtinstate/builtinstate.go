@@ -199,9 +199,13 @@ func isLBuiltin(t types.Type) bool {
 // function with typed arguments or a (value, error) result, into an
 // LBuiltin.
 var typedBindings = map[string]bool{
-	"FuncE": true,
-	"Func1": true,
-	"Func2": true,
+	"FuncE":  true,
+	"Func1":  true,
+	"Func2":  true,
+	"Func3":  true,
+	"Func1E": true,
+	"Func2E": true,
+	"Func3E": true,
 }
 
 // typedBindingBody returns the body call passes to a typed binding, or nil.

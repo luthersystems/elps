@@ -154,3 +154,13 @@ func builtinNested(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	})
 	return inner(env, args)
 }
+
+var builtinFunc1E = lisp.Func1E(func(env *lisp.LEnv, s string) (string, error) {
+	return env.CallGlobal(s).Str, nil // want `builtin calls env.CallGlobal on a name`
+})
+
+var builtinFunc2E = lisp.Func2E(twoArgs)
+
+func twoArgs(env *lisp.LEnv, a string, n int) (*lisp.LVal, error) {
+	return env.Lambda(lisp.Nil(), nil), nil // want `twoArgs calls env.Lambda`
+}

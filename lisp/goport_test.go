@@ -4,6 +4,7 @@ package lisp_test
 
 import (
 	"context"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"strings"
@@ -596,4 +597,101 @@ func TestStringList(t *testing.T) {
 	back, ok := lisp.SeqOf[string](l)
 	assert.True(t, ok)
 	assert.Equal(t, []string{"a", "b"}, back)
+}
+
+// callTyped binds fn as a builtin with formals and evaluates expr.
+func callTyped(t *testing.T, env *lisp.LEnv, name string, formals *lisp.LVal, fn lisp.LBuiltin, expr string) *lisp.LVal {
+	t.Helper()
+	env.PutGlobal(lisp.Symbol(name), lisp.FunInPackage(lisp.DefaultUserPackage, name, formals, fn))
+	return env.LoadString("t", expr)
+}
+
+func lvalMessage(v *lisp.LVal) string {
+	if v.Type != lisp.LError {
+		return "not an error: " + v.String()
+	}
+	return (*lisp.ErrorVal)(v).ErrorMessage()
+}
+
+func TestFunc1E(t *testing.T) {
+	env := testEnv(t)
+	encode := lisp.Func1E(func(env *lisp.LEnv, in lisp.Text) ([]byte, error) {
+		return hex.AppendEncode(nil, in), nil
+	})
+	assert.Equal(t, `"6869"`, callTyped(t, env, "enc", lisp.Formals("x"), encode, `(to-string (enc "hi"))`).String())
+	assert.Equal(t, `"6869"`, env.LoadString("t", `(to-string (enc (to-bytes "hi")))`).String())
+	got := env.LoadString("t", `(enc 3)`)
+	assert.Equal(t, "argument is not a string or bytes: int", lvalMessage(got))
+	assert.Equal(t, "error", got.Str)
+
+	// The arity check: a Func1E builtin bound to two formals fails.
+	got = callTyped(t, env, "enc2", lisp.Formals("x", "y"), encode, `(enc2 "a" "b")`)
+	assert.Equal(t, "invalid number of arguments: 2", lvalMessage(got))
+
+	h := &goportHandle{name: "n"}
+	env.PutGlobal(lisp.Symbol("handle"), lisp.NativeOf(h))
+	name := lisp.Func1E(func(env *lisp.LEnv, h *goportHandle) (string, error) { return h.name, nil })
+	assert.Equal(t, `"n"`, callTyped(t, env, "hname", lisp.Formals("h"), name, `(hname handle)`).String())
+	assert.Equal(t, "argument is not a native *lisp_test.goportHandle: string", lvalMessage(env.LoadString("t", `(hname "x")`)))
+
+	truthy := lisp.Func1E(func(env *lisp.LEnv, b bool) (bool, error) { return !b, nil })
+	assert.Equal(t, "true", callTyped(t, env, "not2", lisp.Formals("b"), truthy, `(not2 ())`).String())
+	assert.Equal(t, "false", env.LoadString("t", `(not2 0)`).String())
+
+	half := lisp.Func1E(func(env *lisp.LEnv, f float64) (float64, error) { return f / 2, nil })
+	assert.Equal(t, "1.5", callTyped(t, env, "half", lisp.Formals("f"), half, `(half 3)`).String())
+	assert.Equal(t, "argument is not a number: string", lvalMessage(env.LoadString("t", `(half "x")`)))
+
+	nothing := lisp.Func1E(func(env *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return nil, nil })
+	assert.Equal(t, "()", callTyped(t, env, "nothing", lisp.Formals("v"), nothing, `(nothing 1)`).String())
+
+	inner := lisp.ErrorConditionf("my-condition", "inner")
+	fail := lisp.Func1E(func(env *lisp.LEnv, v *lisp.LVal) (int, error) { return 0, lisp.GoError(inner) })
+	assert.Same(t, inner, callTyped(t, env, "fail", lisp.Formals("v"), fail, `(fail 1)`))
+
+	list := lisp.Func1E(func(env *lisp.LEnv, n int) (lisp.Cells, error) { return lisp.Cells{lisp.Int(n)}, nil })
+	assert.Equal(t, "'(4)", callTyped(t, env, "list1", lisp.Formals("n"), list, `(list1 4)`).String())
+	plain := lisp.Func1E(func(env *lisp.LEnv, n int) ([]*lisp.LVal, error) { return []*lisp.LVal{lisp.Int(n)}, nil })
+	assert.Equal(t, "'(5)", callTyped(t, env, "list2", lisp.Formals("n"), plain, `(list2 5)`).String())
+	assert.Equal(t, "argument is not an integer: float", lvalMessage(env.LoadString("t", `(list2 5.5)`)))
+}
+
+func TestFunc2EAndFunc3E(t *testing.T) {
+	env := testEnv(t)
+	pad := lisp.Func2E(func(env *lisp.LEnv, s string, width int) (string, error) {
+		if width <= len(s) {
+			return s, nil
+		}
+		if err := lisp.GoError(env.CheckAlloc(width)); err != nil {
+			return "", err
+		}
+		return strings.Repeat(" ", width-len(s)) + s, nil
+	})
+	assert.Equal(t, `"  ab"`, callTyped(t, env, "pad", lisp.Formals("s", "w"), pad, `(pad "ab" 4)`).String())
+	assert.Equal(t, "second argument is not an integer: string", lvalMessage(env.LoadString("t", `(pad "ab" "4")`)))
+	assert.Equal(t, "first argument is not a string: symbol", lvalMessage(env.LoadString("t", `(pad 'ab "4")`)), "the first failure wins")
+	env.Runtime.MaxAlloc = 3
+	assert.Equal(t, "allocation size 4 exceeds maximum (3)", lvalMessage(env.LoadString("t", `(pad "ab" 4)`)))
+	env.Runtime.MaxAlloc = 0
+
+	sum := lisp.Func3E(func(env *lisp.LEnv, a, b, c int) (int, error) { return a + b + c, nil })
+	assert.Equal(t, "6", callTyped(t, env, "sum3", lisp.Formals("a", "b", "c"), sum, `(sum3 1 2 3)`).String())
+	assert.Equal(t, "third argument is not an integer: string", lvalMessage(env.LoadString("t", `(sum3 1 2 "3")`)))
+
+	join3 := lisp.Func3(lisp.StringArg("first argument"), lisp.StringArg("second argument"), lisp.StringArg("third argument"),
+		func(env *lisp.LEnv, a, b, c string) *lisp.LVal { return lisp.String(a + b + c) })
+	assert.Equal(t, `"abc"`, callTyped(t, env, "join3", lisp.Formals("a", "b", "c"), join3, `(join3 "a" "b" "c")`).String())
+	assert.Equal(t, "third argument is not a string: int", lvalMessage(env.LoadString("t", `(join3 "a" "b" 1)`)))
+}
+
+func TestFunc2EAllocations(t *testing.T) {
+	env := testEnv(t)
+	add := lisp.Func2E(func(env *lisp.LEnv, s string, n int) (int, error) { return len(s) + n, nil })
+	args := lisp.Cells{lisp.String("ab"), lisp.Int(1)}.List()
+	allocs := testing.AllocsPerRun(100, func() {
+		if v := add(env, args); v.Int != 3 {
+			t.Fatal(v)
+		}
+	})
+	assert.InDelta(t, 1, allocs, 0, "only the result value is allocated")
 }

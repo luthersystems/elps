@@ -230,3 +230,10 @@ func (v *LVal) Bytes() []byte {
 func (env *LEnv) Errorf(format string, v ...interface{}) *LVal {
 	return &LVal{Str: format}
 }
+
+type Text []byte
+
+func Func1E[A any, R any](f func(env *LEnv, a A) (R, error)) LBuiltin { return nil }
+func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
+	return nil
+}

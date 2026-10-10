@@ -686,8 +686,8 @@ Decoders: `ValueArg`, `TypedArg` and `StringArg` for required arguments, and
 Each one is the `ArgReader` read of the same name. For a function of your own
 like `dateArg` above, use `lisp.CustomArg(dateArg)`. A custom decoder is an
 indirect call, so each call of the builtin allocates one `ArgReader` copy.
-Beyond two arguments, or with `&rest`, use
-`ArgReader` directly: Go has no variadic type parameters, which is where
+`lisp.Func3` takes three decoders. Beyond three arguments, or with `&rest`,
+use `ArgReader` directly: Go has no variadic type parameters, which is where
 generics stop. `string:split` and `string:repeat`
 are written this way.
 
@@ -803,6 +803,47 @@ conversion. Both methods use the receiver as the new value's storage, so
 `lisp.Cells(v.Cells).List()` shares `v`'s cells. elpsvet's `elpsfreshness`
 counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
 returns a fresh list of strings.
+
+**Typed builtins in (value, error) form: `lisp.Func1E`, `Func2E` and
+`Func3E`.** Go infers the argument and result types from the body, and elps
+picks each argument's decoder from its type:
+
+```go
+var builtinEncode = lisp.Func1E(func(env *lisp.LEnv, in lisp.Text) ([]byte, error) {
+	return hex.AppendEncode(nil, in), nil
+})
+// (encode 3) raises "argument is not a string or bytes: int"
+```
+
+| Argument type | Accepts | Message on a mismatch |
+|---|---|---|
+| `string` | a string | "<position> is not a string: <type>" |
+| `int` | an integer | "is not an integer" |
+| `float64` | any number | "is not a number" |
+| `bool` | any value, by truthiness | never fails |
+| `lisp.Text` | a string (copied, one allocation) or bytes (shared) | "is not a string or bytes" |
+| `*lisp.LVal` | any value | never fails |
+| any other type | a native payload, through `NativeValue[T]` | "is not a native <type>" |
+
+The position is "argument" for a builtin of one argument, else "first
+argument", "second argument" or "third argument". These messages are for
+ports that keep only the error condition of the Lisp they replace. elps's own
+builtins keep their messages and do not use `Func*E`.
+
+The result type is one of `*lisp.LVal`, `string`, `int`, `float64`, `bool`,
+`[]byte`, `[]*lisp.LVal` or `lisp.Cells`; any other type does not compile. A
+nil `*LVal` becomes `()`. A `[]byte`, `[]*LVal` or `Cells` result becomes the
+new value's storage, so it must be fresh: `elpsfreshness` reports a body that
+returns an argument's storage. A native goes out as an `*LVal` from
+`lisp.NativeOf`. An error is returned as `FuncE` returns it.
+
+`Func*E` checks types only. Limits, steps and context checks stay the body's
+job. It takes required positional arguments only: register a `Func2E` builtin
+with exactly two required formals. With other formals the call fails with
+"invalid number of arguments: N", and `elpsidiom` reports the registration.
+For `&optional` or `&key`, keep `Func1`, `Func2` or `Func3` with the `Opt`
+decoders; for `&rest`, keep a plain `LBuiltin`. A call allocates nothing
+beyond the body, except the copy of a string into a `lisp.Text`.
 
 **Values as Go types: `lisp.ResultAs[T]` and `lisp.Field[T]`.**
 `lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.
