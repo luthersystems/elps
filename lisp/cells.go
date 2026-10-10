@@ -25,3 +25,16 @@ func (c Cells) List() *LVal {
 func (c Cells) Vector() *LVal {
 	return Vector(c)
 }
+
+// StringList returns a fresh list of the strings ss.  Each element is a new
+// string value.  StringList makes no check; a builtin that sizes the list
+// from its input checks the allocation cap first (see LEnv.CheckAlloc).
+func StringList(ss []string) *LVal {
+	cells := make([]*LVal, len(ss))
+	vals := make([]LVal, len(ss))
+	for i, s := range ss {
+		vals[i] = LVal{Type: LString, Str: s}
+		cells[i] = &vals[i]
+	}
+	return QExpr(cells)
+}

@@ -801,7 +801,8 @@ passed to `Func1` and `Func2`.
 is `lisp.Vector`. Go assigns `Cells` to and from `[]*lisp.LVal` with no
 conversion. Both methods use the receiver as the new value's storage, so
 `lisp.Cells(v.Cells).List()` shares `v`'s cells. elpsvet's `elpsfreshness`
-counts their results as fresh values.
+counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
+returns a fresh list of strings.
 
 **Values as Go types: `lisp.ResultAs[T]` and `lisp.Field[T]`.**
 `lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.

@@ -587,3 +587,13 @@ func TestSeqOf(t *testing.T) {
 	assert.True(t, ok)
 	assert.Same(t, h, hs[0])
 }
+
+func TestStringList(t *testing.T) {
+	l := lisp.StringList([]string{"a", "b"})
+	assert.Equal(t, `'("a" "b")`, l.String())
+	assert.Equal(t, lisp.LString, l.Cells[0].Type)
+	assert.True(t, lisp.StringList(nil).IsNil())
+	back, ok := lisp.SeqOf[string](l)
+	assert.True(t, ok)
+	assert.Equal(t, []string{"a", "b"}, back)
+}
