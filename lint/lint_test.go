@@ -2136,7 +2136,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 31)
+	assert.Len(t, analyzers, 32)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2149,6 +2149,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"duplicate-binding",
 		"duplicate-definition",
 		"duplicate-keyword",
+		"handler-order",
 		"if-arity",
 		"in-package-toplevel",
 		"iteration-mutation",
@@ -2608,6 +2609,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"lambda-list":            SeverityError,
 		"duplicate-binding":      SeverityWarning,
 		"duplicate-keyword":      SeverityWarning,
+		"handler-order":          SeverityWarning,
 		"cond-structure":         SeverityError,
 		"builtin-arity":          SeverityError,
 		"quote-call":             SeverityWarning,

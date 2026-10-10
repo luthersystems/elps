@@ -55,6 +55,8 @@ var specialOpAllowlist = map[string]string{
 	"lint/analyzers.go:scanMacroTemplates":                      "reads walker events to find templates and enclosing handlers",
 	"lint/analyzers.go:var AnalyzerBuiltinArity":                "reads quasiquote walker events to preserve the syntactic lint policy",
 	"lint/analyzers.go:var AnalyzerCondMissingElse":             "checks cond clause exhaustiveness",
+	"lint/analyzers.go:var AnalyzerHandlerOrder":                "reads handler-bind binding lists in source order",
+	"lint/analyzers.go:conditionLiteral":                        "extracts the literal condition operands of define-condition, including explicit quote",
 	"lint/analyzers.go:var AnalyzerCondStructure":               "validates malformed cond syntax before code walking",
 	"lint/analyzers.go:var AnalyzerDefunStructure":              "validates malformed definition syntax before code walking",
 	"lint/analyzers.go:var AnalyzerDuplicateBinding":            "validates duplicate lexical binding entries",
