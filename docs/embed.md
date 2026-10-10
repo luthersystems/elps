@@ -797,6 +797,35 @@ conversion. Both methods use the receiver as the new value's storage, so
 `lisp.Cells(v.Cells).List()` shares `v`'s cells. elpsvet's `elpsfreshness`
 counts their results as fresh values.
 
+**Values as Go types: `lisp.ResultAs[T]` and `lisp.Field[T]`.**
+`lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.
+`lisp.Field[T](m, "key")` reads one sorted-map value with the same
+conversions, and returns `ok=false` for a value that is not a map, a missing
+key or a value of another type.
+
+```go
+keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+status, _ := lisp.Field[string](desc, "status")
+def, ok := lisp.Field[*flowdef.Def](state, "def") // a native payload
+```
+
+| T | Accepts |
+|---|---|
+| `string` | a string only (use `lisp.SymbolName` for a symbol) |
+| `int` | an integer only; a float is not truncated |
+| `float64` | any number |
+| `bool` | any value, by truthiness; it never fails |
+| `[]byte` | bytes |
+| `[]*LVal`, `Cells` | a list's cells |
+| `*LVal` | any value |
+| any other type | a native payload, through `lisp.NativeValue[T]` |
+
+A named type such as `type Status string` reads a native, not a string. A
+`[]byte`, `[]*LVal` or `Cells` result shares the value's storage, so treat it
+as read-only. Use `ResultAs` only where the value always has type `T`. A
+mismatch returns an error with condition `error`. Both make no check, charge
+no step and use no reflection.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
