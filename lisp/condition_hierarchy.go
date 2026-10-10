@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"errors"
 	"fmt"
 	"maps"
 )
@@ -42,16 +43,16 @@ const CondCatchAll = "condition"
 func (rt *Runtime) DefineCondition(child, parent string) error {
 	switch {
 	case child == "" || parent == "":
-		return fmt.Errorf("condition name is empty")
+		return errors.New("condition name is empty")
 	case child == parent:
 		return fmt.Errorf("%s cannot be its own parent", child)
 	}
 	for _, name := range [...]string{child, parent} {
 		switch name {
 		case CondCatchAll:
-			return fmt.Errorf("condition is the root of every condition and cannot be defined")
+			return errors.New("condition is the root of every condition and cannot be defined")
 		case CondInternalPanic:
-			return fmt.Errorf("internal-panic cannot be defined")
+			return errors.New("internal-panic cannot be defined")
 		}
 	}
 	if old := rt.ConditionParent(child); old != "" {

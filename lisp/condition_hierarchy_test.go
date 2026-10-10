@@ -4,7 +4,6 @@ package lisp_test
 
 import (
 	"fmt"
-	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/lisp"
@@ -21,7 +20,7 @@ func TestDefineCondition(t *testing.T) {
 
 	assert.Equal(t, "storage-error", rt.ConditionParent("not-found"))
 	assert.Equal(t, "error", rt.ConditionParent(lisp.CondArgumentError))
-	assert.Equal(t, "", rt.ConditionParent("error"))
+	assert.Empty(t, rt.ConditionParent("error"))
 	assert.True(t, rt.ConditionIsA("not-found", "not-found"))
 	assert.True(t, rt.ConditionIsA("not-found", "storage-error"))
 	assert.True(t, rt.ConditionIsA("not-found", "error"))
@@ -51,8 +50,8 @@ func TestDefineCondition(t *testing.T) {
 		}
 	}
 	// A refused definition changes nothing.
-	assert.Equal(t, "", rt.ConditionParent("error"))
-	assert.Equal(t, "", rt.ConditionParent("x"))
+	assert.Empty(t, rt.ConditionParent("error"))
+	assert.Empty(t, rt.ConditionParent("x"))
 }
 
 func TestDefineConditionDepth(t *testing.T) {
@@ -130,7 +129,7 @@ func TestDefineConditionRendering(t *testing.T) {
 	require.NotEqual(t, lisp.LError, env.LoadString("r.lisp", `(define-condition 'not-found 'error)`).Type)
 	after := lisp.GoError(env.LoadString("r.lisp", `(error 'not-found "missing")`)).Error()
 	assert.Equal(t, before, after)
-	assert.True(t, strings.Contains(after, "not-found"), after)
+	assert.Contains(t, after, "not-found")
 }
 
 func TestConditionHierarchyTemplate(t *testing.T) {
