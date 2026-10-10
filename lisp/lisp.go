@@ -703,7 +703,10 @@ func QExpr(cells []*LVal) *LVal {
 
 // Vector returns an LVal representing a vector, a 1-dimensional array.
 // Provided cells are used as backing storage for the returned vector and are
-// not copied.
+// not copied.  Vector(nil) is an empty vector: its length is 0 and its
+// dimensions are (0), the same value as Array(nil, nil).  A vector is an
+// LArray with one dimension; the Array* methods (ArrayDims, ArrayIndex,
+// ArrayParts, SetArrayData) work on it.
 func Vector(cells []*LVal) *LVal {
 	return Array(nil, cells)
 }
@@ -1463,6 +1466,101 @@ func (v *LVal) ArrayDims() *LVal {
 		return Errorf("not an array: %v", v.Type)
 	}
 	return v.Cells[0].Copy()
+}
+
+// ArrayParts returns the dimension list (dims) and the data list (data) that
+// the array v stores, in that order:
+//
+//	dims, data := v.ArrayParts()
+//
+// It does not copy them, so a write to either list changes v; use
+// ArrayDims for a copy of the dimension list.  ArrayParts makes no check of
+// the lists.  For an LArray value that does not hold two cells (a malformed
+// value built by hand), it returns nil, nil.  ArrayParts panics if v.Type is
+// not LArray, as Map and MapEntries panic for a value that is not a
+// sorted-map.
+func (v *LVal) ArrayParts() (*LVal, *LVal) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	if len(v.Cells) != 2 {
+		return nil, nil
+	}
+	return v.Cells[0], v.Cells[1]
+}
+
+// SetArrayData makes data the data list of the array v and sets its
+// dimensions, in place.  v keeps its pointer, so a value that holds v sees
+// the new contents.  With no dims, v becomes a vector of len(data.Cells)
+// cells.  With dims, they are v's dimensions.  data is kept, not copied.
+// SetArrayData makes no check that data is a list or that the dimensions
+// match its length; Array is the checked form.  When the new rank equals
+// the old rank, SetArrayData writes the dimensions into v's own dimension
+// list, as append! does.  SetArrayData panics if v.Type is not LArray.
+//
+// Use SetArrayData when data has an identity of its own (a list that
+// another value shares).  Use SetArrayCells to fill v's own data list.
+func (v *LVal) SetArrayData(data *LVal, dims ...int) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	//elps:mutates SetArrayData fills the caller's array in place by contract, so a value that holds v sees it
+	v.Cells[1] = data
+	v.setArrayDims(len(data.Cells), dims)
+}
+
+// SetArrayCells makes cells the cells of the data list of the array v and
+// sets its dimensions, in place, as SetArrayData does.  It writes into v's
+// own data list, so it builds no new list; a value that shares that list
+// sees the new cells.  cells is kept, not copied.  SetArrayCells makes no
+// check that the dimensions match len(cells).  It panics if v.Type is not
+// LArray.
+//
+// A decoder that must give out an array before it reads the contents (a
+// back-reference to the array from inside it) builds the empty array first
+// and fills it last:
+//
+//	v := lisp.Vector(nil)
+//	define(v)
+//	cells := readElements()
+//	v.SetArrayCells(cells)
+func (v *LVal) SetArrayCells(cells []*LVal, dims ...int) {
+	if v.Type != LArray {
+		panic("not array: " + v.Type.String())
+	}
+	//elps:mutates SetArrayCells fills the caller's array's own data list in place by contract
+	v.Cells[1].Cells = cells
+	v.setArrayDims(len(cells), dims)
+}
+
+// setArrayDims sets the dimensions of the array v: dims, or a vector of n
+// cells when dims is empty.  When the rank does not change, it writes into
+// v's own dimension list.
+func (v *LVal) setArrayDims(n int, dims []int) {
+	d := v.Cells[0]
+	if len(dims) == 0 {
+		if len(d.Cells) == 1 {
+			//elps:mutates an array owns its dimension list, which append! writes in place too
+			d.Cells[0].Int = n
+			return
+		}
+		//elps:mutates the caller's array takes a new dimension list for the new rank
+		v.Cells[0] = Cells{Int(n)}.List()
+		return
+	}
+	if len(d.Cells) != len(dims) {
+		cells := make([]*LVal, len(dims))
+		for i, k := range dims {
+			cells[i] = Int(k)
+		}
+		//elps:mutates the caller's array takes a new dimension list for the new rank
+		v.Cells[0] = QExpr(cells)
+		return
+	}
+	for i, k := range dims {
+		//elps:mutates an array owns its dimension list, which append! writes in place too
+		d.Cells[i].Int = k
+	}
 }
 
 // ArrayIndex returns the value at the given index in an array.

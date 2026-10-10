@@ -816,6 +816,21 @@ methods. `lisp.Cells{a, b}.List()` is `lisp.QExpr([]*lisp.LVal{a, b})`,
 counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
 returns a fresh list of strings.
 
+**Arrays from Go: `ArrayParts`, `SetArrayData` and `SetArrayCells`.** An
+array stores a dimension list and a data list. Read them with
+`dims, data := v.ArrayParts()`. It returns the stored lists, not copies;
+`v.ArrayDims()` returns a copy of the dimension list. `v.SetArrayData(data,
+dims...)` replaces the data list and sets the dimensions in place, and `v`
+keeps its pointer. With no dims, `v` becomes a vector of `len(data.Cells)`
+cells. `v.SetArrayCells(cells, dims...)` does the same, but writes `cells`
+into `v`'s own data list, so it builds no new list. Use `SetArrayData` when
+the data list is shared with another value. None of these methods makes a
+check; `lisp.Array` is the checked constructor. `lisp.Vector(nil)` is an
+empty vector, the same value as `lisp.Array(nil, nil)`. A decoder that must
+give out an array before it reads the contents (a back-reference) builds
+`lisp.Vector(nil)` first and calls `SetArrayCells` last. Code outside package `lisp` does not index an
+array's `Cells`.
+
 **Typed builtins in (value, error) form: `lisp.Func1E`, `Func2E` and
 `Func3E`.** Go infers the argument and result types from the body, and elps
 picks each argument's decoder from its type:
