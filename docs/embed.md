@@ -852,6 +852,11 @@ context first, as `CallBuiltin` does. The format is a Go string:
 msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
 ```
 
+**`libstring.Join(env, parts, sep)`** is `string:join` for a `[]string`. It
+shares the builtin's body after the element type check, so it makes the same
+allocation check, raises the same error and charges the same steps (one per
+complete KiB of the result). It checks the context first.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
