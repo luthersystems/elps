@@ -2654,6 +2654,50 @@ In the above code double-not-number is handled by replacing the `(double x)`
 function call with the value 0, while any other error (like an unbound symbol)
 will be replaced with the string "ERROR DETECTED".
 
+#### Condition hierarchy
+
+A condition can have a parent. A `handler-bind` binding for the parent then
+catches the child, as a Go `errors.Is` check matches a wrapped error. elps
+gives one built-in condition a parent: `argument-error`, which builtins raise
+for a bad argument, is a child of `error`. `define-condition` adds more:
+
+```lisp
+(define-condition 'storage-error 'error)
+(define-condition 'not-found 'storage-error)
+
+(condition-is? 'not-found 'error)          ; true
+(condition-is? 'not-found 'argument-error) ; false
+(condition-is? 'not-found 'condition)      ; true: every condition is one
+```
+
+When several bindings of one `handler-bind` match, **the most specific one
+runs**: the binding for the condition itself, else the binding for its
+nearest ancestor, with the catch-all `condition` last. The order the bindings
+are written in decides only between bindings for the same type, where the
+first one runs.
+
+```lisp
+(handler-bind ((condition     (lambda (c &rest _) 'any))
+               (error         (lambda (c &rest _) 'error))
+               (storage-error (lambda (c &rest _) 'storage)))
+  (error 'not-found "no such key"))
+; returns 'storage
+```
+
+A condition has at most one parent. Defining the parent a condition already
+has does nothing, and giving it a different one is an error, as are a cycle,
+a chain more than 64 deep, and any definition that names `condition` or
+`internal-panic`. The hierarchy belongs to the runtime: a definition made
+while a template is built is in every VM forked from the template, and one
+made in a VM is seen by no other VM. A definition does not change how an
+error renders.
+
+Before luthersystems/elps#831, the first matching binding in source order ran.
+The two rules differ only for a `handler-bind` that lists a binding before a
+more specific one, such as `condition` before `error`, or `error` before
+`argument-error`. The later binding used to be dead code and now runs for its
+conditions. The `handler-order` lint check reports these.
+
 An error raised while evaluating or calling a handler propagates past that
 `handler-bind`. Its other bindings do not catch the new error. An outer
 `handler-bind` can catch it:

@@ -490,6 +490,36 @@ bare names, and the diagnostic names the canonical one. And as with
 builtin name (for example `(defun quote (x) x)`) is not tracked, so the check
 then reads the shadowed meaning.
 
+### `handler-order`
+
+**Flags a `handler-bind` binding written after a binding for one of its
+ancestors, or for its own type.** (Severity: warning)
+
+`handler-bind` runs the most specific matching binding: the one for the
+raised condition, else the one for its nearest ancestor, with the catch-all
+`condition` last (luthersystems/elps#831). Before that change it ran the
+first match in source order, so the second binding below never ran. It now
+runs for `boom`:
+
+```lisp
+;; WARNING — the boom handler used to be dead code; it now runs for boom
+(handler-bind ((condition (lambda (&rest _) 'any))
+               (boom (lambda (&rest _) 'boom)))
+  (work))
+
+;; GOOD — reads the way it runs
+(handler-bind ((boom (lambda (&rest _) 'boom))
+               (condition (lambda (&rest _) 'any)))
+  (work))
+```
+
+The same applies to `error` before `argument-error`, and to a parent named
+by a `define-condition` call in the same file whose arguments are a quoted
+symbol or a string. A second binding for the same type is reported as one
+that never runs. The check cannot see a parent defined in another file, by
+Go code (`Runtime.DefineCondition`), or by a computed `define-condition`
+call.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)
