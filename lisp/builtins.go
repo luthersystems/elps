@@ -1686,7 +1686,8 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 // value and needs no new entry.
 //
 // It charges no evaluation step, pushes no stack frame and does not write kv.
-// Use it from a Go builtin in place of lisp.SortedMap and MapSet, which skip
+// The map stores the values in kv themselves, not copies, so a later in-place
+// change to one of those values also changes the map's entry.  Use it from a Go builtin in place of lisp.SortedMap and MapSet, which skip
 // the allocation and context checks.
 func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.Type == LError {
