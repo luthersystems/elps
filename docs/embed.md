@@ -579,8 +579,8 @@ or failure (`BindBuiltins`, `ExtendPackage`, `ArgReader.Err`, the step and
 context helpers) returns `lisp.Nil()` on success and the `LError` otherwise,
 like `ChargeSteps` and package loaders, so `lerr.Type == lisp.LError` is
 always the check and a loader can return the result directly. A helper that
-computes something (`CallBuiltin`, `CallGlobal`) returns the value or the
-`LError`.
+computes something (`CallBuiltin`, `CallGlobal`, `SortedMapOf`) returns the
+value or the `LError`.
 
 **Calling a language builtin: `lisp.BuiltinFunc` and `LEnv.CallBuiltin`.**
 Reuse a builtin for its exact errors and guards (sealed maps, `MaxAlloc`,
@@ -600,6 +600,15 @@ does (arity and keyword errors included; the caller's slice is never
 written), checks the context like the evaluator's call boundary, evaluates a
 terminal expression the builtin returns (`funcall`, `apply`), and pushes no
 frame, so an error is attributed to your builtin.
+
+**Building a sorted map: `LEnv.SortedMapOf`.** Use
+`env.SortedMapOf(k1, v1, k2, v2)` to build a map from alternating keys and
+values. It returns what `env.CallBuiltin(lisp.BuiltinFunc("sorted-map"), ...)`
+returns: the same map, or the same error from the same check. It checks the
+context, refuses an odd number of arguments and checks `MaxAlloc` before each
+new key. It charges no step, pushes no frame and does not write its arguments.
+`lisp.SortedMap()` followed by `MapSet` skips the context and `MaxAlloc`
+checks.
 
 **Calling a Lisp function: `LEnv.CallGlobal`.** For a callee that exists
 only in Lisp, `env.CallGlobal("utils:set-exception-business", args...)`
@@ -1209,7 +1218,9 @@ if lisp.True(ok) {  // equivalent to !ok.IsNil()
 
 ### Maps
 
-Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. Keys may be
+Use `l := lisp.SortedMap()` to construct an empty sorted map LVal. In a
+builtin, use `env.SortedMapOf(k1, v1, ...)` to build a map with the checks of
+the `sorted-map` builtin (see "Building a sorted map" above). Keys may be
 ints, strings or symbols; floats are not supported. Symbol keys are coerced to
 string to avoid programming errors causing symbol and string keys with equal
 string values from existing in the same map. An int key is distinct from the
