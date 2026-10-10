@@ -39,7 +39,7 @@
 # elps is a pure Go project (an embedded Lisp interpreter). There is no cloud infra, no
 # Docker, no Playwright. What the Makefile and CI actually need:
 #
-#   go 1.26.8             go.mod `toolchain` (CI `go-version-file`; the hook reads go.mod)
+#   go 1.26.9             go.mod `toolchain` (CI `go-version-file`; the hook reads go.mod)
 #   golangci-lint v2.13.x elps.yml golangci-lint-action `version: v2.13`; hook pins 2.13.2
 #   betteralign v0.14.3   Makefile `fieldalign-fix` (via `go run ...@v0.14.3`)
 #   govulncheck v1.8.0    govulncheck.yml / govulncheck-scheduled.yml
@@ -79,7 +79,7 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 : > "$LOG_FILE" 2>/dev/null || true
 
 # Keep these four in sync with go.mod, .github/workflows/elps.yml and .claude/hooks/session-start.sh.
-GO_VERSION=1.26.8               # copy of go.mod `toolchain` (the repo is not here yet); go-pin-sync-test.py checks it
+GO_VERSION=1.26.9               # copy of go.mod `toolchain` (the repo is not here yet); go-pin-sync-test.py checks it
 GOLANGCI_VERSION=v2.13.2        # CI pins v2.13 (golangci-lint-action); hook pins 2.13.2
 BETTERALIGN_VERSION=v0.14.3     # Makefile `fieldalign-fix`
 GOVULNCHECK_VERSION=v1.8.0      # govulncheck.yml / govulncheck-scheduled.yml
