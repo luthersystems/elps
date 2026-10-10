@@ -32,6 +32,8 @@
 //	                                   env.ToString(v)                (fix)
 //	env.CallBuiltin(ref, lisp.String(f), v, ...) for "format-string"
 //	                                   env.FormatString(f, v, ...)    (fix)
+//	fn.Cells[1] = doc or fn.Cells[1].Str = doc, where every value of fn
+//	is a lisp.FunInPackage result      lisp.FunInPackageDoc(..., doc) (hint)
 //
 // A ref is a lisp.BuiltinFunc call or a package-level variable that one
 // initializes.  MapPut, MapLookup, ToString and FormatString check the
@@ -121,6 +123,9 @@ type state struct {
 	// arities maps a package-level LBuiltin variable to the argument count
 	// of the Func*E call that initializes it.
 	arities map[types.Object]int
+	// funVars maps a variable to true when every value assigned to it is a
+	// lisp.FunInPackage call, and to false when another value is assigned.
+	funVars map[types.Object]bool
 	src     map[string][]byte
 }
 
@@ -133,9 +138,11 @@ func run(pass *analysis.Pass) (any, error) {
 		decls:       make(map[*types.Func]*ast.FuncDecl),
 		builtinRefs: make(map[types.Object]string),
 		arities:     make(map[types.Object]int),
+		funVars:     make(map[types.Object]bool),
 		src:         make(map[string][]byte),
 	}
 	s.collect()
+	s.collectFunVars()
 	for _, file := range pass.Files {
 		s.checkFile(file)
 	}
@@ -386,6 +393,8 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkBuiltinHelper(x)
 		case *ast.IfStmt:
 			s.checkCheckAlloc(x)
+		case *ast.AssignStmt:
+			s.checkFunDocWrite(x)
 		case *ast.RangeStmt:
 			s.checkMapKeysRange(x, stack)
 		case *ast.FuncType:
@@ -1195,4 +1204,83 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 	helper := s.operand(recv.X) + "." + h.helper
 	s.report(call, CategoryInfo, "use "+helper+", which returns the same value or error from the same checks",
 		replace(call, "Use LEnv."+h.helper, helper+"("+strings.Join(parts, ", ")+")"))
+}
+
+// collectFunVars records the variables that hold a lisp.FunInPackage result.
+// A variable that is also assigned another value is not recorded.
+func (s *state) collectFunVars() {
+	note := func(id *ast.Ident, value ast.Expr) {
+		obj := s.pass.TypesInfo.ObjectOf(id)
+		if obj == nil {
+			return
+		}
+		isFun := false
+		if call, ok := ast.Unparen(value).(*ast.CallExpr); ok {
+			fn := s.lispFunc(call)
+			isFun = fn != nil && fn.Name() == "FunInPackage"
+		}
+		if prev, seen := s.funVars[obj]; seen && !prev {
+			return
+		}
+		s.funVars[obj] = isFun
+	}
+	for _, file := range s.pass.Files {
+		ast.Inspect(file, func(n ast.Node) bool {
+			switch x := n.(type) {
+			case *ast.AssignStmt:
+				for i, l := range x.Lhs {
+					id, ok := ast.Unparen(l).(*ast.Ident)
+					if !ok {
+						continue
+					}
+					if len(x.Lhs) != len(x.Rhs) {
+						note(id, nil)
+						continue
+					}
+					note(id, x.Rhs[i])
+				}
+			case *ast.ValueSpec:
+				for i, id := range x.Names {
+					if len(x.Names) != len(x.Values) {
+						note(id, nil)
+						continue
+					}
+					note(id, x.Values[i])
+				}
+			}
+			return true
+		})
+	}
+}
+
+// checkFunDocWrite: fn.Cells[1] = doc, or fn.Cells[1].Str = doc, for an fn
+// that holds a lisp.FunInPackage result.  The second cell of a function
+// value is its docstring, which FunInPackageDoc sets.
+func (s *state) checkFunDocWrite(assign *ast.AssignStmt) {
+	if assign.Tok != token.ASSIGN {
+		return
+	}
+	for _, l := range assign.Lhs {
+		target := ast.Unparen(l)
+		if sel, ok := target.(*ast.SelectorExpr); ok && sel.Sel.Name == "Str" {
+			target = ast.Unparen(sel.X)
+		}
+		idx, ok := target.(*ast.IndexExpr)
+		if !ok {
+			continue
+		}
+		if tv, ok := s.pass.TypesInfo.Types[idx.Index]; !ok || tv.Value == nil || tv.Value.String() != "1" {
+			continue
+		}
+		cells, ok := ast.Unparen(idx.X).(*ast.SelectorExpr)
+		if !ok || cells.Sel.Name != "Cells" || s.typeFieldOwner(cells) == nil {
+			continue
+		}
+		id, ok := ast.Unparen(cells.X).(*ast.Ident)
+		if !ok || !s.funVars[s.pass.TypesInfo.Uses[id]] {
+			continue
+		}
+		s.report(l, CategoryInfo, "lisp.FunInPackageDoc(pkg, fid, formals, fn, doc) sets the docstring when it builds "+
+			id.Name+"; the doc is a Go string, so this is a hint, not a fix")
+	}
 }

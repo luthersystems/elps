@@ -44,9 +44,12 @@ func String(s string) *LVal                                          { return &L
 func Nil() *LVal                                                     { return &LVal{} }
 func Formals(names ...string) *LVal                                  { return &LVal{} }
 func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal { return nil }
-func GoError(v *LVal) error                                          { return nil }
-func Result(v *LVal) (*LVal, error)                                  { return v, nil }
-func ResultAs[T any](v *LVal) (T, error)                             { var z T; return z, nil }
+func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
+	return nil
+}
+func GoError(v *LVal) error              { return nil }
+func Result(v *LVal) (*LVal, error)      { return v, nil }
+func ResultAs[T any](v *LVal) (T, error) { var z T; return z, nil }
 
 func FuncE(f func(env *LEnv, args *LVal) (*LVal, error)) LBuiltin { return nil }
 func Func1E[A any, R any](f func(env *LEnv, a A) (R, error)) LBuiltin {
