@@ -31,6 +31,12 @@ package lisp
 // read-only.  Its message is "<what> is not a string or bytes: <type>".
 type Text []byte
 
+// Name is the text of an argument that is a string or a symbol, such as a
+// key or a collection name a builtin accepts in either form.  As a Func*E
+// argument type it accepts either and allocates nothing.  Its message is
+// "<what> is not a string or symbol: <type>".
+type Name string
+
 // funcResult is the set of result types a Func*E body can return.  elps
 // converts the result to an LVal: a string, int, float64 or bool to that
 // value, []byte to bytes, []*LVal or Cells to a list (the slice becomes the
@@ -159,3 +165,6 @@ func funcResultLVal[R funcResult](env *LEnv, out R, err error) *LVal {
 
 // textNoun is the message noun of a Text argument.
 const textNoun = "a string or bytes"
+
+// nameNoun is the message noun of a Name argument.
+const nameNoun = "a string or symbol"

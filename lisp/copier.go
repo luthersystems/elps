@@ -582,8 +582,7 @@ func (c *copier) cells(v *LVal) []*LVal {
 	if len(v.Cells) == 0 {
 		return nil
 	}
-	cells := make([]*LVal, len(v.Cells))
-	copy(cells, v.Cells)
+	cells := Cells(v.Cells).Clone()
 	c.next = copyFrame{cells: cells, copied: cells}
 
 	return cells

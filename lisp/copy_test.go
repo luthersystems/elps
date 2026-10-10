@@ -232,7 +232,7 @@ func TestCopySharesFunctionAndNativeLeaves(t *testing.T) {
 		t.Fatalf("the sorted-map holding them was not copied")
 	}
 	for _, k := range []string{"f", "n"} {
-		ov, cv := om.MapGetLVal(lisp.String(k)), cm.MapGetLVal(lisp.String(k))
+		ov, cv := mapGet(om, lisp.String(k)), mapGet(cm, lisp.String(k))
 		if ov.Type == lisp.LError {
 			t.Fatalf("map key %q: %v", k, ov)
 		}
@@ -282,7 +282,7 @@ func TestCopyClonesNativeCloner(t *testing.T) {
 	nested := &cloneableNative{state: 9}
 	env.PutGlobal(lisp.Symbol("nested-native"), lisp.Native(nested))
 	mustEval(t, env, `(set 'ncp (copy (sorted-map "n" nested-native)))`)
-	inner := env.GetGlobal(lisp.Symbol("ncp")).MapGetLVal(lisp.String("n"))
+	inner := mapGet(env.GetGlobal(lisp.Symbol("ncp")), lisp.String("n"))
 	if inner.Type == lisp.LError {
 		t.Fatalf("map get: %v", inner)
 	}
@@ -339,7 +339,7 @@ func TestCopySharedClosureKeepsTheOriginalsBindings(t *testing.T) {
 	// Anti-vacuity: the data half of the object really was copied.
 	orig := env.GetGlobal(lisp.Symbol("orig"))
 	cp := env.GetGlobal(lisp.Symbol("cp"))
-	if orig.MapGetLVal(lisp.String("state")) == cp.MapGetLVal(lisp.String("state")) {
+	if mapGet(orig, lisp.String("state")) == mapGet(cp, lisp.String("state")) {
 		t.Fatalf("anti-vacuity: the copy shares the original's state vector")
 	}
 

@@ -256,7 +256,7 @@ func TestForkOracleSeesMapBackingBehindDistinctWrappers(t *testing.T) {
 	if rc := one.MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
-	if got := two.MapGetString("witness"); got.Type != lisp.LInt || got.Int != 17 {
+	if got := mapGet(two, "witness"); got.Type != lisp.LInt || got.Int != 17 {
 		t.Fatal("premise: wrappers did not share actual map storage")
 	}
 }

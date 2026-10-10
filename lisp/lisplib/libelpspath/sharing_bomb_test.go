@@ -104,7 +104,7 @@ func TestSharingBombElpspathCopies(t *testing.T) {
 		t.Run(src, func(t *testing.T) {
 			env := sharingBombDoc(t)
 			out := runBomb(t, env, src)
-			big := out.MapGet(lisp.String("big"))
+			big := mapGet(out, lisp.String("big"))
 			sharedChain(t, big, sharingBombDepth)
 			// The copy is a copy: it shares nothing with the document.
 			x := env.LoadString("x.lisp", "x")
@@ -113,7 +113,7 @@ func TestSharingBombElpspathCopies(t *testing.T) {
 			}
 			// The vector's two cells are the same x, so their copies are
 			// the same copy.
-			v := out.MapGet(lisp.String("v"))
+			v := mapGet(out, lisp.String("v"))
 			if cells := v.Cells[1].Cells; cells[0] != cells[1] || cells[0] != big {
 				t.Fatal("the copy did not keep the document's sharing across containers")
 			}

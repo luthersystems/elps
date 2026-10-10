@@ -47,7 +47,7 @@ func TestCopyScalarMapDepthBoundary(t *testing.T) {
 	for range 1023 {
 		cp = cp.Cells[0]
 	}
-	if cp.MapGetString("leaf").Int != 7 {
+	if testMapGet(cp, "leaf").Int != 7 {
 		t.Fatal("copy lost leaf at valid depth")
 	}
 }

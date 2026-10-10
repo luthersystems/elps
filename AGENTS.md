@@ -74,6 +74,13 @@ reason`, validated like `scripts/benchstat-waivers.txt` -- which the gate
 prints ready to fill. Entries stay until the next release, whose notes list
 them (`scripts/api-breaks-since.sh`), then are deleted.
 
+**Compatibility covers tagged releases only.** elps keeps an API backward
+compatible once a tagged release (`vX.Y.Z`) contains it. An API that is on
+`main` but in no tag may change or go without a deprecation step; the gate
+still asks for its `api-breaks.txt` line, whose reason says the API was never
+tagged. Removing or changing a tagged API needs the owner's agreement and an
+upgrade note in the release notes.
+
 ### Work marker gate
 
 CI's `work-markers` job (`scripts/work-marker-gate.sh`) fails when a tracked

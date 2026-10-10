@@ -304,7 +304,7 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 		m.DefSite = &loc
 	}
 	if len(ctx.Args) > 0 {
-		m.Args = append([]*LVal(nil), ctx.Args...)
+		m.Args = Cells(ctx.Args).Clone()
 	}
 	return m, true
 }
@@ -1606,18 +1606,6 @@ func (v *LVal) ArrayIndex(index ...*LVal) *LVal {
 	return v.Cells[1].Cells[i]
 }
 
-// MapGetLVal returns the value corresponding to k in v or an LError if k is
-// not present in v.  MapGetLVal panics if v.Type is not LSortMap.
-func (v *LVal) MapGetLVal(k *LVal) *LVal {
-	x, _ := v.Map().Get(k)
-	return x
-}
-
-// MapGetString is MapGetLVal with a string key.
-func (v *LVal) MapGetString(k string) *LVal {
-	return v.MapGetLVal(String(k))
-}
-
 // MapSetLVal sets k to val in v.  MapSetLVal returns an error if v.Type is not
 // LSortMap.  String and symbol keys are coerced to avoid programming errors
 // causing symbol and string keys with equal string values from existing in the
@@ -1632,26 +1620,6 @@ func (v *LVal) MapSetLVal(k *LVal, val *LVal) *LVal {
 // MapSetString is MapSetLVal with a string key.
 func (v *LVal) MapSetString(k string, val *LVal) *LVal {
 	return v.MapSetLVal(String(k), val)
-}
-
-// MapGet returns the value corresponding to k in v or an LError if k is not
-// present in v.  MapGet panics if v.Type is not LSortMap.  A key that is
-// neither *LVal nor string compiles but fails at run time.
-//
-// Deprecated: use MapGetLVal or MapGetString, which check the key type at
-// compile time.
-func (v *LVal) MapGet(k any) *LVal {
-	switch k := k.(type) {
-	case *LVal:
-		x, _ := v.Map().Get(k)
-		return x
-	case string:
-		x, _ := v.Map().Get(String(k))
-		return x
-	// numerics unsupported
-	default:
-		return Errorf("invalid key type: %T", k)
-	}
 }
 
 // MapSet sets k to val in v.  MapSet returns an error if v.Type is not

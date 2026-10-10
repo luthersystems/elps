@@ -163,11 +163,11 @@ func TestTemplateLazyIdentityAndSharing(t *testing.T) {
 			}
 			// Reach the shared list through the map first, then the slots.
 			a, _ := user.Symbol("a")
-			x := a.MapGetString("x")
-			if a.MapGetString("y") != x || a.MapGetString("inner").MapGetString("z") != x {
+			x := testMapGet(a, "x")
+			if testMapGet(a, "y") != x || testMapGet(testMapGet(a, "inner"), "z") != x {
 				t.Fatal("shared value materialized twice through one map")
 			}
-			if a.MapGetString("self") != a {
+			if testMapGet(a, "self") != a {
 				t.Fatal("cycle not closed")
 			}
 			b, _ := user.Symbol("b")
@@ -301,7 +301,7 @@ func TestTemplateLazyDetachParity(t *testing.T) {
 			t.Fatal(err)
 		}
 		inner, _ := vm.Runtime.Registry.Package("user").Symbol("a")
-		d, err := inner.MapGetString("inner").detach()
+		d, err := testMapGet(inner, "inner").detach()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -344,7 +344,7 @@ func TestTemplateLazySlotWrite(t *testing.T) {
 	// The overwritten slot's old value is still shared correctly elsewhere.
 	a, _ := vm.Runtime.Registry.Package("user").Symbol("a")
 	shared, _ := vm.Runtime.Registry.Package("user").Symbol("shared")
-	if a.MapGetString("x") != shared {
+	if testMapGet(a, "x") != shared {
 		t.Fatal("sharing broken after a slot write")
 	}
 }
@@ -364,7 +364,7 @@ func TestTemplateLazyPrewarm(t *testing.T) {
 	lib := first.Runtime.Registry.Package("lib")
 	lib.Symbol("v7")
 	a, _ := first.Runtime.Registry.Package("user").Symbol("a")
-	a.MapGetString("x")
+	testMapGet(a, "x")
 	used := lazyInstanceOf(first).count
 
 	warm, err := tmpl.NewVM(VMWithPrewarm())
@@ -378,7 +378,7 @@ func TestTemplateLazyPrewarm(t *testing.T) {
 	user := warm.Runtime.Registry.Package("user")
 	wa, _ := user.Symbol("a")
 	shared, _ := user.Symbol("shared")
-	if wa.MapGetString("x") != shared || wa.MapGetString("self") != wa || wa.MapGetString("inner").MapGetString("z") != shared {
+	if testMapGet(wa, "x") != shared || testMapGet(wa, "self") != wa || testMapGet(testMapGet(wa, "inner"), "z") != shared {
 		t.Fatal("prewarm broke identity or sharing")
 	}
 	if v, _ := warm.Runtime.Registry.Package("lib").Symbol("v7"); v.Cells[0].Int != 7 {

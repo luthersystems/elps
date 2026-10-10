@@ -255,7 +255,7 @@ func TestEqualLargeTreesUnchanged(t *testing.T) {
 				continue
 			}
 			m := SortedMap()
-			m.MapSetLVal(Symbol("k"), c.Cells[1].MapGet(String("k")))
+			m.MapSetLVal(Symbol("k"), testMapGet(c.Cells[1], String("k")))
 			c.Cells[1] = m
 		}
 		return v

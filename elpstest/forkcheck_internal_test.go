@@ -198,7 +198,7 @@ func TestOraclesSeeExplicitBuiltinCaptureGraphs(t *testing.T) {
 		if got := env.LoadString("tx.lisp", "(first)"); got.Type != lisp.LInt || got.Int != 0 {
 			t.Fatalf("callback result: %v, want 0", got)
 		}
-		if got := state.MapGetString("n"); got.Type != lisp.LInt || got.Int != 2 {
+		if got := mapGet(state, "n"); got.Type != lisp.LInt || got.Int != 2 {
 			t.Fatalf("fixture did not mutate captures: %v", got)
 		}
 		if envState(env) == before {
