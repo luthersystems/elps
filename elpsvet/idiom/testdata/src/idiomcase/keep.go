@@ -1,0 +1,19 @@
+package idiomcase
+
+import "github.com/luthersystems/elps/lisp"
+
+// A keep-idiom marker with a reason keeps the code on its line and on the
+// line after it.
+func kept(v *lisp.LVal) bool {
+	//elpsvet:keep-idiom a hot path that measures the extra nil test
+	if v.Type == lisp.LError {
+		return true
+	}
+	return v.Type == lisp.LError //elpsvet:keep-idiom the same hot path
+}
+
+// A marker with no reason keeps nothing.
+func keptNoReason(v *lisp.LVal) bool {
+	//elpsvet:keep-idiom
+	return v.Type == lisp.LError // want `use v.IsError\(\), which is the same compare`
+}

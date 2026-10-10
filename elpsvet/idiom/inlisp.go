@@ -144,12 +144,16 @@ func (s *state) enclosing(pos token.Pos) types.Object {
 	return best.obj
 }
 
-// fixAllowed reports whether a fix at n may call the helpers.  Outside
-// package lisp it is always true.  In package lisp it is false when a
+// fixAllowed reports whether a fix at n may call the helpers.  It is false
+// on a line that a keepMarker comment covers.  Otherwise, outside package
+// lisp, it is true.  In package lisp it is false when a
 // helper reaches the function that holds n, or when the unqualified name of
 // a package-level helper (Vector, Cells, MapOf) does not resolve to that
 // helper at n.
 func (s *state) fixAllowed(n ast.Node, helpers ...string) bool {
+	if s.kept(n.Pos()) {
+		return false
+	}
 	if !s.inLisp {
 		return true
 	}
@@ -382,4 +386,37 @@ func (s *state) nilGuardFix(terms []ast.Expr, i int, cmp token.Token, neg string
 		}
 	}
 	return 0
+}
+
+// keepMarker, followed by a reason, on the line of a fix or on the line
+// above it, keeps the code as it is.  Use it at a hot site where the helper
+// is measurably slower, for example the nil test that IsError adds.
+const keepMarker = "//elpsvet:keep-idiom"
+
+// kept reports whether a keepMarker comment with a reason covers the line of
+// pos.
+func (s *state) kept(pos token.Pos) bool {
+	if s.keepLines == nil {
+		s.keepLines = make(map[string]map[int]bool)
+		for _, f := range s.pass.Files {
+			for _, cg := range f.Comments {
+				for _, c := range cg.List {
+					reason, ok := strings.CutPrefix(c.Text, keepMarker)
+					if !ok || strings.TrimSpace(reason) == "" || !strings.HasPrefix(reason, " ") {
+						continue
+					}
+					p := s.pass.Fset.Position(c.Slash)
+					lines := s.keepLines[p.Filename]
+					if lines == nil {
+						lines = make(map[int]bool)
+						s.keepLines[p.Filename] = lines
+					}
+					lines[p.Line] = true
+					lines[p.Line+1] = true
+				}
+			}
+		}
+	}
+	p := s.pass.Fset.Position(pos)
+	return s.keepLines[p.Filename][p.Line]
 }

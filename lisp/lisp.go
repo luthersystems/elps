@@ -2270,7 +2270,8 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // boundary still render in full. Output and work are bounded by DefaultMaxAlloc;
 // exhausted output is replaced by #<truncated>. Use LEnv.Render for runtime limits. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
-	if v.IsError() && !v.quoted {
+	//elpsvet:keep-idiom IsError's nil test costs 13% on BenchmarkString/int, and v is not nil here
+	if v.Type == LError && !v.quoted {
 		return (*ErrorVal)(v).Error()
 	}
 	s, ok := v.boundedString(DefaultMaxAlloc)

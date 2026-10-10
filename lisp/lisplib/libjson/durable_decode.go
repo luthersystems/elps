@@ -430,6 +430,7 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	// The array exists before its contents, so a cell can refer back to
 	// it.  Only v is reachable until SetArrayData or SetArrayCells fills
 	// it.
+	//elpsvet:keep-idiom the shell becomes an N-D array, so Array names it better than Vector
 	v := lisp.Array(nil, nil)
 	d.define(v)
 	if err := d.expect('['); err != nil {

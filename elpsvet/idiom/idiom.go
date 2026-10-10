@@ -16,6 +16,10 @@
 // keeps v.Type == LError, so it does not call itself.  A fix is also not made
 // where a local name shadows the unqualified helper name.
 //
+// A comment "//elpsvet:keep-idiom <reason>" on the line of a fix, or on the
+// line above it, keeps the code as it is.  Use it at a hot site where the
+// helper measures slower, such as the nil test that IsError adds.
+//
 // IDIOMS, reported with category "info".  Where the rewrite is mechanical,
 // the diagnostic carries a suggested fix, so `-fix` applies it.  Each fix
 // keeps behaviour identical, with two exceptions for a nil *LVal: the
@@ -231,6 +235,8 @@ type state struct {
 	reach map[string]map[types.Object]bool
 	// covered holds the nodes that a wider fix already rewrites.
 	covered map[ast.Node]bool
+	// keepLines maps a file name to the lines that a keepMarker covers.
+	keepLines map[string]map[int]bool
 }
 
 // unit is a function body of package lisp: a declaration, or a function
