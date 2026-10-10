@@ -748,6 +748,30 @@ context check and the same error condition. None of them charges a step.
 **`v.IsError()`** reports whether `v` is an `LError`. It is the same compare
 as `v.Type == lisp.LError`.
 
+**Errors as Go errors: `lisp.Result`, `lisp.GoError` and `lisp.ConditionOf`.**
+Every elps helper returns `*LVal`. Code that returns `error` wraps the call:
+
+```go
+v, err := lisp.Result(env.CallBuiltin(coreFuncall, h)) // (v, nil) or (nil, *ErrorVal)
+if err := lisp.GoError(env.CheckContext()); err != nil { // nil unless an error
+	return nil, err
+}
+```
+
+The error is the `*ErrorVal` itself, so `return nil, err` keeps the
+condition, the data and the stack. A wrap changes what Lisp sees:
+
+| Code | What Lisp sees |
+|---|---|
+| `return nil, err` | The same value: condition, data and stack. |
+| `fmt.Errorf("load: %w", err)` | A new error with condition `error` and the full text. `handler-bind` no longer catches the inner condition. `errors.As` still finds the inner value. |
+| `fmt.Errorf("load: %v", err)` | The same as `%w`, and the inner value is gone. |
+
+To add context, raise a new error with `env.Errorf`. `lisp.ConditionOf(err)`
+returns the condition Lisp sees for `err`: the condition of a bare
+`*ErrorVal`, the condition of a wrapped internal panic, and `error` for any
+other error. It does not look through wraps, because `handler-bind` does not.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
