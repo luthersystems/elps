@@ -293,7 +293,8 @@ compare joins the call), `Cells` (`List`, `SExpr`, `Vector`, and the
 `Cells` field in package `lisp`), `Vector`, `env.CheckAlloc`, `env.MapOf`, `lisp.MapOf`,
 `SortedMapOf`, `MapPut`, `MapLookup`, `ToString`, `FormatString`. Hints:
 `Keys`, `All`, `Field`, `ArgReader`, `FunInPackageDoc`, `SeqCells`,
-`NativeValue`, `FuncE`, `Func1E`..`Func3E`, `MapRange`, `StringList`.
+`NativeValue`, `FuncE`, `Func1E`..`Func3E`, `MapRange`, `StringList`,
+`ArrayParts` and `SetArrayCells` (array layout outside package `lisp`).
 It reports, with category `error`, an error wrap that hides a Lisp
 condition, a `*lisp.ErrorVal` result, `ResultAs` over a result of varying
 type, a `Func*E` builtin registered with the wrong formals and an

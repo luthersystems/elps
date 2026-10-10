@@ -1004,7 +1004,9 @@ a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string` or
 keeps behaviour identical for a non-nil value; the package doc of
 `elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `Field`, an
 `ArgReader` read, `FunInPackageDoc`, `SeqCells`, `NativeValue`, `FuncE`,
-`Func1E`..`Func3E`, `MapRange` and `StringList`. With category `error` it reports these mistakes:
+`Func1E`..`Func3E`, `MapRange`, `StringList`, and `ArrayParts`,
+`lisp.Vector(nil)` and `SetArrayCells` for code that indexes an array's
+`Cells`. With category `error` it reports these mistakes:
 
 - `fmt.Errorf` or `errors.New(err.Error())` over a Lisp error in a `FuncE` or
   `Func*E` body, or in a function whose error such a body returns.
