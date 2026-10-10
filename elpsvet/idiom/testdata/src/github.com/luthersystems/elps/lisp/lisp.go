@@ -116,8 +116,8 @@ const (
 	ShapeMap
 )
 
-func ShapeOf(t LType) Shape                 { return ShapeAtom }
-func (v *LVal) MapGetString(k string) *LVal { return v }
+func ShapeOf(t LType) Shape { return ShapeAtom }
+
 func (v *LVal) IsSymbol(name string) bool   { return v != nil && v.Type == LSymbol && v.Str == name }
 func (v *LVal) Len() int                    { return len(v.Cells) }
 func (v *LVal) ArrayIndex(i ...*LVal) *LVal { return v }

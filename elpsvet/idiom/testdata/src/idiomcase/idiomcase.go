@@ -75,16 +75,6 @@ func keysNoCheck(m *lisp.LVal) int {
 	return n
 }
 
-func field(desc *lisp.LVal) bool {
-	in := false
-	if desc.Type == lisp.LSortMap {
-		if s := desc.MapGetString("status"); s.Type == lisp.LString && s.Str == "ok" { // want `lisp.Field\[string\]\(desc, "status"\) reads a string field`
-			in = true
-		}
-	}
-	return in
-}
-
 func argCells(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	v := args.Cells[0] // want `a cell reader decodes v: r := lisp.Cells\(args.Cells\).Read\(env\), then r.Str\(\)`
 	if v.Type != lisp.LString {

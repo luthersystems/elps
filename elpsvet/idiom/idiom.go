@@ -69,10 +69,10 @@
 //	range m.MapEntries().Cells, after an m.Type == lisp.LSortMap check,
 //	or in case lisp.LSortMap or case lisp.ShapeMap of a switch on m's type
 //	                                   for k, v := range m.All()      (hint)
-//	v := m.MapGetString(k), then a v.Type == lisp.LString check and a
-//	read of v.Str, or a v.Type == lisp.LInt check and a read of v.Int
-//	                                   lisp.Field[string](m, k) or
-//	                                   lisp.Field[int](m, k)          (hint)
+//	if m.Type != lisp.LSortMap { return ... }, then m.Map(), m.Keys(),
+//	m.All(), m.MapKeys() or m.MapEntries() later in the block
+//	                                   mv, ok := lisp.AsMap(m), then
+//	                                   lisp.Lookup[T](mv, k)          (hint)
 //	for _, v := range ss { cells = append(cells, lisp.String(v)) }, then
 //	lisp.QExpr(cells), for a []string ss
 //	                                   lisp.StringList(ss)            (hint)
@@ -613,7 +613,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkKeysLoop(x)
 			s.checkStringListLoop(x)
 			s.checkMapSetChain(x)
-			s.checkMapGetString(x)
+			s.checkMapGuard(x)
 			s.checkMapLoop(x)
 			s.checkMakeCopy(x)
 		}
@@ -819,81 +819,58 @@ func (s *state) checkMapKeysRange(r *ast.RangeStmt, stack []ast.Node) {
 		"the key becomes a lisp.MapKey, so this is a hint, not a fix")
 }
 
-// fieldReads maps the type constant a MapGetString result is tested
-// against to the LVal field that reads it and the Field type argument.
-var fieldReads = map[string]struct{ field, goType string }{
-	"LString": {"Str", "string"},
-	"LInt":    {"Int", "int"},
-}
+// mapReads are the LVal methods that read a sorted-map after its type was
+// checked by hand.
+var mapReads = map[string]bool{"Map": true, "Keys": true, "All": true, "MapKeys": true, "MapEntries": true}
 
-// checkMapGetString: v := m.MapGetString(k) (or the if-init form), then
-// v.Type == lisp.LString and v.Str, or v.Type == lisp.LInt and v.Int.
-func (s *state) checkMapGetString(block *ast.BlockStmt) {
-	check := func(assign *ast.AssignStmt, uses ast.Node) {
-		if assign == nil || assign.Tok != token.DEFINE || len(assign.Lhs) != 1 || len(assign.Rhs) != 1 {
-			return
-		}
-		id, ok := assign.Lhs[0].(*ast.Ident)
-		if !ok {
-			return
-		}
-		call, ok := ast.Unparen(assign.Rhs[0]).(*ast.CallExpr)
-		if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapGetString" {
-			return
-		}
-		fsel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-		if !ok {
-			return
-		}
-		m := fsel.X
-		typed := make(map[string]bool)
-		read := make(map[string]bool)
-		ast.Inspect(uses, func(n ast.Node) bool {
-			switch x := n.(type) {
-			case *ast.BinaryExpr:
-				if v := s.typeField(x.X); v != nil && s.text(v) == id.Name {
-					for c := range fieldReads {
-						if s.isLispConst(x.Y, c) {
-							typed[c] = true
-						}
-					}
-				}
-			case *ast.SelectorExpr:
-				if v, ok := x.X.(*ast.Ident); ok && v.Name == id.Name {
-					read[x.Sel.Name] = true
-				}
-			}
-			return true
-		})
-		for _, c := range []string{"LString", "LInt"} {
-			f := fieldReads[c]
-			if typed[c] && read[f.field] {
-				s.report(call, CategoryInfo, fmt.Sprintf("lisp.Field[%s](%s, %s) reads %s field in one call; "+
-					"it returns ok=false for a value that is not a map, a missing key or another type",
-					f.goType, s.text(m), s.text(call.Args[0]), article(f.goType)))
-				return
-			}
-		}
-	}
+// checkMapGuard: if m.Type != lisp.LSortMap { return ... } (or another
+// statement that leaves the block), then a map read of m later in the
+// block.  A lisp.MapView makes the check once and carries it in its type.
+func (s *state) checkMapGuard(block *ast.BlockStmt) {
 	for i, st := range block.List {
-		switch x := st.(type) {
-		case *ast.IfStmt:
-			if a, ok := x.Init.(*ast.AssignStmt); ok {
-				check(a, x)
-			}
-		case *ast.AssignStmt:
-			if i+1 < len(block.List) {
-				check(x, &ast.BlockStmt{List: block.List[i+1:]})
+		ifs, ok := st.(*ast.IfStmt)
+		if !ok || ifs.Init != nil || ifs.Else != nil || len(ifs.Body.List) == 0 {
+			continue
+		}
+		cond, ok := ast.Unparen(ifs.Cond).(*ast.BinaryExpr)
+		if !ok || cond.Op != token.NEQ {
+			continue
+		}
+		m := s.typeField(cond.X)
+		if m == nil || !s.isLispConst(cond.Y, "LSortMap") {
+			continue
+		}
+		switch ifs.Body.List[len(ifs.Body.List)-1].(type) {
+		case *ast.ReturnStmt, *ast.BranchStmt:
+		default:
+			continue
+		}
+		name := s.text(m)
+		read := false
+		for _, later := range block.List[i+1:] {
+			ast.Inspect(later, func(n ast.Node) bool {
+				call, ok := n.(*ast.CallExpr)
+				if read || !ok {
+					return !read
+				}
+				fn := s.lispMethod(call, "LVal")
+				if fn == nil || !mapReads[fn.Name()] {
+					return true
+				}
+				if sel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr); ok && s.text(sel.X) == name {
+					read = true
+				}
+				return !read
+			})
+			if read {
+				break
 			}
 		}
+		if read {
+			s.report(cond, CategoryInfo, "mv, ok := lisp.AsMap("+name+") makes this check once and returns a lisp.MapView; "+
+				"read it with lisp.Lookup[T](mv, key), mv.Keys() or mv.All(), which need no type check of their own")
+		}
 	}
-}
-
-func article(goType string) string {
-	if goType == "int" {
-		return "an int"
-	}
-	return "a " + goType
 }
 
 // checkArgCells: v := args.Cells[i], or a tuple a, b := args.Cells[0],
