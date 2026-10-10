@@ -739,6 +739,15 @@ The rules are exact, so step counts stay deterministic:
   that is a coordinated upgrade like any other step change. A new builtin can
   adopt it freely.
 
+### Go-style helpers for ports
+
+These helpers let a Go builtin read like ordinary Go. Each helper that
+mirrors a builtin makes that builtin's checks: the allocation cap, the
+context check and the same error condition. None of them charges a step.
+
+**`v.IsError()`** reports whether `v` is an `LError`. It is the same compare
+as `v.Type == lisp.LError`.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,

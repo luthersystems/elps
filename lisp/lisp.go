@@ -1597,6 +1597,12 @@ func (v *LVal) IsNil() bool {
 	return v.Type == LSExpr && len(v.Cells) == 0
 }
 
+// IsError reports whether v is an error value (LError).  It is the same
+// compare as v.Type == LError.
+func (v *LVal) IsError() bool {
+	return v.Type == LError
+}
+
 // IsNumeric returns true if v has a primitive numeric type (int, float64).
 //
 // See IsNil for why this is an expression and not a switch.
