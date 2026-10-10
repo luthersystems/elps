@@ -29,6 +29,9 @@
 //	}                                  env.CheckAlloc(n)              (fix)
 //	range m.MapKeys().Cells, after an m.Type == lisp.LSortMap check
 //	                                   range m.Keys()                 (hint)
+//	range m.MapEntries().Cells, after an m.Type == lisp.LSortMap check,
+//	or in case lisp.LSortMap or case lisp.ShapeMap of a switch on m's type
+//	                                   for k, v := range m.All()      (hint)
 //	m.MapGetString(k) read as .Str after a .Type == lisp.LString check,
 //	after an m.Type == lisp.LSortMap check
 //	                                   lisp.Field[string](m, k)       (hint)
@@ -443,6 +446,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkFunDocWrite(x)
 		case *ast.RangeStmt:
 			s.checkMapKeysRange(x, stack)
+			s.checkMapEntriesRange(x, stack)
 		case *ast.TypeAssertExpr:
 			s.checkNativeAssert(x, stack)
 		case *ast.FuncType:
@@ -1908,6 +1912,59 @@ func (s *state) isErrorReturn(ifs *ast.IfStmt) bool {
 		}
 		if id, ok := ast.Unparen(c.Args[0]).(*ast.Ident); ok && s.pass.TypesInfo.Uses[id] == errObj {
 			return true
+		}
+	}
+	return false
+}
+
+// checkMapEntriesRange: range m.MapEntries().Cells after a map check.
+func (s *state) checkMapEntriesRange(r *ast.RangeStmt, stack []ast.Node) {
+	sel, ok := ast.Unparen(r.X).(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "Cells" {
+		return
+	}
+	call, ok := ast.Unparen(sel.X).(*ast.CallExpr)
+	if !ok || s.lispMethod(call, "LVal") == nil || s.callee(call).Name() != "MapEntries" {
+		return
+	}
+	fsel, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
+	if !ok {
+		return
+	}
+	m := s.text(fsel.X)
+	if !s.mapChecked(stack, m) && !s.mapCase(stack, m) {
+		return
+	}
+	s.report(r.X, CategoryInfo, "for k, v := range "+s.operand(fsel.X)+".All() walks the entries without building a "+
+		"list of pairs; the key becomes a lisp.MapKey, so this is a hint, not a fix")
+}
+
+// mapCase reports whether the top node of stack is in a case clause that
+// selects a map m: case lisp.LSortMap of a switch on m.Type, or case
+// lisp.ShapeMap of a switch on lisp.ShapeOf(m.Type).
+func (s *state) mapCase(stack []ast.Node, m string) bool {
+	for i := len(stack) - 2; i >= 1; i-- {
+		switch p := stack[i].(type) {
+		case *ast.FuncLit, *ast.FuncDecl:
+			return false
+		case *ast.CaseClause:
+			if len(p.List) != 1 {
+				continue
+			}
+			sw, ok := stack[i-2].(*ast.SwitchStmt) // the clause is in the switch's body
+			if !ok || sw.Tag == nil {
+				continue
+			}
+			tag := ast.Unparen(sw.Tag)
+			want := "LSortMap"
+			if c, ok := tag.(*ast.CallExpr); ok && len(c.Args) == 1 {
+				if fn := s.lispFunc(c); fn != nil && fn.Name() == "ShapeOf" {
+					tag, want = c.Args[0], "ShapeMap"
+				}
+			}
+			if x := s.typeField(tag); x != nil && s.text(x) == m && s.isLispConst(p.List[0], want) {
+				return true
+			}
 		}
 	}
 	return false

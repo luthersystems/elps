@@ -75,7 +75,17 @@ func Func2E[A, B any, R any](f func(env *LEnv, a A, b B) (R, error)) LBuiltin {
 	return nil
 }
 
-func (v *LVal) MapKeys() *LVal              { return v }
+func (v *LVal) MapKeys() *LVal    { return v }
+func (v *LVal) MapEntries() *LVal { return v }
+
+type Shape uint
+
+const (
+	ShapeAtom Shape = iota
+	ShapeMap
+)
+
+func ShapeOf(t LType) Shape                 { return ShapeAtom }
 func (v *LVal) MapGetString(k string) *LVal { return v }
 func (v *LVal) IsError() bool               { return v.Type == LError }
 func (v *LVal) IsSymbol(name string) bool   { return v.Type == LSymbol && v.Str == name }
