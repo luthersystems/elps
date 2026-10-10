@@ -906,7 +906,7 @@ func (s *state) checkArgCells(block *ast.BlockStmt) {
 						read = "r.Name(), which takes a string or a symbol,"
 					}
 					s.report(assign, CategoryInfo, "a cell reader decodes "+name+": r := lisp.Cells(args.Cells).Read(env), "+
-						"then "+read+" in argument order, and check r.Err() once; a failure raises argument-error with a "+
+						"then "+read+" in argument order, and check r.Err() once; a failure raises error with a "+
 						"positional subject; use an ArgReader (lisp.ReadArgs) when an argument needs its own message")
 					break next
 				}

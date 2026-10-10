@@ -120,9 +120,7 @@ var langSpecialOps = []*langBuiltin{
 		name rather than being reclassified. Go errors supply message strings. Source parse
 		errors retain their parser condition names. An error raised by a handler
 		propagates past this handler-bind and can be caught by an outer one.
-		Handlers must be regular functions. A condition type also matches
-		its descendants: 'error matches 'argument-error, which builtins
-		raise for a bad argument. Use the symbol
+		Handlers must be regular functions. Use the symbol
 		'condition' to match any error. The internal-panic condition — a
 		Go panic recovered from host code — is excluded from 'condition'
 		and must be named explicitly to be intercepted. Returns () when
@@ -1025,10 +1023,7 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// IsInternalPanic rather than a name comparison so a
 				// lisp-forged 'internal-panic remains an ordinary,
 				// containable condition.
-				// A handler for a condition also catches its descendants
-				// (ConditionIsA): a handler for error catches
-				// argument-error.
-				if !ConditionIsA(val.Str, sym.Str) &&
+				if sym.Str != val.Str &&
 					(sym.Str != "condition" || IsInternalPanic(val)) {
 					continue
 				}

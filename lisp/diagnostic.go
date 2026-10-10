@@ -26,7 +26,7 @@ func (e *ErrorVal) WriteDiagnosticContext(ctx context.Context, w io.Writer, rend
 			s.Text(nilErrorMessage)
 			return
 		}
-		if e.Str != "" && !rendersAsError(e.Str) {
+		if e.Str != "" && e.Str != "error" {
 			s.Text(e.Str, ": ")
 		}
 		stack := (*LVal)(e).CallStack()

@@ -929,20 +929,10 @@ argument", "second argument" or "third argument". These messages are for
 ports that keep only the error condition of the Lisp they replace. A few elps
 builtins use them too (`math:sqrt`, `math:log`, `base64:encode`, ...).
 
-**Argument failures raise `argument-error`.** Every argument failure found by
-these helpers (`ArgReader`'s reads and `Check`, `Cells.Read`, and `Func*E`'s
-decoding and arity check) raises condition `argument-error`
-(`lisp.CondArgumentError`), a child of `error`. A Lisp `handler-bind` on
-`error` still catches it. A builtin that checks by hand with `env.Errorf`
-raises `error`. Go code that must react to an argument failure tests
-`lisp.ConditionIsA(lisp.ConditionOf(err), lisp.CondArgumentError)`.
-
 **Error text is not a stable API.** An error's message may change in any
 elps release. Its condition is stable: changing it is a documented breaking
-change. A new child condition is not a break for a handler on its parent,
-but a handler that reads the condition symbol sees the child. Code that must
-react to an error catches or tests its condition and does not compare its
-text.
+change. Code that must react to an error catches or tests its condition and
+does not compare its text.
 
 The result type is one of `*lisp.LVal`, `string`, `int`, `float64`, `bool`,
 `[]byte`, `[]*lisp.LVal` or `lisp.Cells`; any other type does not compile. A

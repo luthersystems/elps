@@ -17,8 +17,7 @@ import "strconv"
 // Each read takes the next cell.  The subject of a failure comes from its
 // position, as Func1E, Func2E and Func3E name it: "argument" when there is
 // one cell, otherwise "first argument", "second argument" and so on.  A
-// failure raises condition argument-error (CondArgumentError), a child of
-// error.  The first failure sticks: every later read returns a zero value
+// failure raises condition error.  The first failure sticks: every later read returns a zero value
 // without checking, and Err returns that failure.  A read past the last cell
 // fails with "invalid number of arguments: <n>".
 //
@@ -74,7 +73,7 @@ func (r *CellReader) next(opt bool) *LVal {
 	}
 	if r.i >= len(r.cells) {
 		if !opt {
-			r.err = r.env.ErrorConditionf(CondArgumentError, "invalid number of arguments: %d", len(r.cells))
+			r.err = r.env.Errorf("invalid number of arguments: %d", len(r.cells))
 		}
 		return nil
 	}
@@ -85,7 +84,7 @@ func (r *CellReader) next(opt bool) *LVal {
 
 // fail records "<subject> is not <noun>: <type>" for the cell just read.
 func (r *CellReader) fail(noun string, v *LVal) {
-	r.err = r.env.ErrorConditionf(CondArgumentError, "%s is not %s: %v", subject(r.i-1, len(r.cells)), noun, v.Type)
+	r.err = r.env.Errorf("%s is not %s: %v", subject(r.i-1, len(r.cells)), noun, v.Type)
 }
 
 // convert converts v, the cell next returned, to a T with the conversions of

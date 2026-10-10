@@ -77,14 +77,7 @@ func TestArgReaderMatchesHandWritten(t *testing.T) {
 		require.Equal(t, want.Type, got.Type, al)
 		assert.Equal(t, ws, gs, al)
 		if want.Type == lisp.LError {
-			// The reader raises argument-error, a child of the hand-written
-			// check's error (luthersystems/elps#829).
-			assert.Equal(t, "error", want.Str, al)
-			if got.Str != lisp.CondArgumentError {
-				// Only a missing cell (ReqArg) keeps its own condition.
-				assert.Equal(t, want.Str, got.Str, al)
-			}
-			assert.True(t, lisp.ConditionIsA(got.Str, want.Str), al)
+			assert.Equal(t, want.Str, got.Str, al)
 			assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage(), al)
 		} else {
 			assert.Equal(t, want.String(), got.String(), al)

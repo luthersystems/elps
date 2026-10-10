@@ -694,12 +694,11 @@ func TestFunc1E(t *testing.T) {
 	assert.Equal(t, `"6869"`, env.LoadString("t", `(to-string (enc (to-bytes "hi")))`).String())
 	got := env.LoadString("t", `(enc 3)`)
 	assert.Equal(t, "argument is not a string or bytes: int", lvalMessage(got))
-	assert.Equal(t, lisp.CondArgumentError, got.Str)
+	assert.Equal(t, "error", got.Str)
 
 	// The arity check: a Func1E builtin bound to two formals fails.
 	got = callTyped(t, env, "enc2", lisp.Formals("x", "y"), encode, `(enc2 "a" "b")`)
 	assert.Equal(t, "invalid number of arguments: 2", lvalMessage(got))
-	assert.Equal(t, lisp.CondArgumentError, got.Str)
 
 	h := &goportHandle{name: "n"}
 	env.PutGlobal(lisp.Symbol("handle"), lisp.NativeOf(h))

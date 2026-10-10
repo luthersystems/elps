@@ -880,7 +880,7 @@ func (r *valueRenderer) errorValue(e *ErrorVal, g cycleGuard) {
 		}
 	}
 	r.text(": ")
-	if !rendersAsError(e.Str) {
+	if e.Str != "error" {
 		r.text(e.Str)
 		r.text(": ")
 	} else if stack := (*LVal)(e).CallStack(); stack != nil && stack.Top() != nil {

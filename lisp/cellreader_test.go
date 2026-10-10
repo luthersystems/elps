@@ -13,7 +13,7 @@ import (
 func readerMessage(t *testing.T, v *lisp.LVal) string {
 	t.Helper()
 	require.Equal(t, lisp.LError, v.Type)
-	assert.Equal(t, lisp.CondArgumentError, v.Str)
+	assert.Equal(t, "error", v.Str)
 	return (*lisp.ErrorVal)(v).ErrorMessage()
 }
 
@@ -127,5 +127,5 @@ func TestFuncNameArgument(t *testing.T) {
 	assert.Equal(t, `"k"`, env.LoadString("t", `(nm "k")`).String())
 	got := env.LoadString("t", `(nm 3)`)
 	assert.Equal(t, "argument is not a string or symbol: int", lvalMessage(got))
-	assert.Equal(t, lisp.CondArgumentError, got.Str)
+	assert.Equal(t, "error", got.Str)
 }
