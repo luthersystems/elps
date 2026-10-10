@@ -38,10 +38,14 @@ jobs:
   # The diagnostics above intentionally cannot use a PAT or publish
   # (background: #638).
 
-  # A tag publishes to the Marketplace, so it must point to a commit on main
-  # (luthersystems/common-infrastructure#143). release-tag.yml tags main's
-  # validated tip; this also refuses a tag pushed by hand on another branch.
-  # Every publish job depends on it through build-binaries.
+  # A tag publishes to the Marketplace, so it must be a stable version
+  # (vMAJOR.MINOR.PATCH, no leading zeros, as release-tag.yml requires) and
+  # point to a commit on main (luthersystems/common-infrastructure#143).
+  # release-tag.yml tags main's validated tip; this also refuses a tag pushed
+  # by hand on another branch, and a tag name the publish steps would pass to
+  # a shell. Every publish job depends on it through build-binaries. A tag push
+  # runs the workflow file of the tagged commit, so this cannot stop a tag on a
+  # commit whose own copy drops the job; the v* tag ruleset covers that.
   tag-on-main:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Require tag on main
@@ -62,6 +66,10 @@ jobs:
           # over the runner user's workspace needs it, or git refuses the repo
           # ("dubious ownership") and the check fails closed.
           git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          [[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || {
+            echo "::error::Release tag must be vMAJOR.MINOR.PATCH without leading zeros"
+            exit 1
+          }
           git fetch origin main
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main || {
             echo "::error::Release tag $GITHUB_REF_NAME must point to a commit on main"
@@ -178,7 +186,9 @@ jobs:
 
       - name: Set version in package.json
         working-directory: editors/vscode
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        env:
+          EXTENSION_VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$EXTENSION_VERSION" --no-git-tag-version
 
       - name: Build extension
         working-directory: editors/vscode
@@ -217,7 +227,9 @@ jobs:
 
       - name: Set version in package.json
         working-directory: editors/vscode
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        env:
+          EXTENSION_VERSION: ${{ steps.version.outputs.version }}
+        run: npm version "$EXTENSION_VERSION" --no-git-tag-version
 
       - name: Build extension
         working-directory: editors/vscode

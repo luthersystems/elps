@@ -42,6 +42,8 @@ def validate_tag_on_main(jobs):
     assert steps[0]["uses"].startswith("actions/checkout@")
     assert steps[0]["with"]["fetch-depth"] == 0
     script = steps[-1]["run"]
+    assert ('[[ "$GITHUB_REF" =~ ^refs/tags/v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]'
+            in script)
     assert 'git fetch origin main' in script
     assert 'git merge-base --is-ancestor "$GITHUB_SHA" origin/main' in script
     assert jobs["build-binaries"].get("needs") == "tag-on-main"
@@ -105,6 +107,12 @@ class PublicationIsolation(unittest.TestCase):
                     validate(changed)
         changed = copy.deepcopy(doc)
         changed["jobs"]["tag-on-main"]["steps"][-1]["run"] = "true"
+        with self.assertRaises(AssertionError):
+            validate(changed)
+        # The tag name check must stay: it keeps a malformed tag from publishing.
+        changed = copy.deepcopy(doc)
+        script = changed["jobs"]["tag-on-main"]["steps"][-1]["run"]
+        changed["jobs"]["tag-on-main"]["steps"][-1]["run"] = script.replace("[1-9][0-9]*", "[0-9]+")
         with self.assertRaises(AssertionError):
             validate(changed)
         changed = copy.deepcopy(doc)

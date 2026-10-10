@@ -90,7 +90,9 @@ jobs:
           fail() { echo "::error::$*"; exit 1; }
 
           [[ "$GITHUB_REF" == refs/heads/main ]] || fail "release must be dispatched from main"
-          [[ "$RELEASE_VERSION" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "release version must be vMAJOR.MINOR.PATCH"
+          # No leading zeros: v1.08.0 would compare equal to v1.8.0 yet be a
+          # different tag, and npm (vscode-publish.yml) refuses it.
+          [[ "$RELEASE_VERSION" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]] || fail "release version must be vMAJOR.MINOR.PATCH without leading zeros"
           [[ "$GITHUB_SHA" =~ ^[0-9a-f]{40}$ ]] || fail "release target must be a full lowercase commit SHA"
 
           # Compare normalized decimal components, including arbitrarily large
@@ -208,7 +210,13 @@ jobs:
         run: |
           set -euo pipefail
           printf 'Dry run: %s\n\nRelease notes:\n' "$RELEASE_COMMAND"
+          # The notes hold PR titles and scripts/api-breaks.txt text. Stop the
+          # runner from reading a line of them as a workflow command
+          # (::add-mask:: and so on).
+          token=$(python3 -c 'import secrets; print(secrets.token_hex(16))')
+          echo "::stop-commands::$token"
           cat "$NOTES_PATH"
+          echo "::$token::"
       # claude-code-action@v1 installs its own Claude Code CLI, and that build
       # can lag the model pinned below: claude-opus-5-5 needs Claude Code
       # >= 2.1.280, and the bundled 2.1.278 refused it with
