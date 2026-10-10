@@ -1153,7 +1153,7 @@ func builtinMayHaveKey(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			// in-tree Map reaches this branch now that the key is always an
 			// LString; it is here so a future strict Map implementation
 			// cannot silently reproduce the same no-op.
-			if val != nil && val.IsError() {
+			if val.IsError() {
 				return env.ErrorConditionf(WrongType,
 					"Map cannot be searched for key %s: %v", key, val)
 			}

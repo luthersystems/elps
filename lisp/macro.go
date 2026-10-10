@@ -133,7 +133,7 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %s", sym.Type)
 	}
 	fun := env.Lambda(formals, body)
-	if fun.Type == LError {
+	if fun.IsError() {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun
 	}
@@ -141,15 +141,15 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 	// Stamp the definition name so LEnv.Get can return the binding itself
 	// rather than a renamed copy on every lookup (see LEnv.Get).
 	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol("lisp:progn"),
-		SExpr([]*LVal{
+		Cells{
 			Symbol("lisp:set"),
 			Quote(sym),
 			fun,
-		}),
+		}.SExpr(),
 		Nil(),
-	})
+	}.SExpr()
 }
 
 func macroDefun(env *LEnv, args *LVal) *LVal {
@@ -158,22 +158,22 @@ func macroDefun(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not a symbol: %s", sym.Type)
 	}
 	fun := env.Lambda(formals, body)
-	if fun.Type == LError {
+	if fun.IsError() {
 		fun.SetCallStack(env.Runtime.Stack.Copy())
 		return fun
 	}
 	// Stamp the definition name so LEnv.Get can return the binding itself
 	// rather than a renamed copy on every lookup (see LEnv.Get).
 	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol("lisp:progn"),
-		SExpr([]*LVal{
+		Cells{
 			Symbol("lisp:set"),
 			Quote(sym),
 			fun,
-		}),
+		}.SExpr(),
 		Nil(),
-	})
+	}.SExpr()
 }
 
 func macroDefconst(env *LEnv, args *LVal) *LVal {
@@ -184,12 +184,12 @@ func macroDefconst(env *LEnv, args *LVal) *LVal {
 	// Build: (progn (set 'name value docstrings...) (export 'name) nil)
 	setCells := []*LVal{Symbol("lisp:set"), Quote(sym), value}
 	setCells = append(setCells, docstrings...)
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol("lisp:progn"),
 		SExpr(setCells),
-		SExpr([]*LVal{Symbol("lisp:export"), Quote(sym)}),
+		Cells{Symbol("lisp:export"), Quote(sym)}.SExpr(),
 		Nil(),
-	})
+	}.SExpr()
 }
 
 func macroCurryFun(env *LEnv, args *LVal) *LVal {
@@ -201,52 +201,52 @@ func macroCurryFun(env *LEnv, args *LVal) *LVal {
 	}
 	callCells = append(callCells, argExprs...)
 	callCells = append(callCells, argsym)
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol("lambda"),
-		SExpr([]*LVal{
+		Cells{
 			Symbol(VarArgSymbol),
 			argsym,
-		}),
+		}.SExpr(),
 		SExpr(callCells),
-	})
+	}.SExpr()
 }
 
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	mapExpr, keyExpr, defExpr := args.Cells[0], args.Cells[1], args.Cells[2]
 	g := NewGenSyms(args)
 	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
-	let := QExpr([]*LVal{
+	let := Cells{
 		Symbol("lisp:let"),
-		SExpr([]*LVal{
-			SExpr([]*LVal{
+		Cells{
+			Cells{
 				mapSym,
 				mapExpr,
-			}),
-			SExpr([]*LVal{
+			}.SExpr(),
+			Cells{
 				keySym,
 				keyExpr,
-			}),
-		}),
-		SExpr([]*LVal{
+			}.SExpr(),
+		}.SExpr(),
+		Cells{
 			Symbol("lisp:if"),
-			SExpr([]*LVal{
+			Cells{
 				Symbol("lisp:if"),
-				SExpr([]*LVal{Symbol("lisp:nil?"), mapSym}),
+				Cells{Symbol("lisp:nil?"), mapSym}.SExpr(),
 				Symbol("lisp:false"),
-				SExpr([]*LVal{
+				Cells{
 					Symbol("lisp:key?"),
 					mapSym,
 					keySym,
-				}),
-			}),
-			SExpr([]*LVal{
+				}.SExpr(),
+			}.SExpr(),
+			Cells{
 				Symbol("lisp:get"),
 				mapSym,
 				keySym,
-			}),
+			}.SExpr(),
 			defExpr,
-		}),
-	})
+		}.SExpr(),
+	}.List()
 	return let
 }
 
@@ -265,34 +265,34 @@ func macroDeftype(env *LEnv, args *LVal) *LVal {
 		return env.ErrorfAt(formals, "second argument is not a list: %v", GetType(formals))
 	}
 	fqname := env.GenSym()
-	lambda := SExpr([]*LVal{
+	lambda := Cells{
 		psymbol("lambda"),
 		formals,
-	})
+	}.SExpr()
 	lambda.Cells = append(lambda.Cells, exprs.Cells...)
-	return QExpr([]*LVal{
+	return Cells{
 		psymbol("let*"),
-		SExpr([]*LVal{
-			QExpr([]*LVal{
+		Cells{
+			Cells{
 				fqname,
-				SExpr([]*LVal{
+				Cells{
 					psymbol("qualified-symbol"),
 					name,
-				}),
-			}),
-		}),
-		SExpr([]*LVal{
+				}.SExpr(),
+			}.List(),
+		}.SExpr(),
+		Cells{
 			psymbol("set"),
 			fqname,
-			SExpr([]*LVal{
+			Cells{
 				psymbol("new"),
 				psymbol("typedef"),
 				fqname,
 				lambda,
-			}),
-		}),
+			}.SExpr(),
+		}.SExpr(),
 		fqname,
-	})
+	}.List()
 }
 
 // stampMacroExpansion returns the expansion the caller must evaluate, with
@@ -1010,7 +1010,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 				impure = make(map[*LVal]struct{})
 				seen = make(map[*LVal]struct{})
 			}
-			if memo != nil && (list != nil || result.Type != LError) {
+			if memo != nil && (list != nil || !result.IsError()) {
 				// Wrappers unwrapped again -- a chain sharing a suffix with
 				// one walked before -- are duplicated work.
 				if dup > 0 {
@@ -1062,7 +1062,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		// outer loop, which calls prepareUnquote again and re-reads).
 		allocLimit := env.Runtime.MaxAllocBytes()
 		for {
-			if result.Type == LError {
+			if result.IsError() {
 				return result
 			}
 			if len(stack) == 0 {
@@ -1222,7 +1222,7 @@ func prepareUnquote(env *LEnv, v *LVal, opts unquoteContext, seen map[*LVal]stru
 
 func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
 	x := env.Eval(v)
-	if x.Type == LError {
+	if x.IsError() {
 		return x
 	}
 	x = Splice(x)
@@ -1231,7 +1231,7 @@ func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
 
 func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
 	x := env.Eval(v)
-	if x.Type == LError {
+	if x.IsError() {
 		return x
 	}
 	for range quoteLevel {
@@ -1280,7 +1280,7 @@ func chargeDuplicated(env *LEnv, rebuilt *int, n int) *LVal {
 	before := *rebuilt
 	*rebuilt += n
 	if charge := *rebuilt - max(before, quasiquoteRebuildAllowance); charge > 0 {
-		if lerr := env.ChargeSteps(int64(charge)); lerr.Type == LError {
+		if lerr := env.ChargeSteps(int64(charge)); lerr.IsError() {
 			return lerr
 		}
 	}
@@ -1297,19 +1297,18 @@ func requote(v *LVal, quoteLevel int) *LVal {
 
 func macroTrace(env *LEnv, args *LVal) *LVal {
 	expr, msg := args.ReqArg(env, 0), args.KeyArg(1)
-	if expr.Type == LError {
+	if expr.IsError() {
 		return expr
 	}
 	sym := env.GenSym()
 	if msg.IsNil() {
 		msg = String("TRACE")
 	}
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol("lisp:let"),
-		SExpr([]*LVal{
-			SExpr([]*LVal{sym, expr})},
-		),
-		SExpr([]*LVal{Symbol("lisp:debug-print"), msg, sym}),
+		Cells{
+			Cells{sym, expr}.SExpr()}.SExpr(),
+		Cells{Symbol("lisp:debug-print"), msg, sym}.SExpr(),
 		sym,
-	})
+	}.SExpr()
 }

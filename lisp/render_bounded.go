@@ -795,7 +795,7 @@ func (r *valueRenderer) nested(v *LVal, onTheRecord bool, g cycleGuard) {
 			return
 		}
 		entries := sortedMapEntries(v.Map())
-		if entries.Type == LError {
+		if entries.IsError() {
 			// Host maps may report an enumeration error. Its Cells are
 			// error data, not key/value pairs.
 			r.text(" #<map-error ")

@@ -604,9 +604,9 @@ func SplitSymbol(sym *LVal) *LVal {
 	ns, name, n := parts2.namespace, parts2.name, parts2.parts
 	switch n {
 	case 1:
-		return QExpr([]*LVal{sym})
+		return Cells{sym}.List()
 	case 2:
-		return QExpr([]*LVal{Symbol(ns), Symbol(name)})
+		return Cells{Symbol(ns), Symbol(name)}.List()
 	default:
 		return Errorf("illegal symbol: %q", sym.Str)
 	}
@@ -759,7 +759,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		// A self-built dims list is exactly [len(cells)], so its product
 		// needs no loop and cannot overflow.
 		totalSize = len(cells)
-		stored = QExpr([]*LVal{Int(len(cells))})
+		stored = Cells{Int(len(cells))}.List()
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
@@ -809,7 +809,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 
 	return &LVal{
 		Type: LArray,
-		Cells: []*LVal{
+		Cells: Cells{
 			stored,
 			QExpr(cells),
 		},
@@ -871,6 +871,7 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 // FunInPackageDoc is FunInPackage with the docstring doc.  The function value
 // holds its formals and docstring in the layout registered builtins use, so
 // Docstring returns doc.
+//
 //nolint:revive // FunInPackage plus its docstring; the design fixes the five arguments
 func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return &LVal{
@@ -880,7 +881,7 @@ func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *L
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String(doc)},
+		Cells: Cells{formals, String(doc)},
 	}
 }
 
@@ -919,7 +920,7 @@ func newCapturedBuiltin(spec capturedBuiltin) *LVal {
 	data.value = LVal{
 		Type:   LFun,
 		Native: &data.function, //elps:aliases the fresh coallocation owns this payload; its env and location are nil, with no borrowed runtime location
-		Cells:  []*LVal{spec.Formals, String("")},
+		Cells:  Cells{spec.Formals, String("")},
 	}
 	return &data.value
 }
@@ -964,7 +965,7 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: Cells{formals, String("")},
 	}
 }
 
@@ -991,7 +992,7 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 			builtin: fn,
 			pkg:     pkg,
 		},
-		Cells: []*LVal{formals, String("")},
+		Cells: Cells{formals, String("")},
 	}
 }
 
@@ -1052,7 +1053,7 @@ func ErrorCondition(condition string, err error) *LVal {
 	return &LVal{
 		Type: LError,
 		Str:  condition,
-		Cells: []*LVal{{
+		Cells: Cells{{
 			Type: LString,
 			Str:  message,
 			// Keep host identity without exposing a native value to Lisp.
@@ -1085,7 +1086,7 @@ func ErrorConditionf(condition string, format string, v ...any) *LVal {
 	return &LVal{
 		Type:  LError,
 		Str:   condition,
-		Cells: []*LVal{String(fmt.Sprintf(format, v...))},
+		Cells: Cells{String(fmt.Sprintf(format, v...))},
 	}
 }
 
@@ -1100,7 +1101,7 @@ func Quote(v *LVal) *LVal {
 	quote := &LVal{
 		Type:   LQuote,
 		quoted: true,
-		Cells:  []*LVal{v},
+		Cells:  Cells{v},
 	}
 	return quote
 }
@@ -1208,7 +1209,7 @@ func markMacExpand(expr *LVal) *LVal {
 // `error` builtin always copies a nil GoStack.  A forged 'internal-panic is
 // therefore treated as an ordinary condition and stays containable.
 func IsInternalPanic(v *LVal) bool {
-	if v == nil || v.Type != LError || v.Str != CondInternalPanic {
+	if !v.IsError() || v.Str != CondInternalPanic {
 		return false
 	}
 	stack, ok := v.Native.(*CallStack)
@@ -1229,7 +1230,7 @@ func IsInternalPanic(v *LVal) bool {
 // accessor that answered nil would be reporting "no stack recorded" for a
 // value that can never have one.
 func (v *LVal) CallStack() *CallStack {
-	if v.Type != LError {
+	if !v.IsError() {
 		panic("not an error: " + v.Type.String())
 	}
 	stack, ok := v.Native.(*CallStack)
@@ -1245,7 +1246,7 @@ func (v *LVal) CallStack() *CallStack {
 // NOT LISP-REACHABLE (#367): same argument as CallStack above -- every
 // in-tree caller guards on v.Type == LError.
 func (v *LVal) SetCallStack(stack *CallStack) {
-	if v.Type != LError {
+	if !v.IsError() {
 		panic("not an error: " + v.Type.String())
 	}
 	//elps:mutates the audited setter stamping a copied stack onto an in-flight error at its capture point
@@ -1770,10 +1771,10 @@ func (v *LVal) equalShallow(other *LVal, depth int, budget *int) *LVal {
 		}
 		*budget -= 1 + 2*v.Map().Len()
 		ae, be := sortedMapEntries(v.Map()), sortedMapEntries(other.Map())
-		if ae.Type == LError {
+		if ae.IsError() {
 			return ae
 		}
-		if be.Type == LError {
+		if be.IsError() {
 			return be
 		}
 		if len(ae.Cells) != len(be.Cells) {
@@ -1957,10 +1958,10 @@ walk:
 				}
 				if a.Type == LSortMap {
 					ae, be := sortedMapEntries(a.Map()), sortedMapEntries(b.Map())
-					if ae.Type == LError {
+					if ae.IsError() {
 						return ae, false
 					}
-					if be.Type == LError {
+					if be.IsError() {
 						return be, false
 					}
 					if len(ae.Cells) != len(be.Cells) {
@@ -2150,12 +2151,12 @@ func (v *LVal) copyMapData() (*MapData, error) {
 	}
 	m := &MapData{newmap()}
 	entries := sortedMapEntries(m0)
-	if entries.Type == LError {
+	if entries.IsError() {
 		return nil, fmt.Errorf("failed to copy map: %v", entries)
 	}
 	for _, pair := range entries.Cells {
 		lerr := m.Set(pair.Cells[0], pair.Cells[1])
-		if lerr.Type == LError {
+		if lerr.IsError() {
 			return nil, fmt.Errorf("failed to copy map: %v", lerr)
 		}
 	}
@@ -2171,7 +2172,7 @@ func (v *LVal) copyMapData() (*MapData, error) {
 // boundary still render in full. Output and work are bounded by DefaultMaxAlloc;
 // exhausted output is replaced by #<truncated>. Use LEnv.Render for runtime limits. See lisp/render_bounded.go and lisp/cycle.go.
 func (v *LVal) String() string {
-	if v.Type == LError && !v.quoted {
+	if v.IsError() && !v.quoted {
 		return (*ErrorVal)(v).Error()
 	}
 	s, ok := v.boundedString(DefaultMaxAlloc)

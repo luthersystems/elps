@@ -58,7 +58,7 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 		}
 		exist, bound := registrationBound(pkg, name)
 		shadows = shadows || bound
-		if bound && !replaceableLateOp(pkg, name, exist) && exist.Type != LError {
+		if bound && !replaceableLateOp(pkg, name, exist) && !exist.IsError() {
 			if !opts.Shadow {
 				return env.Errorf("symbol already defined: %s", name)
 			}

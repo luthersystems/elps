@@ -35,7 +35,7 @@ import "reflect"
 // unless the conversion fails.
 func ResultAs[T any](v *LVal) (T, error) {
 	var zero T
-	if v.Type == LError {
+	if v.IsError() {
 		return zero, (*ErrorVal)(v)
 	}
 	out, ok := valueAs[T](v)
@@ -59,7 +59,7 @@ func Field[T any](m *LVal, k string) (T, bool) {
 		return zero, false
 	}
 	v, ok := m.Map().Get(String(k))
-	if !ok || v == nil || v.Type == LError {
+	if !ok || v == nil || v.IsError() {
 		return zero, false
 	}
 	return valueAs[T](v)

@@ -61,8 +61,8 @@ func (env *LEnv) MapRange(m *LVal, fn func(key MapKey, val *LVal) bool) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	if msg := env.Runtime.CheckAlloc(m.Len()); msg != "" {
-		return env.Errorf("%s", msg)
+	if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
+		return lerr
 	}
 	return m.mapRange(fn)
 }
@@ -103,7 +103,7 @@ func (v *LVal) mapRange(fn func(key MapKey, val *LVal) bool) *LVal {
 	default:
 		n := md.Len()
 		entries := make([]*LVal, n)
-		if r := md.Entries(entries); r.Type == LError {
+		if r := md.Entries(entries); r.IsError() {
 			return r
 		}
 		for _, e := range entries[:n] {
@@ -229,7 +229,7 @@ func (v *LVal) mapKeyRange(fn func(key MapKey) bool) {
 	default:
 		n := md.Len()
 		entries := make([]*LVal, n)
-		if r := md.Entries(entries); r.Type == LError {
+		if r := md.Entries(entries); r.IsError() {
 			return
 		}
 		for _, e := range entries[:n] {

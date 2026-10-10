@@ -259,7 +259,7 @@ func renderChildren(v *LVal) []*LVal {
 		return nil
 	}
 	entries := sortedMapEntries(md)
-	if entries.Type == LError {
+	if entries.IsError() {
 		return nil
 	}
 	children := make([]*LVal, 0, 2*len(entries.Cells))

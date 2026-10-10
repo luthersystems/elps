@@ -316,7 +316,7 @@ func (f *copyFrame) store(child *LVal) *LVal {
 	case f.pairs != nil:
 		f.mapping[f.pairs[f.index].k] = child
 	case f.md != nil:
-		if err := f.md.Set(f.cells[f.index].Cells[0], child); err.Type == LError {
+		if err := f.md.Set(f.cells[f.index].Cells[0], child); err.IsError() {
 			return err
 		}
 	default:
@@ -413,7 +413,7 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	// Array/quote/tag Cells are fixed representation headers; their child
 	// lists carry the variable data spans. Check these spans before any
 	// child clone hook or backing allocation can run.
-	if v.Type == LSExpr || v.Type == LError || v.Type == LFun {
+	if v.Type == LSExpr || v.IsError() || v.Type == LFun {
 		if c.checkAlloc(len(v.Cells)) != nil {
 			return c.failed
 		}
@@ -724,7 +724,7 @@ func (c *copier) mapData(md *MapData) (*MapData, error) {
 	}
 	m := &MapData{newmap()}
 	entries := sortedMapEntries(md)
-	if entries.Type == LError {
+	if entries.IsError() {
 		// Entries reported a failure; its Cells hold the message, not
 		// pairs, so this has to be checked before they are indexed.
 		return c.failMap(md, fmt.Errorf("failed to copy map: %v", entries))

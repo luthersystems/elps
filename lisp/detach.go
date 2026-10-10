@@ -150,7 +150,7 @@ func (f *detachFrame) store(cp *LVal) error {
 	if i < 2*len(f.entries) {
 		if i%2 == 0 {
 			f.key = cp
-		} else if lerr := f.mapping.Set(f.key, cp); lerr.Type == LError {
+		} else if lerr := f.mapping.Set(f.key, cp); lerr.IsError() {
 			return &detachError{msg: fmt.Sprintf("sorted-map key %s cannot be stored: %v", f.entries[i/2].Cells[0], lerr)}
 		}
 	} else {
@@ -340,7 +340,7 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 			}
 			cp.Native = mdata
 		case *CallStack:
-			if v.Type != LError {
+			if !v.IsError() {
 				return nil, unexpectedNativeError(v)
 			}
 			cp.Native = detachCallStack(native) //elpsvet:allow-native a deep copy of a detached error's stack: publication refuses any value carrying a CallStack (checkDiagnosticPayload, lisp/template.go), so a detached error cannot carry this into a template
@@ -354,7 +354,7 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 
 	// Array/quote/tag Cells are fixed-size representation headers. Their
 	// child lists carry the actual data spans and are checked recursively.
-	if v.Type == LSExpr || v.Type == LError {
+	if v.Type == LSExpr || v.IsError() {
 		if err := d.checkAlloc(len(v.Cells)); err != nil {
 			return nil, err
 		}
@@ -476,7 +476,7 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 		return nil, err
 	}
 	entries := sortedMapEntries(md)
-	if entries.Type == LError {
+	if entries.IsError() {
 		return nil, &detachError{msg: fmt.Sprintf("sorted-map entries cannot be enumerated: %v", entries)}
 	}
 	// Sorted before a single entry is walked, and for the copier's reason

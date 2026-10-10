@@ -18,7 +18,7 @@ import "errors"
 // helper that returns *LVal to code that returns error; GoError is the bridge
 // for a helper that only reports success or failure.
 func Result(v *LVal) (*LVal, error) {
-	if v.Type == LError {
+	if v.IsError() {
 		return nil, (*ErrorVal)(v)
 	}
 	return v, nil

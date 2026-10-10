@@ -55,7 +55,7 @@ func (a *ArgReader) Value(i int) *LVal {
 		return Nil()
 	}
 	v := a.args.ReqArg(a.env, i)
-	if v.Type == LError {
+	if v.IsError() {
 		a.err = v
 		return Nil()
 	}

@@ -132,7 +132,7 @@ func testLetExpansion(env *LEnv, args *LVal, let string) *LVal {
 	letCells := make([]*LVal, 0, 2+len(exprs))
 	letCells = append(letCells, Symbol(lang+":"+let), binds)
 	letCells = append(letCells, exprs...)
-	return SExpr([]*LVal{Symbol(lang + ":test"), name, SExpr(letCells)})
+	return Cells{Symbol(lang + ":test"), name, SExpr(letCells)}.SExpr()
 }
 
 // macroBenchmarkSimple expands (benchmark-simple name exprs...) to
@@ -144,12 +144,12 @@ func macroBenchmarkSimple(env *LEnv, args *LVal) *LVal {
 	lang := env.Runtime.Registry.Lang
 	countsym := env.GenSym()
 	body := make([]*LVal, 0, 2+len(exprs))
-	body = append(body, Symbol(lang+":dotimes"), SExpr([]*LVal{Symbol("_"), countsym}))
+	body = append(body, Symbol(lang+":dotimes"), Cells{Symbol("_"), countsym}.SExpr())
 	body = append(body, exprs...)
-	return SExpr([]*LVal{
+	return Cells{
 		Symbol(lang + ":benchmark"),
 		name,
-		SExpr([]*LVal{countsym}),
+		Cells{countsym}.SExpr(),
 		SExpr(body),
-	})
+	}.SExpr()
 }

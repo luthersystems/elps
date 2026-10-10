@@ -100,7 +100,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	if def == nil {
 		return env.Errorf("CallBuiltin: zero BuiltinRef")
 	}
-	if lerr := env.CheckContext(); lerr.Type == LError {
+	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
 	var list *LVal
@@ -115,7 +115,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	if list == nil {
 		fun := FunInPackage(env.Runtime.Registry.Lang, def.name, def.formals, def.fun)
 		_, list = env.bindGeneral(fun, QExpr(args))
-		if list.Type == LError {
+		if list.IsError() {
 			return list
 		}
 	}
@@ -182,7 +182,7 @@ func (env *LEnv) evalTerminalMark(val *LVal) *LVal {
 // "not a regular function".
 func (env *LEnv) CallGlobal(sym string, args ...*LVal) *LVal {
 	fn := env.GetFunGlobal(Symbol(sym))
-	if fn.Type == LError {
+	if fn.IsError() {
 		return fn
 	}
 	if fn.IsSpecialFun() {

@@ -130,7 +130,7 @@ walk:
 					f := frame{cells: v.Cells}
 					if v.Type == LSortMap {
 						entries := sortedMapEntries(v.Map())
-						if entries.Type == LError {
+						if entries.IsError() {
 							return GoError(entries)
 						}
 						f.entries = entries.Cells

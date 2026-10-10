@@ -385,7 +385,7 @@ func builtinRegisteredBuiltin(env *LEnv, args *LVal) *LVal {
 	reg := env.Runtime.Registry
 	p := reg.Package(pkg)
 	if p != nil {
-		if lerr := env.ChargeSteps(int64((p.NumExternals() + 63) / 64)); lerr.Type == LError {
+		if lerr := env.ChargeSteps(int64((p.NumExternals() + 63) / 64)); lerr.IsError() {
 			return lerr
 		}
 	}

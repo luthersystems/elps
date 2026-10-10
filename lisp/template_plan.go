@@ -390,7 +390,7 @@ func (c *templateCompiler) value(v *LVal) (templateValue, error) {
 	} else if v.Cells != nil {
 		// Preserve nil-versus-empty observations by host callbacks without
 		// retaining a source array hidden behind a zero-capacity view.
-		header.Cells = []*LVal{}
+		header.Cells = Cells{}
 	} else {
 		header.Cells = nil
 	}
