@@ -2810,11 +2810,30 @@ included:
 
 Uncaught, the error renders with the context too:
 `not-found: loading user 9: no user 9`.  `:context` must be a string;
-anything else raises `argument-error`.  To place the original message
-somewhere other than the end, raise a new condition with it, as in
-`(error 'profile-error (format-string "profile failed ({})" (error-message)))`;
-that error has a new condition and stack.  Go code wraps an error with
+anything else raises `argument-error`.  Go code wraps an error with
 `lisp.WrapError` (see docs/embed.md).
+
+`:context` never changes the condition.  To give the error a new type, or to
+place the original message somewhere other than the end, raise a new
+condition explicitly with the old message:
+
+```lisp
+(define-condition 'profile-error 'error)
+
+(handler-bind ((not-found
+                 (lambda (c &rest _)
+                   (error 'profile-error
+                          (format-string "profile failed ({})" (error-message))))))
+  (get-profile 5))
+; raises profile-error with "profile failed (loading user 5: no user 5)"
+```
+
+The new error has its own condition, data and stack and keeps no link to the
+original: a `not-found` handler outside does not catch it.  elps has no cause
+chain, unlike Go's `errors.As` through a custom wrapper type, because a
+handler would then match through two hierarchies at once with no single most
+specific binding.  Use the hierarchy instead when callers should catch a
+family of errors: a handler on a parent catches every child.
 
 ### Inspecting an Error's Call Stack
 
