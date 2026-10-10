@@ -52,12 +52,15 @@ func freshComposite() *lisp.LVal {
 	return w
 }
 
-// freshCells roots a write at a list or vector that lisp.Cells built.
+// freshCells roots a write at a list, s-expression or vector that
+// lisp.Cells built.
 func freshCells(x *lisp.LVal) *lisp.LVal {
 	l := lisp.Cells{x}.List()
 	l.Quoted = false
 	v := lisp.Cells{x}.Vector()
 	v.Str = "v"
+	sx := lisp.Cells{x}.SExpr()
+	sx.Str = "s"
 	return l
 }
 

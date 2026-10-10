@@ -103,6 +103,10 @@ func TestCells(t *testing.T) {
 	assert.Equal(t, lisp.QExpr([]*lisp.LVal{a, b}).String(), l.String())
 	assert.Equal(t, `'("a" 2)`, l.String())
 	assert.Equal(t, `(vector "a" 2)`, lisp.Cells{a, b}.Vector().String())
+	sx := lisp.Cells{a, b}.SExpr()
+	assert.Equal(t, lisp.SExpr([]*lisp.LVal{a, b}).String(), sx.String())
+	assert.Equal(t, `("a" 2)`, sx.String())
+	assert.Equal(t, lisp.LSExpr, sx.Type)
 
 	// Cells and []*lisp.LVal assign to each other with no conversion.
 	var plain []*lisp.LVal = lisp.Cells{a}
@@ -113,6 +117,7 @@ func TestCells(t *testing.T) {
 	src := lisp.QExpr([]*lisp.LVal{a, b})
 	shared := lisp.Cells(src.Cells).List()
 	assert.Same(t, src.Cells[0], shared.Cells[0])
+	assert.Same(t, src.Cells[0], lisp.Cells(src.Cells).SExpr().Cells[0])
 	assert.True(t, lisp.Cells(nil).List().IsNil())
 }
 

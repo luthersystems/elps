@@ -805,10 +805,10 @@ second time. Any other error becomes `env.Error(err)`, with condition
 `elpsbuiltinstate` read the body like any other builtin, and so do the bodies
 passed to `Func1` and `Func2`.
 
-**Lists from Go: `lisp.Cells`.** `lisp.Cells` is `[]*LVal` with two methods.
-`lisp.Cells{a, b}.List()` is `lisp.QExpr([]*lisp.LVal{a, b})`, and `Vector()`
-is `lisp.Vector`. Go assigns `Cells` to and from `[]*lisp.LVal` with no
-conversion. Both methods use the receiver as the new value's storage, so
+**Lists from Go: `lisp.Cells`.** `lisp.Cells` is `[]*LVal` with three
+methods. `lisp.Cells{a, b}.List()` is `lisp.QExpr([]*lisp.LVal{a, b})`,
+`SExpr()` is `lisp.SExpr` and `Vector()` is `lisp.Vector`. Go assigns
+`Cells` to and from `[]*lisp.LVal` with no conversion. The three methods use the receiver as the new value's storage, so
 `lisp.Cells(v.Cells).List()` shares `v`'s cells. elpsvet's `elpsfreshness`
 counts their results as fresh values. `lisp.StringList([]string{"a", "b"})`
 returns a fresh list of strings.

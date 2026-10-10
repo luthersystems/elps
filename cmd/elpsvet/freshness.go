@@ -86,9 +86,10 @@ var freshLValMethods = map[string]bool{
 }
 
 // freshCellsMethods are methods on lisp.Cells whose result is a freshly
-// allocated LVal header (lisp/cells.go: QExpr and Vector of the receiver).
+// allocated LVal header (lisp/cells.go: QExpr, SExpr and Vector of the
+// receiver).
 var freshCellsMethods = map[string]bool{
-	"List": true, "Vector": true,
+	"List": true, "SExpr": true, "Vector": true,
 }
 
 // freshLEnvMethods are methods on *lisp.LEnv whose result is a freshly

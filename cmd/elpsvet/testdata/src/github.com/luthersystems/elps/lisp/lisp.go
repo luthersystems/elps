@@ -197,6 +197,7 @@ type Cells []*LVal
 
 func (c Cells) List() *LVal   { return QExpr(c) }
 func (c Cells) Vector() *LVal { return Array(nil, c) }
+func (c Cells) SExpr() *LVal  { return SExpr(c) }
 
 func Fun(fid string, formals *LVal, fn LBuiltin) *LVal { return &LVal{Str: fid} }
 
