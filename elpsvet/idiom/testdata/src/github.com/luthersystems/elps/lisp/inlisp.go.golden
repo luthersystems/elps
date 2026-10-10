@@ -1,0 +1,43 @@
+package lisp
+
+// In package lisp the rules match unqualified names, and the fixes write
+// the helpers without a qualifier.
+func inLisp(env *LEnv, v *LVal, n int) *LVal {
+	if v.IsError() { // want `use v.IsError\(\), which is the same compare`
+		return v
+	}
+	if v.IsError() { // want `use v.IsError\(\), which is the same test`
+		return v
+	}
+	if v.IsError() { // want `use v.IsError\(\), which is the same test: it is false for a nil value`
+		return v
+	}
+	if v.IsSymbol(TrueSymbol) { // want `use v.IsSymbol\(TrueSymbol\), which is the same compare`
+		return v
+	}
+	if lerr := env.CheckAlloc(n); lerr.IsError() {
+		return lerr
+	}
+	l := Cells{v}.List()                          // want `use Cells\{...\}.List\(\), which builds the same list`
+	sx := Cells{v, l}.SExpr()                     // want `use Cells\{...\}.SExpr\(\), which builds the same s-expression`
+	vec := Vector(sx.Cells)                       // want `use Vector\(sx.Cells\), which is Array\(nil, ...\)`
+	out := &LVal{Type: LSExpr, Cells: Cells{vec}} // want `use Cells\{...\} for the Cells field`
+	out.Cells = Cells{vec, l}                     // want `use Cells\{...\} for the Cells field`
+	out.Cells = sx.Cells
+	m := MapOf("a", v, "b", l) // want `use MapOf with the 2 keys`
+	return m
+}
+
+// A local name that shadows the helper stops the fix.
+func shadowed(v *LVal) *LVal {
+	Vector := func(c []*LVal) *LVal { return nil }
+	_ = Vector
+	Cells := 0
+	_ = Cells
+	return Array(nil, QExpr([]*LVal{v}).Cells)
+}
+
+// Hints and mistakes are not reported in package lisp.
+func hintsOff(v *LVal) (*ErrorVal, bool) {
+	return nil, v.Type == LNative
+}

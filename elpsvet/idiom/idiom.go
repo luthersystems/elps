@@ -8,10 +8,19 @@
 // suggested fix.  The hints stay out of elps's gate, because a hint rewrite
 // needs a person to review it.
 //
+// In package lisp itself, the analyzer reports only the fixes.  The rules
+// match unqualified names (QExpr, LError, GoError, ...), and a fix writes the
+// helper without a qualifier.  A fix is not made in a function that the new
+// helper reaches through the functions and package-level variables that its
+// body names, the helper's own body included: the body of (*LVal).IsError
+// keeps v.Type == LError, so it does not call itself.  A fix is also not made
+// where a local name shadows the unqualified helper name.
+//
 // IDIOMS, reported with category "info".  Where the rewrite is mechanical,
 // the diagnostic carries a suggested fix, so `-fix` applies it.  Each fix
-// keeps behaviour identical, with one exception for a nil *LVal in the
-// lisp.MapOf fix (below):
+// keeps behaviour identical, with two exceptions for a nil *LVal: the
+// lisp.MapOf fix (below), and IsError and IsSymbol, which return false for
+// a nil value where x.Type panics:
 //
 //	x.Type == lisp.LError              x.IsError()                    (fix)
 //	lisp.GoError(x) != nil             x.IsError()                    (fix)
@@ -25,6 +34,17 @@
 //	index, or a constant name)         x.IsSymbol(name)               (fix)
 //	x.Type != lisp.LSymbol || x.Str != name
 //	                                   !x.IsSymbol(name)              (fix)
+//	x != nil && x.Type == lisp.LError, or x != nil && x.IsError(), for a
+//	pure x                             x.IsError()                    (fix)
+//	x == nil || x.Type != lisp.LError, or x == nil || !x.IsError()
+//	                                   !x.IsError()                   (fix)
+//	x != nil && x.Type == lisp.LSymbol && x.Str == name, or
+//	x != nil && x.IsSymbol(name)       x.IsSymbol(name)               (fix)
+//	x == nil || x.Type != lisp.LSymbol || x.Str != name, or
+//	x == nil || !x.IsSymbol(name)      !x.IsSymbol(name)              (fix)
+//	in package lisp only, a []*LVal{...} literal in the Cells field of
+//	an LVal literal or assigned to x.Cells
+//	                                   Cells{...}                     (fix)
 //	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 //		return env.Errorf("%s", msg)
 //	}                                  env.CheckAlloc(n)              (fix)
@@ -191,12 +211,31 @@ type state struct {
 	// lisp.FunInPackage call, and to false when another value is assigned.
 	funVars map[types.Object]bool
 	src     map[string][]byte
+
+	// inLisp is true when the pass is package lisp itself.  There the
+	// rules match unqualified names, only the fixes are reported, and a
+	// fix is not made inside a function that the new helper reaches.
+	inLisp bool
+	// units are the function declarations and the package-level function
+	// literals of package lisp, and uses maps each one to the functions and
+	// variables its body names.
+	units []unit
+	uses  map[types.Object]map[types.Object]bool
+	// reach caches, for each helper name, the units that the helper
+	// reaches through uses (the helper itself included).
+	reach map[string]map[types.Object]bool
+	// covered holds the nodes that a wider fix already rewrites.
+	covered map[ast.Node]bool
+}
+
+// unit is a function body of package lisp: a declaration, or a function
+// literal that initializes a package-level variable.
+type unit struct {
+	obj      types.Object
+	pos, end token.Pos
 }
 
 func run(pass *analysis.Pass) (any, error) {
-	if pass.Pkg.Path() == lispPkgPath {
-		return nil, nil
-	}
 	s := &state{
 		pass:        pass,
 		decls:       make(map[*types.Func]*ast.FuncDecl),
@@ -204,8 +243,13 @@ func run(pass *analysis.Pass) (any, error) {
 		arities:     make(map[types.Object]int),
 		funVars:     make(map[types.Object]bool),
 		src:         make(map[string][]byte),
+		inLisp:      pass.Pkg.Path() == lispPkgPath,
+		covered:     make(map[ast.Node]bool),
 	}
 	s.collect()
+	if s.inLisp {
+		s.collectUses()
+	}
 	s.collectFunVars()
 	for _, file := range pass.Files {
 		s.checkFile(file)
@@ -421,7 +465,7 @@ func (s *state) operand(x ast.Expr) string {
 }
 
 func (s *state) report(n ast.Node, category, msg string, fixes ...analysis.SuggestedFix) {
-	if fixOnly && len(fixes) == 0 {
+	if (fixOnly || s.inLisp) && len(fixes) == 0 {
 		return
 	}
 	s.pass.Report(analysis.Diagnostic{
@@ -430,6 +474,21 @@ func (s *state) report(n ast.Node, category, msg string, fixes ...analysis.Sugge
 		Category:       category,
 		Message:        msg,
 		SuggestedFixes: fixes,
+	})
+}
+
+// reportRange reports an info idiom over the source from first to last
+// with a fix that replaces it with text.
+func (s *state) reportRange(first, last ast.Node, msg, text string) {
+	s.pass.Report(analysis.Diagnostic{
+		Pos:      first.Pos(),
+		End:      last.End(),
+		Category: CategoryInfo,
+		Message:  msg,
+		SuggestedFixes: []analysis.SuggestedFix{{
+			Message:   "Use the helper",
+			TextEdits: []analysis.TextEdit{{Pos: first.Pos(), End: last.End(), NewText: []byte(text)}},
+		}},
 	})
 }
 
@@ -472,6 +531,9 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkSeqBranches(x, s.switchBranches(x))
 		case *ast.AssignStmt:
 			s.checkFunDocWrite(x)
+			s.checkCellsAssign(x)
+		case *ast.CompositeLit:
+			s.checkCellsKeyed(x)
 		case *ast.RangeStmt:
 			s.checkMapKeysRange(x, stack)
 			s.checkMapEntriesRange(x, stack)
@@ -506,7 +568,7 @@ func (s *state) checkIsError(b *ast.BinaryExpr) {
 	if x == nil {
 		x, other = s.typeField(b.Y), b.X
 	}
-	if x == nil || !s.isLispConst(other, "LError") {
+	if x == nil || !s.isLispConst(other, "LError") || s.covered[b] || !s.fixAllowed(b, "LVal.IsError") {
 		return
 	}
 	text := s.operand(x) + ".IsError()"
@@ -526,7 +588,7 @@ func (s *state) checkQExpr(call *ast.CallExpr) {
 	fn := s.lispFunc(call)
 	if fn != nil && fn.Name() == "Array" && len(call.Args) == 2 && isNilIdent(s, call.Args[0]) {
 		// Vector(cells) is Array(nil, cells) (lisp/lisp.go).
-		if qual, ok := lispQualifier(call.Fun); ok {
+		if qual, ok := s.qualifier(call.Fun); ok && s.fixAllowed(call, "Vector") {
 			text := qual + "Vector(" + s.text(call.Args[1]) + ")"
 			s.report(call, CategoryInfo, "use "+text+", which is Array(nil, ...)", replace(call, "Use lisp.Vector", text))
 		}
@@ -547,8 +609,8 @@ func (s *state) checkQExpr(call *ast.CallExpr) {
 	if !ok || at.Len != nil {
 		return
 	}
-	qual, ok := lispQualifier(call.Fun)
-	if !ok {
+	qual, ok := s.qualifier(call.Fun)
+	if !ok || !s.fixAllowed(call, "Cells."+method) {
 		return
 	}
 	elts, ok := s.source(lit.Lbrace+1, lit.Rbrace)
@@ -561,20 +623,6 @@ func (s *state) checkQExpr(call *ast.CallExpr) {
 }
 
 var cellsNoun = map[string]string{"List": "list", "SExpr": "s-expression", "Vector": "vector"}
-
-// lispQualifier returns "lisp." (or the file's name for the lisp import)
-// from a qualified call target.
-func lispQualifier(fun ast.Expr) (string, bool) {
-	sel, ok := ast.Unparen(fun).(*ast.SelectorExpr)
-	if !ok {
-		return "", false
-	}
-	id, ok := sel.X.(*ast.Ident)
-	if !ok {
-		return "", false
-	}
-	return id.Name + ".", true
-}
 
 // checkCheckAlloc: if msg := env.Runtime.CheckAlloc(n); msg != "" {
 // return ..., env.Errorf("%s", msg) }.
@@ -635,7 +683,7 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 		}
 		errIdx = i
 	}
-	if errIdx < 0 {
+	if errIdx < 0 || !s.fixAllowed(stmt, "LEnv.CheckAlloc") {
 		return
 	}
 	results := make([]string, len(ret.Results))
@@ -1239,6 +1287,9 @@ func (s *state) checkSortedMapCall(call *ast.CallExpr) {
 		return
 	}
 	if parts, ok := s.mapOfParts(call); ok {
+		if !s.fixAllowed(call, "LEnv.MapOf") {
+			return
+		}
 		text := s.operand(recv.X) + ".MapOf(" + strings.Join(parts, ", ") + ")"
 		s.report(call, CategoryInfo, "use "+s.operand(recv.X)+".MapOf with Go string keys, which returns the same map or error",
 			replace(call, "Use LEnv.MapOf", text))
@@ -1246,6 +1297,9 @@ func (s *state) checkSortedMapCall(call *ast.CallExpr) {
 	}
 	// SortedMapOf runs the body of sorted-map after the context check, as
 	// CallBuiltin does (TestSortedMapOfMatchesBuiltin).
+	if !s.fixAllowed(call, "LEnv.SortedMapOf") {
+		return
+	}
 	args := make([]string, 0, len(call.Args)-1)
 	for _, a := range call.Args[1:] {
 		args = append(args, s.text(a))
@@ -1345,7 +1399,7 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 		}
 	}
 	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	if !ok {
+	if !ok || !s.fixAllowed(call, "LEnv."+h.helper) {
 		return
 	}
 	helper := s.operand(recv.X) + "." + h.helper
@@ -1848,6 +1902,10 @@ func (s *state) checkIsSymbol(b *ast.BinaryExpr) {
 	}
 	terms := chainTerms(b, b.Op)
 	for i := 0; i+1 < len(terms); i++ {
+		if n := s.nilGuardFix(terms, i, cmp, neg); n > 0 {
+			i += n - 1
+			continue
+		}
 		t1, t2 := terms[i], terms[i+1]
 		x := s.symbolTypeTest(t1, cmp)
 		nx, name := s.symbolNameTest(t2, cmp)
@@ -1855,7 +1913,7 @@ func (s *state) checkIsSymbol(b *ast.BinaryExpr) {
 			nx, name = s.symbolNameTest(t1, cmp)
 			x = s.symbolTypeTest(t2, cmp)
 		}
-		if x == nil || nx == nil || s.text(x) != s.text(nx) || !s.pure(x) {
+		if x == nil || nx == nil || s.text(x) != s.text(nx) || !s.pure(x) || !s.fixAllowed(t1, "LVal.IsSymbol") {
 			continue
 		}
 		text := neg + s.operand(x) + ".IsSymbol(" + s.text(name) + ")"
@@ -1893,7 +1951,7 @@ func (s *state) checkGoErrorNil(b *ast.BinaryExpr) {
 	if !ok || len(c.Args) != 1 || !isNilIdent(s, other) {
 		return
 	}
-	if fn := s.lispFunc(c); fn == nil || fn.Name() != "GoError" {
+	if fn := s.lispFunc(c); fn == nil || fn.Name() != "GoError" || !s.fixAllowed(b, "LVal.IsError") {
 		return
 	}
 	text := s.operand(c.Args[0]) + ".IsError()"
@@ -2284,8 +2342,8 @@ func (s *state) checkMapSetChain(block *ast.BlockStmt) {
 		if fn := s.lispFunc(call); fn == nil || fn.Name() != "SortedMap" {
 			continue
 		}
-		qual, ok := lispQualifier(call.Fun)
-		if !ok {
+		qual, ok := s.qualifier(call.Fun)
+		if !ok || !s.fixAllowed(assign, "MapOf") {
 			continue
 		}
 		obj := s.pass.TypesInfo.ObjectOf(id)

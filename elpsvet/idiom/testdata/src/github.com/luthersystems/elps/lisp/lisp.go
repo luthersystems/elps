@@ -87,8 +87,7 @@ const (
 
 func ShapeOf(t LType) Shape                 { return ShapeAtom }
 func (v *LVal) MapGetString(k string) *LVal { return v }
-func (v *LVal) IsError() bool               { return v.Type == LError }
-func (v *LVal) IsSymbol(name string) bool   { return v.Type == LSymbol && v.Str == name }
+func (v *LVal) IsSymbol(name string) bool   { return v != nil && v.Type == LSymbol && v.Str == name }
 func (v *LVal) Len() int                    { return len(v.Cells) }
 func (v *LVal) ArrayIndex(i ...*LVal) *LVal { return v }
 func (v *LVal) SeqCells() ([]*LVal, bool)   { return v.Cells, true }
@@ -98,7 +97,6 @@ func NativeValue[T any](v *LVal) (T, bool) { var z T; return z, false }
 
 func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
 func (env *LEnv) Error(msg ...any) *LVal                        { return nil }
-func (env *LEnv) CheckAlloc(n int) *LVal                        { return nil }
 func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal { return nil }
 func (env *LEnv) MapLookup(m, k *LVal) *LVal                    { return nil }
 func (env *LEnv) MapPut(m, k, v *LVal) *LVal                    { return nil }

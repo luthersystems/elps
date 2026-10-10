@@ -288,8 +288,9 @@ run time to the build. Each native payload type is one of:
 
 `elpsvet/idiom` holds `elpsidiom`, an analyzer for Go ports of Lisp code.
 It reports, with category `info`, code that a Go-style helper states more
-plainly. Fixes: `IsError`, `IsSymbol`, `Cells` (`List`, `SExpr`,
-`Vector`), `Vector`, `env.CheckAlloc`, `env.MapOf`, `lisp.MapOf`,
+plainly. Fixes: `IsError`, `IsSymbol` (a `x != nil` test before the
+compare joins the call), `Cells` (`List`, `SExpr`, `Vector`, and the
+`Cells` field in package `lisp`), `Vector`, `env.CheckAlloc`, `env.MapOf`, `lisp.MapOf`,
 `SortedMapOf`, `MapPut`, `MapLookup`, `ToString`, `FormatString`. Hints:
 `Keys`, `All`, `Field`, `ArgReader`, `FunInPackageDoc`, `SeqCells`,
 `NativeValue`, `FuncE`, `Func1E`..`Func3E`, `MapRange`, `StringList`.

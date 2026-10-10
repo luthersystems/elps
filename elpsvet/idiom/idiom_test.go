@@ -22,3 +22,10 @@ func TestFixOnly(t *testing.T) {
 	t.Cleanup(func() { _ = idiom.Analyzer.Flags.Set("fixonly", "false") })
 	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), idiom.Analyzer, "idiomfixonly")
 }
+
+// TestInLisp runs the analyzer on package lisp itself: the rules match
+// unqualified names, only the fixes are reported, and a helper's own body
+// keeps its compare.
+func TestInLisp(t *testing.T) {
+	analysistest.RunWithSuggestedFixes(t, analysistest.TestData(), idiom.Analyzer, "github.com/luthersystems/elps/lisp")
+}
