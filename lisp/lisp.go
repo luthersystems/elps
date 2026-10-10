@@ -2226,6 +2226,22 @@ func isSeq(v *LVal) bool {
 	return v.Type == LSExpr || isVec(v)
 }
 
+// SeqCells returns the cells of a list or of a one-dimensional vector and
+// true.  For any other value, a multi-dimensional array included, it returns
+// nil and false.  The cells are the value's own storage, so treat them as
+// read-only.  SeqCells makes no check and allocates nothing.
+//
+//	cells, ok := methodArgs.SeqCells()
+//	if !ok {
+//		return env.Errorf("argument is not a proper sequence: %v", methodArgs.Type)
+//	}
+func (v *LVal) SeqCells() ([]*LVal, bool) {
+	if !isSeq(v) {
+		return nil, false
+	}
+	return seqCells(v), true
+}
+
 func seqCells(v *LVal) []*LVal {
 	// Callers must guard with isSeq.  The panic is the assertion for that
 	// contract -- it is in a default clause so that reaching seqCells with a

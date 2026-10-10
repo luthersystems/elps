@@ -460,3 +460,26 @@ func TestMapLookupParity(t *testing.T) {
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
+
+func TestSeqCells(t *testing.T) {
+	list := lisp.Cells{lisp.Int(1), lisp.Int(2)}.List()
+	cells, ok := list.SeqCells()
+	assert.True(t, ok)
+	assert.Same(t, list.Cells[0], cells[0], "the cells are the list's own")
+
+	vec := lisp.Cells{lisp.Int(1)}.Vector()
+	cells, ok = vec.SeqCells()
+	assert.True(t, ok)
+	assert.Equal(t, 1, cells[0].Int)
+
+	cells, ok = lisp.Nil().SeqCells()
+	assert.True(t, ok)
+	assert.Empty(t, cells)
+
+	grid := lisp.Array(lisp.Cells{lisp.Int(1), lisp.Int(1)}.List(), []*lisp.LVal{lisp.Int(1)})
+	for _, v := range []*lisp.LVal{grid, lisp.Int(1), lisp.String("s"), lisp.SortedMap()} {
+		cells, ok = v.SeqCells()
+		assert.False(t, ok, v.Type.String())
+		assert.Nil(t, cells)
+	}
+}

@@ -866,6 +866,10 @@ where the Lisp called `assoc!` or `get`. Code that fills a map it just built
 keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
 building a list.
 
+**`v.SeqCells()`** returns the cells of a list or a one-dimensional vector
+and `true`, or `nil, false` for any other value, a multi-dimensional array
+included. The cells are the value's own storage, so treat them as read-only.
+
 ### Inspecting local variables
 
 `env.Locals()` returns the local variables visible from an environment,
