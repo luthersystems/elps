@@ -13,7 +13,8 @@
 // New value walkers must have an audited traversal contract (elpsvalwalker).
 // Marked immutable structs must hold only value fields (elpsmarkerfields).
 // Native payload types need a durable codec or a transient mark (elpsdurablenative).
-// Code outside package lisp uses the helper an elpsidiom fix names (elpsidiom).
+// Code in every package, package lisp included, uses the helper an elpsidiom
+// fix names (elpsidiom).
 // Other modules can import elpsownpkg from elpsvet/ownpkg, elpsbuiltinstate
 // from elpsvet/builtinstate, and elpsnativepayload and elpsdurablenative
 // from elpsvet/nativepayload

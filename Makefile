@@ -178,9 +178,10 @@ static-checks: check-golangci-version check-golangci-config
 # table writes must go through the frozen-package gate (elpsfrozenpackage),
 # and lazily filled tables are read only through their accessors (elpslazyread).
 # No library builtin depends on which package is current (elpsownpkg, #736).
-# Code outside package lisp uses the helper an elpsidiom fix names: elpsvet
-# sets -elpsidiom.fixonly, so the hints (ArgReader, NativeValue, ...) do not
-# fail the gate.
+# Code in every package, package lisp included, uses the helper an elpsidiom
+# fix names: elpsvet sets -elpsidiom.fixonly, so the hints (ArgReader,
+# NativeValue, ...) do not fail the gate.  In package lisp the analyzer
+# reports only the fixes, and it leaves a helper's own body unchanged.
 # The package list is ./..., so there is no hand-scoped
 # list for native construction sites to drift out of.
 #

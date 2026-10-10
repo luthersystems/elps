@@ -113,10 +113,10 @@ spell a marker in the gate script or its tests; assemble it at runtime.
   package-level var, because a template shares the builtin with every VM.
 - **`elpsvet/idiom/`** — The importable `elpsidiom` analyzer for Go ports
   of Lisp code: it suggests the Go-style helpers and reports mistakes in
-  their use. `make elpsvet` runs it over elps outside package `lisp` with
-  `-elpsidiom.fixonly`, so only the idioms with a suggested fix fail the
-  gate (the "(fix)" rows of the IDIOMS list in `elpsvet/idiom/idiom.go`).
-  Fix a finding with
+  their use. `make elpsvet` runs it over all of elps, package `lisp`
+  included, with `-elpsidiom.fixonly`, so only the idioms with a suggested
+  fix fail the gate (the "(fix)" rows of the IDIOMS list in
+  `elpsvet/idiom/idiom.go`). Fix a finding with
   `go run ./cmd/elpsvet -test=false -fix ./...`.
 - **`elpsvet/nativepayload/`** — The importable `elpsnativepayload` and
   `elpsdurablenative` analyzers. Each native payload must be safe for a
