@@ -1023,7 +1023,10 @@ func opHandlerBind(env *LEnv, args *LVal) *LVal {
 				// IsInternalPanic rather than a name comparison so a
 				// lisp-forged 'internal-panic remains an ordinary,
 				// containable condition.
-				if sym.Str != val.Str &&
+				// A handler for a condition also catches its descendants
+				// (ConditionIsA): a handler for error catches
+				// argument-error.
+				if !ConditionIsA(val.Str, sym.Str) &&
 					(sym.Str != "condition" || IsInternalPanic(val)) {
 					continue
 				}
