@@ -3,8 +3,10 @@
 // Package idiom is the elpsidiom analyzer.  It reports Go builtin code that
 // an elps helper states more plainly, and a few mistakes in code that uses
 // the helpers.  It is for code outside elps, such as a port of Lisp code to
-// Go: other modules run it with their own vet tool.  elps's own gate does not
-// run it, because elps's own code keeps its style.
+// Go: other modules run it with their own vet tool.  elps's own gate (make
+// elpsvet) runs it with -fixonly, which reports only the idioms that carry a
+// suggested fix.  The hints stay out of elps's gate, because elps's builtins
+// keep their error messages.
 //
 // IDIOMS, reported with category "info".  Each one keeps behaviour
 // identical; where the rewrite is mechanical, the diagnostic carries a
@@ -105,6 +107,15 @@ const (
 	// CategoryError marks a mistake.
 	CategoryError = "error"
 )
+
+// fixOnly is the -fixonly flag: report only the diagnostics that carry a
+// suggested fix.
+var fixOnly bool
+
+func init() {
+	Analyzer.Flags.BoolVar(&fixOnly, "fixonly", false,
+		"report only the idioms that carry a suggested fix; a gate uses it to keep a cleaned tree clean")
+}
 
 // Analyzer is the elpsidiom analyzer.
 var Analyzer = &analysis.Analyzer{
@@ -367,6 +378,9 @@ func (s *state) operand(x ast.Expr) string {
 }
 
 func (s *state) report(n ast.Node, category, msg string, fixes ...analysis.SuggestedFix) {
+	if fixOnly && len(fixes) == 0 {
+		return
+	}
 	s.pass.Report(analysis.Diagnostic{
 		Pos:            n.Pos(),
 		End:            n.End(),
