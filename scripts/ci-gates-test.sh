@@ -3166,7 +3166,6 @@ except ImportError:
 UNPINNED_ALLOWLIST = {
     # file: reason (delete the row once the workflow is pinned)
     "govulncheck.yml": "pre-existing, added in #303; not touched by this change",
-    "release-tag.yml": "pre-existing, added in #302; not touched by this change",
 }
 sha = re.compile(r"^[0-9a-f]{40}$")
 unpinned, warned = [], []

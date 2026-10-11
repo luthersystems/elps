@@ -47,15 +47,16 @@ git log $LATEST..origin/main --oneline
 
 If there are no unreleased commits, stop and say so. Compute the next
 version from the bump argument (or use the explicit version). The pipeline
-re-validates — exact `vMAJOR.MINOR.PATCH` format, strictly newer than the
-latest stable tag by semver — and refuses anything else, so a wrong guess
-fails safely rather than shipping.
+re-validates — exact `vMAJOR.MINOR.PATCH` format with no leading zeros,
+strictly newer than the latest stable tag by semver — and refuses anything
+else, so a wrong guess fails safely rather than shipping.
 
 ### 2. Verify main is releasable
 
-The pipeline always cuts from **main HEAD** — there is no ref input. So
-before dispatching, confirm main is what you intend to ship and its CI is
-green:
+The pipeline always cuts from **main HEAD** — there is no ref input. It
+refuses to release unless the `CI Tests` push run on that commit succeeds,
+and waits up to 30 minutes for one still running. So before dispatching,
+confirm main is what you intend to ship and its CI is green:
 
 ```bash
 gh run list --branch main --limit 3   # or the Actions API if gh is absent
@@ -100,12 +101,16 @@ to run instead.
 without creating anything — use it if there is any doubt about the version
 or the notes.
 
-The pipeline then: validates (format, strictly-newer, checkout == main
-HEAD), summarizes the merged PRs/commits since the last stable tag into the
-release notes, and runs `gh release create` with the App token. On a
-validation failure it STOPS with an explanation and creates nothing; the
-agent transcript is uploaded as the `release-tag-trace-<run id>` artifact
-(14-day retention) so a refusal is explainable after the fact.
+The pipeline then, in shell steps: validates the version (format,
+strictly newer), that the run's commit is GitHub's live main, and that
+`CI Tests` passed on it; and writes the notes (one bullet per merged PR since
+the last stable tag, plus the waived API breaks). On a validation failure it
+stops with an `::error::` line and creates nothing. Claude then runs one
+exact command, `gh release create … --target <commit>`, with the App token;
+a hook denies any other tool call. A last step checks that the release
+exists and that its tag resolves to the validated commit. The agent
+transcript is uploaded as the `release-tag-trace-<run id>` artifact (14-day
+retention).
 
 ### 5. Monitor the publish
 
@@ -115,8 +120,10 @@ The tag push triggers the VS Code extension publish:
 gh run list --workflow vscode-publish.yml --limit 3
 ```
 
-Verify all 9 jobs pass (4 binary builds + 4 platform publishes + 1
-universal). The extension lands at
+Verify all 10 jobs pass (the `Require tag on main` check, 4 binary builds,
+4 platform publishes and 1 universal). The check refuses a tag that is not
+`vMAJOR.MINOR.PATCH` or whose commit is not on main, and then nothing
+publishes. The extension lands at
 https://marketplace.visualstudio.com/items?itemName=LutherSystems.elps-lang
 
 ### 6. Report
