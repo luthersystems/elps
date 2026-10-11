@@ -58,7 +58,3 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
-go | lisp.(*LVal).MapGet | 2027-01-10 | elps#829 substrate#775 | Deprecated untyped getter; no callers. Use lisp.AsMap then lisp.Lookup[T](m, key).
-go | lisp.(*LVal).MapGetLVal | 2027-01-10 | elps#829 substrate#775 | Replaced by lisp.Lookup[T](m, key) with an *LVal key, which reports a missing key as ok=false instead of an error value. substrate#775 migrates its 4 callers.
-go | lisp.(*LVal).MapGetString | 2027-01-10 | elps#829 substrate#775 | The name read as if it returned a string. Replaced by lisp.AsMap then lisp.Lookup[T](m, "key"); a missing key is ok=false instead of an error value. Owner-approved break; substrate#775 migrates its 71 callers.
-go | lisp.Field | 2027-01-10 | elps#829 | On main but in no tag; renamed lisp.Lookup[T], which takes a MapView and a generic key.
