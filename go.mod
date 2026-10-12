@@ -14,9 +14,9 @@ require (
 	github.com/stretchr/testify v1.12.1
 	github.com/tliron/glsp v0.2.2
 	go.opencensus.io v0.24.0
-	go.opentelemetry.io/otel v1.46.0
-	go.opentelemetry.io/otel/sdk v1.46.0
-	go.opentelemetry.io/otel/trace v1.46.0
+	go.opentelemetry.io/otel v1.47.0
+	go.opentelemetry.io/otel/sdk v1.47.0
+	go.opentelemetry.io/otel/trace v1.47.0
 	// PINNED, but the reason it was pinned has lapsed. golang.org/x/perf@HEAD
 	// declares `go 1.26.0` (upgraded 2026-08-19), and while this module and the
 	// workflows were on 1.25 -- with setup-go pinning GOTOOLCHAIN=local -- a
@@ -25,9 +25,11 @@ require (
 	// constraint is gone and the pin may be advanced in its own change. This
 	// commit's benchfmt/ and benchmath/ trees are byte-identical to HEAD's.
 	golang.org/x/perf v0.0.0-20260813145340-fd4a688df892 // used by cmd/benchgate
-	golang.org/x/tools v0.50.0
+	golang.org/x/tools v0.51.0
 	gopkg.in/yaml.v3 v3.0.1
 )
+
+require golang.org/x/sys v0.48.0
 
 require (
 	github.com/aclements/go-moremath v0.0.0-20210112150236-f10218a38794 // indirect
@@ -66,14 +68,14 @@ require (
 	github.com/tliron/kutil v0.3.27 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
-	go.opentelemetry.io/otel/metric v1.46.0 // indirect
+	go.opentelemetry.io/otel/log v1.47.0 // indirect
+	go.opentelemetry.io/otel/metric v1.47.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	golang.org/x/crypto v0.57.0 // indirect
 	golang.org/x/mod v0.41.0 // indirect
 	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/oauth2 v0.36.0 // indirect
 	golang.org/x/sync v0.23.0 // indirect
-	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/term v0.46.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
