@@ -529,3 +529,31 @@ func TestDurableViewsDepthAgreement(t *testing.T) {
 	_, err = libjson.DumpDurable(env, back, nil, libjson.WithTypedMaxDepth(3))
 	require.NoError(t, err)
 }
+
+// A rank 0 array (no dimensions, one cell) loads as rank 0, with its cell
+// inline or in a shared list, and re-encodes to the same document.  The
+// decoder used to fill it with SetArrayCells or SetArrayData, which read
+// no dimensions as a vector, so it came back as a vector of one cell.
+func TestDurableRankZeroArray(t *testing.T) {
+	env := newTypedTestEnv(t)
+	for _, doc := range []string{
+		`["~#durable",[1,["~#array",[[],[5]]]]]`,
+		`["~#durable",[1,[["~#obj",[0,["~#list",[5]]]],["~#array",[[],["~#ref",0]]]]]]`,
+		`["~#durable",[1,[[[[["~#obj",[0,["~#list",[0]]]]]],["~#array",[[],["~#ref",0]]]]]]]`,
+	} {
+		back, err := libjson.LoadDurable(env, []byte(doc), nil)
+		require.NoError(t, err, doc)
+		again, err := libjson.DumpDurable(env, back, nil)
+		require.NoError(t, err, doc)
+		assert.Equal(t, doc, string(again))
+	}
+	a := lisp.Array(lisp.QExpr(nil), []*lisp.LVal{lisp.Int(5)})
+	require.NoError(t, lisp.GoError(a))
+	got, back := roundTrip(t, env, a, nil)
+	assert.Equal(t, `["~#durable",[1,["~#array",[[],[5]]]]]`, got)
+	dims, data := back.ArrayParts()
+	assert.Empty(t, dims.Cells, "rank")
+	assert.Len(t, data.Cells, 1)
+	_, err := libjson.LoadDurable(env, []byte(`["~#durable",[1,["~#array",[[],[]]]]]`), nil)
+	require.ErrorContains(t, err, "array contents do not match its dimensions")
+}

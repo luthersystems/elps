@@ -474,6 +474,9 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 		}
 		var buf [4]int
 		v.SetArrayData(h, dimInts(buf[:0], dims)...)
+		if len(dims) == 0 {
+			clearArrayDims(v)
+		}
 		return v, nil
 	}
 	if len(dims) == 1 {
@@ -494,7 +497,21 @@ func (d *durableDecoder) multiArray(depth int) (*lisp.LVal, error) {
 	}
 	var buf [4]int
 	v.SetArrayCells(cells[:len(cells):len(cells)], dimInts(buf[:0], dims)...)
+	if len(dims) == 0 {
+		clearArrayDims(v)
+	}
 	return v, nil
+}
+
+// clearArrayDims makes the array v rank 0: one cell and no dimensions.
+// SetArrayData and SetArrayCells read no dims as a vector of their cells,
+// so a rank 0 array they fill decodes as a vector of one cell, which
+// DumpDurable writes with the dimensions [1].  v's dimension list is its
+// own (the shell multiArray built), so emptying it changes no other value.
+func clearArrayDims(v *lisp.LVal) {
+	ds, _ := v.ArrayParts()
+	//elps:mutates v is the shell multiArray built, and its dimension list is reachable from nothing else
+	ds.Cells = ds.Cells[:0]
 }
 
 // dimInts appends the values of the dimensions that dims read to ns.
