@@ -279,7 +279,7 @@ jobs:
           echo "claude_settings=$settings" >> "$GITHUB_OUTPUT"
       - name: Cut the release via Claude
         if: ${{ !inputs.dry_run }}
-        uses: anthropics/claude-code-action@ed670b4cf9de2a5a570d130d2f6197b9e543cd64 # v1.0.240
+        uses: anthropics/claude-code-action@1d6de8cb0c237e7c15e9e1bdf973826ebae490cc # v1.0.248
         with:
           # Official-app auth (minted via OIDC using `id-token: write`). Do NOT
           # add a `github_token:` here — a default GITHUB_TOKEN tag does not
@@ -327,7 +327,7 @@ jobs:
       # transcript from the job log. Mirrors buildenv's release-patch.yml.
       - name: Capture agent trace (conversation log)
         if: ${{ always() && !inputs.dry_run }}
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9  # v7.0.2
         with:
           name: release-tag-trace-${{ github.run_id }}
           path: ${{ runner.temp }}/claude-execution-output.json
