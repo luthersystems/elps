@@ -64,8 +64,8 @@ and values, so sharing between roots is kept:
 
 ## Sharing between two groups of roots
 
-`DurableSharing(env, oldRoots, newRoots, reg, opts...)` reports what the
-new roots share with the old roots. An embedder that migrates saved values
+`DurableSharing(env, SharingRoots{Old: oldRoots, New: newRoots}, reg,
+opts...)` reports what the new roots share with the old roots. An embedder that migrates saved values
 uses it to find the old closures the new values keep
 (luthersystems/elps#839).
 
@@ -809,7 +809,7 @@ A limit error wraps `ErrTypedLimit`.
 | Error values | `durable_errors_test.go` | An error raised by `error` round-trips with its condition, message and data, and `handler-bind` matches it after the load; no stack or source; an error with no data; a shared error and an error in a cycle; a host error's text without its Go error; refusals; limits that agree; and a rejection table. `FuzzDurableJSON` seeds error documents. |
 | Literals | `durable_literal_test.go` | A literal and its tail restore as literals that refuse `stable-sort`, a run-time list stays mutable, a literal shared by two roots is one object, and malformed markers are rejected. `FuzzDurableJSON` seeds literal documents. |
 | Views | `durable_views_test.go`, `lisp/vector_capacity_test.go` | A list with its tail and a middle slice (either order), `cdr`, overlapping vector slices of a dead vector, `append!` in place, a vector holding its own slice (a cycle through a view), views made after a restore, a vector's capacity kept alone and with its data list, normalized capacity of non-vector data, arrays of different dims over one data list, every order of a data list, an alias and the vector, a data list held by a map, an array inside its own data, a shared empty data list, a native holding a view of its own storage, views in a native payload, limits at the exact boundary (dump and load accept the same smallest value limit, for five cells and a chain of 30 tails), the nesting limit of a shared empty data list, linear work for a list and all of its tails, capacity pinned after `append!` and equal across VM kinds, and a canonical-rejection table. `FuzzDurableJSON` also builds overlapping views from its input and checks that writes are shared the same way after a restore. |
-| Sharing | `durable_sharing_test.go` | `DurableSharing`: plain data, a kept closure, a nested one, a closure that continues old frames, attribution to the first root, cycles, views of old storage with and without the closure's cell, a native payload, a captured tag, determinism across fresh environments, linear work for 20,000 tails, and limits and charges equal to `DumpDurableRoots`. |
+| Sharing | `durable_sharing_test.go` | `DurableSharing`: plain data, a kept closure, a nested one, a closure that continues old frames, attribution to the first root, cycles, views of old storage with and without the closure's cell, a native payload, a captured tag, walk order within a root, determinism across fresh environments, linear work for 20,000 tails, and limits and charges equal to `DumpDurableRoots`. |
 | Round-5 regression tests for luthersystems/elps#797 | `durable_internal_test.go`, `durable_review3_test.go` | A linear shape for a 20-level repeated subtype, and shapes that differ by function results, method signatures and an unexported method's package path. |
 | Round-4 regression tests for luthersystems/elps#797 | `durable_review3_test.go` | Map keys at the exact byte limit (`{"":0}` and 3,000 random maps of every key kind), complete type shapes (function signatures, interface methods, embedded fields) and a nine-level pointer chain. |
 | Round-3 regression tests for luthersystems/elps#797 | `durable_review2_test.go`, `durable_internal_test.go`, `lisp/package_funnames_test.go` | Integer key text, the member scratch bound, charge before the name read, charge parity across VM kinds, function-scope type shapes, the exact `~#fn` reserve and the thawed lazy table. |

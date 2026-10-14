@@ -412,3 +412,21 @@ func TestDurableSharingFramesListedOnce(t *testing.T) {
 	assert.Equal(t, 0, s.Closures[1].Frame)
 	assert.Equal(t, []string{"np:old n*", "np:old n*"}, keptSummary(s))
 }
+
+// Within one root, kept closures are in the order the encoder first visits
+// them: c, met inside the inner list, comes before f, though the outer list
+// holds c again after the inner list.
+func TestDurableSharingWalkOrder(t *testing.T) {
+	t.Parallel()
+	env := newTypedTestEnv(t)
+	roots := sharingRoots(t, env, `
+(set 'maker (let ((n 10)) (lambda (y) (lambda () (+ n y)))))
+(set 'c (funcall maker 1))
+(set 'f (funcall maker 2))
+(set 'nr (list (list c f) c))`, "maker", "c", "f", "nr")
+	s, err := libjson.DurableSharing(env, libjson.SharingRoots{Old: roots[:1], New: roots[3:]}, nil)
+	require.NoError(t, err)
+	require.Len(t, s.Closures, 2)
+	assert.Same(t, roots[1].Value.Native, s.Closures[0].Closure.Native, "c first")
+	assert.Same(t, roots[2].Value.Native, s.Closures[1].Closure.Native, "f second")
+}

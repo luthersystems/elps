@@ -2066,7 +2066,9 @@ name the closure's frames bind, is a local. Any other name is a global of
 It expands builtin macros (implemented in Go) and checks their expansions.
 It does not run a macro written in Lisp: it checks the call's argument
 count and skips its arguments. It is an evaluation of its own, and it
-charges one step per list and per expansion, as `MacroExpandAll` does. Use it with
+charges one step per list and per expansion, as `MacroExpandAll` does. Like
+`MacroExpandAll`, it advances the gensym counter when a builtin macro it
+expands calls `GenSym` (`trace`, `curry-function`, `deftype`). Use it with
 `libjson.DurableSharing` to check the old closures that migrated values
 keep (see `docs/internals/durable-json.md`).
 

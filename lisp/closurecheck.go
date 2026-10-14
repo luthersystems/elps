@@ -65,8 +65,12 @@ type ClosureIssue struct {
 // The findings are sorted by name, kind and argument count, each once.  The
 // walk charges one step per list it walks and per macro it expands, as
 // macroexpand-all does, so it stops at env's step budget, step limit or
-// cancelled context with that error.  It evaluates no Lisp code and changes
-// nothing.  It returns an error for a value that is not such a function.
+// cancelled context with that error.  It evaluates no Lisp code and does
+// not change fn or any binding.  Like macroexpand-all, it advances the
+// runtime's gensym counter when a builtin macro it expands calls
+// LEnv.GenSym (trace, curry-function and deftype do), so the names later
+// gensym calls return move on.  It returns an error for a value that is
+// not such a function.
 func (env *LEnv) CheckClosure(fn *LVal) ([]ClosureIssue, *LVal) {
 	if fn == nil || fn.Type != LFun || fn.Builtin() != nil || fn.IsSpecialFun() || fn.funEnv() == nil || len(fn.Cells) == 0 {
 		return nil, env.Errorf("check closure: not a lambda")

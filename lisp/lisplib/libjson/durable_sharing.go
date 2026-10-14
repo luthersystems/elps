@@ -456,7 +456,12 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 		return res
 	}
 	// Forward from the new roots in order: each kept closure is listed
-	// under the first root that reaches it.
+	// under the first root that reaches it.  The walk is depth first in
+	// preorder, each node's edges in the order the pass met them, so it
+	// meets the nodes a root holds first in the order the pass first
+	// visited them.  A node is marked when it is taken off the stack, not
+	// when it is pushed: marking at the push would put a node a later
+	// sibling holds before one an earlier sibling's contents hold.
 	seen := make([]bool, total)
 	frames := frameLister{g: g, e: e, out: out, old: old, index: map[int]int{}}
 	var stack []int
@@ -465,11 +470,14 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 		if t < 0 || seen[t] {
 			continue
 		}
-		seen[t] = true
 		stack = append(stack[:0], t)
 		for len(stack) > 0 {
 			i := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
+			if seen[i] {
+				continue
+			}
+			seen[i] = true
 			if v := g.closures[i]; v != nil {
 				f := g.linkOf(i)
 				isOld := old(i)
@@ -485,7 +493,6 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 			next := succ.of(i)
 			for k := len(next) - 1; k >= 0; k-- {
 				if c := next[k]; !seen[c] {
-					seen[c] = true
 					stack = append(stack, c)
 				}
 			}
