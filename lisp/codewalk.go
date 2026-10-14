@@ -1421,7 +1421,11 @@ func (env *LEnv) MacroExpandAll(form *LVal) *LVal {
 // package-qualified name, which has no kind, so the walker treats its
 // form as opaque.
 func (env *LEnv) resolveSpecialOp(head *LVal) (string, bool) {
-	v := env.Get(head)
+	return env.specialOpOf(env.Get(head))
+}
+
+// specialOpOf is resolveSpecialOp for the value v a head is bound to.
+func (env *LEnv) specialOpOf(v *LVal) (string, bool) {
 	if v.Type != LFun || v.Builtin() == nil {
 		return "", false
 	}
