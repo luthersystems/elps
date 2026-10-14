@@ -21,13 +21,20 @@ package libjson
 // roots come first, so that is exactly when an old root reaches it.  Which
 // new roots reach an old node is found by one backward walk from the old
 // nodes, and the kept closures by one forward walk from the new roots in
-// order, so the work is linear in the graph.  Every order a result shows
+// order, so the work is linear in the graph.  A view's range is reached
+// through a segment tree over its storage's cells, and the saved frames of
+// the kept closures are listed once each.  Every order a result shows
 // comes from the encoder's walk order, never from addresses or Go maps.
+//
+// A new closure counts as made by old code only through its frames: one
+// that saves no frame (its frames bind nothing) shares nothing with the old
+// roots, and is not reported.
 
 import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
@@ -44,6 +51,10 @@ type Sharing struct {
 	// is in the order of those roots, and, within one root, in the
 	// encoder's walk order.
 	Closures []KeptClosure
+	// Frames holds the saved frames of the kept closures, each once: a
+	// KeptClosure's Frame and a frame's Parent index it.  A frame is listed
+	// when the first kept closure that captures it is.
+	Frames []CapturedFrame
 }
 
 // RootSharing is what one new root shares with the old group.
@@ -67,31 +78,54 @@ type KeptClosure struct {
 	Closure *lisp.LVal
 	// Root is the name of the first new root that reaches the closure.
 	Root string
-	// Captured holds, for each name the closure's saved frames bind, the
-	// binding a lookup from the closure finds: the innermost one.  It is
-	// sorted by name.  The frames are those DumpDurable saves: the root
-	// environment and frames with no bindings are left out.
-	Captured []CapturedBinding
+	// Frame is the index in Sharing.Frames of the closure's innermost
+	// saved frame, or -1 when it captured none.  The saved frames are those
+	// DumpDurable writes: the root environment and frames with no bindings
+	// are left out.  Sharing.Lookup finds a captured binding.
+	Frame int
 	// Old reports that the old roots reach the closure itself.  When it is
 	// false the closure is new, and its captured frames continue a frame
 	// the old roots reach: code an old closure ran made it.
 	Old bool
 }
 
-// CapturedBinding is one binding a kept closure captured.
+// CapturedFrame is one saved frame of a kept closure.
+type CapturedFrame struct {
+	// Bindings holds the frame's bindings, sorted by name.
+	Bindings []CapturedBinding
+	// Parent is the index in Sharing.Frames of the frame's parent, or -1
+	// when the parent is the root environment.
+	Parent int
+	// Old reports that the old roots reach the frame.
+	Old bool
+}
+
+// CapturedBinding is one binding of a saved frame.
 type CapturedBinding struct {
 	// Name is the bound name.
 	Name string
 	// Tag is the user type of a tagged value (lisp.LTaggedVal), and empty
 	// for any other value.
 	Tag string
-	// Frame is the binding's frame: 0 is the closure's innermost saved
-	// frame, 1 its parent, and so on.
-	Frame int
 	// Type is the bound value's type.
 	Type lisp.LType
-	// Old reports that the binding's frame is a frame the old roots reach.
-	Old bool
+}
+
+// Lookup returns the binding of name that a lookup from frame (an index in
+// s.Frames, such as KeptClosure.Frame) finds: the binding of the innermost
+// frame on the parent chain that binds name.  It reports false when no
+// saved frame binds name.
+func (s *Sharing) Lookup(frame int, name string) (CapturedBinding, bool) {
+	for frame >= 0 && frame < len(s.Frames) {
+		f := &s.Frames[frame]
+		if i, ok := slices.BinarySearchFunc(f.Bindings, name, func(b CapturedBinding, name string) int {
+			return strings.Compare(b.Name, name)
+		}); ok {
+			return f.Bindings[i], true
+		}
+		frame = f.Parent
+	}
+	return CapturedBinding{}, false
 }
 
 // SharingRoots is the two groups of roots DurableSharing compares.  Each
@@ -106,7 +140,7 @@ type SharingRoots struct {
 // Sharing).  It walks the graph DumpDurableRoots walks for the roots of
 // roots.Old followed by those of roots.New, under the same limits, charges
 // and refusals, and fails exactly when that call does.  Root names must be
-// distinct across both groups.  It evaluates nothing, and the result is the
+// distinct across both groups.  It evaluates no Lisp code, and the result is the
 // same for the same value graphs, whatever their addresses.
 func DurableSharing(env *lisp.LEnv, roots SharingRoots, reg *DurableRegistry, opts ...TypedOption) (*Sharing, error) {
 	if env == nil {
@@ -124,7 +158,10 @@ func DurableSharing(env *lisp.LEnv, roots SharingRoots, reg *DurableRegistry, op
 	}
 	e := newDurableEncoder(env, reg, cfg)
 	if len(all) > 0 {
-		e.share = &shareGraph{rootKey: listKey{&list.Cells[0], len(list.Cells)}, cur: -1, top: make([]int, len(all))}
+		e.share = &shareGraph{
+			rootKey: listKey{&list.Cells[0], len(list.Cells)}, cur: -1, top: make([]int, len(all)),
+			closures: map[int]*lisp.LVal{}, frames: map[int]*lisp.LEnv{}, link: map[int]int{},
+		}
 		for i := range e.share.top {
 			e.share.top[i] = -1
 		}
@@ -173,8 +210,8 @@ type shareGraph struct {
 	rootKey any
 	// closures holds each closure node's value.
 	closures map[int]*lisp.LVal
-	// frames marks the captured frame nodes.
-	frames map[int]bool
+	// frames holds each captured frame node's environment.
+	frames map[int]*lisp.LEnv
 	// link holds each closure node's frame node and each frame node's
 	// parent frame node (-1 for the root environment).
 	link map[int]int
@@ -259,24 +296,26 @@ func (g *shareGraph) view(group, lo, hi int) {
 
 // closure records closure node i and its value.
 func (g *shareGraph) closure(i int, v *lisp.LVal) {
-	if g.closures == nil {
-		g.closures, g.frames, g.link = map[int]*lisp.LVal{}, map[int]bool{}, map[int]int{}
-	}
 	g.closures[i] = v
 }
 
-// frame records captured frame node i.
-func (g *shareGraph) frame(i int) {
-	if g.closures == nil {
-		g.closures, g.frames, g.link = map[int]*lisp.LVal{}, map[int]bool{}, map[int]int{}
-	}
-	g.frames[i] = true
+// frame records captured frame node i and its environment.
+func (g *shareGraph) frame(i int, env *lisp.LEnv) {
+	g.frames[i] = env
 }
 
 // setLink records closure node i's frame node, or frame node i's parent
 // frame node: f, or -1 for the root environment.
 func (g *shareGraph) setLink(i, f int) {
 	g.link[i] = f
+}
+
+// linkOf returns the frame node setLink recorded for node i, or -1.
+func (g *shareGraph) linkOf(i int) int {
+	if f, ok := g.link[i]; ok {
+		return f
+	}
+	return -1
 }
 
 // frameNode returns the node of a captured frame the pass has visited, or
@@ -383,7 +422,7 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 	pred := csr(total, to, from)
 	// Backward from the old nodes, and from the old closures and frames.
 	reachesOld := backward(total, pred, func(i int) bool { return old(i) })
-	reachesKept := backward(total, pred, func(i int) bool { return old(i) && (g.closures[i] != nil || g.frames[i]) })
+	reachesKept := backward(total, pred, func(i int) bool { return old(i) && (g.closures[i] != nil || g.frames[i] != nil) })
 	for r := range newRoots {
 		if t := g.top[nOld+r]; t >= 0 {
 			out.Roots[r].Shared = reachesOld[t]
@@ -409,11 +448,7 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 				break
 			}
 			chain = append(chain, f)
-			parent, ok := g.link[f]
-			if !ok {
-				break
-			}
-			f = parent
+			f = g.linkOf(f)
 		}
 		for _, c := range chain {
 			continues[c] = res
@@ -423,6 +458,7 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 	// Forward from the new roots in order: each kept closure is listed
 	// under the first root that reaches it.
 	seen := make([]bool, total)
+	frameIndex := map[int]int{}
 	var stack []int
 	for r, root := range newRoots {
 		t := g.top[nOld+r]
@@ -435,14 +471,14 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 			i := stack[len(stack)-1]
 			stack = stack[:len(stack)-1]
 			if v := g.closures[i]; v != nil {
-				f, ok := g.link[i]
+				f := g.linkOf(i)
 				isOld := old(i)
-				if isOld || ok && continuesOld(f) {
+				if isOld || continuesOld(f) {
 					out.Closures = append(out.Closures, KeptClosure{
 						Closure:  v,
 						Root:     root.Name,
 						Old:      isOld,
-						Captured: e.captured(v, old),
+						Frame:    g.savedFrame(e, out, frameIndex, f, old),
 					})
 				}
 			}
@@ -457,37 +493,40 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 	}
 }
 
-// captured returns the innermost binding of each name a closure's saved
-// frames bind, sorted by name, from the frames and bindings the dump read.
-func (e *durableEncoder) captured(v *lisp.LVal, old func(int) bool) []CapturedBinding {
-	var out []CapturedBinding
-	seen := map[string]bool{}
-	fr, err := e.frameOf(lambdaEnv(v))
-	for depth := 0; fr != nil && err == nil; depth++ {
-		node := e.frameNode(fr)
-		for _, b := range e.frameBindings[fr] {
-			if seen[b.name] {
-				continue
-			}
-			seen[b.name] = true
-			c := CapturedBinding{Name: b.name, Frame: depth, Type: b.value.Type, Old: node >= 0 && old(node)}
-			if b.value.Type == lisp.LTaggedVal {
-				c.Tag = b.value.Str
-			}
-			out = append(out, c)
+// savedFrame returns the index in out.Frames of frame node f, listing it
+// and its parents first when they are not listed yet, or -1 for the root
+// environment.  frameIndex holds the frames listed so far, by node.
+func (g *shareGraph) savedFrame(e *durableEncoder, out *Sharing, frameIndex map[int]int, f int, old func(int) bool) int {
+	// The parents not listed yet, innermost first.
+	var chain []int
+	for ; f >= 0; f = g.linkOf(f) {
+		if _, ok := frameIndex[f]; ok {
+			break
 		}
-		fr, err = e.frameOf(fr.Parent())
+		chain = append(chain, f)
 	}
-	slices.SortFunc(out, func(a, b CapturedBinding) int {
-		switch {
-		case a.Name < b.Name:
-			return -1
-		case a.Name > b.Name:
-			return 1
+	parent := -1
+	if f >= 0 {
+		parent = frameIndex[f]
+	}
+	for k := len(chain) - 1; k >= 0; k-- {
+		node := chain[k]
+		bs := e.frameBindings[g.frames[node]]
+		frame := CapturedFrame{Parent: parent, Old: old(node), Bindings: make([]CapturedBinding, len(bs))}
+		for j, b := range bs {
+			frame.Bindings[j] = CapturedBinding{Name: b.name, Type: b.value.Type}
+			if b.value.Type == lisp.LTaggedVal {
+				frame.Bindings[j].Tag = b.value.Str
+			}
 		}
-		return 0
-	})
-	return out
+		parent = len(out.Frames)
+		frameIndex[node] = parent
+		out.Frames = append(out.Frames, frame)
+	}
+	if len(chain) == 0 {
+		return parent
+	}
+	return frameIndex[chain[0]]
 }
 
 // adjacency is a compressed adjacency list: the successors of node i are

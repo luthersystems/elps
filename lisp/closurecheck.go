@@ -75,6 +75,10 @@ func (env *LEnv) CheckClosure(fn *LVal) ([]ClosureIssue, *LVal) {
 	if pkg == nil {
 		return nil, env.Errorf("check closure: unknown package: %q", fn.Package())
 	}
+	// The check is an evaluation of its own: called from Go it starts a
+	// new step count, as LEnv.Eval does, and the builtin macros it expands
+	// run inside it.
+	defer env.Runtime.beginEval()()
 	c := &closureCheck{env: env, pkg: pkg, captured: map[string]bool{}, skip: -1}
 	for fr := fn.funEnv(); fr != nil; fr = fr.Parent() {
 		for name := range fr.Bindings() {
@@ -132,20 +136,10 @@ type closureCheck struct {
 	skip int
 }
 
-// walkedForm is a form the walk is inside, at its depth.
+// walkedForm is a thread form the walk is inside: its depth, and how many
+// of its arguments the walk has met.
 type walkedForm struct {
-	form  *LVal
-	depth int
-}
-
-// isThreadStep reports whether the call n is a step of the innermost
-// thread form: one of its arguments after the first.
-func (c *closureCheck) isThreadStep(n *WalkNode) bool {
-	if len(c.threads) == 0 {
-		return false
-	}
-	t := c.threads[len(c.threads)-1]
-	return t.depth == n.Depth-1 && len(t.form.Cells) > 2 && slices.Contains(t.form.Cells[2:], n.Node)
+	depth, args int
 }
 
 // global returns the global binding of name, or nil when it has none.
@@ -208,19 +202,28 @@ func (c *closureCheck) visit(n *WalkNode) bool {
 		}
 		c.skip = -1
 	}
+	// A thread form's first argument is its initial value; each later one
+	// at the depth just below it is a step.
+	for len(c.threads) > 0 && c.threads[len(c.threads)-1].depth >= n.Depth {
+		c.threads = c.threads[:len(c.threads)-1]
+	}
+	step := false
+	if len(c.threads) > 0 {
+		if t := &c.threads[len(c.threads)-1]; t.depth == n.Depth-1 {
+			step = t.args > 0
+			t.args++
+		}
+	}
 	switch n.Event {
 	case WalkForm:
-		for len(c.threads) > 0 && c.threads[len(c.threads)-1].depth >= n.Depth {
-			c.threads = c.threads[:len(c.threads)-1]
-		}
 		switch k := specialFormKind(n.Op); {
 		case n.Op == "":
 			c.call, c.calls = n.Node, len(n.Node.Cells)-1
-			if c.isThreadStep(n) {
+			if step {
 				c.calls++
 			}
 		case k == kindThreadFirst || k == kindThreadLast:
-			c.threads = append(c.threads, walkedForm{form: n.Node, depth: n.Depth})
+			c.threads = append(c.threads, walkedForm{depth: n.Depth})
 		}
 	case WalkRef:
 		if n.Bound || c.local(n.Node.Str) {

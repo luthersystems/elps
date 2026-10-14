@@ -87,7 +87,15 @@ old roots come first, so that is exactly when an old root reaches it.
 | `RootSharing.KeepsClosure` | The new root reaches an old closure or captured frame. |
 | `KeptClosure.Old` | `true`: the old roots reach the closure. `false`: the closure is new, and its frame chain reaches an old frame (old code made it). |
 | `KeptClosure.Root` | The first new root, in the order given, that reaches the closure. |
-| `KeptClosure.Captured` | The innermost binding of each name in the closure's saved frames, sorted by name: frame index, value type, tag of a tagged value, and whether the frame is old. |
+| `KeptClosure.Frame` | The index in `Sharing.Frames` of the closure's innermost saved frame, or -1. |
+| `Sharing.Frames` | The saved frames of the kept closures, each once: bindings sorted by name (value type, and tag of a tagged value), parent index, and whether the frame is old. `Sharing.Lookup(frame, name)` returns the binding a lookup from that frame finds. |
+
+A new closure is found as made by old code only through its frames. A
+closure that old code made, and whose frames bind nothing (so it saves no
+frame), shares no object with the old roots and is not reported.
+
+DurableSharing also writes the document, as `DumpDurableRoots` does, and
+then drops it. That keeps the byte limit and the output charge the same.
 
 Every order in the result comes from the walk order. Addresses and Go map
 order play no part. One backward walk from the old nodes and one forward

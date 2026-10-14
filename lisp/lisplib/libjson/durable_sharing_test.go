@@ -5,6 +5,7 @@ package libjson_test
 import (
 	"errors"
 	"regexp"
+	"sort"
 	"strings"
 	"testing"
 
@@ -58,7 +59,9 @@ func rootFlags(s *libjson.Sharing) map[string]string {
 	return out
 }
 
-// keptSummary lists each kept closure as ROOT:OLD:CAPTURED.
+// keptSummary lists each kept closure as ROOT:OLD followed by the names
+// a lookup from the closure finds, sorted, each marked * when its frame is
+// old.
 func keptSummary(s *libjson.Sharing) []string {
 	var out []string
 	for _, k := range s.Closures {
@@ -69,9 +72,22 @@ func keptSummary(s *libjson.Sharing) []string {
 		} else {
 			line.WriteString(":new")
 		}
-		for _, c := range k.Captured {
-			line.WriteString(" " + c.Name)
-			if c.Old {
+		found := map[string]bool{}
+		for f := k.Frame; f >= 0; f = s.Frames[f].Parent {
+			for _, b := range s.Frames[f].Bindings {
+				if _, ok := found[b.Name]; !ok {
+					found[b.Name] = s.Frames[f].Old
+				}
+			}
+		}
+		names := make([]string, 0, len(found))
+		for n := range found {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			line.WriteString(" " + n)
+			if found[n] {
 				line.WriteString("*")
 			}
 		}
@@ -101,7 +117,11 @@ func TestDurableSharingBasics(t *testing.T) {
 	assert.Equal(t, []string{"n-same:old data* x*"}, keptSummary(s))
 	require.Len(t, s.Closures, 1)
 	assert.Equal(t, lisp.LFun, s.Closures[0].Closure.Type)
-	assert.Equal(t, lisp.LSExpr, s.Closures[0].Captured[0].Type)
+	b, ok := s.Lookup(s.Closures[0].Frame, "data")
+	require.True(t, ok)
+	assert.Equal(t, lisp.LSExpr, b.Type)
+	_, ok = s.Lookup(s.Closures[0].Frame, "absent")
+	assert.False(t, ok)
 }
 
 // A closure that old code makes during the migration continues the old
@@ -118,10 +138,11 @@ func TestDurableSharingContinuedFrames(t *testing.T) {
 	k := s.Closures[0]
 	assert.False(t, k.Old)
 	assert.Equal(t, "made", k.Root)
-	assert.Equal(t, []libjson.CapturedBinding{
-		{Name: "n", Frame: 1, Type: lisp.LInt, Old: true},
-		{Name: "y", Frame: 0, Type: lisp.LInt},
-	}, k.Captured)
+	assert.Equal(t, []libjson.CapturedFrame{
+		{Bindings: []libjson.CapturedBinding{{Name: "n", Type: lisp.LInt}}, Parent: -1, Old: true},
+		{Bindings: []libjson.CapturedBinding{{Name: "y", Type: lisp.LInt}}, Parent: 0},
+	}, s.Frames)
+	assert.Equal(t, 1, k.Frame)
 }
 
 // A new closure over a new frame that only holds an old closure does not
@@ -233,16 +254,22 @@ func TestDurableSharingCapturedTag(t *testing.T) {
 	t.Parallel()
 	src := `
 (deftype box (x) x)
-(set 'f (let ((b (new box 1)) (c 2)) (let ((c 3)) (lambda () (list b c)))))`
+(set 'f (let ((b (new box 1)) (c 2)) (let ((c "3")) (lambda () (list b c)))))`
 	env := newTypedTestEnv(t)
 	roots := sharingRoots(t, env, src, "f")
 	s, err := libjson.DurableSharing(env, libjson.SharingRoots{Old: roots, New: []libjson.DurableRoot{{Name: "new", Value: roots[0].Value}}}, nil)
 	require.NoError(t, err)
 	require.Len(t, s.Closures, 1)
-	assert.Equal(t, []libjson.CapturedBinding{
-		{Name: "b", Frame: 1, Type: lisp.LTaggedVal, Tag: "user:box", Old: true},
-		{Name: "c", Frame: 0, Type: lisp.LInt, Old: true},
-	}, s.Closures[0].Captured)
+	assert.Equal(t, []libjson.CapturedFrame{
+		{Bindings: []libjson.CapturedBinding{{Name: "b", Type: lisp.LTaggedVal, Tag: "user:box"}, {Name: "c", Type: lisp.LInt}}, Parent: -1, Old: true},
+		{Bindings: []libjson.CapturedBinding{{Name: "c", Type: lisp.LString}}, Parent: 0, Old: true},
+	}, s.Frames)
+	b, ok := s.Lookup(s.Closures[0].Frame, "c")
+	require.True(t, ok)
+	assert.Equal(t, lisp.LString, b.Type, "the inner c shadows the outer one")
+	b, ok = s.Lookup(s.Closures[0].Frame, "b")
+	require.True(t, ok)
+	assert.Equal(t, "user:box", b.Tag)
 }
 
 // sharingBox is a native whose payload is a value it holds, with sharing.
@@ -368,4 +395,18 @@ func TestDurableSharingCheckKeptCode(t *testing.T) {
 		require.Nil(t, lerr)
 		assert.Equal(t, []lisp.ClosureIssue{{Name: "helper", Kind: lisp.ClosureArity, Args: 1, Message: "calls helper with 1 argument(s); helper takes 2"}}, issues)
 	}
+}
+
+// Kept closures over one frame share its entry in Frames.
+func TestDurableSharingFramesListedOnce(t *testing.T) {
+	t.Parallel()
+	src := `
+(set 'pair (let ((n 0)) (list (lambda () (set! n (+ n 1))) (lambda () n))))
+(set 'np (list (second pair) (first pair)))`
+	_, s := sharingOf(t, src, []string{"pair"}, []string{"np"})
+	require.Len(t, s.Closures, 2)
+	require.Len(t, s.Frames, 1)
+	assert.Equal(t, 0, s.Closures[0].Frame)
+	assert.Equal(t, 0, s.Closures[1].Frame)
+	assert.Equal(t, []string{"np:old n*", "np:old n*"}, keptSummary(s))
 }

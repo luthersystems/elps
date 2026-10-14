@@ -2063,8 +2063,10 @@ A symbol resolves as it does when `fn` runs. A name the code binds, or a
 name the closure's frames bind, is a local. Any other name is a global of
 `fn`'s package, or of the package that qualifies it. The walk is
 `lisp.CodeWalker`, with heads classified as the evaluator classifies them.
-It expands no macro, so it skips the arguments of a macro call. It charges
-one step per list, as `MacroExpandAll` does. Use it with
+It expands builtin macros (implemented in Go) and checks their expansions.
+It does not run a macro written in Lisp: it checks the call's argument
+count and skips its arguments. It is an evaluation of its own, and it
+charges one step per list and per expansion, as `MacroExpandAll` does. Use it with
 `libjson.DurableSharing` to check the old closures that migrated values
 keep (see `docs/internals/durable-json.md`).
 

@@ -62,6 +62,8 @@ func TestCheckClosure(t *testing.T) {
 		{"quoted data", `(lambda () '(missing 1 2) (quote (also missing)))`, []string{}},
 		{"thread steps", `(lambda (x) (thread-first x (two 1)) (thread-last x (two)) (thread-first x (two 1 2)))`,
 			[]string{"calls two with 1 argument(s); two takes 2", "calls two with 3 argument(s); two takes 2"}},
+		{"thread initial value", `(lambda (x) (thread-first (two 1 2) (two 1) two) (thread-first (two 1) (thread-last x (two 1)) (opt)))`,
+			[]string{"calls two with 1 argument(s); two takes 2"}},
 		{"qualified", `(lambda () (lisp:cons 1 2) (user:two 1 2) (user:gone) (nopkg:x))`,
 			[]string{"calls nopkg:x, which is not defined", "calls user:gone, which is not defined"}},
 		{"dotimes", `(lambda () (dotimes (i 3) (two i i)))`, []string{}},
@@ -127,12 +129,37 @@ func TestCheckClosureChargesSteps(t *testing.T) {
 	fn := env.LoadString("test", `(lambda () (list (list (list 1)) (list (list 2)) (list (list 3))))`)
 	require.NoError(t, lisp.GoError(fn))
 	env.Runtime.SetStepBudget(1000)
-	before := env.Runtime.Steps()
+	before := env.Runtime.TotalSteps()
 	_, lerr := env.CheckClosure(fn)
 	require.Nil(t, lerr)
-	assert.Equal(t, int64(8), env.Runtime.Steps()-before, "one step per list walked")
+	assert.Equal(t, int64(8), env.Runtime.TotalSteps()-before, "one step per list walked")
 	env.Runtime.SetStepBudget(2)
 	_, lerr = env.CheckClosure(fn)
 	require.NotNil(t, lerr)
 	assert.Contains(t, lerr.String(), "step budget exceeded")
+}
+
+// Steps an earlier evaluation left do not count against the check's step
+// limit, and the builtin macros it expands do not reset its count.
+func TestCheckClosureStepLimit(t *testing.T) {
+	t.Parallel()
+	env := newCowTestEnv(t)
+	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(1000)(env)))
+	fn := env.LoadString("test", `(lambda (m) (get-default m 1 (list (list (list 1)))) (get-default m 2 (list (list (list 2)))) (list (list (list 3))))`)
+	require.NoError(t, lisp.GoError(fn))
+	_, lerr := env.CheckClosure(fn)
+	require.Nil(t, lerr)
+	steps := env.Runtime.Steps()
+	require.Greater(t, steps, int64(10))
+
+	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(steps)(env)))
+	require.NoError(t, lisp.GoError(env.LoadString("test", `(dotimes (i 3) i)`)))
+	require.Positive(t, env.Runtime.Steps())
+	_, lerr = env.CheckClosure(fn)
+	require.Nil(t, lerr, "the earlier evaluation's steps do not count")
+
+	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(steps-1)(env)))
+	_, lerr = env.CheckClosure(fn)
+	require.NotNil(t, lerr, "a macro expansion does not reset the count")
+	assert.Contains(t, lerr.String(), "step limit exceeded")
 }

@@ -280,7 +280,7 @@ func (e *durableEncoder) scanFrame(env *lisp.LEnv, depth int) error {
 	i := e.openObject(key)
 	share := e.share != nil && !e.discover
 	if share {
-		e.share.frame(i)
+		e.share.frame(i, env)
 	}
 	parent, err := e.frameOf(env.Parent())
 	if err != nil {
