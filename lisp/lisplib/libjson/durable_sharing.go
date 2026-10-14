@@ -458,7 +458,7 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 	// Forward from the new roots in order: each kept closure is listed
 	// under the first root that reaches it.
 	seen := make([]bool, total)
-	frameIndex := map[int]int{}
+	frames := frameLister{g: g, e: e, out: out, old: old, index: map[int]int{}}
 	var stack []int
 	for r, root := range newRoots {
 		t := g.top[nOld+r]
@@ -478,7 +478,7 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 						Closure: v,
 						Root:    root.Name,
 						Old:     isOld,
-						Frame:   g.savedFrame(e, out, frameIndex, f, old),
+						Frame:   frames.list(f),
 					})
 				}
 			}
@@ -493,10 +493,21 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 	}
 }
 
-// savedFrame returns the index in out.Frames of frame node f, listing it
-// and its parents first when they are not listed yet, or -1 for the root
-// environment.  frameIndex holds the frames listed so far, by node.
-func (g *shareGraph) savedFrame(e *durableEncoder, out *Sharing, frameIndex map[int]int, f int, old func(int) bool) int {
+// frameLister lists the saved frames of the kept closures in out.Frames,
+// each once.  index holds the frames listed so far, by node.
+type frameLister struct {
+	g     *shareGraph
+	e     *durableEncoder
+	out   *Sharing
+	old   func(int) bool
+	index map[int]int
+}
+
+// list returns the index in out.Frames of frame node f, listing it and its
+// parents first when they are not listed yet, or -1 for the root
+// environment.
+func (l *frameLister) list(f int) int {
+	g, out, frameIndex := l.g, l.out, l.index
 	// The parents not listed yet, innermost first.
 	var chain []int
 	for ; f >= 0; f = g.linkOf(f) {
@@ -511,8 +522,8 @@ func (g *shareGraph) savedFrame(e *durableEncoder, out *Sharing, frameIndex map[
 	}
 	for k := len(chain) - 1; k >= 0; k-- {
 		node := chain[k]
-		bs := e.frameBindings[g.frames[node]]
-		frame := CapturedFrame{Parent: parent, Old: old(node), Bindings: make([]CapturedBinding, len(bs))}
+		bs := l.e.frameBindings[g.frames[node]]
+		frame := CapturedFrame{Parent: parent, Old: l.old(node), Bindings: make([]CapturedBinding, len(bs))}
 		for j, b := range bs {
 			frame.Bindings[j] = CapturedBinding{Name: b.name, Type: b.value.Type}
 			if b.value.Type == lisp.LTaggedVal {
