@@ -284,7 +284,9 @@ var sharingBoxCodec = libjson.DurableCodec[*sharingBox]{
 		}
 		return b.v, nil
 	},
-	Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) { return lisp.Native(&sharingBox{v: p}), nil },
+	Load: func(_ *lisp.LEnv, _ int, p *lisp.LVal) (*lisp.LVal, error) {
+		return lisp.Native(&sharingBox{v: p}), nil
+	},
 }
 
 // A native's payload is walked: a new native over an old closure keeps it.

@@ -475,10 +475,10 @@ func (g *shareGraph) analyze(e *durableEncoder, nOld int, newRoots []DurableRoot
 				isOld := old(i)
 				if isOld || continuesOld(f) {
 					out.Closures = append(out.Closures, KeptClosure{
-						Closure:  v,
-						Root:     root.Name,
-						Old:      isOld,
-						Frame:    g.savedFrame(e, out, frameIndex, f, old),
+						Closure: v,
+						Root:    root.Name,
+						Old:     isOld,
+						Frame:   g.savedFrame(e, out, frameIndex, f, old),
 					})
 				}
 			}
