@@ -2048,6 +2048,30 @@ result still point into the original file. A special operator an embedder
 registers has no known shape, and the walker treats a form headed by one as
 opaque: its arguments are neither walked nor expanded.
 
+### Checking a closure against the current globals
+
+`(*lisp.LEnv).CheckClosure(fn)` checks the code of a lambda against the
+globals `env` binds now. It returns sorted `lisp.ClosureIssue` values:
+
+| Kind | Finding |
+|---|---|
+| `ClosureUnbound` | The code reads, calls, names with `function` or sets with `set!` a global that is not defined. |
+| `ClosureNotFunction` | The code calls a global bound to a value that is not a function. |
+| `ClosureArity` | The code calls a global function or macro with an argument count its formals refuse. |
+
+A symbol resolves as it does when `fn` runs. A name the code binds, or a
+name the closure's frames bind, is a local. Any other name is a global of
+`fn`'s package, or of the package that qualifies it. The walk is
+`lisp.CodeWalker`, with heads classified as the evaluator classifies them.
+It expands builtin macros (implemented in Go) and checks their expansions.
+It does not run a macro written in Lisp: it checks the call's argument
+count and skips its arguments. It is an evaluation of its own, and it
+charges one step per list and per expansion, as `MacroExpandAll` does. Like
+`MacroExpandAll`, it advances the gensym counter when a builtin macro it
+expands calls `GenSym` (`trace`, `curry-function`, `deftype`). Use it with
+`libjson.DurableSharing` to check the old closures that migrated values
+keep (see `docs/internals/durable-json.md`).
+
 ### Asking where a node is
 
 Two queries in `astutil` are built on the same walker:

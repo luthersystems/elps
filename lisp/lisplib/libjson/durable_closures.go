@@ -235,12 +235,19 @@ func (e *durableEncoder) scanClosure(v *lisp.LVal, depth int) error {
 		return err
 	}
 	i := e.openObject(key)
+	share := e.share != nil && !e.discover
+	if share {
+		e.share.closure(i, v)
+	}
 	fr, err := e.frameOf(lambdaEnv(v))
 	if err != nil {
 		return err
 	}
 	if err := e.scanFrame(fr, depth+1); err != nil {
 		return err
+	}
+	if share {
+		e.share.setLink(i, e.frameNode(fr))
 	}
 	if err := e.scanCode(v, depth+1); err != nil {
 		return err
@@ -271,12 +278,19 @@ func (e *durableEncoder) scanFrame(env *lisp.LEnv, depth int) error {
 		return err
 	}
 	i := e.openObject(key)
+	share := e.share != nil && !e.discover
+	if share {
+		e.share.frame(i, env)
+	}
 	parent, err := e.frameOf(env.Parent())
 	if err != nil {
 		return err
 	}
 	if err := e.scanFrame(parent, depth+1); err != nil {
 		return err
+	}
+	if share {
+		e.share.setLink(i, e.frameNode(parent))
 	}
 	for _, b := range bs {
 		if err := e.countScan(1); err != nil {

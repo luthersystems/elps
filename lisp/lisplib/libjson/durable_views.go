@@ -223,6 +223,9 @@ func (e *durableEncoder) scanView(vi viewInfo, depth int) error {
 	for k := st.scan.free(vi.off); k < end; k = st.scan.free(k + 1) {
 		i := e.openNode()
 		st.scan.claim(k, i)
+		if e.share != nil {
+			e.share.cell(vi.group, len(st.cells), k, i)
+		}
 		if st.live[k] {
 			if err := e.scan(st.cells[k], depth+1); err != nil {
 				return err
@@ -236,6 +239,9 @@ func (e *durableEncoder) scanView(vi viewInfo, depth int) error {
 	// which add nothing new).
 	if n := st.scan.reach(vi.off, end, e.isOpen, e.low); n != noLow {
 		e.reach(n)
+	}
+	if e.share != nil {
+		e.share.view(vi.group, vi.off, end)
 	}
 	return nil
 }
@@ -261,7 +267,11 @@ func (e *durableEncoder) scanHolder(key any, cells []*lisp.LVal, depth int) erro
 			}
 		}
 	} else {
-		for _, c := range cells {
+		roots := e.share != nil && !e.discover && key == e.share.rootKey
+		for k, c := range cells {
+			if roots {
+				e.share.rootCell(k)
+			}
 			if err := e.scan(c, depth+1); err != nil {
 				return err
 			}

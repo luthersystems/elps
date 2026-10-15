@@ -272,6 +272,9 @@ type durableEncoder struct {
 	// environments walked and code nodes scanned, for the bound and the
 	// tests.
 	nearestFrame map[*lisp.LEnv]*lisp.LEnv
+	// share, when set, records the graph the counting pass walks, for
+	// DurableSharing (durable_sharing.go).
+	share *shareGraph
 	// low holds, by first-visit index, for each object scan has finished,
 	// the smallest first-visit index of an object that was still open when
 	// it finished and that it reaches, or noLow.  An open object is one scan
@@ -421,6 +424,9 @@ func (e *durableEncoder) openNode() int {
 	e.isOpen = append(e.isOpen, true)
 	e.low = append(e.low, noLow)
 	e.frames = append(e.frames, noLow)
+	if e.share != nil && !e.discover {
+		e.share.open(i)
+	}
 	return i
 }
 
@@ -440,6 +446,9 @@ func (e *durableEncoder) closeNode(i int) int {
 	low := e.frames[len(e.frames)-1]
 	e.frames = e.frames[:len(e.frames)-1]
 	e.isOpen[i] = false
+	if e.share != nil && !e.discover {
+		e.share.close()
+	}
 	if low >= i {
 		low = noLow
 	}
@@ -581,6 +590,9 @@ func (e *durableEncoder) revisit(_ *lisp.LVal, key any) error {
 	}
 	if i, ok := e.order[key]; ok {
 		e.reach(i)
+		if e.share != nil {
+			e.share.edge(i)
+		}
 	}
 	return nil
 }
@@ -1005,21 +1017,9 @@ func DumpDurableRoots(env *lisp.LEnv, roots []DurableRoot, reg *DurableRegistry,
 	if err := reg.checkUsable(); err != nil {
 		return nil, err
 	}
-	// Each root is at least two values: check before allocating for them.
-	if cfg := durableConfig(env, opts); len(roots) > cfg.maxValues/2 {
-		return nil, fmt.Errorf("%w: more than %d values", ErrTypedLimit, cfg.maxValues)
+	list, err := rootList(roots, durableConfig(env, opts))
+	if err != nil {
+		return nil, err
 	}
-	cells := make([]*lisp.LVal, 0, 2*len(roots))
-	seen := make(map[string]struct{}, len(roots))
-	for _, r := range roots {
-		if r.Name == "" || !utf8.ValidString(r.Name) {
-			return nil, errors.New("durable json: a root name must be a nonempty UTF-8 string")
-		}
-		if _, dup := seen[r.Name]; dup {
-			return nil, fmt.Errorf("durable json: root %q appears twice", r.Name)
-		}
-		seen[r.Name] = struct{}{}
-		cells = append(cells, lisp.String(r.Name), r.Value)
-	}
-	return DumpDurable(env, lisp.QExpr(cells), reg, opts...)
+	return DumpDurable(env, list, reg, opts...)
 }
