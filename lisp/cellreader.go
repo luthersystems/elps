@@ -83,33 +83,43 @@ func (r *CellReader) next(opt bool) *LVal {
 	return v
 }
 
-// fail records "<subject> is not <noun>: <type>" for the cell just read.
+// fail records "<subject> is not <noun>: <type>" for v, the cell just read.
+// A nil v (no cell: a failure is already recorded, or an optional read past
+// the end) records nothing.
 func (r *CellReader) fail(noun string, v *LVal) {
+	if v == nil {
+		return
+	}
 	r.err = r.env.ErrorConditionf(CondArgumentError, "%s is not %s: %v", subject(r.i-1, len(r.cells)), noun, v.Type)
 }
 
-// convert converts v, the cell next returned, to a T with the conversions of
-// ResultAs.  A nil v (no cell) converts to the zero value.  It takes no
-// CellReader, so a reader stays in its caller's frame: a generic function
-// that takes the reader moves it to the heap.
-func convert[T any](v *LVal) (T, bool) {
-	if v == nil {
-		var zero T
-		return zero, true
-	}
-	return valueAs[T](v)
+// Each typed read below checks v.Type itself in its common case, a next cell
+// of the right type, and leaves every other case to miss or optMiss.  It
+// used to call valueAs, a generic type switch that does not inline, which
+// cost several times the check on a hot builtin such as substrate's
+// cc:storage-put (luthersystems/elps#841, BenchmarkCellReader).  The checks
+// and conversions are valueAs's; TestCellReaderMatchesValueAs holds them
+// equal.
+
+// miss reads the next cell for a required read whose common case failed and
+// records why: a failure already recorded, no cell left, or a cell that is
+// not <noun>.  The error path stays out of each read's body.
+func (r *CellReader) miss(noun string) {
+	r.fail(noun, r.next(false))
 }
 
-// convertOpt is convert for an optional cell: def when v is nil or ().
-func convertOpt[T any](v *LVal, def T) (T, bool) {
-	if v == nil || v.IsNil() {
-		return def, true
+// optMiss is miss for an optional read: an absent cell is no failure.  The
+// read returns its default after it.
+func (r *CellReader) optMiss(noun string) {
+	if v := r.next(true); !absent(v) {
+		r.fail(noun, v)
 	}
-	x, ok := valueAs[T](v)
-	if !ok {
-		return def, false
-	}
-	return x, true
+}
+
+// absent reports whether v, the cell next(true) returned, is absent: no
+// cell, or ().
+func absent(v *LVal) bool {
+	return v == nil || v.IsNil()
 }
 
 // Value returns the next argument unchecked.
@@ -125,65 +135,87 @@ func (r *CellReader) Value() *LVal {
 // String, so a CellReader is not a fmt.Stringer: printing a reader must
 // not consume an argument.
 func (r *CellReader) Str() string {
-	v := r.next(false)
-	x, ok := convert[string](v)
-	if !ok {
-		r.fail("a string", v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LString {
+			r.i++
+			return v.Str
+		}
 	}
-	return x
+	r.miss("a string")
+	return ""
 }
 
 // Name returns the text of the next argument, which must be a string or a
 // symbol.
 func (r *CellReader) Name() string {
-	v := r.next(false)
-	x, ok := convert[Name](v)
-	if !ok {
-		r.fail(nameNoun, v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LString || v.Type == LSymbol {
+			r.i++
+			return v.Str
+		}
 	}
-	return string(x)
+	r.miss(nameNoun)
+	return ""
 }
 
 // Text returns the bytes of the next argument, which must be a string (the
 // bytes are a copy) or bytes (the argument's own storage).
 func (r *CellReader) Text() []byte {
-	v := r.next(false)
-	x, ok := convert[Text](v)
-	if !ok {
-		r.fail(textNoun, v)
+	if r.err == nil && r.i < len(r.cells) {
+		v := r.cells[r.i]
+		if v.Type == LString {
+			r.i++
+			return []byte(v.Str)
+		}
+		if v.Type == LBytes {
+			r.i++
+			return v.Bytes()
+		}
 	}
-	return x
+	r.miss(textNoun)
+	return nil
 }
 
 // Int returns the next argument, which must be an integer.
 func (r *CellReader) Int() int {
-	v := r.next(false)
-	x, ok := convert[int](v)
-	if !ok {
-		r.fail("an integer", v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LInt {
+			r.i++
+			return v.Int
+		}
 	}
-	return x
+	r.miss("an integer")
+	return 0
 }
 
 // Float returns the next argument, which must be a number; an integer is
 // converted.
 func (r *CellReader) Float() float64 {
-	v := r.next(false)
-	x, ok := convert[float64](v)
-	if !ok {
-		r.fail("a number", v)
+	if r.err == nil && r.i < len(r.cells) {
+		v := r.cells[r.i]
+		if v.Type == LFloat {
+			r.i++
+			return v.Float
+		}
+		if v.Type == LInt {
+			r.i++
+			return float64(v.Int)
+		}
 	}
-	return x
+	r.miss("a number")
+	return 0
 }
 
 // Bytes returns the next argument, which must be bytes.
 func (r *CellReader) Bytes() []byte {
-	v := r.next(false)
-	x, ok := convert[[]byte](v)
-	if !ok {
-		r.fail("bytes", v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LBytes {
+			r.i++
+			return v.Bytes()
+		}
 	}
-	return x
+	r.miss("bytes")
+	return nil
 }
 
 // Map returns the next argument, which must be a sorted-map, as a MapView.
@@ -238,45 +270,58 @@ func (r *CellReader) OptValue() *LVal {
 // OptStr returns the next argument, which must be a string, or def when
 // it is absent.
 func (r *CellReader) OptStr(def string) string {
-	v := r.next(true)
-	x, ok := convertOpt(v, def)
-	if !ok {
-		r.fail("a string", v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LString {
+			r.i++
+			return v.Str
+		}
 	}
-	return x
+	r.optMiss("a string")
+	return def
 }
 
 // OptName returns the text of the next argument, which must be a string or
 // a symbol, or def when it is absent.
 func (r *CellReader) OptName(def string) string {
-	v := r.next(true)
-	x, ok := convertOpt(v, Name(def))
-	if !ok {
-		r.fail(nameNoun, v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LString || v.Type == LSymbol {
+			r.i++
+			return v.Str
+		}
 	}
-	return string(x)
+	r.optMiss(nameNoun)
+	return def
 }
 
 // OptInt returns the next argument, which must be an integer, or def when it
 // is absent.
 func (r *CellReader) OptInt(def int) int {
-	v := r.next(true)
-	x, ok := convertOpt(v, def)
-	if !ok {
-		r.fail("an integer", v)
+	if r.err == nil && r.i < len(r.cells) {
+		if v := r.cells[r.i]; v.Type == LInt {
+			r.i++
+			return v.Int
+		}
 	}
-	return x
+	r.optMiss("an integer")
+	return def
 }
 
 // OptFloat returns the next argument, which must be a number, or def when it
 // is absent.
 func (r *CellReader) OptFloat(def float64) float64 {
-	v := r.next(true)
-	x, ok := convertOpt(v, def)
-	if !ok {
-		r.fail("a number", v)
+	if r.err == nil && r.i < len(r.cells) {
+		v := r.cells[r.i]
+		if v.Type == LFloat {
+			r.i++
+			return v.Float
+		}
+		if v.Type == LInt {
+			r.i++
+			return float64(v.Int)
+		}
 	}
-	return x
+	r.optMiss("a number")
+	return def
 }
 
 // Rest returns the cells not read yet, which share the argument list's
