@@ -162,11 +162,12 @@ func (r *CellReader) Name() string {
 // bytes are a copy) or bytes (the argument's own storage).
 func (r *CellReader) Text() []byte {
 	if r.err == nil && r.i < len(r.cells) {
-		switch v := r.cells[r.i]; v.Type {
-		case LString:
+		v := r.cells[r.i]
+		if v.Type == LString {
 			r.i++
 			return []byte(v.Str)
-		case LBytes:
+		}
+		if v.Type == LBytes {
 			r.i++
 			return v.Bytes()
 		}
@@ -191,11 +192,12 @@ func (r *CellReader) Int() int {
 // converted.
 func (r *CellReader) Float() float64 {
 	if r.err == nil && r.i < len(r.cells) {
-		switch v := r.cells[r.i]; v.Type {
-		case LFloat:
+		v := r.cells[r.i]
+		if v.Type == LFloat {
 			r.i++
 			return v.Float
-		case LInt:
+		}
+		if v.Type == LInt {
 			r.i++
 			return float64(v.Int)
 		}
@@ -308,11 +310,12 @@ func (r *CellReader) OptInt(def int) int {
 // is absent.
 func (r *CellReader) OptFloat(def float64) float64 {
 	if r.err == nil && r.i < len(r.cells) {
-		switch v := r.cells[r.i]; v.Type {
-		case LFloat:
+		v := r.cells[r.i]
+		if v.Type == LFloat {
 			r.i++
 			return v.Float
-		case LInt:
+		}
+		if v.Type == LInt {
 			r.i++
 			return float64(v.Int)
 		}

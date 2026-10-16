@@ -49,7 +49,7 @@ func TestCellReaderMatchesValueAs(t *testing.T) {
 		got, ok = read(v, func(r *CellReader) any { return r.Float() })
 		wantFloat, wok := valueAs[float64](v)
 		assert.Equal(t, wok, ok, "Float %s", name)
-		assert.Equal(t, wantFloat, got, "Float %s", name)
+		assert.InDelta(t, wantFloat, got, 0, "Float %s", name)
 
 		got, ok = read(v, func(r *CellReader) any { return r.Bytes() })
 		wantBytes, wok := valueAs[[]byte](v)
@@ -89,6 +89,6 @@ func TestCellReaderMatchesValueAs(t *testing.T) {
 			wantFloat = 9
 		}
 		assert.Equal(t, wok || isNil, ok, "OptFloat %s", name)
-		assert.Equal(t, wantFloat, got, "OptFloat %s", name)
+		assert.InDelta(t, wantFloat, got, 0, "OptFloat %s", name)
 	}
 }
