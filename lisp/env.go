@@ -569,7 +569,7 @@ func (env *LEnv) get(k *LVal) *LVal {
 	if pkg == nil {
 		return env.Errorf("unknown package: %q", ns)
 	}
-	lerr := pkg.Get(Symbol(name))
+	lerr := pkg.getName(name)
 	if lerr.IsError() {
 		if err := env.ErrorAssociate(lerr); err != nil {
 			return err
@@ -812,7 +812,7 @@ func (env *LEnv) GetGlobal(k *LVal) *LVal {
 		if pkg == nil {
 			return env.Errorf("unknown package: %q", ns)
 		}
-		lerr := pkg.Get(Symbol(name))
+		lerr := pkg.getName(name)
 		if lerr.IsError() {
 			if err := env.ErrorAssociate(lerr); err != nil {
 				return err
@@ -1879,32 +1879,7 @@ eval:
 	}
 	switch v.Type {
 	case LSymbol:
-		colonIdx := strings.IndexByte(v.Str, ':')
-		if colonIdx < 0 {
-			// No colon — simple unqualified symbol (the common case).
-			return env.Get(v)
-		}
-		if colonIdx == 0 {
-			// Keyword like :foo
-			return v
-		}
-		// Qualified symbol like pkg:name — check for extra colons.
-		ns := v.Str[:colonIdx]
-		name := v.Str[colonIdx+1:]
-		if strings.IndexByte(name, ':') >= 0 {
-			return env.Errorf("illegal symbol: %q", v.Str)
-		}
-		pkg := env.Runtime.Registry.packages[ns]
-		if pkg == nil {
-			return env.Errorf("unknown package: %q", ns)
-		}
-		lerr := pkg.Get(Symbol(name))
-		if lerr.IsError() {
-			if err := env.ErrorAssociate(lerr); err != nil {
-				return err
-			}
-		}
-		return lerr
+		return env.evalSymbol(v)
 	case LSExpr:
 		res := env.evalSExpr(ctx, v)
 		// Post-call check: after a function call returns, the stack
@@ -1939,6 +1914,36 @@ eval:
 	default:
 		return v
 	}
+}
+
+// evalSymbol returns the value of the unquoted symbol v: eval's symbol arm.
+func (env *LEnv) evalSymbol(v *LVal) *LVal {
+	colonIdx := strings.IndexByte(v.Str, ':')
+	if colonIdx < 0 {
+		// No colon — simple unqualified symbol (the common case).
+		return env.Get(v)
+	}
+	if colonIdx == 0 {
+		// Keyword like :foo
+		return v
+	}
+	// Qualified symbol like pkg:name — check for extra colons.
+	ns := v.Str[:colonIdx]
+	name := v.Str[colonIdx+1:]
+	if strings.IndexByte(name, ':') >= 0 {
+		return env.Errorf("illegal symbol: %q", v.Str)
+	}
+	pkg := env.Runtime.Registry.packages[ns]
+	if pkg == nil {
+		return env.Errorf("unknown package: %q", ns)
+	}
+	lerr := pkg.getName(name)
+	if lerr.IsError() {
+		if err := env.ErrorAssociate(lerr); err != nil {
+			return err
+		}
+	}
+	return lerr
 }
 
 // debugOnEval notifies the debugger that eval reached v and waits while it
@@ -2304,11 +2309,27 @@ func (env *LEnv) funCall(ctx context.Context, fun, args *LVal, owned bool) *LVal
 	if fun.IsSpecialFun() {
 		return env.Errorf("not a regular function: %v", fun.FunType)
 	}
-
 	if env.Runtime.Profiler != nil {
-		defer env.trace(fun)()
+		return env.funCallTraced(ctx, fun, args, owned)
 	}
+	return env.funCallFrame(ctx, fun, args, owned)
+}
 
+// funCallTraced is funCall under a profiler.  The profiler's span covers the
+// frame and the call and ends after the frame is popped, as it did when the
+// deferred trace was in funCall itself.
+func (env *LEnv) funCallTraced(ctx context.Context, fun, args *LVal, owned bool) *LVal {
+	defer env.trace(fun)()
+	return env.funCallFrame(ctx, fun, args, owned)
+}
+
+// funCallFrame pushes a frame for the regular function fun, calls it and pops
+// the frame.  Keep its only defer, the pop, open-coded (go build
+// -gcflags=-d=defer): the compiler gives up on that when a function's returns
+// times its defers pass 15, and a defer record costs every function call the
+// runtime's frame walk at return.  That is why the profiler's deferred trace
+// is in funCallTraced.
+func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) *LVal {
 	// Check for possible tail recursion before pushing to avoid hitting s when
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
@@ -2402,7 +2423,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 			defer func() { env.Runtime.Stack.Top().Terminal = true }()
 		}
 	}
-	f := env.eval(ctx, cells[0])
+	f := env.evalOperand(ctx, cells[0])
 	cells = cells[1:]
 	if f.IsError() {
 		return f
@@ -2444,7 +2465,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 			newCells = append(newCells, expr)
 			continue
 		}
-		v := env.eval(ctx, expr)
+		v := env.evalOperand(ctx, expr)
 		if v.IsError() {
 			return v
 		}
@@ -2457,6 +2478,39 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	}
 	call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
 	return call
+}
+
+// evalOperand evaluates x, an element of a call form, exactly as eval does.
+// Most elements are symbols and self-evaluating values, which cannot nest:
+// they take the same step, location and lookup here without eval's frame,
+// whose deferred recover and nesting count guard the Go stack only for an
+// expression that recurses.  Everything else, and every case a leaf would
+// still have to report through eval (a spliced value, the nesting limit, an
+// attached debugger), is left to eval.
+func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
+	r := env.Runtime
+	if operandNeedsEval(r, x) {
+		return env.eval(ctx, x)
+	}
+	checkOwnership(r, x)
+	if lerr := env.checkLimits(ctx); lerr != nil {
+		return lerr
+	}
+	env.loc = x.source
+	if x.quoted || x.Type != LSymbol {
+		return x
+	}
+	return env.evalSymbol(x)
+}
+
+// operandNeedsEval reports whether evalOperand must leave x to eval: x can
+// nest (an unquoted s-expression or quote), x is spliced, a debugger is
+// attached, or eval's nesting check could fail.  The nesting check fails
+// when the next eval would pass the limit, and the cached limit is
+// unresolved or stale when MaxEvalNesting was written directly.
+func operandNeedsEval(r *Runtime, x *LVal) bool {
+	return !x.quoted && (x.Type == LSExpr || x.Type == LQuote) || x.spliced || r.Debugger != nil ||
+		r.evalNestingSetting != r.MaxEvalNesting || r.evalNesting >= r.evalNestingLimit
 }
 
 // call invokes LFun fun with the list args.  In general it is not safe to call

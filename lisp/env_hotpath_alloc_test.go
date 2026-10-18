@@ -18,6 +18,9 @@ func TestEvaluatorHotPathAllocations(t *testing.T) {
 		t.Fatal(got)
 	}
 	qualified := QExpr([]*LVal{Quote(Symbol("user:allocation-value"))})
+	// A qualified name looked up by its name after the colon: the lookup
+	// built a symbol for that name, one allocation, before Package.getName.
+	qualSym := Symbol("user:allocation-value")
 	formals := Formals()
 	// fmt boxes counters above 255; keep the measurement beyond that range.
 	env.Runtime.numenv.Store(1000)
@@ -30,6 +33,9 @@ func TestEvaluatorHotPathAllocations(t *testing.T) {
 		{func() { hotpathValue = SplitSymbol(sym) }, "SplitSymbol", 2},
 		{func() { hotpathValue = opQualifiedSymbol(env, qualified) }, "QualifiedSymbol", 0},
 		{func() { hotpathValue = env.GetGlobal(sym) }, "GetGlobal", 0},
+		{func() { hotpathValue = env.GetGlobal(qualSym) }, "GetGlobalQualified", 0},
+		{func() { hotpathValue = env.Get(qualSym) }, "GetQualified", 0},
+		{func() { hotpathValue = env.evalSymbol(qualSym) }, "EvalQualified", 0},
 		{func() { hotpathValue = env.PutGlobal(sym, value) }, "PutGlobal", 0},
 		{func() { hotpathValue = env.PutGlobalFromLisp(sym, value) }, "PutGlobalFromLisp", 0},
 		{func() { hotpathValue = env.Lambda(formals, []*LVal{value}) }, "Lambda", 4},

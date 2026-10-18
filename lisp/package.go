@@ -582,6 +582,24 @@ func (pkg *Package) get(k *LVal) *LVal {
 	return lerr
 }
 
+// getName is get for the symbol named name.  A qualified symbol is looked up
+// by the name after its colon, and building a symbol for that name cost an
+// allocation on every evaluation of the symbol.  A bound name reads the table
+// directly; true, false and an unbound name take get itself, so the result and
+// the error are get's.
+func (pkg *Package) getName(name string) *LVal {
+	if name != TrueSymbol && name != FalseSymbol {
+		v, ok := pkg.lookupRaw(name)
+		if v == lazyPending {
+			v = pkg.lookupFill(name)
+		}
+		if ok {
+			return v
+		}
+	}
+	return pkg.get(Symbol(name))
+}
+
 // Symbol returns the value bound to name in pkg and reports whether name is
 // bound.  Unlike Get, Symbol performs a raw table lookup: it does not resolve
 // the true/false constants, does not record function names, and returns
