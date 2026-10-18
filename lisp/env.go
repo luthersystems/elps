@@ -1985,9 +1985,9 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 
 	switch fun.FunType {
 	case LFunNone:
-		return env.funCall(ctx, fun, args)
+		return env.funCall(ctx, fun, args, true)
 	case LFunSpecialOp:
-		return env.specialOpCall(ctx, fun, args)
+		return env.specialOpCall(ctx, fun, args, true)
 	case LFunMacro:
 		return env.macroCall(ctx, fun, args)
 	default:
@@ -2058,7 +2058,10 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	// macro's callsite.
 	env.Runtime.Stack.Top().TROBlock = true
 
-	r := env.call(ctx, fun, args)
+	// The macro gets a copy of args (bind, not bindOwned): args.Cells is
+	// read below, as the arguments the in-place locate stops at and as the
+	// debugger's record of them, and a Go macro may rewrite its own list.
+	r := env.call(ctx, fun, args, false)
 	if r == nil {
 		return env.Errorf("internal error: macro %s returned nil", env.GetFunName(fun))
 	}
@@ -2127,12 +2130,12 @@ func (env *LEnv) SpecialOpCall(fun, args *LVal) *LVal {
 	var result *LVal
 	func() {
 		defer env.recoverPanic(&result)
-		result = env.specialOpCall(env.evalCtx, fun, args)
+		result = env.specialOpCall(env.evalCtx, fun, args, false)
 	}()
 	return result
 }
 
-func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
+func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal, owned bool) *LVal {
 	if fun.Type != LFun {
 		return env.Errorf("not a special function: %v", fun.Type)
 	}
@@ -2156,7 +2159,7 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal) *LVal {
 	// by tail-recursion-optimization.
 
 callf:
-	r := env.call(ctx, fun, args)
+	r := env.call(ctx, fun, args, owned)
 	if r == nil {
 		return env.Errorf("internal error: special operator %s returned nil", env.GetFunName(fun))
 	}
@@ -2178,6 +2181,7 @@ callf:
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
+			owned = false
 			goto callf
 		}
 		return r
@@ -2194,7 +2198,7 @@ func (env *LEnv) FunCall(fun, args *LVal) *LVal {
 	var result *LVal
 	func() {
 		defer env.recoverPanic(&result)
-		result = env.funCall(env.evalCtx, fun, args)
+		result = env.funCall(env.evalCtx, fun, args, false)
 	}()
 	return result
 }
@@ -2279,7 +2283,7 @@ func (env *LEnv) FunCallContext(ctx context.Context, fun, args *LVal) *LVal {
 	var result *LVal
 	func() {
 		defer env.recoverPanic(&result)
-		result = env.funCall(ctx, fun, args)
+		result = env.funCall(ctx, fun, args, false)
 	}()
 	return result
 }
@@ -2293,7 +2297,7 @@ func (env *LEnv) trace(fun *LVal) func() {
 	return env.Runtime.Profiler.Start(fun)
 }
 
-func (env *LEnv) funCall(ctx context.Context, fun, args *LVal) *LVal {
+func (env *LEnv) funCall(ctx context.Context, fun, args *LVal, owned bool) *LVal {
 	if fun.Type != LFun {
 		return env.Errorf("not a function: %v", fun.Type)
 	}
@@ -2326,7 +2330,7 @@ func (env *LEnv) funCall(ctx context.Context, fun, args *LVal) *LVal {
 	}
 
 callf:
-	r := env.call(ctx, fun, args)
+	r := env.call(ctx, fun, args, owned)
 	if r == nil {
 		return env.Errorf("internal error: function %s returned nil", env.GetFunName(fun))
 	}
@@ -2349,6 +2353,7 @@ callf:
 				return lerr
 			}
 			fun, args = extractMarkTailRec(r)
+			owned = false
 			goto callf
 		}
 	}
@@ -2459,7 +2464,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 //
 // At the builtin boundary, ctx is bridged onto env.evalCtx so that builtins
 // calling env.Eval() see the correct context.
-func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
+func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal, owned bool) *LVal {
 	// Argument or function-position evaluation may have cancelled the
 	// request after Eval's entry check. Cover native functions, macros and
 	// special operators here without counting an extra evaluation step.
@@ -2468,7 +2473,13 @@ func (env *LEnv) call(ctx context.Context, fun *LVal, args *LVal) *LVal {
 			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
 		}
 	}
-	fenv, list := env.bind(fun, args)
+	var fenv *LEnv
+	var list *LVal
+	if owned {
+		fenv, list = env.bindOwned(fun, args)
+	} else {
+		fenv, list = env.bind(fun, args)
+	}
 	if list.IsError() {
 		return list
 	}
@@ -2669,6 +2680,32 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	return env.bindGeneral(fun, args)
 }
 
+// bindOwned is bind for an argument list the call owns: the list
+// evalSExprCells built for one call form, with a fresh header and fresh
+// cells, which no value or frame holds and which the evaluator drops when
+// the call returns.  Where bind's fast path would copy the list for a host
+// function, bindOwned hands over the list itself, marked as data the way
+// QExpr marks the copy.  The copy existed so that a builtin may retain or
+// write its list without touching the caller's; an owned list has no other
+// reader, so the builtin gets the same contents, length and freedom
+// without the copy (two allocations per call).  Only the capacity can
+// differ: an owned list has no spare capacity, so an append to it always
+// reallocates.  Every other call binds exactly as bind does.
+//
+// Builtin functions and special operators take an owned list.  A macro does
+// not: macroCall reads the list after the call, so bind copies it.  An owned
+// list's header and cells are one allocation (newSExprCap), so a value that
+// keeps a slice of its cells keeps the header alive too.  So vector copies
+// its cells, and list returns the list itself.
+func (env *LEnv) bindOwned(fun, args *LVal) (*LEnv, *LVal) {
+	formals := fun.Cells[0].Cells
+	if fun.funEnv() == nil && nativePositionalOK(formals, len(args.Cells)) {
+		args.quoted = true //elps:mutates the call's own argument list, which evalSExprCells built with a fresh header and backing for this call alone
+		return env, args
+	}
+	return env.bind(fun, args)
+}
+
 // bindGeneral is bind for every call bindNativePositional does not take:
 // any function with a captured environment, and a host function whose
 // formals or argument count fall outside the fast path.  It handles every
@@ -2776,6 +2813,17 @@ func (env *LEnv) bindGeneral(fun, args *LVal) (*LEnv, *LVal) {
 // arity mismatch falls back too, so its error keeps the general path's text.
 // Steps are not involved: binding charges none on either path.
 func bindNativePositional(formals, args []*LVal) *LVal {
+	if !nativePositionalOK(formals, len(args)) {
+		return nil
+	}
+	cells := make([]*LVal, len(args), max(len(args), len(formals)))
+	copy(cells, args)
+	return QExpr(cells)
+}
+
+// nativePositionalOK reports whether bindNativePositional takes a call of
+// narg arguments against formals.
+func nativePositionalOK(formals []*LVal, narg int) bool {
 	nreq := len(formals)
 	rest := false
 	for i, formal := range formals {
@@ -2783,24 +2831,18 @@ func bindNativePositional(formals, args []*LVal) *LVal {
 			// A hand-built formals list with a nil entry: leave it to the
 			// general binder, which reads formals one at a time and may
 			// report an arity error before it reaches the nil.
-			return nil
+			return false
 		}
 		if !strings.HasPrefix(formal.Str, MetaArgPrefix) {
 			continue
 		}
 		if formal.Str != VarArgSymbol || i+2 != len(formals) || strings.HasPrefix(formals[i+1].Str, MetaArgPrefix) {
-			return nil
+			return false
 		}
 		nreq, rest = i, true
 		break
 	}
-	narg := len(args)
-	if narg < nreq || (!rest && narg != nreq) {
-		return nil
-	}
-	cells := make([]*LVal, narg, max(narg, len(formals)))
-	copy(cells, args)
-	return QExpr(cells)
+	return narg >= nreq && (rest || narg == nreq)
 }
 
 type bindfunc func(k, v *LVal) *LVal

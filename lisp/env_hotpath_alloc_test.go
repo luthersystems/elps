@@ -73,14 +73,15 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	// fresh list header on every call; the one left is the call env.  The
 	// empty let fell by one more when bind stopped wrapping a Go special
 	// operator's &rest arguments in a transient list (let's formals are
-	// (bindings &rest expr)).
+	// (bindings &rest expr)), and by two more when the evaluator stopped
+	// copying the argument list of a Go call it builds itself (bindOwned).
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 5},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 3},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
@@ -98,9 +99,9 @@ func TestEmptyScopeAllocations(t *testing.T) {
 // builtin call: its header and its cells (the function plus its arguments)
 // are one allocation (newSExprCap) up to eight cells, and two past that, as
 // every call form was before (5 allocations in all, for every row, before
-// the native binder fast path removed one more).  The other two are the
-// builtin's argument binding and its bookkeeping, which newSExprCap does not
-// touch.
+// the native binder fast path removed one more).  The builtin takes that
+// call value as its argument list (bindOwned), so the call allocates
+// nothing else; it took two more, a copy of the list and its header, before.
 func TestCallFormAllocations(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	x := Symbol("call-form-x")
@@ -119,9 +120,9 @@ func TestCallFormAllocations(t *testing.T) {
 		nargs int
 		want  float64
 	}{
-		{"2-cells", 1, 3},
-		{"8-cells", 7, 3},
-		{"9-cells-not-coallocated", 8, 4},
+		{"2-cells", 1, 1},
+		{"8-cells", 7, 1},
+		{"9-cells-not-coallocated", 8, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			call := form(tc.nargs)

@@ -142,7 +142,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 			top.Terminal = false
 		}
 		fun, fargs := extractMarkTailRec(val)
-		return env.funCall(env.evalCtx, fun, fargs)
+		return env.funCall(env.evalCtx, fun, fargs, false)
 	}
 	if val.Type == LMarkTerminal {
 		return env.evalTerminalMark(val)
