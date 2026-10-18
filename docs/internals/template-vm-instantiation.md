@@ -95,10 +95,43 @@ one list.
 - The builder uses an explicit work queue, not recursion, so a deep graph
   cannot overflow the Go stack.
 
-**Prewarm.** `VMWithPrewarm` builds, when the VM is made, every value that an
-earlier VM of the same template used. The template keeps this "hot set" in
-an atomic per-template set. A host that makes VMs ahead of time, off the
-request path, uses prewarm so the request pays nothing.
+**Prewarm.** `VMWithPrewarm` builds, when the VM is made, the values that at
+least half of the earlier VMs of the same template read. A host that makes
+VMs ahead of time, off the request path, uses prewarm so the request pays
+little.
+
+The template keeps the hot set as counters and bits, written only with
+atomics, and holds no pointer, so no VM keeps another VM's memory alive. A VM
+reads template values through roots: a package binding, a sorted-map entry
+or a registered builtin. A root read builds the root and everything it
+reaches. The set counts root reads per VM, not built values, so a root that
+prewarm built counts only when the VM reads it. A VM counts toward the total
+from its first root read, so a VM that is made and never used (a spare in a
+pool) does not lower the share. The first 64 VMs of a template count, then
+one VM in 16, so most VMs write no shared counter. The bits are rebuilt when
+a VM is made and the number of VMs that read a root has reached the next
+power of two or the next multiple of 16 since the last rebuild.
+
+A sorted map in a counting VM leaves every entry unbuilt in its table, even
+an entry whose value prewarm or another root built. So the VM's first read
+of the entry goes through the root read and counts. Otherwise a prewarmed
+counting VM reads the entry without counting it, its share falls below half,
+prewarm stops building it, and the next VMs count it again: the entry goes in
+and out of the set.
+
+The counts decay. When the number of VMs that read a root reaches 1024, every
+count halves, with an atomic subtract, so a read that a VM adds at the same
+time is kept. A VM's count thus weighs half as much for each 512 counting VMs
+after it. When the VMs start to read other roots, the set follows within
+about 512 counting VMs. Without decay, after a long run the set changes only
+after as many counting VMs as the run had. Decay also keeps every count
+small, so counting never stops.
+
+The half rule keeps prewarm small. A rule that builds every value any
+earlier VM read builds the union of every request's values. On a substrate
+benchmark with a few endpoints, a VM then built about 2.2 times the values it
+read, and prewarm took 16% of the CPU. A value that few VMs read is built on
+first use, by the VMs that read it.
 
 **Walk-everything operations** (copy, republish, a full JSON dump, `help`
 over a whole package) build every value first. They stay correct but lose

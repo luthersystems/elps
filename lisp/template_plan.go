@@ -115,7 +115,7 @@ type templatePackage struct {
 	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
-	hot               *templateHotSet // values any lazy VM has materialized (VMWithPrewarm)
+	hot               *templateHotSet // what the plan's lazy VMs read, for VMWithPrewarm
 	values            []templateValue
 	envs              []templateEnv
 	functions         []templateFunctionData

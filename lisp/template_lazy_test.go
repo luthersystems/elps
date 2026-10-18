@@ -350,8 +350,8 @@ func TestTemplateLazySlotWrite(t *testing.T) {
 }
 
 // TestTemplateLazyPrewarm: a VM created with VMWithPrewarm builds, at NewVM,
-// exactly the values earlier VMs used, with the same identities and sharing,
-// and a VM created without it still builds nothing.
+// exactly the values the one earlier VM read, with the same identities and
+// sharing, and a VM created without it still builds nothing.
 func TestTemplateLazyPrewarm(t *testing.T) {
 	tmpl := lazyFixture(t)
 	first, err := tmpl.NewVM(VMWithPrewarm()) // nothing is hot yet

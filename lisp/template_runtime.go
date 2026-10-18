@@ -19,13 +19,18 @@ type vmConfig struct {
 	prewarm    bool
 }
 
-// VMWithPrewarm builds, during NewVM, every template value that any earlier
-// VM of the same template has used, instead of on first use. A host that
-// creates VMs ahead of demand (a pool filled by a background goroutine) uses
-// it to move that work off the request path. The set is learned from use: it
-// only grows, and is bounded by the template's size, so a value used once by
-// any VM is built by every later prewarmed VM. Results are identical with or
-// without it; it has no effect on a TemplateWithEagerInstantiation template.
+// VMWithPrewarm builds, during NewVM, the template values that at least half
+// of the earlier VMs of the same template read, instead of on first use. A
+// host that creates VMs ahead of demand (a pool filled by a background
+// goroutine) uses it to move that work off the request path. The set is
+// learned from use and follows it: a value read by few VMs is built on first
+// use by the VMs that read it, so a VM does not build values it is not likely
+// to read. The first 64 VMs of a template, and then one VM in 16, count what
+// they read; a VM that reads no template value does not count. Recent VMs
+// weigh more: a VM's count halves for each 512 counting VMs after it, so
+// when the VMs start to read other values, the set changes within about 512
+// counting VMs. Results are identical with or without it; it has no effect
+// on a TemplateWithEagerInstantiation template.
 func VMWithPrewarm() VMOption {
 	return func(c *vmConfig) { c.prewarm = true }
 }
