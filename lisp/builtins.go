@@ -1332,27 +1332,45 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
-	list := args.Cells[0]
-	if !isSeq(list) {
-		return env.Errorf("argument is not a proper sequence: %v", list.Type)
-	}
-	cells := seqCells(list)
-	if len(cells) == 0 {
-		return Nil()
-	}
-	return cells[0]
+	return seqElem(env, args.Cells[0], 0)
 }
 
 func builtinSecond(env *LEnv, args *LVal) *LVal {
-	list := args.Cells[0]
+	return seqElem(env, args.Cells[0], 1)
+}
+
+// First returns what the first builtin returns for (first seq): the first
+// element of a list or a vector, () when it has none, or the same error from
+// the same check.  It checks the evaluation's context first, as CallBuiltin
+// does, and charges no step.  An element is returned as it is stored, an
+// error value included, as the builtin returns it.
+func (env *LEnv) First(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqElem(env, seq, 0)
+}
+
+// Second returns what the second builtin returns for (second seq), as First
+// does for first.
+func (env *LEnv) Second(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqElem(env, seq, 1)
+}
+
+// seqElem is the body of first (i 0) and second (i 1) and of LEnv.First and
+// LEnv.Second, so they cannot differ.
+func seqElem(env *LEnv, list *LVal, i int) *LVal {
 	if !isSeq(list) {
 		return env.Errorf("argument is not a proper sequence: %v", list.Type)
 	}
 	cells := seqCells(list)
-	if len(cells) < 2 {
+	if len(cells) <= i {
 		return Nil()
 	}
-	return cells[1]
+	return cells[i]
 }
 
 func builtinNth(env *LEnv, args *LVal) *LVal {
@@ -1773,7 +1791,27 @@ func mapGet(env *LEnv, m, k *LVal) *LVal {
 }
 
 func builtinKeys(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
+	return mapKeys(env, args.Cells[0])
+}
+
+// MapKeys returns what the keys builtin returns for (keys m): the list of
+// m's keys in key order, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does.  A value that is not a
+// sorted-map raises "first argument is not a map: <type>", and a map with more
+// entries than the allocation limit raises the allocation error.  It charges
+// no step.
+//
+// Use it where the Lisp called keys.  LVal.MapKeys makes none of these checks.
+func (env *LEnv) MapKeys(m *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return mapKeys(env, m)
+}
+
+// mapKeys is the body of the keys builtin and of LEnv.MapKeys, so the two
+// cannot differ.
+func mapKeys(env *LEnv, m *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
@@ -3149,21 +3187,48 @@ func builtinARef(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinLength(env *LEnv, args *LVal) *LVal {
-	seq := args.Cells[0]
-	n := seq.Len()
-	if n < 0 {
-		return env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	n, lerr := seqLength(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	return Int(n)
 }
 
 func builtinIsEmpty(env *LEnv, args *LVal) *LVal {
-	seq := args.Cells[0]
-	n := seq.Len()
-	if n < 0 {
-		return env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	n, lerr := seqLength(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	return Bool(n == 0)
+}
+
+// Length returns what the length builtin returns for (length seq), as a Go
+// int, or 0 and the same error from the same check: a value with no length
+// (not a list, map, vector, bytes or string) raises the builtin's error.  It
+// checks the evaluation's context first, as CallBuiltin does, and charges no
+// step.  LVal.Len makes no check and returns -1 for such a value.
+func (env *LEnv) Length(seq *LVal) (int, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return 0, lerr
+	}
+	return seqLength(env, seq)
+}
+
+// IsEmpty returns what the empty? builtin returns for (empty? seq), as a Go
+// bool, or the same error from the same check, as Length does.
+func (env *LEnv) IsEmpty(seq *LVal) (bool, *LVal) {
+	n, lerr := env.Length(seq)
+	return n == 0 && lerr == nil, lerr
+}
+
+// seqLength is the body of length and empty? and of LEnv.Length, so they
+// cannot differ.  The error is nil when seq has a length.
+func seqLength(env *LEnv, seq *LVal) (int, *LVal) {
+	n := seq.Len()
+	if n < 0 {
+		return 0, env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	}
+	return n, nil
 }
 
 func builtinCons(env *LEnv, args *LVal) *LVal {

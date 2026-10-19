@@ -1062,6 +1062,15 @@ where the Lisp called `assoc!` or `get`. Code that fills a map it just built
 keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
 building a list.
 
+**`env.MapKeys(m)`, `env.Length(seq)`, `env.IsEmpty(seq)`, `env.First(seq)`
+and `env.Second(seq)`** share the bodies of `keys`, `length`, `empty?`,
+`first` and `second`, so each returns the same value or the same error.
+`Length` and `IsEmpty` return a Go `int` and `bool` with a nil error, or the
+builtin's error for a value with no length. `First` and `Second` return an
+element as it is stored, an error value included. Each checks the context
+first and charges no step. `LVal.MapKeys`, `LVal.Len` and `v.SeqCells()` make
+none of these checks.
+
 **Testing a Go copy of a builtin: `elpstest/oracle`.** The package compares
 Go code with the builtin it copies, with the builtin as the oracle.
 `oracle.Values()` returns fresh inputs of every type a builtin can be handed,
