@@ -115,7 +115,7 @@ type templatePackage struct {
 	unfrozen             bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
-	hot               *templateHotSet // what the plan's lazy VMs read, for VMWithPrewarm
+	hot               *templateHotSet // what the plan's lazy VMs read, for VMWithPrewarm; nil for an eager plan
 	values            []templateValue
 	envs              []templateEnv
 	functions         []templateFunctionData
@@ -165,7 +165,10 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 	c.plan.runtime = snapshotTemplateRuntime(env.Runtime)
 	c.plan.eager = inventory.config.eager
 	c.onThaw = inventory.config.thawHook
-	c.plan.hot = newTemplateHotSet(len(inventory.valueQueue))
+	if !c.plan.eager {
+		// Only lazy VMs count root reads and prewarm.
+		c.plan.hot = newTemplateHotSet(len(inventory.valueQueue))
+	}
 	c.plan.cells = make([][]templateRef, len(storage.cells))
 	c.plan.byteBackings = storage.bytes
 	c.plan.root = c.env(env)

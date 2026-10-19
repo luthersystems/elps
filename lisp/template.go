@@ -198,9 +198,10 @@ func NewTemplate(env *LEnv, opts ...TemplateOption) (*Template, error) {
 // edge (a channel send, a mutex). Checked builds (-tags elpscheck) panic when
 // two goroutines materialize in one VM concurrently. Any number of goroutines
 // may call NewVM on one Template concurrently. A retained sorted map or
-// package with unmaterialized entries keeps the whole VM alive, as a retained
-// function or environment always has, until its last entry is materialized;
-// a fully read map retains only itself.
+// package can keep the whole VM alive, as a retained function or environment
+// always has, until each of its entries has been read or written. After
+// that, it keeps alive only what its values refer to. A function among them
+// still keeps the whole VM alive.
 func (t *Template) NewVM(opts ...VMOption) (*LEnv, error) {
 	if t == nil || t.plan.root == 0 {
 		return nil, errors.New("template: uninitialized template")

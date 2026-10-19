@@ -11,7 +11,12 @@ import (
 	"strings"
 )
 
-// LBuiltin is a function that performs executes a lisp function.
+// LBuiltin is a function that executes a lisp function.
+//
+// When the evaluator or LEnv.CallBuiltin calls a builtin, args is a new list
+// header, marked as data.  The builtin may keep or return it.  A builtin
+// function must not write the cells of args: CallBuiltin passes its caller's
+// slice as the cells.  A special operator gets cells that nothing else reads.
 type LBuiltin func(env *LEnv, args *LVal) *LVal
 
 // LBuiltinDef is a built-in function
@@ -2819,17 +2824,25 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	}
 }
 
-// builtinList returns its argument list itself.  Every call gives a builtin
-// a list of its own: bind copies the caller's list, and the evaluator hands
-// over the list it built for the call form (bindOwned), which nothing else
-// reads.  A new header over v.Cells would cost an allocation and, over the
-// evaluator's list, keep the call form's whole allocation (newSExprCap)
-// alive with the result.
+// builtinList returns its argument list as data.  bind gives a builtin a
+// copy of the caller's list, and the evaluator hands over the list it built
+// for the call form (bindOwned), which nothing else reads.  Both are marked
+// as data, so list returns the list itself.  A new header over v.Cells would
+// cost an allocation and, over the evaluator's list, still keep the call
+// form's allocation (newSExprCap) alive with the result.  That allocation
+// also holds the function slot.  For up to 7 elements, it holds 2, 4 or 8
+// slots in all.  So a stored result keeps up to 32 bytes more than a list
+// built directly.  With 8 or more elements, it keeps one slot more.  A Go
+// caller that calls list's builtin directly can pass an s-expression; list
+// then returns a new header over its cells, marked as data.
 //
 // NOTE (issue #373):  The list is deliberately NOT capacity-clamped.  Its
 // spare capacity, if any, is reachable from no other live value, so there is
 // nothing for an append to corrupt.
 func builtinList(env *LEnv, v *LVal) *LVal {
+	if !v.quoted {
+		return QExpr(v.Cells)
+	}
 	return v
 }
 

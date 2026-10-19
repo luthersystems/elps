@@ -2480,13 +2480,22 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	return call
 }
 
-// evalOperand evaluates x, an element of a call form, exactly as eval does.
-// Most elements are symbols and self-evaluating values, which cannot nest:
-// they take the same step, location and lookup here without eval's frame,
-// whose deferred recover and nesting count guard the Go stack only for an
-// expression that recurses.  Everything else, and every case a leaf would
-// still have to report through eval (a spliced value, the nesting limit, an
-// attached debugger), is left to eval.
+// evalOperand evaluates x, an element of a call form, as eval does, except
+// for a Go panic (below).  Most elements are symbols and self-evaluating
+// values, which cannot nest: they take the same step, ownership check,
+// location and lookup here, without eval's frame.  Everything else, and
+// every case a leaf would still have to report through eval (a spliced
+// value, the nesting limit, an attached debugger), is left to eval.
+//
+// eval's frame turns a Go panic into an internal-panic error.  A leaf has no
+// frame here, so a panic in its evaluation (for example, a host context
+// whose Err panics) is recovered by the frame around the call form: eval's,
+// or EvalSExpr's when a host calls it.  The deferred functions of
+// evalSExprCells run first and restore env's location.  So the error has
+// the call form's location under eval, and under EvalSExpr the location env
+// had before the call.  The top frame of its stack trace can show
+// [terminal].  Its condition, the frames of its trace and the step count
+// are the same as through eval.
 func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	r := env.Runtime
 	if operandNeedsEval(r, x) {
@@ -2503,13 +2512,16 @@ func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	return env.evalSymbol(x)
 }
 
-// operandNeedsEval reports whether evalOperand must leave x to eval: x can
-// nest (an unquoted s-expression or quote), x is spliced, a debugger is
-// attached, or eval's nesting check could fail.  The nesting check fails
-// when the next eval would pass the limit, and the cached limit is
+// operandNeedsEval reports whether evalOperand must leave x to eval: x is
+// nil, x can nest (an unquoted s-expression or quote), x is spliced, a
+// debugger is attached, or eval's nesting check could fail.  Only a tree
+// built in Go holds a nil element.  For a nil head, eval charges the head's
+// step before the panic.  A nil argument panics before its step, in the
+// keyword check of evalSExprCells, and never gets here.  The nesting check
+// fails when the next eval would pass the limit, and the cached limit is
 // unresolved or stale when MaxEvalNesting was written directly.
 func operandNeedsEval(r *Runtime, x *LVal) bool {
-	return !x.quoted && (x.Type == LSExpr || x.Type == LQuote) || x.spliced || r.Debugger != nil ||
+	return x == nil || !x.quoted && (x.Type == LSExpr || x.Type == LQuote) || x.spliced || r.Debugger != nil ||
 		r.evalNestingSetting != r.MaxEvalNesting || r.evalNesting >= r.evalNestingLimit
 }
 
@@ -2747,10 +2759,18 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 // reallocates.  Every other call binds exactly as bind does.
 //
 // Builtin functions and special operators take an owned list.  A macro does
-// not: macroCall reads the list after the call, so bind copies it.  An owned
-// list's header and cells are one allocation (newSExprCap), so a value that
-// keeps a slice of its cells keeps the header alive too.  So vector copies
-// its cells, and list returns the list itself.
+// not: macroCall reads the list after the call, so bind copies it.
+//
+// For a call of up to 7 arguments, an owned list's header and cells are one
+// allocation (newSExprCap), which also holds the function slot.  A value
+// that keeps a slice of the cells keeps that whole allocation alive, as a
+// lambda's &rest list does after a direct call.  So vector copies its cells.
+// list and libschema's s:in keep the list itself (see builtinList).  funcall
+// and new pass a slice of the cells to a lambda, whose &rest list keeps it,
+// and s:make-validator keeps one in the validator it returns.  A value that
+// one of these three keeps holds 104 to 144 bytes more than it did with a
+// copy, as much as a direct call's &rest list holds.  With 8 or more
+// arguments, it holds at most 16 bytes more.
 func (env *LEnv) bindOwned(fun, args *LVal) (*LEnv, *LVal) {
 	formals := fun.Cells[0].Cells
 	if fun.funEnv() == nil && nativePositionalOK(formals, len(args.Cells)) {
