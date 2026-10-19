@@ -2503,13 +2503,16 @@ func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	return env.evalSymbol(x)
 }
 
-// operandNeedsEval reports whether evalOperand must leave x to eval: x can
-// nest (an unquoted s-expression or quote), x is spliced, a debugger is
-// attached, or eval's nesting check could fail.  The nesting check fails
-// when the next eval would pass the limit, and the cached limit is
+// operandNeedsEval reports whether evalOperand must leave x to eval: x is
+// nil, x can nest (an unquoted s-expression or quote), x is spliced, a
+// debugger is attached, or eval's nesting check could fail.  Only a tree
+// built in Go holds a nil element.  For a nil head, eval charges the head's
+// step before the panic.  A nil argument panics before its step, in the
+// keyword check of evalSExprCells, and never gets here.  The nesting check
+// fails when the next eval would pass the limit, and the cached limit is
 // unresolved or stale when MaxEvalNesting was written directly.
 func operandNeedsEval(r *Runtime, x *LVal) bool {
-	return !x.quoted && (x.Type == LSExpr || x.Type == LQuote) || x.spliced || r.Debugger != nil ||
+	return x == nil || !x.quoted && (x.Type == LSExpr || x.Type == LQuote) || x.spliced || r.Debugger != nil ||
 		r.evalNestingSetting != r.MaxEvalNesting || r.evalNesting >= r.evalNestingLimit
 }
 

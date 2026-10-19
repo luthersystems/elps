@@ -221,3 +221,18 @@ func TestPackageGetNameFillsTemplateBinding(t *testing.T) {
 	v, _ := lib.Symbol("v5")
 	assert.Same(t, got, v)
 }
+
+// TestEvalOperandNilHeadMatchesEval: a call form whose head is a Go nil, which
+// only a tree built in Go can hold, goes to eval. So the head's step is
+// charged before its panic, and the request fails with internal-panic after
+// 2 steps: one for the call form and one for the head.
+func TestEvalOperandNilHeadMatchesEval(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	got := env.EvalContext(context.Background(), SExpr([]*LVal{nil, Int(1)}))
+	if got.Type != LError || got.Str != CondInternalPanic {
+		t.Fatalf("got %v, want an internal-panic error", got)
+	}
+	if steps := env.Runtime.Steps(); steps != 2 {
+		t.Errorf("steps = %d, want 2", steps)
+	}
+}
