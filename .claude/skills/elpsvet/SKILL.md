@@ -195,11 +195,13 @@ marker. Every package gets a plan base under a lazy plan; `unfrozenBase` keeps
 - A VM is single-goroutine because a read can fill (write) a lazy slot;
   checked builds panic on an overlapping fill (`lazyGuard`).
 - `TemplateWithEagerInstantiation` builds every value at `NewVM` instead.
-  `VMWithPrewarm` builds, at `NewVM`, every value an earlier VM of the template
-  used (a per-template atomic hot set), for hosts that mint VMs off the request
-  path.
-- A map or package with pending entries retains its whole VM (measured in
-  `TestTemplateForkEscapedLeafDoesNotRetainVM`).
+  `VMWithPrewarm` builds, at `NewVM`, the values that at least half of the
+  counting VMs read (a per-template atomic hot set), for hosts that mint VMs
+  off the request path. A VM counts from its first root read: the first 64,
+  then about 1 in 16, picked by a hash of its number. The counts decay.
+- A map or package with pending entries retains its whole VM until each entry
+  is read or written (measured in `TestTemplateForkEscapedLeafDoesNotRetainVM`
+  and `TestTemplateRetainedMapReleasesVMWhenRead`).
 - Fixtures: `testdata/lazyread`.
 
 ## Native payload tiers (condensed)
