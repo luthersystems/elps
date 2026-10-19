@@ -14,10 +14,16 @@ import (
 // nil formals list is not a valid spelling of that and is rejected by
 // PackageLoader and Validate.
 //
+// The definition holds a sealed copy of formals, as the interpreter's own
+// builtin tables hold sealed formals.  Binding the definition aliases sealed
+// formals into the environment where it would copy unsealed ones, and a
+// template shares them with every VM it makes instead of giving each VM its
+// own copy.  The caller's list is not changed.
+//
 // A function constructed with Function has no documentation.  Use FunctionDoc
 // to give it a docstring.
 func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
-	return &Builtin{formals, fun, name, ""}
+	return &Builtin{sealedFormals(formals), fun, name, ""}
 }
 
 // FunctionDoc is a helper to construct documented builtins.  It is Function
@@ -32,8 +38,22 @@ func Function(name string, formals *lisp.LVal, fun lisp.LBuiltin) *Builtin {
 //
 //	elpsutil.FunctionDoc("blend-paths", lisp.Formals("a", "b"), blendPaths,
 //		"Blend two paths.\n\nDeprecated: use join-paths instead.")
+//
+// Like Function, it holds a sealed copy of formals.
 func FunctionDoc(name string, formals *lisp.LVal, fun lisp.LBuiltin, docs string) *Builtin {
-	return &Builtin{formals, fun, name, docs}
+	return &Builtin{sealedFormals(formals), fun, name, docs}
+}
+
+// sealedFormals returns a sealed copy of formals, or nil for a nil formals,
+// which PackageLoader and Validate refuse.  A formals that is already sealed
+// is returned as it is: it cannot change, so a copy buys nothing.
+func sealedFormals(formals *lisp.LVal) *lisp.LVal {
+	if formals == nil || formals.IsSealed() {
+		return formals
+	}
+	c := formals.Copy()
+	c.SealAST()
+	return c
 }
 
 // Builtin captures Go functions that are callable from elps.

@@ -992,12 +992,9 @@ func macroExpand1(env *LEnv, mac *LVal, args *LVal) (*LVal, bool) {
 
 func builtinFunCall(env *LEnv, args *LVal) *LVal {
 	fun, fargs := args.Cells[0], args.Cells[1:]
-	fun = env.GetFunGlobal(fun)
+	fun = funcallTarget(env, fun)
 	if fun.IsError() {
 		return fun
-	}
-	if fun.IsSpecialFun() {
-		return env.Errorf("not a regular function: %v", fun.FunType)
 	}
 	// Because funcall and apply do not actually call env.Eval they cannot use
 	// the standard method of signaling a terminal expression to the LEnv.  We
@@ -1014,18 +1011,9 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 	argtail := fargs[len(fargs)-1]
 	fargs = fargs[:len(fargs)-1]
 
-	fun = env.GetFunGlobal(fun)
+	fun = applyTarget(env, fun, argtail)
 	if fun.IsError() {
 		return fun
-	}
-	if argtail.Type != LSExpr {
-		return env.Errorf("last argument is not a list: %v", argtail.Type)
-	}
-	if fun.Type != LFun {
-		return env.Errorf("first argument is not a function: %v", fun.Type)
-	}
-	if fun.IsSpecialFun() {
-		return env.Errorf("first argument is not a regular function: %v", fun.FunType)
 	}
 
 	// Because funcall and apply do not actually call env.Eval they cannot use
@@ -1037,6 +1025,114 @@ func builtinApply(env *LEnv, args *LVal) *LVal {
 	argcells = append(argcells, fargs...)
 	argcells = append(argcells, argtail.Cells...)
 	return env.FunCall(fun, SExpr(argcells))
+}
+
+// funcallTarget resolves the function funcall calls: a symbol to its global
+// function, as GetFunGlobal does.  It refuses a special operator or a macro.
+// It is the check of the funcall builtin and of LEnv.CallFunction, so the two
+// cannot differ.
+func funcallTarget(env *LEnv, fun *LVal) *LVal {
+	fun = env.GetFunGlobal(fun)
+	if fun.IsError() {
+		return fun
+	}
+	if fun.IsSpecialFun() {
+		return env.Errorf("not a regular function: %v", fun.FunType)
+	}
+	return fun
+}
+
+// applyTarget resolves the function apply calls with the argument list
+// argtail and makes apply's checks in apply's order.  It is the check of the
+// apply builtin and of LEnv.ApplyFunction, so the two cannot differ.
+func applyTarget(env *LEnv, fun, argtail *LVal) *LVal {
+	fun = env.GetFunGlobal(fun)
+	if fun.IsError() {
+		return fun
+	}
+	if argtail == nil {
+		return env.Errorf("last argument is not a list: nil")
+	}
+	if argtail.Type != LSExpr {
+		return env.Errorf("last argument is not a list: %v", argtail.Type)
+	}
+	if fun.Type != LFun {
+		return env.Errorf("first argument is not a function: %v", fun.Type)
+	}
+	if fun.IsSpecialFun() {
+		return env.Errorf("first argument is not a regular function: %v", fun.FunType)
+	}
+	return fun
+}
+
+// CallFunction returns what (funcall fn args...) returns: the function's
+// value, or the same error from the same check.  It checks the evaluation's
+// context first, as CallBuiltin does.  A symbol fn resolves to its global
+// function in the current package, as funcall resolves it, and a special
+// operator or a macro raises funcall's error.  It charges no step of its own;
+// the call costs what it costs from Lisp.  It neither writes args nor keeps
+// the slice: a &rest list in the callee is a copy.
+//
+// Use it from a Go builtin where the Lisp called funcall.  Unlike the funcall
+// builtin, it does not mark the calling frame terminal: a Go frame cannot be
+// unwound, so every call it makes is a plain call, whatever the callee's
+// last form is (luthersystems/elps#852).
+func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	fun := funcallTarget(env, fn)
+	if fun.IsError() {
+		return fun
+	}
+	return env.plainCall(fun, SExpr(Cells(args).Clone()))
+}
+
+// ApplyFunction returns what (apply fn args) returns for the list args (pass
+// lisp.Nil() for no arguments; a Go nil raises apply's error): the
+// function's value, or the same error from the same check, in apply's order
+// (fn first, then a non-list args).  It checks the evaluation's context first,
+// as CallBuiltin does, and charges no step of its own.  It neither writes nor
+// keeps args.
+//
+// Use it from a Go builtin where the Lisp called apply.  Like CallFunction, it
+// does not mark the calling frame terminal.
+func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	fun := applyTarget(env, fn, args)
+	if fun.IsError() {
+		return fun
+	}
+	return env.plainCall(fun, SExpr(Cells(args.Cells).Clone()))
+}
+
+// plainCall calls the regular function fun with args from Go as a plain call:
+// no tail call in fun can return through the calling frame, because a Go
+// frame cannot be unwound.  It keeps the calling frame non-terminal while fun
+// runs, as CallBuiltin does, holding the frame's index rather than a pointer
+// (a push can move the frames).  A tail-call mark that still comes back is
+// called plainly, as a non-tail call from Lisp would be.
+func (env *LEnv) plainCall(fun, args *LVal) *LVal {
+	stack := env.Runtime.Stack
+	top := -1
+	if stack != nil && len(stack.Frames) > 0 {
+		top = len(stack.Frames) - 1
+		terminal := stack.Frames[top].Terminal
+		stack.Frames[top].Terminal = false
+		defer func() {
+			if top < len(stack.Frames) {
+				stack.Frames[top].Terminal = terminal
+			}
+		}()
+	}
+	val := env.FunCall(fun, args)
+	if val.Type == LMarkTailRec {
+		markFun, markArgs := extractMarkTailRec(val)
+		return env.FunCall(markFun, markArgs)
+	}
+	return val
 }
 
 func builtinToString(env *LEnv, args *LVal) *LVal {
@@ -1332,27 +1428,45 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
-	list := args.Cells[0]
-	if !isSeq(list) {
-		return env.Errorf("argument is not a proper sequence: %v", list.Type)
-	}
-	cells := seqCells(list)
-	if len(cells) == 0 {
-		return Nil()
-	}
-	return cells[0]
+	return seqElem(env, args.Cells[0], 0)
 }
 
 func builtinSecond(env *LEnv, args *LVal) *LVal {
-	list := args.Cells[0]
+	return seqElem(env, args.Cells[0], 1)
+}
+
+// First returns what the first builtin returns for (first seq): the first
+// element of a list or a vector, () when it has none, or the same error from
+// the same check.  It checks the evaluation's context first, as CallBuiltin
+// does, and charges no step.  An element is returned as it is stored, an
+// error value included, as the builtin returns it.
+func (env *LEnv) First(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqElem(env, seq, 0)
+}
+
+// Second returns what the second builtin returns for (second seq), as First
+// does for first.
+func (env *LEnv) Second(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqElem(env, seq, 1)
+}
+
+// seqElem is the body of first (i 0) and second (i 1) and of LEnv.First and
+// LEnv.Second, so they cannot differ.
+func seqElem(env *LEnv, list *LVal, i int) *LVal {
 	if !isSeq(list) {
 		return env.Errorf("argument is not a proper sequence: %v", list.Type)
 	}
 	cells := seqCells(list)
-	if len(cells) < 2 {
+	if len(cells) <= i {
 		return Nil()
 	}
-	return cells[1]
+	return cells[i]
 }
 
 func builtinNth(env *LEnv, args *LVal) *LVal {
@@ -1773,7 +1887,27 @@ func mapGet(env *LEnv, m, k *LVal) *LVal {
 }
 
 func builtinKeys(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
+	return mapKeys(env, args.Cells[0])
+}
+
+// MapKeys returns what the keys builtin returns for (keys m): the list of
+// m's keys in key order, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does.  A value that is not a
+// sorted-map raises "first argument is not a map: <type>", and a map with more
+// entries than the allocation limit raises the allocation error.  It charges
+// no step.
+//
+// Use it where the Lisp called keys.  LVal.MapKeys makes none of these checks.
+func (env *LEnv) MapKeys(m *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return mapKeys(env, m)
+}
+
+// mapKeys is the body of the keys builtin and of LEnv.MapKeys, so the two
+// cannot differ.
+func mapKeys(env *LEnv, m *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
@@ -3149,21 +3283,48 @@ func builtinARef(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinLength(env *LEnv, args *LVal) *LVal {
-	seq := args.Cells[0]
-	n := seq.Len()
-	if n < 0 {
-		return env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	n, lerr := seqLength(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	return Int(n)
 }
 
 func builtinIsEmpty(env *LEnv, args *LVal) *LVal {
-	seq := args.Cells[0]
-	n := seq.Len()
-	if n < 0 {
-		return env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	n, lerr := seqLength(env, args.Cells[0])
+	if lerr != nil {
+		return lerr
 	}
 	return Bool(n == 0)
+}
+
+// Length returns what the length builtin returns for (length seq), as a Go
+// int, or 0 and the same error from the same check: a value with no length
+// (not a list, map, vector, bytes or string) raises the builtin's error.  It
+// checks the evaluation's context first, as CallBuiltin does, and charges no
+// step.  LVal.Len makes no check and returns -1 for such a value.
+func (env *LEnv) Length(seq *LVal) (int, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return 0, lerr
+	}
+	return seqLength(env, seq)
+}
+
+// IsEmpty returns what the empty? builtin returns for (empty? seq), as a Go
+// bool, or the same error from the same check, as Length does.
+func (env *LEnv) IsEmpty(seq *LVal) (bool, *LVal) {
+	n, lerr := env.Length(seq)
+	return n == 0 && lerr == nil, lerr
+}
+
+// seqLength is the body of length and empty? and of LEnv.Length, so they
+// cannot differ.  The error is nil when seq has a length.
+func seqLength(env *LEnv, seq *LVal) (int, *LVal) {
+	n := seq.Len()
+	if n < 0 {
+		return 0, env.Errorf("first argument is not a list, map, vector, bytes, or a string: %v", seq.Type)
+	}
+	return n, nil
 }
 
 func builtinCons(env *LEnv, args *LVal) *LVal {

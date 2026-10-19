@@ -130,6 +130,10 @@ func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
 func (env *LEnv) Error(msg ...any) *LVal                        { return nil }
 func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal { return nil }
 func (env *LEnv) MapLookup(m, k *LVal) *LVal                    { return nil }
+func (env *LEnv) First(seq *LVal) *LVal                         { return nil }
+func (env *LEnv) Second(seq *LVal) *LVal                        { return nil }
+func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal    { return nil }
+func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal            { return nil }
 func (env *LEnv) MapPut(m, k, v *LVal) *LVal                    { return nil }
 func (env *LEnv) ToString(v *LVal) *LVal                        { return nil }
 func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal   { return nil }

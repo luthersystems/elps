@@ -134,6 +134,9 @@ spell a marker in the gate script or its tests; assemble it at runtime.
 - **`repl/`** — Interactive REPL using readline.
 - **`elpstest/`** — Test framework (`Runner`, `TestSuite`) for executing lisp
   test files as Go subtests.
+- **`elpstest/oracle/`** — Differential test helpers for Go code that copies
+  a builtin: generated inputs of every type, result comparison, and a sweep
+  of every context check.
 - **`elpsutil/`** — Helpers for building embedded packages in Go
   (`Function()`, `PackageLoader()`, etc.).
 - **`lsp/`** — Language Server (on `tliron/glsp`): diagnostics, hover,

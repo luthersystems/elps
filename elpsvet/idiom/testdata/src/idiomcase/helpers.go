@@ -7,6 +7,8 @@ var (
 	coreToString     = lisp.BuiltinFunc("to-string")
 	coreFormatString = lisp.BuiltinFunc("format-string")
 	coreAssocCopy    = lisp.BuiltinFunc("assoc")
+	coreFirst        = lisp.BuiltinFunc("first")
+	coreSecond       = lisp.BuiltinFunc("second")
 )
 
 func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {
@@ -14,6 +16,8 @@ func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {
 	_ = env.CallBuiltin(lisp.BuiltinFunc("assoc!"), m, k, v)            // want `use env.MapPut`
 	_ = env.CallBuiltin(coreGet, m, k)                                  // want `use env.MapLookup`
 	_ = env.CallBuiltin(coreToString, v)                                // want `use env.ToString`
+	_ = env.CallBuiltin(coreFirst, v)                                   // want `use env.First`
+	_ = env.CallBuiltin(coreSecond, v)                                  // want `use env.Second`
 	_ = env.CallBuiltin(coreFormatString, lisp.String("{}: {}"), k, v)  // want `use env.FormatString`
 	_ = env.CallBuiltin(coreFormatString, lisp.String("unknown "+name)) // want `use env.FormatString`
 }
