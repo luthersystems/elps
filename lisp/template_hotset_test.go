@@ -3,9 +3,11 @@
 package lisp
 
 import (
+	"runtime"
 	"strconv"
 	"sync"
 	"testing"
+	"weak"
 )
 
 func hotSetVM(t *testing.T, tmpl *Template, opts ...VMOption) *LEnv {
@@ -287,6 +289,90 @@ func TestTemplatePrewarmFollowsPeriodicWork(t *testing.T) {
 	if libBuilt(t, vm, "v10") {
 		t.Error("prewarm built v10, which 1 in 4 VMs read")
 	}
+}
+
+// retentionTemplate publishes user:m = {"k": (1)} and user:bulk, 1 MiB of
+// bytes. Four VMs read m, m[k] and bulk, so prewarm builds all three.
+func retentionTemplate(t *testing.T) *Template {
+	t.Helper()
+	source := templateOwnershipEnv()
+	m := SortedMap()
+	m.MapSetString("k", QExpr([]*LVal{Int(1)}))
+	source.Runtime.Package.Put(Symbol("m"), m)
+	source.Runtime.Package.Put(Symbol("bulk"), Bytes(make([]byte, 1<<20)))
+	tmpl, err := NewTemplate(source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 4 {
+		user := hotSetVM(t, tmpl).Runtime.Registry.Package("user")
+		mv, _ := user.Symbol("m")
+		testMapGet(mv, "k")
+		user.Symbol("bulk")
+	}
+	return tmpl
+}
+
+// retainedMap makes a prewarmed VM, reads user:m but not m[k], and returns m
+// and a weak pointer to the VM's bulk bytes, which prewarm built.
+//
+//go:noinline
+func retainedMap(t *testing.T, tmpl *Template) (*LVal, weak.Pointer[[]byte]) {
+	vm := hotSetVM(t, tmpl, VMWithPrewarm())
+	user := vm.Runtime.Registry.Package("user")
+	i, _ := user.base.index.Lookup("bulk")
+	bulk := lazyInstanceOf(vm).values[user.base.bindings[i].value.index-1]
+	if bulk == nil {
+		t.Fatal("prewarm did not build bulk")
+	}
+	data, ok := bulk.Native.(*[]byte)
+	if !ok {
+		t.Fatalf("bulk holds %T", bulk.Native)
+	}
+	m, _ := user.Symbol("m")
+	return m, weak.Make(data)
+}
+
+func collected(p weak.Pointer[[]byte]) bool {
+	for range 3 {
+		runtime.GC()
+	}
+	return p.Value() == nil
+}
+
+// TestTemplateRetainedMapReleasesVMWhenRead: a sorted map kept after its VM
+// can keep the VM alive until each of its entries has been read (the
+// Template.NewVM doc). In a VM that counts its root reads, an entry stays
+// pending until it is read, even when prewarm built its value. A VM that
+// does not count fills the prewarmed entry when it fills the map.
+func TestTemplateRetainedMapReleasesVMWhenRead(t *testing.T) {
+	t.Run("counting", func(t *testing.T) {
+		tmpl := retentionTemplate(t)
+		m, bulk := retainedMap(t, tmpl)
+		if collected(bulk) {
+			t.Fatal("m, with m[k] pending, did not keep the VM alive")
+		}
+		if got := testMapGet(m, "k"); got == nil || got.Cells[0].Int != 1 {
+			t.Fatalf("m[k] = %v", got)
+		}
+		if !collected(bulk) {
+			t.Error("m, read in full, keeps the VM alive")
+		}
+		runtime.KeepAlive(m)
+	})
+	t.Run("not counting", func(t *testing.T) {
+		tmpl := retentionTemplate(t)
+		made := uint64(hotCountAll)
+		for hotSample(made + 1) {
+			made++
+		}
+		tmpl.plan.hot.made.Store(made)
+		m, bulk := retainedMap(t, tmpl)
+		if !collected(bulk) {
+			t.Error("m, whose one entry prewarm built, keeps the VM alive")
+		}
+		runtime.KeepAlive(m)
+	})
 }
 
 // TestTemplatePrewarmConcurrent: VMs built and read on many goroutines at once

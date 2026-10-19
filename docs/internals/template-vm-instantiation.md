@@ -120,7 +120,8 @@ an entry whose value prewarm or another root built. So the VM's first read
 of the entry goes through the root read and counts. Otherwise a prewarmed
 counting VM reads the entry without counting it, its share falls below half,
 prewarm stops building it, and the next VMs count it again: the entry goes in
-and out of the set.
+and out of the set. So a map in a counting VM keeps the VM's lazy state alive
+until the VM has read, written or deleted each of its entries.
 
 The counts decay. When the number of VMs that read a root reaches 1024, every
 count halves, with an atomic subtract, so a read that a VM adds at the same
@@ -185,7 +186,7 @@ because there was little to copy.
 | One VM must not be used from two goroutines at once | Behaviour contract | Hosts already made one VM per request. Checked builds detect a violation; production builds race silently. |
 | Publication: +106 allocations per template, once | Small | Paid once per template, not per request. Waived in `scripts/benchstat-waivers.txt` (#687). |
 | Symbol lookup: about +1 ns | Small | Lookup now goes through the slot index. |
-| A map or package with unbuilt entries keeps its VM's lazy state alive | Memory | Measured in `TestTemplateForkEscapedLeafDoesNotRetainVM`. The VM is freed when nothing refers to it. |
+| A map or package with an entry that the VM has not read or written can keep its VM's lazy state alive | Memory | Measured in `TestTemplateForkEscapedLeafDoesNotRetainVM`. The VM is freed when nothing refers to it. |
 | Walk-everything operations lose the gain | Performance | They stay correct. They are not on the request path. |
 
 **Visible behaviour changes** (both intended):

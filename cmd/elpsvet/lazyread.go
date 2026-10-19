@@ -88,7 +88,7 @@ var lazyTableFunctions = map[string]string{
 	// Constructors of tables no lazy VM has reached.
 	"templatePlan.instantiateEager": "builds eager VM tables before registry publication",
 	"templatePlan.instantiateLazy":  "builds package shells whose slots start nil for baseValue to fill",
-	"lazyInstance.fillBacking":      "builds a lazy map's table, storing lazyPending for unmaterialized entries",
+	"lazyInstance.fillBacking":      "builds a lazy map's table, storing lazyPending for unmaterialized entries and, in a VM that counts its root reads, for every per-VM entry",
 }
 
 type lazyField struct{ typ, field string }
