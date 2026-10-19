@@ -51,6 +51,8 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"externalsSortedLen": "reset: a derived token over the export list; zero in a fresh package means the list is re-sorted before it is searched",
 			"base":               "shared-immutable: frozen package tables built once at publication (TestTemplateFrozenPackageBaseImmutable)",
 			"baseValues":         "remapped: nil until first fill/write, then private per-package slot storage (TestTemplateLazySlotStorage)",
+			"fids":               "remapped: an eager VM starts with the plan's shared FID index under a fresh overlay; a lazy or frozen VM leaves it nil and reads base.fidNames until thaw; any other package builds it from its bindings on first lookup (TestFIDIndexMatchesScan)",
+			"slotFidNames":       "reset: a frozen VM's per-VM overlay on base FID name lists; a source package's index is folded into the base by fidNameLists at publication (TestFIDIndexMatchesScan)",
 			"slotFunNames":       "reset: a frozen VM's per-VM overlay on base function names; a source package's overlay is folded into the base by funNameTable at publication (TestFrozenPackagePerTransactionGlobalsDoNotThaw)",
 			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
 			"lazy":               "remapped: embedded per-VM link to this VM's lazy instance, built by NewVM and never published; cleared once every binding is materialized (TestTemplateLazyRetention)",

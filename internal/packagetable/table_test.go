@@ -59,3 +59,25 @@ func TestAdoptStringsOwnership(t *testing.T) {
 		t.Fatalf("adopted storage changed through its copy: %v", got)
 	}
 }
+
+func TestListsOwnership(t *testing.T) {
+	inner := []string{"a", "b"}
+	input := map[string][]string{"f": inner, "g": {"c"}}
+	table := packagetable.NewLists(input)
+	inner[0] = "corrupt"
+	input["g"] = nil
+	table.Copy()["f"][1] = "corrupt"
+	if table.Len() != 2 || table.ListLen("f") != 2 || table.At("f", 0) != "a" || table.At("f", 1) != "b" {
+		t.Fatalf("snapshot changed: f has %d entries", table.ListLen("f"))
+	}
+	if table.ListLen("g") != 1 || table.At("g", 0) != "c" || table.ListLen("missing") != 0 {
+		t.Fatal("lookup changed")
+	}
+	if keys := table.Keys(); !slices.Equal(keys, []string{"f", "g"}) {
+		t.Fatalf("keys %v", keys)
+	}
+	var zero packagetable.Lists
+	if zero.Len() != 0 || zero.ListLen("f") != 0 || zero.Copy() != nil || packagetable.NewLists(nil).Len() != 0 {
+		t.Fatal("zero table not empty")
+	}
+}

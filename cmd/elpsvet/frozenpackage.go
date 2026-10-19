@@ -34,6 +34,7 @@ var packageWriteFunctions = map[string]string{
 	"Package.Exports":                    "passes ensureWritable (which thaws a frozen package) before merging and sorting exports",
 	"Package.exportSorted":               "passes ensureWritable (which thaws a frozen package) before inserting a sorted export",
 	"Package.putSlot":                    "calls ensureBaseValues before rebinding an existing frozen name in this VM's own slot and slotFunNames overlay; shared descriptors and tables are never written",
+	"Package.setSlotFIDNames":            "writes this VM's own slotFidNames overlay of a frozen package (called from putSlot); shared tables are never written",
 	"Package.ensureBaseValues":           "allocates private slot storage and copies shared references from immutable descriptors on the first fill or write; never lends or writes the descriptor backing",
 	"Package.thaw":                       "the only builder of private tables from a frozen base; reached only through ensureWritable",
 	"NewPackage":                         "constructs an unpublished unfrozen package",
@@ -117,7 +118,7 @@ func protectedPackageField(pass *analysis.Pass, sel *ast.SelectorExpr) bool {
 				return true
 			}
 			switch field.Name() {
-			case "symbols", "funNames", "symbolDocs", "externals", "base", "baseValues", "slotFunNames":
+			case "symbols", "funNames", "symbolDocs", "externals", "base", "baseValues", "slotFunNames", "slotFidNames":
 				return true
 			}
 		}
@@ -244,7 +245,7 @@ func checkPackageWrites(pass *analysis.Pass, node ast.Node) {
 					continue
 				}
 				key, _ := kv.Key.(*ast.Ident)
-				if key != nil && (kind == "packageBase" || key.Name == "symbols" || key.Name == "funNames" || key.Name == "symbolDocs" || key.Name == "externals" || key.Name == "base" || key.Name == "baseValues" || key.Name == "slotFunNames") {
+				if key != nil && (kind == "packageBase" || key.Name == "symbols" || key.Name == "funNames" || key.Name == "symbolDocs" || key.Name == "externals" || key.Name == "base" || key.Name == "baseValues" || key.Name == "slotFunNames" || key.Name == "slotFidNames") {
 					pass.Reportf(key.Pos(), "package table write outside the write gate; use a package constructor")
 				}
 			}

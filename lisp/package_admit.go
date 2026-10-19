@@ -157,6 +157,8 @@ func admitPackage(p *Package, limit int) *Package {
 	for fid, name := range funNames {
 		adm.funNames[fid] = name
 	}
+	// The snapshot builds its FID index on its first lookup, from its own
+	// bindings, which hold the same functions.
 	return adm
 }
 

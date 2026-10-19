@@ -567,27 +567,30 @@ regular function of package `PKG`.
   registration replaced has the same one, and `lisp.FunInPackage` takes
   any `FID`. So each retained generation restores as itself
   (`TestDurableBuiltinGenerations`). Each such function is looked up once
-  per dump, charged ceil(n/4) units for a package of n bindings, and the
-  lookup builds no lazy binding.
+  per dump, charged one unit, and the lookup builds no lazy binding.
 
-The encoder reads each package's names once per dump through
-`Package.FunNamesByFID` for Lisp functions. It visits every binding in any order and keeps the
-smallest name per FID, so it neither sorts nor allocates per binding. It
-reads a binding a lazy template has not built from the template's plan, so
-it builds no value. The read is charged ceil(n/4) units for a package of n
-bindings (`Package.NumBindings`), before the read starts, so a step budget
-or a cancelled context stops it. The work and the charge scale with the
-package's size, not with the saved graph. One unit pays for four bindings:
-one elps step costs about 175 ns, and reading one binding costs 22 ns on a
-cold environment and up to 100 ns on a template VM.
+The encoder finds a Lisp function's name with `Package.FunNameByFID`
+(luthersystems/elps#847). Each package keeps an index of the sorted names
+under which it binds a function of each `FID`, so a lookup reads only the
+names of that function, whatever the size of the package. A template
+publishes the index with each package, so a template VM never builds it. A
+package outside a template builds it on its first lookup, in one read of its
+bindings, and keeps it exact on its write path after that; a package nobody
+looks up pays nothing on its writes. It reads a
+binding a lazy template has not built from the template's plan, so it builds
+no value. Each lookup is charged one unit before it starts, so a step budget
+or a cancelled context stops it. A package's lookups in one dump are charged
+at most ceil(n/4) units for n bindings (`Package.NumBindings`): what a dump
+was charged when it read every binding of the package, so no dump is charged
+more than before (`TestDurableFunctionNamesChargeCap`).
 `BenchmarkDurableFunctionName` dumps one function from a package of 6000
 bindings:
 
-| Environment | Before (sort, materialize) | After (`FunNamesByFID`) |
+| Environment | Read every binding (`FunNamesByFID`) | Index (`FunNameByFID`) |
 |---|---|---|
-| Cold env | 1.6 ms, 109 KB | 0.13 ms, 3.5 KB |
-| Eager template VM | 1.9 ms, 108 KB | 0.64 ms, 1.7 KB |
-| Lazy template VM | 15.8 ms, 5.87 MB, 72,612 allocs | 0.51 ms, 1.7 KB, 16 allocs |
+| Cold env (index already built) | 88 µs, 3.9 KB | 5.0 µs, 3.7 KB |
+| Eager template VM | 237 µs, 2.0 KB | 13 µs, 1.9 KB |
+| Lazy template VM | 370 µs, 2.0 KB | 10 µs, 1.9 KB |
 
 This belongs in the codec, not in a native hook. A B+-tree handle's payload
 then holds its `:compare` function as an ordinary value, and every native
@@ -782,7 +785,7 @@ so every peer charges the same units in the same order:
 
 | Call | Charges, in order |
 |---|---|
-| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, ceil(n/4) units before a package of n bindings has its function names read (once per package for Lisp functions, once per unregistered builtin), and one unit before each 4 environments the frame lookups walk for the first time, counted over the whole dump. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
+| `DumpDurable` | In first-pass order: each codec's declared charge before its `SaveNative`, one unit before each function name it looks up (once per Lisp function and once per unregistered builtin; a lookup reads only the names bound to that function's FID, so it does not grow with the package, luthersystems/elps#847), with a package's Lisp function lookups capped at ceil(n/4) units for n bindings, which a dump was charged for reading the whole package before, and one unit before each 4 environments the frame lookups walk for the first time, counted over the whole dump. Then one unit per started KiB of output as the output grows. The charges are the same on a cold environment, an eager template VM and a lazy template VM (`TestDurableFunctionNamesChargeParity`). Captured frames add no charge of their own: each binding read is written, so the output KiB pay for it. |
 | `LoadDurable` | ceil(n/1024) units for n input bytes, before decoding. Then each codec's declared charge before its `LoadNative`, in document order. |
 
 The two schedules differ in what they pay for. A dump does work the
