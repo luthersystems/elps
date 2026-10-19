@@ -442,3 +442,25 @@ func TestFunctionDoc_ReachesRegisteredValue(t *testing.T) {
 	_, deprecated = lisp.DeprecationNotice(byName["join-paths"].DocString)
 	assert.False(t, deprecated, "an undocumented builtin must not read as deprecated")
 }
+
+// Function and FunctionDoc hold a sealed copy of formals, as the
+// interpreter's own builtin tables do, so binding shares the list instead of
+// copying it.  The caller's list is left as it was.
+func TestFunctionSealsFormalsCopy(t *testing.T) {
+	for _, mk := range []func(*lisp.LVal) *elpsutil.Builtin{
+		func(f *lisp.LVal) *elpsutil.Builtin { return elpsutil.Function("f", f, nilFun) },
+		func(f *lisp.LVal) *elpsutil.Builtin { return elpsutil.FunctionDoc("f", f, nilFun, "Doc.") },
+	} {
+		formals := lisp.Formals("a", lisp.OptArgSymbol, "b")
+		def := mk(formals)
+		assert.True(t, def.Formals().IsSealed(), "the definition's formals must be sealed")
+		assert.NotSame(t, formals, def.Formals(), "the definition must hold a copy")
+		assert.False(t, formals.IsSealed(), "the caller's list must not be sealed")
+		assert.Equal(t, formals.String(), def.Formals().String())
+		for _, c := range def.Formals().Cells {
+			assert.True(t, c.IsSealed(), "every formal must be sealed")
+		}
+		assert.Nil(t, mk(nil).Formals(), "a nil formals stays nil for Validate to refuse")
+		assert.Same(t, def.Formals(), mk(def.Formals()).Formals(), "sealed formals are not copied again")
+	}
+}
