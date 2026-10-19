@@ -1071,6 +1071,16 @@ element as it is stored, an error value included. Each checks the context
 first and charges no step. `LVal.MapKeys`, `LVal.Len` and `v.SeqCells()` make
 none of these checks.
 
+**`env.CallFunction(fn, args...)` and `env.ApplyFunction(fn, args)`** return
+what `(funcall fn args...)` and `(apply fn args)` return, with the same checks
+in the same order: a symbol resolves to its global function, and a macro or a
+special operator raises the builtin's error. Each checks the context first,
+charges no step of its own and does not write its arguments. Use them from a
+Go builtin in place of `env.CallBuiltin` of `funcall` or `apply`. The
+builtins mark the calling frame terminal so that the callee's tail call can
+reuse it; a Go frame cannot be unwound, so these make every call a plain call
+(luthersystems/elps#852).
+
 **Testing a Go copy of a builtin: `elpstest/oracle`.** The package compares
 Go code with the builtin it copies, with the builtin as the oracle.
 `oracle.Values()` returns fresh inputs of every type a builtin can be handed,
@@ -1137,9 +1147,10 @@ or without a `v != nil` test before it) to `v.IsSymbol(name)`,
 `lisp.QExpr`, `lisp.SExpr` and `lisp.Vector` over a slice literal to
 `lisp.Cells{...}.List()`, `.SExpr()` and `.Vector()`, `lisp.Array(nil, x)`
 to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
-a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string` or
-`format-string` to `env.MapOf` or `env.SortedMapOf`, `env.MapPut`,
-`env.MapLookup`, `env.ToString` or `env.FormatString`, and a
+a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string`,
+`format-string`, `first` or `second` to `env.MapOf` or `env.SortedMapOf`,
+`env.MapPut`, `env.MapLookup`, `env.ToString`, `env.FormatString`,
+`env.First` or `env.Second`, and a
 `lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
 keeps behaviour identical for a non-nil value; the package doc of
 `elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `AsMap` and `Lookup`, an
@@ -1152,7 +1163,9 @@ keeps behaviour identical for a non-nil value; the package doc of
   `Func*E` body, or in a function whose error such a body returns.
 - A `*lisp.ErrorVal` in a result list, which makes a typed nil.
 - `lisp.ResultAs[T]` over `get`, `funcall`, `apply`, `nth`, `first`,
-  `second`, `aref` or `env.MapLookup`, whose result type varies.
+  `second`, `aref`, or their helpers `env.MapLookup`, `env.First`,
+  `env.Second`, `env.CallFunction` and `env.ApplyFunction`, whose result type
+  varies.
 - A `Func*E` builtin registered with formals other than its required
   arguments.
 - An `env.MapOf` key or value of a type that `MapOf` does not accept.

@@ -92,6 +92,11 @@ func resultAsVarying(env *lisp.LEnv, m, k *lisp.LVal) {
 	_, _ = lisp.ResultAs[string](env.MapLookup(m, k))                // want `the result type of get varies with the data`
 	_, _ = lisp.ResultAs[*lisp.LVal](env.CallBuiltin(coreGet, m, k)) // want `use env.MapLookup`
 	_, _ = lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+	_, _ = lisp.ResultAs[string](env.First(m))            // want `the result type of first varies with the data`
+	_, _ = lisp.ResultAs[string](env.Second(m))           // want `the result type of second varies with the data`
+	_, _ = lisp.ResultAs[string](env.CallFunction(m, k))  // want `the result type of funcall varies with the data`
+	_, _ = lisp.ResultAs[string](env.ApplyFunction(m, k)) // want `the result type of apply varies with the data`
+	_, _ = lisp.ResultAs[*lisp.LVal](env.First(m))
 }
 
 var builtinPad = lisp.Func2E(func(env *lisp.LEnv, s string, n int) (string, error) {

@@ -98,6 +98,8 @@
 //	                                   env.MapLookup(m, k)            (fix)
 //	env.CallBuiltin(ref, v) for "to-string"
 //	                                   env.ToString(v)                (fix)
+//	env.CallBuiltin(ref, v) for "first" or "second"
+//	                                   env.First(v), env.Second(v)    (fix)
 //	env.CallBuiltin(ref, lisp.String(f), v, ...) for "format-string"
 //	                                   env.FormatString(f, v, ...)    (fix)
 //	fn.Cells[1] = doc or fn.Cells[1].Str = doc, where every value of fn
@@ -176,7 +178,8 @@
 //   - A *lisp.ErrorVal in a function's result list.  A nil *ErrorVal
 //     returned as an error is a non-nil error.  Return error.
 //   - lisp.ResultAs[T] over a call whose result type varies (get, funcall,
-//     apply, nth, first, second, aref, and LEnv.MapLookup), for a T other
+//     apply, nth, first, second, aref, and LEnv.MapLookup, First, Second,
+//     CallFunction and ApplyFunction), for a T other
 //     than *lisp.LVal.  A value of another type is then a run-time error.
 //   - A Func1E, Func2E or Func3E builtin registered with formals that are not
 //     exactly its count of required arguments.  The builtin takes required
@@ -998,7 +1001,8 @@ func (s *state) checkErrorValResult(ft *ast.FuncType) {
 }
 
 // checkResultAs: lisp.ResultAs[T](env.CallBuiltin(ref, ...)) for a builtin
-// whose result type varies, and lisp.ResultAs[T](env.MapLookup(...)).
+// whose result type varies, and lisp.ResultAs[T] over the LEnv helper of such
+// a builtin (MapLookup, First, Second, CallFunction, ApplyFunction).
 func (s *state) checkResultAs(call *ast.CallExpr) {
 	fn := s.lispFunc(call)
 	if fn == nil || fn.Name() != "ResultAs" || len(call.Args) != 1 {
@@ -1023,6 +1027,14 @@ func (s *state) checkResultAs(call *ast.CallExpr) {
 	switch m.Name() {
 	case "MapLookup":
 		name = "get"
+	case "First":
+		name = "first"
+	case "Second":
+		name = "second"
+	case "CallFunction":
+		name = "funcall"
+	case "ApplyFunction":
+		name = "apply"
 	case "CallBuiltin":
 		if len(inner.Args) == 0 {
 			return
@@ -1493,10 +1505,12 @@ var builtinHelpers = map[string]struct {
 	"get":           {"MapLookup", 2},
 	"to-string":     {"ToString", 1},
 	"format-string": {"FormatString", -1},
+	"first":         {"First", 1},
+	"second":        {"Second", 1},
 }
 
-// checkBuiltinHelper: env.CallBuiltin(ref, ...) for assoc!, get, to-string
-// and format-string.  Each helper checks the context first, as CallBuiltin
+// checkBuiltinHelper: env.CallBuiltin(ref, ...) for assoc!, get, to-string,
+// format-string, first and second.  Each helper checks the context first, as CallBuiltin
 // does, and then runs the builtin's own body, so the result and the error
 // are the same (lisp/goport_test.go, TestMapPutParity and its siblings).
 func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
