@@ -36,6 +36,14 @@ func (b *packageBase) fingerprint() [sha256.Size]byte {
 	for key, value := range b.funNames.All() {
 		_, _ = fmt.Fprintf(h, "%q:%q\n", key, value)
 	}
+	_, _ = fmt.Fprintf(h, "fidNames:%d\n", b.fidNames.Len())
+	for _, key := range b.fidNames.Keys() {
+		_, _ = fmt.Fprintf(h, "%q:%d", key, b.fidNames.ListLen(key))
+		for i := range b.fidNames.ListLen(key) {
+			_, _ = fmt.Fprintf(h, ":%q", b.fidNames.At(key, i))
+		}
+		_, _ = fmt.Fprintln(h)
+	}
 	_, _ = fmt.Fprintf(h, "symbolDocs:%d\n", b.symbolDocs.Len())
 	for key, value := range b.symbolDocs.All() {
 		_, _ = fmt.Fprintf(h, "%q:%q\n", key, value)

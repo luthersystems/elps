@@ -1292,7 +1292,11 @@ builtin.
 
 `(*Package).FirstNameOf(fn)` returns the first name, in sorted order, under
 which a package binds `fn` itself (its function data, not its `FID`), and
-builds no binding of a lazy template VM.
+builds no binding of a lazy template VM. `(*Package).FunNameByFID(fid)`
+returns the first name, in sorted order, under which a package binds a
+regular function of its own with that `FID`. Both read only the names bound
+to that `FID`, not the whole package (luthersystems/elps#847).
+`FirstNameOf` also returns how many bindings it read.
 
 `libjson.DumpDurable` uses the registration record to save every registered
 builtin by its registration, whatever its names bind. See [durable typed JSON](internals/durable-json.md#functions).

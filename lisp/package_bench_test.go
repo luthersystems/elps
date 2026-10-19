@@ -88,3 +88,33 @@ func BenchmarkPackageGetFunParallel(b *testing.B) {
 		}
 	})
 }
+
+// BenchmarkFirstNameLookup looks up one function's first name in packages
+// of growing size.  The FID index (luthersystems/elps#847) reads only that
+// function's names, so the time does not grow with the package.
+func BenchmarkFirstNameLookup(b *testing.B) {
+	for _, size := range []int{100, 1000, 10000} {
+		env := templateOwnershipEnv()
+		pkg := env.Runtime.Package
+		fn := env.Lambda(Formals(), []*LVal{Int(1)})
+		for i := range size {
+			pkg.Put(Symbol("v"+strconv.Itoa(i)), env.Lambda(Formals(), []*LVal{Int(i)}))
+		}
+		pkg.Put(Symbol("zz-fn"), fn)
+		fid := fn.FID()
+		b.Run("FunNameByFID/"+strconv.Itoa(size), func(b *testing.B) {
+			for b.Loop() {
+				if _, ok := pkg.FunNameByFID(fid); !ok {
+					b.Fatal("not found")
+				}
+			}
+		})
+		b.Run("FirstNameOf/"+strconv.Itoa(size), func(b *testing.B) {
+			for b.Loop() {
+				if _, ok, _ := pkg.FirstNameOf(fn); !ok {
+					b.Fatal("not found")
+				}
+			}
+		})
+	}
+}

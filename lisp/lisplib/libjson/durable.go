@@ -247,9 +247,10 @@ type durableEncoder struct {
 	// "PKG:NAME".  A builtin is named by identity, never by FID: two
 	// builtins of one package can share an FID.
 	builtinNames map[any]string
-	// funIndex holds, per package, the FID to first-name index read once
-	// per dump.
-	funIndex map[string]map[string]string
+	// funLookups counts, per package, the Lisp function names this dump
+	// looked up and charged, which funName caps at what reading the whole
+	// package was charged before luthersystems/elps#847.
+	funLookups []funLookupCount
 	// dataHeaders marks every array data header discovery found, and
 	// appendable those a vector uses.  recorded marks the holder headers
 	// in headers.  views places each grouped holder.  See
@@ -647,11 +648,10 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 }
 
 // bindingsPerUnit is how many bindings one charge unit pays for when a
-// package's function names are read.  One elps evaluation step costs about
-// 175 ns (BenchmarkDurableFunctionName's host: a dotimes loop of 50,004
-// steps runs in 8.8 ms), and reading one binding costs 22 ns on a cold
-// environment and up to 100 ns on a template VM, so four bindings cost
-// about one step.
+// dump walks environments.  One elps evaluation step costs about 175 ns
+// (BenchmarkDurableFunctionName's host: a dotimes loop of 50,004 steps runs
+// in 8.8 ms), and reading one binding costs 22 ns on a cold environment and
+// up to 100 ns on a template VM, so four bindings cost about one step.
 const bindingsPerUnit = 4
 
 // funNameScanUnits is the charge for reading n bindings: ceil(n/4).
@@ -661,10 +661,31 @@ func funNameScanUnits(n int) int { return (n + bindingsPerUnit - 1) / bindingsPe
 // registeredBuiltin and unregisteredBuiltinName): PKG is the function's
 // defining package, and NAME is the first name, in sorted order, that PKG
 // binds to a function with the same package and FID.  An FID is unique
-// within its package, so the package and FID identify the function.  Each
-// package's names are read once per dump (Package.FunNamesByFID, which
-// materializes no lazy binding), and the read is charged ceil(n/4) units
-// for n bindings before it starts.
+// within its package, so the package and FID identify the function.  The
+// name is found by Package.FunNameByFID, which reads only the names bound
+// to that FID and materializes no lazy binding (luthersystems/elps#847).
+// Each function is looked up once per dump and charged one unit before the
+// lookup, until the package's lookups reach ceil(n/4) units for n bindings:
+// the charge for reading the whole package, which a dump paid before.
+// funLookupCount is the number of Lisp function names one dump looked up
+// in one package.
+type funLookupCount struct {
+	pkg string
+	n   int
+}
+
+// funLookupCount returns the lookup count of the package named pkg.  A dump
+// reads functions of a few packages, so a short list beats a map.
+func (e *durableEncoder) funLookupCount(pkg string) *int {
+	for i := range e.funLookups {
+		if e.funLookups[i].pkg == pkg {
+			return &e.funLookups[i].n
+		}
+	}
+	e.funLookups = append(e.funLookups, funLookupCount{pkg: pkg})
+	return &e.funLookups[len(e.funLookups)-1].n
+}
+
 func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if f.IsSpecialFun() {
 		return "", errors.New("durable json: cannot encode a macro or special operator")
@@ -674,27 +695,20 @@ func (e *durableEncoder) funName(f *lisp.LVal) (string, error) {
 	if fid == "" || pkgName == "" {
 		return "", anonymous
 	}
-	index, ok := e.funIndex[pkgName]
-	if !ok {
-		pkg := e.env.Runtime.Registry.Package(pkgName)
-		if pkg == nil {
-			return "", anonymous
-		}
-		// Charged before the scan, so a step budget or a cancelled
-		// context stops it.  The work scales with the package's bindings,
-		// not with the saved graph.
-		if n := pkg.NumBindings(); e.cfg.charge != nil && n > 0 {
-			if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
-				return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
-			}
-		}
-		index, _ = pkg.FunNamesByFID()
-		if e.funIndex == nil {
-			e.funIndex = map[string]map[string]string{}
-		}
-		e.funIndex[pkgName] = index
+	pkg := e.env.Runtime.Registry.Package(pkgName)
+	if pkg == nil {
+		return "", anonymous
 	}
-	name, ok := index[fid]
+	// Charged before the lookup, so a step budget or a cancelled context
+	// stops it.
+	lookups := e.funLookupCount(pkgName)
+	if e.cfg.charge != nil && *lookups < funNameScanUnits(pkg.NumBindings()) {
+		if err := e.cfg.charge(1); err != nil {
+			return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
+		}
+	}
+	*lookups++
+	name, ok := pkg.FunNameByFID(fid)
 	if !ok {
 		return "", anonymous
 	}
@@ -734,9 +748,10 @@ func (e *durableEncoder) registeredBuiltin(f *lisp.LVal) (builtinRegistration, e
 
 // unregisteredBuiltinName returns "PKG:NAME" for a builtin no registration
 // names: PKG is its package and NAME the first name, in sorted order, under
-// which PKG binds this function itself (lisp.Package.FirstNameOf).  Each
-// such function is looked up once per dump, and the lookup is charged
-// ceil(n/4) units for n bindings before it starts.
+// which PKG binds this function itself (lisp.Package.FirstNameOf, which
+// reads only the names bound to its FID).  Each such function is looked up
+// once per dump, and the lookup is charged one unit before it starts
+// (luthersystems/elps#847; it was ceil(n/4) units for n bindings).
 func (e *durableEncoder) unregisteredBuiltinName(f *lisp.LVal) (string, error) {
 	if name, ok := e.builtinNames[f.Native]; ok {
 		return name, nil
@@ -749,8 +764,8 @@ func (e *durableEncoder) unregisteredBuiltinName(f *lisp.LVal) (string, error) {
 	if pkg == nil {
 		return "", errAnonymous
 	}
-	if n := pkg.NumBindings(); e.cfg.charge != nil && n > 0 {
-		if err := e.cfg.charge(funNameScanUnits(n)); err != nil {
+	if e.cfg.charge != nil && pkg.NumBindings() > 0 {
+		if err := e.cfg.charge(1); err != nil {
 			return "", fmt.Errorf("durable json: function names of package %s: %w", pkgName, err)
 		}
 	}

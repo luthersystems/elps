@@ -110,9 +110,12 @@ type templatePackage struct {
 	name, doc            string
 	bindings             []templateBinding
 	funNames, symbolDocs []templateStringPair
-	externals            []string
-	bindingsSealed       bool
-	unfrozen             bool // a lazy plan's base for a package not named frozen
+	// fidNames is an eager unfrozen package's FID index, which each VM's
+	// index reads under its own overlay.
+	fidNames       packagetable.Lists
+	externals      []string
+	bindingsSealed bool
+	unfrozen       bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
 	hot               *templateHotSet // what the plan's lazy VMs read, for VMWithPrewarm; nil for an eager plan
@@ -221,12 +224,14 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 	if pkg.base != nil || pkg.lazy.inst != nil {
 		symbols, funNames, symbolDocs = pkg.symbolTable(), pkg.funNameTable(), pkg.symbolDocTable()
 	}
+	fidNames := pkg.fidNameLists()
 	// A lazy plan gives every package a base, so each binding can start
 	// unmaterialized; an eager plan rebuilds unfrozen packages per VM.
 	if !frozen && c.plan.eager {
 		return templatePackage{
 			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(symbols),
 			funNames: templateStringPairs(funNames), symbolDocs: templateStringPairs(symbolDocs),
+			fidNames:       fidNames,
 			externals:      pkg.Externals(),
 			bindingsSealed: pkg.bindingsSealed,
 		}
@@ -245,6 +250,7 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 		pending:    pending,
 		index:      packagetable.AdoptMap(index), // built above, referenced nowhere else
 		funNames:   packagetable.NewMap(funNames),
+		fidNames:   fidNames, // built for this publication, referenced nowhere else
 		symbolDocs: packagetable.NewMap(symbolDocs),
 		externals:  packagetable.AdoptStrings(pkg.Externals()), // Externals returns a private copy
 		onThaw:     c.onThaw,
@@ -650,6 +656,7 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 		for _, name := range pkg.funNames {
 			out.funNames[name.key] = name.value
 		}
+		out.fids = &fidIndex{base: pkg.fidNames}
 		if len(pkg.symbolDocs) > 0 {
 			out.symbolDocs = make(map[string]string, len(pkg.symbolDocs))
 			for _, doc := range pkg.symbolDocs {

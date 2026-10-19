@@ -199,6 +199,20 @@ type Package struct {
 	// (see put).  Reads must not write it: a *Package is routinely shared by
 	// pointer across goroutines.  See issue #397.
 	funNames map[string]string
+	// fids maps an FID to the sorted names under which this package binds
+	// a function with that FID, so FunNameByFID and FirstNameOf read only
+	// the names of one function, not the whole package
+	// (luthersystems/elps#847).  It is nil until the first lookup, which
+	// builds it from the bindings and stores it atomically (loadFIDs,
+	// fidIndex), so concurrent readers stay safe (issue #397) and a package
+	// nobody looks up costs nothing.  Write paths, which never run beside a
+	// reader, set and read it directly: an atomic operation there would move
+	// every package that is written to the heap.  An eager template VM starts with the plan's index and a
+	// thawed package with its base's.  Once it exists putName keeps it
+	// exact: it adds a name when it binds a function and removes it when it
+	// rebinds the name to anything else.  A frozen package does not use it:
+	// it reads base.fidNames and this VM's slotFidNames overlay.
+	fids *fidIndex
 	// lazy.inst is non-nil while some binding of this VM's package is not yet
 	// materialized from a lazy template plan: absent/nil slot storage, or (after
 	// a thaw) a lazyPending entry in symbols. See template_lazy.go.
@@ -219,6 +233,11 @@ type Package struct {
 	// consulted before the base by GetFunName, and is merged into the private
 	// table by thaw, so function naming matches an unfrozen package exactly.
 	slotFunNames map[string]string
+	// slotFidNames is this VM's overlay on base.fidNames while the package
+	// is frozen: for each FID a slot write changed, the whole name list,
+	// which replaces the base's list.  It is nil until the first such
+	// write and is merged into the private table by thaw.
+	slotFidNames map[string][]string
 	Name         string
 	Doc          string
 	externals    []string
@@ -259,6 +278,7 @@ type packageBase struct {
 	bindings   []templateBinding
 	index      packagetable.Map[int]
 	funNames   packagetable.Map[string]
+	fidNames   packagetable.Lists
 	symbolDocs packagetable.Map[string]
 	externals  packagetable.Strings
 	pending    int // bindings with a per-VM value (index != 0)
@@ -402,6 +422,10 @@ func (pkg *Package) thaw() {
 	maps.Copy(funNames, pkg.slotFunNames)
 	pkg.funNames = funNames
 	pkg.slotFunNames = nil
+	// The FID index keeps reading the shared base, under this VM's
+	// overlay, so a thaw copies none of it.
+	pkg.fids = &fidIndex{base: base.fidNames, over: pkg.slotFidNames}
+	pkg.slotFidNames = nil
 	pkg.symbolDocs = base.symbolDocs.Copy()
 	pkg.externals = base.externals.Copy()
 	pkg.externalsSortedLen = 0
@@ -824,6 +848,17 @@ func (pkg *Package) putName(name string, v *LVal) {
 		return
 	}
 	pkg.ensureWritable()
+	if idx := pkg.fids; idx != nil {
+		if old, ok := pkg.symbols[name]; ok {
+			if fid, isFun := pkg.symbolFID(name, old); isFun {
+				idx.set(fid, removeSortedName(idx.list(fid), name))
+			}
+		}
+		if v.Type == LFun {
+			fid := v.FID()
+			idx.set(fid, insertSortedName(idx.list(fid), name))
+		}
+	}
 	if v.Type == LFun {
 		pkg.funNames[v.FID()] = name
 		if v.Package() == pkg.Name {
@@ -850,8 +885,12 @@ func (pkg *Package) putSlot(name string, v *LVal) bool {
 	if !ok {
 		return false
 	}
+	if fid, isFun := pkg.slotFID(i); isFun {
+		pkg.setSlotFIDNames(fid, removeSortedName(pkg.frozenFIDIndex().list(fid), name))
+	}
 	if v.Type == LFun {
 		fid := v.FID()
+		pkg.setSlotFIDNames(fid, insertSortedName(pkg.frozenFIDIndex().list(fid), name))
 		if prev, ok := pkg.base.funNames.Lookup(fid); ok && prev == name {
 			delete(pkg.slotFunNames, fid)
 		} else {

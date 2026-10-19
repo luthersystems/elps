@@ -191,9 +191,10 @@ func TestDurableNilReferenceNatives(t *testing.T) {
 	assert.Equal(t, `["~#durable",[1,["~#list",[["~#native",["test:map",1,0]],["~#native",["test:map",1,0]]]]]]`, string(b))
 }
 
-// Lisp function names come from one index per package per dump, which reads
-// no lazy binding.  The read is charged ceil(n/4) units for n bindings, the same
-// on a cold environment, an eager template VM and a lazy template VM.
+// A Lisp function's name comes from its package's FID index, which reads
+// only the names bound to that FID and no lazy binding
+// (luthersystems/elps#847).  Each lookup is charged one unit, the same on a
+// cold environment, an eager template VM and a lazy template VM.
 func TestDurableFunctionNamesChargeParity(t *testing.T) {
 	env := benchFunctionEnv(t)
 	evalString(t, env, `(defun my-fn () 1)`)
@@ -204,7 +205,6 @@ func TestDurableFunctionNamesChargeParity(t *testing.T) {
 		require.NoError(t, err)
 		return vm
 	}
-	units := func(n int) int { return (n + 3) / 4 }
 	var want []int
 	var wantDoc string
 	for _, c := range []struct {
@@ -227,11 +227,11 @@ func TestDurableFunctionNamesChargeParity(t *testing.T) {
 		n := allocatedBy(func() { b, err = libjson.DumpDurable(c.vm, v, nil, record) })
 		require.NoError(t, err, c.name)
 		assert.Equal(t, `["~#durable",[1,["~#list",[["~#fn","user:my-fn"],["~#fn","user:my-fn"],["~#builtin",["lisp","not"]],["~#builtin",["lisp","car"]]]]]]`, string(b), c.name)
-		userN := c.vm.Runtime.Registry.Package("user").NumBindings()
-		// One read of user's names for my-fn, then the output.  The
-		// builtins lisp:not and lisp:car are named by the builtin
-		// registry, so lisp's names are not read (luthersystems/elps#800).
-		assert.Equal(t, []int{units(userN), 1}, charges, c.name)
+		// One lookup for my-fn, whatever the size of user, then the
+		// output.  The builtins lisp:not and lisp:car are named by the
+		// builtin registry, so lisp's names are not read
+		// (luthersystems/elps#800).
+		assert.Equal(t, []int{1, 1}, charges, c.name)
 		// 6000 unrelated user bindings are read, never built.
 		assert.Less(t, n, uint64(256<<10), "%s: bytes allocated", c.name)
 		if want == nil {
@@ -273,4 +273,39 @@ func TestDurableFunctionAtByteLimit(t *testing.T) {
 	require.NoError(t, err)
 	_, err = libjson.DumpDurable(env, f, nil, libjson.WithTypedMaxBytes(len(b)-1))
 	require.ErrorIs(t, err, libjson.ErrTypedLimit)
+}
+
+// A dump charges one unit per Lisp function name it looks up, and at most
+// ceil(n/4) units per package of n bindings: what reading the whole package
+// was charged before luthersystems/elps#847, so no dump is charged more.
+func TestDurableFunctionNamesChargeCap(t *testing.T) {
+	env := newTypedTestEnv(t)
+	var fns []string
+	for i := range 80 {
+		name := "f" + strconv.Itoa(i)
+		evalString(t, env, `(defun `+name+` () `+strconv.Itoa(i)+`)`)
+		fns = append(fns, name)
+	}
+	f0 := env.LoadString("test", `f0`)
+	require.NoError(t, lisp.GoError(f0))
+	n := env.Runtime.Registry.Package(f0.Package()).NumBindings()
+	limit := (n + 3) / 4
+	require.Less(t, limit, len(fns), "the package must be small enough to reach the cap")
+	for _, k := range []int{1, len(fns)} {
+		var charges []int
+		record := libjson.WithTypedCharge(func(n int) error {
+			charges = append(charges, n)
+			return nil
+		})
+		v := env.LoadString("test", `(list `+strings.Join(fns[:k], " ")+`)`)
+		require.NoError(t, lisp.GoError(v))
+		b, err := libjson.DumpDurable(env, v, nil, record)
+		require.NoError(t, err)
+		total := 0
+		for _, c := range charges {
+			total += c
+		}
+		output := (len(b) + 1023) / 1024 // one unit per started KiB
+		assert.Equal(t, min(k, limit), total-output, "%d functions: %v", k, charges)
+	}
 }
