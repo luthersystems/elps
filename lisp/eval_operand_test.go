@@ -236,3 +236,57 @@ func TestEvalOperandNilHeadMatchesEval(t *testing.T) {
 		t.Errorf("steps = %d, want 2", steps)
 	}
 }
+
+// panicErrCtx is a context whose Err panics from call number panicAt on, and
+// counts its calls.
+type panicErrCtx struct {
+	context.Context
+	calls, panicAt int
+}
+
+func (c *panicErrCtx) Err() error {
+	c.calls++
+	if c.panicAt > 0 && c.calls >= c.panicAt {
+		panic("operand context")
+	}
+	return nil
+}
+
+// TestEvalOperandLeavesPanicsToTheCallForm: evalOperand has no frame of its
+// own, so a Go panic while it evaluates a leaf reaches the call form's eval,
+// which turns it into an internal-panic error at the call form's location
+// (the evalOperand doc). eval turns the panic into the error in its own
+// frame.
+func TestEvalOperandLeavesPanicsToTheCallForm(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	env.Runtime.resolveEvalNestingLimit()
+	got := env.eval(&panicErrCtx{Context: context.Background(), panicAt: 1}, Int(1))
+	if got.Type != LError || got.Str != CondInternalPanic {
+		t.Fatalf("eval = %v, want an internal-panic error", got)
+	}
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("evalOperand recovered the panic of its leaf")
+			}
+		}()
+		env.evalOperand(&panicErrCtx{Context: context.Background(), panicAt: 1}, Int(1))
+	}()
+
+	// (list 1): Err is called for the form, for list, for 1 and for the call.
+	form := SExpr([]*LVal{Symbol("list"), Int(1)})
+	form.source = &token.Location{File: "panic.lisp", Line: 1, Col: 1}
+	form.Cells[0].source = &token.Location{File: "panic.lisp", Line: 1, Col: 2}
+	form.Cells[1].source = &token.Location{File: "panic.lisp", Line: 1, Col: 7}
+	count := &panicErrCtx{Context: context.Background()}
+	if v := env.eval(count, form); v.Type != LSExpr || count.calls != 4 {
+		t.Fatalf("(list 1) = %v after %d calls of Err, want (1) after 4", v, count.calls)
+	}
+	got = env.eval(&panicErrCtx{Context: context.Background(), panicAt: 3}, form)
+	if got.Type != LError || got.Str != CondInternalPanic {
+		t.Fatalf("(list 1) with a panic at 1 = %v, want an internal-panic error", got)
+	}
+	if loc, _ := got.Source(); loc != *form.source {
+		t.Errorf("the panic at 1 reports %v, want the call form's location %v", loc, *form.source)
+	}
+}

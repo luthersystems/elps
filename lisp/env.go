@@ -2480,13 +2480,22 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	return call
 }
 
-// evalOperand evaluates x, an element of a call form, exactly as eval does.
-// Most elements are symbols and self-evaluating values, which cannot nest:
-// they take the same step, location and lookup here without eval's frame,
-// whose deferred recover and nesting count guard the Go stack only for an
-// expression that recurses.  Everything else, and every case a leaf would
-// still have to report through eval (a spliced value, the nesting limit, an
-// attached debugger), is left to eval.
+// evalOperand evaluates x, an element of a call form, as eval does, except
+// for a Go panic (below).  Most elements are symbols and self-evaluating
+// values, which cannot nest: they take the same step, ownership check,
+// location and lookup here, without eval's frame.  Everything else, and
+// every case a leaf would still have to report through eval (a spliced
+// value, the nesting limit, an attached debugger), is left to eval.
+//
+// eval's frame turns a Go panic into an internal-panic error.  A leaf has no
+// frame here, so a panic in its evaluation (for example, a host context
+// whose Err panics) is recovered by the frame around the call form: eval's,
+// or EvalSExpr's when a host calls it.  The deferred functions of
+// evalSExprCells run first and restore env's location.  So the error has
+// the call form's location under eval, and under EvalSExpr the location env
+// had before the call.  The top frame of its stack trace can show
+// [terminal].  Its condition, the frames of its trace and the step count
+// are the same as through eval.
 func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	r := env.Runtime
 	if operandNeedsEval(r, x) {
