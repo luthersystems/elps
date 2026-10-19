@@ -100,3 +100,27 @@ func TestListAndVectorKeepNoCallStorage(t *testing.T) {
 		})
 	}
 }
+
+// TestListCalledFromGo: a Go caller that calls list's builtin directly may
+// pass an s-expression it built.  list returns a new header over its cells,
+// marked as data, so the result evaluates to itself.
+func TestListCalledFromGo(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	var def LBuiltinDef
+	for _, d := range DefaultBuiltins() {
+		if d.Name() == "list" {
+			def = d
+		}
+	}
+	in := SExpr([]*LVal{Symbol("+"), Int(1), Int(2)})
+	out := def.Eval(env, in)
+	if out == in {
+		t.Fatal("list returned the caller's header")
+	}
+	if got := env.Eval(out); got != out {
+		t.Errorf("list's result evaluates to %v, not to itself", got)
+	}
+	if got := out.String(); got != "'(+ 1 2)" {
+		t.Errorf("list's result is %s, want '(+ 1 2)", got)
+	}
+}
