@@ -179,6 +179,38 @@ func TestOwnershipCheck_CatchesCrossRuntimeEval(t *testing.T) {
 	})
 }
 
+// TestOwnershipCheck_CatchesCrossRuntimeOperand verifies that a leaf operand
+// of a call form gets the check eval makes. evalOperand evaluates a symbol or
+// a self-evaluating or quoted value without eval, so its own checkOwnership
+// call is the only check on such an operand.
+func TestOwnershipCheck_CatchesCrossRuntimeOperand(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		operand func() *LVal
+	}{
+		{"int", func() *LVal { return Int(42) }},
+		{"string", func() *LVal { return String("s") }},
+		{"symbol", func() *LVal { return Symbol("x") }},
+		{"quoted list", func() *LVal { return QExpr([]*LVal{Int(1)}) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			envA := newOwnershipTestEnv()
+			if res := InitializeUserEnv(envA); res.Type == LError {
+				t.Fatal(res)
+			}
+			envB := newOwnershipTestEnv()
+			if res := InitializeUserEnv(envB); res.Type == LError {
+				t.Fatal(res)
+			}
+			v := tc.operand()
+			envA.Eval(v) // adopts v for runtime A; an unbound symbol is an error, not a panic
+			expectOwnershipPanic(t, func() {
+				envB.Eval(SExpr([]*LVal{Symbol("list"), v}))
+			})
+		})
+	}
+}
+
 // TestOwnershipCheck_SameRuntimeReuse pins the negative case: repeated use
 // of one value inside a single runtime — rebinding, re-evaluation, child
 // scopes, and the quoted-AST handoff a macro performs — must never trip
