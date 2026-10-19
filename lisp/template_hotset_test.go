@@ -291,6 +291,23 @@ func TestTemplatePrewarmFollowsPeriodicWork(t *testing.T) {
 	}
 }
 
+// TestTemplateHotSetOnlyForLazyPlans: only lazy VMs count root reads and
+// prewarm, so an eager plan has no hot set, and VMWithPrewarm on it builds
+// the VM as NewVM does.
+func TestTemplateHotSetOnlyForLazyPlans(t *testing.T) {
+	if lazyFixture(t).plan.hot == nil {
+		t.Error("a lazy plan has no hot set")
+	}
+	tmpl := lazyFixture(t, TemplateWithEagerInstantiation())
+	if tmpl.plan.hot != nil {
+		t.Error("an eager plan has a hot set")
+	}
+	vm := hotSetVM(t, tmpl, VMWithPrewarm())
+	if got := readLib(t, vm, "v7").Cells[0].Int; got != 7 {
+		t.Errorf("lib:v7 = %d in a prewarmed eager VM", got)
+	}
+}
+
 // retentionTemplate publishes user:m = {"k": (1)} and user:bulk, 1 MiB of
 // bytes. Four VMs read m, m[k] and bulk, so prewarm builds all three.
 func retentionTemplate(t *testing.T) *Template {
