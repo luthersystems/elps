@@ -1062,6 +1062,15 @@ where the Lisp called `assoc!` or `get`. Code that fills a map it just built
 keeps `MapSetLVal`, and `env.MapRange` makes the checks of `keys` without
 building a list.
 
+**Testing a Go copy of a builtin: `elpstest/oracle`.** The package compares
+Go code with the builtin it copies, with the builtin as the oracle.
+`oracle.Values()` returns fresh inputs of every type a builtin can be handed,
+`oracle.Same` requires the same value (floats bit for bit) or the same error
+condition, and `oracle.Sweep` cancels the context at each check the builtin
+makes and requires the Go code to stop at the same checks. `elpstest.ParityCheck`
+compares a native with the Lisp source it replaces; use `oracle` where the
+reference is a builtin called from Go.
+
 **`env.MapOf(kv ...)`** is `SortedMapOf` with Go keys and values. A key is a
 `string` or an `*LVal`. A value is an `*LVal` (a nil `*LVal` becomes `()`), a
 `string`, `int`, `float64`, `bool`, `[]byte`, `[]*LVal` (a list) or `Cells`
