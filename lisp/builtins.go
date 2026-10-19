@@ -2819,18 +2819,26 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 	}
 }
 
-// NOTE (issue #373):  builtinList and builtinVector are deliberately NOT
-// capacity-clamped.  They hand out the call's own argument slice, which the
-// evaluator has already discarded, so its spare capacity is not reachable from
-// any other live value -- there is nothing for an append to corrupt.  Clamping
-// them would not be free either: it would force the first (append! (vector
-// ...) x) to reallocate for no benefit.
+// builtinList returns its argument list itself.  Every call gives a builtin
+// a list of its own: bind copies the caller's list, and the evaluator hands
+// over the list it built for the call form (bindOwned), which nothing else
+// reads.  A new header over v.Cells would cost an allocation and, over the
+// evaluator's list, keep the call form's whole allocation (newSExprCap)
+// alive with the result.
+//
+// NOTE (issue #373):  The list is deliberately NOT capacity-clamped.  Its
+// spare capacity, if any, is reachable from no other live value, so there is
+// nothing for an append to corrupt.
 func builtinList(env *LEnv, v *LVal) *LVal {
-	return QExpr(v.Cells)
+	return v
 }
 
+// builtinVector copies its arguments into cells of the vector's own.  A
+// vector over the argument cells would keep the call form's whole allocation
+// alive when the list is the evaluator's (bindOwned).  Array gives the vector
+// a capacity equal to its length either way.
 func builtinVector(env *LEnv, args *LVal) *LVal {
-	return Vector(args.Cells)
+	return Vector(Cells(args.Cells).Clone())
 }
 
 // minGrowCap is the smallest capacity append! gives a vector it grows.

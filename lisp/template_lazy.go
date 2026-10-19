@@ -78,8 +78,13 @@ type lazyInstance struct {
 	byteBackings [][]byte
 	queue        []lazyTask
 	mapsDone     []bool
-	guard        lazyGuard
-	count        int
+	// seen is non-nil in a VM that counts its root reads for the template's
+	// hot set: one bit per plan value, set when the VM first reads the value
+	// as a root.
+	seen   []uint64
+	guard  lazyGuard
+	reader bool // the VM has counted a root read
+	count  int
 }
 
 // lazyPackage is embedded in its package shell. The base describes its slots
@@ -99,11 +104,16 @@ type lazySorted struct {
 }
 
 // ref returns the VM object for r, materializing it and everything it reaches.
+// It is the read of a root (a package binding, a sorted-map entry or a
+// registered builtin), so it is where a counting VM records what it read.
 func (l *lazyInstance) ref(r templateRef) *LVal {
 	if r.index == 0 {
 		return r.shared
 	}
 	l.guard.enter()
+	if l.seen != nil {
+		l.readRoot(r.index - 1)
+	}
 	v := l.value(r.index - 1)
 	l.drain()
 	l.guard.leave()
@@ -159,7 +169,6 @@ func (l *lazyInstance) value(i int) *LVal {
 	out := new(LVal)
 	l.values[i] = out
 	l.count++
-	l.p.hot.mark(i)
 	l.queue = append(l.queue, lazyTask{lazyFillValue, i})
 	return out
 }
@@ -278,7 +287,9 @@ func (l *lazyInstance) mapBacking(i int) Map {
 
 // fillBacking fills a map backing. JSON maps are filled eagerly (their entry
 // storage is an interface map the decoder owns); sorted-map entries whose
-// value is not yet materialized are left pending.
+// value is not yet materialized are left pending. A VM that counts its root
+// reads (seen) leaves every per-VM entry pending, so that its read of an
+// entry is counted even when prewarm, or another root, built the value.
 func (l *lazyInstance) fillBacking(i int) {
 	backing := &l.p.mapBackings[i]
 	if backing.json {
@@ -308,7 +319,7 @@ func (l *lazyInstance) fillBacking(i int) {
 		switch {
 		case entry.value.index == 0:
 			sm.m[entry.name] = entry.value.shared
-		case l.values[entry.value.index-1] != nil:
+		case l.values[entry.value.index-1] != nil && l.seen == nil:
 			sm.m[entry.name] = l.values[entry.value.index-1]
 		default:
 			sm.m[entry.name] = lazyPending
@@ -366,6 +377,9 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		bytes: make([]*[]byte, len(p.bytes)), cells: make([][]*LVal, len(p.cells)),
 		byteBackings: make([][]byte, len(p.byteBackings)),
 	}
+	if p.hot.counts() {
+		l.seen = make([]uint64, len(p.hot.bits))
+	}
 	for i := range p.packages {
 		pkg := &p.packages[i]
 		var lazy lazyPackage
@@ -411,26 +425,132 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 	return env, nil
 }
 
-// templateHotSet records, across every VM of one template, which plan values
-// have been materialized. It is the only template state lazy VMs write, and
-// it is written only through atomics, so VMs on different goroutines share
-// it safely. It never shrinks.
+// templateHotSet learns, across the VMs of one template, which plan values
+// the VMs read, so that VMWithPrewarm builds ahead of time only what most VMs
+// read. It is the only template state lazy VMs write. It holds counts and
+// bits, never a pointer, and is written only through atomics, so VMs on
+// different goroutines share it safely and no VM keeps another VM's memory
+// alive.
+//
+// A VM reads template values through roots: a package binding, a sorted-map
+// entry or a registered builtin, each read through lazyInstance.ref, which
+// builds the root and everything it reaches. The set counts root reads, not
+// built values, so prewarm cannot teach itself: a root that prewarm built
+// counts only when the VM reads it. A counting VM counts each root once, and
+// becomes a reader at its first root read. Prewarm builds a root that at
+// least half of the readers read, so a VM that is made and never used (a
+// pool's spare) does not lower the share. The first hotCountAll VMs count,
+// then one VM in hotCountEvery, so most VMs write no shared counter.
+//
+// The counts halve each time the readers reach 2*hotWindow (decay). So a
+// reader weighs half as much for each hotWindow readers after it, and when
+// the VMs start to read other roots, the set follows within about hotWindow
+// readers. The halving also bounds the counts, so counting never stops.
 type templateHotSet struct {
-	bits []atomic.Uint64
+	reads   []atomic.Uint32 // per plan value: counting VMs that read it as a root, decayed
+	bits    []atomic.Uint64 // the roots VMWithPrewarm builds
+	made    atomic.Uint64   // lazy VMs instantiated
+	readers atomic.Uint64   // counting VMs that have read a root, decayed
+	rebuilt atomic.Uint64   // readers when bits were last rebuilt
+	busy    atomic.Bool     // a goroutine is rebuilding bits
 }
+
+const (
+	// The first hotCountAll VMs count, so the set is learned from the start.
+	hotCountAll = 64
+	// After them, one VM in hotCountEvery counts.
+	hotCountEvery = 16
+	// Bits are rebuilt when a VM is made and the readers have reached the
+	// next power of two or the next multiple of hotRebuildEvery since the
+	// last rebuild.
+	hotRebuildEvery = 16
+	// The counts halve when the readers reach 2*hotWindow. It is a multiple
+	// of hotRebuildEvery, so the halving comes with a rebuild.
+	hotWindow = 512
+)
 
 func newTemplateHotSet(n int) *templateHotSet {
-	return &templateHotSet{bits: make([]atomic.Uint64, (n+63)/64)}
+	return &templateHotSet{reads: make([]atomic.Uint32, n), bits: make([]atomic.Uint64, (n+63)/64)}
 }
 
-func (h *templateHotSet) mark(i int) {
-	word, bit := &h.bits[i/64], uint64(1)<<(uint(i)%64)
-	if word.Load()&bit == 0 {
-		word.Or(bit)
+// counts is called once per lazy VM, before its prewarm. It rebuilds bits
+// when a rebuild is due, and reports whether the VM counts its root reads.
+func (h *templateHotSet) counts() bool {
+	h.maybeRebuild()
+	made := h.made.Add(1)
+	return made <= hotCountAll || made%hotCountEvery == 0
+}
+
+// maybeRebuild rebuilds bits when the readers have reached the next rebuild
+// point, and first halves the counts when the readers have reached
+// 2*hotWindow. A rebuild already running on another goroutine makes it
+// return at once; a later VM rebuilds instead.
+func (h *templateHotSet) maybeRebuild() {
+	if h.readers.Load() < hotNextRebuild(h.rebuilt.Load()) || !h.busy.CompareAndSwap(false, true) {
+		return
+	}
+	if readers := h.readers.Load(); readers >= hotNextRebuild(h.rebuilt.Load()) {
+		if readers >= 2*hotWindow {
+			readers = h.decay(readers)
+		}
+		h.rebuild(readers)
+		h.rebuilt.Store(readers)
+	}
+	h.busy.Store(false)
+}
+
+// decay halves every count and returns the readers it leaves. VMs add to the
+// counts while it runs, so it subtracts half of each count it loaded, and no
+// read is lost. Only the goroutine that holds busy calls it.
+func (h *templateHotSet) decay(readers uint64) uint64 {
+	for i := range h.reads {
+		if half := h.reads[i].Load() / 2; half > 0 {
+			h.reads[i].Add(^(half - 1))
+		}
+	}
+	return h.readers.Add(^(readers/2 - 1))
+}
+
+// hotNextRebuild returns the first number of readers after at that is a
+// power of two or a multiple of hotRebuildEvery.
+func hotNextRebuild(at uint64) uint64 {
+	return min(uint64(1)<<bits.Len64(at), at/hotRebuildEvery*hotRebuildEvery+hotRebuildEvery)
+}
+
+// rebuild sets bits to the roots that at least half of the readers read.
+// Only the goroutine that holds busy calls it.
+func (h *templateHotSet) rebuild(readers uint64) {
+	for w := range h.bits {
+		var word uint64
+		reads := h.reads[w*64 : min(w*64+64, len(h.reads))]
+		for b := range reads {
+			if n := uint64(reads[b].Load()); n > 0 && 2*n >= readers {
+				word |= 1 << uint(b)
+			}
+		}
+		if h.bits[w].Load() != word {
+			h.bits[w].Store(word)
+		}
 	}
 }
 
-// prewarm materializes every hot value in one queue drain (VMWithPrewarm).
+// readRoot counts a read of plan value i as a root, once per VM. The VM's
+// first root read makes it a reader.
+func (l *lazyInstance) readRoot(i int) {
+	word, bit := &l.seen[i/64], uint64(1)<<(uint(i)%64)
+	if *word&bit != 0 {
+		return
+	}
+	*word |= bit
+	if !l.reader {
+		l.reader = true
+		l.p.hot.readers.Add(1)
+	}
+	l.p.hot.reads[i].Add(1)
+}
+
+// prewarm builds every root in the hot set, and all they reach, in one queue
+// drain (VMWithPrewarm).
 func (l *lazyInstance) prewarm() {
 	l.guard.enter()
 	for w := range l.p.hot.bits {

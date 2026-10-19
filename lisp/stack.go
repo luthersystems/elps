@@ -226,13 +226,25 @@ func (s *CallStack) PushFID(src *token.Location, fid string, pkg string, name st
 	if err != nil {
 		return err
 	}
-	s.Frames = append(s.Frames, CallFrame{
-		Source:        src,
-		FID:           fid,
-		Package:       pkg,
-		Name:          name,
-		HeightLogical: heff,
-	})
+	n := len(s.Frames)
+	if n < cap(s.Frames) {
+		s.Frames = s.Frames[:n+1]
+	} else {
+		s.Frames = append(s.Frames, CallFrame{})
+	}
+	// Write the frame field by field.  Assigning a whole CallFrame moves it
+	// with a bulk write barrier, which costs every call while the garbage
+	// collector marks; a field store takes the compiler's batched barrier.
+	// Every field is written, so the slot need not be zero.
+	f := &s.Frames[n]
+	f.Source = src
+	f.FID = fid
+	f.Package = pkg
+	f.Name = name
+	f.HeightLogical = heff
+	f.Terminal = false
+	f.TROBlock = false
+	f.TailIterations = 0
 	return nil
 }
 
@@ -312,8 +324,15 @@ func (s *CallStack) Pop() CallFrame {
 		// either.  An empty stack here means a push/pop pair was separated.
 		panic("pop called on an empty stack")
 	}
-	f := s.Frames[len(s.Frames)-1]
-	s.Frames[len(s.Frames)-1] = CallFrame{}
+	top := &s.Frames[len(s.Frames)-1]
+	f := *top
+	// Clear the pointers field by field, so that the slot keeps nothing
+	// alive, for the reason PushFID writes its fields one by one.  PushFID
+	// writes every field, so the scalars may stay.
+	top.Source = nil
+	top.FID = ""
+	top.Package = ""
+	top.Name = ""
 	s.Frames = s.Frames[:len(s.Frames)-1]
 	return f
 }
