@@ -312,7 +312,12 @@ jobs:
     # the required check open, not to police benchmark duration. If it ever
     # fires, read it as "the job wedged", not "the benchmarks got slower"; the
     # budget to re-derive is BENCH_COUNT, not this number.
-    timeout-minutes: 45
+    #
+    # 60, not 45, for luthersystems/elps#856: main's
+    # BenchmarkDurableFunctionName/eager-template took about 110 s a run, so
+    # a PR's base arm alone needs about 30 minutes until that fix is on main.
+    # Put it back to 45 once a main run of this job is under 30 minutes.
+    timeout-minutes: 60
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
     env:

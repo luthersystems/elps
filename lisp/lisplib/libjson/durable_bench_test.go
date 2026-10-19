@@ -5,6 +5,7 @@ package libjson_test
 import (
 	"strconv"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -35,7 +36,11 @@ func benchFunctionEnv(b testing.TB) *lisp.LEnv {
 
 // BenchmarkDurableFunctionName dumps one function on a cold environment, an
 // eager template VM and a lazy template VM.  Each template iteration mints
-// a fresh VM, outside the timer, so the lazy VM starts unmaterialized.
+// a fresh VM, so the lazy VM starts unmaterialized.  The mint is inside the
+// timer, and dump-ns/op reports the dump alone.  With the mint outside the
+// timer, b.Loop ran about 100,000 untimed mints of about 1 ms each to fill
+// 100 ms of dumps, so one run took about 110 s and the benchmark job passed
+// its timeout (luthersystems/elps#856).
 func BenchmarkDurableFunctionName(b *testing.B) {
 	env := benchFunctionEnv(b)
 	dump := func(b *testing.B, vm *lisp.LEnv) {
@@ -54,8 +59,8 @@ func BenchmarkDurableFunctionName(b *testing.B) {
 		name string
 		opts []lisp.TemplateOption
 	}{
-		{"eager-template", []lisp.TemplateOption{lisp.TemplateWithEagerInstantiation()}},
-		{"lazy-template", nil},
+		{"eager-template-mint", []lisp.TemplateOption{lisp.TemplateWithEagerInstantiation()}},
+		{"lazy-template-mint", nil},
 	} {
 		b.Run(c.name, func(b *testing.B) {
 			tmpl, err := lisp.NewTemplate(env, append([]lisp.TemplateOption{lisp.TemplateWithBuiltinPolicy(func(*lisp.LVal) bool { return true })}, c.opts...)...)
@@ -63,18 +68,20 @@ func BenchmarkDurableFunctionName(b *testing.B) {
 				b.Fatal(err)
 			}
 			b.ReportAllocs()
+			var dumpTime time.Duration
 			for b.Loop() {
-				b.StopTimer()
 				vm, err := tmpl.NewVM()
 				if err != nil {
 					b.Fatal(err)
 				}
 				f := vm.LoadString("bench.lisp", `zz-fn`)
-				b.StartTimer()
+				start := time.Now()
 				if _, err := libjson.DumpDurable(vm, f, nil); err != nil {
 					b.Fatal(err)
 				}
+				dumpTime += time.Since(start)
 			}
+			b.ReportMetric(float64(dumpTime.Nanoseconds())/float64(b.N), "dump-ns/op")
 		})
 	}
 }
