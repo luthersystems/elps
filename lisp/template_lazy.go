@@ -440,7 +440,9 @@ func (p *templatePlan) instantiate(opts []VMOption) (*LEnv, error) {
 // becomes a reader at its first root read. Prewarm builds a root that at
 // least half of the readers read, so a VM that is made and never used (a
 // pool's spare) does not lower the share. The first hotCountAll VMs count,
-// then one VM in hotCountEvery, so most VMs write no shared counter.
+// then about one VM in hotCountEvery, chosen by a hash of the VM's number (see
+// hotSample). So most VMs write only the count of VMs made, not the read
+// counts.
 //
 // The counts halve each time the readers reach 2*hotWindow (decay). So a
 // reader weighs half as much for each hotWindow readers after it, and when
@@ -458,7 +460,7 @@ type templateHotSet struct {
 const (
 	// The first hotCountAll VMs count, so the set is learned from the start.
 	hotCountAll = 64
-	// After them, one VM in hotCountEvery counts.
+	// After them, about one VM in hotCountEvery counts (see hotSample).
 	hotCountEvery = 16
 	// Bits are rebuilt when a VM is made and the readers have reached the
 	// next power of two or the next multiple of hotRebuildEvery since the
@@ -478,7 +480,22 @@ func newTemplateHotSet(n int) *templateHotSet {
 func (h *templateHotSet) counts() bool {
 	h.maybeRebuild()
 	made := h.made.Add(1)
-	return made <= hotCountAll || made%hotCountEvery == 0
+	return made <= hotCountAll || hotSample(made)
+}
+
+// hotSample reports whether VM number made, after the first hotCountAll,
+// counts: about one VM in hotCountEvery. It hashes made (the splitmix64
+// finalizer), because a workload often repeats in the order the VMs are
+// made. With made%hotCountEvery, a pool whose consumers cycle through 4
+// endpoints gives every counting VM after the first hotCountAll the same
+// endpoint.
+func hotSample(made uint64) bool {
+	made ^= made >> 30
+	made *= 0xbf58476d1ce4e5b9
+	made ^= made >> 27
+	made *= 0x94d049bb133111eb
+	made ^= made >> 31
+	return made%hotCountEvery == 0
 }
 
 // maybeRebuild rebuilds bits when the readers have reached the next rebuild

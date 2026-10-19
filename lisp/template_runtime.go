@@ -25,12 +25,13 @@ type vmConfig struct {
 // goroutine) uses it to move that work off the request path. The set is
 // learned from use and follows it: a value read by few VMs is built on first
 // use by the VMs that read it, so a VM does not build values it is not likely
-// to read. The first 64 VMs of a template, and then one VM in 16, count what
-// they read; a VM that reads no template value does not count. Recent VMs
-// weigh more: a VM's count halves for each 512 counting VMs after it, so
-// when the VMs start to read other values, the set changes within about 512
-// counting VMs. Results are identical with or without it; it has no effect
-// on a TemplateWithEagerInstantiation template.
+// to read. The first 64 VMs of a template, and then about one VM in 16,
+// chosen by a hash of the VM's number, count what they read; a VM that reads
+// no template value does not count. Recent VMs weigh more: a VM's count
+// halves for each 512 counting VMs after it, so when the VMs start to read
+// other values, the set changes within about 512 counting VMs. Results are
+// identical with or without it; it has no effect on a
+// TemplateWithEagerInstantiation template.
 func VMWithPrewarm() VMOption {
 	return func(c *vmConfig) { c.prewarm = true }
 }

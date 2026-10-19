@@ -212,24 +212,80 @@ func TestTemplateHotSetFollowsAShift(t *testing.T) {
 }
 
 // TestTemplateHotSetSampling: the first hotCountAll VMs count their root
-// reads, then one VM in hotCountEvery, for as long as the template makes
+// reads, then the VMs that hotSample picks, for as long as the template makes
 // VMs: decay keeps the counts small, so counting never stops.
 func TestTemplateHotSetSampling(t *testing.T) {
 	tmpl := lazyFixture(t)
-	for made := 1; made <= hotCountAll+3*hotCountEvery; made++ {
+	for made := uint64(1); made <= hotCountAll+8*hotCountEvery; made++ {
 		vm := hotSetVM(t, tmpl)
-		want := made <= hotCountAll || made%hotCountEvery == 0
+		want := made <= hotCountAll || hotSample(made)
 		if got := lazyInstanceOf(vm).seen != nil; got != want {
 			t.Fatalf("VM %d counts = %v, want %v", made, got, want)
 		}
 	}
 	const late = 1 << 40
 	tmpl.plan.hot.made.Store(late - 1)
-	for made := late; made < late+hotCountEvery; made++ {
-		want := made%hotCountEvery == 0
+	counted := 0
+	for made := uint64(late); made < late+8*hotCountEvery; made++ {
+		want := hotSample(made)
 		if got := lazyInstanceOf(hotSetVM(t, tmpl)).seen != nil; got != want {
 			t.Fatalf("VM %d counts = %v, want %v", made, got, want)
 		}
+		if want {
+			counted++
+		}
+	}
+	if counted == 0 {
+		t.Fatalf("none of the %d VMs made after VM %d counts", 8*hotCountEvery, late-1)
+	}
+}
+
+// TestTemplateHotSampleCoversEveryPhase: hotSample picks about one VM in
+// hotCountEvery in each phase of a workload that repeats every period VMs,
+// so a pool whose consumers cycle through period kinds of work counts each
+// kind in its share. made%hotCountEvery picks one phase only when period
+// divides hotCountEvery: with period 4, every counting VM does the same work.
+func TestTemplateHotSampleCoversEveryPhase(t *testing.T) {
+	const perPhase = 1 << 14
+	const want = perPhase / hotCountEvery
+	for _, start := range []uint64{hotCountAll + 1, 1 << 40} {
+		for _, period := range []uint64{1, 2, 3, 4, 5, 8, 16, 32, 48, 64} {
+			counted := make([]int, period)
+			for made := start; made < start+period*perPhase; made++ {
+				if hotSample(made) {
+					counted[made%period]++
+				}
+			}
+			for phase, n := range counted {
+				if n < want*3/4 || n > want*5/4 {
+					t.Errorf("from VM %d, period %d, phase %d: %d of %d VMs count, want about %d", start, period, phase, n, perPhase, want)
+				}
+			}
+		}
+	}
+}
+
+// TestTemplatePrewarmFollowsPeriodicWork: VM n does work n%4, as in a pool
+// whose consumers cycle through 4 endpoints. The VMs of works 1 to 3, three
+// in four, read v11, and the VMs of work 0 read v10, so prewarm builds v11
+// and not v10. If every counting VM after the first hotCountAll did the same
+// work, the set would follow that work, not the VMs.
+func TestTemplatePrewarmFollowsPeriodicWork(t *testing.T) {
+	tmpl := lazyFixture(t)
+	for n := 1; n <= 1000; n++ {
+		vm := hotSetVM(t, tmpl, VMWithPrewarm())
+		if n%4 == 0 {
+			readLib(t, vm, "v10")
+		} else {
+			readLib(t, vm, "v11")
+		}
+	}
+	vm := hotSetVM(t, tmpl, VMWithPrewarm())
+	if !libBuilt(t, vm, "v11") {
+		t.Error("prewarm did not build v11, which 3 in 4 VMs read")
+	}
+	if libBuilt(t, vm, "v10") {
+		t.Error("prewarm built v10, which 1 in 4 VMs read")
 	}
 }
 
