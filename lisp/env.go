@@ -2759,10 +2759,18 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 // reallocates.  Every other call binds exactly as bind does.
 //
 // Builtin functions and special operators take an owned list.  A macro does
-// not: macroCall reads the list after the call, so bind copies it.  An owned
-// list's header and cells are one allocation (newSExprCap), so a value that
-// keeps a slice of its cells keeps the header alive too.  So vector copies
-// its cells, and list returns the list itself.
+// not: macroCall reads the list after the call, so bind copies it.
+//
+// For a call of up to 7 arguments, an owned list's header and cells are one
+// allocation (newSExprCap), which also holds the function slot.  A value
+// that keeps a slice of the cells keeps that whole allocation alive, as a
+// lambda's &rest list does after a direct call.  So vector copies its cells.
+// list and libschema's s:in keep the list itself (see builtinList).  funcall
+// and new pass a slice of the cells to a lambda, whose &rest list keeps it,
+// and s:make-validator keeps one in the validator it returns.  A value that
+// one of these three keeps holds 104 to 144 bytes more than it did with a
+// copy, as much as a direct call's &rest list holds.  With 8 or more
+// arguments, it holds at most 16 bytes more.
 func (env *LEnv) bindOwned(fun, args *LVal) (*LEnv, *LVal) {
 	formals := fun.Cells[0].Cells
 	if fun.funEnv() == nil && nativePositionalOK(formals, len(args.Cells)) {
