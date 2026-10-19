@@ -186,3 +186,36 @@ func TestFIDIndexReadDoesNotGrow(t *testing.T) {
 		}
 	}
 }
+
+// TestFIDIndexInsertSharesSpare pins that a run of first names for new FIDs
+// allocates once per spare block, not once per name, and that no list
+// taken from the block can reach its neighbour by append.  A use-package
+// import loop binds one such name per export, so this was one allocation
+// per imported function.
+func TestFIDIndexInsertSharesSpare(t *testing.T) {
+	names := make([]string, fidSpareBlock)
+	for i := range names {
+		names[i] = "n" + strconv.Itoa(i)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		var idx fidIndex
+		for _, name := range names {
+			_ = idx.insert(nil, name)
+		}
+	})
+	if allocs > 1 {
+		t.Fatalf("%d first names allocated %v times, want at most 1", fidSpareBlock, allocs)
+	}
+	var idx fidIndex
+	a := idx.insert(nil, "a")
+	b := idx.insert(nil, "b")
+	if len(a) != 1 || cap(a) != 1 || a[0] != "a" || b[0] != "b" {
+		t.Fatalf("lists %q (cap %d) and %q", a, cap(a), b)
+	}
+	if grown := append(a, "z"); grown[0] != "a" || b[0] != "b" {
+		t.Fatalf("an append to one list changed another: %q %q", grown, b)
+	}
+	if got := idx.insert(a, "0"); len(got) != 2 || got[0] != "0" || got[1] != "a" || a[0] != "a" {
+		t.Fatalf("insert into a one-name list = %q, list %q", got, a)
+	}
+}

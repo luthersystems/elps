@@ -856,7 +856,7 @@ func (pkg *Package) putName(name string, v *LVal) {
 		}
 		if v.Type == LFun {
 			fid := v.FID()
-			idx.set(fid, insertSortedName(idx.list(fid), name))
+			idx.set(fid, idx.insert(idx.list(fid), name))
 		}
 	}
 	if v.Type == LFun {

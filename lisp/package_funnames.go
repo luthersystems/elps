@@ -209,6 +209,12 @@ func (v fidNameView) at(i int) string {
 type fidIndex struct {
 	over map[string][]string
 	base packagetable.Lists
+	// spare backs the one-name lists insert makes, so a run of writes
+	// that each bind a new function (a use-package import loop binds one
+	// per export) allocates once per spare block, not once per name.
+	// Each list it backs has its capacity cut to its length, so no append
+	// reaches a neighbour, and no list is written in place.
+	spare []string
 }
 
 // view returns the list of fid.
@@ -436,6 +442,23 @@ func (pkg *Package) fidNameLists() packagetable.Lists {
 	}
 	return packagetable.AdoptPairs(out)
 }
+
+// insert returns names with name inserted in sorted order, as
+// insertSortedName does, taking a one-name list from idx.spare.
+func (idx *fidIndex) insert(names []string, name string) []string {
+	if len(names) != 0 {
+		return insertSortedName(names, name)
+	}
+	if len(idx.spare) == cap(idx.spare) {
+		idx.spare = make([]string, 0, fidSpareBlock)
+	}
+	idx.spare = append(idx.spare, name)
+	n := len(idx.spare)
+	return idx.spare[n-1 : n : n]
+}
+
+// fidSpareBlock is the number of one-name lists one spare block backs.
+const fidSpareBlock = 32
 
 // insertSortedName returns names with name inserted in sorted order.  It
 // returns names itself when it already holds name, and otherwise a new
