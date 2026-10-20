@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"maps"
 	"slices"
 	"sync/atomic"
 	"unsafe"
@@ -176,7 +177,28 @@ func (pkg *Package) namesOfFID(fid string) fidNameView {
 	if pkg.base != nil {
 		return fidIndex{over: pkg.slotFidNames, base: pkg.base.fidNames}.view(fid)
 	}
-	return pkg.fidIndex().view(fid)
+	return pkg.settledFIDs().view(fid)
+}
+
+// settledFIDs returns an unfrozen package's index, live.  The first lookup
+// of an index that is not live applies its pending writes to a copy and
+// stores the copy, live, atomically in place of the index, so a reader
+// never writes an index another reader can see (issue #397): a reader that
+// loses the race uses the winner's copy, which holds the same lists.  The
+// copy is made once per index: a live index takes its writes at once.
+func (pkg *Package) settledFIDs() *fidIndex {
+	idx := pkg.fidIndex()
+	if idx.live {
+		return idx
+	}
+	settled := &fidIndex{base: idx.base, over: maps.Clone(idx.over), pending: slices.Clone(idx.pending)}
+	settled.apply()
+	settled.pending = nil
+	settled.live = true
+	if atomic.CompareAndSwapPointer(pkg.fidsPointer(), unsafe.Pointer(idx), unsafe.Pointer(settled)) { //nolint:gosec // settled is a *fidIndex, the type of pkg.fids
+		return settled
+	}
+	return pkg.loadFIDs()
 }
 
 // fidNameView is one FID's name list in an index: names from the overlay,
@@ -216,6 +238,64 @@ type fidIndex struct {
 	// Each list it backs has its capacity cut to its length, so no append
 	// reaches a neighbour, and no list is written in place.
 	spare []string
+	// pending holds the writes not yet applied to over, in order, while
+	// the index is not live.  A thawed package's index and an eager
+	// template VM's start not live: a write appends to pending, and the
+	// first lookup applies the log to a copy and stores it live
+	// (settledFIDs).  So a VM that never looks a function up, such as one
+	// that only runs a use-package import loop into a thawed package, pays
+	// one append per write, not a base search and a map write
+	// (luthersystems/elps#855).  A writer applies the log itself once it
+	// holds fidPendingMax writes.
+	pending []fidWrite
+	// live reports that a lookup has used the index.  A live index takes
+	// each write at once, so a write followed by a lookup never copies the
+	// index.
+	live bool
+}
+
+// fidWrite is one pending change to a FID index: add or remove name from
+// the list of fid.
+type fidWrite struct {
+	fid, name string
+	add       bool
+}
+
+// fidPendingMax is the most writes an index holds before the writer
+// applies them, so a VM that rebinds functions in a loop and never looks
+// one up keeps a bounded log.
+const fidPendingMax = 1024
+
+// record takes a write: at once on a live index, and otherwise in the
+// pending log, which it applies when it is full.  Only a writer calls it.
+func (idx *fidIndex) record(w fidWrite) {
+	if idx.live {
+		idx.write(w)
+		return
+	}
+	idx.pending = append(idx.pending, w)
+	if len(idx.pending) >= fidPendingMax {
+		idx.apply()
+	}
+}
+
+// write applies one write to idx in place.
+func (idx *fidIndex) write(w fidWrite) {
+	if w.add {
+		idx.set(w.fid, idx.insert(idx.list(w.fid), w.name))
+	} else {
+		idx.set(w.fid, removeSortedName(idx.list(w.fid), w.name))
+	}
+}
+
+// apply applies the pending writes to idx in place.  Only a writer, or a
+// reader on an index no other goroutine can see, calls it.
+func (idx *fidIndex) apply() {
+	for _, w := range idx.pending {
+		idx.write(w)
+	}
+	clear(idx.pending)
+	idx.pending = idx.pending[:0]
 }
 
 // view returns the list of fid.
@@ -288,7 +368,7 @@ func (pkg *Package) frozenFIDIndex() *fidIndex {
 }
 
 // fidIndex returns an unfrozen package's index, building it from the
-// bindings on first use.  The build reads each binding once without
+// bindings on first use, live.  The build reads each binding once without
 // materializing it, and the result is stored atomically, so concurrent
 // readers of a package no goroutine is writing stay safe (issue #397): a
 // reader that loses the race uses the winner's index.
@@ -305,7 +385,7 @@ func (pkg *Package) fidIndex() *fidIndex {
 	for _, names := range over {
 		slices.Sort(names)
 	}
-	idx := &fidIndex{over: over}
+	idx := &fidIndex{over: over, live: true}
 	if atomic.CompareAndSwapPointer(pkg.fidsPointer(), nil, unsafe.Pointer(idx)) { //nolint:gosec // idx is a *fidIndex, the type of pkg.fids
 		return idx
 	}
@@ -423,8 +503,8 @@ func (pkg *Package) fidNameLists() packagetable.Lists {
 	if pkg.base != nil {
 		return packagetable.AdoptPairs(pkg.frozenFIDIndex().pairs())
 	}
-	if idx := pkg.loadFIDs(); idx != nil {
-		return packagetable.AdoptPairs(idx.pairs())
+	if pkg.loadFIDs() != nil {
+		return packagetable.AdoptPairs(pkg.settledFIDs().pairs())
 	}
 	n := 0
 	for name, v := range pkg.symbols {
