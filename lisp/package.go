@@ -210,7 +210,8 @@ type Package struct {
 	// every package that is written to the heap.  An eager template VM starts with the plan's index and a
 	// thawed package with its base's.  Once it exists putName keeps it
 	// exact: it adds a name when it binds a function and removes it when it
-	// rebinds the name to anything else.  A frozen package does not use it:
+	// rebinds the name to anything else.  It takes a new function's first name
+	// from a spare block (fidIndex.insert), not one allocation per name.  A frozen package does not use it:
 	// it reads base.fidNames and this VM's slotFidNames overlay.
 	fids *fidIndex
 	// lazy.inst is non-nil while some binding of this VM's package is not yet
@@ -856,7 +857,7 @@ func (pkg *Package) putName(name string, v *LVal) {
 		}
 		if v.Type == LFun {
 			fid := v.FID()
-			idx.set(fid, insertSortedName(idx.list(fid), name))
+			idx.set(fid, idx.insert(idx.list(fid), name))
 		}
 	}
 	if v.Type == LFun {

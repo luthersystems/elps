@@ -186,3 +186,83 @@ func TestFIDIndexReadDoesNotGrow(t *testing.T) {
 		}
 	}
 }
+
+// TestFIDIndexInsertSharesSpare pins that a run of first names for new FIDs
+// allocates once per spare block, not once per name, that blocks grow up
+// to fidSpareBlock, and that no list taken from a block can reach another
+// list by append (luthersystems/elps#855).
+func TestFIDIndexInsertSharesSpare(t *testing.T) {
+	// Blocks of 2, 4, 8, 16, 32 and 32 back 94 names.
+	names := make([]string, 94)
+	for i := range names {
+		names[i] = "n" + strconv.Itoa(i)
+	}
+	allocs := testing.AllocsPerRun(100, func() {
+		var idx fidIndex
+		for _, name := range names {
+			_ = idx.insert(nil, name)
+		}
+	})
+	if allocs > 6 {
+		t.Fatalf("%d first names allocated %v times, want at most 6", len(names), allocs)
+	}
+	var idx fidIndex
+	lists := make([][]string, len(names))
+	for i, name := range names {
+		lists[i] = idx.insert(nil, name)
+	}
+	if cap(idx.spare) != fidSpareBlock {
+		t.Fatalf("last block holds %d names, want %d", cap(idx.spare), fidSpareBlock)
+	}
+	for i, l := range lists {
+		if len(l) != 1 || cap(l) != 1 || l[0] != names[i] {
+			t.Fatalf("list %d = %q (cap %d), want [%s]", i, l, cap(l), names[i])
+		}
+	}
+	a, b := lists[0], lists[1]
+	if grown := append(a, "z"); grown[0] != "n0" || b[0] != "n1" {
+		t.Fatalf("an append to one list changed another: %q %q", grown, b)
+	}
+	if got := idx.insert(a, "0"); len(got) != 2 || got[0] != "0" || got[1] != "n0" || a[0] != "n0" {
+		t.Fatalf("insert into a one-name list = %q, list %q", got, a)
+	}
+}
+
+// TestFIDIndexUsePackageAfterThaw pins that putName takes the first names
+// of a use-package into a thawed package from the index's spare blocks
+// (luthersystems/elps#855): the 64 imported functions fill blocks of 2, 4,
+// 8, 16 and 32 and 2 names of the next one.  The index still matches a
+// scan of the bindings.
+func TestFIDIndexUsePackageAfterThaw(t *testing.T) {
+	source := templateOwnershipEnv()
+	user := source.Runtime.Package
+	lib := source.Runtime.Registry.DefinePackage("funs")
+	source.Runtime.Package = lib
+	for i := range 64 {
+		name := "funs" + strconv.Itoa(i)
+		lib.Put(Symbol(name), source.Lambda(Formals(), []*LVal{Int(i)}))
+		lib.Export(name)
+	}
+	source.Runtime.Package = user
+	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("user", "funs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.UsePackage(Symbol("funs"))
+	pkg := vm.Runtime.Registry.Package("user")
+	if pkg.Frozen() || pkg.fids == nil {
+		t.Fatal("use-package did not thaw the package and keep its index")
+	}
+	var fns []*LVal
+	for i := range 64 {
+		fns = append(fns, pkg.Get(Symbol("funs"+strconv.Itoa(i))))
+	}
+	if got := len(pkg.fids.spare); cap(pkg.fids.spare) != fidSpareBlock || got != 2 {
+		t.Fatalf("spare block holds %d of %d names, want 2 of %d", got, cap(pkg.fids.spare), fidSpareBlock)
+	}
+	checkFIDIndex(t, vm, pkg, fns)
+}

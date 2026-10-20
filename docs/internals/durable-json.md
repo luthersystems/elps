@@ -584,7 +584,9 @@ at most ceil(n/4) units for n bindings (`Package.NumBindings`): what a dump
 was charged when it read every binding of the package, so no dump is charged
 more than before (`TestDurableFunctionNamesChargeCap`).
 `BenchmarkDurableFunctionName` dumps one function from a package of 6000
-bindings:
+bindings. On a template VM it mints a fresh VM for each dump, inside the
+timer, and reports the dump alone as `dump-ns/op`; the template rows below
+are that metric:
 
 | Environment | Read every binding (`FunNamesByFID`) | Index (`FunNameByFID`) |
 |---|---|---|
