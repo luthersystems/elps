@@ -334,8 +334,41 @@ func TestFIDIndexPendingRuns(t *testing.T) {
 			vmFns = append(vmFns, pkg.Get(Symbol(name)))
 		}
 	}
-	for _, n := range []int{1, 50, fidPendingMax + 3} {
+	// The index takes writes in its log until the first lookup, so the
+	// longest run comes first.
+	if idx := pkg.loadFIDs(); idx == nil || idx.live {
+		t.Fatal("the thawed package's index is live before a lookup")
+	}
+	for _, n := range []int{fidPendingMax + 3, 1, 50} {
 		run(t, vm, pkg, vmFns, n)
+	}
+}
+
+// TestFIDIndexWriteThenLookupAllocs pins that a write followed by a lookup
+// on a live index does not copy the index (luthersystems/elps#855): its
+// allocations do not grow with the number of functions in the package.
+func TestFIDIndexWriteThenLookupAllocs(t *testing.T) {
+	allocs := func(n int) float64 {
+		env := templateOwnershipEnv()
+		pkg := env.Runtime.Package
+		fns := make([]*LVal, n)
+		for i := range fns {
+			fns[i] = env.Lambda(Formals(), []*LVal{Int(i)})
+			pkg.Put(Symbol("f"+strconv.Itoa(i)), fns[i])
+		}
+		pkg.FunNameByFID(fns[0].FID()) // builds the live index
+		i := 0
+		return testing.AllocsPerRun(50, func() {
+			i++
+			pkg.Put(Symbol("x"), fns[i%n])
+			if _, ok := pkg.FunNameByFID(fns[i%n].FID()); !ok {
+				t.Fatal("FunNameByFID found no name")
+			}
+		})
+	}
+	small, large := allocs(16), allocs(4096)
+	if large > small+1 {
+		t.Fatalf("a write and a lookup take %v allocations with 4096 functions, %v with 16", large, small)
 	}
 }
 

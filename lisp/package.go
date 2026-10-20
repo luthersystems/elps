@@ -210,8 +210,8 @@ type Package struct {
 	// every package that is written to the heap.  An eager template VM starts with the plan's index and a
 	// thawed package with its base's.  Once it exists putName keeps it
 	// exact: it adds a name when it binds a function and removes it when it
-	// rebinds the name to anything else.  It logs each change and the next
-	// lookup applies the log (fidIndex.pending), and it takes a new
+	// rebinds the name to anything else.  A thawed or eager VM's index logs
+	// each change until its first lookup (fidIndex.pending), and it takes a new
 	// function's first name from a spare block (fidIndex.insert), not one
 	// allocation per name.  A frozen package does not use it:
 	// it reads base.fidNames and this VM's slotFidNames overlay.
