@@ -5,12 +5,24 @@ package lisp
 import "strconv"
 
 // SeqKind is a sequence type specifier for the Go forms of map, concat, zip
-// and slice (LEnv.MapSeq, Concat, Zip and Slice).  Each constant stands for
-// the symbol or value a builtin takes as its first argument.  A form given a
-// kind its builtin refuses returns the error the builtin returns for that
-// symbol.  The zero SeqKind and any other value outside the constants stand
-// for an unknown symbol: the form returns the builtin's error for an invalid
-// type specifier, which prints the kind as SeqKind(n).
+// and slice (LEnv.MapSeq, Concat, Zip and Slice).  SeqList, SeqVector,
+// SeqString and SeqBytes stand for the symbols list, vector, string and
+// bytes.  SeqNil stands for the type specifier ().
+//
+// A form given a kind its builtin refuses returns the error the builtin
+// returns for the matching type specifier, at the same point in its checks:
+//
+//   - SeqNil to Concat, Zip or Slice returns the builtin's first check for a
+//     type specifier that is not a symbol, "first argument is not a valid
+//     type specification: list" (concat) or "first argument is not a valid
+//     type specifier: list" (zip and slice).
+//   - Any other refused kind returns the builtin's error for an unknown
+//     symbol, after the builtin's checks of the other arguments: "type
+//     specifier is invalid: K" (map and zip) or "type specifier is not
+//     valid: K" (concat and slice).  K is the kind's String.
+//
+// The zero SeqKind, and any value past the constants, is refused by every
+// form, and K is then "SeqKind(n)".
 type SeqKind uint8
 
 const (
@@ -48,20 +60,14 @@ func (k SeqKind) String() string {
 }
 
 // seqKindOf returns the kind a type specifier symbol names, or 0 for a name
-// no kind has.
+// no kind has.  It reads the names from String, so the two cannot differ.
 func seqKindOf(name string) SeqKind {
-	switch name {
-	case "list":
-		return SeqList
-	case "vector":
-		return SeqVector
-	case "string":
-		return SeqString
-	case "bytes":
-		return SeqBytes
-	default:
-		return 0
+	for k := SeqList; k <= SeqBytes; k++ {
+		if k.String() == name {
+			return k
+		}
 	}
+	return 0
 }
 
 // seqSpec is a type specifier as the shared bodies of map, concat, zip and

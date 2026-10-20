@@ -1532,10 +1532,13 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 }
 
 // MapSeq returns what the map builtin returns for (map typespec fn seq),
-// where typespec is the symbol kind names: a list or a vector of fn's results
-// for the elements of seq, or the same error from the same check.  kind is
-// SeqList or SeqVector, or SeqNil to call fn for its effects and return ().
-// A symbol fn resolves to its global function, as map resolves it.
+// where typespec is the type specifier kind stands for: a list or a vector
+// of fn's results for the elements of seq, or the same error from the same
+// check.  kind is SeqList or SeqVector, or SeqNil, which stands for (), to
+// call fn for its effects and return ().  Any other kind returns "type
+// specifier is invalid: K" after the checks of fn and seq and the allocation
+// check, as map does (see SeqKind).  A symbol fn resolves to its global
+// function, as map resolves it.
 //
 // It checks the evaluation's context first, as CallBuiltin does.  Each call
 // of fn checks the context and charges one step, as map's calls do, and fn
@@ -2089,11 +2092,15 @@ func builtinConcat(env *LEnv, args *LVal) *LVal {
 }
 
 // Concat returns what the concat builtin returns for (concat typespec
-// seqs...), where typespec is the symbol kind names: one value of that type
-// (SeqList, SeqVector, SeqString or SeqBytes) that holds the elements of seqs
-// in order, or the same error from the same check, the allocation check
-// included.  It checks the evaluation's context first, as CallBuiltin does.
-// It charges no step.  It neither writes seqs nor keeps the slice.
+// seqs...), where typespec is the type specifier kind stands for: one value
+// of that type (SeqList, SeqVector, SeqString or SeqBytes) that holds the
+// elements of seqs in order, or the same error from the same check, the
+// allocation check included.  SeqNil, which stands for (), returns "first
+// argument is not a valid type specification: list" before any other check.
+// Any other kind returns "type specifier is not valid: K" before it checks
+// seqs (see SeqKind).  It checks the evaluation's context first, as
+// CallBuiltin does.  It charges no step.  It neither writes seqs nor keeps
+// the slice.
 func (env *LEnv) Concat(kind SeqKind, seqs ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
@@ -2708,12 +2715,15 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 }
 
 // Zip returns what the zip builtin returns for (zip typespec list lists...),
-// where typespec is the symbol kind (SeqList or SeqVector) names: a list or
-// a vector of sequences of that type, where the i-th holds the i-th element
-// of each input, cut to the shortest input; or the same error from the same
-// check, the allocation check included.  It checks the evaluation's context
-// first, as CallBuiltin does.  It charges no step.  It neither writes lists
-// nor keeps the slice.
+// where typespec is the type specifier kind (SeqList or SeqVector) stands
+// for: a list or a vector of sequences of that type, where the i-th holds the
+// i-th element of each input, cut to the shortest input; or the same error
+// from the same check, the allocation check included.  SeqNil, which stands
+// for (), returns "first argument is not a valid type specifier: list"
+// before any other check.  Any other kind returns "type specifier is
+// invalid: K" after the checks of the lists and the allocation check (see
+// SeqKind).  It checks the evaluation's context first, as CallBuiltin does.
+// It charges no step.  It neither writes lists nor keeps the slice.
 func (env *LEnv) Zip(kind SeqKind, list *LVal, lists ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
@@ -2935,12 +2945,15 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 }
 
 // Slice returns what the slice builtin returns for (slice typespec seq start
-// end), where typespec is the symbol kind names: the elements of seq from
-// index start up to end, as that type (SeqList, SeqVector, SeqString or
-// SeqBytes), or the same error from the same check, the allocation check
-// included.  For a list, a vector or bytes the result shares elements with
-// seq, as the builtin's does.  It checks the evaluation's context first, as
-// CallBuiltin does.  It charges no step.
+// end), where typespec is the type specifier kind stands for: the elements of
+// seq from index start up to end, as that type (SeqList, SeqVector,
+// SeqString or SeqBytes), or the same error from the same check, the
+// allocation check included.  SeqNil, which stands for (), returns "first
+// argument is not a valid type specifier: list" before any other check.  Any
+// other kind returns "type specifier is not valid: K" after the checks of
+// seq, start and end (see SeqKind).  For a list, a vector or bytes the
+// result shares elements with seq, as the builtin's does.  It checks the
+// evaluation's context first, as CallBuiltin does.  It charges no step.
 func (env *LEnv) Slice(kind SeqKind, seq, start, end *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr

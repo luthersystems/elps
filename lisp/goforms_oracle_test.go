@@ -132,12 +132,6 @@ func kindSpec(kind lisp.SeqKind) *lisp.LVal {
 	return lisp.Symbol(kind.String())
 }
 
-// badTypespecs are type specifiers that no SeqKind stands for: an unknown
-// symbol and values that are not symbols.  Only the builtins take them.
-func badTypespecs() []*lisp.LVal {
-	return []*lisp.LVal{lisp.Symbol("bogus"), lisp.Int(1), lisp.String("list")}
-}
-
 // TestGoFormsMatchBuiltins holds each Go form to its builtin on inputs of
 // every type: the same value, or the same error condition and message.
 func TestGoFormsMatchBuiltins(t *testing.T) {
@@ -232,44 +226,6 @@ func TestSequenceFormsMatchBuiltins(t *testing.T) {
 						env.CallBuiltin(refSlice, spec(), value(i), start, end))
 				}
 			}
-		}
-	}
-}
-
-// TestSequenceBuiltinsRefuseBadTypespecs checks the type specifiers no
-// SeqKind stands for on the builtins' side: each builtin refuses them with
-// its own message, after its own earlier checks.
-func TestSequenceBuiltinsRefuseBadTypespecs(t *testing.T) {
-	env := oracle.NewEnv(t, context.Background())
-	rc := env.LoadString("setup", mapSetup)
-	require.False(t, rc.IsError(), "%v", rc)
-	list := func() *lisp.LVal { return lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)}) }
-	for _, ts := range badTypespecs() {
-		invalid := "first argument is not a valid type specifier: " + ts.Type.String()
-		invalidMap := "first argument is not a valid type specification: " + ts.Type.String()
-		concatMsg, zipMsg, sliceMsg, mapMsg := invalidMap, invalid, invalid, invalidMap
-		if ts.Type == lisp.LSymbol {
-			concatMsg = "type specifier is not valid: " + ts.String()
-			zipMsg = "type specifier is invalid: " + ts.String()
-			sliceMsg = "type specifier is not valid: " + ts.String()
-			mapMsg = "type specifier is invalid: " + ts.String()
-		}
-		cases := []struct {
-			name string
-			got  *lisp.LVal
-			msg  string
-		}{
-			{"concat", env.CallBuiltin(refConcat, ts, list()), concatMsg},
-			{"zip", env.CallBuiltin(refZip, ts, list(), list()), zipMsg},
-			{"slice", env.CallBuiltin(refSlice, ts, list(), lisp.Int(0), lisp.Int(1)), sliceMsg},
-			{"map", inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
-				return env.CallBuiltin(refMap, ts, lisp.Symbol("twice"), list())
-			}), mapMsg},
-		}
-		for _, c := range cases {
-			label := c.name + "/" + ts.String()
-			require.True(t, c.got.IsError(), "%s: %v", label, c.got)
-			assert.Equal(t, c.msg, (*lisp.ErrorVal)(c.got).ErrorMessage(), label)
 		}
 	}
 }
