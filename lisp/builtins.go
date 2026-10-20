@@ -1528,21 +1528,21 @@ func seqNth(env *LEnv, list, n *LVal) *LVal {
 }
 
 func builtinMap(env *LEnv, args *LVal) *LVal {
-	return mapSeq(env, args.Cells[0], args.Cells[1], args.Cells[2])
+	return mapSeq(env, parseSeqSpec(args.Cells[0]), args.Cells[1], args.Cells[2])
 }
 
-// MapSeq returns what the map builtin returns for (map typespec fn seq): a
-// list or a vector of fn's results for the elements of seq, or the same error
-// from the same check.  typespec is the symbol list or vector, or () to call
-// fn for its effects and return ().  A symbol fn resolves to its global
-// function, as map resolves it.
+// MapSeq returns what the map builtin returns for (map typespec fn seq),
+// where typespec is the symbol kind names: a list or a vector of fn's results
+// for the elements of seq, or the same error from the same check.  kind is
+// SeqList or SeqVector, or SeqNil to call fn for its effects and return ().
+// A symbol fn resolves to its global function, as map resolves it.
 //
 // It checks the evaluation's context first, as CallBuiltin does.  Each call
 // of fn checks the context and charges one step, as map's calls do, and fn
 // charges its own steps.  MapSeq charges no other step.  As CallBuiltin
 // does, it keeps the calling frame non-terminal while fn runs, so no tail
 // call in fn returns through the Go caller.
-func (env *LEnv) MapSeq(typespec, fn, seq *LVal) *LVal {
+func (env *LEnv) MapSeq(kind SeqKind, fn, seq *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
@@ -1550,17 +1550,15 @@ func (env *LEnv) MapSeq(typespec, fn, seq *LVal) *LVal {
 	if top, terminal := stack.holdNonTerminal(); top >= 0 {
 		defer stack.restoreTerminal(top, terminal)
 	}
-	return mapSeq(env, typespec, fn, seq)
+	return mapSeq(env, goSeqSpec(kind), fn, seq)
 }
 
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
 // cannot differ.
-func mapSeq(env *LEnv, typespec, f, lis *LVal) *LVal {
-	nilReturn := false
-	if typespec.IsNil() {
-		nilReturn = true
-	} else if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
+func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
+	nilReturn := spec.kind == SeqNil
+	if !nilReturn && !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specification: %v", spec.typ())
 	}
 	f = env.GetFunGlobal(f)
 	if f.IsError() {
@@ -1585,15 +1583,15 @@ func mapSeq(env *LEnv, typespec, f, lis *LVal) *LVal {
 	if nilReturn {
 		v = Nil()
 	} else {
-		switch typespec.Str {
-		case "vector":
+		switch spec.kind {
+		case SeqVector:
 			v = MakeVector(lis.Len())
 			cells = seqCells(v)
-		case "list":
+		case SeqList:
 			cells = make([]*LVal, lis.Len())
 			v = QExpr(cells)
 		default:
-			return env.Errorf("type specifier is invalid: %v", typespec)
+			return env.Errorf("type specifier is invalid: %v", spec)
 		}
 	}
 	for i, c := range seqCells(lis) {
@@ -2087,37 +2085,37 @@ func sortedMapFromPairs(env *LEnv, kv []*LVal) *LVal {
 }
 
 func builtinConcat(env *LEnv, args *LVal) *LVal {
-	return concatValues(env, args.Cells[0], args.Cells[1:])
+	return concatValues(env, parseSeqSpec(args.Cells[0]), args.Cells[1:])
 }
 
 // Concat returns what the concat builtin returns for (concat typespec
-// seqs...): one value of the type typespec names ('list, 'vector, 'string or
-// 'bytes) that holds the elements of seqs in order, or the same error from
-// the same check, the allocation check included.  It checks the evaluation's
-// context first, as CallBuiltin does.  It charges no step.  It neither writes
-// seqs nor keeps the slice.
-func (env *LEnv) Concat(typespec *LVal, seqs ...*LVal) *LVal {
+// seqs...), where typespec is the symbol kind names: one value of that type
+// (SeqList, SeqVector, SeqString or SeqBytes) that holds the elements of seqs
+// in order, or the same error from the same check, the allocation check
+// included.  It checks the evaluation's context first, as CallBuiltin does.
+// It charges no step.  It neither writes seqs nor keeps the slice.
+func (env *LEnv) Concat(kind SeqKind, seqs ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	return concatValues(env, typespec, seqs)
+	return concatValues(env, goSeqSpec(kind), seqs)
 }
 
 // concatValues is the body of the concat builtin and of LEnv.Concat, so the
 // two cannot differ.
-func concatValues(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
-	if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
+func concatValues(env *LEnv, spec seqSpec, rest []*LVal) *LVal {
+	if !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specification: %v", spec.typ())
 	}
-	switch typespec.Str {
-	case "vector", "list":
-		return concatSeq(env, typespec, rest)
-	case "string":
+	switch spec.kind {
+	case SeqVector, SeqList:
+		return concatSeq(env, spec, rest)
+	case SeqString:
 		return concatString(env, rest)
-	case "bytes":
+	case SeqBytes:
 		return concatBytes(env, rest)
 	default:
-		return env.Errorf("type specifier is not valid: %v", typespec)
+		return env.Errorf("type specifier is not valid: %v", spec)
 	}
 }
 
@@ -2208,7 +2206,7 @@ func appendBytes(_ *LEnv, seq *LVal, fn func(x byte)) error {
 }
 
 // concatSeq is concat's 'list and 'vector arm.
-func concatSeq(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
+func concatSeq(env *LEnv, spec seqSpec, rest []*LVal) *LVal {
 	size := 0
 	for _, v := range rest {
 		if !isSeq(v) {
@@ -2222,15 +2220,17 @@ func concatSeq(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
 		}
 	}
 	if size == 0 {
-		switch typespec.Str {
-		case "vector":
+		switch spec.kind {
+		case SeqVector:
 			return MakeVector(0)
-		case "list":
+		case SeqList:
 			return Nil()
+		default:
+			// The check below refuses every other kind.
 		}
 	}
-	if typespec.Str != "vector" && typespec.Str != "list" {
-		return env.Errorf("type specifier is not valid: %v", typespec)
+	if spec.kind != SeqVector && spec.kind != SeqList {
+		return env.Errorf("type specifier is not valid: %v", spec)
 	}
 	// The result's storage is filled BEFORE it is wrapped in an LVal, rather
 	// than allocating the container first and writing through it.  Both orders
@@ -2248,7 +2248,7 @@ func concatSeq(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
 	for _, v := range rest {
 		cells = append(cells, seqCells(v)...)
 	}
-	if typespec.Str == "vector" {
+	if spec.kind == SeqVector {
 		// len(cells) is exactly size -- the appends above copy every element
 		// of every input and the slice was made with that capacity -- so the
 		// dims Vector derives are the dims this site used to spell out, and
@@ -2704,28 +2704,29 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinZip(env *LEnv, args *LVal) *LVal {
-	return zipSeqs(env, args.Cells[0], args.Cells[1], args.Cells[2:])
+	return zipSeqs(env, parseSeqSpec(args.Cells[0]), args.Cells[1], args.Cells[2:])
 }
 
-// Zip returns what the zip builtin returns for (zip typespec list lists...):
-// a list or a vector of sequences of the type typespec names, where the i-th
-// holds the i-th element of each input, cut to the shortest input; or the
-// same error from the same check, the allocation check included.  It checks
-// the evaluation's context first, as CallBuiltin does.  It charges no step.
-// It neither writes lists nor keeps the slice.
-func (env *LEnv) Zip(typespec, list *LVal, lists ...*LVal) *LVal {
+// Zip returns what the zip builtin returns for (zip typespec list lists...),
+// where typespec is the symbol kind (SeqList or SeqVector) names: a list or
+// a vector of sequences of that type, where the i-th holds the i-th element
+// of each input, cut to the shortest input; or the same error from the same
+// check, the allocation check included.  It checks the evaluation's context
+// first, as CallBuiltin does.  It charges no step.  It neither writes lists
+// nor keeps the slice.
+func (env *LEnv) Zip(kind SeqKind, list *LVal, lists ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	return zipSeqs(env, typespec, list, lists)
+	return zipSeqs(env, goSeqSpec(kind), list, lists)
 }
 
 // zipSeqs is the body of the zip builtin and of LEnv.Zip, so the two cannot
 // differ.  The inputs are first and then rest, so neither caller builds a
 // slice of them.
-func zipSeqs(env *LEnv, typespec, first *LVal, rest []*LVal) *LVal {
-	if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
+func zipSeqs(env *LEnv, spec seqSpec, first *LVal, rest []*LVal) *LVal {
+	if !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specifier: %v", spec.typ())
 	}
 	if !isSeq(first) {
 		return env.Errorf("argument is not a proper list: %v", first.Type)
@@ -2746,28 +2747,28 @@ func zipSeqs(env *LEnv, typespec, first *LVal, rest []*LVal) *LVal {
 	}
 	var v *LVal
 	var cells []*LVal
-	switch typespec.Str {
-	case "vector":
+	switch spec.kind {
+	case SeqVector:
 		v = MakeVector(n)
 		cells = seqCells(v)
-	case "list":
+	case SeqList:
 		cells = make([]*LVal, n)
 		v = QExpr(cells)
 	default:
-		return env.Errorf("type specifier is invalid: %v", typespec)
+		return env.Errorf("type specifier is invalid: %v", spec)
 	}
 	for i := range cells {
 		var elem *LVal
 		var elemCells []*LVal
-		switch typespec.Str {
-		case "vector":
+		switch spec.kind {
+		case SeqVector:
 			elem = MakeVector(width)
 			elemCells = seqCells(elem)
-		case "list":
+		case SeqList:
 			elemCells = make([]*LVal, width)
 			elem = QExpr(elemCells)
 		default:
-			return env.Errorf("type specifier is invalid: %v", typespec)
+			return env.Errorf("type specifier is invalid: %v", spec)
 		}
 		elemCells[0] = seqCells(first)[i]
 		for j, list := range rest {
@@ -2930,27 +2931,28 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinSlice(env *LEnv, args *LVal) *LVal {
-	return env.sliceSeq(args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3])
+	return env.sliceSeq(parseSeqSpec(args.Cells[0]), args.Cells[1], args.Cells[2], args.Cells[3])
 }
 
 // Slice returns what the slice builtin returns for (slice typespec seq start
-// end): the elements of seq from index start up to end, as the type typespec
-// names, or the same error from the same check, the allocation check
+// end), where typespec is the symbol kind names: the elements of seq from
+// index start up to end, as that type (SeqList, SeqVector, SeqString or
+// SeqBytes), or the same error from the same check, the allocation check
 // included.  For a list, a vector or bytes the result shares elements with
 // seq, as the builtin's does.  It checks the evaluation's context first, as
 // CallBuiltin does.  It charges no step.
-func (env *LEnv) Slice(typespec, seq, start, end *LVal) *LVal {
+func (env *LEnv) Slice(kind SeqKind, seq, start, end *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	return env.sliceSeq(typespec, seq, start, end)
+	return env.sliceSeq(goSeqSpec(kind), seq, start, end)
 }
 
 // sliceSeq is the body of the slice builtin and of LEnv.Slice, so the two
 // cannot differ.
-func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
-	if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
+func (env *LEnv) sliceSeq(spec seqSpec, list, start, end *LVal) *LVal {
+	if !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specifier: %v", spec.typ())
 	}
 	if !isSeq(list) && list.Type != LString && list.Type != LBytes {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
@@ -2982,13 +2984,15 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 	// Same-storage views need no new element backing. Conversions between
 	// bytes/strings and sequences do; bound their window before allocation.
 	allocates := false
-	switch typespec.Str {
-	case "string":
+	switch spec.kind {
+	case SeqString:
 		allocates = list.Type != LString
-	case "bytes":
+	case SeqBytes:
 		allocates = list.Type != LBytes
-	case "list", "vector":
+	case SeqList, SeqVector:
 		allocates = list.Type == LString || list.Type == LBytes
+	default:
+		// An invalid kind allocates nothing.  The conversion below refuses it.
 	}
 	if allocates {
 		if lerr := env.CheckAlloc(j - i); lerr.IsError() {
@@ -3032,8 +3036,8 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 	}
 
 	// Convert the intermediate sliced value into the desired type
-	switch typespec.Str {
-	case "string":
+	switch spec.kind {
+	case SeqString:
 		switch list.Type {
 		case LString:
 			return list
@@ -3057,7 +3061,7 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 			}
 			return String(string(b))
 		}
-	case "bytes":
+	case SeqBytes:
 		switch list.Type {
 		case LString:
 			return Bytes([]byte(list.Str))
@@ -3081,7 +3085,7 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 			}
 			return Bytes(b)
 		}
-	case "list":
+	case SeqList:
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
@@ -3089,7 +3093,7 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 		// carries the sealed flag when the backing is shared with a sealed
 		// input, so returning it directly keeps the constraint attached.
 		return list
-	case "vector":
+	case SeqVector:
 		if list.Type == LString || list.Type == LBytes {
 			list = makeByteSeq(list)
 		}
@@ -3119,7 +3123,7 @@ func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 		// this site would otherwise build only to have Array duplicate.
 		return Vector(cells)
 	default:
-		return env.Errorf("type specifier is not valid: %v", typespec)
+		return env.Errorf("type specifier is not valid: %v", spec)
 	}
 }
 

@@ -531,7 +531,7 @@ func TestCheckAllocConcatSeq(t *testing.T) {
 		a := QExpr([]*LVal{Int(1), Int(2)})
 		b := QExpr([]*LVal{Int(3), Int(4)})
 		args := SExpr([]*LVal{Symbol("list"), a, b})
-		result := concatSeq(env, args.Cells[0], args.Cells[1:])
+		result := concatSeq(env, parseSeqSpec(args.Cells[0]), args.Cells[1:])
 		msg := requireLError(t, result)
 		if !strings.Contains(msg, "allocation size 4 exceeds maximum (3)") {
 			t.Errorf("wrong error: %s", msg)
@@ -544,7 +544,7 @@ func TestCheckAllocConcatSeq(t *testing.T) {
 		a := QExpr([]*LVal{Int(1)})
 		b := QExpr([]*LVal{Int(2)})
 		args := SExpr([]*LVal{Symbol("list"), a, b})
-		result := concatSeq(env, args.Cells[0], args.Cells[1:])
+		result := concatSeq(env, parseSeqSpec(args.Cells[0]), args.Cells[1:])
 		if result.Type == LError {
 			t.Fatalf("unexpected error: %v", result)
 		}
