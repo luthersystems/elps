@@ -5,12 +5,13 @@
 package lisp
 
 import (
-	"crypto/sha256"
-	"fmt"
+	"encoding/binary"
+	"hash/maphash"
+	"iter"
 )
 
 type packageBaseCheck struct {
-	fingerprint *[sha256.Size]byte
+	fingerprint *uint64
 }
 
 // publish records the tables after construction and before any VM can see them.
@@ -19,42 +20,93 @@ func (b *packageBase) publish() {
 	b.check.fingerprint = &fingerprint
 }
 
+// fingerprintSeed is fixed for the process: a fingerprint is only compared
+// with one taken earlier in the same process.
+var fingerprintSeed = maphash.MakeSeed()
+
 // fingerprint includes table boundaries, counts, keys, values and export order.
-// Quoted strings make separators unambiguous even for arbitrary Go-side names.
-// Hash writes cannot fail; their results are deliberately ignored.
-func (b *packageBase) fingerprint() [sha256.Size]byte {
-	h := sha256.New()
-	_, _ = fmt.Fprintf(h, "bindings:%d pending:%d\n", len(b.bindings), b.pending)
+// Each string is written with its length first, so separators are
+// unambiguous even for arbitrary Go-side names.
+//
+// Template.NewVM runs this for every template package of every VM, frozen
+// or not, so it is most of the cost of an elpscheck test run.  substrate's
+// elpscheck suite passed its CI time limit once fidNames joined the
+// fingerprint.  So it avoids the costly steps of the first version, which
+// wrote every entry with fmt's %q into a SHA-256 in key order:
+//   - maphash in place of SHA-256.  This is a check against a bug, not an
+//     attacker, so a 64-bit hash is enough.
+//   - A length prefix in place of quoting, which scanned every rune of
+//     every doc string.
+//   - The maps are hashed entry by entry and the entry hashes summed, which
+//     is independent of iteration order, so no keys are sorted.
+func (b *packageBase) fingerprint() uint64 {
+	var h maphash.Hash
+	h.SetSeed(fingerprintSeed)
+	writeInt(&h, len(b.bindings))
+	writeInt(&h, b.pending)
 	for _, binding := range b.bindings {
-		_, _ = fmt.Fprintf(h, "%q:%d:%p\n", binding.name, binding.value.index, binding.value.shared)
+		writeString(&h, binding.name)
+		writeInt(&h, binding.value.index)
+		// The shared value's address, not its contents: a frozen binding must
+		// keep pointing at the same template value.
+		maphash.WriteComparable(&h, binding.value.shared)
 	}
-	_, _ = fmt.Fprintf(h, "index:%d\n", b.index.Len())
-	for key, value := range b.index.All() {
-		_, _ = fmt.Fprintf(h, "%q:%d\n", key, value)
+	writeInt(&h, b.index.Len())
+	writeUint64(&h, sumEntries(b.index.Unordered(), writeInt))
+	writeInt(&h, b.funNames.Len())
+	writeUint64(&h, sumEntries(b.funNames.Unordered(), writeString))
+	// The pair count, then the pairs in the table's own key-then-value
+	// order, so the list boundaries and every element are in the hash.
+	pairs := 0
+	for range b.fidNames.All() {
+		pairs++
 	}
-	_, _ = fmt.Fprintf(h, "funNames:%d\n", b.funNames.Len())
-	for key, value := range b.funNames.All() {
-		_, _ = fmt.Fprintf(h, "%q:%q\n", key, value)
+	writeInt(&h, b.fidNames.Len())
+	writeInt(&h, pairs)
+	for pair := range b.fidNames.All() {
+		writeString(&h, pair.Key)
+		writeString(&h, pair.Value)
 	}
-	_, _ = fmt.Fprintf(h, "fidNames:%d\n", b.fidNames.Len())
-	for _, key := range b.fidNames.Keys() {
-		_, _ = fmt.Fprintf(h, "%q:%d", key, b.fidNames.ListLen(key))
-		for i := range b.fidNames.ListLen(key) {
-			_, _ = fmt.Fprintf(h, ":%q", b.fidNames.At(key, i))
-		}
-		_, _ = fmt.Fprintln(h)
-	}
-	_, _ = fmt.Fprintf(h, "symbolDocs:%d\n", b.symbolDocs.Len())
-	for key, value := range b.symbolDocs.All() {
-		_, _ = fmt.Fprintf(h, "%q:%q\n", key, value)
-	}
-	_, _ = fmt.Fprintf(h, "externals:%d\n", b.externals.Len())
+	writeInt(&h, b.symbolDocs.Len())
+	writeUint64(&h, sumEntries(b.symbolDocs.Unordered(), writeString))
+	writeInt(&h, b.externals.Len())
 	for value := range b.externals.All() {
-		_, _ = fmt.Fprintf(h, "%q\n", value)
+		writeString(&h, value)
 	}
-	var sum [sha256.Size]byte
-	copy(sum[:], h.Sum(nil))
+	return h.Sum64()
+}
+
+// sumEntries returns the sum of the hashes of a map's entries, which does
+// not depend on the order the entries are visited in.
+func sumEntries[V any](entries iter.Seq2[string, V], writeValue func(*maphash.Hash, V)) uint64 {
+	var sum uint64
+	var e maphash.Hash
+	e.SetSeed(fingerprintSeed)
+	for key, value := range entries {
+		e.Reset()
+		writeString(&e, key)
+		writeValue(&e, value)
+		sum += e.Sum64()
+	}
 	return sum
+}
+
+// writeInt writes n as a varint, whose bytes end it, so the next write
+// cannot run into it.
+func writeInt(h *maphash.Hash, n int) {
+	var b [binary.MaxVarintLen64]byte
+	_, _ = h.Write(binary.AppendVarint(b[:0], int64(n)))
+}
+
+func writeUint64(h *maphash.Hash, n uint64) {
+	var b [8]byte
+	binary.LittleEndian.PutUint64(b[:], n)
+	_, _ = h.Write(b[:])
+}
+
+func writeString(h *maphash.Hash, s string) {
+	writeInt(h, len(s))
+	_, _ = h.WriteString(s)
 }
 
 // checkPackageBases is also the in-package test helper for checking integrity
