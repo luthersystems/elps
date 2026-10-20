@@ -398,12 +398,12 @@ func (e *TailIterationLimitError) Error() string {
 // non-terminal.  It returns the frame's index, not a pointer: a push while
 // the callee runs can move the frames (luthersystems/elps#852).  top is -1
 // for a nil or empty stack.
-func (s *CallStack) holdNonTerminal() (top int, terminal bool) {
+func (s *CallStack) holdNonTerminal() (int, bool) {
 	if s == nil || len(s.Frames) == 0 {
 		return -1, false
 	}
-	top = len(s.Frames) - 1
-	terminal = s.Frames[top].Terminal
+	top := len(s.Frames) - 1
+	terminal := s.Frames[top].Terminal
 	s.Frames[top].Terminal = false
 	return top, terminal
 }

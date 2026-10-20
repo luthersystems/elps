@@ -2930,7 +2930,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinSlice(env *LEnv, args *LVal) *LVal {
-	return sliceSeq(env, args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3])
+	return env.sliceSeq(args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3])
 }
 
 // Slice returns what the slice builtin returns for (slice typespec seq start
@@ -2943,12 +2943,12 @@ func (env *LEnv) Slice(typespec, seq, start, end *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	return sliceSeq(env, typespec, seq, start, end)
+	return env.sliceSeq(typespec, seq, start, end)
 }
 
 // sliceSeq is the body of the slice builtin and of LEnv.Slice, so the two
 // cannot differ.
-func sliceSeq(env *LEnv, typespec, list, start, end *LVal) *LVal {
+func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}

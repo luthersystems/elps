@@ -202,18 +202,18 @@ func TestSequenceFormsMatchBuiltins(t *testing.T) {
 			sameResult(t, "concat/"+label, env.Concat(spec(), value(i)), env.CallBuiltin(refConcat, spec(), value(i)))
 			sameResult(t, "zip/"+label, env.Zip(spec(), value(i)), env.CallBuiltin(refZip, spec(), value(i)))
 			for j, b := range oracle.Values() {
-				label := label + "/" + b.Label
-				sameResult(t, "concat/"+label,
+				pairLabel := label + "/" + b.Label
+				sameResult(t, "concat/"+pairLabel,
 					env.Concat(spec(), value(i), value(j)),
 					env.CallBuiltin(refConcat, spec(), value(i), value(j)))
-				sameResult(t, "zip/"+label,
+				sameResult(t, "zip/"+pairLabel,
 					env.Zip(spec(), value(i), value(j), value(i)),
 					env.CallBuiltin(refZip, spec(), value(i), value(j), value(i)))
 			}
 			for _, start := range []*lisp.LVal{lisp.Int(-1), lisp.Int(0), lisp.Int(1), lisp.Int(5), lisp.String("0")} {
 				for _, end := range []*lisp.LVal{lisp.Int(0), lisp.Int(1), lisp.Int(2), lisp.Int(9), lisp.Float(1)} {
-					label := fmt.Sprintf("slice/%s/%v/%v", label, start, end)
-					sameResult(t, label,
+					sliceLabel := fmt.Sprintf("slice/%s/%v/%v", label, start, end)
+					sameResult(t, sliceLabel,
 						env.Slice(spec(), value(i), start, end),
 						env.CallBuiltin(refSlice, spec(), value(i), start, end))
 				}
@@ -320,7 +320,7 @@ func TestDebugStackMatchesDebugStack(t *testing.T) {
 // slice does not reach the result.
 func TestListVectorNeedNoGoForm(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
-	for n := 0; n <= 3; n++ {
+	for n := range 4 {
 		xs := make(lisp.Cells, 0, n+4)
 		for i := range n {
 			xs = append(xs, value(i*7%numValues))
