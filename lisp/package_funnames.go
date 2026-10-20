@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"maps"
 	"slices"
 	"sync/atomic"
 	"unsafe"
@@ -176,7 +177,26 @@ func (pkg *Package) namesOfFID(fid string) fidNameView {
 	if pkg.base != nil {
 		return fidIndex{over: pkg.slotFidNames, base: pkg.base.fidNames}.view(fid)
 	}
-	return pkg.fidIndex().view(fid)
+	return pkg.settledFIDs().view(fid)
+}
+
+// settledFIDs returns an unfrozen package's index with no pending writes.
+// When the index holds some, it applies them to a copy and stores the copy
+// atomically in place of the index, so a reader never writes an index
+// another reader can see (issue #397): a reader that loses the race uses
+// the winner's copy, which holds the same lists.
+func (pkg *Package) settledFIDs() *fidIndex {
+	idx := pkg.fidIndex()
+	if len(idx.pending) == 0 {
+		return idx
+	}
+	settled := &fidIndex{base: idx.base, over: maps.Clone(idx.over), pending: slices.Clone(idx.pending)}
+	settled.apply()
+	settled.pending = nil
+	if atomic.CompareAndSwapPointer(pkg.fidsPointer(), unsafe.Pointer(idx), unsafe.Pointer(settled)) { //nolint:gosec // settled is a *fidIndex, the type of pkg.fids
+		return settled
+	}
+	return pkg.loadFIDs()
 }
 
 // fidNameView is one FID's name list in an index: names from the overlay,
@@ -216,6 +236,48 @@ type fidIndex struct {
 	// Each list it backs has its capacity cut to its length, so no append
 	// reaches a neighbour, and no list is written in place.
 	spare []string
+	// pending holds the writes not yet applied to over, in order.  A
+	// write appends to it, and the first lookup after it applies them
+	// (settledFIDs), so a run of writes nobody looks up between, such as
+	// a use-package import loop into a thawed package, costs one append
+	// per write, not a base search and a map write (luthersystems/elps#855).
+	// A writer applies them itself once there are fidPendingMax.
+	pending []fidWrite
+}
+
+// fidWrite is one pending change to a FID index: add or remove name from
+// the list of fid.
+type fidWrite struct {
+	fid, name string
+	add       bool
+}
+
+// fidPendingMax is the most writes an index holds before the writer
+// applies them, so a VM that rebinds functions in a loop and never looks
+// one up keeps a bounded log.
+const fidPendingMax = 1024
+
+// record adds a write to the pending log, and applies the log when it is
+// full.  Only a writer calls it.
+func (idx *fidIndex) record(w fidWrite) {
+	idx.pending = append(idx.pending, w)
+	if len(idx.pending) >= fidPendingMax {
+		idx.apply()
+	}
+}
+
+// apply applies the pending writes to idx in place.  Only a writer, or a
+// reader on an index no other goroutine can see, calls it.
+func (idx *fidIndex) apply() {
+	for _, w := range idx.pending {
+		if w.add {
+			idx.set(w.fid, idx.insert(idx.list(w.fid), w.name))
+		} else {
+			idx.set(w.fid, removeSortedName(idx.list(w.fid), w.name))
+		}
+	}
+	clear(idx.pending)
+	idx.pending = idx.pending[:0]
 }
 
 // view returns the list of fid.
@@ -423,8 +485,8 @@ func (pkg *Package) fidNameLists() packagetable.Lists {
 	if pkg.base != nil {
 		return packagetable.AdoptPairs(pkg.frozenFIDIndex().pairs())
 	}
-	if idx := pkg.loadFIDs(); idx != nil {
-		return packagetable.AdoptPairs(idx.pairs())
+	if pkg.loadFIDs() != nil {
+		return packagetable.AdoptPairs(pkg.settledFIDs().pairs())
 	}
 	n := 0
 	for name, v := range pkg.symbols {

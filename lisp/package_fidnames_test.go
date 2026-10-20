@@ -5,6 +5,7 @@ package lisp
 import (
 	"math/rand"
 	"strconv"
+	"sync"
 	"testing"
 )
 
@@ -228,11 +229,11 @@ func TestFIDIndexInsertSharesSpare(t *testing.T) {
 	}
 }
 
-// TestFIDIndexUsePackageAfterThaw pins that putName takes the first names
-// of a use-package into a thawed package from the index's spare blocks
-// (luthersystems/elps#855): the 64 imported functions fill blocks of 2, 4,
-// 8, 16 and 32 and 2 names of the next one.  The index still matches a
-// scan of the bindings.
+// TestFIDIndexUsePackageAfterThaw pins that putName logs the 64 imports of
+// a use-package into a thawed package and the first lookup applies them,
+// taking the first names from the index's spare blocks
+// (luthersystems/elps#855): blocks of 2, 4, 8, 16 and 32 and 2 names of the
+// next one.  The index still matches a scan of the bindings.
 func TestFIDIndexUsePackageAfterThaw(t *testing.T) {
 	source := templateOwnershipEnv()
 	user := source.Runtime.Package
@@ -261,8 +262,126 @@ func TestFIDIndexUsePackageAfterThaw(t *testing.T) {
 	for i := range 64 {
 		fns = append(fns, pkg.Get(Symbol("funs"+strconv.Itoa(i))))
 	}
-	if got := len(pkg.fids.spare); cap(pkg.fids.spare) != fidSpareBlock || got != 2 {
-		t.Fatalf("spare block holds %d of %d names, want 2 of %d", got, cap(pkg.fids.spare), fidSpareBlock)
+	if n := len(pkg.fids.pending); n != 64 {
+		t.Fatalf("index holds %d pending writes after use-package, want 64", n)
 	}
 	checkFIDIndex(t, vm, pkg, fns)
+	idx := pkg.loadFIDs()
+	if n := len(idx.pending); n != 0 {
+		t.Fatalf("index holds %d pending writes after a lookup, want 0", n)
+	}
+	if got := len(idx.spare); cap(idx.spare) != fidSpareBlock || got != 2 {
+		t.Fatalf("spare block holds %d of %d names, want 2 of %d", got, cap(idx.spare), fidSpareBlock)
+	}
+}
+
+// TestFIDIndexPendingRuns rebinds names of a package many times between
+// lookups, on a cold package and on a thawed template VM, so the index
+// applies runs of pending writes of every length, past fidPendingMax
+// included, and checks it against a scan after each run
+// (luthersystems/elps#855).
+func TestFIDIndexPendingRuns(t *testing.T) {
+	source := templateOwnershipEnv()
+	lib := source.Runtime.Registry.DefinePackage("lib")
+	user := source.Runtime.Package
+	source.Runtime.Package = lib
+	var fns []*LVal
+	for n := range 6 {
+		fns = append(fns, source.Lambda(Formals(), []*LVal{Int(n)}))
+	}
+	source.Runtime.Package = user
+	names := make([]string, 40)
+	for i := range names {
+		names[i] = "n" + strconv.Itoa(i)
+	}
+	rng := rand.New(rand.NewSource(855)) //nolint:gosec // a fixed seed makes the oracle comparison reproducible; nothing here is security-sensitive
+	run := func(t *testing.T, vm *LEnv, pkg *Package, fns []*LVal, n int) {
+		t.Helper()
+		for range n {
+			name := names[rng.Intn(len(names))]
+			if rng.Intn(4) == 0 {
+				pkg.Put(Symbol(name), Int(1))
+			} else {
+				pkg.Put(Symbol(name), fns[rng.Intn(len(fns))])
+			}
+		}
+		if idx := pkg.loadFIDs(); idx != nil && len(idx.pending) >= fidPendingMax {
+			t.Fatalf("index holds %d pending writes, more than %d", len(idx.pending), fidPendingMax)
+		}
+		checkFIDIndex(t, vm, pkg, fns)
+	}
+	checkFIDIndex(t, source, lib, fns) // builds the cold index
+	for _, n := range []int{1, 2, 7, 100, fidPendingMax - 1, fidPendingMax, fidPendingMax + 1, 3*fidPendingMax + 5} {
+		run(t, source, lib, fns, n)
+	}
+
+	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("lib"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	pkg := vm.Runtime.Registry.Package("lib")
+	pkg.Put(Symbol("thaw"), Int(0))
+	if pkg.Frozen() {
+		t.Fatal("a new name did not thaw the package")
+	}
+	vmFns := make([]*LVal, 0, len(fns))
+	for _, fn := range fns {
+		if name, ok := firstNameOfScan(lib, fn); ok {
+			vmFns = append(vmFns, pkg.Get(Symbol(name)))
+		}
+	}
+	for _, n := range []int{1, 50, fidPendingMax + 3} {
+		run(t, vm, pkg, vmFns, n)
+	}
+}
+
+// TestFIDIndexPendingConcurrentReaders looks up a thawed package from many
+// goroutines while its index holds pending writes, so the readers race to
+// apply them; run under -race it pins that no reader writes an index
+// another can see (issue #397).
+func TestFIDIndexPendingConcurrentReaders(t *testing.T) {
+	source := templateOwnershipEnv()
+	user := source.Runtime.Package
+	lib := source.Runtime.Registry.DefinePackage("funs")
+	source.Runtime.Package = lib
+	for i := range 64 {
+		name := "funs" + strconv.Itoa(i)
+		lib.Put(Symbol(name), source.Lambda(Formals(), []*LVal{Int(i)}))
+		lib.Export(name)
+	}
+	source.Runtime.Package = user
+	tmpl, err := NewTemplate(source, TemplateWithFrozenPackages("user", "funs"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm, err := tmpl.NewVM()
+	if err != nil {
+		t.Fatal(err)
+	}
+	vm.UsePackage(Symbol("funs"))
+	pkg := vm.Runtime.Registry.Package("user")
+	if pkg.fids == nil || len(pkg.fids.pending) == 0 {
+		t.Fatal("use-package left no pending writes")
+	}
+	fn := pkg.Get(Symbol("funs7"))
+	var wg sync.WaitGroup
+	errs := make(chan string, 8)
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if name, ok, _ := pkg.FirstNameOf(fn); !ok || name != "funs7" {
+				errs <- name
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for name := range errs {
+		t.Fatalf("FirstNameOf = %q, want funs7", name)
+	}
 }
