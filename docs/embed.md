@@ -1071,6 +1071,37 @@ element as it is stored, an error value included. Each checks the context
 first and charges no step. `LVal.MapKeys`, `LVal.Len` and `v.SeqCells()` make
 none of these checks.
 
+**Go forms of more builtins.** Each form below shares the body of its builtin,
+so it returns the same value, or the same error condition and message, with
+the same allocation checks. Each checks the context first, as `CallBuiltin`
+does, and charges no step of its own. A form that returns `(bool, *LVal)`
+returns a nil error on success.
+
+| Builtin | Go form |
+|---------|---------|
+| `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
+| `key?` | `env.MapHasKey(m, k) (bool, *LVal)` |
+| `nth` | `env.Nth(seq, n) *LVal` |
+| `map` | `env.MapSeq(typespec, fn, seq) *LVal` |
+| `concat` | `env.Concat(typespec, seqs...) *LVal` |
+| `zip` | `env.Zip(typespec, list, lists...) *LVal` |
+| `slice` | `env.Slice(typespec, seq, start, end) *LVal` |
+| `append!` | `env.AppendInPlace(seq, vals...) *LVal` |
+| `copy` | `env.DeepCopy(v) *LVal` |
+| `to-int`, `to-bytes` | `env.ToInt(v)`, `env.ToBytes(v) *LVal` |
+| `+`, `-` | `env.Add(xs...)`, `env.Sub(xs...) *LVal` |
+| `=`, `<`, `<=`, `>`, `>=` | `env.NumEqual`, `NumLess`, `NumLessEqual`, `NumGreater`, `NumGreaterEqual(a, b) (bool, *LVal)` |
+| `string=` | `env.StringEqual(a, b) (bool, *LVal)` |
+| `debug-stack` | `env.DebugStack() *LVal` |
+
+The type specifier, the index and the bounds are `*LVal` values, as the
+builtins take them. `MapSeq` calls `fn` as `map` does: each call checks the
+context and charges one step. `Add` and `Sub` take every operand at once,
+because a float anywhere makes the builtin sum in float from the start.
+`DeepCopy` honours the runtime's value-depth limit, which `LVal.Copy` does
+not. `list` and `vector` need no form: `lisp.Cells(xs).List()` and
+`lisp.Cells(xs).Clone().Vector()` return the same values.
+
 **`env.CallFunction(fn, args...)` and `env.ApplyFunction(fn, args)`** return
 what `(funcall fn args...)` and `(apply fn args)` return, with the same checks
 in the same order: a symbol resolves to its global function, and a macro or a
