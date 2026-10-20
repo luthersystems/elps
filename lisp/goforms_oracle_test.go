@@ -114,14 +114,22 @@ var binaryForms = []struct {
 	{"-", refSub, func(env *lisp.LEnv, a, b *lisp.LVal) *lisp.LVal { return env.Sub(a, b) }},
 }
 
-// typespecs are the type specifiers the sequence forms are tried with: the
-// valid ones, an unknown symbol, nil and values that are not symbols.
-func typespecs() []*lisp.LVal {
-	return []*lisp.LVal{
-		lisp.Symbol("list"), lisp.Symbol("vector"), lisp.Symbol("string"),
-		lisp.Symbol("bytes"), lisp.Symbol("bogus"), lisp.Nil(), lisp.Int(1),
-		lisp.String("list"),
+// seqKinds are the kinds the sequence forms are tried with: every SeqKind
+// constant, the zero kind and a kind past the constants.
+var seqKinds = []lisp.SeqKind{
+	lisp.SeqList, lisp.SeqVector, lisp.SeqString, lisp.SeqBytes, lisp.SeqNil,
+	0, 200,
+}
+
+// kindSpec is the type specifier the builtins are given for kind: () for
+// SeqNil, and otherwise the symbol kind prints as.  For a kind outside the
+// constants the symbol is unknown, so the builtin refuses it as an invalid
+// type specifier.
+func kindSpec(kind lisp.SeqKind) *lisp.LVal {
+	if kind == lisp.SeqNil {
+		return lisp.Nil()
 	}
+	return lisp.Symbol(kind.String())
 }
 
 // TestGoFormsMatchBuiltins holds each Go form to its builtin on inputs of
@@ -193,28 +201,28 @@ func TestArithmeticFormsVariadic(t *testing.T) {
 // and slice for every type specifier and for inputs of every type.
 func TestSequenceFormsMatchBuiltins(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
-	for si, ts := range typespecs() {
-		tsLabel := ts.String()
-		spec := func() *lisp.LVal { return typespecs()[si] }
-		sameResult(t, "concat/"+tsLabel+"/none", env.Concat(spec()), env.CallBuiltin(refConcat, spec()))
+	for _, kind := range seqKinds {
+		tsLabel := kind.String()
+		spec := func() *lisp.LVal { return kindSpec(kind) }
+		sameResult(t, "concat/"+tsLabel+"/none", env.Concat(kind), env.CallBuiltin(refConcat, spec()))
 		for i, a := range oracle.Values() {
 			label := tsLabel + "/" + a.Label
-			sameResult(t, "concat/"+label, env.Concat(spec(), value(i)), env.CallBuiltin(refConcat, spec(), value(i)))
-			sameResult(t, "zip/"+label, env.Zip(spec(), value(i)), env.CallBuiltin(refZip, spec(), value(i)))
+			sameResult(t, "concat/"+label, env.Concat(kind, value(i)), env.CallBuiltin(refConcat, spec(), value(i)))
+			sameResult(t, "zip/"+label, env.Zip(kind, value(i)), env.CallBuiltin(refZip, spec(), value(i)))
 			for j, b := range oracle.Values() {
 				pairLabel := label + "/" + b.Label
 				sameResult(t, "concat/"+pairLabel,
-					env.Concat(spec(), value(i), value(j)),
+					env.Concat(kind, value(i), value(j)),
 					env.CallBuiltin(refConcat, spec(), value(i), value(j)))
 				sameResult(t, "zip/"+pairLabel,
-					env.Zip(spec(), value(i), value(j), value(i)),
+					env.Zip(kind, value(i), value(j), value(i)),
 					env.CallBuiltin(refZip, spec(), value(i), value(j), value(i)))
 			}
 			for _, start := range []*lisp.LVal{lisp.Int(-1), lisp.Int(0), lisp.Int(1), lisp.Int(5), lisp.String("0")} {
 				for _, end := range []*lisp.LVal{lisp.Int(0), lisp.Int(1), lisp.Int(2), lisp.Int(9), lisp.Float(1)} {
 					sliceLabel := fmt.Sprintf("slice/%s/%v/%v", label, start, end)
 					sameResult(t, sliceLabel,
-						env.Slice(spec(), value(i), start, end),
+						env.Slice(kind, value(i), start, end),
 						env.CallBuiltin(refSlice, spec(), value(i), start, end))
 				}
 			}
@@ -272,12 +280,12 @@ func TestMapSeqMatchesMap(t *testing.T) {
 	rc := env.LoadString("setup", mapSetup)
 	require.False(t, rc.IsError(), "%v", rc)
 	run := func(f func(env *lisp.LEnv) *lisp.LVal) *lisp.LVal { return inEval(t, env, f) }
-	for si, ts := range typespecs() {
-		spec := func() *lisp.LVal { return typespecs()[si] }
+	for _, kind := range seqKinds {
+		spec := func() *lisp.LVal { return kindSpec(kind) }
 		for fi, fn := range mapFns(env) {
 			for i, seq := range oracle.Values() {
-				label := "map/" + ts.String() + "/" + fn.Label + "/" + seq.Label
-				got := run(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(spec(), mapFns(env)[fi].V, value(i)) })
+				label := "map/" + kind.String() + "/" + fn.Label + "/" + seq.Label
+				got := run(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(kind, mapFns(env)[fi].V, value(i)) })
 				want := run(func(env *lisp.LEnv) *lisp.LVal {
 					return env.CallBuiltin(refMap, spec(), mapFns(env)[fi].V, value(i))
 				})
@@ -358,10 +366,10 @@ func TestGoFormsAllocLimit(t *testing.T) {
 		{"to-bytes", env.ToBytes(lisp.String("abc")), env.CallBuiltin(refToBytes, lisp.String("abc"))},
 		{"copy", env.DeepCopy(big()), env.CallBuiltin(refCopy, big())},
 		{"assoc", env.MapAssoc(bigMap(), lisp.String("c"), lisp.Int(3)), env.CallBuiltin(refAssoc, bigMap(), lisp.String("c"), lisp.Int(3))},
-		{"concat", env.Concat(list, big(), big()), env.CallBuiltin(refConcat, list, big(), big())},
-		{"concat-string", env.Concat(lisp.Symbol("string"), lisp.String("ab")), env.CallBuiltin(refConcat, lisp.Symbol("string"), lisp.String("ab"))},
-		{"zip", env.Zip(vec, big(), big()), env.CallBuiltin(refZip, vec, big(), big())},
-		{"slice", env.Slice(list, lisp.String("abc"), lisp.Int(0), lisp.Int(3)), env.CallBuiltin(refSlice, list, lisp.String("abc"), lisp.Int(0), lisp.Int(3))},
+		{"concat", env.Concat(lisp.SeqList, big(), big()), env.CallBuiltin(refConcat, list, big(), big())},
+		{"concat-string", env.Concat(lisp.SeqString, lisp.String("ab")), env.CallBuiltin(refConcat, lisp.Symbol("string"), lisp.String("ab"))},
+		{"zip", env.Zip(lisp.SeqVector, big(), big()), env.CallBuiltin(refZip, vec, big(), big())},
+		{"slice", env.Slice(lisp.SeqList, lisp.String("abc"), lisp.Int(0), lisp.Int(3)), env.CallBuiltin(refSlice, list, lisp.String("abc"), lisp.Int(0), lisp.Int(3))},
 		{"append!", env.AppendInPlace(bigVec(), lisp.Int(3)), env.CallBuiltin(refAppendMut, bigVec(), lisp.Int(3))},
 		{"append!-bytes", env.AppendInPlace(lisp.Bytes([]byte{1, 2}), lisp.Int(3)), env.CallBuiltin(refAppendMut, lisp.Bytes([]byte{1, 2}), lisp.Int(3))},
 	}
@@ -432,16 +440,16 @@ func TestGoFormsCancelled(t *testing.T) {
 			func(env *lisp.LEnv) *lisp.LVal { return env.Sub(lisp.Int(1), lisp.Int(2)) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refSub, lisp.Int(1), lisp.Int(2)) }},
 		{"concat",
-			func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.Symbol("list"), list3(), list3()) },
+			func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.SeqList, list3(), list3()) },
 			func(env *lisp.LEnv) *lisp.LVal {
 				return env.CallBuiltin(refConcat, lisp.Symbol("list"), list3(), list3())
 			}},
 		{"zip",
-			func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.Symbol("list"), list3(), list3()) },
+			func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.SeqList, list3(), list3()) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refZip, lisp.Symbol("list"), list3(), list3()) }},
 		{"slice",
 			func(env *lisp.LEnv) *lisp.LVal {
-				return env.Slice(lisp.Symbol("list"), list3(), lisp.Int(0), lisp.Int(2))
+				return env.Slice(lisp.SeqList, list3(), lisp.Int(0), lisp.Int(2))
 			},
 			func(env *lisp.LEnv) *lisp.LVal {
 				return env.CallBuiltin(refSlice, lisp.Symbol("list"), list3(), lisp.Int(0), lisp.Int(2))
@@ -465,7 +473,7 @@ func TestGoFormsCancelled(t *testing.T) {
 		}
 	}
 	oracle.Sweep(t, "map",
-		load(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(lisp.Symbol("list"), lisp.Symbol("twice"), list3()) }),
+		load(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(lisp.SeqList, lisp.Symbol("twice"), list3()) }),
 		load(func(env *lisp.LEnv) *lisp.LVal {
 			return env.CallBuiltin(refMap, lisp.Symbol("list"), lisp.Symbol("twice"), list3())
 		}))
@@ -488,7 +496,7 @@ func TestMapSeqFromTerminalFrame(t *testing.T) {
 				return lisp.String("done")
 			}
 			env.Runtime.Stack.Top().Terminal = true
-			v := env.MapSeq(lisp.Symbol("list"), lisp.Symbol("f"), lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
+			v := env.MapSeq(lisp.SeqList, lisp.Symbol("f"), lisp.QExpr([]*lisp.LVal{lisp.Int(1)}))
 			if !env.Runtime.Stack.Top().Terminal {
 				return env.Errorf("the frame's terminal mark was not restored")
 			}
@@ -524,7 +532,7 @@ func TestGoFormsSteps(t *testing.T) {
 		require.False(t, v.IsError(), "%v", v)
 		return n
 	}
-	got := steps(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(lisp.Symbol("list"), lisp.Symbol("twice"), list3()) })
+	got := steps(func(env *lisp.LEnv) *lisp.LVal { return env.MapSeq(lisp.SeqList, lisp.Symbol("twice"), list3()) })
 	want := steps(func(env *lisp.LEnv) *lisp.LVal {
 		return env.CallBuiltin(refMap, lisp.Symbol("list"), lisp.Symbol("twice"), list3())
 	})
@@ -550,15 +558,15 @@ func TestGoFormsSteps(t *testing.T) {
 		">=":      func(env *lisp.LEnv) *lisp.LVal { return b(env.NumGreaterEqual(lisp.Int(1), lisp.Int(2))) },
 		"+":       func(env *lisp.LEnv) *lisp.LVal { return env.Add(lisp.Int(1), lisp.Float(2)) },
 		"-":       func(env *lisp.LEnv) *lisp.LVal { return env.Sub(lisp.Int(1), lisp.Int(2), lisp.Int(3)) },
-		"concat":  func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.Symbol("list"), list3(), list3()) },
-		"zip":     func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.Symbol("list"), list3(), list3()) },
+		"concat":  func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.SeqList, list3(), list3()) },
+		"zip":     func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.SeqList, list3(), list3()) },
 		"slice": func(env *lisp.LEnv) *lisp.LVal {
-			return env.Slice(lisp.Symbol("vector"), list3(), lisp.Int(0), lisp.Int(2))
+			return env.Slice(lisp.SeqVector, list3(), lisp.Int(0), lisp.Int(2))
 		},
 		"append!":     func(env *lisp.LEnv) *lisp.LVal { return env.AppendInPlace(lisp.Vector(nil), lisp.Int(1)) },
 		"debug-stack": func(env *lisp.LEnv) *lisp.LVal { return env.DebugStack() },
 		"map-empty": func(env *lisp.LEnv) *lisp.LVal {
-			return env.MapSeq(lisp.Symbol("list"), lisp.Symbol("twice"), lisp.Nil())
+			return env.MapSeq(lisp.SeqList, lisp.Symbol("twice"), lisp.Nil())
 		},
 	}
 	env.Runtime.Stderr = &bytes.Buffer{}

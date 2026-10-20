@@ -1082,10 +1082,10 @@ returns a nil error on success.
 | `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
 | `key?` | `env.MapHasKey(m, k) (bool, *LVal)` |
 | `nth` | `env.Nth(seq, n) *LVal` |
-| `map` | `env.MapSeq(typespec, fn, seq) *LVal` |
-| `concat` | `env.Concat(typespec, seqs...) *LVal` |
-| `zip` | `env.Zip(typespec, list, lists...) *LVal` |
-| `slice` | `env.Slice(typespec, seq, start, end) *LVal` |
+| `map` | `env.MapSeq(kind, fn, seq) *LVal` |
+| `concat` | `env.Concat(kind, seqs...) *LVal` |
+| `zip` | `env.Zip(kind, list, lists...) *LVal` |
+| `slice` | `env.Slice(kind, seq, start, end) *LVal` |
 | `append!` | `env.AppendInPlace(seq, vals...) *LVal` |
 | `copy` | `env.DeepCopy(v) *LVal` |
 | `to-int`, `to-bytes` | `env.ToInt(v)`, `env.ToBytes(v) *LVal` |
@@ -1094,8 +1094,26 @@ returns a nil error on success.
 | `string=` | `env.StringEqual(a, b) (bool, *LVal)` |
 | `debug-stack` | `env.DebugStack() *LVal` |
 
-The type specifier, the index and the bounds are `*LVal` values, as the
-builtins take them. `MapSeq` calls `fn` as `map` does: each call checks the
+The sequence forms take the type specifier as a `lisp.SeqKind` constant, so
+the compiler checks it. The index and the bounds are `*LVal` values, as the
+builtins take them.
+
+| `SeqKind` | Type specifier | Accepted by |
+|-----------|----------------|-------------|
+| `SeqList` | `'list` | `MapSeq`, `Concat`, `Zip`, `Slice` |
+| `SeqVector` | `'vector` | `MapSeq`, `Concat`, `Zip`, `Slice` |
+| `SeqString` | `'string` | `Concat`, `Slice` |
+| `SeqBytes` | `'bytes` | `Concat`, `Slice` |
+| `SeqNil` | `()` | `MapSeq` (calls `fn` for its effects and returns `()`) |
+
+A form given a kind its builtin refuses returns the builtin's error for that
+type specifier. The zero `SeqKind`, and any value outside the constants,
+returns the builtin's error for an unknown symbol, printed as `SeqKind(n)`.
+
+Upgrade from v1.82.0: pass `lisp.SeqList` in place of `lisp.Symbol("list")`,
+and so on for each row above. Pass `lisp.SeqNil` in place of `lisp.Nil()`.
+
+`MapSeq` calls `fn` as `map` does: each call checks the
 context and charges one step. `Add` and `Sub` take every operand at once,
 because a float anywhere makes the builtin sum in float from the start.
 `DeepCopy` honours the runtime's value-depth limit, which `LVal.Copy` does
