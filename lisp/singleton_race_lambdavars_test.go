@@ -9,7 +9,7 @@
 //	s = builtinConcat(nil, s)
 //	s.quoted = false // This is fine because builtinConcat returns a new list
 //
-// The comment was wrong. builtinConcatSeq short-circuits the empty case
+// The comment was wrong. concatSeq short-circuits the empty case
 // with `return Nil()` -- the process-wide shared singleton. So printing
 // any lambda with no formals AND no bound vars wrote straight into
 // singletonNil, racing with every concurrent (*LEnv).eval reading

@@ -467,7 +467,7 @@ func TestCheckAllocConcatString(t *testing.T) {
 		a := String(strings.Repeat("a", 60))
 		b := String(strings.Repeat("b", 60))
 		args := SExpr([]*LVal{Symbol("string"), a, b})
-		result := builtinConcatString(env, args)
+		result := concatString(env, args.Cells[1:])
 		msg := requireLError(t, result)
 		if !strings.Contains(msg, "allocation size 120 exceeds maximum (100)") {
 			t.Errorf("wrong error: %s", msg)
@@ -480,7 +480,7 @@ func TestCheckAllocConcatString(t *testing.T) {
 		a := String("hello")
 		b := String(" world")
 		args := SExpr([]*LVal{Symbol("string"), a, b})
-		result := builtinConcatString(env, args)
+		result := concatString(env, args.Cells[1:])
 		if result.Type == LError {
 			t.Fatalf("unexpected error: %v", result)
 		}
@@ -499,7 +499,7 @@ func TestCheckAllocConcatBytes(t *testing.T) {
 		a := Bytes([]byte{1, 2, 3})
 		b := Bytes([]byte{4, 5, 6})
 		args := SExpr([]*LVal{Symbol("bytes"), a, b})
-		result := builtinConcatBytes(env, args)
+		result := concatBytes(env, args.Cells[1:])
 		msg := requireLError(t, result)
 		if !strings.Contains(msg, "allocation size 6 exceeds maximum (5)") {
 			t.Errorf("wrong error: %s", msg)
@@ -512,7 +512,7 @@ func TestCheckAllocConcatBytes(t *testing.T) {
 		a := Bytes([]byte{1, 2})
 		b := Bytes([]byte{3, 4})
 		args := SExpr([]*LVal{Symbol("bytes"), a, b})
-		result := builtinConcatBytes(env, args)
+		result := concatBytes(env, args.Cells[1:])
 		if result.Type == LError {
 			t.Fatalf("unexpected error: %v", result)
 		}
@@ -531,7 +531,7 @@ func TestCheckAllocConcatSeq(t *testing.T) {
 		a := QExpr([]*LVal{Int(1), Int(2)})
 		b := QExpr([]*LVal{Int(3), Int(4)})
 		args := SExpr([]*LVal{Symbol("list"), a, b})
-		result := builtinConcatSeq(env, args)
+		result := concatSeq(env, args.Cells[0], args.Cells[1:])
 		msg := requireLError(t, result)
 		if !strings.Contains(msg, "allocation size 4 exceeds maximum (3)") {
 			t.Errorf("wrong error: %s", msg)
@@ -544,7 +544,7 @@ func TestCheckAllocConcatSeq(t *testing.T) {
 		a := QExpr([]*LVal{Int(1)})
 		b := QExpr([]*LVal{Int(2)})
 		args := SExpr([]*LVal{Symbol("list"), a, b})
-		result := builtinConcatSeq(env, args)
+		result := concatSeq(env, args.Cells[0], args.Cells[1:])
 		if result.Type == LError {
 			t.Fatalf("unexpected error: %v", result)
 		}

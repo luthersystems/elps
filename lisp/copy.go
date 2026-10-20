@@ -114,7 +114,25 @@ func (v *LVal) deepCopyWithRuntime(runtime *Runtime) (*LVal, error) {
 // another binding, a container or a closure (issue #378).  Code that
 // intends to mutate data it did not construct copies first, full stop.
 func builtinCopy(env *LEnv, args *LVal) *LVal {
-	cp, err := args.Cells[0].deepCopyWithRuntime(env.Runtime)
+	return deepCopyValue(env, args.Cells[0])
+}
+
+// DeepCopy returns what the copy builtin returns for (copy v): a deep copy of
+// v that shares no storage with it, or the same error from the same check.
+// It makes copy's allocation checks and honours the runtime's value-depth
+// limit (WithMaxValueDepth), which LVal.Copy does not.  It checks the
+// evaluation's context first, as CallBuiltin does.  It charges no step.
+func (env *LEnv) DeepCopy(v *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return deepCopyValue(env, v)
+}
+
+// deepCopyValue is the body of the copy builtin and of LEnv.DeepCopy, so the
+// two cannot differ.
+func deepCopyValue(env *LEnv, v *LVal) *LVal {
+	cp, err := v.deepCopyWithRuntime(env.Runtime)
 	if err != nil {
 		return env.Errorf("value cannot be copied: %v", err)
 	}

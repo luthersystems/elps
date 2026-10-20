@@ -1116,16 +1116,8 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 // called plainly, as a non-tail call from Lisp would be.
 func (env *LEnv) plainCall(fun, args *LVal) *LVal {
 	stack := env.Runtime.Stack
-	top := -1
-	if stack != nil && len(stack.Frames) > 0 {
-		top = len(stack.Frames) - 1
-		terminal := stack.Frames[top].Terminal
-		stack.Frames[top].Terminal = false
-		defer func() {
-			if top < len(stack.Frames) {
-				stack.Frames[top].Terminal = terminal
-			}
-		}()
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
 	}
 	val := env.FunCall(fun, args)
 	if val.Type == LMarkTailRec {
@@ -1173,7 +1165,23 @@ func toStringValue(env *LEnv, val *LVal) *LVal {
 }
 
 func builtinToBytes(env *LEnv, args *LVal) *LVal {
-	val := args.Cells[0]
+	return toBytesValue(env, args.Cells[0])
+}
+
+// ToBytes returns what the to-bytes builtin returns for val: the same bytes,
+// or the same error from the same check, the allocation check included.  It
+// checks the evaluation's context first, as CallBuiltin does.  It charges no
+// step.
+func (env *LEnv) ToBytes(val *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return toBytesValue(env, val)
+}
+
+// toBytesValue is the body of the to-bytes builtin and of LEnv.ToBytes, so
+// the two cannot differ.
+func toBytesValue(env *LEnv, val *LVal) *LVal {
 	if val.Type == LBytes {
 		return val
 	}
@@ -1206,7 +1214,22 @@ func toString(val *LVal) (string, error) {
 }
 
 func builtinToInt(env *LEnv, args *LVal) *LVal {
-	val := args.Cells[0]
+	return toIntValue(env, args.Cells[0])
+}
+
+// ToInt returns what the to-int builtin returns for val: the same int, or the
+// same error from the same check.  It checks the evaluation's context first,
+// as CallBuiltin does.  It charges no step.
+func (env *LEnv) ToInt(val *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return toIntValue(env, val)
+}
+
+// toIntValue is the body of the to-int builtin and of LEnv.ToInt, so the two
+// cannot differ.
+func toIntValue(env *LEnv, val *LVal) *LVal {
 	switch val.Type {
 	case LString:
 		x, err := strconv.Atoi(val.Str)
@@ -1470,7 +1493,24 @@ func seqElem(env *LEnv, list *LVal, i int) *LVal {
 }
 
 func builtinNth(env *LEnv, args *LVal) *LVal {
-	list, n := args.Cells[0], args.Cells[1]
+	return seqNth(env, args.Cells[0], args.Cells[1])
+}
+
+// Nth returns what the nth builtin returns for (nth seq n): the element at
+// index n of a list or a vector, () when n is past its end, or the same error
+// from the same check.  It checks the evaluation's context first, as
+// CallBuiltin does, and charges no step.  An element is returned as it is
+// stored, an error value included, as the builtin returns it.
+func (env *LEnv) Nth(seq, n *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqNth(env, seq, n)
+}
+
+// seqNth is the body of the nth builtin and of LEnv.Nth, so the two cannot
+// differ.
+func seqNth(env *LEnv, list, n *LVal) *LVal {
 	if !isSeq(list) {
 		return env.Errorf("first argument is not a proper sequence: %v", list.Type)
 	}
@@ -1488,7 +1528,34 @@ func builtinNth(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinMap(env *LEnv, args *LVal) *LVal {
-	typespec, f, lis := args.Cells[0], args.Cells[1], args.Cells[2]
+	return mapSeq(env, args.Cells[0], args.Cells[1], args.Cells[2])
+}
+
+// MapSeq returns what the map builtin returns for (map typespec fn seq): a
+// list or a vector of fn's results for the elements of seq, or the same error
+// from the same check.  typespec is the symbol list or vector, or () to call
+// fn for its effects and return ().  A symbol fn resolves to its global
+// function, as map resolves it.
+//
+// It checks the evaluation's context first, as CallBuiltin does.  Each call
+// of fn checks the context and charges one step, as map's calls do, and fn
+// charges its own steps.  MapSeq charges no other step.  As CallBuiltin
+// does, it keeps the calling frame non-terminal while fn runs, so no tail
+// call in fn returns through the Go caller.
+func (env *LEnv) MapSeq(typespec, fn, seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	stack := env.Runtime.Stack
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
+	}
+	return mapSeq(env, typespec, fn, seq)
+}
+
+// mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
+// cannot differ.
+func mapSeq(env *LEnv, typespec, f, lis *LVal) *LVal {
 	nilReturn := false
 	if typespec.IsNil() {
 		nilReturn = true
@@ -1721,9 +1788,27 @@ func builtinFlip(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinAssoc(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
-	v := args.Cells[2]
+	return assocCopy(env, args.Cells[0], args.Cells[1], args.Cells[2])
+}
+
+// MapAssoc returns what the assoc builtin returns for (assoc m k v): a new
+// sorted-map that holds m's entries and k set to v, or the same error from
+// the same check.  It does not change m.  A nil m gives a new map with the
+// one entry.  It checks the evaluation's context first, as CallBuiltin does,
+// and makes assoc's allocation checks.  It charges no step.
+//
+// Use it where the Lisp called assoc.  MapPut changes m in place, as assoc!
+// does.
+func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return assocCopy(env, m, k, v)
+}
+
+// assocCopy is the body of the assoc builtin and of LEnv.MapAssoc, so the
+// two cannot differ.
+func assocCopy(env *LEnv, m, k, v *LVal) *LVal {
 	if m.IsNil() {
 		m = SortedMap()
 	} else if m.Type != LSortMap {
@@ -1745,7 +1830,7 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
-		return env.Errorf("%s", err)
+		return env.Error(env.Render(err))
 	}
 	return m
 }
@@ -1918,16 +2003,38 @@ func mapKeys(env *LEnv, m *LVal) *LVal {
 }
 
 func builtinIsKey(env *LEnv, args *LVal) *LVal {
-	m, k := args.Cells[0], args.Cells[1]
+	ok, lerr := mapHasKey(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
+}
+
+// MapHasKey returns what the key? builtin returns for (key? m k): whether m
+// has the key k, or the same error from the same check.  A value that is not
+// a sorted-map raises "first argument is not a map: <type>", and a key the
+// map refuses returns the map's own error.  The error is nil when there is
+// none.  It checks the evaluation's context first, as CallBuiltin does.  It
+// charges no step.
+func (env *LEnv) MapHasKey(m, k *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return mapHasKey(env, m, k)
+}
+
+// mapHasKey is the body of the key? builtin and of LEnv.MapHasKey, so the
+// two cannot differ.
+func mapHasKey(env *LEnv, m, k *LVal) (bool, *LVal) {
 	if m.Type != LSortMap {
-		return env.Errorf("first argument is not a map: %s", m.Type)
+		return false, env.Errorf("first argument is not a map: %s", m.Type)
 	}
 	v, ok := m.Map().Get(k)
 	if v.IsError() {
 		v.SetCallStack(env.Runtime.Stack.Copy())
-		return v
+		return false, v
 	}
-	return Bool(ok)
+	return ok, nil
 }
 
 func builtinSortedMap(env *LEnv, args *LVal) *LVal {
@@ -1980,25 +2087,42 @@ func sortedMapFromPairs(env *LEnv, kv []*LVal) *LVal {
 }
 
 func builtinConcat(env *LEnv, args *LVal) *LVal {
-	typespec := args.Cells[0]
+	return concatValues(env, args.Cells[0], args.Cells[1:])
+}
+
+// Concat returns what the concat builtin returns for (concat typespec
+// seqs...): one value of the type typespec names ('list, 'vector, 'string or
+// 'bytes) that holds the elements of seqs in order, or the same error from
+// the same check, the allocation check included.  It checks the evaluation's
+// context first, as CallBuiltin does.  It charges no step.  It neither writes
+// seqs nor keeps the slice.
+func (env *LEnv) Concat(typespec *LVal, seqs ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return concatValues(env, typespec, seqs)
+}
+
+// concatValues is the body of the concat builtin and of LEnv.Concat, so the
+// two cannot differ.
+func concatValues(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
 	}
 	switch typespec.Str {
 	case "vector", "list":
-		return builtinConcatSeq(env, args)
+		return concatSeq(env, typespec, rest)
 	case "string":
-		return builtinConcatString(env, args)
+		return concatString(env, rest)
 	case "bytes":
-		return builtinConcatBytes(env, args)
+		return concatBytes(env, rest)
 	default:
 		return env.Errorf("type specifier is not valid: %v", typespec)
 	}
 }
 
-func builtinConcatString(env *LEnv, args *LVal) *LVal {
-	// typespec is already known to be 'string here
-	_, rest := args.Cells[0], args.Cells[1:]
+// concatString is concat's 'string arm.
+func concatString(env *LEnv, rest []*LVal) *LVal {
 	size := 0
 	for _, v := range rest {
 		n := v.Len()
@@ -2030,9 +2154,8 @@ func builtinConcatString(env *LEnv, args *LVal) *LVal {
 	return String(buf.String())
 }
 
-func builtinConcatBytes(env *LEnv, args *LVal) *LVal {
-	// typespec is already known to be 'bytes here
-	_, rest := args.Cells[0], args.Cells[1:]
+// concatBytes is concat's 'bytes arm.
+func concatBytes(env *LEnv, rest []*LVal) *LVal {
 	size := 0
 	for _, v := range rest {
 		n := v.Len()
@@ -2084,8 +2207,8 @@ func appendBytes(_ *LEnv, seq *LVal, fn func(x byte)) error {
 	return nil
 }
 
-func builtinConcatSeq(env *LEnv, args *LVal) *LVal {
-	typespec, rest := args.Cells[0], args.Cells[1:]
+// concatSeq is concat's 'list and 'vector arm.
+func concatSeq(env *LEnv, typespec *LVal, rest []*LVal) *LVal {
 	size := 0
 	for _, v := range rest {
 		if !isSeq(v) {
@@ -2581,12 +2704,34 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinZip(env *LEnv, args *LVal) *LVal {
-	typespec, lists := args.Cells[0], args.Cells[1:]
+	return zipSeqs(env, args.Cells[0], args.Cells[1], args.Cells[2:])
+}
+
+// Zip returns what the zip builtin returns for (zip typespec list lists...):
+// a list or a vector of sequences of the type typespec names, where the i-th
+// holds the i-th element of each input, cut to the shortest input; or the
+// same error from the same check, the allocation check included.  It checks
+// the evaluation's context first, as CallBuiltin does.  It charges no step.
+// It neither writes lists nor keeps the slice.
+func (env *LEnv) Zip(typespec, list *LVal, lists ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return zipSeqs(env, typespec, list, lists)
+}
+
+// zipSeqs is the body of the zip builtin and of LEnv.Zip, so the two cannot
+// differ.  The inputs are first and then rest, so neither caller builds a
+// slice of them.
+func zipSeqs(env *LEnv, typespec, first *LVal, rest []*LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	n := lists[0].Len()
-	for _, list := range lists {
+	if !isSeq(first) {
+		return env.Errorf("argument is not a proper list: %v", first.Type)
+	}
+	n := first.Len()
+	for _, list := range rest {
 		if !isSeq(list) {
 			return env.Errorf("argument is not a proper list: %v", list.Type)
 		}
@@ -2595,7 +2740,8 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 			n = m
 		}
 	}
-	if lerr := env.CheckAlloc(n * len(lists)); lerr.IsError() {
+	width := 1 + len(rest)
+	if lerr := env.CheckAlloc(n * width); lerr.IsError() {
 		return lerr
 	}
 	var v *LVal
@@ -2615,16 +2761,17 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 		var elemCells []*LVal
 		switch typespec.Str {
 		case "vector":
-			elem = MakeVector(len(lists))
+			elem = MakeVector(width)
 			elemCells = seqCells(elem)
 		case "list":
-			elemCells = make([]*LVal, len(lists))
+			elemCells = make([]*LVal, width)
 			elem = QExpr(elemCells)
 		default:
 			return env.Errorf("type specifier is invalid: %v", typespec)
 		}
-		for j, list := range lists {
-			elemCells[j] = seqCells(list)[i]
+		elemCells[0] = seqCells(first)[i]
+		for j, list := range rest {
+			elemCells[j+1] = seqCells(list)[i]
 		}
 		cells[i] = elem
 	}
@@ -2783,7 +2930,25 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinSlice(env *LEnv, args *LVal) *LVal {
-	typespec, list, start, end := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3]
+	return env.sliceSeq(args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3])
+}
+
+// Slice returns what the slice builtin returns for (slice typespec seq start
+// end): the elements of seq from index start up to end, as the type typespec
+// names, or the same error from the same check, the allocation check
+// included.  For a list, a vector or bytes the result shares elements with
+// seq, as the builtin's does.  It checks the evaluation's context first, as
+// CallBuiltin does.  It charges no step.
+func (env *LEnv) Slice(typespec, seq, start, end *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return env.sliceSeq(typespec, seq, start, end)
+}
+
+// sliceSeq is the body of the slice builtin and of LEnv.Slice, so the two
+// cannot differ.
+func (env *LEnv) sliceSeq(typespec, list, start, end *LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
@@ -3030,9 +3195,27 @@ func appendGrow(cells, vals []*LVal, limit int) []*LVal {
 // The caller who reaches for append! has already said they want mutation.
 // The bug in #373 was mutation nobody asked for.
 func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
-	vec, vals := args.Cells[0], args.Cells[1:]
+	return appendMutate(env, args.Cells[0], args.Cells[1:])
+}
+
+// AppendInPlace returns what the append! builtin returns for (append! seq
+// vals...): seq, a vector or bytes, after it appends vals to seq in place;
+// or the same error from the same check, the allocation check included.  A
+// vector grows its capacity as append! grows it (GrowCap).  It checks the
+// evaluation's context first, as CallBuiltin does.  It charges no step.  It
+// neither writes vals nor keeps the slice.
+func (env *LEnv) AppendInPlace(seq *LVal, vals ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return appendMutate(env, seq, vals)
+}
+
+// appendMutate is the body of the append! builtin and of LEnv.AppendInPlace,
+// so the two cannot differ.
+func appendMutate(env *LEnv, vec *LVal, vals []*LVal) *LVal {
 	if vec.Type == LBytes {
-		return appendMutateBytes(env, args)
+		return appendMutateBytes(env, vec, vals)
 	}
 	if !isVec(vec) {
 		return env.Errorf("first argument is not a vector: %v", vec.Type)
@@ -3048,8 +3231,7 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 
 // appendMutateBytes is the bytes path of append!.  Not capacity-clamped,
 // for the reason given on builtinAppendMutate (issue #373).
-func appendMutateBytes(env *LEnv, args *LVal) *LVal {
-	lbytes, xs := args.Cells[0], args.Cells[1:]
+func appendMutateBytes(env *LEnv, lbytes *LVal, xs []*LVal) *LVal {
 	b := lbytes.Bytes()
 	xsVal := QExpr(xs)
 	if lerr := env.CheckAlloc(len(b) + xsVal.Len()); lerr.IsError() {
@@ -3614,81 +3796,185 @@ func builtinSymbolEq(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinStringEq(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
+	ok, lerr := stringEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
+}
+
+// StringEqual returns what the string= builtin returns for (string= a b):
+// whether the strings a and b are equal, or the same error from the same
+// check.  The error is nil when there is none.  It checks the evaluation's
+// context first, as CallBuiltin does.  It charges no step.
+func (env *LEnv) StringEqual(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return stringEqual(env, a, b)
+}
+
+// stringEqual is the body of the string= builtin and of LEnv.StringEqual, so
+// the two cannot differ.
+func stringEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
 	if a.Type != LString {
-		return env.Errorf("first argument is not a string: %s", a.Type)
+		return false, env.Errorf("first argument is not a string: %s", a.Type)
 	}
 	if b.Type != LString {
-		return env.Errorf("second argument is not a string: %s", b.Type)
+		return false, env.Errorf("second argument is not a string: %s", b.Type)
 	}
-	return Bool(a.Str == b.Str)
+	return a.Str == b.Str, nil
 }
 
 func builtinLEq(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if !a.IsNumeric() {
-		return env.Errorf("first argument is not a number: %s", a.Type)
+	ok, lerr := numLessEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
 	}
-	if !b.IsNumeric() {
-		return env.Errorf("second argument is not a number: %s", b.Type)
-	}
-	if bothInt(a, b) {
-		return Bool(a.Int <= b.Int)
-	}
-	return Bool(toFloat(a) <= toFloat(b))
+	return Bool(ok)
 }
 
 func builtinLT(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if !a.IsNumeric() {
-		return env.Errorf("first argument is not a number: %s", a.Type)
+	ok, lerr := numLess(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
 	}
-	if !b.IsNumeric() {
-		return env.Errorf("second argument is not a number: %s", b.Type)
-	}
-	if bothInt(a, b) {
-		return Bool(a.Int < b.Int)
-	}
-	return Bool(toFloat(a) < toFloat(b))
+	return Bool(ok)
 }
 
 func builtinGEq(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if !a.IsNumeric() {
-		return env.Errorf("first argument is not a number: %s", a.Type)
+	ok, lerr := numGreaterEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
 	}
-	if !b.IsNumeric() {
-		return env.Errorf("second argument is not a number: %s", b.Type)
-	}
-	if bothInt(a, b) {
-		return Bool(a.Int >= b.Int)
-	}
-	return Bool(toFloat(a) >= toFloat(b))
+	return Bool(ok)
 }
 
 func builtinGT(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
-	if !a.IsNumeric() {
-		return env.Errorf("first argument is not a number: %s", a.Type)
+	ok, lerr := numGreater(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
 	}
-	if !b.IsNumeric() {
-		return env.Errorf("second argument is not a number: %s", b.Type)
-	}
-	if bothInt(a, b) {
-		return Bool(a.Int > b.Int)
-	}
-	return Bool(toFloat(a) > toFloat(b))
+	return Bool(ok)
 }
 
 func builtinEqNum(env *LEnv, args *LVal) *LVal {
-	a, b := args.Cells[0], args.Cells[1]
+	ok, lerr := numEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
+}
+
+// NumEqual returns what the = builtin returns for (= a b): whether the
+// numbers a and b are equal, or the same error from the same check.  An int
+// and a float compare as floats.  The error is nil when there is none.  It
+// checks the evaluation's context first, as CallBuiltin does.  It charges no
+// step.
+func (env *LEnv) NumEqual(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numEqual(env, a, b)
+}
+
+// NumLess returns what the < builtin returns for (< a b), as NumEqual does
+// for =.
+func (env *LEnv) NumLess(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numLess(env, a, b)
+}
+
+// NumLessEqual returns what the <= builtin returns for (<= a b), as NumEqual
+// does for =.
+func (env *LEnv) NumLessEqual(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numLessEqual(env, a, b)
+}
+
+// NumGreater returns what the > builtin returns for (> a b), as NumEqual
+// does for =.
+func (env *LEnv) NumGreater(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numGreater(env, a, b)
+}
+
+// NumGreaterEqual returns what the >= builtin returns for (>= a b), as
+// NumEqual does for =.
+func (env *LEnv) NumGreaterEqual(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numGreaterEqual(env, a, b)
+}
+
+// numArgs returns the error the numeric comparisons raise for a non-number
+// operand, or nil.
+func numArgs(env *LEnv, a, b *LVal) *LVal {
 	if !a.IsNumeric() {
 		return env.Errorf("first argument is not a number: %s", a.Type)
 	}
 	if !b.IsNumeric() {
 		return env.Errorf("second argument is not a number: %s", b.Type)
 	}
-	return a.equalNum(b)
+	return nil
+}
+
+// numEqual, numLess, numLessEqual, numGreater and numGreaterEqual are the
+// bodies of =, <, <=, > and >= and of their Go forms, so the two cannot
+// differ.  Two ints compare as ints; otherwise both compare as floats, so a
+// NaN operand makes every comparison false.
+func numEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	return a.isEqualNum(b), nil
+}
+
+func numLess(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int < b.Int, nil
+	}
+	return toFloat(a) < toFloat(b), nil
+}
+
+func numLessEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int <= b.Int, nil
+	}
+	return toFloat(a) <= toFloat(b), nil
+}
+
+func numGreater(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int > b.Int, nil
+	}
+	return toFloat(a) > toFloat(b), nil
+}
+
+func numGreaterEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int >= b.Int, nil
+	}
+	return toFloat(a) >= toFloat(b), nil
 }
 
 func builtinPow(env *LEnv, args *LVal) *LVal {
@@ -3772,43 +4058,80 @@ func builtinMod(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinAdd(env *LEnv, v *LVal) *LVal {
-	if len(v.Cells) == 0 {
+	return addNumbers(env, v.Cells)
+}
+
+// Add returns what the + builtin returns for (+ xs...): the sum of xs, 0 for
+// no xs, or the same error from the same check.  The sum is an int when
+// every x is an int, and otherwise a float summed in float from the start,
+// so (env.Add a b c) can differ from adding pairwise.  It checks the
+// evaluation's context first, as CallBuiltin does.  It charges no step.  It
+// neither writes xs nor keeps the slice.
+func (env *LEnv) Add(xs ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return addNumbers(env, xs)
+}
+
+// addNumbers is the body of the + builtin and of LEnv.Add, so the two cannot
+// differ.
+func addNumbers(env *LEnv, cells []*LVal) *LVal {
+	if len(cells) == 0 {
 		return Int(0)
 	}
-	for _, c := range v.Cells {
+	for _, c := range cells {
 		if !c.IsNumeric() {
 			return env.Errorf("argument is not a number: %v", c.Type)
 		}
 	}
-	elemt := numericListType(v.Cells)
+	elemt := numericListType(cells)
 	if elemt == LInt {
 		sum := 0
-		for _, c := range v.Cells {
+		for _, c := range cells {
 			sum += c.Int
 		}
 		return Int(sum)
 	}
 	sum := 0.0
-	for _, c := range v.Cells {
+	for _, c := range cells {
 		sum += toFloat(c)
 	}
 	return Float(sum)
 }
 
 func builtinSub(env *LEnv, v *LVal) *LVal {
-	for _, c := range v.Cells {
+	return subNumbers(env, v.Cells)
+}
+
+// Sub returns what the - builtin returns for (- xs...): the negation of one
+// x, the first x less the others, 0 for no xs, or the same error from the
+// same check.  As Add does, it works in float from the start when any x is a
+// float.  It checks the evaluation's context first, as CallBuiltin does.  It
+// charges no step.  It neither writes xs nor keeps the slice.
+func (env *LEnv) Sub(xs ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return subNumbers(env, xs)
+}
+
+// subNumbers is the body of the - builtin and of LEnv.Sub, so the two cannot
+// differ.
+func subNumbers(env *LEnv, cells []*LVal) *LVal {
+	for _, c := range cells {
 		if !c.IsNumeric() {
 			return env.Errorf("argument is not a number: %v", c.Type)
 		}
 	}
 
-	if len(v.Cells) == 0 {
+	if len(cells) == 0 {
 		return Int(0)
 	}
 
-	if len(v.Cells) == 1 {
-		x := v.Cells[0]
-		switch v.Cells[0].Type {
+	if len(cells) == 1 {
+		x := cells[0]
+		switch cells[0].Type {
 		case LInt:
 			return Int(-x.Int)
 		case LFloat:
@@ -3819,16 +4142,16 @@ func builtinSub(env *LEnv, v *LVal) *LVal {
 		}
 	}
 
-	elemt := numericListType(v.Cells)
+	elemt := numericListType(cells)
 	if elemt == LInt {
-		diff := v.Cells[0].Int
-		for _, c := range v.Cells[1:] {
+		diff := cells[0].Int
+		for _, c := range cells[1:] {
 			diff -= c.Int
 		}
 		return Int(diff)
 	}
-	diff := toFloat(v.Cells[0])
-	for _, c := range v.Cells[1:] {
+	diff := toFloat(cells[0])
+	for _, c := range cells[1:] {
 		diff -= toFloat(c)
 	}
 	return Float(diff)
@@ -4005,6 +4328,24 @@ func (env *LEnv) renderError(budget *renderBudget) *LVal {
 }
 
 func builtinDebugStack(env *LEnv, args *LVal) *LVal {
+	return debugStack(env)
+}
+
+// DebugStack does what the debug-stack builtin does: it prints the call stack
+// to the runtime's stderr and returns (), or returns the same error from the
+// same check.  The printing honours the allocation limit and stops when the
+// context ends, as the builtin's does.  It checks the evaluation's context
+// first, as CallBuiltin does.  It charges no step.
+func (env *LEnv) DebugStack() *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return debugStack(env)
+}
+
+// debugStack is the body of the debug-stack builtin and of LEnv.DebugStack,
+// so the two cannot differ.
+func debugStack(env *LEnv) *LVal {
 	_, err := env.Runtime.Stack.debugPrintContext(env.evalCtx, env.Runtime.getStderr(), env.Runtime.MaxAllocBytes())
 	if err != nil {
 		return env.Error(err)

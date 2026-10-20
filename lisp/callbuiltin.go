@@ -128,16 +128,9 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	// the frame slice and move the frames, and a pointer would then clear
 	// and restore a stale copy (luthersystems/elps#852).
 	stack := env.Runtime.Stack
-	top := -1
-	if stack != nil && len(stack.Frames) > 0 {
-		top = len(stack.Frames) - 1
-		terminal := stack.Frames[top].Terminal
-		stack.Frames[top].Terminal = false
-		defer func() {
-			if top < len(stack.Frames) {
-				stack.Frames[top].Terminal = terminal
-			}
-		}()
+	top, terminal := stack.holdNonTerminal()
+	if top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
 	}
 	val := def.fun(env, list)
 	if val == nil {
