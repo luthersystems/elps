@@ -12,7 +12,7 @@ import (
 )
 
 func TestFrozenPackageBaseFingerprint(t *testing.T) {
-	for _, field := range []string{"index", "funNames", "symbolDocs", "externals", "bindings", "pending"} {
+	for _, field := range []string{"index", "funNames", "fidNames", "symbolDocs", "externals", "bindings", "pending"} {
 		for _, viaVM := range []bool{false, true} {
 			t.Run(field+map[bool]string{false: "/helper", true: "/NewVM"}[viaVM], func(t *testing.T) {
 				source := templateOwnershipEnv()
@@ -37,6 +37,8 @@ func TestFrozenPackageBaseFingerprint(t *testing.T) {
 					base.index = packagetable.NewMap(map[string]int{"value": 9})
 				case "funNames":
 					base.funNames = packagetable.NewMap(map[string]string{"f": "corrupt"})
+				case "fidNames":
+					base.fidNames = packagetable.NewLists(map[string][]string{"f": {"corrupt"}})
 				case "symbolDocs":
 					base.symbolDocs = packagetable.NewMap(map[string]string{"value": "corrupt"})
 				case "externals":
