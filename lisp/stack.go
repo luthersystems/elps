@@ -390,3 +390,27 @@ func (e *TailIterationLimitError) Error() string {
 		" backstop, not a stack overflow — raise or disable the limit with"+
 		" WithMaxTailIterations)", e.Iterations)
 }
+
+// holdNonTerminal clears the top frame's terminal mark while Go code calls
+// Lisp, and returns what restoreTerminal needs to put it back.  funcall and
+// apply mark the top frame terminal so a callee's tail call can reuse it, but
+// a Go frame cannot be unwound, so a call made from Go must find the top frame
+// non-terminal.  It returns the frame's index, not a pointer: a push while
+// the callee runs can move the frames (luthersystems/elps#852).  top is -1
+// for a nil or empty stack.
+func (s *CallStack) holdNonTerminal() (top int, terminal bool) {
+	if s == nil || len(s.Frames) == 0 {
+		return -1, false
+	}
+	top = len(s.Frames) - 1
+	terminal = s.Frames[top].Terminal
+	s.Frames[top].Terminal = false
+	return top, terminal
+}
+
+// restoreTerminal puts back the mark holdNonTerminal cleared on frame top.
+func (s *CallStack) restoreTerminal(top int, terminal bool) {
+	if top >= 0 && top < len(s.Frames) {
+		s.Frames[top].Terminal = terminal
+	}
+}

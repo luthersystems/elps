@@ -1099,8 +1099,10 @@ builtins take them. `MapSeq` calls `fn` as `map` does: each call checks the
 context and charges one step. `Add` and `Sub` take every operand at once,
 because a float anywhere makes the builtin sum in float from the start.
 `DeepCopy` honours the runtime's value-depth limit, which `LVal.Copy` does
-not. `list` and `vector` need no form: `lisp.Cells(xs).List()` and
-`lisp.Cells(xs).Clone().Vector()` return the same values.
+not. `list` and `vector` need no form: `lisp.Cells(xs).Clone().List()` and
+`lisp.Cells(xs).Clone().Vector()` return the same values. Clone `xs` for both.
+Without the clone the result shares the backing array and spare capacity of
+`xs`, so a later write to `xs` changes it.
 
 **`env.CallFunction(fn, args...)` and `env.ApplyFunction(fn, args)`** return
 what `(funcall fn args...)` and `(apply fn args)` return, with the same checks

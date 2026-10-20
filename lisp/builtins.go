@@ -1116,16 +1116,8 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 // called plainly, as a non-tail call from Lisp would be.
 func (env *LEnv) plainCall(fun, args *LVal) *LVal {
 	stack := env.Runtime.Stack
-	top := -1
-	if stack != nil && len(stack.Frames) > 0 {
-		top = len(stack.Frames) - 1
-		terminal := stack.Frames[top].Terminal
-		stack.Frames[top].Terminal = false
-		defer func() {
-			if top < len(stack.Frames) {
-				stack.Frames[top].Terminal = terminal
-			}
-		}()
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
 	}
 	val := env.FunCall(fun, args)
 	if val.Type == LMarkTailRec {
@@ -1555,17 +1547,8 @@ func (env *LEnv) MapSeq(typespec, fn, seq *LVal) *LVal {
 		return lerr
 	}
 	stack := env.Runtime.Stack
-	if stack != nil && len(stack.Frames) > 0 {
-		// Hold the frame's index, not a pointer: a push while fn runs can
-		// move the frames (luthersystems/elps#852).
-		top := len(stack.Frames) - 1
-		terminal := stack.Frames[top].Terminal
-		stack.Frames[top].Terminal = false
-		defer func() {
-			if top < len(stack.Frames) {
-				stack.Frames[top].Terminal = terminal
-			}
-		}()
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
 	}
 	return mapSeq(env, typespec, fn, seq)
 }
@@ -1847,7 +1830,7 @@ func assocCopy(env *LEnv, m, k, v *LVal) *LVal {
 	}
 	err := m.Map().Set(k, v)
 	if !err.IsNil() {
-		return env.Errorf("%s", err)
+		return env.Error(env.Render(err))
 	}
 	return m
 }
@@ -2721,7 +2704,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinZip(env *LEnv, args *LVal) *LVal {
-	return zipSeqs(env, args.Cells[0], args.Cells[1:])
+	return zipSeqs(env, args.Cells[0], args.Cells[1], args.Cells[2:])
 }
 
 // Zip returns what the zip builtin returns for (zip typespec list lists...):
@@ -2734,19 +2717,21 @@ func (env *LEnv) Zip(typespec, list *LVal, lists ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	all := make([]*LVal, 0, 1+len(lists))
-	all = append(all, list)
-	return zipSeqs(env, typespec, append(all, lists...))
+	return zipSeqs(env, typespec, list, lists)
 }
 
 // zipSeqs is the body of the zip builtin and of LEnv.Zip, so the two cannot
-// differ.  lists holds at least one value.
-func zipSeqs(env *LEnv, typespec *LVal, lists []*LVal) *LVal {
+// differ.  The inputs are first and then rest, so neither caller builds a
+// slice of them.
+func zipSeqs(env *LEnv, typespec, first *LVal, rest []*LVal) *LVal {
 	if typespec.Type != LSymbol {
 		return env.Errorf("first argument is not a valid type specifier: %v", typespec.Type)
 	}
-	n := lists[0].Len()
-	for _, list := range lists {
+	if !isSeq(first) {
+		return env.Errorf("argument is not a proper list: %v", first.Type)
+	}
+	n := first.Len()
+	for _, list := range rest {
 		if !isSeq(list) {
 			return env.Errorf("argument is not a proper list: %v", list.Type)
 		}
@@ -2755,7 +2740,8 @@ func zipSeqs(env *LEnv, typespec *LVal, lists []*LVal) *LVal {
 			n = m
 		}
 	}
-	if lerr := env.CheckAlloc(n * len(lists)); lerr.IsError() {
+	width := 1 + len(rest)
+	if lerr := env.CheckAlloc(n * width); lerr.IsError() {
 		return lerr
 	}
 	var v *LVal
@@ -2775,16 +2761,17 @@ func zipSeqs(env *LEnv, typespec *LVal, lists []*LVal) *LVal {
 		var elemCells []*LVal
 		switch typespec.Str {
 		case "vector":
-			elem = MakeVector(len(lists))
+			elem = MakeVector(width)
 			elemCells = seqCells(elem)
 		case "list":
-			elemCells = make([]*LVal, len(lists))
+			elemCells = make([]*LVal, width)
 			elem = QExpr(elemCells)
 		default:
 			return env.Errorf("type specifier is invalid: %v", typespec)
 		}
-		for j, list := range lists {
-			elemCells[j] = seqCells(list)[i]
+		elemCells[0] = seqCells(first)[i]
+		for j, list := range rest {
+			elemCells[j+1] = seqCells(list)[i]
 		}
 		cells[i] = elem
 	}
@@ -3809,7 +3796,11 @@ func builtinSymbolEq(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinStringEq(env *LEnv, args *LVal) *LVal {
-	return boolResult(stringEqual(env, args.Cells[0], args.Cells[1]))
+	ok, lerr := stringEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
 }
 
 // StringEqual returns what the string= builtin returns for (string= a b):
@@ -3835,44 +3826,44 @@ func stringEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
 	return a.Str == b.Str, nil
 }
 
-// boolResult returns lerr when it is not nil, and otherwise Bool(ok).  It is
-// how a builtin returns the result of a Go form that returns (bool, *LVal).
-func boolResult(ok bool, lerr *LVal) *LVal {
+func builtinLEq(env *LEnv, args *LVal) *LVal {
+	ok, lerr := numLessEqual(env, args.Cells[0], args.Cells[1])
 	if lerr != nil {
 		return lerr
 	}
 	return Bool(ok)
 }
 
-// numOp names a numeric comparison: =, <, <=, > or >=.
-type numOp int
-
-const (
-	numEq numOp = iota
-	numLT
-	numLEq
-	numGT
-	numGEq
-)
-
-func builtinLEq(env *LEnv, args *LVal) *LVal {
-	return boolResult(numCompare(env, numLEq, args.Cells[0], args.Cells[1]))
-}
-
 func builtinLT(env *LEnv, args *LVal) *LVal {
-	return boolResult(numCompare(env, numLT, args.Cells[0], args.Cells[1]))
+	ok, lerr := numLess(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
 }
 
 func builtinGEq(env *LEnv, args *LVal) *LVal {
-	return boolResult(numCompare(env, numGEq, args.Cells[0], args.Cells[1]))
+	ok, lerr := numGreaterEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
 }
 
 func builtinGT(env *LEnv, args *LVal) *LVal {
-	return boolResult(numCompare(env, numGT, args.Cells[0], args.Cells[1]))
+	ok, lerr := numGreater(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
 }
 
 func builtinEqNum(env *LEnv, args *LVal) *LVal {
-	return boolResult(numCompare(env, numEq, args.Cells[0], args.Cells[1]))
+	ok, lerr := numEqual(env, args.Cells[0], args.Cells[1])
+	if lerr != nil {
+		return lerr
+	}
+	return Bool(ok)
 }
 
 // NumEqual returns what the = builtin returns for (= a b): whether the
@@ -3881,78 +3872,109 @@ func builtinEqNum(env *LEnv, args *LVal) *LVal {
 // checks the evaluation's context first, as CallBuiltin does.  It charges no
 // step.
 func (env *LEnv) NumEqual(a, b *LVal) (bool, *LVal) {
-	return env.numCompareChecked(numEq, a, b)
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numEqual(env, a, b)
 }
 
 // NumLess returns what the < builtin returns for (< a b), as NumEqual does
 // for =.
 func (env *LEnv) NumLess(a, b *LVal) (bool, *LVal) {
-	return env.numCompareChecked(numLT, a, b)
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numLess(env, a, b)
 }
 
 // NumLessEqual returns what the <= builtin returns for (<= a b), as NumEqual
 // does for =.
 func (env *LEnv) NumLessEqual(a, b *LVal) (bool, *LVal) {
-	return env.numCompareChecked(numLEq, a, b)
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numLessEqual(env, a, b)
 }
 
 // NumGreater returns what the > builtin returns for (> a b), as NumEqual
 // does for =.
 func (env *LEnv) NumGreater(a, b *LVal) (bool, *LVal) {
-	return env.numCompareChecked(numGT, a, b)
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return numGreater(env, a, b)
 }
 
 // NumGreaterEqual returns what the >= builtin returns for (>= a b), as
 // NumEqual does for =.
 func (env *LEnv) NumGreaterEqual(a, b *LVal) (bool, *LVal) {
-	return env.numCompareChecked(numGEq, a, b)
-}
-
-// numCompareChecked is numCompare after the context check CallBuiltin makes.
-func (env *LEnv) numCompareChecked(op numOp, a, b *LVal) (bool, *LVal) {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return false, lerr
 	}
-	return numCompare(env, op, a, b)
+	return numGreaterEqual(env, a, b)
 }
 
-// numCompare is the body of the =, <, <=, > and >= builtins and of their Go
-// forms, so the two cannot differ.  Two ints compare as ints; otherwise both
-// compare as floats, so a NaN operand makes every comparison false.
-func numCompare(env *LEnv, op numOp, a, b *LVal) (bool, *LVal) {
+// numArgs returns the error the numeric comparisons raise for a non-number
+// operand, or nil.
+func numArgs(env *LEnv, a, b *LVal) *LVal {
 	if !a.IsNumeric() {
-		return false, env.Errorf("first argument is not a number: %s", a.Type)
+		return env.Errorf("first argument is not a number: %s", a.Type)
 	}
 	if !b.IsNumeric() {
-		return false, env.Errorf("second argument is not a number: %s", b.Type)
+		return env.Errorf("second argument is not a number: %s", b.Type)
 	}
-	if op == numEq {
-		return True(a.equalNum(b)), nil
+	return nil
+}
+
+// numEqual, numLess, numLessEqual, numGreater and numGreaterEqual are the
+// bodies of =, <, <=, > and >= and of their Go forms, so the two cannot
+// differ.  Two ints compare as ints; otherwise both compare as floats, so a
+// NaN operand makes every comparison false.
+func numEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	return a.isEqualNum(b), nil
+}
+
+func numLess(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
 	}
 	if bothInt(a, b) {
-		x, y := a.Int, b.Int
-		switch op {
-		case numLT:
-			return x < y, nil
-		case numLEq:
-			return x <= y, nil
-		case numGT:
-			return x > y, nil
-		default:
-			return x >= y, nil
-		}
+		return a.Int < b.Int, nil
 	}
-	x, y := toFloat(a), toFloat(b)
-	switch op {
-	case numLT:
-		return x < y, nil
-	case numLEq:
-		return x <= y, nil
-	case numGT:
-		return x > y, nil
-	default:
-		return x >= y, nil
+	return toFloat(a) < toFloat(b), nil
+}
+
+func numLessEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
 	}
+	if bothInt(a, b) {
+		return a.Int <= b.Int, nil
+	}
+	return toFloat(a) <= toFloat(b), nil
+}
+
+func numGreater(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int > b.Int, nil
+	}
+	return toFloat(a) > toFloat(b), nil
+}
+
+func numGreaterEqual(env *LEnv, a, b *LVal) (bool, *LVal) {
+	if lerr := numArgs(env, a, b); lerr != nil {
+		return false, lerr
+	}
+	if bothInt(a, b) {
+		return a.Int >= b.Int, nil
+	}
+	return toFloat(a) >= toFloat(b), nil
 }
 
 func builtinPow(env *LEnv, args *LVal) *LVal {

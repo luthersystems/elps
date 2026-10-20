@@ -150,7 +150,8 @@ func TestGoFormsMatchBuiltins(t *testing.T) {
 }
 
 // TestMapAssocMatchesAssoc holds MapAssoc to assoc for every map and key
-// type, and checks that neither changes the map it is given.
+// type, and checks that neither changes the map it is given: after the call,
+// each input still equals a fresh copy of it.
 func TestMapAssocMatchesAssoc(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	for i, m := range oracle.Values() {
@@ -160,7 +161,8 @@ func TestMapAssocMatchesAssoc(t *testing.T) {
 			got := env.MapAssoc(gm, value(j), lisp.Int(42))
 			want := env.CallBuiltin(refAssoc, wm, value(j), lisp.Int(42))
 			sameResult(t, label, got, want)
-			sameResult(t, label+"/input", gm, wm)
+			sameResult(t, label+"/go-input", gm, value(i))
+			sameResult(t, label+"/builtin-input", wm, value(i))
 		}
 	}
 }
@@ -298,27 +300,43 @@ func TestDebugStackMatchesDebugStack(t *testing.T) {
 	assert.NotEmpty(t, wantOut.String())
 	assert.Equal(t, wantOut.String(), gotOut.String())
 
-	// Under an allocation limit too small for the stack, both raise the
-	// same error.
+	// Under a small allocation limit, both return the same result and print
+	// the same text.
+	gotOut.Reset()
+	wantOut.Reset()
 	env.Runtime.MaxAlloc = 1
 	env.Runtime.Stderr = &gotOut
 	got = inEval(t, env, (*lisp.LEnv).DebugStack)
 	env.Runtime.Stderr = &wantOut
 	want = inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refDebugStack) })
 	sameResult(t, "debug-stack/alloc", got, want)
+	assert.Equal(t, wantOut.String(), gotOut.String(), "debug-stack/alloc output")
 }
 
-// TestListVectorNeedNoGoForm shows that Cells.List and Cells.Clone().Vector
-// return what list and vector return, so neither builtin needs a Go form.
+// TestListVectorNeedNoGoForm shows that Cells.Clone().List and
+// Cells.Clone().Vector return what list and vector return, so neither
+// builtin needs a Go form.  The clone gives the result storage of its own,
+// as list and vector called from Lisp have: a later write to the caller's
+// slice does not reach the result.
 func TestListVectorNeedNoGoForm(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	for n := 0; n <= 3; n++ {
-		xs := make(lisp.Cells, 0, n)
+		xs := make(lisp.Cells, 0, n+4)
 		for i := range n {
 			xs = append(xs, value(i*7%numValues))
 		}
-		sameResult(t, fmt.Sprintf("list/%d", n), xs.List(), env.CallBuiltin(refList, xs...))
-		sameResult(t, fmt.Sprintf("vector/%d", n), xs.Clone().Vector(), env.CallBuiltin(refVector, xs...))
+		list, vec := xs.Clone().List(), xs.Clone().Vector()
+		sameResult(t, fmt.Sprintf("list/%d", n), list, env.CallBuiltin(refList, xs...))
+		sameResult(t, fmt.Sprintf("vector/%d", n), vec, env.CallBuiltin(refVector, xs...))
+		if n == 0 {
+			continue
+		}
+		before := list.String()
+		xs[0] = lisp.String("changed")
+		assert.Equal(t, before, list.String(), "list/%d: a write to the Go slice reached the list", n)
+		assert.NotEqual(t, `"changed"`, vec.Cells[1].Cells[0].String(), "vector/%d", n)
+		cells, _ := list.SeqCells()
+		assert.Equal(t, len(cells), cap(cells), "list/%d: the list has spare capacity", n)
 	}
 }
 
@@ -401,7 +419,9 @@ func TestGoFormsCancelled(t *testing.T) {
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refKeyP, lisp.SortedMap(), lisp.String("a")) }},
 		{"string=",
 			func(env *lisp.LEnv) *lisp.LVal { return boolValue(env.StringEqual(lisp.String("a"), lisp.String("a"))) },
-			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refStringEq, lisp.String("a"), lisp.String("a")) }},
+			func(env *lisp.LEnv) *lisp.LVal {
+				return env.CallBuiltin(refStringEq, lisp.String("a"), lisp.String("a"))
+			}},
 		{"<",
 			func(env *lisp.LEnv) *lisp.LVal { return boolValue(env.NumLess(lisp.Int(1), lisp.Float(2))) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refNumLT, lisp.Int(1), lisp.Float(2)) }},
@@ -413,12 +433,16 @@ func TestGoFormsCancelled(t *testing.T) {
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refSub, lisp.Int(1), lisp.Int(2)) }},
 		{"concat",
 			func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.Symbol("list"), list3(), list3()) },
-			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refConcat, lisp.Symbol("list"), list3(), list3()) }},
+			func(env *lisp.LEnv) *lisp.LVal {
+				return env.CallBuiltin(refConcat, lisp.Symbol("list"), list3(), list3())
+			}},
 		{"zip",
 			func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.Symbol("list"), list3(), list3()) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refZip, lisp.Symbol("list"), list3(), list3()) }},
 		{"slice",
-			func(env *lisp.LEnv) *lisp.LVal { return env.Slice(lisp.Symbol("list"), list3(), lisp.Int(0), lisp.Int(2)) },
+			func(env *lisp.LEnv) *lisp.LVal {
+				return env.Slice(lisp.Symbol("list"), list3(), lisp.Int(0), lisp.Int(2))
+			},
 			func(env *lisp.LEnv) *lisp.LVal {
 				return env.CallBuiltin(refSlice, lisp.Symbol("list"), list3(), lisp.Int(0), lisp.Int(2))
 			}},
@@ -481,8 +505,9 @@ func TestMapSeqFromTerminalFrame(t *testing.T) {
 }
 
 // TestGoFormsSteps holds each Go form to its builtin on the steps it
-// charges: none for every form but MapSeq, and the same count for MapSeq as
-// map, the callback's own steps included.
+// charges: none for every form, MapSeq over an empty seq included, and for
+// MapSeq over a list the same count as map, the callback's own steps
+// included.
 func TestGoFormsSteps(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	rc := env.LoadString("setup", mapSetup)
@@ -505,14 +530,38 @@ func TestGoFormsSteps(t *testing.T) {
 	})
 	assert.Positive(t, want)
 	assert.Equal(t, want, got, "map")
+	b := boolValue
 	forms := map[string]func(env *lisp.LEnv) *lisp.LVal{
-		"to-int":  func(env *lisp.LEnv) *lisp.LVal { return env.ToInt(lisp.String("12")) },
-		"copy":    func(env *lisp.LEnv) *lisp.LVal { return env.DeepCopy(list3()) },
+		"to-int":   func(env *lisp.LEnv) *lisp.LVal { return env.ToInt(lisp.String("12")) },
+		"to-bytes": func(env *lisp.LEnv) *lisp.LVal { return env.ToBytes(lisp.String("ab")) },
+		"copy":     func(env *lisp.LEnv) *lisp.LVal { return env.DeepCopy(list3()) },
+		"nth":      func(env *lisp.LEnv) *lisp.LVal { return env.Nth(list3(), lisp.Int(1)) },
+		"assoc": func(env *lisp.LEnv) *lisp.LVal {
+			return env.MapAssoc(lisp.MapOf("a", lisp.Int(1)), lisp.String("b"), lisp.Int(2))
+		},
+		"key?": func(env *lisp.LEnv) *lisp.LVal {
+			return b(env.MapHasKey(lisp.MapOf("a", lisp.Int(1)), lisp.String("a")))
+		},
+		"string=": func(env *lisp.LEnv) *lisp.LVal { return b(env.StringEqual(lisp.String("a"), lisp.String("b"))) },
+		"=":       func(env *lisp.LEnv) *lisp.LVal { return b(env.NumEqual(lisp.Int(1), lisp.Float(1))) },
+		"<":       func(env *lisp.LEnv) *lisp.LVal { return b(env.NumLess(lisp.Int(1), lisp.Float(2))) },
+		"<=":      func(env *lisp.LEnv) *lisp.LVal { return b(env.NumLessEqual(lisp.Int(1), lisp.Int(2))) },
+		">":       func(env *lisp.LEnv) *lisp.LVal { return b(env.NumGreater(lisp.Float(1), lisp.Int(2))) },
+		">=":      func(env *lisp.LEnv) *lisp.LVal { return b(env.NumGreaterEqual(lisp.Int(1), lisp.Int(2))) },
+		"+":       func(env *lisp.LEnv) *lisp.LVal { return env.Add(lisp.Int(1), lisp.Float(2)) },
+		"-":       func(env *lisp.LEnv) *lisp.LVal { return env.Sub(lisp.Int(1), lisp.Int(2), lisp.Int(3)) },
 		"concat":  func(env *lisp.LEnv) *lisp.LVal { return env.Concat(lisp.Symbol("list"), list3(), list3()) },
 		"zip":     func(env *lisp.LEnv) *lisp.LVal { return env.Zip(lisp.Symbol("list"), list3(), list3()) },
-		"+":       func(env *lisp.LEnv) *lisp.LVal { return env.Add(lisp.Int(1), lisp.Float(2)) },
-		"append!": func(env *lisp.LEnv) *lisp.LVal { return env.AppendInPlace(lisp.Vector(nil), lisp.Int(1)) },
+		"slice": func(env *lisp.LEnv) *lisp.LVal {
+			return env.Slice(lisp.Symbol("vector"), list3(), lisp.Int(0), lisp.Int(2))
+		},
+		"append!":     func(env *lisp.LEnv) *lisp.LVal { return env.AppendInPlace(lisp.Vector(nil), lisp.Int(1)) },
+		"debug-stack": func(env *lisp.LEnv) *lisp.LVal { return env.DebugStack() },
+		"map-empty": func(env *lisp.LEnv) *lisp.LVal {
+			return env.MapSeq(lisp.Symbol("list"), lisp.Symbol("twice"), lisp.Nil())
+		},
 	}
+	env.Runtime.Stderr = &bytes.Buffer{}
 	for name, f := range forms {
 		assert.Zero(t, steps(f), name)
 	}

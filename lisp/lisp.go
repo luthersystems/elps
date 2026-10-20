@@ -1937,11 +1937,11 @@ walk:
 				return Bool(false), false
 			}
 		} else if a.Type != b.Type {
-			if !a.IsNumeric() || !b.IsNumeric() || !True(a.equalNum(b)) {
+			if !a.IsNumeric() || !b.IsNumeric() || !a.isEqualNum(b) {
 				return Bool(false), false
 			}
 		} else if a.IsNumeric() {
-			if !True(a.equalNum(b)) {
+			if !a.isEqualNum(b) {
 				return Bool(false), false
 			}
 		} else if a.Type == LString || a.Type == LSymbol {
@@ -2138,14 +2138,20 @@ func (v *LVal) EqualNum(other *LVal) *LVal {
 }
 
 func (v *LVal) equalNum(other *LVal) *LVal {
+	return Bool(v.isEqualNum(other))
+}
+
+// isEqualNum is equalNum as a Go bool.  The = builtin, LEnv.NumEqual and
+// the equality walk call it with numeric operands.
+func (v *LVal) isEqualNum(other *LVal) bool {
 	if bothInt(v, other) {
-		return Bool(v.Int == other.Int)
+		return v.Int == other.Int
 	}
 
 	// Mixed comparisons intentionally convert ints to float, including the
 	// loss of precision above 2^53 documented in
 	// docs/lang.md#json-numbers-and-integer-precision.
-	return Bool(toFloat(v) == toFloat(other))
+	return toFloat(v) == toFloat(other)
 }
 
 // Copy creates a deep copy of the receiver.
