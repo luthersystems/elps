@@ -8,7 +8,6 @@ import (
 	"encoding/binary"
 	"hash/maphash"
 	"iter"
-	"unsafe"
 )
 
 type packageBaseCheck struct {
@@ -29,11 +28,11 @@ var fingerprintSeed = maphash.MakeSeed()
 // Each string is written with its length first, so separators are
 // unambiguous even for arbitrary Go-side names.
 //
-// Template.NewVM runs this for every frozen package of every VM, so it is
-// most of the cost of an elpscheck test run (substrate's elpscheck suite
-// passed its CI time limit once fidNames joined the fingerprint).  So it
-// avoids the costly steps of the first version, which wrote every entry
-// with fmt's %q into a SHA-256 in key order:
+// Template.NewVM runs this for every template package of every VM, frozen
+// or not, so it is most of the cost of an elpscheck test run.  substrate's
+// elpscheck suite passed its CI time limit once fidNames joined the
+// fingerprint.  So it avoids the costly steps of the first version, which
+// wrote every entry with fmt's %q into a SHA-256 in key order:
 //   - maphash in place of SHA-256.  This is a check against a bug, not an
 //     attacker, so a 64-bit hash is enough.
 //   - A length prefix in place of quoting, which scanned every rune of
@@ -50,21 +49,26 @@ func (b *packageBase) fingerprint() uint64 {
 		writeInt(&h, binding.value.index)
 		// The shared value's address, not its contents: a frozen binding must
 		// keep pointing at the same template value.
-		writeInt(&h, int(uintptr(unsafe.Pointer(binding.value.shared))))
+		maphash.WriteComparable(&h, binding.value.shared)
 	}
 	writeInt(&h, b.index.Len())
-	writeInt(&h, int(sumEntries(b.index.Unordered(), func(e *maphash.Hash, v int) { writeInt(e, v) })))
+	writeUint64(&h, sumEntries(b.index.Unordered(), writeInt))
 	writeInt(&h, b.funNames.Len())
-	writeInt(&h, int(sumEntries(b.funNames.Unordered(), writeString)))
-	// The pairs in the table's own key-then-value order, so the list
-	// boundaries and every element are in the hash.
+	writeUint64(&h, sumEntries(b.funNames.Unordered(), writeString))
+	// The pair count, then the pairs in the table's own key-then-value
+	// order, so the list boundaries and every element are in the hash.
+	pairs := 0
+	for range b.fidNames.All() {
+		pairs++
+	}
 	writeInt(&h, b.fidNames.Len())
+	writeInt(&h, pairs)
 	for pair := range b.fidNames.All() {
 		writeString(&h, pair.Key)
 		writeString(&h, pair.Value)
 	}
 	writeInt(&h, b.symbolDocs.Len())
-	writeInt(&h, int(sumEntries(b.symbolDocs.Unordered(), writeString)))
+	writeUint64(&h, sumEntries(b.symbolDocs.Unordered(), writeString))
 	writeInt(&h, b.externals.Len())
 	for value := range b.externals.All() {
 		writeString(&h, value)
@@ -87,9 +91,16 @@ func sumEntries[V any](entries iter.Seq2[string, V], writeValue func(*maphash.Ha
 	return sum
 }
 
+// writeInt writes n as a varint, whose bytes end it, so the next write
+// cannot run into it.
 func writeInt(h *maphash.Hash, n int) {
+	var b [binary.MaxVarintLen64]byte
+	_, _ = h.Write(binary.AppendVarint(b[:0], int64(n)))
+}
+
+func writeUint64(h *maphash.Hash, n uint64) {
 	var b [8]byte
-	binary.LittleEndian.PutUint64(b[:], uint64(n))
+	binary.LittleEndian.PutUint64(b[:], n)
 	_, _ = h.Write(b[:])
 }
 

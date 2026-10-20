@@ -63,3 +63,47 @@ func TestFrozenPackageBaseFingerprint(t *testing.T) {
 		}
 	}
 }
+
+// TestFrozenPackageBaseFingerprintContents changes a table's contents but
+// not its length, so the check must hash each entry, not only the counts.
+func TestFrozenPackageBaseFingerprintContents(t *testing.T) {
+	type tables struct{ before, after func(*packageBase) }
+	cases := map[string]tables{
+		"index": {
+			func(b *packageBase) { b.index = packagetable.NewMap(map[string]int{"a": 1, "b": 2}) },
+			func(b *packageBase) { b.index = packagetable.NewMap(map[string]int{"a": 2, "b": 1}) },
+		},
+		"funNames": {
+			func(b *packageBase) { b.funNames = packagetable.NewMap(map[string]string{"f": "x", "g": "y"}) },
+			func(b *packageBase) { b.funNames = packagetable.NewMap(map[string]string{"f": "y", "g": "x"}) },
+		},
+		"fidNames": {
+			func(b *packageBase) { b.fidNames = packagetable.NewLists(map[string][]string{"f": {"a", "b"}}) },
+			func(b *packageBase) { b.fidNames = packagetable.NewLists(map[string][]string{"f": {"a"}, "g": {"b"}}) },
+		},
+		"fidNames value": {
+			func(b *packageBase) { b.fidNames = packagetable.NewLists(map[string][]string{"f": {"a"}}) },
+			func(b *packageBase) { b.fidNames = packagetable.NewLists(map[string][]string{"f": {"b"}}) },
+		},
+		"symbolDocs": {
+			func(b *packageBase) { b.symbolDocs = packagetable.NewMap(map[string]string{"f": "doc"}) },
+			func(b *packageBase) { b.symbolDocs = packagetable.NewMap(map[string]string{"f": "dog"}) },
+		},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			b := &packageBase{}
+			c.before(b)
+			b.publish()
+			checkPackageBases([]templatePackage{{name: "p", base: b}})
+			c.after(b)
+			defer func() {
+				msg, _ := recover().(string)
+				if !strings.Contains(msg, "frozen package p: shared packageBase tables changed after publication") {
+					t.Fatalf("want packageBase integrity panic, got %q", msg)
+				}
+			}()
+			checkPackageBases([]templatePackage{{name: "p", base: b}})
+		})
+	}
+}
