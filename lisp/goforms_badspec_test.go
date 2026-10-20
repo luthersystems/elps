@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -20,7 +19,7 @@ import (
 // type specifiers no SeqKind stands for.  It was written by this test run on
 // v1.82.0, before the builtins parsed their type specifier into a SeqKind.
 // Rewrite it with UPDATE_GOLDEN=1 only for an intended change of result.
-var badTypespecGolden = filepath.Join("testdata", "badtypespec_golden.txt")
+const badTypespecGolden = "testdata/badtypespec_golden.txt"
 
 // badTypespecs are type specifiers that no SeqKind stands for: an unknown
 // symbol and values that are not symbols.  Only the builtins take them.
