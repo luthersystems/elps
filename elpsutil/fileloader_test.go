@@ -287,7 +287,7 @@ func TestFileLoaderParsePanicWrapsError(t *testing.T) {
 	}
 	rc := l.Load(newFileLoaderEnv(t))
 	require.True(t, rc.IsError(), "%v", rc)
-	assert.ErrorIs(t, l.err, sentinel)
+	require.ErrorIs(t, l.err, sentinel)
 	assert.Contains(t, l.err.Error(), "parsing shared.lisp")
 }
 

@@ -228,7 +228,7 @@ func (s *CallStack) SourceSite() string {
 	// the innermost load that encloses inner.  A load frame above inner does
 	// not enclose it.
 	start := 0
-	for i := 0; i < innerIdx; i++ {
+	for i := range innerIdx {
 		if isSourceLoad(&frames[i]) {
 			start = i + 1
 		}
