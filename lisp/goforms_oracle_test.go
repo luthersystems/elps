@@ -295,6 +295,48 @@ func TestMapSeqMatchesMap(t *testing.T) {
 	}
 }
 
+// TestMapSeqCellsMatchesMap holds MapSeqCells to map's read of its sequence
+// argument, for a value of every type.  A value map refuses must return the
+// same error condition and message.  For any other value, map over a list of
+// the returned cells must return what map over the value returns.
+func TestMapSeqCellsMatchesMap(t *testing.T) {
+	env := oracle.NewEnv(t, context.Background())
+	rc := env.LoadString("setup", "(defun wrap (x) (list x))")
+	require.False(t, rc.IsError(), "%v", rc)
+	run := func(f func(env *lisp.LEnv) *lisp.LVal) *lisp.LVal { return inEval(t, env, f) }
+	mapWrap := func(env *lisp.LEnv, seq *lisp.LVal) *lisp.LVal {
+		return env.CallBuiltin(refMap, lisp.Symbol("list"), lisp.Symbol("wrap"), seq)
+	}
+	for i, seq := range oracle.Values() {
+		label := "map-seq-cells/" + seq.Label
+		got := run(func(env *lisp.LEnv) *lisp.LVal {
+			cells, lerr := env.MapSeqCells(value(i))
+			if lerr != nil {
+				return lerr
+			}
+			return mapWrap(env, lisp.QExpr(cells))
+		})
+		want := run(func(env *lisp.LEnv) *lisp.LVal { return mapWrap(env, value(i)) })
+		sameResult(t, label, got, want)
+	}
+}
+
+// TestMapSeqCellsAliases checks that MapSeqCells returns the value's own
+// cells, so a Go port reads them without a copy.
+func TestMapSeqCellsAliases(t *testing.T) {
+	env := oracle.NewEnv(t, context.Background())
+	list := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)})
+	cells, lerr := env.MapSeqCells(list)
+	require.Nil(t, lerr)
+	require.Len(t, cells, 2)
+	assert.Same(t, list.Cells[0], cells[0])
+
+	cells, lerr = env.MapSeqCells(lisp.String("abc"))
+	assert.Nil(t, cells)
+	require.NotNil(t, lerr)
+	assert.Equal(t, "third argument is not a proper sequence: string", (*lisp.ErrorVal)(lerr).ErrorMessage())
+}
+
 // TestDebugStackMatchesDebugStack holds DebugStack to debug-stack: the same
 // result and the same printed stack.
 func TestDebugStackMatchesDebugStack(t *testing.T) {
