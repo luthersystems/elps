@@ -38,10 +38,13 @@ import (
 // Template.NewVM contract. Checked builds (-tags elpscheck) detect an
 // overlapping fill and panic; see lazyGuard.
 //
-// Retention: a package with unfilled slots, or a sorted map with pending
-// entries, keeps its lazyInstance and therefore the plan and every object
-// this VM has materialized alive. Both drop the reference once their last
-// pending entry is filled. A slot is filled only when it is read or written,
+// Retention: a package with unfilled slots, a sorted map with pending
+// entries, the registered builtins and a runtime's unbuilt VM values
+// (vmValueTable) keep their lazyInstance and therefore the plan and every
+// object this VM has materialized alive. Packages and maps drop the
+// reference once their last pending entry is filled, the VM values at the
+// first VM value call, which builds their map, and the registered builtins
+// never. A slot is filled only when it is read or written,
 // even when prewarm built its value. A map entry is filled when it is read,
 // written or deleted. When the map is built, fillBacking also fills each
 // entry that needs no build and, in a VM that does not count its root reads,

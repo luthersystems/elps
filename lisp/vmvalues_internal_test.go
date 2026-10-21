@@ -40,8 +40,9 @@ func TestVMValueLazyBuild(t *testing.T) {
 
 	rt.DeleteVMValue("b")
 	rt.SetVMValue("c", Int(3))
-	_, ok = rt.VMValue("b")
+	b, ok := rt.VMValue("b")
 	assert.False(t, ok)
+	assert.True(t, b.IsNil(), "a deleted name did not read ()")
 	_, ok = rt.VMValue("d")
 	require.True(t, ok)
 	assert.Nil(t, sm.lz.inst, "the map kept the lazy instance with nothing pending")

@@ -24,16 +24,18 @@ type vmValueTable struct {
 	ref  templateRef
 }
 
-// VMValue returns the VM value called name and whether it is set.  See
+// VMValue returns the VM value called name and whether it is set.  An unset
+// name returns nil, the empty list, and false, as MapData.Get does.  See
 // SetVMValue.  In a lazy template VM the first read of a published value
 // builds this VM's copy, so the single-goroutine rule of Template.NewVM
 // applies.
 func (rt *Runtime) VMValue(name string) (*LVal, bool) {
-	m := rt.vmValueMap(false)
-	if m == nil {
-		return nil, false
+	if m := rt.vmValueMap(false); m != nil {
+		if v, ok := m.Map().getString(name); ok {
+			return v, true
+		}
 	}
-	return m.Map().getString(name)
+	return Nil(), false
 }
 
 // SetVMValue sets the VM value called name to v.  A nil v stores nil, the

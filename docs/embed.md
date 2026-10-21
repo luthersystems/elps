@@ -462,7 +462,7 @@ symbol for a VM value. Only Go code that you provide reads or writes it.
 
 | Method | Purpose |
 | --- | --- |
-| `Runtime.VMValue(name) (*LVal, bool)` | Reads a VM value and whether it is set. |
+| `Runtime.VMValue(name) (*LVal, bool)` | Reads a VM value and whether it is set. An unset name reads `()` and `false`. |
 | `Runtime.SetVMValue(name string, v *LVal)` | Sets a VM value. Stores `v` itself, not a copy. A nil `v` stores `()`. |
 | `Runtime.DeleteVMValue(name)` | Removes a VM value. Removing an unset name does nothing. |
 
@@ -502,7 +502,10 @@ vm, err := tmpl.NewVM()
 if err != nil {
     return err
 }
-table, _ := vm.Runtime.VMValue("app:handlers") // this VM's copy
+table, ok := vm.Runtime.VMValue("app:handlers") // this VM's copy
+if !ok {
+    return errors.New("no handler table")
+}
 fn := vm.MapLookup(table, lisp.String("ping"))
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```

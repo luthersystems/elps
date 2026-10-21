@@ -96,8 +96,12 @@ func vmValueWarm(t *testing.T, tmpl *lisp.Template) {
 func TestVMValueColdRuntime(t *testing.T) {
 	env := templateTestEnv(t)
 	rt := env.Runtime
-	_, ok := rt.VMValue("x")
+	unset, ok := rt.VMValue("x")
 	assert.False(t, ok, "a cold runtime has no VM values")
+	require.NotNil(t, unset, "an unset name read a Go nil")
+	assert.True(t, unset.IsNil(), "an unset name reads ()")
+	// A caller that ignores ok reads (), where a Go nil would panic.
+	assert.True(t, env.MapLookup(unset, lisp.String("k")).IsNil())
 	rt.DeleteVMValue("x") // removing an unset name does nothing
 
 	v := lisp.Int(7)
@@ -106,8 +110,10 @@ func TestVMValueColdRuntime(t *testing.T) {
 	rt.SetVMValue("nil", nil)
 	assert.True(t, vmValueGet(t, rt, "nil").IsNil())
 	rt.DeleteVMValue("x")
-	_, ok = rt.VMValue("x")
+	unset, ok = rt.VMValue("x")
 	assert.False(t, ok)
+	require.NotNil(t, unset, "a deleted name read a Go nil")
+	assert.True(t, unset.IsNil())
 
 	// A VM value has no symbol, so Lisp code cannot reach it.
 	assert.Equal(t, lisp.LError, env.LoadString("cold.lisp", `x`).Type)
