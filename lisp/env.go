@@ -1755,7 +1755,8 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 //     math.MaxInt64 rather than wrapping.  The full n is recorded even when
 //     it overruns the budget, just as the evaluator records the step that
 //     overruns it.  A count that saturates exceeds every budget, including
-//     one of math.MaxInt64.
+//     one of math.MaxInt64.  (LEnv.StepEach records only up to the step
+//     that overruns, as n single steps would.)
 //   - If the step count now exceeds the WithMaxSteps budget, ChargeSteps
 //     returns the same step-limit-exceeded condition (CondStepLimitExceeded)
 //     with the same message the evaluator raises, so handler-bind, Go

@@ -2,6 +2,8 @@
 
 package lisp
 
+import "math"
+
 // Step and context helpers for Go builtins (luthersystems/elps#745).
 //
 // Every helper here returns Nil() to continue, or the LError the builtin must
@@ -46,6 +48,77 @@ func startedKiB(n int) int {
 // done context, so a long native loop stays interruptible.
 func (env *LEnv) Step() *LVal {
 	return env.ChargeSteps(1)
+}
+
+// StepEach charges env n steps as n calls to Step would, stopping at the
+// first one that fails.  Use it when Go code replaces n evaluated forms and
+// a budget that runs out must stop at the usage those forms would have
+// recorded (luthersystems/elps#863).
+//
+// ChargeSteps(n) adds all n steps and then checks the limits once, so when
+// a limit runs out part of the way it records more steps than the evaluator
+// would: with 2 steps left, ChargeSteps(5) records 5 and StepEach(5)
+// records 3, the step that overran the limit included, as the evaluator
+// does.  The error is the same either way, so the outcome of the
+// evaluation is the same; only the recorded usage differs.  A host that
+// logs or bills the usage of a failed evaluation (substrate's step budget
+// does) needs the evaluator's figure, so it needs StepEach.  ChargeSteps
+// stays right for a charge that stands for one unit of work, such as one
+// step per KiB, where no evaluated form had a step of its own.
+//
+// StepEach gives exactly what the loop gives: the same result, condition
+// and message, and the same Steps, TotalSteps and StepBudget usage.  Like
+// Step, it reports a done context only after it charges the first step,
+// and an overrun limit before a done context.  It does not loop: it works
+// out how many steps the loop would charge before it stopped, and charges
+// them at once, so its cost does not grow with n.  The one
+// difference is a context that is cancelled by another goroutine while the
+// call runs: the loop could see it at any step, and StepEach sees it at
+// its last.
+//
+// A zero or negative n behaves as in ChargeSteps: zero charges and checks
+// nothing, and a negative n is an error that changes no counter.
+func (env *LEnv) StepEach(n int64) *LVal {
+	if n <= 0 {
+		return env.ChargeSteps(n)
+	}
+	r := env.Runtime
+	ctx := env.evalCtx
+	if ctx == nil && r.maxSteps|r.stepBudget == 0 { // the fast path of ChargeSteps
+		return Nil()
+	}
+	k := n
+	if ctx != nil && ctx.Err() != nil {
+		k = 1 // the first Step charges itself, then reports the context
+	}
+	if r.maxSteps > 0 {
+		k = min(k, stepsToOverrun(r.steps, r.stepsOverflowed, r.maxSteps))
+	}
+	if r.stepBudget > 0 {
+		k = min(k, stepsToOverrun(r.stepBudgetUsed, r.stepBudgetOverflowed, r.stepBudget))
+	}
+	// What ChargeSteps(k) does past its checks, which StepEach has made.
+	r.addStepsToCurrent(k)
+	if lerr := env.limitViolation(ctx); lerr != nil {
+		return lerr
+	}
+	return Nil()
+}
+
+// stepsToOverrun returns how many more single steps take a counter at used
+// past limit (> 0): the step that overruns is the one that makes used
+// exceed limit.  A counter already at or past the limit, or saturated,
+// overruns at the next step.  From 0 to a limit of math.MaxInt64 the count
+// does not fit an int64; math.MaxInt64 stands for it, since no charge can
+// take more steps than that.
+func stepsToOverrun(used int64, overflowed bool, limit int64) int64 {
+	if overflowed || used >= limit {
+		return 1
+	}
+	if left := limit - used; left < math.MaxInt64 {
+		return left + 1
+	}
+	return math.MaxInt64
 }
 
 // CheckAlloc returns an error when n exceeds the runtime's allocation cap

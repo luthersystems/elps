@@ -1441,6 +1441,32 @@ func TestMyPackage(t *testing.T) {
   (assert= 3 (+ 1 2)))
 ```
 
+### Measuring a builtin's step charge
+
+A builtin's step charges decide whether an evaluation fits a step limit, so
+an embedder pins them in tests. Call the builtin directly from Go: no form is
+evaluated, so every step the runtime records is the builtin's own charge.
+
+```go
+env := elpstest.NewStepEnv() // counts steps, no limit
+out, steps := elpstest.CallBuiltinFunc(t, env, mypackage.BuiltinSum, lisp.Int(1), lisp.Int(2))
+require.Equal(t, 3, out.Int)
+require.Equal(t, int64(2), steps)
+
+// An error path: CallBuiltinFunc fails the test on an error, so measure by hand.
+var res *lisp.LVal
+steps = elpstest.StepsCharged(env, func() { res = mypackage.BuiltinSum(env, lisp.QExpr(nil)) })
+require.True(t, res.IsError())
+require.Equal(t, int64(0), steps)
+```
+
+`CallBuiltinFunc` calls the Go function as is: it binds no formals, so pass
+the argument list in the shape the function reads.
+
+The runtime counts steps only while it has a step limit or a context, so an
+env from `lisp.NewEnv` measures 0. `NewStepEnv` and `elpstest.EnableSteps`
+give the runtime a background context.
+
 ### Parity tests for a Lisp-to-Go migration
 
 `elpstest.ParityCheck` runs a native and the verbatim Lisp definition it
@@ -1995,9 +2021,19 @@ They charge exactly what their names say, so replacing a hand-written
 | Helper | Charge | Use |
 |--------|--------|-----|
 | `env.Step()` | 1 | once per element of a native loop that replaces a Lisp loop |
+| `env.StepEach(n)` | n, one at a time | n steps that stand for n evaluated forms; an overrun limit stops at the step that overran it, as the evaluator does |
 | `lisp.ChargeStartedKiB(env, n)` | ceil(n/1024) | every started KiB (substrate's storage convention) |
 | `lisp.ChargeRecord(env, n)` | max(1, ceil(n/1024)) | per record handed to a reducer, empty records included |
 | `env.CheckContext()` | 0 | the evaluator's `context-cancelled` check, between charges |
+
+`env.StepEach(n)` and `env.ChargeSteps(n)` fail at the same call with the
+same error. They differ in the usage they record when a limit runs out part of
+the way: with 2 steps left, `ChargeSteps(5)` records 5 and `StepEach(5)`
+records 3, what 5 evaluated forms would record. Use `StepEach` when Go code
+replaces forms the evaluator would have stepped through and a host reads the
+usage of a failed evaluation; use `ChargeSteps` for a cost such as one step
+per KiB, which no form ever counted step by step. `StepEach` does not loop, so
+its cost does not depend on n.
 
 There is no public floor(n/1024) helper: the stdlib's is internal. Which
 convention a builtin uses is observable in its step counts, so keep the one
