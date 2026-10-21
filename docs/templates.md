@@ -101,6 +101,7 @@ lookup table, native clone callback, or foreign map factory.
 | Other natives and foreign map implementations | Rejected at publication |
 | Limits and identifier counters | Copied; counters continue past published definitions |
 | Runtime settings (boolean and value) | Copied; a VM reads the template's value map until its first value write |
+| VM values (`Runtime.SetVMValue`) | Admitted and copied as package global values are; a lazy VM builds its copy of a value on first read |
 | Condition hierarchy (`DefineCondition`) | Copied at publication and borrowed until a VM's first definition, which copies it; a definition is seen only by the VM that made it |
 | Reader, source library, sealed load cache, source metadata | Shared under their read-only/concurrency contracts |
 | Context, current evaluation location, active stacks, step accounting, debugger and profiler | Not inherited |
@@ -161,7 +162,9 @@ nor absence of races alone proves behavioral equivalence.
 
 Keep Lisp-controlled modes and per-VM metadata in runtime settings. A
 builtin closure must not hold them. [Per-VM settings](embed.md#per-vm-settings)
-lists the methods, the allowed value types and the template rules.
+lists the methods, the allowed value types and the template rules. Keep
+per-VM Lisp values, such as tables of functions or sorted maps, in
+[VM values](embed.md#per-vm-lisp-values).
 
 The public lifecycle and sharing contract also live in the `lisp` package docs
 (`lisp/doc.go`), with an executable `ExampleTemplate` checked by the Go test suite.

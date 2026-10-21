@@ -35,7 +35,7 @@ import (
 // Stack, conditionStack, and the LEnv Scope maps — are unprotected.
 //
 // Field order is layout-sensitive: pointer-bearing fields lead so the GC scan
-// extent stops at 152 bytes. Add scalars below conditionStack.
+// extent stops at 160 bytes. Add scalars below conditionStack.
 type Runtime struct {
 	Stderr                 io.Writer
 	Reader                 Reader
@@ -48,6 +48,7 @@ type Runtime struct {
 	Stack                  *CallStack
 	settings               map[string]bool           // Per-VM library flags; see Setting.
 	values                 map[string]any            // Per-VM value settings; see SetSettingValue.
+	vmValues               *vmValueTable             // Per-VM Lisp values; see SetVMValue.
 	conditionParents       map[string]conditionEntry // The hierarchy from DefineCondition; see conditionParentsShared.
 	conditionStack         []*LVal
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).

@@ -452,6 +452,61 @@ v, ok := vm.Runtime.SettingValue("program:id")
 id, _ := v.(string) // "example-v1"; ok is false in a cold runtime
 ```
 
+### Per-VM Lisp values
+
+Keep per-VM state that holds Lisp values in VM values. A VM value can hold
+any Lisp value: a function, a closure, a list or a sorted map that Lisp code
+changes in place with `assoc!`. A package global can hold the same values,
+but Lisp code can then reach it by a qualified symbol. Lisp code has no
+symbol for a VM value. Only Go code that you provide reads or writes it.
+
+| Method | Purpose |
+| --- | --- |
+| `Runtime.VMValue(name) (*LVal, bool)` | Reads a VM value and whether it is set. |
+| `Runtime.SetVMValue(name string, v *LVal)` | Sets a VM value. Stores `v` itself, not a copy. A nil `v` stores `()`. |
+| `Runtime.DeleteVMValue(name)` | Removes a VM value. Removing an unset name does nothing. |
+
+VM values use the template rules of package global values:
+
+- `NewTemplate` admits each VM value as it admits a global value. A value
+  that a template cannot publish as a global makes `NewTemplate` fail, and
+  the error names the VM value. Examples are a native payload with no
+  immutability declaration and a builtin that no builtin policy approves.
+- Every VM that `Template.NewVM` mints gets its own copy of each published
+  value. A lazy VM builds the copy on the first `VMValue` call for the name.
+- A write, a delete or an in-place change in one VM is seen by no other VM,
+  by the template, or by the source.
+- A write to the source after `NewTemplate` returns does not change the
+  template.
+- A value that a VM value shares with a package global, or with another VM
+  value, stays shared in each VM.
+- A template published from a VM carries that VM's values.
+- A cold runtime has no VM values.
+
+The single-goroutine rule of `Template.NewVM` applies: in a lazy VM a
+`VMValue` call can build a value.
+
+Keep a table of handlers in a VM value, and call a handler from Go:
+
+```go
+handlers := source.LoadString("init.lisp", `(sorted-map "ping" (lambda () "pong"))`)
+if err := lisp.GoError(handlers); err != nil {
+    return err
+}
+source.Runtime.SetVMValue("app:handlers", handlers)
+tmpl, err := lisp.NewTemplate(source, lisp.TemplateWithBuiltinPolicy(approveAuditedBuiltin))
+if err != nil {
+    return err
+}
+vm, err := tmpl.NewVM()
+if err != nil {
+    return err
+}
+table, _ := vm.Runtime.VMValue("app:handlers") // this VM's copy
+fn := vm.MapLookup(table, lisp.String("ping"))
+result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
+```
+
 ### Writing a Go macro
 
 A Go macro receives unevaluated forms and returns an expansion for the caller

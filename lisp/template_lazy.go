@@ -398,6 +398,10 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		rt.Registry.builtins.plan = p.builtins
 		rt.Registry.builtins.lazy = l
 	}
+	if p.hasVMValues {
+		// The map of VM values is built on the first VM value call.
+		rt.vmValues = &vmValueTable{lazy: l, ref: p.vmValues}
+	}
 	if p.runtime.hasCurrentPackage {
 		rt.Package = rt.Registry.packages[p.runtime.currentPackage]
 	}

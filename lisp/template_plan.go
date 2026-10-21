@@ -130,9 +130,11 @@ type templatePlan struct {
 	cells             [][]templateRef
 	packages          []templatePackage
 	builtins          *templateBuiltins // the builtin registry; nil when empty
+	vmValues          templateRef       // the runtime's map of VM values
 	runtime           templateRuntime
 	root, numCaptures int
 	eager             bool // TemplateWithEagerInstantiation
+	hasVMValues       bool // the runtime has a map of VM values
 }
 type templateCompiler struct {
 	err         error
@@ -185,6 +187,9 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 			entries[i] = templateBuiltin{rec: fn.funData().reg, value: c.ref(fn)}
 		}
 		c.plan.builtins = &templateBuiltins{entries: entries}
+	}
+	if inventory.vmValues != nil {
+		c.plan.vmValues, c.plan.hasVMValues = c.ref(inventory.vmValues), true
 	}
 	for index, env := range inventory.envQueue {
 		c.plan.envs[index] = templateEnv{id: env.ID, parent: c.env(env.parent), bindings: c.scopeBindings(env.scope), scopeHint: env.scopeHint}
@@ -674,6 +679,9 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 		for i, b := range p.builtins.entries {
 			rt.Registry.builtins.values[i] = instance.ref(b.value)
 		}
+	}
+	if p.hasVMValues {
+		rt.vmValues = &vmValueTable{m: instance.ref(p.vmValues)}
 	}
 	if p.runtime.hasCurrentPackage {
 		rt.Package = rt.Registry.packages[p.runtime.currentPackage]

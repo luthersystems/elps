@@ -56,6 +56,9 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"values": "copied",
 	// Each VM rebuilds the flag from the presence of a published map.
 	"valuesShared": "rebuilt",
+	// VM values are one sorted map, which each VM rebuilds from the plan as
+	// it rebuilds a package global value.
+	"vmValues": "rebuilt",
 	// The condition hierarchy (#831) is copied at publication and borrowed
 	// until a VM's first definition, as values are.
 	"conditionParents":       "copied",
