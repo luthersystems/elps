@@ -172,6 +172,84 @@ func (s *CallStack) Top() *CallFrame {
 	return &s.Frames[len(s.Frames)-1]
 }
 
+// SourceSite names where the innermost call with a source position runs and
+// the top-level form that reached it.  It returns "" when no frame has a
+// source position, a nil stack included.  Otherwise it returns
+//
+//	inner <- reach
+//
+// where inner is the position ("file:line:col") of the innermost frame with
+// a source position.  reach is the position of the outermost frame with a
+// source position inside the innermost source stream: the frames after the
+// last load-file, load-string or load-bytes frame of package lisp, or the
+// whole stack when there is no such frame.  So reach is the top-level form,
+// in the file being loaded, whose evaluation reached inner.  When inner and
+// reach are the same position, SourceSite returns inner alone.
+//
+// A frame has a source position when its Source is not nil, its Pos is not
+// negative and its File is neither "" nor token.NativeFile.  A builtin that
+// Go calls has token.NativeLocation, which has no source position.
+//
+// A position names the file as the reader named it, so two files with the
+// same name in different directories give the same position.
+//
+// SourceSite only reads the frames.  It takes no lock, so call it on the
+// goroutine that runs the evaluation, for example from a builtin, or when no
+// evaluation runs.
+func (s *CallStack) SourceSite() string {
+	if s == nil {
+		return ""
+	}
+	frames := s.Frames
+	inner := ""
+	for i := len(frames) - 1; i >= 0; i-- {
+		if pos := sourcePos(frames[i].Source); pos != "" {
+			inner = pos
+			break
+		}
+	}
+	if inner == "" {
+		return ""
+	}
+	// A load frame is an ancestor of every frame after it, so the last one
+	// is the innermost load that encloses inner.
+	start := 0
+	for i := range frames {
+		if isSourceLoad(&frames[i]) {
+			start = i + 1
+		}
+	}
+	for i := start; i < len(frames); i++ {
+		pos := sourcePos(frames[i].Source)
+		if pos == "" {
+			continue
+		}
+		if pos == inner {
+			return inner
+		}
+		return inner + " <- " + pos
+	}
+	return inner
+}
+
+// isSourceLoad reports whether f is a call of a lisp builtin that starts a
+// new source stream: load-file, load-string or load-bytes.
+func isSourceLoad(f *CallFrame) bool {
+	if f.Package != DefaultLangPackage {
+		return false
+	}
+	return f.Name == "load-file" || f.Name == "load-string" || f.Name == "load-bytes"
+}
+
+// sourcePos returns loc as "file:line:col", or "" when loc has no source
+// position: a nil loc, a negative Pos, or an empty or native File.
+func sourcePos(loc *token.Location) string {
+	if loc == nil || loc.Pos < 0 || loc.File == "" || loc.File == token.NativeFile {
+		return ""
+	}
+	return loc.String()
+}
+
 // TerminalFID determines if a chain of terminal stack frames that ends with
 // fid (i.e. fid is a candidate for tail-recursion optimization) and returns
 // the number of frames in the shortest such chain.  If no such chain of
