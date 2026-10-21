@@ -28,6 +28,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
 	"github.com/luthersystems/elps/lisp/lisplib/libtesting"
@@ -478,21 +479,19 @@ func (r *Runner) helperError(t testing.TB, err error) {
 	r.LispError(t, err)
 }
 
+// LispError reports err as a test error.  For an err with a *lisp.ErrorVal
+// in its chain it reports the error's stack trace, as
+// elpsutil.DumpErrorStack writes it, without the final newline.  For any
+// other err it reports err.
 func (r *Runner) LispError(t testing.TB, err error) {
 	var lerr *lisp.ErrorVal
-	ok := errors.As(err, &lerr)
-	if !ok {
+	if !errors.As(err, &lerr) {
 		t.Error(err)
 		return
 	}
 	var buf bytes.Buffer
-	_, ioerr := lerr.WriteTrace(&buf)
-	if ioerr != nil {
-		t.Errorf("io error: %v", ioerr)
-		t.Error(err)
-		return
-	}
-	t.Error(buf.String())
+	elpsutil.DumpErrorStack(&buf, err)
+	t.Error(strings.TrimSuffix(buf.String(), "\n"))
 }
 
 // TestSequence is a sequence of lisp expressions which are evaluated sequentially
