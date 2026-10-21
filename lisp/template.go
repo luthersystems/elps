@@ -244,6 +244,7 @@ type templateInventory struct {
 	runtime     *Runtime
 	valueQueue  []*LVal
 	builtins    []*LVal // the current registered builtins, in registration order
+	vmValues    *LVal   // the runtime's map of VM values; nil when it has none
 	envQueue    []*LEnv
 	cells       []templateCellSpan
 	bytes       []templateByteSpan
@@ -300,6 +301,18 @@ func (s *templateInventory) scan(env *LEnv) error {
 			return fmt.Errorf("template: registered builtin %s:%s: %w", key.pkg, key.name, err)
 		}
 	}
+	// VM values are a sorted map that no package binds, admitted as a
+	// package global is. Each entry is admitted first, so an error names it.
+	vmValues, entries := env.Runtime.vmValueEntries()
+	for _, entry := range entries {
+		if err := s.val(entry.v); err != nil {
+			return fmt.Errorf("template: VM value %q: %w", entry.key, err)
+		}
+	}
+	if err := s.val(vmValues); err != nil {
+		return fmt.Errorf("template: VM values: %w", err)
+	}
+	s.vmValues = vmValues
 	return s.checkSharedStorage()
 }
 
