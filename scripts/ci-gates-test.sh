@@ -2565,7 +2565,10 @@ check_gated_procs() { # workflow -> prints a problem, or nothing
 	local n v
 	n="$(bench_job_block "$1" | grep -cE '^\s*GOMAXPROCS:')"
 	v="$(bench_job_block "$1" | sed -nE 's/^\s*GOMAXPROCS:\s*"?([0-9]+)"?\s*$/\1/p')"
-	if workflow_env_block "$1" | grep -qE '^\s*GOMAXPROCS:'; then
+	# A here-string, not a pipe: under pipefail, grep -q exits at the first
+	# match and workflow_env_block then dies of SIGPIPE, which reads as a miss
+	# (see assert_contains).
+	if grep -qE '^\s*GOMAXPROCS:' <<<"$(workflow_env_block "$1")"; then
 		echo "a workflow-level GOMAXPROCS applies to every job, the gated one included"
 	elif [ "$n" -ne 1 ]; then
 		echo "the benchmark job has ${n} GOMAXPROCS assignments, want exactly 1"

@@ -1556,6 +1556,24 @@ func (env *LEnv) MapSeq(kind SeqKind, fn, seq *LVal) *LVal {
 	return mapSeq(env, goSeqSpec(kind), fn, seq)
 }
 
+// MapSeqCells returns the cells of seq as map reads its sequence argument:
+// the cells of a list or of a one-dimensional vector, and a nil error.  For
+// any other value it returns nil and the error map returns for that value.
+// The message names the value's type, never the value, so its size is
+// bounded.  A Go port of Lisp code that mapped over a value calls it, so the
+// port refuses each value that map refused, with the same message.
+//
+// The cells are the value's own storage, so treat them as read-only.
+// MapSeqCells charges no step and makes no allocation check; map checks the
+// allocation for its result after this check.
+func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
+	cells, ok := seq.SeqCells()
+	if !ok {
+		return nil, env.Errorf("third argument is not a proper sequence: %s", seq.Type)
+	}
+	return cells, nil
+}
+
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
 // cannot differ.
 func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
@@ -1573,8 +1591,9 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 	if f.IsSpecialFun() {
 		return env.Errorf("second argument is not a regular function: %v", f.FunType)
 	}
-	if !isSeq(lis) {
-		return env.Errorf("third argument is not a proper sequence: %s", lis.Type)
+	seq, lerr := env.MapSeqCells(lis)
+	if lerr != nil {
+		return lerr
 	}
 	if !nilReturn {
 		if lerr := env.CheckAlloc(lis.Len()); lerr.IsError() {
@@ -1597,7 +1616,7 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 			return env.Errorf("type specifier is invalid: %v", spec)
 		}
 	}
-	for i, c := range seqCells(lis) {
+	for i, c := range seq {
 		fargs := Cells{c}.List()
 		fret := env.callValueFunction(f, fargs)
 		if fret.IsError() {
