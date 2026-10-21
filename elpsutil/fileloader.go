@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"runtime/debug"
 	"sync"
 	"sync/atomic"
 
@@ -23,6 +24,10 @@ import (
 // and shared, so Lisp code that mutates one raises modify-literal-error; copy
 // a literal before mutating it.  Go code must not write the exported fields
 // of the program's values.
+//
+// FileLoader parses with its own parser.NewReader, not with an environment's
+// Runtime.Reader, because every environment shares the one parse.  A reader
+// that the embedder sets or wraps on a runtime does not see these sources.
 //
 // A FileLoader is safe for concurrent use.
 type FileLoader struct {
@@ -71,32 +76,44 @@ func programLoader(r lisp.Reader, name string, stream io.Reader) (lisp.Loader, e
 // Load implements Loader.  It evaluates the parsed source in env and returns
 // the value of the last expression, or the first error.
 //
-// When the source does not parse, Load panics with an error that names the
-// source.  It panics on every call with the same error, not only on the
-// first.  The source is a constant, so a parse failure is a defect in the
-// program that embeds it.
+// When the source does not parse, Load returns an error that names the
+// source.  It returns the same error on every call, not only on the first,
+// and does not parse again.  The source is a constant, so a parse failure is
+// a defect in the program that embeds it.
 //
-// Load also recovers a panic out of the parser and stores it as the parse
-// error.  sync.Once counts a call that panics as done, so without the
-// recover every later Load would dereference a nil Loader and the original
-// panic would be lost.
+// Load also recovers a panic out of the parser and returns it as the parse
+// error, with the Go stack of the panic.  sync.Once counts a call that
+// panics as done, so without the recover every later Load would dereference
+// a nil Loader and the original panic would be lost.
 func (l *FileLoader) Load(env *lisp.LEnv) *lisp.LVal {
-	l.once.Do(func() {
-		defer func() {
-			if r := recover(); r != nil {
-				l.loader, l.err = nil, fmt.Errorf("parsing %s: %v", l.filename, r)
-			}
-		}()
-		l.loader, l.err = l.newLoader(parser.NewReader(), l.filename,
-			bytes.NewReader(l.bytecode))
-		if l.err == nil {
-			l.parses.Add(1)
-		}
-	})
+	l.once.Do(l.parse)
 	if l.err != nil {
-		panic(l.err)
+		return env.Error(l.err)
 	}
 	return l.loader(env)
+}
+
+// parse builds l.loader, or sets l.err.
+func (l *FileLoader) parse() {
+	defer func() {
+		r := recover()
+		if r == nil {
+			return
+		}
+		l.loader = nil
+		if err, ok := r.(error); ok {
+			l.err = fmt.Errorf("parsing %s: parser panic: %w\n%s", l.filename, err, debug.Stack())
+		} else {
+			l.err = fmt.Errorf("parsing %s: parser panic: %v\n%s", l.filename, r, debug.Stack())
+		}
+	}()
+	loader, err := l.newLoader(parser.NewReader(), l.filename, bytes.NewReader(l.bytecode))
+	if err != nil {
+		l.err = fmt.Errorf("parsing %s: %w", l.filename, err)
+		return
+	}
+	l.loader = loader
+	l.parses.Add(1)
 }
 
 // ParseCount returns the number of times the loader has parsed its source:

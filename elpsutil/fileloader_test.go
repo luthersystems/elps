@@ -4,6 +4,7 @@ package elpsutil
 
 import (
 	"context"
+	"errors"
 	"io"
 	"sync"
 	"testing"
@@ -244,58 +245,79 @@ func TestFileLoaderMatchesFreshParse(t *testing.T) {
 	assert.Equal(t, uint64(1), shared.ParseCount())
 }
 
-// loadPanics calls l.Load twice and returns what each call panicked with.
-// It fails t when a call returns.
-func loadPanics(t *testing.T, l *FileLoader) [2]any {
+// loadErrors calls l.Load twice and returns the error message of each call.
+// It fails t when a call does not return an error.
+func loadErrors(t *testing.T, l *FileLoader) [2]string {
 	t.Helper()
-	var got [2]any
+	var got [2]string
 	for i := range got {
-		func() {
-			defer func() { got[i] = recover() }()
-			l.Load(newFileLoaderEnv(t))
-			t.Fatalf("load %d did not panic", i)
-		}()
+		rc := l.Load(newFileLoaderEnv(t))
+		require.Truef(t, rc.IsError(), "load %d returned %v", i, rc)
+		got[i] = (*lisp.ErrorVal)(rc).ErrorMessage()
 	}
 	return got
 }
 
-// TestFileLoaderParsePanicRepeats checks that a parser panic is reported by
-// every Load, not only the first.  No input makes the parser panic, so the
-// test injects a parser that does.
+// TestFileLoaderParsePanicRepeats checks that every Load returns a parser
+// panic as an error, not only the first.  No input makes the parser panic,
+// so the test injects a parser that does.
 func TestFileLoaderParsePanicRepeats(t *testing.T) {
 	l := NewFileLoader([]byte(fileLoaderSrc), "shared.lisp")
 	l.newLoader = func(lisp.Reader, string, io.Reader) (lisp.Loader, error) {
 		panic("parser exploded")
 	}
 
-	got := loadPanics(t, l)
-	msgs := make([]string, len(got))
-	for i, r := range got {
-		require.NotNil(t, r, "load %d did not panic", i)
-		err, ok := r.(error)
-		require.True(t, ok, "load %d panic value is not an error: %#v", i, r)
-		assert.Contains(t, err.Error(), "parser exploded", "load %d lost the parser panic", i)
-		assert.Contains(t, err.Error(), "shared.lisp", "load %d does not name the source", i)
-		msgs[i] = err.Error()
+	got := loadErrors(t, l)
+	for i, msg := range got {
+		assert.Contains(t, msg, "parser exploded", "load %d lost the parser panic", i)
+		assert.Contains(t, msg, "shared.lisp", "load %d does not name the source", i)
+		assert.Contains(t, msg, "runtime/debug.Stack", "load %d has no Go stack", i)
 	}
-	assert.Equal(t, msgs[0], msgs[1], "the loads report different panics")
+	assert.Equal(t, got[0], got[1], "the loads report different panics")
 	assert.Equal(t, uint64(0), l.ParseCount(), "a parser panic counted as a parse")
 }
 
+// TestFileLoaderParsePanicWrapsError checks that a parser panic with an
+// error value is wrapped, so errors.Is finds it.
+func TestFileLoaderParsePanicWrapsError(t *testing.T) {
+	sentinel := errors.New("parser exploded")
+	l := NewFileLoader([]byte(fileLoaderSrc), "shared.lisp")
+	l.newLoader = func(lisp.Reader, string, io.Reader) (lisp.Loader, error) {
+		panic(sentinel)
+	}
+	rc := l.Load(newFileLoaderEnv(t))
+	require.True(t, rc.IsError(), "%v", rc)
+	assert.ErrorIs(t, l.err, sentinel)
+	assert.Contains(t, l.err.Error(), "parsing shared.lisp")
+}
+
 // TestFileLoaderParseErrorRepeats checks that a source that does not parse
-// makes every Load panic with the same error, not only the first.
+// makes every Load return the same error, not only the first, and that the
+// source is not parsed again.
 func TestFileLoaderParseErrorRepeats(t *testing.T) {
 	l := NewFileLoader([]byte(`(set 'x '(1 2`), "broken.lisp")
-
-	got := loadPanics(t, l)
-	errs := make([]error, len(got))
-	for i, r := range got {
-		require.NotNil(t, r, "load %d did not panic", i)
-		err, ok := r.(error)
-		require.True(t, ok, "load %d panic value is not an error: %#v", i, r)
-		errs[i] = err
+	calls := 0
+	l.newLoader = func(r lisp.Reader, name string, in io.Reader) (lisp.Loader, error) {
+		calls++
+		return programLoader(r, name, in)
 	}
-	assert.Equal(t, errs[0].Error(), errs[1].Error(), "the loads report different parse errors")
-	assert.Contains(t, errs[0].Error(), "broken.lisp", "the parse error does not name the source")
+
+	got := loadErrors(t, l)
+	assert.Equal(t, got[0], got[1], "the loads report different parse errors")
+	assert.Contains(t, got[0], "parsing broken.lisp", "the parse error does not name the source")
+	assert.Equal(t, 1, calls, "a failed parse ran again")
 	assert.Equal(t, uint64(0), l.ParseCount(), "a failed parse counted as a parse")
+}
+
+// TestFileLoaderAdmissionErrorNamesSource checks that an error from building
+// the Program, not only from the reader, names the source.
+func TestFileLoaderAdmissionErrorNamesSource(t *testing.T) {
+	admission := errors.New("program refused")
+	l := NewFileLoader([]byte(fileLoaderSrc), "shared.lisp")
+	l.newLoader = func(lisp.Reader, string, io.Reader) (lisp.Loader, error) {
+		return nil, admission
+	}
+	got := loadErrors(t, l)
+	assert.Equal(t, "parsing shared.lisp: program refused", got[0])
+	assert.ErrorIs(t, l.err, admission)
 }
