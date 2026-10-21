@@ -1441,6 +1441,32 @@ func TestMyPackage(t *testing.T) {
   (assert= 3 (+ 1 2)))
 ```
 
+### Measuring a builtin's step charge
+
+A builtin's step charges decide whether an evaluation fits a step limit, so
+an embedder pins them in tests. Call the builtin directly from Go: no form is
+evaluated, so every step the runtime records is the builtin's own charge.
+
+```go
+env := elpstest.NewStepEnv() // counts steps, no limit
+out, steps := elpstest.CallBuiltinFunc(t, env, mypackage.BuiltinSum, lisp.Int(1), lisp.Int(2))
+require.Equal(t, 3, out.Int)
+require.Equal(t, int64(2), steps)
+
+// An error path: CallBuiltinFunc fails the test on an error, so measure by hand.
+var res *lisp.LVal
+steps = elpstest.StepsCharged(env, func() { res = mypackage.BuiltinSum(env, lisp.QExpr(nil)) })
+require.True(t, res.IsError())
+require.Equal(t, int64(0), steps)
+```
+
+`CallBuiltinFunc` calls the Go function as is: it binds no formals, so pass
+the argument list in the shape the function reads.
+
+The runtime counts steps only while it has a step limit or a context, so an
+env from `lisp.NewEnv` measures 0. `NewStepEnv` and `elpstest.EnableSteps`
+give the runtime a background context.
+
 ### Parity tests for a Lisp-to-Go migration
 
 `elpstest.ParityCheck` runs a native and the verbatim Lisp definition it
