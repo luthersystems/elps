@@ -1995,9 +1995,19 @@ They charge exactly what their names say, so replacing a hand-written
 | Helper | Charge | Use |
 |--------|--------|-----|
 | `env.Step()` | 1 | once per element of a native loop that replaces a Lisp loop |
+| `env.StepEach(n)` | n, one at a time | n steps that stand for n evaluated forms; an overrun limit stops at the step that overran it, as the evaluator does |
 | `lisp.ChargeStartedKiB(env, n)` | ceil(n/1024) | every started KiB (substrate's storage convention) |
 | `lisp.ChargeRecord(env, n)` | max(1, ceil(n/1024)) | per record handed to a reducer, empty records included |
 | `env.CheckContext()` | 0 | the evaluator's `context-cancelled` check, between charges |
+
+`env.StepEach(n)` and `env.ChargeSteps(n)` fail at the same call with the
+same error. They differ in the usage they record when a limit runs out part of
+the way: with 2 steps left, `ChargeSteps(5)` records 5 and `StepEach(5)`
+records 3, what 5 evaluated forms would record. Use `StepEach` when Go code
+replaces forms the evaluator would have stepped through and a host reads the
+usage of a failed evaluation; use `ChargeSteps` for a cost such as one step
+per KiB, which no form ever counted step by step. `StepEach` does not loop, so
+its cost does not depend on n.
 
 There is no public floor(n/1024) helper: the stdlib's is internal. Which
 convention a builtin uses is observable in its step counts, so keep the one

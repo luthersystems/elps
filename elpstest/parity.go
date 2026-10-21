@@ -29,6 +29,7 @@ import (
 // same condition.  Step counts are not compared then: a native that charges
 // its steps in one LEnv.ChargeSteps call overshoots the budget by the rest of
 // that charge where the Lisp stopped one step past it, and both are correct.
+// (A native that charges with LEnv.StepEach stops where the Lisp did.)
 //
 // Argument lists come from Cases, then, when Gen is set, N lists drawn from
 // a rand.Rand seeded with Seed, so a failure is reproducible, then Extra,
