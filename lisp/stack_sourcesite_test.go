@@ -129,6 +129,23 @@ func TestSourceSite(t *testing.T) {
 			siteFrame("app", "now", siteLoc("a.lisp", 2, 9)),
 		},
 		want: "a.lisp:2:9",
+	}, {
+		name: "a load frame above inner does not start a source stream",
+		frames: []lisp.CallFrame{
+			siteFrame("app", "load", nil),
+			siteFrame("lisp", "handler-bind", siteLoc("main.lisp", 4, 9)),
+			siteFrame("app", "now", siteLoc("core.lisp", 5, 29)),
+			siteFrame("lisp", "load-string", native),
+		},
+		want: "core.lisp:5:29 <- main.lisp:4:9",
+	}, {
+		name: "a position without a column or line",
+		frames: []lisp.CallFrame{
+			siteFrame("app", "load", nil),
+			siteFrame("lisp", "progn", &token.Location{File: "main.lisp", Pos: 40}),
+			siteFrame("app", "now", &token.Location{File: "core.lisp", Pos: 9, Line: 5}),
+		},
+		want: "core.lisp:5 <- main.lisp[40]",
 	}}
 
 	for _, tt := range tests {

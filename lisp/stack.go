@@ -178,20 +178,32 @@ func (s *CallStack) Top() *CallFrame {
 //
 //	inner <- reach
 //
-// where inner is the position ("file:line:col") of the innermost frame with
-// a source position.  reach is the position of the outermost frame with a
-// source position inside the innermost source stream: the frames after the
-// last load-file, load-string or load-bytes frame of package lisp, or the
-// whole stack when there is no such frame.  So reach is the top-level form,
+// where inner is the position of the innermost frame with a source position.
+// reach is the position of the outermost frame with a source position inside
+// the innermost source stream that encloses inner.  A source stream starts
+// after a load-file, load-string or load-bytes frame below inner; with no
+// such frame, the stream is the whole stack.  So reach is the top-level form,
 // in the file being loaded, whose evaluation reached inner.  When inner and
 // reach are the same position, SourceSite returns inner alone.
 //
-// A frame has a source position when its Source is not nil, its Pos is not
-// negative and its File is neither "" nor token.NativeFile.  A builtin that
-// Go calls has token.NativeLocation, which has no source position.
+// A position is the frame's token.Location.String: "file:line:col",
+// "file:line" when Col is 0, or "file[pos]" when Line is 0.  A frame has a
+// source position when its Source is not nil, its Pos is not negative and
+// its File is neither "" nor token.NativeFile.  A builtin that Go calls has
+// token.NativeLocation, which has no source position.
 //
-// A position names the file as the reader named it, so two files with the
-// same name in different directories give the same position.
+// Limits:
+//
+//   - Only the load-file, load-string and load-bytes builtins start a source
+//     stream.  A load that Go starts (LEnv.LoadFile, LoadString,
+//     LoadProgramContext, an elpsutil.FileLoader) pushes no frame, so for
+//     code it loads, reach is a form of the enclosing stream.
+//   - A load frame counts only when its package is DefaultLangPackage
+//     ("lisp"), the language package InitializeUserEnv sets.  A CallStack
+//     does not know its runtime's Registry.Lang, so an embedder that names
+//     another language package gets no stream boundaries.
+//   - A position names the file as the reader named it, so two files with
+//     the same name in different directories give the same position.
 //
 // SourceSite only reads the frames.  It takes no lock, so call it on the
 // goroutine that runs the evaluation, for example from a builtin, or when no
@@ -201,25 +213,27 @@ func (s *CallStack) SourceSite() string {
 		return ""
 	}
 	frames := s.Frames
+	innerIdx := -1
 	inner := ""
 	for i := len(frames) - 1; i >= 0; i-- {
 		if pos := sourcePos(frames[i].Source); pos != "" {
-			inner = pos
+			innerIdx, inner = i, pos
 			break
 		}
 	}
-	if inner == "" {
+	if innerIdx < 0 {
 		return ""
 	}
-	// A load frame is an ancestor of every frame after it, so the last one
-	// is the innermost load that encloses inner.
+	// A load frame below inner is an ancestor of inner, so the last one is
+	// the innermost load that encloses inner.  A load frame above inner does
+	// not enclose it.
 	start := 0
-	for i := range frames {
+	for i := 0; i < innerIdx; i++ {
 		if isSourceLoad(&frames[i]) {
 			start = i + 1
 		}
 	}
-	for i := start; i < len(frames); i++ {
+	for i := start; i <= innerIdx; i++ {
 		pos := sourcePos(frames[i].Source)
 		if pos == "" {
 			continue
@@ -232,8 +246,9 @@ func (s *CallStack) SourceSite() string {
 	return inner
 }
 
-// isSourceLoad reports whether f is a call of a lisp builtin that starts a
-// new source stream: load-file, load-string or load-bytes.
+// isSourceLoad reports whether f is a call of a builtin of package
+// DefaultLangPackage that starts a new source stream: load-file, load-string
+// or load-bytes.
 func isSourceLoad(f *CallFrame) bool {
 	if f.Package != DefaultLangPackage {
 		return false
@@ -241,8 +256,8 @@ func isSourceLoad(f *CallFrame) bool {
 	return f.Name == "load-file" || f.Name == "load-string" || f.Name == "load-bytes"
 }
 
-// sourcePos returns loc as "file:line:col", or "" when loc has no source
-// position: a nil loc, a negative Pos, or an empty or native File.
+// sourcePos returns loc.String(), or "" when loc has no source position: a
+// nil loc, a negative Pos, or an empty or native File.
 func sourcePos(loc *token.Location) string {
 	if loc == nil || loc.Pos < 0 || loc.File == "" || loc.File == token.NativeFile {
 		return ""
