@@ -1,0 +1,33 @@
+name: Security
+
+# The org's shared security checks: govulncheck, gosec, gitleaks and
+# osv-scanner, from luthersystems/.github. One workflow in every repo gives
+# each repo the same checks, tool versions and fail rule, and an org ruleset
+# requires its one check, "security / result". How to exempt a finding and
+# why each check exists: docs/security-workflow.md in luthersystems/.github.
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # A scheduled run finds advisories published after the last change, and
+    # opens a security-drift issue when one appears.
+    # Nightly: this repo is public, so Actions minutes are free.
+    - cron: "23 6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The job id must stay "security": the ruleset requires "security / result".
+  security:
+    permissions:
+      contents: read
+      issues: write # the security-drift issue on scheduled runs
+    uses: luthersystems/.github/.github/workflows/security.yml@v1
