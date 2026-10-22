@@ -153,7 +153,7 @@ class OptionalNodeGate(unittest.TestCase):
         source = (ROOT / "scripts/ci-gates-test.sh").read_text()
         helper = "assert_exit() {" + source.split("assert_exit() {", 1)[1].split("\n}\n", 1)[0] + "\n}"
         block = source.split('python3 "${SCRIPT_DIR}/marketplace-workflow-test.py"', 1)[1]
-        block = block.split('echo "== govulncheck fail-summary:', 1)[0]
+        block = block.split('echo "== extracted workflow bodies: bench-compare', 1)[0]
         self.assertIn("marketplace-diagnostics.test.cjs", block)
         script = 'fail=0\nok() { :; }\nbad() { fail=1; }\n' + helper + block + '\nexit "$fail"\n'
         return subprocess.run(["/bin/bash", "-c", script], check=False, text=True,
