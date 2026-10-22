@@ -42,7 +42,7 @@
 #   go 1.26.10            go.mod `toolchain` (CI `go-version-file`; the hook reads go.mod)
 #   golangci-lint v2.13.x elps.yml golangci-lint-action `version: v2.13`; hook pins 2.13.2
 #   betteralign v0.14.3   Makefile `fieldalign-fix` (via `go run ...@v0.14.3`)
-#   govulncheck v1.8.0    govulncheck.yml / govulncheck-scheduled.yml
+#   govulncheck v1.8.0    security.yml (the shared Security workflow pins it)
 #   benchstat @latest     benchmark.yml (needs GOTOOLCHAIN=auto; see go_install)
 #   (shellcheck)          scripts/ci-gates-test.sh (CI asserts it is present);
 #                         parenthesised so this line is not read as a directive
@@ -82,7 +82,7 @@ mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
 GO_VERSION=1.26.10              # copy of go.mod `toolchain` (the repo is not here yet); go-pin-sync-test.py checks it
 GOLANGCI_VERSION=v2.13.2        # CI pins v2.13 (golangci-lint-action); hook pins 2.13.2
 BETTERALIGN_VERSION=v0.14.3     # Makefile `fieldalign-fix`
-GOVULNCHECK_VERSION=v1.8.0      # govulncheck.yml / govulncheck-scheduled.yml
+GOVULNCHECK_VERSION=v1.8.0      # the shared Security workflow (security.yml)
 
 # Bounded network budgets (seconds). Nothing here may block forever: the environment build
 # has its own ceiling, and a step that hangs until that ceiling burns the whole snapshot.
@@ -307,7 +307,7 @@ install_gopls() {
 }
 
 install_govulncheck() {
-  # Same pin as govulncheck.yml so a local `govulncheck ./...` agrees with CI.
+  # Same pin as the shared Security workflow so a local `govulncheck ./...` agrees with CI.
   # This step was FAILING every run: it was the only `go install` without
   # GOTOOLCHAIN=auto, and x/vuln@v1.8.0's go directive (>= 1.26.0) is newer than the
   # GOTOOLCHAIN pin the VM exports, so the module fetch refused before building.
