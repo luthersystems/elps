@@ -53,7 +53,7 @@ type corpusTest struct {
 //	(expected sexp)
 func parseCorpusFile(t *testing.T, path string) []corpusTest {
 	t.Helper()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) //nolint:gosec // G304: path is a corpus file under test/corpus, found by the test
 	require.NoError(t, err, "reading corpus file %s", path)
 
 	content := string(data)
@@ -206,7 +206,7 @@ func TestParseAllLispFiles(t *testing.T) {
 	for _, path := range lispFiles {
 		relPath := strings.TrimPrefix(path, "../")
 		t.Run(relPath, func(t *testing.T) {
-			source, err := os.ReadFile(path)
+			source, err := os.ReadFile(path) //nolint:gosec // G304: path is a .lisp file in this repo, found by the walk above
 			require.NoError(t, err)
 
 			tree := parser.Parse(source, nil)
