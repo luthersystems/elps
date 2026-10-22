@@ -4120,6 +4120,28 @@ for f in sorted(glob.glob(os.path.join(root, ".github", "workflows", "*.y*ml")))
     pr_cfg = triggers.get("pull_request") or {}
     filtered = isinstance(pr_cfg, dict) and (pr_cfg.get("paths") or pr_cfg.get("paths-ignore"))
 
+    # A workflow that only calls a reusable workflow has no steps of its own:
+    # its required check is the aggregate INSIDE the called workflow, named
+    # "<caller job id> / <called job name>". security.yml calls the org's
+    # shared security workflow, whose aggregate "security / result" is the
+    # check an org ruleset requires; a "Required:" job here would be a second
+    # required check over the same one job. Listed by file, so a new
+    # workflow cannot skip the aggregate by being a call.
+    CALLED_AGGREGATES = {
+        "security.yml": "security / result",
+    }
+    if base in CALLED_AGGREGATES:
+        not_calls = sorted(j for j, v in jobs.items() if "uses" not in v)
+        if not_calls:
+            failures.append(
+                f"{base}: is listed as a reusable-workflow call, but jobs {not_calls} "
+                f"run steps here, outside the called workflow's aggregate"
+            )
+        else:
+            passes.append(f"{base}: only calls a reusable workflow; its aggregate "
+                          f"'{CALLED_AGGREGATES[base]}' is the required check")
+        continue
+
     aggs = [j for j in jobs if jobname(j).startswith(MARKER)]
     if aggs and filtered:
         failures.append(

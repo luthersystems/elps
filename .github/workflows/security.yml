@@ -30,4 +30,7 @@ jobs:
     permissions:
       contents: read
       issues: write # the security-drift issue on scheduled runs
-    uses: luthersystems/.github/.github/workflows/security.yml@v1
+    # Pinned to the commit of v1.3.0, as this repo pins every action
+    # (scripts/ci-gates-test.sh); Dependabot moves it. The actions the called
+    # workflow uses still follow luthersystems/.github's v1 tag.
+    uses: luthersystems/.github/.github/workflows/security.yml@632782e52f21c622dede51d8cf8f95a41b1cbd3d # v1.3.0
