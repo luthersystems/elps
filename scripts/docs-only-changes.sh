@@ -2,8 +2,8 @@
 #
 # Decide whether a pull request changes ONLY documentation, so the expensive
 # CI jobs may be skipped. Runs as the `changes` job in every workflow that
-# produces a `Required: *` check (elps.yml, fuzz.yml, govulncheck.yml,
-# tree-sitter.yml, benchmark.yml); scripts/ci-gates-test.sh fixture-tests the
+# produces a `Required: *` check (elps.yml, fuzz.yml, tree-sitter.yml,
+# benchmark.yml); scripts/ci-gates-test.sh fixture-tests the
 # classification below.
 #
 # WHY NOT `paths-ignore:` ON THE WORKFLOW. A path-filtered workflow does not run
