@@ -179,7 +179,7 @@
 //     returned as an error is a non-nil error.  Return error.
 //   - lisp.ResultAs[T] over a call whose result type varies (get, funcall,
 //     apply, nth, first, second, aref, and LEnv.MapLookup, First, Second,
-//     CallFunction and ApplyFunction), for a T other
+//     CallFunction, CallValue and ApplyFunction), for a T other
 //     than *lisp.LVal.  A value of another type is then a run-time error.
 //   - A Func1E, Func2E or Func3E builtin registered with formals that are not
 //     exactly its count of required arguments.  The builtin takes required
@@ -1002,7 +1002,7 @@ func (s *state) checkErrorValResult(ft *ast.FuncType) {
 
 // checkResultAs: lisp.ResultAs[T](env.CallBuiltin(ref, ...)) for a builtin
 // whose result type varies, and lisp.ResultAs[T] over the LEnv helper of such
-// a builtin (MapLookup, First, Second, CallFunction, ApplyFunction).
+// a builtin (MapLookup, First, Second, CallFunction, CallValue, ApplyFunction).
 func (s *state) checkResultAs(call *ast.CallExpr) {
 	fn := s.lispFunc(call)
 	if fn == nil || fn.Name() != "ResultAs" || len(call.Args) != 1 {
@@ -1031,7 +1031,7 @@ func (s *state) checkResultAs(call *ast.CallExpr) {
 		name = "first"
 	case "Second":
 		name = "second"
-	case "CallFunction":
+	case "CallFunction", "CallValue":
 		name = "funcall"
 	case "ApplyFunction":
 		name = "apply"

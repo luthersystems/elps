@@ -1108,6 +1108,52 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 	return env.plainCall(fun, SExpr(Cells(args.Cells).Clone()))
 }
 
+// CallValue returns what the evaluator returns for the call form (f args...)
+// when f is a variable that holds fn: a Go port calls it where the Lisp
+// called a function it was handed, such as a callback argument or a closure
+// read from a map.  It differs from CallFunction, which is funcall, in one
+// check: the evaluator calls only a function value, so a symbol fn raises
+// instead of naming a global function.
+//
+// It makes CheckCallable's check, the context check included, then calls fn
+// as CallFunction does.  It charges no step of its own.  It neither
+// writes args nor keeps the slice.
+func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal {
+	if lerr := env.CheckCallable(fn); lerr.IsError() {
+		return lerr
+	}
+	return env.plainCall(fn, SExpr(Cells(args).Clone()))
+}
+
+// CheckCallable returns the error the evaluator returns for the call form
+// (f args...) when f holds fn and fn is not a function, and Nil() otherwise.
+// The evaluator makes this check before it evaluates the arguments, so a
+// port whose arguments cost work (a decode, a ledger read) calls it first and
+// CallValue after.  It checks the evaluation's context first, as the
+// evaluator does before each form, and charges no step.
+//
+// An error value fn is returned as it is, as the evaluator returns the error
+// its head evaluated to.  For any other value the condition is "error".  The
+// message names fn's type, never fn, so its
+// size is bounded; the evaluator's message prints fn.  The evaluator expands
+// a macro or special operator in the head over the unevaluated argument
+// forms, which Go cannot do, so CheckCallable refuses one with "error".
+func (env *LEnv) CheckCallable(fn *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	if fn.IsError() {
+		return fn
+	}
+	if fn.Type != LFun {
+		return env.Errorf("first element of expression is not a function: %v", fn.Type)
+	}
+	if fn.IsSpecialFun() {
+		return env.Errorf("first element of expression is not a regular function: %v", fn.FunType)
+	}
+	return Nil()
+}
+
 // plainCall calls the regular function fun with args from Go as a plain call:
 // no tail call in fun can return through the calling frame, because a Go
 // frame cannot be unwound.  It keeps the calling frame non-terminal while fun
@@ -1574,6 +1620,36 @@ func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
 	return cells, nil
 }
 
+// MapSeqFunc returns what MapSeq returns when fn is the Go function f: a
+// list or a vector of f's results for the elements of seq, or () for SeqNil,
+// with map's check of seq (MapSeqCells) and its allocation check, in map's
+// order.  A Go port calls it where the Lisp mapped a lambda whose body the
+// port writes in Go, so it need not repeat those checks.
+//
+// It checks the evaluation's context first.  Before each call of f it charges
+// one step and checks the context, as each of map's calls does, and f
+// charges its own steps.  The first error f returns stops the map and is
+// returned.  f must return a value, never a Go nil.  Any kind but SeqList,
+// SeqVector and SeqNil returns "type specifier is invalid: K" after the
+// checks of seq, as MapSeq does.  As MapSeq does, it keeps the calling frame
+// non-terminal while f runs, so no tail call that f evaluates returns
+// through the Go caller.
+func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	stack := env.Runtime.Stack
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
+	}
+	return mapSeqCalls(env, goSeqSpec(kind), seq, func(c *LVal) *LVal {
+		if lerr := env.Step(); lerr.IsError() {
+			return lerr
+		}
+		return f(c)
+	})
+}
+
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
 // cannot differ.
 func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
@@ -1591,6 +1667,17 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 	if f.IsSpecialFun() {
 		return env.Errorf("second argument is not a regular function: %v", f.FunType)
 	}
+	return mapSeqCalls(env, spec, lis, func(c *LVal) *LVal {
+		return env.callValueFunction(f, Cells{c}.List())
+	})
+}
+
+// mapSeqCalls is the part of map after its check of fn: the check of lis,
+// the allocation check, the result's kind, and one call per element, where
+// call charges the call's step and makes it.  It is the body of mapSeq and of
+// LEnv.MapSeqFunc, so the two cannot differ.
+func mapSeqCalls(env *LEnv, spec seqSpec, lis *LVal, call func(c *LVal) *LVal) *LVal {
+	nilReturn := spec.kind == SeqNil
 	seq, lerr := env.MapSeqCells(lis)
 	if lerr != nil {
 		return lerr
@@ -1617,8 +1704,7 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 		}
 	}
 	for i, c := range seq {
-		fargs := Cells{c}.List()
-		fret := env.callValueFunction(f, fargs)
+		fret := call(c)
 		if fret.IsError() {
 			return fret
 		}

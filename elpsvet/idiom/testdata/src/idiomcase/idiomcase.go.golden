@@ -95,6 +95,7 @@ func resultAsVarying(env *lisp.LEnv, m, k *lisp.LVal) {
 	_, _ = lisp.ResultAs[string](env.First(m))            // want `the result type of first varies with the data`
 	_, _ = lisp.ResultAs[string](env.Second(m))           // want `the result type of second varies with the data`
 	_, _ = lisp.ResultAs[string](env.CallFunction(m, k))  // want `the result type of funcall varies with the data`
+	_, _ = lisp.ResultAs[string](env.CallValue(m, k))     // want `the result type of funcall varies with the data`
 	_, _ = lisp.ResultAs[string](env.ApplyFunction(m, k)) // want `the result type of apply varies with the data`
 	_, _ = lisp.ResultAs[*lisp.LVal](env.First(m))
 }

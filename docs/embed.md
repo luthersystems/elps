@@ -1140,7 +1140,7 @@ returns a nil error on success.
 | `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
 | `key?` | `env.MapHasKey(m, k) (bool, *LVal)` |
 | `nth` | `env.Nth(seq, n) *LVal` |
-| `map` | `env.MapSeq(kind, fn, seq) *LVal` |
+| `map` | `env.MapSeq(kind, fn, seq) *LVal`; `env.MapSeqFunc(kind, seq, f)` for a Go `f` |
 | `concat` | `env.Concat(kind, seqs...) *LVal` |
 | `zip` | `env.Zip(kind, list, lists...) *LVal` |
 | `slice` | `env.Slice(kind, seq, start, end) *LVal` |
@@ -1189,6 +1189,25 @@ Go builtin in place of `env.CallBuiltin` of `funcall` or `apply`. The
 builtins mark the calling frame terminal so that the callee's tail call can
 reuse it; a Go frame cannot be unwound, so these make every call a plain call
 (luthersystems/elps#852).
+
+**`env.CallValue(fn, args...)`** returns what the evaluator returns for the
+call form `(f args...)` when `f` is a variable that holds `fn`, as when the
+Lisp called a callback it was handed. It differs from `CallFunction` in one
+check: the evaluator calls only a function value, so a symbol raises instead
+of naming a global function. An error value `fn` comes back as it is. Any
+other value that is not a function raises "first element of expression is
+not a function: TYPE"; the message names the type, where the evaluator prints
+the value, so its size is bounded. A macro or special operator raises
+`error`, since Go cannot expand it over the unevaluated arguments.
+**`env.CheckCallable(fn)`** is that check alone, with the context check first,
+for a port that must refuse `fn` before it does the work of the arguments.
+Neither charges a step of its own.
+
+**`env.MapSeqFunc(kind, seq, f)`** returns what `MapSeq` returns when `fn` is
+the Go function `f`: `MapSeqCells`'s check of `seq`, the allocation check
+(not for `SeqNil`), and one step and context check before each call of `f`,
+in `map`'s order. Use it where the Lisp mapped a lambda whose body the port
+writes in Go, in place of a hand-written loop over `MapSeqCells`.
 
 **Testing a Go copy of a builtin: `elpstest/oracle`.** The package compares
 Go code with the builtin it copies, with the builtin as the oracle.
@@ -1273,7 +1292,7 @@ keeps behaviour identical for a non-nil value; the package doc of
 - A `*lisp.ErrorVal` in a result list, which makes a typed nil.
 - `lisp.ResultAs[T]` over `get`, `funcall`, `apply`, `nth`, `first`,
   `second`, `aref`, or their helpers `env.MapLookup`, `env.First`,
-  `env.Second`, `env.CallFunction` and `env.ApplyFunction`, whose result type
+  `env.Second`, `env.CallFunction`, `env.CallValue` and `env.ApplyFunction`, whose result type
   varies.
 - A `Func*E` builtin registered with formals other than its required
   arguments.
