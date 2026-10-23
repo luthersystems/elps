@@ -168,6 +168,9 @@ The following inbuilt types are available within the library:
 |`s:bytes`|binary array (ie golang `[]byte`)|
 |`s:any`|any ELPS value|
 |`s:array`|array|
+|`s:list`|list (`()` is the empty list)|
+|`s:sequence`|list or array, as a Go slice accepts either|
+|`s:nil`|`()`, for a field that may be nil|
 |`s:bool`|boolean (the symbols `true` and `false`; the strings `"true"` and `"false"` are rejected)|
 |`s:tagged-value`|tagged-value|
 |`s:error`|ELPS error|
@@ -233,7 +236,17 @@ Requires the value to match the supplied pattern. Any regular expression that ca
   
 
 * `(s:of type)`
-  Requires the members of an array to be of type `type`.
+  Requires the members of an array or a list to be of type `type`.
+
+
+* `(s:map-of key-type value-type)`
+  Requires a sorted map whose every key is of type `key-type` and every value of type `value-type`.
+
+
+* `(s:describe validator)`
+  Returns the definition of a validator as a sorted map (`op`, and as it applies `name`, `type`,
+  `key`, `values` and `children`), so a tool can read a schema back. A validator built in Go with
+  `NewValidator` describes as `{"op": "opaque"}`.
   
 
 * `(s:has-key name[ type [type2 typeN]])`

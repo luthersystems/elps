@@ -19,6 +19,14 @@ func TestPackage(t *testing.T) {
 	r.RunTestFile(t, "libschema_test.lisp")
 }
 
+// TestRecords runs the record tests: lists, sequences, nil, map-of, a
+// nested order and s:describe.
+func TestRecords(t *testing.T) {
+	r := &elpstest.Runner{}
+	defer r.Close()
+	r.RunTestFile(t, "records_test.lisp")
+}
+
 // TestMakeValidatorNeverWritesCallerPackage pins #736's rule for libschema: a
 // prefixed library builtin must never write into the caller's package.
 // s:deftype used to violate it -- it bound its validator as a global under

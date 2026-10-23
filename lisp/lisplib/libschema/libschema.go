@@ -34,6 +34,9 @@ const (
 	Bool      = "bool"
 	TaggedVal = "tagged-value"
 	Any       = "any"
+	List      = "list"
+	Sequence  = "sequence"
+	Nil       = "nil"
 )
 
 var symbols = []string{
@@ -49,6 +52,9 @@ var symbols = []string{
 	Bool,
 	TaggedVal,
 	Any,
+	List,
+	Sequence,
+	Nil,
 }
 
 // These are the errors we may produce
@@ -101,6 +107,9 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetSymbolDoc("bool", "Type name for boolean values: the symbols true and false, not the strings \"true\" and \"false\".")
 	env.SetSymbolDoc("tagged-value", "Type name for user-defined tagged values (created with deftype/new).")
 	env.SetSymbolDoc("any", "Type name matching any value type (no type constraint).")
+	env.SetSymbolDoc("list", "Type name for list values; () is the empty list. The s:len constraints do not measure a list, so they pass any list.")
+	env.SetSymbolDoc("sequence", "Type name for a list or a vector. The s:len constraints measure a vector, not a list.")
+	env.SetSymbolDoc("nil", "Type name for (), so (s:may-have-key \"k\" s:string s:nil) allows a nil value.")
 	return lisp.Nil()
 }
 
@@ -113,107 +122,119 @@ var builtins = []*libutil.Builtin{
 		user-data and "tagged-value" is implied. Bind the result with
 		core set to use it with s:validate, e.g. (set 'title
 		(s:make-validator "title" s:string (s:in "Mr" "Ms" "Dr"))).`),
-	libutil.FunctionDoc("in", lisp.Formals("&rest", "allowed-values"), builtinAllowedValues,
+	libutil.FunctionDoc("in", lisp.Formals("&rest", "allowed-values"), literalConstraint("in", builtinAllowedValues),
 		`Returns a constraint that checks if the input is equal to one
 		of the allowed values. Useful for creating enum-like types.
 		Example: (s:in "red" "green" "blue").`),
-	libutil.FunctionDoc("gt", lisp.Formals("allowed-value"), builtinGreaterThan,
+	libutil.FunctionDoc("gt", lisp.Formals("allowed-value"), literalConstraint("gt", builtinGreaterThan),
 		`Returns a constraint that checks if the input is strictly
 		greater than allowed-value. Works with numeric types. NaN never
 		satisfies a numeric constraint, and a NaN allowed-value is an
 		error.`),
-	libutil.FunctionDoc("gte", lisp.Formals("allowed-value"), builtinGreaterThanOrEqual,
+	libutil.FunctionDoc("gte", lisp.Formals("allowed-value"), literalConstraint("gte", builtinGreaterThanOrEqual),
 		`Returns a constraint that checks if the input is greater than
 		or equal to allowed-value. Works with numeric types. NaN never
 		satisfies a numeric constraint, and a NaN allowed-value is an
 		error.`),
-	libutil.FunctionDoc("lt", lisp.Formals("allowed-value"), builtinLessThan,
+	libutil.FunctionDoc("lt", lisp.Formals("allowed-value"), literalConstraint("lt", builtinLessThan),
 		`Returns a constraint that checks if the input is strictly less
 		than allowed-value. Works with numeric types. NaN never
 		satisfies a numeric constraint, and a NaN allowed-value is an
 		error.`),
-	libutil.FunctionDoc("lte", lisp.Formals("allowed-value"), builtinLessThanOrEqual,
+	libutil.FunctionDoc("lte", lisp.Formals("allowed-value"), literalConstraint("lte", builtinLessThanOrEqual),
 		`Returns a constraint that checks if the input is less than or
 		equal to allowed-value. Works with numeric types. NaN never
 		satisfies a numeric constraint, and a NaN allowed-value is an
 		error.`),
-	libutil.FunctionDoc("positive", lisp.Formals(), builtinPositive,
+	libutil.FunctionDoc("positive", lisp.Formals(), literalConstraint("positive", builtinPositive),
 		`Returns a constraint that checks if the input is strictly
 		greater than zero. NaN is neither positive nor negative.`),
-	libutil.FunctionDoc("negative", lisp.Formals(), builtinNegative,
+	libutil.FunctionDoc("negative", lisp.Formals(), literalConstraint("negative", builtinNegative),
 		`Returns a constraint that checks if the input is strictly
 		less than zero. NaN is neither positive nor negative.`),
 	libutil.FunctionDoc("validate", lisp.Formals("type", "input"), builtinValidate,
 		`Validates input against a type validator function (created by
 		make-validator). Returns nil on success or an error with a
 		condition string describing the validation failure.`),
-	libutil.FunctionDoc("len", lisp.Formals("allowed-value"), builtinLen,
+	libutil.FunctionDoc("len", lisp.Formals("allowed-value"), literalConstraint("len", builtinLen),
 		`Returns a constraint that checks if the length of the input
 		equals allowed-value. Works with strings, bytes, and arrays.`),
-	libutil.FunctionDoc("lengt", lisp.Formals("allowed-value"), builtinLenGreaterThan,
+	libutil.FunctionDoc("lengt", lisp.Formals("allowed-value"), literalConstraint("lengt", builtinLenGreaterThan),
 		`Returns a constraint that checks if the length of the input is
 		strictly greater than allowed-value. Works with strings, bytes,
 		and arrays.`),
-	libutil.FunctionDoc("lengte", lisp.Formals("allowed-value"), builtinLenGreaterThanOrEqual,
+	libutil.FunctionDoc("lengte", lisp.Formals("allowed-value"), literalConstraint("lengte", builtinLenGreaterThanOrEqual),
 		`Returns a constraint that checks if the length of the input is
 		greater than or equal to allowed-value. Works with strings,
 		bytes, and arrays.`),
-	libutil.FunctionDoc("lenlt", lisp.Formals("allowed-value"), builtinLenLessThan,
+	libutil.FunctionDoc("lenlt", lisp.Formals("allowed-value"), literalConstraint("lenlt", builtinLenLessThan),
 		`Returns a constraint that checks if the length of the input is
 		strictly less than allowed-value. Works with strings, bytes,
 		and arrays.`),
-	libutil.FunctionDoc("lenlte", lisp.Formals("allowed-value"), builtinLenLessThanOrEqual,
+	libutil.FunctionDoc("lenlte", lisp.Formals("allowed-value"), literalConstraint("lenlte", builtinLenLessThanOrEqual),
 		`Returns a constraint that checks if the length of the input is
 		less than or equal to allowed-value. Works with strings, bytes,
 		and arrays.`),
-	libutil.FunctionDoc("of", lisp.Formals("&rest", "allowed-types"), builtinArrayOf,
-		`Returns a constraint for arrays that checks each element matches
+	libutil.FunctionDoc("of", lisp.Formals("&rest", "allowed-types"), compositeConstraint("of", builtinArrayOf),
+		`Returns a constraint for arrays and lists that checks each element matches
 		one of the allowed types. Each allowed-type is a type string
 		passed to the type handler. Example: (s:of "string") checks all
 		elements are strings.`),
-	libutil.FunctionDoc("has-key", lisp.Formals("key", "&rest", "allowed-types"), builtinHasKey,
+	libutil.FunctionDoc("has-key", lisp.Formals("key", "&rest", "allowed-types"), keyedConstraint("has-key", builtinHasKey),
 		`Returns a constraint for sorted-maps that checks the map has
 		the specified key and its value matches one of the allowed
 		types. key is a string. Returns the key name on success (used
 		by no-other-keys).`),
-	libutil.FunctionDoc("may-have-key", lisp.Formals("key", "&rest", "allowed-types"), builtinMayHaveKey,
+	libutil.FunctionDoc("may-have-key", lisp.Formals("key", "&rest", "allowed-types"), keyedConstraint("may-have-key", builtinMayHaveKey),
 		`Returns a constraint for sorted-maps that checks if the key
 		exists, and if so, validates its value matches one of the
 		allowed types. If the key is absent, validation passes.
 		key is a string, matching has-key. Returns the key name on
 		success (used by no-other-keys).`),
-	libutil.FunctionDoc("no-other-keys", lisp.Formals("&rest", "constraints"), builtinNoOtherKeys,
+	libutil.FunctionDoc("no-other-keys", lisp.Formals("&rest", "constraints"), compositeConstraint("no-other-keys", builtinNoOtherKeys),
 		`Returns a constraint for sorted-maps that rejects maps with
 		keys not declared by the given has-key or may-have-key
 		constraints. Pass all key constraints as arguments.`),
-	libutil.FunctionDoc("when", lisp.Formals("key", "constraint", "matchKey", "&rest", "constraints"), builtinWhen,
+	libutil.FunctionDoc("when", lisp.Formals("key", "constraint", "matchKey", "&rest", "constraints"), whenConstraint(builtinWhen),
 		`Returns a conditional constraint for sorted-maps. When the value
 		at key satisfies constraint, the value at matchKey must satisfy
 		all additional constraints. If the condition is not met, the
 		constraint passes.`),
-	libutil.FunctionDoc("is-true", lisp.Formals(), builtinIsTrue,
+	libutil.FunctionDoc("is-true", lisp.Formals(), literalConstraint("is-true", builtinIsTrue),
 		`Returns a constraint that checks if the input is the boolean
 		true symbol. The string "true" does not qualify.`),
-	libutil.FunctionDoc("is-false", lisp.Formals(), builtinIsFalse,
+	libutil.FunctionDoc("is-false", lisp.Formals(), literalConstraint("is-false", builtinIsFalse),
 		`Returns a constraint that checks if the input is the boolean
 		false symbol. The string "false" does not qualify.`),
-	libutil.FunctionDoc("is-truthy", lisp.Formals(), builtinIsTruthy,
+	libutil.FunctionDoc("is-truthy", lisp.Formals(), literalConstraint("is-truthy", builtinIsTruthy),
 		`Returns a constraint that checks if the input is truthy.
 		Truthy values include: true, non-empty strings (not "false"),
 		non-empty arrays/maps/bytes, and positive numbers. A map is
 		non-empty when it has an entry, and an array when it has an
 		element (a zero-dimensional array has one).`),
-	libutil.FunctionDoc("is-falsy", lisp.Formals(), builtinIsFalsy,
+	libutil.FunctionDoc("is-falsy", lisp.Formals(), literalConstraint("is-falsy", builtinIsFalsy),
 		`Returns a constraint that checks if the input is falsy (the
 		logical negation of is-truthy).`),
-	libutil.FunctionDoc("not", lisp.Formals("constraint"), builtinIsNot,
+	libutil.FunctionDoc("not", lisp.Formals("constraint"), compositeConstraint("not", builtinIsNot),
 		`Returns a constraint that negates another constraint. The
 		input passes if the inner constraint fails, and fails if the
 		inner constraint passes.`),
-	libutil.FunctionDoc("regexp", lisp.Formals("pattern"), builtinRegexp,
+	libutil.FunctionDoc("regexp", lisp.Formals("pattern"), literalConstraint("regexp", builtinRegexp),
 		`Returns a constraint that checks if a string input matches
 		the given regular expression pattern. Uses Go RE2 syntax.
 		Returns an error if the pattern is invalid.`),
+	libutil.FunctionDoc("map-of", lisp.Formals("key-type", "value-type"), builtinMapOf,
+		`Returns a constraint for sorted-maps that checks every key
+		matches key-type and every value matches value-type, for a map
+		keyed by data such as prices by SKU. Example: (s:map-of s:string
+		s:number).`),
+	libutil.FunctionDoc("describe", lisp.Formals("validator"), builtinDescribe,
+		`Returns the definition of a validator as a sorted map: its op
+		("type", "has-key", "in", ...), and where they apply its name,
+		base type, key, literal values and the definitions of the
+		constraints it holds. Lint, the LSP and checks against other
+		type systems read a schema back through it. A validator built
+		in Go with NewValidator describes itself as "opaque".`),
 }
 
 // This is the `s:validate` keyword. It checks its input matches the type
@@ -259,10 +280,17 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lisp.ErrorConditionf(BadArgs, "First argument must resolve to a string or typedef")
 	}
 	res := getHandler(env, typeValidator, name, constraints)
-	if res != nil {
-		return res
+	if res == nil {
+		return lisp.Nil()
 	}
-	return lisp.Nil()
+	// A type given by name, or a validator given as the type with
+	// constraints, builds a fresh validator and a fresh definition, which no
+	// one else holds yet, so it is named in place.  A validator given as the
+	// type with no constraints is returned as it is, and keeps its own.
+	if isValidator(res) && res != typeValidator {
+		descOf(res).name = name //elps:mutates construction-time naming of the definition getHandler just built
+	}
+	return res
 }
 
 // checkConstraints refuses, at construction time, any constraint that is not
@@ -315,6 +343,12 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		res = builtinCheckTaggedVal(env, name, constraints)
 	case Any:
 		res = builtinCheckAny(env, constraints)
+	case List:
+		res = builtinCheckList(env, name, constraints)
+	case Sequence:
+		res = builtinCheckSequence(env, name, constraints)
+	case Nil:
+		res = builtinCheckNil(env, name, constraints)
 	default:
 		// `in` is an ordinary argument that function application has already
 		// evaluated.  It is never evaluated or looked up again here (#737): a
@@ -338,11 +372,17 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 			}
 			// A validator used as the type keeps its extra constraints;
 			// they used to be dropped without a word.
-			return builtinCheckAny(env, lisp.Cells{in}.Append(constraints...))
+			all := lisp.Cells{in}.Append(constraints...)
+			return describeAs(builtinCheckAny(env, all), &schemaDesc{op: "all", children: descsOf(all)})
 		}
 		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
+		return res
 	}
-	return res
+	if lType == TaggedVal {
+		// builtinCheckTaggedVal describes its own validator.
+		return res
+	}
+	return describeAs(res, &schemaDesc{op: "type", typ: lType, children: descsOf(constraints)})
 }
 
 // symcounter names anonymous validators.  It is ATOMIC, and it has to be
@@ -423,7 +463,13 @@ func runtimeSymbol(env *lisp.LEnv) string {
 // raised "Value is not a schema constraint". The zero-state payload value
 // travels intact, and so does its type. The template does not call native
 // replacement or clone hooks.
-type validatorTag struct{ templatepolicy.Marker }
+type validatorTag struct {
+	templatepolicy.Marker
+	// desc is the validator's definition, for s:describe; nil for
+	// NewValidator's.  describeAs builds it before the validator escapes and
+	// nothing writes it after.
+	desc *schemaDesc //elpsvet:allow-marker built once at construction and never written after
+}
 
 var _ templatepolicy.Immutable = validatorTag{}
 
@@ -642,11 +688,13 @@ func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *li
 // Checks constraints and type for values with a user-defined type.
 func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	var rest *lisp.LVal
+	var children []*schemaDesc
 	if len(constraints) == 0 || constraints[0].Type != lisp.LString {
 		if err := checkConstraints(env, constraints); err != nil {
 			return err
 		}
 		rest = builtinCheckAny(env, constraints)
+		children = descsOf(constraints)
 	} else {
 		subtype := constraints[0]
 		constraints = constraints[1:]
@@ -654,14 +702,18 @@ func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal
 		if rest.IsError() {
 			return rest
 		}
+		// The user data's type is part of the definition: describe the
+		// subtype's own validator, its constraints inside it.
+		children = []*schemaDesc{descOf(rest)}
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+	v := newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LTaggedVal {
 			return lisp.ErrorConditionf(WrongType, "Input was not a tagged-value for type %s", name)
 		}
 		return applyConstraint(env, captures, input.UserData())
 	})
+	return describeAs(v, &schemaDesc{op: "type", typ: TaggedVal, children: children})
 }
 
 // Checks constraints and type for untyped values
@@ -968,11 +1020,17 @@ func builtinArrayOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
 	return newCapturedValidator(env, lisp.Formals("input"), lisp.QExpr(compares), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
-		if input.Type != lisp.LArray {
-			return lisp.ErrorConditionf(WrongType, "Invalid input for 'of' - need an array")
+		var items []*lisp.LVal
+		switch input.Type {
+		case lisp.LArray:
+			_, data := input.ArrayParts()
+			items = data.Cells
+		case lisp.LSExpr:
+			items = input.Cells
+		default:
+			return lisp.ErrorConditionf(WrongType, "Invalid input for 'of' - need an array or a list")
 		}
-		_, data := input.ArrayParts()
-		for k, v := range data.Cells {
+		for k, v := range items {
 			matched := false
 			for _, compare := range captures.Cells {
 				if applyConstraint(env, compare, v).IsNil() {
