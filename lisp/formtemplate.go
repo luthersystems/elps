@@ -36,7 +36,7 @@ type FormTemplate struct {
 	src        string // the core template's source, for an ungenerated one
 	root       tmplNode
 	paramCount int
-	ok         bool // false for a core template the generated file lacks
+	missing    bool // a core template the generated file lacks
 }
 
 type tmplKind uint8
@@ -68,6 +68,9 @@ type tmplNode struct {
 // placeholder, a duplicate or unused parameter, a malformed unquote, or a
 // misplaced unquote-splicing.
 func NewFormTemplate(form *LVal, params ...string) (*FormTemplate, error) {
+	if form == nil {
+		return nil, errors.New("nil form")
+	}
 	c := tmplCompiler{params: make(map[string]int, len(params)), used: make([]bool, len(params))}
 	for i, name := range params {
 		if _, exists := c.params[name]; exists {
@@ -87,7 +90,7 @@ func NewFormTemplate(form *LVal, params ...string) (*FormTemplate, error) {
 			return nil, fmt.Errorf("unused parameter %q", params[i])
 		}
 	}
-	return &FormTemplate{root: root, paramCount: len(params), ok: true}, nil
+	return &FormTemplate{root: root, paramCount: len(params)}, nil
 }
 
 var errMisplacedSplice = errors.New("unquote-splicing must be directly inside a list")
@@ -170,8 +173,9 @@ func placeholderKind(v *LVal) (tmplKind, bool) {
 // copy an argument's header to add a quote without changing the argument.
 // Expand panics if the argument count differs from the declared parameter
 // count or a spliced argument is not an unquoted list (nil is accepted).
+// The zero FormTemplate expands to ().
 func (t *FormTemplate) Expand(args ...*LVal) *LVal {
-	if !t.ok {
+	if t.missing {
 		panic(fmt.Sprintf("lisp.FormTemplate.Expand: core template is not in coreformtemplates_gen.go; run go generate ./lisp: %s", t.src))
 	}
 	if len(args) != t.paramCount {
@@ -197,31 +201,21 @@ func (n *tmplNode) expand(args []*LVal) *LVal {
 	default:
 		// Lists expand below; splices are handled by their enclosing list.
 	}
-	if !n.splice {
-		if len(n.children) == 0 {
-			return Nil()
-		}
-		list, cells := newSExprCap(len(n.children))
-		for i := range n.children {
-			cells = append(cells, n.children[i].expand(args))
-		}
-		list.Cells = cells //elps:mutates header freshly allocated by newSExprCap above for this expansion and not yet visible to anything else
-		return list
-	}
-	// Each list's header and cells are one allocation (newSExprCap).
-	// Compute the exact size before allocating, so a list with a spliced
-	// argument needs one cells slice.  Index, never range by value: a loop
-	// copy passed to the pointer receiver would escape, one allocation per
-	// child.
+	// Each list's header and cells are one allocation (newSExprCap).  A list
+	// with a spliced argument computes its exact size first, so it too needs
+	// one cells slice.  Index, never range by value: a loop copy passed to the
+	// pointer receiver would escape, one allocation per child.
 	size := len(n.children)
-	for i := range n.children {
-		child := &n.children[i]
-		if child.kind == tmplSplice {
-			arg := args[child.index]
-			if arg == nil || arg.Type != LSExpr || arg.IsQuoted() {
-				panic(fmt.Sprintf("lisp.FormTemplate.Expand: splice argument %d must be an unquoted list or nil", child.index+1))
+	if n.splice {
+		for i := range n.children {
+			child := &n.children[i]
+			if child.kind == tmplSplice {
+				arg := args[child.index]
+				if arg == nil || arg.Type != LSExpr || arg.IsQuoted() {
+					panic(fmt.Sprintf("lisp.FormTemplate.Expand: splice argument %d must be an unquoted list or nil", child.index+1))
+				}
+				size += len(arg.Cells) - 1
 			}
-			size += len(arg.Cells) - 1
 		}
 	}
 	if size == 0 {
@@ -264,7 +258,7 @@ func coreFormTemplate(src string, params ...string) *FormTemplate {
 	if t, ok := coreFormTemplates[coreFormKey(src, params)]; ok {
 		return t
 	}
-	return &FormTemplate{src: src}
+	return &FormTemplate{src: src, missing: true}
 }
 
 func coreFormKey(src string, params []string) string {

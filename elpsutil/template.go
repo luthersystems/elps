@@ -46,7 +46,10 @@ func templatePanic(format string, args ...any) {
 // Expand returns a fresh expansion, inserting args by pointer without copying
 // or evaluating them (lisp.FormTemplate.Expand).  It panics if the argument
 // count differs from the declared parameter count or a spliced argument is
-// not an unquoted list (nil is accepted).
+// not an unquoted list (nil is accepted).  The zero Template expands to ().
 func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
+	if t.t == nil {
+		return lisp.Nil()
+	}
 	return t.t.Expand(args...)
 }

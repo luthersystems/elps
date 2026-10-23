@@ -4,6 +4,8 @@ package lisp
 
 import (
 	"fmt"
+	"math"
+	"strconv"
 	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
@@ -209,7 +211,7 @@ func CoreFormKey(src string, params []string) string { return coreFormKey(src, p
 // coreformtemplates_gen.go holds.
 func FormTemplateGoLiteral(t *FormTemplate) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "{paramCount: %d, ok: true, root: ", t.paramCount)
+	fmt.Fprintf(&b, "{paramCount: %d, root: ", t.paramCount)
 	b.WriteString("tmplNode")
 	writeTmplNodeLiteral(&b, &t.root, 2)
 	b.WriteString("}")
@@ -217,15 +219,18 @@ func FormTemplateGoLiteral(t *FormTemplate) string {
 }
 
 func writeTmplNodeLiteral(b *strings.Builder, n *tmplNode, depth int) {
-	kinds := [...]string{"tmplList", "tmplSymbol", "tmplString", "tmplInt", "tmplFloat", "tmplArg", "tmplSplice", "tmplQuote"}
-	fmt.Fprintf(b, "{kind: %s", kinds[n.kind])
+	fmt.Fprintf(b, "{kind: %s", tmplKindName(n.kind))
 	switch n.kind {
 	case tmplSymbol, tmplString:
 		fmt.Fprintf(b, ", str: %q", n.str)
 	case tmplInt:
 		fmt.Fprintf(b, ", num: %d", n.num)
 	case tmplFloat:
-		fmt.Fprintf(b, ", float: %v", n.float)
+		f := n.float
+		if math.IsNaN(f) || math.IsInf(f, 0) || (f == 0 && math.Signbit(f)) {
+			panic(fmt.Sprintf("core template float %v has no Go literal", f))
+		}
+		fmt.Fprintf(b, ", float: %s", strconv.FormatFloat(f, 'g', -1, 64))
 	case tmplArg, tmplSplice:
 		fmt.Fprintf(b, ", index: %d", n.index)
 	case tmplList, tmplQuote:
@@ -243,4 +248,26 @@ func writeTmplNodeLiteral(b *strings.Builder, n *tmplNode, depth int) {
 		}
 	}
 	b.WriteString("}")
+}
+
+func tmplKindName(k tmplKind) string {
+	switch k {
+	case tmplList:
+		return "tmplList"
+	case tmplSymbol:
+		return "tmplSymbol"
+	case tmplString:
+		return "tmplString"
+	case tmplInt:
+		return "tmplInt"
+	case tmplFloat:
+		return "tmplFloat"
+	case tmplArg:
+		return "tmplArg"
+	case tmplSplice:
+		return "tmplSplice"
+	case tmplQuote:
+		return "tmplQuote"
+	}
+	panic(fmt.Sprintf("unknown tmplKind %d", k))
 }

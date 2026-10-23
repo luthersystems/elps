@@ -231,3 +231,13 @@ func TestTemplateMacroRegistration(t *testing.T) {
 		})
 	}
 }
+
+func TestTemplateZeroValue(t *testing.T) {
+	var tmpl elpsutil.Template
+	assert.Equal(t, lisp.LSExpr, tmpl.Expand().Type)
+	assert.True(t, tmpl.Expand().IsNil())
+	var ft lisp.FormTemplate
+	assert.True(t, ft.Expand().IsNil())
+	_, err := lisp.NewFormTemplate(nil)
+	assert.Error(t, err)
+}

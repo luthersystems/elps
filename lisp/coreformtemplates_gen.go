@@ -3,7 +3,7 @@
 package lisp
 
 var coreFormTemplates = map[string]*FormTemplate{
-	`["name" "fun"] "(lisp:progn (lisp:set '(unquote name) (unquote fun)) ())"`: {paramCount: 2, ok: true, root: tmplNode{kind: tmplList, children: []tmplNode{
+	`["name" "fun"] "(lisp:progn (lisp:set '(unquote name) (unquote fun)) ())"`: {paramCount: 2, root: tmplNode{kind: tmplList, children: []tmplNode{
 		{kind: tmplSymbol, str: "lisp:progn"},
 		{kind: tmplList, children: []tmplNode{
 			{kind: tmplSymbol, str: "lisp:set"},
@@ -14,7 +14,7 @@ var coreFormTemplates = map[string]*FormTemplate{
 		}},
 		{kind: tmplList},
 	}}},
-	`["name" "value" "docs"] "\n(lisp:progn\n  (lisp:set '(unquote name) (unquote value) (unquote-splicing docs))\n  (lisp:export '(unquote name))\n  ())"`: {paramCount: 3, ok: true, root: tmplNode{kind: tmplList, children: []tmplNode{
+	`["name" "value" "docs"] "\n(lisp:progn\n  (lisp:set '(unquote name) (unquote value) (unquote-splicing docs))\n  (lisp:export '(unquote name))\n  ())"`: {paramCount: 3, root: tmplNode{kind: tmplList, children: []tmplNode{
 		{kind: tmplSymbol, str: "lisp:progn"},
 		{kind: tmplList, splice: true, children: []tmplNode{
 			{kind: tmplSymbol, str: "lisp:set"},
@@ -32,7 +32,7 @@ var coreFormTemplates = map[string]*FormTemplate{
 		}},
 		{kind: tmplList},
 	}}},
-	`["rest" "fun" "args"] "\n(lambda (&rest (unquote rest))\n  (lisp:apply (unquote fun) (unquote-splicing args) (unquote rest)))"`: {paramCount: 3, ok: true, root: tmplNode{kind: tmplList, children: []tmplNode{
+	`["rest" "fun" "args"] "\n(lambda (&rest (unquote rest))\n  (lisp:apply (unquote fun) (unquote-splicing args) (unquote rest)))"`: {paramCount: 3, root: tmplNode{kind: tmplList, children: []tmplNode{
 		{kind: tmplSymbol, str: "lambda"},
 		{kind: tmplList, children: []tmplNode{
 			{kind: tmplSymbol, str: "&rest"},
@@ -45,7 +45,7 @@ var coreFormTemplates = map[string]*FormTemplate{
 			{kind: tmplArg, index: 0},
 		}},
 	}}},
-	`["m" "map" "k" "key" "default"] "\n(lisp:let (((unquote m) (unquote map)) ((unquote k) (unquote key)))\n  (lisp:if (lisp:if (lisp:nil? (unquote m)) lisp:false (lisp:key? (unquote m) (unquote k)))\n    (lisp:get (unquote m) (unquote k))\n    (unquote default)))"`: {paramCount: 5, ok: true, root: tmplNode{kind: tmplList, children: []tmplNode{
+	`["m" "map" "k" "key" "default"] "\n(lisp:let (((unquote m) (unquote map)) ((unquote k) (unquote key)))\n  (lisp:if (lisp:if (lisp:nil? (unquote m)) lisp:false (lisp:key? (unquote m) (unquote k)))\n    (lisp:get (unquote m) (unquote k))\n    (unquote default)))"`: {paramCount: 5, root: tmplNode{kind: tmplList, children: []tmplNode{
 		{kind: tmplSymbol, str: "lisp:let"},
 		{kind: tmplList, children: []tmplNode{
 			{kind: tmplList, children: []tmplNode{
@@ -80,7 +80,7 @@ var coreFormTemplates = map[string]*FormTemplate{
 			{kind: tmplArg, index: 4},
 		}},
 	}}},
-	`["v" "expr" "message"] "\n(lisp:let (((unquote v) (unquote expr)))\n  (lisp:debug-print (unquote message) (unquote v))\n  (unquote v))"`: {paramCount: 3, ok: true, root: tmplNode{kind: tmplList, children: []tmplNode{
+	`["v" "expr" "message"] "\n(lisp:let (((unquote v) (unquote expr)))\n  (lisp:debug-print (unquote message) (unquote v))\n  (unquote v))"`: {paramCount: 3, root: tmplNode{kind: tmplList, children: []tmplNode{
 		{kind: tmplSymbol, str: "lisp:let"},
 		{kind: tmplList, children: []tmplNode{
 			{kind: tmplList, children: []tmplNode{
