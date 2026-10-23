@@ -1292,7 +1292,7 @@ keeps behaviour identical for a non-nil value; the package doc of
 - A `*lisp.ErrorVal` in a result list, which makes a typed nil.
 - `lisp.ResultAs[T]` over `get`, `funcall`, `apply`, `nth`, `first`,
   `second`, `aref`, or their helpers `env.MapLookup`, `env.First`,
-  `env.Second`, `env.CallFunction` and `env.ApplyFunction`, whose result type
+  `env.Second`, `env.CallFunction`, `env.CallValue` and `env.ApplyFunction`, whose result type
   varies.
 - A `Func*E` builtin registered with formals other than its required
   arguments.

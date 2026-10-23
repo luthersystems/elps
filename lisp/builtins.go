@@ -1115,8 +1115,8 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 // check: the evaluator calls only a function value, so a symbol fn raises
 // instead of naming a global function.
 //
-// It checks the evaluation's context first, then CheckCallable's check, then
-// calls fn as CallFunction does.  It charges no step of its own.  It neither
+// It makes CheckCallable's check, the context check included, then calls fn
+// as CallFunction does.  It charges no step of its own.  It neither
 // writes args nor keeps the slice.
 func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal {
 	if lerr := env.CheckCallable(fn); lerr.IsError() {
@@ -1629,48 +1629,25 @@ func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
 // It checks the evaluation's context first.  Before each call of f it charges
 // one step and checks the context, as each of map's calls does, and f
 // charges its own steps.  The first error f returns stops the map and is
-// returned.  Any kind but SeqList, SeqVector and SeqNil returns "type
-// specifier is invalid: K" after the checks of seq, as MapSeq does.
+// returned.  f must return a value, never a Go nil.  Any kind but SeqList,
+// SeqVector and SeqNil returns "type specifier is invalid: K" after the
+// checks of seq, as MapSeq does.  As MapSeq does, it keeps the calling frame
+// non-terminal while f runs, so no tail call that f evaluates returns
+// through the Go caller.
 func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) *LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	cells, lerr := env.MapSeqCells(seq)
-	if lerr != nil {
-		return lerr
+	stack := env.Runtime.Stack
+	if top, terminal := stack.holdNonTerminal(); top >= 0 {
+		defer stack.restoreTerminal(top, terminal)
 	}
-	if kind != SeqNil {
-		if lerr := env.CheckAlloc(len(cells)); lerr.IsError() {
-			return lerr
-		}
-	}
-	var v *LVal
-	var out []*LVal
-	switch kind {
-	case SeqNil:
-		v = Nil()
-	case SeqVector:
-		v = MakeVector(len(cells))
-		out = seqCells(v)
-	case SeqList:
-		out = make([]*LVal, len(cells))
-		v = QExpr(out)
-	default:
-		return env.Errorf("type specifier is invalid: %v", kind)
-	}
-	for i, c := range cells {
+	return mapSeqCalls(env, goSeqSpec(kind), seq, func(c *LVal) *LVal {
 		if lerr := env.Step(); lerr.IsError() {
 			return lerr
 		}
-		r := f(c)
-		if r.IsError() {
-			return r
-		}
-		if out != nil {
-			out[i] = r
-		}
-	}
-	return v
+		return f(c)
+	})
 }
 
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
@@ -1690,6 +1667,17 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 	if f.IsSpecialFun() {
 		return env.Errorf("second argument is not a regular function: %v", f.FunType)
 	}
+	return mapSeqCalls(env, spec, lis, func(c *LVal) *LVal {
+		return env.callValueFunction(f, Cells{c}.List())
+	})
+}
+
+// mapSeqCalls is the part of map after its check of fn: the check of lis,
+// the allocation check, the result's kind, and one call per element, where
+// call charges the call's step and makes it.  It is the body of mapSeq and of
+// LEnv.MapSeqFunc, so the two cannot differ.
+func mapSeqCalls(env *LEnv, spec seqSpec, lis *LVal, call func(c *LVal) *LVal) *LVal {
+	nilReturn := spec.kind == SeqNil
 	seq, lerr := env.MapSeqCells(lis)
 	if lerr != nil {
 		return lerr
@@ -1716,8 +1704,7 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 		}
 	}
 	for i, c := range seq {
-		fargs := Cells{c}.List()
-		fret := env.callValueFunction(f, fargs)
+		fret := call(c)
 		if fret.IsError() {
 			return fret
 		}
