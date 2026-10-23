@@ -1174,70 +1174,91 @@ func (env *LEnv) plainCall(fun, args *LVal) *LVal {
 }
 
 func builtinToString(env *LEnv, args *LVal) *LVal {
-	return toStringValue(env, args.Cells[0])
-}
-
-// ToString returns what the to-string builtin returns for val: the same
-// string, or the same error from the same check, the allocation check
-// included.  It checks the evaluation's context first, as CallBuiltin does.
-// It charges no step.
-func (env *LEnv) ToString(val *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	s, lerr := toStringValue(env, args.Cells[0])
+	if lerr != nil {
 		return lerr
 	}
-	return toStringValue(env, val)
+	return String(s)
+}
+
+// ToString returns the string the to-string builtin returns for val, or the
+// same error from the same check, the allocation check included.  It checks
+// the evaluation's context first, as CallBuiltin does.  It charges no step.
+// The error is the builtin's own *ErrorVal, so a FuncE body that returns it
+// raises the same condition.
+//
+//	s, err := env.ToString(v)
+func (env *LEnv) ToString(val *LVal) (string, error) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return "", (*ErrorVal)(lerr)
+	}
+	return goError(toStringValue(env, val))
 }
 
 // toStringValue is the body of the to-string builtin and of LEnv.ToString,
-// so the two cannot differ.
-func toStringValue(env *LEnv, val *LVal) *LVal {
+// so the two cannot differ.  The error is nil when there is none.
+func toStringValue(env *LEnv, val *LVal) (string, *LVal) {
 	if val.Type == LBytes {
 		if lerr := env.CheckAlloc(val.Len()); lerr.IsError() {
-			return lerr
+			return "", lerr
 		}
 	}
 	s, err := toString(val)
 	if err != nil {
-		return env.Error(err)
+		return "", env.Error(err)
 	}
 	// Numbers render into a fixed-size temporary. Strings and symbols
 	// reuse immutable storage; the bytes conversion was checked above.
 	if val.IsNumeric() {
 		if lerr := env.CheckAlloc(len(s)); lerr.IsError() {
-			return lerr
+			return "", lerr
 		}
 	}
-	return String(s)
+	return s, nil
 }
 
 func builtinToBytes(env *LEnv, args *LVal) *LVal {
-	return toBytesValue(env, args.Cells[0])
-}
-
-// ToBytes returns what the to-bytes builtin returns for val: the same bytes,
-// or the same error from the same check, the allocation check included.  It
-// checks the evaluation's context first, as CallBuiltin does.  It charges no
-// step.
-func (env *LEnv) ToBytes(val *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
-	}
-	return toBytesValue(env, val)
-}
-
-// toBytesValue is the body of the to-bytes builtin and of LEnv.ToBytes, so
-// the two cannot differ.
-func toBytesValue(env *LEnv, val *LVal) *LVal {
+	val := args.Cells[0]
+	// The builtin returns a bytes val itself, so no second value shares
+	// its storage.
 	if val.Type == LBytes {
 		return val
 	}
+	b, lerr := toBytesValue(env, val)
+	if lerr != nil {
+		return lerr
+	}
+	return Bytes(b)
+}
+
+// ToBytes returns the bytes the to-bytes builtin returns for val, or the same
+// error from the same check, the allocation check included.  It checks the
+// evaluation's context first, as CallBuiltin does.  It charges no step.  For
+// a bytes val the result is val's own storage, as the builtin returns val
+// itself, so treat it as read-only.  lisp.Bytes of it makes a second value
+// over the same storage, which append! on either can change: return val
+// itself, or a copy, when the result is a Lisp value.  The error is the
+// builtin's own *ErrorVal.
+func (env *LEnv) ToBytes(val *LVal) ([]byte, error) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return nil, (*ErrorVal)(lerr)
+	}
+	return goError(toBytesValue(env, val))
+}
+
+// toBytesValue is the body of the to-bytes builtin and of LEnv.ToBytes, so
+// the two cannot differ.  The error is nil when there is none.
+func toBytesValue(env *LEnv, val *LVal) ([]byte, *LVal) {
+	if val.Type == LBytes {
+		return val.Bytes(), nil
+	}
 	if val.Type == LString {
 		if lerr := env.CheckAlloc(len(val.Str)); lerr.IsError() {
-			return lerr
+			return nil, lerr
 		}
-		return Bytes([]byte(val.Str))
+		return []byte(val.Str), nil
 	}
-	return env.Errorf("cannot convert type to bytes: %v", val.Type)
+	return nil, env.Errorf("cannot convert type to bytes: %v", val.Type)
 }
 
 func toString(val *LVal) (string, error) {
@@ -1260,31 +1281,40 @@ func toString(val *LVal) (string, error) {
 }
 
 func builtinToInt(env *LEnv, args *LVal) *LVal {
-	return toIntValue(env, args.Cells[0])
-}
-
-// ToInt returns what the to-int builtin returns for val: the same int, or the
-// same error from the same check.  It checks the evaluation's context first,
-// as CallBuiltin does.  It charges no step.
-func (env *LEnv) ToInt(val *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	val := args.Cells[0]
+	if val.Type == LInt {
+		return val
+	}
+	n, lerr := toIntValue(env, val)
+	if lerr != nil {
 		return lerr
 	}
-	return toIntValue(env, val)
+	return Int(n)
+}
+
+// ToInt returns the int the to-int builtin returns for val, or the same error
+// from the same check.  It checks the evaluation's context first, as
+// CallBuiltin does.  It charges no step.  The error is the builtin's own
+// *ErrorVal.
+func (env *LEnv) ToInt(val *LVal) (int, error) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return 0, (*ErrorVal)(lerr)
+	}
+	return goError(toIntValue(env, val))
 }
 
 // toIntValue is the body of the to-int builtin and of LEnv.ToInt, so the two
-// cannot differ.
-func toIntValue(env *LEnv, val *LVal) *LVal {
+// cannot differ.  The error is nil when there is none.
+func toIntValue(env *LEnv, val *LVal) (int, *LVal) {
 	switch val.Type {
 	case LString:
 		x, err := strconv.Atoi(val.Str)
 		if err != nil {
-			return env.Error(err)
+			return 0, env.Error(err)
 		}
-		return Int(x)
+		return x, nil
 	case LInt:
-		return val
+		return val.Int, nil
 	case LFloat:
 		truncated := math.Trunc(val.Float)
 		limit := math.Ldexp(1, strconv.IntSize-1)
@@ -1292,11 +1322,11 @@ func toIntValue(env *LEnv, val *LVal) *LVal {
 		// dependent. Reject it before conversion so ELPS never invents an
 		// integer from NaN, infinity, or an unrepresentable finite value.
 		if math.IsNaN(truncated) || truncated < -limit || truncated >= limit {
-			return env.Errorf("float cannot be represented as an int: %v", val.Float)
+			return 0, env.Errorf("float cannot be represented as an int: %v", val.Float)
 		}
-		return Int(int(truncated))
+		return int(truncated), nil
 	default:
-		return env.Errorf("cannot convert type to int: %v", val.Type)
+		return 0, env.Errorf("cannot convert type to int: %v", val.Type)
 	}
 }
 
@@ -2207,14 +2237,14 @@ func builtinIsKey(env *LEnv, args *LVal) *LVal {
 // MapHasKey returns what the key? builtin returns for (key? m k): whether m
 // has the key k, or the same error from the same check.  A value that is not
 // a sorted-map raises "first argument is not a map: <type>", and a key the
-// map refuses returns the map's own error.  The error is nil when there is
-// none.  It checks the evaluation's context first, as CallBuiltin does.  It
-// charges no step.
-func (env *LEnv) MapHasKey(m, k *LVal) (bool, *LVal) {
+// map refuses returns the map's own error.  The error is the builtin's own
+// *ErrorVal, and nil when there is none.  It checks the evaluation's context
+// first, as CallBuiltin does.  It charges no step.
+func (env *LEnv) MapHasKey(m, k *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return mapHasKey(env, m, k)
+	return goError(mapHasKey(env, m, k))
 }
 
 // mapHasKey is the body of the key? builtin and of LEnv.MapHasKey, so the
@@ -3704,19 +3734,20 @@ func builtinIsEmpty(env *LEnv, args *LVal) *LVal {
 // int, or 0 and the same error from the same check: a value with no length
 // (not a list, map, vector, bytes or string) raises the builtin's error.  It
 // checks the evaluation's context first, as CallBuiltin does, and charges no
-// step.  LVal.Len makes no check and returns -1 for such a value.
-func (env *LEnv) Length(seq *LVal) (int, *LVal) {
+// step.  The error is the builtin's own *ErrorVal.  LVal.Len makes no check
+// and returns -1 for such a value.
+func (env *LEnv) Length(seq *LVal) (int, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return 0, lerr
+		return 0, (*ErrorVal)(lerr)
 	}
-	return seqLength(env, seq)
+	return goError(seqLength(env, seq))
 }
 
 // IsEmpty returns what the empty? builtin returns for (empty? seq), as a Go
 // bool, or the same error from the same check, as Length does.
-func (env *LEnv) IsEmpty(seq *LVal) (bool, *LVal) {
-	n, lerr := env.Length(seq)
-	return n == 0 && lerr == nil, lerr
+func (env *LEnv) IsEmpty(seq *LVal) (bool, error) {
+	n, err := env.Length(seq)
+	return n == 0 && err == nil, err
 }
 
 // seqLength is the body of length and empty? and of LEnv.Length, so they
@@ -4024,13 +4055,14 @@ func builtinStringEq(env *LEnv, args *LVal) *LVal {
 
 // StringEqual returns what the string= builtin returns for (string= a b):
 // whether the strings a and b are equal, or the same error from the same
-// check.  The error is nil when there is none.  It checks the evaluation's
-// context first, as CallBuiltin does.  It charges no step.
-func (env *LEnv) StringEqual(a, b *LVal) (bool, *LVal) {
+// check.  The error is the builtin's own *ErrorVal, and nil when there is
+// none.  It checks the evaluation's context first, as CallBuiltin does.  It
+// charges no step.
+func (env *LEnv) StringEqual(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return stringEqual(env, a, b)
+	return goError(stringEqual(env, a, b))
 }
 
 // stringEqual is the body of the string= builtin and of LEnv.StringEqual, so
@@ -4087,50 +4119,50 @@ func builtinEqNum(env *LEnv, args *LVal) *LVal {
 
 // NumEqual returns what the = builtin returns for (= a b): whether the
 // numbers a and b are equal, or the same error from the same check.  An int
-// and a float compare as floats.  The error is nil when there is none.  It
-// checks the evaluation's context first, as CallBuiltin does.  It charges no
-// step.
-func (env *LEnv) NumEqual(a, b *LVal) (bool, *LVal) {
+// and a float compare as floats.  The error is the builtin's own *ErrorVal,
+// and nil when there is none.  It checks the evaluation's context first, as
+// CallBuiltin does.  It charges no step.
+func (env *LEnv) NumEqual(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return numEqual(env, a, b)
+	return goError(numEqual(env, a, b))
 }
 
 // NumLess returns what the < builtin returns for (< a b), as NumEqual does
 // for =.
-func (env *LEnv) NumLess(a, b *LVal) (bool, *LVal) {
+func (env *LEnv) NumLess(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return numLess(env, a, b)
+	return goError(numLess(env, a, b))
 }
 
 // NumLessEqual returns what the <= builtin returns for (<= a b), as NumEqual
 // does for =.
-func (env *LEnv) NumLessEqual(a, b *LVal) (bool, *LVal) {
+func (env *LEnv) NumLessEqual(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return numLessEqual(env, a, b)
+	return goError(numLessEqual(env, a, b))
 }
 
 // NumGreater returns what the > builtin returns for (> a b), as NumEqual
 // does for =.
-func (env *LEnv) NumGreater(a, b *LVal) (bool, *LVal) {
+func (env *LEnv) NumGreater(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return numGreater(env, a, b)
+	return goError(numGreater(env, a, b))
 }
 
 // NumGreaterEqual returns what the >= builtin returns for (>= a b), as
 // NumEqual does for =.
-func (env *LEnv) NumGreaterEqual(a, b *LVal) (bool, *LVal) {
+func (env *LEnv) NumGreaterEqual(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return numGreaterEqual(env, a, b)
+	return goError(numGreaterEqual(env, a, b))
 }
 
 // numArgs returns the error the numeric comparisons raise for a non-number
@@ -4632,29 +4664,35 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 	if format.Type != LString {
 		return env.Errorf("first argument is not a string")
 	}
-	return formatString(env, format.Str, args.Cells[1:])
-}
-
-// FormatString returns what the format-string builtin returns for the format
-// f and the values fvals: the same string, or the same error from the same
-// check.  It checks the evaluation's context first, as CallBuiltin does.  It
-// bounds the result by MaxAlloc and stops when the context ends, as the
-// builtin does.  It charges no step and does not write fvals.
-//
-//	msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
-func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	str, lerr := formatString(env, format.Str, args.Cells[1:])
+	if lerr != nil {
 		return lerr
 	}
-	return formatString(env, f, fvals)
+	return String(str)
+}
+
+// FormatString returns the string the format-string builtin returns for the
+// format f and the values fvals, or the same error from the same check.  It
+// checks the evaluation's context first, as CallBuiltin does.  It bounds the
+// result by MaxAlloc and stops when the context ends, as the builtin does.
+// It charges no step and does not write fvals.  The error is the builtin's
+// own *ErrorVal.
+//
+//	msg, err := env.FormatString("unknown type: {}", k)
+func (env *LEnv) FormatString(f string, fvals ...*LVal) (string, error) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return "", (*ErrorVal)(lerr)
+	}
+	return goError(formatString(env, f, fvals))
 }
 
 // formatString is the body of the format-string builtin and of
-// LEnv.FormatString, so the two cannot differ.
-func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
+// LEnv.FormatString, so the two cannot differ.  The error is nil when there
+// is none.
+func formatString(env *LEnv, f string, fvals []*LVal) (string, *LVal) {
 	// Fast path: no braces at all.
 	if strings.IndexByte(f, '{') < 0 && strings.IndexByte(f, '}') < 0 {
-		return String(f)
+		return f, nil
 	}
 
 	var buf strings.Builder
@@ -4691,13 +4729,13 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 		for j < n && f[j] != '{' && f[j] != '}' {
 			j++
 			if j%4096 == 0 && !budget.step() {
-				return allocationError()
+				return "", allocationError()
 			}
 		}
 		// Write any literal text before the brace.
 		if j > i {
 			if !write(f[i:j]) {
-				return allocationError()
+				return "", allocationError()
 			}
 		}
 		if j >= n {
@@ -4709,22 +4747,22 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 			// Must be a '}}' escape.
 			if j+1 < n && f[j+1] == '}' {
 				if !write("}") {
-					return allocationError()
+					return "", allocationError()
 				}
 				i = j + 2
 				continue
 			}
-			return env.Errorf("unexpected closing brace '}' outside of formatting directive")
+			return "", env.Errorf("unexpected closing brace '}' outside of formatting directive")
 		}
 
 		// ch == '{'
 		// Check for '{{' escape.
 		if j+1 >= n {
-			return env.Errorf("unclosed '{' in format string")
+			return "", env.Errorf("unclosed '{' in format string")
 		}
 		if f[j+1] == '{' {
 			if !write("{") {
-				return allocationError()
+				return "", allocationError()
 			}
 			i = j + 2
 			continue
@@ -4733,7 +4771,7 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 		// Find the closing '}'.
 		closeIdx := strings.IndexByte(f[j+1:], '}')
 		if closeIdx < 0 {
-			return env.Errorf("unclosed '{' in format string")
+			return "", env.Errorf("unclosed '{' in format string")
 		}
 		closeIdx += j + 1 // absolute index of '}'
 
@@ -4744,7 +4782,7 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 		if len(inner) == 0 || isAllSpaces(inner) {
 			// Sequential placeholder: {} or {  }
 			if mode == 2 {
-				return env.Errorf("cannot mix positional {N} and sequential {} placeholders")
+				return "", env.Errorf("cannot mix positional {N} and sequential {} placeholders")
 			}
 			mode = 1
 			argIdx = seqIndex
@@ -4754,13 +4792,13 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 			inner = strings.TrimSpace(inner)
 			idx, err := strconv.Atoi(inner)
 			if err != nil {
-				return env.Errorf("invalid format directive: {%s}", inner)
+				return "", env.Errorf("invalid format directive: {%s}", inner)
 			}
 			if idx < 0 {
-				return env.Errorf("negative positional index: {%s}", inner)
+				return "", env.Errorf("negative positional index: {%s}", inner)
 			}
 			if mode == 1 {
-				return env.Errorf("cannot mix positional {N} and sequential {} placeholders")
+				return "", env.Errorf("cannot mix positional {N} and sequential {} placeholders")
 			}
 			mode = 2
 			argIdx = idx
@@ -4768,22 +4806,22 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 
 		if argIdx >= len(fvals) {
 			if mode == 2 {
-				return env.Errorf("positional index %d out of range for %d supplied values", argIdx, len(fvals))
+				return "", env.Errorf("positional index %d out of range for %d supplied values", argIdx, len(fvals))
 			}
-			return env.Errorf("too many formatting directives for supplied values")
+			return "", env.Errorf("too many formatting directives for supplied values")
 		}
 
 		val := fvals[argIdx]
 		if val.Type == LString && !val.quoted {
 			if !write(val.Str) {
-				return allocationError()
+				return "", allocationError()
 			}
 		} else {
 			// Bound rendering itself, not just the already-rendered string:
 			// nested/shared data can have a very large printed expansion.
 			s, ok := val.boundedWithBudget(limit-buf.Len(), &budget)
 			if !ok || !write(s) {
-				return allocationError()
+				return "", allocationError()
 			}
 		}
 
@@ -4798,7 +4836,7 @@ func formatString(env *LEnv, f string, fvals []*LVal) *LVal {
 		i = closeIdx + 1
 	}
 
-	return String(buf.String())
+	return buf.String(), nil
 }
 
 // isAllSpaces returns true if s contains only spaces and tabs.

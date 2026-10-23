@@ -43,8 +43,8 @@ func BenchmarkJoinStrings(b *testing.B) {
 			}
 			b.ReportAllocs()
 			for b.Loop() {
-				if v := Join(env, parts, ", "); v.IsError() {
-					b.Fatal(v)
+				if _, err := Join(env, parts, ", "); err != nil {
+					b.Fatal(err)
 				}
 			}
 		})

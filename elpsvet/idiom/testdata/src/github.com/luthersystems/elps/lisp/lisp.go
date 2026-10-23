@@ -126,24 +126,24 @@ func (v *LVal) SeqCells() ([]*LVal, bool)   { return v.Cells, true }
 func SeqOf[T any](v *LVal) ([]T, bool)     { return nil, false }
 func NativeValue[T any](v *LVal) (T, bool) { var z T; return z, false }
 
-func (env *LEnv) Errorf(format string, a ...any) *LVal          { return nil }
-func (env *LEnv) Error(msg ...any) *LVal                        { return nil }
-func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal { return nil }
-func (env *LEnv) MapLookup(m, k *LVal) *LVal                    { return nil }
-func (env *LEnv) First(seq *LVal) *LVal                         { return nil }
-func (env *LEnv) Second(seq *LVal) *LVal                        { return nil }
-func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal    { return nil }
-func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal       { return nil }
-func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal            { return nil }
-func (env *LEnv) MapPut(m, k, v *LVal) *LVal                    { return nil }
-func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal                  { return nil }
-func (env *LEnv) MapDissoc(m, k *LVal) *LVal                    { return nil }
-func (env *LEnv) MapDelete(m, k *LVal) *LVal                    { return nil }
-func (env *LEnv) Car(lis *LVal) *LVal                           { return nil }
-func (env *LEnv) Cdr(lis *LVal) *LVal                           { return nil }
-func (env *LEnv) Rest(seq *LVal) *LVal                          { return nil }
-func (env *LEnv) ToString(v *LVal) *LVal                        { return nil }
-func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal   { return nil }
+func (env *LEnv) Errorf(format string, a ...any) *LVal                  { return nil }
+func (env *LEnv) Error(msg ...any) *LVal                                { return nil }
+func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal         { return nil }
+func (env *LEnv) MapLookup(m, k *LVal) *LVal                            { return nil }
+func (env *LEnv) First(seq *LVal) *LVal                                 { return nil }
+func (env *LEnv) Second(seq *LVal) *LVal                                { return nil }
+func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal            { return nil }
+func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal               { return nil }
+func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal                    { return nil }
+func (env *LEnv) MapPut(m, k, v *LVal) *LVal                            { return nil }
+func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal                          { return nil }
+func (env *LEnv) MapDissoc(m, k *LVal) *LVal                            { return nil }
+func (env *LEnv) MapDelete(m, k *LVal) *LVal                            { return nil }
+func (env *LEnv) Car(lis *LVal) *LVal                                   { return nil }
+func (env *LEnv) Cdr(lis *LVal) *LVal                                   { return nil }
+func (env *LEnv) Rest(seq *LVal) *LVal                                  { return nil }
+func (env *LEnv) ToString(v *LVal) (string, error)                      { return "", nil }
+func (env *LEnv) FormatString(f string, fvals ...*LVal) (string, error) { return "", nil }
 
 func (env *LEnv) MapOf(kv ...any) *LVal         { return nil }
 func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal { return nil }
