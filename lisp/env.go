@@ -1309,10 +1309,13 @@ type registrationFunction struct {
 // construction, never onto a value a caller already holds.
 //
 // The docstring cell is sealed: nothing writes it after registration, and a
-// template shares a function's cells only when every one is sealed.  With
-// sealed formals (every definition table in this repository, and elpsutil's)
-// a VM forked from a template then reads the builtin without copying its
-// formals or docstring, as it reads a Lisp function (issue #870).
+// template shares a function's cells only when every one is sealed.  When the
+// formals are sealed too (the definition tables in this repository, and every
+// elpsutil.Function), a VM forked from a template reads the builtin without
+// copying its formals or docstring, as it reads a Lisp function whose body is
+// sealed (issue #870).  Unsealed formals are copied (registrationFormals), so
+// such a builtin keeps its per-VM cells.  As with a Lisp function's shared
+// body, a host must not write a registered builtin's cells in place.
 //
 // The value is its own registration record (funData.reg, see
 // builtinregistry.go), and the caller records it in the runtime's builtin

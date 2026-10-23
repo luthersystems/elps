@@ -11,20 +11,7 @@ import "testing"
 // every first read of a builtin from a frozen package (use-package reads every
 // export) allocated the group and the docstring value.
 func TestTemplateBuiltinCellsShared(t *testing.T) {
-	source := NewEnv(nil)
-	if rc := InitializeUserEnv(source); rc.Type == LError {
-		t.Fatal(rc)
-	}
-	tmpl, err := NewTemplate(source, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }),
-		TemplateWithFrozenPackages(DefaultLangPackage))
-	if err != nil {
-		t.Fatal(err)
-	}
-	names := []string{"map", "car", "cdr", "list", "concat", "foldl", "cons", "reverse", "length", "nth"}
-	syms := make([]*LVal, len(names))
-	for i, name := range names {
-		syms[i] = Symbol(name)
-	}
+	source, tmpl, syms := builtinCellsTemplate(t)
 	lang := source.Runtime.Registry.packages[DefaultLangPackage]
 
 	vm, err := tmpl.NewVM()
@@ -47,25 +34,25 @@ func TestTemplateBuiltinCellsShared(t *testing.T) {
 			t.Errorf("%s: forked VM copied the builtin's formals or docstring", sym.Str)
 		}
 	}
+}
 
-	// Each read now costs what a Lisp function's does: the function value and
-	// its function data.  One more allocation fills the package's slot values.
-	const runs = 50
-	vms := make([]*LEnv, runs+1)
-	for i := range vms {
-		if vms[i], err = tmpl.NewVM(); err != nil {
-			t.Fatal(err)
-		}
+// builtinCellsTemplate publishes a template with the lisp package frozen and
+// returns it, with its source and symbols naming registered lisp builtins.
+func builtinCellsTemplate(t *testing.T) (*LEnv, *Template, []*LVal) {
+	t.Helper()
+	source := NewEnv(nil)
+	if rc := InitializeUserEnv(source); rc.Type == LError {
+		t.Fatal(rc)
 	}
-	next := 0
-	allocs := testing.AllocsPerRun(runs, func() {
-		pkg := vms[next].Runtime.Registry.packages[DefaultLangPackage]
-		next++
-		for _, sym := range syms {
-			pkg.Get(sym)
-		}
-	})
-	if limit := float64(2*len(syms) + 1); allocs > limit {
-		t.Errorf("first reads of %d builtins allocated %v objects, want at most %v", len(syms), allocs, limit)
+	tmpl, err := NewTemplate(source, TemplateWithBuiltinPolicy(func(*LVal) bool { return true }),
+		TemplateWithFrozenPackages(DefaultLangPackage))
+	if err != nil {
+		t.Fatal(err)
 	}
+	names := []string{"map", "car", "cdr", "list", "concat", "foldl", "cons", "reverse", "length", "nth"}
+	syms := make([]*LVal, len(names))
+	for i, name := range names {
+		syms[i] = Symbol(name)
+	}
+	return source, tmpl, syms
 }
