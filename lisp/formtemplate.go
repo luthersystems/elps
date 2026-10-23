@@ -176,7 +176,7 @@ func placeholderKind(v *LVal) (tmplKind, bool) {
 // The zero FormTemplate expands to ().
 func (t *FormTemplate) Expand(args ...*LVal) *LVal {
 	if t.missing {
-		panic(fmt.Sprintf("lisp.FormTemplate.Expand: core template is not in coreformtemplates_gen.go; run go generate ./lisp: %s", t.src))
+		panic("lisp.FormTemplate.Expand: core template is not in coreformtemplates_gen.go; run go generate ./lisp: " + t.src)
 	}
 	if len(args) != t.paramCount {
 		panic(fmt.Sprintf("lisp.FormTemplate.Expand: expected %d arguments, got %d", t.paramCount, len(args)))

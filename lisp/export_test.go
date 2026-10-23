@@ -195,7 +195,9 @@ func BuiltinGoHelperNames() []string {
 
 // CoreFormSources returns each core form template's source and parameters,
 // for the test that writes coreformtemplates_gen.go.
-func CoreFormSources() (srcs []string, params [][]string) {
+func CoreFormSources() ([]string, [][]string) {
+	var srcs []string
+	var params [][]string
 	for _, s := range coreFormSources {
 		srcs = append(srcs, s.src)
 		params = append(params, s.params)
