@@ -267,7 +267,13 @@ func TestBuiltinGoHelpersCancelled(t *testing.T) {
 		if h.Method == "" || !ok || name == "funcall" || name == "apply" {
 			continue
 		}
-		idx := make([]int, nfixed)
+		// Pass two variadic values, so a variadic helper reaches past its
+		// fixed arguments.
+		n := nfixed
+		if m.Type.IsVariadic() {
+			n += 2
+		}
+		idx := make([]int, n)
 		ref := lisp.BuiltinFunc(name)
 		oracle.Sweep(t, name,
 			func(env *lisp.LEnv) *lisp.LVal { return callHelper(env, m, argValues(idx)) },
