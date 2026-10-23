@@ -1504,40 +1504,48 @@ func (s *state) mapOfParts(call *ast.CallExpr) ([]string, bool) {
 // MapOf and SortedMapOf (checkMapOf and checkSortedMapCall).
 var specialHelpers = map[string]bool{"format-string": true, "sorted-map": true}
 
+// lvalMethod is an LEnv method that takes only *LVal arguments and returns
+// one *LVal: name, its number of fixed arguments, and whether it takes more
+// as a variadic list.
+type lvalMethod struct {
+	name     string
+	nfixed   int
+	variadic bool
+}
+
 // lvalHelper returns the LEnv method that lisp.BuiltinGoHelper names for
-// the builtin name, with its number of fixed arguments, when the method
-// takes only *LVal arguments (the last may be variadic) and returns one
-// *LVal: then a CallBuiltin call is the method call with the same
-// arguments.  recv is the type of CallBuiltin's receiver.
-func lvalHelper(recv types.Type, name string) (method string, nfixed int, variadic, ok bool) {
+// the builtin name when the method takes only *LVal arguments (the last may
+// be variadic) and returns one *LVal: then a CallBuiltin call is the method
+// call with the same arguments.  recv is the type of CallBuiltin's receiver.
+func lvalHelper(recv types.Type, name string) (lvalMethod, bool) {
 	h, known := lisp.BuiltinGoHelper(name)
 	if !known || h.Method == "" || specialHelpers[name] {
-		return "", 0, false, false
+		return lvalMethod{}, false
 	}
 	obj, _, _ := types.LookupFieldOrMethod(recv, true, nil, h.Method)
 	fn, isFunc := obj.(*types.Func)
 	if !isFunc {
-		return "", 0, false, false
+		return lvalMethod{}, false
 	}
 	sig := fn.Signature()
 	if sig.Results().Len() != 1 || !isLValPtr(sig.Results().At(0).Type()) {
-		return "", 0, false, false
+		return lvalMethod{}, false
 	}
 	params := sig.Params()
-	nfixed = params.Len()
+	nfixed := params.Len()
 	if sig.Variadic() {
 		nfixed--
 		last, isSlice := params.At(nfixed).Type().(*types.Slice)
 		if !isSlice || !isLValPtr(last.Elem()) {
-			return "", 0, false, false
+			return lvalMethod{}, false
 		}
 	}
 	for i := range nfixed {
 		if !isLValPtr(params.At(i).Type()) {
-			return "", 0, false, false
+			return lvalMethod{}, false
 		}
 	}
-	return h.Method, nfixed, sig.Variadic(), true
+	return lvalMethod{name: h.Method, nfixed: nfixed, variadic: sig.Variadic()}, true
 }
 
 // checkBuiltinHelper: env.CallBuiltin(ref, ...) where lisp.BuiltinGoHelper
@@ -1575,7 +1583,7 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 			parts = append(parts, s.text(a))
 		}
 	} else {
-		method, nfixed, variadic, ok := lvalHelper(m.Signature().Recv().Type(), name)
+		method, ok := lvalHelper(m.Signature().Recv().Type(), name)
 		if !ok {
 			return
 		}
@@ -1583,18 +1591,18 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 		case call.Ellipsis.IsValid():
 			// A spread list passes on whole only to a method that takes
 			// every argument as its variadic list.
-			if !variadic || nfixed != 0 || len(args) != 1 {
+			if !method.variadic || method.nfixed != 0 || len(args) != 1 {
 				return
 			}
 			parts = append(parts, s.text(args[0])+"...")
-		case len(args) == nfixed || variadic && len(args) > nfixed:
+		case len(args) == method.nfixed || method.variadic && len(args) > method.nfixed:
 			for _, a := range args {
 				parts = append(parts, s.text(a))
 			}
 		default:
 			return // a different count is an arity error that the helper does not make
 		}
-		helper = method
+		helper = method.name
 	}
 	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
 	if !ok || !s.fixAllowed(call, "LEnv."+helper) {

@@ -78,7 +78,7 @@ func TestBuiltinGoHelpersListEveryHelper(t *testing.T) {
 	for _, name := range lisp.BuiltinGoHelperNames() {
 		assert.NotPanics(t, func() { lisp.BuiltinFunc(name) }, "builtinGoHelpers names %q, which is no builtin", name)
 		h, _ := lisp.BuiltinGoHelper(name)
-		assert.True(t, (h.Method == "") != (h.Note == ""), "%s: set Method or Note", name)
+		assert.NotEqual(t, h.Method == "", h.Note == "", "%s: set Method or Note", name)
 		if h.Method != "" {
 			_, ok := envType.MethodByName(h.Method)
 			assert.True(t, ok, "%s: LEnv has no method %s", name, h.Method)
@@ -145,11 +145,9 @@ func callHelper(env *lisp.LEnv, m reflect.Method, args []*lisp.LVal) *lisp.LVal 
 		in = append(in, reflect.ValueOf(a))
 	}
 	out := m.Func.Call(in)
-	if len(out) == 1 {
-		return out[0].Interface().(*lisp.LVal)
-	}
-	if lerr := out[1].Interface().(*lisp.LVal); lerr != nil {
-		return lerr
+	last, _ := out[len(out)-1].Interface().(*lisp.LVal)
+	if len(out) == 1 || last != nil {
+		return last
 	}
 	if out[0].Type() == boolType {
 		return lisp.Bool(out[0].Bool())
