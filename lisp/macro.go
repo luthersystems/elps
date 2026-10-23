@@ -127,6 +127,10 @@ func DefaultMacros() []LBuiltinDef {
 // lisp's macro instead of colliding with it.
 var lateMacros = map[string]bool{"test-let": true, "test-let*": true, "benchmark-simple": true}
 
+// defineForm is the expansion of defmacro and defun: it binds name to the
+// function the macro made.
+var defineForm = coreFormTemplate(`(lisp:progn (lisp:set '(unquote name) (unquote fun)) ())`, "name", "fun")
+
 func macroDefmacro(env *LEnv, args *LVal) *LVal {
 	sym, formals, body := args.Cells[0], args.Cells[1], args.Cells[2:]
 	if sym.Type != LSymbol {
@@ -141,15 +145,7 @@ func macroDefmacro(env *LEnv, args *LVal) *LVal {
 	// Stamp the definition name so LEnv.Get can return the binding itself
 	// rather than a renamed copy on every lookup (see LEnv.Get).
 	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
-	return Cells{
-		Symbol("lisp:progn"),
-		Cells{
-			Symbol("lisp:set"),
-			Quote(sym),
-			fun,
-		}.SExpr(),
-		Nil(),
-	}.SExpr()
+	return defineForm.Expand(sym, fun)
 }
 
 func macroDefun(env *LEnv, args *LVal) *LVal {
@@ -165,15 +161,7 @@ func macroDefun(env *LEnv, args *LVal) *LVal {
 	// Stamp the definition name so LEnv.Get can return the binding itself
 	// rather than a renamed copy on every lookup (see LEnv.Get).
 	fun.Str = sym.Str //elps:mutates records the definition name: fun is the closure env.Lambda freshly allocated above
-	return Cells{
-		Symbol("lisp:progn"),
-		Cells{
-			Symbol("lisp:set"),
-			Quote(sym),
-			fun,
-		}.SExpr(),
-		Nil(),
-	}.SExpr()
+	return defineForm.Expand(sym, fun)
 }
 
 func macroDefconst(env *LEnv, args *LVal) *LVal {
@@ -181,74 +169,36 @@ func macroDefconst(env *LEnv, args *LVal) *LVal {
 	if sym.Type != LSymbol {
 		return env.ErrorfAt(sym, "first argument is not a symbol: %s", sym.Type)
 	}
-	// Build: (progn (set 'name value docstrings...) (export 'name) nil)
-	setCells := []*LVal{Symbol("lisp:set"), Quote(sym), value}
-	setCells = append(setCells, docstrings...)
-	return Cells{
-		Symbol("lisp:progn"),
-		SExpr(setCells),
-		Cells{Symbol("lisp:export"), Quote(sym)}.SExpr(),
-		Nil(),
-	}.SExpr()
+	return defconstForm.Expand(sym, value, SExpr(docstrings))
 }
+
+var defconstForm = coreFormTemplate(`
+(lisp:progn
+  (lisp:set '(unquote name) (unquote value) (unquote-splicing docs))
+  (lisp:export '(unquote name))
+  ())`, "name", "value", "docs")
 
 func macroCurryFun(env *LEnv, args *LVal) *LVal {
 	funExpr, argExprs := args.Cells[0], args.Cells[1:]
-	argsym := env.GenSym()
-	callCells := []*LVal{
-		Symbol("lisp:apply"),
-		funExpr,
-	}
-	callCells = append(callCells, argExprs...)
-	callCells = append(callCells, argsym)
-	return Cells{
-		Symbol("lambda"),
-		Cells{
-			Symbol(VarArgSymbol),
-			argsym,
-		}.SExpr(),
-		SExpr(callCells),
-	}.SExpr()
+	return curryForm.Expand(env.GenSym(), funExpr, SExpr(argExprs))
 }
+
+var curryForm = coreFormTemplate(`
+(lambda (&rest (unquote rest))
+  (lisp:apply (unquote fun) (unquote-splicing args) (unquote rest)))`, "rest", "fun", "args")
 
 func macroGetDefault(env *LEnv, args *LVal) *LVal {
 	mapExpr, keyExpr, defExpr := args.Cells[0], args.Cells[1], args.Cells[2]
 	g := NewGenSyms(args)
 	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
-	let := Cells{
-		Symbol("lisp:let"),
-		Cells{
-			Cells{
-				mapSym,
-				mapExpr,
-			}.SExpr(),
-			Cells{
-				keySym,
-				keyExpr,
-			}.SExpr(),
-		}.SExpr(),
-		Cells{
-			Symbol("lisp:if"),
-			Cells{
-				Symbol("lisp:if"),
-				Cells{Symbol("lisp:nil?"), mapSym}.SExpr(),
-				Symbol("lisp:false"),
-				Cells{
-					Symbol("lisp:key?"),
-					mapSym,
-					keySym,
-				}.SExpr(),
-			}.SExpr(),
-			Cells{
-				Symbol("lisp:get"),
-				mapSym,
-				keySym,
-			}.SExpr(),
-			defExpr,
-		}.SExpr(),
-	}.List()
-	return let
+	return getDefaultForm.Expand(mapSym, mapExpr, keySym, keyExpr, defExpr)
 }
+
+var getDefaultForm = coreFormTemplate(`
+(lisp:let (((unquote m) (unquote map)) ((unquote k) (unquote key)))
+  (lisp:if (lisp:if (lisp:nil? (unquote m)) lisp:false (lisp:key? (unquote m) (unquote k)))
+    (lisp:get (unquote m) (unquote k))
+    (unquote default)))`, "m", "map", "k", "key", "default")
 
 func macroDeftype(env *LEnv, args *LVal) *LVal {
 	pkg := env.Runtime.Registry.Lang
@@ -1304,11 +1254,10 @@ func macroTrace(env *LEnv, args *LVal) *LVal {
 	if msg.IsNil() {
 		msg = String("TRACE")
 	}
-	return Cells{
-		Symbol("lisp:let"),
-		Cells{
-			Cells{sym, expr}.SExpr()}.SExpr(),
-		Cells{Symbol("lisp:debug-print"), msg, sym}.SExpr(),
-		sym,
-	}.SExpr()
+	return traceForm.Expand(sym, expr, msg)
 }
+
+var traceForm = coreFormTemplate(`
+(lisp:let (((unquote v) (unquote expr)))
+  (lisp:debug-print (unquote message) (unquote v))
+  (unquote v))`, "v", "expr", "message")

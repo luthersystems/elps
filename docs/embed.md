@@ -556,6 +556,14 @@ fails to parse, and on undeclared, duplicate or unused parameters or a
 malformed placeholder; `Expand` panics on an argument count mismatch or an
 invalid splice argument. libtesting's assert macros are built this way.
 
+`MustTemplate` wraps a `lisp.FormTemplate`, and `lisp.NewFormTemplate`
+compiles a form that is already read. Package lisp's own Go macros (`defun`,
+`defmacro`, `defconst`, `curry-function`, `get-default` and `trace`) are
+written as templates too. Package lisp cannot import the reader, so the
+compiled forms are checked in to `lisp/coreformtemplates_gen.go`, and the
+source stays next to each macro. `TestCoreFormTemplatesGenerated` fails when
+the file is out of date; `go generate ./lisp` rewrites it.
+
 Each expansion allocates fresh, unlocated syntax, shares the inserted
 argument forms, and uses the immutable nil singleton for `()`; it never
 parses or evaluates. This follows the Go macro contract: the evaluator

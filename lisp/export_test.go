@@ -2,7 +2,12 @@
 
 package lisp
 
-import "github.com/luthersystems/elps/parser/token"
+import (
+	"fmt"
+	"strings"
+
+	"github.com/luthersystems/elps/parser/token"
+)
 
 // Test-only bridges to the unexported detach machinery (lisp/detach.go).
 // detach has no production consumers and stays unexported until a real
@@ -184,4 +189,58 @@ func BuiltinGoHelperNames() []string {
 		names = append(names, name)
 	}
 	return names
+}
+
+// CoreFormSources returns each core form template's source and parameters,
+// for the test that writes coreformtemplates_gen.go.
+func CoreFormSources() (srcs []string, params [][]string) {
+	for _, s := range coreFormSources {
+		srcs = append(srcs, s.src)
+		params = append(params, s.params)
+	}
+	return srcs, params
+}
+
+// CoreFormKey is the key coreformtemplates_gen.go stores a core template
+// under.
+func CoreFormKey(src string, params []string) string { return coreFormKey(src, params) }
+
+// FormTemplateGoLiteral writes t as the Go composite literal
+// coreformtemplates_gen.go holds.
+func FormTemplateGoLiteral(t *FormTemplate) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "{paramCount: %d, ok: true, root: ", t.paramCount)
+	b.WriteString("tmplNode")
+	writeTmplNodeLiteral(&b, &t.root, 2)
+	b.WriteString("}")
+	return b.String()
+}
+
+func writeTmplNodeLiteral(b *strings.Builder, n *tmplNode, depth int) {
+	kinds := [...]string{"tmplList", "tmplSymbol", "tmplString", "tmplInt", "tmplFloat", "tmplArg", "tmplSplice", "tmplQuote"}
+	fmt.Fprintf(b, "{kind: %s", kinds[n.kind])
+	switch n.kind {
+	case tmplSymbol, tmplString:
+		fmt.Fprintf(b, ", str: %q", n.str)
+	case tmplInt:
+		fmt.Fprintf(b, ", num: %d", n.num)
+	case tmplFloat:
+		fmt.Fprintf(b, ", float: %v", n.float)
+	case tmplArg, tmplSplice:
+		fmt.Fprintf(b, ", index: %d", n.index)
+	case tmplList, tmplQuote:
+		if n.splice {
+			b.WriteString(", splice: true")
+		}
+		if len(n.children) > 0 {
+			b.WriteString(", children: []tmplNode{\n")
+			for i := range n.children {
+				b.WriteString(strings.Repeat("\t", depth+1))
+				writeTmplNodeLiteral(b, &n.children[i], depth+1)
+				b.WriteString(",\n")
+			}
+			b.WriteString(strings.Repeat("\t", depth) + "}")
+		}
+	}
+	b.WriteString("}")
 }

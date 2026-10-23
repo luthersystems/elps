@@ -185,8 +185,8 @@ func TestTemplateCompilePanics(t *testing.T) {
 
 func TestTemplateExpandPanics(t *testing.T) {
 	tmpl := elpsutil.MustTemplate(`(f (unquote-splicing xs))`, "xs")
-	assert.PanicsWithValue(t, "elpsutil.Template.Expand: expected 1 arguments, got 0", func() { tmpl.Expand() })
-	assert.PanicsWithValue(t, "elpsutil.Template.Expand: splice argument 1 must be an unquoted list or nil", func() {
+	assert.PanicsWithValue(t, "lisp.FormTemplate.Expand: expected 1 arguments, got 0", func() { tmpl.Expand() })
+	assert.PanicsWithValue(t, "lisp.FormTemplate.Expand: splice argument 1 must be an unquoted list or nil", func() {
 		tmpl.Expand(lisp.Int(1))
 	})
 }
