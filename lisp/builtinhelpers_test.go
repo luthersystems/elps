@@ -322,33 +322,60 @@ func TestAppendMatchesBuiltin(t *testing.T) {
 		})
 }
 
-// typePredicates is the Go each type predicate's Note names.
-var typePredicates = map[string]func(v *lisp.LVal) bool{
-	"nil?":          func(v *lisp.LVal) bool { return v.IsNil() },
-	"true?":         lisp.True,
-	"list?":         func(v *lisp.LVal) bool { return v.Type == lisp.LSExpr },
-	"sorted-map?":   func(v *lisp.LVal) bool { return v.Type == lisp.LSortMap },
-	"array?":        func(v *lisp.LVal) bool { return v.Type == lisp.LArray },
-	"vector?":       func(v *lisp.LVal) bool { return v.Type == lisp.LArray && v.Cells[0].Len() == 1 },
-	"bool?":         func(v *lisp.LVal) bool { return v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol) },
-	"number?":       func(v *lisp.LVal) bool { return v.IsNumeric() },
-	"int?":          func(v *lisp.LVal) bool { return v.Type == lisp.LInt },
-	"float?":        func(v *lisp.LVal) bool { return v.Type == lisp.LFloat },
-	"symbol?":       func(v *lisp.LVal) bool { return v.Type == lisp.LSymbol },
-	"string?":       func(v *lisp.LVal) bool { return v.Type == lisp.LString },
-	"bytes?":        func(v *lisp.LVal) bool { return v.Type == lisp.LBytes },
-	"tagged-value?": func(v *lisp.LVal) bool { return v.Type == lisp.LTaggedVal },
+// typePredicates is the Go each type predicate's Note names, with the
+// Note's text, so the two change together.
+var typePredicates = map[string]struct {
+	note string
+	pred func(v *lisp.LVal) bool
+}{
+	"nil?":          {"v.IsNil()", func(v *lisp.LVal) bool { return v.IsNil() }},
+	"true?":         {"lisp.True(v)", lisp.True},
+	"list?":         {"v.Type == lisp.LSExpr", func(v *lisp.LVal) bool { return v.Type == lisp.LSExpr }},
+	"sorted-map?":   {"v.Type == lisp.LSortMap", func(v *lisp.LVal) bool { return v.Type == lisp.LSortMap }},
+	"array?":        {"v.Type == lisp.LArray", func(v *lisp.LVal) bool { return v.Type == lisp.LArray }},
+	"vector?":       {"v.IsVector()", func(v *lisp.LVal) bool { return v.IsVector() }},
+	"bool?":         {"v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol)", func(v *lisp.LVal) bool { return v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol) }},
+	"number?":       {"v.IsNumeric()", func(v *lisp.LVal) bool { return v.IsNumeric() }},
+	"int?":          {"v.Type == lisp.LInt", func(v *lisp.LVal) bool { return v.Type == lisp.LInt }},
+	"float?":        {"v.Type == lisp.LFloat", func(v *lisp.LVal) bool { return v.Type == lisp.LFloat }},
+	"symbol?":       {"v.Type == lisp.LSymbol", func(v *lisp.LVal) bool { return v.Type == lisp.LSymbol }},
+	"string?":       {"v.Type == lisp.LString", func(v *lisp.LVal) bool { return v.Type == lisp.LString }},
+	"bytes?":        {"v.Type == lisp.LBytes", func(v *lisp.LVal) bool { return v.Type == lisp.LBytes }},
+	"tagged-value?": {"v.Type == lisp.LTaggedVal", func(v *lisp.LVal) bool { return v.Type == lisp.LTaggedVal }},
 }
 
-// TestTypePredicateNotes checks that every builtin of one argument whose
-// name ends in "?" has a Note, and that the Go each Note names returns what
+// predicateInputs is a value of every type, and the values the oracle list
+// lacks that a predicate is true of: the symbols true and false and a
+// tagged value.
+func predicateInputs() []oracle.Value {
+	return append(oracle.Values(),
+		oracle.Value{V: lisp.Symbol(lisp.TrueSymbol), Label: "true"},
+		oracle.Value{V: lisp.Symbol(lisp.FalseSymbol), Label: "false"},
+		oracle.Value{V: &lisp.LVal{Type: lisp.LTaggedVal, Str: "thing", Cells: []*lisp.LVal{lisp.Int(1)}}, Label: "tagged"})
+}
+
+// requiredFormals counts the formals before the first & keyword.
+func requiredFormals(formals *lisp.LVal) int {
+	n := 0
+	for _, f := range formals.Cells {
+		if f.Type == lisp.LSymbol && strings.HasPrefix(f.Str, "&") {
+			break
+		}
+		n++
+	}
+	return n
+}
+
+// TestTypePredicateNotes checks that every builtin of one required argument
+// whose name ends in "?" has a GoHelper, that each Note is the text
+// typePredicates holds, and that the Go typePredicates holds returns what
 // the builtin returns for a value of every type.
 func TestTypePredicateNotes(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
-	checked := 0
+	seen := map[string]bool{}
 	for _, b := range lisp.DefaultBuiltins() {
 		name := b.Name()
-		if !strings.HasSuffix(name, "?") || b.Formals().Len() != 1 {
+		if !strings.HasSuffix(name, "?") || requiredFormals(b.Formals()) != 1 {
 			continue
 		}
 		h, ok := lisp.BuiltinGoHelper(name)
@@ -358,17 +385,20 @@ func TestTypePredicateNotes(t *testing.T) {
 		if h.Method != "" {
 			continue // empty?, which LEnv.IsEmpty covers
 		}
-		checked++
-		pred, ok := typePredicates[name]
+		seen[name] = true
+		p, ok := typePredicates[name]
 		if !assert.True(t, ok, "typePredicates has no Go for %s (Note %q)", name, h.Note) {
 			continue
 		}
+		assert.Equal(t, p.note, h.Note, "%s: the Note and typePredicates differ", name)
 		ref := lisp.BuiltinFunc(name)
-		for _, v := range oracle.Values() {
+		for _, v := range predicateInputs() {
 			want := env.CallBuiltin(ref, v.V)
 			require.False(t, want.IsError(), name)
-			assert.Equal(t, lisp.True(want), pred(v.V), "%s %s", name, v.Label)
+			assert.Equal(t, lisp.True(want), p.pred(v.V), "%s %s", name, v.Label)
 		}
 	}
-	assert.Equal(t, len(typePredicates), checked, "a type predicate in typePredicates is no builtin of one argument")
+	for name := range typePredicates {
+		assert.True(t, seen[name], "typePredicates lists %s, which is no type predicate with a Note", name)
+	}
 }

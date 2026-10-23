@@ -3827,8 +3827,7 @@ func builtinIsArray(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinIsVector(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
-	return Bool(v.Type == LArray && v.Cells[0].Len() == 1)
+	return Bool(args.Cells[0].IsVector())
 }
 
 func builtinIsBool(env *LEnv, args *LVal) *LVal {

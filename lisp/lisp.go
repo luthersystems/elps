@@ -1693,6 +1693,12 @@ func (v *LVal) IsNumeric() bool {
 	return v.Type == LInt || v.Type == LFloat
 }
 
+// IsVector reports whether v is a vector: an array of one dimension, as the
+// vector? builtin reads it.
+func (v *LVal) IsVector() bool {
+	return v.Type == LArray && v.Cells[0].Len() == 1
+}
+
 // Equal returns a non-nil value if v and other are logically equal, under the
 // rules used by the "equal?" function.
 //

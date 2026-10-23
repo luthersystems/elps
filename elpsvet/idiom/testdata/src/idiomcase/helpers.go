@@ -16,6 +16,7 @@ var (
 	coreRest         = lisp.BuiltinFunc("rest")          // want `lisp has a Go helper for rest: call LEnv\.Rest`
 	coreLength       = lisp.BuiltinFunc("length")        // the stub LEnv has no Length: no hint
 	coreVector       = lisp.BuiltinFunc("vector")        // want `lisp has a Go helper for vector: write lisp\.Cells\{\.\.\.\}\.Vector\(\) \(it makes no context check\)`
+	coreIsBool       = lisp.BuiltinFunc("bool?")         // want `lisp has a Go helper for bool\?: write v\.IsSymbol\(lisp\.TrueSymbol\) \|\| v\.IsSymbol\(lisp\.FalseSymbol\) \(it makes no context check\)`
 )
 
 func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {

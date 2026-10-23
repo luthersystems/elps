@@ -66,14 +66,15 @@ var builtinGoHelpers = map[string]GoHelper{
 	"apply":         {Method: "ApplyFunction"},
 	"vector":        {Note: "lisp.Cells{...}.Vector()"},
 	"list":          {Note: "lisp.Cells{...}.List()"},
-	// The type predicates.  TestTypePredicateNotes checks each Note's Go
-	// against its builtin, and that every type predicate is listed.
+	// The type predicates.  TestTypePredicateNotes checks that every type
+	// predicate is listed, and checks the Go each Note names (a copy in the
+	// test, held to the Note's text) against its builtin.
 	"nil?":          {Note: "v.IsNil()"},
 	"true?":         {Note: "lisp.True(v)"},
 	"list?":         {Note: "v.Type == lisp.LSExpr"},
 	"sorted-map?":   {Note: "v.Type == lisp.LSortMap"},
 	"array?":        {Note: "v.Type == lisp.LArray"},
-	"vector?":       {Note: "v.Type == lisp.LArray && v.Cells[0].Len() == 1"},
+	"vector?":       {Note: "v.IsVector()"},
 	"bool?":         {Note: "v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol)"},
 	"number?":       {Note: "v.IsNumeric()"},
 	"int?":          {Note: "v.Type == lisp.LInt"},
