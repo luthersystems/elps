@@ -1,0 +1,161 @@
+// Copyright © 2026 The ELPS authors
+
+package lisp
+
+// GoHelper names the Go code that returns what a language builtin returns,
+// for a Go builtin that would otherwise call the builtin with CallBuiltin.
+//
+// Method is the LEnv method, when there is one.  It checks the evaluation's
+// context first, as CallBuiltin does, and then runs the builtin's own body,
+// so the value, the error and the allocation checks are the same.  Note is
+// the Go to write instead when there is no method, such as a type test for
+// a predicate; it makes no context check.
+type GoHelper struct {
+	Method string
+	Note   string
+}
+
+// builtinGoHelpers maps a builtin's name to its GoHelper.  Every LEnv
+// method whose doc comment says it "returns what the X builtin returns" is
+// listed (TestBuiltinGoHelpersListEveryHelper), and each method is checked
+// against its builtin on inputs of every type
+// (TestBuiltinGoHelpersMatchBuiltins).  elpsvet's elpsidiom analyzer reads
+// it to report a lisp.BuiltinFunc that has a helper.
+var builtinGoHelpers = map[string]GoHelper{
+	"to-string":     {Method: "ToString"},
+	"to-bytes":      {Method: "ToBytes"},
+	"to-int":        {Method: "ToInt"},
+	"car":           {Method: "Car"},
+	"cdr":           {Method: "Cdr"},
+	"rest":          {Method: "Rest"},
+	"first":         {Method: "First"},
+	"second":        {Method: "Second"},
+	"nth":           {Method: "Nth"},
+	"map":           {Method: "MapSeq"},
+	"assoc":         {Method: "MapAssoc"},
+	"assoc!":        {Method: "MapPut"},
+	"dissoc":        {Method: "MapDissoc"},
+	"dissoc!":       {Method: "MapDelete"},
+	"get":           {Method: "MapLookup"},
+	"keys":          {Method: "MapKeys"},
+	"key?":          {Method: "MapHasKey"},
+	"sorted-map":    {Method: "SortedMapOf"},
+	"concat":        {Method: "Concat"},
+	"zip":           {Method: "Zip"},
+	"slice":         {Method: "Slice"},
+	"append":        {Method: "Append"},
+	"append!":       {Method: "AppendInPlace"},
+	"make-sequence": {Method: "MakeSequence"},
+	"length":        {Method: "Length"},
+	"empty?":        {Method: "IsEmpty"},
+	"string=":       {Method: "StringEqual"},
+	"string<":       {Method: "StringLess"},
+	"string>":       {Method: "StringGreater"},
+	"=":             {Method: "NumEqual"},
+	"<":             {Method: "NumLess"},
+	"<=":            {Method: "NumLessEqual"},
+	">":             {Method: "NumGreater"},
+	">=":            {Method: "NumGreaterEqual"},
+	"+":             {Method: "Add"},
+	"-":             {Method: "Sub"},
+	"*":             {Method: "Mul"},
+	"mod":           {Method: "Mod"},
+	"format-string": {Method: "FormatString"},
+	"copy":          {Method: "DeepCopy"},
+	"funcall":       {Method: "CallFunction"},
+	"apply":         {Method: "ApplyFunction"},
+	"vector":        {Note: "lisp.Cells{...}.Vector()"},
+	"list":          {Note: "lisp.Cells{...}.List()"},
+	"list?":         {Note: "v.Type == lisp.LSExpr"},
+	"sorted-map?":   {Note: "v.Type == lisp.LSortMap"},
+	"string?":       {Note: "v.Type == lisp.LString"},
+	"symbol?":       {Note: "v.Type == lisp.LSymbol"},
+}
+
+// BuiltinGoHelper returns the GoHelper for the language builtin name, and
+// false when there is none.
+func BuiltinGoHelper(name string) (GoHelper, bool) {
+	h, ok := builtinGoHelpers[name]
+	return h, ok
+}
+
+// Mul returns what the * builtin returns for (* xs...): the product of xs,
+// 1 for none, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) Mul(xs ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return builtinMul(env, QExpr(xs))
+}
+
+// Mod returns what the mod builtin returns for (mod a b): the remainder of
+// the ints a and b, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) Mod(a, b *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return builtinMod(env, Cells{a, b}.List())
+}
+
+// Append returns what the append builtin returns for (append typespec seq
+// vals...), where typespec is the type specifier kind stands for: a new
+// sequence of that type that holds seq's elements and then vals, or the same
+// error from the same check, the allocation check included.  It does not
+// change seq; AppendInPlace does, as append! does.  It checks the
+// evaluation's context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) Append(kind SeqKind, seq *LVal, vals ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	spec := Nil()
+	if kind != SeqNil {
+		spec = Symbol(kind.String())
+	}
+	args := make([]*LVal, 0, 2+len(vals))
+	args = append(args, spec, seq)
+	return builtinAppend(env, QExpr(append(args, vals...)))
+}
+
+// MakeSequence returns what the make-sequence builtin returns for
+// (make-sequence start stop step...): the list of numbers from start up to
+// stop, or the same error from the same check, the allocation check
+// included.  It checks the evaluation's context first, as CallBuiltin does,
+// and charges no step.
+func (env *LEnv) MakeSequence(start, stop *LVal, step ...*LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	args := make([]*LVal, 0, 2+len(step))
+	args = append(args, start, stop)
+	return builtinMakeSequence(env, QExpr(append(args, step...)))
+}
+
+// StringLess returns what the string< builtin returns for (string< a b):
+// whether the string a sorts before b, or the same error from the same
+// check.  The error is nil when there is none.  It checks the evaluation's
+// context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) StringLess(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return boolResult(builtinStringLT(env, Cells{a, b}.List()))
+}
+
+// StringGreater returns what the string> builtin returns for (string> a b),
+// as StringLess does for string<.
+func (env *LEnv) StringGreater(a, b *LVal) (bool, *LVal) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return false, lerr
+	}
+	return boolResult(builtinStringGT(env, Cells{a, b}.List()))
+}
+
+// boolResult reads a predicate builtin's result as a Go bool, or its error.
+func boolResult(v *LVal) (bool, *LVal) {
+	if v.IsError() {
+		return false, v
+	}
+	return True(v), nil
+}

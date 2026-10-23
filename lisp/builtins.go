@@ -1420,7 +1420,24 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinCAR(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return listCar(env, args.Cells[0])
+}
+
+// Car returns what the car builtin returns for (car lis): the first element
+// of a list, () for an empty list, or the same error from the same check.
+// It checks the evaluation's context first, as CallBuiltin does, and
+// charges no step.  The element is returned as it is stored, an error value
+// included, as the builtin returns it.
+func (env *LEnv) Car(lis *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return listCar(env, lis)
+}
+
+// listCar is the body of the car builtin and of LEnv.Car, so the two cannot
+// differ.
+func listCar(env *LEnv, v *LVal) *LVal {
 	if v.Type != LSExpr {
 		return env.Errorf("argument is not a list: %v", v.Type)
 	}
@@ -1432,7 +1449,24 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinCDR(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return listCdr(env, args.Cells[0])
+}
+
+// Cdr returns what the cdr builtin returns for (cdr lis): a view of a list
+// after its first element, () when it has fewer than two, or the same error
+// from the same check.  It checks the evaluation's context first, as
+// CallBuiltin does, and charges no step.  The view shares lis's elements,
+// as the builtin's does.
+func (env *LEnv) Cdr(lis *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return listCdr(env, lis)
+}
+
+// listCdr is the body of the cdr builtin and of LEnv.Cdr, so the two cannot
+// differ.
+func listCdr(env *LEnv, v *LVal) *LVal {
 	if v.Type != LSExpr {
 		return env.Errorf("argument is not a list: %v", v.Type)
 	}
@@ -1481,7 +1515,23 @@ func clampCapBytes(b []byte) []byte {
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return seqRest(env, args.Cells[0])
+}
+
+// Rest returns what the rest builtin returns for (rest seq): a view of a
+// list or a vector after its first element, as a list, () when it has fewer
+// than two, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) Rest(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqRest(env, seq)
+}
+
+// seqRest is the body of the rest builtin and of LEnv.Rest, so the two cannot
+// differ.
+func seqRest(env *LEnv, v *LVal) *LVal {
 	if !isSeq(v) {
 		return env.Errorf("argument is not a proper sequence: %v", v.Type)
 	}
@@ -2006,8 +2056,27 @@ func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
 }
 
 func builtinDissoc(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
+	return dissocCopy(env, args.Cells[0], args.Cells[1])
+}
+
+// MapDissoc returns what the dissoc builtin returns for (dissoc m k): a new
+// sorted-map that holds m's entries but k, or the same error from the same
+// check.  It does not change m.  A nil m gives a new empty map.  It checks
+// the evaluation's context first, as CallBuiltin does, and makes dissoc's
+// allocation check.  It charges no step.
+//
+// Use it where the Lisp called dissoc.  MapDelete changes m in place, as
+// dissoc! does.
+func (env *LEnv) MapDissoc(m, k *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return dissocCopy(env, m, k)
+}
+
+// dissocCopy is the body of the dissoc builtin and of LEnv.MapDissoc, so the
+// two cannot differ.
+func dissocCopy(env *LEnv, m, k *LVal) *LVal {
 	if m.IsNil() {
 		m = SortedMap()
 	} else if m.Type != LSortMap {
@@ -2032,8 +2101,27 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
+	return dissocMutate(env, args.Cells[0], args.Cells[1])
+}
+
+// MapDelete returns what the dissoc! builtin returns for (dissoc! m k): m
+// after it removes k, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, then refuses a nil or
+// non-map m and returns the map's own error for a key the map refuses.  It
+// charges no step.
+//
+// Use it where the Lisp called dissoc!.  MapDissoc returns a copy, as dissoc
+// does.
+func (env *LEnv) MapDelete(m, k *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return dissocMutate(env, m, k)
+}
+
+// dissocMutate is the body of the dissoc! builtin and of LEnv.MapDelete, so
+// the two cannot differ.
+func dissocMutate(env *LEnv, m, k *LVal) *LVal {
 	if m.IsNil() {
 		return env.Errorf("first argument is nil: %v", m.Type)
 	} else if m.Type != LSortMap {

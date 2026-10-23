@@ -136,6 +136,12 @@ func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal    { return nil }
 func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal       { return nil }
 func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal            { return nil }
 func (env *LEnv) MapPut(m, k, v *LVal) *LVal                    { return nil }
+func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal                  { return nil }
+func (env *LEnv) MapDissoc(m, k *LVal) *LVal                    { return nil }
+func (env *LEnv) MapDelete(m, k *LVal) *LVal                    { return nil }
+func (env *LEnv) Car(lis *LVal) *LVal                           { return nil }
+func (env *LEnv) Cdr(lis *LVal) *LVal                           { return nil }
+func (env *LEnv) Rest(seq *LVal) *LVal                          { return nil }
 func (env *LEnv) ToString(v *LVal) *LVal                        { return nil }
 func (env *LEnv) FormatString(f string, fvals ...*LVal) *LVal   { return nil }
 
