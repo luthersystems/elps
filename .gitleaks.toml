@@ -1,0 +1,19 @@
+# gitleaks settings for the org's shared security scan (security.yml).
+# The default rules apply; this file only adds an allowlist.
+minVersion = "v8.25.0"
+
+[extend]
+useDefault = true
+
+# The analysis golden files name each fuzz corpus input by its content
+# hash ("input fuzz/<dir>/<name> sha256=<hex>"). When the name holds a
+# word such as "key", generic-api-key reads the hash as a key (#869).
+# The allowlist matches only such a line in those files, so any other
+# finding in them is still reported.
+[[allowlists]]
+description = "fuzz corpus content hashes in analysis golden files"
+targetRules = ["generic-api-key"]
+condition = "AND"
+paths = ['''^analysis/testdata/[^/]+\.golden\.txt$''']
+regexTarget = "line"
+regexes = ['''(?m)^input fuzz/\S+ sha256=[0-9a-f]{64}$''']
