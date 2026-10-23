@@ -31,9 +31,10 @@ type descValue struct {
 	kind lisp.LType
 }
 
-// literal records v as a descValue.  A value that is not a number, string,
-// symbol or keyword is kept as its type name, such as "sorted-map": printing
-// it would cost each constructor of a large literal a walk of the value.
+// literal records v as a descValue.  () is kept as nil.  Any other value
+// that is not a number, string, symbol or keyword is kept as its type name,
+// which describe prints as (sorted-map "type" "sorted-map"): printing the
+// value would cost each constructor of a large literal a walk of it.
 func literal(v *lisp.LVal) descValue {
 	switch v.Type {
 	case lisp.LInt:
@@ -42,9 +43,15 @@ func literal(v *lisp.LVal) descValue {
 		return descValue{kind: lisp.LFloat, f: v.Float}
 	case lisp.LString, lisp.LSymbol:
 		return descValue{kind: v.Type, s: v.Str}
-	default:
-		return descValue{kind: lisp.LString, s: v.Type.String()}
+	case lisp.LSExpr:
+		if v.IsNil() {
+			return descValue{kind: lisp.LSExpr}
+		}
+	case lisp.LInvalid, lisp.LError, lisp.LFun, lisp.LQuote, lisp.LBytes,
+		lisp.LSortMap, lisp.LArray, lisp.LNative, lisp.LTaggedVal,
+		lisp.LMarkTerminal, lisp.LMarkTailRec, lisp.LMarkMacExpand, lisp.LTypeMax:
 	}
+	return descValue{kind: lisp.LNative, s: v.Type.String()}
 }
 
 func (d descValue) lval() *lisp.LVal {
@@ -55,6 +62,12 @@ func (d descValue) lval() *lisp.LVal {
 		return lisp.Float(d.f)
 	case lisp.LSymbol:
 		return lisp.Symbol(d.s)
+	case lisp.LSExpr:
+		return lisp.Nil()
+	case lisp.LNative:
+		// A value too large to record: its type name, in a map so that no
+		// reader takes it for a string the validator accepts.
+		return lisp.MapOf("type", d.s)
 	default:
 		return lisp.String(d.s)
 	}
@@ -158,10 +171,10 @@ func builtinMapOf(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		for k, val := range input.All() {
 			key := mapKeyLVal(k)
 			if applyConstraint(env, kt, key).IsError() {
-				return lisp.ErrorConditionf(WrongType, "Key %s was of wrong type", key)
+				return env.ErrorConditionf(WrongType, "Key %s was of wrong type", env.Render(key))
 			}
 			if applyConstraint(env, vt, val).IsError() {
-				return lisp.ErrorConditionf(WrongType, "Value at key %s was of wrong type", key)
+				return env.ErrorConditionf(WrongType, "Value at key %s was of wrong type", env.Render(key))
 			}
 		}
 		return lisp.Nil()

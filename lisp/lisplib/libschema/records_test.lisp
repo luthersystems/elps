@@ -81,3 +81,14 @@
                                                (sorted-map "op" "type" "type" "number")))
                 (s:describe (s:map-of s:string s:number)))
   (assert-equal (sorted-map "op" "gt" "values" (vector 3)) (s:describe (s:gt 3))))
+
+(test "describe-typedef-and-literals"
+  (deftype point (x))
+  (assert-equal (sorted-map "op" "type" "name" "user:point" "type" "tagged-value"
+                            "children" (vector (sorted-map "op" "type" "type" "string"
+                                                           "children" (vector (sorted-map "op" "lenlt" "values" (vector 5))))))
+                (s:describe (s:make-validator point s:string (s:lenlt 5))))
+  (set 'base (s:make-validator "base" s:int))
+  (assert-equal "v2" (get (s:describe (s:make-validator "v2" base (s:gt 1))) "name"))
+  (assert-equal (vector () "list" (sorted-map "type" "sorted-map"))
+                (get (s:describe (s:in () "list" (sorted-map))) "values")))

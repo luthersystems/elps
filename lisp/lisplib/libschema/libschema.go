@@ -107,8 +107,8 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetSymbolDoc("bool", "Type name for boolean values: the symbols true and false, not the strings \"true\" and \"false\".")
 	env.SetSymbolDoc("tagged-value", "Type name for user-defined tagged values (created with deftype/new).")
 	env.SetSymbolDoc("any", "Type name matching any value type (no type constraint).")
-	env.SetSymbolDoc("list", "Type name for list values; () is the empty list.")
-	env.SetSymbolDoc("sequence", "Type name for a list or a vector.")
+	env.SetSymbolDoc("list", "Type name for list values; () is the empty list. The s:len constraints do not measure a list, so they pass any list.")
+	env.SetSymbolDoc("sequence", "Type name for a list or a vector. The s:len constraints measure a vector, not a list.")
 	env.SetSymbolDoc("nil", "Type name for (), so (s:may-have-key \"k\" s:string s:nil) allows a nil value.")
 	return lisp.Nil()
 }
@@ -283,11 +283,11 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if res == nil {
 		return lisp.Nil()
 	}
-	// A type given by name builds a fresh validator and a fresh definition,
-	// which no one else holds yet, so it is named in place.  A validator
-	// given as the type with no constraints is returned as it is, and keeps
-	// its own.
-	if typeValidator.Type == lisp.LString && isValidator(res) {
+	// A type given by name, or a validator given as the type with
+	// constraints, builds a fresh validator and a fresh definition, which no
+	// one else holds yet, so it is named in place.  A validator given as the
+	// type with no constraints is returned as it is, and keeps its own.
+	if isValidator(res) && res != typeValidator {
 		descOf(res).name = name //elps:mutates construction-time naming of the definition getHandler just built
 	}
 	return res
@@ -378,11 +378,11 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		res = env.ErrorConditionf(BadArgs, "Bad input type: %s is not usable as a constraint (%v)", in.Type.String(), in)
 		return res
 	}
-	children := constraints
-	if lType == TaggedVal && len(children) > 0 && children[0].Type == lisp.LString {
-		children = children[1:]
+	if lType == TaggedVal {
+		// builtinCheckTaggedVal describes its own validator.
+		return res
 	}
-	return describeAs(res, &schemaDesc{op: "type", typ: lType, children: descsOf(children)})
+	return describeAs(res, &schemaDesc{op: "type", typ: lType, children: descsOf(constraints)})
 }
 
 // symcounter names anonymous validators.  It is ATOMIC, and it has to be
@@ -688,11 +688,13 @@ func builtinCheckBool(env *lisp.LEnv, name string, constraints []*lisp.LVal) *li
 // Checks constraints and type for values with a user-defined type.
 func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal) *lisp.LVal {
 	var rest *lisp.LVal
+	var children []*schemaDesc
 	if len(constraints) == 0 || constraints[0].Type != lisp.LString {
 		if err := checkConstraints(env, constraints); err != nil {
 			return err
 		}
 		rest = builtinCheckAny(env, constraints)
+		children = descsOf(constraints)
 	} else {
 		subtype := constraints[0]
 		constraints = constraints[1:]
@@ -700,14 +702,18 @@ func builtinCheckTaggedVal(env *lisp.LEnv, name string, constraints []*lisp.LVal
 		if rest.IsError() {
 			return rest
 		}
+		// The user data's type is part of the definition: describe the
+		// subtype's own validator, its constraints inside it.
+		children = []*schemaDesc{descOf(rest)}
 	}
 	// NB these aren't normal functions - they aren't looking for an array of args
-	return newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
+	v := newCapturedValidator(env, lisp.Formals("input"), rest, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		if input.Type != lisp.LTaggedVal {
 			return lisp.ErrorConditionf(WrongType, "Input was not a tagged-value for type %s", name)
 		}
 		return applyConstraint(env, captures, input.UserData())
 	})
+	return describeAs(v, &schemaDesc{op: "type", typ: TaggedVal, children: children})
 }
 
 // Checks constraints and type for untyped values
