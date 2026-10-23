@@ -123,7 +123,7 @@ func TestMapSeqFuncMatchesMapSeq(t *testing.T) {
 					fn := env.GetGlobal(lisp.Symbol(name))
 					before := env.Runtime.TotalSteps()
 					defer func() { gotSteps = env.Runtime.TotalSteps() - before }()
-					return env.MapSeqFunc(kind, value(i), func(c *lisp.LVal) *lisp.LVal {
+					return env.MapSeqFunc(kind, oracle.Values()[i].V, func(c *lisp.LVal) *lisp.LVal {
 						return env.CallFunction(fn, c)
 					})
 				})
@@ -131,7 +131,7 @@ func TestMapSeqFuncMatchesMapSeq(t *testing.T) {
 					fn := env.GetGlobal(lisp.Symbol(name))
 					before := env.Runtime.TotalSteps()
 					defer func() { wantSteps = env.Runtime.TotalSteps() - before }()
-					return env.MapSeq(kind, fn, value(i))
+					return env.MapSeq(kind, fn, oracle.Values()[i].V)
 				})
 				sameResult(t, label, got, want)
 				assert.Equal(t, wantSteps, gotSteps, label+" steps")
