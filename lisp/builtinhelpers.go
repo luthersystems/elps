@@ -109,13 +109,7 @@ func (env *LEnv) Append(kind SeqKind, seq *LVal, vals ...*LVal) *LVal {
 	if lerr := env.CheckContext(); lerr.IsError() {
 		return lerr
 	}
-	spec := Nil()
-	if kind != SeqNil {
-		spec = Symbol(kind.String())
-	}
-	args := make([]*LVal, 0, 2+len(vals))
-	args = append(args, spec, seq)
-	return builtinAppend(env, QExpr(append(args, vals...)))
+	return appendValues(env, goSeqSpec(kind), seq, vals)
 }
 
 // MakeSequence returns what the make-sequence builtin returns for

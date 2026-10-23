@@ -53,6 +53,9 @@ func documentedHelpers(t *testing.T) map[string]string {
 			if m == nil || m[1] != fd.Name.Name {
 				continue
 			}
+			if prev, dup := found[m[2]]; dup {
+				t.Errorf("LEnv.%s and LEnv.%s both say they return what %s returns; the registry holds one", prev, fd.Name.Name, m[2])
+			}
 			found[m[2]] = fd.Name.Name
 		}
 	}
@@ -72,7 +75,7 @@ func TestBuiltinGoHelpersListEveryHelper(t *testing.T) {
 		}
 	}
 	envType := reflect.TypeOf((*lisp.LEnv)(nil))
-	for _, name := range registeredBuiltins() {
+	for _, name := range lisp.BuiltinGoHelperNames() {
 		assert.NotPanics(t, func() { lisp.BuiltinFunc(name) }, "builtinGoHelpers names %q, which is no builtin", name)
 		h, _ := lisp.BuiltinGoHelper(name)
 		assert.True(t, (h.Method == "") != (h.Note == ""), "%s: set Method or Note", name)

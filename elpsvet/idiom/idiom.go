@@ -1603,6 +1603,9 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 	text := s.operand(recv.X) + "." + helper
 	s.report(call, CategoryInfo, "use "+text+", which returns the same value or error from the same checks",
 		replace(call, "Use LEnv."+helper, text+"("+strings.Join(parts, ", ")+")"))
+	// The fix removes an inline lisp.BuiltinFunc ref, so checkBuiltinRef
+	// gives it no hint of its own.
+	s.covered[ast.Unparen(call.Args[0])] = true
 }
 
 // checkBuiltinRef: lisp.BuiltinFunc("x") where lisp.BuiltinGoHelper names
@@ -1620,12 +1623,22 @@ func (s *state) checkBuiltinRef(call *ast.CallExpr) {
 		return
 	}
 	h, known := lisp.BuiltinGoHelper(name)
-	if !known {
+	if !known || s.covered[call] {
 		return
 	}
-	use := "call LEnv." + h.Method
-	if h.Method == "" {
-		use = "write " + h.Note + " (it makes no context check)"
+	use := "write " + h.Note + " (it makes no context check)"
+	if h.Method != "" {
+		// The lisp the pass compiles against can be older than the one
+		// that built the analyzer, so name only a method it has.
+		env := fn.Pkg().Scope().Lookup("LEnv")
+		if env == nil {
+			return
+		}
+		obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(env.Type()), true, fn.Pkg(), h.Method)
+		if _, isFunc := obj.(*types.Func); !isFunc {
+			return
+		}
+		use = "call LEnv." + h.Method
 	}
 	s.report(call, CategoryInfo, "lisp has a Go helper for "+name+": "+use+
 		" where it fits, and CallBuiltin only where it does not")

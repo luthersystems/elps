@@ -14,13 +14,13 @@ var (
 	coreCar          = lisp.BuiltinFunc("car")           // want `lisp has a Go helper for car: call LEnv\.Car`
 	coreCdr          = lisp.BuiltinFunc("cdr")           // want `lisp has a Go helper for cdr: call LEnv\.Cdr`
 	coreRest         = lisp.BuiltinFunc("rest")          // want `lisp has a Go helper for rest: call LEnv\.Rest`
-	coreLength       = lisp.BuiltinFunc("length")        // want `lisp has a Go helper for length: call LEnv\.Length`
+	coreLength       = lisp.BuiltinFunc("length") // the stub LEnv has no Length: no hint
 	coreVector       = lisp.BuiltinFunc("vector")        // want `lisp has a Go helper for vector: write lisp\.Cells\{\.\.\.\}\.Vector\(\) \(it makes no context check\)`
 )
 
 func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {
 	_ = env.MapPut(m, k, v)                 // want `use env.MapPut, which returns the same value or error from the same checks`
-	_ = env.MapPut(m, k, v)                 // want `use env.MapPut` `lisp has a Go helper for assoc!`
+	_ = env.MapPut(m, k, v)                 // want `use env.MapPut`
 	_ = env.MapLookup(m, k)                 // want `use env.MapLookup`
 	_ = env.ToString(v)                     // want `use env.ToString`
 	_ = env.First(v)                        // want `use env.First`

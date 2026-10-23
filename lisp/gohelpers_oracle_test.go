@@ -360,10 +360,12 @@ func TestDissocHelpersMatchBuiltins(t *testing.T) {
 	for _, limit := range []int{0, 1} {
 		env.Runtime.MaxAlloc = limit
 		for _, h := range dissocHelpers {
-			for i, in := range dissocInputs() {
-				for j, k := range dissocKeys() {
+			for j, k := range dissocKeys() {
+				// Fresh inputs for each key, since dissoc! changes its map.
+				wantIns, gotIns := dissocInputs(), dissocInputs()
+				for i, in := range wantIns {
 					label := h.name + "/" + in.Label + "/" + k.String()
-					wantM, gotM := dissocInputs()[i].V, dissocInputs()[i].V
+					wantM, gotM := in.V, gotIns[i].V
 					want := env.CallBuiltin(h.builtin, wantM, k)
 					got := h.fn(env, gotM, dissocKeys()[j])
 					oracle.Same(t, label, got, want)

@@ -3494,12 +3494,17 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinAppend(env *LEnv, args *LVal) *LVal {
-	typespec, seq, vals := args.Cells[0], args.Cells[1], args.Cells[2:]
-	if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
+	return appendValues(env, parseSeqSpec(args.Cells[0]), args.Cells[1], args.Cells[2:])
+}
+
+// appendValues is the body of the append builtin and of LEnv.Append, so the
+// two cannot differ.
+func appendValues(env *LEnv, spec seqSpec, seq *LVal, vals []*LVal) *LVal {
+	if !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specification: %v", spec.typ())
 	}
-	if typespec.Str == "bytes" {
-		return builtinAppend_Bytes(env, args)
+	if spec.kind == SeqBytes {
+		return appendToBytes(env, seq, vals)
 	}
 	if !isSeq(seq) {
 		return env.Errorf("second argument is not a proper sequence: %v", seq.Type)
@@ -3508,8 +3513,8 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 	if lerr := env.CheckAlloc(len(cells) + len(vals)); lerr.IsError() {
 		return lerr
 	}
-	switch typespec.Str {
-	case "list":
+	switch spec.kind {
+	case SeqList:
 		// The Cells of the returned list must not intersect with seqCells(seq)
 		// (in regards to slice memory regions, not referenced LVals).  This is
 		// particularly relevent if seq is a vector.  This makes the following
@@ -3518,7 +3523,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		list = append(list, cells...)
 		list = append(list, vals...)
 		return QExpr(list)
-	case "vector":
+	case SeqVector:
 		// The input is clamped so this append can never write into seq's
 		// spare capacity (issue #373).
 		//
@@ -3580,14 +3585,20 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
 		return Vector(append(clampCap(cells), vals...))
 	default:
-		return env.Errorf("type specifier is invalid: %v", typespec)
+		return env.Errorf("type specifier is invalid: %v", spec)
 	}
 }
 
-// NOTE:  The name of this function is funky because the append-bytes function
-// will have other behavior, and there is another func in this file called
-// appendBytes.
+// builtinAppend_Bytes is (append 'bytes lbytes xs...), for the tests that
+// call it with an argument list.
 func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
+	return appendToBytes(env, args.Cells[1], args.Cells[2:])
+}
+
+// appendToBytes is append for the type specifier 'bytes.  It is not
+// builtinAppendBytes, the append-bytes builtin, nor appendBytes, which reads
+// a sequence of bytes.
+func appendToBytes(env *LEnv, lbytes *LVal, xs []*LVal) *LVal {
 	// The comment that used to sit here claimed the sequence "has already been
 	// validated".  It had not been: builtinAppend validates the type
 	// SPECIFIER (args.Cells[0] == 'bytes) and then dispatches here without
@@ -3596,7 +3607,6 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	// interpreter that surfaces as an internal-panic condition -- an error no
 	// ordinary handler can contain -- and in a phylum it is a chaincode
 	// crash.  This is the same guard append-bytes has always had.
-	_, lbytes, xs := args.Cells[0], args.Cells[1], args.Cells[2:]
 	if lbytes.Type != LBytes {
 		return env.Errorf("second argument is not bytes: %v", lbytes.Type)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 var (
-	coreKeys = lisp.BuiltinFunc("keys") // want `lisp has a Go helper for keys: call LEnv\.MapKeys`
+	coreKeys = lisp.BuiltinFunc("keys") // the stub LEnv has no MapKeys: no hint
 	coreGet  = lisp.BuiltinFunc("get")  // want `lisp has a Go helper for get: call LEnv\.MapLookup`
 )
 

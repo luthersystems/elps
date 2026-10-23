@@ -175,3 +175,13 @@ func RegistryHolds(env *LEnv, fn *LVal) bool {
 	})
 	return held
 }
+
+// BuiltinGoHelperNames returns the names builtinGoHelpers lists, so
+// package lisp_test can check that each is a builtin.
+func BuiltinGoHelperNames() []string {
+	names := make([]string, 0, len(builtinGoHelpers))
+	for name := range builtinGoHelpers {
+		names = append(names, name)
+	}
+	return names
+}

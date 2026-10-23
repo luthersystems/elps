@@ -832,7 +832,7 @@ nil `v`.
 Every elps helper returns `*LVal`. Code that returns `error` wraps the call:
 
 ```go
-v, err := lisp.Result(env.CallBuiltin(coreFuncall, h)) // (v, nil) or (nil, *ErrorVal)
+v, err := lisp.Result(env.CallFunction(h)) // (v, nil) or (nil, *ErrorVal)
 if err := lisp.GoError(env.CheckContext()); err != nil { // nil unless an error
 	return nil, err
 }
@@ -856,7 +856,7 @@ other error. It does not look through wraps, because `handler-bind` does not.
 
 ```go
 var builtinMerge = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
-	keys, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+	keys, err := lisp.Result(env.MapKeys(args.Cells[0]))
 	if err != nil {
 		return nil, err
 	}
@@ -1048,7 +1048,7 @@ allocates nothing. `Lookup[lisp.MapView]` reads a nested map, and
 `Lookup[*lisp.LVal]` reads the value as it is.
 
 ```go
-keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+keys, err := lisp.ResultAs[lisp.Cells](env.MapKeys(m))
 desc, ok := lisp.AsMap(v)
 if !ok {
 	return env.Errorf("argument is not a sorted-map: %v", v.Type)
