@@ -238,7 +238,11 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 	// grows cell slices in place (append!, and (append 'vector seq x)
 	// deliberately appends into seq's spare capacity), so a shared backing
 	// is a live cross-runtime write channel even when both sides read empty.
-	if sameCellsBacking(o, n) {
+	// The one exception is a builtin whose cells are all sealed, with no
+	// spare capacity: a registered builtin's sealed formals and docstring.
+	// No write reaches that backing, so the plan shares it, as
+	// templateInventory.valNode admits it (#870).
+	if sameCellsBacking(o, n) && !sealedBuiltinCells(o) {
 		a.t.Errorf("%s: Cells backing array shared with template (len=%d cap=%d)",
 			path, len(o.Cells), cap(o.Cells))
 		return
@@ -353,6 +357,23 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 		a.val(path+"."+k, ov, nv)
 	}
 	a.env(path+".Parent", o.parent, n.parent)
+}
+
+// sealedBuiltinCells reports whether v is a builtin whose cells a template
+// shares: every cell sealed (or nil) and no spare capacity (#870).
+func sealedBuiltinCells(v *LVal) bool {
+	if v.Type != LFun || cap(v.Cells) != len(v.Cells) {
+		return false
+	}
+	if fd := v.funData(); fd == nil || fd.builtin == nil {
+		return false
+	}
+	for _, c := range v.Cells {
+		if c != nil && !c.sealed {
+			return false
+		}
+	}
+	return true
 }
 
 // sameCellsBacking reports whether two values' Cells slices point at the
