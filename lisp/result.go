@@ -57,7 +57,7 @@ func ConditionOf(err error) string {
 // FuncE returns an LBuiltin whose body f is written in (value, error) form.
 //
 //	var builtinLoad = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
-//		v, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+//		v, err := lisp.Result(env.MapKeys(args.Cells[0]))
 //		if err != nil {
 //			return nil, err
 //		}

@@ -9,7 +9,7 @@ import "reflect"
 // returns the Go value and a nil error.  Otherwise it returns an error with
 // condition "error", such as "value is not a string: int".
 //
-//	keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+//	keys, err := lisp.ResultAs[lisp.Cells](env.MapKeys(m))
 //	msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
 //
 // T selects the conversion:

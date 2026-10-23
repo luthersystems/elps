@@ -21,37 +21,46 @@ var (
 	refEmpty  = lisp.BuiltinFunc("empty?")
 	refFirst  = lisp.BuiltinFunc("first")
 	refSecond = lisp.BuiltinFunc("second")
+	refCar    = lisp.BuiltinFunc("car")
+	refCdr    = lisp.BuiltinFunc("cdr")
+	refRest   = lisp.BuiltinFunc("rest")
 )
 
 // seqHelpers pairs each helper with its builtin.  samePtr says whether the
-// helper must return the very value the builtin returns.
+// helper must return the very value the builtin returns, and view whether it
+// returns a list of the very elements the builtin's list holds.
 var seqHelpers = []struct {
 	name    string
 	builtin lisp.BuiltinRef
 	fn      func(*lisp.LEnv, *lisp.LVal) *lisp.LVal
 	samePtr bool
+	view    bool
 }{
-	{"keys", refKeys, (*lisp.LEnv).MapKeys, false},
+	{"keys", refKeys, (*lisp.LEnv).MapKeys, false, false},
 	{"length", refLength, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
 		n, lerr := env.Length(v)
 		if lerr != nil {
 			return lerr
 		}
 		return lisp.Int(n)
-	}, false},
+	}, false, false},
 	{"empty?", refEmpty, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
 		empty, lerr := env.IsEmpty(v)
 		if lerr != nil {
 			return lerr
 		}
 		return lisp.Bool(empty)
-	}, false},
-	{"first", refFirst, (*lisp.LEnv).First, true},
-	{"second", refSecond, (*lisp.LEnv).Second, true},
+	}, false, false},
+	{"first", refFirst, (*lisp.LEnv).First, true, false},
+	{"second", refSecond, (*lisp.LEnv).Second, true, false},
+	{"car", refCar, (*lisp.LEnv).Car, true, false},
+	{"cdr", refCdr, (*lisp.LEnv).Cdr, false, true},
+	{"rest", refRest, (*lisp.LEnv).Rest, false, true},
 }
 
-// TestSeqHelpersMatchBuiltins holds MapKeys, Length, IsEmpty, First and
-// Second to keys, length, empty?, first and second on an input of every type:
+// TestSeqHelpersMatchBuiltins holds MapKeys, Length, IsEmpty, First,
+// Second, Car, Cdr and Rest to keys, length, empty?, first, second, car, cdr
+// and rest on an input of every type:
 // the same value (or the same element), or the same error condition.
 func TestSeqHelpersMatchBuiltins(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
@@ -66,10 +75,24 @@ func TestSeqHelpersMatchBuiltins(t *testing.T) {
 				if cells, ok := in.V.SeqCells(); ok && want.IsError() && slices.Contains(cells, want) {
 					assert.Same(t, want, got, "%s/%s: the stored error value", h.name, in.Label)
 				}
+			} else if h.view && !want.IsError() && want.Type == lisp.LSExpr {
+				sameView(t, h.name+"/"+in.Label, got, want)
 			} else {
 				oracle.Same(t, h.name+"/"+in.Label, got, want)
 			}
 		}
+	}
+}
+
+// sameView fails t unless got is a list of the very elements want holds:
+// a stored error value is not Equal to itself, so compare the cells.
+func sameView(t *testing.T, label string, got, want *lisp.LVal) {
+	t.Helper()
+	if !assert.Equal(t, lisp.LSExpr, got.Type, label) || !assert.Len(t, got.Cells, len(want.Cells), label) {
+		return
+	}
+	for i := range want.Cells {
+		assert.Same(t, want.Cells[i], got.Cells[i], "%s: element %d", label, i)
 	}
 }
 
@@ -89,6 +112,12 @@ func TestSeqHelpersCancelled(t *testing.T) {
 	// Each run gets its own input: a value belongs to one runtime.
 	for _, h := range seqHelpers {
 		for i, in := range oracle.Values() {
+			if cells, ok := in.V.SeqCells(); ok && h.view && slices.ContainsFunc(cells, (*lisp.LVal).IsError) {
+				// The two runs' views hold different error values, which
+				// are never Equal; TestSeqHelpersMatchBuiltins compares
+				// them by identity.
+				continue
+			}
 			oracle.Sweep(t, h.name+"/"+in.Label,
 				func(env *lisp.LEnv) *lisp.LVal { return h.fn(env, oracle.Values()[i].V) },
 				func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(h.builtin, oracle.Values()[i].V) })
@@ -282,5 +311,83 @@ ran`)
 			require.False(t, v.IsError(), "%v", v)
 			assert.Equal(t, "2", v.String())
 		})
+	}
+}
+
+// The language builtins MapDissoc and MapDelete return what they return.
+var (
+	refDissoc       = lisp.BuiltinFunc("dissoc")
+	refDissocMutate = lisp.BuiltinFunc("dissoc!")
+)
+
+// dissocHelpers pairs each map removal helper with its builtin.
+var dissocHelpers = []struct {
+	name    string
+	builtin lisp.BuiltinRef
+	fn      func(env *lisp.LEnv, m, k *lisp.LVal) *lisp.LVal
+}{
+	{"dissoc", refDissoc, (*lisp.LEnv).MapDissoc},
+	{"dissoc!", refDissocMutate, (*lisp.LEnv).MapDelete},
+}
+
+// dissocKeys are the keys the removal tests remove: present, absent, a
+// symbol for a string key, and keys of other types a map may refuse.
+func dissocKeys() []*lisp.LVal {
+	return []*lisp.LVal{lisp.String("a"), lisp.String("absent"), lisp.Symbol("a"),
+		lisp.Int(1), lisp.Float(1.5), lisp.Nil(), lisp.QExpr([]*lisp.LVal{lisp.Int(1)})}
+}
+
+// dissocMap returns a fresh map that holds the key "a".
+func dissocMap() *lisp.LVal {
+	m := lisp.SortedMap()
+	m.MapSetString("a", lisp.Int(1))
+	m.MapSetString("b", lisp.Int(2))
+	return m
+}
+
+// dissocInputs returns fresh maps to remove from: dissocMap and a value of
+// every type.
+func dissocInputs() []oracle.Value {
+	return append(oracle.Values(), oracle.Value{V: dissocMap(), Label: "map-with-a"})
+}
+
+// TestDissocHelpersMatchBuiltins holds MapDissoc and MapDelete to dissoc and
+// dissoc! for a map argument of every type and each key, under no limit and
+// a limit below the map's size: the same value or error condition, and the
+// same map afterwards.
+func TestDissocHelpersMatchBuiltins(t *testing.T) {
+	env := oracle.NewEnv(t, context.Background())
+	for _, limit := range []int{0, 1} {
+		env.Runtime.MaxAlloc = limit
+		for _, h := range dissocHelpers {
+			for j, k := range dissocKeys() {
+				// Fresh inputs for each key, since dissoc! changes its map.
+				wantIns, gotIns := dissocInputs(), dissocInputs()
+				for i, in := range wantIns {
+					label := h.name + "/" + in.Label + "/" + k.String()
+					wantM, gotM := in.V, gotIns[i].V
+					want := env.CallBuiltin(h.builtin, wantM, k)
+					got := h.fn(env, gotM, dissocKeys()[j])
+					oracle.Same(t, label, got, want)
+					if wantM.Type == lisp.LSortMap {
+						oracle.Same(t, label+"/map", gotM, wantM)
+					}
+				}
+			}
+		}
+	}
+}
+
+// TestDissocHelpersCancelled holds MapDissoc and MapDelete to dissoc and
+// dissoc! at every context check.
+func TestDissocHelpersCancelled(t *testing.T) {
+	for _, h := range dissocHelpers {
+		for i, in := range dissocInputs() {
+			oracle.Sweep(t, h.name+"/"+in.Label,
+				func(env *lisp.LEnv) *lisp.LVal { return h.fn(env, dissocInputs()[i].V, lisp.String("a")) },
+				func(env *lisp.LEnv) *lisp.LVal {
+					return env.CallBuiltin(h.builtin, dissocInputs()[i].V, lisp.String("a"))
+				})
+		}
 	}
 }

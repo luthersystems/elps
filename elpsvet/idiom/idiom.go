@@ -92,14 +92,15 @@
 //	m := lisp.SortedMap() followed by two or more m.MapSetString("k", v)
 //	statements (or MapSet or MapSetLVal with a lisp.String("k") key)
 //	                                   m := lisp.MapOf("k", v, ...)   (fix)
-//	env.CallBuiltin(ref, m, k, v), where ref is lisp.BuiltinFunc("assoc!")
-//	                                   env.MapPut(m, k, v)            (fix)
-//	env.CallBuiltin(ref, m, k) for "get"
-//	                                   env.MapLookup(m, k)            (fix)
-//	env.CallBuiltin(ref, v) for "to-string"
-//	                                   env.ToString(v)                (fix)
-//	env.CallBuiltin(ref, v) for "first" or "second"
-//	                                   env.First(v), env.Second(v)    (fix)
+//	env.CallBuiltin(ref, args...), where ref is lisp.BuiltinFunc("x") and
+//	lisp.BuiltinGoHelper("x") names an LEnv method M that takes the
+//	builtin's arguments as *LVal values and returns one *LVal (assoc!,
+//	get, to-string, first, car, dissoc, ...)
+//	                                   env.M(args...)                 (fix)
+//	lisp.BuiltinFunc("x") outside a test file, where
+//	lisp.BuiltinGoHelper("x") names Go code for x
+//	                                   the helper; CallBuiltin only
+//	                                   where it does not fit          (hint)
 //	env.CallBuiltin(ref, lisp.String(f), v, ...) for "format-string"
 //	                                   env.FormatString(f, v, ...)    (fix)
 //	fn.Cells[1] = doc or fn.Cells[1].Str = doc, where every value of fn
@@ -209,6 +210,8 @@ import (
 	"strings"
 
 	"golang.org/x/tools/go/analysis"
+
+	"github.com/luthersystems/elps/lisp"
 )
 
 const lispPkgPath = "github.com/luthersystems/elps/lisp"
@@ -582,6 +585,7 @@ func (s *state) checkFile(file *ast.File) {
 			s.checkMapOf(x)
 			s.checkSortedMapCall(x)
 			s.checkBuiltinHelper(x)
+			s.checkBuiltinRef(x)
 		case *ast.IfStmt:
 			s.checkCheckAlloc(x)
 			if len(stack) < 2 || !isElseOf(stack[len(stack)-2], x) {
@@ -1494,49 +1498,76 @@ func (s *state) mapOfParts(call *ast.CallExpr) ([]string, bool) {
 	return parts, true
 }
 
-// builtinHelpers maps a builtin name to the LEnv helper that returns the
-// same value or error from the same checks, and to the argument count that
-// CallBuiltin must pass.  A count of -1 is format-string's: one or more.
-var builtinHelpers = map[string]struct {
-	helper string
-	nargs  int
-}{
-	"assoc!":        {"MapPut", 3},
-	"get":           {"MapLookup", 2},
-	"to-string":     {"ToString", 1},
-	"format-string": {"FormatString", -1},
-	"first":         {"First", 1},
-	"second":        {"Second", 1},
+// specialHelpers are the builtins whose helper takes Go arguments of its
+// own, so their own rules rewrite the call: format-string's helper takes the
+// format as a Go string (checkBuiltinHelper below) and sorted-map's are
+// MapOf and SortedMapOf (checkMapOf and checkSortedMapCall).
+var specialHelpers = map[string]bool{"format-string": true, "sorted-map": true}
+
+// lvalMethod is an LEnv method that takes only *LVal arguments and returns
+// one *LVal: name, its number of fixed arguments, and whether it takes more
+// as a variadic list.
+type lvalMethod struct {
+	name     string
+	nfixed   int
+	variadic bool
 }
 
-// checkBuiltinHelper: env.CallBuiltin(ref, ...) for assoc!, get, to-string,
-// format-string, first and second.  Each helper checks the context first, as CallBuiltin
-// does, and then runs the builtin's own body, so the result and the error
-// are the same (lisp/goport_test.go, TestMapPutParity and its siblings).
+// lvalHelper returns the LEnv method that lisp.BuiltinGoHelper names for
+// the builtin name when the method takes only *LVal arguments (the last may
+// be variadic) and returns one *LVal: then a CallBuiltin call is the method
+// call with the same arguments.  recv is the type of CallBuiltin's receiver.
+func lvalHelper(recv types.Type, name string) (lvalMethod, bool) {
+	h, known := lisp.BuiltinGoHelper(name)
+	if !known || h.Method == "" || specialHelpers[name] {
+		return lvalMethod{}, false
+	}
+	obj, _, _ := types.LookupFieldOrMethod(recv, true, nil, h.Method)
+	fn, isFunc := obj.(*types.Func)
+	if !isFunc {
+		return lvalMethod{}, false
+	}
+	sig := fn.Signature()
+	if sig.Results().Len() != 1 || !isLValPtr(sig.Results().At(0).Type()) {
+		return lvalMethod{}, false
+	}
+	params := sig.Params()
+	nfixed := params.Len()
+	if sig.Variadic() {
+		nfixed--
+		last, isSlice := params.At(nfixed).Type().(*types.Slice)
+		if !isSlice || !isLValPtr(last.Elem()) {
+			return lvalMethod{}, false
+		}
+	}
+	for i := range nfixed {
+		if !isLValPtr(params.At(i).Type()) {
+			return lvalMethod{}, false
+		}
+	}
+	return lvalMethod{name: h.Method, nfixed: nfixed, variadic: sig.Variadic()}, true
+}
+
+// checkBuiltinHelper: env.CallBuiltin(ref, ...) where lisp.BuiltinGoHelper
+// names an LEnv method for ref's builtin that takes the builtin's arguments
+// as *LVal values, and format-string.  Each helper checks the context
+// first, as CallBuiltin does, and then runs the builtin's own body, so the
+// result and the error are the same (lisp/builtinhelpers_test.go,
+// TestBuiltinGoHelpersMatchBuiltins).
 func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 	m := s.lispMethod(call, "LEnv")
-	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) == 0 || call.Ellipsis.IsValid() {
+	if m == nil || m.Name() != "CallBuiltin" || len(call.Args) == 0 {
 		return
 	}
-	h, known := builtinHelpers[s.builtinName(call.Args[0])]
-	if !known {
-		return
-	}
+	name := s.builtinName(call.Args[0])
 	args := call.Args[1:]
+	var helper string
 	parts := make([]string, 0, len(args))
-	switch {
-	case h.nargs >= 0:
-		if len(args) != h.nargs {
-			return // a different count is an arity error that the helper does not make
-		}
-		for _, a := range args {
-			parts = append(parts, s.text(a))
-		}
-	default:
+	if name == "format-string" {
 		// FormatString takes the format as a Go string.  Only a
 		// lisp.String(f) format is surely a string; for any other value,
 		// the helper would drop format-string's check of the format's type.
-		if len(args) == 0 {
+		if len(args) == 0 || call.Ellipsis.IsValid() {
 			return
 		}
 		f, isCall := ast.Unparen(args[0]).(*ast.CallExpr)
@@ -1546,18 +1577,79 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 		if fn := s.lispFunc(f); fn == nil || fn.Name() != "String" {
 			return
 		}
+		helper = "FormatString"
 		parts = append(parts, s.text(f.Args[0]))
 		for _, a := range args[1:] {
 			parts = append(parts, s.text(a))
 		}
+	} else {
+		method, ok := lvalHelper(m.Signature().Recv().Type(), name)
+		if !ok {
+			return
+		}
+		switch {
+		case call.Ellipsis.IsValid():
+			// A spread list passes on whole only to a method that takes
+			// every argument as its variadic list.
+			if !method.variadic || method.nfixed != 0 || len(args) != 1 {
+				return
+			}
+			parts = append(parts, s.text(args[0])+"...")
+		case len(args) == method.nfixed || method.variadic && len(args) > method.nfixed:
+			for _, a := range args {
+				parts = append(parts, s.text(a))
+			}
+		default:
+			return // a different count is an arity error that the helper does not make
+		}
+		helper = method.name
 	}
 	recv, ok := ast.Unparen(call.Fun).(*ast.SelectorExpr)
-	if !ok || !s.fixAllowed(call, "LEnv."+h.helper) {
+	if !ok || !s.fixAllowed(call, "LEnv."+helper) {
 		return
 	}
-	helper := s.operand(recv.X) + "." + h.helper
-	s.report(call, CategoryInfo, "use "+helper+", which returns the same value or error from the same checks",
-		replace(call, "Use LEnv."+h.helper, helper+"("+strings.Join(parts, ", ")+")"))
+	text := s.operand(recv.X) + "." + helper
+	s.report(call, CategoryInfo, "use "+text+", which returns the same value or error from the same checks",
+		replace(call, "Use LEnv."+helper, text+"("+strings.Join(parts, ", ")+")"))
+	// The fix removes an inline lisp.BuiltinFunc ref, so checkBuiltinRef
+	// gives it no hint of its own.
+	s.covered[ast.Unparen(call.Args[0])] = true
+}
+
+// checkBuiltinRef: lisp.BuiltinFunc("x") where lisp.BuiltinGoHelper names
+// Go code for x.  A port reaches for the builtin when it does not know the
+// helper, so the hint names it.  CallBuiltin stays right where the helper
+// does not fit, such as a spread argument list.  Test files are skipped:
+// an oracle test calls the builtin to check the helper.
+func (s *state) checkBuiltinRef(call *ast.CallExpr) {
+	fn := s.lispFunc(call)
+	if fn == nil || fn.Name() != "BuiltinFunc" || len(call.Args) != 1 {
+		return
+	}
+	name, ok := s.constString(call.Args[0])
+	if !ok || strings.HasSuffix(s.pass.Fset.Position(call.Pos()).Filename, "_test.go") {
+		return
+	}
+	h, known := lisp.BuiltinGoHelper(name)
+	if !known || s.covered[call] {
+		return
+	}
+	use := "write " + h.Note + " (it makes no context check)"
+	if h.Method != "" {
+		// The lisp the pass compiles against can be older than the one
+		// that built the analyzer, so name only a method it has.
+		env := fn.Pkg().Scope().Lookup("LEnv")
+		if env == nil {
+			return
+		}
+		obj, _, _ := types.LookupFieldOrMethod(types.NewPointer(env.Type()), true, fn.Pkg(), h.Method)
+		if _, isFunc := obj.(*types.Func); !isFunc {
+			return
+		}
+		use = "call LEnv." + h.Method
+	}
+	s.report(call, CategoryInfo, "lisp has a Go helper for "+name+": "+use+
+		" where it fits, and CallBuiltin only where it does not")
 }
 
 // collectFunVars records the variables that hold a lisp.FunInPackage result.

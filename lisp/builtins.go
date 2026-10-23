@@ -1420,7 +1420,24 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinCAR(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return listCar(env, args.Cells[0])
+}
+
+// Car returns what the car builtin returns for (car lis): the first element
+// of a list, () for an empty list, or the same error from the same check.
+// It checks the evaluation's context first, as CallBuiltin does, and
+// charges no step.  The element is returned as it is stored, an error value
+// included, as the builtin returns it.
+func (env *LEnv) Car(lis *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return listCar(env, lis)
+}
+
+// listCar is the body of the car builtin and of LEnv.Car, so the two cannot
+// differ.
+func listCar(env *LEnv, v *LVal) *LVal {
 	if v.Type != LSExpr {
 		return env.Errorf("argument is not a list: %v", v.Type)
 	}
@@ -1432,7 +1449,24 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinCDR(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return listCdr(env, args.Cells[0])
+}
+
+// Cdr returns what the cdr builtin returns for (cdr lis): a view of a list
+// after its first element, () when it has fewer than two, or the same error
+// from the same check.  It checks the evaluation's context first, as
+// CallBuiltin does, and charges no step.  The view shares lis's elements,
+// as the builtin's does.
+func (env *LEnv) Cdr(lis *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return listCdr(env, lis)
+}
+
+// listCdr is the body of the cdr builtin and of LEnv.Cdr, so the two cannot
+// differ.
+func listCdr(env *LEnv, v *LVal) *LVal {
 	if v.Type != LSExpr {
 		return env.Errorf("argument is not a list: %v", v.Type)
 	}
@@ -1481,7 +1515,23 @@ func clampCapBytes(b []byte) []byte {
 }
 
 func builtinRest(env *LEnv, args *LVal) *LVal {
-	v := args.Cells[0]
+	return seqRest(env, args.Cells[0])
+}
+
+// Rest returns what the rest builtin returns for (rest seq): a view of a
+// list or a vector after its first element, as a list, () when it has fewer
+// than two, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, and charges no step.
+func (env *LEnv) Rest(seq *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return seqRest(env, seq)
+}
+
+// seqRest is the body of the rest builtin and of LEnv.Rest, so the two cannot
+// differ.
+func seqRest(env *LEnv, v *LVal) *LVal {
 	if !isSeq(v) {
 		return env.Errorf("argument is not a proper sequence: %v", v.Type)
 	}
@@ -2006,8 +2056,27 @@ func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
 }
 
 func builtinDissoc(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
+	return dissocCopy(env, args.Cells[0], args.Cells[1])
+}
+
+// MapDissoc returns what the dissoc builtin returns for (dissoc m k): a new
+// sorted-map that holds m's entries but k, or the same error from the same
+// check.  It does not change m.  A nil m gives a new empty map.  It checks
+// the evaluation's context first, as CallBuiltin does, and makes dissoc's
+// allocation check.  It charges no step.
+//
+// Use it where the Lisp called dissoc.  MapDelete changes m in place, as
+// dissoc! does.
+func (env *LEnv) MapDissoc(m, k *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return dissocCopy(env, m, k)
+}
+
+// dissocCopy is the body of the dissoc builtin and of LEnv.MapDissoc, so the
+// two cannot differ.
+func dissocCopy(env *LEnv, m, k *LVal) *LVal {
 	if m.IsNil() {
 		m = SortedMap()
 	} else if m.Type != LSortMap {
@@ -2032,8 +2101,27 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
-	m := args.Cells[0]
-	k := args.Cells[1]
+	return dissocMutate(env, args.Cells[0], args.Cells[1])
+}
+
+// MapDelete returns what the dissoc! builtin returns for (dissoc! m k): m
+// after it removes k, or the same error from the same check.  It checks the
+// evaluation's context first, as CallBuiltin does, then refuses a nil or
+// non-map m and returns the map's own error for a key the map refuses.  It
+// charges no step.
+//
+// Use it where the Lisp called dissoc!.  MapDissoc returns a copy, as dissoc
+// does.
+func (env *LEnv) MapDelete(m, k *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	return dissocMutate(env, m, k)
+}
+
+// dissocMutate is the body of the dissoc! builtin and of LEnv.MapDelete, so
+// the two cannot differ.
+func dissocMutate(env *LEnv, m, k *LVal) *LVal {
 	if m.IsNil() {
 		return env.Errorf("first argument is nil: %v", m.Type)
 	} else if m.Type != LSortMap {
@@ -3406,12 +3494,17 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinAppend(env *LEnv, args *LVal) *LVal {
-	typespec, seq, vals := args.Cells[0], args.Cells[1], args.Cells[2:]
-	if typespec.Type != LSymbol {
-		return env.Errorf("first argument is not a valid type specification: %v", typespec.Type)
+	return appendValues(env, parseSeqSpec(args.Cells[0]), args.Cells[1], args.Cells[2:])
+}
+
+// appendValues is the body of the append builtin and of LEnv.Append, so the
+// two cannot differ.
+func appendValues(env *LEnv, spec seqSpec, seq *LVal, vals []*LVal) *LVal {
+	if !spec.isSymbol() {
+		return env.Errorf("first argument is not a valid type specification: %v", spec.typ())
 	}
-	if typespec.Str == "bytes" {
-		return builtinAppend_Bytes(env, args)
+	if spec.kind == SeqBytes {
+		return appendToBytes(env, seq, vals)
 	}
 	if !isSeq(seq) {
 		return env.Errorf("second argument is not a proper sequence: %v", seq.Type)
@@ -3420,8 +3513,8 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 	if lerr := env.CheckAlloc(len(cells) + len(vals)); lerr.IsError() {
 		return lerr
 	}
-	switch typespec.Str {
-	case "list":
+	switch spec.kind {
+	case SeqList:
 		// The Cells of the returned list must not intersect with seqCells(seq)
 		// (in regards to slice memory regions, not referenced LVals).  This is
 		// particularly relevent if seq is a vector.  This makes the following
@@ -3430,7 +3523,7 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		list = append(list, cells...)
 		list = append(list, vals...)
 		return QExpr(list)
-	case "vector":
+	case SeqVector:
 		// The input is clamped so this append can never write into seq's
 		// spare capacity (issue #373).
 		//
@@ -3492,14 +3585,20 @@ func builtinAppend(env *LEnv, args *LVal) *LVal {
 		//elps:mutates appends into a cap==len reslice (clampCap), which forces a reallocation; seq's backing is unreachable from the result
 		return Vector(append(clampCap(cells), vals...))
 	default:
-		return env.Errorf("type specifier is invalid: %v", typespec)
+		return env.Errorf("type specifier is invalid: %v", spec)
 	}
 }
 
-// NOTE:  The name of this function is funky because the append-bytes function
-// will have other behavior, and there is another func in this file called
-// appendBytes.
+// builtinAppend_Bytes is (append 'bytes lbytes xs...), for the tests that
+// call it with an argument list.
 func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
+	return appendToBytes(env, args.Cells[1], args.Cells[2:])
+}
+
+// appendToBytes is append for the type specifier 'bytes.  It is not
+// builtinAppendBytes, the append-bytes builtin, nor appendBytes, which reads
+// a sequence of bytes.
+func appendToBytes(env *LEnv, lbytes *LVal, xs []*LVal) *LVal {
 	// The comment that used to sit here claimed the sequence "has already been
 	// validated".  It had not been: builtinAppend validates the type
 	// SPECIFIER (args.Cells[0] == 'bytes) and then dispatches here without
@@ -3508,7 +3607,6 @@ func builtinAppend_Bytes(env *LEnv, args *LVal) *LVal {
 	// interpreter that surfaces as an internal-panic condition -- an error no
 	// ordinary handler can contain -- and in a phylum it is a chaincode
 	// crash.  This is the same guard append-bytes has always had.
-	_, lbytes, xs := args.Cells[0], args.Cells[1], args.Cells[2:]
 	if lbytes.Type != LBytes {
 		return env.Errorf("second argument is not bytes: %v", lbytes.Type)
 	}

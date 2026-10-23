@@ -8,8 +8,8 @@ import (
 )
 
 var (
-	coreKeys = lisp.BuiltinFunc("keys")
-	coreGet  = lisp.BuiltinFunc("get")
+	coreKeys = lisp.BuiltinFunc("keys") // the stub LEnv has no MapKeys: no hint
+	coreGet  = lisp.BuiltinFunc("get")  // want `lisp has a Go helper for get: call LEnv\.MapLookup`
 )
 
 func isErr(v *lisp.LVal) bool {

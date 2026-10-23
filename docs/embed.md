@@ -832,7 +832,7 @@ nil `v`.
 Every elps helper returns `*LVal`. Code that returns `error` wraps the call:
 
 ```go
-v, err := lisp.Result(env.CallBuiltin(coreFuncall, h)) // (v, nil) or (nil, *ErrorVal)
+v, err := lisp.Result(env.CallFunction(h)) // (v, nil) or (nil, *ErrorVal)
 if err := lisp.GoError(env.CheckContext()); err != nil { // nil unless an error
 	return nil, err
 }
@@ -856,7 +856,7 @@ other error. It does not look through wraps, because `handler-bind` does not.
 
 ```go
 var builtinMerge = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
-	keys, err := lisp.Result(env.CallBuiltin(coreKeys, args.Cells[0]))
+	keys, err := lisp.Result(env.MapKeys(args.Cells[0]))
 	if err != nil {
 		return nil, err
 	}
@@ -1048,7 +1048,7 @@ allocates nothing. `Lookup[lisp.MapView]` reads a nested map, and
 `Lookup[*lisp.LVal]` reads the value as it is.
 
 ```go
-keys, err := lisp.ResultAs[lisp.Cells](env.CallBuiltin(coreKeys, m))
+keys, err := lisp.ResultAs[lisp.Cells](env.MapKeys(m))
 desc, ok := lisp.AsMap(v)
 if !ok {
 	return env.Errorf("argument is not a sorted-map: %v", v.Type)
@@ -1138,18 +1138,23 @@ returns a nil error on success.
 | Builtin | Go form |
 |---------|---------|
 | `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
+| `dissoc`, `dissoc!` | `env.MapDissoc(m, k)` (copies `m`), `env.MapDelete(m, k) *LVal` (changes `m`) |
+| `car`, `cdr`, `rest` | `env.Car(seq)`, `env.Cdr(seq)`, `env.Rest(seq) *LVal` (`cdr` and `rest` return a view of `seq`, as the builtins do) |
 | `key?` | `env.MapHasKey(m, k) (bool, *LVal)` |
 | `nth` | `env.Nth(seq, n) *LVal` |
 | `map` | `env.MapSeq(kind, fn, seq) *LVal`; `env.MapSeqFunc(kind, seq, f)` for a Go `f` |
 | `concat` | `env.Concat(kind, seqs...) *LVal` |
 | `zip` | `env.Zip(kind, list, lists...) *LVal` |
 | `slice` | `env.Slice(kind, seq, start, end) *LVal` |
+| `append` | `env.Append(kind, seq, vals...) *LVal` (a new sequence; `seq` is unchanged) |
 | `append!` | `env.AppendInPlace(seq, vals...) *LVal` |
+| `make-sequence` | `env.MakeSequence(start, stop, step...) *LVal` |
 | `copy` | `env.DeepCopy(v) *LVal` |
 | `to-int`, `to-bytes` | `env.ToInt(v)`, `env.ToBytes(v) *LVal` |
-| `+`, `-` | `env.Add(xs...)`, `env.Sub(xs...) *LVal` |
+| `+`, `-`, `*` | `env.Add(xs...)`, `env.Sub(xs...)`, `env.Mul(xs...) *LVal` |
+| `mod` | `env.Mod(a, b) *LVal` |
 | `=`, `<`, `<=`, `>`, `>=` | `env.NumEqual`, `NumLess`, `NumLessEqual`, `NumGreater`, `NumGreaterEqual(a, b) (bool, *LVal)` |
-| `string=` | `env.StringEqual(a, b) (bool, *LVal)` |
+| `string=`, `string<`, `string>` | `env.StringEqual`, `StringLess`, `StringGreater(a, b) (bool, *LVal)` |
 | `debug-stack` | `env.DebugStack() *LVal` |
 
 The sequence forms take the type specifier as a `lisp.SeqKind` constant, so
@@ -1158,10 +1163,10 @@ builtins take them.
 
 | `SeqKind` | Type specifier | Accepted by |
 |-----------|----------------|-------------|
-| `SeqList` | `'list` | `MapSeq`, `Concat`, `Zip`, `Slice` |
-| `SeqVector` | `'vector` | `MapSeq`, `Concat`, `Zip`, `Slice` |
+| `SeqList` | `'list` | `MapSeq`, `Concat`, `Zip`, `Slice`, `Append` |
+| `SeqVector` | `'vector` | `MapSeq`, `Concat`, `Zip`, `Slice`, `Append` |
 | `SeqString` | `'string` | `Concat`, `Slice` |
-| `SeqBytes` | `'bytes` | `Concat`, `Slice` |
+| `SeqBytes` | `'bytes` | `Concat`, `Slice`, `Append` |
 | `SeqNil` | `()` | `MapSeq` (calls `fn` for its effects and returns `()`) |
 
 A form given a kind its builtin refuses returns the builtin's error for that
@@ -1179,6 +1184,19 @@ not. `list` and `vector` need no form: `lisp.Cells(xs).Clone().List()` and
 `lisp.Cells(xs).Clone().Vector()` return the same values. Clone `xs` for both.
 Without the clone the result shares the backing array and spare capacity of
 `xs`, so a later write to `xs` changes it.
+
+**Which builtins have a Go form: `lisp.BuiltinGoHelper(name)`.** It returns
+a `lisp.GoHelper` for a builtin that has one: `Method` names the `LEnv`
+method above, or `Note` names the Go to write when there is no method (a type
+test for `list?`, `lisp.Cells{...}.Vector()` for `vector`; these make no
+context check). Every method whose doc says it "returns what the X builtin
+returns" is in the table, and a test checks each method against
+`CallBuiltin` of its builtin on values of every type. `elpsvet`'s `elpsidiom`
+analyzer reads it: it rewrites a `CallBuiltin` whose method takes the
+builtin's arguments as `*LVal` values, and gives a hint on each
+`lisp.BuiltinFunc("x")` outside a test file when `x` has a Go form. Keep
+`CallBuiltin` where the form does not fit, such as a spread argument list for
+a method with fixed arguments.
 
 **`env.CallFunction(fn, args...)` and `env.ApplyFunction(fn, args)`** return
 what `(funcall fn args...)` and `(apply fn args)` return, with the same checks
@@ -1275,10 +1293,10 @@ or without a `v != nil` test before it) to `v.IsSymbol(name)`,
 `lisp.QExpr`, `lisp.SExpr` and `lisp.Vector` over a slice literal to
 `lisp.Cells{...}.List()`, `.SExpr()` and `.Vector()`, `lisp.Array(nil, x)`
 to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
-a `CallBuiltin` of `sorted-map`, `assoc!`, `get`, `to-string`,
-`format-string`, `first` or `second` to `env.MapOf` or `env.SortedMapOf`,
-`env.MapPut`, `env.MapLookup`, `env.ToString`, `env.FormatString`,
-`env.First` or `env.Second`, and a
+a `CallBuiltin` of `sorted-map` to `env.MapOf` or `env.SortedMapOf`, of
+`format-string` to `env.FormatString`, and of any builtin whose
+`lisp.BuiltinGoHelper` method takes `*LVal` arguments (`assoc!`, `get`,
+`to-string`, `first`, `car`, `dissoc`, ...) to that method, and a
 `lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
 keeps behaviour identical for a non-nil value; the package doc of
 `elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `AsMap` and `Lookup`, an

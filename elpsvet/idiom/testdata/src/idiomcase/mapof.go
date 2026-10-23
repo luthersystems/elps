@@ -2,7 +2,7 @@ package idiomcase
 
 import "github.com/luthersystems/elps/lisp"
 
-var coreSortedMap = lisp.BuiltinFunc("sorted-map")
+var coreSortedMap = lisp.BuiltinFunc("sorted-map") // want `lisp has a Go helper for sorted\-map: call LEnv\.SortedMapOf`
 
 type status string
 

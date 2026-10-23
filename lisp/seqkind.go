@@ -4,39 +4,39 @@ package lisp
 
 import "strconv"
 
-// SeqKind is a sequence type specifier for the Go forms of map, concat, zip
-// and slice (LEnv.MapSeq, Concat, Zip and Slice).  SeqList, SeqVector,
-// SeqString and SeqBytes stand for the symbols list, vector, string and
-// bytes.  SeqNil stands for the type specifier ().
+// SeqKind is a sequence type specifier for the Go forms of map, concat,
+// zip, slice and append (LEnv.MapSeq, Concat, Zip, Slice and Append).
+// SeqList, SeqVector, SeqString and SeqBytes stand for the symbols list,
+// vector, string and bytes.  SeqNil stands for the type specifier ().
 //
 // A form given a kind its builtin refuses returns the error the builtin
 // returns for the matching type specifier, at the same point in its checks:
 //
-//   - SeqNil to Concat, Zip or Slice returns the builtin's first check for a
-//     type specifier that is not a symbol, "first argument is not a valid
-//     type specification: list" (concat) or "first argument is not a valid
-//     type specifier: list" (zip and slice).
+//   - SeqNil to Concat, Zip, Slice or Append returns the builtin's first
+//     check for a type specifier that is not a symbol, "first argument is
+//     not a valid type specification: list" (concat and append) or "first
+//     argument is not a valid type specifier: list" (zip and slice).
 //   - Any other refused kind returns the builtin's error for an unknown
 //     symbol, after the builtin's checks of the other arguments: "type
-//     specifier is invalid: K" (map and zip) or "type specifier is not
-//     valid: K" (concat and slice).  K is the kind's String.
+//     specifier is invalid: K" (map, zip and append) or "type specifier is
+//     not valid: K" (concat and slice).  K is the kind's String.
 //
 // The zero SeqKind, and any value past the constants, is refused by every
 // form, and K is then "SeqKind(n)".
 type SeqKind uint8
 
 const (
-	// SeqList is 'list.  map, concat, zip and slice accept it.
+	// SeqList is 'list.  map, concat, zip, slice and append accept it.
 	SeqList SeqKind = iota + 1
-	// SeqVector is 'vector.  map, concat, zip and slice accept it.
+	// SeqVector is 'vector.  map, concat, zip, slice and append accept it.
 	SeqVector
 	// SeqString is 'string.  concat and slice accept it.
 	SeqString
-	// SeqBytes is 'bytes.  concat and slice accept it.
+	// SeqBytes is 'bytes.  concat, slice and append accept it.
 	SeqBytes
 	// SeqNil is the type specifier ().  map accepts it: map calls fn for
-	// its effects and returns ().  concat, zip and slice refuse it, as they
-	// refuse a type specifier that is not a symbol.
+	// its effects and returns ().  concat, zip, slice and append refuse it,
+	// as they refuse a type specifier that is not a symbol.
 	SeqNil
 )
 
