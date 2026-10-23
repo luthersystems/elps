@@ -1308,12 +1308,20 @@ type registrationFunction struct {
 // builtin return the binding itself instead of a copy.  Str is written at
 // construction, never onto a value a caller already holds.
 //
+// The docstring cell is sealed: nothing writes it after registration, and a
+// template shares a function's cells only when every one is sealed.  With
+// sealed formals (every definition table in this repository, and elpsutil's)
+// a VM forked from a template then reads the builtin without copying its
+// formals or docstring, as it reads a Lisp function (issue #870).
+//
 // The value is its own registration record (funData.reg, see
 // builtinregistry.go), and the caller records it in the runtime's builtin
 // registry.
 func registrationFunValue(pkgName string, name string, opts registrationFunction) *LVal {
 	fid, funType, formals, fn, doc := opts.fid, opts.funType, opts.formals, opts.fn, opts.doc
 
+	docCell := String(doc)
+	docCell.sealAST()
 	v := &LVal{
 		Type:    LFun,
 		FunType: funType,
@@ -1323,7 +1331,7 @@ func registrationFunValue(pkgName string, name string, opts registrationFunction
 			builtin: fn,
 			pkg:     pkgName,
 		},
-		Cells: Cells{formals, String(doc)},
+		Cells: Cells{formals, docCell},
 	}
 	v.funData().reg = v
 	return v

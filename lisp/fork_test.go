@@ -238,7 +238,11 @@ func (a *forkAuditor) val(path string, o, n *LVal) {
 	// grows cell slices in place (append!, and (append 'vector seq x)
 	// deliberately appends into seq's spare capacity), so a shared backing
 	// is a live cross-runtime write channel even when both sides read empty.
-	if sameCellsBacking(o, n) {
+	// The one exception is a function whose cells are all sealed, with no
+	// spare capacity: no write reaches that backing, so the plan shares it,
+	// as templateInventory.valNode admits it.  A registered builtin's
+	// formals and docstring take this path (#870).
+	if sameCellsBacking(o, n) && !sealedFunctionCells(o) {
 		a.t.Errorf("%s: Cells backing array shared with template (len=%d cap=%d)",
 			path, len(o.Cells), cap(o.Cells))
 		return
@@ -359,6 +363,20 @@ func (a *forkAuditor) env(path string, o, n *LEnv) {
 // same backing array.  Reslicing to cap is what makes the zero-length case
 // visible: a len-0/cap-2 slice has no element to compare, but its backing
 // array is exactly the memory an in-place append would write.
+// sealedFunctionCells reports whether v is a function whose cells a
+// template shares: every cell sealed (or nil) and no spare capacity.
+func sealedFunctionCells(v *LVal) bool {
+	if v.Type != LFun || cap(v.Cells) != len(v.Cells) {
+		return false
+	}
+	for _, c := range v.Cells {
+		if c != nil && !c.sealed {
+			return false
+		}
+	}
+	return true
+}
+
 func sameCellsBacking(a, b *LVal) bool {
 	if cap(a.Cells) == 0 || cap(b.Cells) == 0 {
 		return false
