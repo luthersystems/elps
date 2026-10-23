@@ -571,7 +571,9 @@ func (p *printer) writeListInner(v *lisp.LVal, indent int) {
 //
 // Found by FuzzFormat.
 func (p *printer) tryPrefixForm(v *lisp.LVal, indent int) bool {
-	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol {
+	// A quoted head, as in ('lisp:expr x), is data: the shorthand would drop
+	// the quote.
+	if len(v.Cells) != 2 || v.Cells[0].Type != lisp.LSymbol || v.Cells[0].IsQuoted() {
 		return false
 	}
 	// The shorthand has nowhere to put a comment written inside the form: it
