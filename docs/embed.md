@@ -1086,6 +1086,37 @@ with the same conversions, and returns `ok=false` when any element has
 another type. It allocates the slice it returns. It reads one level only,
 unlike `GoSliceOf`, which converts nested values and reads lists only.
 
+**Structs as sorted maps: `lisp.Decode[T]`, `lisp.DecodeInto` and
+`lisp.Encode`** (#874). `Decode[T](v)` reads a value into a Go type, and a
+sorted map into a struct, field by field. `DecodeInto(v, &dst)` does the same
+into an existing value, so a field the map does not name keeps its default.
+`Encode(x)` is the reverse: a struct becomes a sorted map with string keys.
+Package `elpstag` holds the field rules, so a WASM guest that cannot link the
+interpreter matches fields the same way. A field maps to the key in its
+`elps` tag, or to its Go name; `elps:"-"` and unexported fields map to none;
+`omitempty` leaves a zero field out of `Encode`. A key matches ignoring case,
+and a keyword key without its colon.
+
+```go
+type openArgs struct {
+	Prefix    string     `elps:"prefix"`
+	HDK       int        `elps:"hdk,omitempty"`
+	Compare   *lisp.LVal `elps:"compare"`
+	Autoflush bool       `elps:"autoflush"`
+}
+o := openArgs{HDK: 50}
+if err := lisp.DecodeInto(m, &o); err != nil {
+	return nil, err
+}
+saved, err := lisp.Encode(o)
+```
+
+A `*lisp.LVal` field takes any value as it is, and a native converts to a
+field its payload is assignable to. The error is a `*lisp.CodecError` that
+names the path of the value, such as `items[1].name`, and never renders the
+value. All three make no check, charge no step and use reflection; the doc
+comment of `DecodeInto` lists every conversion.
+
 **The allocation check as a value: `env.CheckAlloc(n)`.** It returns the
 error builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
 maximum (M)"), and `()` otherwise. `Runtime.CheckAlloc` returns the message
