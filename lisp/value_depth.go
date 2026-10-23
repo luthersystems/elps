@@ -33,7 +33,7 @@ import (
 // elpspath copy | lisp/lisplib/libelpspath/path.go:71 | explicit stack / runtime counter (carried down the walk by setPath/deletePath/nilPath) | TestPathValueDepth; TestCopyHonoursRuntimeDepthLimit
 // elpspath copying chains | lisp/lisplib/libelpspath/path.go:933 | separate maxPathSteps (1024) | TestPathTraversalDepth
 // elpspath nested iterators | lisp/lisplib/libelpspath/query.go:125 | separate maxPathSteps (1024) | TestPathTraversalDepth
-// struct codec (Decode / DecodeInto / Encode) | lisp/structcodec.go:157 | separate fixed maxCodecDepth (10,000), Go recursion | TestCodecDepthLimit
+// struct codec (Decode / DecodeInto / Encode) | lisp/structcodec.go:205 | separate fixed maxCodecDepth (10,000), Go recursion, memo per container and type | TestCodecDepthLimit
 // reader admission | lisp/loader.go:673 | existing loaderWalkMaxDepth | TestLoadCacheDepthCapSurvivesMemoHit
 // program seal classification | lisp/program.go:333 | existing reader admission | TestLoadCacheDepthCapSurvivesMemoHit
 // seal fingerprint | lisp/sealfp.go:166 | existing depth / work limit | TestSealedASTFingerprintCycleTerminates

@@ -263,3 +263,81 @@ func TestCodecDepthLimit(t *testing.T) {
 	assert.Less(t, len(err.Error()), 200_000)
 	assert.True(t, strings.HasPrefix(err.Error(), "lisp: [0][0]"))
 }
+
+type namedByte uint8
+
+func TestCodecNamedByteSlice(t *testing.T) {
+	got, err := lisp.Decode[[]namedByte](lisp.Bytes([]byte{1, 2}))
+	require.NoError(t, err)
+	assert.Equal(t, []namedByte{1, 2}, got)
+	v, err := lisp.Encode([]namedByte{3, 4})
+	require.NoError(t, err)
+	require.Equal(t, lisp.LBytes, v.Type)
+	assert.Equal(t, []byte{3, 4}, v.Bytes())
+}
+
+func TestDecodeFastPathTakesNative(t *testing.T) {
+	s, err := lisp.Decode[string](lisp.NativeOf("hi"))
+	require.NoError(t, err)
+	assert.Equal(t, "hi", s)
+}
+
+func TestDecodeKeyCollisions(t *testing.T) {
+	m := lisp.SortedMap()
+	m.MapSetString("a", lisp.Int(1))
+	m.MapSetLVal(lisp.Symbol(":a"), lisp.Int(2))
+	_, err := lisp.Decode[map[string]int](m)
+	require.ErrorContains(t, err, "two keys convert to one string key")
+	_, err = lisp.Decode[any](m)
+	require.ErrorContains(t, err, "two keys convert to one string key")
+
+	got, err := lisp.Decode[any](lisp.MapOf(":kw", 1))
+	require.NoError(t, err)
+	assert.Equal(t, map[string]any{"kw": int64(1)}, got)
+}
+
+func TestDecodeNilInterface(t *testing.T) {
+	type s struct {
+		Err error `elps:"err"`
+	}
+	got, err := lisp.Decode[s](lisp.MapOf("err", lisp.Nil()))
+	require.NoError(t, err)
+	assert.NoError(t, got.Err)
+}
+
+func TestEncodeOpaqueStruct(t *testing.T) {
+	type opaque struct{ n int }
+	_ = opaque{}.n
+	_, err := lisp.Encode(struct{ At opaque }{})
+	require.ErrorContains(t, err, "At: cannot encode a lisp_test.opaque: it has no exported fields")
+	v, err := lisp.Encode(struct{}{})
+	require.NoError(t, err)
+	assert.Equal(t, lisp.LSortMap, v.Type)
+}
+
+// TestDecodeSharedValueIsLinear decodes a value with 2^60 paths and 61
+// distinct containers; without the memo it would not finish.
+func TestDecodeSharedValueIsLinear(t *testing.T) {
+	type node struct {
+		L *node `elps:"l"`
+		R *node `elps:"r"`
+	}
+	list := lisp.Nil()
+	m := lisp.SortedMap()
+	for range 60 {
+		list = lisp.QExpr([]*lisp.LVal{list, list})
+		next := lisp.SortedMap()
+		next.MapSetString("l", m)
+		next.MapSetString("r", m)
+		m = next
+	}
+	_, err := lisp.Decode[any](list)
+	require.NoError(t, err)
+	_, err = lisp.Decode[[]any](list)
+	require.NoError(t, err)
+	n, err := lisp.Decode[*node](m)
+	require.NoError(t, err)
+	assert.Same(t, n.L, n.R)
+	_, err = lisp.Decode[map[string]any](m)
+	require.NoError(t, err)
+}
