@@ -66,10 +66,22 @@ var builtinGoHelpers = map[string]GoHelper{
 	"apply":         {Method: "ApplyFunction"},
 	"vector":        {Note: "lisp.Cells{...}.Vector()"},
 	"list":          {Note: "lisp.Cells{...}.List()"},
+	// The type predicates.  TestTypePredicateNotes checks each Note's Go
+	// against its builtin, and that every type predicate is listed.
+	"nil?":          {Note: "v.IsNil()"},
+	"true?":         {Note: "lisp.True(v)"},
 	"list?":         {Note: "v.Type == lisp.LSExpr"},
 	"sorted-map?":   {Note: "v.Type == lisp.LSortMap"},
-	"string?":       {Note: "v.Type == lisp.LString"},
+	"array?":        {Note: "v.Type == lisp.LArray"},
+	"vector?":       {Note: "v.Type == lisp.LArray && v.Cells[0].Len() == 1"},
+	"bool?":         {Note: "v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol)"},
+	"number?":       {Note: "v.IsNumeric()"},
+	"int?":          {Note: "v.Type == lisp.LInt"},
+	"float?":        {Note: "v.Type == lisp.LFloat"},
 	"symbol?":       {Note: "v.Type == lisp.LSymbol"},
+	"string?":       {Note: "v.Type == lisp.LString"},
+	"bytes?":        {Note: "v.Type == lisp.LBytes"},
+	"tagged-value?": {Note: "v.Type == lisp.LTaggedVal"},
 }
 
 // BuiltinGoHelper returns the GoHelper for the language builtin name, and

@@ -321,3 +321,54 @@ func TestAppendMatchesBuiltin(t *testing.T) {
 			return env.CallBuiltin(ref, lisp.Symbol("list"), lisp.Nil(), lisp.Int(1))
 		})
 }
+
+// typePredicates is the Go each type predicate's Note names.
+var typePredicates = map[string]func(v *lisp.LVal) bool{
+	"nil?":          func(v *lisp.LVal) bool { return v.IsNil() },
+	"true?":         lisp.True,
+	"list?":         func(v *lisp.LVal) bool { return v.Type == lisp.LSExpr },
+	"sorted-map?":   func(v *lisp.LVal) bool { return v.Type == lisp.LSortMap },
+	"array?":        func(v *lisp.LVal) bool { return v.Type == lisp.LArray },
+	"vector?":       func(v *lisp.LVal) bool { return v.Type == lisp.LArray && v.Cells[0].Len() == 1 },
+	"bool?":         func(v *lisp.LVal) bool { return v.IsSymbol(lisp.TrueSymbol) || v.IsSymbol(lisp.FalseSymbol) },
+	"number?":       func(v *lisp.LVal) bool { return v.IsNumeric() },
+	"int?":          func(v *lisp.LVal) bool { return v.Type == lisp.LInt },
+	"float?":        func(v *lisp.LVal) bool { return v.Type == lisp.LFloat },
+	"symbol?":       func(v *lisp.LVal) bool { return v.Type == lisp.LSymbol },
+	"string?":       func(v *lisp.LVal) bool { return v.Type == lisp.LString },
+	"bytes?":        func(v *lisp.LVal) bool { return v.Type == lisp.LBytes },
+	"tagged-value?": func(v *lisp.LVal) bool { return v.Type == lisp.LTaggedVal },
+}
+
+// TestTypePredicateNotes checks that every builtin of one argument whose
+// name ends in "?" has a Note, and that the Go each Note names returns what
+// the builtin returns for a value of every type.
+func TestTypePredicateNotes(t *testing.T) {
+	env := oracle.NewEnv(t, context.Background())
+	checked := 0
+	for _, b := range lisp.DefaultBuiltins() {
+		name := b.Name()
+		if !strings.HasSuffix(name, "?") || b.Formals().Len() != 1 {
+			continue
+		}
+		h, ok := lisp.BuiltinGoHelper(name)
+		if !assert.True(t, ok, "the type predicate %s has no GoHelper", name) {
+			continue
+		}
+		if h.Method != "" {
+			continue // empty?, which LEnv.IsEmpty covers
+		}
+		checked++
+		pred, ok := typePredicates[name]
+		if !assert.True(t, ok, "typePredicates has no Go for %s (Note %q)", name, h.Note) {
+			continue
+		}
+		ref := lisp.BuiltinFunc(name)
+		for _, v := range oracle.Values() {
+			want := env.CallBuiltin(ref, v.V)
+			require.False(t, want.IsError(), name)
+			assert.Equal(t, lisp.True(want), pred(v.V), "%s %s", name, v.Label)
+		}
+	}
+	assert.Equal(t, len(typePredicates), checked, "a type predicate in typePredicates is no builtin of one argument")
+}
