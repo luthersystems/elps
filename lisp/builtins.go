@@ -1108,6 +1108,52 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 	return env.plainCall(fun, SExpr(Cells(args.Cells).Clone()))
 }
 
+// CallValue returns what the evaluator returns for the call form (f args...)
+// when f is a variable that holds fn: a Go port calls it where the Lisp
+// called a function it was handed, such as a callback argument or a closure
+// read from a map.  It differs from CallFunction, which is funcall, in one
+// check: the evaluator calls only a function value, so a symbol fn raises
+// instead of naming a global function.
+//
+// It checks the evaluation's context first, then CheckCallable's check, then
+// calls fn as CallFunction does.  It charges no step of its own.  It neither
+// writes args nor keeps the slice.
+func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal {
+	if lerr := env.CheckCallable(fn); lerr.IsError() {
+		return lerr
+	}
+	return env.plainCall(fn, SExpr(Cells(args).Clone()))
+}
+
+// CheckCallable returns the error the evaluator returns for the call form
+// (f args...) when f holds fn and fn is not a function, and Nil() otherwise.
+// The evaluator makes this check before it evaluates the arguments, so a
+// port whose arguments cost work (a decode, a ledger read) calls it first and
+// CallValue after.  It checks the evaluation's context first, as the
+// evaluator does before each form, and charges no step.
+//
+// An error value fn is returned as it is, as the evaluator returns the error
+// its head evaluated to.  For any other value the condition is "error".  The
+// message names fn's type, never fn, so its
+// size is bounded; the evaluator's message prints fn.  The evaluator expands
+// a macro or special operator in the head over the unevaluated argument
+// forms, which Go cannot do, so CheckCallable refuses one with "error".
+func (env *LEnv) CheckCallable(fn *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	if fn.IsError() {
+		return fn
+	}
+	if fn.Type != LFun {
+		return env.Errorf("first element of expression is not a function: %v", fn.Type)
+	}
+	if fn.IsSpecialFun() {
+		return env.Errorf("first element of expression is not a regular function: %v", fn.FunType)
+	}
+	return Nil()
+}
+
 // plainCall calls the regular function fun with args from Go as a plain call:
 // no tail call in fun can return through the calling frame, because a Go
 // frame cannot be unwound.  It keeps the calling frame non-terminal while fun
@@ -1572,6 +1618,59 @@ func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
 		return nil, env.Errorf("third argument is not a proper sequence: %s", seq.Type)
 	}
 	return cells, nil
+}
+
+// MapSeqFunc returns what MapSeq returns when fn is the Go function f: a
+// list or a vector of f's results for the elements of seq, or () for SeqNil,
+// with map's check of seq (MapSeqCells) and its allocation check, in map's
+// order.  A Go port calls it where the Lisp mapped a lambda whose body the
+// port writes in Go, so it need not repeat those checks.
+//
+// It checks the evaluation's context first.  Before each call of f it charges
+// one step and checks the context, as each of map's calls does, and f
+// charges its own steps.  The first error f returns stops the map and is
+// returned.  Any kind but SeqList, SeqVector and SeqNil returns "type
+// specifier is invalid: K" after the checks of seq, as MapSeq does.
+func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) *LVal) *LVal {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return lerr
+	}
+	cells, lerr := env.MapSeqCells(seq)
+	if lerr != nil {
+		return lerr
+	}
+	if kind != SeqNil {
+		if lerr := env.CheckAlloc(len(cells)); lerr.IsError() {
+			return lerr
+		}
+	}
+	var v *LVal
+	var out []*LVal
+	switch kind {
+	case SeqNil:
+		v = Nil()
+	case SeqVector:
+		v = MakeVector(len(cells))
+		out = seqCells(v)
+	case SeqList:
+		out = make([]*LVal, len(cells))
+		v = QExpr(out)
+	default:
+		return env.Errorf("type specifier is invalid: %v", kind)
+	}
+	for i, c := range cells {
+		if lerr := env.Step(); lerr.IsError() {
+			return lerr
+		}
+		r := f(c)
+		if r.IsError() {
+			return r
+		}
+		if out != nil {
+			out[i] = r
+		}
+	}
+	return v
 }
 
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
