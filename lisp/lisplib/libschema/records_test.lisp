@@ -33,28 +33,28 @@
 (test "nested-order"
   (set 'tier (s:make-validator "tier" s:string (s:in "gold" "silver" "basic")))
   (set 'customer (s:make-validator "customer" s:sorted-map
-    (s:no-other-keys
-      (s:has-key "id" s:string)
-      (s:has-key "tier" tier))))
+                                   (s:no-other-keys
+                                     (s:has-key "id" s:string)
+                                     (s:has-key "tier" tier))))
   (set 'line (s:make-validator "line" s:sorted-map
-    (s:no-other-keys
-      (s:has-key "sku" s:string)
-      (s:has-key "qty" (s:make-validator "qty" s:int (s:positive)))
-      (s:has-key "price" s:number))))
+                               (s:no-other-keys
+                                 (s:has-key "sku" s:string)
+                                 (s:has-key "qty" (s:make-validator "qty" s:int (s:positive)))
+                                 (s:has-key "price" s:number))))
   (set 'order (s:make-validator "order" s:sorted-map
-    (s:no-other-keys
-      (s:has-key "id" s:string)
-      (s:has-key "customer" customer)
-      (s:has-key "lines" (s:make-validator "lines" s:sequence (s:of line)))
-      (s:may-have-key "note" s:string s:nil))))
+                                (s:no-other-keys
+                                  (s:has-key "id" s:string)
+                                  (s:has-key "customer" customer)
+                                  (s:has-key "lines" (s:make-validator "lines" s:sequence (s:of line)))
+                                  (s:may-have-key "note" s:string s:nil))))
   (set 'good (sorted-map "id" "o1"
                          "customer" (sorted-map "id" "c1" "tier" "gold")
                          "lines" (list (sorted-map "sku" "a" "qty" 2 "price" 5))))
   (assert-nil (s:validate order good))
   (assert-equal "WRONG"
-    (wrong-type (lambda () (s:validate order (assoc good "customer" (sorted-map "id" "c1" "tier" "tin"))))))
+                (wrong-type (lambda () (s:validate order (assoc good "customer" (sorted-map "id" "c1" "tier" "tin"))))))
   (assert-equal "WRONG"
-    (wrong-type (lambda () (s:validate order (assoc good "lines" (list (sorted-map "sku" "a" "qty" 0 "price" 5))))))))
+                (wrong-type (lambda () (s:validate order (assoc good "lines" (list (sorted-map "sku" "a" "qty" 0 "price" 5))))))))
 
 (test "describe"
   (set 'tier (s:make-validator "tier" s:string (s:in "gold" "silver")))
@@ -62,9 +62,9 @@
                             "children" (vector (sorted-map "op" "in" "values" (vector "gold" "silver"))))
                 (s:describe tier))
   (set 'customer (s:make-validator "customer" s:sorted-map
-    (s:no-other-keys
-      (s:has-key "id" s:string)
-      (s:may-have-key "tier" tier s:nil))))
+                                   (s:no-other-keys
+                                     (s:has-key "id" s:string)
+                                     (s:may-have-key "tier" tier s:nil))))
   (assert-equal (sorted-map
                   "op" "type" "name" "customer" "type" "sorted-map"
                   "children" (vector

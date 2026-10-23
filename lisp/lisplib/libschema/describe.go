@@ -32,7 +32,8 @@ type descValue struct {
 }
 
 // literal records v as a descValue.  A value that is not a number, string,
-// symbol or keyword is kept as its printed form, as a string.
+// symbol or keyword is kept as its type name, such as "sorted-map": printing
+// it would cost each constructor of a large literal a walk of the value.
 func literal(v *lisp.LVal) descValue {
 	switch v.Type {
 	case lisp.LInt:
@@ -42,7 +43,7 @@ func literal(v *lisp.LVal) descValue {
 	case lisp.LString, lisp.LSymbol:
 		return descValue{kind: v.Type, s: v.Str}
 	default:
-		return descValue{kind: lisp.LString, s: v.String()}
+		return descValue{kind: lisp.LString, s: v.Type.String()}
 	}
 }
 
@@ -235,8 +236,28 @@ func argDescs(vs []*lisp.LVal) []*schemaDesc {
 // s:in or s:gt.
 func literalConstraint(op string, fn lisp.LBuiltin) lisp.LBuiltin {
 	return func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-		return describeAs(fn(env, args), &schemaDesc{op: op, values: literals(args.Cells)})
+		v := fn(env, args)
+		if !isValidator(v) {
+			return v
+		}
+		switch len(args.Cells) {
+		case 0:
+			return describeAs(v, &schemaDesc{op: op})
+		case 1:
+			// One allocation holds the definition and its one value.
+			d := &oneValueDesc{one: [1]descValue{literal(args.Cells[0])}}
+			d.op, d.values = op, d.one[:]
+			return describeAs(v, &d.schemaDesc)
+		}
+		return describeAs(v, &schemaDesc{op: op, values: literals(args.Cells)})
 	}
+}
+
+// oneValueDesc is a schemaDesc and the storage of its one value, so that
+// s:gt and its siblings record their definition in one allocation.
+type oneValueDesc struct {
+	schemaDesc
+	one [1]descValue
 }
 
 // keyedConstraint records the key and the types of s:has-key and

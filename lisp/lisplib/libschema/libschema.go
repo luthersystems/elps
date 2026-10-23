@@ -283,13 +283,12 @@ func builtinMakeValidator(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if res == nil {
 		return lisp.Nil()
 	}
-	// A type given by name builds a fresh validator; name its definition.
-	// A validator given as the type with no constraints is returned as it
-	// is, and keeps its own.
+	// A type given by name builds a fresh validator and a fresh definition,
+	// which no one else holds yet, so it is named in place.  A validator
+	// given as the type with no constraints is returned as it is, and keeps
+	// its own.
 	if typeValidator.Type == lisp.LString && isValidator(res) {
-		d := *descOf(res)
-		d.name = name
-		describeAs(res, &d)
+		descOf(res).name = name //elps:mutates construction-time naming of the definition getHandler just built
 	}
 	return res
 }

@@ -109,3 +109,19 @@
 # waivers were deleted once main's baseline included the per-call package
 # switch and the gate reported both rows `waiver-unused` on every run -- see
 # elps#767.)
+
+# s:describe (elps#868): each schema constructor records its definition as Go
+# data at construction, one schemaDesc and one native marker cell (two
+# allocations; s:gt's value shares the schemaDesc's allocation).  Construction
+# runs at phylum load, validation is unchanged.  Threading the definition into
+# markValidator would save the marker cell but still exceed the 5% gate, and
+# building it lazily is impossible: a validator is a closure.
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-gt | allocs/op | 16 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-gt | B/op | 32 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-gt | sec/op | 30 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-in | allocs/op | 17 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-in | B/op | 33 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-in | sec/op | 35 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: one schemaDesc and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-map | allocs/op | 13 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: the type's schemaDesc, its children and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-map | B/op | 15 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: the type's schemaDesc, its children and one marker cell
+github.com/luthersystems/elps/lisp/lisplib/libschema | SchemaCaptures/construct-map | sec/op | 30 | 2027-01-31 | elps#868 | s:describe records each validator definition at construction: the type's schemaDesc, its children and one marker cell
