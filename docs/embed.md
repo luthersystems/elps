@@ -1128,19 +1128,40 @@ if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
 }
 ```
 
-**`env.ToString(v)` and `env.FormatString(format, values...)`** share the
-bodies of the `to-string` and `format-string` builtins, so they return the
-same value or the same error, the `MaxAlloc` checks included. Each checks the
-context first, as `CallBuiltin` does. The format is a Go string:
+**Go forms return a Go value and an `error`.** A Go form whose result always
+has one type returns that type as a Go value, and the builtin's error as an
+`error`. The error is the builtin's own `*lisp.ErrorVal`, so a `FuncE` or
+`Func*E` body that returns it raises the same condition, message and stack.
+On success the error is an untyped nil, so `err != nil` is false. A builtin
+that returns `*LVal` returns `lisp.Error(err)`, which gives back the
+`*ErrorVal` itself. A Go form whose result can be any value returns `*LVal`;
+read it with `lisp.Result` or `lisp.ResultAs`.
 
 ```go
-msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
+n, err := env.Length(seq)
+if err != nil {
+	return lisp.Error(err)
+}
+```
+
+**`env.ToString(v)` and `env.FormatString(format, values...)`** share the
+bodies of the `to-string` and `format-string` builtins, so they return the
+same string or the same error, the `MaxAlloc` checks included. Each returns
+`(string, error)` and checks the context first, as `CallBuiltin` does. The
+format is a Go string:
+
+```go
+msg, err := env.FormatString("unknown type: {}", k)
+if err != nil {
+	return nil, err
+}
 ```
 
 **`libstring.Join(env, parts, sep)`** is `string:join` for a `[]string`. It
-shares the builtin's body after the element type check, so it makes the same
-allocation check, raises the same error and charges the same steps (one per
-complete KiB of the result). It checks the context first.
+returns `(string, error)`. It shares the builtin's body after the element
+type check, so it makes the same allocation check, raises the same error and
+charges the same steps (one per complete KiB of the result). It checks the
+context first.
 
 **`env.MapPut(m, k, v)` and `env.MapLookup(m, k)`** share the bodies of
 `assoc!` and `get`. `MapPut` refuses a nil or non-map `m`, makes `assoc!`'s
@@ -1154,8 +1175,8 @@ building a list.
 **`env.MapKeys(m)`, `env.Length(seq)`, `env.IsEmpty(seq)`, `env.First(seq)`
 and `env.Second(seq)`** share the bodies of `keys`, `length`, `empty?`,
 `first` and `second`, so each returns the same value or the same error.
-`Length` and `IsEmpty` return a Go `int` and `bool` with a nil error, or the
-builtin's error for a value with no length. `First` and `Second` return an
+`Length` and `IsEmpty` return a Go `int` and `bool` with a nil `error`, or
+the builtin's error for a value with no length. `First` and `Second` return an
 element as it is stored, an error value included. Each checks the context
 first and charges no step. `LVal.MapKeys`, `LVal.Len` and `v.SeqCells()` make
 none of these checks.
@@ -1163,15 +1184,15 @@ none of these checks.
 **Go forms of more builtins.** Each form below shares the body of its builtin,
 so it returns the same value, or the same error condition and message, with
 the same allocation checks. Each checks the context first, as `CallBuiltin`
-does, and charges no step of its own. A form that returns `(bool, *LVal)`
-returns a nil error on success.
+does, and charges no step of its own. A form that returns a Go value returns
+it with an `error`, as above.
 
 | Builtin | Go form |
 |---------|---------|
 | `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
 | `dissoc`, `dissoc!` | `env.MapDissoc(m, k)` (copies `m`), `env.MapDelete(m, k) *LVal` (changes `m`) |
 | `car`, `cdr`, `rest` | `env.Car(seq)`, `env.Cdr(seq)`, `env.Rest(seq) *LVal` (`cdr` and `rest` return a view of `seq`, as the builtins do) |
-| `key?` | `env.MapHasKey(m, k) (bool, *LVal)` |
+| `key?` | `env.MapHasKey(m, k) (bool, error)` |
 | `nth` | `env.Nth(seq, n) *LVal` |
 | `map` | `env.MapSeq(kind, fn, seq) *LVal`; `env.MapSeqFunc(kind, seq, f)` for a Go `f` |
 | `concat` | `env.Concat(kind, seqs...) *LVal` |
@@ -1181,11 +1202,12 @@ returns a nil error on success.
 | `append!` | `env.AppendInPlace(seq, vals...) *LVal` |
 | `make-sequence` | `env.MakeSequence(start, stop, step...) *LVal` |
 | `copy` | `env.DeepCopy(v) *LVal` |
-| `to-int`, `to-bytes` | `env.ToInt(v)`, `env.ToBytes(v) *LVal` |
+| `to-int` | `env.ToInt(v) (int, error)` |
+| `to-bytes` | `env.ToBytes(v) ([]byte, error)` (for bytes `v`, the result is `v`'s own storage: read-only) |
 | `+`, `-`, `*` | `env.Add(xs...)`, `env.Sub(xs...)`, `env.Mul(xs...) *LVal` |
 | `mod` | `env.Mod(a, b) *LVal` |
-| `=`, `<`, `<=`, `>`, `>=` | `env.NumEqual`, `NumLess`, `NumLessEqual`, `NumGreater`, `NumGreaterEqual(a, b) (bool, *LVal)` |
-| `string=`, `string<`, `string>` | `env.StringEqual`, `StringLess`, `StringGreater(a, b) (bool, *LVal)` |
+| `=`, `<`, `<=`, `>`, `>=` | `env.NumEqual`, `NumLess`, `NumLessEqual`, `NumGreater`, `NumGreaterEqual(a, b) (bool, error)` |
+| `string=`, `string<`, `string>` | `env.StringEqual`, `StringLess`, `StringGreater(a, b) (bool, error)` |
 | `debug-stack` | `env.DebugStack() *LVal` |
 
 The sequence forms take the type specifier as a `lisp.SeqKind` constant, so
@@ -1324,10 +1346,10 @@ or without a `v != nil` test before it) to `v.IsSymbol(name)`,
 `lisp.QExpr`, `lisp.SExpr` and `lisp.Vector` over a slice literal to
 `lisp.Cells{...}.List()`, `.SExpr()` and `.Vector()`, `lisp.Array(nil, x)`
 to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
-a `CallBuiltin` of `sorted-map` to `env.MapOf` or `env.SortedMapOf`, of
-`format-string` to `env.FormatString`, and of any builtin whose
-`lisp.BuiltinGoHelper` method takes `*LVal` arguments (`assoc!`, `get`,
-`to-string`, `first`, `car`, `dissoc`, ...) to that method, and a
+a `CallBuiltin` of `sorted-map` to `env.MapOf` or `env.SortedMapOf`, and
+of any builtin whose `lisp.BuiltinGoHelper` method takes `*LVal` arguments
+and returns one `*LVal` (`assoc!`, `get`, `first`, `car`, `dissoc`, ...) to
+that method, and a
 `lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
 keeps behaviour identical for a non-nil value; the package doc of
 `elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `AsMap` and `Lookup`, an

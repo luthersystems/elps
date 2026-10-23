@@ -179,27 +179,37 @@ func join(env *lisp.LEnv, list *lisp.LVal, sep string) *lisp.LVal {
 			return env.Errorf("first argument is not a list of strings: %v", cell.Type)
 		}
 	}
-	return joinParts(env, nil, list.Cells, sep)
-}
-
-// Join returns what string:join returns for a list of the strings parts and
-// the separator sep: the same string, or the same error from the same check.
-// It checks the evaluation's context first, as LEnv.CallBuiltin does.  Then
-// it makes string:join's allocation check ("join would exceed maximum
-// allocation size (N bytes)") and charges its steps: one per complete KiB of
-// the result.  The caller has no element type to check: every part is a
-// string.
-func Join(env *lisp.LEnv, parts []string, sep string) *lisp.LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	str, lerr := joinParts(env, nil, list.Cells, sep)
+	if lerr != nil {
 		return lerr
 	}
-	return joinParts(env, parts, nil, sep)
+	return lisp.String(str)
+}
+
+// Join returns the string string:join returns for a list of the strings parts
+// and the separator sep, or the same error from the same check.  It checks
+// the evaluation's context first, as LEnv.CallBuiltin does.  Then it makes
+// string:join's allocation check ("join would exceed maximum allocation size
+// (N bytes)") and charges its steps: one per complete KiB of the result.  The
+// caller has no element type to check: every part is a string.  The error is
+// string:join's own *lisp.ErrorVal, so a FuncE body that returns it raises
+// the same condition.
+func Join(env *lisp.LEnv, parts []string, sep string) (string, error) {
+	if lerr := env.CheckContext(); lerr.IsError() {
+		return "", lisp.GoError(lerr)
+	}
+	s, lerr := joinParts(env, parts, nil, sep)
+	if lerr != nil {
+		return "", lisp.GoError(lerr)
+	}
+	return s, nil
 }
 
 // joinParts is the body of string:join and of Join, after the element type
 // check.  The parts are strs when cells is nil, and the strings in cells
-// otherwise.  The checks, the errors and the step charge exist once.
-func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *lisp.LVal {
+// otherwise.  The checks, the errors and the step charge exist once.  The
+// error is nil when there is none.
+func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) (string, *lisp.LVal) {
 	limit := env.Runtime.MaxAllocBytes()
 	n := len(strs)
 	if cells != nil {
@@ -209,18 +219,18 @@ func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *l
 	for i := range n {
 		p := joinPart(strs, cells, i)
 		if len(p) > limit-size {
-			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+			return "", env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
 		}
 		size += len(p)
 	}
 	if n > 1 {
 		if len(sep) > (limit-size)/(n-1) {
-			return env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
+			return "", env.Errorf("join would exceed maximum allocation size (%d bytes)", limit)
 		}
 		size += len(sep) * (n - 1)
 	}
 	if lerr := libutil.ChargeKiB(env, size); lerr != nil {
-		return lerr
+		return "", lerr
 	}
 	var buf strings.Builder
 	buf.Grow(size)
@@ -230,7 +240,7 @@ func joinParts(env *lisp.LEnv, strs []string, cells []*lisp.LVal, sep string) *l
 		}
 		buf.WriteString(joinPart(strs, cells, i))
 	}
-	return lisp.String(buf.String())
+	return buf.String(), nil
 }
 
 // joinPart returns part i: cells[i].Str when cells is not nil, else strs[i].

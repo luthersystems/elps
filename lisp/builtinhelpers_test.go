@@ -104,12 +104,15 @@ var (
 	lvalsType = reflect.TypeOf([]*lisp.LVal(nil))
 	boolType  = reflect.TypeOf(false)
 	intType   = reflect.TypeOf(0)
+	strType   = reflect.TypeOf("")
+	bytesType = reflect.TypeOf([]byte(nil))
+	errType   = reflect.TypeOf((*error)(nil)).Elem()
 )
 
 // lvalHelper returns the method h names when it takes only *LVal arguments,
-// the last one variadic or not, and returns *LVal, (bool, *LVal) or
-// (int, *LVal): the shapes a test can call with any argument list.  It
-// returns the number of fixed arguments too.
+// the last one variadic or not, and returns *LVal or a bool, int, string or
+// []byte with an error: the shapes a test can call with any argument list.
+// It returns the number of fixed arguments too.
 func lvalHelper(h lisp.GoHelper) (reflect.Method, int, bool) {
 	m, ok := reflect.TypeOf((*lisp.LEnv)(nil)).MethodByName(h.Method)
 	if !ok {
@@ -130,7 +133,8 @@ func lvalHelper(h lisp.GoHelper) (reflect.Method, int, bool) {
 	}
 	switch {
 	case ft.NumOut() == 1 && ft.Out(0) == lvalType:
-	case ft.NumOut() == 2 && (ft.Out(0) == boolType || ft.Out(0) == intType) && ft.Out(1) == lvalType:
+	case ft.NumOut() == 2 && ft.Out(1) == errType &&
+		(ft.Out(0) == boolType || ft.Out(0) == intType || ft.Out(0) == strType || ft.Out(0) == bytesType):
 	default:
 		return m, 0, false
 	}
@@ -138,21 +142,30 @@ func lvalHelper(h lisp.GoHelper) (reflect.Method, int, bool) {
 }
 
 // callHelper calls m on env with args and returns its result as the
-// builtin returns it: a bool as a Lisp bool and an int as a Lisp int.
+// builtin returns it: the error as the *lisp.ErrorVal it is, and a Go bool,
+// int, string or []byte as that Lisp value.
 func callHelper(env *lisp.LEnv, m reflect.Method, args []*lisp.LVal) *lisp.LVal {
 	in := []reflect.Value{reflect.ValueOf(env)}
 	for _, a := range args {
 		in = append(in, reflect.ValueOf(a))
 	}
 	out := m.Func.Call(in)
-	last, _ := out[len(out)-1].Interface().(*lisp.LVal)
-	if len(out) == 1 || last != nil {
-		return last
+	if len(out) == 1 {
+		v, _ := out[0].Interface().(*lisp.LVal)
+		return v
 	}
-	if out[0].Type() == boolType {
-		return lisp.Bool(out[0].Bool())
+	err, _ := out[1].Interface().(error)
+	switch v := out[0].Interface().(type) {
+	case bool:
+		return goValue(v, err)
+	case int:
+		return goValue(v, err)
+	case string:
+		return goValue(v, err)
+	case []byte:
+		return goValue(v, err)
 	}
-	return lisp.Int(int(out[0].Int()))
+	panic("unreachable")
 }
 
 // helperArgs returns the argument lists to try for a method with nfixed

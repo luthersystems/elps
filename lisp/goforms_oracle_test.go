@@ -71,13 +71,32 @@ func sameResult(t *testing.T, label string, got, want *lisp.LVal) {
 	}
 }
 
-// boolValue turns a (bool, *LVal) Go form result into the builtin's value.
-func boolValue(ok bool, lerr *lisp.LVal) *lisp.LVal {
-	if lerr != nil {
-		return lerr
+// goValue turns a (value, error) Go form result into the value its builtin
+// returns: the error as the *lisp.ErrorVal it is, or the Go value as an LVal.
+// It panics on an error of another type, which no Go form returns.
+func goValue[T string | int | bool | []byte](v T, err error) *lisp.LVal {
+	if err != nil {
+		e, ok := err.(*lisp.ErrorVal) //nolint:errorlint // a Go form returns the builtin's *ErrorVal unwrapped
+		if !ok {
+			panic(fmt.Sprintf("a Go form returned an error of type %T", err))
+		}
+		return (*lisp.LVal)(e)
 	}
-	return lisp.Bool(ok)
+	switch x := any(v).(type) {
+	case string:
+		return lisp.String(x)
+	case int:
+		return lisp.Int(x)
+	case bool:
+		return lisp.Bool(x)
+	case []byte:
+		return lisp.Bytes(x)
+	}
+	panic("unreachable")
 }
+
+// boolValue turns a (bool, error) Go form result into the builtin's value.
+func boolValue(ok bool, err error) *lisp.LVal { return goValue(ok, err) }
 
 // value returns the i-th input of a fresh oracle.Values.
 func value(i int) *lisp.LVal { return oracle.Values()[i].V }
@@ -91,8 +110,8 @@ var unaryForms = []struct {
 	builtin lisp.BuiltinRef
 	fn      func(*lisp.LEnv, *lisp.LVal) *lisp.LVal
 }{
-	{"to-int", refToInt, (*lisp.LEnv).ToInt},
-	{"to-bytes", refToBytes, (*lisp.LEnv).ToBytes},
+	{"to-int", refToInt, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.ToInt(v)) }},
+	{"to-bytes", refToBytes, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.ToBytes(v)) }},
 	{"copy", refCopy, (*lisp.LEnv).DeepCopy},
 }
 
@@ -405,7 +424,7 @@ func TestGoFormsAllocLimit(t *testing.T) {
 		name      string
 		got, want *lisp.LVal
 	}{
-		{"to-bytes", env.ToBytes(lisp.String("abc")), env.CallBuiltin(refToBytes, lisp.String("abc"))},
+		{"to-bytes", goValue(env.ToBytes(lisp.String("abc"))), env.CallBuiltin(refToBytes, lisp.String("abc"))},
 		{"copy", env.DeepCopy(big()), env.CallBuiltin(refCopy, big())},
 		{"assoc", env.MapAssoc(bigMap(), lisp.String("c"), lisp.Int(3)), env.CallBuiltin(refAssoc, bigMap(), lisp.String("c"), lisp.Int(3))},
 		{"concat", env.Concat(lisp.SeqList, big(), big()), env.CallBuiltin(refConcat, list, big(), big())},
@@ -448,10 +467,10 @@ func TestGoFormsCancelled(t *testing.T) {
 		run, want func(env *lisp.LEnv) *lisp.LVal
 	}{
 		{"to-int",
-			func(env *lisp.LEnv) *lisp.LVal { return env.ToInt(lisp.String("12")) },
+			func(env *lisp.LEnv) *lisp.LVal { return goValue(env.ToInt(lisp.String("12"))) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refToInt, lisp.String("12")) }},
 		{"to-bytes",
-			func(env *lisp.LEnv) *lisp.LVal { return env.ToBytes(lisp.String("ab")) },
+			func(env *lisp.LEnv) *lisp.LVal { return goValue(env.ToBytes(lisp.String("ab"))) },
 			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refToBytes, lisp.String("ab")) }},
 		{"copy",
 			func(env *lisp.LEnv) *lisp.LVal { return env.DeepCopy(list3()) },
@@ -582,8 +601,8 @@ func TestGoFormsSteps(t *testing.T) {
 	assert.Equal(t, want, got, "map")
 	b := boolValue
 	forms := map[string]func(env *lisp.LEnv) *lisp.LVal{
-		"to-int":   func(env *lisp.LEnv) *lisp.LVal { return env.ToInt(lisp.String("12")) },
-		"to-bytes": func(env *lisp.LEnv) *lisp.LVal { return env.ToBytes(lisp.String("ab")) },
+		"to-int":   func(env *lisp.LEnv) *lisp.LVal { return goValue(env.ToInt(lisp.String("12"))) },
+		"to-bytes": func(env *lisp.LEnv) *lisp.LVal { return goValue(env.ToBytes(lisp.String("ab"))) },
 		"copy":     func(env *lisp.LEnv) *lisp.LVal { return env.DeepCopy(list3()) },
 		"nth":      func(env *lisp.LEnv) *lisp.LVal { return env.Nth(list3(), lisp.Int(1)) },
 		"assoc": func(env *lisp.LEnv) *lisp.LVal {

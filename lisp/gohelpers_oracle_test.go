@@ -37,20 +37,8 @@ var seqHelpers = []struct {
 	view    bool
 }{
 	{"keys", refKeys, (*lisp.LEnv).MapKeys, false, false},
-	{"length", refLength, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
-		n, lerr := env.Length(v)
-		if lerr != nil {
-			return lerr
-		}
-		return lisp.Int(n)
-	}, false, false},
-	{"empty?", refEmpty, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
-		empty, lerr := env.IsEmpty(v)
-		if lerr != nil {
-			return lerr
-		}
-		return lisp.Bool(empty)
-	}, false, false},
+	{"length", refLength, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.Length(v)) }, false, false},
+	{"empty?", refEmpty, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.IsEmpty(v)) }, false, false},
 	{"first", refFirst, (*lisp.LEnv).First, true, false},
 	{"second", refSecond, (*lisp.LEnv).Second, true, false},
 	{"car", refCar, (*lisp.LEnv).Car, true, false},

@@ -416,12 +416,12 @@ func TestToStringParity(t *testing.T) {
 	for _, limit := range []int{0, 4} {
 		env.Runtime.MaxAlloc = limit
 		for _, v := range values {
-			assertSameResult(t, env.CallBuiltin(goportToString, v), env.ToString(v), "limit %d, %v", limit, v)
+			assertSameResult(t, env.CallBuiltin(goportToString, v), goValue(env.ToString(v)), "limit %d, %v", limit, v)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		got := env.ToString(lisp.Int(1))
+		got := goValue(env.ToString(lisp.Int(1)))
 		assertSameResult(t, env.CallBuiltin(goportToString, lisp.Int(1)), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
@@ -450,12 +450,12 @@ func TestFormatStringParity(t *testing.T) {
 		for _, tc := range cases {
 			args := append([]*lisp.LVal{lisp.String(tc.format)}, tc.vals...)
 			want := env.CallBuiltin(goportFormatString, args...)
-			assertSameResult(t, want, env.FormatString(tc.format, tc.vals...), "limit %d, %q", limit, tc.format)
+			assertSameResult(t, want, goValue(env.FormatString(tc.format, tc.vals...)), "limit %d, %q", limit, tc.format)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		got := env.FormatString("{}", lisp.Int(1))
+		got := goValue(env.FormatString("{}", lisp.Int(1)))
 		assertSameResult(t, env.CallBuiltin(goportFormatString, lisp.String("{}"), lisp.Int(1)), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})

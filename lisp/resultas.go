@@ -10,7 +10,7 @@ import "reflect"
 // condition "error", such as "value is not a string: int".
 //
 //	keys, err := lisp.ResultAs[lisp.Cells](env.MapKeys(m))
-//	msg, err := lisp.ResultAs[string](env.FormatString("unknown type: {}", k))
+//	s, err := lisp.ResultAs[string](env.Concat(lisp.SeqString, a, b))
 //
 // T selects the conversion:
 //

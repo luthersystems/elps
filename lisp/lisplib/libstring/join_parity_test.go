@@ -41,13 +41,15 @@ func TestJoinParity(t *testing.T) {
 				cells[i] = lisp.String(p)
 			}
 			want := builtinJoin(env, lisp.QExpr([]*lisp.LVal{lisp.QExpr(cells), lisp.String(tc.sep)}))
-			got := Join(env, tc.parts, tc.sep)
-			require.Equal(t, want.Type, got.Type, "limit %d, %q", limit, tc.parts)
+			got, err := Join(env, tc.parts, tc.sep)
 			if want.Type == lisp.LError {
-				assert.Equal(t, want.Str, got.Str)
-				assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage())
+				var e *lisp.ErrorVal
+				require.ErrorAs(t, err, &e, "limit %d, %q", limit, tc.parts)
+				assert.Equal(t, want.Str, e.Condition())
+				assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), e.ErrorMessage())
 			} else {
-				assert.Equal(t, want.Str, got.Str)
+				require.NoError(t, err, "limit %d, %q", limit, tc.parts)
+				assert.Equal(t, want.Str, got)
 			}
 		}
 	}
@@ -60,9 +62,9 @@ func TestJoinParity(t *testing.T) {
 		func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			cancel()
 			ran = true
-			got := Join(env, []string{"a", "b"}, ",")
-			assert.Equal(t, lisp.CondContextCancelled, got.Str)
-			assert.Equal(t, env.CheckContext().Str, got.Str, "Join checks the context first, as CallBuiltin does")
+			_, err := Join(env, []string{"a", "b"}, ",")
+			assert.Equal(t, lisp.CondContextCancelled, lisp.ConditionOf(err))
+			assert.Equal(t, env.CheckContext().Str, lisp.ConditionOf(err), "Join checks the context first, as CallBuiltin does")
 			return lisp.Nil()
 		}))
 	env.EvalContext(ctx, lisp.SExpr([]*lisp.LVal{lisp.Symbol("join-probe")}))

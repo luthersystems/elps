@@ -140,23 +140,24 @@ func (env *LEnv) MakeSequence(start, stop *LVal, step ...*LVal) *LVal {
 }
 
 // StringLess returns what the string< builtin returns for (string< a b):
-// whether the string a sorts before b, or the same error from the same
-// check.  The error is nil when there is none.  It checks the evaluation's
-// context first, as CallBuiltin does, and charges no step.
-func (env *LEnv) StringLess(a, b *LVal) (bool, *LVal) {
+// whether the string a sorts before b, or the same error from the same check.
+// The error is the builtin's own *ErrorVal, and nil when there is none.  It
+// checks the evaluation's context first, as CallBuiltin does, and charges no
+// step.
+func (env *LEnv) StringLess(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return boolResult(builtinStringLT(env, Cells{a, b}.List()))
+	return goError(boolResult(builtinStringLT(env, Cells{a, b}.List())))
 }
 
 // StringGreater returns what the string> builtin returns for (string> a b),
 // as StringLess does for string<.
-func (env *LEnv) StringGreater(a, b *LVal) (bool, *LVal) {
+func (env *LEnv) StringGreater(a, b *LVal) (bool, error) {
 	if lerr := env.CheckContext(); lerr.IsError() {
-		return false, lerr
+		return false, (*ErrorVal)(lerr)
 	}
-	return boolResult(builtinStringGT(env, Cells{a, b}.List()))
+	return goError(boolResult(builtinStringGT(env, Cells{a, b}.List())))
 }
 
 // boolResult reads a predicate builtin's result as a Go bool, or its error.
@@ -165,4 +166,16 @@ func boolResult(v *LVal) (bool, *LVal) {
 		return false, v
 	}
 	return True(v), nil
+}
+
+// goError returns the (value, error) pair of a Go form from the (value,
+// *LVal) pair of a builtin body: v and a nil error when lerr is nil, else
+// the zero value and lerr as a *ErrorVal.  The nil error is untyped, so a
+// caller's err != nil test is false on success.
+func goError[T any](v T, lerr *LVal) (T, error) {
+	if lerr != nil {
+		var zero T
+		return zero, (*ErrorVal)(lerr)
+	}
+	return v, nil
 }

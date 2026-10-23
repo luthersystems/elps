@@ -14,26 +14,23 @@ var (
 	coreCar          = lisp.BuiltinFunc("car")           // want `lisp has a Go helper for car: call LEnv\.Car`
 	coreCdr          = lisp.BuiltinFunc("cdr")           // want `lisp has a Go helper for cdr: call LEnv\.Cdr`
 	coreRest         = lisp.BuiltinFunc("rest")          // want `lisp has a Go helper for rest: call LEnv\.Rest`
-	coreLength       = lisp.BuiltinFunc("length") // the stub LEnv has no Length: no hint
+	coreLength       = lisp.BuiltinFunc("length")        // the stub LEnv has no Length: no hint
 	coreVector       = lisp.BuiltinFunc("vector")        // want `lisp has a Go helper for vector: write lisp\.Cells\{\.\.\.\}\.Vector\(\) \(it makes no context check\)`
-	coreIsBool = lisp.BuiltinFunc("bool?") // want `lisp has a Go helper for bool\?: write v\.IsSymbol\(lisp\.TrueSymbol\) \|\| v\.IsSymbol\(lisp\.FalseSymbol\) \(it makes no context check\)`
+	coreIsBool       = lisp.BuiltinFunc("bool?")         // want `lisp has a Go helper for bool\?: write v\.IsSymbol\(lisp\.TrueSymbol\) \|\| v\.IsSymbol\(lisp\.FalseSymbol\) \(it makes no context check\)`
 )
 
-func helpers(env *lisp.LEnv, m, k, v *lisp.LVal, name string) {
-	_ = env.MapPut(m, k, v)                 // want `use env.MapPut, which returns the same value or error from the same checks`
-	_ = env.MapPut(m, k, v)                 // want `use env.MapPut`
-	_ = env.MapLookup(m, k)                 // want `use env.MapLookup`
-	_ = env.ToString(v)                     // want `use env.ToString`
-	_ = env.First(v)                        // want `use env.First`
-	_ = env.Second(v)                       // want `use env.Second`
-	_ = env.FormatString("{}: {}", k, v)    // want `use env.FormatString`
-	_ = env.FormatString("unknown " + name) // want `use env.FormatString`
-	_ = env.MapAssoc(m, k, v)               // want `use env.MapAssoc`
-	_ = env.MapDissoc(m, k)                 // want `use env.MapDissoc`
-	_ = env.MapDelete(m, k)                 // want `use env.MapDelete`
-	_ = env.Car(v)                          // want `use env.Car`
-	_ = env.Cdr(v)                          // want `use env.Cdr`
-	_ = env.Rest(v)                         // want `use env.Rest`
+func helpers(env *lisp.LEnv, m, k, v *lisp.LVal) {
+	_ = env.MapPut(m, k, v)   // want `use env.MapPut, which returns the same value or error from the same checks`
+	_ = env.MapPut(m, k, v)   // want `use env.MapPut`
+	_ = env.MapLookup(m, k)   // want `use env.MapLookup`
+	_ = env.First(v)          // want `use env.First`
+	_ = env.Second(v)         // want `use env.Second`
+	_ = env.MapAssoc(m, k, v) // want `use env.MapAssoc`
+	_ = env.MapDissoc(m, k)   // want `use env.MapDissoc`
+	_ = env.MapDelete(m, k)   // want `use env.MapDelete`
+	_ = env.Car(v)            // want `use env.Car`
+	_ = env.Cdr(v)            // want `use env.Cdr`
+	_ = env.Rest(v)           // want `use env.Rest`
 }
 
 // Same checks: no idiom drops a check that the CallBuiltin call makes.
@@ -46,6 +43,10 @@ func helpersNoFix(env *lisp.LEnv, m, k, v, f *lisp.LVal, args []*lisp.LVal) {
 	_ = env.CallBuiltin(coreFormatString, f, v)
 	// A spread argument list has an unknown count.
 	_ = env.CallBuiltin(coreFormatString, args...)
+	// ToString and FormatString return (string, error), which does not fit
+	// the *LVal place of the call.
+	_ = env.CallBuiltin(coreToString, v)
+	_ = env.CallBuiltin(coreFormatString, lisp.String("{}: {}"), k, v)
 	// A helper with fixed arguments does not fit another count.
 	_ = env.CallBuiltin(coreCar, v, v)
 }
