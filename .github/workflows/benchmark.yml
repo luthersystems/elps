@@ -1,6 +1,8 @@
 name: Benchmark Regression Check
 
 on:
+  # The merge queue runs the required checks on the merged result.
+  merge_group:
   pull_request:
     branches:
       - main
@@ -88,8 +90,9 @@ env:
 # itself is NOT path-filtered: the `Required: *` aggregate still runs on every
 # PR and passes a docs-only skip only through scripts/require-jobs-succeeded.sh,
 # which accepts `skipped` solely when DOCS_ONLY is `true` on a pull_request
-# event and still fails on any `failure` or `cancelled`. This workflow only
-# fires on pull_request. `gates` (the CI gate self-test, ~20s, no Go) is
+# event and still fails on any `failure` or `cancelled`. This workflow fires
+# on pull_request and in the merge queue (merge_group), which always runs
+# everything and compares against the queue's base commit. `gates` (the CI gate self-test, ~20s, no Go) is
 # deliberately NOT conditioned: it is cheap and keeps one real check running.
 # What counts as docs-only is documented in that script.
 
@@ -390,7 +393,7 @@ jobs:
       - name: Check out PR base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: base
 
       - name: Set up Go
@@ -450,7 +453,7 @@ jobs:
         run: bash "${GITHUB_WORKSPACE}/pr/scripts/bench-run-arms.sh"
 
       - name: Compare with benchstat
-        if: github.event_name == 'pull_request'
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
         id: benchstat
         # Body lives in scripts/bench-compare.sh -- syntax-checked, shellchecked
         # and fixture-tested by scripts/ci-gates-test.sh, which a `run: |` block
@@ -496,7 +499,8 @@ jobs:
       # that pass; 1 = regression and 2 = uninterpretable both fail.
       - name: Fail on regressions
         if: >-
-          always() && github.event_name == 'pull_request' &&
+          always() &&
+          (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
           steps.benchstat.outputs.gate_status != 'skipped' &&
           steps.benchstat.outputs.gate_status != '0'
         # Body lives in scripts/bench-gate-fail.sh, where the three-way split
@@ -558,7 +562,7 @@ jobs:
       - name: Check out PR base
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
-          ref: ${{ github.event.pull_request.base.sha }}
+          ref: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
           path: base
           persist-credentials: false
 

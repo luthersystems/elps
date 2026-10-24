@@ -7,6 +7,8 @@ name: Security
 # why each check exists: docs/security-workflow.md in luthersystems/.github.
 
 on:
+  # The merge queue runs the required checks on the merged result.
+  merge_group:
   pull_request:
   push:
     branches: [main]

@@ -30,6 +30,8 @@ name: Fuzz
 # milliseconds regardless of what this job finds.
 
 on:
+  # The merge queue runs the required checks on the merged result.
+  merge_group:
   pull_request:
     branches:
       - main
@@ -290,10 +292,10 @@ jobs:
         # matrix cannot drift apart again.
         run: ./scripts/fuzz.sh --shard ${{ matrix.shard }}/${{ strategy.job-total }}
 
-      # Only from main/schedule: a corpus grown from an unmerged branch would
-      # otherwise be handed to every other PR.
+      # Only from main/schedule: a corpus grown from an unmerged branch (a PR,
+      # or a merge queue entry) would otherwise be handed to every other PR.
       - name: Save generated fuzz corpus
-        if: github.event_name != 'pull_request'
+        if: github.event_name != 'pull_request' && github.event_name != 'merge_group'
         uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9  # v6
         with:
           path: ~/.cache/go-build/fuzz
