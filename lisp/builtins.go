@@ -1456,13 +1456,13 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 // Car returns what the car builtin returns for (car lis): the first element
 // of a list, () for an empty list, or the same error from the same check.
 // It checks the evaluation's context first, as CallBuiltin does, and
-// charges no step.  The element is returned as it is stored, an error value
-// included, as the builtin returns it.
+// charges no step.  A stored error value comes back as the error, as the
+// evaluator raises the builtin's result.
 func (env *LEnv) Car(lis *LVal) (*LVal, error) {
 	if lerr := env.checkContext(); lerr.IsError() {
 		return valueOf(lerr)
 	}
-	return goError(listCar(env, lis))
+	return valueOf(builtinValue(listCar(env, lis)))
 }
 
 // listCar is the body of the car builtin and of LEnv.Car, so the two cannot
@@ -1587,13 +1587,13 @@ func builtinSecond(env *LEnv, args *LVal) *LVal {
 // First returns what the first builtin returns for (first seq): the first
 // element of a list or a vector, () when it has none, or the same error from
 // the same check.  It checks the evaluation's context first, as CallBuiltin
-// does, and charges no step.  An element is returned as it is stored, an
-// error value included, as the builtin returns it.
+// does, and charges no step.  A stored error value comes back as the error,
+// as the evaluator raises the builtin's result.
 func (env *LEnv) First(seq *LVal) (*LVal, error) {
 	if lerr := env.checkContext(); lerr.IsError() {
 		return valueOf(lerr)
 	}
-	return goError(seqElem(env, seq, 0))
+	return valueOf(builtinValue(seqElem(env, seq, 0)))
 }
 
 // Second returns what the second builtin returns for (second seq), as First
@@ -1602,7 +1602,7 @@ func (env *LEnv) Second(seq *LVal) (*LVal, error) {
 	if lerr := env.checkContext(); lerr.IsError() {
 		return valueOf(lerr)
 	}
-	return goError(seqElem(env, seq, 1))
+	return valueOf(builtinValue(seqElem(env, seq, 1)))
 }
 
 // seqElem is the body of first (i 0) and second (i 1) and of LEnv.First and
@@ -1625,13 +1625,13 @@ func builtinNth(env *LEnv, args *LVal) *LVal {
 // Nth returns what the nth builtin returns for (nth seq n): the element at
 // index n of a list or a vector, () when n is past its end, or the same error
 // from the same check.  It checks the evaluation's context first, as
-// CallBuiltin does, and charges no step.  An element is returned as it is
-// stored, an error value included, as the builtin returns it.
+// CallBuiltin does, and charges no step.  A stored error value comes back as
+// the error, as the evaluator raises the builtin's result.
 func (env *LEnv) Nth(seq, n *LVal) (*LVal, error) {
 	if lerr := env.checkContext(); lerr.IsError() {
 		return valueOf(lerr)
 	}
-	return goError(seqNth(env, seq, n))
+	return valueOf(builtinValue(seqNth(env, seq, n)))
 }
 
 // seqNth is the body of the nth builtin and of LEnv.Nth, so the two cannot
@@ -1732,11 +1732,7 @@ func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) (*LVal, error
 		if lerr := env.step(); lerr.IsError() {
 			return lerr
 		}
-		v, err := f(c)
-		if err != nil {
-			return Error(err)
-		}
-		return v
+		return ValueOrError(f(c)) // a nil value with a nil error is ()
 	}))
 }
 
@@ -2182,14 +2178,15 @@ func builtinGet(env *LEnv, args *LVal) *LVal {
 // () for a missing key or a nil m, or the same error from the same check.
 // It checks the evaluation's context first, as CallBuiltin does.  A non-map
 // m raises "first argument is not a map: <type>", and a key the map refuses
-// returns the map's own error.  It charges no step.
+// returns the map's own error.  A stored error value comes back as the error,
+// as the evaluator raises the builtin's result.  It charges no step.
 //
 // Use it where the Lisp called get.  Lookup makes none of these checks.
 func (env *LEnv) MapLookup(m, k *LVal) (*LVal, error) {
 	if lerr := env.checkContext(); lerr.IsError() {
 		return valueOf(lerr)
 	}
-	return goError(mapGet(env, m, k))
+	return valueOf(builtinValue(mapGet(env, m, k)))
 }
 
 // mapGet is the body of the get builtin and of LEnv.MapLookup, so the two

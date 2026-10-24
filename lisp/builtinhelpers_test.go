@@ -152,6 +152,11 @@ func callHelper(env *lisp.LEnv, m reflect.Method, args []*lisp.LVal) *lisp.LVal 
 	err, _ := out[1].Interface().(error)
 	switch v := out[0].Interface().(type) {
 	case *lisp.LVal:
+		// A form returns any error as its error, so the pair is (nil, err)
+		// or a value that is not an error with a nil err (elps#883).
+		if (err != nil) != (v == nil) || v.IsError() {
+			return lisp.Errorf("%s returned the pair (%v, %v)", m.Name, v, err)
+		}
 		return lisp.ValueOrError(v, err)
 	case bool:
 		return goValue(v, err)

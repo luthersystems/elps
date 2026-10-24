@@ -1217,8 +1217,8 @@ building a list.
 and `env.Second(seq)`** share the bodies of `keys`, `length`, `empty?`,
 `first` and `second`, so each returns the same value or the same error.
 `Length` and `IsEmpty` return a Go `int` and `bool` with a nil `error`, or
-the builtin's error for a value with no length. `First` and `Second` return an
-element as it is stored, an error value included. Each checks the context
+the builtin's error for a value with no length. `First` and `Second` return a
+stored error element as the error, as the evaluator raises it. Each checks the context
 first and charges no step. `LVal.MapKeys`, `LVal.Len` and `v.SeqCells()` make
 none of these checks.
 

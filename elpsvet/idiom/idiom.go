@@ -764,6 +764,15 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 	if !ok || !s.returnsGoError(env, "CheckAlloc") {
 		return
 	}
+	// The new err binding would shadow an err the copied code reads.
+	if usesIdent(call.Args[0], "err") || usesIdent(env, "err") {
+		return
+	}
+	for i, r := range ret.Results {
+		if i != errIdx && usesIdent(r, "err") {
+			return
+		}
+	}
 	results := make([]string, len(ret.Results))
 	for i, r := range ret.Results {
 		if i == errIdx {
@@ -776,6 +785,18 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 		s.operand(env), s.text(call.Args[0]), strings.Join(results, ", "))
 	s.report(stmt, CategoryInfo, "use "+s.operand(env)+".CheckAlloc, which returns the same error",
 		replace(stmt, "Use LEnv.CheckAlloc", text))
+}
+
+// usesIdent reports whether x mentions the identifier name.
+func usesIdent(x ast.Node, name string) bool {
+	found := false
+	ast.Inspect(x, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // mapChecked reports whether an enclosing if statement in stack tests
@@ -1278,8 +1299,12 @@ func (s *state) returnedCallees(body *ast.BlockStmt) []*types.Func {
 
 // lispErrorCall reports whether call returns a Lisp error as its error
 // result: lisp.Result, lisp.ResultAs, lisp.GoError, an LEnv method whose
-// last result is an error (the Go forms, elps#883), or a function in
-// sources.
+// last result is an error (the Go forms and checks, elps#883; not
+// plainErrorMethods), or a function in sources.
+// plainErrorMethods are the LEnv methods whose error is a Go error, not a
+// builtin's *ErrorVal.
+var plainErrorMethods = map[string]bool{"ParseProgram": true}
+
 func (s *state) lispErrorCall(call *ast.CallExpr, sources map[*types.Func]bool) bool {
 	fn := s.callee(call)
 	if fn == nil {
@@ -1292,7 +1317,7 @@ func (s *state) lispErrorCall(call *ast.CallExpr, sources map[*types.Func]bool) 
 			case "Result", "ResultAs", "GoError":
 				return true
 			}
-		} else if s.lispMethod(call, "LEnv") != nil {
+		} else if s.lispMethod(call, "LEnv") != nil && !plainErrorMethods[fn.Name()] {
 			res := sig.Results()
 			if res.Len() > 0 && types.Identical(res.At(res.Len()-1).Type(), types.Universe.Lookup("error").Type()) {
 				return true

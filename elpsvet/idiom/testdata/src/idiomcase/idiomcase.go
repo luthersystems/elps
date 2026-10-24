@@ -48,6 +48,14 @@ func allocPair(env *lisp.LEnv, n int) (*lisp.LVal, *lisp.LVal) {
 	return nil, nil
 }
 
+// The fix's err would shadow the err this return reads.
+func allocShadow(env *lisp.LEnv, n int, err *lisp.LVal) (*lisp.LVal, *lisp.LVal) {
+	if msg := env.Runtime.CheckAlloc(n); msg != "" {
+		return err, env.Errorf("%s", msg)
+	}
+	return nil, nil
+}
+
 // A different message is not the same error.
 func allocOtherMessage(env *lisp.LEnv, n int) *lisp.LVal {
 	if msg := env.Runtime.CheckAlloc(n); msg != "" {
