@@ -1,5 +1,7 @@
 name: CI Tests
 on:
+  # The merge queue runs the required checks on the merged result.
+  merge_group:
   pull_request:
     branches:
       - main
