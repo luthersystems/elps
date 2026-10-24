@@ -167,7 +167,7 @@ func TestStatusHelpersReturnNilValue(t *testing.T) {
 		"ChargeStartedKiB": lisp.ChargeStartedKiB(env, 5000),
 		"ChargeRecord":     lisp.ChargeRecord(env, 0),
 	} {
-		assert.NoError(t, err, name)
+		require.NoError(t, err, name)
 	}
 	for name, v := range map[string]*lisp.LVal{
 		"ArgReader.Err": a.Err(),

@@ -348,13 +348,13 @@ func TestMapSeqCellsAliases(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	list := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)})
 	cells, lerr := env.MapSeqCells(list)
-	require.Nil(t, lerr)
+	require.NoError(t, lerr)
 	require.Len(t, cells, 2)
 	assert.Same(t, list.Cells[0], cells[0])
 
 	cells, lerr = env.MapSeqCells(lisp.String("abc"))
 	assert.Nil(t, cells)
-	require.NotNil(t, lerr)
+	require.Error(t, lerr)
 	assert.Equal(t, "third argument is not a proper sequence: string", (*lisp.ErrorVal)(lisp.Error(lerr)).ErrorMessage())
 }
 

@@ -739,8 +739,8 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 	}
 	errIdx := -1
 	for i, r := range ret.Results {
-		rc, ok := ast.Unparen(r).(*ast.CallExpr)
-		if !ok || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
+		rc, isCall := ast.Unparen(r).(*ast.CallExpr)
+		if !isCall || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
 			continue
 		}
 		if f, isConst := s.constString(rc.Args[0]); !isConst || f != "%s" {
@@ -749,8 +749,8 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 		if id, isID := ast.Unparen(rc.Args[1]).(*ast.Ident); !isID || id.Name != msgID.Name {
 			continue
 		}
-		recv, ok := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
-		if !ok || s.text(recv.X) != s.text(env) {
+		recv, isSel := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
+		if !isSel || s.text(recv.X) != s.text(env) {
 			continue
 		}
 		errIdx = i

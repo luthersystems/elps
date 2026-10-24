@@ -114,7 +114,7 @@ func TestCheckClosureRefuses(t *testing.T) {
 		}
 		_, err := env.CheckClosure(v)
 		if v.Type == lisp.LFun && v.Builtin() == nil {
-			assert.NoError(t, err)
+			require.NoError(t, err)
 			continue
 		}
 		require.Error(t, err, src)

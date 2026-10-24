@@ -27,7 +27,7 @@ func TestRestoreLambda(t *testing.T) {
 		root = root.Parent()
 	}
 	code, lerr := env.NewLambdaCode(f.Cells[0], f.Cells[1:])
-	require.Nil(t, lerr)
+	require.NoError(t, lerr)
 	var restored []*lisp.LVal
 	for _, n := range []int{1, 2} {
 		fr := lisp.NewEnv(root)
@@ -46,10 +46,10 @@ func TestRestoreLambda(t *testing.T) {
 
 	assert.Equal(t, lisp.LError, root.RestoreLambda("no-such-package", code).Type)
 	_, lerr = env.NewLambdaCode(lisp.QExpr([]*lisp.LVal{lisp.Int(1)}), nil)
-	assert.NotNil(t, lerr)
+	require.Error(t, lerr)
 	// Quoted formals, which lambda accepts, are accepted.
 	_, lerr = env.NewLambdaCode(lisp.Formals("x"), []*lisp.LVal{lisp.Symbol("x")})
-	assert.Nil(t, lerr)
+	assert.NoError(t, lerr)
 }
 
 // Code validated under legacy keyword formals is validated again in a
@@ -61,7 +61,7 @@ func TestRestoreLambdaValidationPolicy(t *testing.T) {
 	strict := templateTestEnv(t)
 	formals := lisp.QExpr([]*lisp.LVal{lisp.Symbol(":x")})
 	code, lerr := legacy.NewLambdaCode(formals, []*lisp.LVal{lisp.Int(1)})
-	require.Nil(t, lerr, "legacy runtimes accept a keyword formal")
+	require.NoError(t, lerr, "legacy runtimes accept a keyword formal")
 	assert.Equal(t, lisp.LFun, legacy.RestoreLambda(lisp.DefaultUserPackage, code).Type)
 	assert.Equal(t, lisp.LError, strict.RestoreLambda(lisp.DefaultUserPackage, code).Type)
 	assert.Equal(t, lisp.LError, strict.Lambda(formals, []*lisp.LVal{lisp.Int(1)}).Type)

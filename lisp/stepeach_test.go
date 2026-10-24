@@ -181,7 +181,7 @@ func TestStepEachZeroAndNegative(t *testing.T) {
 	t.Parallel()
 	env := stepEachCase{maxSteps: 1, ctx: "done", used: 5}.env(t)
 	before := stateOf(env)
-	assert.NoError(t, env.StepEach(0), "zero checks nothing, not even an exceeded limit")
+	require.NoError(t, env.StepEach(0), "zero checks nothing, not even an exceeded limit")
 	res := lisp.ValueOrError(lisp.Nil(), env.StepEach(-1))
 	require.Equal(t, lisp.LError, res.Type)
 	assert.Contains(t, lisp.GoError(res).Error(), "negative step charge: -1")

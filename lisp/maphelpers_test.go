@@ -62,7 +62,7 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 	env := newLimitTestEnv(t)
 	m := env.LoadString("test", `(sorted-map "a" 1 "b" 2 "c" 3 4 4)`)
 	var seen []string
-	env.MapRange(m, func(k lisp.MapKey, _ *lisp.LVal) bool {
+	_ = env.MapRange(m, func(k lisp.MapKey, _ *lisp.LVal) bool {
 		seen = append(seen, keyLVal(k).String())
 		return len(seen) < 2
 	})
@@ -70,8 +70,8 @@ func TestMapRangeStopsAndNoAlloc(t *testing.T) {
 
 	sum := 0
 	fn := func(_ lisp.MapKey, v *lisp.LVal) bool { sum += v.Int; return true }
-	env.MapRange(m, fn) // warm the pool
-	allocs := testing.AllocsPerRun(100, func() { env.MapRange(m, fn) })
+	require.NoError(t, env.MapRange(m, fn)) // warm the pool
+	allocs := testing.AllocsPerRun(100, func() { _ = env.MapRange(m, fn) })
 	if !raceEnabled { // the race detector makes sync.Pool drop buffers
 		assert.Zero(t, allocs)
 	}
@@ -83,8 +83,8 @@ func TestMapRangeReentrant(t *testing.T) {
 	env := newLimitTestEnv(t)
 	m := env.LoadString("test", `(sorted-map "a" (sorted-map "x" 1) "b" (sorted-map "y" 2))`)
 	var out []string
-	env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
-		env.MapRange(v, func(k2 lisp.MapKey, _ *lisp.LVal) bool {
+	_ = env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
+		_ = env.MapRange(v, func(k2 lisp.MapKey, _ *lisp.LVal) bool {
 			out = append(out, k.Str+k2.Str)
 			return true
 		})

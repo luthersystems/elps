@@ -1039,8 +1039,8 @@ func dumpError(env *lisp.LEnv, err error) *lisp.LVal {
 	var cancelled encodeCancelledError
 	if errors.As(err, &size) || errors.As(err, &cancelled) {
 		// Cancellation wins when both apply, as it does for format-string.
-		if err := env.CheckContext(); err != nil {
-			return lisp.Error(err)
+		if cerr := env.CheckContext(); cerr != nil {
+			return lisp.Error(cerr)
 		}
 	}
 	if errors.As(err, &size) {

@@ -357,7 +357,7 @@ func TestCheckAllocParity(t *testing.T) {
 	for _, k := range []string{"a", "b", "c"} {
 		m.MapSetString(k, lisp.Int(1))
 	}
-	assert.NoError(t, env.CheckAlloc(2))
+	require.NoError(t, env.CheckAlloc(2))
 
 	_, werr := env.CallBuiltin(goportKeys, m)
 	err := env.CheckAlloc(m.Len())
@@ -370,7 +370,7 @@ func TestCheckAllocParity(t *testing.T) {
 
 	// No context check: a cancelled context does not change the result.
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		assert.Error(t, env.CheckContext(), "the context is cancelled")
+		require.Error(t, env.CheckContext(), "the context is cancelled")
 		assert.NoError(t, env.CheckAlloc(1))
 	})
 }
@@ -856,10 +856,10 @@ func TestPackageMapOf(t *testing.T) {
 
 func TestMapOfPanicsOnBadTypes(t *testing.T) {
 	env := testEnv(t)
-	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { env.MapOf(1, 2) })
+	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { _, _ = env.MapOf(1, 2) })
 	assert.PanicsWithValue(t, "lisp.MapOf: value of type []string; a value is *LVal, string, int, float64, bool, []byte, []*LVal or Cells",
-		func() { env.MapOf("a", []string{"x"}) })
-	assert.Panics(t, func() { env.MapOf("a", &goportHandle{}) }, "MapOf never makes a native")
+		func() { _, _ = env.MapOf("a", []string{"x"}) })
+	assert.Panics(t, func() { _, _ = env.MapOf("a", &goportHandle{}) }, "MapOf never makes a native")
 }
 
 // TestMapOfAllocations checks that MapOf allocates what SortedMapOf with
@@ -868,10 +868,10 @@ func TestMapOfAllocations(t *testing.T) {
 	env := testEnv(t)
 	id, typ, desc := lisp.String("id"), "kind", lisp.String("d")
 	want := testing.AllocsPerRun(100, func() {
-		env.SortedMapOf(lisp.String("id"), id, lisp.String("type"), lisp.String(typ), lisp.String("description"), desc)
+		_, _ = env.SortedMapOf(lisp.String("id"), id, lisp.String("type"), lisp.String(typ), lisp.String("description"), desc)
 	})
 	got := testing.AllocsPerRun(100, func() {
-		env.MapOf("id", id, "type", typ, "description", desc)
+		_, _ = env.MapOf("id", id, "type", typ, "description", desc)
 	})
 	assert.InDelta(t, want, got, 0)
 }
