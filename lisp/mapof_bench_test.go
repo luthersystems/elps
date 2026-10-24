@@ -15,8 +15,8 @@ func BenchmarkMapOf(b *testing.B) {
 	id, desc := lisp.String("id-1"), lisp.String("a description")
 	b.ReportAllocs()
 	for b.Loop() {
-		if m := env.MapOf("id", id, "description", desc, "count", 3, "ok", true); m.IsError() {
-			b.Fatal(m)
+		if _, err := env.MapOf("id", id, "description", desc, "count", 3, "ok", true); err != nil {
+			b.Fatal(err)
 		}
 	}
 }
@@ -26,10 +26,9 @@ func BenchmarkSortedMapOf(b *testing.B) {
 	id, desc := lisp.String("id-1"), lisp.String("a description")
 	b.ReportAllocs()
 	for b.Loop() {
-		m := env.SortedMapOf(lisp.String("id"), id, lisp.String("description"), desc,
-			lisp.String("count"), lisp.Int(3), lisp.String("ok"), lisp.Bool(true))
-		if m.IsError() {
-			b.Fatal(m)
+		if _, err := env.SortedMapOf(lisp.String("id"), id, lisp.String("description"), desc,
+			lisp.String("count"), lisp.Int(3), lisp.String("ok"), lisp.Bool(true)); err != nil {
+			b.Fatal(err)
 		}
 	}
 }

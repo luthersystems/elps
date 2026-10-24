@@ -327,8 +327,8 @@ func (enc *encoder) chargeKiB(b encodeBudget, n int) error {
 	}
 	enc.chargedKiB += owed
 	enc.setNext(b)
-	if lerr := enc.env.ChargeSteps(int64(owed)); lerr.IsError() {
-		return encodeStepError{lerr}
+	if err := enc.env.ChargeSteps(int64(owed)); err != nil {
+		return encodeStepError{lisp.Error(err)}
 	}
 	return nil
 }

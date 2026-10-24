@@ -95,13 +95,13 @@ func BuiltinFunc(name string) BuiltinRef {
 // frame, as it was for the hand-written b.Eval(env, QExpr(args)) this
 // replaces.  It does not recover panics; call it from a builtin, which the
 // evaluator already guards.
-func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
+func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) (*LVal, error) {
 	def := b.def()
 	if def == nil {
-		return env.Errorf("CallBuiltin: zero BuiltinRef")
+		return valueOf(env.Errorf("CallBuiltin: zero BuiltinRef"))
 	}
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	var list *LVal
 	if len(args) == b.nreq {
@@ -116,7 +116,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 		fun := FunInPackage(env.Runtime.Registry.Lang, def.name, def.formals, def.fun)
 		_, list = env.bindGeneral(fun, QExpr(args))
 		if list.IsError() {
-			return list
+			return valueOf(list)
 		}
 	}
 	// CallBuiltin pushes no frame, so the top frame is the calling
@@ -134,7 +134,7 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 	}
 	val := def.fun(env, list)
 	if val == nil {
-		return env.Errorf("internal error: builtin %s returned nil", def.name)
+		return valueOf(env.Errorf("internal error: builtin %s returned nil", def.name))
 	}
 	if val.Type == LMarkTailRec {
 		// The callee matched a terminal chain through the frame funcall or
@@ -144,12 +144,12 @@ func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal {
 			stack.Frames[top].Terminal = false
 		}
 		fun, fargs := extractMarkTailRec(val)
-		return env.funCall(env.evalCtx, fun, fargs, false)
+		return valueOf(env.funCall(env.evalCtx, fun, fargs, false))
 	}
 	if val.Type == LMarkTerminal {
-		return env.evalTerminalMark(val)
+		return valueOf(env.evalTerminalMark(val))
 	}
-	return val
+	return valueOf(val)
 }
 
 // evalTerminalMark evaluates the expression a terminal mark carries, in the
@@ -182,13 +182,13 @@ func (env *LEnv) evalTerminalMark(val *LVal) *LVal {
 // argument expression).  sym is a string, not a symbol LVal, so a caller
 // keeps no package-level LVal.  A special operator or macro is refused with
 // "not a regular function".
-func (env *LEnv) CallGlobal(sym string, args ...*LVal) *LVal {
+func (env *LEnv) CallGlobal(sym string, args ...*LVal) (*LVal, error) {
 	fn := env.GetFunGlobal(Symbol(sym))
 	if fn.IsError() {
-		return fn
+		return valueOf(fn)
 	}
 	if fn.IsSpecialFun() {
-		return env.Errorf("not a regular function: %v", fn.FunType)
+		return valueOf(env.Errorf("not a regular function: %v", fn.FunType))
 	}
-	return env.FunCallContext(env.Context(), fn, SExpr(args))
+	return valueOf(env.FunCallContext(env.Context(), fn, SExpr(args)))
 }

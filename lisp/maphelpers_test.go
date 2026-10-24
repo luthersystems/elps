@@ -28,8 +28,8 @@ func rangeRender(env *lisp.LEnv, m *lisp.LVal) string {
 	if lerr := env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
 		cells = append(cells, lisp.QExpr([]*lisp.LVal{keyLVal(k), v}))
 		return true
-	}); lerr.Type == lisp.LError {
-		return lerr.String()
+	}); lerr != nil {
+		return lisp.Error(lerr).String()
 	}
 	return lisp.QExpr(cells).String()
 }
@@ -106,9 +106,9 @@ func TestMapRangeErrorsMatchKeys(t *testing.T) {
 		want := env.LoadString("test", "(keys "+src+")")
 		require.Equal(t, lisp.LError, want.Type, src)
 		called := false
-		got := env.MapRange(v, func(lisp.MapKey, *lisp.LVal) bool { called = true; return true })
-		require.Equal(t, lisp.LError, got.Type, src)
-		assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage(), src)
+		err := env.MapRange(v, func(lisp.MapKey, *lisp.LVal) bool { called = true; return true })
+		require.Error(t, err, src)
+		assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(lisp.Error(err)).ErrorMessage(), src)
 		assert.False(t, called, src)
 	}
 }

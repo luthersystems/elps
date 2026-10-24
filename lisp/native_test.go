@@ -389,7 +389,7 @@ func TestRequireNativeThroughInterface(t *testing.T) {
 	// The message for an interface T names the interface.  This is what a
 	// %T verb over the zero T cannot do: it renders <nil>.
 	_, lerr = lisp.RequireNative[fmt.Stringer](nil)
-	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native fmt.Stringer value, got nil" {
+	if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native fmt.Stringer value, got nil" {
 		t.Errorf("message = %q, want the interface named", msg)
 	}
 }
@@ -398,14 +398,14 @@ func TestRequireNativeThroughInterface(t *testing.T) {
 // accessor whenever a caller forwards an un-checked result.
 func TestRequireNativeNilLVal(t *testing.T) {
 	got, lerr := lisp.RequireNative[*handle](nil)
-	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.handle value, got nil" {
+	if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *lisp_test.handle value, got nil" {
 		t.Errorf("message = %q", msg)
 	}
 	if got != nil {
 		t.Errorf("RequireNative returned %v on failure, want the zero value", got)
 	}
 	gotVal, lerr := lisp.RequireNative[point](nil)
-	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native lisp_test.point value, got nil" {
+	if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native lisp_test.point value, got nil" {
 		t.Errorf("message = %q", msg)
 	}
 	if gotVal != (point{}) {
@@ -434,7 +434,7 @@ func TestRequireNativeRefusesInternalStorage(t *testing.T) {
 			if b != nil {
 				t.Errorf("RequireNative[*[]byte] exposed the backing of a lisp bytes value: %q", string(*b))
 			}
-			if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *[]uint8 value, got bytes" {
+			if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *[]uint8 value, got bytes" {
 				t.Errorf("message = %q", msg)
 			}
 			// The same leak asked for through `any`.
@@ -442,7 +442,7 @@ func TestRequireNativeRefusesInternalStorage(t *testing.T) {
 			if x != nil {
 				t.Errorf("RequireNative[any] exposed a bytes value's payload: %T", x)
 			}
-			if msg := requireNativeErrorMessage(t, lerr); msg != "expected native interface {} value, got bytes" {
+			if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native interface {} value, got bytes" {
 				t.Errorf("message = %q", msg)
 			}
 		}
@@ -457,7 +457,7 @@ func TestRequireNativeRefusesInternalStorage(t *testing.T) {
 		if md != nil {
 			t.Error("RequireNative[*lisp.MapData] exposed the backing of a lisp sorted-map")
 		}
-		if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp.MapData value, got sorted-map" {
+		if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *lisp.MapData value, got sorted-map" {
 			t.Errorf("message = %q", msg)
 		}
 	})
@@ -477,7 +477,7 @@ func TestRequireNativeRefusesInternalStorage(t *testing.T) {
 		if stack != nil {
 			t.Error("RequireNative[*lisp.CallStack] exposed a lisp error's call stack")
 		}
-		if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp.CallStack value, got error" {
+		if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *lisp.CallStack value, got error" {
 			t.Errorf("message = %q", msg)
 		}
 	})
@@ -491,7 +491,7 @@ func TestRequireNativeWrongPayloadType(t *testing.T) {
 	if got != nil {
 		t.Errorf("RequireNative returned %v on failure, want the zero value", got)
 	}
-	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.other value, got native *lisp_test.handle" {
+	if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *lisp_test.other value, got native *lisp_test.handle" {
 		t.Errorf("message = %q", msg)
 	}
 	// The other direction, so the test cannot pass by refusing everything.
@@ -523,7 +523,7 @@ func TestRequireNativeNilPayload(t *testing.T) {
 	if got != nil {
 		t.Errorf("RequireNative returned %v for a nil payload, want nil", got)
 	}
-	if msg := requireNativeErrorMessage(t, lerr); msg != "expected native *lisp_test.handle value, got native <nil>" {
+	if msg := requireNativeErrorMessage(t, lisp.Error(lerr)); msg != "expected native *lisp_test.handle value, got native <nil>" {
 		t.Errorf("message = %q", msg)
 	}
 	if _, lerr := lisp.RequireNative[any](v); lerr == nil {

@@ -122,11 +122,11 @@ func builtinCopy(env *LEnv, args *LVal) *LVal {
 // It makes copy's allocation checks and honours the runtime's value-depth
 // limit (WithMaxValueDepth), which LVal.Copy does not.  It checks the
 // evaluation's context first, as CallBuiltin does.  It charges no step.
-func (env *LEnv) DeepCopy(v *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) DeepCopy(v *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return deepCopyValue(env, v)
+	return valueOf(deepCopyValue(env, v))
 }
 
 // deepCopyValue is the body of the copy builtin and of LEnv.DeepCopy, so the

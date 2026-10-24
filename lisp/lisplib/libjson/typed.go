@@ -703,8 +703,8 @@ func DumpTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	// cancelled context stops a large encode part way.
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if r := env.ChargeSteps(int64(kib)); r.IsError() {
-			lerr = r
+		if err := env.ChargeSteps(int64(kib)); err != nil {
+			lerr = lisp.Error(err)
 			return errTypedCharge
 		}
 		return nil
@@ -730,8 +730,8 @@ func LoadTypedBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	default:
 		return env.Errorf("argument is not bytes or a string: %v", lisp.GetType(in))
 	}
-	if lerr := lisp.ChargeStartedKiB(env, len(b)); lerr.IsError() {
-		return lerr
+	if err := lisp.ChargeStartedKiB(env, len(b)); err != nil {
+		return lisp.Error(err)
 	}
 	v, err := LoadTyped(b, typedOptions(env)...)
 	if err != nil {

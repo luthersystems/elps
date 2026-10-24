@@ -18,8 +18,8 @@ import (
 // chargeBuiltin is (charge n): charge n steps, returning the charge's error
 // or 'ok.  It carries no state, so templates may publish it.
 func chargeBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	if lerr := env.ChargeSteps(int64(args.Cells[0].Int)); lerr.Type == lisp.LError {
-		return lerr
+	if err := env.ChargeSteps(int64(args.Cells[0].Int)); err != nil {
+		return lisp.Error(err)
 	}
 	return lisp.Symbol("ok")
 }
@@ -44,8 +44,8 @@ func (l *nativeLoop) install(env *lisp.LEnv) {
 			l.processed = 0
 			sum := 0
 			for _, x := range args.Cells[0].Cells {
-				if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
-					return lerr
+				if err := env.ChargeSteps(1); err != nil {
+					return lisp.Error(err)
 				}
 				sum += x.Int
 				l.processed++
@@ -119,8 +119,8 @@ func TestChargeStepsPastBudgetMatchesEvaluator(t *testing.T) {
 	// first error observes this directly.
 	var after [3]*lisp.LVal
 	env.AddBuiltins(true, elpsutil.Function("overrun-and-continue", lisp.Formals(), func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
-		after[0] = env.ChargeSteps(5000)
-		after[1] = env.ChargeSteps(1)
+		after[0] = lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(5000))
+		after[1] = lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(1))
 		after[2] = env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("+"), lisp.Int(1), lisp.Int(2)}))
 		return lisp.Nil()
 	}))
@@ -189,8 +189,8 @@ func TestChargeStepsWithContextOnly(t *testing.T) {
 			if i == 3 {
 				cancel()
 			}
-			if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
-				return lerr
+			if err := env.ChargeSteps(1); err != nil {
+				return lisp.Error(err)
 			}
 			charged++
 		}
@@ -236,9 +236,9 @@ func TestChargeStepsZeroAndNegative(t *testing.T) {
 		// charge still reports success and does not move the counter.
 		requireStepLimit(t, env.LoadString("test", `(charge 5000)`))
 		steps := env.Runtime.Steps()
-		assert.Equal(t, lisp.LSExpr, env.ChargeSteps(0).Type)
+		assert.Equal(t, lisp.LSExpr, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(0)).Type)
 		assert.Equal(t, steps, env.Runtime.Steps())
-		requireStepLimit(t, env.ChargeSteps(1))
+		requireStepLimit(t, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(1)))
 	})
 }
 
@@ -254,7 +254,7 @@ func TestChargeStepsSaturates(t *testing.T) {
 	assert.Equal(t, int64(math.MaxInt64), env.Runtime.TotalSteps())
 
 	// Further charges stay saturated and keep failing.
-	requireStepLimit(t, env.ChargeSteps(math.MaxInt64))
+	requireStepLimit(t, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(math.MaxInt64)))
 	assert.Equal(t, int64(math.MaxInt64), env.Runtime.Steps())
 
 	// A handler running under the saturated budget cannot wrap it either.
@@ -276,16 +276,16 @@ func TestChargeStepsSaturates(t *testing.T) {
 	// it exactly, and a count that saturates past it trips the limit.
 	env, _ = chargeTestEnv(t, lisp.WithMaxSteps(math.MaxInt64))
 	env.Runtime.ResetSteps()
-	require.Equal(t, lisp.LSExpr, env.ChargeSteps(math.MaxInt64).Type, "landing exactly on the budget is allowed")
-	requireStepLimit(t, env.ChargeSteps(1))
+	require.Equal(t, lisp.LSExpr, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(math.MaxInt64)).Type, "landing exactly on the budget is allowed")
+	requireStepLimit(t, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(1)))
 	assert.Equal(t, int64(math.MaxInt64), env.Runtime.Steps())
 	res = env.LoadString("test", `(progn (charge 9223372036854775807) (+ 1 2))`)
 	requireStepLimit(t, res)
 	// An evaluator step past a saturated count trips it too.
 	env.AddBuiltins(true, elpsutil.Function("saturate-then-eval", lisp.Formals(), func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 		env.Runtime.ResetSteps()
-		if lerr := env.ChargeSteps(math.MaxInt64); lerr.Type == lisp.LError {
-			return lisp.String("charge failed: " + lerr.String())
+		if err := env.ChargeSteps(math.MaxInt64); err != nil {
+			return lisp.String("charge failed: " + lisp.Error(err).String())
 		}
 		return env.Eval(lisp.Int(1))
 	}))
@@ -344,7 +344,7 @@ func TestChargeStepsBudgetScope(t *testing.T) {
 
 	// A direct Go charge outside any evaluation charges the counter the next
 	// evaluation resets.
-	require.Equal(t, lisp.LSExpr, env.ChargeSteps(10).Type)
+	require.Equal(t, lisp.LSExpr, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(10)).Type)
 	assert.Equal(t, int64(10), env.Runtime.Steps())
 	assert.Equal(t, total+10, env.Runtime.TotalSteps())
 	require.Equal(t, "ok", env.LoadString("test", `(charge 1)`).String())

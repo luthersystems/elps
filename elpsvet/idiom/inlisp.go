@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
 	"strings"
 )
 
@@ -419,4 +420,49 @@ func (s *state) kept(pos token.Pos) bool {
 	}
 	p := s.pass.Fset.Position(pos)
 	return s.keepLines[p.Filename][p.Line]
+}
+
+// lispQualifier returns the prefix that names a package-level lisp function
+// in the file at pos: "" in package lisp, and otherwise the name of the
+// file's lisp import with a dot.  It is false when the file has no named
+// import of package lisp.
+func (s *state) lispQualifier(pos token.Pos) (string, bool) {
+	if s.inLisp {
+		return "", true
+	}
+	for _, file := range s.pass.Files {
+		if pos < file.FileStart || pos >= file.FileEnd {
+			continue
+		}
+		for _, imp := range file.Imports {
+			path, err := strconv.Unquote(imp.Path.Value)
+			if err != nil || path != lispPkgPath {
+				continue
+			}
+			if imp.Name == nil {
+				return "lisp.", true
+			}
+			if imp.Name.Name == "_" || imp.Name.Name == "." {
+				return "", imp.Name.Name == "."
+			}
+			return imp.Name.Name + ".", true
+		}
+	}
+	return "", false
+}
+
+// returnsGoError reports whether method name of x's type returns one Go
+// error, as the checks of package lisp do since elps#883.
+func (s *state) returnsGoError(x ast.Expr, name string) bool {
+	t := s.pass.TypesInfo.TypeOf(x)
+	if t == nil {
+		return false
+	}
+	obj, _, _ := types.LookupFieldOrMethod(t, true, nil, name)
+	fn, ok := obj.(*types.Func)
+	if !ok {
+		return false
+	}
+	res := fn.Signature().Results()
+	return res.Len() == 1 && types.Identical(res.At(0).Type(), types.Universe.Lookup("error").Type())
 }

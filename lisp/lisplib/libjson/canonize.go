@@ -642,8 +642,8 @@ func CanonizeBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if r := env.ChargeSteps(int64(kib)); r.IsError() {
-			lerr = r
+		if err := env.ChargeSteps(int64(kib)); err != nil {
+			lerr = lisp.Error(err)
 			return errTypedCharge
 		}
 		return nil

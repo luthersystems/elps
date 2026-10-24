@@ -87,10 +87,10 @@ func TestSortedMapOfMatchesBuiltin(t *testing.T) {
 			kv := append([]*lisp.LVal(nil), tc.kv...)
 
 			want, wantSteps := callInEval(t, env, tc.cancel, func(env *lisp.LEnv) *lisp.LVal {
-				return env.CallBuiltin(refSortedMap, kv...)
+				return lisp.ValueOrError(env.CallBuiltin(refSortedMap, kv...))
 			})
 			got, gotSteps := callInEval(t, env, tc.cancel, func(env *lisp.LEnv) *lisp.LVal {
-				return env.SortedMapOf(kv...)
+				return lisp.ValueOrError(env.SortedMapOf(kv...))
 			})
 
 			assert.Equal(t, int64(0), wantSteps, "CallBuiltin steps")
@@ -122,12 +122,12 @@ func TestSortedMapOfMatchesBuiltin(t *testing.T) {
 // The error messages SortedMapOf returns are the sorted-map builtin's own.
 func TestSortedMapOfErrorMessages(t *testing.T) {
 	env := newLimitTestEnv(t)
-	v := env.SortedMapOf(lisp.String("a"), lisp.Int(1), lisp.String("b"))
+	v := lisp.ValueOrError(env.SortedMapOf(lisp.String("a"), lisp.Int(1), lisp.String("b")))
 	require.Equal(t, lisp.LError, v.Type)
 	assert.Equal(t, "uneven number of arguments: 3", (*lisp.ErrorVal)(v).ErrorMessage())
 
 	env.Runtime.MaxAlloc = 1
-	v = env.SortedMapOf(lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2))
+	v = lisp.ValueOrError(env.SortedMapOf(lisp.String("a"), lisp.Int(1), lisp.String("b"), lisp.Int(2)))
 	require.Equal(t, lisp.LError, v.Type)
 	assert.Equal(t, "allocation size 2 exceeds maximum (1)", (*lisp.ErrorVal)(v).ErrorMessage())
 }

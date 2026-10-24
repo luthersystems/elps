@@ -31,7 +31,7 @@ const mapOfStack = 16
 // in a fixed array on the stack for up to 16 of them, else in one allocated
 // slice.  MapOf charges no step.  The package-level MapOf is the unchecked
 // form, for Go code that fills a map it just built.
-func (env *LEnv) MapOf(kv ...any) *LVal {
+func (env *LEnv) MapOf(kv ...any) (*LVal, error) {
 	var buf [mapOfStack]*LVal
 	var cells []*LVal
 	if len(kv) <= mapOfStack {

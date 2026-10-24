@@ -71,13 +71,13 @@ type ClosureIssue struct {
 // LEnv.GenSym (trace, curry-function and deftype do), so the names later
 // gensym calls return move on.  It returns an error for a value that is
 // not such a function.
-func (env *LEnv) CheckClosure(fn *LVal) ([]ClosureIssue, *LVal) {
+func (env *LEnv) CheckClosure(fn *LVal) ([]ClosureIssue, error) {
 	if fn == nil || fn.Type != LFun || fn.Builtin() != nil || fn.IsSpecialFun() || fn.funEnv() == nil || len(fn.Cells) == 0 {
-		return nil, env.Errorf("check closure: not a lambda")
+		return nil, errorOf(env.Errorf("check closure: not a lambda"))
 	}
 	pkg := env.Runtime.Registry.Package(fn.Package())
 	if pkg == nil {
-		return nil, env.Errorf("check closure: unknown package: %q", fn.Package())
+		return nil, errorOf(env.Errorf("check closure: unknown package: %q", fn.Package()))
 	}
 	// The check is an evaluation of its own: called from Go it starts a
 	// new step count, as LEnv.Eval does, and the builtin macros it expands
@@ -107,12 +107,12 @@ func (env *LEnv) CheckClosure(fn *LVal) ([]ClosureIssue, *LVal) {
 	form = append(form, Symbol(env.Runtime.Registry.Lang+":lambda"))
 	form = append(form, fn.Cells...)
 	if r := w.Walk(SExpr(form)); r.IsError() {
-		return nil, r
+		return nil, errorOf(r)
 	}
 	// KeepGoing walks a failed expansion as a call, so a limit the
 	// expansion crossed is checked here.
 	if lerr := env.limitViolation(env.evalCtx); lerr != nil {
-		return nil, lerr
+		return nil, errorOf(lerr)
 	}
 	slices.SortFunc(c.issues, func(a, b ClosureIssue) int {
 		return cmp.Or(cmp.Compare(a.Name, b.Name), cmp.Compare(a.Kind, b.Kind), cmp.Compare(a.Args, b.Args))

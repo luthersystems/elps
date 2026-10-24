@@ -8,9 +8,9 @@ func (v *LVal) IsError() bool { return v != nil && errorType(v) }
 
 func errorType(v *LVal) bool { return v.Type == LError }
 
-func (env *LEnv) CheckAlloc(n int) *LVal {
+func (env *LEnv) CheckAlloc(n int) error {
 	if msg := env.Runtime.CheckAlloc(n); msg != "" {
-		return env.Errorf("%s", msg)
+		return (*ErrorVal)(env.Errorf("%s", msg))
 	}
-	return Nil()
+	return nil
 }

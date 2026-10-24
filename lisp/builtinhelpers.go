@@ -95,21 +95,21 @@ func BuiltinGoHelper(name string) (GoHelper, bool) {
 // Mul returns what the * builtin returns for (* xs...): the product of xs,
 // 1 for none, or the same error from the same check.  It checks the
 // evaluation's context first, as CallBuiltin does, and charges no step.
-func (env *LEnv) Mul(xs ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Mul(xs ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return builtinMul(env, QExpr(xs))
+	return valueOf(builtinMul(env, QExpr(xs)))
 }
 
 // Mod returns what the mod builtin returns for (mod a b): the remainder of
 // the ints a and b, or the same error from the same check.  It checks the
 // evaluation's context first, as CallBuiltin does, and charges no step.
-func (env *LEnv) Mod(a, b *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Mod(a, b *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return builtinMod(env, Cells{a, b}.List())
+	return valueOf(builtinMod(env, Cells{a, b}.List()))
 }
 
 // Append returns what the append builtin returns for (append typespec seq
@@ -118,11 +118,11 @@ func (env *LEnv) Mod(a, b *LVal) *LVal {
 // error from the same check, the allocation check included.  It does not
 // change seq; AppendInPlace does, as append! does.  It checks the
 // evaluation's context first, as CallBuiltin does, and charges no step.
-func (env *LEnv) Append(kind SeqKind, seq *LVal, vals ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Append(kind SeqKind, seq *LVal, vals ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return appendValues(env, goSeqSpec(kind), seq, vals)
+	return valueOf(appendValues(env, goSeqSpec(kind), seq, vals))
 }
 
 // MakeSequence returns what the make-sequence builtin returns for
@@ -130,13 +130,13 @@ func (env *LEnv) Append(kind SeqKind, seq *LVal, vals ...*LVal) *LVal {
 // stop, or the same error from the same check, the allocation check
 // included.  It checks the evaluation's context first, as CallBuiltin does,
 // and charges no step.
-func (env *LEnv) MakeSequence(start, stop *LVal, step ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MakeSequence(start, stop *LVal, step ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	args := make([]*LVal, 0, 2+len(step))
 	args = append(args, start, stop)
-	return builtinMakeSequence(env, QExpr(append(args, step...)))
+	return valueOf(builtinMakeSequence(env, QExpr(append(args, step...))))
 }
 
 // StringLess returns what the string< builtin returns for (string< a b):
@@ -145,7 +145,7 @@ func (env *LEnv) MakeSequence(start, stop *LVal, step ...*LVal) *LVal {
 // checks the evaluation's context first, as CallBuiltin does, and charges no
 // step.
 func (env *LEnv) StringLess(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(boolResult(builtinStringLT(env, Cells{a, b}.List())))
@@ -154,7 +154,7 @@ func (env *LEnv) StringLess(a, b *LVal) (bool, error) {
 // StringGreater returns what the string> builtin returns for (string> a b),
 // as StringLess does for string<.
 func (env *LEnv) StringGreater(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(boolResult(builtinStringGT(env, Cells{a, b}.List())))
@@ -178,4 +178,34 @@ func goError[T any](v T, lerr *LVal) (T, error) {
 		return zero, (*ErrorVal)(lerr)
 	}
 	return v, nil
+}
+
+// errorOf returns the error of a check whose body returns an error value or
+// (): nil when lerr is not an error, else lerr as a *ErrorVal.  The nil is
+// untyped, so a caller's err != nil test is false on success.
+func errorOf(lerr *LVal) error {
+	if !lerr.IsError() {
+		return nil
+	}
+	return (*ErrorVal)(lerr)
+}
+
+// valueOf returns the (value, error) pair of a Go form whose result is a
+// Lisp value: v and a nil error when v is not an error, else a nil value and
+// v as a *ErrorVal.
+func valueOf(v *LVal) (*LVal, error) {
+	if v.IsError() {
+		return nil, (*ErrorVal)(v)
+	}
+	return v, nil
+}
+
+// builtinValue returns a builtin's result from the (value, error) pair of a
+// body that keeps them apart: the error when there is one, else the value,
+// which may itself be an error value stored in a sequence or a map.
+func builtinValue(v, lerr *LVal) *LVal {
+	if lerr != nil {
+		return lerr
+	}
+	return v
 }

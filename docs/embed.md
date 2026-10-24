@@ -506,7 +506,10 @@ table, ok := vm.Runtime.VMValue("app:handlers") // this VM's copy
 if !ok {
     return errors.New("no handler table")
 }
-fn := vm.MapLookup(table, lisp.String("ping"))
+fn, err := vm.MapLookup(table, lisp.String("ping"))
+if err != nil {
+    return err
+}
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```
 
@@ -636,13 +639,15 @@ endorsing peers, for one) needs every machine to produce the same bytes. The
 helpers below make that the easy path (luthersystems/elps#745). None of them
 charges a step, so adopting one changes no step count.
 
-One return convention runs through them. A helper that only reports success
-or failure (`BindBuiltins`, `ExtendPackage`, `ArgReader.Err`, the step and
-context helpers) returns `lisp.Nil()` on success and the `LError` otherwise,
-like `ChargeSteps` and package loaders, so `lerr.Type == lisp.LError` is
-always the check and a loader can return the result directly. A helper that
-computes something (`CallBuiltin`, `CallGlobal`, `SortedMapOf`) returns the
-value or the `LError`.
+Two return conventions run through them. A helper that computes something
+(`CallBuiltin`, `CallGlobal`, `SortedMapOf`) returns `(*LVal, error)`, and a
+check (`CheckAlloc`, `CheckContext`, `CheckCallable`, the step helpers)
+returns `error`. The error is the builtin's own `*ErrorVal`, so
+`return lisp.Error(err)` hands the condition, data and stack back to Lisp
+unchanged. A helper that a package loader calls (`BindBuiltins`,
+`ExtendPackage`, `ArgReader.Err`) returns `lisp.Nil()` on success and the
+`LError` otherwise, like package loaders, so a loader can return the result
+directly.
 
 **Calling a language builtin: `lisp.BuiltinFunc` and `LEnv.CallBuiltin`.**
 Reuse a builtin for its exact errors and guards (sealed maps, `MaxAlloc`,
@@ -653,7 +658,7 @@ package initialization, where a misspelled name panics at start-up:
 var builtinAssocMut = lisp.BuiltinFunc("assoc!")
 
 func builtinRemember(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	return env.CallBuiltin(builtinAssocMut, args.Cells[0], lisp.String("seen"), lisp.True())
+	return lisp.ValueOrError(env.CallBuiltin(builtinAssocMut, args.Cells[0], lisp.String("seen"), lisp.True()))
 }
 ```
 
@@ -768,8 +773,8 @@ keys by spelling). Keys arrive by value, and for the interpreter's own map
 backings it allocates nothing in the steady state, unlike `MapKeys` and
 `MapEntries`, which build lists.
 Where `(keys m)` would fail (m not a map, or larger than `MaxAlloc`),
-`MapRange` returns that error with the same message and calls `fn` for
-nothing. It charges no step and makes no context check.
+`MapRange` returns that error, an `*ErrorVal` with the same message, and
+calls `fn` for nothing; otherwise it returns nil. It charges no step and makes no context check.
 
 **Steps and cancellation.** See "Charging steps from a Go builtin" below:
 `env.Step()`, `lisp.ChargeStartedKiB`, `lisp.ChargeRecord` and
@@ -828,15 +833,25 @@ as `v != nil && v.Type == lisp.LError`. **`v.IsSymbol(name)`** reports whether
 `v != nil && v.Type == lisp.LSymbol && v.Str == name`. Both return false for a
 nil `v`.
 
-**Errors as Go errors: `lisp.Result`, `lisp.GoError` and `lisp.ConditionOf`.**
-Every elps helper returns `*LVal`. Code that returns `error` wraps the call:
+**Errors as Go errors: `lisp.Error`, `lisp.ValueOrError`, `lisp.Result`, `lisp.GoError` and `lisp.ConditionOf`.**
+A Go form returns its error as a Go `error`, and a check returns only the
+error:
 
 ```go
-v, err := lisp.Result(env.CallFunction(h)) // (v, nil) or (nil, *ErrorVal)
-if err := lisp.GoError(env.CheckContext()); err != nil { // nil unless an error
-	return nil, err
+v, err := env.CallFunction(h) // (v, nil) or (nil, *ErrorVal)
+if err != nil {
+	return lisp.Error(err) // the same LError, for a builtin's *LVal result
+}
+if err := env.CheckContext(); err != nil {
+	return lisp.Error(err)
 }
 ```
+
+`lisp.ValueOrError(env.CallFunction(h))` gives a form's result as one
+`*LVal`, the value or the `LError`, for a builtin that returns it as is. For
+an `*LVal` that can be an `LError` (an evaluation's result, a builtin
+called directly), `lisp.Result(v)` returns `(v, nil)` or
+`(nil, *ErrorVal)`, and `lisp.GoError(v)` returns only the error.
 
 The error is the `*ErrorVal` itself, so `return nil, err` keeps the
 condition, the data and the stack. A wrap changes what Lisp sees:
@@ -856,7 +871,7 @@ other error. It does not look through wraps, because `handler-bind` does not.
 
 ```go
 var builtinMerge = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
-	keys, err := lisp.Result(env.MapKeys(args.Cells[0]))
+	keys, err := env.MapKeys(args.Cells[0])
 	if err != nil {
 		return nil, err
 	}
@@ -1036,7 +1051,9 @@ decoders; for `&rest`, keep a plain `LBuiltin`. A call allocates nothing
 beyond the body, except the copy of a string into a `lisp.Text`.
 
 **Values as Go types: `lisp.ResultAs[T]`, `lisp.AsMap` and `lisp.Lookup[T]`.**
-`lisp.ResultAs[T](v)` is `Result` followed by a conversion to `T`.
+`lisp.ResultAs[T](env.MapKeys(m))` takes a Go form's `(*LVal, error)` and
+converts the value to `T`; it returns the form's error first, unchanged. For
+a value with no error, pass a nil error: `lisp.ResultAs[string](v, nil)`.
 `lisp.AsMap(v)` checks once that `v` is a sorted-map and returns it as a
 `lisp.MapView`, a struct that holds one pointer. A function that takes a
 `MapView` needs no type check of its own. `lisp.Lookup[T](m, key)` reads one
@@ -1117,32 +1134,56 @@ names the path of the value, such as `items[1].name`, and never renders the
 value. All three make no check, charge no step and use reflection; the doc
 comment of `DecodeInto` lists every conversion.
 
-**The allocation check as a value: `env.CheckAlloc(n)`.** It returns the
-error builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
-maximum (M)"), and `()` otherwise. `Runtime.CheckAlloc` returns the message
-as a string instead. `env.CheckAlloc` makes no context check.
+**The allocation check: `env.CheckAlloc(n)`.** It returns the error
+builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
+maximum (M)"), as an `*ErrorVal`, and nil otherwise. `Runtime.CheckAlloc`
+returns the message as a string instead. `env.CheckAlloc` makes no context
+check.
 
 ```go
-if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
-	return nil, err
+if err := env.CheckAlloc(len(cells)); err != nil {
+	return lisp.Error(err)
 }
 ```
 
-**Go forms return a Go value and an `error`.** A Go form whose result always
-has one type returns that type as a Go value, and the builtin's error as an
-`error`. The error is the builtin's own `*lisp.ErrorVal`, so a `FuncE` or
-`Func*E` body that returns it raises the same condition, message and stack.
-On success the error is an untyped nil, so `err != nil` is false. A builtin
-that returns `*LVal` returns `lisp.Error(err)`, which gives back the
-`*ErrorVal` itself. A Go form whose result can be any value returns `*LVal`;
-read it with `lisp.Result` or `lisp.ResultAs`.
+**Go forms return a Go value and an `error`.** Every Go form returns its
+value and the builtin's error as an `error`. A form whose result always has
+one type returns that type as a Go value (`Length` an `int`, `ToString` a
+`string`); a form whose result can be any value returns `*LVal`. The error is
+the builtin's own `*lisp.ErrorVal`, so a `FuncE` or `Func*E` body that
+returns it raises the same condition, message and stack. On success the
+error is an untyped nil, so `err != nil` is false, and the value is never an
+`LError`. A builtin that returns `*LVal` returns `lisp.Error(err)`, which
+gives back the `*ErrorVal` itself, or `lisp.ValueOrError(...)` around the
+call to return the form's result as it is.
 
 ```go
 n, err := env.Length(seq)
 if err != nil {
 	return lisp.Error(err)
 }
+keys, err := env.MapKeys(m)
+if err != nil {
+	return lisp.Error(err)
+}
 ```
+
+Upgrading from elps v1.90.0 (luthersystems/elps#883): the forms that
+returned `*LVal` (`CallBuiltin`, `CallGlobal`, `CallFunction`, `CallValue`,
+`MapLookup`, `MapPut`, `MapKeys`, `MapOf`, `SortedMapOf`, `First`, `MapSeq`
+and the forms in the table below) return `(*LVal, error)`, and the checks
+(`CheckAlloc`, `CheckContext`, `CheckCallable`, `Step`, `StepEach`,
+`ChargeSteps`, `ChargeStartedKiB`, `ChargeRecord`) return `error`. Replace
+`v := env.F(...); if v.IsError() { return v }` with
+`v, err := env.F(...); if err != nil { return lisp.Error(err) }`, a
+`lisp.Result(env.F(...))` with `env.F(...)`, and a
+`lisp.GoError(env.CheckAlloc(n))` with `env.CheckAlloc(n)`.
+`lisp.ResultAs[T]` takes `(v, err)`: pass the form's call, or `v, nil`.
+`MapSeqFunc`'s `f` returns `(*LVal, error)`, `MapRange` returns `error`,
+`MapSeqCells` returns `([]*LVal, error)`, `RequireNative[T]` returns
+`(T, error)`, `NewLambdaCode` returns `(*LambdaCode, error)` and
+`CheckClosure` returns `([]ClosureIssue, error)`. The values and errors are
+the same as before, and no step count changes.
 
 **`env.ToString(v)` and `env.FormatString(format, values...)`** share the
 bodies of the `to-string` and `format-string` builtins, so they return the
@@ -1184,31 +1225,32 @@ none of these checks.
 **Go forms of more builtins.** Each form below shares the body of its builtin,
 so it returns the same value, or the same error condition and message, with
 the same allocation checks. Each checks the context first, as `CallBuiltin`
-does, and charges no step of its own. A form that returns a Go value returns
-it with an `error`, as above.
+does, and charges no step of its own. Each returns its value with an
+`error`, as above; a form shown without a result type returns
+`(*LVal, error)`.
 
 | Builtin | Go form |
 |---------|---------|
-| `assoc` | `env.MapAssoc(m, k, v) *LVal` (copies `m`; `MapPut` is `assoc!`) |
-| `dissoc`, `dissoc!` | `env.MapDissoc(m, k)` (copies `m`), `env.MapDelete(m, k) *LVal` (changes `m`) |
-| `car`, `cdr`, `rest` | `env.Car(seq)`, `env.Cdr(seq)`, `env.Rest(seq) *LVal` (`cdr` and `rest` return a view of `seq`, as the builtins do) |
+| `assoc` | `env.MapAssoc(m, k, v) (*LVal, error)` (copies `m`; `MapPut` is `assoc!`) |
+| `dissoc`, `dissoc!` | `env.MapDissoc(m, k)` (copies `m`), `env.MapDelete(m, k) (*LVal, error)` (changes `m`) |
+| `car`, `cdr`, `rest` | `env.Car(seq)`, `env.Cdr(seq)`, `env.Rest(seq) (*LVal, error)` (`cdr` and `rest` return a view of `seq`, as the builtins do) |
 | `key?` | `env.MapHasKey(m, k) (bool, error)` |
-| `nth` | `env.Nth(seq, n) *LVal` |
-| `map` | `env.MapSeq(kind, fn, seq) *LVal`; `env.MapSeqFunc(kind, seq, f)` for a Go `f` |
-| `concat` | `env.Concat(kind, seqs...) *LVal` |
-| `zip` | `env.Zip(kind, list, lists...) *LVal` |
-| `slice` | `env.Slice(kind, seq, start, end) *LVal` |
-| `append` | `env.Append(kind, seq, vals...) *LVal` (a new sequence; `seq` is unchanged) |
-| `append!` | `env.AppendInPlace(seq, vals...) *LVal` |
-| `make-sequence` | `env.MakeSequence(start, stop, step...) *LVal` |
-| `copy` | `env.DeepCopy(v) *LVal` |
+| `nth` | `env.Nth(seq, n) (*LVal, error)` |
+| `map` | `env.MapSeq(kind, fn, seq) (*LVal, error)`; `env.MapSeqFunc(kind, seq, f)` for a Go `f` |
+| `concat` | `env.Concat(kind, seqs...) (*LVal, error)` |
+| `zip` | `env.Zip(kind, list, lists...) (*LVal, error)` |
+| `slice` | `env.Slice(kind, seq, start, end) (*LVal, error)` |
+| `append` | `env.Append(kind, seq, vals...) (*LVal, error)` (a new sequence; `seq` is unchanged) |
+| `append!` | `env.AppendInPlace(seq, vals...) (*LVal, error)` |
+| `make-sequence` | `env.MakeSequence(start, stop, step...) (*LVal, error)` |
+| `copy` | `env.DeepCopy(v) (*LVal, error)` |
 | `to-int` | `env.ToInt(v) (int, error)` |
 | `to-bytes` | `env.ToBytes(v) ([]byte, error)` (for bytes `v`, the result is `v`'s own storage: read-only) |
-| `+`, `-`, `*` | `env.Add(xs...)`, `env.Sub(xs...)`, `env.Mul(xs...) *LVal` |
-| `mod` | `env.Mod(a, b) *LVal` |
+| `+`, `-`, `*` | `env.Add(xs...)`, `env.Sub(xs...)`, `env.Mul(xs...) (*LVal, error)` |
+| `mod` | `env.Mod(a, b) (*LVal, error)` |
 | `=`, `<`, `<=`, `>`, `>=` | `env.NumEqual`, `NumLess`, `NumLessEqual`, `NumGreater`, `NumGreaterEqual(a, b) (bool, error)` |
 | `string=`, `string<`, `string>` | `env.StringEqual`, `StringLess`, `StringGreater(a, b) (bool, error)` |
-| `debug-stack` | `env.DebugStack() *LVal` |
+| `debug-stack` | `env.DebugStack() (*LVal, error)` |
 
 The sequence forms take the type specifier as a `lisp.SeqKind` constant, so
 the compiler checks it. The index and the bounds are `*LVal` values, as the
@@ -1271,11 +1313,12 @@ not a function: TYPE"; the message names the type, where the evaluator prints
 the value, so its size is bounded. A macro or special operator raises
 `error`, since Go cannot expand it over the unevaluated arguments.
 **`env.CheckCallable(fn)`** is that check alone, with the context check first,
-for a port that must refuse `fn` before it does the work of the arguments.
-Neither charges a step of its own.
+for a port that must refuse `fn` before it does the work of the arguments; it
+returns the error, or nil. Neither charges a step of its own.
 
 **`env.MapSeqFunc(kind, seq, f)`** returns what `MapSeq` returns when `fn` is
-the Go function `f`: `MapSeqCells`'s check of `seq`, the allocation check
+the Go function `f`, which returns `(*LVal, error)` like a form:
+`MapSeqCells`'s check of `seq`, the allocation check
 (not for `SeqNil`), and one step and context check before each call of `f`,
 in `map`'s order. Use it where the Lisp mapped a lambda whose body the port
 writes in Go, in place of a hand-written loop over `MapSeqCells`.
@@ -1348,8 +1391,8 @@ or without a `v != nil` test before it) to `v.IsSymbol(name)`,
 to `lisp.Vector(x)`, the `Runtime.CheckAlloc` pattern to `env.CheckAlloc`,
 a `CallBuiltin` of `sorted-map` to `env.MapOf` or `env.SortedMapOf`, and
 of any builtin whose `lisp.BuiltinGoHelper` method takes `*LVal` arguments
-and returns one `*LVal` (`assoc!`, `get`, `first`, `car`, `dissoc`, ...) to
-that method, and a
+and returns what `CallBuiltin` returns, `(*LVal, error)` (`assoc!`, `get`,
+`first`, `car`, `dissoc`, ...) to that method, and a
 `lisp.SortedMap()` and `MapSetString` chain to `lisp.MapOf`. Each rewrite
 keeps behaviour identical for a non-nil value; the package doc of
 `elpsvet/idiom` lists the limits. The hints, which have no fix, suggest `Keys`, `All`, `AsMap` and `Lookup`, an
@@ -2023,7 +2066,7 @@ The evaluator charges a native builtin's call like any other (the call form
 and its arguments), but nothing for the work inside it. When a native
 builtin replaces a Lisp loop — a fold over a map, say — work that cost
 hundreds of steps now costs a handful, which silently loosens a
-`WithMaxSteps` budget. `LEnv.ChargeSteps(n int64) *LVal` lets the builtin
+`WithMaxSteps` budget. `LEnv.ChargeSteps(n int64) error` lets the builtin
 charge its work to the same budget. How many steps a unit of work costs is
 the host's choice: one per element is the simplest bound on work; to keep
 an existing budget's behaviour close to the Lisp it replaces, measure that
@@ -2034,8 +2077,8 @@ func builtinSumValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	sum := 0
 	for _, x := range args.Cells[0].Cells {
 		// One step per element: a host-chosen cost for the work done.
-		if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
-			return lerr
+		if err := env.ChargeSteps(1); err != nil {
+			return lisp.Error(err)
 		}
 		sum += x.Int
 	}
@@ -2043,12 +2086,13 @@ func builtinSumValues(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 }
 ```
 
-`ChargeSteps` returns `Nil()` when evaluation may continue and an `LError`
-otherwise; return that error unchanged. It applies the evaluator's own
+`ChargeSteps` returns nil when evaluation may continue and the error, an
+`*ErrorVal`, otherwise; return it unchanged (`lisp.Error(err)` in a builtin
+that returns `*LVal`). It applies the evaluator's own
 accounting `n` times at once:
 
 - With neither a step budget nor a context configured it counts nothing and
-  returns `Nil()`, exactly as the evaluator counts nothing.
+  returns nil, exactly as the evaluator counts nothing.
 - Otherwise `Steps()` and `TotalSteps()` grow by `n`, saturating at
   `math.MaxInt64`. The whole `n` is recorded even when it overruns the budget.
 - Past the budget it returns the evaluator's `step-limit-exceeded` condition
@@ -2102,9 +2146,9 @@ Limits and choices worth knowing:
   round differently. For example, luthersystems/substrate's storage builtins
   charge every started KiB, ceil(n/1024).
 
-Helpers for the common charges return `lisp.Nil()` to continue, or the
-`LError` to return unchanged, as `ChargeSteps` does; check a result with
-`lerr.Type == lisp.LError`. For n steps at once, call `env.ChargeSteps(n)`.
+Helpers for the common charges return nil to continue, or the error to
+return unchanged, as `ChargeSteps` does; check a result with `err != nil`.
+For n steps at once, call `env.ChargeSteps(n)`.
 They charge exactly what their names say, so replacing a hand-written
 `ChargeSteps` call with one changes no count:
 
@@ -2331,7 +2375,8 @@ globals `env` binds now. It returns sorted `lisp.ClosureIssue` values:
 
 A symbol resolves as it does when `fn` runs. A name the code binds, or a
 name the closure's frames bind, is a local. Any other name is a global of
-`fn`'s package, or of the package that qualifies it. The walk is
+`fn`'s package, or of the package that qualifies it. The error is the walk's
+own: a step limit, a cancelled context or a builtin macro that fails. The walk is
 `lisp.CodeWalker`, with heads classified as the evaluator classifies them.
 It expands builtin macros (implemented in Go) and checks their expansions.
 It does not run a macro written in Lisp: it checks the call's argument

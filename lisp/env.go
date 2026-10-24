@@ -1004,9 +1004,9 @@ type LambdaCode struct {
 // NewLambdaCode validates a lambda's formals as Lambda does and returns
 // its code for RestoreLambda.  It evaluates nothing.  A serializer that
 // restores many closures over one body calls it once for that body.
-func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, *LVal) {
+func (env *LEnv) NewLambdaCode(formals *LVal, body []*LVal) (*LambdaCode, error) {
 	if lerr := env.validateLambdaFormals(formals); lerr != nil {
-		return nil, lerr
+		return nil, (*ErrorVal)(lerr)
 	}
 	cells := make([]*LVal, 0, len(body)+1)
 	cells = append(cells, formals)
@@ -1739,6 +1739,26 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 	return nil
 }
 
+// chargeSteps is ChargeSteps as an error value or ().
+func (env *LEnv) chargeSteps(n int64) *LVal {
+	if n <= 0 {
+		if n == 0 {
+			return Nil()
+		}
+		return env.Errorf("negative step charge: %d", n)
+	}
+	r := env.Runtime
+	ctx := env.evalCtx
+	if ctx == nil && r.maxSteps|r.stepBudget == 0 { // both are non-negative: one compare
+		return Nil()
+	}
+	r.addStepsToCurrent(n)
+	if lerr := env.limitViolation(ctx); lerr != nil {
+		return lerr
+	}
+	return Nil()
+}
+
 // ChargeSteps charges n evaluation steps to the current top-level
 // evaluation on behalf of Go code, and reports whether the evaluation may
 // continue.  It exists for native builtins that do work the interpreter would
@@ -1748,19 +1768,18 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 // loosens a WithMaxSteps budget.  Charging per element keeps the budget
 // honest; the cost of a unit of work is the host's choice.
 //
-// ChargeSteps returns Nil() when the evaluation may continue and an LError
-// otherwise, so a builtin checks it the way it checks any other result and
-// returns the error unchanged:
+// ChargeSteps returns nil when the evaluation may continue and the error, a
+// *ErrorVal, otherwise, so a builtin returns the error unchanged:
 //
-//	if lerr := env.ChargeSteps(1); lerr.Type == lisp.LError {
-//		return lerr
+//	if err := env.ChargeSteps(1); err != nil {
+//		return lisp.Error(err)
 //	}
 //
 // The accounting is the evaluator's own, applied n times at once:
 //
 //   - When the runtime has neither a step limit nor a context (the default),
 //     the evaluator counts nothing, and neither does ChargeSteps: it returns
-//     Nil() without touching Steps or TotalSteps.  The check is a couple of
+//     nil without touching Steps or TotalSteps.  The check is a couple of
 //     comparisons.
 //   - Otherwise Steps (and so TotalSteps) grows by n, saturating at
 //     math.MaxInt64 rather than wrapping.  The full n is recorded even when
@@ -1779,7 +1798,7 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 //     does between steps.  A long native loop that charges per element is
 //     therefore also interruptible by a deadline.
 //
-// A zero n is a no-op that returns Nil() and checks nothing.  A negative n is
+// A zero n is a no-op that returns nil and checks nothing.  A negative n is
 // a programming error in the builtin: ChargeSteps returns an ordinary error
 // and changes no counter, whatever limits are configured, rather than
 // refunding steps.
@@ -1797,23 +1816,8 @@ func (env *LEnv) limitViolation(ctx context.Context) *LVal {
 //
 // ChargeSteps bounds work, not time.  It does not make a builtin that blocks
 // inside a single charge responsive to cancellation.
-func (env *LEnv) ChargeSteps(n int64) *LVal {
-	if n <= 0 {
-		if n == 0 {
-			return Nil()
-		}
-		return env.Errorf("negative step charge: %d", n)
-	}
-	r := env.Runtime
-	ctx := env.evalCtx
-	if ctx == nil && r.maxSteps|r.stepBudget == 0 { // both are non-negative: one compare
-		return Nil()
-	}
-	r.addStepsToCurrent(n)
-	if lerr := env.limitViolation(ctx); lerr != nil {
-		return lerr
-	}
-	return Nil()
+func (env *LEnv) ChargeSteps(n int64) error {
+	return errorOf(env.chargeSteps(n))
 }
 
 // Eval evaluates v in the context (scope) of env and returns the resulting

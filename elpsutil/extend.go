@@ -24,9 +24,8 @@ func ExtendPackage(env *lisp.LEnv, name string) *lisp.LVal {
 	if _, cerr := currentPackageName(env); cerr != nil {
 		return cerr
 	}
-	v := env.CallBuiltin(inPackageBuiltin, lisp.Symbol(name))
-	if v.IsError() {
-		return v
+	if _, err := env.CallBuiltin(inPackageBuiltin, lisp.Symbol(name)); err != nil {
+		return lisp.Error(err)
 	}
 	return lisp.Nil()
 }

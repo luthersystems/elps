@@ -17,10 +17,10 @@ func TestCallGlobal(t *testing.T) {
 		&testBuiltinDef{name: "nop0", formals: lisp.Formals(), fn: func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }},
 		&testBuiltinDef{name: "nop1", formals: lisp.Formals("x"), fn: func(*lisp.LEnv, *lisp.LVal) *lisp.LVal { return lisp.Nil() }},
 		&testBuiltinDef{name: "go-twice", formals: lisp.Formals(), fn: func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
-			return env.CallGlobal("user:twice", lisp.Int(21))
+			return lisp.ValueOrError(env.CallGlobal("user:twice", lisp.Int(21)))
 		}},
 		&testBuiltinDef{name: "go-call", formals: lisp.Formals("sym"), fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			return env.CallGlobal(args.Cells[0].Str, lisp.Int(1))
+			return lisp.ValueOrError(env.CallGlobal(args.Cells[0].Str, lisp.Int(1)))
 		}})
 
 	v, goSteps := stepsOf(t, env, `(go-twice)`)

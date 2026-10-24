@@ -52,25 +52,25 @@ func TestSequenceBuiltinsRefuseBadTypespecs(t *testing.T) {
 	for si, ts := range badTypespecs() {
 		spec := func() *lisp.LVal { return badTypespecs()[si] }
 		tsLabel := ts.Type.String() + ":" + ts.String()
-		line("concat/"+tsLabel+"/none", env.CallBuiltin(refConcat, spec()))
+		line("concat/"+tsLabel+"/none", lisp.ValueOrError(env.CallBuiltin(refConcat, spec())))
 		for i, a := range oracle.Values() {
 			label := tsLabel + "/" + a.Label
-			line("concat/"+label, env.CallBuiltin(refConcat, spec(), value(i)))
-			line("zip/"+label, env.CallBuiltin(refZip, spec(), value(i)))
+			line("concat/"+label, lisp.ValueOrError(env.CallBuiltin(refConcat, spec(), value(i))))
+			line("zip/"+label, lisp.ValueOrError(env.CallBuiltin(refZip, spec(), value(i))))
 			for j, bv := range oracle.Values() {
 				pairLabel := label + "/" + bv.Label
-				line("concat/"+pairLabel, env.CallBuiltin(refConcat, spec(), value(i), value(j)))
-				line("zip/"+pairLabel, env.CallBuiltin(refZip, spec(), value(i), value(j), value(i)))
+				line("concat/"+pairLabel, lisp.ValueOrError(env.CallBuiltin(refConcat, spec(), value(i), value(j))))
+				line("zip/"+pairLabel, lisp.ValueOrError(env.CallBuiltin(refZip, spec(), value(i), value(j), value(i))))
 			}
 			for _, start := range []*lisp.LVal{lisp.Int(-1), lisp.Int(0), lisp.Int(1), lisp.Int(5), lisp.String("0")} {
 				for _, end := range []*lisp.LVal{lisp.Int(0), lisp.Int(1), lisp.Int(2), lisp.Int(9), lisp.Float(1)} {
 					line(fmt.Sprintf("slice/%s/%v/%v", label, start, end),
-						env.CallBuiltin(refSlice, spec(), value(i), start, end))
+						lisp.ValueOrError(env.CallBuiltin(refSlice, spec(), value(i), start, end)))
 				}
 			}
 			for fi, fn := range mapFns(env) {
 				line("map/"+label+"/"+fn.Label, inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
-					return env.CallBuiltin(refMap, spec(), mapFns(env)[fi].V, value(i))
+					return lisp.ValueOrError(env.CallBuiltin(refMap, spec(), mapFns(env)[fi].V, value(i)))
 				}))
 			}
 		}

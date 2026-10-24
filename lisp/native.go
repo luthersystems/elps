@@ -84,9 +84,9 @@ func NativeValue[T any](v *LVal) (T, bool) {
 // payload and a nil second value; the second value is nil ON SUCCESS ONLY,
 // so a caller's whole failure branch is
 //
-//	h, lerr := lisp.RequireNative[*Handle](v)
-//	if lerr != nil {
-//		return lerr
+//	h, err := lisp.RequireNative[*Handle](v)
+//	if err != nil {
+//		return lisp.Error(err)
 //	}
 //
 // which is the message the accessor pair was introduced to supply once
@@ -120,7 +120,7 @@ func NativeValue[T any](v *LVal) (T, bool) {
 // this accessor cannot).  Nothing is lost — an error returned up through
 // eval acquires the current stack from LEnv.ErrorAssociate, which fills
 // one in for any error still lacking it.
-func RequireNative[T any](v *LVal) (T, *LVal) {
+func RequireNative[T any](v *LVal) (T, error) {
 	x, ok := NativeValue[T](v)
 	if ok {
 		return x, nil
@@ -129,11 +129,11 @@ func RequireNative[T any](v *LVal) (T, *LVal) {
 	want := reflect.TypeFor[T]()
 	switch {
 	case v == nil:
-		return zero, Errorf("expected native %v value, got nil", want)
+		return zero, (*ErrorVal)(Errorf("expected native %v value, got nil", want))
 	case v.Type != LNative:
-		return zero, Errorf("expected native %v value, got %v", want, v.Type)
+		return zero, (*ErrorVal)(Errorf("expected native %v value, got %v", want, v.Type))
 	default:
-		return zero, Errorf("expected native %v value, got native %T", want, v.Native)
+		return zero, (*ErrorVal)(Errorf("expected native %v value, got native %T", want, v.Native))
 	}
 }
 

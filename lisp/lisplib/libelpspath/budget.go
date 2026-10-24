@@ -151,15 +151,15 @@ func (op *copyOp) chargeIter(n int) error {
 	// of this charge past the allowance costs steps.
 	if excess := op.iterWork - max(before, iterWorkAllowance); excess > 0 {
 		// ChargeSteps also polls the context when there is one.
-		if lerr := env.ChargeSteps(int64(excess)); lerr.IsError() {
-			op.stop = lerr
+		if err := env.ChargeSteps(int64(excess)); err != nil {
+			op.stop = lisp.Error(err)
 			return errIterStopped
 		}
 		return nil
 	}
 	if op.iterWork/iterPollGrain != before/iterPollGrain {
-		if lerr := env.CheckContext(); lerr.IsError() {
-			op.stop = lerr
+		if err := env.CheckContext(); err != nil {
+			op.stop = lisp.Error(err)
 			return errIterStopped
 		}
 	}

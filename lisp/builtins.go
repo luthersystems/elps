@@ -1077,15 +1077,15 @@ func applyTarget(env *LEnv, fun, argtail *LVal) *LVal {
 // builtin, it does not mark the calling frame terminal: a Go frame cannot be
 // unwound, so every call it makes is a plain call, whatever the callee's
 // last form is (luthersystems/elps#852).
-func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	fun := funcallTarget(env, fn)
 	if fun.IsError() {
-		return fun
+		return valueOf(fun)
 	}
-	return env.plainCall(fun, SExpr(Cells(args).Clone()))
+	return valueOf(env.plainCall(fun, SExpr(Cells(args).Clone())))
 }
 
 // ApplyFunction returns what (apply fn args) returns for the list args (pass
@@ -1097,15 +1097,15 @@ func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal {
 //
 // Use it from a Go builtin where the Lisp called apply.  Like CallFunction, it
 // does not mark the calling frame terminal.
-func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) ApplyFunction(fn, args *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	fun := applyTarget(env, fn, args)
 	if fun.IsError() {
-		return fun
+		return valueOf(fun)
 	}
-	return env.plainCall(fun, SExpr(Cells(args.Cells).Clone()))
+	return valueOf(env.plainCall(fun, SExpr(Cells(args.Cells).Clone())))
 }
 
 // CallValue returns what the evaluator returns for the call form (f args...)
@@ -1118,11 +1118,11 @@ func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal {
 // It makes CheckCallable's check, the context check included, then calls fn
 // as CallFunction does.  It charges no step of its own.  It neither
 // writes args nor keeps the slice.
-func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal {
-	if lerr := env.CheckCallable(fn); lerr.IsError() {
-		return lerr
+func (env *LEnv) CallValue(fn *LVal, args ...*LVal) (*LVal, error) {
+	if err := env.CheckCallable(fn); err != nil {
+		return nil, err
 	}
-	return env.plainCall(fn, SExpr(Cells(args).Clone()))
+	return valueOf(env.plainCall(fn, SExpr(Cells(args).Clone())))
 }
 
 // CheckCallable returns the error the evaluator returns for the call form
@@ -1138,20 +1138,20 @@ func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal {
 // size is bounded; the evaluator's message prints fn.  The evaluator expands
 // a macro or special operator in the head over the unevaluated argument
 // forms, which Go cannot do, so CheckCallable refuses one with "error".
-func (env *LEnv) CheckCallable(fn *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) CheckCallable(fn *LVal) error {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return errorOf(lerr)
 	}
 	if fn.IsError() {
-		return fn
+		return errorOf(fn)
 	}
 	if fn.Type != LFun {
-		return env.Errorf("first element of expression is not a function: %v", fn.Type)
+		return errorOf(env.Errorf("first element of expression is not a function: %v", fn.Type))
 	}
 	if fn.IsSpecialFun() {
-		return env.Errorf("first element of expression is not a regular function: %v", fn.FunType)
+		return errorOf(env.Errorf("first element of expression is not a regular function: %v", fn.FunType))
 	}
-	return Nil()
+	return nil
 }
 
 // plainCall calls the regular function fun with args from Go as a plain call:
@@ -1189,7 +1189,7 @@ func builtinToString(env *LEnv, args *LVal) *LVal {
 //
 //	s, err := env.ToString(v)
 func (env *LEnv) ToString(val *LVal) (string, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return "", (*ErrorVal)(lerr)
 	}
 	return goError(toStringValue(env, val))
@@ -1199,7 +1199,7 @@ func (env *LEnv) ToString(val *LVal) (string, error) {
 // so the two cannot differ.  The error is nil when there is none.
 func toStringValue(env *LEnv, val *LVal) (string, *LVal) {
 	if val.Type == LBytes {
-		if lerr := env.CheckAlloc(val.Len()); lerr.IsError() {
+		if lerr := env.checkAlloc(val.Len()); lerr.IsError() {
 			return "", lerr
 		}
 	}
@@ -1210,7 +1210,7 @@ func toStringValue(env *LEnv, val *LVal) (string, *LVal) {
 	// Numbers render into a fixed-size temporary. Strings and symbols
 	// reuse immutable storage; the bytes conversion was checked above.
 	if val.IsNumeric() {
-		if lerr := env.CheckAlloc(len(s)); lerr.IsError() {
+		if lerr := env.checkAlloc(len(s)); lerr.IsError() {
 			return "", lerr
 		}
 	}
@@ -1240,7 +1240,7 @@ func builtinToBytes(env *LEnv, args *LVal) *LVal {
 // itself, or a copy, when the result is a Lisp value.  The error is the
 // builtin's own *ErrorVal.
 func (env *LEnv) ToBytes(val *LVal) ([]byte, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return nil, (*ErrorVal)(lerr)
 	}
 	return goError(toBytesValue(env, val))
@@ -1253,7 +1253,7 @@ func toBytesValue(env *LEnv, val *LVal) ([]byte, *LVal) {
 		return val.Bytes(), nil
 	}
 	if val.Type == LString {
-		if lerr := env.CheckAlloc(len(val.Str)); lerr.IsError() {
+		if lerr := env.checkAlloc(len(val.Str)); lerr.IsError() {
 			return nil, lerr
 		}
 		return []byte(val.Str), nil
@@ -1297,7 +1297,7 @@ func builtinToInt(env *LEnv, args *LVal) *LVal {
 // CallBuiltin does.  It charges no step.  The error is the builtin's own
 // *ErrorVal.
 func (env *LEnv) ToInt(val *LVal) (int, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return 0, (*ErrorVal)(lerr)
 	}
 	return goError(toIntValue(env, val))
@@ -1411,7 +1411,7 @@ func builtinErrorMessage(env *LEnv, args *LVal) *LVal {
 	// No context: the text must not depend on when a cancellation lands.
 	msg := (*ErrorVal)(cond).ErrorMessage()
 	// One step per complete KiB, as the stdlib's string builtins charge.
-	if lerr := env.ChargeSteps(int64(len(msg) / 1024)); lerr.IsError() {
+	if lerr := env.chargeSteps(int64(len(msg) / 1024)); lerr.IsError() {
 		return lerr
 	}
 	return String(msg)
@@ -1428,7 +1428,7 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 	}
 	// One step per started 64 frames: the result is a map per frame, so its
 	// cost grows with the stack's depth rather than with the call count.
-	if lerr := env.ChargeSteps(int64((len(stack.Frames) + 63) / 64)); lerr.IsError() {
+	if lerr := env.chargeSteps(int64((len(stack.Frames) + 63) / 64)); lerr.IsError() {
 		return lerr
 	}
 	frames := make([]*LVal, 0, len(stack.Frames))
@@ -1450,7 +1450,7 @@ func builtinErrorStack(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinCAR(env *LEnv, args *LVal) *LVal {
-	return listCar(env, args.Cells[0])
+	return builtinValue(listCar(env, args.Cells[0]))
 }
 
 // Car returns what the car builtin returns for (car lis): the first element
@@ -1458,24 +1458,24 @@ func builtinCAR(env *LEnv, args *LVal) *LVal {
 // It checks the evaluation's context first, as CallBuiltin does, and
 // charges no step.  The element is returned as it is stored, an error value
 // included, as the builtin returns it.
-func (env *LEnv) Car(lis *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Car(lis *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return listCar(env, lis)
+	return goError(listCar(env, lis))
 }
 
 // listCar is the body of the car builtin and of LEnv.Car, so the two cannot
 // differ.
-func listCar(env *LEnv, v *LVal) *LVal {
+func listCar(env *LEnv, v *LVal) (*LVal, *LVal) {
 	if v.Type != LSExpr {
-		return env.Errorf("argument is not a list: %v", v.Type)
+		return nil, env.Errorf("argument is not a list: %v", v.Type)
 	}
 	if len(v.Cells) == 0 {
-		return Nil()
+		return Nil(), nil
 	}
 
-	return v.Cells[0]
+	return v.Cells[0], nil
 }
 
 func builtinCDR(env *LEnv, args *LVal) *LVal {
@@ -1487,11 +1487,11 @@ func builtinCDR(env *LEnv, args *LVal) *LVal {
 // from the same check.  It checks the evaluation's context first, as
 // CallBuiltin does, and charges no step.  The view shares lis's elements,
 // as the builtin's does.
-func (env *LEnv) Cdr(lis *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Cdr(lis *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return listCdr(env, lis)
+	return valueOf(listCdr(env, lis))
 }
 
 // listCdr is the body of the cdr builtin and of LEnv.Cdr, so the two cannot
@@ -1552,11 +1552,11 @@ func builtinRest(env *LEnv, args *LVal) *LVal {
 // list or a vector after its first element, as a list, () when it has fewer
 // than two, or the same error from the same check.  It checks the
 // evaluation's context first, as CallBuiltin does, and charges no step.
-func (env *LEnv) Rest(seq *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Rest(seq *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return seqRest(env, seq)
+	return valueOf(seqRest(env, seq))
 }
 
 // seqRest is the body of the rest builtin and of LEnv.Rest, so the two cannot
@@ -1577,11 +1577,11 @@ func seqRest(env *LEnv, v *LVal) *LVal {
 }
 
 func builtinFirst(env *LEnv, args *LVal) *LVal {
-	return seqElem(env, args.Cells[0], 0)
+	return builtinValue(seqElem(env, args.Cells[0], 0))
 }
 
 func builtinSecond(env *LEnv, args *LVal) *LVal {
-	return seqElem(env, args.Cells[0], 1)
+	return builtinValue(seqElem(env, args.Cells[0], 1))
 }
 
 // First returns what the first builtin returns for (first seq): the first
@@ -1589,37 +1589,37 @@ func builtinSecond(env *LEnv, args *LVal) *LVal {
 // the same check.  It checks the evaluation's context first, as CallBuiltin
 // does, and charges no step.  An element is returned as it is stored, an
 // error value included, as the builtin returns it.
-func (env *LEnv) First(seq *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) First(seq *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return seqElem(env, seq, 0)
+	return goError(seqElem(env, seq, 0))
 }
 
 // Second returns what the second builtin returns for (second seq), as First
 // does for first.
-func (env *LEnv) Second(seq *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Second(seq *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return seqElem(env, seq, 1)
+	return goError(seqElem(env, seq, 1))
 }
 
 // seqElem is the body of first (i 0) and second (i 1) and of LEnv.First and
 // LEnv.Second, so they cannot differ.
-func seqElem(env *LEnv, list *LVal, i int) *LVal {
+func seqElem(env *LEnv, list *LVal, i int) (*LVal, *LVal) {
 	if !isSeq(list) {
-		return env.Errorf("argument is not a proper sequence: %v", list.Type)
+		return nil, env.Errorf("argument is not a proper sequence: %v", list.Type)
 	}
 	cells := seqCells(list)
 	if len(cells) <= i {
-		return Nil()
+		return Nil(), nil
 	}
-	return cells[i]
+	return cells[i], nil
 }
 
 func builtinNth(env *LEnv, args *LVal) *LVal {
-	return seqNth(env, args.Cells[0], args.Cells[1])
+	return builtinValue(seqNth(env, args.Cells[0], args.Cells[1]))
 }
 
 // Nth returns what the nth builtin returns for (nth seq n): the element at
@@ -1627,30 +1627,30 @@ func builtinNth(env *LEnv, args *LVal) *LVal {
 // from the same check.  It checks the evaluation's context first, as
 // CallBuiltin does, and charges no step.  An element is returned as it is
 // stored, an error value included, as the builtin returns it.
-func (env *LEnv) Nth(seq, n *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Nth(seq, n *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return seqNth(env, seq, n)
+	return goError(seqNth(env, seq, n))
 }
 
 // seqNth is the body of the nth builtin and of LEnv.Nth, so the two cannot
 // differ.
-func seqNth(env *LEnv, list, n *LVal) *LVal {
+func seqNth(env *LEnv, list, n *LVal) (*LVal, *LVal) {
 	if !isSeq(list) {
-		return env.Errorf("first argument is not a proper sequence: %v", list.Type)
+		return nil, env.Errorf("first argument is not a proper sequence: %v", list.Type)
 	}
 	if n.Type != LInt {
-		return env.Errorf("second argument is not an integer: %v", n.Type)
+		return nil, env.Errorf("second argument is not an integer: %v", n.Type)
 	}
 	if n.Int < 0 {
-		return env.Errorf("index cannot be negative: %d", n.Int)
+		return nil, env.Errorf("index cannot be negative: %d", n.Int)
 	}
 	cells := seqCells(list)
 	if len(cells) <= n.Int {
-		return Nil()
+		return Nil(), nil
 	}
-	return cells[n.Int]
+	return cells[n.Int], nil
 }
 
 func builtinMap(env *LEnv, args *LVal) *LVal {
@@ -1671,15 +1671,15 @@ func builtinMap(env *LEnv, args *LVal) *LVal {
 // charges its own steps.  MapSeq charges no other step.  As CallBuiltin
 // does, it keeps the calling frame non-terminal while fn runs, so no tail
 // call in fn returns through the Go caller.
-func (env *LEnv) MapSeq(kind SeqKind, fn, seq *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapSeq(kind SeqKind, fn, seq *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	stack := env.Runtime.Stack
 	if top, terminal := stack.holdNonTerminal(); top >= 0 {
 		defer stack.restoreTerminal(top, terminal)
 	}
-	return mapSeq(env, goSeqSpec(kind), fn, seq)
+	return valueOf(mapSeq(env, goSeqSpec(kind), fn, seq))
 }
 
 // MapSeqCells returns the cells of seq as map reads its sequence argument:
@@ -1692,7 +1692,12 @@ func (env *LEnv) MapSeq(kind SeqKind, fn, seq *LVal) *LVal {
 // The cells are the value's own storage, so treat them as read-only.
 // MapSeqCells charges no step and makes no allocation check; map checks the
 // allocation for its result after this check.
-func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
+func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, error) {
+	return goError(mapSeqCells(env, seq))
+}
+
+// mapSeqCells is MapSeqCells with its error as an error value.
+func mapSeqCells(env *LEnv, seq *LVal) ([]*LVal, *LVal) {
 	cells, ok := seq.SeqCells()
 	if !ok {
 		return nil, env.Errorf("third argument is not a proper sequence: %s", seq.Type)
@@ -1709,25 +1714,30 @@ func (env *LEnv) MapSeqCells(seq *LVal) ([]*LVal, *LVal) {
 // It checks the evaluation's context first.  Before each call of f it charges
 // one step and checks the context, as each of map's calls does, and f
 // charges its own steps.  The first error f returns stops the map and is
-// returned.  f must return a value, never a Go nil.  Any kind but SeqList,
+// returned; lisp.Error(err) gives it to the map, so a *ErrorVal comes back as
+// itself.  On success f must return a value, never a Go nil.  Any kind but SeqList,
 // SeqVector and SeqNil returns "type specifier is invalid: K" after the
 // checks of seq, as MapSeq does.  As MapSeq does, it keeps the calling frame
 // non-terminal while f runs, so no tail call that f evaluates returns
 // through the Go caller.
-func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapSeqFunc(kind SeqKind, seq *LVal, f func(*LVal) (*LVal, error)) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
 	stack := env.Runtime.Stack
 	if top, terminal := stack.holdNonTerminal(); top >= 0 {
 		defer stack.restoreTerminal(top, terminal)
 	}
-	return mapSeqCalls(env, goSeqSpec(kind), seq, func(c *LVal) *LVal {
-		if lerr := env.Step(); lerr.IsError() {
+	return valueOf(mapSeqCalls(env, goSeqSpec(kind), seq, func(c *LVal) *LVal {
+		if lerr := env.step(); lerr.IsError() {
 			return lerr
 		}
-		return f(c)
-	})
+		v, err := f(c)
+		if err != nil {
+			return Error(err)
+		}
+		return v
+	}))
 }
 
 // mapSeq is the body of the map builtin and of LEnv.MapSeq, so the two
@@ -1758,12 +1768,12 @@ func mapSeq(env *LEnv, spec seqSpec, f, lis *LVal) *LVal {
 // LEnv.MapSeqFunc, so the two cannot differ.
 func mapSeqCalls(env *LEnv, spec seqSpec, lis *LVal, call func(c *LVal) *LVal) *LVal {
 	nilReturn := spec.kind == SeqNil
-	seq, lerr := env.MapSeqCells(lis)
+	seq, lerr := mapSeqCells(env, lis)
 	if lerr != nil {
 		return lerr
 	}
 	if !nilReturn {
-		if lerr := env.CheckAlloc(lis.Len()); lerr.IsError() {
+		if lerr := env.checkAlloc(lis.Len()); lerr.IsError() {
 			return lerr
 		}
 	}
@@ -1985,11 +1995,11 @@ func builtinAssoc(env *LEnv, args *LVal) *LVal {
 //
 // Use it where the Lisp called assoc.  MapPut changes m in place, as assoc!
 // does.
-func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapAssoc(m, k, v *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return assocCopy(env, m, k, v)
+	return valueOf(assocCopy(env, m, k, v))
 }
 
 // assocCopy is the body of the assoc builtin and of LEnv.MapAssoc, so the
@@ -2000,7 +2010,7 @@ func assocCopy(env *LEnv, m, k, v *LVal) *LVal {
 	} else if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	} else {
-		if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
+		if lerr := env.checkAlloc(m.Len()); lerr.IsError() {
 			return lerr
 		}
 		mdata, err := m.copyMapData()
@@ -2033,11 +2043,11 @@ func builtinAssocMutate(env *LEnv, args *LVal) *LVal {
 //
 // Use it where the Lisp called assoc!.  A Go builtin that fills a map it
 // just built keeps MapSetLVal, which makes none of these checks.
-func (env *LEnv) MapPut(m, k, v *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapPut(m, k, v *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return assocMutate(env, m, k, v)
+	return valueOf(assocMutate(env, m, k, v))
 }
 
 // assocMutate is the body of the assoc! builtin and of LEnv.MapPut, so the
@@ -2078,7 +2088,7 @@ func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
 		return nil
 	}
 	if !exists {
-		if lerr := env.CheckAlloc(m.Len() + 1); lerr.IsError() {
+		if lerr := env.checkAlloc(m.Len() + 1); lerr.IsError() {
 			return lerr
 		}
 	}
@@ -2097,11 +2107,11 @@ func builtinDissoc(env *LEnv, args *LVal) *LVal {
 //
 // Use it where the Lisp called dissoc.  MapDelete changes m in place, as
 // dissoc! does.
-func (env *LEnv) MapDissoc(m, k *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapDissoc(m, k *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return dissocCopy(env, m, k)
+	return valueOf(dissocCopy(env, m, k))
 }
 
 // dissocCopy is the body of the dissoc builtin and of LEnv.MapDissoc, so the
@@ -2114,7 +2124,7 @@ func dissocCopy(env *LEnv, m, k *LVal) *LVal {
 	} else {
 		// dissoc copies before deleting, so even its temporary full map
 		// must fit the allocation cap (docs/lang.md#allocation-limits).
-		if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
+		if lerr := env.checkAlloc(m.Len()); lerr.IsError() {
 			return lerr
 		}
 		mdata, err := m.copyMapData()
@@ -2142,11 +2152,11 @@ func builtinDissocMutate(env *LEnv, args *LVal) *LVal {
 //
 // Use it where the Lisp called dissoc!.  MapDissoc returns a copy, as dissoc
 // does.
-func (env *LEnv) MapDelete(m, k *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapDelete(m, k *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return dissocMutate(env, m, k)
+	return valueOf(dissocMutate(env, m, k))
 }
 
 // dissocMutate is the body of the dissoc! builtin and of LEnv.MapDelete, so
@@ -2165,7 +2175,7 @@ func dissocMutate(env *LEnv, m, k *LVal) *LVal {
 }
 
 func builtinGet(env *LEnv, args *LVal) *LVal {
-	return mapGet(env, args.Cells[0], args.Cells[1])
+	return builtinValue(mapGet(env, args.Cells[0], args.Cells[1]))
 }
 
 // MapLookup returns what the get builtin returns for (get m k): the value,
@@ -2175,24 +2185,27 @@ func builtinGet(env *LEnv, args *LVal) *LVal {
 // returns the map's own error.  It charges no step.
 //
 // Use it where the Lisp called get.  Lookup makes none of these checks.
-func (env *LEnv) MapLookup(m, k *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapLookup(m, k *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return mapGet(env, m, k)
+	return goError(mapGet(env, m, k))
 }
 
 // mapGet is the body of the get builtin and of LEnv.MapLookup, so the two
 // cannot differ.
-func mapGet(env *LEnv, m, k *LVal) *LVal {
+func mapGet(env *LEnv, m, k *LVal) (*LVal, *LVal) {
 	if m.IsNil() {
-		return Nil()
+		return Nil(), nil
 	}
 	if m.Type != LSortMap {
-		return env.Errorf("first argument is not a map: %s", m.Type)
+		return nil, env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	v, _ := m.Map().Get(k)
-	return v
+	v, ok := m.Map().Get(k)
+	if !ok && v.IsError() { // the map refused k
+		return nil, v
+	}
+	return v, nil
 }
 
 func builtinKeys(env *LEnv, args *LVal) *LVal {
@@ -2207,11 +2220,11 @@ func builtinKeys(env *LEnv, args *LVal) *LVal {
 // no step.
 //
 // Use it where the Lisp called keys.  LVal.MapKeys makes none of these checks.
-func (env *LEnv) MapKeys(m *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) MapKeys(m *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return mapKeys(env, m)
+	return valueOf(mapKeys(env, m))
 }
 
 // mapKeys is the body of the keys builtin and of LEnv.MapKeys, so the two
@@ -2220,7 +2233,7 @@ func mapKeys(env *LEnv, m *LVal) *LVal {
 	if m.Type != LSortMap {
 		return env.Errorf("first argument is not a map: %s", m.Type)
 	}
-	if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
+	if lerr := env.checkAlloc(m.Len()); lerr.IsError() {
 		return lerr
 	}
 	return m.Map().Keys()
@@ -2241,7 +2254,7 @@ func builtinIsKey(env *LEnv, args *LVal) *LVal {
 // *ErrorVal, and nil when there is none.  It checks the evaluation's context
 // first, as CallBuiltin does.  It charges no step.
 func (env *LEnv) MapHasKey(m, k *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(mapHasKey(env, m, k))
@@ -2281,11 +2294,11 @@ func builtinSortedMap(env *LEnv, args *LVal) *LVal {
 // The map stores the values in kv themselves, not copies, so a later in-place
 // change to one of those values also changes the map's entry.  Use it from a Go builtin in place of lisp.SortedMap and MapSet, which skip
 // the allocation and context checks.
-func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) SortedMapOf(kv ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return sortedMapFromPairs(env, kv)
+	return valueOf(sortedMapFromPairs(env, kv))
 }
 
 // sortedMapFromPairs is the body of the sorted-map builtin and of
@@ -2324,11 +2337,11 @@ func builtinConcat(env *LEnv, args *LVal) *LVal {
 // seqs (see SeqKind).  It checks the evaluation's context first, as
 // CallBuiltin does.  It charges no step.  It neither writes seqs nor keeps
 // the slice.
-func (env *LEnv) Concat(kind SeqKind, seqs ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Concat(kind SeqKind, seqs ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return concatValues(env, goSeqSpec(kind), seqs)
+	return valueOf(concatValues(env, goSeqSpec(kind), seqs))
 }
 
 // concatValues is the body of the concat builtin and of LEnv.Concat, so the
@@ -2360,7 +2373,7 @@ func concatString(env *LEnv, rest []*LVal) *LVal {
 		}
 		size += n
 	}
-	if lerr := env.CheckAlloc(size); lerr.IsError() {
+	if lerr := env.checkAlloc(size); lerr.IsError() {
 		return lerr
 	}
 	buf := bytes.NewBuffer(make([]byte, 0, size))
@@ -2393,7 +2406,7 @@ func concatBytes(env *LEnv, rest []*LVal) *LVal {
 		}
 		size += n
 	}
-	if lerr := env.CheckAlloc(size); lerr.IsError() {
+	if lerr := env.checkAlloc(size); lerr.IsError() {
 		return lerr
 	}
 	buf := make([]byte, 0, size)
@@ -2445,7 +2458,7 @@ func concatSeq(env *LEnv, spec seqSpec, rest []*LVal) *LVal {
 		size += v.Len()
 	}
 	if env != nil {
-		if lerr := env.CheckAlloc(size); lerr.IsError() {
+		if lerr := env.checkAlloc(size); lerr.IsError() {
 			return lerr
 		}
 	}
@@ -2637,7 +2650,7 @@ func builtinInsertIndex(env *LEnv, args *LVal) *LVal {
 	if index.Int < 0 || index.Int > list.Len() {
 		return env.Errorf("index out of bounds")
 	}
-	if lerr := env.CheckAlloc(list.Len() + 1); lerr.IsError() {
+	if lerr := env.checkAlloc(list.Len() + 1); lerr.IsError() {
 		return lerr
 	}
 	var v *LVal
@@ -2693,7 +2706,7 @@ func builtinInsertSorted(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("last argument is not a regular function: %v", keyFun.FunType)
 		}
 	}
-	if lerr := env.CheckAlloc(list.Len() + 1); lerr.IsError() {
+	if lerr := env.checkAlloc(list.Len() + 1); lerr.IsError() {
 		return lerr
 	}
 	sortErr := Nil()
@@ -2858,7 +2871,7 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 			return ok
 		}
 		if True(ok) {
-			if lerr := env.CheckAlloc(len(cells) + 1); lerr.IsError() {
+			if lerr := env.checkAlloc(len(cells) + 1); lerr.IsError() {
 				return lerr
 			}
 			cells = append(cells, v)
@@ -2915,7 +2928,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 			return ok
 		}
 		if !True(ok) {
-			if lerr := env.CheckAlloc(len(cells) + 1); lerr.IsError() {
+			if lerr := env.checkAlloc(len(cells) + 1); lerr.IsError() {
 				return lerr
 			}
 			cells = append(cells, v)
@@ -2947,11 +2960,11 @@ func builtinZip(env *LEnv, args *LVal) *LVal {
 // invalid: K" after the checks of the lists and the allocation check (see
 // SeqKind).  It checks the evaluation's context first, as CallBuiltin does.
 // It charges no step.  It neither writes lists nor keeps the slice.
-func (env *LEnv) Zip(kind SeqKind, list *LVal, lists ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Zip(kind SeqKind, list *LVal, lists ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return zipSeqs(env, goSeqSpec(kind), list, lists)
+	return valueOf(zipSeqs(env, goSeqSpec(kind), list, lists))
 }
 
 // zipSeqs is the body of the zip builtin and of LEnv.Zip, so the two cannot
@@ -2975,7 +2988,7 @@ func zipSeqs(env *LEnv, spec seqSpec, first *LVal, rest []*LVal) *LVal {
 		}
 	}
 	width := 1 + len(rest)
-	if lerr := env.CheckAlloc(n * width); lerr.IsError() {
+	if lerr := env.checkAlloc(n * width); lerr.IsError() {
 		return lerr
 	}
 	var v *LVal
@@ -3100,7 +3113,7 @@ func builtinMakeSequence(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	for x := start; lessNumeric(x, stop); {
-		if lerr := env.CheckAlloc(len(list.Cells) + 1); lerr.IsError() {
+		if lerr := env.checkAlloc(len(list.Cells) + 1); lerr.IsError() {
 			return lerr
 		}
 		list.Cells = append(list.Cells, x.Copy())
@@ -3142,7 +3155,7 @@ func builtinReverse(env *LEnv, args *LVal) *LVal {
 	if !isSeq(list) {
 		return env.Errorf("second argument is not a proper sequence: %v", list.Type)
 	}
-	if lerr := env.CheckAlloc(list.Len()); lerr.IsError() {
+	if lerr := env.checkAlloc(list.Len()); lerr.IsError() {
 		return lerr
 	}
 	var v *LVal
@@ -3177,11 +3190,11 @@ func builtinSlice(env *LEnv, args *LVal) *LVal {
 // seq, start and end (see SeqKind).  For a list, a vector or bytes the
 // result shares elements with seq, as the builtin's does.  It checks the
 // evaluation's context first, as CallBuiltin does.  It charges no step.
-func (env *LEnv) Slice(kind SeqKind, seq, start, end *LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Slice(kind SeqKind, seq, start, end *LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return env.sliceSeq(goSeqSpec(kind), seq, start, end)
+	return valueOf(env.sliceSeq(goSeqSpec(kind), seq, start, end))
 }
 
 // sliceSeq is the body of the slice builtin and of LEnv.Slice, so the two
@@ -3231,7 +3244,7 @@ func (env *LEnv) sliceSeq(spec seqSpec, list, start, end *LVal) *LVal {
 		// An invalid kind allocates nothing.  The conversion below refuses it.
 	}
 	if allocates {
-		if lerr := env.CheckAlloc(j - i); lerr.IsError() {
+		if lerr := env.checkAlloc(j - i); lerr.IsError() {
 			return lerr
 		}
 	}
@@ -3444,11 +3457,11 @@ func builtinAppendMutate(env *LEnv, args *LVal) *LVal {
 // vector grows its capacity as append! grows it (GrowCap).  It checks the
 // evaluation's context first, as CallBuiltin does.  It charges no step.  It
 // neither writes vals nor keeps the slice.
-func (env *LEnv) AppendInPlace(seq *LVal, vals ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) AppendInPlace(seq *LVal, vals ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return appendMutate(env, seq, vals)
+	return valueOf(appendMutate(env, seq, vals))
 }
 
 // appendMutate is the body of the append! builtin and of LEnv.AppendInPlace,
@@ -3460,7 +3473,7 @@ func appendMutate(env *LEnv, vec *LVal, vals []*LVal) *LVal {
 	if !isVec(vec) {
 		return env.Errorf("first argument is not a vector: %v", vec.Type)
 	}
-	if lerr := env.CheckAlloc(len(vec.Cells[1].Cells) + len(vals)); lerr.IsError() {
+	if lerr := env.checkAlloc(len(vec.Cells[1].Cells) + len(vals)); lerr.IsError() {
 		return lerr
 	}
 	dims := vec.Cells[0]
@@ -3474,7 +3487,7 @@ func appendMutate(env *LEnv, vec *LVal, vals []*LVal) *LVal {
 func appendMutateBytes(env *LEnv, lbytes *LVal, xs []*LVal) *LVal {
 	b := lbytes.Bytes()
 	xsVal := QExpr(xs)
-	if lerr := env.CheckAlloc(len(b) + xsVal.Len()); lerr.IsError() {
+	if lerr := env.checkAlloc(len(b) + xsVal.Len()); lerr.IsError() {
 		return lerr
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
@@ -3499,7 +3512,7 @@ func builtinAppendBytesMutate(env *LEnv, args *LVal) *LVal {
 		return env.Errorf("first argument is not bytes: %v", lbytes.Type)
 	}
 	b := lbytes.Bytes()
-	if lerr := env.CheckAlloc(len(b) + byteseq.Len()); lerr.IsError() {
+	if lerr := env.checkAlloc(len(b) + byteseq.Len()); lerr.IsError() {
 		return lerr
 	}
 	switch byteseq.Type {
@@ -3540,7 +3553,7 @@ func appendValues(env *LEnv, spec seqSpec, seq *LVal, vals []*LVal) *LVal {
 		return env.Errorf("second argument is not a proper sequence: %v", seq.Type)
 	}
 	cells := seqCells(seq)
-	if lerr := env.CheckAlloc(len(cells) + len(vals)); lerr.IsError() {
+	if lerr := env.checkAlloc(len(cells) + len(vals)); lerr.IsError() {
 		return lerr
 	}
 	switch spec.kind {
@@ -3646,7 +3659,7 @@ func appendToBytes(env *LEnv, lbytes *LVal, xs []*LVal) *LVal {
 	b := clampCapBytes(lbytes.Bytes())
 	xsVal := QExpr(xs)
 	resultLen := len(b) + xsVal.Len()
-	if lerr := env.CheckAlloc(resultLen); lerr.IsError() {
+	if lerr := env.checkAlloc(resultLen); lerr.IsError() {
 		return lerr
 	}
 	err := appendBytes(env, xsVal, func(x byte) {
@@ -3672,7 +3685,7 @@ func builtinAppendBytes(env *LEnv, args *LVal) *LVal {
 	}
 	// The result owns storage even for an empty addition, so the entire
 	// result must fit the per-allocation limit before appending or cloning.
-	if lerr := env.CheckAlloc(lbytes.Len() + byteseq.Len()); lerr.IsError() {
+	if lerr := env.checkAlloc(lbytes.Len() + byteseq.Len()); lerr.IsError() {
 		return lerr
 	}
 	// Clamped so this append cannot write into lbytes' spare capacity
@@ -3737,7 +3750,7 @@ func builtinIsEmpty(env *LEnv, args *LVal) *LVal {
 // step.  The error is the builtin's own *ErrorVal.  LVal.Len makes no check
 // and returns -1 for such a value.
 func (env *LEnv) Length(seq *LVal) (int, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return 0, (*ErrorVal)(lerr)
 	}
 	return goError(seqLength(env, seq))
@@ -3765,7 +3778,7 @@ func builtinCons(env *LEnv, args *LVal) *LVal {
 	if tail.Type != LSExpr {
 		return env.Errorf("second argument is not a list: %s", tail.Type)
 	}
-	if lerr := env.CheckAlloc(tail.Len() + 1); lerr.IsError() {
+	if lerr := env.checkAlloc(tail.Len() + 1); lerr.IsError() {
 		return lerr
 	}
 	cells := make([]*LVal, 0, 1+tail.Len())
@@ -4059,7 +4072,7 @@ func builtinStringEq(env *LEnv, args *LVal) *LVal {
 // none.  It checks the evaluation's context first, as CallBuiltin does.  It
 // charges no step.
 func (env *LEnv) StringEqual(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(stringEqual(env, a, b))
@@ -4123,7 +4136,7 @@ func builtinEqNum(env *LEnv, args *LVal) *LVal {
 // and nil when there is none.  It checks the evaluation's context first, as
 // CallBuiltin does.  It charges no step.
 func (env *LEnv) NumEqual(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(numEqual(env, a, b))
@@ -4132,7 +4145,7 @@ func (env *LEnv) NumEqual(a, b *LVal) (bool, error) {
 // NumLess returns what the < builtin returns for (< a b), as NumEqual does
 // for =.
 func (env *LEnv) NumLess(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(numLess(env, a, b))
@@ -4141,7 +4154,7 @@ func (env *LEnv) NumLess(a, b *LVal) (bool, error) {
 // NumLessEqual returns what the <= builtin returns for (<= a b), as NumEqual
 // does for =.
 func (env *LEnv) NumLessEqual(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(numLessEqual(env, a, b))
@@ -4150,7 +4163,7 @@ func (env *LEnv) NumLessEqual(a, b *LVal) (bool, error) {
 // NumGreater returns what the > builtin returns for (> a b), as NumEqual
 // does for =.
 func (env *LEnv) NumGreater(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(numGreater(env, a, b))
@@ -4159,7 +4172,7 @@ func (env *LEnv) NumGreater(a, b *LVal) (bool, error) {
 // NumGreaterEqual returns what the >= builtin returns for (>= a b), as
 // NumEqual does for =.
 func (env *LEnv) NumGreaterEqual(a, b *LVal) (bool, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return false, (*ErrorVal)(lerr)
 	}
 	return goError(numGreaterEqual(env, a, b))
@@ -4318,11 +4331,11 @@ func builtinAdd(env *LEnv, v *LVal) *LVal {
 // so (env.Add a b c) can differ from adding pairwise.  It checks the
 // evaluation's context first, as CallBuiltin does.  It charges no step.  It
 // neither writes xs nor keeps the slice.
-func (env *LEnv) Add(xs ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Add(xs ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return addNumbers(env, xs)
+	return valueOf(addNumbers(env, xs))
 }
 
 // addNumbers is the body of the + builtin and of LEnv.Add, so the two cannot
@@ -4360,11 +4373,11 @@ func builtinSub(env *LEnv, v *LVal) *LVal {
 // same check.  As Add does, it works in float from the start when any x is a
 // float.  It checks the evaluation's context first, as CallBuiltin does.  It
 // charges no step.  It neither writes xs nor keeps the slice.
-func (env *LEnv) Sub(xs ...*LVal) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) Sub(xs ...*LVal) (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return subNumbers(env, xs)
+	return valueOf(subNumbers(env, xs))
 }
 
 // subNumbers is the body of the - builtin and of LEnv.Sub, so the two cannot
@@ -4569,7 +4582,7 @@ func builtinDebugPrint(env *LEnv, args *LVal) *LVal {
 // after a limit that was never reached. A nil budget means the caller already
 // knows the byte cap is what stopped it.
 func (env *LEnv) renderError(budget *renderBudget) *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return lerr
 	}
 	if budget != nil && budget.remaining <= 0 {
@@ -4587,11 +4600,11 @@ func builtinDebugStack(env *LEnv, args *LVal) *LVal {
 // same check.  The printing honours the allocation limit and stops when the
 // context ends, as the builtin's does.  It checks the evaluation's context
 // first, as CallBuiltin does.  It charges no step.
-func (env *LEnv) DebugStack() *LVal {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return lerr
+func (env *LEnv) DebugStack() (*LVal, error) {
+	if lerr := env.checkContext(); lerr.IsError() {
+		return valueOf(lerr)
 	}
-	return debugStack(env)
+	return valueOf(debugStack(env))
 }
 
 // debugStack is the body of the debug-stack builtin and of LEnv.DebugStack,
@@ -4680,7 +4693,7 @@ func builtinFormatString(env *LEnv, args *LVal) *LVal {
 //
 //	msg, err := env.FormatString("unknown type: {}", k)
 func (env *LEnv) FormatString(f string, fvals ...*LVal) (string, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
+	if lerr := env.checkContext(); lerr.IsError() {
 		return "", (*ErrorVal)(lerr)
 	}
 	return goError(formatString(env, f, fvals))

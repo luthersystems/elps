@@ -31,32 +31,32 @@ func nativeRunner(add3Steps, bumpSteps int64, wrongBump bool) *elpstest.Runner {
 		}
 		return env.BindBuiltins(lisp.BindOpts{},
 			elpsutil.Function("native-add3", lisp.Formals("a", "b", "c"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				if lerr := env.ChargeSteps(add3Steps); lerr.Type == lisp.LError {
-					return lerr
+				if err := env.ChargeSteps(add3Steps); err != nil {
+					return lisp.Error(err)
 				}
-				return env.CallBuiltin(parityAdd, args.Cells...)
+				return lisp.ValueOrError(env.CallBuiltin(parityAdd, args.Cells...))
 			}),
 			elpsutil.Function("native-bump", lisp.Formals("m", "k"), func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				if lerr := env.ChargeSteps(bumpSteps); lerr.Type == lisp.LError {
-					return lerr
+				if err := env.ChargeSteps(bumpSteps); err != nil {
+					return lisp.Error(err)
 				}
 				n := lisp.Int(1)
 				if wrongBump {
 					n = lisp.Int(2)
 				}
 				m, k := args.Cells[0], args.Cells[1]
-				cur := env.CallBuiltin(parityGet, m, k)
-				if cur.Type == lisp.LError {
-					return cur
+				cur, err := env.CallBuiltin(parityGet, m, k)
+				if err != nil {
+					return lisp.Error(err)
 				}
 				if cur.IsNil() {
 					cur = lisp.Int(0)
 				}
-				sum := env.CallBuiltin(parityAdd, cur, n)
-				if sum.Type == lisp.LError {
-					return sum
+				sum, err := env.CallBuiltin(parityAdd, cur, n)
+				if err != nil {
+					return lisp.Error(err)
 				}
-				return env.CallBuiltin(parityAssoc, m, k, sum)
+				return lisp.ValueOrError(env.CallBuiltin(parityAssoc, m, k, sum))
 			}))
 	}}
 }

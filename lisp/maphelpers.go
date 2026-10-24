@@ -46,7 +46,7 @@ var mapRangePool = sync.Pool{New: func() any { return new([]mapRangeEntry) }}
 // When (keys m) would fail, MapRange returns that error, with keys' own
 // message, and calls fn for nothing: m not a sorted-map ("first argument is
 // not a map: <type>") or m larger than the runtime's MaxAlloc.  Otherwise it
-// returns Nil(), or the error a custom backing's Entries method raises.
+// returns nil, or the error a custom backing's Entries method raises.
 //
 // For the interpreter's own map backings MapRange allocates nothing in the
 // steady state: it orders the entries in a recycled buffer rather than
@@ -57,14 +57,14 @@ var mapRangePool = sync.Pool{New: func() any { return new([]mapRangeEntry) }}
 // map but must not rely on seeing its own writes to it.  MapRange charges no
 // evaluation step and makes no context check; a builtin iterating a large map
 // charges what its Lisp counterpart did (LEnv.Step per element, for example).
-func (env *LEnv) MapRange(m *LVal, fn func(key MapKey, val *LVal) bool) *LVal {
+func (env *LEnv) MapRange(m *LVal, fn func(key MapKey, val *LVal) bool) error {
 	if m.Type != LSortMap {
-		return env.Errorf("first argument is not a map: %s", m.Type)
+		return errorOf(env.Errorf("first argument is not a map: %s", m.Type))
 	}
-	if lerr := env.CheckAlloc(m.Len()); lerr.IsError() {
-		return lerr
+	if lerr := env.checkAlloc(m.Len()); lerr.IsError() {
+		return errorOf(lerr)
 	}
-	return m.mapRange(fn)
+	return errorOf(m.mapRange(fn))
 }
 
 // mapRange is MapRange's walk over a sorted-map v.
