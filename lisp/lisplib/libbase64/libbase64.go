@@ -83,8 +83,8 @@ func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	switch v.Type {
 	case lisp.LString:
 		size := decodedOutputLen(v.Str)
-		if lerr := env.CheckAlloc(size); lerr.IsError() {
-			return lerr
+		if err := env.CheckAlloc(size); err != nil {
+			return lisp.Error(err)
 		}
 		b := make([]byte, size)
 		n, err := base64.StdEncoding.Decode(b, []byte(v.Str))
@@ -94,8 +94,8 @@ func builtinDecode(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lisp.Bytes(b[:n])
 	case lisp.LBytes:
 		size := decodedOutputLen(v.Bytes())
-		if lerr := env.CheckAlloc(size); lerr.IsError() {
-			return lerr
+		if err := env.CheckAlloc(size); err != nil {
+			return lisp.Error(err)
 		}
 		b := make([]byte, size)
 		n, err := base64.StdEncoding.Decode(b, v.Bytes())

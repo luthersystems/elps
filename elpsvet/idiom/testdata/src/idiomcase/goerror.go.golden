@@ -6,7 +6,7 @@ func goErr(env *lisp.LEnv, v *lisp.LVal) bool {
 	if v.IsError() { // want `use v.IsError\(\), which is the same test`
 		return true
 	}
-	if !env.CheckAlloc(3).IsError() { // want `use !env.CheckAlloc\(3\).IsError\(\)`
+	if !env.Error("x").IsError() { // want `use !env.Error\("x"\).IsError\(\)`
 		return false
 	}
 	return !v.IsError() // want `use !v.IsError\(\)`

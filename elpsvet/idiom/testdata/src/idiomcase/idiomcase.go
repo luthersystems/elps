@@ -48,6 +48,14 @@ func allocPair(env *lisp.LEnv, n int) (*lisp.LVal, *lisp.LVal) {
 	return nil, nil
 }
 
+// The fix's err would shadow the err this return reads.
+func allocShadow(env *lisp.LEnv, n int, err *lisp.LVal) (*lisp.LVal, *lisp.LVal) {
+	if msg := env.Runtime.CheckAlloc(n); msg != "" {
+		return err, env.Errorf("%s", msg)
+	}
+	return nil, nil
+}
+
 // A different message is not the same error.
 func allocOtherMessage(env *lisp.LEnv, n int) *lisp.LVal {
 	if msg := env.Runtime.CheckAlloc(n); msg != "" {
@@ -116,11 +124,11 @@ func register() []*lisp.LVal {
 }
 
 var builtinWrap = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, error) {
-	keys, err := lisp.Result(env.CallBuiltin(coreKeys, args))
+	keys, err := env.CallBuiltin(coreKeys, args)
 	if err != nil {
 		return nil, fmt.Errorf("keys: %w", err) // want `fmt.Errorf over a Lisp error gives the error condition "error"`
 	}
-	if err := lisp.GoError(env.CheckAlloc(3)); err != nil {
+	if err := env.CheckAlloc(3); err != nil {
 		return nil, errors.New(err.Error()) // want `errors.New\(err.Error\(\)\) over a Lisp error drops its condition`
 	}
 	v, err := helper(env, keys)
@@ -132,7 +140,7 @@ var builtinWrap = lisp.FuncE(func(env *lisp.LEnv, args *lisp.LVal) (*lisp.LVal, 
 
 // helper is scoped: builtinWrap returns its error.
 func helper(env *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) {
-	out, err := lisp.Result(env.CallBuiltin(coreKeys, v))
+	out, err := env.CallBuiltin(coreKeys, v)
 	if err != nil {
 		return nil, fmt.Errorf("inner: %w", err) // want `fmt.Errorf over a Lisp error`
 	}

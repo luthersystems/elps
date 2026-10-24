@@ -63,7 +63,9 @@
 //	copies xs[:i] into out             lisp.Cells(xs).MapIfChanged(f) (hint)
 //	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 //		return env.Errorf("%s", msg)
-//	}                                  env.CheckAlloc(n)              (fix)
+//	}                                  if err := env.CheckAlloc(n);
+//	                                   err != nil { return
+//	                                   lisp.Error(err) }              (fix)
 //	range m.MapKeys().Cells, after an m.Type == lisp.LSortMap check
 //	                                   range m.Keys()                 (hint)
 //	range m.MapEntries().Cells, after an m.Type == lisp.LSortMap check,
@@ -76,7 +78,7 @@
 //	for _, v := range ss { cells = append(cells, lisp.String(v)) }, then
 //	lisp.QExpr(cells), for a []string ss
 //	                                   lisp.StringList(ss)            (hint)
-//	keys := env.CallBuiltin(ref, m) for "keys", then a range over keys.Cells
+//	keys, err := env.CallBuiltin(ref, m) for "keys", then a range over keys.Cells
 //	                                   env.MapRange or ResultAs[lisp.Cells] (hint)
 //	v := args.Cells[i] (or a, b := args.Cells[0], args.Cells[1]) followed
 //	by a v.Type check that returns Errorf
@@ -94,8 +96,8 @@
 //	                                   m := lisp.MapOf("k", v, ...)   (fix)
 //	env.CallBuiltin(ref, args...), where ref is lisp.BuiltinFunc("x") and
 //	lisp.BuiltinGoHelper("x") names an LEnv method M that takes the
-//	builtin's arguments as *LVal values and returns one *LVal (assoc!,
-//	get, first, car, dissoc, ...)
+//	builtin's arguments as *LVal values and returns what CallBuiltin
+//	returns, (*lisp.LVal, error) (assoc!, get, first, car, dissoc, ...)
 //	                                   env.M(args...)                 (fix)
 //	lisp.BuiltinFunc("x") outside a test file, where
 //	lisp.BuiltinGoHelper("x") names Go code for x
@@ -127,7 +129,7 @@
 // make the arity check.  A helper that
 // returns a Go value and an error (ToString, ToInt, ToBytes, FormatString,
 // Length and the comparisons) gets no fix, because its result does not fit
-// the *LVal place of the CallBuiltin call; the ref keeps its hint.
+// the (*LVal, error) place of the CallBuiltin call; the ref keeps its hint.
 //
 // The lisp.MapOf fix keeps the order of the sets, so a duplicate key
 // resolves the same.  It drops a lisp.String, lisp.Int, lisp.Float or
@@ -737,8 +739,8 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 	}
 	errIdx := -1
 	for i, r := range ret.Results {
-		rc, ok := ast.Unparen(r).(*ast.CallExpr)
-		if !ok || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
+		rc, isCall := ast.Unparen(r).(*ast.CallExpr)
+		if !isCall || s.lispMethod(rc, "LEnv") == nil || s.callee(rc).Name() != "Errorf" || len(rc.Args) != 2 {
 			continue
 		}
 		if f, isConst := s.constString(rc.Args[0]); !isConst || f != "%s" {
@@ -747,27 +749,54 @@ func (s *state) checkCheckAlloc(stmt *ast.IfStmt) {
 		if id, isID := ast.Unparen(rc.Args[1]).(*ast.Ident); !isID || id.Name != msgID.Name {
 			continue
 		}
-		recv, ok := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
-		if !ok || s.text(recv.X) != s.text(env) {
+		recv, isSel := ast.Unparen(rc.Fun).(*ast.SelectorExpr)
+		if !isSel || s.text(recv.X) != s.text(env) {
 			continue
 		}
 		errIdx = i
 	}
-	if errIdx < 0 || !s.fixAllowed(stmt, "LEnv.CheckAlloc") {
+	if errIdx < 0 || !s.fixAllowed(stmt, "LEnv.CheckAlloc", "Error") {
 		return
+	}
+	// LEnv.CheckAlloc returns error since elps#883.  The fix is written for
+	// that form only, so a pass against an older lisp gets none.
+	q, ok := s.lispQualifier(stmt.Pos())
+	if !ok || !s.returnsGoError(env, "CheckAlloc") {
+		return
+	}
+	// The new err binding would shadow an err the copied code reads.
+	if usesIdent(call.Args[0], "err") || usesIdent(env, "err") {
+		return
+	}
+	for i, r := range ret.Results {
+		if i != errIdx && usesIdent(r, "err") {
+			return
+		}
 	}
 	results := make([]string, len(ret.Results))
 	for i, r := range ret.Results {
 		if i == errIdx {
-			results[i] = "lerr"
+			results[i] = q + "Error(err)"
 			continue
 		}
 		results[i] = s.text(r)
 	}
-	text := fmt.Sprintf("if lerr := %s.CheckAlloc(%s); lerr.IsError() {\n\treturn %s\n}",
+	text := fmt.Sprintf("if err := %s.CheckAlloc(%s); err != nil {\n\treturn %s\n}",
 		s.operand(env), s.text(call.Args[0]), strings.Join(results, ", "))
 	s.report(stmt, CategoryInfo, "use "+s.operand(env)+".CheckAlloc, which returns the same error",
 		replace(stmt, "Use LEnv.CheckAlloc", text))
+}
+
+// usesIdent reports whether x mentions the identifier name.
+func usesIdent(x ast.Node, name string) bool {
+	found := false
+	ast.Inspect(x, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // mapChecked reports whether an enclosing if statement in stack tests
@@ -1269,17 +1298,30 @@ func (s *state) returnedCallees(body *ast.BlockStmt) []*types.Func {
 }
 
 // lispErrorCall reports whether call returns a Lisp error as its error
-// result: lisp.Result, lisp.ResultAs, lisp.GoError, or a function in
-// sources.
+// result: lisp.Result, lisp.ResultAs, lisp.GoError, an LEnv method whose
+// last result is an error (the Go forms and checks, elps#883; not
+// plainErrorMethods), or a function in sources.
+// plainErrorMethods are the LEnv methods whose error is a Go error, not a
+// builtin's *ErrorVal.
+var plainErrorMethods = map[string]bool{"ParseProgram": true}
+
 func (s *state) lispErrorCall(call *ast.CallExpr, sources map[*types.Func]bool) bool {
 	fn := s.callee(call)
 	if fn == nil {
 		return false
 	}
-	if fn.Pkg() != nil && fn.Pkg().Path() == lispPkgPath && fn.Signature().Recv() == nil {
-		switch fn.Name() {
-		case "Result", "ResultAs", "GoError":
-			return true
+	if fn.Pkg() != nil && fn.Pkg().Path() == lispPkgPath {
+		sig := fn.Signature()
+		if sig.Recv() == nil {
+			switch fn.Name() {
+			case "Result", "ResultAs", "GoError":
+				return true
+			}
+		} else if s.lispMethod(call, "LEnv") != nil && !plainErrorMethods[fn.Name()] {
+			res := sig.Results()
+			if res.Len() > 0 && types.Identical(res.At(res.Len()-1).Type(), types.Universe.Lookup("error").Type()) {
+				return true
+			}
 		}
 	}
 	return sources[fn.Origin()]
@@ -1505,7 +1547,7 @@ func (s *state) mapOfParts(call *ast.CallExpr) ([]string, bool) {
 var specialHelpers = map[string]bool{"format-string": true, "sorted-map": true}
 
 // lvalMethod is an LEnv method that takes only *LVal arguments and returns
-// one *LVal: name, its number of fixed arguments, and whether it takes more
+// what CallBuiltin returns: name, its number of fixed arguments, and whether it takes more
 // as a variadic list.
 type lvalMethod struct {
 	name     string
@@ -1515,9 +1557,10 @@ type lvalMethod struct {
 
 // lvalHelper returns the LEnv method that lisp.BuiltinGoHelper names for
 // the builtin name when the method takes only *LVal arguments (the last may
-// be variadic) and returns one *LVal: then a CallBuiltin call is the method
-// call with the same arguments.  recv is the type of CallBuiltin's receiver.
-func lvalHelper(recv types.Type, name string) (lvalMethod, bool) {
+// be variadic) and returns results, CallBuiltin's results: then a
+// CallBuiltin call is the method call with the same arguments.  recv is the
+// type of CallBuiltin's receiver.
+func lvalHelper(recv types.Type, name string, results *types.Tuple) (lvalMethod, bool) {
 	h, known := lisp.BuiltinGoHelper(name)
 	if !known || h.Method == "" || specialHelpers[name] {
 		return lvalMethod{}, false
@@ -1528,7 +1571,7 @@ func lvalHelper(recv types.Type, name string) (lvalMethod, bool) {
 		return lvalMethod{}, false
 	}
 	sig := fn.Signature()
-	if res := sig.Results(); res.Len() != 1 || !isLValPtr(res.At(0).Type()) {
+	if !types.Identical(sig.Results(), results) {
 		return lvalMethod{}, false
 	}
 	params := sig.Params()
@@ -1550,7 +1593,7 @@ func lvalHelper(recv types.Type, name string) (lvalMethod, bool) {
 
 // checkBuiltinHelper: env.CallBuiltin(ref, ...) where lisp.BuiltinGoHelper
 // names an LEnv method for ref's builtin that takes the builtin's arguments
-// as *LVal values and returns one *LVal.  Each helper checks the context
+// as *LVal values and returns what CallBuiltin returns.  Each helper checks the context
 // first, as CallBuiltin does, and then runs the builtin's own body, so the
 // result and the error are the same (lisp/builtinhelpers_test.go,
 // TestBuiltinGoHelpersMatchBuiltins).
@@ -1561,7 +1604,7 @@ func (s *state) checkBuiltinHelper(call *ast.CallExpr) {
 	}
 	name := s.builtinName(call.Args[0])
 	args := call.Args[1:]
-	method, ok := lvalHelper(m.Signature().Recv().Type(), name)
+	method, ok := lvalHelper(m.Signature().Recv().Type(), name, m.Signature().Results())
 	if !ok {
 		return
 	}
@@ -2310,14 +2353,11 @@ func (s *state) mapCase(stack []ast.Node, m string) bool {
 }
 
 // keysCall returns the map argument when e is env.CallBuiltin(ref, m) for
-// the keys builtin, alone or inside lisp.Result.
+// the keys builtin.
 func (s *state) keysCall(e ast.Expr) ast.Expr {
 	call, ok := ast.Unparen(e).(*ast.CallExpr)
 	if !ok {
 		return nil
-	}
-	if fn := s.lispFunc(call); fn != nil && fn.Name() == "Result" && len(call.Args) == 1 {
-		return s.keysCall(call.Args[0])
 	}
 	if m := s.lispMethod(call, "LEnv"); m == nil || m.Name() != "CallBuiltin" || len(call.Args) != 2 || call.Ellipsis.IsValid() {
 		return nil
@@ -2328,8 +2368,8 @@ func (s *state) keysCall(e ast.Expr) ast.Expr {
 	return call.Args[1]
 }
 
-// checkKeysLoop: keys := env.CallBuiltin(coreKeys, m) (or through
-// lisp.Result), then a later range over keys.Cells in the same block.
+// checkKeysLoop: keys, err := env.CallBuiltin(coreKeys, m), then a later
+// range over keys.Cells in the same block.
 func (s *state) checkKeysLoop(block *ast.BlockStmt) {
 	for i, st := range block.List {
 		assign, ok := st.(*ast.AssignStmt)

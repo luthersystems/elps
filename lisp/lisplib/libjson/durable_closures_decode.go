@@ -4,6 +4,7 @@ package libjson
 
 import (
 	"bytes"
+	"errors"
 	"unicode/utf8"
 
 	"github.com/luthersystems/elps/lisp"
@@ -209,9 +210,13 @@ func (d *durableDecoder) codeValue(depth int) (*lisp.LVal, error) {
 	if cells[0].Type != lisp.LSExpr {
 		return nil, d.errorf("code formals must be a list")
 	}
-	code, lerr := d.env.NewLambdaCode(cells[0], cells[1:])
-	if lerr != nil {
-		return nil, d.errorf("closure: %v", (*lisp.ErrorVal)(lerr).ErrorMessage())
+	code, err := d.env.NewLambdaCode(cells[0], cells[1:])
+	if err != nil {
+		var lerr *lisp.ErrorVal
+		if errors.As(err, &lerr) {
+			return nil, d.errorf("closure: %v", lerr.ErrorMessage())
+		}
+		return nil, d.errorf("closure: %v", err)
 	}
 	ph.Native = &decCode{code: code, cells: cells} //elpsvet:allow-native the decoder's own placeholder for a code object: it lives only in d.objs and is unwrapped by codeRef, so it never reaches a value LoadDurable returns, let alone a template
 	return ph, nil

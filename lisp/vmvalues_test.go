@@ -101,7 +101,7 @@ func TestVMValueColdRuntime(t *testing.T) {
 	require.NotNil(t, unset, "an unset name read a Go nil")
 	assert.True(t, unset.IsNil(), "an unset name reads ()")
 	// A caller that ignores ok reads (), where a Go nil would panic.
-	assert.True(t, env.MapLookup(unset, lisp.String("k")).IsNil())
+	assert.True(t, lisp.ValueOrError(env.MapLookup(unset, lisp.String("k"))).IsNil())
 	rt.DeleteVMValue("x") // removing an unset name does nothing
 
 	v := lisp.Int(7)

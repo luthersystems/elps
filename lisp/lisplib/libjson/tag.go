@@ -427,8 +427,8 @@ func transformBuiltin(env *lisp.LEnv, args *lisp.LVal, transform func(*lisp.LVal
 	}
 	var lerr *lisp.LVal
 	charge := WithTypedCharge(func(kib int) error {
-		if rc := env.ChargeSteps(int64(kib)); rc.IsError() {
-			lerr = rc
+		if err := env.ChargeSteps(int64(kib)); err != nil {
+			lerr = lisp.Error(err)
 			return errTypedCharge
 		}
 		return nil

@@ -82,6 +82,24 @@ func FuncE(f func(env *LEnv, args *LVal) (*LVal, error)) LBuiltin {
 	}
 }
 
+// ValueOrError joins the (value, error) pair of a Go form into the one value
+// a builtin returns: lisp.Error(err) when err is not nil, which returns a
+// *ErrorVal as itself, else v, or () for a nil v.  It is the inverse of
+// Result, for a builtin that returns a Go form's result as it is.
+//
+//	return lisp.ValueOrError(env.MapPut(m, k, v))
+//
+// ValueOrError makes no check and allocates nothing for a *ErrorVal.
+func ValueOrError(v *LVal, err error) *LVal {
+	if err != nil {
+		return Error(err)
+	}
+	if v == nil {
+		return Nil()
+	}
+	return v
+}
+
 // builtinResult converts the (value, error) result of a FuncE or Func*E body
 // to the value its builtin returns.
 func builtinResult(env *LEnv, v *LVal, err error) *LVal {

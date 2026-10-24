@@ -64,7 +64,7 @@ func TestJoinParity(t *testing.T) {
 			ran = true
 			_, err := Join(env, []string{"a", "b"}, ",")
 			assert.Equal(t, lisp.CondContextCancelled, lisp.ConditionOf(err))
-			assert.Equal(t, env.CheckContext().Str, lisp.ConditionOf(err), "Join checks the context first, as CallBuiltin does")
+			assert.Equal(t, lisp.ConditionOf(env.CheckContext()), lisp.ConditionOf(err), "Join checks the context first, as CallBuiltin does")
 			return lisp.Nil()
 		}))
 	env.EvalContext(ctx, lisp.SExpr([]*lisp.LVal{lisp.Symbol("join-probe")}))

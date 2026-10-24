@@ -18,8 +18,8 @@ import (
 // (elpsstep.Charge, luthersystems/substrate#837) before StepEach existed.
 func stepLoop(env *lisp.LEnv, n int64) *lisp.LVal {
 	for range n {
-		if lerr := env.Step(); lerr.Type == lisp.LError {
-			return lerr
+		if err := env.Step(); err != nil {
+			return lisp.Error(err)
 		}
 	}
 	return lisp.Nil()
@@ -78,7 +78,7 @@ func stateOf(env *lisp.LEnv) stepState {
 func requireSameCharge(t *testing.T, c stepEachCase, n int64) {
 	t.Helper()
 	want, got := c.env(t), c.env(t)
-	wantRes, gotRes := stepLoop(want, n), got.StepEach(n)
+	wantRes, gotRes := stepLoop(want, n), lisp.ValueOrError(lisp.Nil(), got.StepEach(n))
 	require.Equal(t, wantRes.Type, gotRes.Type, "%v n=%d: result %v, want %v", c, n, gotRes, wantRes)
 	if wantRes.Type == lisp.LError {
 		assert.Equal(t, wantRes.Str, gotRes.Str, "%v n=%d: condition", c, n)
@@ -131,7 +131,7 @@ func TestStepEachNearMaxInt64(t *testing.T) {
 	// A charge the loop could not finish in a test's lifetime: StepEach
 	// does not loop, so it records all of it when no limit is in reach.
 	env := stepEachCase{maxSteps: math.MaxInt64, ctx: "live"}.env(t)
-	require.True(t, env.StepEach(math.MaxInt64-1).IsNil())
+	require.NoError(t, env.StepEach(math.MaxInt64-1))
 	assert.Equal(t, int64(math.MaxInt64-1), env.Runtime.Steps())
 }
 
@@ -144,13 +144,13 @@ func TestStepEachStopsWhereChargeStepsOvershoots(t *testing.T) {
 	c := stepEachCase{budget: 2, ctx: "live"}
 
 	each := c.env(t)
-	res := each.StepEach(5)
+	res := lisp.ValueOrError(lisp.Nil(), each.StepEach(5))
 	require.Equal(t, lisp.CondStepBudgetExceeded, res.Str)
 	_, used := each.Runtime.StepBudget()
 	assert.Equal(t, int64(3), used, "StepEach stops at the step that overran the budget")
 
 	bulk := c.env(t)
-	res = bulk.ChargeSteps(5)
+	res = lisp.ValueOrError(lisp.Nil(), bulk.ChargeSteps(5))
 	require.Equal(t, lisp.CondStepBudgetExceeded, res.Str)
 	_, used = bulk.Runtime.StepBudget()
 	assert.Equal(t, int64(5), used, "ChargeSteps records the whole charge")
@@ -162,14 +162,14 @@ func TestStepEachStopsWhereChargeStepsOvershoots(t *testing.T) {
 func TestStepEachChecksContext(t *testing.T) {
 	t.Parallel()
 	env := stepEachCase{ctx: "done"}.env(t)
-	res := env.StepEach(4)
+	res := lisp.ValueOrError(lisp.Nil(), env.StepEach(4))
 	require.Equal(t, lisp.LError, res.Type)
 	assert.Equal(t, lisp.CondContextCancelled, res.Str)
 	assert.Contains(t, lisp.GoError(res).Error(), "context cancelled: context canceled")
 	assert.Equal(t, int64(1), env.Runtime.Steps())
 
 	env = stepEachCase{maxSteps: 2, ctx: "done", used: 2}.env(t)
-	res = env.StepEach(4)
+	res = lisp.ValueOrError(lisp.Nil(), env.StepEach(4))
 	assert.Equal(t, lisp.CondStepLimitExceeded, res.Str)
 	assert.Equal(t, int64(3), env.Runtime.Steps())
 }
@@ -181,8 +181,8 @@ func TestStepEachZeroAndNegative(t *testing.T) {
 	t.Parallel()
 	env := stepEachCase{maxSteps: 1, ctx: "done", used: 5}.env(t)
 	before := stateOf(env)
-	assert.True(t, env.StepEach(0).IsNil(), "zero checks nothing, not even an exceeded limit")
-	res := env.StepEach(-1)
+	require.NoError(t, env.StepEach(0), "zero checks nothing, not even an exceeded limit")
+	res := lisp.ValueOrError(lisp.Nil(), env.StepEach(-1))
 	require.Equal(t, lisp.LError, res.Type)
 	assert.Contains(t, lisp.GoError(res).Error(), "negative step charge: -1")
 	assert.Equal(t, before, stateOf(env))
@@ -194,12 +194,12 @@ func TestStepEachZeroAndNegative(t *testing.T) {
 func TestStepEachNoCountingWithoutLimits(t *testing.T) {
 	// Not parallel: AllocsPerRun refuses to run in a parallel test.
 	env := lisp.NewEnv(nil)
-	require.True(t, env.StepEach(1000).IsNil())
+	require.NoError(t, env.StepEach(1000))
 	assert.Zero(t, env.Runtime.TotalSteps())
 
 	live := stepEachCase{maxSteps: math.MaxInt64, budget: math.MaxInt64, ctx: "live"}.env(t)
 	allocs := testing.AllocsPerRun(100, func() {
-		if live.StepEach(16).Type == lisp.LError {
+		if lisp.ValueOrError(lisp.Nil(), live.StepEach(16)).Type == lisp.LError {
 			t.Fatal("unexpected error")
 		}
 	})

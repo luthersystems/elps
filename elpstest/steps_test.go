@@ -16,8 +16,8 @@ import (
 // the argument, or the charge's error.
 func chargeArg(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	n := args.Cells[0]
-	if lerr := env.ChargeSteps(int64(n.Int)); lerr.Type == lisp.LError {
-		return lerr
+	if err := env.ChargeSteps(int64(n.Int)); err != nil {
+		return lisp.Error(err)
 	}
 	return n
 }
@@ -60,7 +60,7 @@ func TestStepsChargedAcrossEvaluations(t *testing.T) {
 func TestNewStepEnvHasNoLimit(t *testing.T) {
 	t.Parallel()
 	env := elpstest.NewStepEnv()
-	require.True(t, env.ChargeSteps(1<<40).IsNil(), "counting is on, with no limit to exceed")
+	require.NoError(t, env.ChargeSteps(1<<40), "counting is on, with no limit to exceed")
 	budget, _ := env.Runtime.StepBudget()
 	assert.Zero(t, budget)
 }

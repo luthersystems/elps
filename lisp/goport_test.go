@@ -139,62 +139,67 @@ type goportHandle struct{ name string }
 type goportStatus string
 
 func TestResultAs(t *testing.T) {
-	s, err := lisp.ResultAs[string](lisp.String("x"))
+	s, err := lisp.ResultAs[string](lisp.String("x"), nil)
 	require.NoError(t, err)
 	assert.Equal(t, "x", s)
 
-	_, err = lisp.ResultAs[string](lisp.Symbol("x"))
+	_, err = lisp.ResultAs[string](lisp.Symbol("x"), nil)
 	assert.Equal(t, "value is not a string: symbol", errMessage(t, err))
 	assert.Equal(t, "error", lisp.ConditionOf(err))
 
-	n, err := lisp.ResultAs[int](lisp.Int(4))
+	n, err := lisp.ResultAs[int](lisp.Int(4), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 4, n)
-	_, err = lisp.ResultAs[int](lisp.Float(4.5))
+	_, err = lisp.ResultAs[int](lisp.Float(4.5), nil)
 	assert.Equal(t, "value is not an integer: float", errMessage(t, err))
 
-	f, err := lisp.ResultAs[float64](lisp.Int(2))
+	f, err := lisp.ResultAs[float64](lisp.Int(2), nil)
 	require.NoError(t, err)
 	assert.InDelta(t, 2.0, f, 0)
 
-	b, err := lisp.ResultAs[bool](lisp.Nil())
+	b, err := lisp.ResultAs[bool](lisp.Nil(), nil)
 	require.NoError(t, err)
 	assert.False(t, b)
-	b, _ = lisp.ResultAs[bool](lisp.Int(0))
+	b, _ = lisp.ResultAs[bool](lisp.Int(0), nil)
 	assert.True(t, b)
 
-	bs, err := lisp.ResultAs[[]byte](lisp.Bytes([]byte("ab")))
+	bs, err := lisp.ResultAs[[]byte](lisp.Bytes([]byte("ab")), nil)
 	require.NoError(t, err)
 	assert.Equal(t, []byte("ab"), bs)
 
 	list := lisp.Cells{lisp.Int(1), lisp.Int(2)}.List()
-	cells, err := lisp.ResultAs[lisp.Cells](list)
+	cells, err := lisp.ResultAs[lisp.Cells](list, nil)
 	require.NoError(t, err)
 	assert.Len(t, cells, 2)
-	plain, err := lisp.ResultAs[[]*lisp.LVal](list)
+	plain, err := lisp.ResultAs[[]*lisp.LVal](list, nil)
 	require.NoError(t, err)
 	assert.Same(t, list.Cells[0], plain[0])
 
-	v, err := lisp.ResultAs[*lisp.LVal](lisp.Int(1))
+	v, err := lisp.ResultAs[*lisp.LVal](lisp.Int(1), nil)
 	require.NoError(t, err)
 	assert.Equal(t, 1, v.Int)
 
 	h := &goportHandle{name: "h"}
-	got, err := lisp.ResultAs[*goportHandle](lisp.NativeOf(h))
+	got, err := lisp.ResultAs[*goportHandle](lisp.NativeOf(h), nil)
 	require.NoError(t, err)
 	assert.Same(t, h, got)
-	_, err = lisp.ResultAs[*goportHandle](lisp.Int(1))
+	_, err = lisp.ResultAs[*goportHandle](lisp.Int(1), nil)
 	assert.Equal(t, "value is not a native *lisp_test.goportHandle: int", errMessage(t, err))
 
 	// A named type reads a native, not a string.
-	_, err = lisp.ResultAs[goportStatus](lisp.String("ok"))
+	_, err = lisp.ResultAs[goportStatus](lisp.String("ok"), nil)
 	require.Error(t, err)
 
 	lerr := lisp.Errorf("boom")
-	_, err = lisp.ResultAs[string](lerr)
+	_, err = lisp.ResultAs[string](lerr, nil)
 	var ev *lisp.ErrorVal
 	require.ErrorAs(t, err, &ev)
 	assert.Same(t, (*lisp.LVal)(ev), lerr)
+
+	// A form's error passes through as is, whatever the value.
+	formErr := (*lisp.ErrorVal)(lisp.Errorf("form failed"))
+	_, err = lisp.ResultAs[string](lisp.String("x"), formErr)
+	assert.Same(t, error(formErr), err)
 }
 
 func TestLookup(t *testing.T) {
@@ -284,7 +289,7 @@ func TestLookupAllocations(t *testing.T) {
 func TestResultAsAllocations(t *testing.T) {
 	v := lisp.String("x")
 	allocs := testing.AllocsPerRun(100, func() {
-		if _, err := lisp.ResultAs[string](v); err != nil {
+		if _, err := lisp.ResultAs[string](v, nil); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -352,21 +357,21 @@ func TestCheckAllocParity(t *testing.T) {
 	for _, k := range []string{"a", "b", "c"} {
 		m.MapSetString(k, lisp.Int(1))
 	}
-	assert.Equal(t, lisp.LSExpr, env.CheckAlloc(2).Type)
-	assert.True(t, env.CheckAlloc(2).IsNil())
+	require.NoError(t, env.CheckAlloc(2))
 
-	want := env.CallBuiltin(goportKeys, m)
-	got := env.CheckAlloc(m.Len())
-	require.True(t, want.IsError())
-	require.True(t, got.IsError())
+	_, werr := env.CallBuiltin(goportKeys, m)
+	err := env.CheckAlloc(m.Len())
+	require.Error(t, werr)
+	require.Error(t, err)
+	want, got := lisp.Error(werr), lisp.Error(err)
 	assert.Equal(t, want.Str, got.Str, "condition")
 	assert.Equal(t, (*lisp.ErrorVal)(want).ErrorMessage(), (*lisp.ErrorVal)(got).ErrorMessage())
 	assert.Equal(t, "allocation size 3 exceeds maximum (2)", (*lisp.ErrorVal)(got).ErrorMessage())
 
 	// No context check: a cancelled context does not change the result.
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		assert.True(t, env.CheckContext().IsError(), "the context is cancelled")
-		assert.True(t, env.CheckAlloc(1).IsNil())
+		require.Error(t, env.CheckContext(), "the context is cancelled")
+		assert.NoError(t, env.CheckAlloc(1))
 	})
 }
 
@@ -416,13 +421,13 @@ func TestToStringParity(t *testing.T) {
 	for _, limit := range []int{0, 4} {
 		env.Runtime.MaxAlloc = limit
 		for _, v := range values {
-			assertSameResult(t, env.CallBuiltin(goportToString, v), goValue(env.ToString(v)), "limit %d, %v", limit, v)
+			assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportToString, v)), goValue(env.ToString(v)), "limit %d, %v", limit, v)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
 		got := goValue(env.ToString(lisp.Int(1)))
-		assertSameResult(t, env.CallBuiltin(goportToString, lisp.Int(1)), got)
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportToString, lisp.Int(1))), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
@@ -449,14 +454,14 @@ func TestFormatStringParity(t *testing.T) {
 		env.Runtime.MaxAlloc = limit
 		for _, tc := range cases {
 			args := append([]*lisp.LVal{lisp.String(tc.format)}, tc.vals...)
-			want := env.CallBuiltin(goportFormatString, args...)
+			want := lisp.ValueOrError(env.CallBuiltin(goportFormatString, args...))
 			assertSameResult(t, want, goValue(env.FormatString(tc.format, tc.vals...)), "limit %d, %q", limit, tc.format)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
 		got := goValue(env.FormatString("{}", lisp.Int(1)))
-		assertSameResult(t, env.CallBuiltin(goportFormatString, lisp.String("{}"), lisp.Int(1)), got)
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportFormatString, lisp.String("{}"), lisp.Int(1))), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
@@ -493,16 +498,16 @@ func TestMapPutParity(t *testing.T) {
 	for _, limit := range []int{0, 2} {
 		env.Runtime.MaxAlloc = limit
 		for _, in := range inputs {
-			want := env.CallBuiltin(goportAssocMutate, in.m(), in.k, in.v)
-			got := env.MapPut(in.m(), in.k, in.v)
+			want := lisp.ValueOrError(env.CallBuiltin(goportAssocMutate, in.m(), in.k, in.v))
+			got := lisp.ValueOrError(env.MapPut(in.m(), in.k, in.v))
 			assertSameResult(t, want, got, "limit %d, %s", limit, in.name)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
 		m := goportMap(1)
-		got := env.MapPut(m, lisp.String("x"), lisp.Int(1))
-		assertSameResult(t, env.CallBuiltin(goportAssocMutate, m, lisp.String("x"), lisp.Int(1)), got)
+		got := lisp.ValueOrError(env.MapPut(m, lisp.String("x"), lisp.Int(1)))
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportAssocMutate, m, lisp.String("x"), lisp.Int(1))), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 		assert.Equal(t, 1, m.Len(), "a cancelled MapPut writes nothing")
 	})
@@ -522,14 +527,14 @@ func TestMapLookupParity(t *testing.T) {
 		{m, lisp.Float(1.5)},
 		{m, lisp.Int(1)},
 	} {
-		assertSameResult(t, env.CallBuiltin(goportGet, tc.m, tc.k), env.MapLookup(tc.m, tc.k), "%v %v", tc.m, tc.k)
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportGet, tc.m, tc.k)), lisp.ValueOrError(env.MapLookup(tc.m, tc.k)), "%v %v", tc.m, tc.k)
 	}
 	env.Runtime.MaxAlloc = 1
-	assertSameResult(t, env.CallBuiltin(goportGet, m, lisp.String("k0")), env.MapLookup(m, lisp.String("k0")), "get makes no allocation check")
+	assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportGet, m, lisp.String("k0"))), lisp.ValueOrError(env.MapLookup(m, lisp.String("k0"))), "get makes no allocation check")
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		got := env.MapLookup(m, lisp.String("k0"))
-		assertSameResult(t, env.CallBuiltin(goportGet, m, lisp.String("k0")), got)
+		got := lisp.ValueOrError(env.MapLookup(m, lisp.String("k0")))
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportGet, m, lisp.String("k0"))), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
@@ -578,11 +583,11 @@ func TestMapIterators(t *testing.T) {
 
 	var want []lisp.MapKey
 	var wantVals []int
-	require.True(t, env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
+	require.NoError(t, env.MapRange(m, func(k lisp.MapKey, v *lisp.LVal) bool {
 		want = append(want, k)
 		wantVals = append(wantVals, v.Int)
 		return true
-	}).IsNil())
+	}))
 
 	var keys []lisp.MapKey
 	for k := range m.Keys() {
@@ -735,7 +740,7 @@ func TestFunc2EAndFunc3E(t *testing.T) {
 		if width <= len(s) {
 			return s, nil
 		}
-		if err := lisp.GoError(env.CheckAlloc(width)); err != nil {
+		if err := lisp.GoError(lisp.ValueOrError(lisp.Nil(), env.CheckAlloc(width))); err != nil {
 			return "", err
 		}
 		return strings.Repeat(" ", width-len(s)) + s, nil
@@ -802,14 +807,14 @@ func TestMapOfParity(t *testing.T) {
 	for _, limit := range []int{0, 2} {
 		env.Runtime.MaxAlloc = limit
 		for _, tc := range cases {
-			want := env.CallBuiltin(goportSortedMap, tc.lv...)
-			assertSameResult(t, want, env.MapOf(tc.kv...), "limit %d, %s", limit, tc.name)
+			want := lisp.ValueOrError(env.CallBuiltin(goportSortedMap, tc.lv...))
+			assertSameResult(t, want, lisp.ValueOrError(env.MapOf(tc.kv...)), "limit %d, %s", limit, tc.name)
 		}
 	}
 	env.Runtime.MaxAlloc = 0
 	inCancelledBuiltin(t, env, func(env *lisp.LEnv) {
-		got := env.MapOf("a", 1)
-		assertSameResult(t, env.CallBuiltin(goportSortedMap, lisp.String("a"), lisp.Int(1)), got)
+		got := lisp.ValueOrError(env.MapOf("a", 1))
+		assertSameResult(t, lisp.ValueOrError(env.CallBuiltin(goportSortedMap, lisp.String("a"), lisp.Int(1))), got)
 		assert.Equal(t, lisp.CondContextCancelled, got.Str)
 	})
 }
@@ -851,10 +856,10 @@ func TestPackageMapOf(t *testing.T) {
 
 func TestMapOfPanicsOnBadTypes(t *testing.T) {
 	env := testEnv(t)
-	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { env.MapOf(1, 2) })
+	assert.PanicsWithValue(t, "lisp.MapOf: key of type int; a key is a string or an *LVal", func() { _, _ = env.MapOf(1, 2) })
 	assert.PanicsWithValue(t, "lisp.MapOf: value of type []string; a value is *LVal, string, int, float64, bool, []byte, []*LVal or Cells",
-		func() { env.MapOf("a", []string{"x"}) })
-	assert.Panics(t, func() { env.MapOf("a", &goportHandle{}) }, "MapOf never makes a native")
+		func() { _, _ = env.MapOf("a", []string{"x"}) })
+	assert.Panics(t, func() { _, _ = env.MapOf("a", &goportHandle{}) }, "MapOf never makes a native")
 }
 
 // TestMapOfAllocations checks that MapOf allocates what SortedMapOf with
@@ -863,10 +868,10 @@ func TestMapOfAllocations(t *testing.T) {
 	env := testEnv(t)
 	id, typ, desc := lisp.String("id"), "kind", lisp.String("d")
 	want := testing.AllocsPerRun(100, func() {
-		env.SortedMapOf(lisp.String("id"), id, lisp.String("type"), lisp.String(typ), lisp.String("description"), desc)
+		_, _ = env.SortedMapOf(lisp.String("id"), id, lisp.String("type"), lisp.String(typ), lisp.String("description"), desc)
 	})
 	got := testing.AllocsPerRun(100, func() {
-		env.MapOf("id", id, "type", typ, "description", desc)
+		_, _ = env.MapOf("id", id, "type", typ, "description", desc)
 	})
 	assert.InDelta(t, want, got, 0)
 }

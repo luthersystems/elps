@@ -47,7 +47,7 @@ func TestCallValueMatchesCallForm(t *testing.T) {
 		if fn.V.Type == lisp.LFun && fn.V.IsSpecialFun() {
 			continue // the evaluator expands it; TestCallValueRefusesSpecialFun
 		}
-		got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.CallValue(fn.V, arg) })
+		got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallValue(fn.V, arg)) })
 		want := evalCallForm(fn.V)
 		if fn.V.Type == lisp.LFun {
 			sameResult(t, "call-value/"+fn.Label, got, want)
@@ -71,7 +71,7 @@ func TestCallValueRefusesSpecialFun(t *testing.T) {
 	for _, name := range []string{"defun", "if"} {
 		fn := env.GetGlobal(lisp.Symbol(name))
 		require.Equal(t, lisp.LFun, fn.Type, name)
-		got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.CallValue(fn, lisp.Int(1)) })
+		got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallValue(fn, lisp.Int(1))) })
 		require.True(t, got.IsError(), name)
 		assert.Equal(t, "error", got.Str, name)
 		assert.Contains(t, (*lisp.ErrorVal)(got).ErrorMessage(), "first element of expression is not a regular function", name)
@@ -87,7 +87,7 @@ func TestCheckCallableChecksContextFirst(t *testing.T) {
 	var got *lisp.LVal
 	inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
 		cancel()
-		got = env.CheckCallable(lisp.Int(3))
+		got = lisp.ValueOrError(lisp.Nil(), env.CheckCallable(lisp.Int(3)))
 		return lisp.Nil()
 	})
 	require.True(t, got.IsError())
@@ -103,8 +103,8 @@ func TestCheckCallableChecksContextFirst(t *testing.T) {
 		return env.Runtime.TotalSteps() - before
 	}
 	assert.Equal(t,
-		steps(func(env *lisp.LEnv) *lisp.LVal { return env.CallFunction(fn, lisp.Int(1)) }),
-		steps(func(env *lisp.LEnv) *lisp.LVal { return env.CallValue(fn, lisp.Int(1)) }))
+		steps(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallFunction(fn, lisp.Int(1))) }),
+		steps(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallValue(fn, lisp.Int(1))) }))
 }
 
 // TestMapSeqFuncMatchesMapSeq holds MapSeqFunc to MapSeq for every kind and
@@ -123,15 +123,15 @@ func TestMapSeqFuncMatchesMapSeq(t *testing.T) {
 					fn := env.GetGlobal(lisp.Symbol(name))
 					before := env.Runtime.TotalSteps()
 					defer func() { gotSteps = env.Runtime.TotalSteps() - before }()
-					return env.MapSeqFunc(kind, oracle.Values()[i].V, func(c *lisp.LVal) *lisp.LVal {
+					return lisp.ValueOrError(env.MapSeqFunc(kind, oracle.Values()[i].V, func(c *lisp.LVal) (*lisp.LVal, error) {
 						return env.CallFunction(fn, c)
-					})
+					}))
 				})
 				want := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
 					fn := env.GetGlobal(lisp.Symbol(name))
 					before := env.Runtime.TotalSteps()
 					defer func() { wantSteps = env.Runtime.TotalSteps() - before }()
-					return env.MapSeq(kind, fn, oracle.Values()[i].V)
+					return lisp.ValueOrError(env.MapSeq(kind, fn, oracle.Values()[i].V))
 				})
 				sameResult(t, label, got, want)
 				assert.Equal(t, wantSteps, gotSteps, label+" steps")
@@ -147,12 +147,12 @@ func TestMapSeqFuncAllocLimit(t *testing.T) {
 	env.Runtime.MaxAlloc = 2
 	seq := lisp.QExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2), lisp.Int(3)})
 	calls := 0
-	f := func(c *lisp.LVal) *lisp.LVal { calls++; return c }
-	got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.MapSeqFunc(lisp.SeqVector, seq, f) })
+	f := func(c *lisp.LVal) (*lisp.LVal, error) { calls++; return c, nil }
+	got := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.MapSeqFunc(lisp.SeqVector, seq, f)) })
 	require.True(t, got.IsError())
 	assert.Contains(t, (*lisp.ErrorVal)(got).ErrorMessage(), "allocation size 3 exceeds maximum")
 	assert.Zero(t, calls)
-	got = inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.MapSeqFunc(lisp.SeqNil, seq, f) })
+	got = inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.MapSeqFunc(lisp.SeqNil, seq, f)) })
 	require.False(t, got.IsError(), "%v", got)
 	assert.Equal(t, 3, calls)
 }

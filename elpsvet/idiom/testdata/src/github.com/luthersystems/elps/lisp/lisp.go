@@ -94,9 +94,10 @@ func FunInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal { return ni
 func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *LVal {
 	return nil
 }
-func GoError(v *LVal) error              { return nil }
-func Result(v *LVal) (*LVal, error)      { return v, nil }
-func ResultAs[T any](v *LVal) (T, error) { var z T; return z, nil }
+func Error(err error) *LVal                         { return &LVal{Type: LError} }
+func GoError(v *LVal) error                         { return nil }
+func Result(v *LVal) (*LVal, error)                 { return v, nil }
+func ResultAs[T any](v *LVal, err error) (T, error) { var z T; return z, nil }
 
 func FuncE(f func(env *LEnv, args *LVal) (*LVal, error)) LBuiltin { return nil }
 func Func1E[A any, R any](f func(env *LEnv, a A) (R, error)) LBuiltin {
@@ -126,28 +127,28 @@ func (v *LVal) SeqCells() ([]*LVal, bool)   { return v.Cells, true }
 func SeqOf[T any](v *LVal) ([]T, bool)     { return nil, false }
 func NativeValue[T any](v *LVal) (T, bool) { var z T; return z, false }
 
-func (env *LEnv) Errorf(format string, a ...any) *LVal                  { return nil }
-func (env *LEnv) Error(msg ...any) *LVal                                { return nil }
-func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) *LVal         { return nil }
-func (env *LEnv) MapLookup(m, k *LVal) *LVal                            { return nil }
-func (env *LEnv) First(seq *LVal) *LVal                                 { return nil }
-func (env *LEnv) Second(seq *LVal) *LVal                                { return nil }
-func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) *LVal            { return nil }
-func (env *LEnv) CallValue(fn *LVal, args ...*LVal) *LVal               { return nil }
-func (env *LEnv) ApplyFunction(fn, args *LVal) *LVal                    { return nil }
-func (env *LEnv) MapPut(m, k, v *LVal) *LVal                            { return nil }
-func (env *LEnv) MapAssoc(m, k, v *LVal) *LVal                          { return nil }
-func (env *LEnv) MapDissoc(m, k *LVal) *LVal                            { return nil }
-func (env *LEnv) MapDelete(m, k *LVal) *LVal                            { return nil }
-func (env *LEnv) Car(lis *LVal) *LVal                                   { return nil }
-func (env *LEnv) Cdr(lis *LVal) *LVal                                   { return nil }
-func (env *LEnv) Rest(seq *LVal) *LVal                                  { return nil }
-func (env *LEnv) ToString(v *LVal) (string, error)                      { return "", nil }
-func (env *LEnv) FormatString(f string, fvals ...*LVal) (string, error) { return "", nil }
+func (env *LEnv) Errorf(format string, a ...any) *LVal                   { return nil }
+func (env *LEnv) Error(msg ...any) *LVal                                 { return nil }
+func (env *LEnv) CallBuiltin(b BuiltinRef, args ...*LVal) (*LVal, error) { return nil, nil }
+func (env *LEnv) MapLookup(m, k *LVal) (*LVal, error)                    { return nil, nil }
+func (env *LEnv) First(seq *LVal) (*LVal, error)                         { return nil, nil }
+func (env *LEnv) Second(seq *LVal) (*LVal, error)                        { return nil, nil }
+func (env *LEnv) CallFunction(fn *LVal, args ...*LVal) (*LVal, error)    { return nil, nil }
+func (env *LEnv) CallValue(fn *LVal, args ...*LVal) (*LVal, error)       { return nil, nil }
+func (env *LEnv) ApplyFunction(fn, args *LVal) (*LVal, error)            { return nil, nil }
+func (env *LEnv) MapPut(m, k, v *LVal) (*LVal, error)                    { return nil, nil }
+func (env *LEnv) MapAssoc(m, k, v *LVal) (*LVal, error)                  { return nil, nil }
+func (env *LEnv) MapDissoc(m, k *LVal) (*LVal, error)                    { return nil, nil }
+func (env *LEnv) MapDelete(m, k *LVal) (*LVal, error)                    { return nil, nil }
+func (env *LEnv) Car(lis *LVal) (*LVal, error)                           { return nil, nil }
+func (env *LEnv) Cdr(lis *LVal) (*LVal, error)                           { return nil, nil }
+func (env *LEnv) Rest(seq *LVal) (*LVal, error)                          { return nil, nil }
+func (env *LEnv) ToString(v *LVal) (string, error)                       { return "", nil }
+func (env *LEnv) FormatString(f string, fvals ...*LVal) (string, error)  { return "", nil }
 
-func (env *LEnv) MapOf(kv ...any) *LVal         { return nil }
-func (env *LEnv) SortedMapOf(kv ...*LVal) *LVal { return nil }
-func Int(n int) *LVal                           { return &LVal{Int: n} }
+func (env *LEnv) MapOf(kv ...any) (*LVal, error)         { return nil, nil }
+func (env *LEnv) SortedMapOf(kv ...*LVal) (*LVal, error) { return nil, nil }
+func Int(n int) *LVal                                    { return &LVal{Int: n} }
 
 func (v *LVal) MapSetString(k string, val *LVal) *LVal { return v }
 func (v *LVal) MapSet(k any, val *LVal) *LVal          { return v }

@@ -1280,7 +1280,7 @@ func chargeDuplicated(env *LEnv, rebuilt *int, n int) *LVal {
 	before := *rebuilt
 	*rebuilt += n
 	if charge := *rebuilt - max(before, quasiquoteRebuildAllowance); charge > 0 {
-		if lerr := env.ChargeSteps(int64(charge)); lerr.IsError() {
+		if lerr := env.chargeSteps(int64(charge)); lerr.IsError() {
 			return lerr
 		}
 	}

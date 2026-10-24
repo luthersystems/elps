@@ -132,9 +132,8 @@ func lvalHelper(h lisp.GoHelper) (reflect.Method, int, bool) {
 		}
 	}
 	switch {
-	case ft.NumOut() == 1 && ft.Out(0) == lvalType:
 	case ft.NumOut() == 2 && ft.Out(1) == errType &&
-		(ft.Out(0) == boolType || ft.Out(0) == intType || ft.Out(0) == strType || ft.Out(0) == bytesType):
+		(ft.Out(0) == lvalType || ft.Out(0) == boolType || ft.Out(0) == intType || ft.Out(0) == strType || ft.Out(0) == bytesType):
 	default:
 		return m, 0, false
 	}
@@ -142,20 +141,23 @@ func lvalHelper(h lisp.GoHelper) (reflect.Method, int, bool) {
 }
 
 // callHelper calls m on env with args and returns its result as the
-// builtin returns it: the error as the *lisp.ErrorVal it is, and a Go bool,
-// int, string or []byte as that Lisp value.
+// builtin returns it: the error as the *lisp.ErrorVal it is, a Lisp value as
+// it is, and a Go bool, int, string or []byte as that Lisp value.
 func callHelper(env *lisp.LEnv, m reflect.Method, args []*lisp.LVal) *lisp.LVal {
 	in := []reflect.Value{reflect.ValueOf(env)}
 	for _, a := range args {
 		in = append(in, reflect.ValueOf(a))
 	}
 	out := m.Func.Call(in)
-	if len(out) == 1 {
-		v, _ := out[0].Interface().(*lisp.LVal)
-		return v
-	}
 	err, _ := out[1].Interface().(error)
 	switch v := out[0].Interface().(type) {
+	case *lisp.LVal:
+		// A form returns any error as its error, so the pair is (nil, err)
+		// or a value that is not an error with a nil err (elps#883).
+		if (err != nil) != (v == nil) || v.IsError() {
+			return lisp.Errorf("%s returned the pair (%v, %v)", m.Name, v, err)
+		}
+		return lisp.ValueOrError(v, err)
 	case bool:
 		return goValue(v, err)
 	case int:
@@ -256,7 +258,7 @@ func TestBuiltinGoHelpersMatchBuiltins(t *testing.T) {
 		ref := lisp.BuiltinFunc(name)
 		for _, idx := range helperArgs(nfixed, m.Type.IsVariadic()) {
 			wantArgs, gotArgs := argValues(idx), argValues(idx)
-			want := env.CallBuiltin(ref, wantArgs...)
+			want := lisp.ValueOrError(env.CallBuiltin(ref, wantArgs...))
 			got := callHelper(env, m, gotArgs)
 			label := name + "/" + argLabel(idx)
 			sameValue(t, label, got, want)
@@ -288,7 +290,7 @@ func TestBuiltinGoHelpersCancelled(t *testing.T) {
 		ref := lisp.BuiltinFunc(name)
 		oracle.Sweep(t, name,
 			func(env *lisp.LEnv) *lisp.LVal { return callHelper(env, m, argValues(idx)) },
-			func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(ref, argValues(idx)...) })
+			func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallBuiltin(ref, argValues(idx)...)) })
 	}
 }
 
@@ -318,8 +320,8 @@ func TestAppendMatchesBuiltin(t *testing.T) {
 			for _, extra := range [][]int{{}, {i % 12}, {i % 12, (i + 1) % 12}} {
 				idx := append([]int{i}, extra...)
 				wantArgs, gotArgs := argValues(idx), argValues(idx)
-				want := env.CallBuiltin(ref, append([]*lisp.LVal{spec}, wantArgs...)...)
-				got := env.Append(kind, gotArgs[0], gotArgs[1:]...)
+				want := lisp.ValueOrError(env.CallBuiltin(ref, append([]*lisp.LVal{spec}, wantArgs...)...))
+				got := lisp.ValueOrError(env.Append(kind, gotArgs[0], gotArgs[1:]...))
 				label := kind.String() + "/" + argLabel(idx)
 				sameValue(t, label, got, want)
 				for j := range wantArgs {
@@ -329,9 +331,11 @@ func TestAppendMatchesBuiltin(t *testing.T) {
 		}
 	}
 	oracle.Sweep(t, "append",
-		func(env *lisp.LEnv) *lisp.LVal { return env.Append(lisp.SeqList, lisp.Nil(), lisp.Int(1)) },
 		func(env *lisp.LEnv) *lisp.LVal {
-			return env.CallBuiltin(ref, lisp.Symbol("list"), lisp.Nil(), lisp.Int(1))
+			return lisp.ValueOrError(env.Append(lisp.SeqList, lisp.Nil(), lisp.Int(1)))
+		},
+		func(env *lisp.LEnv) *lisp.LVal {
+			return lisp.ValueOrError(env.CallBuiltin(ref, lisp.Symbol("list"), lisp.Nil(), lisp.Int(1)))
 		})
 }
 
@@ -406,7 +410,7 @@ func TestTypePredicateNotes(t *testing.T) {
 		assert.Equal(t, p.note, h.Note, "%s: the Note and typePredicates differ", name)
 		ref := lisp.BuiltinFunc(name)
 		for _, v := range predicateInputs() {
-			want := env.CallBuiltin(ref, v.V)
+			want := lisp.ValueOrError(env.CallBuiltin(ref, v.V))
 			require.False(t, want.IsError(), name)
 			assert.Equal(t, lisp.True(want), p.pred(v.V), "%s %s", name, v.Label)
 		}

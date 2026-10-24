@@ -26,8 +26,8 @@ func ChargeKiB(env *lisp.LEnv, n int) *lisp.LVal {
 	if n < 1024 {
 		return nil
 	}
-	if lerr := env.ChargeSteps(int64(n >> 10)); lerr.IsError() {
-		return lerr
+	if err := env.ChargeSteps(int64(n >> 10)); err != nil {
+		return lisp.Error(err)
 	}
 	return nil
 }

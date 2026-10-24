@@ -16,8 +16,8 @@ func checkClosure(t *testing.T, env *lisp.LEnv, src string) []string {
 	t.Helper()
 	fn := env.LoadString("test", src)
 	require.NoError(t, lisp.GoError(fn))
-	issues, lerr := env.CheckClosure(fn)
-	require.Nil(t, lerr)
+	issues, err := env.CheckClosure(fn)
+	require.NoError(t, err)
 	out := make([]string, len(issues))
 	for i, is := range issues {
 		out[i] = is.Message
@@ -94,12 +94,12 @@ func TestCheckClosureCurrentBindings(t *testing.T) {
 (lambda () (helper 1))`)
 	require.NoError(t, lisp.GoError(fn))
 	require.NoError(t, lisp.GoError(env.LoadString("test", `(in-package 'user)`)))
-	issues, lerr := env.CheckClosure(fn)
-	require.Nil(t, lerr)
+	issues, err := env.CheckClosure(fn)
+	require.NoError(t, err)
 	assert.Empty(t, issues)
 	require.NoError(t, lisp.GoError(env.LoadString("test", `(in-package 'other) (defun helper (a b) a) (in-package 'user)`)))
-	issues, lerr = env.CheckClosure(fn)
-	require.Nil(t, lerr)
+	issues, err = env.CheckClosure(fn)
+	require.NoError(t, err)
 	assert.Equal(t, []lisp.ClosureIssue{{Name: "helper", Kind: lisp.ClosureArity, Args: 1, Message: "calls helper with 1 argument(s); helper takes 2"}}, issues)
 }
 
@@ -112,13 +112,13 @@ func TestCheckClosureRefuses(t *testing.T) {
 		if v.Type == lisp.LSymbol {
 			v = env.Get(v)
 		}
-		_, lerr := env.CheckClosure(v)
+		_, err := env.CheckClosure(v)
 		if v.Type == lisp.LFun && v.Builtin() == nil {
-			assert.Nil(t, lerr)
+			require.NoError(t, err)
 			continue
 		}
-		require.NotNil(t, lerr, src)
-		assert.Contains(t, lerr.String(), "not a lambda")
+		require.Error(t, err, src)
+		assert.Contains(t, err.Error(), "not a lambda")
 	}
 }
 
@@ -130,13 +130,13 @@ func TestCheckClosureChargesSteps(t *testing.T) {
 	require.NoError(t, lisp.GoError(fn))
 	env.Runtime.SetStepBudget(1000)
 	before := env.Runtime.TotalSteps()
-	_, lerr := env.CheckClosure(fn)
-	require.Nil(t, lerr)
+	_, err := env.CheckClosure(fn)
+	require.NoError(t, err)
 	assert.Equal(t, int64(8), env.Runtime.TotalSteps()-before, "one step per list walked")
 	env.Runtime.SetStepBudget(2)
-	_, lerr = env.CheckClosure(fn)
-	require.NotNil(t, lerr)
-	assert.Contains(t, lerr.String(), "step budget exceeded")
+	_, err = env.CheckClosure(fn)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "step budget exceeded")
 }
 
 // Steps an earlier evaluation left do not count against the check's step
@@ -147,19 +147,19 @@ func TestCheckClosureStepLimit(t *testing.T) {
 	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(1000)(env)))
 	fn := env.LoadString("test", `(lambda (m) (get-default m 1 (list (list (list 1)))) (get-default m 2 (list (list (list 2)))) (list (list (list 3))))`)
 	require.NoError(t, lisp.GoError(fn))
-	_, lerr := env.CheckClosure(fn)
-	require.Nil(t, lerr)
+	_, err := env.CheckClosure(fn)
+	require.NoError(t, err)
 	steps := env.Runtime.Steps()
 	require.Greater(t, steps, int64(10))
 
 	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(steps)(env)))
 	require.NoError(t, lisp.GoError(env.LoadString("test", `(dotimes (i 3) i)`)))
 	require.Positive(t, env.Runtime.Steps())
-	_, lerr = env.CheckClosure(fn)
-	require.Nil(t, lerr, "the earlier evaluation's steps do not count")
+	_, err = env.CheckClosure(fn)
+	require.NoError(t, err, "the earlier evaluation's steps do not count")
 
 	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(steps-1)(env)))
-	_, lerr = env.CheckClosure(fn)
-	require.NotNil(t, lerr, "a macro expansion does not reset the count")
-	assert.Contains(t, lerr.String(), "step limit exceeded")
+	_, err = env.CheckClosure(fn)
+	require.Error(t, err, "a macro expansion does not reset the count")
+	assert.Contains(t, err.Error(), "step limit exceeded")
 }

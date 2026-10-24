@@ -6,9 +6,9 @@ import "math"
 
 // Step and context helpers for Go builtins (luthersystems/elps#745).
 //
-// Every helper here returns Nil() to continue, or the LError the builtin must
-// return as is -- the convention of LEnv.ChargeSteps, so a result is checked
-// with `lerr.Type == LError` and never dereferences Go nil.  None of them
+// Every helper here returns a nil error to continue, or the builtin's error
+// as a *ErrorVal, which lisp.Error(err) returns as the builtin's value -- the
+// convention of LEnv.ChargeSteps (luthersystems/elps#883).  None of them
 // charges anything beyond what its name says, so replacing a hand-written
 // ChargeSteps call with one of them changes no step count.
 //
@@ -22,18 +22,18 @@ import "math"
 // ChargeStartedKiB charges env one step per started KiB of n bytes of native
 // work: ceil(n/1024).  0 bytes cost nothing, 1..1024 cost one step, 1025 cost
 // two.
-func ChargeStartedKiB(env *LEnv, n int) *LVal {
+func ChargeStartedKiB(env *LEnv, n int) error {
 	if n <= 0 {
-		return Nil()
+		return nil
 	}
-	return env.ChargeSteps(int64(startedKiB(n)))
+	return errorOf(env.chargeSteps(int64(startedKiB(n))))
 }
 
 // ChargeRecord charges env for one record of n value bytes:
 // max(1, ceil(n/1024)).  A record of up to 1 KiB, empty included, costs
 // exactly one step; a larger one costs what ChargeStartedKiB(n) does.
-func ChargeRecord(env *LEnv, n int) *LVal {
-	return env.ChargeSteps(int64(max(1, startedKiB(n))))
+func ChargeRecord(env *LEnv, n int) error {
+	return errorOf(env.chargeSteps(int64(max(1, startedKiB(n)))))
 }
 
 func startedKiB(n int) int {
@@ -43,11 +43,44 @@ func startedKiB(n int) int {
 	return (n-1)/1024 + 1 // (n+1023)/1024 without overflow near MaxInt
 }
 
+// step is Step as an error value or ().
+func (env *LEnv) step() *LVal {
+	return env.chargeSteps(1)
+}
+
 // Step charges env one evaluation step, the per-element charge of a native
 // loop that replaces a Lisp loop.  Like LEnv.ChargeSteps it also reports a
 // done context, so a long native loop stays interruptible.
-func (env *LEnv) Step() *LVal {
-	return env.ChargeSteps(1)
+func (env *LEnv) Step() error {
+	return errorOf(env.step())
+}
+
+// stepEach is StepEach as an error value or ().
+func (env *LEnv) stepEach(n int64) *LVal {
+	if n <= 0 {
+		return env.chargeSteps(n)
+	}
+	r := env.Runtime
+	ctx := env.evalCtx
+	if ctx == nil && r.maxSteps|r.stepBudget == 0 { // the fast path of ChargeSteps
+		return Nil()
+	}
+	k := n
+	if ctx != nil && ctx.Err() != nil {
+		k = 1 // the first Step charges itself, then reports the context
+	}
+	if r.maxSteps > 0 {
+		k = min(k, stepsToOverrun(r.steps, r.stepsOverflowed, r.maxSteps))
+	}
+	if r.stepBudget > 0 {
+		k = min(k, stepsToOverrun(r.stepBudgetUsed, r.stepBudgetOverflowed, r.stepBudget))
+	}
+	// What ChargeSteps(k) does past its checks, which StepEach has made.
+	r.addStepsToCurrent(k)
+	if lerr := env.limitViolation(ctx); lerr != nil {
+		return lerr
+	}
+	return Nil()
 }
 
 // StepEach charges env n steps as n calls to Step would, stopping at the
@@ -78,31 +111,8 @@ func (env *LEnv) Step() *LVal {
 //
 // A zero or negative n behaves as in ChargeSteps: zero charges and checks
 // nothing, and a negative n is an error that changes no counter.
-func (env *LEnv) StepEach(n int64) *LVal {
-	if n <= 0 {
-		return env.ChargeSteps(n)
-	}
-	r := env.Runtime
-	ctx := env.evalCtx
-	if ctx == nil && r.maxSteps|r.stepBudget == 0 { // the fast path of ChargeSteps
-		return Nil()
-	}
-	k := n
-	if ctx != nil && ctx.Err() != nil {
-		k = 1 // the first Step charges itself, then reports the context
-	}
-	if r.maxSteps > 0 {
-		k = min(k, stepsToOverrun(r.steps, r.stepsOverflowed, r.maxSteps))
-	}
-	if r.stepBudget > 0 {
-		k = min(k, stepsToOverrun(r.stepBudgetUsed, r.stepBudgetOverflowed, r.stepBudget))
-	}
-	// What ChargeSteps(k) does past its checks, which StepEach has made.
-	r.addStepsToCurrent(k)
-	if lerr := env.limitViolation(ctx); lerr != nil {
-		return lerr
-	}
-	return Nil()
+func (env *LEnv) StepEach(n int64) error {
+	return errorOf(env.stepEach(n))
 }
 
 // stepsToOverrun returns how many more single steps take a counter at used
@@ -121,33 +131,43 @@ func stepsToOverrun(used int64, overflowed bool, limit int64) int64 {
 	return math.MaxInt64
 }
 
-// CheckAlloc returns an error when n exceeds the runtime's allocation cap
-// (Runtime.MaxAlloc), and Nil() otherwise.  The error is the one builtins
-// raise for that check: env.Errorf("%s", env.Runtime.CheckAlloc(n)), with
-// condition "error" and the message "allocation size N exceeds maximum (M)".
-// Runtime.CheckAlloc returns the message as a string instead.  CheckAlloc
-// makes no context check and charges no step.
-//
-//	if err := lisp.GoError(env.CheckAlloc(len(cells))); err != nil {
-//		return nil, err
-//	}
-func (env *LEnv) CheckAlloc(n int) *LVal {
+// checkAlloc is CheckAlloc as an error value or ().
+func (env *LEnv) checkAlloc(n int) *LVal {
 	if msg := env.Runtime.CheckAlloc(n); msg != "" {
 		return env.Errorf("%s", msg)
 	}
 	return Nil()
 }
 
-// CheckContext returns the standard context-cancelled condition
-// (CondContextCancelled, "context cancelled: <cause>") when the evaluation's
-// context is done, and Nil() otherwise.  It charges no step.  It is the check
-// the evaluator makes at every call boundary, for a builtin that does
-// expensive work between charges.
-func (env *LEnv) CheckContext() *LVal {
+// CheckAlloc returns an error when n exceeds the runtime's allocation cap
+// (Runtime.MaxAlloc), as a *ErrorVal, and nil otherwise.  The error is the one builtins
+// raise for that check: env.Errorf("%s", env.Runtime.CheckAlloc(n)), with
+// condition "error" and the message "allocation size N exceeds maximum (M)".
+// Runtime.CheckAlloc returns the message as a string instead.  CheckAlloc
+// makes no context check and charges no step.
+//
+//	if err := env.CheckAlloc(len(cells)); err != nil {
+//		return lisp.Error(err)
+//	}
+func (env *LEnv) CheckAlloc(n int) error {
+	return errorOf(env.checkAlloc(n))
+}
+
+// checkContext is CheckContext as an error value or ().
+func (env *LEnv) checkContext() *LVal {
 	if ctx := env.evalCtx; ctx != nil {
 		if err := ctx.Err(); err != nil {
 			return env.ErrorConditionf(CondContextCancelled, "context cancelled: %v", err)
 		}
 	}
 	return Nil()
+}
+
+// CheckContext returns the standard context-cancelled condition
+// (CondContextCancelled, "context cancelled: <cause>") when the evaluation's
+// context is done, as a *ErrorVal, and nil otherwise.  It charges no step.  It is the check
+// the evaluator makes at every call boundary, for a builtin that does
+// expensive work between charges.
+func (env *LEnv) CheckContext() error {
+	return errorOf(env.checkContext())
 }

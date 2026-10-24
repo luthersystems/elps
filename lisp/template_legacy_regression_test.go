@@ -114,7 +114,7 @@ func TestTemplateLegacySortKeepsNativeLValPayload(t *testing.T) {
 				seen++
 				inner, lerr := lisp.RequireNative[*lisp.LVal](args.Cells[0])
 				if lerr != nil {
-					return lerr
+					return lisp.Error(lerr)
 				}
 				return inner.Cells[0]
 			})

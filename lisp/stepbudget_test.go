@@ -54,7 +54,7 @@ func TestStepBudgetSharedAcrossEvals(t *testing.T) {
 	requireStepBudget(t, env.LoadString("test", budgetProgram))
 	// Exhausted: every later evaluation and charge fails.
 	requireStepBudget(t, env.LoadString("test", `(+ 1 2)`))
-	requireStepBudget(t, env.ChargeSteps(1))
+	requireStepBudget(t, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(1)))
 
 	// Reset refills without changing the budget.
 	env.Runtime.ResetStepBudget()
@@ -71,7 +71,7 @@ func TestStepBudgetSharedAcrossEvals(t *testing.T) {
 func TestStepBudgetChargeSteps(t *testing.T) {
 	env, loop := chargeTestEnv(t)
 	env.Runtime.SetStepBudget(100)
-	require.Equal(t, lisp.LSExpr, env.ChargeSteps(60).Type)
+	require.Equal(t, lisp.LSExpr, lisp.ValueOrError(lisp.Nil(), env.ChargeSteps(60)).Type)
 	requireStepBudget(t, env.LoadString("test", `(native-sum (make-sequence 0 100))`))
 	assert.Less(t, loop.processed, 40)
 	_, used := env.Runtime.StepBudget()

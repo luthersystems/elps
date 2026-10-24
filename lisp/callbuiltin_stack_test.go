@@ -21,7 +21,7 @@ func TestCallBuiltinStackGrowthRestoresFrame(t *testing.T) {
 		&testBuiltinDef{name: "run-hook", formals: lisp.Formals("f"),
 			fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 				before = env.Runtime.Stack.Top().Terminal
-				v := env.CallBuiltin(refFuncall, args.Cells[0])
+				v := lisp.ValueOrError(env.CallBuiltin(refFuncall, args.Cells[0]))
 				after = env.Runtime.Stack.Top().Terminal
 				return v
 			}},
@@ -45,9 +45,10 @@ func TestCallBuiltinStackGrowthTailCallRuns(t *testing.T) {
 			fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 				last := lisp.Nil()
 				for _, f := range args.Cells {
-					last = env.CallBuiltin(refFuncall, f)
-					if last.Type == lisp.LError {
-						return last
+					var err error
+					last, err = env.CallBuiltin(refFuncall, f)
+					if err != nil {
+						return lisp.Error(err)
 					}
 					if last.Type != lisp.LInt && last.Type != lisp.LSymbol && !last.IsNil() {
 						return env.Errorf("CallBuiltin leaked a %v", last.Type)

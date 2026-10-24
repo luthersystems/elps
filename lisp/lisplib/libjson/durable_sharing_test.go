@@ -394,7 +394,7 @@ func TestDurableSharingCheckKeptCode(t *testing.T) {
 	require.Len(t, s.Closures, 1)
 	for _, fn := range []*lisp.LVal{s.Closures[0].Closure, back} {
 		issues, lerr := env.CheckClosure(fn)
-		require.Nil(t, lerr)
+		require.NoError(t, lerr)
 		assert.Equal(t, []lisp.ClosureIssue{{Name: "helper", Kind: lisp.ClosureArity, Args: 1, Message: "calls helper with 1 argument(s); helper takes 2"}}, issues)
 	}
 }

@@ -20,11 +20,11 @@ func stepsOf(t *testing.T, env *lisp.LEnv, src string) (*lisp.LVal, int64) {
 }
 
 // helperBuiltin registers (name n) in the user package, calling f with n.
-func helperBuiltin(env *lisp.LEnv, name string, f func(env *lisp.LEnv, n int) *lisp.LVal) {
+func helperBuiltin(env *lisp.LEnv, name string, f func(env *lisp.LEnv, n int) error) {
 	env.AddBuiltins(false, &testBuiltinDef{name: name, formals: lisp.Formals("n"),
 		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			if lerr := f(env, args.Cells[0].Int); lerr != nil && lerr.Type == lisp.LError {
-				return lerr
+			if err := f(env, args.Cells[0].Int); err != nil {
+				return lisp.Error(err)
 			}
 			return lisp.Symbol("ok")
 		}})
@@ -58,7 +58,7 @@ func TestChargeHelpersArithmetic(t *testing.T) {
 		{10 << 20, 10 << 10, 10 << 10},
 	}
 	env := newLimitTestEnv(t)
-	helperBuiltin(env, "nop", func(*lisp.LEnv, int) *lisp.LVal { return nil })
+	helperBuiltin(env, "nop", func(*lisp.LEnv, int) error { return nil })
 	helperBuiltin(env, "started", lisp.ChargeStartedKiB)
 	helperBuiltin(env, "record", lisp.ChargeRecord)
 	for _, tc := range cases {
@@ -80,13 +80,10 @@ func TestChargeHelpersArithmetic(t *testing.T) {
 // non-negative size.
 func TestChargeHelpersMatchLegacyFormulas(t *testing.T) {
 	env := newLimitTestEnv(t)
-	helperBuiltin(env, "nop", func(*lisp.LEnv, int) *lisp.LVal { return nil })
+	helperBuiltin(env, "nop", func(*lisp.LEnv, int) error { return nil })
 	helperBuiltin(env, "started", lisp.ChargeStartedKiB)
-	helperBuiltin(env, "legacy-started", func(env *lisp.LEnv, n int) *lisp.LVal {
-		if v := env.ChargeSteps(int64((n + 1023) / 1024)); v.Type == lisp.LError {
-			return v
-		}
-		return nil
+	helperBuiltin(env, "legacy-started", func(env *lisp.LEnv, n int) error {
+		return env.ChargeSteps(int64((n + 1023) / 1024))
 	})
 	for n := 0; n < 5000; n += 7 {
 		for _, pair := range [][2]string{{"started", "legacy-started"}} {
@@ -99,16 +96,16 @@ func TestChargeHelpersMatchLegacyFormulas(t *testing.T) {
 
 func TestStepAndCheckContext(t *testing.T) {
 	env := newLimitTestEnv(t)
-	helperBuiltin(env, "nop", func(*lisp.LEnv, int) *lisp.LVal { return nil })
-	helperBuiltin(env, "steps", func(env *lisp.LEnv, n int) *lisp.LVal {
+	helperBuiltin(env, "nop", func(*lisp.LEnv, int) error { return nil })
+	helperBuiltin(env, "steps", func(env *lisp.LEnv, n int) error {
 		for range n {
-			if lerr := env.Step(); lerr.Type == lisp.LError {
-				return lerr
+			if err := env.Step(); err != nil {
+				return err
 			}
 		}
 		return nil
 	})
-	helperBuiltin(env, "check", func(env *lisp.LEnv, _ int) *lisp.LVal { return env.CheckContext() })
+	helperBuiltin(env, "check", func(env *lisp.LEnv, _ int) error { return env.CheckContext() })
 	_, base := stepsOf(t, env, "(nop 0)")
 	_, got := stepsOf(t, env, "(steps 5)")
 	assert.Equal(t, int64(5), got-base)
@@ -120,7 +117,7 @@ func TestStepAndCheckContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	res := lisp.Fun("check", lisp.Formals(), func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
-		return env.CheckContext()
+		return lisp.ValueOrError(lisp.Nil(), env.CheckContext())
 	})
 	v := env.FunCallContext(ctx, res, lisp.SExpr(nil))
 	require.Equal(t, lisp.LError, v.Type)
@@ -129,9 +126,9 @@ func TestStepAndCheckContext(t *testing.T) {
 
 	// Without a context or a limit, nothing is counted and nothing fails.
 	plain := newLimitTestEnv(t)
-	assert.True(t, plain.Step().IsNil())
-	assert.True(t, plain.CheckContext().IsNil())
-	assert.True(t, lisp.ChargeStartedKiB(plain, 1<<20).IsNil())
+	assert.NoError(t, plain.Step())
+	assert.NoError(t, plain.CheckContext())
+	assert.NoError(t, lisp.ChargeStartedKiB(plain, 1<<20))
 }
 
 func TestChargeHelpersEnforceBudget(t *testing.T) {
@@ -145,7 +142,7 @@ func TestChargeHelpersEnforceBudget(t *testing.T) {
 func TestChargeHelpersNoAlloc(t *testing.T) {
 	env := newLimitTestEnv(t)
 	allocs := testing.AllocsPerRun(100, func() {
-		if lisp.ChargeStartedKiB(env, 100).Type == lisp.LError || env.CheckContext().Type == lisp.LError {
+		if lisp.ChargeStartedKiB(env, 100) != nil || env.CheckContext() != nil {
 			t.Fatal("unexpected error")
 		}
 	})
@@ -156,21 +153,25 @@ func itoa(n int) string {
 	return lisp.Int(n).String()
 }
 
-// Every #745 helper that only reports success or failure follows one
-// convention, the one LEnv.ChargeSteps and package loaders already use:
-// lisp.Nil() to continue, or the LError to return.  So `lerr.Type ==
-// lisp.LError` is always safe on a result and never dereferences Go nil.
+// Every #745 helper that only reports success or failure returns a nil
+// error to continue (luthersystems/elps#883), and the package loaders and
+// ArgReader.Err return lisp.Nil().  So neither result needs a Go nil check
+// beyond its own type's.
 func TestStatusHelpersReturnNilValue(t *testing.T) {
 	env := newLimitTestEnv(t, lisp.WithMaxSteps(1<<40))
 	a := lisp.ReadArgs(env, lisp.QExpr([]*lisp.LVal{lisp.String("x")}))
 	a.String(0, "first argument")
-	for name, v := range map[string]*lisp.LVal{
+	for name, err := range map[string]error{
 		"Step":             env.Step(),
 		"CheckContext":     env.CheckContext(),
 		"ChargeStartedKiB": lisp.ChargeStartedKiB(env, 5000),
 		"ChargeRecord":     lisp.ChargeRecord(env, 0),
-		"ArgReader.Err":    a.Err(),
-		"BindBuiltins":     env.BindBuiltins(lisp.BindOpts{}, constBuiltin("status-helper", 1)),
+	} {
+		require.NoError(t, err, name)
+	}
+	for name, v := range map[string]*lisp.LVal{
+		"ArgReader.Err": a.Err(),
+		"BindBuiltins":  env.BindBuiltins(lisp.BindOpts{}, constBuiltin("status-helper", 1)),
 	} {
 		require.NotNil(t, v, name)
 		assert.NotEqual(t, lisp.LError, v.Type, name)

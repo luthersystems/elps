@@ -30,7 +30,7 @@ func TestBuiltinFuncResolves(t *testing.T) {
 func callVia(env *lisp.LEnv, name string, ref lisp.BuiltinRef) {
 	env.AddBuiltins(false, &testBuiltinDef{name: name, formals: lisp.Formals(lisp.VarArgSymbol, "args"),
 		fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-			return env.CallBuiltin(ref, args.Cells...)
+			return lisp.ValueOrError(env.CallBuiltin(ref, args.Cells...))
 		}})
 }
 
@@ -89,11 +89,11 @@ func TestCallBuiltinArityErrors(t *testing.T) {
 func TestCallBuiltinDoesNotWriteArgs(t *testing.T) {
 	env := newLimitTestEnv(t)
 	args := []*lisp.LVal{lisp.Int(1), lisp.Int(2)}
-	v := env.CallBuiltin(refAdd, args...)
+	v := lisp.ValueOrError(env.CallBuiltin(refAdd, args...))
 	require.Equal(t, 3, v.Int)
 	assert.Equal(t, 1, args[0].Int)
 	assert.Equal(t, 2, args[1].Int)
-	assert.Equal(t, lisp.LError, env.CallBuiltin(lisp.BuiltinRef{}).Type)
+	assert.Equal(t, lisp.LError, lisp.ValueOrError(env.CallBuiltin(lisp.BuiltinRef{})).Type)
 }
 
 func TestCallBuiltinChecksContext(t *testing.T) {
@@ -101,7 +101,7 @@ func TestCallBuiltinChecksContext(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	fn := lisp.Fun("f", lisp.Formals(), func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
-		return env.CallBuiltin(refAdd, lisp.Int(1))
+		return lisp.ValueOrError(env.CallBuiltin(refAdd, lisp.Int(1)))
 	})
 	v := env.FunCallContext(ctx, fn, lisp.SExpr(nil))
 	require.Equal(t, lisp.LError, v.Type)
@@ -127,17 +127,17 @@ func TestCallBuiltinTailPositionNoMarker(t *testing.T) {
 	env.AddBuiltins(false,
 		&testBuiltinDef{name: "napply", formals: lisp.Formals("f", "xs"),
 			fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				return check(env, env.CallBuiltin(refApply, args.Cells[0], args.Cells[1]))
+				return check(env, lisp.ValueOrError(env.CallBuiltin(refApply, args.Cells[0], args.Cells[1])))
 			}},
 		&testBuiltinDef{name: "nfuncall", formals: lisp.Formals("f", "x"),
 			fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-				return check(env, env.CallBuiltin(refFuncall, args.Cells[0], args.Cells[1]))
+				return check(env, lisp.ValueOrError(env.CallBuiltin(refFuncall, args.Cells[0], args.Cells[1])))
 			}},
 		&testBuiltinDef{name: "ntwice", formals: lisp.Formals("f", "x"),
 			fn: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 				// A plain FunCall after CallBuiltin(funcall ...) must not
 				// see a terminal frame funcall left behind.
-				if v := check(env, env.CallBuiltin(refFuncall, args.Cells[0], lisp.Int(0))); v.Type == lisp.LError {
+				if v := check(env, lisp.ValueOrError(env.CallBuiltin(refFuncall, args.Cells[0], lisp.Int(0)))); v.Type == lisp.LError {
 					return v
 				}
 				return check(env, env.FunCall(args.Cells[0], lisp.SExpr([]*lisp.LVal{args.Cells[1]})))
@@ -165,7 +165,7 @@ func TestCallBuiltinExactArityAllocs(t *testing.T) {
 	require.Equal(t, lisp.LSortMap, m.Type)
 	k := lisp.String("a")
 	allocs := testing.AllocsPerRun(100, func() {
-		if v := env.CallBuiltin(refGet, m, k); v.Type != lisp.LInt {
+		if v := lisp.ValueOrError(env.CallBuiltin(refGet, m, k)); v.Type != lisp.LInt {
 			t.Fatalf("get returned %v", v)
 		}
 	})

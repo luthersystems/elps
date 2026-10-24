@@ -15,8 +15,8 @@ func inLisp(env *LEnv, v *LVal, n int) *LVal {
 	if v.IsSymbol(TrueSymbol) { // want `use v.IsSymbol\(TrueSymbol\), which is the same compare`
 		return v
 	}
-	if lerr := env.CheckAlloc(n); lerr.IsError() {
-		return lerr
+	if err := env.CheckAlloc(n); err != nil {
+		return Error(err)
 	}
 	l := Cells{v}.List()                          // want `use Cells\{...\}.List\(\), which builds the same list`
 	sx := Cells{v, l}.SExpr()                     // want `use Cells\{...\}.SExpr\(\), which builds the same s-expression`

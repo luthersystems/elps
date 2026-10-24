@@ -160,8 +160,8 @@ func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
 		}
 		count++
 	}
-	if lerr := env.CheckAlloc(count); lerr.IsError() {
-		return lerr
+	if err := env.CheckAlloc(count); err != nil {
+		return lisp.Error(err)
 	}
 	return lisp.StringList(strings.Split(str, sep))
 }
@@ -195,8 +195,8 @@ func join(env *lisp.LEnv, list *lisp.LVal, sep string) *lisp.LVal {
 // string:join's own *lisp.ErrorVal, so a FuncE body that returns it raises
 // the same condition.
 func Join(env *lisp.LEnv, parts []string, sep string) (string, error) {
-	if lerr := env.CheckContext(); lerr.IsError() {
-		return "", lisp.GoError(lerr)
+	if err := env.CheckContext(); err != nil {
+		return "", err
 	}
 	s, lerr := joinParts(env, parts, nil, sep)
 	if lerr != nil {

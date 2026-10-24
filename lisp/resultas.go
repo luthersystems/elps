@@ -4,13 +4,17 @@ package lisp
 
 import "reflect"
 
-// ResultAs is Result followed by a conversion of the value to the Go type T.
-// When v is an LError it returns v as the error.  When v converts to T it
-// returns the Go value and a nil error.  Otherwise it returns an error with
-// condition "error", such as "value is not a string: int".
+// ResultAs converts the result of a Go form to the Go type T.  It takes the
+// form's two results, so it wraps the call:
 //
 //	keys, err := lisp.ResultAs[lisp.Cells](env.MapKeys(m))
 //	s, err := lisp.ResultAs[string](env.Concat(lisp.SeqString, a, b))
+//
+// When err is not nil it returns err.  When v is an LError it returns v as
+// the error.  When v converts to T it returns the Go value and a nil error.
+// Otherwise it returns an error with condition "error", such as "value is
+// not a string: int".  For a value that is not a form's result, pass a nil
+// err: lisp.ResultAs[string](v, nil).
 //
 // T selects the conversion:
 //
@@ -35,8 +39,11 @@ import "reflect"
 // keys returns or the string that format-string returns.  A mismatch is then
 // a bug in the Go code.  ResultAs uses no reflection and allocates nothing
 // unless the conversion fails.
-func ResultAs[T any](v *LVal) (T, error) {
+func ResultAs[T any](v *LVal, err error) (T, error) {
 	var zero T
+	if err != nil {
+		return zero, err
+	}
 	if v.IsError() {
 		return zero, (*ErrorVal)(v)
 	}

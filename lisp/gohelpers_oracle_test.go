@@ -36,14 +36,14 @@ var seqHelpers = []struct {
 	samePtr bool
 	view    bool
 }{
-	{"keys", refKeys, (*lisp.LEnv).MapKeys, false, false},
+	{"keys", refKeys, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.MapKeys(v)) }, false, false},
 	{"length", refLength, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.Length(v)) }, false, false},
 	{"empty?", refEmpty, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return goValue(env.IsEmpty(v)) }, false, false},
-	{"first", refFirst, (*lisp.LEnv).First, true, false},
-	{"second", refSecond, (*lisp.LEnv).Second, true, false},
-	{"car", refCar, (*lisp.LEnv).Car, true, false},
-	{"cdr", refCdr, (*lisp.LEnv).Cdr, false, true},
-	{"rest", refRest, (*lisp.LEnv).Rest, false, true},
+	{"first", refFirst, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.First(v)) }, true, false},
+	{"second", refSecond, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.Second(v)) }, true, false},
+	{"car", refCar, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.Car(v)) }, true, false},
+	{"cdr", refCdr, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.Cdr(v)) }, false, true},
+	{"rest", refRest, func(env *lisp.LEnv, v *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.Rest(v)) }, false, true},
 }
 
 // TestSeqHelpersMatchBuiltins holds MapKeys, Length, IsEmpty, First,
@@ -54,7 +54,7 @@ func TestSeqHelpersMatchBuiltins(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	for _, h := range seqHelpers {
 		for _, in := range oracle.Values() {
-			want := env.CallBuiltin(h.builtin, in.V)
+			want := lisp.ValueOrError(env.CallBuiltin(h.builtin, in.V))
 			got := h.fn(env, in.V)
 			if h.samePtr {
 				oracle.SameObject(t, h.name+"/"+in.Label, got, want)
@@ -90,7 +90,7 @@ func TestSeqHelpersAllocLimit(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
 	env.Runtime.MaxAlloc = 1
 	for _, in := range oracle.Values() {
-		oracle.Same(t, "keys/"+in.Label, env.MapKeys(in.V), env.CallBuiltin(refKeys, in.V))
+		oracle.Same(t, "keys/"+in.Label, lisp.ValueOrError(env.MapKeys(in.V)), lisp.ValueOrError(env.CallBuiltin(refKeys, in.V)))
 	}
 }
 
@@ -108,7 +108,9 @@ func TestSeqHelpersCancelled(t *testing.T) {
 			}
 			oracle.Sweep(t, h.name+"/"+in.Label,
 				func(env *lisp.LEnv) *lisp.LVal { return h.fn(env, oracle.Values()[i].V) },
-				func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(h.builtin, oracle.Values()[i].V) })
+				func(env *lisp.LEnv) *lisp.LVal {
+					return lisp.ValueOrError(env.CallBuiltin(h.builtin, oracle.Values()[i].V))
+				})
 		}
 	}
 }
@@ -156,18 +158,18 @@ func TestCallFunctionMatchesFuncall(t *testing.T) {
 	run := func(f func(env *lisp.LEnv) *lisp.LVal) *lisp.LVal { return inEval(t, env, f) }
 	for _, fn := range fns {
 		oracle.Same(t, "funcall/"+fn.Label,
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.CallFunction(fn.V, arg) }),
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refFuncall, fn.V, arg) }))
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallFunction(fn.V, arg)) }),
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallBuiltin(refFuncall, fn.V, arg)) }))
 		list := lisp.SExpr([]*lisp.LVal{arg})
 		oracle.Same(t, "apply/"+fn.Label,
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(fn.V, list) }),
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refApply, fn.V, list) }))
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.ApplyFunction(fn.V, list)) }),
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallBuiltin(refApply, fn.V, list)) }))
 	}
 	two := lisp.Symbol("two")
 	for _, args := range oracle.Values() {
 		oracle.Same(t, "apply-args/"+args.Label,
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(two, args.V) }),
-			run(func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refApply, two, args.V) }))
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.ApplyFunction(two, args.V)) }),
+			run(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallBuiltin(refApply, two, args.V)) }))
 	}
 }
 
@@ -178,7 +180,9 @@ func TestCallFunctionDoesNotWriteArgs(t *testing.T) {
 	rc := env.LoadString("setup", `(defun clobber (&rest xs) (set! xs (cons 0 xs)) xs)`)
 	require.False(t, rc.IsError(), "%v", rc)
 	list := lisp.SExpr([]*lisp.LVal{lisp.Int(1), lisp.Int(2)})
-	v := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(lisp.Symbol("clobber"), list) })
+	v := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
+		return lisp.ValueOrError(env.ApplyFunction(lisp.Symbol("clobber"), list))
+	})
 	require.False(t, v.IsError(), "%v", v)
 	assert.Equal(t, "'(0 1 2)", v.String())
 	assert.Equal(t, "(1 2)", list.String())
@@ -187,12 +191,16 @@ func TestCallFunctionDoesNotWriteArgs(t *testing.T) {
 	rc = env.LoadString("keep", `(defun keep (&rest xs) xs)`)
 	require.False(t, rc.IsError(), "%v", rc)
 	buf := []*lisp.LVal{lisp.Int(1), lisp.Int(2)}
-	kept := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.CallFunction(lisp.Symbol("keep"), buf...) })
+	kept := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
+		return lisp.ValueOrError(env.CallFunction(lisp.Symbol("keep"), buf...))
+	})
 	require.False(t, kept.IsError(), "%v", kept)
 	buf[0] = lisp.Int(9)
 	assert.Equal(t, "'(1 2)", kept.String())
 	list = lisp.SExpr(buf)
-	kept = inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(lisp.Symbol("keep"), list) })
+	kept = inEval(t, env, func(env *lisp.LEnv) *lisp.LVal {
+		return lisp.ValueOrError(env.ApplyFunction(lisp.Symbol("keep"), list))
+	})
 	require.False(t, kept.IsError(), "%v", kept)
 	list.Cells[1] = lisp.Int(8)
 	assert.Equal(t, "'(9 2)", kept.String())
@@ -202,7 +210,7 @@ func TestCallFunctionDoesNotWriteArgs(t *testing.T) {
 // panicking.
 func TestApplyFunctionNilArgs(t *testing.T) {
 	env := oracle.NewEnv(t, context.Background())
-	v := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(lisp.Symbol("list"), nil) })
+	v := inEval(t, env, func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.ApplyFunction(lisp.Symbol("list"), nil)) })
 	require.True(t, v.IsError())
 	assert.Contains(t, v.String(), "last argument is not a list")
 }
@@ -221,7 +229,7 @@ func TestCallFunctionFromTerminalFrame(t *testing.T) {
 				return lisp.String("done")
 			}
 			env.Runtime.Stack.Top().Terminal = true
-			v := env.CallFunction(lisp.Symbol("f"))
+			v := lisp.ValueOrError(env.CallFunction(lisp.Symbol("f")))
 			if !env.Runtime.Stack.Top().Terminal {
 				return env.Errorf("the frame's terminal mark was not restored")
 			}
@@ -253,12 +261,14 @@ func TestCallFunctionCancelled(t *testing.T) {
 		}
 	}
 	oracle.Sweep(t, "funcall",
-		load(func(env *lisp.LEnv) *lisp.LVal { return env.CallFunction(two(), arg()) }),
-		load(func(env *lisp.LEnv) *lisp.LVal { return env.CallBuiltin(refFuncall, two(), arg()) }))
+		load(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallFunction(two(), arg())) }),
+		load(func(env *lisp.LEnv) *lisp.LVal { return lisp.ValueOrError(env.CallBuiltin(refFuncall, two(), arg())) }))
 	oracle.Sweep(t, "apply",
-		load(func(env *lisp.LEnv) *lisp.LVal { return env.ApplyFunction(two(), lisp.SExpr([]*lisp.LVal{arg()})) }),
 		load(func(env *lisp.LEnv) *lisp.LVal {
-			return env.CallBuiltin(refApply, two(), lisp.SExpr([]*lisp.LVal{arg()}))
+			return lisp.ValueOrError(env.ApplyFunction(two(), lisp.SExpr([]*lisp.LVal{arg()})))
+		}),
+		load(func(env *lisp.LEnv) *lisp.LVal {
+			return lisp.ValueOrError(env.CallBuiltin(refApply, two(), lisp.SExpr([]*lisp.LVal{arg()})))
 		}))
 }
 
@@ -275,9 +285,9 @@ func TestCallFunctionTailCallsCaller(t *testing.T) {
 					last := lisp.Nil()
 					for _, f := range args.Cells {
 						if via == "call" {
-							last = env.CallFunction(f)
+							last = lisp.ValueOrError(env.CallFunction(f))
 						} else {
-							last = env.ApplyFunction(f, lisp.Nil())
+							last = lisp.ValueOrError(env.ApplyFunction(f, lisp.Nil()))
 						}
 						if last.IsError() {
 							return last
@@ -314,8 +324,8 @@ var dissocHelpers = []struct {
 	builtin lisp.BuiltinRef
 	fn      func(env *lisp.LEnv, m, k *lisp.LVal) *lisp.LVal
 }{
-	{"dissoc", refDissoc, (*lisp.LEnv).MapDissoc},
-	{"dissoc!", refDissocMutate, (*lisp.LEnv).MapDelete},
+	{"dissoc", refDissoc, func(env *lisp.LEnv, m, k *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.MapDissoc(m, k)) }},
+	{"dissoc!", refDissocMutate, func(env *lisp.LEnv, m, k *lisp.LVal) *lisp.LVal { return lisp.ValueOrError(env.MapDelete(m, k)) }},
 }
 
 // dissocKeys are the keys the removal tests remove: present, absent, a
@@ -354,7 +364,7 @@ func TestDissocHelpersMatchBuiltins(t *testing.T) {
 				for i, in := range wantIns {
 					label := h.name + "/" + in.Label + "/" + k.String()
 					wantM, gotM := in.V, gotIns[i].V
-					want := env.CallBuiltin(h.builtin, wantM, k)
+					want := lisp.ValueOrError(env.CallBuiltin(h.builtin, wantM, k))
 					got := h.fn(env, gotM, dissocKeys()[j])
 					oracle.Same(t, label, got, want)
 					if wantM.Type == lisp.LSortMap {
@@ -374,7 +384,7 @@ func TestDissocHelpersCancelled(t *testing.T) {
 			oracle.Sweep(t, h.name+"/"+in.Label,
 				func(env *lisp.LEnv) *lisp.LVal { return h.fn(env, dissocInputs()[i].V, lisp.String("a")) },
 				func(env *lisp.LEnv) *lisp.LVal {
-					return env.CallBuiltin(h.builtin, dissocInputs()[i].V, lisp.String("a"))
+					return lisp.ValueOrError(env.CallBuiltin(h.builtin, dissocInputs()[i].V, lisp.String("a")))
 				})
 		}
 	}
