@@ -1,0 +1,33 @@
+name: Quality
+
+# The org's shared code quality checks: the work marker gate, golangci-lint
+# (one pinned version, with this repo's .golangci.yml) and the API break gate,
+# from luthersystems/.github. Every repo runs the same checks and versions,
+# and an org ruleset will require its one check, "quality / result". How to
+# make an exception: docs/quality-workflow.md in luthersystems/.github.
+
+on:
+  merge_group:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: quality-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  # The job id must stay "quality": the ruleset requires "quality / result".
+  quality:
+    permissions:
+      contents: read
+      issues: read # the work marker gate reads each named issue's state
+    uses: luthersystems/.github/.github/workflows/quality.yml@ecf4a077df3cc9d017ed44cafcec94d396ba308b # v1.8.0
+    with:
+      # Lint only the root module: tree-sitter-elps has its own CI.
+      go-directories: "."
+      # scripts/ci-gates-test.sh pins every Linux job to this runner.
+      runs-on: ubuntu-24.04-arm

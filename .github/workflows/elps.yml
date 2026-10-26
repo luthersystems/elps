@@ -77,23 +77,9 @@ jobs:
       - name: Confidentiality guard
         run: bash scripts/confidentiality-guard.sh
 
-  # Fails when a tracked file has a work marker that scripts/work-markers.txt
-  # does not allow. Its own job so it also runs on docs-only PRs: a marker in a
-  # README is as unfinished as one in a .go file.
-  work-markers:
-    name: Work marker gate
-    # ARM for the reason spelled out on lint-and-test below.
-    runs-on: ubuntu-24.04-arm
-    # 5 minutes against a checkout and one scan of the tracked tree.
-    timeout-minutes: 5
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
-
-      # Markers are assembled inside the script, so neither the script nor
-      # this workflow trips the gate. Allowlist rules and format are in the
-      # header of scripts/work-markers.txt.
-      - name: Work marker gate
-        run: bash scripts/work-marker-gate.sh
+  # The work marker gate runs in the shared Quality workflow
+  # (.github/workflows/quality.yml, from luthersystems/.github), which also
+  # runs on docs-only PRs. Its allowlist is .github/quality/work-markers.txt.
 
   lint-and-test:
     name: Lint & Test
@@ -148,28 +134,24 @@ jobs:
       - name: Download dependencies
         run: go mod download
 
-      - name: golangci-lint
+      # golangci-lint itself runs in the shared Quality workflow
+      # (.github/workflows/quality.yml), with the one version every repo
+      # uses. This job keeps the config schema check below, which the shared
+      # workflow does not run yet: `golangci-lint run` does NOT reject an
+      # unknown key in .golangci.yml (a misspelled section runs to "0
+      # issues"). Keep the version equal to the shared workflow's pin.
+      - name: Install golangci-lint
         uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a  # v9
         with:
-          version: v2.13
-          args: --timeout=5m ./...
-          # `config verify` downloads the JSON schema from golangci-lint.run
-          # on every run and was the one step in this job that needed a host
-          # other than GitHub.  When that fetch timed out the job died here,
-          # before a single test had run, and the rollup went red for a
-          # reason no PR could fix (three PRs in one day: #586 twice, #573).
-          # The check itself is worth keeping: `golangci-lint run` does NOT
-          # reject an unknown key in .golangci.yml (a misspelled section runs
-          # to "0 issues"), only the schema check does.  So it runs in the
-          # next step against the schema vendored in .github/, offline.
-          verify: false
+          version: v2.15.0
+          install-only: true
 
       # The schema check `verify: true` used to run, in a form that needs no
       # network.  Through v2.12 that meant `--schema` pointed at a copy of the
       # schema vendored in .github/; v2.13 dropped the flag and embeds the
       # schema in the binary, so the make target just runs `config verify` and
       # there is nothing left to re-vendor on a bump.  golangci-lint is on PATH
-      # because the action above adds its install dir (core.addPath in
+      # because the step above adds its install dir (core.addPath in
       # src/run.ts, before the install-only branch).
       - name: golangci-lint config schema
         run: make check-golangci-config
@@ -363,7 +345,7 @@ jobs:
     # 5 minutes against an observed 2s. This job's name is the one in
     # branch protection; wedged here means the PR is blocked with no red.
     timeout-minutes: 5
-    needs: [changes, confidentiality, work-markers, lint-and-test, build-windows, json-386, api-break]
+    needs: [changes, confidentiality, lint-and-test, build-windows, json-386, api-break]
     if: always()
     steps:
       # NOTE: this checkout is NEW, and is the one structural cost of moving
