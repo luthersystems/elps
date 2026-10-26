@@ -492,7 +492,7 @@ func (d *decoder) array2(depth int) (Value, error) {
 	cells := int64(1)
 	for _, x := range dimv {
 		n, ok := x.Int()
-		if !ok || n < 0 {
+		if !ok || n < 0 || n > math.MaxInt {
 			return Value{}, d.errorf("bad array dimension")
 		}
 		if n > 0 && cells > int64(len(cellv))/n+1 {
@@ -661,10 +661,19 @@ func (d *decoder) hex4() (rune, bool) {
 	if d.i+4 > len(d.b) {
 		return 0, false
 	}
-	n, err := strconv.ParseUint(string(d.b[d.i:d.i+4]), 16, 32)
-	if err != nil {
-		return 0, false
+	var r rune
+	for _, c := range d.b[d.i : d.i+4] {
+		switch {
+		case c >= '0' && c <= '9':
+			r = r<<4 | rune(c-'0')
+		case c >= 'a' && c <= 'f':
+			r = r<<4 | rune(c-'a'+10)
+		case c >= 'A' && c <= 'F':
+			r = r<<4 | rune(c-'A'+10)
+		default:
+			return 0, false
+		}
 	}
 	d.i += 4
-	return rune(n), true //nolint:gosec // ParseUint with bitSize 32 of 4 hex digits is at most 0xFFFF
+	return r, true
 }
