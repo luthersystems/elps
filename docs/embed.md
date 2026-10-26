@@ -1134,6 +1134,16 @@ names the path of the value, such as `items[1].name`, and never renders the
 value. All three make no check, charge no step and use reflection; the doc
 comment of `DecodeInto` lists every conversion.
 
+**Values without the interpreter: package `lval`.** Go code that exchanges
+values with an ELPS program but cannot link package `lisp`, such as a
+WebAssembly guest, holds them as `lval.Value` and passes them as typed JSON.
+`lval.Marshal` writes the bytes `libjson.DumpTyped` writes for the same
+value, and `lval.Unmarshal` reads every input `libjson.LoadTyped` reads, as
+the same value. `lval.Decode` and `lval.Encode` convert to and from Go
+values by the `elpstag` rules above. The package imports neither `lisp` nor
+`encoding/json`. Its tests compare it with libjson on oracle's values and in
+a fuzz target, so a change to typed JSON fails there first.
+
 **The allocation check: `env.CheckAlloc(n)`.** It returns the error
 builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds
 maximum (M)"), as an `*ErrorVal`, and nil otherwise. `Runtime.CheckAlloc`
