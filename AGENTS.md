@@ -28,7 +28,6 @@ designed to be embedded within Go applications. Module:
 | `make fieldalign-fix` | Reorder struct fields for the fieldalignment gate (uses betteralign — `fieldalignment -fix` deletes field comments) |
 | `make ci-gates-test` | Self-test for the CI gate scripts in `scripts/` |
 | `make api-break-gate` | API break gate vs `BASE` (default `origin/main`; CI runs it; see below) |
-| `make work-marker-gate` | Work marker gate over the tracked tree (CI runs it; see below) |
 | `make repl` | Build and launch the REPL |
 | `./elps run file.lisp` | Run a lisp file |
 | `./elps doc <query>` | Show function/package documentation |
@@ -49,8 +48,9 @@ designed to be embedded within Go applications. Module:
 
 ### golangci-lint version skew
 
-`make static-checks` runs whatever `golangci-lint` is on PATH; CI pins the
-version in `.github/workflows/elps.yml`. When the two differ the findings
+`make static-checks` runs whatever `golangci-lint` is on PATH; CI runs the
+version the shared Quality workflow pins (v2.15.0; `quality.yml`, and the
+install step in `elps.yml` keeps the same pin). When the two differ the findings
 differ **in both directions, silently** (the target prints a warning naming
 both versions). Trust CI over a local run.
 
@@ -83,14 +83,16 @@ upgrade note in the release notes.
 
 ### Work marker gate
 
-CI's `work-markers` job (`scripts/work-marker-gate.sh`) fails when a tracked
-file contains a work marker that `scripts/work-markers.txt` does not allow.
-The header of that file lists the five marker words and the entry format,
-`path | text | expires | issue | reason`. Do the work before you merge. Deferred
-work needs a tracking issue and an expiry date. A marker word that is data (a
-log prefix, third-party source) uses `never` and `-`. The gate also fails on an
-entry that covers nothing, so delete the entry when the marker goes. Never
-spell a marker in the gate script or its tests; assemble it at runtime.
+The work marker gate runs in the org's shared Quality workflow
+(`.github/workflows/quality.yml`, from luthersystems/.github; check
+`quality / result`), which also runs golangci-lint. A work marker must name an
+open issue, as `MARKER(#N)` or `MARKER(owner/repo#N)`. The allowlist
+`.github/quality/work-markers.txt` is only for marker words that are data (a
+log prefix, third-party source): format `path | text | expires | issue |
+reason`, with `never` and `-`. The gate fails on an entry that covers nothing,
+so delete the entry when the marker goes. Never spell a marker in a script or
+its tests; assemble it at runtime. To run the gate locally, see
+`docs/quality-workflow.md` in luthersystems/.github.
 
 ## Architecture
 
