@@ -1,0 +1,32 @@
+# Allowlist for the shared work marker gate (luthersystems/.github,
+# actions/work-markers), which the Quality workflow runs.
+#
+# A work marker is one of the upper-case words TODO, FIXME, XXX, HACK or BUG,
+# standing alone. It passes when it names an open issue right after the word,
+# as MARKER(#N) or MARKER(owner/repo#N), or when an entry here covers it.
+# Entries are only for words that are not work: a log prefix, a quoted
+# message, third-party source. Deferred work names its issue on the marker.
+# The rules and the format are in docs/quality-workflow.md in
+# luthersystems/.github; the gate fails on an entry that covers nothing.
+#
+#   path | text | expires | issue | reason
+#
+# ---------------------------------------------------------------------------
+# path | text | expires | issue | reason
+# ---------------------------------------------------------------------------
+
+# GetFunName logs this prefix for a function value with no package (#271).
+# Tests match the prefix, and comments name it.
+lisp/env.go | at BUG level | never | - | Comment that names the log level of the GetFunName fallback.
+lisp/env.go | "BUG: GetFunName: | never | - | Log prefix of the GetFunName fallback; tests match it.
+lisp/lisp.go | "BUG: GetFunName" | never | - | Comment that quotes the GetFunName log prefix.
+lisp/lisp.go | "BUG: ..." | never | - | Comments that quote the GetFunName log prefix.
+lisp/constructors_test.go | BUG: GetFunName | never | - | Comment that quotes the GetFunName log prefix.
+lisp/lisplib/libschema/libschema_test.go | BUG: GetFunName | never | - | Regression tests that match the GetFunName log prefix.
+lisp/lisplib/libschema/libschema_test.go | BUG: log | never | - | Comment that names the GetFunName log prefix.
+lisp/lisplib/libschema/libschema_test.go | "BUG:" | never | - | Comment that quotes the GetFunName log prefix.
+lisp/lisplib/libschema/libschema_test.go | "BUG: ..." | never | - | Comment that quotes the GetFunName log prefix.
+
+# Parser benchmark input copied from SICP. The analysis corpus mirrors it.
+parser/rdparser/testdata/bench/sicp/scheme-math.lisp | ; BUG:  Function dispatch- | never | - | Third-party SICP source kept verbatim as benchmark input.
+analysis/testdata/resolver-inputs/parser/rdparser/testdata/bench/sicp/scheme-math.lisp.input | ; BUG:  Function dispatch- | never | - | Mirror of the SICP benchmark input for the resolver corpus.
