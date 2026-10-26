@@ -24,8 +24,13 @@ func Marshal(v Value) ([]byte, error) {
 }
 
 func appendValue(b []byte, v Value, depth int) ([]byte, error) {
-	if depth > maxDepth {
-		return nil, errors.New("lval: value nests too deeply")
+	// As libjson counts it: a container nested maxDepth deep is too deep.
+	switch v.kind {
+	case List, Vector, Map, Tagged, Array:
+		if depth >= maxDepth && (v.kind != List || len(v.items) > 0) {
+			return nil, errors.New("lval: value nests too deeply")
+		}
+	default:
 	}
 	switch v.kind {
 	case Nil:
@@ -45,6 +50,9 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 		}
 		return appendString(b, v.str)
 	case Symbol:
+		if v.str == "" {
+			return nil, errors.New("lval: a symbol needs a name")
+		}
 		return appendString(b, "~$"+v.str)
 	case Keyword:
 		return appendString(b, "~:"+v.str)
@@ -80,6 +88,9 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 			if !ok {
 				return nil, errors.New("lval: a map key must be a string, symbol, keyword, int or boolean")
 			}
+			if k.kind == Symbol && k.str == "" {
+				return nil, errors.New("lval: a symbol needs a name")
+			}
 			var err error
 			if b, err = appendString(b, kt); err != nil {
 				return nil, err
@@ -98,6 +109,9 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 	case Array:
 		n := 1
 		for _, d := range v.dims {
+			if d < 0 {
+				return nil, errors.New("lval: an array dimension is negative")
+			}
 			n *= d
 		}
 		if n != len(v.items) || len(v.dims) == 1 {
@@ -271,9 +285,6 @@ func (d *decoder) lit(s string) bool {
 }
 
 func (d *decoder) value(depth int) (Value, error) {
-	if depth > maxDepth {
-		return Value{}, d.errorf("nesting too deep")
-	}
 	if d.i >= len(d.b) {
 		return Value{}, d.errorf("unexpected end")
 	}
@@ -290,6 +301,9 @@ func (d *decoder) value(depth int) (Value, error) {
 			return Value{}, err
 		}
 		return tilde(s, d)
+	case (c == '[' || c == '{') && depth >= maxDepth:
+		// As libjson counts it: a container nested maxDepth deep.
+		return Value{}, d.errorf("nesting too deep")
 	case c == '[':
 		return d.array(depth)
 	case c == '{':
@@ -421,10 +435,14 @@ func (d *decoder) array(depth int) (Value, error) {
 	if d.i >= len(d.b) || d.b[d.i] != '[' {
 		return Value{}, d.errorf("expected [ after a tag")
 	}
-	if tag == "~#tagged" {
+	switch tag {
+	case "~#tagged":
 		return d.tagged(depth)
+	case "~#array":
+		return d.array2(depth)
+	default:
 	}
-	body, err := d.elems(depth + 1)
+	body, err := d.elems(depth)
 	if err != nil {
 		return Value{}, err
 	}
@@ -435,29 +453,58 @@ func (d *decoder) array(depth int) (Value, error) {
 	switch tag {
 	case "~#list":
 		return MakeList(body...), nil
-	case "~#array":
-		if len(body) != 2 || body[0].kind != Vector || body[1].kind != Vector {
-			return Value{}, d.errorf("malformed array")
-		}
-		dims := make([]int, 0, len(body[0].items))
-		cells := int64(1)
-		for _, x := range body[0].items {
-			n, ok := x.Int()
-			if !ok || n < 0 {
-				return Value{}, d.errorf("bad array dimension")
-			}
-			if n > 0 && cells > int64(len(body[1].items))/n+1 {
-				return Value{}, d.errorf("array cells do not match its dimensions")
-			}
-			cells *= n
-			dims = append(dims, int(n))
-		}
-		if cells != int64(len(body[1].items)) {
-			return Value{}, d.errorf("array cells do not match its dimensions")
-		}
-		return MakeArray(dims, body[1].items...), nil
+	default:
 	}
 	return Value{}, d.errorf("unknown tag " + strconv.Quote(tag))
+}
+
+// array2 reads the body of an array of rank other than 1,
+// [[dims...],[cells...]], and the ] that closes the value. As in libjson,
+// the dims and cells are not levels of nesting of their own.
+func (d *decoder) array2(depth int) (Value, error) {
+	d.i++ // [
+	var parts [2][]Value
+	for i := range parts {
+		d.ws()
+		if i > 0 && !d.lit(",") {
+			return Value{}, d.errorf("malformed array")
+		}
+		d.ws()
+		if d.i >= len(d.b) || d.b[d.i] != '[' {
+			return Value{}, d.errorf("malformed array")
+		}
+		var err error
+		if parts[i], err = d.elems(depth); err != nil {
+			return Value{}, err
+		}
+	}
+	for range 2 {
+		d.ws()
+		if !d.lit("]") {
+			return Value{}, d.errorf("malformed array")
+		}
+	}
+	dimv, cellv := parts[0], parts[1]
+	if len(dimv) == 1 {
+		return Value{}, d.errorf("a vector written as an array")
+	}
+	dims := make([]int, 0, len(dimv))
+	cells := int64(1)
+	for _, x := range dimv {
+		n, ok := x.Int()
+		if !ok || n < 0 {
+			return Value{}, d.errorf("bad array dimension")
+		}
+		if n > 0 && cells > int64(len(cellv))/n+1 {
+			return Value{}, d.errorf("array cells do not match its dimensions")
+		}
+		cells *= n
+		dims = append(dims, int(n))
+	}
+	if cells != int64(len(cellv)) {
+		return Value{}, d.errorf("array cells do not match its dimensions")
+	}
+	return MakeArray(dims, cellv...), nil
 }
 
 // tagged reads the body of a tagged value, [type, data], and the ] that
@@ -481,7 +528,7 @@ func (d *decoder) tagged(depth int) (Value, error) {
 		return Value{}, d.errorf("expected , after a tagged value's type")
 	}
 	d.ws()
-	data, err := d.value(depth + 2)
+	data, err := d.value(depth + 1)
 	if err != nil {
 		return Value{}, err
 	}

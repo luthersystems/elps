@@ -81,13 +81,17 @@ func MakeFloat(f float64) Value { return Value{kind: Float, f: f} }
 // MakeString returns a string.
 func MakeString(s string) Value { return Value{kind: String, str: s} }
 
-// MakeSymbol returns the symbol name ("true" and "false" are booleans).
+// MakeSymbol returns the symbol name. As in ELPS, "true" and "false" are
+// booleans, and a name that starts with a colon is a keyword.
 func MakeSymbol(name string) Value {
 	switch name {
 	case "true":
 		return MakeBool(true)
 	case "false":
 		return MakeBool(false)
+	}
+	if strings.HasPrefix(name, ":") {
+		return Value{kind: Keyword, str: name[1:]}
 	}
 	return Value{kind: Symbol, str: name}
 }
@@ -169,6 +173,8 @@ func buildMap(keys, vals []Value) Value {
 	for i, k := range keys {
 		if id, ok := keyID(k); ok {
 			if j, dup := seen[id]; dup {
+				// As Set: the later key and value replace the earlier.
+				entries[j].text, _ = keyText(k)
 				entries[j].key, entries[j].val = k, vals[i]
 				continue
 			}

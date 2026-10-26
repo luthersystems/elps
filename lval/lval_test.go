@@ -125,8 +125,9 @@ func TestFieldRules(t *testing.T) {
 	if err := lval.Decode(v, &q); err != nil {
 		t.Fatal(err)
 	}
-	if want, _ := v.Keys()[0].Str(); q.Name != map[string]string{"NAME": "upper", "Name": "mixed"}[want] {
-		t.Fatalf("Name = %q, want the first key's value in sorted order (%q)", q.Name, want)
+	// lisp reads keys by name, and ":Name" sorts before "NAME".
+	if q.Name != "mixed" {
+		t.Fatalf("Name = %q, want the keyword's value", q.Name)
 	}
 	type dup struct {
 		First  string `elps:"id"`
