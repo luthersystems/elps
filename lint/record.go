@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
@@ -42,6 +43,10 @@ type recordFinding struct {
 // astutil.FindCallSites, which owns the lexical syntax; this file reads
 // only the record forms.
 func recordFindings(exprs []*lisp.LVal) []recordFinding {
+	exprs = recordForms(exprs)
+	if len(exprs) == 0 {
+		return nil
+	}
 	var out []recordFinding
 	inMethod := make(map[*lisp.LVal]bool)
 	for _, top := range exprs {
@@ -62,6 +67,23 @@ func recordFindings(exprs []*lisp.LVal) []recordFinding {
 			}
 		}
 		recordTypeBindings(top, &out)
+	}
+	return out
+}
+
+// recordForms returns the top-level forms that name a symbol of the
+// libschema package.  Every record check starts from such a symbol, so the
+// other forms (most of a usual file) skip the call-site queries.
+func recordForms(exprs []*lisp.LVal) []*lisp.LVal {
+	var out []*lisp.LVal
+	for _, top := range exprs {
+		found := false
+		astutil.Walk([]*lisp.LVal{top}, func(node, _ *lisp.LVal, _ int) {
+			found = found || (node.Type == lisp.LSymbol && strings.HasPrefix(node.Str, recordPackage))
+		})
+		if found {
+			out = append(out, top)
+		}
 	}
 	return out
 }
