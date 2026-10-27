@@ -944,6 +944,41 @@ type quasiquoteMemo struct {
 // the allowance above -- work the tree walk did without charging for it at
 // all.
 func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
+	return findAndUnquoteWith(env, v, depth, nil)
+}
+
+// QuasiquoteWith returns what (quasiquote form) evaluates to, except that
+// the value of each unquoted expression is resolve(expr) where the
+// quasiquote evaluated expr.  An unquote-splicing splices the list resolve
+// returns.  The walk is quasiquote's own: its value depth checks, its
+// allocation checks as each list adds a cell (a splice adds its length),
+// its errors and their messages, and its step charges for duplicated work
+// on a shared DAG.  An error resolve returns stops the walk where an
+// evaluation error stopped it.
+//
+// A Go macro that replaces a defmacro whose body was a quasiquote calls it,
+// so the expansion fails where the defmacro failed, with the same caught
+// error (luthersystems/elps#894).  resolve is not called for an unquote
+// that the walk does not reach, and a nil it returns is an error.  form is walked, not changed; the result
+// shares form's leaves, as a quasiquote's result shares its template's, so
+// a macro that must return fresh syntax passes a fresh form.
+func (env *LEnv) QuasiquoteWith(form *LVal, resolve func(expr *LVal) *LVal) *LVal {
+	if resolve == nil {
+		return env.Errorf("QuasiquoteWith: resolve is nil")
+	}
+	return findAndUnquoteWith(env, form, 0, func(expr *LVal) *LVal {
+		// The walk dereferences each value, so a Go nil is an error here,
+		// not a panic later.
+		if v := resolve(expr); v != nil {
+			return v
+		}
+		return env.Errorf("QuasiquoteWith: resolve returned nil")
+	})
+}
+
+// findAndUnquoteWith is findAndUnquote with resolve, when non-nil, in place
+// of the evaluation of each unquoted expression.
+func findAndUnquoteWith(env *LEnv, v *LVal, depth int, resolve func(expr *LVal) *LVal) *LVal {
 	type frame struct {
 		v, orig                             *LVal
 		cells                               []*LVal
@@ -994,7 +1029,7 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 		}
 		if !memoised {
 			var dup int
-			prepared := prepareUnquote(env, v, unquoteContext{depth: depth, valueDepth: valueDepth}, seen)
+			prepared := prepareUnquote(env, v, unquoteContext{depth: depth, valueDepth: valueDepth, resolve: resolve}, seen)
 			result, list, quotes, quoteEdges, dup, evaluated = prepared.result, prepared.list, prepared.quotes, prepared.quoteEdges, prepared.dup, prepared.evaluated
 			need = quoteEdges
 			// The work this visit did: the quote wrappers it unwrapped, and
@@ -1119,6 +1154,9 @@ func findAndUnquote(env *LEnv, v *LVal, depth int) *LVal {
 
 // unquoteContext holds quasiquote traversal and value depths.
 type unquoteContext struct {
+	// resolve, when non-nil, gives an unquoted expression's value in
+	// place of its evaluation (QuasiquoteWith).
+	resolve func(expr *LVal) *LVal
 	// depth is the traversal depth.
 	depth int
 	// valueDepth is the current value depth.
@@ -1211,17 +1249,26 @@ func prepareUnquote(env *LEnv, v *LVal, opts unquoteContext, seen map[*LVal]stru
 			env.loc = v.source
 			return unquotePreparation{result: env.Errorf("unquote-splicing used in an invalid context"), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 		}
-		return unquotePreparation{result: doUnquoteSpliced(env, expr), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
+		return unquotePreparation{result: doUnquoteSpliced(env, expr, opts.resolve), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
 	}
 	if unquote == unquoteValue {
 		// v looks like ``(unquote expr)''
-		return unquotePreparation{result: doUnquoteValue(env, v.Cells[1], quoteLevel), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
+		return unquotePreparation{result: doUnquoteValue(env, v.Cells[1], quoteLevel, opts.resolve), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
 	}
 	return unquotePreparation{result: nil, list: v, quotes: quoteLevel, quoteEdges: quoteEdges, dup: dup, evaluated: false}
 }
 
-func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
-	x := env.Eval(v)
+// unquoteEval is the value of the unquoted expression v: resolve(v) for
+// QuasiquoteWith, else v's evaluation.
+func unquoteEval(env *LEnv, v *LVal, resolve func(expr *LVal) *LVal) *LVal {
+	if resolve != nil {
+		return resolve(v)
+	}
+	return env.Eval(v)
+}
+
+func doUnquoteSpliced(env *LEnv, v *LVal, resolve func(expr *LVal) *LVal) *LVal {
+	x := unquoteEval(env, v, resolve)
 	if x.IsError() {
 		return x
 	}
@@ -1229,8 +1276,8 @@ func doUnquoteSpliced(env *LEnv, v *LVal) *LVal {
 	return x
 }
 
-func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int) *LVal {
-	x := env.Eval(v)
+func doUnquoteValue(env *LEnv, v *LVal, quoteLevel int, resolve func(expr *LVal) *LVal) *LVal {
+	x := unquoteEval(env, v, resolve)
 	if x.IsError() {
 		return x
 	}

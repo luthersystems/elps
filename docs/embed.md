@@ -587,6 +587,14 @@ fails to parse, and on undeclared, duplicate or unused parameters or a
 malformed placeholder; `Expand` panics on an argument count mismatch or an
 invalid splice argument. libtesting's assert macros are built this way.
 
+`Expand` makes none of the checks that quasiquote makes. When a Go macro
+replaces a `defmacro` whose body was a quasiquote, call
+`ExpandChecked(env, args...)` instead. It runs quasiquote's own walk
+(`LEnv.QuasiquoteWith`) under env's limits, so a form deeper than the value
+depth limit, an expansion over the allocation limit, a splice of a non-list
+and a cancelled context return the error the `defmacro` returned, with the
+same condition and message. It costs about twice what `Expand` costs.
+
 Each expansion allocates fresh, unlocated syntax, shares the inserted
 argument forms, and uses the immutable nil singleton for `()`; it never
 parses or evaluates. This follows the Go macro contract: the evaluator

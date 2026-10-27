@@ -42,6 +42,7 @@ var specialOpAllowlist = map[string]string{
 	"astutil/query.go:ClassifyNodes":                            "reads walker Op events and classifies quasiquote template holes",
 	"astutil/walk.go:quotedSymbolName":                          "extracts a quoted symbol operand, not expression dispatch",
 	"elpsutil/template.go:templateCompiler.placeholderKind":     "recognizes the unquote and unquote-splicing placeholder markers of a template, not expression dispatch",
+	"elpsutil/template.go:templateNode.hasQuotedHead":           "finds a once-quoted unquote or unquote-splicing list head, which quasiquote reads as an unquote, not expression dispatch",
 	"formatter/printer.go:printer.tryPrefixForm":                "prints reader prefixes for their explicit form spellings",
 	"formatter/rules.go:DefaultRules":                           "form-specific indentation configuration",
 	"internal/fuzzseed/evalseed.go:EvalTerminating":             "names test seeds after the forms they exercise",
