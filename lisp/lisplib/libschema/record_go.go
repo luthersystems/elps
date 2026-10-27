@@ -228,7 +228,21 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	this := Record{caps: caps, t: t}
 	if op.Type == lisp.LSymbol {
 		if m := t.methods[op.Str]; m != nil {
-			return m.Call(env, this, rest)
+			// Set checks one field; Check runs when the method returns, so
+			// every object a caller sees, and every object a dump saves,
+			// loads again.  A method that fails, or breaks Check, leaves
+			// the fields as they were.
+			saved := lisp.Cells(caps.Cells).Clone()
+			r := m.Call(env, this, rest)
+			if !r.IsError() && t.spec.Check != nil {
+				if err := t.spec.Check(this); err != nil {
+					r = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+				}
+			}
+			if r.IsError() {
+				copy(caps.Cells, saved) //elps:mutates restores the object's own fields after a failed method
+			}
+			return r
 		}
 		if i, ok := t.index[op.Str]; ok && t.spec.Fields[i].Getter {
 			if len(rest) > 0 {
@@ -262,7 +276,7 @@ func (t *RecordType) Record(v *lisp.LVal) (Record, bool) {
 	return Record{caps: caps, t: t}, true
 }
 
-// fieldMap returns a new sorted map of v's fields.
+// fieldMap returns a new sorted map of the fields of v that have a getter.
 func (t *RecordType) fieldMap(v *lisp.LVal) *lisp.LVal {
 	r, ok := t.Record(v)
 	if !ok {
@@ -270,7 +284,10 @@ func (t *RecordType) fieldMap(v *lisp.LVal) *lisp.LVal {
 	}
 	m := lisp.SortedMapSized(len(t.spec.Fields))
 	for i, f := range t.spec.Fields {
-		m.Map().Set(lisp.String(f.Name), r.At(i))
+		// A field with no getter is hidden from Lisp, here as in a call.
+		if f.Getter {
+			m.Map().Set(lisp.String(f.Name), r.At(i))
+		}
 	}
 	return m
 }
@@ -325,7 +342,8 @@ func (r Record) Field(name string) *lisp.LVal {
 	return r.caps.Cells[i]
 }
 
-// Set checks v with field i's check and stores it.  It returns nil, or an
+// Set checks v with field i's check and stores it.  The type's Check runs
+// when the method that called Set returns.  It returns nil, or an
 // error value when the check fails, and then field i is not changed.
 func (r Record) Set(env *lisp.LEnv, i int, v *lisp.LVal) *lisp.LVal {
 	f := r.t.spec.Fields[i]
