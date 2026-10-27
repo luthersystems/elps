@@ -127,7 +127,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.detacher.detach":                                   "specialized traversal: detachment copies storage and native payloads with its own memo",
 	"github.com/luthersystems/elps/lisp.detacher.detachNode":                               "specialized traversal: detachment dispatch is separate from its frame driver",
 	"github.com/luthersystems/elps/lisp.exportArgs":                                        "syntax walker: validates export declarations and their symbol lists",
-	"github.com/luthersystems/elps/lisp.findAndUnquote":                                    "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/lisp.findAndUnquoteWith":                                "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.firstUnsealed":                                     "syntax walker: validates sealed source storage before package publication",
 	"github.com/luthersystems/elps/lisp.genSymLevelWalk":                                   "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lisp.loaderWalk.check":                                  "syntax walker: validates reader trees and counts quoted evaluation work",

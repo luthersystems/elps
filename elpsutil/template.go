@@ -28,6 +28,9 @@ import (
 // (quasiquote (a (unquote x))) the inner unquote is substituted.  Build such
 // a form in Go and pass it as an argument.
 //
+// Expand makes none of the checks that quasiquote makes.  ExpandChecked
+// expands as quasiquote would, under env's limits, with its errors.
+//
 // A template stores no LVals.  Each Expand constructs fresh, unsealed,
 // unlocated syntax, as the Go macro contract in lisp.LEnv.AddMacros requires:
 // the evaluator locates it at the macro call site.  Arguments are inserted by
@@ -36,6 +39,10 @@ import (
 type Template struct {
 	root       templateNode
 	paramCount int
+	// quotedHead is true when a list in the template has a quoted unquote
+	// or unquote-splicing head, ('unquote x): Expand copies it, but
+	// quasiquote reads it as an unquote, so ExpandChecked refuses it.
+	quotedHead bool
 }
 
 type templateKind uint8
@@ -90,7 +97,7 @@ func MustTemplate(src string, params ...string) *Template {
 			templatePanic("unused parameter %q", params[i])
 		}
 	}
-	return &Template{root: root, paramCount: len(params)}
+	return &Template{root: root, paramCount: len(params), quotedHead: root.hasQuotedHead()}
 }
 
 func templatePanic(format string, args ...any) {
@@ -171,6 +178,91 @@ func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
 		panic(fmt.Sprintf("elpsutil.Template.Expand: expected %d arguments, got %d", t.paramCount, len(args)))
 	}
 	return t.root.expand(args)
+}
+
+// ExpandChecked returns what (quasiquote <template>) evaluates to in env when
+// each placeholder's parameter is bound to its argument: the expansion, or
+// the error the quasiquote raised.  It runs quasiquote's own walk
+// (lisp.LEnv.QuasiquoteWith), so it makes the same checks in the same order
+// with the same messages: the value depth limit at each node, quote
+// wrappers included, and the allocation limit as each list adds a cell,
+// where a splice adds its argument's length.  Where the quasiquote
+// evaluated a placeholder's parameter, ExpandChecked checks env's context,
+// as that evaluation did.  It charges no step and does not check the step
+// limit or budget, so under a step limit the defmacro can fail where
+// ExpandChecked does not.  A spliced argument that is not a list is
+// quasiquote's error, not a panic, and a nil argument is an error.
+//
+// A Go macro that replaces a defmacro whose body was a quasiquote of the
+// same form calls it, so the expansion fails where the defmacro's failed
+// and a handler that catches the error reads the same message
+// (luthersystems/elps#894).  The expansion is fresh syntax, as Expand's
+// is, with arguments inserted by pointer.  ExpandChecked builds the form
+// before it walks it, so it costs about twice what Expand costs.  It
+// panics if the argument count differs from the declared parameter count,
+// and on a template with a list whose head is a quoted unquote, such as
+// (f ('unquote y)): Expand copies that list, but quasiquote reads it as an
+// unquote of y, so no defmacro expands as the template does.
+func (t *Template) ExpandChecked(env *lisp.LEnv, args ...*lisp.LVal) *lisp.LVal {
+	if len(args) != t.paramCount {
+		panic(fmt.Sprintf("elpsutil.Template.ExpandChecked: expected %d arguments, got %d", t.paramCount, len(args)))
+	}
+	if t.quotedHead {
+		panic("elpsutil.Template.ExpandChecked: the template has a list with a quoted unquote head, which quasiquote reads as an unquote; use Expand")
+	}
+	return env.QuasiquoteWith(t.root.source(), func(expr *lisp.LVal) *lisp.LVal {
+		if err := env.CheckContext(); err != nil {
+			return lisp.Error(err)
+		}
+		return args[expr.Int]
+	})
+}
+
+// hasQuotedHead reports whether n or a node under it is a list whose head
+// is a once-quoted unquote or unquote-splicing symbol.
+func (n *templateNode) hasQuotedHead() bool {
+	if n.kind == templateList && len(n.children) > 0 {
+		// One quote only: source() builds 'unquote as a quoted symbol,
+		// which quasiquote reads as an unquote, but ''unquote as an
+		// LQuote wrapper, which it does not.
+		if head := &n.children[0]; head.kind == templateQuote {
+			sym := &head.children[0]
+			if sym.kind == templateSymbol && (sym.str == "unquote" || sym.str == "unquote-splicing") {
+				return true
+			}
+		}
+	}
+	for i := range n.children {
+		if n.children[i].hasQuotedHead() {
+			return true
+		}
+	}
+	return false
+}
+
+// source returns the template as quasiquote source: the form MustTemplate
+// read, with each placeholder's parameter name replaced by its index.
+// It is fresh syntax, built as expand builds an expansion.
+func (n *templateNode) source() *lisp.LVal {
+	switch n.kind {
+	case templateArg:
+		return lisp.Cells{lisp.Symbol("unquote"), lisp.Int(n.index)}.SExpr()
+	case templateSplice:
+		return lisp.Cells{lisp.Symbol("unquote-splicing"), lisp.Int(n.index)}.SExpr()
+	case templateQuote:
+		return lisp.Quote(n.children[0].source())
+	case templateList:
+		if len(n.children) == 0 {
+			return lisp.Nil()
+		}
+		cells := make([]*lisp.LVal, len(n.children))
+		for i := range n.children {
+			cells[i] = n.children[i].source()
+		}
+		return lisp.SExpr(cells)
+	default:
+		return n.expand(nil)
+	}
 }
 
 func (n *templateNode) expand(args []*lisp.LVal) *lisp.LVal {
