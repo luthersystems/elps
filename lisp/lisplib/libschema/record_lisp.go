@@ -33,7 +33,9 @@ var recordMacros = []*libutil.Builtin{
 		object, as a Go method receiver is; or the option :check fn, a function of the new object that
 		raises an error to refuse it.  Call an object as (obj 'name
 		args...): a method runs, and a field name returns the field.  Any
-		other name raises unknown-operation.  Bind the type with a
+		other name raises unknown-operation.  A method call is atomic:
+		if it raises an error, or :check refuses the object, the fields
+		return to their state before the call.  Bind the type with a
 		top-level set: a saved object names that global.`),
 	libutil.FunctionDoc("method", lisp.Formals("name", "formals", lisp.VarArgSymbol, "body"), macroMethod,
 		`Declares a method inside s:make-record: (s:method name (recv
