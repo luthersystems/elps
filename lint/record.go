@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
+	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -14,7 +16,7 @@ import (
 // keep each object's fields valid by checking every write: the constructor
 // and s:set! run the field validators.  The interpreter cannot refuse every
 // way around those checks without a cost on each call, so these checks find
-// the usual ones in source.  All three are warnings now; the next major
+// the usual ones in source.  All of them are warnings now; the next major
 // release may make the runtime refuse what they report.
 
 // recordPackage is the qualifier of the libschema package.  Its exports
@@ -29,6 +31,9 @@ const (
 	recordFieldMutation    = "record-field-mutation"
 	recordUnknownMember    = "record-unknown-member"
 	recordCheckWrites      = "record-check-writes"
+	recordMethodArity      = "record-method-arity"
+	recordDefmethodType    = "record-defmethod-type"
+	recordPlainSet         = "record-plain-set"
 )
 
 // recordFinding is one finding of the record walker.  kind is the name of
@@ -44,8 +49,10 @@ type recordFinding struct {
 // fields and methods.  closed is false when a field form is not a literal
 // s:has-key or s:may-have-key, so the field names are not all known.
 type recordShape struct {
-	fields  map[string]bool
-	methods map[string]bool
+	fields map[string]bool
+	// methods maps each method to its signature after the receiver, or
+	// to nil when its formals cannot be read.
+	methods map[string]*analysis.Signature
 	closed  bool
 }
 
@@ -53,18 +60,20 @@ type recordShape struct {
 // The calls and the function bodies around them come from
 // astutil.FindCallSites, which owns the lexical syntax; this file reads
 // only the record forms.
-func recordFindings(exprs []*lisp.LVal) []recordFinding {
+func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFinding {
+	all := exprs
 	exprs = recordForms(exprs)
 	if len(exprs) == 0 {
 		return nil
 	}
-	shapes, byName := recordShapes(exprs)
 	w := &recordWalk{handled: make(map[*lisp.LVal]bool)}
+	types := recordShapes(exprs, all)
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
-			shape := shapes[site.Form]
+			shape := types.shapes[site.Form]
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
-				shape = byName[site.Form.Cells[1].Str]
+				shape = types.byName[site.Form.Cells[1].Str]
+				w.defmethodType(site.Form, types, semantics)
 			}
 			for _, m := range recordMethods(site.Form) {
 				w.methodBody(m.body, m.recv, shape)
@@ -102,33 +111,61 @@ type mutationReport struct {
 	kind, msg, note string
 }
 
-// recordShapes returns the shape of each s:make-record call in exprs, and
-// the shape of each type a top-level set or defconst binds.  A
-// s:defmethod in exprs adds its method to the shape of the type it names.
-func recordShapes(exprs []*lisp.LVal) (map[*lisp.LVal]*recordShape, map[string]*recordShape) {
-	shapes := make(map[*lisp.LVal]*recordShape)
-	byName := make(map[string]*recordShape)
+// recordTypes is what a file declares about record types.
+type recordTypes struct {
+	// shapes is the shape of each s:make-record call.
+	shapes map[*lisp.LVal]*recordShape
+	// byName is the shape of each type a top-level set or defconst binds.
+	byName map[string]*recordShape
+	// bound maps every name a top-level set or defconst binds to its
+	// value form.
+	bound map[string]*lisp.LVal
+}
+
+// recordShapes returns the record types of exprs, the top forms that use
+// the s: package.  A s:defmethod in exprs adds its method to the shape of
+// the type it names.  bound comes from all, every top form of the file.
+func recordShapes(exprs, all []*lisp.LVal) recordTypes {
+	t := recordTypes{
+		shapes: make(map[*lisp.LVal]*recordShape),
+		byName: make(map[string]*recordShape),
+		bound:  make(map[string]*lisp.LVal),
+	}
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"make-record") {
-			shapes[site.Form] = newRecordShape(site.Form)
+			t.shapes[site.Form] = newRecordShape(site.Form)
 		}
 		if name := boundName(top); name != "" {
 			if sites := callSites(top.Cells[2], recordPackage+"make-record"); len(sites) == 1 {
-				byName[name] = shapes[sites[0].Form]
+				t.byName[name] = t.shapes[sites[0].Form]
 			}
+		}
+	}
+	for _, top := range all {
+		if name := boundName(top); name != "" {
+			t.bound[name] = top.Cells[2]
 		}
 	}
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"defmethod") {
 			c := site.Form.Cells
-			if len(c) > 2 && c[1].Type == lisp.LSymbol && c[2].Type == lisp.LSymbol {
-				if shape := byName[c[1].Str]; shape != nil {
-					shape.methods[c[2].Str] = true
+			if len(c) > 3 && c[1].Type == lisp.LSymbol && c[2].Type == lisp.LSymbol {
+				if shape := t.byName[c[1].Str]; shape != nil {
+					shape.methods[c[2].Str] = methodSignature(c[3])
 				}
 			}
 		}
 	}
-	return shapes, byName
+	return t
+}
+
+// methodSignature returns the signature of a method's formals after the
+// receiver, or nil when they are not a list.
+func methodSignature(formals *lisp.LVal) *analysis.Signature {
+	if formals.Type != lisp.LSExpr || len(formals.Cells) == 0 {
+		return nil
+	}
+	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(formals.Cells[1:]))}
 }
 
 // boundName returns NAME when top is (set 'NAME value) or
@@ -153,15 +190,15 @@ func boundName(top *lisp.LVal) string {
 
 // newRecordShape reads the field and method forms of a s:make-record call.
 func newRecordShape(call *lisp.LVal) *recordShape {
-	shape := &recordShape{fields: make(map[string]bool), methods: make(map[string]bool), closed: true}
+	shape := &recordShape{fields: make(map[string]bool), methods: make(map[string]*analysis.Signature), closed: true}
 	forms := call.Cells[min(2, len(call.Cells)):]
 	for i := 0; i < len(forms); i++ {
 		form := forms[i]
 		switch h := astutil.HeadSymbol(form); {
 		case form.IsSymbol(":check"):
 			i++
-		case (h == recordPackage+"method" || h == "method") && len(form.Cells) > 1 && form.Cells[1].Type == lisp.LSymbol:
-			shape.methods[form.Cells[1].Str] = true
+		case (h == recordPackage+"method" || h == "method") && len(form.Cells) > 2 && form.Cells[1].Type == lisp.LSymbol:
+			shape.methods[form.Cells[1].Str] = methodSignature(form.Cells[2])
 		case (h == recordPackage+"has-key" || h == recordPackage+"may-have-key") && len(form.Cells) > 1 && form.Cells[1].Type == lisp.LString:
 			shape.fields[form.Cells[1].Str] = true
 		default:
@@ -276,16 +313,152 @@ func (w *recordWalk) methodBody(body []*lisp.LVal, recv string, shape *recordSha
 		}
 		if known {
 			for _, site := range callSites(form, recv) {
-				name, ok := quotedName(site.Form.Cells[min(1, len(site.Form.Cells)-1)])
-				if ok && len(site.Form.Cells) > 1 && !shape.fields[name] && !shape.methods[name] {
-					w.out = append(w.out, unknownMember(site.Form, name+" is not a field or method of the type"))
-				}
+				w.memberCall(site.Form, shape)
 			}
 		}
+		w.plainSets(form, recv)
 		r := strings.ReplaceAll(recv, "%", "%%")
 		w.fieldMutations(form, recv, mutationReport{recordFieldMutation,
 			"%s changes field %s of " + r + " in place, and its validator does not run",
 			"build the new value and give it to s:set!: (s:set! " + r + " '%[2]s new-value)"})
+	}
+}
+
+// memberCall checks a call (recv 'name args...) in a method of a type
+// whose members are all known: the member must exist, a field takes no
+// arguments, and a method takes the arguments its formals accept.
+func (w *recordWalk) memberCall(call *lisp.LVal, shape *recordShape) {
+	if len(call.Cells) < 2 {
+		return
+	}
+	name, ok := quotedName(call.Cells[1])
+	if !ok {
+		return
+	}
+	n := len(call.Cells) - 2
+	sig, isMethod := shape.methods[name]
+	switch {
+	case shape.fields[name]:
+		if n > 0 {
+			w.out = append(w.out, arityFinding(call, fmt.Sprintf("field %s takes no arguments, got %d", name, n)))
+		}
+	case !isMethod:
+		w.out = append(w.out, unknownMember(call, name+" is not a field or method of the type"))
+	case sig == nil:
+	case n < sig.MinArity():
+		w.out = append(w.out, arityFinding(call, fmt.Sprintf("method %s needs at least %d argument(s), got %d", name, sig.MinArity(), n)))
+	case sig.MaxArity() >= 0 && n > sig.MaxArity():
+		w.out = append(w.out, arityFinding(call, fmt.Sprintf("method %s accepts at most %d argument(s), got %d", name, sig.MaxArity(), n)))
+	}
+}
+
+// arityFinding returns a record-method-arity finding.
+func arityFinding(node *lisp.LVal, msg string) recordFinding {
+	return recordFinding{
+		node: node, kind: recordMethodArity, msg: msg,
+		note: "the arguments after the member name go to the method's formals after the receiver",
+	}
+}
+
+// plainSets reports a set! or set in a method body that rebinds the
+// receiver.  The receiver is a local name, so the binding changes and the
+// object does not.  A set! of a name the body binds itself is not the
+// receiver.
+func (w *recordWalk) plainSets(form *lisp.LVal, recv string) {
+	var current *lisp.LVal
+	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		switch n.Event {
+		case lisp.WalkForm:
+			current = n.Node
+		case lisp.WalkSet:
+			if !n.Bound && n.Node.Str == recv && current != nil {
+				w.plainSet(current, recv)
+			}
+		case lisp.WalkRef, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkEnter, lisp.WalkLeave:
+		}
+		return true
+	}}
+	codewalk.Occurrences(cw, maxPlainSetWork, form)
+	for _, site := range callSites(form, "set") {
+		if name, ok := quotedName(site.Form.Cells[min(1, len(site.Form.Cells)-1)]); ok && name == recv {
+			w.plainSet(site.Form, recv)
+		}
+	}
+}
+
+// maxPlainSetWork bounds the lists plainSets walks in one method body.
+const maxPlainSetWork = 1 << 16
+
+// plainSet reports one set! or set on the receiver.
+func (w *recordWalk) plainSet(call *lisp.LVal, recv string) {
+	c := call.Cells
+	f := recordFinding{
+		node: call, kind: recordPlainSet,
+		msg:  c[0].Str + " rebinds the local name " + recv + "; the object does not change",
+		note: "to change a field of the object, use (s:set! " + recv + " 'field value)",
+	}
+	if !strings.HasSuffix(c[0].Str, "!") {
+		f.msg = c[0].Str + " binds the package name " + recv + ", not the receiver; the object does not change"
+	}
+	if len(c) == 4 {
+		if field, ok := quotedName(c[2]); ok {
+			f.msg = c[0].Str + " does not change a record field"
+			f.note = "use (s:set! " + recv + " '" + field + " value)"
+		}
+	}
+	w.out = append(w.out, f)
+}
+
+// defmethodType reports a s:defmethod whose first argument cannot be a
+// record type: a literal, a quoted name, or a name the file binds to
+// something that is not a type.  A name bound in another file is trusted.
+func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics *analysis.Result) {
+	if len(call.Cells) < 2 {
+		return
+	}
+	arg := call.Cells[1]
+	if msg := notATypeForm(arg); msg != "" {
+		w.out = append(w.out, defmethodTypeFinding(arg, msg))
+		return
+	}
+	if arg.Type != lisp.LSymbol || types.byName[arg.Str] != nil {
+		return
+	}
+	if v := types.bound[arg.Str]; v != nil {
+		if msg := notATypeForm(v); msg != "" {
+			w.out = append(w.out, defmethodTypeFinding(arg, arg.Str+" is bound to "+msg+", not to a record type"))
+		}
+		return
+	}
+	if semantics == nil || semantics.RootScope == nil {
+		return
+	}
+	if sym := semantics.RootScope.Lookup(arg.Str); sym != nil {
+		switch sym.Kind {
+		case analysis.SymFunction, analysis.SymMacro, analysis.SymBuiltin, analysis.SymSpecialOp, analysis.SymType:
+			w.out = append(w.out, defmethodTypeFinding(arg, arg.Str+" is a "+sym.Kind.String()+", not a record type"))
+		case analysis.SymVariable, analysis.SymParameter:
+		}
+	}
+}
+
+// notATypeForm describes a form whose value is never a record type, or
+// returns "" when the form may evaluate to one.
+func notATypeForm(v *lisp.LVal) string {
+	switch {
+	case v.IsQuoted():
+		return "a quoted value"
+	case v.Type == lisp.LString, v.Type == lisp.LInt, v.Type == lisp.LFloat:
+		return "a literal"
+	}
+	return ""
+}
+
+// defmethodTypeFinding returns a record-defmethod-type finding.
+func defmethodTypeFinding(node *lisp.LVal, msg string) recordFinding {
+	return recordFinding{
+		node: node, kind: recordDefmethodType, msg: msg,
+		note: "the first argument of s:defmethod is the type a s:make-record returns: (s:defmethod TYPE NAME (recv args...) body...)",
 	}
 }
 
@@ -416,7 +589,7 @@ func recordAnalyzerRun(kind string) func(pass *Pass) error {
 			sh = &passShared{}
 		}
 		if !sh.recordDone {
-			sh.record, sh.recordDone = recordFindings(pass.Exprs), true
+			sh.record, sh.recordDone = recordFindings(pass.Exprs, pass.Semantics), true
 		}
 		for _, f := range sh.record {
 			if f.kind != kind {
@@ -496,4 +669,41 @@ var AnalyzerRecordCheckWrites = &Analyzer{
 		"change. A write in it (s:set!, or a mutating builtin such as assoc! on a " +
 		"field) changes the object after its validators ran.",
 	Run: recordAnalyzerRun(recordCheckWrites),
+}
+
+// AnalyzerRecordMethodArity reports a member call in a method with the
+// wrong number of arguments.
+var AnalyzerRecordMethodArity = &Analyzer{
+	Name:     recordMethodArity,
+	Severity: SeverityWarning,
+	Doc: "Report a call (recv 'name args...) in a method that gives a member the wrong number of arguments.\n\n" +
+		"A field read takes no arguments. A method call takes the arguments its formals " +
+		"accept after the receiver. The check knows the members of a type made by " +
+		"s:make-record in the same file, with the s:defmethod methods of that file.",
+	Run: recordAnalyzerRun(recordMethodArity),
+}
+
+// AnalyzerRecordDefmethodType reports a s:defmethod whose type argument
+// is not a record type.
+var AnalyzerRecordDefmethodType = &Analyzer{
+	Name:     recordDefmethodType,
+	Severity: SeverityWarning,
+	Doc: "Report a s:defmethod whose first argument is not a record type.\n\n" +
+		"The first argument is evaluated and must give the type s:make-record returns. " +
+		"The check reports a literal, a quoted name, a name the file binds to a literal, " +
+		"and a name that is a function, macro or builtin. A name bound in another file " +
+		"is not checked.",
+	Run: recordAnalyzerRun(recordDefmethodType),
+}
+
+// AnalyzerRecordPlainSet reports a set! or set in a method that rebinds
+// the receiver.
+var AnalyzerRecordPlainSet = &Analyzer{
+	Name:     recordPlainSet,
+	Severity: SeverityWarning,
+	Doc: "Report set! or set on a method's receiver.\n\n" +
+		"The receiver is a local name. (set! o v) and (set 'o v) change the binding, " +
+		"not the object, and (set! o 'field v) is not a field write. Use " +
+		"(s:set! o 'field v) to change a field.",
+	Run: recordAnalyzerRun(recordPlainSet),
 }
