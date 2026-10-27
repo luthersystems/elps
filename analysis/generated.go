@@ -73,9 +73,16 @@ func isPackageFormHead(head string) bool {
 // resolved head is expanded at most once per package per analysis, so prescan
 // and the deep walk share expansions in the same package and import context.
 func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal {
-	if a.cfg == nil || a.cfg.MacroExpander == nil || a.expansionDepth >= maxMacroExpansionDepth ||
+	if a.cfg == nil || a.expansionDepth >= maxMacroExpansionDepth ||
 		node == nil || node.Type != lisp.LSExpr || node.IsQuoted() ||
 		len(node.Cells) == 0 || node.Cells[0].Type != lisp.LSymbol {
+		return nil
+	}
+	exp := a.cfg.MacroExpander
+	if exp == nil {
+		exp = a.cfg.SyntaxExpander
+	}
+	if exp == nil {
 		return nil
 	}
 	if a.fileNonMacros[node.Cells[0].Str] {
@@ -93,7 +100,7 @@ func (a *analyzer) expand(node *lisp.LVal, scope *Scope, pkg string) *lisp.LVal 
 	if expanded, ok := a.expansions[key]; ok {
 		return expanded
 	}
-	expanded := a.cfg.MacroExpander.ExpandMacro(call, pkg)
+	expanded := exp.ExpandMacro(call, pkg)
 	if a.expansions == nil {
 		a.expansions = make(map[expansionKey]*lisp.LVal)
 	}

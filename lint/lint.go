@@ -470,11 +470,13 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		}
 		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
 	}
+	var syntax analysis.MacroExpander
 	if expander == nil {
 		// Expand the standard library macros whose expansions bind names
-		// (this and a method's formals).  Without an expansion those names
-		// read as undefined.  Other macros are not expanded, as before.
-		expander = &bindingMacroExpander{env: stdlibEnv}
+		// (a method's receiver and formals).  Without an expansion those
+		// names read as undefined.  It is a SyntaxExpander, so the analysis
+		// of a file that calls none of them does not change.
+		syntax = &bindingMacroExpander{env: stdlibEnv}
 	}
 
 	acfg := &analysis.Config{
@@ -486,6 +488,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		DefaultPackage: prescan.DefaultPackage,
 		FilePackages:   prescan.FilePackages,
 		MacroExpander:  expander,
+		SyntaxExpander: syntax,
 	}
 
 	// Build workspace refs so lint analyzers (e.g. unused-function) can check

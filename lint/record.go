@@ -499,10 +499,20 @@ func (w *recordWalk) checkBody(check *lisp.LVal) {
 // fieldMutations reports each mutating builtin in form whose target is
 // (receiver 'field).
 func (w *recordWalk) fieldMutations(form *lisp.LVal, receiver string, r mutationReport) {
-	for _, site := range callSites(form, mutatingNames()...) {
+	sites := callSites(form, mutatingNames()...)
+	if len(sites) == 0 {
+		return
+	}
+	// The receiver's calls in form.  A call to a nested function's formal
+	// of the same name is not one of them.
+	reads := make(map[*lisp.LVal]bool)
+	for _, read := range callSites(form, receiver) {
+		reads[read.Form] = true
+	}
+	for _, site := range sites {
 		head := mutationHead(site.Form)
 		target := mutatingBuiltins[head]
-		if target >= len(site.Form.Cells) {
+		if target >= len(site.Form.Cells) || !reads[site.Form.Cells[target]] {
 			continue
 		}
 		if field, ok := receiverFieldRead(site.Form.Cells[target], receiver); ok {
