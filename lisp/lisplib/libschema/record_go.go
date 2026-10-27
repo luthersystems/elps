@@ -33,7 +33,9 @@ type RecordSpec struct {
 	// built or loaded.  It must not run Lisp.
 	Check func(r Record) error
 	// Default, if not nil, runs for an op that no method or getter
-	// matches.  Without it such an op raises UnknownOp.
+	// matches.  Without it such an op raises UnknownOp.  Like a method,
+	// it runs under Check, and a call that fails leaves the fields as they
+	// were.
 	Default func(env *lisp.LEnv, r Record, op *lisp.LVal, args []*lisp.LVal) *lisp.LVal
 	// Package and FID identify the objects of the type, as for
 	// lisp.CapturedFun.  FID defaults to Name.
@@ -228,21 +230,7 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	obj := Record{caps: caps, t: t}
 	if op.Type == lisp.LSymbol {
 		if m := t.methods[op.Str]; m != nil {
-			// Set checks one field; Check runs when the method returns, so
-			// every object a caller sees, and every object a dump saves,
-			// loads again.  A method that fails, or breaks Check, leaves
-			// the fields as they were.
-			saved := lisp.Cells(caps.Cells).Clone()
-			res := m.Call(env, obj, rest)
-			if !res.IsError() && t.spec.Check != nil {
-				if err := t.spec.Check(obj); err != nil {
-					res = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
-				}
-			}
-			if res.IsError() {
-				copy(caps.Cells, saved) //elps:mutates restores the object's own fields after a failed method
-			}
-			return res
+			return t.guarded(env, obj, func() *lisp.LVal { return m.Call(env, obj, rest) })
 		}
 		if i, ok := t.index[op.Str]; ok && t.spec.Fields[i].Getter {
 			if len(rest) > 0 {
@@ -252,9 +240,28 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		}
 	}
 	if t.spec.Default != nil {
-		return t.spec.Default(env, obj, op, rest)
+		return t.guarded(env, obj, func() *lisp.LVal { return t.spec.Default(env, obj, op, rest) })
 	}
 	return env.ErrorCondition(t.spec.UnknownOp, op)
+}
+
+// guarded runs call, a method or Default on obj.  Set checks one field;
+// Check runs when call returns, so every object a caller sees, and every
+// object a dump saves, loads again.  A call that fails, or breaks Check,
+// leaves the fields as they were.
+func (t *RecordType) guarded(env *lisp.LEnv, obj Record, call func() *lisp.LVal) *lisp.LVal {
+	caps := obj.caps
+	saved := lisp.Cells(caps.Cells).Clone()
+	res := call()
+	if !res.IsError() && t.spec.Check != nil {
+		if err := t.spec.Check(obj); err != nil {
+			res = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+		}
+	}
+	if res.IsError() {
+		copy(caps.Cells, saved) //elps:mutates restores the object's own fields after a failed method
+	}
+	return res
 }
 
 // Is reports whether v is an object of t.

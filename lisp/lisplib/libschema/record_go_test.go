@@ -209,9 +209,15 @@ func newCounterType(t *testing.T) *libschema.RecordType {
 				return r.At(0)
 			},
 		}},
-		Default: func(env *lisp.LEnv, _ libschema.Record, op *lisp.LVal, _ []*lisp.LVal) *lisp.LVal {
+		Default: func(env *lisp.LEnv, r libschema.Record, op *lisp.LVal, args []*lisp.LVal) *lisp.LVal {
 			if op.Type == lisp.LSymbol && op.Str == "passed" {
 				return lisp.String("default")
+			}
+			if op.Type == lisp.LSymbol && op.Str == "set-to" && len(args) == 1 {
+				if lerr := r.Set(env, 0, args[0]); lerr != nil {
+					return lerr
+				}
+				return lisp.Nil()
 			}
 			return env.ErrorCondition(libschema.UnknownOperation, op)
 		},
@@ -257,6 +263,12 @@ func TestGoRecordType(t *testing.T) {
 	require.NoError(t, lisp.GoError(r.Set(env, 0, lisp.Int(-5))), "Set checks only the field")
 	require.Error(t, lisp.GoError(env.FunCall(neg, lisp.QExpr([]*lisp.LVal{lisp.Symbol("inc")}))))
 	require.Equal(t, -5, r.At(0).Int, "the failed method restored the field it was given")
+
+	// Default runs under Check like a method.
+	require.NoError(t, lisp.GoError(call(lisp.Symbol("set-to"), lisp.Int(7))))
+	require.Equal(t, 7, call(lisp.Symbol("n")).Int)
+	require.Error(t, lisp.GoError(call(lisp.Symbol("set-to"), lisp.Int(-3))))
+	require.Equal(t, 7, call(lisp.Symbol("n")).Int, "the failed Default restored the field")
 
 	// A load runs the Go checks at once.
 	bad := strings.Replace(string(b), "2", "-4", 1)

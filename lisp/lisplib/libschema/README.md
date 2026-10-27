@@ -327,10 +327,15 @@ Rules:
   passes `o` as the receiver and `"a" 2` as the other arguments.
 * The constructor checks each field and then runs `:check`. An unknown
   field is a `bad-arguments` error.
-* `s:set!` checks only the field it changes. `:check` runs when each
-  method call returns.
+* `s:set!` checks only the field it changes. `:check` runs when the
+  outermost method call on the object returns. A call that a method or
+  `:check` makes on the same object runs without a check, so a method may
+  pass through a state `:check` refuses, and `:check` may call methods.
 * A method call that fails, or that breaks `:check`, leaves the fields as
-  they were before the call. This is true for Go types and their `Check`.
+  they were before the outermost call. This is true for Go types and their
+  `Check`. It does not undo a change made in place to a field's value, such
+  as `assoc!` on `(o 'lines)`; the lint check `record-field-mutation`
+  reports those.
 * A call to an unknown operation raises `unknown-operation`.
 * A type takes methods only from the package that defines it. A method
   name must not be a field name.

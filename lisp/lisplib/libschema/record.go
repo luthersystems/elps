@@ -37,9 +37,10 @@ import (
 //	typeCheck    the :check function, or ()
 //	typeSelf     the type value itself, which each object it builds holds
 //
-// An object's captures are (type fields): the type value and a sorted map
-// from field name (a string) to value.  A map rather than positions, so a
-// type that adds or reorders fields still reads older objects by name.
+// An object's captures are (type fields state): the type value, a sorted map
+// from field name (a string) to value, and the call state (objState).  A
+// map rather than positions, so a type that adds or reorders fields still
+// reads older objects by name.
 const (
 	typeTag = iota
 	typeFields
@@ -52,6 +53,11 @@ const (
 const (
 	objType = iota
 	objFields
+	// objState is nil while no method or :check runs on the object.
+	// While one runs it is true, and the first s:set! replaces it with
+	// the field map as it was before the outermost call, which a failed
+	// call puts back.
+	objState
 	objCells
 )
 
@@ -120,6 +126,8 @@ type lispType struct {
 type lispObject struct {
 	lispType
 	fields *lisp.LVal
+	// objCaps are the object's captures (type fields state).
+	objCaps *lisp.LVal
 }
 
 // lispTypeOf returns v as a lispType when v is a Lisp record type.
@@ -153,7 +161,7 @@ func lispObjectOf(v *lisp.LVal) (lispObject, bool) {
 	if !ok {
 		return lispObject{}, false
 	}
-	return lispObject{lispType: t, fields: caps.Cells[objFields]}, true
+	return lispObject{lispType: t, fields: caps.Cells[objFields], objCaps: caps}, true
 }
 
 // objectFormals is the formal list of every object.  Each object gets its
@@ -191,29 +199,7 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		return env.ErrorCondition(UnknownOperation, op)
 	}
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
-		// A method may change several fields.  :check runs when it
-		// returns, so every object a caller sees keeps the type's rules.
-		// A method that fails, or breaks :check, leaves the fields as they
-		// were: every header of the object reads its fields through caps,
-		// so putting the saved map back restores them all.
-		saved := copyMap(env, caps.Cells[objFields])
-		if saved.IsError() {
-			return saved
-		}
-		recv := newLispObject(desc, caps)
-		call := make([]*lisp.LVal, 0, len(rest)+1)
-		call = append(call, recv)
-		call = append(call, rest...)
-		r := env.FunCall(m, lisp.QExpr(call))
-		if !r.IsError() {
-			if lerr := runRecordCheck(env, desc, tcaps, recv); lerr != nil {
-				r = lerr
-			}
-		}
-		if r.IsError() {
-			caps.Cells[objFields] = saved //elps:mutates restores the object's own fields after a failed method
-		}
-		return r
+		return callLispMethod(env, caps, m, rest)
 	}
 	if desc.hasField(op.Str) {
 		if len(rest) > 0 {
@@ -228,6 +214,42 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	return env.ErrorCondition(UnknownOperation, op)
 }
 
+// callLispMethod calls the method m on the object over caps, whose type
+// evalLispObject has checked.
+//
+// A method may change several fields.  :check runs when the outermost
+// method call on the object returns, so every object a caller sees keeps
+// the type's rules.  A call that a method or :check makes on the same
+// object runs without a check: the outer call checks the end state, and a
+// :check that calls a method does not call itself.  A call that fails, or
+// breaks :check, leaves the fields as they were before the outermost
+// call: every header of the object reads its fields through caps, so
+// putting the saved map back restores them all.
+func callLispMethod(env *lisp.LEnv, caps, m *lisp.LVal, rest []*lisp.LVal) *lisp.LVal {
+	t, _ := lispTypeOf(caps.Cells[objType])
+	recv := newLispObject(t.desc, caps)
+	call := make([]*lisp.LVal, 0, len(rest)+1)
+	call = append(call, recv)
+	call = append(call, rest...)
+	if !caps.Cells[objState].IsNil() {
+		return env.FunCall(m, lisp.QExpr(call))
+	}
+	caps.Cells[objState] = lisp.Bool(true) //elps:mutates marks the object's own call state
+	defer func() {
+		caps.Cells[objState] = lisp.Nil() //elps:mutates clears the object's own call state
+	}()
+	r := env.FunCall(m, lisp.QExpr(call))
+	if !r.IsError() {
+		if lerr := runRecordCheck(env, t.desc, t.caps, recv); lerr != nil {
+			r = lerr
+		}
+	}
+	if saved := caps.Cells[objState]; r.IsError() && saved.Type == lisp.LSortMap {
+		caps.Cells[objFields] = saved //elps:mutates restores the object's own fields after a failed method
+	}
+	return r
+}
+
 // evalLispType runs (type :field value ...) or (type field-map).
 func evalLispType(env *lisp.LEnv, args, tcaps *lisp.LVal) *lisp.LVal {
 	desc := mustTag(tcaps)
@@ -238,7 +260,7 @@ func evalLispType(env *lisp.LEnv, args, tcaps *lisp.LVal) *lisp.LVal {
 	if lerr := validateLispFields(env, desc, tcaps, fields); lerr != nil {
 		return lerr
 	}
-	obj := newLispObject(desc, lisp.Cells{tcaps.Cells[typeSelf], fields}.List())
+	obj := newLispObject(desc, lisp.Cells{tcaps.Cells[typeSelf], fields, lisp.Nil()}.List())
 	if lerr := runRecordCheck(env, desc, tcaps, obj); lerr != nil {
 		return lerr
 	}
@@ -323,10 +345,19 @@ func validateLispFields(env *lisp.LEnv, desc *recordDesc, tcaps, fields *lisp.LV
 
 // runRecordCheck calls the type's :check function, if any, with obj.  The
 // function rejects obj by raising an error.
+//
+// While the check runs, the object is marked as in a call, so a method the
+// check calls on it runs without a check of its own.
 func runRecordCheck(env *lisp.LEnv, desc *recordDesc, tcaps, obj *lisp.LVal) *lisp.LVal {
 	check := tcaps.Cells[typeCheck]
 	if check.IsNil() {
 		return nil
+	}
+	if caps := funraw.Captures(obj); caps != nil && len(caps.Cells) == objCells && caps.Cells[objState].IsNil() {
+		caps.Cells[objState] = lisp.Bool(true) //elps:mutates marks the object's own call state
+		defer func() {
+			caps.Cells[objState] = lisp.Nil() //elps:mutates clears the object's own call state
+		}()
 	}
 	if r := env.FunCall(check, lisp.Cells{obj}.List()); r.IsError() {
 		return r
@@ -397,6 +428,15 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			return recordError(env, desc, r)
 		}
 	}
+	if caps := o.objCaps; caps.Cells[objState].Type == lisp.LSymbol {
+		// The first write in a call saves the fields as they were, for a
+		// failed call to put back.
+		saved := copyMap(env, fields)
+		if saved.IsError() {
+			return saved
+		}
+		caps.Cells[objState] = saved //elps:mutates saves the object's own fields before the first write of a call
+	}
 	if lerr := fields.Map().Set(key, value); lerr.IsError() { //elps:mutates s:set! writes the object's own field map, which its constructor copied
 		return lerr
 	}
@@ -464,7 +504,7 @@ func loadLispObject(_ *lisp.LEnv, version int, caps *lisp.LVal) (*lisp.LVal, err
 		return nil, fmt.Errorf("record object: unknown version %d", version)
 	}
 	if caps == nil || len(caps.Cells) != objCells {
-		return nil, errors.New("record object: saved captures are not a type and a field map")
+		return nil, errors.New("record object: saved captures are not a type, a field map and a call state")
 	}
 	t, ok := lispTypeOf(caps.Cells[objType])
 	desc := t.desc
@@ -474,6 +514,9 @@ func loadLispObject(_ *lisp.LEnv, version int, caps *lisp.LVal) (*lisp.LVal, err
 	if caps.Cells[objFields].Type != lisp.LSortMap {
 		return nil, fmt.Errorf("record object %s: saved fields are not a map", desc.display)
 	}
+	// A dump made during a method call saved the call state; the loaded
+	// object is in no call.
+	caps.Cells[objState] = lisp.Nil() //elps:mutates resets the call state of the object the load builds
 	return newLispObject(desc, caps), nil
 }
 
