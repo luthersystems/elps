@@ -17,6 +17,10 @@ const maxLintExpansions = 10000
 type passShared struct {
 	expanded []expandedForm
 	done     bool
+	// record holds the record checks' findings, computed once for the
+	// three record analyzers.
+	record     []recordFinding
+	recordDone bool
 }
 
 // expandedForm is one top-level form, fully expanded, and the package it
