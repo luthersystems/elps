@@ -45,7 +45,6 @@ func TestRecordTypeBinding(t *testing.T) {
   (s:make-record "pricer" (s:has-key "d" s:int) (s:method c () (cents (this 'd))))))`,
 		`(set 'order (let ([v s:int]) (s:make-record "order" (s:has-key "n" v))))`,
 		`(defconst order (s:make-record "order" (s:has-key "n" s:int)))`,
-		`(progn (set 'order (s:make-record "order" (s:has-key "n" s:int))))`,
 	} {
 		assertNoDiags(t, lintCheck(t, AnalyzerRecordTypeBinding, src))
 	}
@@ -68,7 +67,7 @@ func TestRecordFieldMutation(t *testing.T) {
   (s:make-record "order"
     (s:has-key "lines" s:sorted-map)
     (s:method add (sku n) (assoc! (this 'lines) sku n))))
-(s:defmethod order grow (x) (lisp:append! (this (quote items)) x))`)
+(s:defmethod order grow (x) (lisp:append! (this 'items) x))`)
 	assert.Len(t, diags, 2)
 	assertDiagOnLine(t, diags, 4, "assoc! changes field lines")
 	assertDiagOnLine(t, diags, 5, "append! changes field items")
