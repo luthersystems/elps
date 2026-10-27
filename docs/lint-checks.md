@@ -535,11 +535,11 @@ call returns, so a change from outside a method skips it.
 (defun pay (o) (s:set! o 'status "paid"))
 
 ;; GOOD: the type changes its own field
-(s:defmethod order pay () (s:set! this 'status "paid"))
+(s:defmethod order pay (o) (s:set! o 'status "paid"))
 (o 'pay)
 ```
 
-A lambda inside a method body is part of the method, so `s:set! this` in
+A lambda inside a method body is part of the method, so `s:set! o` in
 it is not reported.
 
 ### `record-type-binding`
@@ -563,7 +563,7 @@ dump of its objects fails.
   (labels ([cents (d) (* 100 d)])
     (s:make-record "order"
       (s:has-key "dollars" s:int)
-      (s:method in-cents () (cents (this 'dollars))))))
+      (s:method in-cents (o) (cents (o 'dollars))))))
 ```
 
 ### `record-field-mutation`
@@ -571,19 +571,19 @@ dump of its objects fails.
 **Flags a method that changes a field's value in place.** (Severity:
 warning)
 
-`(this 'field)` returns the field's value, not a copy. A mutating builtin
+`(o 'field)`, where `o` is the method's receiver, returns the field's value, not a copy. A mutating builtin
 on it (`assoc!`, `dissoc!`, `append!`, `append-bytes!`, `stable-sort`)
 changes the field, and the field's validator does not run.
 
 ```lisp
 ;; WARNING: the lines validator does not see the new line
-(s:method add-line (sku qty) (assoc! (this 'lines) sku qty))
+(s:method add-line (o sku qty) (assoc! (o 'lines) sku qty))
 
 ;; GOOD: s:set! checks the new map
-(s:method add-line (sku qty) (s:set! this 'lines (assoc (this 'lines) sku qty)))
+(s:method add-line (o sku qty) (s:set! o 'lines (assoc (o 'lines) sku qty)))
 ```
 
-The check sees only a direct `(this 'field)` argument. It does not follow
+The check sees only a direct `(o 'field)` argument, where `o` is the receiver. It does not follow
 a field's value into a local variable.
 
 ### `record-unknown-member`
@@ -592,13 +592,14 @@ a field's value into a local variable.
 warning)
 
 In a method,
-`(this 'name)` must name a field or a method of the type, and
-`(s:set! this 'name ...)` must name a field. A wrong name fails only when
+`(o 'name)` must name a field or a method of the type, and
+`(s:set! o 'name ...)` must name a field, where `o` is the method's
+receiver. A wrong name fails only when
 the method runs.
 
 ```lisp
 ;; WARNING: lnies is not a field
-(s:method add (sku n) (s:set! this 'lnies (assoc (this 'lines) sku n)))
+(s:method add (o sku n) (s:set! o 'lnies (assoc (o 'lines) sku n)))
 ```
 
 The check reads the fields and methods from the type's `s:make-record`

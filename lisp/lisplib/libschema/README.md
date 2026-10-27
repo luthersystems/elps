@@ -299,10 +299,10 @@ A record type is a constructor for objects with typed fields and methods
     (s:has-key "id" s:string)
     (s:has-key "lines" (s:map-of s:string s:int))
     (s:may-have-key "note" s:any)
-    (s:method add-line (sku qty)
-      (s:set! this 'lines (assoc (this 'lines) sku qty)))
-    (s:method qty ()
-      (foldl (lambda (n sku) (+ n (get (this 'lines) sku))) 0 (keys (this 'lines))))
+    (s:method add-line (o sku qty)
+      (s:set! o 'lines (assoc (o 'lines) sku qty)))
+    (s:method qty (o)
+      (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
     :check (lambda (o) (when (> (o 'qty) 100) (error 'order-too-big (o 'qty))))))
 
 (set 'o (order :id "o1" :lines (sorted-map)))  ; or (order a-sorted-map)
@@ -314,14 +314,17 @@ A record type is a constructor for objects with typed fields and methods
 | Form | Use |
 |------|-----|
 | `(s:make-record NAME FIELD... METHOD... [:check FN])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
-| `(s:method NAME (ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. `this` is the object. |
-| `(s:defmethod TYPE NAME (ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
-| `(s:set! this 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
+| `(s:method NAME (RECV ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. RECV is the object. |
+| `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
+| `(s:set! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
 
 Rules:
 
+* The first formal of a method is its receiver, the object it is called
+  on, as in a Go method. You choose its name. `(o 'add-line "a" 2)`
+  passes `o` as the receiver and `"a" 2` as the other arguments.
 * The constructor checks each field and then runs `:check`. An unknown
   field is a `bad-arguments` error.
 * `s:set!` checks only the field it changes. `:check` runs when each
@@ -349,8 +352,9 @@ methods and Go checks. Its objects work with `s:fields` and `s:record?`.
 A Go type is sealed: `s:defmethod` and `s:set!` refuse it. Add
 `(*RecordType).Codec()` to the durable registry to save its objects.
 
-Lint checks: `record-set-outside-method`, `record-type-binding` and
-`record-field-mutation` (see `docs/lint-checks.md`).
+Lint checks: `record-set-outside-method`, `record-type-binding`,
+`record-field-mutation`, `record-unknown-member` and `record-check-writes`
+(see `docs/lint-checks.md`).
 
 ### Gotchas
 

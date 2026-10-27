@@ -18,7 +18,7 @@ import (
 // A record type declares fields and methods.  The type value is the
 // constructor: calling it builds an object.  An object is a function value
 // whose state is explicit (lisp.NewCapturedFun), and calling it dispatches
-// in Go: (obj 'op args...) calls the method op with this bound to obj, or
+// in Go: (obj 'op args...) calls the method op with obj as its receiver, or
 // returns the field op.  This replaces the hand-written
 // (lambda (op &rest args) (cond ...)) closures phylum code uses for classes.
 //
@@ -174,7 +174,7 @@ func newLispObject(desc *recordDesc, caps *lisp.LVal) *lisp.LVal {
 	})
 }
 
-// evalLispObject runs (obj op args...).  A method gets this bound to an
+// evalLispObject runs (obj op args...).  A method gets as its receiver an
 // object over the same captures: the call cannot reach the value it was
 // called through, but one over the same captures shares all its state.
 func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
@@ -200,13 +200,13 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		if saved.IsError() {
 			return saved
 		}
-		this := newLispObject(desc, caps)
+		recv := newLispObject(desc, caps)
 		call := make([]*lisp.LVal, 0, len(rest)+1)
-		call = append(call, this)
+		call = append(call, recv)
 		call = append(call, rest...)
 		r := env.FunCall(m, lisp.QExpr(call))
 		if !r.IsError() {
-			if lerr := runRecordCheck(env, desc, tcaps, this); lerr != nil {
+			if lerr := runRecordCheck(env, desc, tcaps, recv); lerr != nil {
 				r = lerr
 			}
 		}

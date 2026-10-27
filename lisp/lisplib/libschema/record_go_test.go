@@ -23,7 +23,7 @@ const orderV1 = `
   (s:make-record "order"
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
-    (s:method add (n) (s:set! this 'qty (+ n (this 'qty))))))
+    (s:method add (o n) (s:set! o 'qty (+ n (o 'qty))))))
 (set 'o (order :id "o1" :qty 1))
 (o 'add 2)
 `
@@ -37,8 +37,8 @@ const orderV2 = `
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
     (s:has-key "currency" s:string)
-    (s:method add (n) (s:set! this 'qty (+ (* 10 n) (this 'qty))))
-    (s:method label () (format-string "{}:{}" (this 'id) (this 'currency)))))
+    (s:method add (o n) (s:set! o 'qty (+ (* 10 n) (o 'qty))))
+    (s:method label (o) (format-string "{}:{}" (o 'id) (o 'currency)))))
 `
 
 func recordRegistry(t *testing.T, codecs ...libjson.DurableEntry) *libjson.DurableRegistry {
@@ -152,7 +152,7 @@ func TestRecordTemplateFork(t *testing.T) {
 	require.Equal(t, 13, evalString(t, a, `(shop:o 'qty)`).Int)
 	require.Equal(t, 3, evalString(t, b, `(shop:o 'qty)`).Int)
 
-	evalString(t, a, `(in-package 'shop) (s:defmethod order twice () (* 2 (this 'qty)))`)
+	evalString(t, a, `(in-package 'shop) (s:defmethod order twice (o) (* 2 (o 'qty)))`)
 	require.Equal(t, 26, evalString(t, a, `(shop:o 'twice)`).Int)
 	res := b.LoadString("b.lisp", `(shop:o 'twice)`)
 	require.True(t, res.IsError())
@@ -171,7 +171,7 @@ func TestRecordTemplateFork(t *testing.T) {
 func TestDefmethodFromAnotherPackage(t *testing.T) {
 	env := newSchemaForkEnv(t)
 	evalString(t, env, orderV1)
-	res := env.LoadString("other.lisp", `(in-package 'other) (s:defmethod shop:order hack () 1)`)
+	res := env.LoadString("other.lisp", `(in-package 'other) (s:defmethod shop:order hack (o) 1)`)
 	require.True(t, res.IsError())
 	require.Contains(t, res.String(), "package")
 }
@@ -202,11 +202,11 @@ func newCounterType(t *testing.T) *libschema.RecordType {
 		},
 		Methods: []libschema.MethodSpec{{
 			Name: "inc",
-			Call: func(env *lisp.LEnv, this libschema.Record, args []*lisp.LVal) *lisp.LVal {
-				if lerr := this.Set(env, 0, lisp.Int(this.At(0).Int+1)); lerr != nil {
+			Call: func(env *lisp.LEnv, r libschema.Record, args []*lisp.LVal) *lisp.LVal {
+				if lerr := r.Set(env, 0, lisp.Int(r.At(0).Int+1)); lerr != nil {
 					return lerr
 				}
-				return this.At(0)
+				return r.At(0)
 			},
 		}},
 		Default: func(env *lisp.LEnv, _ libschema.Record, op *lisp.LVal, _ []*lisp.LVal) *lisp.LVal {

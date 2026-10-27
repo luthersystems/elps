@@ -1204,12 +1204,6 @@ var AnalyzerUnusedVariable = &Analyzer{
 			if len(sym.Name) > 0 && sym.Name[0] == '_' {
 				continue
 			}
-			// Skip a name with no source location.  A macro wrote it, so the
-			// file has nothing to rename: s:make-record binds this in every
-			// method, used or not.
-			if sym.Source == nil {
-				continue
-			}
 			pass.Report(Diagnostic{
 				Message:     fmt.Sprintf("unused %s: %s", sym.Kind, sym.Name),
 				Pos:         posFromSource(sym.Source),

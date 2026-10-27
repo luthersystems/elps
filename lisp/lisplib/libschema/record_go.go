@@ -34,7 +34,7 @@ type RecordSpec struct {
 	Check func(r Record) error
 	// Default, if not nil, runs for an op that no method or getter
 	// matches.  Without it such an op raises UnknownOp.
-	Default func(env *lisp.LEnv, this Record, op *lisp.LVal, args []*lisp.LVal) *lisp.LVal
+	Default func(env *lisp.LEnv, r Record, op *lisp.LVal, args []*lisp.LVal) *lisp.LVal
 	// Package and FID identify the objects of the type, as for
 	// lisp.CapturedFun.  FID defaults to Name.
 	Package string
@@ -75,7 +75,7 @@ type FieldSpec struct {
 type MethodSpec struct {
 	// Call runs the method.  args are the arguments after the op; Call
 	// checks their number itself.
-	Call func(env *lisp.LEnv, this Record, args []*lisp.LVal) *lisp.LVal
+	Call func(env *lisp.LEnv, r Record, args []*lisp.LVal) *lisp.LVal
 	// Name is the op that calls the method.
 	Name string
 	// Doc describes the method.
@@ -225,7 +225,7 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		return env.ErrorConditionf(BadArgs, "%s: no operation given", t.spec.DisplayName)
 	}
 	op, rest := args.Cells[0], args.Cells[1:]
-	this := Record{caps: caps, t: t}
+	obj := Record{caps: caps, t: t}
 	if op.Type == lisp.LSymbol {
 		if m := t.methods[op.Str]; m != nil {
 			// Set checks one field; Check runs when the method returns, so
@@ -233,16 +233,16 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 			// loads again.  A method that fails, or breaks Check, leaves
 			// the fields as they were.
 			saved := lisp.Cells(caps.Cells).Clone()
-			r := m.Call(env, this, rest)
-			if !r.IsError() && t.spec.Check != nil {
-				if err := t.spec.Check(this); err != nil {
-					r = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+			res := m.Call(env, obj, rest)
+			if !res.IsError() && t.spec.Check != nil {
+				if err := t.spec.Check(obj); err != nil {
+					res = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
 				}
 			}
-			if r.IsError() {
+			if res.IsError() {
 				copy(caps.Cells, saved) //elps:mutates restores the object's own fields after a failed method
 			}
-			return r
+			return res
 		}
 		if i, ok := t.index[op.Str]; ok && t.spec.Fields[i].Getter {
 			if len(rest) > 0 {
@@ -252,7 +252,7 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		}
 	}
 	if t.spec.Default != nil {
-		return t.spec.Default(env, this, op, rest)
+		return t.spec.Default(env, obj, op, rest)
 	}
 	return env.ErrorCondition(t.spec.UnknownOp, op)
 }
