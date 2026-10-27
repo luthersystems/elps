@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"reflect"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -72,8 +73,67 @@ func (c ForeignCodec) registerDurable(r *DurableRegistry) error {
 	return r.Register(c.Type, c.Name, c.Version, NativeFuncs{Save: c.Save, Load: c.Load}, opts...)
 }
 
+// DurableFunCodec is the durable codec of the Go function values that one
+// constructor makes with lisp.NewCapturedFun: the values whose Package and
+// FID are the codec's.  A dump writes such a value as a native,
+// ["~#native",[NAME,VERSION,CAPTURES]], where CAPTURES is the value's
+// capture graph, saved with sharing like any other value.  A load decodes
+// CAPTURES and calls Load, which must return a function value of the same
+// Package and FID over exactly the captures it was given, so that sharing is
+// kept.  Load must only assemble the value, as a native codec's LoadNative
+// does: it must run no Lisp code and read no state outside its arguments.
+//
+// A function value with no codec is refused, as before: a durable dump
+// cannot save a Go function's code.  Name and Version follow the rules of
+// DurableRegistry.Register; the Fingerprint lists the codec as the function
+// it rebuilds.
+type DurableFunCodec struct {
+	// Load rebuilds the value over captures, saved at version.
+	Load func(env *lisp.LEnv, version int, captures *lisp.LVal) (*lisp.LVal, error)
+	// Package and FID name the function values the codec saves.
+	Package string
+	FID     string
+	// Name is written into every document; it must never change.
+	Name string
+	// Version is the captures layout DumpDurable writes, starting at 1.
+	Version int
+	// Charge is the WithNativeCharge contract.
+	Charge int
+}
+
+func (c DurableFunCodec) registerDurable(r *DurableRegistry) error {
+	if err := r.checkNew(c.Name, c.Version); err != nil {
+		return err
+	}
+	fun := funKey{c.Package, c.FID}
+	switch {
+	case c.Load == nil:
+		return fmt.Errorf("durable json: function codec %q needs a Load function", c.Name)
+	case c.Package == "" || c.FID == "":
+		return fmt.Errorf("durable json: function codec %q needs a package and an FID", c.Name)
+	case c.Charge < 0:
+		return fmt.Errorf("durable json: native %q: negative charge %d", c.Name, c.Charge)
+	}
+	if prev, ok := r.byFun[fun]; ok {
+		return fmt.Errorf("durable json: function %s is already registered as %q", fun, prev.name)
+	}
+	load := c.Load
+	e := &nativeEntry{
+		fun: fun, name: c.Name, version: c.Version, charge: c.Charge,
+		// Save returns the captures Load was given, so sharing is kept.
+		shared: true,
+		codec: NativeFuncs{
+			Save: func(_ *lisp.LEnv, v *lisp.LVal) (*lisp.LVal, error) { return funraw.Captures(v), nil },
+			Load: load,
+		},
+	}
+	r.byFun[fun] = e
+	r.byName[c.Name] = e
+	return nil
+}
+
 // DurableEntry is one codec of NewFrozenDurableRegistry: a DurableCodec of
-// any type, or a ForeignCodec.  Only this package implements it.
+// any type, a ForeignCodec or a DurableFunCodec.  Only this package implements it.
 type DurableEntry interface {
 	registerDurable(r *DurableRegistry) error
 }

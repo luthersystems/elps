@@ -7,11 +7,6 @@ import (
 )
 
 func init() {
-	funrawhook.NewCapturedBuiltin = func(pkg, fid string, formals, captures *LVal, eval func(*LEnv, *LVal, *LVal) *LVal) *LVal {
-		return newCapturedBuiltin(capturedBuiltin{
-			Package: pkg, FID: fid, Formals: formals, Captures: captures, Eval: eval,
-		})
-	}
 	// Inject the captured-environment accessor for in-repo tooling (the
 	// debugger's user-defined-function classification, the profiler's name
 	// resolution).  The typed surface lives in internal/funraw; the untyped

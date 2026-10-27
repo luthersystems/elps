@@ -191,6 +191,11 @@ func (e *durableEncoder) bindings(env *lisp.LEnv) ([]binding, error) {
 // or a closure.  An unregistered builtin is named by the bindings of its
 // package that hold it.
 func (e *durableEncoder) scanFunValue(v *lisp.LVal, depth int) error {
+	if c := e.reg.funCodec(v); c != nil {
+		// A function object with captures is an object (identity), so this
+		// one has none: its codec has nothing to save.
+		return fmt.Errorf("durable json: function codec %q: %s has no captures to save", c.name, c.fun)
+	}
 	if v.Builtin() != nil {
 		{
 			registration, registrationErr := e.registeredBuiltin(v)

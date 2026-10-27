@@ -1,6 +1,6 @@
 // Package libjson is a minimal stub of elps's libjson for analysistest.
 // Only the names elpsdurablenative reads matter: DurableCodec,
-// ForeignCodec, NewFrozenDurableRegistry and TransientNative.
+// ForeignCodec, DurableFunCodec, NewFrozenDurableRegistry and TransientNative.
 package libjson
 
 import (
@@ -30,6 +30,15 @@ type ForeignCodec struct {
 }
 
 func (c ForeignCodec) registerDurable() error { return nil }
+
+type DurableFunCodec struct {
+	Package string
+	FID     string
+	Name    string
+	Version int
+}
+
+func (c DurableFunCodec) registerDurable() error { return nil }
 
 type DurableEntry interface{ registerDurable() error }
 

@@ -10,7 +10,7 @@ import (
 )
 
 func rejectionCapture(v *LVal) *LVal {
-	return newCapturedBuiltin(capturedBuiltin{
+	return newCapturedBuiltin(CapturedFun{
 		Package: "user", FID: "capture", Formals: Formals(), Captures: v,
 		Eval: func(_ *LEnv, _, values *LVal) *LVal { return values },
 	})

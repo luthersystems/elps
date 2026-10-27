@@ -247,7 +247,7 @@ func (l *lazyInstance) function(i int) *funData {
 	*data = tf.header
 	l.functions[i] = data
 	if tf.captures != 0 {
-		captures := &builtinCaptures{code: tf.code}
+		captures := &builtinCaptures{code: tf.code, name: tf.name}
 		data.captures = captures
 		data.builtin = captures.call
 	}

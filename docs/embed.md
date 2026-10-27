@@ -513,6 +513,34 @@ if err != nil {
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```
 
+### Go function objects
+
+A Lisp library often returns an object as a closure over its state, and
+callers send it messages: `(obj 'put k v)`. To dispatch in Go instead,
+return a function value made with `lisp.NewCapturedFun`:
+
+```go
+func newCounter(state *lisp.LVal) *lisp.LVal {
+    return lisp.NewCapturedFun(lisp.CapturedFun{
+        Package: "mylib", FID: "counter", Name: "mylib:counter",
+        Formals:  lisp.Formals("op", lisp.VarArgSymbol, "args"),
+        Captures: state,
+        Eval: func(env *lisp.LEnv, args, state *lisp.LVal) *lisp.LVal {
+            // Dispatch on args.Cells[0] and read or change state.
+            return lisp.Nil()
+        },
+    })
+}
+```
+
+| Property | Rule |
+|---|---|
+| State | Keep every mutable value `Eval` uses in `Captures`. `Template.NewVM` remaps the graph, so each VM gets its own copy of the state, as it does for a closure. A template admits the value with no builtin policy. |
+| Calls | The value is a function: `funcall`, `apply`, `map` and `handler-bind` work as for a closure. A call with the wrong number of arguments fails as a closure's call does. |
+| Printing | The value prints as `#<Name>`, or `#<builtin>` when `Name` is empty. `NewCapturedFun` refuses a `Name` with a space, a control character or a `>`, or that is not valid UTF-8. |
+| Privacy | Lisp code cannot read `Captures`. |
+| Durable dumps | With a `libjson.DurableFunCodec` registered for its `Package` and `FID`, a dump saves the value and its state. With none, a dump saves a value that a global of its package binds as a reference to that global, which loads as the global's current value, not this object's state; any other value is refused. Register a codec for every object a dump can reach. See [durable typed JSON](internals/durable-json.md#go-function-objects). |
+
 ### Writing a Go macro
 
 A Go macro receives unevaluated forms and returns an expansion for the caller
