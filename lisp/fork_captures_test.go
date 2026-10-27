@@ -6,7 +6,7 @@ import (
 )
 
 func TestCapturedBuiltinRequiresImplementation(t *testing.T) {
-	got := newCapturedBuiltin(capturedBuiltin{Package: DefaultUserPackage, FID: "missing", Formals: Formals()})
+	got := newCapturedBuiltin(CapturedFun{Package: DefaultUserPackage, FID: "missing", Formals: Formals()})
 	if got.Type != LError || got.String() != "<native code>: captured builtin requires Eval" {
 		t.Fatalf("missing implementation: got %v", got)
 	}
@@ -16,11 +16,11 @@ func TestForkBuiltinCapturesPreserveAliasesAndCycles(t *testing.T) {
 	template := newForkTestEnv(t)
 	state := SortedMap()
 	callback := func(_ *LEnv, _ *LVal, captures *LVal) *LVal { return captures }
-	first := newCapturedBuiltin(capturedBuiltin{
+	first := newCapturedBuiltin(CapturedFun{
 		Package: DefaultUserPackage, FID: "first", Formals: Formals(),
 		Captures: state, Eval: callback,
 	})
-	second := newCapturedBuiltin(capturedBuiltin{
+	second := newCapturedBuiltin(CapturedFun{
 		Package: DefaultUserPackage, FID: "second", Formals: Formals(),
 		Captures: state, Eval: callback,
 	})

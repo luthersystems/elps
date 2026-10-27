@@ -11,6 +11,7 @@ import (
 	"strings"
 	"unicode/utf8"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -78,11 +79,17 @@ func (f NativeFuncs) LoadNative(env *lisp.LEnv, version int, payload *lisp.LVal)
 type DurableRegistry struct {
 	byType map[reflect.Type]*nativeEntry
 	byName map[string]*nativeEntry
+	// byFun holds the codecs of Go function objects (DurableFunCodec), by
+	// package and FID.
+	byFun  map[funKey]*nativeEntry
 	frozen bool
 }
 
 type nativeEntry struct {
-	typ     reflect.Type
+	typ reflect.Type
+	// fun is the package and FID of a DurableFunCodec entry, and empty for
+	// a native.
+	fun     funKey
 	codec   NativeCodec
 	name    string
 	version int
@@ -121,6 +128,7 @@ func NewDurableRegistry() *DurableRegistry {
 	return &DurableRegistry{
 		byType: map[reflect.Type]*nativeEntry{},
 		byName: map[string]*nativeEntry{},
+		byFun:  map[funKey]*nativeEntry{},
 	}
 }
 
@@ -133,21 +141,14 @@ func NewDurableRegistry() *DurableRegistry {
 //
 //nolint:revive // exported API; changing it breaks embedders
 func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c NativeCodec, opts ...NativeOption) error {
+	if err := r.checkNew(name, version); err != nil {
+		return err
+	}
 	switch {
-	case r == nil || r.byType == nil:
-		return errors.New("durable json: registry is not initialized; use NewDurableRegistry")
-	case r.frozen:
-		return fmt.Errorf("durable json: cannot register %q: the registry is frozen", name)
 	case typ == nil:
 		return errors.New("durable json: cannot register a nil type")
 	case c == nil:
 		return fmt.Errorf("durable json: cannot register a nil codec for %q", name)
-	case name == "" || !utf8.ValidString(name):
-		return errors.New("durable json: a native name must be a nonempty UTF-8 string")
-	case version < 1:
-		return fmt.Errorf("durable json: native %q: version %d is below 1", name, version)
-	case int64(version) > maxNativeVersion:
-		return fmt.Errorf("durable json: native %q: version %d is above 2^53", name, version)
 	}
 	switch typ.Kind() {
 	case reflect.Func, reflect.Slice, reflect.Interface:
@@ -160,9 +161,6 @@ func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c
 	if prev, ok := r.byType[typ]; ok {
 		return fmt.Errorf("durable json: type %v is already registered as %q", typ, prev.name)
 	}
-	if _, ok := r.byName[name]; ok {
-		return fmt.Errorf("durable json: name %q is already registered", name)
-	}
 	e := &nativeEntry{typ: typ, codec: c, name: name, version: version}
 	for _, o := range opts {
 		o(e)
@@ -172,6 +170,28 @@ func (r *DurableRegistry) Register(typ reflect.Type, name string, version int, c
 	}
 	r.byType[typ] = e
 	r.byName[name] = e
+	return nil
+}
+
+// checkNew checks the rules every codec's registration shares: the
+// registry takes registrations, and name and version are valid and name is
+// free.
+func (r *DurableRegistry) checkNew(name string, version int) error {
+	switch {
+	case r == nil || r.byType == nil:
+		return errors.New("durable json: registry is not initialized; use NewDurableRegistry")
+	case r.frozen:
+		return fmt.Errorf("durable json: cannot register %q: the registry is frozen", name)
+	case name == "" || !utf8.ValidString(name):
+		return errors.New("durable json: a native name must be a nonempty UTF-8 string")
+	case version < 1:
+		return fmt.Errorf("durable json: native %q: version %d is below 1", name, version)
+	case int64(version) > maxNativeVersion:
+		return fmt.Errorf("durable json: native %q: version %d is above 2^53", name, version)
+	}
+	if _, ok := r.byName[name]; ok {
+		return fmt.Errorf("durable json: name %q is already registered", name)
+	}
 	return nil
 }
 
@@ -218,6 +238,11 @@ func (r *DurableRegistry) Fingerprint() string {
 	}
 	rows := make([]row, 0, len(r.byName))
 	for name, e := range r.byName {
+		if e.fun != (funKey{}) {
+			// A function codec has no Go type: the function it rebuilds names it.
+			rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: "func " + e.fun.String(), Shape: "captured-builtin"})
+			continue
+		}
 		rows = append(rows, row{Name: name, Version: e.version, Charge: e.charge, Shared: e.shared, Type: qualifiedTypeName(e.typ), Shape: typeShape(e.typ, true)})
 	}
 	slices.SortFunc(rows, func(a, b row) int { return strings.Compare(a.Name, b.Name) })
@@ -371,4 +396,23 @@ func (r *DurableRegistry) entryNamed(name string) *nativeEntry {
 		return nil
 	}
 	return r.byName[name]
+}
+
+// entryForFun returns the codec of v, a function value, or nil.  Only a
+// Go function object with captures has one: its package and FID name the
+// codec.  funCodec finds a codec whatever the value's captures.
+func (r *DurableRegistry) entryForFun(v *lisp.LVal) *nativeEntry {
+	if e := r.funCodec(v); e != nil && funraw.Captures(v) != nil {
+		return e
+	}
+	return nil
+}
+
+// funCodec returns the codec registered for v's package and FID, for a Go
+// function value v, or nil.
+func (r *DurableRegistry) funCodec(v *lisp.LVal) *nativeEntry {
+	if r == nil || len(r.byFun) == 0 || v.Builtin() == nil {
+		return nil
+	}
+	return r.byFun[funKey{v.Package(), v.FID()}]
 }

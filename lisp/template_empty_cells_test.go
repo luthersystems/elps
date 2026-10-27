@@ -18,7 +18,7 @@ func TestTemplatePreservesEmptyCellsInBuiltinCaptures(t *testing.T) {
 			if nonnil {
 				cells = make([]*LVal, 0)
 			}
-			env.Runtime.Package.symbols["probe"] = newCapturedBuiltin(capturedBuiltin{
+			env.Runtime.Package.symbols["probe"] = newCapturedBuiltin(CapturedFun{
 				FID: "probe", Package: "user", Formals: Formals(), Captures: QExpr(cells),
 				Eval: func(_ *LEnv, _, captures *LVal) *LVal {
 					if captures.Cells == nil {

@@ -513,6 +513,34 @@ if err != nil {
 result := vm.FunCallContext(ctx, fn, lisp.SExpr(nil)) // "pong"
 ```
 
+### Go function objects
+
+A Lisp library often returns an object as a closure over its state, and
+callers send it messages: `(obj 'put k v)`. To dispatch in Go instead,
+return a function value made with `lisp.NewCapturedFun`:
+
+```go
+func newCounter(state *lisp.LVal) *lisp.LVal {
+    return lisp.NewCapturedFun(lisp.CapturedFun{
+        Package: "mylib", FID: "counter", Name: "mylib:counter",
+        Formals:  lisp.Formals("op", lisp.VarArgSymbol, "args"),
+        Captures: state,
+        Eval: func(env *lisp.LEnv, args, state *lisp.LVal) *lisp.LVal {
+            // Dispatch on args.Cells[0] and read or change state.
+            return lisp.Nil()
+        },
+    })
+}
+```
+
+| Property | Rule |
+|---|---|
+| State | Keep every mutable value `Eval` uses in `Captures`. `Template.NewVM` remaps the graph, so each VM gets its own copy of the state, as it does for a closure. A template admits the value with no builtin policy. |
+| Calls | The value is a function: `funcall`, `apply`, `map` and `handler-bind` work as for a closure. A call with the wrong number of arguments fails as a closure's call does. |
+| Printing | The value prints as `#<Name>`, or `#<builtin>` when `Name` is empty. `NewCapturedFun` refuses a `Name` with a space, a control character or a `>`, or that is not valid UTF-8. |
+| Privacy | Lisp code cannot read `Captures`. |
+| Durable dumps | With a `libjson.DurableFunCodec` registered for its `Package` and `FID`, a dump saves the value and its state. With none, a dump saves a value that a global of its package binds as a reference to that global, which loads as the global's current value, not this object's state; any other value is refused. Register a codec for every object a dump can reach. See [durable typed JSON](internals/durable-json.md#go-function-objects). |
+
 ### Writing a Go macro
 
 A Go macro receives unevaluated forms and returns an expansion for the caller
@@ -558,6 +586,14 @@ argument order. `MustTemplate` panics if the source is not exactly one form or
 fails to parse, and on undeclared, duplicate or unused parameters or a
 malformed placeholder; `Expand` panics on an argument count mismatch or an
 invalid splice argument. libtesting's assert macros are built this way.
+
+`Expand` makes none of the checks that quasiquote makes. When a Go macro
+replaces a `defmacro` whose body was a quasiquote, call
+`ExpandChecked(env, args...)` instead. It runs quasiquote's own walk
+(`LEnv.QuasiquoteWith`) under env's limits, so a form deeper than the value
+depth limit, an expansion over the allocation limit, a splice of a non-list
+and a cancelled context return the error the `defmacro` returned, with the
+same condition and message. It costs about twice what `Expand` costs.
 
 Each expansion allocates fresh, unlocated syntax, shares the inserted
 argument forms, and uses the immutable nil singleton for `()`; it never
@@ -1133,6 +1169,16 @@ field its payload is assignable to. The error is a `*lisp.CodecError` that
 names the path of the value, such as `items[1].name`, and never renders the
 value. All three make no check, charge no step and use reflection; the doc
 comment of `DecodeInto` lists every conversion.
+
+**Values without the interpreter: package `lval`.** Go code that exchanges
+values with an ELPS program but cannot link package `lisp`, such as a
+WebAssembly guest, holds them as `lval.Value` and passes them as typed JSON.
+`lval.Marshal` writes the bytes `libjson.DumpTyped` writes for the same
+value, and `lval.Unmarshal` reads every input `libjson.LoadTyped` reads, as
+the same value. `lval.Decode` and `lval.Encode` convert to and from Go
+values by the `elpstag` rules above. The package imports neither `lisp` nor
+`encoding/json`. Its tests compare it with libjson on oracle's values and in
+a fuzz target, so a change to typed JSON fails there first.
 
 **The allocation check: `env.CheckAlloc(n)`.** It returns the error
 builtins raise when `n` exceeds `MaxAlloc` ("allocation size N exceeds

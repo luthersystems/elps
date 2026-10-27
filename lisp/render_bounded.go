@@ -765,6 +765,10 @@ func (r *valueRenderer) nested(v *LVal, onTheRecord bool, g cycleGuard) {
 		}
 		r.text(quote)
 		if v.Builtin() != nil {
+			if name := v.capturedName(); name != "" {
+				r.text("#<" + name + ">")
+				return
+			}
 			r.text("#<builtin>")
 			return
 		}

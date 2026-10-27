@@ -20,10 +20,3 @@ var Env any
 // Captures holds a func(*lisp.LVal) *lisp.LVal, with the same initialization
 // contract as Env. The returned explicit builtin state is read-only.
 var Captures any
-
-// NewCapturedBuiltin holds the constructor adapter for ELPS libraries. Its
-// type is func(string, string, *lisp.LVal, *lisp.LVal,
-// func(*lisp.LEnv, *lisp.LVal, *lisp.LVal) *lisp.LVal) *lisp.LVal.
-// The individual fields cross this import-cycle boundary; callers use the
-// typed specification in internal/funraw instead.
-var NewCapturedBuiltin any

@@ -101,16 +101,18 @@ to run instead.
 without creating anything — use it if there is any doubt about the version
 or the notes.
 
-The pipeline then, in shell steps: validates the version (format,
-strictly newer), that the run's commit is GitHub's live main, and that
-`CI Tests` passed on it; and writes the notes (one bullet per merged PR since
-the last stable tag, plus the waived API breaks). On a validation failure it
-stops with an `::error::` line and creates nothing. Claude then runs one
-exact command, `gh release create … --target <commit>`, with the App token;
-a hook denies any other tool call. A last step checks that the release
-exists and that its tag resolves to the validated commit. The agent
-transcript is uploaded as the `release-tag-trace-<run id>` artifact (14-day
-retention).
+The pipeline is the org's shared release workflow
+(`luthersystems/.github/.github/workflows/release-tag.yml`), which
+`release-tag.yml` calls. In shell steps it validates the version (format,
+newer than the latest tag of its major, the commit not released yet), that
+the run's commit is GitHub's live main, and that `CI Tests` passed on it; and
+writes the notes with `scripts/release-notes.sh` (one bullet per merged PR
+since the last tag, plus the waived API breaks). On a validation failure it
+stops with an error and creates nothing. Claude then runs one exact command,
+`gh release create … --target <commit>`, with the App token; a hook denies
+any other tool call. A last step checks that the release exists and that its
+tag resolves to the validated commit. The agent transcript is uploaded as the
+`release-tag-trace-<run id>` artifact.
 
 ### 5. Monitor the publish
 

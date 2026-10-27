@@ -37,6 +37,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",
+			"name": "scalar: display name, copied into each fork (TestCapturedFunForks)",
 		}},
 		{reflect.TypeFor[LEnv](), map[string]string{
 			"loc": "reset: transient evaluation location", "scope": "remapped: binding descriptors; empty scopes stay nil",

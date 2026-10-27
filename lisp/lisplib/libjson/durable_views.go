@@ -195,6 +195,11 @@ func (e *durableEncoder) identity(v *lisp.LVal) (any, bool) {
 			return arrayKey{dims, data}, true
 		}
 	}
+	if v.Type == lisp.LFun && e.reg.entryForFun(v) != nil {
+		// A Go function object saved through its codec is an object, like
+		// a native: one reached twice is written once.
+		return funObjKey{v.Native}, true
+	}
 	return durableIdentity(v)
 }
 

@@ -129,16 +129,17 @@ jobs:
       # or a single failure costs the whole night's coverage.
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]
     # DERIVED, not remembered. scripts/fuzz-budget-check.sh asserts
     #
     #     ceil(targets / shards) x FUZZTIME + overhead + FUZZTIME <= timeout-minutes
     #
     # on every PR, so this number cannot silently stop covering the sweep. At
-    # 45 targets over 12 shards that is 4 x 10m + 10m + 10m = 60. The
-    # canonize invariant target puts five targets on an eleven-shard worker
-    # and consumes the required margin. Twelve preserves
-    # every target's full budget without raising the 60-minute timeout.
+    # 50 targets over 13 shards that is 4 x 10m + 10m + 10m = 60. lval's two
+    # differential targets (FuzzUnmarshal, FuzzMarshal) put five targets on a
+    # twelve-shard worker and consumed the required margin. Thirteen
+    # preserves every target's full budget without raising the 60-minute
+    # timeout.
     #
     # The rule is that a target never lands without this line being recomputed,
     # not that every target buys a shard -- the eighth shard absorbed two

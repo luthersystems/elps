@@ -139,6 +139,10 @@ its tests; assemble it at runtime. To run the gate locally, see
 - **`elpstest/oracle/`** — Differential test helpers for Go code that copies
   a builtin: generated inputs of every type, result comparison, and a sweep
   of every context check.
+- **`lval/`** — ELPS values in Go without the interpreter, read and written
+  as typed JSON (the bytes `libjson` writes), for code such as a WebAssembly
+  guest. It imports neither `lisp` nor `encoding/json`; its tests compare it
+  with `libjson`.
 - **`elpsutil/`** — Helpers for building embedded packages in Go
   (`Function()`, `PackageLoader()`, etc.).
 - **`lsp/`** — Language Server (on `tliron/glsp`): diagnostics, hover,

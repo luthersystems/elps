@@ -10,6 +10,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -775,6 +776,10 @@ func (d *durableDecoder) native(depth int) (*lisp.LVal, error) {
 	switch {
 	case err != nil:
 		return nil, fmt.Errorf("durable json: native %q: %w", name, err)
+	case entry.fun != (funKey{}):
+		if v == nil || v.Type != lisp.LFun || v.Builtin() == nil || (funKey{v.Package(), v.FID()}) != entry.fun || funraw.Captures(v) != payload {
+			return nil, fmt.Errorf("durable json: function codec %q: Load did not return %s over its captures", name, entry.fun)
+		}
 	case v == nil || v.Type != lisp.LNative || reflect.TypeOf(v.Native) != entry.typ:
 		return nil, fmt.Errorf("durable json: native %q: LoadNative did not return a native %v", name, entry.typ)
 	}
