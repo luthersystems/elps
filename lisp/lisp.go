@@ -888,34 +888,17 @@ func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *L
 	}
 }
 
-// capturedBuiltin describes a Go function whose VM state is explicit. Eval
-// receives the ordinary arguments followed by the capture graph for the VM
-// invoking it. All mutable VM state used by Eval must be reachable through
-// Captures; Eval may otherwise retain only immutable, concurrency-safe Go data.
-//
-// Captures is retained by reference at construction so aliases to other values
-// in the same VM remain intact. Fork remaps the whole graph, including aliases
-// and cycles, together with the VM's other state. Sharing the returned function
-// directly between independent runtimes does not clone its captures.
-type capturedBuiltin struct {
-	Formals  *LVal
-	Captures *LVal
-	Eval     func(env *LEnv, args, captures *LVal) *LVal
-	Package  string
-	FID      string
-}
-
 // newCapturedBuiltin constructs an LFun whose explicit capture graph can be
 // remapped by Fork. A nil Captures graph explicitly declares no VM captures.
 // FunInPackage uses the legacy callback contract and needs template approval.
-func newCapturedBuiltin(spec capturedBuiltin) *LVal {
+func newCapturedBuiltin(spec CapturedFun) *LVal {
 	if spec.Eval == nil {
 		return Errorf("captured builtin requires Eval")
 	}
 	// These three objects always travel together. Coallocation keeps explicit
 	// ownership from adding an allocation for each edge in the capture graph.
 	data := &capturedFunction{}
-	data.captures = builtinCaptures{values: spec.Captures, code: spec.Eval}
+	data.captures = builtinCaptures{values: spec.Captures, code: spec.Eval, name: spec.Name}
 	data.function = funData{
 		fid: spec.FID, pkg: spec.Package,
 		captures: &data.captures, builtin: data.captures.call,
@@ -939,6 +922,8 @@ type capturedFunction struct {
 type builtinCaptures struct {
 	values *LVal
 	code   func(env *LEnv, args, captures *LVal) *LVal
+	// name is the display name the value prints as; "" prints #<builtin>.
+	name string
 }
 
 func (c *builtinCaptures) call(env *LEnv, args *LVal) *LVal {

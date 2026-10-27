@@ -24,7 +24,7 @@ func TestTemplateContinuationPolicyOrder(t *testing.T) {
 	lexical.scope = scopeOf(map[string]*LVal{"b": leaf(7)})
 	lexical.scope.put("a", leaf(6), 0)
 	closure := lexical.Lambda(Formals(), []*LVal{Nil()})
-	capture := newCapturedBuiltin(capturedBuiltin{
+	capture := newCapturedBuiltin(CapturedFun{
 		Package: "user", FID: "capture", Formals: Formals(), Captures: leaf(5),
 		Eval: func(_ *LEnv, _, values *LVal) *LVal { return values },
 	})

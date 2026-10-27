@@ -49,6 +49,7 @@ type templateEnv struct {
 type templateFunctionData struct {
 	values   templateRef
 	code     func(*LEnv, *LVal, *LVal) *LVal
+	name     string
 	header   funData
 	env      int
 	captures int
@@ -337,6 +338,7 @@ func (c *templateCompiler) function(fd *funData) int {
 		function.captures = c.plan.numCaptures
 		function.values = c.ref(fd.captures.values)
 		function.code = fd.captures.code
+		function.name = fd.captures.name
 		function.header.builtin = nil
 	}
 	c.plan.functions = append(c.plan.functions, function)
@@ -583,7 +585,7 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 		data.env = instance.env(function.env)
 		if function.captures != 0 {
 			captures := instance.captures[function.captures-1]
-			*captures = builtinCaptures{values: instance.ref(function.values), code: function.code}
+			*captures = builtinCaptures{values: instance.ref(function.values), code: function.code, name: function.name}
 			data.captures = captures
 			data.builtin = captures.call
 		}

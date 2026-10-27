@@ -26,7 +26,7 @@ func TestTemplateCompilerRejectsMissingAdmittedIdentity(t *testing.T) {
 			case "capacity-tail":
 				subject = QExpr([]*LVal{leaf}[:0])
 			case "capture":
-				subject = newCapturedBuiltin(capturedBuiltin{
+				subject = newCapturedBuiltin(CapturedFun{
 					Package: "user", FID: "capture", Formals: Formals(), Captures: leaf,
 					Eval: func(_ *LEnv, _, captures *LVal) *LVal { return captures },
 				})
@@ -148,7 +148,7 @@ func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	closure := lexical.Lambda(Formals(), []*LVal{Symbol("leaf")})
 	lexical.scope.put("self", closure, 0)
 	captures := QExpr([]*LVal{leaf, closure, nil})
-	callback := newCapturedBuiltin(capturedBuiltin{
+	callback := newCapturedBuiltin(CapturedFun{
 		Package: "user", FID: "cycle", Formals: Formals(), Captures: captures,
 		Eval: func(_ *LEnv, _, values *LVal) *LVal { return values },
 	})

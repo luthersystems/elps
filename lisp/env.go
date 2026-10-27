@@ -86,7 +86,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// This callback lives inside the metatype, not a package registration.
 	// Declare its empty capture graph so hosts need not approve arbitrary
 	// nested callbacks merely to admit the core type system (#622).
-	ctor := newCapturedBuiltin(capturedBuiltin{
+	ctor := newCapturedBuiltin(CapturedFun{
 		Package: env.Runtime.Package.Name,
 		FID:     fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
 		Formals: Formals("name", "ctor"),
