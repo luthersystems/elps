@@ -161,3 +161,33 @@
   (let ([r (range :lo 1 :hi 5)])
     (handler-bind ([bad-range (lambda (c &rest data) (assert-equal 99 (car data)))])
       (r 'set-lo 99))))
+
+; A :check that calls a method, and a method that calls another method on
+; its receiver.  Only the outermost call runs :check, so the check does
+; not call itself and a method may pass through a state the check refuses.
+(set 'span
+     (s:make-record "span"
+                    (s:has-key "lo" s:int)
+                    (s:has-key "hi" s:int)
+                    (s:method width (o) (- (o 'hi) (o 'lo)))
+                    (s:method set-lo (o n) (s:set! o 'lo n))
+                    (s:method set-hi (o n) (s:set! o 'hi n))
+                    (s:method move (o n)
+                              (o 'set-lo (+ n (o 'lo)))
+                              (o 'set-hi (+ n (o 'hi))))
+                    :check (lambda (o)
+                             (when (< (o 'width) 0)
+                               (error 'bad-span "lo is above hi")))))
+
+(test "check-calls-a-method"
+  (let ([sp (span :lo 1 :hi 5)])
+    (assert-equal 4 (sp 'width))
+    (assert-equal 'bad-span (condition-of (lambda () (span :lo 6 :hi 5))))))
+
+(test "nested-method-calls-check-once"
+  (let ([sp (span :lo 1 :hi 5)])
+    (sp 'move 10)
+    (assert-equal 11 (sp 'lo))
+    (assert-equal 15 (sp 'hi))
+    (assert-equal 'bad-span (condition-of (lambda () (sp 'set-lo 20))))
+    (assert-equal 11 (sp 'lo))))
