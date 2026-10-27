@@ -331,11 +331,7 @@ Rules:
   outermost method call on the object returns. A call that a method or
   `:check` makes on the same object runs without a check, so a method may
   pass through a state `:check` refuses, and `:check` may call methods.
-* A method call that fails, or that breaks `:check`, leaves the fields as
-  they were before the outermost call. This is true for Go types and their
-  `Check`. It does not undo a change made in place to a field's value, such
-  as `assoc!` on `(o 'lines)`; the lint check `record-field-mutation`
-  reports those.
+* A method call is atomic: see "Method calls are atomic" below.
 * A call to an unknown operation raises `unknown-operation`.
 * A type takes methods only from the package that defines it. A method
   name must not be a field name.
@@ -344,6 +340,45 @@ Rules:
 * Helper functions are ordinary `defun`s, or locals of a closure around
   the type: `(set 'order (labels (...) (s:make-record ...)))`.
 * Use `s:any` for a field that takes any value.
+
+#### Method calls are atomic
+
+A method call works like a database transaction. If the method raises an
+error, or `:check` refuses the object after it, the object's fields go back
+to their state before the call. A caller that catches the error still has
+a valid object.
+
+```lisp
+(set 'order
+  (s:make-record "order"
+    (s:has-key "lines" (s:map-of s:string s:int))
+    (s:method add-line (o sku qty)
+      (s:set! o 'lines (assoc (o 'lines) sku qty))   ; write the line
+      (unless (in-stock? sku qty)
+        (error 'out-of-stock sku)))))                 ; then fail
+
+(set 'o (order :lines (sorted-map)))
+(ignore-errors (o 'add-line "a" 5))   ; raises out-of-stock
+(o 'lines)                            ; (sorted-map): the write was undone
+```
+
+Details:
+
+* The rollback covers the outermost call on the object. A method that
+  calls another method on its receiver is one call: a failure anywhere
+  undoes all of it.
+* The fields are saved on the first `s:set!` of a call, so a read-only
+  method costs nothing.
+* Go types work the same way: a Go method or `Default` that fails, or that
+  breaks `Check`, leaves the fields as they were.
+* The rollback restores which value each field holds. It does **not** undo
+  a change made in place to a field's value, such as `(assoc! (o 'lines)
+  "a" 5)`: the saved map holds the same `lines` map, so it changes too.
+  Build a new value and `s:set!` it instead. The lint check
+  `record-field-mutation` reports each in-place change.
+* A phylum endpoint that raises an error already rolls back its whole
+  transaction. The rollback matters for code that catches an error and
+  keeps using the object.
 
 Saving objects. An object saves only its fields. Its type saves as the name
 of the global that holds it, and its methods are never saved. Add
