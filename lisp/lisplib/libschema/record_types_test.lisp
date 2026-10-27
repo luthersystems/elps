@@ -17,13 +17,13 @@
                     (s:has-key "lines" (s:make-validator "lines" s:sorted-map (s:map-of s:string s:int)))
                     (s:has-key "status" order-status)
                     (s:may-have-key "note" s:any)
-                    (s:method add-line (sku qty)
-                              (s:set! this 'lines (assoc (this 'lines) sku (+ qty (get-default (this 'lines) sku 0)))))
-                    (s:method qty ()
-                              (foldl (lambda (n sku) (+ n (get (this 'lines) sku))) 0 (keys (this 'lines))))
-                    (s:method pay ()
-                              (s:set! this 'status "paid"))
-                    (s:method self () this)))
+                    (s:method add-line (o sku qty)
+                              (s:set! o 'lines (assoc (o 'lines) sku (+ qty (get-default (o 'lines) sku 0)))))
+                    (s:method qty (o)
+                              (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
+                    (s:method pay (o)
+                              (s:set! o 'status "paid"))
+                    (s:method self (o) o)))
 
 (defun new-order ()
   (order :id "o1" :lines (sorted-map) :status "open"))
@@ -60,7 +60,7 @@
     ; A round trip through the fields rebuilds an equal object.
     (assert-equal "o1" ((order (s:fields o)) 'id))))
 
-(test "this-shares-state"
+(test "receiver-shares-state"
   (let* ([o (new-order)]
          [s (o 'self)])
     (s 'add-line "z" 4)
@@ -97,7 +97,7 @@
                     (s:has-key "n" s:int)
                     :check (lambda (c) (when (< (c 'n) 0) (error 'negative-count (c 'n))))))
 
-(s:defmethod counter inc () (s:set! this 'n (+ 1 (this 'n))))
+(s:defmethod counter inc (o) (s:set! o 'n (+ 1 (o 'n))))
 
 (test "check-and-defmethod"
   (let ([c (counter :n 0)])
@@ -105,9 +105,9 @@
     (c 'inc)
     (assert-equal 2 (c 'n)))
   (assert-equal 'negative-count (condition-of (lambda () (counter :n -1))))
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc () 0))))
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n () 0))))
-  (s:defmethod counter inc () :replace true (s:set! this 'n (+ 10 (this 'n))))
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc (_o) 0))))
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0))))
+  (s:defmethod counter inc (o) :replace true (s:set! o 'n (+ 10 (o 'n))))
   (let ([c (counter :n 0)])
     (c 'inc)
     (assert-equal 10 (c 'n))))
@@ -117,29 +117,31 @@
      (labels ([cents (dollars) (* 100 dollars)])
        (s:make-record "pricer"
                       (s:has-key "dollars" s:int)
-                      (s:method in-cents () (cents (this 'dollars))))))
+                      (s:method in-cents (o) (cents (o 'dollars))))))
 
 (test "closure-helpers"
   (assert-equal 300 ((pricer :dollars 3) 'in-cents)))
 
 (test "definition-errors"
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:has-key "a" s:int) (s:has-key "a" s:int))))) ; nolint:record-type-binding
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:has-key "a" s:int) (s:method a () 1))))) ; nolint:record-type-binding
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m () 1) (s:method m () 2))))) ; nolint:record-type-binding
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:has-key "a" s:int) (s:method a (_o) 1))))) ; nolint:record-type-binding
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m (_o) 1) (s:method m (_o) 2))))) ; nolint:record-type-binding
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" s:int)))) ; nolint:record-type-binding
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m (this) 1))))) ; nolint:record-type-binding,undefined-symbol
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m () 1)))))
+  ; A method needs a receiver, and the receiver is a plain name.
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m () 1))))) ; nolint:record-type-binding,undefined-symbol
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m (&rest xs) 1))))) ; nolint:record-type-binding,undefined-symbol
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m (_o) 1)))))
 
 (set 'range
      (s:make-record "range"
                     (s:has-key "lo" s:int)
                     (s:has-key "hi" s:int)
-                    (s:method set-lo (n) (s:set! this 'lo n))
-                    (s:method shift (n)
-                              (s:set! this 'lo (+ n (this 'lo)))
-                              (s:set! this 'hi (+ n (this 'hi))))
-                    (s:method half-shift (n)
-                              (s:set! this 'lo (+ n (this 'lo)))
+                    (s:method set-lo (o n) (s:set! o 'lo n))
+                    (s:method shift (o n)
+                              (s:set! o 'lo (+ n (o 'lo)))
+                              (s:set! o 'hi (+ n (o 'hi))))
+                    (s:method half-shift (o n)
+                              (s:set! o 'lo (+ n (o 'lo)))
                               (error 'stopped n))
                     :check (lambda (r) (when (> (r 'lo) (r 'hi)) (error 'bad-range (r 'lo))))))
 

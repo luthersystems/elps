@@ -29,20 +29,21 @@ var recordMacros = []*libutil.Builtin{
 		constructor: (type :field value ...) or (type field-map) builds
 		an object, which is checked against the fields.  Each form is a
 		field, (s:has-key "f" ...) or (s:may-have-key "f" ...); a method,
-		(s:method name (args) body...), whose body sees the object as
-		this; or the option :check fn, a function of the new object that
+		(s:method name (recv args...) body...), whose first formal is the
+		object, as a Go method receiver is; or the option :check fn, a function of the new object that
 		raises an error to refuse it.  Call an object as (obj 'name
 		args...): a method runs, and a field name returns the field.  Any
 		other name raises unknown-operation.  Bind the type with a
 		top-level set: a saved object names that global.`),
 	libutil.FunctionDoc("method", lisp.Formals("name", "formals", lisp.VarArgSymbol, "body"), macroMethod,
-		`Declares a method inside s:make-record: (s:method name (args)
-		body...).  The body sees the object as this.  Outside
-		s:make-record it is an error.`),
+		`Declares a method inside s:make-record: (s:method name (recv
+		args...) body...).  The first formal, recv, is the object the
+		method is called on; the call (obj 'name args...) passes only
+		args.  Outside s:make-record it is an error.`),
 	libutil.FunctionDoc("defmethod", lisp.Formals("type", "name", "formals", lisp.VarArgSymbol, "body"), macroDefMethod,
 		`Adds a method to a record type that the same package defined:
-		(s:defmethod type name (args) body...).  The body sees the
-		object as this.  It refuses a name that is a field of the type,
+		(s:defmethod type name (recv args...) body...).  The first
+		formal, recv, is the object, as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
 		:replace true.`),
 }
@@ -58,7 +59,7 @@ var recordBuiltins = []*libutil.Builtin{
 		`The function s:defmethod expands to.  Do not call it
 		directly.`),
 	libutil.FunctionDoc("set!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
-		`Sets a field of a record object, (s:set! this 'field value),
+		`Sets a field of a record object, (s:set! obj 'field value),
 		and returns the value.  The field's validator checks the value
 		first; a failure leaves the object as it was.  Use it in method
 		bodies only: code outside the type changes an object through its
@@ -70,9 +71,6 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("record?", lisp.Formals("value"), builtinIsRecord,
 		`Returns true if value is a record object.`),
 }
-
-// thisSymbol is the receiver every method binds.
-const thisSymbol = "this"
 
 // isMethodForm reports whether form is (s:method ...) or (method ...).
 func isMethodForm(form *lisp.LVal) bool {
@@ -89,7 +87,8 @@ type methodForm struct {
 	body          []*lisp.LVal
 }
 
-// methodLambda returns (lisp:lambda (this args...) body...) for m.
+// methodLambda returns (lisp:lambda (recv args...) body...) for m.  The
+// first formal is the receiver: the object the method is called on.
 func methodLambda(env *lisp.LEnv, who string, m methodForm) *lisp.LVal {
 	name, formals, body := m.name, m.formals, m.body
 	if name.Type != lisp.LSymbol || name.Str == "" || name.Str[0] == ':' {
@@ -98,19 +97,19 @@ func methodLambda(env *lisp.LEnv, who string, m methodForm) *lisp.LVal {
 	if formals.Type != lisp.LSExpr {
 		return env.ErrorConditionf(BadArgs, "%s: method %s: formals must be a list: %v", who, name.Str, formals)
 	}
-	params := make([]*lisp.LVal, 0, len(formals.Cells)+1)
-	params = append(params, lisp.Symbol(thisSymbol))
-	for _, p := range formals.Cells {
+	if len(formals.Cells) == 0 {
+		return env.ErrorConditionf(BadArgs, "%s: method %s: the first formal is the receiver, the object the method is called on: (%s (obj args...) ...)", who, name.Str, name.Str)
+	}
+	for i, p := range formals.Cells {
 		if p.Type != lisp.LSymbol {
 			return env.ErrorConditionf(BadArgs, "%s: method %s: formal %v is not a symbol", who, name.Str, p)
 		}
-		if p.Str == thisSymbol {
-			return env.ErrorConditionf(BadArgs, "%s: method %s: this is bound already; do not name it as a formal", who, name.Str)
+		if i == 0 && (p.Str == "" || p.Str[0] == '&' || p.Str[0] == ':') {
+			return env.ErrorConditionf(BadArgs, "%s: method %s: the receiver %s must be a plain name", who, name.Str, p.Str)
 		}
-		params = append(params, p)
 	}
 	form := make([]*lisp.LVal, 0, len(body)+2)
-	form = append(form, lisp.Symbol("lisp:lambda"), lisp.SExpr(params))
+	form = append(form, lisp.Symbol("lisp:lambda"), formals)
 	form = append(form, body...)
 	return lisp.SExpr(form)
 }
@@ -130,7 +129,7 @@ func listForm(items []*lisp.LVal) *lisp.LVal {
 
 // macroMakeRecord expands s:make-record into
 //
-//	(s:%make-record NAME (lisp:list FIELD...) (lisp:list 'm1 (lisp:lambda (this ...) ...) ...) CHECK (lisp:lambda ()))
+//	(s:%make-record NAME (lisp:list FIELD...) (lisp:list 'm1 (lisp:lambda (recv ...) ...) ...) CHECK (lisp:lambda ()))
 //
 // The last lambda marks the caller's package when the type has no
 // methods.
@@ -176,7 +175,7 @@ func macroMethod(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 
 // macroDefMethod expands s:defmethod into
 //
-//	(s:%add-method TYPE 'NAME (lisp:lambda (this ...) ...) REPLACE)
+//	(s:%add-method TYPE 'NAME (lisp:lambda (recv ...) ...) REPLACE)
 func macroDefMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	typeForm, name, formals, body := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3:]
 	replace := lisp.Nil()

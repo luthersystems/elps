@@ -66,8 +66,8 @@ func recordFindings(exprs []*lisp.LVal) []recordFinding {
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
 				shape = byName[site.Form.Cells[1].Str]
 			}
-			for _, body := range methodBodies(site.Form) {
-				w.methodBody(body, "this", shape)
+			for _, m := range recordMethods(site.Form) {
+				w.methodBody(m.body, m.recv, shape)
 			}
 			if check := checkFunction(site.Form); check != nil {
 				w.checkBody(check)
@@ -209,23 +209,44 @@ func callSites(form *lisp.LVal, names ...string) []astutil.CallSite {
 	return sites
 }
 
-// methodBodies returns the body forms of each method in a s:make-record or
-// s:defmethod call.
-func methodBodies(call *lisp.LVal) [][]*lisp.LVal {
+// recordMethod is one method in a s:make-record or s:defmethod call: the
+// name of its receiver and its body.
+type recordMethod struct {
+	recv string
+	body []*lisp.LVal
+}
+
+// recordMethods returns each method of a s:make-record or s:defmethod call
+// that has a receiver.
+func recordMethods(call *lisp.LVal) []recordMethod {
 	if astutil.HeadSymbol(call) == recordPackage+"defmethod" {
 		if len(call.Cells) > 4 {
-			return [][]*lisp.LVal{call.Cells[4:]}
+			if recv := receiverName(call.Cells[3]); recv != "" {
+				return []recordMethod{{recv, call.Cells[4:]}}
+			}
 		}
 		return nil
 	}
-	var bodies [][]*lisp.LVal
+	var methods []recordMethod
 	for _, c := range call.Cells[1:] {
 		h := astutil.HeadSymbol(c)
 		if (h == recordPackage+"method" || h == "method") && !c.IsQuoted() && len(c.Cells) > 3 {
-			bodies = append(bodies, c.Cells[3:])
+			if recv := receiverName(c.Cells[2]); recv != "" {
+				methods = append(methods, recordMethod{recv, c.Cells[3:]})
+			}
 		}
 	}
-	return bodies
+	return methods
+}
+
+// receiverName returns the first formal of a method's formals: its
+// receiver.
+func receiverName(formals *lisp.LVal) string {
+	if len(formals.Cells) == 0 {
+		return ""
+	}
+	name, _ := symbolName(formals.Cells[0])
+	return name
 }
 
 // mutatingNames returns the names of the mutating builtins.
@@ -238,15 +259,15 @@ func mutatingNames() []string {
 }
 
 // methodBody marks the s:set! calls of a method body as handled.  It
-// reports a mutating builtin that writes through (this 'field), and, when
+// reports a mutating builtin that writes through (recv 'field), and, when
 // the type's shape is known, a member name the type does not declare.
-func (w *recordWalk) methodBody(body []*lisp.LVal, this string, shape *recordShape) {
+func (w *recordWalk) methodBody(body []*lisp.LVal, recv string, shape *recordShape) {
 	known := shape != nil && shape.closed
 	for _, form := range body {
 		for _, site := range callSites(form, recordPackage+"set!") {
 			w.handled[site.Form] = true
 			c := site.Form.Cells
-			if !known || len(c) < 3 || !c[1].IsSymbol(this) {
+			if !known || len(c) < 3 || !c[1].IsSymbol(recv) {
 				continue
 			}
 			if field, ok := quotedName(c[2]); ok && !shape.fields[field] {
@@ -254,16 +275,17 @@ func (w *recordWalk) methodBody(body []*lisp.LVal, this string, shape *recordSha
 			}
 		}
 		if known {
-			for _, site := range callSites(form, this) {
+			for _, site := range callSites(form, recv) {
 				name, ok := quotedName(site.Form.Cells[min(1, len(site.Form.Cells)-1)])
 				if ok && len(site.Form.Cells) > 1 && !shape.fields[name] && !shape.methods[name] {
 					w.out = append(w.out, unknownMember(site.Form, name+" is not a field or method of the type"))
 				}
 			}
 		}
-		w.fieldMutations(form, this, mutationReport{recordFieldMutation,
-			"%s changes field %s of this in place, and its validator does not run",
-			"build the new value and give it to s:set!: (s:set! this '%[2]s new-value)"})
+		r := strings.ReplaceAll(recv, "%", "%%")
+		w.fieldMutations(form, recv, mutationReport{recordFieldMutation,
+			"%s changes field %s of " + r + " in place, and its validator does not run",
+			"build the new value and give it to s:set!: (s:set! " + r + " '%[2]s new-value)"})
 	}
 }
 
@@ -358,12 +380,7 @@ func firstFormal(fn *lisp.LVal) string {
 	if len(fn.Cells) < 2 {
 		return ""
 	}
-	formals := fn.Cells[1]
-	if len(formals.Cells) == 0 {
-		return ""
-	}
-	name, _ := symbolName(formals.Cells[0])
-	return name
+	return receiverName(fn.Cells[1])
 }
 
 // symbolName returns the name of a symbol.
@@ -443,25 +460,25 @@ var AnalyzerRecordTypeBinding = &Analyzer{
 }
 
 // AnalyzerRecordFieldMutation reports a mutating builtin that writes
-// through (this 'field) in a method.
+// through (recv 'field) in a method.
 var AnalyzerRecordFieldMutation = &Analyzer{
 	Name:     recordFieldMutation,
 	Severity: SeverityWarning,
 	Doc: "Report a method that changes a field's value in place.\n\n" +
-		"(this 'field) returns the field's value itself, not a copy. A mutating " +
+		"(recv 'field), where recv is the method's receiver, returns the field's value itself, not a copy. A mutating " +
 		"builtin such as assoc! or append! on it changes the field without its " +
 		"validator. Build the new value and give it to s:set!.",
 	Run: recordAnalyzerRun(recordFieldMutation),
 }
 
 // AnalyzerRecordUnknownMember reports a member name a record type does not
-// declare, read or set through this in a method.
+// declare, read or set through the receiver in a method.
 var AnalyzerRecordUnknownMember = &Analyzer{
 	Name:     recordUnknownMember,
 	Severity: SeverityWarning,
 	Doc: "Report a field or method name that the record type does not declare.\n\n" +
-		"In a method, (this 'name) must name a field or method of the type, and " +
-		"(s:set! this 'name ...) must name a field. A wrong name fails only when the " +
+		"In a method, (recv 'name) must name a field or method of the type, and " +
+		"(s:set! recv 'name ...) must name a field, where recv is the method's receiver. A wrong name fails only when the " +
 		"method runs. The check knows the type's fields and methods from its " +
 		"s:make-record and from each s:defmethod in the same file; it skips a type " +
 		"whose field forms are not literal s:has-key or s:may-have-key calls.",
