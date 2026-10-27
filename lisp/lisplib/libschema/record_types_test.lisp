@@ -12,18 +12,18 @@
 (set 'order-status (s:make-validator "order-status" s:string (s:in "open" "paid")))
 
 (set 'order
-  (s:make-record "order"
-    (s:has-key "id" s:string)
-    (s:has-key "lines" (s:make-validator "lines" s:sorted-map (s:map-of s:string s:int)))
-    (s:has-key "status" order-status)
-    (s:may-have-key "note" s:any)
-    (s:method add-line (sku qty)
-      (s:set! this 'lines (assoc (this 'lines) sku (+ qty (get-default (this 'lines) sku 0)))))
-    (s:method qty ()
-      (foldl (lambda (n sku) (+ n (get (this 'lines) sku))) 0 (keys (this 'lines))))
-    (s:method pay ()
-      (s:set! this 'status "paid"))
-    (s:method self () this)))
+     (s:make-record "order"
+                    (s:has-key "id" s:string)
+                    (s:has-key "lines" (s:make-validator "lines" s:sorted-map (s:map-of s:string s:int)))
+                    (s:has-key "status" order-status)
+                    (s:may-have-key "note" s:any)
+                    (s:method add-line (sku qty)
+                              (s:set! this 'lines (assoc (this 'lines) sku (+ qty (get-default (this 'lines) sku 0)))))
+                    (s:method qty ()
+                              (foldl (lambda (n sku) (+ n (get (this 'lines) sku))) 0 (keys (this 'lines))))
+                    (s:method pay ()
+                              (s:set! this 'status "paid"))
+                    (s:method self () this)))
 
 (defun new-order ()
   (order :id "o1" :lines (sorted-map) :status "open"))
@@ -93,9 +93,9 @@
   (assert-equal 'wrong-type (condition-of (lambda () (s:validate order (sorted-map))))))
 
 (set 'counter
-  (s:make-record "counter"
-    (s:has-key "n" s:int)
-    :check (lambda (c) (when (< (c 'n) 0) (error 'negative-count (c 'n))))))
+     (s:make-record "counter"
+                    (s:has-key "n" s:int)
+                    :check (lambda (c) (when (< (c 'n) 0) (error 'negative-count (c 'n))))))
 
 (s:defmethod counter inc () (s:set! this 'n (+ 1 (this 'n))))
 
@@ -114,10 +114,10 @@
 
 ; A type built inside a closure: the closure's local is a private helper.
 (set 'pricer
-  (labels ([cents (dollars) (* 100 dollars)])
-    (s:make-record "pricer"
-      (s:has-key "dollars" s:int)
-      (s:method in-cents () (cents (this 'dollars))))))
+     (labels ([cents (dollars) (* 100 dollars)])
+       (s:make-record "pricer"
+                      (s:has-key "dollars" s:int)
+                      (s:method in-cents () (cents (this 'dollars))))))
 
 (test "closure-helpers"
   (assert-equal 300 ((pricer :dollars 3) 'in-cents)))
@@ -131,17 +131,17 @@
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m () 1)))))
 
 (set 'range
-  (s:make-record "range"
-    (s:has-key "lo" s:int)
-    (s:has-key "hi" s:int)
-    (s:method set-lo (n) (s:set! this 'lo n))
-    (s:method shift (n)
-      (s:set! this 'lo (+ n (this 'lo)))
-      (s:set! this 'hi (+ n (this 'hi))))
-    (s:method half-shift (n)
-      (s:set! this 'lo (+ n (this 'lo)))
-      (error 'stopped n))
-    :check (lambda (r) (when (> (r 'lo) (r 'hi)) (error 'bad-range (r 'lo))))))
+     (s:make-record "range"
+                    (s:has-key "lo" s:int)
+                    (s:has-key "hi" s:int)
+                    (s:method set-lo (n) (s:set! this 'lo n))
+                    (s:method shift (n)
+                              (s:set! this 'lo (+ n (this 'lo)))
+                              (s:set! this 'hi (+ n (this 'hi))))
+                    (s:method half-shift (n)
+                              (s:set! this 'lo (+ n (this 'lo)))
+                              (error 'stopped n))
+                    :check (lambda (r) (when (> (r 'lo) (r 'hi)) (error 'bad-range (r 'lo))))))
 
 (test "check-runs-after-each-method"
   (let ([r (range :lo 1 :hi 5)])
