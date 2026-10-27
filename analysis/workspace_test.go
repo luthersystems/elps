@@ -2040,10 +2040,11 @@ func TestConfigForFile_CarriesEveryField(t *testing.T) {
 		PackageImports: map[string][]string{"p": {"q"}},
 		DefaultPackage: "svc",
 		// No entry for other.lisp, so DefaultPackage is copied unchanged.
-		FilePackages:  map[string]string{"/elsewhere.lisp": "pkg"},
-		WorkspaceRefs: map[string][]FileReference{"k": {{File: "a.lisp"}}},
-		MacroExpander: &countingStubExpander{},
-		Filename:      "original.lisp",
+		FilePackages:   map[string]string{"/elsewhere.lisp": "pkg"},
+		WorkspaceRefs:  map[string][]FileReference{"k": {{File: "a.lisp"}}},
+		MacroExpander:  &countingStubExpander{},
+		SyntaxExpander: &countingStubExpander{},
+		Filename:       "original.lisp",
 	}
 
 	// Every field must be non-zero above, or the test proves nothing.

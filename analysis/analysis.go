@@ -67,6 +67,14 @@ type Config struct {
 	// expanded rather than guessed at by name; DefForms still take priority.
 	MacroExpander MacroExpander
 
+	// SyntaxExpander, used only when MacroExpander is nil, expands the
+	// calls it chooses in the deep walk and nothing else: the analysis
+	// stays in its mode without an expander (no prescan expansion, no
+	// expander-only package rules).  It returns nil for a call it does
+	// not expand.  The linter uses it for the standard library macros
+	// whose expansions bind names, such as s:make-record.
+	SyntaxExpander MacroExpander
+
 	// Filename is the source file being analyzed.
 	Filename string
 }

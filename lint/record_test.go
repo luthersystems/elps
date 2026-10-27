@@ -217,3 +217,25 @@ func TestRecordPlainSet(t *testing.T) {
 	assertDiagOnLine(t, diags, 4, "set binds the package name o")
 	assertDiagOnLine(t, diags, 5, "lisp:set! does not change a record field")
 }
+
+// TestRecordShadowedReceiver checks that a nested function whose formal has
+// the receiver's name is not read as the receiver.
+func TestRecordShadowedReceiver(t *testing.T) {
+	src := `(set 'order
+  (s:make-record "order"
+    (s:has-key "total" s:int)
+    (s:method merge (o others)
+      (map 'list (lambda (o) (assoc! (o 'lines) "k" 1) (o 'total 1) (set! o 2)) others))))`
+	for _, a := range []*Analyzer{AnalyzerRecordUnknownMember, AnalyzerRecordMethodArity, AnalyzerRecordFieldMutation, AnalyzerRecordPlainSet} {
+		assertNoDiags(t, lintCheck(t, a, src))
+	}
+}
+
+// TestRecordSyntaxExpanderOnly checks that the linter expands the record
+// macros without switching the analysis into expander mode.
+func TestRecordSyntaxExpanderOnly(t *testing.T) {
+	cfg, err := BuildAnalysisConfig(&LintConfig{})
+	require.NoError(t, err)
+	assert.Nil(t, cfg.MacroExpander)
+	assert.NotNil(t, cfg.SyntaxExpander)
+}
