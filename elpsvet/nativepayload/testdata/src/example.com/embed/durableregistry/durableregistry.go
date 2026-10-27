@@ -21,11 +21,15 @@ var thingCodec = durableelps.Codec.WithName("embed:thing")
 
 // A codec of another module (durableelps.Codec) need not be listed.
 func complete() {
-	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec)
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, durablecodecs.FunCodec, localCodec, thingCodec)
 }
 
 func missing() {
-	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec) // want `libjson\.NewFrozenDurableRegistry does not list the durable codec durablecodecs\.ForeignCodec`
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, durablecodecs.FunCodec, localCodec, thingCodec) // want `libjson\.NewFrozenDurableRegistry does not list the durable codec durablecodecs\.ForeignCodec`
+}
+
+func missingFun() {
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec, durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec) // want `libjson\.NewFrozenDurableRegistry does not list the durable codec durablecodecs\.FunCodec`
 }
 
 // A spread list is not checked.
@@ -46,5 +50,5 @@ func builtLocal() *lisp.LVal {
 
 // A codec renamed in the call (Codec.WithName) counts as listed.
 func renamed() {
-	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec.WithName("test:renamed"), durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, localCodec, thingCodec)
+	_, _ = libjson.NewFrozenDurableRegistry(durablecodecs.DurableCodec.WithName("test:renamed"), durablecodecs.ForeignCodec, durablecodecs.BothCodec, durablecodecs.AliasCodec, durablecodecs.FunCodec, localCodec, thingCodec)
 }

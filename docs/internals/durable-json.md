@@ -518,9 +518,39 @@ on the value, never on what its names bind when it is saved:
 
 | Function | Form | Restored as |
 |---|---|---|
+| A Go function value with captures (`lisp.NewCapturedFun`) whose package and FID have a `DurableFunCodec` | `["~#native",["NAME",VERSION,CAPTURES]]` | The codec's `Load` over the decoded captures. See [Go function objects](#go-function-objects). |
 | A registered builtin | `["~#builtin",["PKG","NAME"]]` | The registered builtin, through `PackageRegistry.RegisteredBuiltin` |
 | A Lisp function, or a builtin no registration names, that a global of its package binds | `["~#fn","PKG:NAME"]` | The current global `PKG:NAME` |
 | A lambda no global binds | `["~#closure",...]` | A new lambda over the saved frames and code. See [Closures](#closures). |
+
+The first row wins: a Go function object with a codec is saved through
+its codec, also when a global binds it.
+
+### Go function objects
+
+An embedder can give Lisp code an object whose dispatch is Go: a function
+value made with `lisp.NewCapturedFun`, whose state is its capture graph.
+Its code is Go, so a dump cannot save it as a closure. A
+`libjson.DurableFunCodec` saves it instead. The codec names the function
+values it saves by their `Package` and `FID`, which all the values of one
+constructor share.
+
+| Step | What happens |
+|---|---|
+| Dump | The value is written as a native: the codec's `Name` and `Version`, and the capture graph as the payload. The graph is saved with sharing, so a map the object and another value both hold is written once. One object reached twice is written once and referenced. |
+| Load | The payload is decoded first, then the codec's `Load` gets it. `Load` must return a function value of the same package and FID over exactly those captures, or the load fails. `Load` must only assemble the value: it runs no Lisp code. |
+| Sharing | `DurableSharing` reports a Go object as an object, like a native. It is never a kept closure: it has no Lisp code for `CheckClosure` to check. |
+| Fingerprint | The codec is a row with the type `func PKG:FID`. Adding a codec changes the fingerprint; so does a new version. |
+
+Only a value with captures is saved through the codec: a dump refuses a
+value of the codec's package and FID whose `Captures` is nil. With no
+codec, a Go object is a builtin no registration names: a global of its
+package that binds it saves it as `~#fn` (its state is lost), and any
+other is refused.
+
+Upgrades: a document that holds a Go object loads only where its codec is
+registered. Keep the codec, and every version its `Load` reads, for as
+long as stored documents may hold the object.
 
 ### Builtins
 
@@ -752,7 +782,9 @@ package when the document loads (see Functions).
 |---|---|
 | Internal panic | `durable json: cannot encode an internal panic` |
 | Error whose condition is empty or not UTF-8 | `durable json: cannot encode an error whose condition is empty or not UTF-8` |
-| Builtin no registration names that no global of its package holds | `durable json: cannot encode an anonymous function` |
+| Builtin no registration names that no global of its package holds, and Go function object with no codec | `durable json: cannot encode an anonymous function` |
+| Go function object of a codec's package and FID with no captures | `durable json: function codec "NAME": PKG:FID has no captures to save` |
+| Go function object whose codec's `Load` does not return the object over its captures | `durable json: function codec "NAME": Load did not return PKG:FID over its captures` |
 | Closure whose frame holds a refused value | `durable json: captured variable "NAME": ...` |
 | Closure whose code holds a value that is not a scalar, list or quote | `durable json: a closure's code holds a T` |
 | Closure whose code shares a mutable list with a value or other code | `durable json: a closure's code shares a mutable list with another value; ...` |

@@ -330,8 +330,8 @@ func checkPointerCodecs(pass *analysis.Pass) {
 		}
 		if p, ok := types.Unalias(v.Type()).(*types.Pointer); ok {
 			if _, ok := codecPayload(p.Elem()); ok {
-				pass.Reportf(v.Pos(), "durable codec %s is a pointer; declare it as a libjson.DurableCodec or"+
-					" libjson.ForeignCodec value", name)
+				pass.Reportf(v.Pos(), "durable codec %s is a pointer; declare it as a libjson.DurableCodec,"+
+					" libjson.ForeignCodec or libjson.DurableFunCodec value", name)
 			}
 		}
 	}
@@ -367,8 +367,8 @@ func visibleCodecs(pkg *types.Package) []codecVar {
 	return out
 }
 
-// codecPayload reports whether t is libjson.DurableCodec[T] (payload T) or
-// libjson.ForeignCodec (payload nil).
+// codecPayload reports whether t is libjson.DurableCodec[T] (payload T),
+// libjson.ForeignCodec or libjson.DurableFunCodec (payload nil).
 func codecPayload(t types.Type) (types.Type, bool) {
 	named, ok := types.Unalias(t).(*types.Named)
 	if !ok {
@@ -383,7 +383,10 @@ func codecPayload(t types.Type) (types.Type, bool) {
 		if args := named.TypeArgs(); args.Len() == 1 {
 			return args.At(0), true
 		}
-	case "ForeignCodec":
+	case "ForeignCodec", "DurableFunCodec":
+		// A function codec saves Go function objects, which are not
+		// natives: it makes no payload type durable, but a registry must
+		// list it.
 		return nil, true
 	}
 	return nil, false

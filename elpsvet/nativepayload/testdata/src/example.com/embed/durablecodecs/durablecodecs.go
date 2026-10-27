@@ -22,6 +22,10 @@ var ForeignCodec = libjson.ForeignCodec{Type: reflect.TypeFor[*foreignish](), Na
 
 type foreignish struct{ n int }
 
+// FunCodec saves Go function objects: a registry must list it, and it makes
+// no native payload type durable.
+var FunCodec = libjson.DurableFunCodec{Package: "user", FID: "obj", Name: "test:obj", Version: 1}
+
 func builtForeignish() *lisp.LVal {
 	return lisp.Native(&foreignish{}) // want `payload type \*durablecodecs\.foreignish has no durable codec`
 }

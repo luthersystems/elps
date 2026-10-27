@@ -60,6 +60,9 @@ type (
 	taggedKey       struct{ p *lisp.LVal }
 	nativeHeaderKey struct{ p *lisp.LVal }
 	nativeKey       struct{ p any }
+	// funObjKey is a Go function object saved through its codec
+	// (DurableFunCodec): its function data.
+	funObjKey struct{ p any }
 	// nativeRefKey is a native whose payload is a Go map, channel or
 	// unsafe pointer: its type and the address it refers to.
 	nativeRefKey struct {
@@ -307,6 +310,9 @@ type durableEncoder struct {
 }
 
 type funKey struct{ pkg, fid string }
+
+// String returns "PKG:FID".
+func (k funKey) String() string { return k.pkg + ":" + k.fid }
 
 // noLow marks a frame or object that reaches no open object.
 const noLow = math.MaxInt
@@ -566,6 +572,9 @@ func (e *durableEncoder) scan(v *lisp.LVal, depth int) error {
 	case lisp.LNative:
 		return e.scanNative(v, key, depth)
 	case lisp.LFun:
+		if _, ok := key.(funObjKey); ok {
+			return e.scanSaved(v, e.reg.entryForFun(v), key, depth)
+		}
 		return e.scanFunValue(v, depth)
 	case lisp.LError:
 		return e.scanError(v, key, depth)
@@ -610,6 +619,12 @@ func (e *durableEncoder) scanNative(v *lisp.LVal, key any, depth int) error {
 	if entry == nil {
 		return fmt.Errorf("durable json: no codec registered for native type %T", v.Native)
 	}
+	return e.scanSaved(v, entry, key, depth)
+}
+
+// scanSaved saves v through entry's codec and scans the payload: a native,
+// or a function value with a function codec.
+func (e *durableEncoder) scanSaved(v *lisp.LVal, entry *nativeEntry, key any, depth int) error {
 	if err := e.scanDepth(depth); err != nil {
 		return err
 	}
@@ -902,22 +917,20 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		if !ok {
 			return fmt.Errorf("durable json: native %T was not saved", v.Native)
 		}
-		if err := e.container(depth); err != nil {
+		if err := e.savedBody(s, depth); err != nil {
 			return err
 		}
-		if err := e.reserve(jsonStringLen(s.entry.name) + len(tagNative) + 6); err != nil {
-			return err
-		}
-		e.buf = append(e.buf, `["`+tagNative+`",[`...)
-		e.buf = appendJSONString(e.buf, s.entry.name)
-		e.buf = append(e.buf, ',')
-		e.buf = strconv.AppendInt(e.buf, int64(s.entry.version), 10)
-		e.buf = append(e.buf, ',')
-		if err := e.value(s.payload, depth+1); err != nil {
-			return err
-		}
-		e.buf = append(e.buf, ']', ']')
 	case lisp.LFun:
+		if _, ok := key.(funObjKey); ok {
+			s, ok := e.saved[key]
+			if !ok {
+				return fmt.Errorf("durable json: function %s:%s was not saved", v.Package(), v.FID())
+			}
+			if err := e.savedBody(s, depth); err != nil {
+				return err
+			}
+			break
+		}
 		if v.Builtin() != nil {
 			registration, registrationErr := e.registeredBuiltin(v)
 			pkg, name, ok, err := registration.pkg, registration.name, registration.registered, registrationErr
@@ -951,6 +964,27 @@ func (e *durableEncoder) body(v *lisp.LVal, key any, shareable bool, depth int) 
 		return fmt.Errorf("durable json: cannot encode a %v", v.Type)
 	}
 	return e.grow()
+}
+
+// savedBody writes ["~#native",[NAME,VERSION,PAYLOAD]] for a value saved
+// through a codec.
+func (e *durableEncoder) savedBody(s savedNative, depth int) error {
+	if err := e.container(depth); err != nil {
+		return err
+	}
+	if err := e.reserve(jsonStringLen(s.entry.name) + len(tagNative) + 6); err != nil {
+		return err
+	}
+	e.buf = append(e.buf, `["`+tagNative+`",[`...)
+	e.buf = appendJSONString(e.buf, s.entry.name)
+	e.buf = append(e.buf, ',')
+	e.buf = strconv.AppendInt(e.buf, int64(s.entry.version), 10)
+	e.buf = append(e.buf, ',')
+	if err := e.value(s.payload, depth+1); err != nil {
+		return err
+	}
+	e.buf = append(e.buf, ']', ']')
+	return nil
 }
 
 // container counts a container and checks its depth.
