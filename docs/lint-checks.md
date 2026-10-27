@@ -527,8 +527,8 @@ call.
 
 A record type's methods are the one place that changes its objects
 (luthersystems/elps#895). `s:set!` checks the new value against the
-field's validator only. The type's `:check` function does not run, so a
-rule that spans fields holds only when the type's own methods keep it.
+field's validator only. The type's `:check` function runs when a method
+call returns, so a change from outside a method skips it.
 
 ```lisp
 ;; WARNING: changes the order from outside its type

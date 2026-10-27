@@ -19,6 +19,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
@@ -469,11 +470,11 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		}
 		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
 	}
-	if expander == nil && stdlibEnv != nil {
+	if expander == nil {
 		// Expand the standard library macros whose expansions bind names
 		// (this and a method's formals).  Without an expansion those names
 		// read as undefined.  Other macros are not expanded, as before.
-		expander = bindingMacroExpander{&analysis.EnvMacroExpander{Env: stdlibEnv}}
+		expander = &bindingMacroExpander{env: stdlibEnv}
 	}
 
 	acfg := &analysis.Config{
@@ -503,15 +504,26 @@ var bindingMacros = map[string]bool{
 	"s:defmethod":   true,
 }
 
-// bindingMacroExpander expands only bindingMacros.
+// bindingMacroExpander expands only bindingMacros, with the standard
+// library.  It boots a standard library env on its first expansion when it
+// was given none, so a run whose files never call a binding macro pays
+// nothing.
 type bindingMacroExpander struct {
-	exp analysis.MacroExpander
+	env  *lisp.LEnv
+	once sync.Once
+	exp  analysis.MacroExpander
 }
 
-func (b bindingMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal {
+func (b *bindingMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal {
 	if !bindingMacros[astutil.HeadSymbol(form)] {
 		return nil
 	}
+	b.once.Do(func() {
+		if b.env == nil {
+			b.env = newStdlibEnv()
+		}
+		b.exp = &analysis.EnvMacroExpander{Env: b.env}
+	})
 	return b.exp.ExpandMacro(form, pkg)
 }
 

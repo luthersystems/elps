@@ -55,17 +55,28 @@ type recordContext struct {
 // checks, in source order.
 func recordFindings(exprs []*lisp.LVal) []recordFinding {
 	var out []recordFinding
+	walkRecordTop(exprs, &out)
+	return out
+}
+
+// walkRecordTop walks top-level forms.  The value of a top-level set or
+// defconst binds a global, and so does one inside a top-level progn.
+func walkRecordTop(exprs []*lisp.LVal, out *[]recordFinding) {
 	for _, e := range exprs {
-		if astutil.HeadSymbol(e) == "set" || astutil.HeadSymbol(e) == "lisp:set" {
-			// The value of a top-level (set 'name value).
+		switch mutationHead(e) {
+		case "set", "defconst":
 			for i, c := range e.Cells[1:] {
-				walkRecord(c, recordContext{topSet: i == 1}, &out)
+				walkRecord(c, recordContext{topSet: i == 1}, out)
 			}
 			continue
+		case "progn":
+			if !e.IsQuoted() {
+				walkRecordTop(e.Cells[1:], out)
+				continue
+			}
 		}
-		walkRecord(e, recordContext{}, &out)
+		walkRecord(e, recordContext{}, out)
 	}
-	return out
 }
 
 // walkRecord collects the record findings of v in ctx.
@@ -177,7 +188,14 @@ func thisFieldRead(v *lisp.LVal) (string, bool) {
 // recordAnalyzerRun reports the findings of one kind.
 func recordAnalyzerRun(kind string) func(pass *Pass) error {
 	return func(pass *Pass) error {
-		for _, f := range recordFindings(pass.Exprs) {
+		sh := pass.shared
+		if sh == nil {
+			sh = &passShared{}
+		}
+		if !sh.recordDone {
+			sh.record, sh.recordDone = recordFindings(pass.Exprs), true
+		}
+		for _, f := range sh.record {
 			if f.kind != kind {
 				continue
 			}
@@ -200,8 +218,8 @@ var AnalyzerRecordSetOutsideMethod = &Analyzer{
 	Doc: "Report s:set! outside a method of a record type.\n\n" +
 		"A record type's methods are the one place that changes its objects. s:set! " +
 		"checks the new value against the field's validator only. The type's :check " +
-		"function does not run, so a rule that spans fields holds only when the " +
-		"type's own methods keep it. Add a method and call it.",
+		"function runs when a method call returns, so a change from outside a " +
+		"method skips it. Add a method and call it.",
 	Run: recordAnalyzerRun(recordSetOutsideMethod),
 }
 

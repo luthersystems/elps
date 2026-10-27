@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/luthersystems/elps/analysis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -43,6 +44,8 @@ func TestRecordTypeBinding(t *testing.T) {
 		`(set 'pricer (labels ([cents (d) (* 100 d)])
   (s:make-record "pricer" (s:has-key "d" s:int) (s:method c () (cents (this 'd))))))`,
 		`(set 'order (let ([v s:int]) (s:make-record "order" (s:has-key "n" v))))`,
+		`(defconst order (s:make-record "order" (s:has-key "n" s:int)))`,
+		`(progn (set 'order (s:make-record "order" (s:has-key "n" s:int))))`,
 	} {
 		assertNoDiags(t, lintCheck(t, AnalyzerRecordTypeBinding, src))
 	}
@@ -97,4 +100,22 @@ func TestRecordWorkspaceNames(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, diags, 1, "%v", diags)
 	assertDiagOnLine(t, diags, 9, "undefined symbol: missing")
+}
+
+// TestRecordWorkspaceNamesWithStdlibExports lints with precomputed stdlib
+// exports and no env, as an embedder does: the record macros still expand.
+func TestRecordWorkspaceNamesWithStdlibExports(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "order.lisp")
+	require.NoError(t, os.WriteFile(file, []byte(`(set 'order
+  (s:make-record "order" (s:has-key "n" s:int) (s:method twice () (* 2 (this 'n)))))
+`), 0o600))
+	env := newStdlibEnv()
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol}}
+	diags, err := l.LintFiles(&LintConfig{
+		Workspace:     dir,
+		StdlibExports: analysis.ExtractPackageExports(env.Runtime.Registry),
+	}, []string{file})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
 }
