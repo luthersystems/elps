@@ -922,5 +922,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerRecordSetOutsideMethod,
 		AnalyzerRecordTypeBinding,
 		AnalyzerRecordFieldMutation,
+		AnalyzerRecordUnknownMember,
+		AnalyzerRecordCheckWrites,
 	}
 }

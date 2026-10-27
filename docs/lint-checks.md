@@ -586,6 +586,45 @@ changes the field, and the field's validator does not run.
 The check sees only a direct `(this 'field)` argument. It does not follow
 a field's value into a local variable.
 
+### `record-unknown-member`
+
+**Flags a member name that the record type does not declare.** (Severity:
+warning)
+
+In a method,
+`(this 'name)` must name a field or a method of the type, and
+`(s:set! this 'name ...)` must name a field. A wrong name fails only when
+the method runs.
+
+```lisp
+;; WARNING: lnies is not a field
+(s:method add (sku n) (s:set! this 'lnies (assoc (this 'lines) sku n)))
+```
+
+The check reads the fields and methods from the type's `s:make-record`
+and from each `s:defmethod` in the same file. It skips a type whose field
+forms are not literal `s:has-key` or `s:may-have-key` calls, and a type
+defined in another file. A method added by an `s:defmethod` in another
+file is not known; suppress that line with `; nolint:record-unknown-member`.
+
+### `record-check-writes`
+
+**Flags a `:check` function that changes the object it checks.** (Severity:
+warning)
+
+`:check`
+runs after the constructor and after each method call, and it must only
+read the object. To refuse a change, raise an error.
+
+```lisp
+;; WARNING: :check changes a field
+:check (lambda (c) (s:set! c 'n 0))
+;; WARNING: assoc! changes the field in place
+:check (lambda (c) (assoc! (c 'seen) "k" 1))
+```
+
+An `s:set!` in `:check` gets this warning, not `record-set-outside-method`.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

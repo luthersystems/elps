@@ -118,3 +118,49 @@ func TestRecordWorkspaceNamesWithStdlibExports(t *testing.T) {
 	require.NoError(t, err)
 	assertNoDiags(t, diags)
 }
+
+func TestRecordUnknownMember(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRecordUnknownMember, `(set 'order
+  (s:make-record "order"
+    (s:has-key "lines" s:sorted-map)
+    (s:method add (sku n) (s:set! this 'lnies (assoc (this 'lines) sku n)))
+    (s:method size () (length (this 'lines)))
+    (s:method twice () (* 2 (this 'szie)))))
+(s:defmethod order count () (this 'size))
+(s:defmethod order clear () (s:set! this 'size 0))`)
+	assert.Len(t, diags, 3, "%v", diags)
+	assertDiagOnLine(t, diags, 4, "s:set! names lnies, which is not a field")
+	assertDiagOnLine(t, diags, 6, "szie is not a field or method")
+	assertDiagOnLine(t, diags, 8, "s:set! names size, which is not a field")
+
+	// A method from a s:defmethod in the file is a member.
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordUnknownMember, recordOrder+`
+(s:defmethod order size () (length (keys (this 'lines))))
+(s:defmethod order big () (> (this 'size) 10))`))
+	// A field form that is not a literal s:has-key: the fields are unknown.
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordUnknownMember, `(set 'f (s:has-key "a" s:int))
+(set 'r (s:make-record "r" f (s:method m () (this 'b))))`))
+	// A type from another file: the shape is unknown.
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordUnknownMember, `(s:defmethod other m () (this 'whatever))`))
+}
+
+func TestRecordCheckWrites(t *testing.T) {
+	src := `(set 'counter
+  (s:make-record "counter"
+    (s:has-key "n" s:int)
+    (s:has-key "seen" s:sorted-map)
+    :check (lambda (c)
+             (s:set! c 'n 0)
+             (assoc! (c 'seen) "k" 1)
+             (when (< (c 'n) 0) (error 'negative (c 'n))))))`
+	diags := lintCheck(t, AnalyzerRecordCheckWrites, src)
+	assert.Len(t, diags, 2, "%v", diags)
+	assertDiagOnLine(t, diags, 6, "s:set! in a :check function")
+	assertDiagOnLine(t, diags, 7, "assoc! changes field seen in a :check function")
+	// The s:set! is reported once, not also as outside a method.
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, src))
+
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordCheckWrites, `(set 'counter
+  (s:make-record "counter" (s:has-key "n" s:int)
+    :check (lambda (c) (when (< (c 'n) 0) (error 'negative (c 'n))))))`))
+}
