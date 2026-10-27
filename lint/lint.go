@@ -21,6 +21,7 @@ import (
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
+	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/fmtraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -433,8 +434,10 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	// array (cf. #364). defaultStdlibExports() returns a map this function
 	// owns, so that path needs no copy.
 	var pkgExports map[string][]analysis.ExternalSymbol
+	var stdlibEnv *lisp.LEnv
 	if cfg.StdlibExports == nil {
-		pkgExports = defaultStdlibExports()
+		stdlibEnv = newStdlibEnv()
+		pkgExports = analysis.ExtractPackageExports(stdlibEnv.Runtime.Registry)
 	} else {
 		pkgExports = make(map[string][]analysis.ExternalSymbol, len(cfg.StdlibExports))
 		for pkg, syms := range cfg.StdlibExports {
@@ -466,6 +469,12 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		}
 		expander = &analysis.EnvMacroExpander{Env: cfg.Env}
 	}
+	if expander == nil && stdlibEnv != nil {
+		// Expand the standard library macros whose expansions bind names
+		// (this and a method's formals).  Without an expansion those names
+		// read as undefined.  Other macros are not expanded, as before.
+		expander = bindingMacroExpander{&analysis.EnvMacroExpander{Env: stdlibEnv}}
+	}
 
 	acfg := &analysis.Config{
 		ExtraGlobals:   prescan.AllDefs,
@@ -486,15 +495,35 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	return acfg, nil
 }
 
-// defaultStdlibExports creates a temporary ELPS env, loads the standard
-// library, and extracts package exports.
-func defaultStdlibExports() map[string][]analysis.ExternalSymbol {
+// bindingMacros are the standard library macros that bind names in their
+// arguments.  They are pure syntax: their expansion reads no state of the
+// env that expands them.
+var bindingMacros = map[string]bool{
+	"s:make-record": true,
+	"s:defmethod":   true,
+}
+
+// bindingMacroExpander expands only bindingMacros.
+type bindingMacroExpander struct {
+	exp analysis.MacroExpander
+}
+
+func (b bindingMacroExpander) ExpandMacro(form *lisp.LVal, pkg string) *lisp.LVal {
+	if !bindingMacros[astutil.HeadSymbol(form)] {
+		return nil
+	}
+	return b.exp.ExpandMacro(form, pkg)
+}
+
+// newStdlibEnv creates a temporary ELPS env with the standard library
+// loaded.
+func newStdlibEnv() *lisp.LEnv {
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	env.Runtime.Library = &lisp.RelativeFileSystemLibrary{}
 	lisp.InitializeUserEnv(env)
 	lisplib.LoadLibrary(env)
-	return analysis.ExtractPackageExports(env.Runtime.Registry)
+	return env
 }
 
 // LintFile analyzes a single source file and returns all diagnostics.
@@ -878,5 +907,8 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerDeprecated,
 		AnalyzerRemovedBuiltin,
 		AnalyzerHandlerOrder,
+		AnalyzerRecordSetOutsideMethod,
+		AnalyzerRecordTypeBinding,
+		AnalyzerRecordFieldMutation,
 	}
 }
