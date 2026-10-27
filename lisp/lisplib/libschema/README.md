@@ -288,6 +288,67 @@ Requires the value to match the supplied pattern. Any regular expression that ca
 * `(s:is-falsy)`
   Require the value to be equivalent to `false`. Literally `(s:not (s:is-truthy))`
   
+### Record types
+
+A record type is a constructor for objects with typed fields and methods
+(luthersystems/elps#895). Bind it with `set` at the top level of a file.
+
+```lisp
+(set 'order
+  (s:make-record "order"
+    (s:has-key "id" s:string)
+    (s:has-key "lines" (s:map-of s:string s:int))
+    (s:may-have-key "note" s:any)
+    (s:method add-line (sku qty)
+      (s:set! this 'lines (assoc (this 'lines) sku qty)))
+    (s:method qty ()
+      (foldl (lambda (n sku) (+ n (get (this 'lines) sku))) 0 (keys (this 'lines))))
+    :check (lambda (o) (when (> (o 'qty) 100) (error 'order-too-big (o 'qty))))))
+
+(set 'o (order :id "o1" :lines (sorted-map)))  ; or (order a-sorted-map)
+(o 'add-line "a" 2)
+(o 'qty)                                        ; 2
+(o 'id)                                         ; "o1": every field has a getter
+```
+
+| Form | Use |
+|------|-----|
+| `(s:make-record NAME FIELD... METHOD... [:check FN])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
+| `(s:method NAME (ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. `this` is the object. |
+| `(s:defmethod TYPE NAME (ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
+| `(s:set! this 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
+| `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
+| `(s:record? V)` | True when V is an object of a record type. |
+
+Rules:
+
+* The constructor checks each field and then runs `:check`. An unknown
+  field is a `bad-arguments` error.
+* `s:set!` checks only the field it changes. It does not run `:check`.
+* A call to an unknown operation raises `unknown-operation`.
+* A type takes methods only from the package that defines it. A method
+  name must not be a field name.
+* A type is a validator: `(s:has-key "order" order)` accepts only objects
+  of that type with valid fields.
+* Helper functions are ordinary `defun`s, or locals of a closure around
+  the type: `(set 'order (labels (...) (s:make-record ...)))`.
+* Use `s:any` for a field that takes any value.
+
+Saving objects. An object saves only its fields. Its type saves as the name
+of the global that holds it, and its methods are never saved. Add
+`libschema.RecordCodec` to the durable registry. A load runs no Lisp, so
+call `libschema.ValidateLoaded` on the loaded values before Lisp uses them.
+It checks each object against the type the loading program binds to the
+saved name.
+
+Go types. `libschema.NewRecordType` defines a record type in Go with Go
+methods and Go checks. Its objects work with `s:fields` and `s:record?`.
+A Go type is sealed: `s:defmethod` and `s:set!` refuse it. Add
+`(*RecordType).Codec()` to the durable registry to save its objects.
+
+Lint checks: `record-set-outside-method`, `record-type-binding` and
+`record-field-mutation` (see `docs/lint-checks.md`).
+
 ### Gotchas
 
 * `name` is always a string when you call `s:make-validator` (or a typedef,

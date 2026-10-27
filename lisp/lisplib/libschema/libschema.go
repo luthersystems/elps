@@ -90,6 +90,12 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}
+	for _, fn := range recordBuiltins {
+		env.AddBuiltins(true, fn)
+	}
+	for _, fn := range recordMacros {
+		env.AddMacros(true, fn)
+	}
 	// We export the type symbols to the package to make writing code using it less messy
 	for _, symbol := range symbols {
 		env.PutGlobal(lisp.Symbol(symbol), lisp.String(symbol))
@@ -354,6 +360,10 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		// evaluated.  It is never evaluated or looked up again here (#737): a
 		// quoted form such as '(s:gt 1), or a quoted symbol naming a
 		// validator, is data and is refused below like any other non-validator.
+		if t, ok := lispTypeOf(in); ok {
+			// A record type checks its objects (luthersystems/elps#895).
+			in = recordValidator(env, in, t.desc)
+		}
 		if in.Type == lisp.LFun {
 			// The choke point. Every composite constraint (s:has-key,
 			// s:may-have-key, s:of, s:no-other-keys, s:when) and the
@@ -547,6 +557,9 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 	// re-wrapping it as "not a constraint" would hide the real cause.
 	if constraint.IsError() {
 		return constraint
+	}
+	if t, ok := lispTypeOf(constraint); ok {
+		return validateRecordValue(env, t.desc, t.caps, input)
 	}
 	if !isValidator(constraint) {
 		return env.ErrorConditionf(BadArgs,
