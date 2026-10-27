@@ -249,6 +249,15 @@ func TestGoRecordType(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, 2, env.FunCall(got, lisp.QExpr([]*lisp.LVal{lisp.Symbol("n")})).Int)
 
+	// A method that breaks Check fails and leaves the field as it was.
+	require.NoError(t, lisp.GoError(rt.New(env, lisp.Int(0))))
+	neg := rt.New(env, lisp.Int(0))
+	r, ok := rt.Record(neg)
+	require.True(t, ok)
+	require.NoError(t, lisp.GoError(r.Set(env, 0, lisp.Int(-5))), "Set checks only the field")
+	require.Error(t, lisp.GoError(env.FunCall(neg, lisp.QExpr([]*lisp.LVal{lisp.Symbol("inc")}))))
+	require.Equal(t, -5, r.At(0).Int, "the failed method restored the field it was given")
+
 	// A load runs the Go checks at once.
 	bad := strings.Replace(string(b), "2", "-4", 1)
 	_, err = libjson.LoadDurable(env, []byte(bad), reg)
@@ -274,4 +283,18 @@ func TestNewRecordTypeRefuses(t *testing.T) {
 	require.NoError(t, err)
 	_, err = libschema.NewRecordType(spec)
 	require.Error(t, err, "a second type with the same package and FID")
+}
+
+// TestGoRecordHiddenField checks that a field with no getter is hidden
+// from s:fields as well as from a call.
+func TestGoRecordHiddenField(t *testing.T) {
+	env := newSchemaForkEnv(t)
+	rt, err := libschema.NewRecordType(libschema.RecordSpec{
+		Package: "user", Name: "secretive", FID: fmt.Sprintf("secretive-%d", goTypeSeq.Add(1)),
+		Fields: []libschema.FieldSpec{{Name: "shown", Getter: true}, {Name: "secret"}},
+	})
+	require.NoError(t, err)
+	env.PutGlobal(lisp.Symbol("x"), rt.New(env, lisp.Int(1), lisp.String("pin")))
+	require.Equal(t, libschema.UnknownOperation, env.LoadString("t.lisp", `(x 'secret)`).Str)
+	require.Equal(t, `(sorted-map "shown" 1)`, evalString(t, env, `(s:fields x)`).String())
 }

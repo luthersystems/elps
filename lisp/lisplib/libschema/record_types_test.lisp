@@ -129,3 +129,33 @@
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" s:int)))) ; nolint:record-type-binding
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m (this) 1))))) ; nolint:record-type-binding,undefined-symbol
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m () 1)))))
+
+(set 'range
+  (s:make-record "range"
+    (s:has-key "lo" s:int)
+    (s:has-key "hi" s:int)
+    (s:method set-lo (n) (s:set! this 'lo n))
+    (s:method shift (n)
+      (s:set! this 'lo (+ n (this 'lo)))
+      (s:set! this 'hi (+ n (this 'hi))))
+    (s:method half-shift (n)
+      (s:set! this 'lo (+ n (this 'lo)))
+      (error 'stopped n))
+    :check (lambda (r) (when (> (r 'lo) (r 'hi)) (error 'bad-range (r 'lo))))))
+
+(test "check-runs-after-each-method"
+  (let ([r (range :lo 1 :hi 5)])
+    (r 'shift 10)
+    (assert-equal 11 (r 'lo))
+    (assert-equal 15 (r 'hi))
+    ; The method breaks :check: the call fails and the fields stay.
+    (assert-equal 'bad-range (condition-of (lambda () (r 'set-lo 99))))
+    (assert-equal 11 (r 'lo))
+    ; The method fails part way: the fields stay.
+    (assert-equal 'stopped (condition-of (lambda () (r 'half-shift 2))))
+    (assert-equal 11 (r 'lo))))
+
+(test "check-condition-keeps-its-data"
+  (let ([r (range :lo 1 :hi 5)])
+    (handler-bind ([bad-range (lambda (c &rest data) (assert-equal 99 (car data)))])
+      (r 'set-lo 99))))

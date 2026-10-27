@@ -324,7 +324,10 @@ Rules:
 
 * The constructor checks each field and then runs `:check`. An unknown
   field is a `bad-arguments` error.
-* `s:set!` checks only the field it changes. It does not run `:check`.
+* `s:set!` checks only the field it changes. `:check` runs when each
+  method call returns.
+* A method call that fails, or that breaks `:check`, leaves the fields as
+  they were before the call. This is true for Go types and their `Check`.
 * A call to an unknown operation raises `unknown-operation`.
 * A type takes methods only from the package that defines it. A method
   name must not be a field name.

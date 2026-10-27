@@ -191,10 +191,29 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		return env.ErrorCondition(UnknownOperation, op)
 	}
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
+		// A method may change several fields.  :check runs when it
+		// returns, so every object a caller sees keeps the type's rules.
+		// A method that fails, or breaks :check, leaves the fields as they
+		// were: every header of the object reads its fields through caps,
+		// so putting the saved map back restores them all.
+		saved := copyMap(env, caps.Cells[objFields])
+		if saved.IsError() {
+			return saved
+		}
+		this := newLispObject(desc, caps)
 		call := make([]*lisp.LVal, 0, len(rest)+1)
-		call = append(call, newLispObject(desc, caps))
+		call = append(call, this)
 		call = append(call, rest...)
-		return env.FunCall(m, lisp.QExpr(call))
+		r := env.FunCall(m, lisp.QExpr(call))
+		if !r.IsError() {
+			if lerr := runRecordCheck(env, desc, tcaps, this); lerr != nil {
+				r = lerr
+			}
+		}
+		if r.IsError() {
+			caps.Cells[objFields] = saved //elps:mutates restores the object's own fields after a failed method
+		}
+		return r
 	}
 	if desc.hasField(op.Str) {
 		if len(rest) > 0 {
@@ -318,7 +337,15 @@ func runRecordCheck(env *lisp.LEnv, desc *recordDesc, tcaps, obj *lisp.LVal) *li
 // recordError returns a validator's error with the record's name in front
 // of its message.  The condition does not change.
 func recordError(env *lisp.LEnv, desc *recordDesc, lerr *lisp.LVal) *lisp.LVal {
-	return env.ErrorConditionf(lerr.Str, "%s: %s", desc.display, errorText(lerr))
+	switch lerr.Str {
+	case WrongType, FailedConstraint, BadArgs:
+		if !lisp.IsInternalPanic(lerr) {
+			return env.ErrorConditionf(lerr.Str, "%s: %s", desc.display, errorText(lerr))
+		}
+	}
+	// Any other condition, such as one a nested :check raised, keeps its
+	// data and its stack.
+	return lerr
 }
 
 // errorText returns the message of an error made by ErrorConditionf.
@@ -335,13 +362,12 @@ func errorText(lerr *lisp.LVal) string {
 }
 
 // fieldValidator returns the validator of the field name, or nil.
-func fieldValidator(tcaps *lisp.LVal, name string) *lisp.LVal {
-	for _, v := range tcaps.Cells[typeFields].Cells {
-		if descOf(v).key == name {
-			return v
-		}
+func fieldValidator(desc *recordDesc, tcaps *lisp.LVal, name string) *lisp.LVal {
+	i, ok := desc.index[name]
+	if !ok {
+		return nil
 	}
-	return nil
+	return tcaps.Cells[typeFields].Cells[i]
 }
 
 // builtinRecordSet is s:set!.  It checks the field's validator, then
@@ -364,7 +390,7 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.ErrorConditionf(BadArgs, "s:set!: %s has no field %s", desc.display, name)
 	}
 	key := lisp.String(name)
-	if v := fieldValidator(tcaps, name); v != nil {
+	if v := fieldValidator(desc, tcaps, name); v != nil {
 		probe := lisp.SortedMapSized(1)
 		probe.Map().Set(key, value)
 		if r := applyConstraint(env, v, probe); r.IsError() {
