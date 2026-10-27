@@ -2147,7 +2147,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 32)
+	assert.Len(t, analyzers, 35)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2171,6 +2171,9 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"loop-variable-capture",
 		"package-builtins",
 		"quote-call",
+		"record-field-mutation",
+		"record-set-outside-method",
+		"record-type-binding",
 		"removed-builtin",
 		"rethrow-context",
 		"set-usage",
@@ -2608,26 +2611,29 @@ func TestSeverity_UnsetRendersTheSameEverywhere(t *testing.T) {
 func TestSeverity_AnalyzerDefaults(t *testing.T) {
 	// Table-driven: verify each analyzer has the expected severity.
 	expected := map[string]Severity{
-		"set-usage":              SeverityWarning,
-		"in-package-toplevel":    SeverityWarning,
-		"package-builtins":       SeverityError,
-		"lisp-package-seal":      SeverityError,
-		"builtin-shadowing":      SeverityWarning,
-		"if-arity":               SeverityError,
-		"let-bindings":           SeverityError,
-		"let-recursion":          SeverityWarning,
-		"defun-structure":        SeverityError,
-		"lambda-list":            SeverityError,
-		"duplicate-binding":      SeverityWarning,
-		"duplicate-keyword":      SeverityWarning,
-		"handler-order":          SeverityWarning,
-		"cond-structure":         SeverityError,
-		"builtin-arity":          SeverityError,
-		"quote-call":             SeverityWarning,
-		"cond-missing-else":      SeverityInfo,
-		"rethrow-context":        SeverityError,
-		"test-outside-test-file": SeverityError,
-		"unnecessary-progn":      SeverityInfo,
+		"set-usage":                 SeverityWarning,
+		"in-package-toplevel":       SeverityWarning,
+		"package-builtins":          SeverityError,
+		"lisp-package-seal":         SeverityError,
+		"builtin-shadowing":         SeverityWarning,
+		"if-arity":                  SeverityError,
+		"let-bindings":              SeverityError,
+		"let-recursion":             SeverityWarning,
+		"defun-structure":           SeverityError,
+		"lambda-list":               SeverityError,
+		"duplicate-binding":         SeverityWarning,
+		"duplicate-keyword":         SeverityWarning,
+		"handler-order":             SeverityWarning,
+		"record-set-outside-method": SeverityWarning,
+		"record-type-binding":       SeverityWarning,
+		"record-field-mutation":     SeverityWarning,
+		"cond-structure":            SeverityError,
+		"builtin-arity":             SeverityError,
+		"quote-call":                SeverityWarning,
+		"cond-missing-else":         SeverityInfo,
+		"rethrow-context":           SeverityError,
+		"test-outside-test-file":    SeverityError,
+		"unnecessary-progn":         SeverityInfo,
 		// Error: a comparator with a side effect does not merely read
 		// oddly, it makes the sort's result depend on how many times the
 		// runtime happened to call the predicate.

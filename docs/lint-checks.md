@@ -521,6 +521,71 @@ that never runs. The check cannot see a parent defined in another file, by
 Go code (`Runtime.DefineCondition`), or by a computed `define-condition`
 call.
 
+### `record-set-outside-method`
+
+**Flags `s:set!` outside a method of a record type.** (Severity: warning)
+
+A record type's methods are the one place that changes its objects
+(luthersystems/elps#895). `s:set!` checks the new value against the
+field's validator only. The type's `:check` function does not run, so a
+rule that spans fields holds only when the type's own methods keep it.
+
+```lisp
+;; WARNING: changes the order from outside its type
+(defun pay (o) (s:set! o 'status "paid"))
+
+;; GOOD: the type changes its own field
+(s:defmethod order pay () (s:set! this 'status "paid"))
+(o 'pay)
+```
+
+A lambda inside a method body is part of the method, so `s:set! this` in
+it is not reported.
+
+### `record-type-binding`
+
+**Flags `s:make-record` whose type does not reach a top-level `set`.**
+(Severity: warning)
+
+A durable dump saves an object's type by the name of the global that
+holds the type. A type built inside a function has no such name, so a
+dump of its objects fails.
+
+```lisp
+;; WARNING: no global holds the type
+(defun make-order-type () (s:make-record "order" (s:has-key "id" s:string)))
+
+;; GOOD
+(set 'order (s:make-record "order" (s:has-key "id" s:string)))
+
+;; GOOD: a closure keeps a private helper
+(set 'order
+  (labels ([cents (d) (* 100 d)])
+    (s:make-record "order"
+      (s:has-key "dollars" s:int)
+      (s:method in-cents () (cents (this 'dollars))))))
+```
+
+### `record-field-mutation`
+
+**Flags a method that changes a field's value in place.** (Severity:
+warning)
+
+`(this 'field)` returns the field's value, not a copy. A mutating builtin
+on it (`assoc!`, `dissoc!`, `append!`, `append-bytes!`, `stable-sort`)
+changes the field, and the field's validator does not run.
+
+```lisp
+;; WARNING: the lines validator does not see the new line
+(s:method add-line (sku qty) (assoc! (this 'lines) sku qty))
+
+;; GOOD: s:set! checks the new map
+(s:method add-line (sku qty) (s:set! this 'lines (assoc (this 'lines) sku qty)))
+```
+
+The check sees only a direct `(this 'field)` argument. It does not follow
+a field's value into a local variable.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

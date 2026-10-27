@@ -59,6 +59,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/elpstest.walkOracleGraph":                               "oracle: checks value storage independently of production traversal",
 	"github.com/luthersystems/elps/elpsutil.templateCompiler.compile":                      "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/elpsutil.templateNode.expand":                           "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/lint.walkRecord":                                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/formatter.printer.tryPrefixForm":                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/formatter.printer.writeCompactExpr":                     "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/formatter.printer.writeExpr":                            "syntax walker: visits source forms with syntax and quote rules",
