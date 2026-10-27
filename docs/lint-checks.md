@@ -626,6 +626,57 @@ read the object. To refuse a change, raise an error.
 
 An `s:set!` in `:check` gets this warning, not `record-set-outside-method`.
 
+### `record-method-arity`
+
+**Flags a member call in a method with the wrong number of arguments.**
+(Severity: warning)
+
+In a method, `(o 'field)` takes no arguments, and `(o 'method args...)`
+takes the arguments the method's formals accept after the receiver. A
+wrong count fails only when the method runs.
+
+```lisp
+(s:method add (o sku qty) ...)
+;; WARNING: method add needs at least 2 argument(s), got 1
+(s:method add-one (o sku) (o 'add sku))
+```
+
+The check knows the same members as `record-unknown-member`, so it has the
+same limits: a type or an `s:defmethod` in another file is not checked.
+
+### `record-defmethod-type`
+
+**Flags an `s:defmethod` whose first argument is not a record type.**
+(Severity: warning)
+
+The first argument is evaluated and must give the type `s:make-record`
+returns. The check reports a literal, a quoted name, a name the file binds
+to a literal, and a name that is a function, macro or builtin.
+
+```lisp
+;; WARNING: a quoted value
+(s:defmethod 'order pay (o) ...)
+;; WARNING: make-order is a function, not a record type
+(s:defmethod make-order pay (o) ...)
+```
+
+A name bound in another file is not checked.
+
+### `record-plain-set`
+
+**Flags `set!` or `set` on a method's receiver.** (Severity: warning)
+
+The receiver is a local name. `(set! o v)` changes the binding, not the
+object, and `(set 'o v)` binds a package name. `(set! o 'field v)` is not a
+field write. Use `s:set!` to change a field.
+
+```lisp
+;; WARNING: set! does not change a record field
+(s:method pay (o) (set! o 'paid true))
+;; OK
+(s:method pay (o) (s:set! o 'paid true))
+```
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

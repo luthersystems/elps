@@ -924,5 +924,8 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerRecordFieldMutation,
 		AnalyzerRecordUnknownMember,
 		AnalyzerRecordCheckWrites,
+		AnalyzerRecordMethodArity,
+		AnalyzerRecordDefmethodType,
+		AnalyzerRecordPlainSet,
 	}
 }

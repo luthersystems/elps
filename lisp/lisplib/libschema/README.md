@@ -353,7 +353,8 @@ A Go type is sealed: `s:defmethod` and `s:set!` refuse it. Add
 `(*RecordType).Codec()` to the durable registry to save its objects.
 
 Lint checks: `record-set-outside-method`, `record-type-binding`,
-`record-field-mutation`, `record-unknown-member` and `record-check-writes`
+`record-field-mutation`, `record-unknown-member`, `record-check-writes`,
+`record-method-arity`, `record-defmethod-type` and `record-plain-set`
 (see `docs/lint-checks.md`).
 
 ### Gotchas

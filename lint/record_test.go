@@ -168,3 +168,52 @@ func TestRecordCheckWrites(t *testing.T) {
   (s:make-record "counter" (s:has-key "n" s:int)
     :check (lambda (c) (when (< (c 'n) 0) (error 'negative (c 'n))))))`))
 }
+
+func TestRecordMethodArity(t *testing.T) {
+	src := `(set 'order
+  (s:make-record "order"
+    (s:has-key "total" s:int)
+    (s:method add (o n &optional note) (s:set! o 'total (+ (o 'total) n)))
+    (s:method all (o &rest ns) (o 'total))
+    (s:method twice (o) (o 'add 1 2 3) (o 'add) (o 'total 1) (o 'all 1 2 3) (o 'add 1 "x"))))
+(s:defmethod order pay (o amount) (o 'pay) (o 'pay 1))`
+	diags := lintCheck(t, AnalyzerRecordMethodArity, src)
+	assert.Len(t, diags, 4, "%v", diags)
+	assertDiagOnLine(t, diags, 6, "method add accepts at most 2 argument(s), got 3")
+	assertDiagOnLine(t, diags, 6, "method add needs at least 1 argument(s), got 0")
+	assertDiagOnLine(t, diags, 6, "field total takes no arguments, got 1")
+	assertDiagOnLine(t, diags, 7, "method pay needs at least 1 argument(s), got 0")
+}
+
+func TestRecordDefmethodType(t *testing.T) {
+	src := `(set 'order (s:make-record "order" (s:has-key "n" s:int)))
+(set 'label "order")
+(defun make-type () order)
+(s:defmethod order ok (_o) 1)
+(s:defmethod 'order quoted (_o) 1)
+(s:defmethod "order" str (_o) 1)
+(s:defmethod label lit (_o) 1)
+(s:defmethod make-type fn (_o) 1)
+(s:defmethod (make-type) call (_o) 1)
+(s:defmethod other-file-type far (_o) 1)`
+	diags := lintCheckSemantic(t, AnalyzerRecordDefmethodType, src)
+	assert.Len(t, diags, 4, "%v", diags)
+	assertDiagOnLine(t, diags, 5, "a quoted value")
+	assertDiagOnLine(t, diags, 6, "a literal")
+	assertDiagOnLine(t, diags, 7, "label is bound to a literal, not to a record type")
+	assertDiagOnLine(t, diags, 8, "make-type is a function, not a record type")
+}
+
+func TestRecordPlainSet(t *testing.T) {
+	src := `(set 'order
+  (s:make-record "order"
+    (s:has-key "n" s:int)
+    (s:method reset (o) (set! o 0) (set 'o 1) (s:set! o 'n 0))
+    (s:method bump (o) (lisp:set! o 'n 1) nil)))
+(s:defmethod order other (o x) (set! x 1) (s:set! o 'n x))`
+	diags := lintCheck(t, AnalyzerRecordPlainSet, src)
+	assert.Len(t, diags, 3, "%v", diags)
+	assertDiagOnLine(t, diags, 4, "set! rebinds the local name o")
+	assertDiagOnLine(t, diags, 4, "set binds the package name o")
+	assertDiagOnLine(t, diags, 5, "lisp:set! does not change a record field")
+}
