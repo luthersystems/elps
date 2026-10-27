@@ -234,3 +234,8 @@ func TestGetFunNameBugLogStillFires(t *testing.T) {
 		t.Fatalf("expected BUG: GetFunName line for package-less LFun but got none — safety net disarmed?\ncaptured output:\n%s", got)
 	}
 }
+
+func TestRecordTypes(t *testing.T) {
+	r := &elpstest.Runner{}
+	r.RunTestFile(t, "record_types_test.lisp")
+}

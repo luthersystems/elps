@@ -54,6 +54,7 @@ func TestNoLibrarySpecialOps(t *testing.T) {
 	// package and its expansion is evaluated in the caller, so it may only
 	// build forms; a new one is added here deliberately.
 	assert.Equal(t, map[string][]string{
+		"s":       {"defmethod", "make-record", "method"},
 		"testing": {"assert-equal", "assert-nil", "assert-not", "assert-not-nil", "assert-string=", "assert="},
 	}, macros)
 }
