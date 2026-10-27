@@ -37,136 +37,121 @@ type recordFinding struct {
 	note string
 }
 
-// recordContext is what the walker knows about the forms that enclose a
-// node.
-type recordContext struct {
-	// topSet is true inside the value of a top-level set, outside any
-	// function body.
-	topSet bool
-	// inFunction is true inside a function body: a lambda, a defun, a
-	// defmacro, a flet or labels function, or a method.
-	inFunction bool
-	// inMethod is true inside the body of a record method, where this is
-	// bound to the object.
-	inMethod bool
-}
-
-// recordFindings walks exprs and returns every finding of the record
-// checks, in source order.
+// recordFindings returns every finding of the record checks in exprs.
+// The calls and the function bodies around them come from
+// astutil.FindCallSites, which owns the lexical syntax; this file reads
+// only the record forms.
 func recordFindings(exprs []*lisp.LVal) []recordFinding {
 	var out []recordFinding
-	walkRecordTop(exprs, &out)
+	inMethod := make(map[*lisp.LVal]bool)
+	for _, top := range exprs {
+		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
+			for _, body := range methodBodies(site.Form) {
+				recordMethodBody(body, inMethod, &out)
+			}
+		}
+	}
+	for _, top := range exprs {
+		for _, site := range callSites(top, recordPackage+"set!") {
+			if !inMethod[site.Form] {
+				out = append(out, recordFinding{
+					node: site.Form, kind: recordSetOutsideMethod,
+					msg:  "s:set! outside a method of the record type",
+					note: "only the type's own methods change an object's fields; add a method with s:method or s:defmethod and call it",
+				})
+			}
+		}
+		recordTypeBindings(top, &out)
+	}
 	return out
 }
 
-// walkRecordTop walks top-level forms.  The value of a top-level set or
-// defconst binds a global, and so does one inside a top-level progn.
-func walkRecordTop(exprs []*lisp.LVal, out *[]recordFinding) {
-	for _, e := range exprs {
-		switch mutationHead(e) {
-		case "set", "defconst":
-			for i, c := range e.Cells[1:] {
-				walkRecord(c, recordContext{topSet: i == 1}, out)
-			}
-			continue
-		case "progn":
-			if !e.IsQuoted() {
-				walkRecordTop(e.Cells[1:], out)
+// callSites returns the calls in form whose head is one of names.  A site
+// past the query's budget is dropped; the record checks are warnings, so a
+// missed site costs a finding, never a false one.
+func callSites(form *lisp.LVal, names ...string) []astutil.CallSite {
+	sites, _ := astutil.FindCallSites(form, names...)
+	return sites
+}
+
+// methodBodies returns the body forms of each method in a s:make-record or
+// s:defmethod call.
+func methodBodies(call *lisp.LVal) [][]*lisp.LVal {
+	if astutil.HeadSymbol(call) == recordPackage+"defmethod" {
+		if len(call.Cells) > 4 {
+			return [][]*lisp.LVal{call.Cells[4:]}
+		}
+		return nil
+	}
+	var bodies [][]*lisp.LVal
+	for _, c := range call.Cells[1:] {
+		h := astutil.HeadSymbol(c)
+		if (h == recordPackage+"method" || h == "method") && !c.IsQuoted() && len(c.Cells) > 3 {
+			bodies = append(bodies, c.Cells[3:])
+		}
+	}
+	return bodies
+}
+
+// recordMethodBody marks the s:set! calls of a method body, and reports a
+// mutating builtin that writes through (this 'field).
+func recordMethodBody(body []*lisp.LVal, inMethod map[*lisp.LVal]bool, out *[]recordFinding) {
+	names := make([]string, 0, len(mutatingBuiltins))
+	for name := range mutatingBuiltins {
+		names = append(names, name)
+	}
+	for _, form := range body {
+		for _, site := range callSites(form, recordPackage+"set!") {
+			inMethod[site.Form] = true
+		}
+		for _, site := range callSites(form, names...) {
+			head := mutationHead(site.Form)
+			target := mutatingBuiltins[head]
+			if target >= len(site.Form.Cells) {
 				continue
 			}
+			if field, ok := thisFieldRead(site.Form.Cells[target]); ok {
+				*out = append(*out, recordFinding{
+					node: site.Form, kind: recordFieldMutation,
+					msg:  fmt.Sprintf("%s changes field %s of this in place, and its validator does not run", head, field),
+					note: fmt.Sprintf("build the new value and give it to s:set!: (s:set! this '%s new-value)", field),
+				})
+			}
 		}
-		walkRecord(e, recordContext{}, out)
 	}
 }
 
-// walkRecord collects the record findings of v in ctx.
-func walkRecord(v *lisp.LVal, ctx recordContext, out *[]recordFinding) {
-	if v == nil || v.Type != lisp.LSExpr || v.IsQuoted() || len(v.Cells) == 0 {
-		return
-	}
-	head := mutationHead(v)
-	args := v.Cells[1:]
-	walkAll := func(cells []*lisp.LVal, ctx recordContext) {
-		for _, c := range cells {
-			walkRecord(c, ctx, out)
-		}
-	}
-	fnCtx := ctx
-	fnCtx.topSet, fnCtx.inFunction = false, true
-	switch head {
-	case "quote", "quasiquote":
-		return
-	case recordPackage + "make-record":
-		if !ctx.topSet {
+// recordTypeBindings reports each s:make-record in top that does not reach
+// a top-level set or defconst: one outside the bound value, or inside a
+// function body within it.
+func recordTypeBindings(top *lisp.LVal, out *[]recordFinding) {
+	report := func(sites []astutil.CallSite, allowValue bool) {
+		for _, site := range sites {
+			inFunction := false
+			for _, e := range site.Enclosing {
+				inFunction = inFunction || e.Function
+			}
+			if allowValue && !inFunction {
+				continue
+			}
 			*out = append(*out, recordFinding{
-				node: v, kind: recordTypeBinding,
+				node: site.Form, kind: recordTypeBinding,
 				msg:  "s:make-record does not reach a top-level set; a durable dump cannot save objects of this type",
 				note: "an object saves its type by the name of the global that holds it; write (set 'name (s:make-record ...)) at the top level of the file",
 			})
 		}
-		methodCtx := fnCtx
-		methodCtx.inMethod = true
-		for _, c := range args {
-			if h := astutil.HeadSymbol(c); (h == recordPackage+"method" || h == "method") && len(c.Cells) >= 3 {
-				walkAll(c.Cells[3:], methodCtx)
-				continue
+	}
+	name := recordPackage + "make-record"
+	switch unqualifiedLispName(astutil.HeadSymbol(top)) {
+	case "set", "defconst":
+		if !top.IsQuoted() && len(top.Cells) > 2 {
+			for i, c := range top.Cells[1:] {
+				report(callSites(c, name), i == 1)
 			}
-			walkRecord(c, ctx, out)
-		}
-		return
-	case recordPackage + "defmethod":
-		if len(args) >= 3 {
-			walkRecord(args[0], ctx, out)
-			methodCtx := fnCtx
-			methodCtx.inMethod = true
-			walkAll(args[3:], methodCtx)
-			return
-		}
-	case recordPackage + "set!":
-		if !ctx.inMethod {
-			*out = append(*out, recordFinding{
-				node: v, kind: recordSetOutsideMethod,
-				msg:  "s:set! outside a method of the record type",
-				note: "only the type's own methods change an object's fields; add a method with s:method or s:defmethod and call it",
-			})
-		}
-	case "lambda", "defun", "defmacro":
-		walkAll(args, fnCtx)
-		return
-	case "flet", "labels", "macrolet":
-		// A binding [name formals body...] is a function body.  The reader
-		// marks a bracketed list as quoted, so walk its cells directly.
-		if len(args) > 0 {
-			for _, b := range args[0].Cells {
-				if len(b.Cells) > 2 {
-					walkAll(b.Cells[2:], fnCtx)
-				}
-			}
-			walkAll(args[1:], ctx)
-			return
-		}
-	case "let", "let*":
-		// A binding is [name value]; walk the value as the let's own code.
-		if len(args) > 0 {
-			for _, b := range args[0].Cells {
-				if len(b.Cells) > 1 {
-					walkAll(b.Cells[1:], ctx)
-				}
-			}
-			walkAll(args[1:], ctx)
 			return
 		}
 	}
-	if target, ok := mutatingBuiltins[head]; ok && head != "set!" && ctx.inMethod && target < len(v.Cells) {
-		if field, ok := thisFieldRead(v.Cells[target]); ok {
-			*out = append(*out, recordFinding{
-				node: v, kind: recordFieldMutation,
-				msg:  fmt.Sprintf("%s changes field %s of this in place, and its validator does not run", head, field),
-				note: fmt.Sprintf("build the new value and give it to s:set!: (s:set! this '%s new-value)", field),
-			})
-		}
-	}
-	walkAll(v.Cells, ctx)
+	report(callSites(top, name), false)
 }
 
 // thisFieldRead returns the field name when v is (this 'field).
@@ -175,12 +160,8 @@ func thisFieldRead(v *lisp.LVal) (string, bool) {
 		astutil.HeadSymbol(v) != "this" {
 		return "", false
 	}
-	arg := v.Cells[1]
-	if arg.Type == lisp.LSymbol && arg.IsQuoted() {
+	if arg := v.Cells[1]; arg.Type == lisp.LSymbol && arg.IsQuoted() {
 		return arg.Str, true
-	}
-	if mutationHead(arg) == "quote" && len(arg.Cells) == 2 && arg.Cells[1].Type == lisp.LSymbol {
-		return arg.Cells[1].Str, true
 	}
 	return "", false
 }
