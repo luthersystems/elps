@@ -30,6 +30,12 @@ import (
 
 func newSchemaForkEnv(t *testing.T) *lisp.LEnv {
 	t.Helper()
+	return newSchemaForkEnvB(t)
+}
+
+// newSchemaForkEnvB is newSchemaForkEnv for a test or a benchmark.
+func newSchemaForkEnvB(t testing.TB) *lisp.LEnv {
+	t.Helper()
 	env := lisp.NewEnv(nil)
 	env.Runtime.Reader = parser.NewReader()
 	if rc := lisp.InitializeUserEnv(env); rc.Type == lisp.LError {

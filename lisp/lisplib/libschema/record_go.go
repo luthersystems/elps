@@ -60,6 +60,9 @@ type RecordSpec struct {
 	// Methods are the methods.  A method may not have the name of a field
 	// that has a getter.
 	Methods []MethodSpec
+	// Implements are interfaces the type must satisfy.  A Go type is
+	// sealed, so NewRecordType checks them at once.
+	Implements []*Interface
 }
 
 // FieldSpec describes one field of a Go record type.
@@ -193,6 +196,15 @@ func NewRecordType(spec RecordSpec) (*RecordType, error) {
 		}
 		m.ArgChecks = maps.Clone(m.ArgChecks)
 	}
+	for i, in := range spec.Implements {
+		if in == nil {
+			return nil, fmt.Errorf("libschema: record type %s: Implements[%d] is nil", spec.Name, i)
+		}
+		if err := matchMethods(in.name, in.methods, t.methodArity, true); err != nil {
+			return nil, fmt.Errorf("libschema: record type %s: implements %s: %w", spec.Name, in.name, err)
+		}
+	}
+	t.spec.Implements = append([]*Interface(nil), spec.Implements...)
 	if _, loaded := goTypes.LoadOrStore(goTypeKey(spec.Package, spec.FID), t); loaded {
 		return nil, fmt.Errorf("libschema: record type %s:%s is defined already", spec.Package, spec.FID)
 	}

@@ -204,7 +204,7 @@ func newRecordShape(call *lisp.LVal) *recordShape {
 	for i := 0; i < len(forms); i++ {
 		form := forms[i]
 		switch h := astutil.HeadSymbol(form); {
-		case form.IsSymbol(":check"):
+		case form.IsSymbol(":check"), form.IsSymbol(":implements"):
 			i++
 		case (h == recordPackage+"method" || h == "method") && len(form.Cells) > 2 && form.Cells[1].Type == lisp.LSymbol:
 			shape.methods[form.Cells[1].Str] = methodSignature(form.Cells[2])

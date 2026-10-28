@@ -146,6 +146,11 @@ func TestRecordUnknownMember(t *testing.T) {
 (set 'r (s:make-record "r" f (s:method m (o) (o 'b))))`))
 	// A type from another file: the shape is unknown.
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordUnknownMember, `(s:defmethod other m (o) (o 'whatever))`))
+	// :implements and its list are an option, not a field form, so the
+	// shape stays known.
+	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordUnknownMember, `(set 'p (s:make-interface "p" (n ())))
+(set 'r (s:make-record "r" :implements (p) (s:has-key "a" s:int)
+  (s:method n (o) (o 'b))))`), 3, "b is not a field or method")
 }
 
 func TestRecordCheckWrites(t *testing.T) {

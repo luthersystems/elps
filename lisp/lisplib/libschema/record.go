@@ -38,6 +38,12 @@ import (
 //	typeSelf     the type value itself, which each object it builds holds
 //	typeSigs     a sorted map from the name of each typed method to its
 //	             signature (lispMethodSig)
+//	typeArities  a sorted map from method name to its arity (arityTag),
+//	             stored when the method is added
+//	typeImpls    the interfaces of :implements, a list of validators
+//	typeImplOK   true once the type has every method of each interface:
+//	             checked at the first construction, as s:defmethod may
+//	             still add a method after s:make-record
 //
 // An object's captures are (type fields state): the type value, a sorted map
 // from field name (a string) to value, and the call state (objState).  A
@@ -50,6 +56,9 @@ const (
 	typeCheck
 	typeSelf
 	typeSigs
+	typeArities
+	typeImpls
+	typeImplOK
 	typeCells
 )
 
@@ -204,7 +213,8 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
 		// The call's shape is checked in Go, as for a Go method, so a
 		// bad call is bad-arguments with no receiver in the count.
-		if msg := lispMethodArity(m).checkCall(rest); msg != "" {
+		a, _ := lispTypeArities(tcaps)(op.Str)
+		if msg := a.checkCall(rest); msg != "" {
 			return env.ErrorConditionf(BadArgs, "%s: method %s %s", desc.display, op.Str, msg)
 		}
 		call := lispCall{fn: m, who: methodWho{display: desc.display, method: op.Str}, args: rest}
@@ -293,6 +303,9 @@ func evalLispType(env *lisp.LEnv, args, tcaps *lisp.LVal) *lisp.LVal {
 	fields := constructorFields(env, desc.display, args.Cells)
 	if fields.IsError() {
 		return fields
+	}
+	if lerr := checkImplementsAll(env, desc, tcaps); lerr != nil {
+		return lerr
 	}
 	if lerr := validateLispFields(env, desc, tcaps, fields); lerr != nil {
 		return lerr

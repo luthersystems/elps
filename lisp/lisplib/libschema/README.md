@@ -316,7 +316,7 @@ A record type is a constructor for objects with typed fields and methods
 
 | Form | Use |
 |------|-----|
-| `(s:make-record NAME FIELD... METHOD... [:check FN])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
+| `(s:make-record NAME FIELD... METHOD... [:check FN] [:implements (IFACE...)])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
 | `(s:method NAME (RECV ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. RECV is the object. |
 | `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
 | `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
@@ -461,7 +461,7 @@ Rules:
 An interface names a set of methods, as a Go interface does
 (luthersystems/elps#900). A value satisfies it when it is a record object
 whose type has each method, and each method accepts every call the
-interface allows. A type does not declare the interfaces it satisfies, and
+interface allows. A type need not declare the interfaces it satisfies, and
 a method that `s:defmethod` adds later counts.
 
 ```lisp
@@ -494,6 +494,15 @@ a method that `s:defmethod` adds later counts.
   `MethodSpec.Formals`; a call with the wrong number of arguments, or
   an odd or unknown keyword argument, then fails before `Call` runs. A Go method without `Formals` accepts any
   number of arguments, for an interface too.
+* A type can declare the interfaces it must satisfy: `(s:make-record
+  "inv" :implements (payable) ...)`. A method in the form that does not
+  match fails when the type is defined. A missing method fails
+  (wrong-type) when the first object is built, so `s:defmethod` can still
+  add it. A later `s:defmethod` that does not match fails and changes
+  nothing. In Go, `RecordSpec.Implements` is checked by `NewRecordType`,
+  as a Go type is sealed.
+* A check reads arities stored when each method is added, so it parses
+  no formals: about 1 µs and 6 allocations for three methods.
 
 Saving objects. An object saves only its fields. Its type saves as the name
 of the global that holds it, and its methods are never saved. Add

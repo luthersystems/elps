@@ -196,7 +196,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp/lisplib/libjson.untagWalker.value":                 "hand-rolled JSON walker: limits, paths and callback order pinned by goldens",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.lispMethodSig":                   "syntax walker: reads one level of a method's type list",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.untypedFormals":                  "syntax walker: reads one level of a formal list",
-	"github.com/luthersystems/elps/lisp/lisplib/libschema.evalGoType":                      "constructor: reads one level of a field map, no recursion",
+	"github.com/luthersystems/elps/lisp/lisplib/libschema.evalGoType":                      "hot path: a Go type constructor reads one level of its field map",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinArrayOf":                  "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinCheckTaggedVal":           "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinHasKey":                   "hot path: schema callbacks construct and apply recursive validation constraints",
