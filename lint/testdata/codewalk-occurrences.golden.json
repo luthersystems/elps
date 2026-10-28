@@ -7282,6 +7282,231 @@
     ]
   },
   {
+    "Source": "(match)",
+    "Calls": [
+      "(match)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(match ())",
+    "Calls": [
+      "(match ())"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(match (x x) (lambda (\u0026rest) 1))",
+    "Calls": [
+      "(match (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(\u0026rest)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(match f (x x) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(match f (x x) (lambda (\u0026key) 1))",
+      "(\u0026key)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(match ((1 (x x) (lambda (\u0026rest) 1)) [f () (kf :x 1 :x 2)]) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(match ((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2))) (lambda (\u0026key) 1))",
+      "((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2)))",
+      "(1 (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(lambda (\u0026rest) 1)",
+      "(\u0026key)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 27
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 32
+        },
+        "message": "function formal argument list contains a control symbol at an invalid location: \u0026rest; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
+    "Source": "(lisp:match)",
+    "Calls": [
+      "(lisp:match)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(lisp:match ())",
+    "Calls": [
+      "(lisp:match ())"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(lisp:match (x x) (lambda (\u0026rest) 1))",
+    "Calls": [
+      "(lisp:match (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(\u0026rest)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(lisp:match f (x x) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(lisp:match f (x x) (lambda (\u0026key) 1))",
+      "(\u0026key)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(lisp:match ((1 (x x) (lambda (\u0026rest) 1)) [f () (kf :x 1 :x 2)]) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(lisp:match ((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2))) (lambda (\u0026key) 1))",
+      "((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2)))",
+      "(1 (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(lambda (\u0026rest) 1)",
+      "(\u0026key)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 32
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 37
+        },
+        "message": "function formal argument list contains a control symbol at an invalid location: \u0026rest; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
+    "Source": "(other:match)",
+    "Calls": [
+      "(other:match)"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(other:match ())",
+    "Calls": [
+      "(other:match ())"
+    ],
+    "Diagnostics": null
+  },
+  {
+    "Source": "(other:match (x x) (lambda (\u0026rest) 1))",
+    "Calls": [
+      "(other:match (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(lambda (\u0026rest) 1)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 29
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 34
+        },
+        "message": "function formal argument list contains a control symbol at an invalid location: \u0026rest; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
+    "Source": "(other:match f (x x) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(other:match f (x x) (lambda (\u0026key) 1))",
+      "(x x)",
+      "(lambda (\u0026key) 1)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 31
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 35
+        },
+        "message": "function formal argument list: \u0026key must be followed by at least one parameter name; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
+    "Source": "(other:match ((1 (x x) (lambda (\u0026rest) 1)) [f () (kf :x 1 :x 2)]) (lambda (\u0026key) 1))",
+    "Calls": [
+      "(other:match ((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2))) (lambda (\u0026key) 1))",
+      "((1 (x x) (lambda (\u0026rest) 1)) '(f () (kf :x 1 :x 2)))",
+      "(1 (x x) (lambda (\u0026rest) 1))",
+      "(x x)",
+      "(lambda (\u0026rest) 1)",
+      "(lambda (\u0026key) 1)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 33
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 38
+        },
+        "message": "function formal argument list contains a control symbol at an invalid location: \u0026rest; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      },
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 76
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 80
+        },
+        "message": "function formal argument list: \u0026key must be followed by at least one parameter name; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
     "Source": "(or)",
     "Calls": [
       "(or)"

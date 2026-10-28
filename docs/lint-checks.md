@@ -695,6 +695,25 @@ not flagged.
 (s:has-key "email" (s:make-validator "email" s:string (s:regexp "@")))
 ```
 
+### `match-unreachable`
+
+**Flags a `match` clause after a clause that matches every value.**
+(Severity: warning)
+
+`match` tries its clauses in order. A pattern of `_` or a bare name, with
+no `:when` guard, matches every value, so the clauses after it never run.
+
+```lisp
+;; WARNING: (2 'two) never runs
+(match v
+  (x 'any)
+  (2 'two))
+;; OK: the catch-all is last
+(match v
+  (2 'two)
+  (x 'any))
+```
+
 ### `use-package-hides-lisp`
 
 **Warns when a `use-package` hides `lisp` names, and at each call that then

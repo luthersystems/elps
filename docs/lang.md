@@ -654,6 +654,53 @@ Either must be the final clause; reaching a non-final default raises
 `:else`: move it to the end. The `cond-structure` linter reports misplaced
 defaults in source; dynamically constructed forms still need runtime checks.
 
+### match
+
+`match` tests a value against patterns. It evaluates its first argument
+once, then tries each clause in order. A clause is a pattern, an optional
+`:when` guard, and a body. The body of the first clause whose pattern
+matches, and whose guard is truthy, runs with the names the pattern binds.
+A final `(:else body...)` clause matches anything. With no match, `match`
+returns `()`.
+
+```lisp
+(match v
+  (0 'zero)
+  ((list x y) (+ x y))
+  ((list x &rest more) :when (> x 9) more)
+  ((sorted-map "id" id) id)
+  ([s s:string] (concat 'string "str:" s))
+  ((point :x 0 :y y) y)
+  (_ 'other))
+```
+
+| Pattern | Matches |
+|---------|---------|
+| `_` | Any value. Binds nothing. |
+| `name` | Any value. Binds `name`. |
+| `1`, `1.5`, `"s"`, `:kw`, `true`, `false`, `()` | A value `equal?` to it. |
+| `'sym`, `(quote datum)` | A value `equal?` to the symbol or datum. |
+| `(list p... [&rest r])` | A list of that length (at least that length with `&rest`). `r` gets the rest as a new list. |
+| `(sorted-map key p ...)` | A sorted map that has each key, with values that match. A key is a string, an int or a keyword. |
+| `[name T]` | A value of type `T`. Binds `name` (`_` binds nothing). |
+| `(T :field p ...)` | A record object of type `T` whose fields match. A field that is not set reads as `()`. `(T)` tests the type only. |
+
+Rules:
+
+- `T` is evaluated each time its pattern is tried, in the scope around
+  the `match`. It is any type `s:is?` takes: a record type, an
+  interface, a validator or a type name. Type patterns need package `s`;
+  without it they are an error.
+- The reader reads `[x T]` and `'(x T)` as the same value, so a quoted
+  list in a pattern is always `[name T]`. Match a literal list with
+  `(list 'a 'b)` or `(quote (a b))`.
+- A pattern that binds the same name twice, or has a bad shape, is an
+  error when its clause is reached.
+- A guard that is false goes on to the next clause. An error in a guard,
+  a type test or a field read stops the match.
+- Each pattern node that is tried costs one step.
+- The `match-unreachable` linter reports a clause after a catch-all clause.
+
 ### when, unless, while and default
 
 These four one-liners are special operators rather than macros, so using one

@@ -934,6 +934,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerRecordDefmethodType,
 		AnalyzerRecordPlainSet,
 		AnalyzerSchemaTypeUnion,
+		AnalyzerMatchUnreachable,
 		AnalyzerUsePackageHidesLisp,
 	}
 }

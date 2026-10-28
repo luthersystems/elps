@@ -358,6 +358,11 @@ Rules:
   `failed-constraint` in `:check` to make `s:is?` false). A built-in type
   name takes no gensym. Go: `libschema.Is(env, v, typ)` and
   `libschema.As(env, v, typ)`.
+* `match` (a `lisp` special operator) uses `s:is?` for its type
+  patterns: `[o order]` matches an `order` object, and
+  `(order :id id)` matches one and binds its `id`. A field that is not
+  set reads as `()`; an unknown field or a hidden Go field is an error.
+  Package `s` sets this up when it loads (`lisp.SetMatchTypes`).
 * Helper functions are ordinary `defun`s, or locals of a closure around
   the type: `(set 'order (labels (...) (s:make-record ...)))`.
 * Use `s:any` for a field that takes any value.

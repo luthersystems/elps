@@ -2147,7 +2147,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 42)
+	assert.Len(t, analyzers, 43)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2169,6 +2169,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"let-recursion",
 		"lisp-package-seal",
 		"loop-variable-capture",
+		"match-unreachable",
 		"package-builtins",
 		"quote-call",
 		"record-check-writes",
@@ -2640,6 +2641,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"record-defmethod-type":     SeverityWarning,
 		"record-plain-set":          SeverityWarning,
 		"schema-type-union":         SeverityWarning,
+		"match-unreachable":         SeverityWarning,
 		"cond-structure":            SeverityError,
 		"builtin-arity":             SeverityError,
 		"quote-call":                SeverityWarning,

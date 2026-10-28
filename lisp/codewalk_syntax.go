@@ -96,7 +96,7 @@ func init() {
 		spec := formKinds[name]
 		syntaxEntries = append(syntaxEntries, syntaxEntry{name: name, next: *b, bareOnly: bare,
 			calls: hook.CallPolicy{FormalsIndex: spec.formalsIndex, CallsStart: spec.callsStart,
-				BindingStart: spec.bindingStart, Role: spec.role, BindingFormals: spec.bindingFormals, Clauses: spec.clauses}})
+				BindingStart: spec.bindingStart, Role: spec.role, BindingFormals: spec.bindingFormals, Clauses: spec.clauses, Patterns: spec.patterns}})
 		index++
 		*b = index
 	}

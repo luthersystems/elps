@@ -87,6 +87,9 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetPackageDoc(`Schema validation: define typed validators with constraints and
 		check values against them at runtime. Validators compose to
 		describe complex data structures.`)
+	if err := lisp.SetMatchTypes(env.Runtime, matchIs, matchField); err != nil {
+		return env.Error(err)
+	}
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}

@@ -114,9 +114,18 @@ func syntax(node *lisp.LVal, parent *lisp.LVal, depth int, opts syntaxVisitors) 
 				}
 			}
 			if policy.Clauses {
-				for _, clause := range v.Cells[1:] {
+				// Cells before the clauses (match's value) are code.
+				first := max(1, policy.CallsStart)
+				for _, child := range v.Cells[1:min(first, len(v.Cells))] {
+					syntax(child, v, depth+1, syntaxVisitors{visit: nil, stop: nil, calls: calls})
+				}
+				skip := 0
+				if policy.Patterns {
+					skip = 1
+				}
+				for _, clause := range v.Cells[min(first, len(v.Cells)):] {
 					if clause.Type == lisp.LSExpr {
-						for _, child := range clause.Cells {
+						for _, child := range clause.Cells[min(skip, len(clause.Cells)):] {
 							syntax(child, v, depth+2, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 						}
 					}

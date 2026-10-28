@@ -64,6 +64,7 @@ const (
 	kindDeftype                  // source constructor definition
 	kindTestLet                  // source test-let
 	kindTestLetSeq               // source test-let*
+	kindMatch                    // match
 )
 
 // formSpec carries scope and signature metadata for each builtin form.
@@ -77,6 +78,7 @@ type formSpec struct {
 	role           hook.FormalsRole
 	bindingFormals bool
 	clauses        bool
+	patterns       bool
 }
 
 // formKinds is the single registry of builtin forms with walking rules.
@@ -101,6 +103,7 @@ var formKinds = map[string]formSpec{
 	"ignore-errors":    {kind: kindIgnoreErrors},
 	"with-cleanup":     {kind: kindWithCleanup},
 	"cond":             {kind: kindCond, clauses: true},
+	"match":            {kind: kindMatch, scope: hook.ScopeLocal, clauses: true, patterns: true, callsStart: 2},
 	"if":               {kind: kindIf},
 	"when":             {kind: kindWhen},
 	"unless":           {kind: kindUnless},
@@ -138,7 +141,7 @@ func (k formKind) opensFunction() bool {
 		kindThreadFirst, kindThreadLast, kindDotimes, kindLabels, kindMacrolet, kindFlet,
 		kindLetSeq, kindLet, kindProgn, kindHandlerBind, kindIgnoreErrors, kindWithCleanup,
 		kindCond, kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd,
-		kindHelp, kindTest, kindBenchmark, kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
+		kindHelp, kindTest, kindBenchmark, kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
 		return false
 	}
 	return false
@@ -883,6 +886,43 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			w.forms(cb, 1, d)
 			b.set(i, cb.done())
 		}
+	case kindMatch:
+		if len(cells) > 1 {
+			b.set(1, w.form(cells[1], d))
+		}
+		for i := 2; i < len(cells); i++ {
+			clause := cells[i]
+			if clause.Type != LSExpr || len(clause.Cells) == 0 {
+				if !w.sourceAnalysis {
+					w.data(clause, d)
+				}
+				continue
+			}
+			cb := newRebuild(clause)
+			pat := clause.Cells[0]
+			if isMatchElse(pat) {
+				w.visit(&walkNode{Event: WalkLiteral, Node: pat, Depth: d + 1})
+				w.forms(cb, 1, d)
+				b.set(i, cb.done())
+				continue
+			}
+			// A pattern's type expressions run in the enclosing scope,
+			// before any name the pattern binds.
+			var names []*LVal
+			cb.set(0, w.matchPattern(pat, d+1, &names))
+			enter(clause, false)
+			for _, name := range names {
+				w.emitBind(name, op, d+1, nil)
+			}
+			body := 1
+			if len(clause.Cells) > 2 && clause.Cells[1].IsSymbol(":when") {
+				w.visit(&walkNode{Event: WalkLiteral, Node: clause.Cells[1], Depth: d + 1})
+				body = 2
+			}
+			w.forms(cb, body, d)
+			leave(clause)
+			b.set(i, cb.done())
+		}
 	case kindDotimes:
 		if len(cells) > 1 {
 			ctrl := cells[1]
@@ -972,6 +1012,53 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 	case kindNone: // opaque forms never reach here
 	}
 	return b.done()
+}
+
+// matchPattern walks a match pattern: its type expressions are forms, the
+// rest is data.  It adds the names the pattern binds to names and returns
+// the pattern with its type expressions expanded.
+func (w *CodeWalker) matchPattern(p *LVal, depth int, names *[]*LVal) *LVal {
+	switch classifyPattern(p) {
+	case matchName:
+		*names = append(*names, p)
+		return p
+	case matchTyped:
+		pb := newRebuild(p)
+		if p.Cells[0].Str != "_" {
+			*names = append(*names, p.Cells[0])
+		}
+		pb.set(1, w.form(p.Cells[1], depth+1))
+		return pb.done()
+	case matchList:
+		pb := newRebuild(p)
+		w.data(p.Cells[0], depth+1)
+		for i := 1; i < len(p.Cells); i++ {
+			if p.Cells[i].IsSymbol(VarArgSymbol) {
+				w.data(p.Cells[i], depth+1)
+				continue
+			}
+			pb.set(i, w.matchPattern(p.Cells[i], depth+1, names))
+		}
+		return pb.done()
+	case matchMap, matchRecord:
+		pb := newRebuild(p)
+		if classifyPattern(p) == matchRecord {
+			pb.set(0, w.form(p.Cells[0], depth+1))
+		} else {
+			w.data(p.Cells[0], depth+1)
+		}
+		for i := 1; i < len(p.Cells); i++ {
+			if i%2 == 1 {
+				w.data(p.Cells[i], depth+1)
+				continue
+			}
+			pb.set(i, w.matchPattern(p.Cells[i], depth+1, names))
+		}
+		return pb.done()
+	case matchAny, matchLiteral, matchQuote, matchBad:
+	}
+	w.data(p, depth)
+	return p
 }
 
 // formals binds the names in a lambda list.  Markers are skipped.
@@ -1565,7 +1652,7 @@ func (k formKind) sourceModes() uint8 {
 		return 0b0111 // package scan omits qualified bindings
 	case kindDefun, kindDefmacro, kindDeftype, kindMacrolet, kindHandlerBind:
 		return 0b0101 // unqualified only
-	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
+	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
 		return 0b0001 // unqualified source only
 	case kindExpr:
 		return 0b0011 // source only
@@ -1719,7 +1806,7 @@ func (w *CodeWalker) scanPackage(v *LVal, top bool, out *[]*LVal) {
 		kindExpr, kindThreadFirst, kindThreadLast, kindDotimes, kindProgn,
 		kindIgnoreErrors, kindWithCleanup, kindCond, kindIf, kindWhen, kindUnless,
 		kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindTest, kindBenchmark,
-		kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
+		kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
 	}
 	for i := start; i < len(v.Cells); i++ {
 		if child := v.Cells[i]; child != nil && child.Type == LSExpr {

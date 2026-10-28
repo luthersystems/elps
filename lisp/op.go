@@ -157,6 +157,24 @@ var langSpecialOps = []*langBuiltin{
 		:else as the test in the final clause to match unconditionally;
 		either spelling in a non-final clause raises an error when reached.
 		Returns () if no clause matches or the matching clause has no body.`},
+	{"match", Formals("value", VarArgSymbol, "clause"), opMatch,
+		`Pattern match. Evaluates value, then tries each clause
+		(pattern [:when guard] body...) in order. For the first pattern
+		that matches, and whose guard is truthy, the body forms are
+		evaluated with the names the pattern binds, and the last value
+		returned. A final (:else body...) clause matches anything.
+		Returns () if no clause matches. Patterns: _ matches anything; a
+		symbol matches anything and binds it; a number, string, keyword,
+		true, false, () or 'sym matches an equal? value; (quote datum)
+		matches an equal? datum; (list p... &rest r) matches a list;
+		(sorted-map key p ...) matches a map with those keys; [name T]
+		matches a value of type T; (T :field p ...) matches a value of
+		type T with those fields. T is evaluated each time it is tried.
+		Type patterns need a type library such as package s. A guard
+		that is false goes on to the next clause; an error in a guard,
+		a type expression or a pattern stops the match. A quoted list in
+		a pattern is always [name T]; match a literal list with
+		(list 'a 'b). A pattern that binds a name twice is an error.`},
 	{"if", Formals("condition", "then", "else"), opIf,
 		`Conditional branch. Evaluates condition; if truthy, evaluates
 		and returns then, otherwise evaluates and returns else. All three

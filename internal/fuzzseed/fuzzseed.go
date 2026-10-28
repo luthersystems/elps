@@ -242,6 +242,11 @@ func Adversarial() [][]byte {
 		"(with-cleanup ((c) (d)) (a) (b))",
 		"(with-cleanup () (f))",
 		"(with-cleanup (g) (f))",
+		// match: its pattern shapes for the code walkers, the formatter and
+		// the match-unreachable analyzer.
+		"(match v ((list a &rest r) :when (> a 1) r) ([s s:string] s) ((T :f x) x) (_ 0))",
+		"(match v (x 1) (2 2) (:else 3))",
+		"(match)", "(match v ())", "(match v ('(1 2) 1))",
 		"(in-package 'foo)\n(export 'bar)\n(defun bar () ())",
 		// A definition whose NAME carries a reader quote, plus a call to it.
 		// The quote is not a node of its own -- rdparser folds it into the
