@@ -7,7 +7,8 @@ and the Javascript library [yup](https://github.com/jquense/yup).
 
 The library is exported by default under the package name `s` and all functions and types should be prefixed as such.
 Do not `(use-package 's)`: several of its exports (`not`, `when`, `list`, `error`,
-`sorted-map`) then hide the core forms ([#903](https://github.com/luthersystems/elps/issues/903)).
+`sorted-map`) then hide the core forms, and the `use-package-hides-lisp` lint
+check warns about it ([#903](https://github.com/luthersystems/elps/issues/903)).
 
 ### How do I use it?
 

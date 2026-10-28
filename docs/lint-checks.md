@@ -677,6 +677,32 @@ field write. Use `s:set-field!` to change a field.
 (s:method pay (o) (s:set-field! o 'paid true))
 ```
 
+### `use-package-hides-lisp`
+
+**Warns when a `use-package` hides `lisp` names, and at each call that then
+misses the core form.** (Severity: warning)
+
+`use-package` copies the package's exports over the caller's bindings. After
+`(use-package 's)`, `not`, `when`, `list`, `error` and `sorted-map` are the
+`s` exports, so `(not x)` calls the constraint `s:not` (elps#903). The check
+reports the `use-package` once, naming the hidden names, and each later
+unqualified call to one of them in the same package.
+
+```lisp
+;; WARNING: use-package 's hides lisp names: error, list, not, sorted-map, when
+(use-package 's)
+;; WARNING: not here is s:not
+(if (not ok) 1 2)
+
+;; GOOD: use the package qualified
+(s:validate v (s:not s:nil))
+(if (not ok) 1 2)
+```
+
+Only standard library packages are known. A name the file defines itself is
+left to [`builtin-shadowing`](#builtin-shadowing). Quoted data and
+quasiquote templates are not calls.
+
 ### `with-cleanup-forms`
 
 **Flags a degenerate `with-cleanup` spec list.** (Severity: warning)

@@ -2147,7 +2147,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 40)
+	assert.Len(t, analyzers, 41)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2188,6 +2188,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"unnecessary-progn",
 		"unused-function",
 		"unused-variable",
+		"use-package-hides-lisp",
 		"user-arity",
 		"with-cleanup-forms",
 	}, names)
@@ -2651,15 +2652,16 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		// Warning, not error: a callback that writes to the collection it is
 		// walking is sometimes deliberate, and unlike a comparator it runs a
 		// defined number of times in a defined order.
-		"iteration-mutation":   SeverityWarning,
-		"undefined-symbol":     SeverityError,
-		"unused-variable":      SeverityWarning,
-		"unused-function":      SeverityWarning,
-		"shadowing":            SeverityInfo,
-		"user-arity":           SeverityError,
-		"duplicate-definition": SeverityWarning,
-		"deprecated":           SeverityWarning,
-		"removed-builtin":      SeverityError,
+		"iteration-mutation":     SeverityWarning,
+		"undefined-symbol":       SeverityError,
+		"unused-variable":        SeverityWarning,
+		"use-package-hides-lisp": SeverityWarning,
+		"unused-function":        SeverityWarning,
+		"shadowing":              SeverityInfo,
+		"user-arity":             SeverityError,
+		"duplicate-definition":   SeverityWarning,
+		"deprecated":             SeverityWarning,
+		"removed-builtin":        SeverityError,
 		// Warning, not info: unlike unnecessary-progn neither shape is a
 		// style preference -- one guarantees nothing, the other silently
 		// drops the cleanup entirely.
