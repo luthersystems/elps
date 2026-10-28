@@ -487,6 +487,7 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 		PackageImports: prescan.PackageImports,
 		DefaultPackage: prescan.DefaultPackage,
 		FilePackages:   prescan.FilePackages,
+		RecordMethods:  prescan.RecordMethods,
 		MacroExpander:  expander,
 		SyntaxExpander: syntax,
 	}

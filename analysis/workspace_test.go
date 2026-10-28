@@ -2042,6 +2042,7 @@ func TestConfigForFile_CarriesEveryField(t *testing.T) {
 		// No entry for other.lisp, so DefaultPackage is copied unchanged.
 		FilePackages:   map[string]string{"/elsewhere.lisp": "pkg"},
 		WorkspaceRefs:  map[string][]FileReference{"k": {{File: "a.lisp"}}},
+		RecordMethods:  RecordMethods{"order": {"size": nil}},
 		MacroExpander:  &countingStubExpander{},
 		SyntaxExpander: &countingStubExpander{},
 		Filename:       "original.lisp",

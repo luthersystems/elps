@@ -397,6 +397,8 @@ type fileScan struct {
 	filePkg string
 	// firstInPkgLine is the first package declaration line.
 	firstInPkgLine int
+	// recordMethods are the methods the file's s:defmethod calls add.
+	recordMethods RecordMethods
 }
 
 // scanFileFull parses a file once and extracts exported globals, package-grouped
@@ -415,7 +417,7 @@ func scanFileFull(source []byte, filename string) fileScan {
 
 	exprs, err := p.ParseProgram()
 	if err != nil {
-		return fileScan{globals: nil, pkgs: nil, defs: nil, pkgAll: nil, usePackages: nil, preamble: nil, filePkg: "", firstInPkgLine: 0}
+		return fileScan{globals: nil, pkgs: nil, defs: nil, pkgAll: nil, usePackages: nil, preamble: nil, filePkg: "", firstInPkgLine: 0, recordMethods: nil}
 	}
 
 	filePkg, firstInPkgLine = scanFilePackage(exprs)
@@ -446,7 +448,7 @@ func scanFileFull(source []byte, filename string) fileScan {
 		}
 	}
 
-	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine}
+	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: ScanRecordMethods(exprs)}
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -1008,6 +1010,10 @@ type WorkspacePrescan struct {
 	// to Config.FilePackages. It is set only when DefaultPackage is set,
 	// the same condition under which definitions are remapped.
 	FilePackages map[string]string
+	// RecordMethods are the methods the s:defmethod calls of all files add
+	// to each record type. Copy it to Config.RecordMethods, so the record
+	// lint checks know a method that another file adds.
+	RecordMethods RecordMethods
 }
 
 // PrescanWorkspace performs a single-pass workspace scan that collects
@@ -1031,6 +1037,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		usePackages    map[string][]string
 		filePkg        string // "" for bare files
 		firstInPkgLine int    // 1-based line of first in-package, 0 if none
+		recordMethods  RecordMethods
 	}
 
 	results := make([]fileResult, len(paths))
@@ -1061,7 +1068,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				scanned := scanFileFull(fileSrc, paths[i])
 				g, p, d, pa, up, md, fp, fpl := scanned.globals, scanned.pkgs, scanned.defs, scanned.pkgAll, scanned.usePackages, scanned.preamble, scanned.filePkg, scanned.firstInPkgLine
 				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, preamble: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl}
+				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, preamble: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl, recordMethods: scanned.recordMethods}
 			}
 		}()
 	}
@@ -1155,6 +1162,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		for pkg, imports := range r.usePackages {
 			prescan.PackageImports[pkg] = appendUnique(prescan.PackageImports[pkg], imports...)
 		}
+		prescan.RecordMethods = prescan.RecordMethods.Merge(r.recordMethods)
 	}
 
 	// Remap user-package symbols to their correct package.
