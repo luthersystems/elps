@@ -59,7 +59,7 @@ type Config struct {
 	// s:defmethod calls add to each record type
 	// (WorkspacePrescan.RecordMethodsByFile). The record lint checks read
 	// it through Result.WorkspaceRecordMethods.
-	RecordMethodsByFile RecordMethodsByFile
+	RecordMethodsByFile *RecordMethodsByFile
 
 	// MacroExpander optionally expands user-macro calls at analysis time.
 	// When set, the analyzer expands macro calls and analyzes the expanded
@@ -127,7 +127,7 @@ type Result struct {
 
 	// recordMethodsByFile and filename are copied from Config, for
 	// WorkspaceRecordMethods.
-	recordMethodsByFile RecordMethodsByFile
+	recordMethodsByFile *RecordMethodsByFile
 	filename            string
 
 	// MacroExpander and DefaultPackage are copied from Config, so lint
@@ -208,9 +208,13 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 //
 // The analyzed file's own entries are left out.  They come from the file
 // on disk, and the text being analyzed can differ from it: a method the
-// text has renamed or removed must not stay known.
+// text has renamed or removed must not stay known.  The methods of test
+// files are known only when the analyzed file is a test file.
+//
+// The result may be shared with other analyses; the caller must not
+// change it.
 func (r *Result) WorkspaceRecordMethods() RecordMethods {
-	if r == nil || len(r.recordMethodsByFile) == 0 {
+	if r == nil || r.recordMethodsByFile == nil {
 		return nil
 	}
 	return r.recordMethodsByFile.Except(r.filename)

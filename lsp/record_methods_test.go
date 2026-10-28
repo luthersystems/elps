@@ -5,11 +5,15 @@ package lsp
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/luthersystems/elps/analysis"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	protocol "github.com/tliron/glsp/protocol_3_16"
 )
 
 // TestWorkspaceRecordMethods checks that the workspace index carries the
@@ -68,4 +72,85 @@ func TestWorkspaceRecordMethodsOwnFile(t *testing.T) {
 	s.ensureAnalysis(doc)
 	require.NotNil(t, doc.analysis)
 	assert.NotContains(t, doc.analysis.WorkspaceRecordMethods()["order"], "own")
+}
+
+// TestRecordMethodsSaveReanalyzesOpenDocs checks that a save that changes
+// a file's s:defmethod methods publishes new diagnostics for the other
+// open documents that make a record type, not only for the saved one.
+func TestRecordMethodsSaveReanalyzesOpenDocs(t *testing.T) {
+	old := recordReanalyzeDelay
+	recordReanalyzeDelay = time.Millisecond
+	t.Cleanup(func() { recordReanalyzeDelay = old })
+
+	dir := t.TempDir()
+	orderPath := filepath.Join(dir, "order.lisp")
+	methodsPath := filepath.Join(dir, "methods.lisp")
+	src := "(set 'order (s:make-record \"order\" (s:has-key \"n\" s:int) (s:method use (o) (o 'sz))))\n"
+	require.NoError(t, os.WriteFile(orderPath, []byte(src), 0o600))
+	require.NoError(t, os.WriteFile(methodsPath, []byte("(s:defmethod order size (o) 0)\n"), 0o600))
+
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+	ctx, captured := capturingContext()
+	var mu sync.Mutex
+	notify := ctx.Notify
+	ctx.Notify = func(method string, params any) {
+		mu.Lock()
+		defer mu.Unlock()
+		notify(method, params)
+	}
+	s.captureNotify(ctx)
+	orderURI := pathToURI(orderPath)
+	unknownSz := func() (published, unknown bool) {
+		mu.Lock()
+		defer mu.Unlock()
+		for i := len(*captured) - 1; i >= 0; i-- {
+			p := (*captured)[i]
+			if p.URI != orderURI {
+				continue
+			}
+			for _, d := range p.Diagnostics {
+				if strings.Contains(d.Message, "sz is not a field or method") {
+					return true, true
+				}
+			}
+			return true, false
+		}
+		return false, false
+	}
+	require.NoError(t, s.textDocumentDidOpen(ctx, &protocol.DidOpenTextDocumentParams{
+		TextDocument: protocol.TextDocumentItem{URI: orderURI, Version: 1, Text: src},
+	}))
+	published, unknown := unknownSz()
+	require.True(t, published)
+	require.True(t, unknown, "sz is not known before the save")
+
+	require.NoError(t, os.WriteFile(methodsPath, []byte("(s:defmethod order sz (o) 0)\n"), 0o600))
+	require.NoError(t, s.textDocumentDidSave(ctx, &protocol.DidSaveTextDocumentParams{
+		TextDocument: protocol.TextDocumentIdentifier{URI: pathToURI(methodsPath)},
+	}))
+	require.Eventually(t, func() bool {
+		_, unknown := unknownSz()
+		return !unknown
+	}, 5*time.Second, 5*time.Millisecond, "the open document is analyzed again with sz known")
+}
+
+// TestWorkspaceRecordMethodsTestFile checks that an open test file knows
+// the methods of the workspace's test helpers, and a production file does
+// not.
+func TestWorkspaceRecordMethodsTestFile(t *testing.T) {
+	dir := t.TempDir()
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "order_testhelpers.lisp"), []byte("(s:defmethod order helper (o) 0)\n"), 0o600))
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+	src := "(set 'order (s:make-record \"order\"))\n"
+	for name, want := range map[string]bool{"order_test.lisp": true, "order.lisp": false} {
+		doc := openDoc(s, pathToURI(filepath.Join(dir, name)), src)
+		s.ensureAnalysis(doc)
+		require.NotNil(t, doc.analysis)
+		_, ok := doc.analysis.WorkspaceRecordMethods()["order"]["helper"]
+		assert.Equal(t, want, ok, name)
+	}
 }
