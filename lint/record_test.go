@@ -185,6 +185,22 @@ func TestRecordMethodArity(t *testing.T) {
 	assertDiagOnLine(t, diags, 7, "method pay needs at least 1 argument(s), got 0")
 }
 
+// TestRecordMethodArityTyped reads typed formals, [name type] (#905), as
+// their names.
+func TestRecordMethodArityTyped(t *testing.T) {
+	src := `(set 'acct
+  (s:make-record "acct"
+    (s:has-key "bal" s:int)
+    (s:method dep (o [amount s:int] &optional [memo s:string]) amount)
+    (s:method bad (o) (o 'dep 1 2 3) (o 'dep) (o 'dep 1 "m"))))
+(s:defmethod acct w (o [amt s:int]) (o 'w) (o 'w 1))`
+	diags := lintCheck(t, AnalyzerRecordMethodArity, src)
+	assert.Len(t, diags, 3, "%v", diags)
+	assertDiagOnLine(t, diags, 5, "method dep accepts at most 2 argument(s), got 3")
+	assertDiagOnLine(t, diags, 5, "method dep needs at least 1 argument(s), got 0")
+	assertDiagOnLine(t, diags, 6, "method w needs at least 1 argument(s), got 0")
+}
+
 func TestRecordDefmethodType(t *testing.T) {
 	src := `(set 'order (s:make-record "order" (s:has-key "n" s:int)))
 (set 'label "order")

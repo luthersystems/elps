@@ -28,7 +28,10 @@ import (
 // InterfaceMethod is one method of an interface.
 type InterfaceMethod struct {
 	// Formals are the method's formals after the receiver, as lisp.Formals
-	// builds them.  &optional, &rest and &key are allowed.  Nil is ().
+	// builds them.  &optional, &rest and &key are allowed.  Nil is ().  A
+	// formal may be a typed formal, (name type) as [name type] reads: the
+	// type is not evaluated and not part of the match; it documents the
+	// method for readers and lint.
 	Formals *lisp.LVal
 	// Name is the op that calls the method.
 	Name string
@@ -201,21 +204,52 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		if formals == nil {
 			formals = lisp.Formals()
 		}
+		text := formalsText(formals)
+		formals = untypedFormals(formals)
 		if err := checkFormals(formals); err != nil {
 			return nil, fmt.Errorf("libschema: interface %s: method %s: %w", spec.Name, m.Name, err)
 		}
-		in.methods = append(in.methods, ifaceMethod{name: m.Name, formals: formalsText(formals), arity: arityOf(formals)})
+		in.methods = append(in.methods, ifaceMethod{name: m.Name, formals: text, arity: arityOf(formals)})
 	}
 	return in, nil
 }
 
-// formalsText writes formals, a list of symbols, as "(a &optional b)".
+// formalsText writes formals as "(a &optional [b s:string])".
 func formalsText(formals *lisp.LVal) string {
+	if formals.Type != lisp.LSExpr {
+		return formals.String()
+	}
 	names := make([]string, len(formals.Cells))
 	for i, p := range formals.Cells {
-		names[i] = p.Str
+		if isTypedFormal(p) {
+			names[i] = "[" + p.Cells[0].Str + " " + p.Cells[1].String() + "]"
+			continue
+		}
+		names[i] = p.String()
 	}
 	return "(" + strings.Join(names, " ") + ")"
+}
+
+// isTypedFormal reports whether p is a typed formal, [name type] (#905).
+func isTypedFormal(p *lisp.LVal) bool {
+	return p.Type == lisp.LSExpr && len(p.Cells) == 2 && p.Cells[0].Type == lisp.LSymbol
+}
+
+// untypedFormals returns formals with each typed formal replaced by its
+// name.  An interface matches on names and arity only: its types are a
+// contract for the reader and for lint, not part of the match (#905).
+func untypedFormals(formals *lisp.LVal) *lisp.LVal {
+	if formals.Type != lisp.LSExpr || !slices.ContainsFunc(formals.Cells, isTypedFormal) {
+		return formals
+	}
+	plain := make([]*lisp.LVal, len(formals.Cells))
+	for i, p := range formals.Cells {
+		if isTypedFormal(p) {
+			p = p.Cells[0]
+		}
+		plain[i] = p
+	}
+	return lisp.SExpr(plain)
 }
 
 // Name returns the interface's name.

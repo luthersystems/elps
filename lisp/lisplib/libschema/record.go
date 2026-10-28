@@ -36,6 +36,8 @@ import (
 //	typeMethods  a sorted map from method name (a string) to function
 //	typeCheck    the :check function, or ()
 //	typeSelf     the type value itself, which each object it builds holds
+//	typeSigs     a sorted map from the name of each typed method to its
+//	             signature (lispMethodSig)
 //
 // An object's captures are (type fields state): the type value, a sorted map
 // from field name (a string) to value, and the call state (objState).  A
@@ -47,6 +49,7 @@ const (
 	typeMethods
 	typeCheck
 	typeSelf
+	typeSigs
 	typeCells
 )
 
@@ -199,7 +202,19 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		return env.ErrorCondition(UnknownOperation, op)
 	}
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
-		return callLispMethod(env, caps, m, rest)
+		// The call's shape is checked in Go, as for a Go method, so a
+		// bad call is bad-arguments with no receiver in the count.
+		if msg := lispMethodArity(m).checkCall(rest); msg != "" {
+			return env.ErrorConditionf(BadArgs, "%s: method %s %s", desc.display, op.Str, msg)
+		}
+		call := lispCall{fn: m, who: methodWho{display: desc.display, method: op.Str}, args: rest}
+		if sig, typed := tcaps.Cells[typeSigs].Map().Get(lisp.String(op.Str)); typed {
+			if lerr := checkLispArgs(env, call.who, sig, rest); lerr != nil {
+				return lerr
+			}
+			call.sig = sig
+		}
+		return callLispMethod(env, caps, call)
 	}
 	if desc.hasField(op.Str) {
 		if len(rest) > 0 {
@@ -214,7 +229,29 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	return env.ErrorCondition(UnknownOperation, op)
 }
 
-// callLispMethod calls the method m on the object over caps, whose type
+// lispCall is a call of a Lisp method whose arguments evalLispObject has
+// checked: the method, its signature (or nil) and the arguments after the
+// receiver.
+type lispCall struct {
+	fn, sig *lisp.LVal
+	who     methodWho
+	args    []*lisp.LVal
+}
+
+// run calls the method with args, the receiver first, and checks the value
+// it returns against its :returns type.
+func (c lispCall) run(env *lisp.LEnv, args []*lisp.LVal) *lisp.LVal {
+	r := env.FunCall(c.fn, lisp.QExpr(args))
+	if r.IsError() || c.sig == nil {
+		return r
+	}
+	if lerr := checkLispReturn(env, c.who, c.sig, r); lerr != nil {
+		return lerr
+	}
+	return r
+}
+
+// callLispMethod calls the method c on the object over caps, whose type
 // evalLispObject has checked.
 //
 // A method may change several fields.  :check runs when the outermost
@@ -225,20 +262,20 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 // breaks :check, leaves the fields as they were before the outermost
 // call: every header of the object reads its fields through caps, so
 // putting the saved map back restores them all.
-func callLispMethod(env *lisp.LEnv, caps, m *lisp.LVal, rest []*lisp.LVal) *lisp.LVal {
+func callLispMethod(env *lisp.LEnv, caps *lisp.LVal, c lispCall) *lisp.LVal {
 	t, _ := lispTypeOf(caps.Cells[objType])
 	recv := newLispObject(t.desc, caps)
-	call := make([]*lisp.LVal, 0, len(rest)+1)
-	call = append(call, recv)
-	call = append(call, rest...)
+	args := make([]*lisp.LVal, 0, len(c.args)+1)
+	args = append(args, recv)
+	args = append(args, c.args...)
 	if !caps.Cells[objState].IsNil() {
-		return env.FunCall(m, lisp.QExpr(call))
+		return c.run(env, args)
 	}
 	caps.Cells[objState] = lisp.Bool(true) //elps:mutates marks the object's own call state
 	defer func() {
 		caps.Cells[objState] = lisp.Nil() //elps:mutates clears the object's own call state
 	}()
-	r := env.FunCall(m, lisp.QExpr(call))
+	r := c.run(env, args)
 	if !r.IsError() {
 		if lerr := runRecordCheck(env, t.desc, t.caps, recv); lerr != nil {
 			r = lerr

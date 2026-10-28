@@ -371,6 +371,9 @@ Details:
 * The rollback covers the outermost call on the object. A method that
   calls another method on its receiver is one call: a failure anywhere
   undoes all of it.
+* The rollback is per object. A call on another object that returned with
+  no error is not undone when the outer call fails later: a ledger method
+  that pays an invoice and then fails leaves the invoice paid.
 * The fields are saved on the first `s:set-field!` of a call, so a read-only
   method costs nothing.
 * Go types work the same way: a Go method or `Default` that fails, or that
@@ -383,6 +386,68 @@ Details:
 * A phylum endpoint that raises an error already rolls back its whole
   transaction. The rollback matters for code that catches an error and
   keeps using the object.
+
+#### Typed arguments
+
+A formal after the receiver is a name or `[name type]`
+(luthersystems/elps#905). The type is any value `s:has-key` accepts as a
+type.
+
+```lisp
+(set 'positive (s:make-validator "positive" s:int (s:gt 0)))
+(set 'acct
+  (s:make-record "acct"
+    (s:has-key "bal" s:int)
+    (s:method deposit (o [amount positive] &optional [memo s:string])
+      (s:set-field! o 'bal (+ (o 'bal) amount)))
+    (s:method balance (o) :returns s:int (o 'bal))
+    (s:method merge (o [other :self])            ; the type being defined
+      (s:set-field! o 'bal (+ (o 'bal) (other 'bal))))
+    (s:method pay (o [to 'payee])                ; late: resolved on each call
+      (to 'credit (o 'bal)))))
+
+((acct :bal 0) 'deposit -5)    ; failed-constraint: ...: method deposit: argument amount: ...
+((acct :bal 0) 'deposit 5 'x)  ; wrong-type on memo
+((acct :bal 0) 'deposit 5)     ; memo is absent, so it is not checked
+```
+
+| Kind | Form | Checked |
+|------|------|---------|
+| Required | `[amount positive]` | Always |
+| Optional | `&optional [memo s:string]` | When the call gives it, an explicit `()` too |
+| Key | `&key [fee s:int]` | When the call gives `:fee v`, `:fee ()` too |
+| Rest | `&rest [xs s:int]` | Each element, at one step each |
+
+Rules:
+
+* Go checks the call's shape and then each typed argument, before the body
+  runs. A bad call changes nothing. The check costs no ELPS steps, except
+  one step per element of a typed `&rest`.
+* A wrong number of arguments is `bad-arguments`, for every method, with
+  the receiver not counted. A failed type check keeps the type's condition
+  (`wrong-type`, or `failed-constraint` for a rule such as `s:gt`) and names
+  the method and the argument.
+* A type is resolved once, when the method is made. `:self` names the type
+  being defined. `[x 'T]` resolves `T` on each call, in the defining
+  package, so a method can name a type that is defined later, or two types
+  can name each other; it costs a few steps on each call.
+* A record type is checked as `s:validate` checks it: the type, every field
+  and `:check`. `(s:ref T)` checks the type only.
+* `:returns T` after the formals checks the value the method returns, after
+  the body and inside the rollback: a bad value fails the call and the
+  object goes back to its state before it. `:self` and `'T` work here too.
+  In `s:defmethod`, `:replace` and `:returns` come in either order. Go:
+  `MethodSpec.ReturnCheck`.
+* The receiver has no type. `s:defmethod` with `:replace true` replaces the
+  types with the method.
+* An interface may write types, `(pay ([amount positive]))`. They are not
+  evaluated and not part of the match, which uses names and arity only;
+  they document the method.
+* Go: `MethodSpec.ArgChecks` maps a formal's name to a check function. A
+  check's error is `wrong-type`, or `failed-constraint` when it wraps
+  `libschema.ErrFailedConstraint`; the same rule holds for `FieldSpec.Check`
+  and `RecordSpec.Check`. `NewRecordType` refuses a name that is not in
+  `Formals`.
 
 #### Interfaces
 

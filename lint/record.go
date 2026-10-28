@@ -161,12 +161,20 @@ func recordShapes(exprs, all []*lisp.LVal) recordTypes {
 }
 
 // methodSignature returns the signature of a method's formals after the
-// receiver, or nil when they are not a list.
+// receiver, or nil when they are not a list.  A typed formal, [name type]
+// (#905), counts as its name.
 func methodSignature(formals *lisp.LVal) *analysis.Signature {
 	if formals.Type != lisp.LSExpr || len(formals.Cells) == 0 {
 		return nil
 	}
-	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(formals.Cells[1:]))}
+	names := make([]*lisp.LVal, 0, len(formals.Cells)-1)
+	for _, p := range formals.Cells[1:] {
+		if p.Type == lisp.LSExpr && len(p.Cells) == 2 && p.Cells[0].Type == lisp.LSymbol {
+			p = p.Cells[0]
+		}
+		names = append(names, p)
+	}
+	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(names))}
 }
 
 // boundName returns NAME when top is (set 'NAME value) or

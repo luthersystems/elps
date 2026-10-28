@@ -633,7 +633,7 @@ An `s:set-field!` in `:check` gets this warning, not `record-set-outside-method`
 
 In a method, `(o 'field)` takes no arguments, and `(o 'method args...)`
 takes the arguments the method's formals accept after the receiver. A
-wrong count fails only when the method runs.
+wrong count fails only when the method runs. A typed formal, `[name type]`, counts as its name.
 
 ```lisp
 (s:method add (o sku qty) ...)

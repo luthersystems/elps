@@ -175,7 +175,7 @@ func validateGoValue(env *lisp.LEnv, t *RecordType, input *lisp.LVal) *lisp.LVal
 		return env.ErrorConditionf(WrongType, "Input is not a %s record", t.spec.DisplayName)
 	}
 	if err := t.check(r.caps); err != nil {
-		return env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+		return env.ErrorConditionf(goCheckCondition(err), "%s: %v", t.spec.DisplayName, err)
 	}
 	return lisp.Nil()
 }

@@ -5,6 +5,7 @@ package libschema
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"unicode"
@@ -87,6 +88,18 @@ type MethodSpec struct {
 	// checks them.  Without Formals the method accepts any number of
 	// arguments as far as an interface is concerned.
 	Formals *lisp.LVal
+	// ArgChecks, if not nil, check the arguments (#905): a map from the
+	// name of a formal in Formals to its check.  Each argument a call
+	// supplies for the formal is checked before Call runs, an explicit ()
+	// too, and each element of an &rest formal; an absent argument is not.
+	// A check must not run Lisp.  Its error fails the call with
+	// wrong-type, or failed-constraint when it wraps ErrFailedConstraint.
+	// ArgChecks needs Formals.
+	ArgChecks map[string]func(*lisp.LVal) error
+	// ReturnCheck, if not nil, checks the value Call returns, inside the
+	// call's rollback: a value it refuses fails the call, as :returns
+	// does for a Lisp method.  It must not run Lisp.
+	ReturnCheck func(*lisp.LVal) error
 	// Name is the op that calls the method.
 	Name string
 	// Doc describes the method.
@@ -99,6 +112,8 @@ type RecordType struct {
 	methods map[string]*MethodSpec
 	// arity is the arity of each method, from its Formals.
 	arity map[string]arity
+	// sigs are the argument checks of each method with ArgChecks.
+	sigs  map[string]*goSig
 	index map[string]int
 	spec  RecordSpec
 }
@@ -136,6 +151,7 @@ func NewRecordType(spec RecordSpec) (*RecordType, error) {
 		index:   make(map[string]int, len(spec.Fields)),
 		methods: make(map[string]*MethodSpec, len(spec.Methods)),
 		arity:   make(map[string]arity, len(spec.Methods)),
+		sigs:    make(map[string]*goSig),
 	}
 	t.spec.Fields = append([]FieldSpec(nil), spec.Fields...)
 	t.spec.Methods = append([]MethodSpec(nil), spec.Methods...)
@@ -168,6 +184,14 @@ func NewRecordType(spec RecordSpec) (*RecordType, error) {
 			t.arity[m.Name] = arityOf(m.Formals)
 			m.Formals = m.Formals.Copy()
 		}
+		sig, err := newGoSig(m)
+		if err != nil {
+			return nil, fmt.Errorf("libschema: record type %s: method %s: %w", spec.Name, m.Name, err)
+		}
+		if sig != nil {
+			t.sigs[m.Name] = sig
+		}
+		m.ArgChecks = maps.Clone(m.ArgChecks)
 	}
 	if _, loaded := goTypes.LoadOrStore(goTypeKey(spec.Package, spec.FID), t); loaded {
 		return nil, fmt.Errorf("libschema: record type %s:%s is defined already", spec.Package, spec.FID)
@@ -200,6 +224,7 @@ func (t *RecordType) Spec() RecordSpec {
 		if s.Methods[i].Formals != nil {
 			s.Methods[i].Formals = s.Methods[i].Formals.Copy()
 		}
+		s.Methods[i].ArgChecks = maps.Clone(s.Methods[i].ArgChecks)
 	}
 	return s
 }
@@ -213,7 +238,7 @@ func (t *RecordType) New(env *lisp.LEnv, fields ...*lisp.LVal) *lisp.LVal {
 	}
 	caps := lisp.QExpr(lisp.Cells(fields).Clone())
 	if err := t.check(caps); err != nil {
-		return env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+		return env.ErrorConditionf(goCheckCondition(err), "%s: %v", t.spec.DisplayName, err)
 	}
 	return t.object(caps)
 }
@@ -258,7 +283,15 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 			if msg := t.arity[op.Str].checkCall(rest); msg != "" {
 				return env.ErrorConditionf(BadArgs, "%s: method %s %s", t.spec.DisplayName, op.Str, msg)
 			}
-			return t.guarded(env, obj, func() *lisp.LVal { return m.Call(env, obj, rest) })
+			sig := t.sigs[op.Str]
+			if sig == nil {
+				return t.guarded(env, obj, func() *lisp.LVal { return m.Call(env, obj, rest) })
+			}
+			who := methodWho{display: t.spec.DisplayName, method: op.Str}
+			if lerr := sig.check(env, who, rest); lerr != nil {
+				return lerr
+			}
+			return t.guarded(env, obj, func() *lisp.LVal { return sig.checkReturn(env, who, m.Call(env, obj, rest)) })
 		}
 		if i, ok := t.index[op.Str]; ok && t.spec.Fields[i].Getter {
 			if len(rest) > 0 {
@@ -283,7 +316,7 @@ func (t *RecordType) guarded(env *lisp.LEnv, obj Record, call func() *lisp.LVal)
 	res := call()
 	if !res.IsError() && t.spec.Check != nil {
 		if err := t.spec.Check(obj); err != nil {
-			res = env.ErrorConditionf(WrongType, "%s: %v", t.spec.DisplayName, err)
+			res = env.ErrorConditionf(goCheckCondition(err), "%s: %v", t.spec.DisplayName, err)
 		}
 	}
 	if res.IsError() {
@@ -384,7 +417,7 @@ func (r Record) Set(env *lisp.LEnv, i int, v *lisp.LVal) *lisp.LVal {
 	f := r.t.spec.Fields[i]
 	if f.Check != nil {
 		if err := f.Check(v); err != nil {
-			return env.ErrorConditionf(WrongType, "%s: field %s: %v", r.t.spec.DisplayName, f.Name, err)
+			return env.ErrorConditionf(goCheckCondition(err), "%s: field %s: %v", r.t.spec.DisplayName, f.Name, err)
 		}
 	}
 	r.caps.Cells[i] = v //elps:mutates a Go method writes its own object's field through the record view
