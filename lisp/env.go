@@ -1070,6 +1070,11 @@ func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	return nil
 }
 
+// lispFunFIDPrefix starts the FID of each function newLambda builds: every
+// function defined in Lisp (lambda, defun, defmacro and the functions of
+// flet and labels).  CallStack.InLispFunction reads it.
+const lispFunFIDPrefix = "_fun"
+
 // newLambda builds a lambda over validated cells (formals, then body).
 func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
@@ -1077,8 +1082,8 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
 	var name [24]byte
-	copy(name[:], "_fun")
-	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
+	copy(name[:], lispFunFIDPrefix)
+	fid := strconv.AppendUint(name[:len(lispFunFIDPrefix)], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc

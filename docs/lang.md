@@ -2737,13 +2737,17 @@ will be replaced with the string "ERROR DETECTED".
 
 A condition can have a parent. A `handler-bind` binding for the parent then
 catches the child, as a Go `errors.Is` check matches a wrapped error. elps
-gives two built-in conditions a parent, `error`, and both render as `error`
-does:
+gives three built-in conditions a parent, `error`, and all three render as
+`error` does:
 
 - `argument-error`: a builtin built with elps's Go argument helpers raises
   it for a bad argument.
 - `match-error`: a `let` or `let*` binding pattern raises it for a value
   that does not match (see "Binding patterns").
+- `record-error`: a libschema record type raises it when a program breaks
+  a record rule: `s:set-field!` with no method of the object's type running
+  on the object, `s:set-field!` while the object's `:check` runs, and
+  `s:defmethod` in a function call (see `lisp/lisplib/libschema/README.md`).
 
 `define-condition` adds more:
 
@@ -2779,7 +2783,7 @@ define a hierarchy from the root down: `(define-condition 'storage-error
 'error)` before `(define-condition 'not-found 'storage-error)`. Defining the
 parent a condition already has does nothing. Giving it a different one is an
 error, as are giving a parent to a condition that already has children
-(`error` has `argument-error` and `match-error`), a chain more than 64 deep, and any definition
+(`error` has `argument-error`, `match-error` and `record-error`), a chain more than 64 deep, and any definition
 that names `condition` or `internal-panic`. The hierarchy belongs to the runtime: a definition made
 while a template is built is in every VM forked from the template, and one
 made in a VM is seen by no other VM. A definition does not change how an

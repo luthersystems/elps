@@ -222,7 +222,8 @@ var (
 			gets it before its children, so define a hierarchy from the root
 			down: defining the parent it already has does nothing, and any
 			other parent is an error. Giving a parent to a condition that
-			has children (error has argument-error and match-error), a
+			has children (error has argument-error, match-error and
+			record-error), a
 			chain more than 64
 			deep, or a definition that names condition or internal-panic is
 			an error. The hierarchy belongs to the runtime: a template

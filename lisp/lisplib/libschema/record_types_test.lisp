@@ -23,7 +23,8 @@
                               (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
                     (s:method pay (o)
                               (s:set-field! o 'status "paid"))
-                    (s:method self (o) o)))
+                    (s:method self (o) o)
+                    (s:method put (o field value) (s:set-field! o field value))))
 
 (defun new-order ()
   (order :id "o1" :lines (sorted-map) :status "open"))
@@ -75,10 +76,17 @@
 
 (test "set-checks-the-field"
   (let ([o (new-order)])
-    (assert-equal 'wrong-type (condition-of (lambda () (s:set-field! o 'status "lost")))) ; nolint:record-set-outside-method
+    (assert-equal 'wrong-type (condition-of (lambda () (o 'put 'status "lost"))))
     (assert-equal "open" (o 'status))
-    (assert-equal 'bad-arguments (condition-of (lambda () (s:set-field! o 'bogus 1)))) ; nolint:record-set-outside-method
+    (assert-equal 'bad-arguments (condition-of (lambda () (o 'put 'bogus 1))))
     (assert-equal 'bad-arguments (condition-of (lambda () (s:set-field! (sorted-map) 'id "x")))))) ; nolint:record-set-outside-method
+
+; s:set-field! needs a method of the object's type running on the object
+; (luthersystems/elps#908).
+(test "set-outside-a-method"
+  (let ([o (new-order)])
+    (assert-equal 'record-error (condition-of (lambda () (s:set-field! o 'status "paid")))) ; nolint:record-set-outside-method
+    (assert-equal "open" (o 'status))))
 
 (test "call-errors"
   (let ([o (new-order)])
@@ -107,8 +115,18 @@
   (assert-equal 'negative-count (condition-of (lambda () (counter :n -1))))
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc (_o) 0))))
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0))))
-  (s:defmethod counter inc (o) :replace true (s:set-field! o 'n (+ 10 (o 'n))))
-  (let ([c (counter :n 0)])
+  ; A valid s:defmethod in a function call is refused (luthersystems/elps#908).
+  (assert-equal 'record-error (condition-of (lambda () (s:defmethod counter late (_o) 0))))
+  (assert-equal 'unknown-operation (condition-of (lambda () ((counter :n 0) 'late)))))
+
+(set 'tally
+     (s:make-record "tally"
+                    (s:has-key "n" s:int)))
+(s:defmethod tally inc (o) (s:set-field! o 'n (+ 1 (o 'n))))
+(s:defmethod tally inc (o) :replace true (s:set-field! o 'n (+ 10 (o 'n))))
+
+(test "defmethod-replace"
+  (let ([c (tally :n 0)])
     (c 'inc)
     (assert-equal 10 (c 'n))))
 

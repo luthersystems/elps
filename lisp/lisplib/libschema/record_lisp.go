@@ -57,7 +57,9 @@ var recordMacros = []*libutil.Builtin{
 		formal, recv, is the object, and a formal after it may be
 		[name type], as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
-		:replace true.`),
+		:replace true.  It raises record-error while a function defined
+		in Lisp runs: write it at the top level of a file, also in a
+		let, progn or flet body, so it runs at load.`),
 	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
 		`Defines an interface, a set of methods, and returns it:
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
@@ -89,9 +91,10 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("set-field!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
 		`Sets a field of a record object, (s:set-field! obj 'field value),
 		and returns the value.  The field's validator checks the value
-		first; a failure leaves the object as it was.  Use it in method
-		bodies only: code outside the type changes an object through its
-		methods.`),
+		first; a failure leaves the object as it was.  It raises
+		record-error unless a method of the object's type runs on the
+		object, and while the object's :check runs: code outside the
+		type changes an object through its methods.`),
 	libutil.FunctionDoc("fields", lisp.Formals("obj"), builtinRecordFields,
 		`Returns a copy of a record object's fields as a sorted map.
 		Store this map, not the object, in a ledger or other plain
@@ -484,12 +487,18 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
 		return env.ErrorConditionf(WrongType, "%v", err)
 	}
-	sigs := tcaps.Cells[typeSigs].Map()
+	var sig *lisp.LVal
 	if len(args.Cells) > 4 && !args.Cells[4].IsNil() {
-		sig := lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, args.Cells[4])
+		sig = lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, args.Cells[4])
 		if sig.IsError() {
 			return sig
 		}
+	}
+	if lerr := refuseLateMethod(env, desc, name.Str); lerr != nil {
+		return lerr
+	}
+	sigs := tcaps.Cells[typeSigs].Map()
+	if sig != nil {
 		sigs.Set(key, sig) //elps:mutates s:defmethod sets the method's types with the method
 	} else if _, ok := sigs.Get(key); ok {
 		sigs.Del(key) //elps:mutates :replace with an untyped method drops the old types
@@ -497,6 +506,26 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	methods.Map().Set(key, fn)                                           //elps:mutates s:defmethod adds to the type's own method map
 	tcaps.Cells[typeArities].Map().Set(key, lisp.Native(arityTag{a: a})) //elps:mutates the arity goes with the method
 	return name
+}
+
+// refuseLateMethod returns the record-error of an s:defmethod that runs in
+// a function call, or nil when it runs at load (luthersystems/elps#908).
+//
+// A template publishes a type with the methods it has at publication, so a
+// method added in a function call reaches only the VM that runs the call.
+// The test is lisp.CallStack.InLispFunction: s:defmethod refuses while a
+// lambda, defun, defmacro, flet or labels function runs.  It reads only the
+// call stack, which is the same for the same code in a cold-loaded VM and
+// in every VM of a template, so every peer gives the same answer.  A
+// top-level form, also in a let, progn, when, flet body, call argument,
+// load-file or load-string, runs with no Lisp function on the stack.  The
+// check runs after the other checks of s:defmethod, so a bad type or name
+// gets its own error first.
+func refuseLateMethod(env *lisp.LEnv, desc *recordDesc, name string) *lisp.LVal {
+	if !env.Runtime.Stack.InLispFunction() {
+		return nil
+	}
+	return env.ErrorConditionf(RecordError, "s:defmethod: method %s of %s is added in a function call, not at load; write s:defmethod at the top level of a file", name, desc.display)
 }
 
 // interfaceList checks the interfaces of :implements and returns them as a
