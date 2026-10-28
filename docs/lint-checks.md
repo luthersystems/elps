@@ -788,8 +788,13 @@ load, so the method reaches only the VM that runs the call:
 The runtime refuses the same code (luthersystems/elps#908): `s:defmethod`
 raises `record-error` while a function defined in Lisp runs, that is when
 the call stack holds a frame of a `lambda`, `defun`, `defmacro`, `flet` or
-`labels` function. The test reads only the call stack, so it gives the same
-answer in a cold-loaded VM and in every template VM. The lint finds the call
+`labels` function. The test reads only the call stack. A template VM starts
+with an empty stack, so the test gives the same answer in every template VM
+and in a cold-loaded VM, on one condition: the embedder loads the program
+with no Lisp function on the stack, as Go's `LEnv.LoadFile` and
+`LoadString` at the top level do. A cold load that a Lisp function starts,
+such as `(funcall (lambda () (load-file "types.lisp")))`, refuses an
+`s:defmethod` that a Go-loaded template accepts. The lint finds the call
 before the code runs. The two tests differ:
 
 | Code | Lint | Runtime |
@@ -797,7 +802,6 @@ before the code runs. The two tests differ:
 | `s:defmethod` in a function body | reported | refused |
 | `s:defmethod` in the arguments of a macro call that expands it at the top level | reported | allowed |
 | `s:defmethod` at the top level of a file that a function loads with `load-file` | not reported | refused |
-| `s:defmethod` in a `*_test.lisp` test body | skipped | refused |
 
 An `s:defmethod` runs at load when nothing around it defers it:
 
@@ -837,9 +841,10 @@ the macro runs its body at load, because the check cannot see into the
 macro. Suppress that line with
 `; nolint:record-defmethod-not-toplevel`.
 
-The check skips `*_test.lisp` and `*_testhelpers.lisp` files. Only test
-runners load them, and the runtime refuses a call-time `s:defmethod` in a
-test too. A test checks the refusal with an `s:defmethod` in a lambda.
+The check covers `*_test.lisp` and `*_testhelpers.lisp` files too: a
+`test` body is a function body, so the runtime refuses an `s:defmethod` in
+it. A test that checks the refusal on purpose suppresses the line with
+`; nolint:record-defmethod-not-toplevel`.
 
 ### `schema-type-union`
 

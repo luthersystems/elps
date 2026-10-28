@@ -1070,11 +1070,6 @@ func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	return nil
 }
 
-// lispFunFIDPrefix starts the FID of each function newLambda builds: every
-// function defined in Lisp (lambda, defun, defmacro and the functions of
-// flet and labels).  CallStack.InLispFunction reads it.
-const lispFunFIDPrefix = "_fun"
-
 // newLambda builds a lambda over validated cells (formals, then body).
 func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
@@ -1082,8 +1077,8 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
 	var name [24]byte
-	copy(name[:], lispFunFIDPrefix)
-	fid := strconv.AppendUint(name[:len(lispFunFIDPrefix)], uint64(env.Runtime.GenEnvID()), 10)
+	copy(name[:], "_fun")
+	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
@@ -2144,7 +2139,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), fun.Builtin() == nil)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2431,7 +2426,7 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), fun.Builtin() == nil)
 	if err != nil {
 		return env.Error(err)
 	}

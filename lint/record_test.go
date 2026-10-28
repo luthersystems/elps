@@ -527,11 +527,12 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
 		`(defun add-size () (s:defmethod order size (o) 0)) ; nolint:record-defmethod-not-toplevel`))
 
-	// A test file is skipped: a test may call s:defmethod on purpose.
+	// A test file is checked too: the runtime refuses a call-time
+	// s:defmethod in a test as well (luthersystems/elps#908).
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordDefmethodNotToplevel}}
 	for _, name := range []string{"order_test.lisp", "order_testhelpers.lisp"} {
 		diags, err := l.LintFile([]byte(src), name)
 		require.NoError(t, err)
-		assertNoDiags(t, diags)
+		assertDiagOnLine(t, diags, 6, "s:defmethod inside defun")
 	}
 }

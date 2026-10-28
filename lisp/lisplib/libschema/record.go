@@ -78,8 +78,9 @@ const (
 	//	       from before it and puts it back when the check returns
 	//
 	// s:set-field! reads it to refuse a write outside a method or in a
-	// :check.  The values are the singletons () true and false, and the
-	// saved map, so a call allocates nothing for its state.
+	// :check.  The marks are the singletons () true and false, so marking
+	// a call or a :check allocates nothing.  The first s:set-field! of a
+	// method call copies the field map, which the call saves.
 	objState
 	objCells
 )

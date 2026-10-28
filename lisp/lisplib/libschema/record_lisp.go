@@ -84,7 +84,8 @@ var recordBuiltins = []*libutil.Builtin{
 		directly.`),
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
-		directly.`),
+		directly.  It raises record-error while a function defined in
+		Lisp runs.`),
 	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
@@ -487,18 +488,15 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
 		return env.ErrorConditionf(WrongType, "%v", err)
 	}
-	var sig *lisp.LVal
-	if len(args.Cells) > 4 && !args.Cells[4].IsNil() {
-		sig = lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, args.Cells[4])
-		if sig.IsError() {
-			return sig
-		}
-	}
 	if lerr := refuseLateMethod(env, desc, name.Str); lerr != nil {
 		return lerr
 	}
 	sigs := tcaps.Cells[typeSigs].Map()
-	if sig != nil {
+	if len(args.Cells) > 4 && !args.Cells[4].IsNil() {
+		sig := lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, args.Cells[4])
+		if sig.IsError() {
+			return sig
+		}
 		sigs.Set(key, sig) //elps:mutates s:defmethod sets the method's types with the method
 	} else if _, ok := sigs.Get(key); ok {
 		sigs.Del(key) //elps:mutates :replace with an untyped method drops the old types
@@ -515,12 +513,16 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // method added in a function call reaches only the VM that runs the call.
 // The test is lisp.CallStack.InLispFunction: s:defmethod refuses while a
 // lambda, defun, defmacro, flet or labels function runs.  It reads only the
-// call stack, which is the same for the same code in a cold-loaded VM and
-// in every VM of a template, so every peer gives the same answer.  A
-// top-level form, also in a let, progn, when, flet body, call argument,
-// load-file or load-string, runs with no Lisp function on the stack.  The
-// check runs after the other checks of s:defmethod, so a bad type or name
-// gets its own error first.
+// call stack.  A template VM starts with an empty stack, so the same code
+// gives the same answer in every VM of a template and in a cold-loaded VM
+// whose embedder loads the program with no Lisp function on the stack, as
+// Go's LEnv.LoadFile and LoadString at the top level do.  A cold load that
+// a Lisp function starts, (funcall (lambda () (load-file ...))), refuses
+// where a Go-loaded template accepts.  A top-level form, also in a let,
+// progn, when, flet body, call argument, load-file or load-string, runs
+// with no Lisp function on the stack.  The check runs after the type, name
+// and interface checks, so a bad type or name gets its own error first, and
+// before the method's signature is built, so a refused call builds none.
 func refuseLateMethod(env *lisp.LEnv, desc *recordDesc, name string) *lisp.LVal {
 	if !env.Runtime.Stack.InLispFunction() {
 		return nil
