@@ -35,6 +35,7 @@ const (
 	recordMethodArity      = "record-method-arity"
 	recordDefmethodType    = "record-defmethod-type"
 	recordPlainSet         = "record-plain-set"
+	recordCapturedSet      = "record-captured-set"
 )
 
 // recordFinding is one finding of the record walker.  kind is the name of
@@ -67,7 +68,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	if len(exprs) == 0 {
 		return nil
 	}
-	w := &recordWalk{handled: make(map[*lisp.LVal]bool)}
+	w := &recordWalk{handled: make(map[*lisp.LVal]bool), locals: make(map[*lisp.LVal]map[*lisp.LVal]map[string]bool)}
 	types := recordShapes(exprs, all)
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
@@ -78,6 +79,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 			}
 			for _, m := range recordMethods(site.Form) {
 				w.methodBody(m.body, m.recv, shape)
+				w.capturedSets(top, m)
 			}
 			if check := checkFunction(site.Form); check != nil {
 				w.checkBody(check)
@@ -104,6 +106,10 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 type recordWalk struct {
 	handled map[*lisp.LVal]bool
 	out     []recordFinding
+	// locals maps a top-level form to the lexical names in scope at each
+	// form in it (lexicalNames).  It is computed once per top form, on
+	// the first method in it.
+	locals map[*lisp.LVal]map[*lisp.LVal]map[string]bool
 }
 
 // mutationReport is the text of a finding on a mutating builtin.  msg
@@ -164,17 +170,28 @@ func recordShapes(exprs, all []*lisp.LVal) recordTypes {
 // receiver, or nil when they are not a list.  A typed formal, [name type]
 // (#905), counts as its name.
 func methodSignature(formals *lisp.LVal) *analysis.Signature {
+	names := methodFormals(formals)
+	if names == nil {
+		return nil
+	}
+	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(names[1:]))}
+}
+
+// methodFormals returns a method's formals, the receiver first, with each
+// typed formal, [name type] (#905), replaced by its name.  It returns nil
+// when the formals are not a list with a receiver.
+func methodFormals(formals *lisp.LVal) []*lisp.LVal {
 	if formals.Type != lisp.LSExpr || len(formals.Cells) == 0 {
 		return nil
 	}
-	names := make([]*lisp.LVal, 0, len(formals.Cells)-1)
-	for _, p := range formals.Cells[1:] {
+	names := make([]*lisp.LVal, 0, len(formals.Cells))
+	for _, p := range formals.Cells {
 		if p.Type == lisp.LSExpr && len(p.Cells) == 2 && p.Cells[0].Type == lisp.LSymbol {
 			p = p.Cells[0]
 		}
 		names = append(names, p)
 	}
-	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(names))}
+	return names
 }
 
 // boundName returns NAME when top is (set 'NAME value) or
@@ -256,10 +273,13 @@ func callSites(form *lisp.LVal, names ...string) []astutil.CallSite {
 }
 
 // recordMethod is one method in a s:make-record or s:defmethod call: the
-// name of its receiver and its body.
+// name of its receiver, its formals and its body.  form is the s:method
+// form or the s:defmethod call.
 type recordMethod struct {
-	recv string
-	body []*lisp.LVal
+	recv    string
+	formals *lisp.LVal
+	body    []*lisp.LVal
+	form    *lisp.LVal
 }
 
 // recordMethods returns each method of a s:make-record or s:defmethod call
@@ -268,7 +288,7 @@ func recordMethods(call *lisp.LVal) []recordMethod {
 	if astutil.HeadSymbol(call) == recordPackage+"defmethod" {
 		if len(call.Cells) > 4 {
 			if recv := receiverName(call.Cells[3]); recv != "" {
-				return []recordMethod{{recv, call.Cells[4:]}}
+				return []recordMethod{{recv, call.Cells[3], call.Cells[4:], call}}
 			}
 		}
 		return nil
@@ -278,7 +298,7 @@ func recordMethods(call *lisp.LVal) []recordMethod {
 		h := astutil.HeadSymbol(c)
 		if (h == recordPackage+"method" || h == "method") && !c.IsQuoted() && len(c.Cells) > 3 {
 			if recv := receiverName(c.Cells[2]); recv != "" {
-				methods = append(methods, recordMethod{recv, c.Cells[3:]})
+				methods = append(methods, recordMethod{recv, c.Cells[2], c.Cells[3:], c})
 			}
 		}
 	}
@@ -397,6 +417,93 @@ func (w *recordWalk) plainSets(form *lisp.LVal, recv string) {
 
 // maxPlainSetWork bounds the lists plainSets walks in one method body.
 const maxPlainSetWork = 1 << 16
+
+// capturedSets reports each set! in method m of a name that a closure
+// around the type binds: a let, let*, flet, labels or function formal
+// outside the method.  Such a name is one variable for every object of
+// the type, so a method that changes it changes shared state.  No object
+// holds that state, so a durable dump does not save it and the rollback
+// of a failed method call does not undo it.
+//
+// The walk is syntactic, as the other record checks are, so it runs
+// without workspace analysis.  A set! of a global is not reported: the
+// check is about locals that look private to the type.
+func (w *recordWalk) capturedSets(top *lisp.LVal, m recordMethod) {
+	names := methodFormals(m.formals)
+	if names == nil {
+		return
+	}
+	locals, ok := w.locals[top]
+	if !ok {
+		locals = lexicalNames(top)
+		w.locals[top] = locals
+	}
+	captured := locals[m.form]
+	if len(captured) == 0 {
+		return
+	}
+	// Walk the method as the lambda it runs as.  The walk then binds the
+	// receiver and the formals, and a set! it reports as not bound is
+	// free in the method.
+	fn := lisp.SExpr(lisp.Cells{lisp.Symbol("lambda"), lisp.SExpr(names)}.Append(m.body...))
+	var current *lisp.LVal
+	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		switch n.Event {
+		case lisp.WalkForm:
+			current = n.Node
+		case lisp.WalkSet:
+			if !n.Bound && captured[n.Node.Str] && current != nil {
+				name := n.Node.Str
+				w.out = append(w.out, recordFinding{
+					node: current, kind: recordCapturedSet,
+					msg:  "set! changes " + name + ", a local of the closure around the record type; every object of the type shares it",
+					note: "a durable dump does not save " + name + ", and a failed method call does not undo it; keep per-object state in a field and change it with s:set-field!",
+				})
+			}
+		case lisp.WalkRef, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkEnter, lisp.WalkLeave:
+		}
+		return true
+	}}
+	codewalk.Occurrences(cw, maxPlainSetWork, fn)
+}
+
+// lexicalNames returns, for each compound form in code position in top,
+// the names that the lexical binding forms around it bind.  Globals are
+// not in the sets.  Macros are not expanded, so a name a macro binds is
+// not seen; the check then misses a finding and never makes a false one.
+func lexicalNames(top *lisp.LVal) map[*lisp.LVal]map[string]bool {
+	out := make(map[*lisp.LVal]map[string]bool)
+	var scopes []map[string]bool
+	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		switch n.Event {
+		case lisp.WalkEnter:
+			scopes = append(scopes, make(map[string]bool))
+		case lisp.WalkLeave:
+			if len(scopes) > 0 {
+				scopes = scopes[:len(scopes)-1]
+			}
+		case lisp.WalkBind:
+			if len(scopes) > 0 && n.Node.Type == lisp.LSymbol {
+				scopes[len(scopes)-1][n.Node.Str] = true
+			}
+		case lisp.WalkForm:
+			if len(scopes) == 0 {
+				break
+			}
+			names := make(map[string]bool)
+			for _, s := range scopes {
+				for name := range s {
+					names[name] = true
+				}
+			}
+			out[n.Node] = names
+		case lisp.WalkRef, lisp.WalkSet, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData:
+		}
+		return true
+	}}
+	codewalk.Occurrences(cw, maxPlainSetWork, top)
+	return out
+}
 
 // plainSet reports one set! or set on the receiver.
 func (w *recordWalk) plainSet(call *lisp.LVal, recv string) {
@@ -713,6 +820,20 @@ var AnalyzerRecordDefmethodType = &Analyzer{
 		"and a name that is a function, macro or builtin. A name bound in another file " +
 		"is not checked.",
 	Run: recordAnalyzerRun(recordDefmethodType),
+}
+
+// AnalyzerRecordCapturedSet reports a set! in a method of a local that a
+// closure around the record type binds.
+var AnalyzerRecordCapturedSet = &Analyzer{
+	Name:     recordCapturedSet,
+	Severity: SeverityWarning,
+	Doc: "Report set! in a method of a local of the closure around the record type.\n\n" +
+		"A type built in a let, let*, flet or labels can use the closure's locals as " +
+		"private helpers. Each local is one variable for every object of the type. " +
+		"A method that changes it with set! changes state that all objects share and " +
+		"that no object holds: a durable dump does not save it, and a failed method " +
+		"call does not undo it. Keep per-object state in a field.",
+	Run: recordAnalyzerRun(recordCapturedSet),
 }
 
 // AnalyzerRecordPlainSet reports a set! or set in a method that rebinds

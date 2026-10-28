@@ -549,7 +549,8 @@ type and on the same Go type (`parity_test.go`).
 
 Lint checks: `record-set-outside-method`, `record-type-binding`,
 `record-field-mutation`, `record-unknown-member`, `record-check-writes`,
-`record-method-arity`, `record-defmethod-type` and `record-plain-set`
+`record-method-arity`, `record-defmethod-type`, `record-plain-set` and
+`record-captured-set`
 (see `docs/lint-checks.md`).
 
 ### Gotchas

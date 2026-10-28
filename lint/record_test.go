@@ -265,3 +265,52 @@ func TestRecordSyntaxExpanderOnly(t *testing.T) {
 	assert.Nil(t, cfg.MacroExpander)
 	assert.NotNil(t, cfg.SyntaxExpander)
 }
+
+func TestRecordCapturedSet(t *testing.T) {
+	src := `(set 'counter
+  (let ([total 0] [step 1])
+    (labels ([bump (n) (+ n step)])
+      (s:make-record "counter"
+        (s:has-key "n" s:int)
+        (s:method add (o)
+          (set! total (bump total))
+          (s:set-field! o 'n (+ (o 'n) step)))
+        (s:method later (_o)
+          (map () (lambda (x) (set! step x)) '(1 2)))))))
+(set 'ledger
+  (let ([seen 0])
+    (s:defmethod counter mark (o) (set! seen (+ seen 1)) (o 'n))
+    (s:make-record "ledger" (s:has-key "n" s:int))))`
+	diags := lintCheck(t, AnalyzerRecordCapturedSet, src)
+	assert.Len(t, diags, 3, "%v", diags)
+	assertDiagOnLine(t, diags, 7, "set! changes total, a local of the closure")
+	assertDiagOnLine(t, diags, 10, "set! changes step, a local of the closure")
+	assertDiagOnLine(t, diags, 13, "set! changes seen, a local of the closure")
+
+	for _, ok := range []string{
+		// The receiver, the formals and a local of the method body are
+		// the method's own names.
+		`(set 'r (let ([o 1] [n 2] [tmp 3])
+  (s:make-record "r" (s:has-key "n" s:int)
+    (s:method m (o n [k s:int]) (set! o 1) (set! n 2) (set! k 3)
+      (let ([tmp 0]) (set! tmp 1) tmp)))))`,
+		// A global is not a local of a closure.
+		`(set 'total 0)
+(set 'r (s:make-record "r" (s:has-key "n" s:int) (s:method m (_o) (set! total 1))))
+(s:defmethod r m2 (_o) (set! total 2))`,
+		// A read of a captured local is a private helper.
+		`(set 'r (let ([rate 3])
+  (s:make-record "r" (s:has-key "n" s:int) (s:method m (o) (* rate (o 'n))))))`,
+		// A set! outside the method is not in a method body.
+		`(set 'r (let ([k 0])
+  (set! k 1)
+  (s:make-record "r" (s:has-key "n" s:int) (s:method m (_o) k))))`,
+	} {
+		assertNoDiags(t, lintCheck(t, AnalyzerRecordCapturedSet, ok))
+	}
+
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordCapturedSet, `(set 'r (let ([k 0])
+  (s:make-record "r" (s:has-key "n" s:int)
+    (s:method m (_o) (set! k 1) ; nolint:record-captured-set
+      k))))`))
+}

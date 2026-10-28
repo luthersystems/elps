@@ -933,6 +933,7 @@ func DefaultAnalyzers() []*Analyzer {
 		AnalyzerRecordMethodArity,
 		AnalyzerRecordDefmethodType,
 		AnalyzerRecordPlainSet,
+		AnalyzerRecordCapturedSet,
 		AnalyzerSchemaTypeUnion,
 		AnalyzerMatchUnreachable,
 		AnalyzerUsePackageHidesLisp,
