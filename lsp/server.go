@@ -359,6 +359,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var packageImports map[string][]string
 	var defaultPackage string
 	var filePackages map[string]string
+	var recordMethods analysis.RecordMethods
 
 	scanCfg := s.scanConfig()
 
@@ -374,6 +375,7 @@ func (s *Server) buildWorkspaceIndex() {
 			packageImports = prescan.PackageImports
 			defaultPackage = prescan.DefaultPackage
 			filePackages = prescan.FilePackages
+			recordMethods = prescan.RecordMethods
 			preamble = prescan.Preamble
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
@@ -420,6 +422,7 @@ func (s *Server) buildWorkspaceIndex() {
 		PackageImports: packageImports,
 		DefaultPackage: defaultPackage,
 		FilePackages:   filePackages,
+		RecordMethods:  recordMethods,
 	}
 
 	// Enable macro expansion at analysis time if an environment is available.

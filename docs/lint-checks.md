@@ -603,10 +603,18 @@ the method runs.
 ```
 
 The check reads the fields and methods from the type's `s:make-record`
-and from each `s:defmethod` in the same file. It skips a type whose field
-forms are not literal `s:has-key` or `s:may-have-key` calls, and a type
-defined in another file. A method added by an `s:defmethod` in another
-file is not known; suppress that line with `; nolint:record-unknown-member`.
+and from each `s:defmethod` in the same file. With a workspace
+(`elps lint --workspace`, the LSP, the MCP server), it also knows each
+method an `s:defmethod` in another workspace file adds. A type's methods
+are often split across files, and without that data a call to such a
+method reads as an unknown member. Without a workspace, add
+`; nolint:record-unknown-member` to a call of a method from another file.
+
+The workspace methods are keyed by the type's name without its package,
+so two packages with a type of one name share one method set. The check
+then misses a finding; it does not report a false one. The check skips a
+type whose field forms are not literal `s:has-key` or `s:may-have-key`
+calls, and a type defined in another file.
 
 ### `record-check-writes`
 
@@ -641,8 +649,11 @@ wrong count fails only when the method runs. A typed formal, `[name type]`, coun
 (s:method add-one (o sku) (o 'add sku))
 ```
 
-The check knows the same members as `record-unknown-member`, so it has the
-same limits: a type or an `s:defmethod` in another file is not checked.
+The check knows the same members as `record-unknown-member`, with the same
+workspace data and limits: a type defined in another file is not checked.
+A method from the linted file uses that file's formals. When `s:defmethod`
+calls in other files give one method different arities, the check skips
+calls to that method, because it cannot know which definition runs.
 
 ### `record-defmethod-type`
 

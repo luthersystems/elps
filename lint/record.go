@@ -69,7 +69,11 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 		return nil
 	}
 	w := &recordWalk{handled: make(map[*lisp.LVal]bool), locals: make(map[*lisp.LVal]map[*lisp.LVal]map[string]bool)}
-	types := recordShapes(exprs, all)
+	var workspace analysis.RecordMethods
+	if semantics != nil {
+		workspace = semantics.RecordMethods
+	}
+	types := recordShapes(exprs, all, workspace)
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
 			shape := types.shapes[site.Form]
@@ -132,7 +136,13 @@ type recordTypes struct {
 // recordShapes returns the record types of exprs, the top forms that use
 // the s: package.  A s:defmethod in exprs adds its method to the shape of
 // the type it names.  bound comes from all, every top form of the file.
-func recordShapes(exprs, all []*lisp.LVal) recordTypes {
+//
+// workspace holds the methods the s:defmethod calls of every workspace
+// file add, or nil without a workspace scan.  A method that another file
+// adds is then a member too, so a call to it is not reported as unknown.
+// The file's own declarations win: the workspace data comes from the
+// files on disk, which can be older than the text being linted.
+func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) recordTypes {
 	t := recordTypes{
 		shapes: make(map[*lisp.LVal]*recordShape),
 		byName: make(map[string]*recordShape),
@@ -163,6 +173,13 @@ func recordShapes(exprs, all []*lisp.LVal) recordTypes {
 			}
 		}
 	}
+	for name, shape := range t.byName {
+		for method, sig := range workspace[name] {
+			if _, ok := shape.methods[method]; !ok && !shape.fields[method] {
+				shape.methods[method] = sig
+			}
+		}
+	}
 	return t
 }
 
@@ -170,28 +187,13 @@ func recordShapes(exprs, all []*lisp.LVal) recordTypes {
 // receiver, or nil when they are not a list.  A typed formal, [name type]
 // (#905), counts as its name.
 func methodSignature(formals *lisp.LVal) *analysis.Signature {
-	names := methodFormals(formals)
-	if names == nil {
-		return nil
-	}
-	return &analysis.Signature{Params: lisp.ParseFormals(lisp.SExpr(names[1:]))}
+	return analysis.RecordMethodSignature(formals)
 }
 
 // methodFormals returns a method's formals, the receiver first, with each
-// typed formal, [name type] (#905), replaced by its name.  It returns nil
-// when the formals are not a list with a receiver.
+// typed formal replaced by its name.
 func methodFormals(formals *lisp.LVal) []*lisp.LVal {
-	if formals.Type != lisp.LSExpr || len(formals.Cells) == 0 {
-		return nil
-	}
-	names := make([]*lisp.LVal, 0, len(formals.Cells))
-	for _, p := range formals.Cells {
-		if p.Type == lisp.LSExpr && len(p.Cells) == 2 && p.Cells[0].Type == lisp.LSymbol {
-			p = p.Cells[0]
-		}
-		names = append(names, p)
-	}
-	return names
+	return analysis.RecordMethodFormals(formals)
 }
 
 // boundName returns NAME when top is (set 'NAME value) or
@@ -779,8 +781,9 @@ var AnalyzerRecordUnknownMember = &Analyzer{
 		"In a method, (recv 'name) must name a field or method of the type, and " +
 		"(s:set-field! recv 'name ...) must name a field, where recv is the method's receiver. A wrong name fails only when the " +
 		"method runs. The check knows the type's fields and methods from its " +
-		"s:make-record and from each s:defmethod in the same file; it skips a type " +
-		"whose field forms are not literal s:has-key or s:may-have-key calls.",
+		"s:make-record and from each s:defmethod in the same file. With a workspace " +
+		"scan it also knows the methods an s:defmethod in another file adds. It skips " +
+		"a type whose field forms are not literal s:has-key or s:may-have-key calls.",
 	Run: recordAnalyzerRun(recordUnknownMember),
 }
 
@@ -805,7 +808,8 @@ var AnalyzerRecordMethodArity = &Analyzer{
 	Doc: "Report a call (recv 'name args...) in a method that gives a member the wrong number of arguments.\n\n" +
 		"A field read takes no arguments. A method call takes the arguments its formals " +
 		"accept after the receiver. The check knows the members of a type made by " +
-		"s:make-record in the same file, with the s:defmethod methods of that file.",
+		"s:make-record in the same file, with the s:defmethod methods of that file " +
+		"and, with a workspace scan, of the other workspace files.",
 	Run: recordAnalyzerRun(recordMethodArity),
 }
 

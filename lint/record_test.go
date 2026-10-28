@@ -266,6 +266,38 @@ func TestRecordSyntaxExpanderOnly(t *testing.T) {
 	assert.NotNil(t, cfg.SyntaxExpander)
 }
 
+// TestRecordWorkspaceMethods checks that the member checks know a method
+// that an s:defmethod in another workspace file adds.
+func TestRecordWorkspaceMethods(t *testing.T) {
+	dir := t.TempDir()
+	a := filepath.Join(dir, "order.lisp")
+	require.NoError(t, os.WriteFile(a, []byte(`(set 'order
+  (s:make-record "order"
+    (s:has-key "lines" s:sorted-map)
+    (s:method big (o) (> (o 'size) 10))
+    (s:method bad (o) (o 'szie))
+    (s:method charge (o) (o 'pay) (o 'pay 1))))
+`), 0o600))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "order_methods.lisp"), []byte(`(s:defmethod order size (o) (length (keys (o 'lines))))
+(let ([fee 1])
+  (s:defmethod order pay (_o amount) (+ amount fee)))
+`), 0o600))
+	analyzers := []*Analyzer{AnalyzerRecordUnknownMember, AnalyzerRecordMethodArity}
+
+	l := &Linter{Analyzers: analyzers}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{a})
+	require.NoError(t, err)
+	require.Len(t, diags, 2, "%v", diags)
+	assertDiagOnLine(t, diags, 5, "szie is not a field or method")
+	assertDiagOnLine(t, diags, 6, "method pay needs at least 1 argument(s), got 0")
+
+	// Without a workspace the check knows only the file, as before.
+	diags, err = l.LintFiles(nil, []string{a})
+	require.NoError(t, err)
+	assertDiagOnLine(t, diags, 4, "size is not a field or method")
+	assertDiagOnLine(t, diags, 6, "pay is not a field or method")
+}
+
 func TestRecordCapturedSet(t *testing.T) {
 	src := `(set 'counter
   (let ([total 0] [step 1])
