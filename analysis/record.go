@@ -123,7 +123,7 @@ const recordDefmethod = "s:defmethod"
 func ScanRecordMethods(exprs []*lisp.LVal) RecordMethods {
 	var out RecordMethods
 	for _, top := range exprs {
-		if !mentionsSymbol(top, recordDefmethod) {
+		if !astutil.MentionsSymbol([]*lisp.LVal{top}, isDefmethodName) {
 			continue
 		}
 		for _, d := range RecordDefmethods(top) {
@@ -304,13 +304,5 @@ func loadScopeCall(head string) bool {
 	return false
 }
 
-// mentionsSymbol reports whether form holds the symbol name.  It skips the
-// call-site query for the forms that cannot hold a call, most of a usual
-// file.
-func mentionsSymbol(form *lisp.LVal, name string) bool {
-	found := false
-	astutil.Walk([]*lisp.LVal{form}, func(node, _ *lisp.LVal, _ int) {
-		found = found || node.IsSymbol(name)
-	})
-	return found
-}
+// isDefmethodName reports whether name is the head of a s:defmethod call.
+func isDefmethodName(name string) bool { return name == recordDefmethod }

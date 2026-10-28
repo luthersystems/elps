@@ -69,7 +69,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	if len(exprs) == 0 {
 		return nil
 	}
-	w := &recordWalk{handled: make(map[*lisp.LVal]bool), locals: make(map[*lisp.LVal]map[*lisp.LVal]map[string]bool)}
+	w := &recordWalk{handled: make(map[*lisp.LVal]bool)}
 	var workspace analysis.RecordMethods
 	if semantics != nil {
 		workspace = semantics.WorkspaceRecordMethods()
@@ -79,6 +79,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 		// scopes says where each s:defmethod in top runs.  It is one walk
 		// of top, made on the first s:defmethod.
 		var scopes map[*lisp.LVal]string
+		var methods []recordMethod
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
 			shape := types.shapes[site.Form]
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
@@ -91,10 +92,20 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 			}
 			for _, m := range recordMethods(site.Form) {
 				w.methodBody(m.body, m.recv, shape)
-				w.capturedSets(top, m)
+				methods = append(methods, m)
 			}
 			if check := checkFunction(site.Form); check != nil {
 				w.checkBody(check)
+			}
+		}
+		if len(methods) > 0 {
+			forms := make(map[*lisp.LVal]bool, len(methods))
+			for _, m := range methods {
+				forms[m.form] = true
+			}
+			locals := lexicalNames(top, forms)
+			for _, m := range methods {
+				w.capturedSets(m, locals[m.form])
 			}
 		}
 	}
@@ -118,10 +129,6 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 type recordWalk struct {
 	handled map[*lisp.LVal]bool
 	out     []recordFinding
-	// locals maps a top-level form to the lexical names in scope at each
-	// form in it (lexicalNames).  It is computed once per top form, on
-	// the first method in it.
-	locals map[*lisp.LVal]map[*lisp.LVal]map[string]bool
 }
 
 // mutationReport is the text of a finding on a mutating builtin.  msg
@@ -263,12 +270,9 @@ func checkFunction(call *lisp.LVal) *lisp.LVal {
 // other forms (most of a usual file) skip the call-site queries.
 func recordForms(exprs []*lisp.LVal) []*lisp.LVal {
 	var out []*lisp.LVal
+	inPackage := func(name string) bool { return strings.HasPrefix(name, recordPackage) }
 	for _, top := range exprs {
-		found := false
-		astutil.Walk([]*lisp.LVal{top}, func(node, _ *lisp.LVal, _ int) {
-			found = found || (node.Type == lisp.LSymbol && strings.HasPrefix(node.Str, recordPackage))
-		})
-		if found {
+		if astutil.MentionsSymbol([]*lisp.LVal{top}, inPackage) {
 			out = append(out, top)
 		}
 	}
@@ -439,18 +443,15 @@ const maxPlainSetWork = 1 << 16
 // The walk is syntactic, as the other record checks are, so it runs
 // without workspace analysis.  A set! of a global is not reported: the
 // check is about locals that look private to the type.
-func (w *recordWalk) capturedSets(top *lisp.LVal, m recordMethod) {
-	names := methodFormals(m.formals)
-	if names == nil {
+//
+// captured holds the lexical names in scope at the method form
+// (lexicalNames).
+func (w *recordWalk) capturedSets(m recordMethod, captured map[string]bool) {
+	if len(captured) == 0 {
 		return
 	}
-	locals, ok := w.locals[top]
-	if !ok {
-		locals = lexicalNames(top)
-		w.locals[top] = locals
-	}
-	captured := locals[m.form]
-	if len(captured) == 0 {
+	names := methodFormals(m.formals)
+	if names == nil {
 		return
 	}
 	// Walk the method as the lambda it runs as.  The walk then binds the
@@ -478,11 +479,13 @@ func (w *recordWalk) capturedSets(top *lisp.LVal, m recordMethod) {
 	codewalk.Occurrences(cw, maxPlainSetWork, fn)
 }
 
-// lexicalNames returns, for each compound form in code position in top,
-// the names that the lexical binding forms around it bind.  Globals are
-// not in the sets.  Macros are not expanded, so a name a macro binds is
-// not seen; the check then misses a finding and never makes a false one.
-func lexicalNames(top *lisp.LVal) map[*lisp.LVal]map[string]bool {
+// lexicalNames returns, for each form of targets in top, the names that
+// the lexical binding forms around it bind.  Globals are not in the sets.
+// The scopes are copied only at targets, so the walk allocates for the
+// methods it reports, not for every form.  Macros are not expanded, so a
+// name a macro binds is not seen; the check then misses a finding and
+// never makes a false one.
+func lexicalNames(top *lisp.LVal, targets map[*lisp.LVal]bool) map[*lisp.LVal]map[string]bool {
 	out := make(map[*lisp.LVal]map[string]bool)
 	var scopes []map[string]bool
 	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
@@ -498,7 +501,7 @@ func lexicalNames(top *lisp.LVal) map[*lisp.LVal]map[string]bool {
 				scopes[len(scopes)-1][n.Node.Str] = true
 			}
 		case lisp.WalkForm:
-			if len(scopes) == 0 {
+			if len(scopes) == 0 || !targets[n.Node] {
 				break
 			}
 			names := make(map[string]bool)

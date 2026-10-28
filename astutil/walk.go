@@ -36,6 +36,34 @@ func walkNode(node, parent *lisp.LVal, depth int, fn func(*lisp.LVal, *lisp.LVal
 	}
 }
 
+// MentionsSymbol reports whether any symbol in exprs, quoted or not, has a
+// name that match accepts.  It stops at the first one.  A check uses it as
+// a cheap prefilter: a form that does not name a symbol cannot hold a call
+// to it, so the check skips its slower queries.
+func MentionsSymbol(exprs []*lisp.LVal, match func(name string) bool) bool {
+	var walk func(v *lisp.LVal) bool
+	walk = func(v *lisp.LVal) bool {
+		if v == nil {
+			return false
+		}
+		if v.Type == lisp.LSymbol {
+			return match(v.Str)
+		}
+		for _, c := range v.Cells {
+			if walk(c) {
+				return true
+			}
+		}
+		return false
+	}
+	for _, e := range exprs {
+		if walk(e) {
+			return true
+		}
+	}
+	return false
+}
+
 // WalkSExprs calls fn for every unquoted s-expression (potential function
 // call or special form) in the tree.
 func WalkSExprs(exprs []*lisp.LVal, fn func(sexpr *lisp.LVal, depth int)) {
