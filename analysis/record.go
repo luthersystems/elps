@@ -3,11 +3,15 @@
 package analysis
 
 import (
+	"bytes"
+	"path/filepath"
 	"strings"
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/rdparser"
+	"github.com/luthersystems/elps/parser/token"
 )
 
 // RecordMethods maps the name of a record type to the methods that
@@ -16,14 +20,95 @@ import (
 // s:defmethod calls give the method different arities.
 //
 // The lint checks record-unknown-member and record-method-arity read it
-// from Result.RecordMethods.  A type's s:make-record is often in one file
-// and an s:defmethod for it in another.  Without the workspace's methods,
-// a call to such a method reads as an unknown member.
+// from Result.WorkspaceRecordMethods.  A type's s:make-record is often in
+// one file and an s:defmethod for it in another.  Without the workspace's
+// methods, a call to such a method reads as an unknown member.
 //
-// A type is keyed by its name without a package.  Two packages with a type
-// of one name share one method set; the checks then miss a finding, never
-// report a false one.
+// A type is keyed by its name without a package (RecordTypeKey).  Two
+// packages with a type of one name share one method set; the checks then
+// miss a finding, never report a false one.
 type RecordMethods map[string]map[string]*Signature
+
+// RecordMethodsByFile maps the path of each workspace file, as
+// NormalizePath returns it, to the methods its s:defmethod calls add.
+//
+// The methods are kept per file so an editor can replace one file's
+// methods when it is saved, and so the analysis of a file can leave out
+// that file's own entries: they come from the file on disk, and the text
+// being analyzed declares its methods itself.
+type RecordMethodsByFile map[string]RecordMethods
+
+// Except returns the methods of every file but file.
+func (b RecordMethodsByFile) Except(file string) RecordMethods {
+	skip := ""
+	if file != "" {
+		skip = NormalizePath(file)
+	}
+	var out RecordMethods
+	for path, methods := range b {
+		if path != skip {
+			out = out.Merge(methods)
+		}
+	}
+	return out
+}
+
+// With returns a copy of b in which file has the methods m, or has no
+// entry when m is empty.  b is not changed: a Config that shares it may
+// be in use by another analysis.
+func (b RecordMethodsByFile) With(file string, m RecordMethods) RecordMethodsByFile {
+	file = NormalizePath(file)
+	out := make(RecordMethodsByFile, len(b)+1)
+	for path, methods := range b {
+		if path != file {
+			out[path] = methods
+		}
+	}
+	if len(m) > 0 {
+		out[file] = m
+	}
+	return out
+}
+
+// RecordTypeKey returns the key of a record type's name in RecordMethods:
+// the name without its package qualifier.  (s:defmethod shop:order ...) in
+// one package and (set 'order ...) in another name one type.
+func RecordTypeKey(name string) string {
+	if i := strings.LastIndexByte(name, ':'); i >= 0 {
+		return name[i+1:]
+	}
+	return name
+}
+
+// IsTestSourceFile reports whether path is a file only test runners load:
+// a *_test.lisp file or a *_testhelpers.lisp file.  No production load or
+// template holds what such a file defines.
+func IsTestSourceFile(path string) bool {
+	base := filepath.Base(path)
+	return strings.HasSuffix(base, "_test.lisp") || strings.HasSuffix(base, "_testhelpers.lisp")
+}
+
+// ExtractFileRecordMethods returns the methods the s:defmethod calls of one
+// file add, as the workspace prescan collects them.  An editor calls it
+// when a file is saved.
+func ExtractFileRecordMethods(source []byte, filename string) RecordMethods {
+	if !mayAddRecordMethods(source, filename) {
+		return nil
+	}
+	exprs, err := rdparser.New(token.NewScanner(filename, bytes.NewReader(source))).ParseProgram()
+	if err != nil {
+		return nil
+	}
+	return ScanRecordMethods(exprs)
+}
+
+// mayAddRecordMethods reports whether a file can add a method that the
+// workspace knows.  A test file adds none: a method that only a test adds
+// would hide an unknown member in a production file.  A file without the
+// text "defmethod" holds no s:defmethod call, so it skips the walk.
+func mayAddRecordMethods(source []byte, filename string) bool {
+	return !IsTestSourceFile(filename) && bytes.Contains(source, []byte("defmethod"))
+}
 
 // recordDefmethod is the head of the call that adds a method to a record
 // type.
@@ -31,24 +116,25 @@ const recordDefmethod = "s:defmethod"
 
 // ScanRecordMethods returns the methods that the s:defmethod calls in exprs
 // add.  A call is (s:defmethod TYPE NAME (recv formals...) body...), with
-// TYPE and NAME symbols.  It finds the calls in code position anywhere in
-// exprs: an s:defmethod inside a let is a call too.
+// TYPE and NAME symbols.  Only a call that runs at load counts
+// (RecordDefmethods): an s:defmethod in a top-level let does, one in a
+// defun body does not.  A call-time method is not part of the type a
+// template publishes, so it must not make a member known.
 func ScanRecordMethods(exprs []*lisp.LVal) RecordMethods {
 	var out RecordMethods
 	for _, top := range exprs {
 		if !mentionsSymbol(top, recordDefmethod) {
 			continue
 		}
-		sites, _ := astutil.FindCallSites(top, recordDefmethod)
-		for _, site := range sites {
-			c := site.Form.Cells
-			if len(c) < 4 || c[1].Type != lisp.LSymbol || c[2].Type != lisp.LSymbol {
+		for _, d := range RecordDefmethods(top) {
+			c := d.Call.Cells
+			if d.NotLoadScope != "" || len(c) < 4 || c[1].Type != lisp.LSymbol || c[2].Type != lisp.LSymbol {
 				continue
 			}
 			if out == nil {
 				out = make(RecordMethods)
 			}
-			out.add(c[1].Str, c[2].Str, RecordMethodSignature(c[3]))
+			out.add(RecordTypeKey(c[1].Str), c[2].Str, RecordMethodSignature(c[3]))
 		}
 	}
 	return out

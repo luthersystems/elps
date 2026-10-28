@@ -727,7 +727,7 @@ func (s *service) buildWorkspaceState(root, fingerprint string, validatedAt time
 		state.cfg.PackageImports = prescan.PackageImports
 		state.cfg.DefaultPackage = prescan.DefaultPackage
 		state.cfg.FilePackages = prescan.FilePackages
-		state.cfg.RecordMethods = prescan.RecordMethods
+		state.cfg.RecordMethodsByFile = prescan.RecordMethodsByFile
 		state.symbols = prescan.AllDefs
 		preamble = prescan.Preamble
 	}

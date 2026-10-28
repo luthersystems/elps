@@ -55,10 +55,11 @@ type Config struct {
 	// other files in the workspace.
 	WorkspaceRefs map[string][]FileReference
 
-	// RecordMethods are the methods that the workspace's s:defmethod calls
-	// add to each record type (WorkspacePrescan.RecordMethods). It is
-	// copied to Result.RecordMethods for the record lint checks.
-	RecordMethods RecordMethods
+	// RecordMethodsByFile holds the methods that each workspace file's
+	// s:defmethod calls add to each record type
+	// (WorkspacePrescan.RecordMethodsByFile). The record lint checks read
+	// it through Result.WorkspaceRecordMethods.
+	RecordMethodsByFile RecordMethodsByFile
 
 	// MacroExpander optionally expands user-macro calls at analysis time.
 	// When set, the analyzer expands macro calls and analyzes the expanded
@@ -124,10 +125,10 @@ type Result struct {
 	// is referenced from other workspace files (e.g. unused-function check).
 	WorkspaceRefs map[string][]FileReference
 
-	// RecordMethods is copied from Config. Nil when no workspace was
-	// scanned; the record lint checks then know only the file's own
-	// s:defmethod calls.
-	RecordMethods RecordMethods
+	// recordMethodsByFile and filename are copied from Config, for
+	// WorkspaceRecordMethods.
+	recordMethodsByFile RecordMethodsByFile
+	filename            string
 
 	// MacroExpander and DefaultPackage are copied from Config, so lint
 	// analyzers that walk fully expanded code (astutil.ExpandAll) expand
@@ -170,12 +171,13 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	a := &analyzer{
 		root: root,
 		result: &Result{
-			RootScope:      root,
-			ExtraGlobals:   cfg.ExtraGlobals,
-			WorkspaceRefs:  cfg.WorkspaceRefs,
-			RecordMethods:  cfg.RecordMethods,
-			MacroExpander:  cfg.MacroExpander,
-			DefaultPackage: cfg.DefaultPackage,
+			RootScope:           root,
+			ExtraGlobals:        cfg.ExtraGlobals,
+			WorkspaceRefs:       cfg.WorkspaceRefs,
+			recordMethodsByFile: cfg.RecordMethodsByFile,
+			filename:            cfg.Filename,
+			MacroExpander:       cfg.MacroExpander,
+			DefaultPackage:      cfg.DefaultPackage,
 		},
 		cfg:              cfg,
 		qualifiedSymbols: make(map[string]*Symbol),
@@ -197,4 +199,19 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	return a.result
+}
+
+// WorkspaceRecordMethods returns the methods that the s:defmethod calls of
+// the other workspace files add to each record type.  It is nil when no
+// workspace was scanned; the record lint checks then know only the
+// analyzed file's own s:defmethod calls.
+//
+// The analyzed file's own entries are left out.  They come from the file
+// on disk, and the text being analyzed can differ from it: a method the
+// text has renamed or removed must not stay known.
+func (r *Result) WorkspaceRecordMethods() RecordMethods {
+	if r == nil || len(r.recordMethodsByFile) == 0 {
+		return nil
+	}
+	return r.recordMethodsByFile.Except(r.filename)
 }

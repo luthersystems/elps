@@ -4,7 +4,6 @@ package lint
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
@@ -73,7 +72,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	w := &recordWalk{handled: make(map[*lisp.LVal]bool), locals: make(map[*lisp.LVal]map[*lisp.LVal]map[string]bool)}
 	var workspace analysis.RecordMethods
 	if semantics != nil {
-		workspace = semantics.RecordMethods
+		workspace = semantics.WorkspaceRecordMethods()
 	}
 	types := recordShapes(exprs, all, workspace)
 	for _, top := range exprs {
@@ -83,7 +82,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
 			shape := types.shapes[site.Form]
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
-				shape = types.byName[site.Form.Cells[1].Str]
+				shape = types.byName[analysis.RecordTypeKey(site.Form.Cells[1].Str)]
 				w.defmethodType(site.Form, types, semantics)
 				if scopes == nil {
 					scopes = defmethodScopes(top)
@@ -146,11 +145,12 @@ type recordTypes struct {
 // the s: package.  A s:defmethod in exprs adds its method to the shape of
 // the type it names.  bound comes from all, every top form of the file.
 //
-// workspace holds the methods the s:defmethod calls of every workspace
-// file add, or nil without a workspace scan.  A method that another file
+// workspace holds the methods the s:defmethod calls of the other workspace
+// files add, or nil without a workspace scan.  A method that another file
 // adds is then a member too, so a call to it is not reported as unknown.
 // The file's own declarations win: the workspace data comes from the
-// files on disk, which can be older than the text being linted.
+// files on disk, which can be older than the text being linted.  A type
+// and a s:defmethod match by the type's name without its package.
 func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) recordTypes {
 	t := recordTypes{
 		shapes: make(map[*lisp.LVal]*recordShape),
@@ -176,7 +176,7 @@ func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) rec
 		for _, site := range callSites(top, recordPackage+"defmethod") {
 			c := site.Form.Cells
 			if len(c) > 3 && c[1].Type == lisp.LSymbol && c[2].Type == lisp.LSymbol {
-				if shape := t.byName[c[1].Str]; shape != nil {
+				if shape := t.byName[analysis.RecordTypeKey(c[1].Str)]; shape != nil {
 					shape.methods[c[2].Str] = methodSignature(c[3])
 				}
 			}
@@ -890,8 +890,7 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 	Run: func(pass *Pass) error {
 		// A test may add a method at call time on purpose, to test
 		// s:defmethod itself, and a test file is never part of a template.
-		base := filepath.Base(pass.Filename)
-		if strings.HasSuffix(base, "_test.lisp") || strings.HasSuffix(base, "_testhelpers.lisp") {
+		if analysis.IsTestSourceFile(pass.Filename) {
 			return nil
 		}
 		return recordAnalyzerRun(recordDefmethodScope)(pass)

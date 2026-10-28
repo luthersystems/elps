@@ -480,16 +480,16 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 	}
 
 	acfg := &analysis.Config{
-		ExtraGlobals:   prescan.AllDefs,
-		PackageExports: pkgExports,
-		PackageSymbols: prescan.PkgAllSymbols,
-		DefForms:       prescan.DefForms,
-		PackageImports: prescan.PackageImports,
-		DefaultPackage: prescan.DefaultPackage,
-		FilePackages:   prescan.FilePackages,
-		RecordMethods:  prescan.RecordMethods,
-		MacroExpander:  expander,
-		SyntaxExpander: syntax,
+		ExtraGlobals:        prescan.AllDefs,
+		PackageExports:      pkgExports,
+		PackageSymbols:      prescan.PkgAllSymbols,
+		DefForms:            prescan.DefForms,
+		PackageImports:      prescan.PackageImports,
+		DefaultPackage:      prescan.DefaultPackage,
+		FilePackages:        prescan.FilePackages,
+		RecordMethodsByFile: prescan.RecordMethodsByFile,
+		MacroExpander:       expander,
+		SyntaxExpander:      syntax,
 	}
 
 	// Build workspace refs so lint analyzers (e.g. unused-function) can check
