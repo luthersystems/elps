@@ -33,6 +33,23 @@ func TestUsePackageHidesLisp(t *testing.T) {
 (use-package 'math)
 (in-package 'b)
 (not true)`))
+	// in-package takes docstrings, use-package takes several packages, and
+	// a progn at top level is still top level.
+	diags = lintCheck(t, AnalyzerUsePackageHidesLisp, `(in-package 'p "doc")
+(progn (use-package 'math 's))
+(in-package 'q "doc")
+(not 1)
+(in-package 'p)
+(not 1)`)
+	assert.Len(t, diags, 2)
+	assertDiagOnLine(t, diags, 2, "use-package 's hides")
+	assertDiagOnLine(t, diags, 6, "not here is s:not")
+	// A package named by a variable is not known; testing re-exports lisp's
+	// own test, which hides nothing.
+	assertNoDiags(t, lintCheck(t, AnalyzerUsePackageHidesLisp, `(use-package pkg)
+(use-package 'testing)
+(not 1)
+(test "t" 1)`))
 	// A file that defines the name itself is left to builtin-shadowing.
 	diags = lintCheck(t, AnalyzerUsePackageHidesLisp, `(use-package 's)
 (defun when (a b) a)

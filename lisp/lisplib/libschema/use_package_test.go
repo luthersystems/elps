@@ -21,7 +21,7 @@ func TestUsePackageKeepsCoreSetBang(t *testing.T) {
 (set 'acct (s:make-record "acct" (s:has-key "n" s:int)))
 ; s:sorted-map hides lisp:sorted-map after use-package.
 (set 'a (acct (lisp:sorted-map "n" 1)))
-(set-field! a 'n 5)
+(s:set-field! a 'n 5)
 `)
 	got := env.LoadString("check.lisp", `(list use-s-test:x (use-s-test:a 'n))`)
 	if got.Type == lisp.LError {

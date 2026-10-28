@@ -7,7 +7,6 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/lisp"
 )
@@ -33,28 +32,32 @@ var AnalyzerUsePackageHidesLisp = &Analyzer{
 		// imports maps a package to the names its use-packages hide there,
 		// each to the package that hides it.
 		imports := map[string]map[string]string{}
-		for _, top := range pass.Exprs {
+		for _, top := range topLevelForms(pass.Exprs) {
 			head := unqualifiedLispName(HeadSymbol(top))
-			if top.Type == lisp.LSExpr && len(top.Cells) == 2 && !userDefs[HeadSymbol(top)] {
-				name := astutil.PackageNameArg(top.Cells[1])
+			if top.Type == lisp.LSExpr && len(top.Cells) >= 2 && !userDefs[HeadSymbol(top)] {
 				switch head {
 				case "in-package":
-					pkg = name // "" for a dynamic package: no imports match it.
+					// Trailing arguments are docstrings.  "" is a dynamic
+					// package: no imports match it.
+					pkg = literalPackageName(top.Cells[1])
 					continue
 				case "use-package":
-					names := hidden[name]
-					if len(names) == 0 || pkg == "" {
-						continue
+					for _, arg := range top.Cells[1:] {
+						name := literalPackageName(arg)
+						names := hidden[name]
+						if len(names) == 0 || pkg == "" {
+							continue
+						}
+						if imports[pkg] == nil {
+							imports[pkg] = map[string]string{}
+						}
+						for _, n := range names {
+							imports[pkg][n] = name
+						}
+						pass.ReportNode(arg,
+							"use-package '%s hides lisp names: %s; use %s qualified, or call the core forms as lisp:NAME",
+							name, strings.Join(names, ", "), name)
 					}
-					if imports[pkg] == nil {
-						imports[pkg] = map[string]string{}
-					}
-					for _, n := range names {
-						imports[pkg][n] = name
-					}
-					pass.ReportNode(top.Cells[1],
-						"use-package '%s hides lisp names: %s; use %s qualified, or call the core forms as lisp:NAME",
-						name, strings.Join(names, ", "), name)
 					continue
 				}
 			}
@@ -66,19 +69,45 @@ var AnalyzerUsePackageHidesLisp = &Analyzer{
 	},
 }
 
-// reportHiddenCalls reports each call in form whose bare head is a name
-// hides.  FindCalls skips quoted data and lexically bound names; a call in a
-// quasiquote template is data, which
-// ClassifyNodes marks.
+// topLevelForms returns exprs with each top-level progn replaced by its
+// body, so a use-package or in-package in a progn is seen in order.
+func topLevelForms(exprs []*lisp.LVal) []*lisp.LVal {
+	var out []*lisp.LVal
+	for _, e := range exprs {
+		if e.Type == lisp.LSExpr && !e.IsQuoted() && unqualifiedLispName(HeadSymbol(e)) == "progn" {
+			out = append(out, topLevelForms(e.Cells[1:])...)
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
+}
+
+// literalPackageName returns the package an in-package or use-package
+// argument names, or "" when the argument is evaluated at run time.  The
+// operators are functions, so an unquoted symbol is a variable.
+func literalPackageName(arg *lisp.LVal) string {
+	if arg.Type == lisp.LSymbol && !arg.IsQuoted() {
+		return ""
+	}
+	return astutil.PackageNameArg(arg)
+}
+
 func reportHiddenCalls(pass *Pass, form *lisp.LVal, hides map[string]string, userDefs map[string]bool) {
 	names := make([]string, 0, len(hides))
 	for n := range hides {
 		names = append(names, n)
 	}
-	roles := astutil.ClassifyNodes(form)
+	var roles *astutil.Roles
 	for _, site := range astutil.FindCalls(form, names...) {
 		from, ok := hides[site.Name]
-		if !ok || userDefs[site.Name] || roles.Role(site.Form) == astutil.RoleData {
+		if !ok || userDefs[site.Name] {
+			continue
+		}
+		if roles == nil {
+			roles = astutil.ClassifyNodes(form)
+		}
+		if roles.Role(site.Form) == astutil.RoleData {
 			continue
 		}
 		pass.ReportNode(site.Form.Cells[0], "%s here is %s:%s, which use-package '%s brings in; call lisp:%s for the core form",
@@ -86,23 +115,26 @@ func reportHiddenCalls(pass *Pass, form *lisp.LVal, hides map[string]string, use
 	}
 }
 
+// stdlibHiddenLispNames maps each standard library package to the lisp
+// names its exports hide.  An export bound to lisp's own value (testing:test
+// is lisp:test) hides nothing.
 var stdlibHiddenLispNames = sync.OnceValue(func() map[string][]string {
-	exports := analysis.ExtractPackageExports(newStdlibEnv().Runtime.Registry)
-	core := map[string]bool{}
-	for _, sym := range exports[lisp.DefaultLangPackage] {
-		core[sym.Name] = true
-	}
+	reg := newStdlibEnv().Runtime.Registry
+	core := reg.Package(lisp.DefaultLangPackage)
 	hidden := map[string][]string{}
-	for pkg, syms := range exports {
-		if pkg == lisp.DefaultLangPackage || pkg == lisp.DefaultUserPackage {
+	for _, name := range reg.PackageNames() {
+		if name == lisp.DefaultLangPackage || name == lisp.DefaultUserPackage {
 			continue
 		}
-		for _, sym := range syms {
-			if core[sym.Name] {
-				hidden[pkg] = append(hidden[pkg], sym.Name)
+		pkg := reg.Package(name)
+		for _, ext := range pkg.Externals() {
+			v, ok := pkg.Symbol(ext)
+			c, isCore := core.Symbol(ext)
+			if ok && isCore && v != c {
+				hidden[name] = append(hidden[name], ext)
 			}
 		}
-		sort.Strings(hidden[pkg])
+		sort.Strings(hidden[name])
 	}
 	return hidden
 })

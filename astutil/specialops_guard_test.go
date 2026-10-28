@@ -74,6 +74,7 @@ var specialOpAllowlist = map[string]string{
 	"lint/analyzers.go:var testDefinitionForms":                 "test-registration vocabulary",
 	"lint/analyzers.go:walkRethrowContext":                      "reads handler walker enclosures and definition events",
 	"lint/analyzers.go:walkRethrowTemplate":                     "syntactic scan of generated code templates rather than evaluated code",
+	"lint/use_package.go:topLevelForms":                         "flattens a top-level progn so use-package and in-package are seen in order",
 	"lisp/codewalk.go:CodeWalker.let":                           "source initializer metadata in the shared syntax walker",
 	"lisp/codewalk.go:CodeWalker.templateList":                  "template-hole grammar in the shared syntax walker",
 	"lisp/codewalk.go:var formKinds":                            "the single registry of structural special forms",
