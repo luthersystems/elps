@@ -338,13 +338,14 @@ func macroMakeInterface(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // builtinMakeInterface builds an interface: s:%make-interface.
 func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	name, specs := args.Cells[0], args.Cells[1]
-	if name.Type != lisp.LString || name.Str == "" {
-		return env.ErrorConditionf(BadArgs, "s:make-interface: the name must be a string: %v", name)
+	nameV, specs := args.Cells[0], args.Cells[1]
+	name, ok := lisp.GoString(nameV)
+	if !ok || name == "" {
+		return env.ErrorConditionf(BadArgs, "s:make-interface: the name must be a non-empty string: %v", nameV)
 	}
-	spec, bad := interfaceSpecOf(name.Str, specs)
+	spec, bad := interfaceSpecOf(name, specs)
 	if bad != nil {
-		return env.ErrorConditionf(BadArgs, "s:make-interface: %s: a method is (name (args...)): %v", name.Str, bad)
+		return env.ErrorConditionf(BadArgs, "s:make-interface: %s: a method is (name (args...)): %v", name, bad)
 	}
 	in, err := NewInterface(spec)
 	if err != nil {

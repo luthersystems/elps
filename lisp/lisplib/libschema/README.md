@@ -405,6 +405,10 @@ a method that `s:defmethod` adds later counts.
 * A method matches when it accepts every call the interface allows: it
   needs no more arguments, and accepts at least as many. `(pay (o amount
   &optional note))` satisfies `(pay (amount))`; `(pay (o))` does not.
+  A keyword argument is not a positional one: `(pay (o &key amount))`
+  does not satisfy `(pay (amount))`. When the interface has `&key`
+  names, the method needs each of them and the same number of
+  positional arguments, or `&rest`.
 * An interface is a validator, so it is a field type, an `s:of` element
   or an `s:validate` type, and `ValidateLoaded` checks it. It is never
   saved: an object saves its own type.
@@ -412,8 +416,8 @@ a method that `s:defmethod` adds later counts.
   `(*Interface).Validator(env)` makes the validator, and
   `(*Interface).Satisfies(v)` checks a value. Lisp and Go interfaces both
   accept Lisp and Go record objects. A Go method declares its formals in
-  `MethodSpec.Formals`; a call with the wrong number of arguments then
-  fails before `Call` runs. A Go method without `Formals` accepts any
+  `MethodSpec.Formals`; a call with the wrong number of arguments, or
+  an odd or unknown keyword argument, then fails before `Call` runs. A Go method without `Formals` accepts any
   number of arguments, for an interface too.
 
 Saving objects. An object saves only its fields. Its type saves as the name

@@ -5,7 +5,11 @@ package libschema
 import (
 	"errors"
 	"fmt"
+	"slices"
+	"sort"
+	"strings"
 
+	"github.com/luthersystems/elps/internal/lambdalist"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -45,25 +49,29 @@ type Interface struct {
 	methods []ifaceMethod
 }
 
-// ifaceMethod is a method of an interface with its argument counts.
+// ifaceMethod is a method of an interface with its signature.
 type ifaceMethod struct {
-	name string
+	name    string
+	formals string // the formals as written, for s:describe
 	arity
 }
 
-// arity is the number of arguments a function accepts after the
-// receiver: at least min, and at most max, or any number when max is -1.
+// arity is the shape of the calls a function accepts after the receiver:
+// at least min positional arguments and at most max, or any number when
+// max is -1 (&rest).  keys are its &key names, sorted; a call may follow
+// the max positional arguments with :key value pairs of those names.
 type arity struct {
+	keys     []string
 	min, max int
+	none     bool // no call at all: the function cannot take a receiver
 }
 
-// anyArity accepts any number of arguments.
+// anyArity accepts any call.
 var anyArity = arity{min: 0, max: -1}
 
-// arityOf returns the arity of formals, a formal list.
+// arityOf returns the arity of formals, a formal list checkFormals accepts.
 func arityOf(formals *lisp.LVal) arity {
 	a := arity{}
-	variadic := false
 	for _, p := range lisp.ParseFormals(formals) {
 		switch p.Kind {
 		case lisp.ParamRequired:
@@ -71,49 +79,105 @@ func arityOf(formals *lisp.LVal) arity {
 			a.max++
 		case lisp.ParamOptional:
 			a.max++
-		case lisp.ParamRest, lisp.ParamKey:
-			variadic = true
+		case lisp.ParamKey:
+			a.keys = append(a.keys, p.Name)
+		case lisp.ParamRest:
+			a.max = -1
 		}
 	}
-	if variadic {
-		a.max = -1
+	if a.max == -1 {
+		return arity{min: a.min, max: -1}
 	}
+	sort.Strings(a.keys)
 	return a
 }
 
 // accepts reports whether a function of arity a accepts every call that a
 // function of arity want accepts.
 func (a arity) accepts(want arity) bool {
-	if a.min > want.min {
+	switch {
+	case a.none || want.none:
 		return false
-	}
-	if a.max == -1 {
+	case a.min > want.min:
+		return false
+	case a.max == -1:
+		return true
+	case want.max == -1 || a.max < want.max:
+		return false
+	case len(want.keys) == 0:
 		return true
 	}
-	return want.max != -1 && a.max >= want.max
+	// The optional arguments take what comes first, so a function with
+	// more positional slots would bind the keyword pairs to them.
+	if a.max != want.max {
+		return false
+	}
+	for _, k := range want.keys {
+		if _, ok := slices.BinarySearch(a.keys, k); !ok {
+			return false
+		}
+	}
+	return true
+}
+
+// checkCall returns an error message when args is not a call that a
+// function of arity a accepts, or "".
+func (a arity) checkCall(args []*lisp.LVal) string {
+	n := len(args)
+	switch {
+	case n < a.min:
+		return fmt.Sprintf("takes %v, got %d", a, n)
+	case a.max == -1 || n <= a.max:
+		return ""
+	case len(a.keys) == 0:
+		return fmt.Sprintf("takes %v, got %d", a, n)
+	case (n-a.max)%2 != 0:
+		return "got an odd number of keyword arguments"
+	}
+	for i := a.max; i < n; i += 2 {
+		k := args[i]
+		if k.Type != lisp.LSymbol || !strings.HasPrefix(k.Str, ":") {
+			return fmt.Sprintf("argument %v is not a keyword", k)
+		}
+		if _, ok := slices.BinarySearch(a.keys, k.Str[1:]); !ok {
+			return fmt.Sprintf("has no keyword argument %v", k)
+		}
+	}
+	return ""
 }
 
 // String describes the arity for an error message.
 func (a arity) String() string {
+	var s string
 	switch {
+	case a.none:
+		return "no arguments, not even the receiver"
 	case a.max == -1:
-		return fmt.Sprintf("%d or more arguments", a.min)
+		s = fmt.Sprintf("%d or more arguments", a.min)
 	case a.min == a.max:
-		return fmt.Sprintf("%d argument(s)", a.min)
+		s = fmt.Sprintf("%d argument(s)", a.min)
 	default:
-		return fmt.Sprintf("%d to %d arguments", a.min, a.max)
+		s = fmt.Sprintf("%d to %d arguments", a.min, a.max)
 	}
+	if len(a.keys) > 0 {
+		s += " and keywords :" + strings.Join(a.keys, " :")
+	}
+	return s
 }
 
-// checkFormals returns an error when formals is not a list of symbols.
+// checkFormals returns an error when formals is not a formal list a lambda
+// accepts.
 func checkFormals(formals *lisp.LVal) error {
 	if formals.Type != lisp.LSExpr {
 		return fmt.Errorf("formals must be a list: %v", formals)
 	}
 	for _, p := range formals.Cells {
-		if p.Type != lisp.LSymbol || p.Str == "" || p.Str[0] == ':' {
+		if p.Type != lisp.LSymbol {
 			return fmt.Errorf("formal %v is not a name", p)
 		}
+	}
+	if _, msg := lambdalist.Validate(len(formals.Cells), func(i int) string { return formals.Cells[i].Str }); msg != "" {
+		return errors.New(msg)
 	}
 	return nil
 }
@@ -140,9 +204,18 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		if err := checkFormals(formals); err != nil {
 			return nil, fmt.Errorf("libschema: interface %s: method %s: %w", spec.Name, m.Name, err)
 		}
-		in.methods = append(in.methods, ifaceMethod{name: m.Name, arity: arityOf(formals)})
+		in.methods = append(in.methods, ifaceMethod{name: m.Name, formals: formalsText(formals), arity: arityOf(formals)})
 	}
 	return in, nil
+}
+
+// formalsText writes formals, a list of symbols, as "(a &optional b)".
+func formalsText(formals *lisp.LVal) string {
+	names := make([]string, len(formals.Cells))
+	for i, p := range formals.Cells {
+		names[i] = p.Str
+	}
+	return "(" + strings.Join(names, " ") + ")"
 }
 
 // Name returns the interface's name.
@@ -160,7 +233,11 @@ func (in *Interface) Satisfies(v *lisp.LVal) error {
 func (in *Interface) Validator(env *lisp.LEnv) *lisp.LVal {
 	ms := make([]*lisp.LVal, len(in.methods))
 	for i, m := range in.methods {
-		ms[i] = lisp.Cells{lisp.String(m.name), lisp.Int(m.min), lisp.Int(m.max)}.List()
+		keys := make([]*lisp.LVal, len(m.keys))
+		for j, k := range m.keys {
+			keys[j] = lisp.String(k)
+		}
+		ms[i] = lisp.Cells{lisp.String(m.name), lisp.Int(m.min), lisp.Int(m.max), lisp.QExpr(keys)}.List()
 	}
 	caps := lisp.Cells{lisp.String(in.name), lisp.QExpr(ms)}.List()
 	v := newCapturedValidator(env, lisp.Formals("input"), caps, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
@@ -168,14 +245,22 @@ func (in *Interface) Validator(env *lisp.LEnv) *lisp.LVal {
 		cells := captures.Cells[1].Cells
 		methods := make([]ifaceMethod, len(cells))
 		for i, c := range cells {
-			methods[i] = ifaceMethod{name: c.Cells[0].Str, arity: arity{min: c.Cells[1].Int, max: c.Cells[2].Int}}
+			var keys []string
+			for _, k := range c.Cells[3].Cells {
+				keys = append(keys, k.Str)
+			}
+			methods[i] = ifaceMethod{name: c.Cells[0].Str, arity: arity{keys: keys, min: c.Cells[1].Int, max: c.Cells[2].Int}}
 		}
 		if err := satisfies(name, methods, input); err != nil {
 			return env.ErrorConditionf(WrongType, "%v", err)
 		}
 		return lisp.Nil()
 	})
-	return describeAs(v, &schemaDesc{op: "interface", name: in.name})
+	sigs := make([]descValue, len(in.methods))
+	for i, m := range in.methods {
+		sigs[i] = descValue{kind: lisp.LString, s: m.name + " " + m.formals}
+	}
+	return describeAs(v, &schemaDesc{op: "interface", name: in.name, values: sigs})
 }
 
 // satisfies is Interface.Satisfies over an interface's parts.
@@ -220,11 +305,21 @@ func methodArities(v *lisp.LVal) (func(string) (arity, bool), bool) {
 	return nil, false
 }
 
-// lispMethodArity returns the arity of a Lisp method after its receiver.
+// lispMethodArity returns the arity of a Lisp method after its receiver,
+// the first argument.
 func lispMethodArity(m *lisp.LVal) arity {
 	formals := m.Cells[0]
-	if formals == nil || formals.Type != lisp.LSExpr || len(formals.Cells) == 0 {
+	if formals == nil || formals.Type != lisp.LSExpr {
 		return anyArity
 	}
-	return arityOf(lisp.SExpr(formals.Cells[1:]))
+	a := arityOf(formals)
+	switch a.max {
+	case -1:
+		return arity{min: max(a.min-1, 0), max: -1}
+	case 0:
+		return arity{none: true}
+	}
+	a.min = max(a.min-1, 0)
+	a.max--
+	return a
 }

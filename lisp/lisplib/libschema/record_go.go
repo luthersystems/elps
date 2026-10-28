@@ -76,13 +76,14 @@ type FieldSpec struct {
 // MethodSpec describes one method of a Go record type.
 type MethodSpec struct {
 	// Call runs the method.  args are the arguments after the op.  When
-	// Formals is set, their number is checked before Call runs; without
-	// it, Call checks it.
+	// Formals is set, the call's shape (the argument count and the
+	// keyword names) is checked before Call runs; without it, Call checks
+	// it.
 	Call func(env *lisp.LEnv, r Record, args []*lisp.LVal) *lisp.LVal
 	// Formals, if not nil, are the method's formals after the receiver,
 	// as lisp.Formals builds them (&optional, &rest and &key allowed).  A
-	// call with a number of arguments they do not accept fails with
-	// bad-arguments, and an interface (NewInterface, s:make-interface)
+	// call they do not accept (a wrong argument count, an odd or unknown
+	// keyword argument) fails with bad-arguments, and an interface (NewInterface, s:make-interface)
 	// checks them.  Without Formals the method accepts any number of
 	// arguments as far as an interface is concerned.
 	Formals *lisp.LVal
@@ -254,8 +255,8 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	obj := Record{caps: caps, t: t}
 	if op.Type == lisp.LSymbol {
 		if m := t.methods[op.Str]; m != nil {
-			if a := t.arity[op.Str]; len(rest) < a.min || (a.max >= 0 && len(rest) > a.max) {
-				return env.ErrorConditionf(BadArgs, "%s: method %s takes %v, got %d", t.spec.DisplayName, op.Str, a, len(rest))
+			if msg := t.arity[op.Str].checkCall(rest); msg != "" {
+				return env.ErrorConditionf(BadArgs, "%s: method %s %s", t.spec.DisplayName, op.Str, msg)
 			}
 			return t.guarded(env, obj, func() *lisp.LVal { return m.Call(env, obj, rest) })
 		}

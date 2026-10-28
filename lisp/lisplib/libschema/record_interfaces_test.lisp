@@ -68,3 +68,27 @@
   (assert-equal 'bad-arguments (failure (lambda () (s:make-interface "x" pay))))
   (assert-equal 'bad-arguments (failure (lambda () (s:make-interface "x" (pay amount)))))
   (assert-equal 'bad-arguments (failure (lambda () (s:make-interface "x" (pay ()) (pay ()))))))
+
+(set 'cancellable (s:make-interface "cancellable" (cancel (&key why))))
+
+(set 'keyed
+     (s:make-record "keyed"
+                    (s:has-key "n" s:int)
+                    (s:method pay (_o &key amount) amount)
+                    (s:method cancel (_o &key why) why)))
+
+(test "keywords"
+  ; a keyword argument is not a positional one
+  (assert-equal 'wrong-type (failure (lambda () (s:validate payable (keyed :n 1)))))
+  (assert-nil (s:validate cancellable (keyed :n 1)))
+  ; a method with no :why keyword does not match
+  (assert-equal 'wrong-type (failure (lambda () (s:validate cancellable (invoice :total 5)))))
+  (assert-nil (s:validate cancellable (refund :n 1))))
+
+(test "bad-formals"
+  (assert-equal 'bad-arguments (failure (lambda () (s:make-interface "x" (pay (&rest))))))
+  (assert-equal 'bad-arguments (failure (lambda () (s:make-interface "x" (pay (a a)))))))
+
+(test "describe"
+  (assert-equal (vector "pay (amount)" "cancel ()")
+                (get (s:describe payable) "values")))
