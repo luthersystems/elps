@@ -61,7 +61,10 @@ var recordMacros = []*libutil.Builtin{
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
 		method is (name (args...)): its formals after the receiver,
 		with &optional, &rest and &key allowed.  A formal may be [name
-		type]; the type documents the method and is not matched.  A value satisfies the
+		type]; the type documents the method and is not matched.  The
+		option :embed (iface...) adds the methods of other interfaces,
+		as a Go interface embeds one; a name may come from two places
+		only with the same arity.  A value satisfies the
 		interface when it is a record object whose type has each method,
 		and each method accepts every call the interface allows, as in
 		Go.  The interface is a validator: use it as a field type, in
@@ -78,7 +81,7 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
 		directly.`),
-	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods"), builtinMakeInterface,
+	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
 	libutil.FunctionDoc("set-field!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
@@ -525,19 +528,37 @@ func checkImplementsAll(env *lisp.LEnv, desc *recordDesc, tcaps *lisp.LVal) *lis
 
 // macroMakeInterface expands s:make-interface into
 //
-//	(s:%make-interface NAME '((m1 (formals...)) ...))
+//	(s:%make-interface NAME '((m1 (formals...)) ...) (lisp:list EMBED...))
 //
-// The method specs are data: builtinMakeInterface checks them.
-func macroMakeInterface(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+// The method specs are data: builtinMakeInterface checks them.  The
+// interfaces of :embed are evaluated.
+func macroMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	var specs, embed []*lisp.LVal
+	forms := args.Cells[1:]
+	for i := 0; i < len(forms); i++ {
+		if !forms[i].IsSymbol(":embed") {
+			specs = append(specs, forms[i])
+			continue
+		}
+		if i+1 >= len(forms) || forms[i+1].Type != lisp.LSExpr || forms[i+1].IsQuoted() {
+			return env.ErrorConditionf(BadArgs, "s:make-interface: :embed needs a list of interfaces: :embed (iface...)")
+		}
+		i++
+		embed = append(embed, forms[i].Cells...)
+	}
 	return lisp.Cells{
 		lisp.Symbol(DefaultPackageName + ":%make-interface"),
 		args.Cells[0],
-		quoted(lisp.SExpr(args.Cells[1:])),
+		quoted(lisp.SExpr(specs)),
+		listForm(embed),
 	}.SExpr()
 }
 
 // builtinMakeInterface builds an interface: s:%make-interface.
 func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if len(args.Cells) < 2 {
+		return args.ReqArg(env, len(args.Cells))
+	}
 	nameV, specs := args.Cells[0], args.Cells[1]
 	name, ok := lisp.GoString(nameV)
 	if !ok || name == "" {
@@ -546,6 +567,18 @@ func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	spec, bad := interfaceSpecOf(name, specs)
 	if bad != nil {
 		return env.ErrorConditionf(BadArgs, "s:make-interface: %s: a method is (name (args...)): %v", name, bad)
+	}
+	if len(args.Cells) > 2 {
+		for _, v := range args.Cells[2].Cells {
+			if v.IsError() {
+				return v
+			}
+			e := interfaceOf(v)
+			if e == nil {
+				return env.ErrorConditionf(BadArgs, "s:make-interface: %s: :embed takes interfaces (s:make-interface), got %v", name, v)
+			}
+			spec.Embed = append(spec.Embed, e)
+		}
 	}
 	in, err := NewInterface(spec)
 	if err != nil {

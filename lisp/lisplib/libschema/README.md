@@ -322,7 +322,7 @@ A record type is a constructor for objects with typed fields and methods
 | `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
-| `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
+| `(s:make-interface NAME [:embed (IFACE...)] (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
 | `(s:ref TYPE)` | A type that passes an object of TYPE and checks nothing else. |
 | `(s:is? VALUE TYPE)` | `true` if VALUE passes TYPE, else `false`. |
 | `(s:as VALUE TYPE)` | VALUE if it passes TYPE; else the check's error. |
@@ -504,6 +504,11 @@ a method that `s:defmethod` adds later counts.
   `MethodSpec.Formals`; a call with the wrong number of arguments, or
   an odd or unknown keyword argument, then fails before `Call` runs. A Go method without `Formals` accepts any
   number of arguments, for an interface too.
+* `(s:make-interface "both" :embed (payer sized) (note ()))` has the
+  methods of `payer` and `sized` too, as a Go interface embeds one. The
+  embedded methods come first, in `:embed` order. A name may come from
+  two places only with the same arity; another arity fails. Go:
+  `InterfaceSpec.Embed`.
 * A type can declare the interfaces it must satisfy: `(s:make-record
   "inv" :implements (payable) ...)`. A method in the form that does not
   match fails when the type is defined. A missing method fails

@@ -45,6 +45,11 @@ type InterfaceSpec struct {
 	Name string
 	// Methods are the methods a value must have.
 	Methods []InterfaceMethod
+	// Embed are interfaces whose methods this one has too, as a Go
+	// interface embeds one.  Their methods come first, in Embed order,
+	// then Methods.  A name may come from more than one place only with
+	// the same arity; a different arity is an error.
+	Embed []*Interface
 }
 
 // Interface is a set of methods that a record object must have.  It is
@@ -193,6 +198,17 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		return nil, errors.New("libschema: an interface needs a Name")
 	}
 	in := &Interface{name: spec.Name, methods: make([]ifaceMethod, 0, len(spec.Methods))}
+	from := make(map[string]string) // method name to the interface it came from
+	for i, e := range spec.Embed {
+		if e == nil {
+			return nil, fmt.Errorf("libschema: interface %s: Embed[%d] is nil", spec.Name, i)
+		}
+		for _, m := range e.methods {
+			if err := in.addEmbedded(m, e.name, from); err != nil {
+				return nil, err
+			}
+		}
+	}
 	seen := make(map[string]bool, len(spec.Methods))
 	for i, m := range spec.Methods {
 		if m.Name == "" || m.Name[0] == ':' || m.Name[0] == '&' {
@@ -211,9 +227,32 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		if err := checkFormals(formals); err != nil {
 			return nil, fmt.Errorf("libschema: interface %s: method %s: %w", spec.Name, m.Name, err)
 		}
-		in.methods = append(in.methods, ifaceMethod{name: m.Name, formals: text, arity: arityOf(formals)})
+		if err := in.addEmbedded(ifaceMethod{name: m.Name, formals: text, arity: arityOf(formals)}, spec.Name, from); err != nil {
+			return nil, err
+		}
 	}
 	return in, nil
+}
+
+// addEmbedded adds m, which comes from the interface src, unless in has a
+// method of that name already.  The two must then have the same arity.
+func (in *Interface) addEmbedded(m ifaceMethod, src string, from map[string]string) error {
+	i := slices.IndexFunc(in.methods, func(h ifaceMethod) bool { return h.name == m.name })
+	if i < 0 {
+		in.methods = append(in.methods, m)
+		from[m.name] = src
+		return nil
+	}
+	if !in.methods[i].arity.equal(m.arity) {
+		return fmt.Errorf("libschema: interface %s: method %s takes %v in %s and %v in %s",
+			in.name, m.name, in.methods[i].arity, from[m.name], m.arity, src)
+	}
+	return nil
+}
+
+// equal reports whether a and b accept the same calls.
+func (a arity) equal(b arity) bool {
+	return a.min == b.min && a.max == b.max && a.none == b.none && slices.Equal(a.keys, b.keys)
 }
 
 // formalsText writes formals as "(a &optional [b s:string])".

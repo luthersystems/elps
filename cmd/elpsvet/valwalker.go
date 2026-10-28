@@ -207,6 +207,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.ValidateLoaded":                  "specialized traversal: iterative, visits each value once, never enters closures or natives",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.methodLambda":                    "syntax walker: reads one s:method form of a make-record body",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.macroMakeRecord":                 "syntax walker: reads the top-level forms of a make-record body",
+	"github.com/luthersystems/elps/lisp/lisplib/libschema.macroMakeInterface":              "syntax walker: reads the top-level forms of a make-interface body",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.builtinMakeRecord":               "hot path: reads the field validators and method pairs the macro built",
 	"github.com/luthersystems/elps/lisp/lisplib/libschema.getHandler":                      "hot path: schema callbacks construct and apply recursive validation constraints",
 	"github.com/luthersystems/elps/lisp/x/debugger/dapserver.exprWalk.hasUserFunCall":      "syntax walker: inspects source calls for debugger stepping",

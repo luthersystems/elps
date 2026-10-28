@@ -93,12 +93,17 @@ func TestRecordWorkspaceNames(t *testing.T) {
     (s:method zero (_o) 0)))
 (s:defmethod order size (o) (length (keys (o 'lines))))
 (s:defmethod order bad (_o x) (+ x missing))
+(set 'sized (s:make-interface "sized" (size ())))
+(set 'both (s:make-interface "both" :embed (sized nope) (pay (amount))))
 `), 0o600))
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol, AnalyzerUnusedVariable}}
 	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{file})
 	require.NoError(t, err)
-	require.Len(t, diags, 1, "%v", diags)
+	require.Len(t, diags, 2, "%v", diags)
 	assertDiagOnLine(t, diags, 9, "undefined symbol: missing")
+	// :embed names are evaluated, so an unknown one is undefined; the
+	// method specs are data.
+	assertDiagOnLine(t, diags, 11, "undefined symbol: nope")
 }
 
 // TestRecordWorkspaceNamesWithStdlibExports lints with precomputed stdlib
