@@ -65,6 +65,7 @@ func TestExpandCheckedMatchesQuasiquote(t *testing.T) {
 		params []string
 	}{
 		{`(progn (unquote-splicing xs) (f (unquote x)))`, []string{"x", "xs"}},
+		{`(f a b (unquote x))`, []string{"x"}},
 		{`(a (unquote-splicing xs) b (unquote-splicing ys) (c (unquote x)))`, []string{"x", "xs", "ys"}},
 		{`(with-cleanup ((g (unquote x))) (unquote-splicing xs))`, []string{"x", "xs"}},
 		{`(h '(unquote x) ''(k (unquote x) l m) (unquote-splicing xs))`, []string{"x", "xs"}},
@@ -182,4 +183,38 @@ func TestExpandCheckedNilArgument(t *testing.T) {
 	env := checkedEnv(t, 0, 0)
 	form := lisp.Cells{lisp.Symbol("a"), lisp.Cells{lisp.Symbol("unquote"), lisp.Symbol("b")}.SExpr()}.SExpr()
 	require.True(t, env.QuasiquoteWith(form, func(*lisp.LVal) *lisp.LVal { return nil }).IsError())
+}
+
+// TestExpandCheckedFastPath: when no list of the expansion can reach the
+// allocation limit and no node the value depth limit, ExpandChecked costs
+// what Expand costs, as substrate's Go macros did before they called it
+// (luthersystems/substrate#973).
+func TestExpandCheckedFastPath(t *testing.T) {
+	tmpl := elpsutil.MustTemplate(`(if (unquote a) (utils:to-bool (unquote b)) true)`, "a", "b")
+	env := checkedEnv(t, 0, 0)
+	a, b := lisp.Symbol("x"), lisp.Symbol("y")
+	plain := testing.AllocsPerRun(100, func() { tmpl.Expand(a, b) })
+	checked := testing.AllocsPerRun(100, func() { tmpl.ExpandChecked(env, a, b) })
+	require.Equal(t, int(plain), int(checked))
+}
+
+// TestExpandCheckedDepthBoundary: on each side of the value depth limit,
+// with the deepest node a leaf, a quote, an unquote or a splice,
+// ExpandChecked agrees with quasiquote.  So the template's depth bound is
+// never below the walk's: a bound one level too low fails it.  For a once
+// quoted node the bound is one level above the walk's, which only sends
+// that node's template to the walk at the limit.
+func TestExpandCheckedDepthBoundary(t *testing.T) {
+	for _, tail := range []string{`b`, `'b`, `''b`, `(unquote x)`, `'(unquote x)`, `(b (unquote-splicing xs))`, `()`} {
+		for levels := 1018; levels <= 1026; levels++ {
+			src := strings.Repeat("(a ", levels) + tail + " (unquote x) (unquote-splicing xs)" + strings.Repeat(")", levels)
+			params := []string{"x", "xs"}
+			args := func() []*lisp.LVal {
+				return []*lisp.LVal{lisp.Symbol("v"), lisp.Cells{lisp.Symbol("w")}.SExpr()}
+			}
+			want := quasiquoted(t, checkedEnv(t, 0, 1024), src, params, args())
+			got := elpsutil.MustTemplate(src, params...).ExpandChecked(checkedEnv(t, 0, 1024), args()...)
+			sameOutcome(t, want, got, tail)
+		}
+	}
 }

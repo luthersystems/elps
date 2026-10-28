@@ -43,6 +43,14 @@ type Template struct {
 	// or unquote-splicing head, ('unquote x): Expand copies it, but
 	// quasiquote reads it as an unquote, so ExpandChecked refuses it.
 	quotedHead bool
+	// widest is the most cells a list of the template has, less its
+	// splices, and deepest a bound on the value depth of its deepest node:
+	// each quote counts as a level, though the walk counts a single quote
+	// as a flag, so the bound is at or above the walk's depth.  splices
+	// are the parameters the template splices.  ExpandChecked reads them
+	// to skip quasiquote's walk when no check of it can fail (see fits).
+	widest, deepest int
+	splices         []int
 }
 
 type templateKind uint8
@@ -92,12 +100,14 @@ func MustTemplate(src string, params ...string) *Template {
 	if root.kind == templateSplice {
 		templatePanic("unquote-splicing must be directly inside a list")
 	}
-	for i, used := range c.used {
-		if !used {
-			templatePanic("unused parameter %q", params[i])
+	for i, name := range params {
+		if !c.used[i] {
+			templatePanic("unused parameter %q", name)
 		}
 	}
-	return &Template{root: root, paramCount: len(params), quotedHead: root.hasQuotedHead()}
+	t := &Template{root: root, paramCount: len(params), quotedHead: root.hasQuotedHead()}
+	t.widest, t.deepest = root.bounds(0, &t.splices)
+	return t
 }
 
 func templatePanic(format string, args ...any) {
@@ -186,9 +196,10 @@ func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
 // (lisp.LEnv.QuasiquoteWith), so it makes the same checks in the same order
 // with the same messages: the value depth limit at each node, quote
 // wrappers included, and the allocation limit as each list adds a cell,
-// where a splice adds its argument's length.  Where the quasiquote
-// evaluated a placeholder's parameter, ExpandChecked checks env's context,
-// as that evaluation did.  It charges no step and does not check the step
+// where a splice adds its argument's length.  It checks env's context, as
+// the quasiquote's evaluation of a placeholder's parameter did: at each
+// placeholder on the walk, and once, before it expands, when it skips the
+// walk (below), since every placeholder sees the same context.  It charges no step and does not check the step
 // limit or budget, so under a step limit the defmacro can fail where
 // ExpandChecked does not.  A spliced argument that is not a list is
 // quasiquote's error, not a panic, and a nil argument is an error.
@@ -197,8 +208,12 @@ func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
 // same form calls it, so the expansion fails where the defmacro's failed
 // and a handler that catches the error reads the same message
 // (luthersystems/elps#894).  The expansion is fresh syntax, as Expand's
-// is, with arguments inserted by pointer.  ExpandChecked builds the form
-// before it walks it, so it costs about twice what Expand costs.  It
+// is, with arguments inserted by pointer.  When no check of the walk can
+// fail, which is so for a small template under the default limits,
+// ExpandChecked skips the walk and costs what Expand costs, and a () in
+// the template is then the lisp.Nil singleton, as in Expand's expansion,
+// where the walk builds an empty list.  Otherwise it builds the form
+// before it walks it, about twice Expand's cost.  It
 // panics if the argument count differs from the declared parameter count,
 // and on a template with a list whose head is a quoted unquote, such as
 // (f ('unquote y)): Expand copies that list, but quasiquote reads it as an
@@ -210,12 +225,88 @@ func (t *Template) ExpandChecked(env *lisp.LEnv, args ...*lisp.LVal) *lisp.LVal 
 	if t.quotedHead {
 		panic("elpsutil.Template.ExpandChecked: the template has a list with a quoted unquote head, which quasiquote reads as an unquote; use Expand")
 	}
+	if t.fits(env, args) {
+		// No check of the walk can fail, so its only possible error is
+		// the context check at each placeholder, and every one of them
+		// sees the same context.
+		if t.paramCount > 0 {
+			if err := env.CheckContext(); err != nil {
+				return lisp.Error(err)
+			}
+		}
+		return t.root.expand(args)
+	}
 	return env.QuasiquoteWith(t.root.source(), func(expr *lisp.LVal) *lisp.LVal {
 		if err := env.CheckContext(); err != nil {
 			return lisp.Error(err)
 		}
 		return args[expr.Int]
 	})
+}
+
+// fits reports whether quasiquote's walk of t with args would pass every
+// check it makes and build what Expand builds.  The walk builds the source
+// form and then a copy of it, about twice Expand's cost, and a Go macro
+// expands on every call of the function whose body holds it
+// (luthersystems/substrate#973).  The template's shape is known only here,
+// so the bound is here and not in package lisp.
+//
+// The walk fails a node at value depth deepest or more, and a list when
+// its cells pass the allocation limit, where a splice adds its argument's
+// length and an unquote one cell.  It does not enter an argument, so only
+// the splices' lengths depend on args.  The walk also treats some
+// arguments in its own way: it returns an error argument as its result,
+// splices an argument with the spliced flag (lisp.Splice) even in an
+// unquote position, fails on a nil argument and on a splice of a value
+// that is not a list, and splices a quoted list, on which Expand panics.
+// fits is false for each of these, so the walk handles them.  The rules
+// are those of findAndUnquoteWith in package lisp, whose comment points
+// here.  TestExpandCheckedArgumentKinds compares the two paths
+// for each kind of argument.
+func (t *Template) fits(env *lisp.LEnv, args []*lisp.LVal) bool {
+	limit := env.Runtime.MaxAllocBytes() - t.widest
+	if limit < 0 || t.deepest >= env.Runtime.ValueDepthLimit() {
+		return false
+	}
+	for _, arg := range args {
+		if arg == nil || arg.IsError() || arg.IsSpliced() {
+			return false
+		}
+	}
+	spliced := 0
+	for _, i := range t.splices {
+		arg := args[i]
+		if arg.Type != lisp.LSExpr || arg.IsQuoted() {
+			return false
+		}
+		// No list can hold more than widest cells plus every splice.
+		if spliced += len(arg.Cells); spliced > limit {
+			return false
+		}
+	}
+	return true
+}
+
+// bounds returns the most cells a list under n has, less its splices, and
+// the value depth of the deepest node, where n is at depth.  It appends
+// each splice's parameter to splices.
+func (n *templateNode) bounds(depth int, splices *[]int) (int, int) {
+	widest, deepest := 0, depth
+	count := 0
+	for i := range n.children {
+		child := &n.children[i]
+		if child.kind == templateSplice {
+			*splices = append(*splices, child.index)
+		} else {
+			count++
+		}
+		w, d := child.bounds(depth+1, splices)
+		widest, deepest = max(widest, w), max(deepest, d)
+	}
+	if n.kind == templateList {
+		widest = max(widest, count)
+	}
+	return widest, deepest
 }
 
 // hasQuotedHead reports whether n or a node under it is a list whose head

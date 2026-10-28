@@ -593,7 +593,10 @@ replaces a `defmacro` whose body was a quasiquote, call
 (`LEnv.QuasiquoteWith`) under env's limits, so a form deeper than the value
 depth limit, an expansion over the allocation limit, a splice of a non-list
 and a cancelled context return the error the `defmacro` returned, with the
-same condition and message. It costs about twice what `Expand` costs.
+same condition and message. When no check of the walk can fail, as for a
+small template under the default limits, it skips the walk, checks the
+context once and costs what `Expand` costs. Otherwise it builds the form and
+walks it, about twice `Expand`'s cost.
 
 Each expansion allocates fresh, unlocated syntax, shares the inserted
 argument forms, and uses the immutable nil singleton for `()`; it never
