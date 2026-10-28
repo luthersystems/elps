@@ -677,6 +677,43 @@ field write. Use `s:set-field!` to change a field.
 (s:method pay (o) (s:set-field! o 'paid true))
 ```
 
+### `record-captured-set`
+
+**Flags `set!` in a method of a local of the closure around the record
+type.** (Severity: warning)
+
+A record type can be built inside `let`, `let*`, `flet` or `labels`, so the
+closure's locals act as private helpers of the type. Each local is one
+variable for all objects of the type. A method that changes it with `set!`
+changes state that every object shares and that no object holds:
+
+* A durable dump saves an object's fields and the name of its type. It
+  does not save the closure's locals, so the change is lost on load.
+* A failed method call puts the object's fields back. It does not undo a
+  change to a closure local.
+
+Keep per-object state in a field and change it with `s:set-field!`.
+
+```lisp
+;; WARNING: every order shares count, and a dump does not save it
+(set 'order
+  (let ([count 0])
+    (s:make-record "order"
+      (s:has-key "n" s:int)
+      (s:method add (o) (set! count (+ count 1))))))
+;; OK: the count is a field of each object
+(set 'order
+  (s:make-record "order"
+    (s:has-key "n" s:int)
+    (s:method add (o) (s:set-field! o 'n (+ (o 'n) 1)))))
+```
+
+The check covers inline `s:method` forms and `s:defmethod` calls, and a
+`set!` in a lambda inside the method. It does not report a `set!` of the
+receiver (see `record-plain-set`), of the method's formals, of a local the
+method body binds, or of a global. A read of a closure local is not
+reported.
+
 ### `schema-type-union`
 
 **Flags a type next to a constraint on the same type in `s:has-key`,
