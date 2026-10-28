@@ -5,6 +5,7 @@ package lint
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/analysis"
@@ -296,6 +297,79 @@ func TestRecordWorkspaceMethods(t *testing.T) {
 	require.NoError(t, err)
 	assertDiagOnLine(t, diags, 4, "size is not a field or method")
 	assertDiagOnLine(t, diags, 6, "pay is not a field or method")
+}
+
+// recordUser is a file whose type calls the members its test names.
+const recordUser = `(set 'order
+  (s:make-record "order"
+    (s:has-key "lines" s:sorted-map)
+    (s:method use (o) (o 'size) (o 'from-test) (o 'late))))
+`
+
+// lintRecordWorkspace writes files into a workspace and lints the
+// recordUser file there with the member check.
+func lintRecordWorkspace(t *testing.T, files map[string]string) []Diagnostic {
+	t.Helper()
+	dir := t.TempDir()
+	user := filepath.Join(dir, "order.lisp")
+	require.NoError(t, os.WriteFile(user, []byte(recordUser), 0o600))
+	for name, src := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600))
+	}
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordUnknownMember}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{user})
+	require.NoError(t, err)
+	return diags
+}
+
+// TestRecordWorkspaceMethodsQualifiedType checks that a s:defmethod that
+// names the type with its package adds to the type of that name.
+func TestRecordWorkspaceMethodsQualifiedType(t *testing.T) {
+	diags := lintRecordWorkspace(t, map[string]string{
+		"methods.lisp": "(in-package 'shop)\n(s:defmethod shop:order size (o) 0)\n",
+	})
+	for _, d := range diags {
+		assert.NotContains(t, d.Message, "size is not", "%v", diags)
+	}
+	assertHasDiag(t, diags, "from-test is not a field or method")
+}
+
+// TestRecordWorkspaceMethodsProductionOnly checks that a method from a test
+// file, or from a s:defmethod that runs at call time, does not make a
+// member known.  Neither is part of the type a production load builds, so
+// a call to it in a production file is still an unknown member.
+func TestRecordWorkspaceMethodsProductionOnly(t *testing.T) {
+	diags := lintRecordWorkspace(t, map[string]string{
+		"order_test.lisp": "(s:defmethod order from-test (o) 0)\n",
+		"methods.lisp":    "(s:defmethod order size (o) 0)\n(defun later () (s:defmethod order late (o) 0))\n",
+	})
+	require.Len(t, diags, 2, "%v", diags)
+	assertDiagOnLine(t, diags, 4, "from-test is not a field or method")
+	assertDiagOnLine(t, diags, 4, "late is not a field or method")
+}
+
+// TestRecordWorkspaceMethodsUnsavedText checks that the workspace entries
+// of the linted file do not stand in for its text.  The file on disk adds
+// own; the text being linted has renamed it, so a call to own is unknown.
+func TestRecordWorkspaceMethodsUnsavedText(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "order.lisp")
+	onDisk := `(set 'order (s:make-record "order" (s:has-key "n" s:int) (s:method use (o) (o 'own))))
+(s:defmethod order own (o) 0)
+`
+	require.NoError(t, os.WriteFile(file, []byte(onDisk), 0o600))
+	cfg, err := BuildAnalysisConfig(&LintConfig{Workspace: dir})
+	require.NoError(t, err)
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordUnknownMember}}
+
+	diags, err := l.LintFileWithAnalysis([]byte(onDisk), file, cfg)
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+
+	edited := strings.Replace(onDisk, "order own", "order renamed", 1)
+	diags, err = l.LintFileWithAnalysis([]byte(edited), file, cfg)
+	require.NoError(t, err)
+	assertDiagOnLine(t, diags, 1, "own is not a field or method")
 }
 
 func TestRecordCapturedSet(t *testing.T) {

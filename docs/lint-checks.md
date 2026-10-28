@@ -610,11 +610,24 @@ are often split across files, and without that data a call to such a
 method reads as an unknown member. Without a workspace, add
 `; nolint:record-unknown-member` to a call of a method from another file.
 
-The workspace methods are keyed by the type's name without its package,
-so two packages with a type of one name share one method set. The check
-then misses a finding; it does not report a false one. The check skips a
-type whose field forms are not literal `s:has-key` or `s:may-have-key`
-calls, and a type defined in another file.
+The workspace methods follow these rules:
+
+* A method counts only when a production load adds it. An `s:defmethod`
+  in a `*_test.lisp` or `*_testhelpers.lisp` file, or one that runs at
+  call time (see `record-defmethod-not-toplevel`), is not part of the type
+  a template publishes. So it does not hide an unknown member in a
+  production file.
+* The linted file's own entries are left out. They come from the file on
+  disk, and the text being linted declares its methods itself, so a method
+  the unsaved text renamed or removed is unknown again. The LSP replaces a
+  file's methods each time the file is saved.
+* A type is matched by its name without its package:
+  `(s:defmethod shop:order ...)` adds to `order`. So two packages with a
+  type of one name share one method set. The check then misses a finding;
+  it does not report a false one.
+
+The check skips a type whose field forms are not literal `s:has-key` or
+`s:may-have-key` calls, and a type defined in another file.
 
 ### `record-check-writes`
 

@@ -359,7 +359,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var packageImports map[string][]string
 	var defaultPackage string
 	var filePackages map[string]string
-	var recordMethods analysis.RecordMethods
+	var recordMethods analysis.RecordMethodsByFile
 
 	scanCfg := s.scanConfig()
 
@@ -375,7 +375,7 @@ func (s *Server) buildWorkspaceIndex() {
 			packageImports = prescan.PackageImports
 			defaultPackage = prescan.DefaultPackage
 			filePackages = prescan.FilePackages
-			recordMethods = prescan.RecordMethods
+			recordMethods = prescan.RecordMethodsByFile
 			preamble = prescan.Preamble
 			if prescan.Truncated {
 				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
@@ -415,14 +415,14 @@ func (s *Server) buildWorkspaceIndex() {
 	analysis.SortDefinitions(extraGlobals)
 
 	cfg := &analysis.Config{
-		ExtraGlobals:   extraGlobals,
-		PackageExports: pkgExports,
-		PackageSymbols: pkgAllSymbols,
-		DefForms:       defForms,
-		PackageImports: packageImports,
-		DefaultPackage: defaultPackage,
-		FilePackages:   filePackages,
-		RecordMethods:  recordMethods,
+		ExtraGlobals:        extraGlobals,
+		PackageExports:      pkgExports,
+		PackageSymbols:      pkgAllSymbols,
+		DefForms:            defForms,
+		PackageImports:      packageImports,
+		DefaultPackage:      defaultPackage,
+		FilePackages:        filePackages,
+		RecordMethodsByFile: recordMethods,
 	}
 
 	// Enable macro expansion at analysis time if an environment is available.
@@ -713,6 +713,7 @@ func (s *Server) updateFileDefinitions(uri string) {
 	}
 
 	newDefs := analysis.ExtractFileDefinitions(source, filePath)
+	newMethods := analysis.ExtractFileRecordMethods(source, filePath)
 
 	s.analysisCfgMu.Lock()
 	defer s.analysisCfgMu.Unlock()
@@ -722,9 +723,14 @@ func (s *Server) updateFileDefinitions(uri string) {
 	}
 
 	s.analysisCfg.ExtraGlobals = append(filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath), newDefs...)
+	// Replace the file's record methods, so a s:defmethod added, renamed
+	// or removed in it reaches the record lint checks of the other files.
+	// With copies the map: a Config copied from this one may be in use.
+	s.analysisCfg.RecordMethodsByFile = s.analysisCfg.RecordMethodsByFile.With(filePath, newMethods)
 }
 
-// removeFileDefinitions removes all ExtraGlobals entries for the given file path.
+// removeFileDefinitions removes all ExtraGlobals entries for the given file
+// path, and the record methods the file added.
 func (s *Server) removeFileDefinitions(filePath string) {
 	filePath = analysis.NormalizePath(filePath)
 
@@ -736,6 +742,7 @@ func (s *Server) removeFileDefinitions(filePath string) {
 	}
 
 	s.analysisCfg.ExtraGlobals = filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath)
+	s.analysisCfg.RecordMethodsByFile = s.analysisCfg.RecordMethodsByFile.With(filePath, nil)
 }
 
 // filterExtraGlobalsByFile returns a new slice with all entries whose

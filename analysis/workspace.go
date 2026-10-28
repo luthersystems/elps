@@ -397,7 +397,8 @@ type fileScan struct {
 	filePkg string
 	// firstInPkgLine is the first package declaration line.
 	firstInPkgLine int
-	// recordMethods are the methods the file's s:defmethod calls add.
+	// recordMethods are the methods the file's load-time s:defmethod
+	// calls add; nil for a test file.
 	recordMethods RecordMethods
 }
 
@@ -448,7 +449,16 @@ func scanFileFull(source []byte, filename string) fileScan {
 		}
 	}
 
-	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: ScanRecordMethods(exprs)}
+	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: fileRecordMethods(source, filename, exprs)}
+}
+
+// fileRecordMethods returns the methods one parsed file adds, under the
+// rules of ExtractFileRecordMethods.
+func fileRecordMethods(source []byte, filename string, exprs []*lisp.LVal) RecordMethods {
+	if !mayAddRecordMethods(source, filename) {
+		return nil
+	}
+	return ScanRecordMethods(exprs)
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -1010,10 +1020,11 @@ type WorkspacePrescan struct {
 	// to Config.FilePackages. It is set only when DefaultPackage is set,
 	// the same condition under which definitions are remapped.
 	FilePackages map[string]string
-	// RecordMethods are the methods the s:defmethod calls of all files add
-	// to each record type. Copy it to Config.RecordMethods, so the record
-	// lint checks know a method that another file adds.
-	RecordMethods RecordMethods
+	// RecordMethodsByFile holds, for each file, the methods its load-time
+	// s:defmethod calls add to each record type. Test files are left out.
+	// Copy it to Config.RecordMethodsByFile, so the record lint checks know
+	// a method that another file adds.
+	RecordMethodsByFile RecordMethodsByFile
 }
 
 // PrescanWorkspace performs a single-pass workspace scan that collects
@@ -1149,7 +1160,13 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		}
 	}
 
-	for _, r := range results {
+	for i, r := range results {
+		if len(r.recordMethods) > 0 {
+			if prescan.RecordMethodsByFile == nil {
+				prescan.RecordMethodsByFile = make(RecordMethodsByFile)
+			}
+			prescan.RecordMethodsByFile[NormalizePath(paths[i])] = r.recordMethods
+		}
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
 		prescan.DefForms = append(prescan.DefForms, r.defForms...)
@@ -1162,7 +1179,6 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		for pkg, imports := range r.usePackages {
 			prescan.PackageImports[pkg] = appendUnique(prescan.PackageImports[pkg], imports...)
 		}
-		prescan.RecordMethods = prescan.RecordMethods.Merge(r.recordMethods)
 	}
 
 	// Remap user-package symbols to their correct package.
