@@ -21,7 +21,9 @@ import (
 // not.  &rest [xs type] checks each element, at one step each.
 //
 // The checks run in Go, after the argument count and before the body, so a
-// bad call changes nothing and costs no ELPS steps.  A Lisp method keeps
+// bad call changes nothing.  A check costs no ELPS steps, except one step
+// per &rest element and the steps of the Lisp code a check runs: a late
+// type's lookup, a Lisp validator or a record type's :check.  A Lisp method keeps
 // its types in its type's captures, so each fork of a template has its own;
 // a Go method has check functions, as FieldSpec has.  Both run through
 // argCheck.supplied and argError, so they fail the same way.

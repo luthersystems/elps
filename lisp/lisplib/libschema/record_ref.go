@@ -151,6 +151,11 @@ func evalGoType(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	// (), the field is required: fail as s:has-key fails on a missing key.
 	for i, f := range t.spec.Fields {
 		if !given[i] && f.Check != nil && f.Check(fields[i]) != nil {
+			if !f.Getter {
+				// Lisp cannot give a hidden field; only Go can make
+				// this object.
+				return env.ErrorConditionf(FailedConstraint, "%s: hidden field %s refuses (), so only Go can make this object", t.spec.DisplayName, f.Name)
+			}
 			return env.ErrorConditionf(FailedConstraint, "%s: missing required field %s", t.spec.DisplayName, f.Name)
 		}
 	}
