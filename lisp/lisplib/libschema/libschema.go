@@ -62,6 +62,10 @@ const (
 	BadArgs          = "bad-arguments"
 	FailedConstraint = "failed-constraint"
 	WrongType        = "wrong-type"
+	// RecordError is the condition of a record rule the runtime enforces:
+	// s:set-field! outside a method of the object's type or in its :check,
+	// and s:defmethod in a function call.  It is a child of error.
+	RecordError = lisp.CondRecordError
 )
 
 // LoadPackage adds the schema package to env.

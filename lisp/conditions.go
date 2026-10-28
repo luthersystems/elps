@@ -113,13 +113,22 @@ const CondArgumentError = "argument-error"
 // handler-bind on error catches it and it renders as error does.
 const CondMatchError = "match-error"
 
+// CondRecordError reports that a program broke a rule of a libschema record
+// type that the runtime enforces (luthersystems/elps#908): an s:set-field!
+// while no method of the object's type runs on the object, an s:set-field!
+// while the object's :check runs, or an s:defmethod while a function
+// defined in Lisp runs.  Its message names the type and the rule.
+// record-error is a child of error, as argument-error is, so a
+// handler-bind on error catches it and it renders as error does.
+const CondRecordError = "record-error"
+
 // conditionParent returns the parent of condition c in elps's fixed
 // condition hierarchy, or "" when c has none.  Only conditions elps raises
 // itself have a parent; a condition a program names with (error 'x ...) has
 // none.
 func conditionParent(c string) string {
 	switch c {
-	case CondArgumentError, CondMatchError:
+	case CondArgumentError, CondMatchError, CondRecordError:
 		return "error"
 	}
 	return ""

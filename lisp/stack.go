@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -263,6 +264,30 @@ func sourcePos(loc *token.Location) string {
 		return ""
 	}
 	return loc.String()
+}
+
+// InLispFunction reports whether a function defined in Lisp is running: a
+// frame of s is a call of a lambda, a defun, a defmacro expansion, or a flet
+// or labels function.  A frame of a builtin, a special operator or a macro
+// defined in Go does not count, so the top-level forms of a load, also of a
+// load-file or load-string, run with no Lisp function on the stack unless a
+// Lisp function started the load.
+//
+// The answer depends only on the frames, so the same evaluation gives the
+// same answer in a cold-loaded VM and in every VM of a template: a template
+// VM starts with an empty stack, as a quiescent source has.  A tail call
+// keeps at least one frame of the function it loops in.  A Go function whose
+// FID starts with the prefix of Lisp functions, "_fun", counts as one.
+func (s *CallStack) InLispFunction() bool {
+	if s == nil {
+		return false
+	}
+	for i := len(s.Frames) - 1; i >= 0; i-- {
+		if strings.HasPrefix(s.Frames[i].FID, lispFunFIDPrefix) {
+			return true
+		}
+	}
+	return false
 }
 
 // TerminalFID determines if a chain of terminal stack frames that ends with

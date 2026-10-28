@@ -67,10 +67,19 @@ const (
 const (
 	objType = iota
 	objFields
-	// objState is nil while no method or :check runs on the object.
-	// While one runs it is true, and the first s:set-field! replaces it with
-	// the field map as it was before the outermost call, which a failed
-	// call puts back.
+	// objState is the object's call state (luthersystems/elps#908):
+	//
+	//	()     no method and no :check runs on the object
+	//	true   a method runs on the object, and has not written a field
+	//	a map  a method runs on the object, and has written a field: the
+	//	       map is the fields as they were before the outermost call,
+	//	       which a failed call puts back
+	//	false  the object's :check runs; runRecordCheck keeps the state
+	//	       from before it and puts it back when the check returns
+	//
+	// s:set-field! reads it to refuse a write outside a method or in a
+	// :check.  The values are the singletons () true and false, and the
+	// saved map, so a call allocates nothing for its state.
 	objState
 	objCells
 )
@@ -398,17 +407,21 @@ func validateLispFields(env *lisp.LEnv, desc *recordDesc, tcaps, fields *lisp.LV
 // runRecordCheck calls the type's :check function, if any, with obj.  The
 // function rejects obj by raising an error.
 //
-// While the check runs, the object is marked as in a call, so a method the
-// check calls on it runs without a check of its own.
+// While the check runs, the object's call state is false: a method the
+// check calls on it runs without a check of its own, and s:set-field! on it
+// refuses (luthersystems/elps#908).  The state from before the check comes
+// back when the check returns, so a method call that the check follows
+// still has its saved fields for a rollback.
 func runRecordCheck(env *lisp.LEnv, desc *recordDesc, tcaps, obj *lisp.LVal) *lisp.LVal {
 	check := tcaps.Cells[typeCheck]
 	if check.IsNil() {
 		return nil
 	}
-	if caps := funraw.Captures(obj); caps != nil && len(caps.Cells) == objCells && caps.Cells[objState].IsNil() {
-		caps.Cells[objState] = lisp.Bool(true) //elps:mutates marks the object's own call state
+	if caps := funraw.Captures(obj); caps != nil && len(caps.Cells) == objCells {
+		prev := caps.Cells[objState]
+		caps.Cells[objState] = lisp.Bool(false) //elps:mutates marks the object's own call state: its :check runs
 		defer func() {
-			caps.Cells[objState] = lisp.Nil() //elps:mutates clears the object's own call state
+			caps.Cells[objState] = prev //elps:mutates puts back the object's own call state
 		}()
 	}
 	if r := env.FunCall(check, lisp.Cells{obj}.List()); r.IsError() {
@@ -472,6 +485,9 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !desc.hasField(name) {
 		return env.ErrorConditionf(BadArgs, "s:set-field!: %s has no field %s", desc.display, name)
 	}
+	if lerr := refuseWrite(env, desc, o.objCaps.Cells[objState]); lerr != nil {
+		return lerr
+	}
 	key := lisp.String(name)
 	if v := fieldValidator(desc, tcaps, name); v != nil {
 		probe := lisp.SortedMapSized(1)
@@ -481,6 +497,8 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 	}
 	if caps := o.objCaps; caps.Cells[objState].Type == lisp.LSymbol {
+		// refuseWrite let only true through: a method runs and has not
+		// written yet.
 		// The first write in a call saves the fields as they were, for a
 		// failed call to put back.
 		saved := copyMap(env, fields)
@@ -493,6 +511,24 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return lerr
 	}
 	return value
+}
+
+// refuseWrite returns the record-error of an s:set-field! on an object
+// whose call state is state, or nil when the write may go on
+// (luthersystems/elps#908).  A write needs a method of the object's type
+// running on the object: a call (obj 'method ...) on any header of the
+// object that has not returned.  The test is dynamic, so code the method
+// calls, a lambda or a helper defun, may write.  A lambda that a method
+// returns, called after the method returned, may not.  A write while the
+// object's :check runs is refused, also from a method the check calls.
+func refuseWrite(env *lisp.LEnv, desc *recordDesc, state *lisp.LVal) *lisp.LVal {
+	switch {
+	case state.IsNil():
+		return env.ErrorConditionf(RecordError, "no method of %s runs on the object; change the field in a method of the type", desc.display)
+	case state.Type == lisp.LSymbol && !lisp.True(state):
+		return env.ErrorConditionf(RecordError, "the :check of %s runs on the object; :check must only read the object", desc.display)
+	}
+	return nil
 }
 
 // fieldName returns the field name a symbol or string names.

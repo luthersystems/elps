@@ -100,7 +100,7 @@ func (rt *Runtime) DefineCondition(child, parent string) error {
 
 // builtinChildConditions lists the conditions that have a built-in parent
 // (conditionParent).  Keep the two in step.
-var builtinChildConditions = [...]string{CondArgumentError, CondMatchError}
+var builtinChildConditions = [...]string{CondArgumentError, CondMatchError, CondRecordError}
 
 // conditionHasChildren reports whether some condition has c as its parent,
 // built in or defined.

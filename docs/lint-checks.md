@@ -527,8 +527,8 @@ runs for `boom`:
   (work))
 ```
 
-The same applies to `error` before `argument-error` or `match-error`, the
-built-in children of `error`, and to a parent named
+The same applies to `error` before `argument-error`, `match-error` or
+`record-error`, the built-in children of `error`, and to a parent named
 by a `define-condition` call in the same file whose arguments are a quoted
 symbol or a string. A second binding for the same type is reported as one
 that never runs. The check cannot see a parent defined in another file, by
@@ -555,6 +555,18 @@ call returns, so a change from outside a method skips it.
 
 A lambda inside a method body is part of the method, so `s:set-field! o` in
 it is not reported.
+
+The runtime refuses the write too (luthersystems/elps#908): `s:set-field!`
+raises `record-error` unless a method of the object's type runs on that
+object. The lint finds the write before the code runs. The two tests
+differ:
+
+| Code | Lint | Runtime |
+|------|------|---------|
+| `s:set-field!` in a method body, or in a lambda in it that runs during the call | not reported | allowed |
+| `s:set-field! o` in a `defun` that a method on `o` calls | reported | allowed: the method runs |
+| `s:set-field! other` in a method on `o` | not reported | refused unless a method runs on `other` |
+| `s:set-field!` in a lambda that a method returned, called after the call | not reported | refused |
 
 ### `record-type-binding`
 
@@ -663,6 +675,12 @@ read the object. To refuse a change, raise an error.
 
 An `s:set-field!` in `:check` gets this warning, not `record-set-outside-method`.
 
+The runtime refuses an `s:set-field!` on the object while its `:check` runs
+(luthersystems/elps#908), also from a method the check calls, with
+`record-error`. The lint finds the write before the code runs. The runtime
+cannot see an in-place change such as `assoc!` on a field's value; only the
+lint reports those.
+
 ### `record-method-arity`
 
 **Flags a member call in a method with the wrong number of arguments.**
@@ -767,8 +785,19 @@ load, so the method reaches only the VM that runs the call:
 * It is not in the type's saved form.
 * A later call in another VM does not see it.
 
-A runtime refusal in template VMs only would make cold and template peers
-answer differently, so this check is the guard, the same in every mode.
+The runtime refuses the same code (luthersystems/elps#908): `s:defmethod`
+raises `record-error` while a function defined in Lisp runs, that is when
+the call stack holds a frame of a `lambda`, `defun`, `defmacro`, `flet` or
+`labels` function. The test reads only the call stack, so it gives the same
+answer in a cold-loaded VM and in every template VM. The lint finds the call
+before the code runs. The two tests differ:
+
+| Code | Lint | Runtime |
+|------|------|---------|
+| `s:defmethod` in a function body | reported | refused |
+| `s:defmethod` in the arguments of a macro call that expands it at the top level | reported | allowed |
+| `s:defmethod` at the top level of a file that a function loads with `load-file` | not reported | refused |
+| `s:defmethod` in a `*_test.lisp` test body | skipped | refused |
 
 An `s:defmethod` runs at load when nothing around it defers it:
 
@@ -809,8 +838,8 @@ macro. Suppress that line with
 `; nolint:record-defmethod-not-toplevel`.
 
 The check skips `*_test.lisp` and `*_testhelpers.lisp` files. Only test
-runners load them, and a test may call `s:defmethod` at call time to test
-it.
+runners load them, and the runtime refuses a call-time `s:defmethod` in a
+test too. A test checks the refusal with an `s:defmethod` in a lambda.
 
 ### `schema-type-union`
 

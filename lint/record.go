@@ -16,8 +16,11 @@ import (
 // keep each object's fields valid by checking every write: the constructor
 // and s:set-field! run the field validators.  The interpreter cannot refuse every
 // way around those checks without a cost on each call, so these checks find
-// the usual ones in source.  All of them are warnings now; the next major
-// release may make the runtime refuse what they report.
+// the usual ones in source.  All of them are warnings.  The runtime also
+// refuses what three of them report, with record-error
+// (luthersystems/elps#908): record-set-outside-method, record-check-writes
+// and record-defmethod-not-toplevel.  The lint finds that code before it
+// runs.
 
 // recordPackage is the qualifier of the libschema package.  Several of its
 // exports (not, when, list, error, sorted-map) hide lisp names after a
@@ -819,7 +822,8 @@ var AnalyzerRecordSetOutsideMethod = &Analyzer{
 		"A record type's methods are the one place that changes its objects. s:set-field! " +
 		"checks the new value against the field's validator only. The type's :check " +
 		"function runs when a method call returns, so a change from outside a " +
-		"method skips it. Add a method and call it.",
+		"method skips it. Add a method and call it. The runtime also refuses the " +
+		"write with record-error unless a method of the object's type runs on the object.",
 	Run: recordAnalyzerRun(recordSetOutsideMethod),
 }
 
@@ -873,7 +877,8 @@ var AnalyzerRecordCheckWrites = &Analyzer{
 		"A record type's :check function runs after the constructor and after each " +
 		"method call. It must only read the object and raise an error to refuse a " +
 		"change. A write in it (s:set-field!, or a mutating builtin such as assoc! on a " +
-		"field) changes the object after its validators ran.",
+		"field) changes the object after its validators ran. The runtime also refuses " +
+		"an s:set-field! on the object while its :check runs, with record-error.",
 	Run: recordAnalyzerRun(recordCheckWrites),
 }
 
@@ -932,7 +937,9 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"the body of flet or labels, the arguments of a function call, or the value of " +
 		"a defconst. A function body, or the arguments of a macro call, is reported. A " +
 		"head the analysis cannot resolve is taken for a function and not reported. A " +
-		"*_test.lisp or *_testhelpers.lisp file is skipped: only test runners load it.",
+		"*_test.lisp or *_testhelpers.lisp file is skipped: only test runners load it. " +
+		"The runtime also refuses s:defmethod with record-error while a function defined " +
+		"in Lisp runs, in every file.",
 	Run: func(pass *Pass) error {
 		// A test may add a method at call time on purpose, to test
 		// s:defmethod itself, and a test file is never part of a template.

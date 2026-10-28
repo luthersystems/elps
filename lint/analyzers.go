@@ -3358,7 +3358,7 @@ func mentionsSymbol(exprs []*lisp.LVal, name string) bool {
 var AnalyzerHandlerOrder = &Analyzer{
 	Name:     "handler-order",
 	Severity: SeverityWarning,
-	Doc:      "Warn when a handler-bind binding follows a binding for one of its ancestors, or for its own type.\n\nhandler-bind runs the most specific matching binding: the one for the raised condition, else the one for its nearest ancestor, with the catch-all `condition` last. Before luthersystems/elps#831 it ran the first match in source order, so a binding written after `condition`, or after a parent such as `error` (the parent of the built-in argument-error and match-error), never ran; it now runs for its conditions. A second binding for the same type still never runs. List the most specific binding first so the code reads as it runs.",
+	Doc:      "Warn when a handler-bind binding follows a binding for one of its ancestors, or for its own type.\n\nhandler-bind runs the most specific matching binding: the one for the raised condition, else the one for its nearest ancestor, with the catch-all `condition` last. Before luthersystems/elps#831 it ran the first match in source order, so a binding written after `condition`, or after a parent such as `error` (the parent of the built-in argument-error, match-error and record-error), never ran; it now runs for its conditions. A second binding for the same type still never runs. List the most specific binding first so the code reads as it runs.",
 	Run: func(pass *Pass) error {
 		rt := &lisp.Runtime{}
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {

@@ -45,9 +45,14 @@
 (test "missing-method"
   (assert-equal 'wrong-type (failure (lambda () (s:validate payable (draft :text "x"))))))
 
+(set 'later
+     (s:make-record "later"
+                    (s:has-key "text" s:string)
+                    (s:method pay (_o amount) amount)))
+(s:defmethod later cancel (_o) ())
+
 (test "added-method-counts"
-  (s:defmethod draft cancel (_o) ())
-  (assert-nil (s:validate payable (draft :text "x"))))
+  (assert-nil (s:validate payable (later :text "x"))))
 
 (test "not-a-record"
   (assert-equal 'wrong-type (failure (lambda () (s:validate payable 5))))

@@ -318,8 +318,8 @@ A record type is a constructor for objects with typed fields and methods
 |------|-----|
 | `(s:make-record NAME FIELD... METHOD... [:check FN] [:implements (IFACE...)])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
 | `(s:method NAME (RECV ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. RECV is the object. |
-| `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
-| `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
+| `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. Only at load. |
+| `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. Only in a method. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
 | `(s:make-interface NAME [:embed (IFACE...)] (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
@@ -339,6 +339,8 @@ Rules:
   `:check` makes on the same object runs without a check, so a method may
   pass through a state `:check` refuses, and `:check` may call methods.
 * A method call is atomic: see "Method calls are atomic" below.
+* The runtime enforces three rules with the condition `record-error`, a
+  child of `error`: see "Rules the runtime enforces" below.
 * A call to an unknown operation raises `unknown-operation`.
 * A type takes methods only from the package that defines it. A method
   name must not be a field name.
@@ -408,6 +410,31 @@ Details:
 * A phylum endpoint that raises an error already rolls back its whole
   transaction. The rollback matters for code that catches an error and
   keeps using the object.
+
+#### Rules the runtime enforces
+
+Three rules raise `record-error` (luthersystems/elps#908). It is a child of
+`error`, so `(handler-bind ((error ...)) ...)` and `ignore-errors` catch it.
+A refused call changes nothing. The checks are Go tests that charge no
+step.
+
+| Rule | Refused | Allowed |
+|------|---------|---------|
+| `s:set-field!` needs a method of the object's type running on the object. | A write at the top level, in a `defun` no method calls, to another object than the method's receiver, or in a lambda a method returned, called after the call. | A write while a call `(obj 'method ...)` on the object has not returned: in the method body, in a lambda it calls, or in a helper `defun` it calls. |
+| `s:set-field!` refuses while the object's `:check` runs. | A write in `:check`, or in a method that `:check` calls on the object. | Reads in `:check`, and method calls that only read. |
+| `s:defmethod` runs only at load. | A call while a function defined in Lisp runs: in a `defun`, `lambda`, `defmacro` body, `flet` or `labels` function, a method or a handler. | A top-level form, also in `let`, `progn`, `when`, a `flet` body, a call argument, `load-file` or `load-string`, or the expansion of a top-level macro call. |
+
+The `s:defmethod` test reads only the call stack. A template VM starts
+with an empty stack, as a cold-loaded VM does after its load, so each VM
+gives the same answer. Load a program with no Lisp function on the stack.
+The lint checks `record-set-outside-method`, `record-check-writes` and
+`record-defmethod-not-toplevel` report the same code before it runs.
+
+Upgrading: record types are in no tagged release before this change. Code
+that wrote a field from outside a method, wrote in `:check`, or added a
+method in a function call now raises `record-error`. Move the write into a
+method and call it, raise an error in `:check` instead of writing, and move
+the `s:defmethod` to the top level of a file.
 
 #### Typed arguments
 
