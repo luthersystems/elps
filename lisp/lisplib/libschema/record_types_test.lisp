@@ -113,10 +113,10 @@
     (c 'inc)
     (assert-equal 2 (c 'n)))
   (assert-equal 'negative-count (condition-of (lambda () (counter :n -1))))
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc (_o) 0))))
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0))))
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc (_o) 0)))) ; nolint:record-defmethod-not-toplevel
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0)))) ; nolint:record-defmethod-not-toplevel
   ; A valid s:defmethod in a function call is refused (luthersystems/elps#908).
-  (assert-equal 'record-error (condition-of (lambda () (s:defmethod counter late (_o) 0))))
+  (assert-equal 'record-error (condition-of (lambda () (s:defmethod counter late (_o) 0)))) ; nolint:record-defmethod-not-toplevel
   (assert-equal 'unknown-operation (condition-of (lambda () ((counter :n 0) 'late)))))
 
 (set 'tally
@@ -148,7 +148,7 @@
   ; A method needs a receiver, and the receiver is a plain name.
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m () 1))))) ; nolint:record-type-binding,undefined-symbol
   (assert-equal 'bad-arguments (condition-of (lambda () (s:make-record "x" (s:method m (&rest xs) 1))))) ; nolint:record-type-binding,undefined-symbol
-  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m (_o) 1)))))
+  (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod (sorted-map) m (_o) 1))))) ; nolint:record-defmethod-not-toplevel
 
 (set 'range
      (s:make-record "range"

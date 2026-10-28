@@ -23,15 +23,20 @@ func TestPushFIDWritesEveryField(t *testing.T) {
 	for f := range reflect.TypeFor[CallFrame]().Fields() {
 		fields = append(fields, f.Name)
 	}
-	require.Equal(t, []string{"Source", "FID", "Package", "Name", "HeightLogical", "Terminal", "TROBlock", "TailIterations"}, fields)
+	require.Equal(t, []string{"Source", "FID", "Package", "Name", "HeightLogical", "Terminal", "TROBlock", "lispFun", "TailIterations"}, fields)
 	var s CallStack
 	src := &token.Location{File: "frames.lisp", Line: 2}
 	require.NoError(t, s.PushFID(src, "fid1", "pkg1", "name1"))
 	top := s.Top()
-	top.Terminal, top.TROBlock, top.TailIterations = true, true, 9
+	top.Terminal, top.TROBlock, top.lispFun, top.TailIterations = true, true, true, 9
 	s.Frames = s.Frames[:0] // truncated without Pop
 	require.NoError(t, s.PushFID(nil, "fid2", "pkg2", "name2"))
 	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2"}, s.Frames[0])
+	s.Frames = s.Frames[:0]
+	require.NoError(t, s.pushFrame(nil, "fid2", "pkg2", "name2", true))
+	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2", lispFun: true}, s.Frames[0])
+	s.Frames = s.Frames[:0]
+	require.NoError(t, s.PushFID(nil, "fid2", "pkg2", "name2"))
 	require.NoError(t, s.PushFID(src, "fid3", "pkg3", "name3"))
 	want := CallFrame{Source: src, FID: "fid3", Package: "pkg3", Name: "name3", HeightLogical: 1}
 	assert.Equal(t, want, s.Frames[1])

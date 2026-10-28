@@ -9,7 +9,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"strings"
 
 	"github.com/luthersystems/elps/parser/token"
 )
@@ -78,6 +77,12 @@ type CallFrame struct {
 
 	Terminal bool
 	TROBlock bool // Stop tail-recursion optimization from collapsing this frame
+
+	// lispFun is true when the frame calls a function defined in Lisp: a
+	// lambda, defun, defmacro, or flet or labels function.  The evaluator
+	// sets it from the function value, not from its FID.  The byte fits in
+	// the padding after TROBlock, so the struct stays 72 bytes.
+	lispFun bool
 
 	// TailIterations counts tail-call iterations performed at this frame.
 	// Each turn of a tail loop increments it by exactly one, regardless of
@@ -268,22 +273,24 @@ func sourcePos(loc *token.Location) string {
 
 // InLispFunction reports whether a function defined in Lisp is running: a
 // frame of s is a call of a lambda, a defun, a defmacro expansion, or a flet
-// or labels function.  A frame of a builtin, a special operator or a macro
-// defined in Go does not count, so the top-level forms of a load, also of a
-// load-file or load-string, run with no Lisp function on the stack unless a
-// Lisp function started the load.
+// or labels function.  The evaluator marks such a frame when it calls a
+// function value that has no Go implementation.  A frame of a builtin, a
+// special operator, a macro defined in Go, or a frame pushed with PushFID
+// does not count.  So the top-level forms of a load, also of a load-file or
+// load-string, run with no Lisp function on the stack unless a Lisp
+// function started the load.
 //
-// The answer depends only on the frames, so the same evaluation gives the
-// same answer in a cold-loaded VM and in every VM of a template: a template
-// VM starts with an empty stack, as a quiescent source has.  A tail call
-// keeps at least one frame of the function it loops in.  A Go function whose
-// FID starts with the prefix of Lisp functions, "_fun", counts as one.
+// The answer depends only on the frames.  A template VM starts with an
+// empty stack, as a quiescent source has, so the same evaluation from an
+// empty stack gives the same answer in a cold-loaded VM and in every VM of
+// a template.  A tail call keeps at least one frame of the function it
+// loops in.
 func (s *CallStack) InLispFunction() bool {
 	if s == nil {
 		return false
 	}
 	for i := len(s.Frames) - 1; i >= 0; i-- {
-		if strings.HasPrefix(s.Frames[i].FID, lispFunFIDPrefix) {
+		if s.Frames[i].lispFun {
 			return true
 		}
 	}
@@ -334,8 +341,17 @@ func (s *CallStack) TerminalFID(fid string) int {
 	return 0
 }
 
-// PushFID pushes a new stack frame with the given FID onto s.
+// PushFID pushes a new stack frame with the given FID onto s.  The frame
+// does not count as a call of a function defined in Lisp (InLispFunction).
 func (s *CallStack) PushFID(src *token.Location, fid string, pkg string, name string) error {
+	return s.pushFrame(src, fid, pkg, name, false)
+}
+
+// pushFrame is PushFID for the evaluator, which also marks a frame that
+// calls a function defined in Lisp.
+//
+//nolint:revive // PushFID's four arguments plus the mark
+func (s *CallStack) pushFrame(src *token.Location, fid string, pkg string, name string, lispFun bool) error {
 	heff := 0
 	if len(s.Frames) > 0 {
 		heff = s.Top().HeightLogical + 1
@@ -362,6 +378,7 @@ func (s *CallStack) PushFID(src *token.Location, fid string, pkg string, name st
 	f.HeightLogical = heff
 	f.Terminal = false
 	f.TROBlock = false
+	f.lispFun = lispFun
 	f.TailIterations = 0
 	return nil
 }

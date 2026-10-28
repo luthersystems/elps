@@ -927,7 +927,7 @@ var AnalyzerRecordCapturedSet = &Analyzer{
 var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 	Name:     recordDefmethodScope,
 	Severity: SeverityWarning,
-	Doc: "Report s:defmethod that does not run at load, outside a test file.\n\n" +
+	Doc: "Report s:defmethod that does not run at load.\n\n" +
 		"A template publishes a record type with its method table as it stands at " +
 		"publication. A s:defmethod in a function body, such as a defun, lambda or " +
 		"endpoint body, runs at call time and adds its method only in the VM that runs " +
@@ -936,18 +936,10 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"top level, or in a form that runs its parts at load: let, let*, progn, if, when, " +
 		"the body of flet or labels, the arguments of a function call, or the value of " +
 		"a defconst. A function body, or the arguments of a macro call, is reported. A " +
-		"head the analysis cannot resolve is taken for a function and not reported. A " +
-		"*_test.lisp or *_testhelpers.lisp file is skipped: only test runners load it. " +
-		"The runtime also refuses s:defmethod with record-error while a function defined " +
-		"in Lisp runs, in every file.",
-	Run: func(pass *Pass) error {
-		// A test may add a method at call time on purpose, to test
-		// s:defmethod itself, and a test file is never part of a template.
-		if analysis.IsTestSourceFile(pass.Filename) {
-			return nil
-		}
-		return recordAnalyzerRun(recordDefmethodScope)(pass)
-	},
+		"head the analysis cannot resolve is taken for a function and not reported. " +
+		"Test files are checked too. The runtime also refuses s:defmethod with " +
+		"record-error while a function defined in Lisp runs, in every file.",
+	Run: recordAnalyzerRun(recordDefmethodScope),
 }
 
 // AnalyzerRecordPlainSet reports a set! or set in a method that rebinds

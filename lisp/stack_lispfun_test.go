@@ -3,7 +3,9 @@
 package lisp_test
 
 import (
+	"strconv"
 	"testing"
+	"unsafe"
 
 	"github.com/luthersystems/elps/elpsutil"
 	"github.com/luthersystems/elps/lisp"
@@ -38,6 +40,8 @@ func TestInLispFunction(t *testing.T) {
 		{`(labels ([g () (in-lisp?)]) (g))`, "true"},
 		{`(m)`, "'yes"},
 		{`(funcall (lambda () (load-string "(in-lisp?)")))`, "true"},
+		// A Go function counts as Go whatever its FID says.
+		{`(go-fun)`, "false"},
 	}
 	load := func() *lisp.LEnv {
 		env := templateTestEnv(t)
@@ -46,6 +50,10 @@ func TestInLispFunction(t *testing.T) {
 			func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 				return lisp.Bool(env.Runtime.Stack.InLispFunction())
 			}))
+		inLisp := func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
+			return lisp.Bool(env.Runtime.Stack.InLispFunction())
+		}
+		require.True(t, env.PutGlobal(lisp.Symbol("go-fun"), lisp.FunInPackage(lisp.DefaultUserPackage, "_fun99999", lisp.Formals(), inLisp)).IsNil())
 		require.NotEqual(t, lisp.LError, env.LoadString("setup", setup).Type)
 		return env
 	}
@@ -59,4 +67,18 @@ func TestInLispFunction(t *testing.T) {
 		assert.Equal(t, tc.want, vm.LoadString("case", tc.src).String(), "template VM %s", tc.src)
 	}
 	assert.False(t, (*lisp.CallStack)(nil).InLispFunction())
+
+	// A frame an embedder pushes is not a Lisp function, whatever its FID.
+	var stack lisp.CallStack
+	require.NoError(t, stack.PushFID(nil, "_fun1", "user", "f"))
+	assert.False(t, stack.InLispFunction())
+}
+
+// TestCallFrameSize pins the size of a CallFrame, which the evaluator
+// allocates per call: the Lisp-function mark sits in padding.
+func TestCallFrameSize(t *testing.T) {
+	if strconv.IntSize != 64 {
+		t.Skip("the size is pinned for 64-bit platforms")
+	}
+	assert.Equal(t, uintptr(72), unsafe.Sizeof(lisp.CallFrame{}))
 }
