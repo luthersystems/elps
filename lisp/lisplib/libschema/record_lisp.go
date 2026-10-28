@@ -309,7 +309,7 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	lt, ok := lispTypeOf(t)
 	desc, tcaps := lt.desc, lt.caps
 	if !ok {
-		if goObjectType(t) != nil {
+		if goTypeValueOf(t) != nil || goObjectType(t) != nil {
 			return env.ErrorConditionf(BadArgs, "s:defmethod: a record type defined in Go is sealed")
 		}
 		return env.ErrorConditionf(BadArgs, "s:defmethod: first argument is not a record type: %v", t)

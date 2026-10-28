@@ -363,6 +363,8 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		if t, ok := lispTypeOf(in); ok {
 			// A record type checks its objects (luthersystems/elps#895).
 			in = recordValidator(env, in, t.desc)
+		} else if t := goTypeValueOf(in); t != nil {
+			in = goTypeValidator(env, t)
 		}
 		if in.Type == lisp.LFun {
 			// The choke point. Every composite constraint (s:has-key,
@@ -560,6 +562,9 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 	}
 	if t, ok := lispTypeOf(constraint); ok {
 		return validateRecordValue(env, t.desc, t.caps, input)
+	}
+	if t := goTypeValueOf(constraint); t != nil {
+		return validateGoValue(env, t, input)
 	}
 	if !isValidator(constraint) {
 		return env.ErrorConditionf(BadArgs,

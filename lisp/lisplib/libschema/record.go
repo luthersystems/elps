@@ -253,7 +253,7 @@ func callLispMethod(env *lisp.LEnv, caps, m *lisp.LVal, rest []*lisp.LVal) *lisp
 // evalLispType runs (type :field value ...) or (type field-map).
 func evalLispType(env *lisp.LEnv, args, tcaps *lisp.LVal) *lisp.LVal {
 	desc := mustTag(tcaps)
-	fields := constructorFields(env, desc, args.Cells)
+	fields := constructorFields(env, desc.display, args.Cells)
 	if fields.IsError() {
 		return fields
 	}
@@ -278,22 +278,22 @@ func mustTag(tcaps *lisp.LVal) *recordDesc {
 // arguments: one sorted map, or keyword and value pairs.  The map is new,
 // so the object owns it: a caller's later change to its map does not
 // change the object.
-func constructorFields(env *lisp.LEnv, desc *recordDesc, args []*lisp.LVal) *lisp.LVal {
+func constructorFields(env *lisp.LEnv, display string, args []*lisp.LVal) *lisp.LVal {
 	if len(args) == 1 && args[0].Type == lisp.LSortMap {
 		return copyMap(env, args[0])
 	}
 	if len(args)%2 != 0 {
-		return env.ErrorConditionf(BadArgs, "%s: give one field map, or keyword and value pairs", desc.display)
+		return env.ErrorConditionf(BadArgs, "%s: give one field map, or keyword and value pairs", display)
 	}
 	fields := lisp.SortedMapSized(len(args) / 2)
 	for i := 0; i < len(args); i += 2 {
 		k := args[i]
 		if k.Type != lisp.LSymbol || len(k.Str) < 2 || k.Str[0] != ':' {
-			return env.ErrorConditionf(BadArgs, "%s: argument %d is not a keyword: %v", desc.display, i+1, k)
+			return env.ErrorConditionf(BadArgs, "%s: argument %d is not a keyword: %v", display, i+1, k)
 		}
 		key := lisp.String(k.Str[1:])
 		if _, dup := fields.Map().Get(key); dup {
-			return env.ErrorConditionf(BadArgs, "%s: field %s given twice", desc.display, k.Str[1:])
+			return env.ErrorConditionf(BadArgs, "%s: field %s given twice", display, k.Str[1:])
 		}
 		if lerr := fields.Map().Set(key, args[i+1]); lerr.IsError() {
 			return lerr
@@ -493,7 +493,7 @@ func recordValidator(env *lisp.LEnv, t *lisp.LVal, desc *recordDesc) *lisp.LVal 
 	v := newCapturedValidator(env, lisp.Formals("input"), lisp.Cells{t}.List(), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		return applyConstraint(env, captures.Cells[0], input)
 	})
-	return describeAs(v, &schemaDesc{op: "record", name: desc.display})
+	return describeAs(v, &schemaDesc{op: "record", name: desc.display, rec: recordRef{lisp: desc}})
 }
 
 // loadLispObject is RecordCodec's Load.  It runs no Lisp: it checks that

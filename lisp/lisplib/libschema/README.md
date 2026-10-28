@@ -434,6 +434,14 @@ Go types. `libschema.NewRecordType` defines a record type in Go with Go
 methods and Go checks. Its objects work with `s:fields` and `s:record?`.
 A Go type is sealed: `s:defmethod` and `s:set-field!` refuse it. Add
 `(*RecordType).Codec()` to the durable registry to save its objects.
+`(*RecordType).Value()` returns the type's Lisp value. Bind it to a global
+(`env.PutGlobal(lisp.Symbol("counter"), rt.Value())`), and Lisp code uses
+it as it uses the value of `s:make-record`: `(counter :n 1)` builds an
+object, and `(s:has-key "c" counter)`, `(s:of counter)` and `s:validate`
+accept it as a type. Only fields with a getter can be given; a left-out
+field whose check refuses `()` fails with `failed-constraint`, as a missing
+`s:has-key` field does. A Lisp/Go parity test runs the same cases on a Lisp
+type and on the same Go type (`parity_test.go`).
 
 Lint checks: `record-set-outside-method`, `record-type-binding`,
 `record-field-mutation`, `record-unknown-member`, `record-check-writes`,
