@@ -3253,24 +3253,9 @@ func firstCapture(fn *lisp.LVal, v *analysis.Symbol, refAt map[*lisp.LVal]*analy
 // mentionsSymbol reports whether any symbol in exprs is spelled name, bare
 // or lisp-qualified.
 func mentionsSymbol(exprs []*lisp.LVal, name string) bool {
-	found := false
-	var walk func(v *lisp.LVal)
-	walk = func(v *lisp.LVal) {
-		if found || v == nil {
-			return
-		}
-		if v.Type == lisp.LSymbol {
-			found = strings.TrimPrefix(v.Str, lisp.DefaultLangPackage+":") == name
-			return
-		}
-		for _, c := range v.Cells {
-			walk(c)
-		}
-	}
-	for _, e := range exprs {
-		walk(e)
-	}
-	return found
+	return astutil.MentionsSymbol(exprs, func(sym string) bool {
+		return strings.TrimPrefix(sym, lisp.DefaultLangPackage+":") == name
+	})
 }
 
 // AnalyzerHandlerOrder reports a handler-bind binding that follows a binding
