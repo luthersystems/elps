@@ -71,23 +71,20 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	}
 	w := &recordWalk{handled: make(map[*lisp.LVal]bool)}
 	var workspace analysis.RecordMethods
+	var scope *analysis.Scope
 	if semantics != nil {
 		workspace = semantics.WorkspaceRecordMethods()
+		scope = semantics.RootScope
 	}
-	types := recordShapes(exprs, all, workspace)
+	scopes := defmethodScopes(exprs, analysis.RecordMacroTest(scope, all))
+	types := recordShapes(exprs, all, workspace, scopes)
 	for _, top := range exprs {
-		// scopes says where each s:defmethod in top runs.  It is one walk
-		// of top, made on the first s:defmethod.
-		var scopes map[*lisp.LVal]string
 		var methods []recordMethod
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
 			shape := types.shapes[site.Form]
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
 				shape = types.byName[analysis.RecordTypeKey(site.Form.Cells[1].Str)]
 				w.defmethodType(site.Form, types, semantics)
-				if scopes == nil {
-					scopes = defmethodScopes(top)
-				}
 				w.defmethodScope(scopes, site.Form)
 			}
 			for _, m := range recordMethods(site.Form) {
@@ -99,9 +96,9 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 			}
 		}
 		if len(methods) > 0 {
-			forms := make(map[*lisp.LVal]bool, len(methods))
+			forms := make(map[*lisp.LVal][]*lisp.LVal, len(methods))
 			for _, m := range methods {
-				forms[m.form] = true
+				forms[m.form] = analysis.RecordMethodFormals(m.formals)
 			}
 			locals := lexicalNames(top, forms)
 			for _, m := range methods {
@@ -141,7 +138,9 @@ type mutationReport struct {
 type recordTypes struct {
 	// shapes is the shape of each s:make-record call.
 	shapes map[*lisp.LVal]*recordShape
-	// byName is the shape of each type a top-level set or defconst binds.
+	// byName is the shape of each type a top-level set or defconst binds,
+	// keyed by the type's name without its package
+	// (analysis.RecordTypeKey), as a s:defmethod names it.
 	byName map[string]*recordShape
 	// bound maps every name a top-level set or defconst binds to its
 	// value form.
@@ -158,7 +157,11 @@ type recordTypes struct {
 // The file's own declarations win: the workspace data comes from the
 // files on disk, which can be older than the text being linted.  A type
 // and a s:defmethod match by the type's name without its package.
-func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) recordTypes {
+//
+// scopes says where each s:defmethod runs (defmethodScopes).  A
+// s:defmethod that does not run at load adds no member, as in the
+// workspace scan: a template does not publish its method.
+func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods, scopes map[*lisp.LVal]string) recordTypes {
 	t := recordTypes{
 		shapes: make(map[*lisp.LVal]*recordShape),
 		byName: make(map[string]*recordShape),
@@ -170,7 +173,7 @@ func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) rec
 		}
 		if name := boundName(top); name != "" {
 			if sites := callSites(top.Cells[2], recordPackage+"make-record"); len(sites) == 1 {
-				t.byName[name] = t.shapes[sites[0].Form]
+				t.byName[analysis.RecordTypeKey(name)] = t.shapes[sites[0].Form]
 			}
 		}
 	}
@@ -182,9 +185,12 @@ func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) rec
 	for _, top := range exprs {
 		for _, site := range callSites(top, recordPackage+"defmethod") {
 			c := site.Form.Cells
+			if scopes[site.Form] != "" {
+				continue
+			}
 			if len(c) > 3 && c[1].Type == lisp.LSymbol && c[2].Type == lisp.LSymbol {
 				if shape := t.byName[analysis.RecordTypeKey(c[1].Str)]; shape != nil {
-					shape.methods[c[2].Str] = methodSignature(c[3])
+					shape.methods[c[2].Str] = analysis.RecordMethodSignature(c[3])
 				}
 			}
 		}
@@ -197,19 +203,6 @@ func recordShapes(exprs, all []*lisp.LVal, workspace analysis.RecordMethods) rec
 		}
 	}
 	return t
-}
-
-// methodSignature returns the signature of a method's formals after the
-// receiver, or nil when they are not a list.  A typed formal, [name type]
-// (#905), counts as its name.
-func methodSignature(formals *lisp.LVal) *analysis.Signature {
-	return analysis.RecordMethodSignature(formals)
-}
-
-// methodFormals returns a method's formals, the receiver first, with each
-// typed formal replaced by its name.
-func methodFormals(formals *lisp.LVal) []*lisp.LVal {
-	return analysis.RecordMethodFormals(formals)
 }
 
 // boundName returns NAME when top is (set 'NAME value) or
@@ -242,7 +235,7 @@ func newRecordShape(call *lisp.LVal) *recordShape {
 		case form.IsSymbol(":check"), form.IsSymbol(":implements"):
 			i++
 		case (h == recordPackage+"method" || h == "method") && len(form.Cells) > 2 && form.Cells[1].Type == lisp.LSymbol:
-			shape.methods[form.Cells[1].Str] = methodSignature(form.Cells[2])
+			shape.methods[form.Cells[1].Str] = analysis.RecordMethodSignature(form.Cells[2])
 		case (h == recordPackage+"has-key" || h == recordPackage+"may-have-key") && len(form.Cells) > 1 && form.Cells[1].Type == lisp.LString:
 			shape.fields[form.Cells[1].Str] = true
 		default:
@@ -445,12 +438,13 @@ const maxPlainSetWork = 1 << 16
 // check is about locals that look private to the type.
 //
 // captured holds the lexical names in scope at the method form
-// (lexicalNames).
+// (lexicalNames).  A method nested in the body is not walked: its own
+// capturedSets call reports it, with its own formals bound.
 func (w *recordWalk) capturedSets(m recordMethod, captured map[string]bool) {
 	if len(captured) == 0 {
 		return
 	}
-	names := methodFormals(m.formals)
+	names := analysis.RecordMethodFormals(m.formals)
 	if names == nil {
 		return
 	}
@@ -462,6 +456,10 @@ func (w *recordWalk) capturedSets(m recordMethod, captured map[string]bool) {
 	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
 		switch n.Event {
 		case lisp.WalkForm:
+			if n.Op == "" && isMethodForm(n.Node) {
+				// Returning false skips the nested method's arguments.
+				return false
+			}
 			current = n.Node
 		case lisp.WalkSet:
 			if !n.Bound && captured[n.Node.Str] && current != nil {
@@ -479,16 +477,40 @@ func (w *recordWalk) capturedSets(m recordMethod, captured map[string]bool) {
 	codewalk.Occurrences(cw, maxPlainSetWork, fn)
 }
 
-// lexicalNames returns, for each form of targets in top, the names that
-// the lexical binding forms around it bind.  Globals are not in the sets.
-// The scopes are copied only at targets, so the walk allocates for the
-// methods it reports, not for every form.  Macros are not expanded, so a
-// name a macro binds is not seen; the check then misses a finding and
-// never makes a false one.
-func lexicalNames(top *lisp.LVal, targets map[*lisp.LVal]bool) map[*lisp.LVal]map[string]bool {
+// isMethodForm reports whether form is a s:method, method or s:defmethod
+// form.
+func isMethodForm(form *lisp.LVal) bool {
+	switch astutil.HeadSymbol(form) {
+	case recordPackage + "method", "method", recordPackage + "defmethod":
+		return !form.IsQuoted()
+	}
+	return false
+}
+
+// lexicalNames returns, for each method form of targets in top, the names
+// that the lexical binding forms around it bind.  targets maps each method
+// form to its formals (analysis.RecordMethodFormals).  Globals are not in
+// the sets.  A method form is a macro call the walk does not expand, so
+// the walk does not bind its formals; lexicalNames takes them out of the
+// sets of the methods nested in it, which they shadow.  The scopes are
+// copied only at targets, so the walk allocates for the methods it
+// reports, not for every form.  Macros are not expanded, so a name a
+// macro binds is not seen; the check then misses a finding and never
+// makes a false one.
+func lexicalNames(top *lisp.LVal, targets map[*lisp.LVal][]*lisp.LVal) map[*lisp.LVal]map[string]bool {
 	out := make(map[*lisp.LVal]map[string]bool)
 	var scopes []map[string]bool
+	// methods holds the method forms around the walk position, each with
+	// the depth of its event.
+	type method struct {
+		formals []*lisp.LVal
+		depth   int
+	}
+	var methods []method
 	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
+		for len(methods) > 0 && methods[len(methods)-1].depth >= n.Depth {
+			methods = methods[:len(methods)-1]
+		}
 		switch n.Event {
 		case lisp.WalkEnter:
 			scopes = append(scopes, make(map[string]bool))
@@ -501,16 +523,27 @@ func lexicalNames(top *lisp.LVal, targets map[*lisp.LVal]bool) map[*lisp.LVal]ma
 				scopes[len(scopes)-1][n.Node.Str] = true
 			}
 		case lisp.WalkForm:
-			if len(scopes) == 0 || !targets[n.Node] {
+			formals, ok := targets[n.Node]
+			if !ok {
 				break
 			}
-			names := make(map[string]bool)
-			for _, s := range scopes {
-				for name := range s {
-					names[name] = true
+			if len(scopes) > 0 {
+				names := make(map[string]bool)
+				for _, s := range scopes {
+					for name := range s {
+						names[name] = true
+					}
 				}
+				for _, m := range methods {
+					for _, f := range m.formals {
+						if f.Type == lisp.LSymbol {
+							delete(names, f.Str)
+						}
+					}
+				}
+				out[n.Node] = names
 			}
-			out[n.Node] = names
+			methods = append(methods, method{formals: formals, depth: n.Depth})
 		case lisp.WalkRef, lisp.WalkSet, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData:
 		}
 		return true
@@ -551,7 +584,7 @@ func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics
 		w.out = append(w.out, defmethodTypeFinding(arg, msg))
 		return
 	}
-	if arg.Type != lisp.LSymbol || types.byName[arg.Str] != nil {
+	if arg.Type != lisp.LSymbol || types.byName[analysis.RecordTypeKey(arg.Str)] != nil {
 		return
 	}
 	if v := types.bound[arg.Str]; v != nil {
@@ -572,12 +605,20 @@ func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics
 	}
 }
 
-// defmethodScopes maps each s:defmethod call in top to the form that keeps
-// it from running at load, or to "" when it runs at load.
-func defmethodScopes(top *lisp.LVal) map[*lisp.LVal]string {
+// defmethodScopes maps each s:defmethod call in exprs to the form that
+// keeps it from running at load, or to "" when it runs at load.  isMacro
+// tells a macro call from a function call (analysis.RecordMacroTest).  A
+// call the walk does not reach is not in the map, so it counts as running
+// at load.
+func defmethodScopes(exprs []*lisp.LVal, isMacro func(string) bool) map[*lisp.LVal]string {
 	scopes := make(map[*lisp.LVal]string)
-	for _, d := range analysis.RecordDefmethods(top) {
-		scopes[d.Call] = d.NotLoadScope
+	for _, top := range exprs {
+		if !mentionsSymbol([]*lisp.LVal{top}, recordPackage+"defmethod") {
+			continue
+		}
+		for _, d := range analysis.RecordDefmethods(top, isMacro) {
+			scopes[d.Call] = d.NotLoadScope
+		}
 	}
 	return scopes
 }
@@ -816,8 +857,9 @@ var AnalyzerRecordUnknownMember = &Analyzer{
 		"In a method, (recv 'name) must name a field or method of the type, and " +
 		"(s:set-field! recv 'name ...) must name a field, where recv is the method's receiver. A wrong name fails only when the " +
 		"method runs. The check knows the type's fields and methods from its " +
-		"s:make-record and from each s:defmethod in the same file. With a workspace " +
-		"scan it also knows the methods an s:defmethod in another file adds. It skips " +
+		"s:make-record and from each s:defmethod in the same file that runs at load. With " +
+		"a workspace scan it also knows the methods a load-time s:defmethod in another " +
+		"file adds; a test file's methods are known only in a test file. It skips " +
 		"a type whose field forms are not literal s:has-key or s:may-have-key calls.",
 	Run: recordAnalyzerRun(recordUnknownMember),
 }
@@ -887,9 +929,10 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"the call. The method is lost after the call, it is not in the type's saved " +
 		"form, and a later call in another VM does not see it. Write s:defmethod at the " +
 		"top level, or in a form that runs its parts at load: let, let*, progn, if, when, " +
-		"the body of flet or labels, or the value of a set or defconst. A function body, " +
-		"or the arguments of a call or macro call, is reported. A *_test.lisp " +
-		"or *_testhelpers.lisp file is skipped: only test runners load it.",
+		"the body of flet or labels, the arguments of a function call, or the value of " +
+		"a defconst. A function body, or the arguments of a macro call, is reported. A " +
+		"head the analysis cannot resolve is taken for a function and not reported. A " +
+		"*_test.lisp or *_testhelpers.lisp file is skipped: only test runners load it.",
 	Run: func(pass *Pass) error {
 		// A test may add a method at call time on purpose, to test
 		// s:defmethod itself, and a test file is never part of a template.

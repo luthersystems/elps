@@ -603,7 +603,7 @@ the method runs.
 ```
 
 The check reads the fields and methods from the type's `s:make-record`
-and from each `s:defmethod` in the same file. With a workspace
+and from each `s:defmethod` in the same file that runs at load. With a workspace
 (`elps lint --workspace`, the LSP, the MCP server), it also knows each
 method an `s:defmethod` in another workspace file adds. A type's methods
 are often split across files, and without that data a call to such a
@@ -612,11 +612,13 @@ method reads as an unknown member. Without a workspace, add
 
 The workspace methods follow these rules:
 
-* A method counts only when a production load adds it. An `s:defmethod`
-  in a `*_test.lisp` or `*_testhelpers.lisp` file, or one that runs at
-  call time (see `record-defmethod-not-toplevel`), is not part of the type
-  a template publishes. So it does not hide an unknown member in a
-  production file.
+* A method counts only when a load adds it. An `s:defmethod` that runs
+  at call time (see `record-defmethod-not-toplevel`) is not part of the
+  type a template publishes, in the workspace or in the same file.
+* A method from a `*_test.lisp` or `*_testhelpers.lisp` file counts only
+  in a test file. Only test runners load those files, so their methods do
+  not hide an unknown member in a production file. A test can still call
+  a method its test helpers add.
 * The linted file's own entries are left out. They come from the file on
   disk, and the text being linted declares its methods itself, so a method
   the unsaved text renamed or removed is unknown again. The LSP replaces a
@@ -758,15 +760,25 @@ An `s:defmethod` runs at load when nothing around it defers it:
 
 * A function body runs at call time: `defun`, `lambda`, and a `flet` or
   `labels` function. It is reported.
-* The arguments of a function call or a macro call run when the callee
-  decides. They are reported. The check does not expand macros, so a
-  macro such as an endpoint definition counts as a call. The value of a
-  `set` or `defconst` runs at load, so those two calls are not reported.
+* The arguments of a macro call run when the macro decides, if ever.
+  They are reported. The check does not expand macros, so the body of a
+  macro such as an endpoint definition is reported. The value of a
+  `defconst` runs at load, so it is not reported.
+* The arguments of a function call run at once, before the call:
+  `(set 'x (list (s:defmethod ...)))` and `(export (s:defmethod ...))`
+  at the top level run at load. They are not reported.
+* A head is a macro when the analysis resolves it to one: a builtin
+  macro, a libschema macro, a macro the file defines, or, with a
+  workspace, one another file defines. A head it cannot resolve is taken
+  for a function. The check then misses a finding, and the methods of
+  that call count as members, so a guess never reports a known method as
+  unknown.
 * The other special forms run their parts at load: `let` and `let*`
   (bindings and body), `progn`, `if`, `when`, `unless`, `cond`, and the
   body of `flet` and `labels`. They are not reported.
 
-The message names the outermost form to move, for example `defun`.
+The message names the innermost form that defers the call, for example
+`defun`, or `lambda` for a `lambda` in an endpoint body.
 
 ```lisp
 ;; WARNING: the method exists only during this call
@@ -777,8 +789,9 @@ The message names the outermost form to move, for example `defun`.
 (let ([limit 10]) (s:defmethod order big (o) (> (o 'size) limit)))
 ```
 
-A load-time call of your own macro around an `s:defmethod` is reported,
-because the check cannot see into the macro. Suppress that line with
+A call of your own macro around an `s:defmethod` is reported even when
+the macro runs its body at load, because the check cannot see into the
+macro. Suppress that line with
 `; nolint:record-defmethod-not-toplevel`.
 
 The check skips `*_test.lisp` and `*_testhelpers.lisp` files. Only test

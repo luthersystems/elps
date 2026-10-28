@@ -348,6 +348,55 @@ func TestRecordWorkspaceMethodsProductionOnly(t *testing.T) {
 	assertDiagOnLine(t, diags, 4, "late is not a field or method")
 }
 
+// TestRecordWorkspaceMethodsInTestFile checks that a test file knows the
+// methods the workspace's test helpers add.  Only test runners load both,
+// so a production file still does not know them.
+func TestRecordWorkspaceMethodsInTestFile(t *testing.T) {
+	dir := t.TempDir()
+	user := `(set 'order (s:make-record "order" (s:has-key "n" s:int) (s:method use (o) (o 'from-helper))))
+`
+	for name, src := range map[string]string{
+		"order_testhelpers.lisp": "(s:defmethod order from-helper (o) 0)\n",
+		"order_test.lisp":        user,
+		"order.lisp":             user,
+	} {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600))
+	}
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordUnknownMember}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{filepath.Join(dir, "order_test.lisp")})
+	require.NoError(t, err)
+	assertNoDiags(t, diags)
+
+	diags, err = l.LintFiles(&LintConfig{Workspace: dir}, []string{filepath.Join(dir, "order.lisp")})
+	require.NoError(t, err)
+	assertDiagOnLine(t, diags, 1, "from-helper is not a field or method")
+}
+
+// TestRecordQualifiedTypeSameFile checks that a type bound under a
+// qualified name gets the methods of a s:defmethod in the same file that
+// names it so.  Types and s:defmethod calls match by the name without its
+// package.
+func TestRecordQualifiedTypeSameFile(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRecordUnknownMember, `(set 'shop:order (s:make-record "order" (s:has-key "n" s:int) (s:method use (o) (o 'size) (o 'nope))))
+(s:defmethod shop:order size (o) 0)`)
+	require.Len(t, diags, 1, "%v", diags)
+	assertDiagOnLine(t, diags, 1, "nope is not a field or method")
+
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodType, `(set 'shop:order (s:make-record "order" (s:has-key "n" s:int)))
+(s:defmethod shop:order size (o) 0)`))
+}
+
+// TestRecordCallTimeDefmethodSameFile checks that a s:defmethod in the
+// same file that runs at call time adds no member, as in the workspace
+// scan: a template does not publish its method.
+func TestRecordCallTimeDefmethodSameFile(t *testing.T) {
+	diags := lintCheck(t, AnalyzerRecordUnknownMember, `(set 'order (s:make-record "order" (s:has-key "n" s:int) (s:method use (o) (o 'late) (o 'now))))
+(defun f () (s:defmethod order late (o) 0))
+(s:defmethod order now (o) 0)`)
+	require.Len(t, diags, 1, "%v", diags)
+	assertDiagOnLine(t, diags, 1, "late is not a field or method")
+}
+
 // TestRecordWorkspaceMethodsUnsavedText checks that the workspace entries
 // of the linted file do not stand in for its text.  The file on disk adds
 // own; the text being linted has renamed it, so a call to own is unknown.
@@ -415,6 +464,19 @@ func TestRecordCapturedSet(t *testing.T) {
 		assertNoDiags(t, lintCheck(t, AnalyzerRecordCapturedSet, ok))
 	}
 
+	// A method nested in another is reported once, by its own walk, and
+	// its own formal, or the outer method's, shadows the closure's local.
+	nested := lintCheck(t, AnalyzerRecordCapturedSet, `(set 'r (let ([k 0])
+  (s:make-record "r" (s:has-key "n" s:int)
+    (s:method m (_o)
+      (s:defmethod r inner (_p k) (set! k 1))
+      (s:defmethod r inner2 (_p) (set! k 2))))))
+(set 'r2 (let ([k 0])
+  (s:make-record "r2" (s:has-key "n" s:int)
+    (s:method m (_o k) (s:defmethod r2 inner3 (_p) (set! k 3))))))`)
+	require.Len(t, nested, 1, "%v", nested)
+	assertDiagOnLine(t, nested, 5, "set! changes k, a local of the closure")
+
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordCapturedSet, `(set 'r (let ([k 0])
   (s:make-record "r" (s:has-key "n" s:int)
     (s:method m (_o) (set! k 1) ; nolint:record-captured-set
@@ -427,15 +489,19 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 (defun g () (let ([k 1]) (s:defmethod order size (o) k)))
 (set 'h (flet ([mk () (s:defmethod order size (o) 0)]) mk))
 (defendpoint "add" () (s:defmethod order size (o) 0))
-(defun g2 () (let* ([m (s:defmethod order size (o) 0)]) m))`
+(defun g2 () (let* ([m (s:defmethod order size (o) 0)]) m))
+(defendpoint "in" () (lambda () (s:defmethod order size (o) 0)))
+(defmacro defendpoint (name args &rest body) (quasiquote (progn)))`
 	diags := lintCheck(t, AnalyzerRecordDefmethodNotToplevel, src)
-	assert.Len(t, diags, 6, "%v", diags)
+	assert.Len(t, diags, 7, "%v", diags)
 	assertDiagOnLine(t, diags, 11, "s:defmethod inside defun")
 	assertDiagOnLine(t, diags, 6, "s:defmethod inside defun")
 	assertDiagOnLine(t, diags, 7, "s:defmethod inside lambda")
 	assertDiagOnLine(t, diags, 8, "s:defmethod inside defun")
 	assertDiagOnLine(t, diags, 9, "s:defmethod inside flet")
 	assertDiagOnLine(t, diags, 10, "s:defmethod inside defendpoint")
+	// The innermost form that defers the call names it.
+	assertDiagOnLine(t, diags, 12, "s:defmethod inside lambda")
 
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+`(s:defmethod order a (o) 0)
 (let ([k 1]) (s:defmethod order b (o) k))
@@ -446,7 +512,10 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 '(defun quoted () (s:defmethod order g (o) 0))
 (when (> 1 0) (s:defmethod order h (o) 0))
 (let ([k 1]) (set 'x (s:defmethod order i (o) k)))
-(progn (defconst y (s:defmethod order j (o) 0)))`))
+(progn (defconst y (s:defmethod order j (o) 0)))
+(set 'zz (list (s:defmethod order k (o) 0)))
+(export (s:defmethod order l (o) 0))
+(unknown-endpoint "x" () (s:defmethod order m (o) 0))`))
 
 	// A set or defconst value is load scope only where its own place is.
 	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+

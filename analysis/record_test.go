@@ -29,7 +29,7 @@ func TestPrescanWorkspace_RecordMethods(t *testing.T) {
 
 	prescan, err := PrescanWorkspace(dir, nil)
 	require.NoError(t, err)
-	assert.Len(t, prescan.RecordMethodsByFile, 2)
+	assert.Equal(t, 2, prescan.RecordMethodsByFile.Len())
 	methods := prescan.RecordMethodsByFile.Except("")["order"]
 	require.NotNil(t, methods)
 	assert.Len(t, methods, 3, "%v", methods)
@@ -64,9 +64,10 @@ func TestRecordMethodsQualifiedType(t *testing.T) {
 }
 
 // TestPrescanWorkspace_RecordMethodsLoadScopeOnly checks that the prescan
-// collects only methods a production load adds.  A method from a test
-// file, or from a s:defmethod that runs at call time, is not part of the
-// type a template publishes, so it must not make a member known.
+// collects only methods a production load adds.  A method from a
+// s:defmethod that runs at call time is not part of the type a template
+// publishes, so it must not make a member known.  A method from a test
+// file is known only to the analysis of a test file.
 func TestPrescanWorkspace_RecordMethodsLoadScopeOnly(t *testing.T) {
 	dir := t.TempDir()
 	for name, src := range map[string]string{
@@ -78,16 +79,73 @@ func TestPrescanWorkspace_RecordMethodsLoadScopeOnly(t *testing.T) {
 	}
 	prescan, err := PrescanWorkspace(dir, nil)
 	require.NoError(t, err)
-	methods := prescan.RecordMethodsByFile.Except("")["order"]
+	methods := prescan.RecordMethodsByFile.Except(filepath.Join(dir, "other.lisp"))["order"]
 	assert.Contains(t, methods, "size")
 	for _, name := range []string{"late", "from-test", "from-helper"} {
 		assert.NotContains(t, methods, name)
 	}
-	assert.Len(t, prescan.RecordMethodsByFile, 1)
 
-	assert.Nil(t, ExtractFileRecordMethods([]byte("(s:defmethod order x (o) 0)"), "order_test.lisp"))
+	// A test file knows the methods of the other test files.
+	inTest := prescan.RecordMethodsByFile.Except(filepath.Join(dir, "order_test.lisp"))["order"]
+	assert.Contains(t, inTest, "size")
+	assert.Contains(t, inTest, "from-helper")
+	assert.NotContains(t, inTest, "from-test", "a file's own entries are left out")
+	assert.NotContains(t, inTest, "late")
+
+	assert.Contains(t, ExtractFileRecordMethods([]byte("(s:defmethod order x (o) 0)"), "order_test.lisp")["order"], "x")
 	assert.Nil(t, ExtractFileRecordMethods([]byte("(defun f () 1)"), "plain.lisp"))
 	assert.Contains(t, ExtractFileRecordMethods([]byte("(s:defmethod order x (o) 0)"), "order.lisp")["order"], "x")
+}
+
+// TestRecordDefmethodsScope checks where RecordDefmethods says each
+// s:defmethod runs.  The arguments of a function call run at load; a
+// function body or a macro call defers them, and the innermost such form
+// names the finding.
+func TestRecordDefmethodsScope(t *testing.T) {
+	for _, tc := range []struct {
+		src, want string
+	}{
+		{"(s:defmethod order m (o) 0)", ""},
+		{"(set 'zz (list (s:defmethod order m (o) 0)))", ""},
+		{"(export (s:defmethod order m (o) 0))", ""},
+		{"(let ([k 1]) (s:defmethod order m (o) k))", ""},
+		{"(defconst y (s:defmethod order m (o) 0))", ""},
+		{"(unknown-fn (s:defmethod order m (o) 0))", ""},
+		{"(defun f () (s:defmethod order m (o) 0))", "defun"},
+		{"(defmacro defep (&rest body) body)\n(defep (s:defmethod order m (o) 0))", "defep"},
+		{"(get-default (s:defmethod order m (o) 0))", "get-default"},
+		{"(get-default (lambda () (s:defmethod order m (o) 0)))", "lambda"},
+		{"(defun f () (get-default (s:defmethod order m (o) 0)))", "get-default"},
+		{"(s:defmethod order a (o) (s:defmethod order m (p) 0))", recordDefmethod},
+	} {
+		exprs := parsePreamble(t, tc.src)
+		isMacro := RecordMacroTest(nil, exprs)
+		var got []RecordDefmethod
+		for _, top := range exprs {
+			got = append(got, RecordDefmethods(top, isMacro)...)
+		}
+		require.NotEmpty(t, got, tc.src)
+		last := got[len(got)-1]
+		assert.Equal(t, "m", last.Call.Cells[2].Str, tc.src)
+		assert.Equal(t, tc.want, last.NotLoadScope, tc.src)
+	}
+	// A function call's arguments run at load, so the prescan keeps the
+	// method.
+	m := ScanRecordMethods(parsePreamble(t, "(set 'zz (list (s:defmethod order m (o) 0)))"))
+	assert.Contains(t, m["order"], "m")
+}
+
+// TestRecordMacroTestScope checks that the analysis scope decides what is
+// a macro when it knows the head.
+func TestRecordMacroTestScope(t *testing.T) {
+	res := parseAndAnalyzeWithConfig(t, "(defmacro ep (&rest body) body)\n(defun list2 (&rest x) x)", &Config{})
+	isMacro := RecordMacroTest(res.RootScope, nil)
+	assert.True(t, isMacro("ep"))
+	assert.False(t, isMacro("list2"))
+	assert.False(t, isMacro("list"))
+	assert.True(t, isMacro("defconst"))
+	assert.True(t, isMacro("s:defmethod"))
+	assert.False(t, isMacro("not-defined"))
 }
 
 // TestWorkspaceRecordMethodsExceptOwnFile checks that the analysis of a
@@ -97,21 +155,44 @@ func TestWorkspaceRecordMethodsExceptOwnFile(t *testing.T) {
 	dir := t.TempDir()
 	own := filepath.Join(dir, "order.lisp")
 	other := filepath.Join(dir, "methods.lisp")
-	byFile := RecordMethodsByFile{}.
-		With(own, RecordMethods{"order": {"old-name": nil}}).
-		With(other, RecordMethods{"order": {"size": nil}})
+	third := filepath.Join(dir, "third.lisp")
+	sig := func(src string) *Signature {
+		return RecordMethodSignature(parsePreamble(t, src)[0])
+	}
+	var byFile *RecordMethodsByFile
+	byFile = byFile.
+		With(own, RecordMethods{"order": {"old-name": nil, "shared": sig("(o a)")}, "own-only": {"x": nil}}).
+		With(other, RecordMethods{"order": {"size": nil, "shared": sig("(o a b)")}}).
+		With(third, RecordMethods{"order": {"shared": sig("(o a b)")}})
 
 	res := parseAndAnalyzeWithConfig(t, `(+ 1 2)`, &Config{RecordMethodsByFile: byFile, Filename: own})
-	methods := res.WorkspaceRecordMethods()["order"]
+	all := res.WorkspaceRecordMethods()
+	methods := all["order"]
 	assert.Contains(t, methods, "size")
 	assert.NotContains(t, methods, "old-name")
+	assert.NotContains(t, all, "own-only")
+	// The method the file shares is rebuilt from the other files: their
+	// arities agree, so its signature is known again.
+	require.NotNil(t, methods["shared"])
+	assert.Equal(t, 2, methods["shared"].MinArity())
+
+	// In the merge of every file, the arities disagree.
+	merged := byFile.Except("")["order"]
+	assert.Contains(t, merged, "shared")
+	assert.Nil(t, merged["shared"])
+	assert.Contains(t, merged, "old-name")
+
+	// A file with no entries shares the merge.
+	assert.Equal(t, merged, byFile.Except(filepath.Join(dir, "none.lisp"))["order"])
 
 	// With no workspace data there are no workspace methods.
 	assert.Nil(t, parseAndAnalyzeWithConfig(t, `(+ 1 2)`, &Config{}).WorkspaceRecordMethods())
 	assert.Nil(t, RecordMethods(nil).Merge(nil))
 
-	// With copies: the map a Config shares does not change.
+	// With copies: the value a Config shares does not change.
 	next := byFile.With(other, nil)
-	assert.Len(t, byFile, 2)
-	assert.Len(t, next, 1)
+	assert.Equal(t, 3, byFile.Len())
+	assert.Equal(t, 2, next.Len())
+	assert.Contains(t, byFile.File(other)["order"], "size")
+	assert.Nil(t, next.File(other))
 }

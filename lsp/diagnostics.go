@@ -80,11 +80,15 @@ func (s *Server) textDocumentDidSave(ctx *glsp.Context, params *protocol.DidSave
 
 	// Update the definition index synchronously before analysis so that
 	// the current save's diagnostics reflect the latest ExtraGlobals.
-	s.updateFileDefinitions(params.TextDocument.URI)
+	recordsChanged := s.updateFileDefinitions(params.TextDocument.URI)
 
 	doc := s.docs.Get(params.TextDocument.URI)
 	if doc != nil {
 		s.analyzeAndPublish(doc)
+	}
+	// The other open documents read the saved file's record methods too.
+	if recordsChanged {
+		s.reanalyzeRecordDocumentsLater(params.TextDocument.URI)
 	}
 
 	// Incrementally update the workspace reference index in the background.

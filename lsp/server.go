@@ -8,6 +8,8 @@ package lsp
 import (
 	"io"
 	"os"
+	"reflect"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -359,7 +361,7 @@ func (s *Server) buildWorkspaceIndex() {
 	var packageImports map[string][]string
 	var defaultPackage string
 	var filePackages map[string]string
-	var recordMethods analysis.RecordMethodsByFile
+	var recordMethods *analysis.RecordMethodsByFile
 
 	scanCfg := s.scanConfig()
 
@@ -697,8 +699,9 @@ func (s *Server) dropFileRefsLocked(filePath string) {
 
 // updateFileDefinitions re-extracts top-level definitions from a single file
 // and updates ExtraGlobals in the analysis config. Old entries for this file
-// are removed and replaced with the new definitions.
-func (s *Server) updateFileDefinitions(uri string) {
+// are removed and replaced with the new definitions. It reports whether
+// the record methods the file adds changed.
+func (s *Server) updateFileDefinitions(uri string) bool {
 	filePath := analysis.NormalizePath(uriToPath(uri))
 	source, status := s.readWorkspaceFile(filePath)
 	switch status {
@@ -706,10 +709,9 @@ func (s *Server) updateFileDefinitions(uri string) {
 	case workspaceReadOverLimit:
 		// As above: purge, do not keep stale definitions for a file the scan
 		// would now skip.
-		s.removeFileDefinitions(filePath)
-		return
+		return s.removeFileDefinitions(filePath)
 	default:
-		return
+		return false
 	}
 
 	newDefs := analysis.ExtractFileDefinitions(source, filePath)
@@ -719,30 +721,93 @@ func (s *Server) updateFileDefinitions(uri string) {
 	defer s.analysisCfgMu.Unlock()
 
 	if s.analysisCfg == nil {
-		return
+		return false
 	}
 
 	s.analysisCfg.ExtraGlobals = append(filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath), newDefs...)
-	// Replace the file's record methods, so a s:defmethod added, renamed
-	// or removed in it reaches the record lint checks of the other files.
-	// With copies the map: a Config copied from this one may be in use.
-	s.analysisCfg.RecordMethodsByFile = s.analysisCfg.RecordMethodsByFile.With(filePath, newMethods)
+	return s.setFileRecordMethodsLocked(filePath, newMethods)
+}
+
+// setFileRecordMethodsLocked replaces the record methods of a file, so a
+// s:defmethod added, renamed or removed in it reaches the record lint
+// checks of the other files. With copies: a Config copied from this one
+// may be in use. It reports whether the methods changed. The caller holds
+// analysisCfgMu.
+func (s *Server) setFileRecordMethodsLocked(filePath string, methods analysis.RecordMethods) bool {
+	old := s.analysisCfg.RecordMethodsByFile
+	if len(methods) == 0 && len(old.File(filePath)) == 0 {
+		return false
+	}
+	if reflect.DeepEqual(old.File(filePath), methods) {
+		return false
+	}
+	s.analysisCfg.RecordMethodsByFile = old.With(filePath, methods)
+	return true
 }
 
 // removeFileDefinitions removes all ExtraGlobals entries for the given file
-// path, and the record methods the file added.
-func (s *Server) removeFileDefinitions(filePath string) {
+// path, and the record methods the file added. It reports whether the
+// file had record methods.
+func (s *Server) removeFileDefinitions(filePath string) bool {
 	filePath = analysis.NormalizePath(filePath)
 
 	s.analysisCfgMu.Lock()
 	defer s.analysisCfgMu.Unlock()
 
 	if s.analysisCfg == nil {
-		return
+		return false
 	}
 
 	s.analysisCfg.ExtraGlobals = filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath)
-	s.analysisCfg.RecordMethodsByFile = s.analysisCfg.RecordMethodsByFile.With(filePath, nil)
+	return s.setFileRecordMethodsLocked(filePath, nil)
+}
+
+// recordReanalyzeDelay is how long a change of a file's record methods
+// waits before the open documents that use record types are analyzed
+// again. Saves in a row share one pass.
+var recordReanalyzeDelay = 500 * time.Millisecond
+
+// recordReanalyzeKey is the debounce key of that pass.
+const recordReanalyzeKey = "__record_methods__"
+
+// reanalyzeRecordDocumentsLater schedules reanalyzeRecordDocuments, so
+// the record diagnostics of the other open documents follow a change of
+// the workspace's s:defmethod methods. except is the URI of the document
+// that changed, which its save already analyzed.
+func (s *Server) reanalyzeRecordDocumentsLater(except string) {
+	s.debounceMu.Lock()
+	defer s.debounceMu.Unlock()
+
+	if t, ok := s.debounce[recordReanalyzeKey]; ok {
+		t.Stop()
+	}
+	s.debounce[recordReanalyzeKey] = time.AfterFunc(recordReanalyzeDelay, func() {
+		defer func() { _ = recover() }() // don't crash the server on analysis panic
+		s.reanalyzeRecordDocuments(except)
+	})
+}
+
+// reanalyzeRecordDocuments analyzes again, and publishes, each open
+// document but except whose text makes a record type: only those read the
+// workspace methods (the record lint checks of s:make-record).
+func (s *Server) reanalyzeRecordDocuments(except string) {
+	for _, doc := range s.docs.All() {
+		if doc.URI == except {
+			continue
+		}
+		doc.mu.Lock()
+		uses := strings.Contains(doc.Content, "make-record")
+		if uses {
+			doc.analysis = nil
+			// Reset publishedVersion so the version guard allows
+			// republishing with the new workspace methods.
+			doc.publishedVersion = 0
+		}
+		doc.mu.Unlock()
+		if uses {
+			s.analyzeAndPublish(doc)
+		}
+	}
 }
 
 // filterExtraGlobalsByFile returns a new slice with all entries whose

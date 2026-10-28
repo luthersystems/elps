@@ -449,16 +449,7 @@ func scanFileFull(source []byte, filename string) fileScan {
 		}
 	}
 
-	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: fileRecordMethods(source, filename, exprs)}
-}
-
-// fileRecordMethods returns the methods one parsed file adds, under the
-// rules of ExtractFileRecordMethods.
-func fileRecordMethods(source []byte, filename string, exprs []*lisp.LVal) RecordMethods {
-	if !mayAddRecordMethods(source, filename) {
-		return nil
-	}
-	return ScanRecordMethods(exprs)
+	return fileScan{globals: globals, pkgs: pkgs, defs: defs, pkgAll: pkgAll, usePackages: usePackages, preamble: preamble, filePkg: filePkg, firstInPkgLine: firstInPkgLine, recordMethods: fileRecordMethods(source, func() ([]*lisp.LVal, error) { return exprs, nil })}
 }
 
 // extractDefinitions collects top-level definitions from pre-parsed expressions.
@@ -1021,10 +1012,11 @@ type WorkspacePrescan struct {
 	// the same condition under which definitions are remapped.
 	FilePackages map[string]string
 	// RecordMethodsByFile holds, for each file, the methods its load-time
-	// s:defmethod calls add to each record type. Test files are left out.
-	// Copy it to Config.RecordMethodsByFile, so the record lint checks know
-	// a method that another file adds.
-	RecordMethodsByFile RecordMethodsByFile
+	// s:defmethod calls add to each record type. A test file's methods
+	// are known only to the analysis of a test file. Copy it to
+	// Config.RecordMethodsByFile, so the record lint checks know a method
+	// that another file adds.
+	RecordMethodsByFile *RecordMethodsByFile
 }
 
 // PrescanWorkspace performs a single-pass workspace scan that collects
@@ -1160,12 +1152,13 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		}
 	}
 
+	var recordMethods map[string]RecordMethods
 	for i, r := range results {
 		if len(r.recordMethods) > 0 {
-			if prescan.RecordMethodsByFile == nil {
-				prescan.RecordMethodsByFile = make(RecordMethodsByFile)
+			if recordMethods == nil {
+				recordMethods = make(map[string]RecordMethods)
 			}
-			prescan.RecordMethodsByFile[NormalizePath(paths[i])] = r.recordMethods
+			recordMethods[paths[i]] = r.recordMethods
 		}
 		prescan.ExportedGlobals = append(prescan.ExportedGlobals, r.globals...)
 		prescan.AllDefs = append(prescan.AllDefs, r.allDefs...)
@@ -1180,6 +1173,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 			prescan.PackageImports[pkg] = appendUnique(prescan.PackageImports[pkg], imports...)
 		}
 	}
+	prescan.RecordMethodsByFile = NewRecordMethodsByFile(recordMethods)
 
 	// Remap user-package symbols to their correct package.
 	//
