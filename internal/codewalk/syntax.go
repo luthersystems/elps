@@ -3,6 +3,8 @@
 package codewalk
 
 import (
+	"strings"
+
 	"github.com/luthersystems/elps/internal/codewalk/hook"
 	"github.com/luthersystems/elps/lisp"
 )
@@ -114,9 +116,23 @@ func syntax(node *lisp.LVal, parent *lisp.LVal, depth int, opts syntaxVisitors) 
 				}
 			}
 			if policy.Clauses {
-				for _, clause := range v.Cells[1:] {
+				// Cells before the clauses (match's value) are code.
+				first := max(1, policy.CallsStart)
+				for _, child := range v.Cells[1:min(first, len(v.Cells))] {
+					syntax(child, v, depth+1, syntaxVisitors{visit: nil, stop: nil, calls: calls})
+				}
+				skip := 0
+				if policy.Patterns {
+					skip = 1
+				}
+				for _, clause := range v.Cells[min(first, len(v.Cells)):] {
 					if clause.Type == lisp.LSExpr {
-						for _, child := range clause.Cells {
+						if policy.Patterns && len(clause.Cells) > 0 {
+							patternCode(clause.Cells[0], func(code *lisp.LVal) {
+								syntax(code, v, depth+3, syntaxVisitors{visit: nil, stop: nil, calls: calls})
+							})
+						}
+						for _, child := range clause.Cells[min(skip, len(clause.Cells)):] {
 							syntax(child, v, depth+2, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 						}
 					}
@@ -185,6 +201,41 @@ func init() {
 		OpThreadFirst, OpThreadLast, OpUnquote, OpUnquoteSplicing} {
 		if syntaxOp(lisp.Symbol(op)) != op {
 			panic("codewalk: " + op + " is not a CodeWalker syntax operator")
+		}
+	}
+}
+
+// patternCode calls fn with each type expression in the match pattern p,
+// the code match evaluates while it tries p.  It reads the pattern shapes
+// lisp's classifyPattern defines; a shape it does not know has no code.
+func patternCode(p *lisp.LVal, fn func(code *lisp.LVal)) {
+	if p.Type != lisp.LSExpr || len(p.Cells) == 0 {
+		return
+	}
+	if p.IsQuoted() {
+		if len(p.Cells) == 2 {
+			fn(p.Cells[1]) // [name T]
+		}
+		return
+	}
+	head := p.Cells[0]
+	if head.Type != lisp.LSymbol || head.IsQuoted() {
+		return
+	}
+	switch strings.TrimPrefix(head.Str, "lisp:") {
+	case "quote":
+	case "list":
+		for _, q := range p.Cells[1:] {
+			patternCode(q, fn)
+		}
+	case "sorted-map":
+		for i := 2; i < len(p.Cells); i += 2 {
+			patternCode(p.Cells[i], fn)
+		}
+	default:
+		fn(head) // (T :field p ...)
+		for i := 2; i < len(p.Cells); i += 2 {
+			patternCode(p.Cells[i], fn)
 		}
 	}
 }

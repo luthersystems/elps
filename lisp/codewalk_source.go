@@ -151,9 +151,21 @@ func (w *CodeWalker) sourceCalls(v *LVal, spec formSpec, depth int) {
 		}
 	}
 	if spec.clauses {
-		for _, clause := range v.Cells[1:] {
+		// Cells before the clauses (match's value) are code.
+		first := max(1, spec.callsStart)
+		for _, child := range v.Cells[1:min(first, len(v.Cells))] {
+			w.sourceValue(child, depth+1)
+		}
+		skip := 0
+		if spec.patterns {
+			skip = 1
+		}
+		for _, clause := range v.Cells[min(first, len(v.Cells)):] {
 			if clause.Type == LSExpr {
-				for _, child := range clause.Cells {
+				if spec.patterns && len(clause.Cells) > 0 {
+					matchPatternCode(clause.Cells[0], func(code *LVal) { w.sourceValue(code, depth+3) })
+				}
+				for _, child := range clause.Cells[min(skip, len(clause.Cells)):] {
 					w.sourceValue(child, depth+2)
 				}
 			}

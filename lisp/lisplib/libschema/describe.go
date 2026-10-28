@@ -15,6 +15,7 @@ import (
 // A schemaDesc is built once, when its validator is built, and never written
 // after, so it is shared by every VM a template forks (see validatorTag).
 type schemaDesc struct {
+	rec      recordRef     // record: the record type it checks
 	op       string        // "type", "in", "gt", "has-key", ...
 	name     string        // a type's name, as s:make-validator was given it
 	typ      string        // a type's base type: "string", "sorted-map", ...

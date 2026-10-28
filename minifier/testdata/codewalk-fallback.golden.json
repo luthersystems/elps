@@ -4430,6 +4430,250 @@
     }
   },
   {
+    "Source": "(match)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(match)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(match () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@11:1:12",
+      "-",
+      "export@11:1:12"
+    ],
+    "Output": "(match () (x1 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 12
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(match bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13",
+      "in-package@12:1:13"
+    ],
+    "Output": "(match bad (x1 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 13
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(match ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37",
+      "export@36:1:37"
+    ],
+    "Output": "(match ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:match)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:match)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:match () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@16:1:17",
+      "-",
+      "export@16:1:17"
+    ],
+    "Output": "(lisp:match () (x1 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 17
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:match bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18",
+      "in-package@17:1:18"
+    ],
+    "Output": "(lisp:match bad (x1 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 18
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
+    "Source": "(lisp:match ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42",
+      "export@41:1:42"
+    ],
+    "Output": "(lisp:match ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
     "Source": "(or)",
     "Fallbacks": [
       "-",

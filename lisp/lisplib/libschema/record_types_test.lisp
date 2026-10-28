@@ -1,7 +1,7 @@
 (use-package 'testing)
 
 ; Record types (luthersystems/elps#895): s:make-record, s:method,
-; s:defmethod, s:set! and s:fields.
+; s:defmethod, s:set-field! and s:fields.
 
 ; condition-of returns the condition the thunk raises, or 'none.
 (defun condition-of (thunk)
@@ -18,11 +18,11 @@
                     (s:has-key "status" order-status)
                     (s:may-have-key "note" s:any)
                     (s:method add-line (o sku qty)
-                              (s:set! o 'lines (assoc (o 'lines) sku (+ qty (get-default (o 'lines) sku 0)))))
+                              (s:set-field! o 'lines (assoc (o 'lines) sku (+ qty (get-default (o 'lines) sku 0)))))
                     (s:method qty (o)
                               (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
                     (s:method pay (o)
-                              (s:set! o 'status "paid"))
+                              (s:set-field! o 'status "paid"))
                     (s:method self (o) o)))
 
 (defun new-order ()
@@ -75,10 +75,10 @@
 
 (test "set-checks-the-field"
   (let ([o (new-order)])
-    (assert-equal 'wrong-type (condition-of (lambda () (s:set! o 'status "lost")))) ; nolint:record-set-outside-method
+    (assert-equal 'wrong-type (condition-of (lambda () (s:set-field! o 'status "lost")))) ; nolint:record-set-outside-method
     (assert-equal "open" (o 'status))
-    (assert-equal 'bad-arguments (condition-of (lambda () (s:set! o 'bogus 1)))) ; nolint:record-set-outside-method
-    (assert-equal 'bad-arguments (condition-of (lambda () (s:set! (sorted-map) 'id "x")))))) ; nolint:record-set-outside-method
+    (assert-equal 'bad-arguments (condition-of (lambda () (s:set-field! o 'bogus 1)))) ; nolint:record-set-outside-method
+    (assert-equal 'bad-arguments (condition-of (lambda () (s:set-field! (sorted-map) 'id "x")))))) ; nolint:record-set-outside-method
 
 (test "call-errors"
   (let ([o (new-order)])
@@ -97,7 +97,7 @@
                     (s:has-key "n" s:int)
                     :check (lambda (c) (when (< (c 'n) 0) (error 'negative-count (c 'n))))))
 
-(s:defmethod counter inc (o) (s:set! o 'n (+ 1 (o 'n))))
+(s:defmethod counter inc (o) (s:set-field! o 'n (+ 1 (o 'n))))
 
 (test "check-and-defmethod"
   (let ([c (counter :n 0)])
@@ -107,7 +107,7 @@
   (assert-equal 'negative-count (condition-of (lambda () (counter :n -1))))
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter inc (_o) 0))))
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0))))
-  (s:defmethod counter inc (o) :replace true (s:set! o 'n (+ 10 (o 'n))))
+  (s:defmethod counter inc (o) :replace true (s:set-field! o 'n (+ 10 (o 'n))))
   (let ([c (counter :n 0)])
     (c 'inc)
     (assert-equal 10 (c 'n))))
@@ -136,12 +136,12 @@
      (s:make-record "range"
                     (s:has-key "lo" s:int)
                     (s:has-key "hi" s:int)
-                    (s:method set-lo (o n) (s:set! o 'lo n))
+                    (s:method set-lo (o n) (s:set-field! o 'lo n))
                     (s:method shift (o n)
-                              (s:set! o 'lo (+ n (o 'lo)))
-                              (s:set! o 'hi (+ n (o 'hi))))
+                              (s:set-field! o 'lo (+ n (o 'lo)))
+                              (s:set-field! o 'hi (+ n (o 'hi))))
                     (s:method half-shift (o n)
-                              (s:set! o 'lo (+ n (o 'lo)))
+                              (s:set-field! o 'lo (+ n (o 'lo)))
                               (error 'stopped n))
                     :check (lambda (r) (when (> (r 'lo) (r 'hi)) (error 'bad-range (r 'lo))))))
 
@@ -170,8 +170,8 @@
                     (s:has-key "lo" s:int)
                     (s:has-key "hi" s:int)
                     (s:method width (o) (- (o 'hi) (o 'lo)))
-                    (s:method set-lo (o n) (s:set! o 'lo n))
-                    (s:method set-hi (o n) (s:set! o 'hi n))
+                    (s:method set-lo (o n) (s:set-field! o 'lo n))
+                    (s:method set-hi (o n) (s:set-field! o 'hi n))
                     (s:method move (o n)
                               (o 'set-lo (+ n (o 'lo)))
                               (o 'set-hi (+ n (o 'hi))))

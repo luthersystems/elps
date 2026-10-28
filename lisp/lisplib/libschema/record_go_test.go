@@ -23,7 +23,7 @@ const orderV1 = `
   (s:make-record "order"
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
-    (s:method add (o n) (s:set! o 'qty (+ n (o 'qty))))))
+    (s:method add (o n) (s:set-field! o 'qty (+ n (o 'qty))))))
 (set 'o (order :id "o1" :qty 1))
 (o 'add 2)
 `
@@ -37,7 +37,7 @@ const orderV2 = `
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
     (s:has-key "currency" s:string)
-    (s:method add (o n) (s:set! o 'qty (+ (* 10 n) (o 'qty))))
+    (s:method add (o n) (s:set-field! o 'qty (+ (* 10 n) (o 'qty))))
     (s:method label (o) (format-string "{}:{}" (o 'id) (o 'currency)))))
 `
 
@@ -244,7 +244,7 @@ func TestGoRecordType(t *testing.T) {
 
 	env.PutGlobal(lisp.Symbol("c"), c)
 	require.Equal(t, 2, evalString(t, env, `(get (s:fields c) "n")`).Int)
-	require.True(t, env.LoadString("set.lisp", `(s:set! c 'n 5)`).IsError(), "a Go type is sealed")
+	require.True(t, env.LoadString("set.lisp", `(s:set-field! c 'n 5)`).IsError(), "a Go type is sealed")
 	require.True(t, lisp.True(evalString(t, env, `(s:record? c)`)))
 
 	reg := recordRegistry(t, rt.Codec())
@@ -270,8 +270,11 @@ func TestGoRecordType(t *testing.T) {
 	require.Error(t, lisp.GoError(call(lisp.Symbol("set-to"), lisp.Int(-3))))
 	require.Equal(t, 7, call(lisp.Symbol("n")).Int, "the failed Default restored the field")
 
-	// A load runs the Go checks at once.
-	bad := strings.Replace(string(b), "2", "-4", 1)
+	// A load runs the Go checks at once.  The FID holds a sequence number
+	// that may contain a 2, so it is set aside while the value changes.
+	fid := `"user:` + rt.Spec().FID + `"`
+	bad := strings.Replace(strings.Replace(string(b), fid, "FID", 1), "2", "-4", 1)
+	bad = strings.Replace(bad, "FID", fid, 1)
 	_, err = libjson.LoadDurable(env, []byte(bad), reg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "negative")
@@ -309,4 +312,33 @@ func TestGoRecordHiddenField(t *testing.T) {
 	env.PutGlobal(lisp.Symbol("x"), rt.New(env, lisp.Int(1), lisp.String("pin")))
 	require.Equal(t, libschema.UnknownOperation, env.LoadString("t.lisp", `(x 'secret)`).Str)
 	require.Equal(t, `(sorted-map "shown" 1)`, evalString(t, env, `(s:fields x)`).String())
+
+	// A field with a getter satisfies an interface method that takes no
+	// arguments (#905); a hidden field does not.
+	evalString(t, env, `(set 'shows (s:make-interface "shows" (shown ())))
+(set 'hides (s:make-interface "hides" (secret ())))`)
+	require.Equal(t, "true", evalString(t, env, `(s:is? x shows)`).String())
+	require.Equal(t, "false", evalString(t, env, `(s:is? x hides)`).String())
+
+	// match reads a field with a getter; a hidden field is an error.
+	env.PutGlobal(lisp.Symbol("secretive"), rt.Value())
+	require.Equal(t, "1", evalString(t, env, `(match x ((secretive :shown n) n))`).String())
+	require.Equal(t, libschema.UnknownOperation, env.LoadString("t.lisp", `(match x ((secretive :secret s) s))`).Str)
+
+	// A hidden field whose check refuses () cannot be given from Lisp, so
+	// the error says only Go can make the object.
+	strict, err := libschema.NewRecordType(libschema.RecordSpec{
+		Package: "user", Name: "strict", FID: fmt.Sprintf("strict-%d", goTypeSeq.Add(1)),
+		Fields: []libschema.FieldSpec{{Name: "shown", Getter: true}, {Name: "secret", Check: func(v *lisp.LVal) error {
+			if v.IsNil() {
+				return errors.New("required")
+			}
+			return nil
+		}}},
+	})
+	require.NoError(t, err)
+	env.PutGlobal(lisp.Symbol("strict"), strict.Value())
+	v := env.LoadString("t.lisp", `(strict :shown 1)`)
+	require.Equal(t, libschema.FailedConstraint, v.Str)
+	require.Contains(t, lisp.GoError(v).Error(), "hidden field secret refuses (), so only Go can make this object")
 }

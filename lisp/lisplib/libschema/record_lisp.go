@@ -3,6 +3,8 @@
 package libschema
 
 import (
+	"fmt"
+
 	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
@@ -30,8 +32,12 @@ var recordMacros = []*libutil.Builtin{
 		an object, which is checked against the fields.  Each form is a
 		field, (s:has-key "f" ...) or (s:may-have-key "f" ...); a method,
 		(s:method name (recv args...) body...), whose first formal is the
-		object, as a Go method receiver is; or the option :check fn, a function of the new object that
-		raises an error to refuse it.  Call an object as (obj 'name
+		object, as a Go method receiver is; the option :check fn, a
+		function of the new object that raises an error to refuse it;
+		or the option :implements (iface...), interfaces the type must
+		satisfy.  A method in the form that does not match an interface
+		fails at once; a method that is missing fails at the first
+		construction, so s:defmethod can still add it.  Call an object as (obj 'name
 		args...): a method runs, and a field name returns the field.  Any
 		other name raises unknown-operation.  A method call is atomic:
 		if it raises an error, or :check refuses the object, the fields
@@ -41,21 +47,29 @@ var recordMacros = []*libutil.Builtin{
 		`Declares a method inside s:make-record: (s:method name (recv
 		args...) body...).  The first formal, recv, is the object the
 		method is called on; the call (obj 'name args...) passes only
-		args.  Outside s:make-record it is an error.`),
+		args.  A formal after recv may be [name type]: each argument
+		the call gives for it is checked before the body runs.  The
+		type :self is the type being defined, and [name 'T] resolves T
+		on each call.  Outside s:make-record it is an error.`),
 	libutil.FunctionDoc("defmethod", lisp.Formals("type", "name", "formals", lisp.VarArgSymbol, "body"), macroDefMethod,
 		`Adds a method to a record type that the same package defined:
 		(s:defmethod type name (recv args...) body...).  The first
-		formal, recv, is the object, as in s:method.  It refuses a name that is a field of the type,
+		formal, recv, is the object, and a formal after it may be
+		[name type], as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
 		:replace true.`),
 	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
 		`Defines an interface, a set of methods, and returns it:
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
 		method is (name (args...)): its formals after the receiver,
-		with &optional, &rest and &key allowed.  A value satisfies the
+		with &optional, &rest and &key allowed.  A formal may be [name
+		type]; the type documents the method and is not matched.  The
+		option :embed (iface...) adds the methods of other interfaces,
+		as a Go interface embeds one; a name may come from two places
+		only with the same arity.  A value satisfies the
 		interface when it is a record object whose type has each method,
 		and each method accepts every call the interface allows, as in
-		Go.  The interface is a validator: use it as a field type, in
+		Go.  A field counts as a method that takes no arguments.  The interface is a validator: use it as a field type, in
 		s:of, or with s:validate.`),
 }
 
@@ -63,17 +77,17 @@ var recordMacros = []*libutil.Builtin{
 //
 //elpsvet:allow package builtin table; formals are sealed by libutil at construction and shared via registrationFormals (lisp.LEnv.AddBuiltins)
 var recordBuiltins = []*libutil.Builtin{
-	libutil.FunctionDoc("%make-record", lisp.Formals("name", "fields", "methods", "check", "marker"), builtinMakeRecord,
+	libutil.FunctionDoc("%make-record", lisp.Formals("name", "fields", "methods", "check", "marker", "&optional", "sigs", "implements"), builtinMakeRecord,
 		`The function s:make-record expands to.  Do not call it
 		directly.`),
-	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace"), builtinAddMethod,
+	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
 		directly.`),
-	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods"), builtinMakeInterface,
+	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
-	libutil.FunctionDoc("set!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
-		`Sets a field of a record object, (s:set! obj 'field value),
+	libutil.FunctionDoc("set-field!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
+		`Sets a field of a record object, (s:set-field! obj 'field value),
 		and returns the value.  The field's validator checks the value
 		first; a failure leaves the object as it was.  Use it in method
 		bodies only: code outside the type changes an object through its
@@ -82,6 +96,24 @@ var recordBuiltins = []*libutil.Builtin{
 		`Returns a copy of a record object's fields as a sorted map.
 		Store this map, not the object, in a ledger or other plain
 		data; pass it back to the type to rebuild the object.`),
+	libutil.FunctionDoc("is?", lisp.Formals("value", "type"), builtinIs,
+		`Returns true if value passes type, and false if not.  type is
+		what a typed formal takes: a built-in type name (s:int), a
+		record type (the full check), (s:ref T), an interface or
+		another validator.  Only wrong-type and failed-constraint mean
+		false; any other error, such as a type that is not a type or a
+		condition a :check raises itself, propagates.`),
+	libutil.FunctionDoc("as", lisp.Formals("value", "type"), builtinAs,
+		`Returns value if it passes type, as s:is? checks it, and
+		raises the check's error if not.  Use it to check a value in
+		an expression: (let ((o (s:as x order))) ...).`),
+	libutil.FunctionDoc("ref", lisp.Formals("type"), builtinRef,
+		`Returns a type that passes an object of the record type and
+		checks nothing else: no field check and no :check, so it is
+		cheap.  The type itself, used as a type, checks every field.
+		s:ref does not prove the fields are valid: a getter returns a
+		field's own value, and code that changes it in place (assoc!)
+		is not checked.  Use it for objects your own code made.`),
 	libutil.FunctionDoc("record?", lisp.Formals("value"), builtinIsRecord,
 		`Returns true if value is a record object.`),
 }
@@ -98,34 +130,98 @@ func isMethodForm(form *lisp.LVal) bool {
 // methodForm is the source of one method: its name, formals and body.
 type methodForm struct {
 	name, formals *lisp.LVal
-	body          []*lisp.LVal
+	// returns is the :returns type form, or nil.
+	returns *lisp.LVal
+	body    []*lisp.LVal
 }
 
-// methodLambda returns (lisp:lambda (recv args...) body...) for m.  The
-// first formal is the receiver: the object the method is called on.
-func methodLambda(env *lisp.LEnv, who string, m methodForm) *lisp.LVal {
+// methodLambda returns (lisp:lambda (recv args...) body...) for m, and the
+// form that builds its argument types, (lisp:list 'name type ...), or nil
+// when no formal has a type.  The first formal is the receiver: the object
+// the method is called on.  A formal after it is a name or [name type]
+// (#905); the lambda gets the plain names.
+func methodLambda(env *lisp.LEnv, who string, m methodForm) (*lisp.LVal, *lisp.LVal) {
 	name, formals, body := m.name, m.formals, m.body
 	if name.Type != lisp.LSymbol || name.Str == "" || name.Str[0] == ':' {
-		return env.ErrorConditionf(BadArgs, "%s: method name must be a symbol: %v", who, name)
+		return env.ErrorConditionf(BadArgs, "%s: method name must be a symbol: %v", who, name), nil
 	}
 	if formals.Type != lisp.LSExpr {
-		return env.ErrorConditionf(BadArgs, "%s: method %s: formals must be a list: %v", who, name.Str, formals)
+		return env.ErrorConditionf(BadArgs, "%s: method %s: formals must be a list: %v", who, name.Str, formals), nil
 	}
 	if len(formals.Cells) == 0 {
-		return env.ErrorConditionf(BadArgs, "%s: method %s: the first formal is the receiver, the object the method is called on: (%s (obj args...) ...)", who, name.Str, name.Str)
+		return env.ErrorConditionf(BadArgs, "%s: method %s: the first formal is the receiver, the object the method is called on: (%s (obj args...) ...)", who, name.Str, name.Str), nil
 	}
+	plain := make([]*lisp.LVal, len(formals.Cells))
+	var typeForms []*lisp.LVal
 	for i, p := range formals.Cells {
+		if i > 0 && p.Type == lisp.LSExpr {
+			if len(p.Cells) != 2 || p.Cells[0].Type != lisp.LSymbol || p.Cells[0].Str == "" || p.Cells[0].Str[0] == '&' || p.Cells[0].Str[0] == ':' {
+				return env.ErrorConditionf(BadArgs, "%s: method %s: a typed formal is [name type]: %v", who, name.Str, p), nil
+			}
+			typeForms = append(typeForms, typeForm(p.Cells[0], p.Cells[1])...)
+			p = p.Cells[0]
+		}
 		if p.Type != lisp.LSymbol {
-			return env.ErrorConditionf(BadArgs, "%s: method %s: formal %v is not a symbol", who, name.Str, p)
+			if i == 0 {
+				return env.ErrorConditionf(BadArgs, "%s: method %s: the receiver must be a plain name, with no type: %v", who, name.Str, p), nil
+			}
+			return env.ErrorConditionf(BadArgs, "%s: method %s: formal %v is not a symbol", who, name.Str, p), nil
 		}
 		if i == 0 && (p.Str == "" || p.Str[0] == '&' || p.Str[0] == ':') {
-			return env.ErrorConditionf(BadArgs, "%s: method %s: the receiver %s must be a plain name", who, name.Str, p.Str)
+			return env.ErrorConditionf(BadArgs, "%s: method %s: the receiver %s must be a plain name", who, name.Str, p.Str), nil
 		}
+		plain[i] = p
+	}
+	if m.returns != nil {
+		typeForms = append(typeForms, typeForm(lisp.Symbol(":returns"), m.returns)...)
 	}
 	form := make([]*lisp.LVal, 0, len(body)+2)
-	form = append(form, lisp.Symbol("lisp:lambda"), formals)
+	form = append(form, lisp.Symbol("lisp:lambda"), lisp.SExpr(plain))
 	form = append(form, body...)
-	return lisp.SExpr(form)
+	var types *lisp.LVal
+	if typeForms != nil {
+		types = listForm(typeForms)
+	}
+	return lisp.SExpr(form), types
+}
+
+// typeForm returns the pair of forms lispMethodSig reads for the type typ
+// of name, a formal or :returns: 'name and typ.  For a late type, 'T, it
+// is '(name) and a lambda in the caller's package that returns T.
+func typeForm(name, typ *lisp.LVal) []*lisp.LVal {
+	if typ.Type == lisp.LSymbol && typ.IsQuoted() {
+		thunk := lisp.Cells{lisp.Symbol("lisp:lambda"), lisp.Nil(), lisp.Symbol(typ.Str)}.SExpr()
+		return []*lisp.LVal{quoted(lisp.Cells{name}.SExpr()), thunk}
+	}
+	return []*lisp.LVal{quoted(name), typ}
+}
+
+// methodOpts are the options at the start of a method body and the body
+// after them.
+type methodOpts struct {
+	replace, returns *lisp.LVal
+	body             []*lisp.LVal
+}
+
+// methodOptions reads the options at the start of a method body, in any
+// order: :replace v (s:defmethod only) and :returns T.  It returns them
+// with the body after them.
+func methodOptions(body []*lisp.LVal, allowReplace bool) methodOpts {
+	o := methodOpts{replace: lisp.Nil()}
+	for len(body) >= 2 {
+		switch {
+		case allowReplace && body[0].IsSymbol(":replace"):
+			o.replace = body[1]
+		case body[0].IsSymbol(":returns") && o.returns == nil:
+			o.returns = body[1]
+		default:
+			o.body = body
+			return o
+		}
+		body = body[2:]
+	}
+	o.body = body
+	return o
 }
 
 // quoted returns (lisp:quote v).
@@ -143,14 +239,16 @@ func listForm(items []*lisp.LVal) *lisp.LVal {
 
 // macroMakeRecord expands s:make-record into
 //
-//	(s:%make-record NAME (lisp:list FIELD...) (lisp:list 'm1 (lisp:lambda (recv ...) ...) ...) CHECK (lisp:lambda ()))
+//	(s:%make-record NAME (lisp:list FIELD...) (lisp:list 'm1 (lisp:lambda (recv ...) ...) ...) CHECK (lisp:lambda ())
+//	                (lisp:list 'm1 (lisp:list 'arg TYPE ...) ...) (lisp:list IFACE...))
 //
-// The last lambda marks the caller's package when the type has no
-// methods.
+// The lambda (lisp:lambda ()) marks the caller's package when the type has
+// no methods.  The list after it holds the argument types of each typed
+// method, and the last list the interfaces of :implements.
 func macroMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	name := args.Cells[0]
 	forms := args.Cells[1:]
-	var fields, methods []*lisp.LVal
+	var fields, methods, sigs, impls []*lisp.LVal
 	check := lisp.Nil()
 	for i := 0; i < len(forms); i++ {
 		form := forms[i]
@@ -159,17 +257,28 @@ func macroMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			if len(form.Cells) < 3 {
 				return env.ErrorConditionf(BadArgs, "s:make-record: a method needs a name and formals: %v", form)
 			}
-			fn := methodLambda(env, "s:make-record", methodForm{name: form.Cells[1], formals: form.Cells[2], body: form.Cells[3:]})
+			opts := methodOptions(form.Cells[3:], false)
+			returns, body := opts.returns, opts.body
+			fn, types := methodLambda(env, "s:make-record", methodForm{name: form.Cells[1], formals: form.Cells[2], returns: returns, body: body})
 			if fn.IsError() {
 				return fn
 			}
 			methods = append(methods, quoted(form.Cells[1]), fn)
+			if types != nil {
+				sigs = append(sigs, quoted(form.Cells[1]), types)
+			}
 		case form.IsSymbol(":check"):
 			if i+1 >= len(forms) {
 				return env.ErrorConditionf(BadArgs, "s:make-record: :check needs a function")
 			}
 			i++
 			check = forms[i]
+		case form.IsSymbol(":implements"):
+			if i+1 >= len(forms) || forms[i+1].Type != lisp.LSExpr || forms[i+1].IsQuoted() {
+				return env.ErrorConditionf(BadArgs, "s:make-record: :implements needs a list of interfaces: :implements (iface...)")
+			}
+			i++
+			impls = append(impls, forms[i].Cells...)
 		default:
 			fields = append(fields, form)
 		}
@@ -177,7 +286,7 @@ func macroMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	marker := lisp.Cells{lisp.Symbol("lisp:lambda"), lisp.Nil()}.SExpr()
 	return lisp.Cells{
 		lisp.Symbol(DefaultPackageName + ":%make-record"),
-		name, listForm(fields), listForm(methods), check, marker,
+		name, listForm(fields), listForm(methods), check, marker, listForm(sigs), listForm(impls),
 	}.SExpr()
 }
 
@@ -189,26 +298,30 @@ func macroMethod(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 
 // macroDefMethod expands s:defmethod into
 //
-//	(s:%add-method TYPE 'NAME (lisp:lambda (recv ...) ...) REPLACE)
+//	(s:%add-method TYPE 'NAME (lisp:lambda (recv ...) ...) REPLACE [(lisp:list 'arg TYPE ...)])
 func macroDefMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
-	typeForm, name, formals, body := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3:]
-	replace := lisp.Nil()
-	if len(body) >= 2 && body[0].IsSymbol(":replace") {
-		replace = body[1]
-		body = body[2:]
-	}
-	fn := methodLambda(env, "s:defmethod", methodForm{name: name, formals: formals, body: body})
+	typeV, name, formals, body := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3:]
+	opts := methodOptions(body, true)
+	replace, returns, body := opts.replace, opts.returns, opts.body
+	fn, types := methodLambda(env, "s:defmethod", methodForm{name: name, formals: formals, returns: returns, body: body})
 	if fn.IsError() {
 		return fn
 	}
-	return lisp.Cells{
+	form := lisp.Cells{
 		lisp.Symbol(DefaultPackageName + ":%add-method"),
-		typeForm, quoted(name), fn, replace,
-	}.SExpr()
+		typeV, quoted(name), fn, replace,
+	}
+	if types != nil {
+		form = append(form, types)
+	}
+	return form.SExpr()
 }
 
 // builtinMakeRecord builds a record type: s:%make-record.
 func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if len(args.Cells) < 5 {
+		return args.ReqArg(env, len(args.Cells))
+	}
 	nameV, fieldsV, methodsV, check, marker := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3], args.Cells[4]
 	name, ok := lisp.GoString(nameV)
 	if !ok || name == "" {
@@ -239,12 +352,21 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return env.ErrorConditionf(BadArgs, "%s: methods must be name and function pairs", desc.display)
 	}
 	methods := lisp.SortedMapSized(len(methodsV.Cells) / 2)
+	arities := lisp.SortedMapSized(len(methodsV.Cells) / 2)
 	for i := 0; i < len(methodsV.Cells); i += 2 {
 		mname, fn := methodsV.Cells[i], methodsV.Cells[i+1]
 		if lerr := (methodTarget{desc: desc, pkg: pkg, methods: methods}).check(env, mname, fn); lerr != nil {
 			return lerr
 		}
 		methods.Map().Set(lisp.String(mname.Str), fn)
+		arities.Map().Set(lisp.String(mname.Str), lisp.Native(arityTag{a: lispMethodArity(fn)}))
+	}
+	impls := lisp.QExpr(nil)
+	if len(args.Cells) > 6 {
+		var lerr *lisp.LVal
+		if impls, lerr = interfaceList(env, desc, args.Cells[6]); lerr != nil {
+			return lerr
+		}
 	}
 	if !check.IsNil() && check.Type != lisp.LFun {
 		return env.ErrorConditionf(BadArgs, "%s: :check must be a function, got %v", desc.display, check)
@@ -255,7 +377,14 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		methods,
 		check,
 		lisp.Nil(),
+		lisp.SortedMap(),
+		arities,
+		impls,
+		lisp.Bool(len(impls.Cells) == 0),
 	}.List()
+	if err := checkImplements(desc, impls, lispTypeArities(tcaps), false); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
+	}
 	t := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
 		Package:  pkg,
 		FID:      "record-type:" + name,
@@ -268,7 +397,34 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		return t
 	}
 	tcaps.Cells[typeSelf] = t //elps:mutates the type's own captures, built above and not yet returned
+	if len(args.Cells) > 5 {
+		if lerr := addSigs(env, lispType{desc: desc, caps: tcaps}, t, args.Cells[5]); lerr != nil {
+			return lerr
+		}
+	}
 	return t
+}
+
+// addSigs stores the argument types of each typed method of a new type.
+// sigs is the list (name types name types ...) that s:make-record builds.
+func addSigs(env *lisp.LEnv, lt lispType, t, sigs *lisp.LVal) *lisp.LVal {
+	desc, tcaps := lt.desc, lt.caps
+	if len(sigs.Cells)%2 != 0 {
+		return env.ErrorConditionf(BadArgs, "%s: method types must be name and type-list pairs", desc.display)
+	}
+	for i := 0; i < len(sigs.Cells); i += 2 {
+		name := sigs.Cells[i]
+		fn, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(name.Str))
+		if name.Type != lisp.LSymbol || !ok {
+			return env.ErrorConditionf(BadArgs, "%s: types given for %v, which is not a method", desc.display, name)
+		}
+		sig := lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, sigs.Cells[i+1])
+		if sig.IsError() {
+			return sig
+		}
+		tcaps.Cells[typeSigs].Map().Set(lisp.String(name.Str), sig) //elps:mutates the new type's own signature map, not yet returned
+	}
+	return nil
 }
 
 // methodTarget is the type a method is added to: its descriptor, its
@@ -305,11 +461,14 @@ func (mt methodTarget) check(env *lisp.LEnv, name, fn *lisp.LVal) *lisp.LVal {
 
 // builtinAddMethod adds a method to a Lisp record type: s:%add-method.
 func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if len(args.Cells) < 4 {
+		return args.ReqArg(env, len(args.Cells))
+	}
 	t, name, fn, replace := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3]
 	lt, ok := lispTypeOf(t)
 	desc, tcaps := lt.desc, lt.caps
 	if !ok {
-		if goObjectType(t) != nil {
+		if goTypeValueOf(t) != nil || goObjectType(t) != nil {
 			return env.ErrorConditionf(BadArgs, "s:defmethod: a record type defined in Go is sealed")
 		}
 		return env.ErrorConditionf(BadArgs, "s:defmethod: first argument is not a record type: %v", t)
@@ -319,25 +478,102 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr := target.check(env, name, fn); lerr != nil {
 		return lerr
 	}
-	methods.Map().Set(lisp.String(name.Str), fn) //elps:mutates s:defmethod adds to the type's own method map
+	key := lisp.String(name.Str)
+	a := lispMethodArity(fn)
+	only := func(n string) (arity, bool) { return a, n == name.Str }
+	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
+	}
+	sigs := tcaps.Cells[typeSigs].Map()
+	if len(args.Cells) > 4 && !args.Cells[4].IsNil() {
+		sig := lispMethodSig(env, methodWho{display: desc.display, method: name.Str, self: t}, fn, args.Cells[4])
+		if sig.IsError() {
+			return sig
+		}
+		sigs.Set(key, sig) //elps:mutates s:defmethod sets the method's types with the method
+	} else if _, ok := sigs.Get(key); ok {
+		sigs.Del(key) //elps:mutates :replace with an untyped method drops the old types
+	}
+	methods.Map().Set(key, fn)                                           //elps:mutates s:defmethod adds to the type's own method map
+	tcaps.Cells[typeArities].Map().Set(key, lisp.Native(arityTag{a: a})) //elps:mutates the arity goes with the method
 	return name
+}
+
+// interfaceList checks the interfaces of :implements and returns them as a
+// list of validators.
+func interfaceList(env *lisp.LEnv, desc *recordDesc, v *lisp.LVal) (*lisp.LVal, *lisp.LVal) {
+	out := make([]*lisp.LVal, 0, len(v.Cells))
+	for _, in := range v.Cells {
+		if in.IsError() {
+			return nil, in
+		}
+		if interfaceOf(in) == nil {
+			return nil, env.ErrorConditionf(BadArgs, "%s: :implements takes interfaces (s:make-interface), got %v", desc.display, in)
+		}
+		out = append(out, in)
+	}
+	return lisp.QExpr(out), nil
+}
+
+// checkImplements checks the methods have looks up against each interface
+// in impls.  A missing method is an error only when all is true.
+func checkImplements(desc *recordDesc, impls *lisp.LVal, have func(string) (arity, bool), all bool) error {
+	for _, v := range impls.Cells {
+		in := interfaceOf(v)
+		if err := matchMethods(in.name, in.methods, have, all); err != nil {
+			return fmt.Errorf("%s: :implements %s: %w", desc.display, in.name, err)
+		}
+	}
+	return nil
+}
+
+// checkImplementsAll checks, once per type, that the type has every
+// method of each interface of :implements.  A method only matches or is
+// added, so a type that passed once passes after each later s:defmethod.
+func checkImplementsAll(env *lisp.LEnv, desc *recordDesc, tcaps *lisp.LVal) *lisp.LVal {
+	if lisp.True(tcaps.Cells[typeImplOK]) {
+		return nil
+	}
+	if err := checkImplements(desc, tcaps.Cells[typeImpls], lispTypeArities(tcaps), true); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
+	}
+	tcaps.Cells[typeImplOK] = lisp.Bool(true) //elps:mutates the type's own captures record the passed check
+	return nil
 }
 
 // macroMakeInterface expands s:make-interface into
 //
-//	(s:%make-interface NAME '((m1 (formals...)) ...))
+//	(s:%make-interface NAME '((m1 (formals...)) ...) (lisp:list EMBED...))
 //
-// The method specs are data: builtinMakeInterface checks them.
-func macroMakeInterface(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+// The method specs are data: builtinMakeInterface checks them.  The
+// interfaces of :embed are evaluated.
+func macroMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	var specs, embed []*lisp.LVal
+	forms := args.Cells[1:]
+	for i := 0; i < len(forms); i++ {
+		if !forms[i].IsSymbol(":embed") {
+			specs = append(specs, forms[i])
+			continue
+		}
+		if i+1 >= len(forms) || forms[i+1].Type != lisp.LSExpr || forms[i+1].IsQuoted() {
+			return env.ErrorConditionf(BadArgs, "s:make-interface: :embed needs a list of interfaces: :embed (iface...)")
+		}
+		i++
+		embed = append(embed, forms[i].Cells...)
+	}
 	return lisp.Cells{
 		lisp.Symbol(DefaultPackageName + ":%make-interface"),
 		args.Cells[0],
-		quoted(lisp.SExpr(args.Cells[1:])),
+		quoted(lisp.SExpr(specs)),
+		listForm(embed),
 	}.SExpr()
 }
 
 // builtinMakeInterface builds an interface: s:%make-interface.
 func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	if len(args.Cells) < 2 {
+		return args.ReqArg(env, len(args.Cells))
+	}
 	nameV, specs := args.Cells[0], args.Cells[1]
 	name, ok := lisp.GoString(nameV)
 	if !ok || name == "" {
@@ -346,6 +582,18 @@ func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	spec, bad := interfaceSpecOf(name, specs)
 	if bad != nil {
 		return env.ErrorConditionf(BadArgs, "s:make-interface: %s: a method is (name (args...)): %v", name, bad)
+	}
+	if len(args.Cells) > 2 {
+		for _, v := range args.Cells[2].Cells {
+			if v.IsError() {
+				return v
+			}
+			e := interfaceOf(v)
+			if e == nil {
+				return env.ErrorConditionf(BadArgs, "s:make-interface: %s: :embed takes interfaces (s:make-interface), got %v", name, v)
+			}
+			spec.Embed = append(spec.Embed, e)
+		}
 	}
 	in, err := NewInterface(spec)
 	if err != nil {

@@ -58,3 +58,4 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
+lisp | s:set! | 2027-01-28 | elps#903 | in no tagged release; renamed s:set-field! because (use-package 's) hid lisp:set!. Callers write (s:set-field! obj 'field v)

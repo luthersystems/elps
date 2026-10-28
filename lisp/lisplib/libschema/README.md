@@ -6,6 +6,9 @@ amongst other things. It is strongly inspired by [Clojure's schema library](http
 and the Javascript library [yup](https://github.com/jquense/yup).
 
 The library is exported by default under the package name `s` and all functions and types should be prefixed as such.
+Do not `(use-package 's)`: several of its exports (`not`, `when`, `list`, `error`,
+`sorted-map`) then hide the core forms, and the `use-package-hides-lisp` lint
+check warns about it ([#903](https://github.com/luthersystems/elps/issues/903)).
 
 ### How do I use it?
 
@@ -300,7 +303,7 @@ A record type is a constructor for objects with typed fields and methods
     (s:has-key "lines" (s:map-of s:string s:int))
     (s:may-have-key "note" s:any)
     (s:method add-line (o sku qty)
-      (s:set! o 'lines (assoc (o 'lines) sku qty)))
+      (s:set-field! o 'lines (assoc (o 'lines) sku qty)))
     (s:method qty (o)
       (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
     :check (lambda (o) (when (> (o 'qty) 100) (error 'order-too-big (o 'qty))))))
@@ -313,13 +316,16 @@ A record type is a constructor for objects with typed fields and methods
 
 | Form | Use |
 |------|-----|
-| `(s:make-record NAME FIELD... METHOD... [:check FN])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
+| `(s:make-record NAME FIELD... METHOD... [:check FN] [:implements (IFACE...)])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
 | `(s:method NAME (RECV ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. RECV is the object. |
 | `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
-| `(s:set! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
+| `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
-| `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
+| `(s:make-interface NAME [:embed (IFACE...)] (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
+| `(s:ref TYPE)` | A type that passes an object of TYPE and checks nothing else. |
+| `(s:is? VALUE TYPE)` | `true` if VALUE passes TYPE, else `false`. |
+| `(s:as VALUE TYPE)` | VALUE if it passes TYPE; else the check's error. |
 
 Rules:
 
@@ -328,7 +334,7 @@ Rules:
   passes `o` as the receiver and `"a" 2` as the other arguments.
 * The constructor checks each field and then runs `:check`. An unknown
   field is a `bad-arguments` error.
-* `s:set!` checks only the field it changes. `:check` runs when the
+* `s:set-field!` checks only the field it changes. `:check` runs when the
   outermost method call on the object returns. A call that a method or
   `:check` makes on the same object runs without a check, so a method may
   pass through a state `:check` refuses, and `:check` may call methods.
@@ -338,6 +344,25 @@ Rules:
   name must not be a field name.
 * A type is a validator: `(s:has-key "order" order)` accepts only objects
   of that type with valid fields.
+* `(s:ref order)` checks the type only: no field check, no `:check`, no
+  Lisp steps. It does not prove the fields are valid. A getter returns the
+  field's own value, so code that changes it in place (`assoc!`) is not
+  checked, and the rollback does not undo that. Use `s:ref` for objects
+  your own code made; check data from outside with the type itself. Go:
+  `(*RecordType).Ref(env)`; `(*RecordType).Is(v)` is the plain Go test.
+* `(s:is? v T)` and `(s:as v T)` take any type a typed formal takes: a
+  built-in type name, a record type (the full check), `s:ref`, an
+  interface or a validator. Only `wrong-type` and `failed-constraint`
+  make `s:is?` false. Any other error propagates: a TYPE that is not a
+  type, a step limit, or a condition a `:check` raises itself (raise
+  `failed-constraint` in `:check` to make `s:is?` false). A built-in type
+  name takes no gensym. Go: `libschema.Is(env, v, typ)` and
+  `libschema.As(env, v, typ)`.
+* `match` (a `lisp` special operator) uses `s:is?` for its type
+  patterns: `[o order]` matches an `order` object, and
+  `(order :id id)` matches one and binds its `id`. A field that is not
+  set reads as `()`; an unknown field or a hidden Go field is an error.
+  Package `s` sets this up when it loads (`lisp.SetMatchTypes`).
 * Helper functions are ordinary `defun`s, or locals of a closure around
   the type: `(set 'order (labels (...) (s:make-record ...)))`.
 * Use `s:any` for a field that takes any value.
@@ -354,7 +379,7 @@ a valid object.
   (s:make-record "order"
     (s:has-key "lines" (s:map-of s:string s:int))
     (s:method add-line (o sku qty)
-      (s:set! o 'lines (assoc (o 'lines) sku qty))   ; write the line
+      (s:set-field! o 'lines (assoc (o 'lines) sku qty))   ; write the line
       (unless (in-stock? sku qty)
         (error 'out-of-stock sku)))))                 ; then fail
 
@@ -368,25 +393,90 @@ Details:
 * The rollback covers the outermost call on the object. A method that
   calls another method on its receiver is one call: a failure anywhere
   undoes all of it.
-* The fields are saved on the first `s:set!` of a call, so a read-only
+* The rollback is per object. A call on another object that returned with
+  no error is not undone when the outer call fails later: a ledger method
+  that pays an invoice and then fails leaves the invoice paid.
+* The fields are saved on the first `s:set-field!` of a call, so a read-only
   method costs nothing.
 * Go types work the same way: a Go method or `Default` that fails, or that
   breaks `Check`, leaves the fields as they were.
 * The rollback restores which value each field holds. It does **not** undo
   a change made in place to a field's value, such as `(assoc! (o 'lines)
   "a" 5)`: the saved map holds the same `lines` map, so it changes too.
-  Build a new value and `s:set!` it instead. The lint check
+  Build a new value and `s:set-field!` it instead. The lint check
   `record-field-mutation` reports each in-place change.
 * A phylum endpoint that raises an error already rolls back its whole
   transaction. The rollback matters for code that catches an error and
   keeps using the object.
+
+#### Typed arguments
+
+A formal after the receiver is a name or `[name type]`
+(luthersystems/elps#905). The type is any value `s:has-key` accepts as a
+type.
+
+```lisp
+(set 'positive (s:make-validator "positive" s:int (s:gt 0)))
+(set 'acct
+  (s:make-record "acct"
+    (s:has-key "bal" s:int)
+    (s:method deposit (o [amount positive] &optional [memo s:string])
+      (s:set-field! o 'bal (+ (o 'bal) amount)))
+    (s:method balance (o) :returns s:int (o 'bal))
+    (s:method merge (o [other :self])            ; the type being defined
+      (s:set-field! o 'bal (+ (o 'bal) (other 'bal))))
+    (s:method pay (o [to 'payee])                ; late: resolved on each call
+      (to 'credit (o 'bal)))))
+
+((acct :bal 0) 'deposit -5)    ; failed-constraint: ...: method deposit: argument amount: ...
+((acct :bal 0) 'deposit 5 'x)  ; wrong-type on memo
+((acct :bal 0) 'deposit 5)     ; memo is absent, so it is not checked
+```
+
+| Kind | Form | Checked |
+|------|------|---------|
+| Required | `[amount positive]` | Always |
+| Optional | `&optional [memo s:string]` | When the call gives it, an explicit `()` too |
+| Key | `&key [fee s:int]` | When the call gives `:fee v`, `:fee ()` too |
+| Rest | `&rest [xs s:int]` | Each element, at one step each |
+
+Rules:
+
+* Go checks the call's shape and then each typed argument, before the body
+  runs. A bad call changes nothing. The check costs no ELPS steps, except
+  one step per element of a typed `&rest`.
+* A wrong number of arguments is `bad-arguments`, for every method, with
+  the receiver not counted. A failed type check keeps the type's condition
+  (`wrong-type`, or `failed-constraint` for a rule such as `s:gt`) and names
+  the method and the argument.
+* A type is resolved once, when the method is made. `:self` names the type
+  being defined. `[x 'T]` resolves `T` on each call, in the defining
+  package, so a method can name a type that is defined later, or two types
+  can name each other; it costs a few steps on each call.
+* A record type is checked as `s:validate` checks it: the type, every field
+  and `:check`. `(s:ref T)` checks the type only.
+* `:returns T` after the formals checks the value the method returns, after
+  the body and inside the rollback: a bad value fails the call and the
+  object goes back to its state before it. `:self` and `'T` work here too.
+  In `s:defmethod`, `:replace` and `:returns` come in either order. Go:
+  `MethodSpec.ReturnCheck`.
+* The receiver has no type. `s:defmethod` with `:replace true` replaces the
+  types with the method.
+* An interface may write types, `(pay ([amount positive]))`. They are not
+  evaluated and not part of the match, which uses names and arity only;
+  they document the method.
+* Go: `MethodSpec.ArgChecks` maps a formal's name to a check function. A
+  check's error is `wrong-type`, or `failed-constraint` when it wraps
+  `libschema.ErrFailedConstraint`; the same rule holds for `FieldSpec.Check`
+  and `RecordSpec.Check`. `NewRecordType` refuses a name that is not in
+  `Formals`.
 
 #### Interfaces
 
 An interface names a set of methods, as a Go interface does
 (luthersystems/elps#900). A value satisfies it when it is a record object
 whose type has each method, and each method accepts every call the
-interface allows. A type does not declare the interfaces it satisfies, and
+interface allows. A type need not declare the interfaces it satisfies, and
 a method that `s:defmethod` adds later counts.
 
 ```lisp
@@ -409,6 +499,9 @@ a method that `s:defmethod` adds later counts.
   does not satisfy `(pay (amount))`. When the interface has `&key`
   names, the method needs each of them and the same number of
   positional arguments, or `&rest`.
+* A field satisfies a method that takes no arguments, since `(obj
+  'field)` returns it: `(total ())` accepts a type with a field `total`.
+  A Go field needs `Getter`; a hidden field does not count.
 * An interface is a validator, so it is a field type, an `s:of` element
   or an `s:validate` type, and `ValidateLoaded` checks it. It is never
   saved: an object saves its own type.
@@ -419,6 +512,20 @@ a method that `s:defmethod` adds later counts.
   `MethodSpec.Formals`; a call with the wrong number of arguments, or
   an odd or unknown keyword argument, then fails before `Call` runs. A Go method without `Formals` accepts any
   number of arguments, for an interface too.
+* `(s:make-interface "both" :embed (payer sized) (note ()))` has the
+  methods of `payer` and `sized` too, as a Go interface embeds one. The
+  embedded methods come first, in `:embed` order. A name may come from
+  two places only with the same arity; another arity fails. Go:
+  `InterfaceSpec.Embed`.
+* A type can declare the interfaces it must satisfy: `(s:make-record
+  "inv" :implements (payable) ...)`. A method in the form that does not
+  match fails when the type is defined. A missing method fails
+  (wrong-type) when the first object is built, so `s:defmethod` can still
+  add it. A later `s:defmethod` that does not match fails and changes
+  nothing. In Go, `RecordSpec.Implements` is checked by `NewRecordType`,
+  as a Go type is sealed.
+* A check reads arities stored when each method is added, so it parses
+  no formals: about 1 µs and 6 allocations for three methods.
 
 Saving objects. An object saves only its fields. Its type saves as the name
 of the global that holds it, and its methods are never saved. Add
@@ -429,8 +536,16 @@ saved name.
 
 Go types. `libschema.NewRecordType` defines a record type in Go with Go
 methods and Go checks. Its objects work with `s:fields` and `s:record?`.
-A Go type is sealed: `s:defmethod` and `s:set!` refuse it. Add
+A Go type is sealed: `s:defmethod` and `s:set-field!` refuse it. Add
 `(*RecordType).Codec()` to the durable registry to save its objects.
+`(*RecordType).Value()` returns the type's Lisp value. Bind it to a global
+(`env.PutGlobal(lisp.Symbol("counter"), rt.Value())`), and Lisp code uses
+it as it uses the value of `s:make-record`: `(counter :n 1)` builds an
+object, and `(s:has-key "c" counter)`, `(s:of counter)` and `s:validate`
+accept it as a type. Only fields with a getter can be given; a left-out
+field whose check refuses `()` fails with `failed-constraint`, as a missing
+`s:has-key` field does. A Lisp/Go parity test runs the same cases on a Lisp
+type and on the same Go type (`parity_test.go`).
 
 Lint checks: `record-set-outside-method`, `record-type-binding`,
 `record-field-mutation`, `record-unknown-member`, `record-check-writes`,

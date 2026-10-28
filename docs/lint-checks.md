@@ -523,23 +523,23 @@ call.
 
 ### `record-set-outside-method`
 
-**Flags `s:set!` outside a method of a record type.** (Severity: warning)
+**Flags `s:set-field!` outside a method of a record type.** (Severity: warning)
 
 A record type's methods are the one place that changes its objects
-(luthersystems/elps#895). `s:set!` checks the new value against the
+(luthersystems/elps#895). `s:set-field!` checks the new value against the
 field's validator only. The type's `:check` function runs when a method
 call returns, so a change from outside a method skips it.
 
 ```lisp
 ;; WARNING: changes the order from outside its type
-(defun pay (o) (s:set! o 'status "paid"))
+(defun pay (o) (s:set-field! o 'status "paid"))
 
 ;; GOOD: the type changes its own field
-(s:defmethod order pay (o) (s:set! o 'status "paid"))
+(s:defmethod order pay (o) (s:set-field! o 'status "paid"))
 (o 'pay)
 ```
 
-A lambda inside a method body is part of the method, so `s:set! o` in
+A lambda inside a method body is part of the method, so `s:set-field! o` in
 it is not reported.
 
 ### `record-type-binding`
@@ -579,8 +579,8 @@ changes the field, and the field's validator does not run.
 ;; WARNING: the lines validator does not see the new line
 (s:method add-line (o sku qty) (assoc! (o 'lines) sku qty))
 
-;; GOOD: s:set! checks the new map
-(s:method add-line (o sku qty) (s:set! o 'lines (assoc (o 'lines) sku qty)))
+;; GOOD: s:set-field! checks the new map
+(s:method add-line (o sku qty) (s:set-field! o 'lines (assoc (o 'lines) sku qty)))
 ```
 
 The check sees only a direct `(o 'field)` argument, where `o` is the receiver. It does not follow
@@ -593,13 +593,13 @@ warning)
 
 In a method,
 `(o 'name)` must name a field or a method of the type, and
-`(s:set! o 'name ...)` must name a field, where `o` is the method's
+`(s:set-field! o 'name ...)` must name a field, where `o` is the method's
 receiver. A wrong name fails only when
 the method runs.
 
 ```lisp
 ;; WARNING: lnies is not a field
-(s:method add (o sku n) (s:set! o 'lnies (assoc (o 'lines) sku n)))
+(s:method add (o sku n) (s:set-field! o 'lnies (assoc (o 'lines) sku n)))
 ```
 
 The check reads the fields and methods from the type's `s:make-record`
@@ -619,12 +619,12 @@ read the object. To refuse a change, raise an error.
 
 ```lisp
 ;; WARNING: :check changes a field
-:check (lambda (c) (s:set! c 'n 0))
+:check (lambda (c) (s:set-field! c 'n 0))
 ;; WARNING: assoc! changes the field in place
 :check (lambda (c) (assoc! (c 'seen) "k" 1))
 ```
 
-An `s:set!` in `:check` gets this warning, not `record-set-outside-method`.
+An `s:set-field!` in `:check` gets this warning, not `record-set-outside-method`.
 
 ### `record-method-arity`
 
@@ -633,7 +633,7 @@ An `s:set!` in `:check` gets this warning, not `record-set-outside-method`.
 
 In a method, `(o 'field)` takes no arguments, and `(o 'method args...)`
 takes the arguments the method's formals accept after the receiver. A
-wrong count fails only when the method runs.
+wrong count fails only when the method runs. A typed formal, `[name type]`, counts as its name.
 
 ```lisp
 (s:method add (o sku qty) ...)
@@ -668,14 +668,77 @@ A name bound in another file is not checked.
 
 The receiver is a local name. `(set! o v)` changes the binding, not the
 object, and `(set 'o v)` binds a package name. `(set! o 'field v)` is not a
-field write. Use `s:set!` to change a field.
+field write. Use `s:set-field!` to change a field.
 
 ```lisp
 ;; WARNING: set! does not change a record field
 (s:method pay (o) (set! o 'paid true))
 ;; OK
-(s:method pay (o) (s:set! o 'paid true))
+(s:method pay (o) (s:set-field! o 'paid true))
 ```
+
+### `schema-type-union`
+
+**Flags a type next to a constraint on the same type in `s:has-key`,
+`s:may-have-key` or `s:of`.** (Severity: warning)
+
+The allowed types are OR'ed: a value passes when it matches one of them. So
+a base type next to a constraint on that type accepts every value of the
+type, and the constraint never refuses one. `s:any` next to any other type
+is flagged too. A real union of types, `(s:has-key "n" s:int s:string)`, is
+not flagged.
+
+```lisp
+;; WARNING: every string passes, "nope" too
+(s:has-key "email" s:string (s:regexp "@"))
+;; OK: both must pass
+(s:has-key "email" (s:make-validator "email" s:string (s:regexp "@")))
+```
+
+### `match-unreachable`
+
+**Flags a `match` clause after a clause that matches every value.**
+(Severity: warning)
+
+`match` tries its clauses in order. A pattern of `_` or a bare name, with
+no `:when` guard, matches every value, so the clauses after it never run.
+
+```lisp
+;; WARNING: (2 'two) never runs
+(match v
+  (x 'any)
+  (2 'two))
+;; OK: the catch-all is last
+(match v
+  (2 'two)
+  (x 'any))
+```
+
+### `use-package-hides-lisp`
+
+**Warns when a `use-package` hides `lisp` names, and at each call that then
+misses the core form.** (Severity: warning)
+
+`use-package` copies the package's exports over the caller's bindings. After
+`(use-package 's)`, `not`, `when`, `list`, `error` and `sorted-map` are the
+`s` exports, so `(not x)` calls the constraint `s:not` (elps#903). The check
+reports the `use-package` once, naming the hidden names, and each later
+unqualified call to one of them in the same package.
+
+```lisp
+;; WARNING: use-package 's hides lisp names: error, list, not, sorted-map, when
+(use-package 's)
+;; WARNING: not here is s:not
+(if (not ok) 1 2)
+
+;; GOOD: use the package qualified
+(s:validate v (s:not s:nil))
+(if (not ok) 1 2)
+```
+
+Only standard library packages are known. A name the file defines itself is
+left to [`builtin-shadowing`](#builtin-shadowing). Quoted data and
+quasiquote templates are not calls.
 
 ### `with-cleanup-forms`
 

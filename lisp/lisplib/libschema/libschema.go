@@ -87,6 +87,9 @@ func LoadPackage(env *lisp.LEnv) *lisp.LVal {
 	env.SetPackageDoc(`Schema validation: define typed validators with constraints and
 		check values against them at runtime. Validators compose to
 		describe complex data structures.`)
+	if err := lisp.SetMatchTypes(env.Runtime, matchIs, matchField); err != nil {
+		return env.Error(err)
+	}
 	for _, fn := range builtins {
 		env.AddBuiltins(true, fn)
 	}
@@ -363,6 +366,8 @@ func getHandler(env *lisp.LEnv, in *lisp.LVal, name string, constraints []*lisp.
 		if t, ok := lispTypeOf(in); ok {
 			// A record type checks its objects (luthersystems/elps#895).
 			in = recordValidator(env, in, t.desc)
+		} else if t := goTypeValueOf(in); t != nil {
+			in = goTypeValidator(env, t)
 		}
 		if in.Type == lisp.LFun {
 			// The choke point. Every composite constraint (s:has-key,
@@ -560,6 +565,9 @@ func applyConstraint(env *lisp.LEnv, constraint *lisp.LVal, input *lisp.LVal) *l
 	}
 	if t, ok := lispTypeOf(constraint); ok {
 		return validateRecordValue(env, t.desc, t.caps, input)
+	}
+	if t := goTypeValueOf(constraint); t != nil {
+		return validateGoValue(env, t, input)
 	}
 	if !isValidator(constraint) {
 		return env.ErrorConditionf(BadArgs,

@@ -9,7 +9,9 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/internal/lambdalist"
+	"github.com/luthersystems/elps/internal/templatepolicy"
 	"github.com/luthersystems/elps/lisp"
 )
 
@@ -18,7 +20,8 @@ import (
 // An interface names a set of methods, as a Go interface does.  A value
 // satisfies it when it is a record object, of a Lisp or a Go type, whose
 // type has each method, and each method accepts every call the interface
-// allows.  The check is structural: the type does not declare the
+// allows.  A field (with a getter, for a Go type) counts as a method
+// that takes no arguments.  The check is structural: the type does not declare the
 // interface, and a method that s:defmethod adds later counts.
 //
 // An interface is a schema validator, so it is the type of a field, an
@@ -28,7 +31,10 @@ import (
 // InterfaceMethod is one method of an interface.
 type InterfaceMethod struct {
 	// Formals are the method's formals after the receiver, as lisp.Formals
-	// builds them.  &optional, &rest and &key are allowed.  Nil is ().
+	// builds them.  &optional, &rest and &key are allowed.  Nil is ().  A
+	// formal may be a typed formal, (name type) as [name type] reads: the
+	// type is not evaluated and not part of the match; it documents the
+	// method for readers and lint.
 	Formals *lisp.LVal
 	// Name is the op that calls the method.
 	Name string
@@ -40,6 +46,11 @@ type InterfaceSpec struct {
 	Name string
 	// Methods are the methods a value must have.
 	Methods []InterfaceMethod
+	// Embed are interfaces whose methods this one has too, as a Go
+	// interface embeds one.  Their methods come first, in Embed order,
+	// then Methods.  A name may come from more than one place only with
+	// the same arity; a different arity is an error.
+	Embed []*Interface
 }
 
 // Interface is a set of methods that a record object must have.  It is
@@ -188,6 +199,17 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		return nil, errors.New("libschema: an interface needs a Name")
 	}
 	in := &Interface{name: spec.Name, methods: make([]ifaceMethod, 0, len(spec.Methods))}
+	from := make(map[string]string) // method name to the interface it came from
+	for i, e := range spec.Embed {
+		if e == nil {
+			return nil, fmt.Errorf("libschema: interface %s: Embed[%d] is nil", spec.Name, i)
+		}
+		for _, m := range e.methods {
+			if err := in.addEmbedded(m, e.name, from); err != nil {
+				return nil, err
+			}
+		}
+	}
 	seen := make(map[string]bool, len(spec.Methods))
 	for i, m := range spec.Methods {
 		if m.Name == "" || m.Name[0] == ':' || m.Name[0] == '&' {
@@ -201,21 +223,75 @@ func NewInterface(spec InterfaceSpec) (*Interface, error) {
 		if formals == nil {
 			formals = lisp.Formals()
 		}
+		text := formalsText(formals)
+		formals = untypedFormals(formals)
 		if err := checkFormals(formals); err != nil {
 			return nil, fmt.Errorf("libschema: interface %s: method %s: %w", spec.Name, m.Name, err)
 		}
-		in.methods = append(in.methods, ifaceMethod{name: m.Name, formals: formalsText(formals), arity: arityOf(formals)})
+		if err := in.addEmbedded(ifaceMethod{name: m.Name, formals: text, arity: arityOf(formals)}, spec.Name, from); err != nil {
+			return nil, err
+		}
 	}
 	return in, nil
 }
 
-// formalsText writes formals, a list of symbols, as "(a &optional b)".
+// addEmbedded adds m, which comes from the interface src, unless in has a
+// method of that name already.  The two must then have the same arity.
+func (in *Interface) addEmbedded(m ifaceMethod, src string, from map[string]string) error {
+	i := slices.IndexFunc(in.methods, func(h ifaceMethod) bool { return h.name == m.name })
+	if i < 0 {
+		in.methods = append(in.methods, m)
+		from[m.name] = src
+		return nil
+	}
+	if !in.methods[i].equal(m.arity) {
+		return fmt.Errorf("libschema: interface %s: method %s takes %v in %s and %v in %s",
+			in.name, m.name, in.methods[i].arity, from[m.name], m.arity, src)
+	}
+	return nil
+}
+
+// equal reports whether a and b accept the same calls.
+func (a arity) equal(b arity) bool {
+	return a.min == b.min && a.max == b.max && a.none == b.none && slices.Equal(a.keys, b.keys)
+}
+
+// formalsText writes formals as "(a &optional [b s:string])".
 func formalsText(formals *lisp.LVal) string {
+	if formals.Type != lisp.LSExpr {
+		return formals.String()
+	}
 	names := make([]string, len(formals.Cells))
 	for i, p := range formals.Cells {
-		names[i] = p.Str
+		if isTypedFormal(p) {
+			names[i] = "[" + p.Cells[0].Str + " " + p.Cells[1].String() + "]"
+			continue
+		}
+		names[i] = p.String()
 	}
 	return "(" + strings.Join(names, " ") + ")"
+}
+
+// isTypedFormal reports whether p is a typed formal, [name type] (#905).
+func isTypedFormal(p *lisp.LVal) bool {
+	return p.Type == lisp.LSExpr && len(p.Cells) == 2 && p.Cells[0].Type == lisp.LSymbol
+}
+
+// untypedFormals returns formals with each typed formal replaced by its
+// name.  An interface matches on names and arity only: its types are a
+// contract for the reader and for lint, not part of the match (#905).
+func untypedFormals(formals *lisp.LVal) *lisp.LVal {
+	if formals.Type != lisp.LSExpr || !slices.ContainsFunc(formals.Cells, isTypedFormal) {
+		return formals
+	}
+	plain := make([]*lisp.LVal, len(formals.Cells))
+	for i, p := range formals.Cells {
+		if isTypedFormal(p) {
+			p = p.Cells[0]
+		}
+		plain[i] = p
+	}
+	return lisp.SExpr(plain)
 }
 
 // Name returns the interface's name.
@@ -227,31 +303,26 @@ func (in *Interface) Satisfies(v *lisp.LVal) error {
 	return satisfies(in.name, in.methods, v)
 }
 
-// Validator returns the interface as a schema validator for env.  Its
-// captures hold the interface as Lisp data, so a fork of a template gets
-// its own copy.
+// ifaceTag carries an interface in the captures of its validator.  An
+// Interface never changes, so every fork of a template shares it.  Its Go
+// type marks the validator: Lisp code cannot build a native payload.
+type ifaceTag struct {
+	templatepolicy.Marker
+	in *Interface //elpsvet:allow-marker an Interface is immutable after NewInterface
+}
+
+var _ templatepolicy.Immutable = ifaceTag{}
+
+// TransientNative marks ifaceTag as never saved: an interface is never
+// saved.
+func (ifaceTag) TransientNative() {}
+
+// Validator returns the interface as a schema validator for env.
 func (in *Interface) Validator(env *lisp.LEnv) *lisp.LVal {
-	ms := make([]*lisp.LVal, len(in.methods))
-	for i, m := range in.methods {
-		keys := make([]*lisp.LVal, len(m.keys))
-		for j, k := range m.keys {
-			keys[j] = lisp.String(k)
-		}
-		ms[i] = lisp.Cells{lisp.String(m.name), lisp.Int(m.min), lisp.Int(m.max), lisp.QExpr(keys)}.List()
-	}
-	caps := lisp.Cells{lisp.String(in.name), lisp.QExpr(ms)}.List()
+	caps := lisp.Cells{lisp.Native(ifaceTag{in: in})}.List()
 	v := newCapturedValidator(env, lisp.Formals("input"), caps, func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
-		name := captures.Cells[0].Str
-		cells := captures.Cells[1].Cells
-		methods := make([]ifaceMethod, len(cells))
-		for i, c := range cells {
-			var keys []string
-			for _, k := range c.Cells[3].Cells {
-				keys = append(keys, k.Str)
-			}
-			methods[i] = ifaceMethod{name: c.Cells[0].Str, arity: arity{keys: keys, min: c.Cells[1].Int, max: c.Cells[2].Int}}
-		}
-		if err := satisfies(name, methods, input); err != nil {
+		tag, _ := lisp.NativeValue[ifaceTag](captures.Cells[0])
+		if err := tag.in.Satisfies(input); err != nil {
 			return env.ErrorConditionf(WrongType, "%v", err)
 		}
 		return lisp.Nil()
@@ -263,15 +334,40 @@ func (in *Interface) Validator(env *lisp.LEnv) *lisp.LVal {
 	return describeAs(v, &schemaDesc{op: "interface", name: in.name, values: sigs})
 }
 
+// interfaceOf returns the interface whose validator is v, or nil.
+func interfaceOf(v *lisp.LVal) *Interface {
+	if !isValidator(v) {
+		return nil
+	}
+	caps := funraw.Captures(v)
+	if caps == nil || len(caps.Cells) != 1 {
+		return nil
+	}
+	tag, ok := lisp.NativeValue[ifaceTag](caps.Cells[0])
+	if !ok {
+		return nil
+	}
+	return tag.in
+}
+
 // satisfies is Interface.Satisfies over an interface's parts.
 func satisfies(name string, methods []ifaceMethod, v *lisp.LVal) error {
 	have, ok := methodArities(v)
 	if !ok {
 		return fmt.Errorf("Input is not a record object, so it is not a %s", name)
 	}
+	return matchMethods(name, methods, have, true)
+}
+
+// matchMethods checks the methods have looks up against an interface's
+// methods.  A method that is missing is an error only when all is true.
+func matchMethods(name string, methods []ifaceMethod, have func(string) (arity, bool), all bool) error {
 	for _, m := range methods {
 		a, ok := have(m.name)
 		if !ok {
+			if !all {
+				continue
+			}
 			return fmt.Errorf("Input is not a %s: it has no method %s", name, m.name)
 		}
 		if !a.accepts(m.arity) {
@@ -285,25 +381,67 @@ func satisfies(name string, methods []ifaceMethod, v *lisp.LVal) error {
 // arities, and false when v is not a record object.
 func methodArities(v *lisp.LVal) (func(string) (arity, bool), bool) {
 	if o, ok := lispObjectOf(v); ok {
-		methods := o.caps.Cells[typeMethods].Map()
-		return func(name string) (arity, bool) {
-			m, ok := methods.Get(lisp.String(name))
-			if !ok || m.Type != lisp.LFun {
-				return arity{}, false
-			}
-			return lispMethodArity(m), true
-		}, true
+		return lispTypeArities(o.caps), true
 	}
 	if t := goObjectType(v); t != nil {
-		return func(name string) (arity, bool) {
-			if t.methods[name] == nil {
-				return arity{}, false
-			}
-			return t.arity[name], true
-		}, true
+		return t.methodArity, true
 	}
 	return nil, false
 }
+
+// fieldArity is the arity of a field read as a method: (obj 'field) takes
+// no arguments.  A field satisfies an interface method that takes none.
+var fieldArity = arity{}
+
+// methodArity looks up the arity of a method of t.  A field with a getter
+// counts as a method that takes no arguments.
+func (t *RecordType) methodArity(name string) (arity, bool) {
+	if t.methods[name] == nil {
+		if i, ok := t.index[name]; ok && t.spec.Fields[i].Getter {
+			return fieldArity, true
+		}
+		return arity{}, false
+	}
+	return t.arity[name], true
+}
+
+// lispTypeArities returns a lookup of the arities of the methods of the
+// Lisp type with captures tcaps.  Each arity was stored when its method
+// was added, so a lookup parses nothing.  A field counts as a method that
+// takes no arguments.
+func lispTypeArities(tcaps *lisp.LVal) func(string) (arity, bool) {
+	desc := mustTag(tcaps)
+	return func(name string) (arity, bool) {
+		if a, ok := storedArity(tcaps, name); ok {
+			return a, true
+		}
+		return fieldArity, desc.hasField(name)
+	}
+}
+
+// storedArity returns the arity stored for the method name of the Lisp
+// type with captures tcaps.
+func storedArity(tcaps *lisp.LVal, name string) (arity, bool) {
+	v, ok := tcaps.Cells[typeArities].Map().Get(lisp.String(name))
+	if !ok {
+		return arity{}, false
+	}
+	tag, _ := lisp.NativeValue[arityTag](v)
+	return tag.a, true
+}
+
+// arityTag carries a Lisp method's arity in its type's captures.  It is
+// built when the method is added and never written after.
+type arityTag struct {
+	templatepolicy.Marker
+	a arity //elpsvet:allow-marker built when the method is added and never written after
+}
+
+var _ templatepolicy.Immutable = arityTag{}
+
+// TransientNative marks arityTag as never saved: a type's captures are
+// never saved.
+func (arityTag) TransientNative() {}
 
 // lispMethodArity returns the arity of a Lisp method after its receiver,
 // the first argument.

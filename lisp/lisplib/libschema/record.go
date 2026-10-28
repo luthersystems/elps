@@ -36,6 +36,14 @@ import (
 //	typeMethods  a sorted map from method name (a string) to function
 //	typeCheck    the :check function, or ()
 //	typeSelf     the type value itself, which each object it builds holds
+//	typeSigs     a sorted map from the name of each typed method to its
+//	             signature (lispMethodSig)
+//	typeArities  a sorted map from method name to its arity (arityTag),
+//	             stored when the method is added
+//	typeImpls    the interfaces of :implements, a list of validators
+//	typeImplOK   true once the type has every method of each interface:
+//	             checked at the first construction, as s:defmethod may
+//	             still add a method after s:make-record
 //
 // An object's captures are (type fields state): the type value, a sorted map
 // from field name (a string) to value, and the call state (objState).  A
@@ -47,6 +55,10 @@ const (
 	typeMethods
 	typeCheck
 	typeSelf
+	typeSigs
+	typeArities
+	typeImpls
+	typeImplOK
 	typeCells
 )
 
@@ -54,7 +66,7 @@ const (
 	objType = iota
 	objFields
 	// objState is nil while no method or :check runs on the object.
-	// While one runs it is true, and the first s:set! replaces it with
+	// While one runs it is true, and the first s:set-field! replaces it with
 	// the field map as it was before the outermost call, which a failed
 	// call puts back.
 	objState
@@ -199,7 +211,20 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 		return env.ErrorCondition(UnknownOperation, op)
 	}
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
-		return callLispMethod(env, caps, m, rest)
+		// The call's shape is checked in Go, as for a Go method, so a
+		// bad call is bad-arguments with no receiver in the count.
+		a, _ := storedArity(tcaps, op.Str)
+		if msg := a.checkCall(rest); msg != "" {
+			return env.ErrorConditionf(BadArgs, "%s: method %s %s", desc.display, op.Str, msg)
+		}
+		call := lispCall{fn: m, who: methodWho{display: desc.display, method: op.Str}, args: rest}
+		if sig, typed := tcaps.Cells[typeSigs].Map().Get(lisp.String(op.Str)); typed {
+			if lerr := checkLispArgs(env, call.who, sig, rest); lerr != nil {
+				return lerr
+			}
+			call.sig = sig
+		}
+		return callLispMethod(env, caps, call)
 	}
 	if desc.hasField(op.Str) {
 		if len(rest) > 0 {
@@ -214,7 +239,29 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	return env.ErrorCondition(UnknownOperation, op)
 }
 
-// callLispMethod calls the method m on the object over caps, whose type
+// lispCall is a call of a Lisp method whose arguments evalLispObject has
+// checked: the method, its signature (or nil) and the arguments after the
+// receiver.
+type lispCall struct {
+	fn, sig *lisp.LVal
+	who     methodWho
+	args    []*lisp.LVal
+}
+
+// run calls the method with args, the receiver first, and checks the value
+// it returns against its :returns type.
+func (c lispCall) run(env *lisp.LEnv, args []*lisp.LVal) *lisp.LVal {
+	r := env.FunCall(c.fn, lisp.QExpr(args))
+	if r.IsError() || c.sig == nil {
+		return r
+	}
+	if lerr := checkLispReturn(env, c.who, c.sig, r); lerr != nil {
+		return lerr
+	}
+	return r
+}
+
+// callLispMethod calls the method c on the object over caps, whose type
 // evalLispObject has checked.
 //
 // A method may change several fields.  :check runs when the outermost
@@ -225,20 +272,20 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 // breaks :check, leaves the fields as they were before the outermost
 // call: every header of the object reads its fields through caps, so
 // putting the saved map back restores them all.
-func callLispMethod(env *lisp.LEnv, caps, m *lisp.LVal, rest []*lisp.LVal) *lisp.LVal {
+func callLispMethod(env *lisp.LEnv, caps *lisp.LVal, c lispCall) *lisp.LVal {
 	t, _ := lispTypeOf(caps.Cells[objType])
 	recv := newLispObject(t.desc, caps)
-	call := make([]*lisp.LVal, 0, len(rest)+1)
-	call = append(call, recv)
-	call = append(call, rest...)
+	args := make([]*lisp.LVal, 0, len(c.args)+1)
+	args = append(args, recv)
+	args = append(args, c.args...)
 	if !caps.Cells[objState].IsNil() {
-		return env.FunCall(m, lisp.QExpr(call))
+		return c.run(env, args)
 	}
 	caps.Cells[objState] = lisp.Bool(true) //elps:mutates marks the object's own call state
 	defer func() {
 		caps.Cells[objState] = lisp.Nil() //elps:mutates clears the object's own call state
 	}()
-	r := env.FunCall(m, lisp.QExpr(call))
+	r := c.run(env, args)
 	if !r.IsError() {
 		if lerr := runRecordCheck(env, t.desc, t.caps, recv); lerr != nil {
 			r = lerr
@@ -253,9 +300,12 @@ func callLispMethod(env *lisp.LEnv, caps, m *lisp.LVal, rest []*lisp.LVal) *lisp
 // evalLispType runs (type :field value ...) or (type field-map).
 func evalLispType(env *lisp.LEnv, args, tcaps *lisp.LVal) *lisp.LVal {
 	desc := mustTag(tcaps)
-	fields := constructorFields(env, desc, args.Cells)
+	fields := constructorFields(env, desc.display, args.Cells)
 	if fields.IsError() {
 		return fields
+	}
+	if lerr := checkImplementsAll(env, desc, tcaps); lerr != nil {
+		return lerr
 	}
 	if lerr := validateLispFields(env, desc, tcaps, fields); lerr != nil {
 		return lerr
@@ -278,22 +328,22 @@ func mustTag(tcaps *lisp.LVal) *recordDesc {
 // arguments: one sorted map, or keyword and value pairs.  The map is new,
 // so the object owns it: a caller's later change to its map does not
 // change the object.
-func constructorFields(env *lisp.LEnv, desc *recordDesc, args []*lisp.LVal) *lisp.LVal {
+func constructorFields(env *lisp.LEnv, display string, args []*lisp.LVal) *lisp.LVal {
 	if len(args) == 1 && args[0].Type == lisp.LSortMap {
 		return copyMap(env, args[0])
 	}
 	if len(args)%2 != 0 {
-		return env.ErrorConditionf(BadArgs, "%s: give one field map, or keyword and value pairs", desc.display)
+		return env.ErrorConditionf(BadArgs, "%s: give one field map, or keyword and value pairs", display)
 	}
 	fields := lisp.SortedMapSized(len(args) / 2)
 	for i := 0; i < len(args); i += 2 {
 		k := args[i]
 		if k.Type != lisp.LSymbol || len(k.Str) < 2 || k.Str[0] != ':' {
-			return env.ErrorConditionf(BadArgs, "%s: argument %d is not a keyword: %v", desc.display, i+1, k)
+			return env.ErrorConditionf(BadArgs, "%s: argument %d is not a keyword: %v", display, i+1, k)
 		}
 		key := lisp.String(k.Str[1:])
 		if _, dup := fields.Map().Get(key); dup {
-			return env.ErrorConditionf(BadArgs, "%s: field %s given twice", desc.display, k.Str[1:])
+			return env.ErrorConditionf(BadArgs, "%s: field %s given twice", display, k.Str[1:])
 		}
 		if lerr := fields.Map().Set(key, args[i+1]); lerr.IsError() {
 			return lerr
@@ -401,7 +451,7 @@ func fieldValidator(desc *recordDesc, tcaps *lisp.LVal, name string) *lisp.LVal 
 	return tcaps.Cells[typeFields].Cells[i]
 }
 
-// builtinRecordSet is s:set!.  It checks the field's validator, then
+// builtinRecordSet is s:set-field!.  It checks the field's validator, then
 // replaces the field's value in the object.
 func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	obj, field, value := args.Cells[0], args.Cells[1], args.Cells[2]
@@ -409,16 +459,16 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	desc, tcaps, fields := o.desc, o.caps, o.fields
 	if !ok {
 		if goObjectType(obj) != nil {
-			return env.ErrorConditionf(BadArgs, "s:set!: %v is a record type defined in Go; use its methods to change it", obj)
+			return env.ErrorConditionf(BadArgs, "s:set-field!: %v is a record type defined in Go; use its methods to change it", obj)
 		}
-		return env.ErrorConditionf(BadArgs, "s:set!: first argument is not a record object: %v", obj)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: first argument is not a record object: %v", obj)
 	}
 	name, ok := fieldName(field)
 	if !ok {
-		return env.ErrorConditionf(BadArgs, "s:set!: field must be a symbol or a string: %v", field)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: field must be a symbol or a string: %v", field)
 	}
 	if !desc.hasField(name) {
-		return env.ErrorConditionf(BadArgs, "s:set!: %s has no field %s", desc.display, name)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: %s has no field %s", desc.display, name)
 	}
 	key := lisp.String(name)
 	if v := fieldValidator(desc, tcaps, name); v != nil {
@@ -437,7 +487,7 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 		caps.Cells[objState] = saved //elps:mutates saves the object's own fields before the first write of a call
 	}
-	if lerr := fields.Map().Set(key, value); lerr.IsError() { //elps:mutates s:set! writes the object's own field map, which its constructor copied
+	if lerr := fields.Map().Set(key, value); lerr.IsError() { //elps:mutates s:set-field! writes the object's own field map, which its constructor copied
 		return lerr
 	}
 	return value
@@ -493,7 +543,7 @@ func recordValidator(env *lisp.LEnv, t *lisp.LVal, desc *recordDesc) *lisp.LVal 
 	v := newCapturedValidator(env, lisp.Formals("input"), lisp.Cells{t}.List(), func(env *lisp.LEnv, input, captures *lisp.LVal) *lisp.LVal {
 		return applyConstraint(env, captures.Cells[0], input)
 	})
-	return describeAs(v, &schemaDesc{op: "record", name: desc.display})
+	return describeAs(v, &schemaDesc{op: "record", name: desc.display, rec: recordRef{lisp: desc}})
 }
 
 // loadLispObject is RecordCodec's Load.  It runs no Lisp: it checks that

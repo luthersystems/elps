@@ -16,25 +16,25 @@ const recordOrder = `(set 'order
   (s:make-record "order"
     (s:has-key "lines" s:sorted-map)
     (s:method add (o sku n)
-      (s:set! o 'lines (assoc (o 'lines) sku n)))))
+      (s:set-field! o 'lines (assoc (o 'lines) sku n)))))
 `
 
 func TestRecordSetOutsideMethod(t *testing.T) {
 	diags := lintCheck(t, AnalyzerRecordSetOutsideMethod, recordOrder+`
-(defun bump (o) (s:set! o 'lines (sorted-map)))`)
+(defun bump (o) (s:set-field! o 'lines (sorted-map)))`)
 	assert.Len(t, diags, 1)
-	assertDiagOnLine(t, diags, 7, "s:set! outside a method")
+	assertDiagOnLine(t, diags, 7, "s:set-field! outside a method")
 
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, recordOrder))
 	// A lambda in a method still sees the receiver.
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, recordOrder+`
-(s:defmethod order clear (o) (map () (lambda (k) (s:set! o 'lines (sorted-map))) '(1)))`))
+(s:defmethod order clear (o) (map () (lambda (k) (s:set-field! o 'lines (sorted-map))) '(1)))`))
 	// Quoted data is not code.
-	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, `(set 'x '(s:set! o 'a 1))`))
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, `(set 'x '(s:set-field! o 'a 1))`))
 	// A let binding's value is code.
-	assertHasDiag(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, `(let ([x (s:set! o 'a 1)]) x)`), "s:set! outside")
+	assertHasDiag(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, `(let ([x (s:set-field! o 'a 1)]) x)`), "s:set-field! outside")
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod,
-		`(defun bump (o) (s:set! o 'lines 1)) ; nolint:record-set-outside-method`))
+		`(defun bump (o) (s:set-field! o 'lines 1)) ; nolint:record-set-outside-method`))
 }
 
 func TestRecordTypeBinding(t *testing.T) {
@@ -89,16 +89,21 @@ func TestRecordWorkspaceNames(t *testing.T) {
   (s:make-record "order"
     (s:has-key "lines" s:sorted-map)
     (s:method add (o sku n)
-      (s:set! o 'lines (assoc (o 'lines) sku n)))
+      (s:set-field! o 'lines (assoc (o 'lines) sku n)))
     (s:method zero (_o) 0)))
 (s:defmethod order size (o) (length (keys (o 'lines))))
 (s:defmethod order bad (_o x) (+ x missing))
+(set 'sized (s:make-interface "sized" (size ())))
+(set 'both (s:make-interface "both" :embed (sized nope) (pay (amount))))
 `), 0o600))
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerUndefinedSymbol, AnalyzerUnusedVariable}}
 	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{file})
 	require.NoError(t, err)
-	require.Len(t, diags, 1, "%v", diags)
+	require.Len(t, diags, 2, "%v", diags)
 	assertDiagOnLine(t, diags, 9, "undefined symbol: missing")
+	// :embed names are evaluated, so an unknown one is undefined; the
+	// method specs are data.
+	assertDiagOnLine(t, diags, 11, "undefined symbol: nope")
 }
 
 // TestRecordWorkspaceNamesWithStdlibExports lints with precomputed stdlib
@@ -123,15 +128,15 @@ func TestRecordUnknownMember(t *testing.T) {
 	diags := lintCheck(t, AnalyzerRecordUnknownMember, `(set 'order
   (s:make-record "order"
     (s:has-key "lines" s:sorted-map)
-    (s:method add (o sku n) (s:set! o 'lnies (assoc (o 'lines) sku n)))
+    (s:method add (o sku n) (s:set-field! o 'lnies (assoc (o 'lines) sku n)))
     (s:method size (o) (length (o 'lines)))
     (s:method twice (o) (* 2 (o 'szie)))))
 (s:defmethod order count (o) (o 'size))
-(s:defmethod order clear (o) (s:set! o 'size 0))`)
+(s:defmethod order clear (o) (s:set-field! o 'size 0))`)
 	assert.Len(t, diags, 3, "%v", diags)
-	assertDiagOnLine(t, diags, 4, "s:set! names lnies, which is not a field")
+	assertDiagOnLine(t, diags, 4, "s:set-field! names lnies, which is not a field")
 	assertDiagOnLine(t, diags, 6, "szie is not a field or method")
-	assertDiagOnLine(t, diags, 8, "s:set! names size, which is not a field")
+	assertDiagOnLine(t, diags, 8, "s:set-field! names size, which is not a field")
 
 	// The check follows the receiver the method names.
 	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordUnknownMember, recordOrder+`
@@ -146,6 +151,11 @@ func TestRecordUnknownMember(t *testing.T) {
 (set 'r (s:make-record "r" f (s:method m (o) (o 'b))))`))
 	// A type from another file: the shape is unknown.
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordUnknownMember, `(s:defmethod other m (o) (o 'whatever))`))
+	// :implements and its list are an option, not a field form, so the
+	// shape stays known.
+	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordUnknownMember, `(set 'p (s:make-interface "p" (n ())))
+(set 'r (s:make-record "r" :implements (p) (s:has-key "a" s:int)
+  (s:method n (o) (o 'b))))`), 3, "b is not a field or method")
 }
 
 func TestRecordCheckWrites(t *testing.T) {
@@ -154,14 +164,14 @@ func TestRecordCheckWrites(t *testing.T) {
     (s:has-key "n" s:int)
     (s:has-key "seen" s:sorted-map)
     :check (lambda (c)
-             (s:set! c 'n 0)
+             (s:set-field! c 'n 0)
              (assoc! (c 'seen) "k" 1)
              (when (< (c 'n) 0) (error 'negative (c 'n))))))`
 	diags := lintCheck(t, AnalyzerRecordCheckWrites, src)
 	assert.Len(t, diags, 2, "%v", diags)
-	assertDiagOnLine(t, diags, 6, "s:set! in a :check function")
+	assertDiagOnLine(t, diags, 6, "s:set-field! in a :check function")
 	assertDiagOnLine(t, diags, 7, "assoc! changes field seen in a :check function")
-	// The s:set! is reported once, not also as outside a method.
+	// The s:set-field! is reported once, not also as outside a method.
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordSetOutsideMethod, src))
 
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordCheckWrites, `(set 'counter
@@ -173,7 +183,7 @@ func TestRecordMethodArity(t *testing.T) {
 	src := `(set 'order
   (s:make-record "order"
     (s:has-key "total" s:int)
-    (s:method add (o n &optional note) (s:set! o 'total (+ (o 'total) n)))
+    (s:method add (o n &optional note) (s:set-field! o 'total (+ (o 'total) n)))
     (s:method all (o &rest ns) (o 'total))
     (s:method twice (o) (o 'add 1 2 3) (o 'add) (o 'total 1) (o 'all 1 2 3) (o 'add 1 "x"))))
 (s:defmethod order pay (o amount) (o 'pay) (o 'pay 1))`
@@ -183,6 +193,22 @@ func TestRecordMethodArity(t *testing.T) {
 	assertDiagOnLine(t, diags, 6, "method add needs at least 1 argument(s), got 0")
 	assertDiagOnLine(t, diags, 6, "field total takes no arguments, got 1")
 	assertDiagOnLine(t, diags, 7, "method pay needs at least 1 argument(s), got 0")
+}
+
+// TestRecordMethodArityTyped reads typed formals, [name type] (#905), as
+// their names.
+func TestRecordMethodArityTyped(t *testing.T) {
+	src := `(set 'acct
+  (s:make-record "acct"
+    (s:has-key "bal" s:int)
+    (s:method dep (o [amount s:int] &optional [memo s:string]) amount)
+    (s:method bad (o) (o 'dep 1 2 3) (o 'dep) (o 'dep 1 "m"))))
+(s:defmethod acct w (o [amt s:int]) (o 'w) (o 'w 1))`
+	diags := lintCheck(t, AnalyzerRecordMethodArity, src)
+	assert.Len(t, diags, 3, "%v", diags)
+	assertDiagOnLine(t, diags, 5, "method dep accepts at most 2 argument(s), got 3")
+	assertDiagOnLine(t, diags, 5, "method dep needs at least 1 argument(s), got 0")
+	assertDiagOnLine(t, diags, 6, "method w needs at least 1 argument(s), got 0")
 }
 
 func TestRecordDefmethodType(t *testing.T) {
@@ -208,9 +234,9 @@ func TestRecordPlainSet(t *testing.T) {
 	src := `(set 'order
   (s:make-record "order"
     (s:has-key "n" s:int)
-    (s:method reset (o) (set! o 0) (set 'o 1) (s:set! o 'n 0))
+    (s:method reset (o) (set! o 0) (set 'o 1) (s:set-field! o 'n 0))
     (s:method bump (o) (lisp:set! o 'n 1) nil)))
-(s:defmethod order other (o x) (set! x 1) (s:set! o 'n x))`
+(s:defmethod order other (o x) (set! x 1) (s:set-field! o 'n x))`
 	diags := lintCheck(t, AnalyzerRecordPlainSet, src)
 	assert.Len(t, diags, 3, "%v", diags)
 	assertDiagOnLine(t, diags, 4, "set! rebinds the local name o")

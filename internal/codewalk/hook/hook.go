@@ -41,6 +41,9 @@ type CallPolicy struct {
 	Role           FormalsRole
 	BindingFormals bool
 	Clauses        bool
+	// Patterns marks clauses whose first cell is a match pattern, which
+	// is not code.
+	Patterns bool
 }
 
 // Node carries source-only metadata without depending on lisp. Both sides
