@@ -8,7 +8,7 @@
 (set 'invoice
      (s:make-record "invoice"
                     (s:has-key "total" s:int)
-                    (s:method pay (o amount) (s:set! o 'total (- (o 'total) amount)))
+                    (s:method pay (o amount) (s:set-field! o 'total (- (o 'total) amount)))
                     (s:method cancel (_o) ())))
 
 (set 'refund

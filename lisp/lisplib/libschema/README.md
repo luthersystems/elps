@@ -6,6 +6,8 @@ amongst other things. It is strongly inspired by [Clojure's schema library](http
 and the Javascript library [yup](https://github.com/jquense/yup).
 
 The library is exported by default under the package name `s` and all functions and types should be prefixed as such.
+Do not `(use-package 's)`: several of its exports (`not`, `when`, `list`, `error`,
+`sorted-map`) then hide the core forms ([#903](https://github.com/luthersystems/elps/issues/903)).
 
 ### How do I use it?
 
@@ -300,7 +302,7 @@ A record type is a constructor for objects with typed fields and methods
     (s:has-key "lines" (s:map-of s:string s:int))
     (s:may-have-key "note" s:any)
     (s:method add-line (o sku qty)
-      (s:set! o 'lines (assoc (o 'lines) sku qty)))
+      (s:set-field! o 'lines (assoc (o 'lines) sku qty)))
     (s:method qty (o)
       (foldl (lambda (n sku) (+ n (get (o 'lines) sku))) 0 (keys (o 'lines))))
     :check (lambda (o) (when (> (o 'qty) 100) (error 'order-too-big (o 'qty))))))
@@ -316,7 +318,7 @@ A record type is a constructor for objects with typed fields and methods
 | `(s:make-record NAME FIELD... METHOD... [:check FN])` | Build a type. A field is `s:has-key` or `s:may-have-key`. |
 | `(s:method NAME (RECV ARGS...) BODY...)` | A method. Allowed only as a form of `s:make-record`. RECV is the object. |
 | `(s:defmethod TYPE NAME (RECV ARGS...) [:replace true] BODY...)` | Add a method to a type after it is built. |
-| `(s:set! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
+| `(s:set-field! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
 | `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
@@ -328,7 +330,7 @@ Rules:
   passes `o` as the receiver and `"a" 2` as the other arguments.
 * The constructor checks each field and then runs `:check`. An unknown
   field is a `bad-arguments` error.
-* `s:set!` checks only the field it changes. `:check` runs when the
+* `s:set-field!` checks only the field it changes. `:check` runs when the
   outermost method call on the object returns. A call that a method or
   `:check` makes on the same object runs without a check, so a method may
   pass through a state `:check` refuses, and `:check` may call methods.
@@ -354,7 +356,7 @@ a valid object.
   (s:make-record "order"
     (s:has-key "lines" (s:map-of s:string s:int))
     (s:method add-line (o sku qty)
-      (s:set! o 'lines (assoc (o 'lines) sku qty))   ; write the line
+      (s:set-field! o 'lines (assoc (o 'lines) sku qty))   ; write the line
       (unless (in-stock? sku qty)
         (error 'out-of-stock sku)))))                 ; then fail
 
@@ -368,14 +370,14 @@ Details:
 * The rollback covers the outermost call on the object. A method that
   calls another method on its receiver is one call: a failure anywhere
   undoes all of it.
-* The fields are saved on the first `s:set!` of a call, so a read-only
+* The fields are saved on the first `s:set-field!` of a call, so a read-only
   method costs nothing.
 * Go types work the same way: a Go method or `Default` that fails, or that
   breaks `Check`, leaves the fields as they were.
 * The rollback restores which value each field holds. It does **not** undo
   a change made in place to a field's value, such as `(assoc! (o 'lines)
   "a" 5)`: the saved map holds the same `lines` map, so it changes too.
-  Build a new value and `s:set!` it instead. The lint check
+  Build a new value and `s:set-field!` it instead. The lint check
   `record-field-mutation` reports each in-place change.
 * A phylum endpoint that raises an error already rolls back its whole
   transaction. The rollback matters for code that catches an error and
@@ -429,7 +431,7 @@ saved name.
 
 Go types. `libschema.NewRecordType` defines a record type in Go with Go
 methods and Go checks. Its objects work with `s:fields` and `s:record?`.
-A Go type is sealed: `s:defmethod` and `s:set!` refuse it. Add
+A Go type is sealed: `s:defmethod` and `s:set-field!` refuse it. Add
 `(*RecordType).Codec()` to the durable registry to save its objects.
 
 Lint checks: `record-set-outside-method`, `record-type-binding`,

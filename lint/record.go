@@ -14,14 +14,15 @@ import (
 
 // The record type checks (luthersystems/elps#895).  libschema record types
 // keep each object's fields valid by checking every write: the constructor
-// and s:set! run the field validators.  The interpreter cannot refuse every
+// and s:set-field! run the field validators.  The interpreter cannot refuse every
 // way around those checks without a cost on each call, so these checks find
 // the usual ones in source.  All of them are warnings now; the next major
 // release may make the runtime refuse what they report.
 
-// recordPackage is the qualifier of the libschema package.  Its exports
-// include set!, which collides with lisp:set!, so a file never uses the
-// package unqualified and the checks match only the qualified spellings.
+// recordPackage is the qualifier of the libschema package.  Several of its
+// exports (not, when, list, error, sorted-map) hide lisp names after a
+// use-package, so a file uses the package qualified, and the checks match
+// only the qualified spellings.
 const recordPackage = "s:"
 
 // The names of the record checks.
@@ -84,11 +85,11 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 		}
 	}
 	for _, top := range exprs {
-		for _, site := range callSites(top, recordPackage+"set!") {
+		for _, site := range callSites(top, recordPackage+"set-field!") {
 			if !w.handled[site.Form] {
 				w.out = append(w.out, recordFinding{
 					node: site.Form, kind: recordSetOutsideMethod,
-					msg:  "s:set! outside a method of the record type",
+					msg:  "s:set-field! outside a method of the record type",
 					note: "only the type's own methods change an object's fields; add a method with s:method or s:defmethod and call it",
 				})
 			}
@@ -98,7 +99,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	return w.out
 }
 
-// recordWalk holds what the record checks collect: the s:set! calls a
+// recordWalk holds what the record checks collect: the s:set-field! calls a
 // method or :check function holds, and the findings.
 type recordWalk struct {
 	handled map[*lisp.LVal]bool
@@ -295,20 +296,20 @@ func mutatingNames() []string {
 	return names
 }
 
-// methodBody marks the s:set! calls of a method body as handled.  It
+// methodBody marks the s:set-field! calls of a method body as handled.  It
 // reports a mutating builtin that writes through (recv 'field), and, when
 // the type's shape is known, a member name the type does not declare.
 func (w *recordWalk) methodBody(body []*lisp.LVal, recv string, shape *recordShape) {
 	known := shape != nil && shape.closed
 	for _, form := range body {
-		for _, site := range callSites(form, recordPackage+"set!") {
+		for _, site := range callSites(form, recordPackage+"set-field!") {
 			w.handled[site.Form] = true
 			c := site.Form.Cells
 			if !known || len(c) < 3 || !c[1].IsSymbol(recv) {
 				continue
 			}
 			if field, ok := quotedName(c[2]); ok && !shape.fields[field] {
-				w.out = append(w.out, unknownMember(site.Form, fmt.Sprintf("s:set! names %s, which is not a field of the type", field)))
+				w.out = append(w.out, unknownMember(site.Form, fmt.Sprintf("s:set-field! names %s, which is not a field of the type", field)))
 			}
 		}
 		if known {
@@ -320,7 +321,7 @@ func (w *recordWalk) methodBody(body []*lisp.LVal, recv string, shape *recordSha
 		r := strings.ReplaceAll(recv, "%", "%%")
 		w.fieldMutations(form, recv, mutationReport{recordFieldMutation,
 			"%s changes field %s of " + r + " in place, and its validator does not run",
-			"build the new value and give it to s:set!: (s:set! " + r + " '%[2]s new-value)"})
+			"build the new value and give it to s:set-field!: (s:set-field! " + r + " '%[2]s new-value)"})
 	}
 }
 
@@ -395,7 +396,7 @@ func (w *recordWalk) plainSet(call *lisp.LVal, recv string) {
 	f := recordFinding{
 		node: call, kind: recordPlainSet,
 		msg:  c[0].Str + " rebinds the local name " + recv + "; the object does not change",
-		note: "to change a field of the object, use (s:set! " + recv + " 'field value)",
+		note: "to change a field of the object, use (s:set-field! " + recv + " 'field value)",
 	}
 	if !strings.HasSuffix(c[0].Str, "!") {
 		f.msg = c[0].Str + " binds the package name " + recv + ", not the receiver; the object does not change"
@@ -403,7 +404,7 @@ func (w *recordWalk) plainSet(call *lisp.LVal, recv string) {
 	if len(c) == 4 {
 		if field, ok := quotedName(c[2]); ok {
 			f.msg = c[0].Str + " does not change a record field"
-			f.note = "use (s:set! " + recv + " '" + field + " value)"
+			f.note = "use (s:set-field! " + recv + " '" + field + " value)"
 		}
 	}
 	w.out = append(w.out, f)
@@ -470,15 +471,15 @@ func unknownMember(node *lisp.LVal, msg string) recordFinding {
 	}
 }
 
-// checkBody reports a write in a :check function: s:set!, or a
-// mutating builtin on a field of the object it checks.  It marks the s:set!
+// checkBody reports a write in a :check function: s:set-field!, or a
+// mutating builtin on a field of the object it checks.  It marks the s:set-field!
 // calls as handled, so they are not also reported as outside a method.
 func (w *recordWalk) checkBody(check *lisp.LVal) {
-	for _, site := range callSites(check, recordPackage+"set!") {
+	for _, site := range callSites(check, recordPackage+"set-field!") {
 		w.handled[site.Form] = true
 		w.out = append(w.out, recordFinding{
 			node: site.Form, kind: recordCheckWrites,
-			msg:  "s:set! in a :check function",
+			msg:  "s:set-field! in a :check function",
 			note: ":check runs after each change and must only read the object; raise an error to refuse the change",
 		})
 	}
@@ -616,13 +617,13 @@ func recordAnalyzerRun(kind string) func(pass *Pass) error {
 	}
 }
 
-// AnalyzerRecordSetOutsideMethod reports s:set! outside a method of a
+// AnalyzerRecordSetOutsideMethod reports s:set-field! outside a method of a
 // record type.
 var AnalyzerRecordSetOutsideMethod = &Analyzer{
 	Name:     recordSetOutsideMethod,
 	Severity: SeverityWarning,
-	Doc: "Report s:set! outside a method of a record type.\n\n" +
-		"A record type's methods are the one place that changes its objects. s:set! " +
+	Doc: "Report s:set-field! outside a method of a record type.\n\n" +
+		"A record type's methods are the one place that changes its objects. s:set-field! " +
 		"checks the new value against the field's validator only. The type's :check " +
 		"function runs when a method call returns, so a change from outside a " +
 		"method skips it. Add a method and call it.",
@@ -650,7 +651,7 @@ var AnalyzerRecordFieldMutation = &Analyzer{
 	Doc: "Report a method that changes a field's value in place.\n\n" +
 		"(recv 'field), where recv is the method's receiver, returns the field's value itself, not a copy. A mutating " +
 		"builtin such as assoc! or append! on it changes the field without its " +
-		"validator. Build the new value and give it to s:set!.",
+		"validator. Build the new value and give it to s:set-field!.",
 	Run: recordAnalyzerRun(recordFieldMutation),
 }
 
@@ -661,7 +662,7 @@ var AnalyzerRecordUnknownMember = &Analyzer{
 	Severity: SeverityWarning,
 	Doc: "Report a field or method name that the record type does not declare.\n\n" +
 		"In a method, (recv 'name) must name a field or method of the type, and " +
-		"(s:set! recv 'name ...) must name a field, where recv is the method's receiver. A wrong name fails only when the " +
+		"(s:set-field! recv 'name ...) must name a field, where recv is the method's receiver. A wrong name fails only when the " +
 		"method runs. The check knows the type's fields and methods from its " +
 		"s:make-record and from each s:defmethod in the same file; it skips a type " +
 		"whose field forms are not literal s:has-key or s:may-have-key calls.",
@@ -676,7 +677,7 @@ var AnalyzerRecordCheckWrites = &Analyzer{
 	Doc: "Report a :check function that changes the object it checks.\n\n" +
 		"A record type's :check function runs after the constructor and after each " +
 		"method call. It must only read the object and raise an error to refuse a " +
-		"change. A write in it (s:set!, or a mutating builtin such as assoc! on a " +
+		"change. A write in it (s:set-field!, or a mutating builtin such as assoc! on a " +
 		"field) changes the object after its validators ran.",
 	Run: recordAnalyzerRun(recordCheckWrites),
 }
@@ -714,6 +715,6 @@ var AnalyzerRecordPlainSet = &Analyzer{
 	Doc: "Report set! or set on a method's receiver.\n\n" +
 		"The receiver is a local name. (set! o v) and (set 'o v) change the binding, " +
 		"not the object, and (set! o 'field v) is not a field write. Use " +
-		"(s:set! o 'field v) to change a field.",
+		"(s:set-field! o 'field v) to change a field.",
 	Run: recordAnalyzerRun(recordPlainSet),
 }

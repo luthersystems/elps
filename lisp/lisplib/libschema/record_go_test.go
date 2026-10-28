@@ -23,7 +23,7 @@ const orderV1 = `
   (s:make-record "order"
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
-    (s:method add (o n) (s:set! o 'qty (+ n (o 'qty))))))
+    (s:method add (o n) (s:set-field! o 'qty (+ n (o 'qty))))))
 (set 'o (order :id "o1" :qty 1))
 (o 'add 2)
 `
@@ -37,7 +37,7 @@ const orderV2 = `
     (s:has-key "id" s:string)
     (s:has-key "qty" s:int)
     (s:has-key "currency" s:string)
-    (s:method add (o n) (s:set! o 'qty (+ (* 10 n) (o 'qty))))
+    (s:method add (o n) (s:set-field! o 'qty (+ (* 10 n) (o 'qty))))
     (s:method label (o) (format-string "{}:{}" (o 'id) (o 'currency)))))
 `
 
@@ -244,7 +244,7 @@ func TestGoRecordType(t *testing.T) {
 
 	env.PutGlobal(lisp.Symbol("c"), c)
 	require.Equal(t, 2, evalString(t, env, `(get (s:fields c) "n")`).Int)
-	require.True(t, env.LoadString("set.lisp", `(s:set! c 'n 5)`).IsError(), "a Go type is sealed")
+	require.True(t, env.LoadString("set.lisp", `(s:set-field! c 'n 5)`).IsError(), "a Go type is sealed")
 	require.True(t, lisp.True(evalString(t, env, `(s:record? c)`)))
 
 	reg := recordRegistry(t, rt.Codec())

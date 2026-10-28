@@ -104,7 +104,7 @@ type RecordType struct {
 }
 
 // goTypes maps the package and FID of each Go record type to the type, so
-// that s:fields, s:set! and s:record? recognize a Go object.  A type is
+// that s:fields, s:set-field! and s:record? recognize a Go object.  A type is
 // registered once, by NewRecordType, and never removed.
 var goTypes sync.Map //elpsvet:allow written only by NewRecordType, which Go code calls at setup, never a builtin
 

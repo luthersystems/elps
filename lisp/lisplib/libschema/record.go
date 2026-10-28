@@ -54,7 +54,7 @@ const (
 	objType = iota
 	objFields
 	// objState is nil while no method or :check runs on the object.
-	// While one runs it is true, and the first s:set! replaces it with
+	// While one runs it is true, and the first s:set-field! replaces it with
 	// the field map as it was before the outermost call, which a failed
 	// call puts back.
 	objState
@@ -401,7 +401,7 @@ func fieldValidator(desc *recordDesc, tcaps *lisp.LVal, name string) *lisp.LVal 
 	return tcaps.Cells[typeFields].Cells[i]
 }
 
-// builtinRecordSet is s:set!.  It checks the field's validator, then
+// builtinRecordSet is s:set-field!.  It checks the field's validator, then
 // replaces the field's value in the object.
 func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	obj, field, value := args.Cells[0], args.Cells[1], args.Cells[2]
@@ -409,16 +409,16 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	desc, tcaps, fields := o.desc, o.caps, o.fields
 	if !ok {
 		if goObjectType(obj) != nil {
-			return env.ErrorConditionf(BadArgs, "s:set!: %v is a record type defined in Go; use its methods to change it", obj)
+			return env.ErrorConditionf(BadArgs, "s:set-field!: %v is a record type defined in Go; use its methods to change it", obj)
 		}
-		return env.ErrorConditionf(BadArgs, "s:set!: first argument is not a record object: %v", obj)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: first argument is not a record object: %v", obj)
 	}
 	name, ok := fieldName(field)
 	if !ok {
-		return env.ErrorConditionf(BadArgs, "s:set!: field must be a symbol or a string: %v", field)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: field must be a symbol or a string: %v", field)
 	}
 	if !desc.hasField(name) {
-		return env.ErrorConditionf(BadArgs, "s:set!: %s has no field %s", desc.display, name)
+		return env.ErrorConditionf(BadArgs, "s:set-field!: %s has no field %s", desc.display, name)
 	}
 	key := lisp.String(name)
 	if v := fieldValidator(desc, tcaps, name); v != nil {
@@ -437,7 +437,7 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		}
 		caps.Cells[objState] = saved //elps:mutates saves the object's own fields before the first write of a call
 	}
-	if lerr := fields.Map().Set(key, value); lerr.IsError() { //elps:mutates s:set! writes the object's own field map, which its constructor copied
+	if lerr := fields.Map().Set(key, value); lerr.IsError() { //elps:mutates s:set-field! writes the object's own field map, which its constructor copied
 		return lerr
 	}
 	return value

@@ -72,8 +72,8 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
-	libutil.FunctionDoc("set!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
-		`Sets a field of a record object, (s:set! obj 'field value),
+	libutil.FunctionDoc("set-field!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
+		`Sets a field of a record object, (s:set-field! obj 'field value),
 		and returns the value.  The field's validator checks the value
 		first; a failure leaves the object as it was.  Use it in method
 		bodies only: code outside the type changes an object through its
