@@ -505,6 +505,9 @@ func BuildAnalysisConfig(cfg *LintConfig) (*analysis.Config, error) {
 var bindingMacros = map[string]bool{
 	"s:make-record": true,
 	"s:defmethod":   true,
+	// s:make-interface quotes its method specs; without an expansion
+	// their names read as calls.
+	"s:make-interface": true,
 }
 
 // bindingMacroExpander expands only bindingMacros, with the standard

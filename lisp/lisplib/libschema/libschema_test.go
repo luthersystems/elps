@@ -239,3 +239,8 @@ func TestRecordTypes(t *testing.T) {
 	r := &elpstest.Runner{}
 	r.RunTestFile(t, "record_types_test.lisp")
 }
+
+func TestRecordInterfaces(t *testing.T) {
+	r := &elpstest.Runner{}
+	r.RunTestFile(t, "record_interfaces_test.lisp")
+}
