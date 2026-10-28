@@ -1549,8 +1549,9 @@ if pkg, name, ok := reg.RegisteredBuiltinName(fn); ok {
 | `(*PackageRegistry).RegisteredBuiltin(pkg, name)` | The function, macro or special operator registered as `pkg:name`, or nil. |
 | `(*PackageRegistry).RegisteredBuiltinName(fn)` | The package and name `fn` was registered under, and `ok`. |
 
-- Registration is `LEnv.AddBuiltins`, `LEnv.BindBuiltins`, `LEnv.AddMacros`
-  and `LEnv.AddSpecialOps`, and the `elpsutil` loaders that call them.
+- Registration is `LEnv.AddBuiltins`, `LEnv.BindBuiltins`, `LEnv.AddMacros`,
+  `LEnv.AddSpecialOps` and `LEnv.RegisterBuiltins`, and the `elpsutil`
+  loaders that call them.
 - `set`, `set!`, `defun`, `Put` and a shadowing binding in another package
   change no entry. Only a later registration of the same package and name
   replaces it. The replaced builtin then answers `ok == false`.
@@ -1574,6 +1575,37 @@ if pkg, name, ok := reg.RegisteredBuiltinName(fn); ok {
 - A builtin built at run time without registration, for example a Go
   closure passed to `lisp.FunInPackage` and bound with `Put`, stays
   unregistered: `RegisteredBuiltinName` answers `ok == false` for it.
+
+#### Builtins without a name
+
+`LEnv.RegisterBuiltins(defs...)` registers builtins in the current package
+and binds no name (luthersystems/elps#907). It returns the function values.
+Use it for a helper that only Go calls, such as the target of a Go macro's
+expansion. An expansion can hold the function value as the head of a call,
+so the helper needs no name that Lisp can reach, and a phylum cannot call it
+or come to depend on it.
+
+```go
+env.InPackage(lisp.String("utils"))
+env.RegisterBuiltins(elpsutil.Function("step-enter", lisp.Formals("id"), stepEnter))
+
+// In the Go macro, which runs in every VM of a template:
+fn := env.Runtime.Registry.RegisteredBuiltin("utils", "step-enter")
+return lisp.SExpr([]*lisp.LVal{fn, id})
+```
+
+- The registry knows it as any other builtin: `RegisteredBuiltin`,
+  `RegisteredBuiltinName`, a template's builtin policy (approve the value
+  `RegisterBuiltins` returned, by identity) and durable dumps.
+- Stack frames name it, as they name a bound builtin.
+- Lisp lookup, qualified or after `use-package`, `(builtin 'PKG:NAME)`, the
+  export list, `elps doc` and completion do not see it.
+- A Go macro gets the value with `RegisteredBuiltin` in the env it runs in.
+  Each template VM has its own value, so the macro must not hold the value
+  `RegisterBuiltins` returned.
+- It panics on a name the package binds or a builtin is registered under. A
+  later `AddBuiltins`, `AddMacros` or `AddSpecialOps` of the name replaces
+  the registration.
 
 Lisp code reads the same registry through `(builtin 'PKG:NAME)` and
 `(builtin-name f)` in the `lisp` package (see the language reference).

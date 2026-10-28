@@ -71,11 +71,13 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"plan":     "shared-immutable: the plan's current registry entries, never written after publication; its index is built once under sync.Once",
 			"values":   "remapped: this VM's value per plan entry, built from plan references",
 			"lazy":     "remapped: this VM's lazy instance, built by NewVM and never published",
+			"unbound":  "reset: set by RegisterBuiltins in this runtime; a VM reads the source's flag from plan.unbound (#907; TestRegisterBuiltinsReplacedByBinding)",
 		}},
 		{reflect.TypeFor[templateBuiltins](), map[string]string{
 			"entries": "shared-immutable: one per current registration, written only at publication",
 			"index":   "shared-immutable: built once under once on the first lookup in any VM, only read after",
 			"once":    "shared-immutable: guards the one write of index",
+			"unbound": "shared-immutable: whether the source may have held an unbound registration, written only at publication (#907; TestRegisterBuiltinsReplacedByBinding)",
 		}},
 		{reflect.TypeFor[templateBuiltin](), map[string]string{
 			"rec":   "shared-immutable: the registration record, the source's registered header; VMs read only its Str and package (#800; TestRegistrationRecordSharedByForks)",

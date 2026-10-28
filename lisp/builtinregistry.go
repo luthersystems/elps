@@ -9,7 +9,7 @@ import (
 
 // The builtin registry (luthersystems/elps#800) records every function,
 // macro and special operator as LEnv.AddBuiltins, LEnv.BindBuiltins,
-// LEnv.AddMacros and LEnv.AddSpecialOps registered it, keyed by package and
+// LEnv.AddMacros, LEnv.AddSpecialOps and LEnv.RegisterBuiltins registered it, keyed by package and
 // name.  A package binding can change later (set, set!, defun, a shadowing
 // use-package or Put); the registry entry cannot.  Only a later
 // registration of the same package and name replaces it.
@@ -77,6 +77,10 @@ type templateBuiltins struct {
 	index   map[builtinKey]int
 	entries []templateBuiltin
 	once    sync.Once
+	// unbound reports that some entry may be a registration that
+	// LEnv.RegisterBuiltins made, which no package binds.  See
+	// builtinRegistry.unbound.
+	unbound bool
 }
 
 // lookupIndex returns the shared index of the plan's entries.
@@ -117,12 +121,23 @@ type builtinRegistry struct {
 	last     *builtinChunk
 	slots    *builtinSlotIndex
 	values   []*LVal
+	// unbound reports that LEnv.RegisterBuiltins registered a builtin in
+	// this runtime (luthersystems/elps#907).  Such a registration has no
+	// package binding, so a later registration of its name does not see
+	// the name as bound and cannot report the shadowing itself; register
+	// then looks the key up, and only then, so a runtime without unbound
+	// registrations builds no index at registration time.
+	unbound bool
 }
 
 // register records fn, which registrationFunValue built with fn as its own
 // record, as the registered builtin of its package and name.  shadows
 // reports that the name was already bound in the package.
 func (r *builtinRegistry) register(fn *LVal, shadows bool) {
+	if !shadows && r.mayHaveUnbound() {
+		key := registrationKey(fn)
+		shadows = r.currentRecord(key.pkg, key.name) != nil
+	}
 	if r.last == nil || r.last.n == builtinChunkSize {
 		r.last = &builtinChunk{prev: r.last}
 	}
@@ -237,6 +252,12 @@ func (r *builtinRegistry) ownLookup(key builtinKey) *LVal {
 	return (*idx)[key]
 }
 
+// mayHaveUnbound reports that this runtime or the template it came from
+// may hold a registration that no package binds.
+func (r *builtinRegistry) mayHaveUnbound() bool {
+	return r.unbound || (r.plan != nil && r.plan.unbound)
+}
+
 // planLookup returns the index of the plan entry of key.
 func (r *builtinRegistry) planLookup(key builtinKey) (int, bool) {
 	if r.plan == nil {
@@ -321,8 +342,8 @@ func (r *builtinRegistry) current() []*LVal {
 // RegisteredBuiltin returns the function, macro or special operator
 // registered as pkg:name, or nil when nothing is registered under that
 // name.  Registration is LEnv.AddBuiltins, LEnv.BindBuiltins,
-// LEnv.AddMacros or LEnv.AddSpecialOps.  The answer does not depend on what
-// pkg binds name to now: set, set!, defun, Put and shadowing never change
+// LEnv.AddMacros, LEnv.AddSpecialOps or LEnv.RegisterBuiltins.  The answer
+// does not depend on what pkg binds name to now: set, set!, defun, Put and shadowing never change
 // it.  A later registration of the same package and name replaces it.
 //
 // In a template VM the answer is the VM's own value of the builtin, the

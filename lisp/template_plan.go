@@ -187,7 +187,7 @@ func compileTemplate(env *LEnv, inventory *templateInventory) (templatePlan, err
 		for i, fn := range inventory.builtins {
 			entries[i] = templateBuiltin{rec: fn.funData().reg, value: c.ref(fn)}
 		}
-		c.plan.builtins = &templateBuiltins{entries: entries}
+		c.plan.builtins = &templateBuiltins{entries: entries, unbound: env.Runtime.Registry.builtins.mayHaveUnbound()}
 	}
 	if inventory.vmValues != nil {
 		c.plan.vmValues, c.plan.hasVMValues = c.ref(inventory.vmValues), true

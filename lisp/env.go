@@ -1468,6 +1468,76 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 	}
 }
 
+// RegisterBuiltins registers funs as builtins of the current package
+// without binding their names (luthersystems/elps#907), and returns the
+// function values in the order of funs.
+//
+// It exists for builtins that only Go calls: for example a helper that a Go
+// macro's expansion calls.  An expansion may hold the function value itself
+// as the head of a call, so the helper needs no name that Lisp can reach.
+// Before this, the only registration was a binding (AddBuiltins), so such a
+// helper had to stay bound, visible and callable as pkg:name, only so that
+// the registry knew it.
+//
+// A builtin registered here is registered like one AddBuiltins binds, less
+// the binding:
+//
+//   - PackageRegistry.RegisteredBuiltin and RegisteredBuiltinName answer
+//     for it, and a template publishes it with every other registered
+//     builtin, so a builtin policy approves it by identity (compare the
+//     value the policy gets with the value returned here).
+//   - Stack frames and GetFunName show its name.
+//   - Nothing binds the name: Lisp lookup (qualified or after use-package),
+//     lisp:builtin, the export list, elps doc and completion do not see it.
+//
+// In a VM that a template mints, the function is the VM's own copy of the
+// value returned here.  A Go macro that runs in such VMs gets it with
+// env.Runtime.Registry.RegisteredBuiltin(pkg, name), never by holding the
+// returned value, which belongs to the runtime that registered it.
+//
+// It panics when the current package binds a name in funs, or when a
+// builtin is already registered under it, so a name never means two
+// builtins at once.  A later AddBuiltins, AddMacros or AddSpecialOps of the
+// name replaces the registration, as a later registration always does.
+// Like the other registration functions it is Go API that an embedder
+// calls at setup, never Lisp.
+func (env *LEnv) RegisterBuiltins(funs ...LBuiltinDef) []*LVal {
+	formals := newFormalsCopier(funs)
+	pkg := env.Runtime.Package
+	registry := &env.Runtime.Registry.builtins
+	out := make([]*LVal, 0, len(funs))
+	for _, f := range funs {
+		name := f.Name()
+		if _, bound := registrationBound(pkg, name); bound {
+			// NOT LISP-REACHABLE (#367): registration is Go API.
+			panic("symbol already defined: " + name)
+		}
+		if registry.currentRecord(pkg.Name, name) != nil {
+			// NOT LISP-REACHABLE (#367): registration is Go API.
+			panic("builtin already registered: " + name)
+		}
+		funFormals := f.Formals()
+		checkRegistrationFormals("builtin", name, funFormals)
+		freeKeys, msg := freeKeysOf(f)
+		if msg != "" {
+			// NOT LISP-REACHABLE (#367): registration is Go API.
+			panic(msg)
+		}
+		v := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<builtin-function ``" + name + "''>", funType: LFunNone, formals: registrationFormals(&formals, funFormals), fn: f.Eval, doc: builtinDocstring(f)})
+		if freeKeys != 0 {
+			v.funData().freeKeys = freeKeys
+		}
+		// putName is what names a bound builtin in a stack frame.  With no
+		// binding, the display name is set here; nothing binds the FID, so
+		// nothing replaces it.
+		v.funData().name = name
+		registry.unbound = true
+		registry.register(v, false)
+		out = append(out, v)
+	}
+	return out
+}
+
 // errorStack snapshots the rendering policy along with the diagnostic frames.
 // Only the byte cap is captured: it answers a question a late renderer cannot
 // answer for itself (whose runtime produced this?), while a context answers
