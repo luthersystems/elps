@@ -196,9 +196,10 @@ func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
 // (lisp.LEnv.QuasiquoteWith), so it makes the same checks in the same order
 // with the same messages: the value depth limit at each node, quote
 // wrappers included, and the allocation limit as each list adds a cell,
-// where a splice adds its argument's length.  Where the quasiquote
-// evaluated a placeholder's parameter, ExpandChecked checks env's context,
-// as that evaluation did.  It charges no step and does not check the step
+// where a splice adds its argument's length.  It checks env's context, as
+// the quasiquote's evaluation of a placeholder's parameter did: at each
+// placeholder on the walk, and once, before it expands, when it skips the
+// walk (below), since every placeholder sees the same context.  It charges no step and does not check the step
 // limit or budget, so under a step limit the defmacro can fail where
 // ExpandChecked does not.  A spliced argument that is not a list is
 // quasiquote's error, not a panic, and a nil argument is an error.
@@ -209,8 +210,10 @@ func (t *Template) Expand(args ...*lisp.LVal) *lisp.LVal {
 // (luthersystems/elps#894).  The expansion is fresh syntax, as Expand's
 // is, with arguments inserted by pointer.  When no check of the walk can
 // fail, which is so for a small template under the default limits,
-// ExpandChecked skips the walk and costs what Expand costs.  Otherwise it
-// builds the form before it walks it, about twice Expand's cost.  It
+// ExpandChecked skips the walk and costs what Expand costs, and a () in
+// the template is then the lisp.Nil singleton, as in Expand's expansion,
+// where the walk builds an empty list.  Otherwise it builds the form
+// before it walks it, about twice Expand's cost.  It
 // panics if the argument count differs from the declared parameter count,
 // and on a template with a list whose head is a quoted unquote, such as
 // (f ('unquote y)): Expand copies that list, but quasiquote reads it as an
@@ -254,9 +257,11 @@ func (t *Template) ExpandChecked(env *lisp.LEnv, args ...*lisp.LVal) *lisp.LVal 
 // the splices' lengths depend on args.  The walk also treats some
 // arguments in its own way: it returns an error argument as its result,
 // splices an argument with the spliced flag (lisp.Splice) even in an
-// unquote position, and fails on a nil argument and on a splice of a value
-// that is not an unquoted list.  fits is false for each of these, so the
-// walk handles them.  TestExpandCheckedArgumentKinds compares the two paths
+// unquote position, fails on a nil argument and on a splice of a value
+// that is not a list, and splices a quoted list, on which Expand panics.
+// fits is false for each of these, so the walk handles them.  The rules
+// are those of findAndUnquoteWith in package lisp, whose comment points
+// here.  TestExpandCheckedArgumentKinds compares the two paths
 // for each kind of argument.
 func (t *Template) fits(env *lisp.LEnv, args []*lisp.LVal) bool {
 	limit := env.Runtime.MaxAllocBytes() - t.widest

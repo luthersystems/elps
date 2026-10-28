@@ -15,8 +15,8 @@ import (
 // quasiquote's walk of the template returns.  Plain arguments take the
 // fast path and the others the walk, so this pins fits to the walk's
 // treatment of its arguments: an error is the result, a spliced-flag value
-// is spliced, and a nil, a non-list splice or a quoted splice fails
-// (luthersystems/substrate#973).
+// is spliced, a nil or a non-list splice fails, and a quoted list is
+// spliced (luthersystems/substrate#973).
 func TestExpandCheckedArgumentKinds(t *testing.T) {
 	kinds := []struct {
 		name string

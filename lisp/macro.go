@@ -978,6 +978,14 @@ func (env *LEnv) QuasiquoteWith(form *LVal, resolve func(expr *LVal) *LVal) *LVa
 
 // findAndUnquoteWith is findAndUnquote with resolve, when non-nil, in place
 // of the evaluation of each unquoted expression.
+//
+// elpsutil.Template.ExpandChecked skips this walk when its fits reports
+// that no check here can fail, so fits models the checks below: the value
+// depth limit, the allocation limit as a list adds a cell, and the
+// treatment of a resolved value (an error, a nil, the spliced flag, a
+// splice of a non-list).  A change to those checks needs the same change
+// in fits; TestExpandCheckedArgumentKinds and the elpsutil limit sweeps
+// compare the two.
 func findAndUnquoteWith(env *LEnv, v *LVal, depth int, resolve func(expr *LVal) *LVal) *LVal {
 	type frame struct {
 		v, orig                             *LVal
