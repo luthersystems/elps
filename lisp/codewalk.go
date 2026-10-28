@@ -96,8 +96,8 @@ var formKinds = map[string]formSpec{
 	"labels":           {kind: kindLabels, scope: hook.ScopeFunctions, bindingFormals: true, callsStart: 2, bindingStart: 2},
 	"macrolet":         {kind: kindMacrolet, scope: hook.ScopeMacros, functionScope: hook.ScopeMacros, bindingFormals: true, callsStart: 2, bindingStart: 2},
 	"flet":             {kind: kindFlet, scope: hook.ScopeFunctions, bindingFormals: true, callsStart: 2, bindingStart: 2},
-	"let*":             {kind: kindLetSeq, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1},
-	"let":              {kind: kindLet, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1},
+	"let*":             {kind: kindLetSeq, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1, patterns: true},
+	"let":              {kind: kindLet, scope: hook.ScopeLocal, callsStart: 2, bindingStart: 1, patterns: true},
 	"progn":            {kind: kindProgn},
 	"handler-bind":     {kind: kindHandlerBind, callsStart: 2, bindingStart: 1},
 	"ignore-errors":    {kind: kindIgnoreErrors},
@@ -1139,14 +1139,25 @@ func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVa
 			if len(pair.Cells) < 2 {
 				return
 			}
+			name := pair.Cells[0]
+			var names []*LVal
 			if !seq {
 				w.visit(&walkNode{Event: WalkEnter, Outer: true, Depth: depth + 1})
 				pb.set(1, w.form(pair.Cells[1], depth+2))
+				// A let pattern's types run in the scope around the let.
+				if name.Type != LSymbol {
+					pb.set(0, w.matchPattern(name, depth+2, &names))
+				}
 				w.visit(&walkNode{Event: WalkLeave, Outer: true, Depth: depth + 1})
 			} else {
 				pb.set(1, w.form(pair.Cells[1], depth+2))
+				if name.Type != LSymbol {
+					pb.set(0, w.matchPattern(name, depth+2, &names))
+				}
 			}
-			name := pair.Cells[0]
+			for _, n := range names {
+				w.emitBind(n, op, depth+2, nil)
+			}
 			if name.Type == LSymbol {
 				w.bind(name, nil)
 				var init *LVal
@@ -1175,17 +1186,33 @@ func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVa
 		out = w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
 			w.forms(pb, 1, depth+1)
 			if len(pair.Cells) > 0 {
+				// A let* pattern's types see the bindings before it.
+				for _, n := range w.letPattern(pb, pair.Cells[0], depth+2) {
+					w.emitBind(n, op, depth+2, nil)
+				}
 				w.emitBind(pair.Cells[0], op, depth+2, nil)
 			}
 		})
 	} else {
-		out = w.pairs(list, depth, func(pb *rebuild, _ *LVal) {
+		// A let pattern's types run in the scope around the let, with the
+		// initializers; its names are bound with the other names.
+		var patternNames map[*LVal][]*LVal
+		out = w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
 			w.forms(pb, 1, depth+1)
+			if len(pair.Cells) > 0 && pair.Cells[0].Type != LSymbol {
+				if patternNames == nil {
+					patternNames = make(map[*LVal][]*LVal)
+				}
+				patternNames[pair] = w.letPattern(pb, pair.Cells[0], depth+2)
+			}
 		})
 		w.push(false)
 		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
 		for _, pair := range list.Cells {
 			if pair.Type == LSExpr && len(pair.Cells) > 0 {
+				for _, n := range patternNames[pair] {
+					w.emitBind(n, op, depth+2, nil)
+				}
 				w.emitBind(pair.Cells[0], op, depth+2, nil)
 			}
 		}
@@ -1194,6 +1221,19 @@ func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVa
 	w.visit(&walkNode{Event: WalkLeave, Node: form, Op: op, Depth: depth - 1})
 	w.pop()
 	return out
+}
+
+// letPattern walks the name of a let binding when it is a match pattern
+// (luthersystems/elps#910): its type expressions are forms, the rest is
+// data.  It sets the walked pattern in pb and returns the names the
+// pattern binds.  A symbol name is not a pattern; it returns nil for one.
+func (w *CodeWalker) letPattern(pb *rebuild, name *LVal, depth int) []*LVal {
+	if name.Type == LSymbol {
+		return nil
+	}
+	var names []*LVal
+	pb.set(0, w.matchPattern(name, depth, &names))
+	return names
 }
 
 // fletWalk holds local function traversal settings.

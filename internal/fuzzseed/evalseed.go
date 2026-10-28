@@ -335,6 +335,8 @@ func EvalAdversarial() []string {
 		"(dotimes)", "(dotimes ())", "(dotimes (i))", "(dotimes (i 'a))",
 		"(match)", "(match 1 ())", "(match 1 ((list a a) 1))", "(match 1 ((list &rest) 1))",
 		"(match '(1 2) ((list a &rest r) :when (> a 0) r) (_ 0))", "(match 1 ([x 5] x))",
+		"(let ([(list a b) '(1 2)]) b)", "(let ([(list a a) '(1 1)]) a)", "(let* ([(list a) 5]) a)",
+		"(let* ([(list a &rest r) '(1 2)] [[b s:int] a]) r)", "(let ([(list a) :when true '(1)]) a)",
 
 		// --- the package system ---
 		"(in-package 'nope)", "(use-package 'nope)", "(export 'nope)",

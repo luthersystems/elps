@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 func TestMatchUnreachable_Positive(t *testing.T) {
@@ -60,4 +61,25 @@ func TestMatchBindings_UndefinedSymbol(t *testing.T) {
 	assert.Len(t, diags, 2, "%v", diags)
 	assertDiagOnLine(t, diags, 6, "undefined symbol: y")
 	assertDiagOnLine(t, diags, 7, "undefined symbol: a")
+}
+
+// The names of a let binding pattern are bound in the let's scope
+// (luthersystems/elps#910): let binds them after every initializer, let*
+// in order.
+func TestLetPatternScope(t *testing.T) {
+	src := `(defun f (v)
+  (let* ([(list a b) v] [(sorted-map "k" c) a] [[d s:int] c])
+    (list a b c d)))
+(defun g (v)
+  (let ([(list x y) v] [z x])
+    (list x y z)))
+(f 1) (g 1)`
+	diags := lintCheckSemantic(t, AnalyzerUndefinedSymbol, src)
+	require.Len(t, diags, 1, "%v", diags)
+	assert.Contains(t, diags[0].Message, "undefined symbol: x")
+	assert.Equal(t, 5, diags[0].Pos.Line)
+
+	diags = lintCheckSemantic(t, AnalyzerShadowing, `(defun f (v) (let ([(list car) v]) car)) (f 1)`)
+	require.Len(t, diags, 1, "%v", diags)
+	assert.Contains(t, diags[0].Message, "'car' shadows builtin")
 }

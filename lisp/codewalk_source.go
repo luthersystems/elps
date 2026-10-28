@@ -144,6 +144,11 @@ func (w *CodeWalker) sourceCalls(v *LVal, spec formSpec, depth int) {
 	if spec.bindingStart > 0 && len(v.Cells) > 1 && v.Cells[1].Type == LSExpr {
 		for _, binding := range v.Cells[1].Cells {
 			if binding.Type == LSExpr {
+				// A let binding's name may be a match pattern, whose type
+				// expressions are code.
+				if spec.patterns && len(binding.Cells) > 0 {
+					matchPatternCode(binding.Cells[0], func(code *LVal) { w.sourceValue(code, depth+4) })
+				}
 				for _, child := range binding.Cells[min(spec.bindingStart, len(binding.Cells)):] {
 					w.sourceValue(child, depth+3)
 				}

@@ -800,6 +800,38 @@ in CI. Dynamic code and opaque macros limit static detection; see the
 Captured bindings remain live: `set!` in a closure updates its captured
 binding, not a later binding that happens to have the same name.
 
+#### Binding patterns
+
+A `let` or `let*` binding can give a `match` pattern in place of its name.
+The value must match the pattern, and the pattern's names are bound.
+
+```lisp
+(let* ([(list a b) (lookup k)]
+       [(sorted-map "total" total) row]
+       [(point :x x :y y) p]
+       [[s s:string] name])
+  (list a b total x y s))
+```
+
+Rules:
+
+- A symbol is a name, as before. `_` is a name too. Any other value in the
+  name position is a pattern, so `[x 1]` binds `x` and `[(list x) v]`
+  matches `v`.
+- The reader reads `[x T]` and `'(x T)` as the same value, so a binding
+  `[[s s:string] v]` has the typed pattern `[s s:string]` as its name.
+- Patterns are the ones `match` takes, with the same rules. A `:when` guard
+  is an error: a binding has no other clause to try.
+- A value that does not match raises `match-error`, a child of `error`.
+  Its message names the pattern and the value's type.
+- `let` evaluates every initializer first, then matches the patterns and
+  binds their names. A pattern's type expressions see the scope around the
+  `let`. In `let*`, an initializer and a type expression see the bindings
+  before them.
+- A pattern binding costs what `match` costs for the same pattern: one step
+  for each pattern node tried. A symbol binding costs what it cost before
+  patterns.
+
 ### dotimes and captured loop variables
 
 `dotimes` evaluates its count once in the enclosing scope. It reuses one

@@ -25,6 +25,17 @@ func TestMatchParity(t *testing.T) {
 	})
 }
 
+// A let binding pattern reads a record as match does
+// (luthersystems/elps#910).
+func TestLetPatternParity(t *testing.T) {
+	runParity(t, []parityCase{
+		{`(let ([(T :n x) (T :n 1)]) x)`, "1"},
+		{`(let* ([[o T] (T :n 2)] [(T :n x) o]) x)`, "2"},
+		{`(let ([(T :n x) 5]) x)`, "error:match-error"},
+		{`(let ([(T :n 1) (T :n 2)]) 'no)`, "error:match-error"},
+	})
+}
+
 // A Lisp record field that is not set reads as (), as (o 'f) reads it.
 // A record pattern may name an interface.
 func TestMatchLisp(t *testing.T) {

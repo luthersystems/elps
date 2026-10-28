@@ -112,7 +112,7 @@ func opMatch(env *LEnv, args *LVal) *LVal {
 			}
 			guard, body = body[1], body[2:]
 		}
-		if lerr := checkMatchPattern(env, pat, nil); lerr != nil {
+		if lerr := checkMatchPattern(env, "match: ", pat, nil); lerr != nil {
 			return lerr
 		}
 		m := matcher{env: env, binds: binds[:0]}
@@ -249,8 +249,10 @@ func matchListParts(parts []*LVal) ([]*LVal, *LVal) {
 }
 
 // checkMatchPattern checks the shape of p and that it binds no name twice.
-// seen holds the names bound so far.  It returns nil when p is good.
-func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
+// seen holds the names bound so far.  prefix starts each error message:
+// "match: " for match, and "" for let and let*, whose errors already
+// render with the operator's name.  It returns nil when p is good.
+func checkMatchPattern(env *LEnv, prefix string, p *LVal, seen map[string]bool) *LVal {
 	switch classifyPattern(p) {
 	case matchAny, matchLiteral:
 		return nil // the common leaf patterns need no walk
@@ -269,14 +271,14 @@ func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
 				seen = make(map[string]bool)
 			}
 			if seen[name.Str] {
-				return env.Errorf("match: pattern binds %s twice", name.Str)
+				return env.Errorf(prefix+"pattern binds %s twice", name.Str)
 			}
 			seen[name.Str] = true
 			return nil
 		}
 		switch classifyPattern(p) {
 		case matchBad:
-			return env.Errorf("match: bad pattern: %v; a quoted list is [name type], and (list 'a 'b) matches a literal list", p)
+			return env.Errorf(prefix+"bad pattern: %v; a quoted list is [name type], and (list 'a 'b) matches a literal list", p)
 		case matchAny, matchLiteral:
 		case matchName:
 			if lerr := bind(p); lerr != nil {
@@ -284,7 +286,7 @@ func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
 			}
 		case matchQuote:
 			if len(p.Cells) != 2 {
-				return env.Errorf("match: (quote datum) takes one datum: %v", p)
+				return env.Errorf(prefix+"(quote datum) takes one datum: %v", p)
 			}
 		case matchTyped:
 			if lerr := bind(p.Cells[0]); lerr != nil {
@@ -294,7 +296,7 @@ func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
 			elems, rest := matchListParts(p.Cells[1:])
 			for _, q := range elems {
 				if q.IsSymbol(VarArgSymbol) {
-					return env.Errorf("match: &rest must come before the last pattern of a list: %v", p)
+					return env.Errorf(prefix+"&rest must come before the last pattern of a list: %v", p)
 				}
 				stack = append(stack, item{q})
 			}
@@ -304,16 +306,16 @@ func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
 		case matchMap, matchRecord:
 			parts := p.Cells[1:]
 			if len(parts)%2 != 0 {
-				return env.Errorf("match: %v needs key and pattern pairs", p)
+				return env.Errorf(prefix+"%v needs key and pattern pairs", p)
 			}
 			for i := 0; i < len(parts); i += 2 {
 				k := parts[i]
 				if classifyPattern(p) == matchRecord {
 					if k.Type != LSymbol || k.quoted || !isKeyword(k.Str) || len(k.Str) < 2 {
-						return env.Errorf("match: a record pattern is (type :field pattern ...): %v", p)
+						return env.Errorf(prefix+"a record pattern is (type :field pattern ...): %v", p)
 					}
 				} else if k.Type != LString && k.Type != LInt && (k.Type != LSymbol || !isKeyword(k.Str)) {
-					return env.Errorf("match: a map key in a pattern is a string, an int or a keyword: %v", k)
+					return env.Errorf(prefix+"a map key in a pattern is a string, an int or a keyword: %v", k)
 				}
 				stack = append(stack, item{parts[i+1]})
 			}
@@ -414,6 +416,50 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 	case matchBad:
 	}
 	return false, env.Errorf("match: bad pattern: %v", p)
+}
+
+// matchBinding matches the pattern pat of a let or let* binding against
+// val, and returns the names the pattern binds
+// (luthersystems/elps#910).  env evaluates the pattern's type
+// expressions: the scope around a let, or the bindings so far of a let*.
+// A value that does not match raises match-error, a child of error.  A
+// binding has no other clause to try, so binding () to every name would
+// hide the mismatch until a later use of a name.
+func matchBinding(env *LEnv, pat, val *LVal) ([]matchBind, *LVal) {
+	if lerr := checkMatchPattern(env, "", pat, nil); lerr != nil {
+		return nil, lerr
+	}
+	m := matcher{env: env}
+	ok, lerr := m.match(pat, val)
+	if lerr != nil {
+		return nil, lerr
+	}
+	if !ok {
+		// The message names the pattern, which is program text, and the
+		// value's type, never the value: a value can be large.
+		return nil, env.ErrorConditionf(CondMatchError, "the value does not match the pattern %v: got %v", pat, val.Type)
+	}
+	return m.binds, nil
+}
+
+// putBinds binds each name of a pattern in env.
+func putBinds(env *LEnv, binds []matchBind) *LVal {
+	for _, b := range binds {
+		if lerr := env.Put(b.name, b.val); lerr.IsError() {
+			return lerr
+		}
+	}
+	return nil
+}
+
+// badLetBinding returns the error for a let or let* binding that is not a
+// (name value) pair.  A pattern with a :when guard gets its own message: a
+// binding has no clause to fall through to, so a guard has no meaning.
+func badLetBinding(env *LEnv, bind *LVal) *LVal {
+	if bind.Type == LSExpr && len(bind.Cells) > 2 && bind.Cells[0].Type != LSymbol && bind.Cells[1].IsSymbol(":when") {
+		return env.Errorf("a binding pattern takes no :when guard: %v", bind)
+	}
+	return env.Errorf("first argument is not a list of pairs")
 }
 
 // equal reports whether v is equal? to lit.

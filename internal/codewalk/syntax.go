@@ -109,6 +109,13 @@ func syntax(node *lisp.LVal, parent *lisp.LVal, depth int, opts syntaxVisitors) 
 			if policy.BindingStart > 0 && len(v.Cells) > 1 && v.Cells[1].Type == lisp.LSExpr {
 				for _, binding := range v.Cells[1].Cells {
 					if binding.Type == lisp.LSExpr {
+						// A let binding's name may be a match pattern, whose
+						// type expressions are code.
+						if policy.Patterns && len(binding.Cells) > 0 {
+							patternCode(binding.Cells[0], func(code *lisp.LVal) {
+								syntax(code, v, depth+4, syntaxVisitors{visit: nil, stop: nil, calls: calls})
+							})
+						}
 						for _, child := range binding.Cells[min(policy.BindingStart, len(binding.Cells)):] {
 							syntax(child, v, depth+3, syntaxVisitors{visit: nil, stop: nil, calls: calls})
 						}

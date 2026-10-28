@@ -30,6 +30,7 @@ func TestGlobalFallbackGolden(t *testing.T) {
 		`(lisp:export '(a b)) (lisp:in-package 'p)`,
 		`(in-package) (use-package) (export)`,
 		`(export '(a (b) 1)) (export (quote f)) (export "f")`,
+		`(let (((list a [b (export 'f)]) v)) (export 'g))`,
 	}
 	names := []string{"defun", "defmacro", "deftype", "test-let", "test-let*"}
 	for _, op := range lisp.DefaultSpecialOps() {

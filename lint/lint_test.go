@@ -292,6 +292,20 @@ func TestLetBindings_Positive_NonSymbolBinding(t *testing.T) {
 	assertHasDiag(t, diags, "must be a symbol")
 }
 
+// A list in a binding's name position is a match pattern
+// (luthersystems/elps#910).
+func TestLetBindings_Negative_Pattern(t *testing.T) {
+	for _, src := range []string{
+		`(let (((list a b) v)) a)`,
+		`(let* ([(sorted-map "k" k) m] [[s s:string] k] [(point :x x) p]) x)`,
+		`(let ([() v]) 1)`,
+	} {
+		assert.Empty(t, lintCheck(t, AnalyzerLetBindings, src), src)
+	}
+	diags := lintCheck(t, AnalyzerLetBindings, `(let (((list a) :when b v)) a)`)
+	assertHasDiag(t, diags, "expected 2 elements")
+}
+
 func TestLetBindings_Positive_LetStar(t *testing.T) {
 	diags := lintCheck(t, AnalyzerLetBindings, `(let* (x 42) x)`)
 	assert.Len(t, diags, 2) // both x and 42 are "not a list"

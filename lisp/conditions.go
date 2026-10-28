@@ -107,13 +107,19 @@ const CondModifyLiteral = "modify-literal-error"
 // failing function's name and no condition name.
 const CondArgumentError = "argument-error"
 
+// CondMatchError reports that the value of a let or let* binding does not
+// match the binding's pattern (luthersystems/elps#910).  Its message names
+// the pattern.  match-error is a child of error, as argument-error is, so a
+// handler-bind on error catches it and it renders as error does.
+const CondMatchError = "match-error"
+
 // conditionParent returns the parent of condition c in elps's fixed
 // condition hierarchy, or "" when c has none.  Only conditions elps raises
 // itself have a parent; a condition a program names with (error 'x ...) has
 // none.
 func conditionParent(c string) string {
 	switch c {
-	case CondArgumentError:
+	case CondArgumentError, CondMatchError:
 		return "error"
 	}
 	return ""

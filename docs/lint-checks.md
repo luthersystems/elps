@@ -116,9 +116,15 @@ indicate a structural error.
 
 **Checks for malformed `let`/`let*` binding lists.**
 
-The first argument to `let` or `let*` must be a list of `(symbol value)`
-pairs. The most common mistake is forgetting the outer parentheses, which
-causes unexpected nil bindings.
+The first argument to `let` or `let*` must be a list of `(name value)`
+pairs. A name is a symbol or a list pattern, such as `(list a b)` or
+`[s s:string]` (see "Binding patterns" in the language reference). The most
+common mistake is forgetting the outer parentheses, which causes unexpected
+nil bindings.
+
+A literal name such as `42` is reported. `let` accepts it as a pattern that
+binds nothing and only tests the value, but that is more often a mistake.
+Use `match` to test a value against a literal.
 
 ```lisp
 ;; BAD — binds x to nil and 42 to nil
@@ -131,6 +137,7 @@ causes unexpected nil bindings.
 ;; GOOD
 (let ((x 42)) ...)
 (let ((x 1) (y 2)) ...)
+(let (((list a b) pair)) ...)
 ```
 
 ### `let-recursion`
