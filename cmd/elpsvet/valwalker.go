@@ -77,6 +77,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lint.mentionsUnquoted":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.nodeMentionsRethrowContext":                        "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.walkLambdaListCalls":                               "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/lint.topLevelForms":                                     "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/lint.walkRethrowTemplate":                               "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/internal/codewalk.syntax":                               "syntax walker: the raw source traversal behind codewalk.Syntax",
 	"github.com/luthersystems/elps/lisp.CodeWalker.sourceCalls":                            "syntax walker: source calls for the internal formals event, quote and quasiquote skipped",
