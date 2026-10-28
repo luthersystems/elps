@@ -677,6 +677,24 @@ field write. Use `s:set-field!` to change a field.
 (s:method pay (o) (s:set-field! o 'paid true))
 ```
 
+### `schema-type-union`
+
+**Flags a type next to a constraint on the same type in `s:has-key`,
+`s:may-have-key` or `s:of`.** (Severity: warning)
+
+The allowed types are OR'ed: a value passes when it matches one of them. So
+a base type next to a constraint on that type accepts every value of the
+type, and the constraint never refuses one. `s:any` next to any other type
+is flagged too. A real union of types, `(s:has-key "n" s:int s:string)`, is
+not flagged.
+
+```lisp
+;; WARNING: every string passes, "nope" too
+(s:has-key "email" s:string (s:regexp "@"))
+;; OK: both must pass
+(s:has-key "email" (s:make-validator "email" s:string (s:regexp "@")))
+```
+
 ### `use-package-hides-lisp`
 
 **Warns when a `use-package` hides `lisp` names, and at each call that then

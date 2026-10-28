@@ -2147,7 +2147,7 @@ func TestBracketListIgnored(t *testing.T) {
 
 func TestDefaultAnalyzers(t *testing.T) {
 	analyzers := DefaultAnalyzers()
-	assert.Len(t, analyzers, 41)
+	assert.Len(t, analyzers, 42)
 	names := AnalyzerNames()
 	assert.Equal(t, []string{
 		"builtin-arity",
@@ -2181,6 +2181,7 @@ func TestDefaultAnalyzers(t *testing.T) {
 		"record-unknown-member",
 		"removed-builtin",
 		"rethrow-context",
+		"schema-type-union",
 		"set-usage",
 		"shadowing",
 		"test-outside-test-file",
@@ -2638,6 +2639,7 @@ func TestSeverity_AnalyzerDefaults(t *testing.T) {
 		"record-method-arity":       SeverityWarning,
 		"record-defmethod-type":     SeverityWarning,
 		"record-plain-set":          SeverityWarning,
+		"schema-type-union":         SeverityWarning,
 		"cond-structure":            SeverityError,
 		"builtin-arity":             SeverityError,
 		"quote-call":                SeverityWarning,
