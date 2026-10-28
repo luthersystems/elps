@@ -75,9 +75,17 @@ type FieldSpec struct {
 
 // MethodSpec describes one method of a Go record type.
 type MethodSpec struct {
-	// Call runs the method.  args are the arguments after the op; Call
-	// checks their number itself.
+	// Call runs the method.  args are the arguments after the op.  When
+	// Formals is set, their number is checked before Call runs; without
+	// it, Call checks it.
 	Call func(env *lisp.LEnv, r Record, args []*lisp.LVal) *lisp.LVal
+	// Formals, if not nil, are the method's formals after the receiver,
+	// as lisp.Formals builds them (&optional, &rest and &key allowed).  A
+	// call with a number of arguments they do not accept fails with
+	// bad-arguments, and an interface (NewInterface, s:make-interface)
+	// checks them.  Without Formals the method accepts any number of
+	// arguments as far as an interface is concerned.
+	Formals *lisp.LVal
 	// Name is the op that calls the method.
 	Name string
 	// Doc describes the method.
@@ -88,8 +96,10 @@ type MethodSpec struct {
 // share between runtimes and goroutines.
 type RecordType struct {
 	methods map[string]*MethodSpec
-	index   map[string]int
-	spec    RecordSpec
+	// arity is the arity of each method, from its Formals.
+	arity map[string]arity
+	index map[string]int
+	spec  RecordSpec
 }
 
 // goTypes maps the package and FID of each Go record type to the type, so
@@ -124,6 +134,7 @@ func NewRecordType(spec RecordSpec) (*RecordType, error) {
 		spec:    spec,
 		index:   make(map[string]int, len(spec.Fields)),
 		methods: make(map[string]*MethodSpec, len(spec.Methods)),
+		arity:   make(map[string]arity, len(spec.Methods)),
 	}
 	t.spec.Fields = append([]FieldSpec(nil), spec.Fields...)
 	t.spec.Methods = append([]MethodSpec(nil), spec.Methods...)
@@ -148,6 +159,14 @@ func NewRecordType(spec RecordSpec) (*RecordType, error) {
 			return nil, fmt.Errorf("libschema: record type %s: method %s has the name of a field with a getter", spec.Name, m.Name)
 		}
 		t.methods[m.Name] = m
+		t.arity[m.Name] = anyArity
+		if m.Formals != nil {
+			if err := checkFormals(m.Formals); err != nil {
+				return nil, fmt.Errorf("libschema: record type %s: method %s: %w", spec.Name, m.Name, err)
+			}
+			t.arity[m.Name] = arityOf(m.Formals)
+			m.Formals = m.Formals.Copy()
+		}
 	}
 	if _, loaded := goTypes.LoadOrStore(goTypeKey(spec.Package, spec.FID), t); loaded {
 		return nil, fmt.Errorf("libschema: record type %s:%s is defined already", spec.Package, spec.FID)
@@ -176,6 +195,11 @@ func (t *RecordType) Spec() RecordSpec {
 	s := t.spec
 	s.Fields = append([]FieldSpec(nil), t.spec.Fields...)
 	s.Methods = append([]MethodSpec(nil), t.spec.Methods...)
+	for i := range s.Methods {
+		if s.Methods[i].Formals != nil {
+			s.Methods[i].Formals = s.Methods[i].Formals.Copy()
+		}
+	}
 	return s
 }
 
@@ -230,6 +254,9 @@ func (t *RecordType) eval(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	obj := Record{caps: caps, t: t}
 	if op.Type == lisp.LSymbol {
 		if m := t.methods[op.Str]; m != nil {
+			if a := t.arity[op.Str]; len(rest) < a.min || (a.max >= 0 && len(rest) > a.max) {
+				return env.ErrorConditionf(BadArgs, "%s: method %s takes %v, got %d", t.spec.DisplayName, op.Str, a, len(rest))
+			}
 			return t.guarded(env, obj, func() *lisp.LVal { return m.Call(env, obj, rest) })
 		}
 		if i, ok := t.index[op.Str]; ok && t.spec.Fields[i].Getter {

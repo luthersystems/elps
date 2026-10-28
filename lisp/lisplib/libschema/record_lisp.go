@@ -48,6 +48,15 @@ var recordMacros = []*libutil.Builtin{
 		formal, recv, is the object, as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
 		:replace true.`),
+	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
+		`Defines an interface, a set of methods, and returns it:
+		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
+		method is (name (args...)): its formals after the receiver,
+		with &optional, &rest and &key allowed.  A value satisfies the
+		interface when it is a record object whose type has each method,
+		and each method accepts every call the interface allows, as in
+		Go.  The interface is a validator: use it as a field type, in
+		s:of, or with s:validate.`),
 }
 
 // recordBuiltins are the record builtins of package s.
@@ -59,6 +68,9 @@ var recordBuiltins = []*libutil.Builtin{
 		directly.`),
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
+		directly.`),
+	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods"), builtinMakeInterface,
+		`The function s:make-interface expands to.  Do not call it
 		directly.`),
 	libutil.FunctionDoc("set!", lisp.Formals("obj", "field", "value"), builtinRecordSet,
 		`Sets a field of a record object, (s:set! obj 'field value),
@@ -309,4 +321,57 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	methods.Map().Set(lisp.String(name.Str), fn) //elps:mutates s:defmethod adds to the type's own method map
 	return name
+}
+
+// macroMakeInterface expands s:make-interface into
+//
+//	(s:%make-interface NAME '((m1 (formals...)) ...))
+//
+// The method specs are data: builtinMakeInterface checks them.
+func macroMakeInterface(_ *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	return lisp.Cells{
+		lisp.Symbol(DefaultPackageName + ":%make-interface"),
+		args.Cells[0],
+		quoted(lisp.SExpr(args.Cells[1:])),
+	}.SExpr()
+}
+
+// builtinMakeInterface builds an interface: s:%make-interface.
+func builtinMakeInterface(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	name, specs := args.Cells[0], args.Cells[1]
+	if name.Type != lisp.LString || name.Str == "" {
+		return env.ErrorConditionf(BadArgs, "s:make-interface: the name must be a string: %v", name)
+	}
+	spec, bad := interfaceSpecOf(name.Str, specs)
+	if bad != nil {
+		return env.ErrorConditionf(BadArgs, "s:make-interface: %s: a method is (name (args...)): %v", name.Str, bad)
+	}
+	in, err := NewInterface(spec)
+	if err != nil {
+		return env.ErrorConditionf(BadArgs, "s:make-interface: %v", err)
+	}
+	return in.Validator(env)
+}
+
+// interfaceSpecOf reads the method specs of s:make-interface.  It
+// returns the first spec it cannot read as bad.
+func interfaceSpecOf(name string, specs *lisp.LVal) (InterfaceSpec, *lisp.LVal) {
+	spec := InterfaceSpec{Name: name}
+	for _, m := range specs.Cells {
+		im, ok := interfaceMethodOf(m)
+		if !ok {
+			return spec, m
+		}
+		spec.Methods = append(spec.Methods, im)
+	}
+	return spec, nil
+}
+
+// interfaceMethodOf reads one method spec of s:make-interface, (name
+// (args...)).  NewInterface checks the formals.
+func interfaceMethodOf(m *lisp.LVal) (InterfaceMethod, bool) {
+	if m.Type != lisp.LSExpr || len(m.Cells) != 2 || m.Cells[0].Type != lisp.LSymbol {
+		return InterfaceMethod{}, false
+	}
+	return InterfaceMethod{Name: m.Cells[0].Str, Formals: m.Cells[1]}, true
 }

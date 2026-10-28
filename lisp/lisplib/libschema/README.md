@@ -319,6 +319,7 @@ A record type is a constructor for objects with typed fields and methods
 | `(s:set! RECV 'FIELD VALUE)` | Change a field. Checks VALUE against the field's validator. |
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
+| `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
 
 Rules:
 
@@ -379,6 +380,41 @@ Details:
 * A phylum endpoint that raises an error already rolls back its whole
   transaction. The rollback matters for code that catches an error and
   keeps using the object.
+
+#### Interfaces
+
+An interface names a set of methods, as a Go interface does
+(luthersystems/elps#900). A value satisfies it when it is a record object
+whose type has each method, and each method accepts every call the
+interface allows. A type does not declare the interfaces it satisfies, and
+a method that `s:defmethod` adds later counts.
+
+```lisp
+(set 'payable (s:make-interface "payable" (pay (amount)) (cancel ())))
+
+(set 'ledger
+  (s:make-record "ledger"
+    (s:has-key "payer" payable)              ; any record with pay and cancel
+    (s:may-have-key "others" (s:of payable))))
+
+(s:validate payable obj)                     ; () or wrong-type
+```
+
+* Each method is `(NAME (ARGS...))`: its formals after the receiver.
+  `&optional`, `&rest` and `&key` are allowed.
+* A method matches when it accepts every call the interface allows: it
+  needs no more arguments, and accepts at least as many. `(pay (o amount
+  &optional note))` satisfies `(pay (amount))`; `(pay (o))` does not.
+* An interface is a validator, so it is a field type, an `s:of` element
+  or an `s:validate` type, and `ValidateLoaded` checks it. It is never
+  saved: an object saves its own type.
+* Go: `libschema.NewInterface(InterfaceSpec)` builds the same interface.
+  `(*Interface).Validator(env)` makes the validator, and
+  `(*Interface).Satisfies(v)` checks a value. Lisp and Go interfaces both
+  accept Lisp and Go record objects. A Go method declares its formals in
+  `MethodSpec.Formals`; a call with the wrong number of arguments then
+  fails before `Call` runs. A Go method without `Formals` accepts any
+  number of arguments, for an interface too.
 
 Saving objects. An object saves only its fields. Its type saves as the name
 of the global that holds it, and its methods are never saved. Add
