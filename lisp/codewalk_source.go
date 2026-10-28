@@ -162,6 +162,9 @@ func (w *CodeWalker) sourceCalls(v *LVal, spec formSpec, depth int) {
 		}
 		for _, clause := range v.Cells[min(first, len(v.Cells)):] {
 			if clause.Type == LSExpr {
+				if spec.patterns && len(clause.Cells) > 0 {
+					matchPatternCode(clause.Cells[0], func(code *LVal) { w.sourceValue(code, depth+3) })
+				}
 				for _, child := range clause.Cells[min(skip, len(clause.Cells)):] {
 					w.sourceValue(child, depth+2)
 				}

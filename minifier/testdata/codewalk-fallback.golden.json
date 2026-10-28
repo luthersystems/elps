@@ -4573,7 +4573,7 @@
       "-",
       "export@16:1:17"
     ],
-    "Output": "(lisp:match () (export 'f))\n",
+    "Output": "(lisp:match () (x1 'f))\n",
     "Symbols": {
       "excluded": [
         {
@@ -4581,8 +4581,24 @@
           "reason": "quoted-reference"
         }
       ],
-      "entries": [],
-      "minified_to_original": {}
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "export",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 17
+        }
+      ],
+      "minified_to_original": {
+        "x1": "export"
+      },
+      "original_to_minified": {
+        "export": [
+          "x1"
+        ]
+      }
     }
   },
   {
@@ -4593,7 +4609,7 @@
       "in-package@17:1:18",
       "in-package@17:1:18"
     ],
-    "Output": "(lisp:match bad (in-package 'p))\n",
+    "Output": "(lisp:match bad (x1 'p))\n",
     "Symbols": {
       "excluded": [
         {
@@ -4601,8 +4617,24 @@
           "reason": "quoted-reference"
         }
       ],
-      "entries": [],
-      "minified_to_original": {}
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "in-package",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 18
+        }
+      ],
+      "minified_to_original": {
+        "x1": "in-package"
+      },
+      "original_to_minified": {
+        "in-package": [
+          "x1"
+        ]
+      }
     }
   },
   {

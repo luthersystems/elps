@@ -1648,11 +1648,11 @@ func (k formKind) sourceModes() uint8 {
 	switch k {
 	case kindQuote, kindQuasiquote:
 		return 0b1111 // source and package scan, plain and qualified
-	case kindLambda, kindLet, kindLetSeq, kindFlet, kindLabels:
+	case kindLambda, kindLet, kindLetSeq, kindFlet, kindLabels, kindMatch:
 		return 0b0111 // package scan omits qualified bindings
 	case kindDefun, kindDefmacro, kindDeftype, kindMacrolet, kindHandlerBind:
 		return 0b0101 // unqualified only
-	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
+	case kindFunction, kindSetBang, kindDotimes, kindCond, kindTest, kindQualifiedSymbol, kindTestLet, kindTestLetSeq:
 		return 0b0001 // unqualified source only
 	case kindExpr:
 		return 0b0011 // source only

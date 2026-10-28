@@ -22,7 +22,7 @@ var AnalyzerMatchUnreachable = &Analyzer{
 		"so the clauses after it never run. Move the catch-all clause last.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
-			if HeadSymbol(sexpr) != "match" || len(sexpr.Cells) < 3 {
+			if head := HeadSymbol(sexpr); (head != "match" && head != "lisp:match") || len(sexpr.Cells) < 3 {
 				return
 			}
 			clauses := sexpr.Cells[2:]
@@ -45,7 +45,9 @@ var AnalyzerMatchUnreachable = &Analyzer{
 }
 
 // isMatchCatchAll reports whether clause c matches every value: its
-// pattern is _, :else or a name to bind, and it has no :when guard.
+// pattern is _, :else or a name to bind, and it has no :when guard.  It
+// follows the symbol rules of lisp's classifyPattern: a keyword, true,
+// false, an &-name or a qualified name is not a name to bind.
 func isMatchCatchAll(c *lisp.LVal) bool {
 	if c.Type != lisp.LSExpr || c.IsQuoted() || len(c.Cells) == 0 {
 		return false
@@ -60,7 +62,7 @@ func isMatchCatchAll(c *lisp.LVal) bool {
 	switch {
 	case p.Str == "_" || p.Str == ":else":
 		return true
-	case p.Str == "" || p.Str == "true" || p.Str == "false" || strings.HasPrefix(p.Str, ":") || strings.HasPrefix(p.Str, "&"):
+	case p.Str == "" || p.Str == "true" || p.Str == "false" || strings.HasPrefix(p.Str, "&") || strings.Contains(p.Str, ":"):
 		return false
 	}
 	return true

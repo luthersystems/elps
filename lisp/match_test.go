@@ -69,6 +69,9 @@ func TestMatch(t *testing.T) {
 		{`(match 1 (x :when))`, "error: match: :when needs a guard"},
 		{`(match 1 (x :when (error 'boom "no") 1))`, "error: no"},
 		{`(match 1 ([x (error 'boom "t")] 1))`, "error: t"},
+		{`(match 5 (user:x 1))`, "error: match: bad pattern"},
+		{`(match 5 ([true s:int] 1))`, "error: match: bad pattern"},
+		{`(match 5 ([:k s:int] 1))`, "error: match: bad pattern"},
 		{`(match 1 (2 1) bad)`, "error: match: a clause is (pattern body...)"},
 		// A shape error is found when its clause is reached.
 		{`(match 1 (1 'one) ((list a a) 2))`, "'one"},

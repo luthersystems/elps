@@ -3,6 +3,8 @@
 package lisp
 
 import (
+	"strings"
+
 	"github.com/luthersystems/elps/internal/templatepolicy"
 )
 
@@ -44,9 +46,10 @@ import (
 type MatchTypeFunc func(env *LEnv, v, typ *LVal) *LVal
 
 // MatchFieldFunc reads the field name of v, a value that passed a type
-// test.  ok is false when the field is not set, so the pattern does not
-// match.  err is an error when v has no field name that a pattern may
-// read; it stops the match.
+// test.  ok is false when the pattern must not match, for a field the
+// library treats as absent; package s returns ok and () for a field that
+// is not set, as (v 'name) reads it.  err is an error when v has no field
+// name that a pattern may read; it stops the match.
 type MatchFieldFunc func(env *LEnv, v *LVal, name string) (field *LVal, ok bool, err *LVal)
 
 // matchTypesSetting is the value setting (Runtime.SetSettingValue) that
@@ -175,7 +178,9 @@ func classifyPattern(p *LVal) matchPatternKind {
 			return matchAny
 		case p.Str == TrueSymbol || p.Str == FalseSymbol || isKeyword(p.Str):
 			return matchLiteral
-		case p.Str == "" || p.Str[0] == '&':
+		case p.Str == "" || p.Str[0] == '&' || strings.Contains(p.Str, ":"):
+			// A qualified name is not a local name: Put would bind it,
+			// but a reference reads the package.
 			return matchBad
 		}
 		return matchName
@@ -184,8 +189,10 @@ func classifyPattern(p *LVal) matchPatternKind {
 			return matchLiteral // () or '()
 		}
 		if p.quoted {
-			if len(p.Cells) == 2 && p.Cells[0].Type == LSymbol && !p.Cells[0].quoted {
-				return matchTyped
+			if len(p.Cells) == 2 {
+				if k := classifyPattern(p.Cells[0]); k == matchName || k == matchAny {
+					return matchTyped
+				}
 			}
 			return matchBad
 		}
@@ -208,6 +215,27 @@ func classifyPattern(p *LVal) matchPatternKind {
 	return matchBad
 }
 
+// matchPatternCode calls fn with each type expression in the pattern p:
+// the code a match evaluates while it tries p.
+func matchPatternCode(p *LVal, fn func(code *LVal)) {
+	switch classifyPattern(p) {
+	case matchTyped:
+		fn(p.Cells[1])
+	case matchList:
+		for _, q := range p.Cells[1:] {
+			matchPatternCode(q, fn)
+		}
+	case matchMap, matchRecord:
+		if classifyPattern(p) == matchRecord {
+			fn(p.Cells[0])
+		}
+		for i := 2; i < len(p.Cells); i += 2 {
+			matchPatternCode(p.Cells[i], fn)
+		}
+	case matchBad, matchAny, matchName, matchLiteral, matchQuote:
+	}
+}
+
 // matchListParts splits the parts of a list pattern into the element
 // patterns and the &rest pattern, or nil.
 func matchListParts(parts []*LVal) ([]*LVal, *LVal) {
@@ -221,6 +249,11 @@ func matchListParts(parts []*LVal) ([]*LVal, *LVal) {
 // checkMatchPattern checks the shape of p and that it binds no name twice.
 // seen holds the names bound so far.  It returns nil when p is good.
 func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
+	switch classifyPattern(p) {
+	case matchAny, matchLiteral:
+		return nil // the common leaf patterns need no walk
+	case matchBad, matchName, matchQuote, matchTyped, matchList, matchMap, matchRecord:
+	}
 	type item struct{ p *LVal }
 	stack := []item{{p}}
 	for len(stack) > 0 {

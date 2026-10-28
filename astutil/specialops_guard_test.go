@@ -57,6 +57,7 @@ var specialOpAllowlist = map[string]string{
 	"lint/analyzers.go:var AnalyzerBuiltinArity":                "reads quasiquote walker events to preserve the syntactic lint policy",
 	"lint/analyzers.go:var AnalyzerCondMissingElse":             "checks cond clause exhaustiveness",
 	"lint/match.go:var AnalyzerMatchUnreachable":                "checks match clause order",
+	"internal/codewalk/syntax.go:patternCode":                   "reads the heads of match patterns (quote, list, sorted-map), as lisp.classifyPattern does, to find their type expressions",
 	"lisp/match.go:classifyPattern":                             "reads the heads of match patterns (quote, list, sorted-map), which are pattern syntax, not forms",
 	"lint/analyzers.go:var AnalyzerHandlerOrder":                "reads handler-bind binding lists in source order",
 	"lint/analyzers.go:conditionLiteral":                        "extracts the literal condition operands of define-condition, including explicit quote",
