@@ -494,6 +494,9 @@ a method that `s:defmethod` adds later counts.
   does not satisfy `(pay (amount))`. When the interface has `&key`
   names, the method needs each of them and the same number of
   positional arguments, or `&rest`.
+* A field satisfies a method that takes no arguments, since `(obj
+  'field)` returns it: `(total ())` accepts a type with a field `total`.
+  A Go field needs `Getter`; a hidden field does not count.
 * An interface is a validator, so it is a field type, an `s:of` element
   or an `s:validate` type, and `ValidateLoaded` checks it. It is never
   saved: an object saves its own type.

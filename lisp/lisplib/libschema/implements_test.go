@@ -40,6 +40,9 @@ func TestImplementsLisp(t *testing.T) {
 	require.Equal(t, "error:wrong-type", parityOutcome(env, `(s:make-record "bad" :implements (payable)
   (s:method pay (o) 1) (s:method total (o) 1))`))
 	require.Equal(t, "error:bad-arguments", parityOutcome(env, `(s:make-record "bad" :implements (5))`))
+	// A field satisfies a method that takes no arguments.
+	require.Equal(t, "7", parityOutcome(env, `(((s:make-record "f" :implements ((s:make-interface "t" (total ())))
+  (s:has-key "total" s:int)) :total 7) 'total)`))
 	require.Equal(t, "error:bad-arguments", parityOutcome(env, `(s:make-record "bad" :implements)`))
 }
 

@@ -20,7 +20,8 @@ import (
 // An interface names a set of methods, as a Go interface does.  A value
 // satisfies it when it is a record object, of a Lisp or a Go type, whose
 // type has each method, and each method accepts every call the interface
-// allows.  The check is structural: the type does not declare the
+// allows.  A field (with a getter, for a Go type) counts as a method
+// that takes no arguments.  The check is structural: the type does not declare the
 // interface, and a method that s:defmethod adds later counts.
 //
 // An interface is a schema validator, so it is the type of a field, an
@@ -388,9 +389,17 @@ func methodArities(v *lisp.LVal) (func(string) (arity, bool), bool) {
 	return nil, false
 }
 
-// methodArity looks up the arity of a method of t.
+// fieldArity is the arity of a field read as a method: (obj 'field) takes
+// no arguments.  A field satisfies an interface method that takes none.
+var fieldArity = arity{}
+
+// methodArity looks up the arity of a method of t.  A field with a getter
+// counts as a method that takes no arguments.
 func (t *RecordType) methodArity(name string) (arity, bool) {
 	if t.methods[name] == nil {
+		if i, ok := t.index[name]; ok && t.spec.Fields[i].Getter {
+			return fieldArity, true
+		}
 		return arity{}, false
 	}
 	return t.arity[name], true
@@ -398,17 +407,27 @@ func (t *RecordType) methodArity(name string) (arity, bool) {
 
 // lispTypeArities returns a lookup of the arities of the methods of the
 // Lisp type with captures tcaps.  Each arity was stored when its method
-// was added, so a lookup parses nothing.
+// was added, so a lookup parses nothing.  A field counts as a method that
+// takes no arguments.
 func lispTypeArities(tcaps *lisp.LVal) func(string) (arity, bool) {
-	arities := tcaps.Cells[typeArities].Map()
+	desc := mustTag(tcaps)
 	return func(name string) (arity, bool) {
-		v, ok := arities.Get(lisp.String(name))
-		if !ok {
-			return arity{}, false
+		if a, ok := storedArity(tcaps, name); ok {
+			return a, true
 		}
-		tag, _ := lisp.NativeValue[arityTag](v)
-		return tag.a, true
+		return fieldArity, desc.hasField(name)
 	}
+}
+
+// storedArity returns the arity stored for the method name of the Lisp
+// type with captures tcaps.
+func storedArity(tcaps *lisp.LVal, name string) (arity, bool) {
+	v, ok := tcaps.Cells[typeArities].Map().Get(lisp.String(name))
+	if !ok {
+		return arity{}, false
+	}
+	tag, _ := lisp.NativeValue[arityTag](v)
+	return tag.a, true
 }
 
 // arityTag carries a Lisp method's arity in its type's captures.  It is

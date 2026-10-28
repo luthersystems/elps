@@ -32,6 +32,20 @@ func TestIsParity(t *testing.T) {
 	})
 }
 
+// TestFieldSatisfiesParity checks that a field satisfies an interface
+// method that takes no arguments, on a Lisp type and the same Go type
+// (#905).  A field takes no arguments, so a method that needs one, or may
+// take one, is not satisfied.
+func TestFieldSatisfiesParity(t *testing.T) {
+	runParity(t, []parityCase{
+		{`(s:is? (T :n 1) (s:make-interface "has-n" (n ())))`, "true"},
+		{`(s:is? (T :n 1) (s:make-interface "has-n" (n ()) (inc ())))`, "true"},
+		{`(s:is? (T :n 1) (s:make-interface "n1" (n (x))))`, "false"},
+		{`(s:is? (T :n 1) (s:make-interface "n?" (n (&optional x))))`, "false"},
+		{`(s:is? (T :n 1) (s:make-interface "m" (m ())))`, "false"},
+	})
+}
+
 // TestIsLisp checks the parts of s:is? that only Lisp has: an interface,
 // a :check that raises its own condition, and gensyms.
 func TestIsLisp(t *testing.T) {

@@ -312,4 +312,11 @@ func TestGoRecordHiddenField(t *testing.T) {
 	env.PutGlobal(lisp.Symbol("x"), rt.New(env, lisp.Int(1), lisp.String("pin")))
 	require.Equal(t, libschema.UnknownOperation, env.LoadString("t.lisp", `(x 'secret)`).Str)
 	require.Equal(t, `(sorted-map "shown" 1)`, evalString(t, env, `(s:fields x)`).String())
+
+	// A field with a getter satisfies an interface method that takes no
+	// arguments (#905); a hidden field does not.
+	evalString(t, env, `(set 'shows (s:make-interface "shows" (shown ())))
+(set 'hides (s:make-interface "hides" (secret ())))`)
+	require.Equal(t, "true", evalString(t, env, `(s:is? x shows)`).String())
+	require.Equal(t, "false", evalString(t, env, `(s:is? x hides)`).String())
 }

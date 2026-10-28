@@ -213,7 +213,7 @@ func evalLispObject(env *lisp.LEnv, args, caps *lisp.LVal) *lisp.LVal {
 	if m, ok := tcaps.Cells[typeMethods].Map().Get(lisp.String(op.Str)); ok && m.Type == lisp.LFun {
 		// The call's shape is checked in Go, as for a Go method, so a
 		// bad call is bad-arguments with no receiver in the count.
-		a, _ := lispTypeArities(tcaps)(op.Str)
+		a, _ := storedArity(tcaps, op.Str)
 		if msg := a.checkCall(rest); msg != "" {
 			return env.ErrorConditionf(BadArgs, "%s: method %s %s", desc.display, op.Str, msg)
 		}

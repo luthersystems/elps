@@ -67,7 +67,7 @@ var recordMacros = []*libutil.Builtin{
 		only with the same arity.  A value satisfies the
 		interface when it is a record object whose type has each method,
 		and each method accepts every call the interface allows, as in
-		Go.  The interface is a validator: use it as a field type, in
+		Go.  A field counts as a method that takes no arguments.  The interface is a validator: use it as a field type, in
 		s:of, or with s:validate.`),
 }
 
