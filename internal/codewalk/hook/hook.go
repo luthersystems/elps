@@ -42,7 +42,8 @@ type CallPolicy struct {
 	BindingFormals bool
 	Clauses        bool
 	// Patterns marks clauses whose first cell is a match pattern, which
-	// is not code.
+	// is not code.  With BindingStart it marks bindings whose first cell
+	// may be a match pattern (let and let*).
 	Patterns bool
 }
 

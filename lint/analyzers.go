@@ -125,7 +125,7 @@ var AnalyzerIfArity = &Analyzer{
 var AnalyzerLetBindings = &Analyzer{
 	Name:     "let-bindings",
 	Severity: SeverityError,
-	Doc:      "Check for malformed `let`/`let*` binding lists.\n\nThe first argument to `let` or `let*` must be a list of (symbol value) pairs. Common mistakes include forgetting the outer list: `(let (x 1) ...)` instead of `(let ((x 1)) ...)`.",
+	Doc:      "Check for malformed `let`/`let*` binding lists.\n\nThe first argument to `let` or `let*` must be a list of (name value) pairs. A name is a symbol or a list pattern such as (list a b). Common mistakes include forgetting the outer list: `(let (x 1) ...)` instead of `(let ((x 1)) ...)`.",
 	Run: func(pass *Pass) error {
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {
 			head := HeadSymbol(sexpr)
@@ -167,9 +167,10 @@ var AnalyzerLetBindings = &Analyzer{
 					continue
 				}
 				// Accept (unquote sym) as a valid binding name — it expands to a symbol at macro-expansion time.
-				if binding.Cells[0].Type != lisp.LSymbol && HeadSymbol(binding.Cells[0]) != "unquote" {
+				// A list is a match pattern (luthersystems/elps#910); let checks its shape when it runs.
+				if binding.Cells[0].Type != lisp.LSymbol && HeadSymbol(binding.Cells[0]) != "unquote" && !isBindingPattern(binding.Cells[0]) {
 					pass.Reportf(bindingSource(binding, src),
-						"%s binding %d: first element must be a symbol, got %s", head, i+1, binding.Cells[0].Type)
+						"%s binding %d: first element must be a symbol or a list pattern, got %s", head, i+1, binding.Cells[0].Type)
 					continue
 				}
 				if len(binding.Cells) != 2 {
@@ -180,6 +181,16 @@ var AnalyzerLetBindings = &Analyzer{
 		})
 		return nil
 	},
+}
+
+// isBindingPattern reports whether v, the first cell of a let binding that
+// is not a symbol, is a list pattern: (list ...), (sorted-map ...), a
+// record pattern or [name T] (a quoted list).  let also takes a literal
+// pattern such as 42, but it binds no name and only tests the value, so
+// the check goes on reporting it: (let ((42 1)) ...) is more likely a
+// mistake than a test, and match states a test plainly.
+func isBindingPattern(v *lisp.LVal) bool {
+	return v.Type == lisp.LSExpr
 }
 
 // AnalyzerLetRecursion identifies unresolved self-references in closures

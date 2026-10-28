@@ -52,9 +52,11 @@ operator (let bindings &rest expr)
   Creates local variable bindings evaluated in parallel. All value
   expressions are evaluated in the enclosing scope before any
   bindings are established. The first argument is a list of
-  [symbol value] pairs. Duplicate names are legal (the last binding wins),
-  but lint warns; use let* for sequential rebinding. Returns the last body
-  value.
+  [symbol value] pairs. In place of the symbol a binding may give a match
+  pattern, such as [(list a b) v]: the value must match it, and its names
+  are bound. A value that does not match raises match-error. Duplicate
+  names are legal (the last binding wins), but lint warns; use let* for
+  sequential rebinding. Returns the last body value.
 => ()
 ;; (HELP undoc)
 function (undoc x)

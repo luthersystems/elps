@@ -523,6 +523,63 @@
     ]
   },
   {
+    "Source": "(let (((list f [g (lambda (x x) 1)]) v)) (lambda (\u0026rest) 1)) (let* (((R :f h) (lambda (\u0026key) 1))) h)",
+    "Calls": [
+      "(let (((list f '(g (lambda (x x) 1))) v)) (lambda (\u0026rest) 1))",
+      "(lambda (x x) 1)",
+      "(lambda (\u0026rest) 1)",
+      "(let* (((R :f h) (lambda (\u0026key) 1))) h)",
+      "(lambda (\u0026key) 1)"
+    ],
+    "Diagnostics": [
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 30
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 31
+        },
+        "message": "duplicate formal argument name: x; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      },
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 51
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 56
+        },
+        "message": "function formal argument list contains a control symbol at an invalid location: \u0026rest; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      },
+      {
+        "pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 88
+        },
+        "end_pos": {
+          "file": "test.lisp",
+          "line": 1,
+          "col": 92
+        },
+        "message": "function formal argument list: \u0026key must be followed by at least one parameter name; use unique parameter names and valid \u0026optional, \u0026key, or final \u0026rest name",
+        "analyzer": "lambda-list",
+        "severity": "error"
+      }
+    ]
+  },
+  {
     "Source": "(and)",
     "Calls": [
       "(and)"

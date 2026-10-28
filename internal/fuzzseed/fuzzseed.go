@@ -247,6 +247,10 @@ func Adversarial() [][]byte {
 		"(match v ((list a &rest r) :when (> a 1) r) ([s s:string] s) ((T :f x) x) (_ 0))",
 		"(match v (x 1) (2 2) (:else 3))",
 		"(match)", "(match v ())", "(match v ('(1 2) 1))",
+		// let and let* binding patterns: their names for the scope walks,
+		// their type expressions as code.
+		"(let* ([(list a &rest r) v] [[s s:string] a] [(T :f x) s] [(sorted-map \"k\" k) x]) (list r k))",
+		"(let (((list a) v) (b a)) b)", "(let ([() v] [1 v]) v)",
 		"(in-package 'foo)\n(export 'bar)\n(defun bar () ())",
 		// A definition whose NAME carries a reader quote, plus a call to it.
 		// The quote is not a node of its own -- rdparser folds it into the

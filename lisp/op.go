@@ -100,13 +100,19 @@ var langSpecialOps = []*langBuiltin{
 		`Creates local variable bindings evaluated sequentially, so each
 		binding can refer to previously bound symbols. Repeated names are legal
 		sequential rebinding and do not produce duplicate-binding lint warnings.
-		The first argument is a list of [symbol value] pairs. Returns the last body value.`},
+		The first argument is a list of [symbol value] pairs. In place of the
+		symbol a binding may give a match pattern, such as [(list a b) v]: the
+		value must match it, and its names are bound. A value that does not
+		match raises match-error. Returns the last body value.`},
 	{"let", Formals("bindings", VarArgSymbol, "expr"), opLet,
 		`Creates local variable bindings evaluated in parallel. All value
 		expressions are evaluated in the enclosing scope before any
 		bindings are established. The first argument is a list of
-		[symbol value] pairs. Duplicate names are legal (the last binding wins),
-		but lint warns; use let* for sequential rebinding. Returns the last body value.`},
+		[symbol value] pairs. In place of the symbol a binding may give a match
+		pattern, such as [(list a b) v]: the value must match it, and its names
+		are bound. A value that does not match raises match-error. Duplicate
+		names are legal (the last binding wins), but lint warns; use let* for
+		sequential rebinding. Returns the last body value.`},
 	{"progn", Formals(VarArgSymbol, "expr"), opProgn,
 		`Evaluates its body forms sequentially and returns the value of
 		the last form. Returns () if no forms are given.`},
@@ -935,7 +941,7 @@ func opLet(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("first argument is not a list of pairs")
 		}
 		if len(bind.Cells) != 2 {
-			return env.Errorf("first argument is not a list of pairs")
+			return badLetBinding(env, bind)
 		}
 		// Initializers run outside the new bindings, including closures
 		// they return. Capturing letenv here would expose later bindings.
@@ -945,6 +951,20 @@ func opLet(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	for i, bind := range bindlist.Cells {
+		// A name that is not a symbol is a match pattern (#910).  Put
+		// refuses every such name, so no program that ran before takes this
+		// branch, and a symbol binding pays one type test for it.  The
+		// pattern's types are evaluated in env, as the initializers are.
+		if name := bind.Cells[0]; name.Type != LSymbol {
+			binds, lerr := matchBinding(env, name, vals[i])
+			if lerr != nil {
+				return lerr
+			}
+			if lerr := putBinds(letenv, binds); lerr != nil {
+				return lerr
+			}
+			continue
+		}
 		lerr := letenv.Put(bind.Cells[0], vals[i])
 		if lerr.IsError() {
 			return lerr
@@ -965,7 +985,16 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 			return env.Errorf("first argument is not a list of pairs")
 		}
 		if len(bind.Cells) != 2 {
-			return env.Errorf("first argument is not a list of pairs")
+			return badLetBinding(env, bind)
+		}
+		// A name that is not a symbol is a match pattern (#910); see
+		// opLet.  The symbol path below is unchanged.
+		if bind.Cells[0].Type != LSymbol {
+			var lerr *LVal
+			if letenv, lerr = letSeqPattern(letenv, bind, len(bindlist.Cells)-i); lerr != nil {
+				return lerr
+			}
+			continue
 		}
 		before := env.Runtime.closuresCreated()
 		val := letenv.Eval(bind.Cells[1])
@@ -993,6 +1022,28 @@ func opLetSeq(env *LEnv, args *LVal) *LVal {
 		}
 	}
 	return opProgn(letenv, args)
+}
+
+// letSeqPattern runs one let* binding whose name is a match pattern and
+// returns the scope that holds its names.  The initializer and the
+// pattern's type expressions see the bindings so far.  As for a symbol
+// binding, the scope is split when they created a closure, so the closure
+// does not see the names this binding and later ones add.  room is the
+// number of bindings left, the new scope's size hint.
+func letSeqPattern(letenv *LEnv, bind *LVal, room int) (*LEnv, *LVal) {
+	before := letenv.Runtime.closuresCreated()
+	val := letenv.Eval(bind.Cells[1])
+	if val.IsError() {
+		return letenv, val
+	}
+	binds, lerr := matchBinding(letenv, bind.Cells[0], val)
+	if lerr != nil {
+		return letenv, lerr
+	}
+	if letenv.Runtime.closuresCreated() != before {
+		letenv = newEnvN(letenv, room)
+	}
+	return letenv, putBinds(letenv, binds)
 }
 
 func opProgn(env *LEnv, args *LVal) *LVal {

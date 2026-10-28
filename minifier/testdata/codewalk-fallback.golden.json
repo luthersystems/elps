@@ -398,6 +398,54 @@
     }
   },
   {
+    "Source": "(let (((list a [b (export 'f)]) v)) (export 'g))",
+    "Fallbacks": [
+      "-",
+      "export@19:1:20",
+      "-",
+      "export@19:1:20"
+    ],
+    "Output": "(let (((list x1 [b (export 'f)]) v)) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "b",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [
+        {
+          "minified": "x1",
+          "original": "a",
+          "kind": "variable",
+          "file": "fallback.lisp",
+          "line": 1,
+          "col": 14
+        }
+      ],
+      "minified_to_original": {
+        "x1": "a"
+      },
+      "original_to_minified": {
+        "a": [
+          "x1"
+        ]
+      }
+    }
+  },
+  {
     "Source": "(and)",
     "Fallbacks": [
       "-",

@@ -145,6 +145,16 @@ func TestIndentLet(t *testing.T) {
 			expected: "(let ([x 1] [y 2])\n" +
 				"  (+ x y))\n",
 		},
+		{
+			// A binding pattern (luthersystems/elps#910) is a list in
+			// the name position; it keeps its layout.
+			name:  "let* with patterns",
+			input: "(let* ([(list a b) v]\n[(sorted-map \"k\" k) m]\n[[s s:string] k])\n(list a b s))",
+			expected: "(let* ([(list a b) v]\n" +
+				"       [(sorted-map \"k\" k) m]\n" +
+				"       [[s s:string] k])\n" +
+				"  (list a b s))\n",
+		},
 	})
 }
 
