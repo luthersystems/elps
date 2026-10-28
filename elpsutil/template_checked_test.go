@@ -199,9 +199,11 @@ func TestExpandCheckedFastPath(t *testing.T) {
 }
 
 // TestExpandCheckedDepthBoundary: on each side of the value depth limit,
-// with the deepest node a leaf, a quote, an unquote or a splice, the fast
-// path and the walk agree with quasiquote, so the template's depth bound
-// is the walk's.
+// with the deepest node a leaf, a quote, an unquote or a splice,
+// ExpandChecked agrees with quasiquote.  So the template's depth bound is
+// never below the walk's: a bound one level too low fails it.  For a once
+// quoted node the bound is one level above the walk's, which only sends
+// that node's template to the walk at the limit.
 func TestExpandCheckedDepthBoundary(t *testing.T) {
 	for _, tail := range []string{`b`, `'b`, `''b`, `(unquote x)`, `'(unquote x)`, `(b (unquote-splicing xs))`, `()`} {
 		for levels := 1018; levels <= 1026; levels++ {

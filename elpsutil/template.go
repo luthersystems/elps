@@ -44,10 +44,11 @@ type Template struct {
 	// quasiquote reads it as an unquote, so ExpandChecked refuses it.
 	quotedHead bool
 	// widest is the most cells a list of the template has, less its
-	// splices, and deepest the value depth of its deepest node, quote
-	// wrappers counted.  splices are the parameters the template splices.
-	// ExpandChecked reads them to skip quasiquote's walk when no check of
-	// it can fail (see fits).
+	// splices, and deepest a bound on the value depth of its deepest node:
+	// each quote counts as a level, though the walk counts a single quote
+	// as a flag, so the bound is at or above the walk's depth.  splices
+	// are the parameters the template splices.  ExpandChecked reads them
+	// to skip quasiquote's walk when no check of it can fail (see fits).
 	widest, deepest int
 	splices         []int
 }
@@ -99,9 +100,9 @@ func MustTemplate(src string, params ...string) *Template {
 	if root.kind == templateSplice {
 		templatePanic("unquote-splicing must be directly inside a list")
 	}
-	for i, used := range c.used {
-		if !used {
-			templatePanic("unused parameter %q", params[i])
+	for i, name := range params {
+		if !c.used[i] {
+			templatePanic("unused parameter %q", name)
 		}
 	}
 	t := &Template{root: root, paramCount: len(params), quotedHead: root.hasQuotedHead()}
@@ -241,27 +242,33 @@ func (t *Template) ExpandChecked(env *lisp.LEnv, args ...*lisp.LVal) *lisp.LVal 
 }
 
 // fits reports whether quasiquote's walk of t with args would pass every
-// check it makes, so Expand builds what the walk would.  The walk builds
-// the source form and then a copy of it, about twice Expand's cost, and a
-// Go macro expands on every call of the function whose body holds it
-// (luthersystems/substrate#973).  The bounds are those of the walk: it
-// fails a node at value depth deepest or more, and a list when its cells
-// pass the allocation limit, where a splice adds its argument's length and
-// an unquote one cell.  The walk does not enter an argument, so only the
-// splices' lengths depend on args.  A nil argument or a splice of a value
-// that is not an unquoted list is the walk's error, so fits is false and
-// the walk reports it.
+// check it makes and build what Expand builds.  The walk builds the source
+// form and then a copy of it, about twice Expand's cost, and a Go macro
+// expands on every call of the function whose body holds it
+// (luthersystems/substrate#973).  The template's shape is known only here,
+// so the bound is here and not in package lisp.
+//
+// The walk fails a node at value depth deepest or more, and a list when
+// its cells pass the allocation limit, where a splice adds its argument's
+// length and an unquote one cell.  It does not enter an argument, so only
+// the splices' lengths depend on args.  The walk also treats some
+// arguments in its own way: it returns an error argument as its result,
+// splices an argument with the spliced flag (lisp.Splice) even in an
+// unquote position, and fails on a nil argument and on a splice of a value
+// that is not an unquoted list.  fits is false for each of these, so the
+// walk handles them.  TestExpandCheckedArgumentKinds compares the two paths
+// for each kind of argument.
 func (t *Template) fits(env *lisp.LEnv, args []*lisp.LVal) bool {
-	if t.deepest >= env.Runtime.ValueDepthLimit() {
+	limit := env.Runtime.MaxAllocBytes() - t.widest
+	if limit < 0 || t.deepest >= env.Runtime.ValueDepthLimit() {
 		return false
 	}
 	for _, arg := range args {
-		if arg == nil {
+		if arg == nil || arg.IsError() || arg.IsSpliced() {
 			return false
 		}
 	}
 	spliced := 0
-	limit := env.Runtime.MaxAllocBytes() - t.widest
 	for _, i := range t.splices {
 		arg := args[i]
 		if arg.Type != lisp.LSExpr || arg.IsQuoted() {
@@ -272,7 +279,7 @@ func (t *Template) fits(env *lisp.LEnv, args []*lisp.LVal) bool {
 			return false
 		}
 	}
-	return spliced <= limit
+	return true
 }
 
 // bounds returns the most cells a list under n has, less its splices, and
