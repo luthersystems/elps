@@ -102,7 +102,7 @@ func TestRecordMethodsSaveReanalyzesOpenDocs(t *testing.T) {
 	}
 	s.captureNotify(ctx)
 	orderURI := pathToURI(orderPath)
-	unknownSz := func() (published, unknown bool) {
+	unknownSz := func() (bool, bool) { // published, unknown
 		mu.Lock()
 		defer mu.Unlock()
 		for i := len(*captured) - 1; i >= 0; i-- {
