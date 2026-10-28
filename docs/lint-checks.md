@@ -725,6 +725,45 @@ receiver (see `record-plain-set`), of the method's formals, of a local the
 method body binds, or of a global. A read of a closure local is not
 reported.
 
+### `record-defmethod-not-toplevel`
+
+**Flags an `s:defmethod` that does not run at load.** (Severity: warning)
+
+A template publishes a record type with its method table as it stands at
+publication. An `s:defmethod` in a function body runs at call time. In
+substrate, each transaction runs in a fresh VM, from a template or a cold
+load, so the method reaches only the VM that runs the call:
+
+* The method is lost after the call.
+* It is not in the type's saved form.
+* A later call in another VM does not see it.
+
+A runtime refusal in template VMs only would make cold and template peers
+answer differently, so this check is the guard, the same in every mode.
+
+The load-scope forms are the top level of the file, `progn`, the body and
+binding values of `let` and `let*`, the body of `flet` and `labels`, and
+the value of a top-level `set` or `defconst`. Any other form around the
+`s:defmethod` is reported: a `defun`, a `lambda`, a `flet` or `labels`
+function, or a macro call such as an endpoint definition.
+
+```lisp
+;; WARNING: the method exists only during this call
+(defun add-size () (s:defmethod order size (o) (length (o 'lines))))
+;; OK: the method is part of the type at load
+(s:defmethod order size (o) (length (o 'lines)))
+;; OK: a top-level closure around the method
+(let ([limit 10]) (s:defmethod order big (o) (> (o 'size) limit)))
+```
+
+A top-level `if`, `when` or `cond` around an `s:defmethod` is reported
+too: a method that a type has only sometimes is hard to follow. Suppress
+it with `; nolint:record-defmethod-not-toplevel` when it is intended.
+
+The check skips `*_test.lisp` and `*_testhelpers.lisp` files. Only test
+runners load them, and a test may call `s:defmethod` at call time to test
+it.
+
 ### `schema-type-union`
 
 **Flags a type next to a constraint on the same type in `s:has-key`,

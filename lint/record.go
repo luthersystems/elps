@@ -4,6 +4,7 @@ package lint
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"github.com/luthersystems/elps/analysis"
@@ -36,6 +37,7 @@ const (
 	recordDefmethodType    = "record-defmethod-type"
 	recordPlainSet         = "record-plain-set"
 	recordCapturedSet      = "record-captured-set"
+	recordDefmethodScope   = "record-defmethod-not-toplevel"
 )
 
 // recordFinding is one finding of the record walker.  kind is the name of
@@ -80,6 +82,7 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
 				shape = types.byName[site.Form.Cells[1].Str]
 				w.defmethodType(site.Form, types, semantics)
+				w.defmethodScope(top, site.Form)
 			}
 			for _, m := range recordMethods(site.Form) {
 				w.methodBody(m.body, m.recv, shape)
@@ -560,6 +563,95 @@ func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics
 	}
 }
 
+// defmethodScope reports a s:defmethod that does not run at load: one
+// in a function body, a macro call or any other form that is not a
+// load-scope wrapper.  See AnalyzerRecordDefmethodNotToplevel for why.
+func (w *recordWalk) defmethodScope(top, call *lisp.LVal) {
+	path := pathTo(top, call, maxPlainSetWork)
+	if path == nil {
+		return
+	}
+	if where := notLoadScope(path); where != "" {
+		w.out = append(w.out, recordFinding{
+			node: call, kind: recordDefmethodScope,
+			msg:  "s:defmethod inside " + where + " runs when that code runs, not at load; the method reaches only the VM that runs it",
+			note: "move the s:defmethod to the top level of the file, or into a top-level let, let*, flet, labels or progn around the type",
+		})
+	}
+}
+
+// notLoadScope returns "" when each form on path, from the top form to the
+// s:defmethod call, keeps it at load scope, or else the head of the first
+// form that does not.  The load-scope forms are progn, the body and the
+// binding values of let and let*, the body of flet and labels, and the
+// value of a top-level set or defconst.  A flet or labels binding is a
+// function body, so it is not load scope.
+func notLoadScope(path []*lisp.LVal) string {
+	for i := 0; i+1 < len(path); i++ {
+		parent, child := path[i], path[i+1]
+		idx := cellIndex(parent, child)
+		head := unqualifiedLispName(astutil.HeadSymbol(parent))
+		switch {
+		case head == "progn" && idx >= 1:
+		case (head == "let" || head == "let*") && idx >= 2:
+		case (head == "let" || head == "let*") && idx == 1:
+			// The binding list, then one binding, then its value.
+			if i+3 >= len(path) || cellIndex(child, path[i+2]) < 0 || cellIndex(path[i+2], path[i+3]) != 1 {
+				return head + " bindings"
+			}
+			i += 2
+		case (head == "flet" || head == "labels") && idx >= 2:
+		case i == 0 && (head == "set" || head == "defconst") && idx == 2:
+		default:
+			if head == "" {
+				return "a form"
+			}
+			return head
+		}
+	}
+	return ""
+}
+
+// cellIndex returns the index of child in the cells of parent, or -1.
+func cellIndex(parent, child *lisp.LVal) int {
+	for i, c := range parent.Cells {
+		if c == child {
+			return i
+		}
+	}
+	return -1
+}
+
+// pathTo returns the lists from top down to target, both included, or nil
+// when target is not found within budget lists.  target comes from a
+// call-site query, which returns only calls in code position, so the
+// search also enters quoted lists: a let binding [x v] reads as one.
+func pathTo(top, target *lisp.LVal, budget int) []*lisp.LVal {
+	var path []*lisp.LVal
+	var find func(v *lisp.LVal) bool
+	find = func(v *lisp.LVal) bool {
+		if budget <= 0 || v.Type != lisp.LSExpr {
+			return false
+		}
+		budget--
+		path = append(path, v)
+		if v == target {
+			return true
+		}
+		for _, c := range v.Cells {
+			if find(c) {
+				return true
+			}
+		}
+		path = path[:len(path)-1]
+		return false
+	}
+	if find(top) {
+		return path
+	}
+	return nil
+}
+
 // notATypeForm describes a form whose value is never a record type, or
 // returns "" when the form may evaluate to one.
 func notATypeForm(v *lisp.LVal) string {
@@ -838,6 +930,30 @@ var AnalyzerRecordCapturedSet = &Analyzer{
 		"that no object holds: a durable dump does not save it, and a failed method " +
 		"call does not undo it. Keep per-object state in a field.",
 	Run: recordAnalyzerRun(recordCapturedSet),
+}
+
+// AnalyzerRecordDefmethodNotToplevel reports a s:defmethod that runs at
+// call time instead of at load.
+var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
+	Name:     recordDefmethodScope,
+	Severity: SeverityWarning,
+	Doc: "Report s:defmethod that does not run at load, outside a test file.\n\n" +
+		"A template publishes a record type with its method table as it stands at " +
+		"publication. A s:defmethod in a function body, such as a defun, lambda or " +
+		"endpoint body, runs at call time and adds its method only in the VM that runs " +
+		"the call. The method is lost after the call, it is not in the type's saved " +
+		"form, and a later call in another VM does not see it. Write s:defmethod at the " +
+		"top level, or in a top-level let, let*, flet, labels or progn. A *_test.lisp " +
+		"or *_testhelpers.lisp file is skipped: only test runners load it.",
+	Run: func(pass *Pass) error {
+		// A test may add a method at call time on purpose, to test
+		// s:defmethod itself, and a test file is never part of a template.
+		base := filepath.Base(pass.Filename)
+		if strings.HasSuffix(base, "_test.lisp") || strings.HasSuffix(base, "_testhelpers.lisp") {
+			return nil
+		}
+		return recordAnalyzerRun(recordDefmethodScope)(pass)
+	},
 }
 
 // AnalyzerRecordPlainSet reports a set! or set in a method that rebinds
