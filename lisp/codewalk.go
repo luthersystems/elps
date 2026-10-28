@@ -1145,15 +1145,11 @@ func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVa
 				w.visit(&walkNode{Event: WalkEnter, Outer: true, Depth: depth + 1})
 				pb.set(1, w.form(pair.Cells[1], depth+2))
 				// A let pattern's types run in the scope around the let.
-				if name.Type != LSymbol {
-					pb.set(0, w.matchPattern(name, depth+2, &names))
-				}
+				names = w.letPattern(pb, name, depth+2)
 				w.visit(&walkNode{Event: WalkLeave, Outer: true, Depth: depth + 1})
 			} else {
 				pb.set(1, w.form(pair.Cells[1], depth+2))
-				if name.Type != LSymbol {
-					pb.set(0, w.matchPattern(name, depth+2, &names))
-				}
+				names = w.letPattern(pb, name, depth+2)
 			}
 			for _, n := range names {
 				w.emitBind(n, op, depth+2, nil)
@@ -1196,25 +1192,40 @@ func (w *CodeWalker) let(list *LVal, form *LVal, opts letWalk, body func()) *LVa
 	} else {
 		// A let pattern's types run in the scope around the let, with the
 		// initializers; its names are bound with the other names.
-		var patternNames map[*LVal][]*LVal
+		// patternNames[k] holds the names of the k-th list binding.  pairs
+		// calls fn for each list binding in order, so k counts them; the
+		// slice is made only when a pattern is seen, so a plain let walk
+		// allocates nothing for it.
+		var patternNames [][]*LVal
+		k := 0
 		out = w.pairs(list, depth, func(pb *rebuild, pair *LVal) {
 			w.forms(pb, 1, depth+1)
-			if len(pair.Cells) > 0 && pair.Cells[0].Type != LSymbol {
-				if patternNames == nil {
-					patternNames = make(map[*LVal][]*LVal)
+			if len(pair.Cells) > 0 {
+				if names := w.letPattern(pb, pair.Cells[0], depth+2); names != nil {
+					if patternNames == nil {
+						patternNames = make([][]*LVal, len(list.Cells))
+					}
+					patternNames[k] = names
 				}
-				patternNames[pair] = w.letPattern(pb, pair.Cells[0], depth+2)
 			}
+			k++
 		})
 		w.push(false)
 		w.visit(&walkNode{Event: WalkEnter, Node: form, Op: op, Depth: depth - 1})
+		k = 0
 		for _, pair := range list.Cells {
-			if pair.Type == LSExpr && len(pair.Cells) > 0 {
-				for _, n := range patternNames[pair] {
-					w.emitBind(n, op, depth+2, nil)
+			if pair.Type != LSExpr {
+				continue
+			}
+			if len(pair.Cells) > 0 {
+				if patternNames != nil {
+					for _, n := range patternNames[k] {
+						w.emitBind(n, op, depth+2, nil)
+					}
 				}
 				w.emitBind(pair.Cells[0], op, depth+2, nil)
 			}
+			k++
 		}
 	}
 	body()

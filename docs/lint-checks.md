@@ -122,6 +122,12 @@ pairs. A name is a symbol or a list pattern, such as `(list a b)` or
 common mistake is forgetting the outer parentheses, which causes unexpected
 nil bindings.
 
+A pattern that `let` always refuses is reported with the runtime's message:
+a malformed pattern such as `(f x)`, a quoted list that is not
+`[name type]`, a pattern that binds a name twice, and a pattern with a
+`:when` guard. A pattern in a macro template that holds an `unquote` is not
+checked, because its shape is known only after expansion.
+
 A literal name such as `42` is reported. `let` accepts it as a pattern that
 binds nothing and only tests the value, but that is more often a mistake.
 Use `match` to test a value against a literal.
@@ -521,7 +527,8 @@ runs for `boom`:
   (work))
 ```
 
-The same applies to `error` before `argument-error`, and to a parent named
+The same applies to `error` before `argument-error` or `match-error`, the
+built-in children of `error`, and to a parent named
 by a `define-condition` call in the same file whose arguments are a quoted
 symbol or a string. A second binding for the same type is reported as one
 that never runs. The check cannot see a parent defined in another file, by

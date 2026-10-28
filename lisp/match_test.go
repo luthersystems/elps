@@ -97,6 +97,11 @@ func TestMatchNoTypeLibrary(t *testing.T) {
 	require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
 	assert.Equal(t, "2", matchOutcome(env, `(match '(1 2) ((list _ b) b))`))
 	assert.Contains(t, matchOutcome(env, `(match 1 ([x int] x))`), "match: a type pattern needs a type library")
+	// A let binding pattern's errors carry let's name, not match's
+	// (luthersystems/elps#910).
+	got := matchOutcome(env, `(let ([[x int] 1]) x)`)
+	assert.Contains(t, got, "lisp:let: a type pattern needs a type library")
+	assert.NotContains(t, got, "match:")
 }
 
 // Each pattern node tried costs one step.  The counts are pinned so a
