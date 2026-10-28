@@ -30,6 +30,7 @@ func TestDefineCondition(t *testing.T) {
 	// The package function sees only the built-in parents.
 	assert.False(t, lisp.ConditionIsA("not-found", "error"))
 	assert.True(t, lisp.ConditionIsA(lisp.CondArgumentError, "error"))
+	assert.True(t, lisp.ConditionIsA(lisp.CondMatchError, "error"))
 
 	for _, tc := range []struct{ child, parent, msg string }{
 		{"", "error", "empty"},
@@ -41,6 +42,7 @@ func TestDefineCondition(t *testing.T) {
 		{"x", lisp.CondInternalPanic, "internal-panic"},
 		{"not-found", "error", "already has parent storage-error"},
 		{lisp.CondArgumentError, "storage-error", "already has parent error"},
+		{lisp.CondMatchError, "storage-error", "already has parent error"},
 		{"error", "not-found", "already has children"},
 		{"storage-error", "not-found", "already has parent"},
 	} {

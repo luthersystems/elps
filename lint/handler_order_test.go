@@ -23,6 +23,10 @@ func TestHandlerOrder_BuiltinParentFirst(t *testing.T) {
   (f))`)
 	assert.Len(t, diags, 1)
 	assertHasDiag(t, diags, "its ancestor error")
+	diags = lintCheck(t, AnalyzerHandlerOrder, `(handler-bind ((error (lambda (&rest _) 1))
+               (match-error (lambda (&rest _) 2)))
+  (f))`)
+	assertHasDiag(t, diags, "handler for match-error follows a handler for its ancestor error")
 }
 
 func TestHandlerOrder_DefinedParentFirst(t *testing.T) {

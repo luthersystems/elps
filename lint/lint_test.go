@@ -303,7 +303,48 @@ func TestLetBindings_Negative_Pattern(t *testing.T) {
 		assert.Empty(t, lintCheck(t, AnalyzerLetBindings, src), src)
 	}
 	diags := lintCheck(t, AnalyzerLetBindings, `(let (((list a) :when b v)) a)`)
-	assertHasDiag(t, diags, "expected 2 elements")
+	assertHasDiag(t, diags, "(list a)): a binding pattern takes no :when guard")
+	diags = lintCheck(t, AnalyzerLetBindings, `(let (((list a) v w)) a)`)
+	assertHasDiag(t, diags, "let binding 1 ((list a)): expected 2 elements (pattern value), got 3")
+	// A pattern that let always refuses when it runs is reported with
+	// lisp's own message.
+	for _, tc := range []struct{ src, want string }{
+		{`(let (((f x) 1)) x)`, "needs key and pattern pairs"},
+		{`(let (((point :x) p)) 1)`, "needs key and pattern pairs"},
+		{`(let (((point x y) p)) 1)`, "a record pattern is (type :field pattern ...)"},
+		{`(let (('(a b c) v)) a)`, "bad pattern"},
+		{`(let (((list a a) v)) a)`, "pattern binds a twice"},
+		{`(let (((list &rest) v)) 1)`, "&rest must come before"},
+	} {
+		diags := lintCheck(t, AnalyzerLetBindings, tc.src)
+		require.Len(t, diags, 1, tc.src)
+		assertHasDiag(t, diags, "let binding 1: ")
+		assertHasDiag(t, diags, tc.want)
+	}
+	// A macro template's pattern is known only after expansion.
+	assert.Empty(t, lintCheck(t, AnalyzerLetBindings,
+		`(defmacro m (a) (quasiquote (let (((list (unquote a) (unquote a)) v)) 1)))`))
+}
+
+// let-recursion walks the initializer of a pattern binding and checks
+// the names the pattern binds (luthersystems/elps#910).
+func TestLetRecursion_Pattern(t *testing.T) {
+	diags := lintCheck(t, AnalyzerLetRecursion,
+		`(defun a1 () (let ([(list f) (list (let ((g (lambda () (g)))) g))]) f))`)
+	assertHasDiag(t, diags, "cannot refer to its own binding 'g'")
+	diags = lintCheck(t, AnalyzerLetRecursion,
+		`(defun a2 () (let ([(list g) (list (lambda () (g)))]) g))`)
+	assertHasDiag(t, diags, "cannot refer to its own binding 'g'")
+}
+
+// duplicate-binding counts the names a let pattern binds
+// (luthersystems/elps#910).
+func TestDuplicateBinding_Pattern(t *testing.T) {
+	diags := lintCheck(t, AnalyzerDuplicateBinding, `(let ([(list a) (list 1)] [a 2]) a)`)
+	assertHasDiag(t, diags, "duplicate let binding: a")
+	diags = lintCheck(t, AnalyzerDuplicateBinding, `(let ([a 2] [(list b a) (list 1 2)]) a)`)
+	assertHasDiag(t, diags, "duplicate let binding: a")
+	assert.Empty(t, lintCheck(t, AnalyzerDuplicateBinding, `(let* ([(list a) (list 1)] [a 2]) a)`))
 }
 
 func TestLetBindings_Positive_LetStar(t *testing.T) {

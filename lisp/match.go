@@ -3,6 +3,7 @@
 package lisp
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/luthersystems/elps/internal/templatepolicy"
@@ -112,10 +113,10 @@ func opMatch(env *LEnv, args *LVal) *LVal {
 			}
 			guard, body = body[1], body[2:]
 		}
-		if lerr := checkMatchPattern(env, "match: ", pat, nil); lerr != nil {
+		if lerr := checkMatchPattern(env, "match: ", pat); lerr != nil {
 			return lerr
 		}
-		m := matcher{env: env, binds: binds[:0]}
+		m := matcher{env: env, prefix: "match: ", binds: binds[:0]}
 		ok, lerr := m.match(pat, v)
 		binds = m.binds
 		if lerr != nil {
@@ -248,86 +249,136 @@ func matchListParts(parts []*LVal) ([]*LVal, *LVal) {
 	return parts, nil
 }
 
-// checkMatchPattern checks the shape of p and that it binds no name twice.
-// seen holds the names bound so far.  prefix starts each error message:
-// "match: " for match, and "" for let and let*, whose errors already
-// render with the operator's name.  It returns nil when p is good.
-func checkMatchPattern(env *LEnv, prefix string, p *LVal, seen map[string]bool) *LVal {
+// patternIssue is a bad pattern found by patternShape: a message format
+// and its arguments, so that each caller can add its own prefix.
+type patternIssue struct {
+	format string
+	args   []any
+}
+
+func (e *patternIssue) Error() string {
+	return fmt.Sprintf(e.format, e.args...)
+}
+
+// patternShape checks the shape of p and that it binds no name twice.  If
+// names is not nil, it appends each name p binds, in source order.  It
+// reads only p's cells and charges no step, so lint can use it through
+// MatchPatternNames.  It returns nil when p is good.
+func patternShape(p *LVal, names *[]*LVal) *patternIssue {
 	switch classifyPattern(p) {
 	case matchAny, matchLiteral:
 		return nil // the common leaf patterns need no walk
 	case matchBad, matchName, matchQuote, matchTyped, matchList, matchMap, matchRecord:
 	}
-	type item struct{ p *LVal }
-	stack := []item{{p}}
-	for len(stack) > 0 {
-		p := stack[len(stack)-1].p
-		stack = stack[:len(stack)-1]
-		bind := func(name *LVal) *LVal {
-			if name.Str == "_" {
-				return nil
-			}
-			if seen == nil {
-				seen = make(map[string]bool)
-			}
-			if seen[name.Str] {
-				return env.Errorf(prefix+"pattern binds %s twice", name.Str)
-			}
-			seen[name.Str] = true
+	var seen map[string]bool
+	bind := func(name *LVal) *patternIssue {
+		if name.Str == "_" {
 			return nil
 		}
+		if seen == nil {
+			seen = make(map[string]bool)
+		}
+		if seen[name.Str] {
+			return &patternIssue{"pattern binds %s twice", []any{name.Str}}
+		}
+		seen[name.Str] = true
+		if names != nil {
+			*names = append(*names, name)
+		}
+		return nil
+	}
+	// The walk uses a stack, not recursion, so a deep pattern cannot
+	// exhaust the Go stack.  Children are pushed in reverse so that they
+	// are checked, and their names listed, in source order.
+	stack := []*LVal{p}
+	push := func(ps []*LVal) {
+		for i := len(ps) - 1; i >= 0; i-- {
+			stack = append(stack, ps[i])
+		}
+	}
+	for len(stack) > 0 {
+		p := stack[len(stack)-1]
+		stack = stack[:len(stack)-1]
 		switch classifyPattern(p) {
 		case matchBad:
-			return env.Errorf(prefix+"bad pattern: %v; a quoted list is [name type], and (list 'a 'b) matches a literal list", p)
+			return &patternIssue{"bad pattern: %v; a quoted list is [name type], and (list 'a 'b) matches a literal list", []any{p}}
 		case matchAny, matchLiteral:
 		case matchName:
-			if lerr := bind(p); lerr != nil {
-				return lerr
+			if e := bind(p); e != nil {
+				return e
 			}
 		case matchQuote:
 			if len(p.Cells) != 2 {
-				return env.Errorf(prefix+"(quote datum) takes one datum: %v", p)
+				return &patternIssue{"(quote datum) takes one datum: %v", []any{p}}
 			}
 		case matchTyped:
-			if lerr := bind(p.Cells[0]); lerr != nil {
-				return lerr
+			if e := bind(p.Cells[0]); e != nil {
+				return e
 			}
 		case matchList:
 			elems, rest := matchListParts(p.Cells[1:])
 			for _, q := range elems {
 				if q.IsSymbol(VarArgSymbol) {
-					return env.Errorf(prefix+"&rest must come before the last pattern of a list: %v", p)
+					return &patternIssue{"&rest must come before the last pattern of a list: %v", []any{p}}
 				}
-				stack = append(stack, item{q})
 			}
 			if rest != nil {
-				stack = append(stack, item{rest})
+				stack = append(stack, rest)
 			}
+			push(elems)
 		case matchMap, matchRecord:
 			parts := p.Cells[1:]
 			if len(parts)%2 != 0 {
-				return env.Errorf(prefix+"%v needs key and pattern pairs", p)
+				return &patternIssue{"%v needs key and pattern pairs", []any{p}}
 			}
+			sub := make([]*LVal, 0, len(parts)/2)
 			for i := 0; i < len(parts); i += 2 {
 				k := parts[i]
 				if classifyPattern(p) == matchRecord {
 					if k.Type != LSymbol || k.quoted || !isKeyword(k.Str) || len(k.Str) < 2 {
-						return env.Errorf(prefix+"a record pattern is (type :field pattern ...): %v", p)
+						return &patternIssue{"a record pattern is (type :field pattern ...): %v", []any{p}}
 					}
 				} else if k.Type != LString && k.Type != LInt && (k.Type != LSymbol || !isKeyword(k.Str)) {
-					return env.Errorf(prefix+"a map key in a pattern is a string, an int or a keyword: %v", k)
+					return &patternIssue{"a map key in a pattern is a string, an int or a keyword: %v", []any{k}}
 				}
-				stack = append(stack, item{parts[i+1]})
+				sub = append(sub, parts[i+1])
 			}
+			push(sub)
 		}
 	}
 	return nil
 }
 
+// checkMatchPattern checks the shape of p, as patternShape does, and
+// returns the error for a bad pattern.  prefix starts the message:
+// "match: " for match, and "" for let and let*, whose errors already
+// render with the operator's name.  It returns nil when p is good.
+func checkMatchPattern(env *LEnv, prefix string, p *LVal) *LVal {
+	if e := patternShape(p, nil); e != nil {
+		return env.Errorf(prefix+e.format, e.args...)
+	}
+	return nil
+}
+
+// MatchPatternNames checks the shape of the match pattern p with the rules
+// that match and a let binding pattern use before they try p.  It returns
+// the names p binds, in source order, or an error that describes a bad
+// pattern.  It evaluates nothing, so a static check such as lint can use
+// it (luthersystems/elps#910).
+func MatchPatternNames(p *LVal) ([]*LVal, error) {
+	var names []*LVal
+	if e := patternShape(p, &names); e != nil {
+		return nil, e
+	}
+	return names, nil
+}
+
 // matcher matches one clause's pattern and collects its bindings.
 type matcher struct {
-	env   *LEnv
-	binds []matchBind
+	env *LEnv
+	// prefix starts each error message, as for checkMatchPattern.
+	prefix string
+	binds  []matchBind
 }
 
 // match reports whether v matches p, whose shape checkMatchPattern has
@@ -415,7 +466,7 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 		return true, nil
 	case matchBad:
 	}
-	return false, env.Errorf("match: bad pattern: %v", p)
+	return false, env.Errorf(m.prefix+"bad pattern: %v", p)
 }
 
 // matchBinding matches the pattern pat of a let or let* binding against
@@ -426,7 +477,7 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 // binding has no other clause to try, so binding () to every name would
 // hide the mismatch until a later use of a name.
 func matchBinding(env *LEnv, pat, val *LVal) ([]matchBind, *LVal) {
-	if lerr := checkMatchPattern(env, "", pat, nil); lerr != nil {
+	if lerr := checkMatchPattern(env, "", pat); lerr != nil {
 		return nil, lerr
 	}
 	m := matcher{env: env}
@@ -476,7 +527,7 @@ func (m *matcher) isType(v, typ *LVal) (bool, *LVal) {
 	env := m.env
 	types, ok := matchTypesOf(env)
 	if !ok {
-		return false, env.Errorf("match: a type pattern needs a type library; load package s")
+		return false, env.Errorf(m.prefix + "a type pattern needs a type library; load package s")
 	}
 	t := env.Eval(typ)
 	if t.IsError() {

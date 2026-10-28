@@ -121,3 +121,27 @@ func TestLetPatternStepCount(t *testing.T) {
 		})
 	}
 }
+
+// MatchPatternNames gives lint the shape rules and names of a pattern
+// without evaluating it (luthersystems/elps#910).
+func TestMatchPatternNames(t *testing.T) {
+	read := func(src string) *lisp.LVal {
+		t.Helper()
+		env := newLimitTestEnv(t)
+		vals, err := env.Runtime.Reader.Read("p.lisp", strings.NewReader(src))
+		require.NoError(t, err)
+		require.Len(t, vals, 1)
+		return vals[0]
+	}
+	names, err := lisp.MatchPatternNames(read(`(list a [b s:int] (sorted-map "k" c :j d) (R :f e) _ &rest r)`))
+	require.NoError(t, err)
+	var got []string
+	for _, n := range names {
+		got = append(got, n.Str)
+	}
+	assert.Equal(t, []string{"a", "b", "c", "d", "e", "r"}, got)
+	for _, src := range []string{`(f x)`, `(list a a)`, `'(a b c)`, `(list &rest)`, `(R x y)`} {
+		_, err := lisp.MatchPatternNames(read(src))
+		assert.Error(t, err, src)
+	}
+}

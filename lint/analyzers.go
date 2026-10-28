@@ -166,16 +166,31 @@ var AnalyzerLetBindings = &Analyzer{
 						"%s binding %d is empty", head, i+1)
 					continue
 				}
-				// Accept (unquote sym) as a valid binding name — it expands to a symbol at macro-expansion time.
-				// A list is a match pattern (luthersystems/elps#910); let checks its shape when it runs.
-				if binding.Cells[0].Type != lisp.LSymbol && HeadSymbol(binding.Cells[0]) != "unquote" && !isBindingPattern(binding.Cells[0]) {
-					pass.Reportf(bindingSource(binding, src),
-						"%s binding %d: first element must be a symbol or a list pattern, got %s", head, i+1, binding.Cells[0].Type)
-					continue
+				name := binding.Cells[0]
+				pattern := name.Type != lisp.LSymbol
+				if pattern {
+					if !isBindingPattern(name) {
+						pass.Reportf(bindingSource(binding, src),
+							"%s binding %d: first element must be a symbol or a list pattern, got %s", head, i+1, name.Type)
+						continue
+					}
+					if err := checkBindingPattern(name); err != nil {
+						pass.Reportf(bindingSource(binding, src),
+							"%s binding %d: %v", head, i+1, err)
+						continue
+					}
 				}
-				if len(binding.Cells) != 2 {
+				switch {
+				case len(binding.Cells) == 2:
+				case pattern && len(binding.Cells) > 2 && binding.Cells[1].IsSymbol(":when"):
 					pass.Reportf(bindingSource(binding, src),
-						"%s binding %d (%s): expected 2 elements (symbol value), got %d", head, i+1, binding.Cells[0].Str, len(binding.Cells))
+						"%s binding %d (%v): a binding pattern takes no :when guard; use match to test a value", head, i+1, name)
+				case pattern:
+					pass.Reportf(bindingSource(binding, src),
+						"%s binding %d (%v): expected 2 elements (pattern value), got %d", head, i+1, name, len(binding.Cells))
+				default:
+					pass.Reportf(bindingSource(binding, src),
+						"%s binding %d (%s): expected 2 elements (symbol value), got %d", head, i+1, name.Str, len(binding.Cells))
 				}
 			}
 		})
@@ -185,12 +200,57 @@ var AnalyzerLetBindings = &Analyzer{
 
 // isBindingPattern reports whether v, the first cell of a let binding that
 // is not a symbol, is a list pattern: (list ...), (sorted-map ...), a
-// record pattern or [name T] (a quoted list).  let also takes a literal
-// pattern such as 42, but it binds no name and only tests the value, so
-// the check goes on reporting it: (let ((42 1)) ...) is more likely a
-// mistake than a test, and match states a test plainly.
+// record pattern or [name T] (a quoted list).  It also accepts (unquote
+// sym) and every other list: in a macro template a list can expand to a
+// symbol.  let also takes a literal pattern such as 42, but it binds no
+// name and only tests the value, so the check goes on reporting it:
+// (let ((42 1)) ...) is more likely a mistake than a test, and match
+// states a test plainly.  checkBindingPattern checks the list's shape.
 func isBindingPattern(v *lisp.LVal) bool {
 	return v.Type == lisp.LSExpr
+}
+
+// checkBindingPattern checks the shape of the let binding pattern p with
+// lisp's own rules (lisp.MatchPatternNames), so a pattern that let always
+// refuses when it runs is reported here.  A pattern that holds an unquote
+// is a macro template, whose shape is known only after expansion, so it
+// is not checked.
+func checkBindingPattern(p *lisp.LVal) error {
+	if hasUnquote(p) {
+		return nil
+	}
+	_, err := lisp.MatchPatternNames(p)
+	return err
+}
+
+// bindingPatternNames returns the names that the let binding pattern p
+// binds, or nil when p is a macro template or a bad pattern.
+func bindingPatternNames(p *lisp.LVal) []*lisp.LVal {
+	if hasUnquote(p) {
+		return nil
+	}
+	names, err := lisp.MatchPatternNames(p)
+	if err != nil {
+		return nil
+	}
+	return names
+}
+
+// hasUnquote reports whether v holds an (unquote x) or an
+// (unquote-splicing x) form at any depth.
+func hasUnquote(v *lisp.LVal) bool {
+	if v.Type != lisp.LSExpr {
+		return false
+	}
+	if h := HeadSymbol(v); h == "unquote" || h == "unquote-splicing" {
+		return true
+	}
+	for _, c := range v.Cells {
+		if hasUnquote(c) {
+			return true
+		}
+	}
+	return false
 }
 
 // AnalyzerLetRecursion identifies unresolved self-references in closures
@@ -310,14 +370,25 @@ func (s *letRecursionState) visit(node *lisp.LVal, depth int) bool {
 			return false
 		}
 		for _, binding := range node.Cells[1].Cells {
-			if binding == nil || binding.Type != lisp.LSExpr || len(binding.Cells) != 2 || binding.Cells[0] == nil || binding.Cells[0].Type != lisp.LSymbol {
+			if binding == nil || binding.Type != lisp.LSExpr || len(binding.Cells) != 2 || binding.Cells[0] == nil {
 				continue
 			}
-			name := binding.Cells[0]
-			previous := s.pending[name.Str]
-			s.pending[name.Str] = append(previous, letRecursionBinding{name: name, form: spelling, depth: depth})
+			// The names a binding introduces: one symbol, or the names of
+			// a match pattern (luthersystems/elps#910).  The initializer
+			// is walked in every case, so a closure inside it is checked.
+			names := []*lisp.LVal{binding.Cells[0]}
+			if binding.Cells[0].Type != lisp.LSymbol {
+				names = bindingPatternNames(binding.Cells[0])
+			}
+			previous := make([][]letRecursionBinding, len(names))
+			for i, name := range names {
+				previous[i] = s.pending[name.Str]
+				s.pending[name.Str] = append(previous[i], letRecursionBinding{name: name, form: spelling, depth: depth})
+			}
 			s.walk(binding.Cells[1], depth)
-			s.pending[name.Str] = previous
+			for i := len(names) - 1; i >= 0; i-- {
+				s.pending[names[i].Str] = previous[i]
+			}
 		}
 		for _, body := range node.Cells[2:] {
 			s.walk(body, depth)
@@ -2843,14 +2914,21 @@ var AnalyzerDuplicateBinding = &Analyzer{
 				if binding.Type != lisp.LSExpr || len(binding.Cells) == 0 {
 					continue
 				}
-				name := binding.Cells[0]
-				if name.Type != lisp.LSymbol {
-					continue
+				names := []*lisp.LVal{binding.Cells[0]}
+				if binding.Cells[0].Type != lisp.LSymbol {
+					if head != "let" {
+						continue
+					}
+					// A let pattern binds each of its names
+					// (luthersystems/elps#910).
+					names = bindingPatternNames(binding.Cells[0])
 				}
-				if seen[name.Str] {
-					pass.ReportNode(name, "duplicate %s binding: %s; the last binding wins, use distinct names or let* for sequential rebinding", head, name.Str)
+				for _, name := range names {
+					if seen[name.Str] {
+						pass.ReportNode(name, "duplicate %s binding: %s; the last binding wins, use distinct names or let* for sequential rebinding", head, name.Str)
+					}
+					seen[name.Str] = true
 				}
-				seen[name.Str] = true
 			}
 		})
 		return nil
@@ -3280,7 +3358,7 @@ func mentionsSymbol(exprs []*lisp.LVal, name string) bool {
 var AnalyzerHandlerOrder = &Analyzer{
 	Name:     "handler-order",
 	Severity: SeverityWarning,
-	Doc:      "Warn when a handler-bind binding follows a binding for one of its ancestors, or for its own type.\n\nhandler-bind runs the most specific matching binding: the one for the raised condition, else the one for its nearest ancestor, with the catch-all `condition` last. Before luthersystems/elps#831 it ran the first match in source order, so a binding written after `condition`, or after a parent such as `error`, never ran; it now runs for its conditions. A second binding for the same type still never runs. List the most specific binding first so the code reads as it runs.",
+	Doc:      "Warn when a handler-bind binding follows a binding for one of its ancestors, or for its own type.\n\nhandler-bind runs the most specific matching binding: the one for the raised condition, else the one for its nearest ancestor, with the catch-all `condition` last. Before luthersystems/elps#831 it ran the first match in source order, so a binding written after `condition`, or after a parent such as `error` (the parent of the built-in argument-error and match-error), never ran; it now runs for its conditions. A second binding for the same type still never runs. List the most specific binding first so the code reads as it runs.",
 	Run: func(pass *Pass) error {
 		rt := &lisp.Runtime{}
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, depth int) {

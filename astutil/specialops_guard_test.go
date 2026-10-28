@@ -47,6 +47,7 @@ var specialOpAllowlist = map[string]string{
 	"formatter/rules.go:DefaultRules":                           "form-specific indentation configuration",
 	"internal/fuzzseed/evalseed.go:EvalTerminating":             "names test seeds after the forms they exercise",
 	"lint/analyzers.go:checkLispBindings":                       "checks writes to the sealed lisp package",
+	"lint/analyzers.go:hasUnquote":                              "finds the unquote markers of a macro template in a let binding pattern, by the bare spellings macro.go reads",
 	"lint/analyzers.go:isDeprecatedDefinition":                  "recognizes definition annotations",
 	"lint/analyzers.go:lambdaCallback":                          "recognizes literal comparator/iteration callbacks",
 	"lint/analyzers.go:mutationRun.indexNode":                   "indexes comparator definitions and quasiquote holes for mutation checks",

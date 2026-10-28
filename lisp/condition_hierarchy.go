@@ -98,10 +98,19 @@ func (rt *Runtime) DefineCondition(child, parent string) error {
 	return nil
 }
 
+// builtinChildConditions lists the conditions that have a built-in parent
+// (conditionParent).  Keep the two in step.
+var builtinChildConditions = [...]string{CondArgumentError, CondMatchError}
+
 // conditionHasChildren reports whether some condition has c as its parent,
 // built in or defined.
 func (rt *Runtime) conditionHasChildren(c string) bool {
-	return conditionParent(CondArgumentError) == c || rt.conditionParents[c].children > 0
+	for _, b := range builtinChildConditions {
+		if conditionParent(b) == c {
+			return true
+		}
+	}
+	return rt.conditionParents[c].children > 0
 }
 
 // conditionDepth returns how many ancestors condition c has.
