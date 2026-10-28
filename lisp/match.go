@@ -46,11 +46,13 @@ import (
 type MatchTypeFunc func(env *LEnv, v, typ *LVal) *LVal
 
 // MatchFieldFunc reads the field name of v, a value that passed a type
-// test.  It returns the field; nil when the pattern must not match, for a
-// field the library treats as absent; or an error value when v has no
-// field name that a pattern may read, which stops the match.  Package s
-// returns () for a field that is not set, as (v 'name) reads it.
-type MatchFieldFunc func(env *LEnv, v *LVal, name string) *LVal
+// test.  It returns the field and a nil error.  A nil field means the
+// pattern must not match, for a field the library treats as absent.  The
+// second result is an error when v has no field name that a pattern may
+// read; it stops the match.  Package s returns () for a field that is not
+// set, as (v 'name) reads it.  The field itself may be any value, an
+// error value too.
+type MatchFieldFunc func(env *LEnv, v *LVal, name string) (*LVal, *LVal)
 
 // matchTypesSetting is the value setting (Runtime.SetSettingValue) that
 // holds the type library's functions, so each VM of a template has them.
@@ -397,12 +399,12 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 		types, _ := matchTypesOf(env)
 		parts := p.Cells[1:]
 		for i := 0; i < len(parts); i += 2 {
-			f := types.field(env, v, parts[i].Str[1:])
+			f, lerr := types.field(env, v, parts[i].Str[1:])
+			if lerr != nil {
+				return false, lerr
+			}
 			if f == nil {
 				return false, nil
-			}
-			if f.IsError() {
-				return false, f
 			}
 			if ok, lerr := m.match(parts[i+1], f); !ok || lerr != nil {
 				return false, lerr
