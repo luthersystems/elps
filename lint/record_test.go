@@ -346,3 +346,39 @@ func TestRecordCapturedSet(t *testing.T) {
     (s:method m (_o) (set! k 1) ; nolint:record-captured-set
       k))))`))
 }
+
+func TestRecordDefmethodNotToplevel(t *testing.T) {
+	src := recordOrder + `(defun add-size () (s:defmethod order size (o) 0))
+(set 'f (lambda () (s:defmethod order size (o) 0)))
+(defun g () (let ([k 1]) (s:defmethod order size (o) k)))
+(set 'h (flet ([mk () (s:defmethod order size (o) 0)]) mk))
+(defendpoint "add" () (s:defmethod order size (o) 0))
+(defun g2 () (let* ([m (s:defmethod order size (o) 0)]) m))`
+	diags := lintCheck(t, AnalyzerRecordDefmethodNotToplevel, src)
+	assert.Len(t, diags, 6, "%v", diags)
+	assertDiagOnLine(t, diags, 11, "s:defmethod inside defun")
+	assertDiagOnLine(t, diags, 6, "s:defmethod inside defun")
+	assertDiagOnLine(t, diags, 7, "s:defmethod inside lambda")
+	assertDiagOnLine(t, diags, 8, "s:defmethod inside defun")
+	assertDiagOnLine(t, diags, 9, "s:defmethod inside flet")
+	assertDiagOnLine(t, diags, 10, "s:defmethod inside defendpoint")
+
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+`(s:defmethod order a (o) 0)
+(let ([k 1]) (s:defmethod order b (o) k))
+(let* ([k 1] [m (s:defmethod order c (o) k)]) m)
+(flet ([helper (x) x]) (s:defmethod order d (o) (helper 1)))
+(labels ([helper (x) x]) (progn (s:defmethod order e (o) (helper 1))))
+(set 'ledger (let ([seen 0]) (s:defmethod order f (o) seen) 1))
+'(defun quoted () (s:defmethod order g (o) 0))`))
+
+	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
+		`(defun add-size () (s:defmethod order size (o) 0)) ; nolint:record-defmethod-not-toplevel`))
+
+	// A test file is skipped: a test may call s:defmethod on purpose.
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordDefmethodNotToplevel}}
+	for _, name := range []string{"order_test.lisp", "order_testhelpers.lisp"} {
+		diags, err := l.LintFile([]byte(src), name)
+		require.NoError(t, err)
+		assertNoDiags(t, diags)
+	}
+}
