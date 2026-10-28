@@ -492,6 +492,17 @@ func (v *LVal) IsQuoted() bool {
 	return v != nil && v.quoted
 }
 
+// IsSpliced reports whether v carries the spliced flag that Splice sets.
+// A quasiquote splices such a value into its list even in an unquote
+// position, so a Go caller that builds what a quasiquote would build reads
+// it (elpsutil.Template.ExpandChecked).  Like quoted, the flag is read-only
+// outside this package.
+//
+// IsSpliced is nil-receiver safe: a nil LVal reports false.
+func (v *LVal) IsSpliced() bool {
+	return v != nil && v.spliced
+}
+
 // GetType returns a quoted symbol denoting v's type.
 func GetType(v *LVal) *LVal {
 	t := Symbol(v.Str)
