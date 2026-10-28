@@ -324,6 +324,8 @@ A record type is a constructor for objects with typed fields and methods
 | `(s:record? V)` | True when V is an object of a record type. |
 | `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
 | `(s:ref TYPE)` | A type that passes an object of TYPE and checks nothing else. |
+| `(s:is? VALUE TYPE)` | `true` if VALUE passes TYPE, else `false`. |
+| `(s:as VALUE TYPE)` | VALUE if it passes TYPE; else the check's error. |
 
 Rules:
 
@@ -348,6 +350,14 @@ Rules:
   checked, and the rollback does not undo that. Use `s:ref` for objects
   your own code made; check data from outside with the type itself. Go:
   `(*RecordType).Ref(env)`; `(*RecordType).Is(v)` is the plain Go test.
+* `(s:is? v T)` and `(s:as v T)` take any type a typed formal takes: a
+  built-in type name, a record type (the full check), `s:ref`, an
+  interface or a validator. Only `wrong-type` and `failed-constraint`
+  make `s:is?` false. Any other error propagates: a TYPE that is not a
+  type, a step limit, or a condition a `:check` raises itself (raise
+  `failed-constraint` in `:check` to make `s:is?` false). A built-in type
+  name takes no gensym. Go: `libschema.Is(env, v, typ)` and
+  `libschema.As(env, v, typ)`.
 * Helper functions are ordinary `defun`s, or locals of a closure around
   the type: `(set 'order (labels (...) (s:make-record ...)))`.
 * Use `s:any` for a field that takes any value.

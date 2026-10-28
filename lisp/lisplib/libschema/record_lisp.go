@@ -91,6 +91,17 @@ var recordBuiltins = []*libutil.Builtin{
 		`Returns a copy of a record object's fields as a sorted map.
 		Store this map, not the object, in a ledger or other plain
 		data; pass it back to the type to rebuild the object.`),
+	libutil.FunctionDoc("is?", lisp.Formals("value", "type"), builtinIs,
+		`Returns true if value passes type, and false if not.  type is
+		what a typed formal takes: a built-in type name (s:int), a
+		record type (the full check), (s:ref T), an interface or
+		another validator.  Only wrong-type and failed-constraint mean
+		false; any other error, such as a type that is not a type or a
+		condition a :check raises itself, propagates.`),
+	libutil.FunctionDoc("as", lisp.Formals("value", "type"), builtinAs,
+		`Returns value if it passes type, as s:is? checks it, and
+		raises the check's error if not.  Use it to check a value in
+		an expression: (let ((o (s:as x order))) ...).`),
 	libutil.FunctionDoc("ref", lisp.Formals("type"), builtinRef,
 		`Returns a type that passes an object of the record type and
 		checks nothing else: no field check and no :check, so it is

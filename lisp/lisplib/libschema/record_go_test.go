@@ -270,8 +270,11 @@ func TestGoRecordType(t *testing.T) {
 	require.Error(t, lisp.GoError(call(lisp.Symbol("set-to"), lisp.Int(-3))))
 	require.Equal(t, 7, call(lisp.Symbol("n")).Int, "the failed Default restored the field")
 
-	// A load runs the Go checks at once.
-	bad := strings.Replace(string(b), "2", "-4", 1)
+	// A load runs the Go checks at once.  The FID holds a sequence number
+	// that may contain a 2, so it is set aside while the value changes.
+	fid := `"user:` + rt.Spec().FID + `"`
+	bad := strings.Replace(strings.Replace(string(b), fid, "FID", 1), "2", "-4", 1)
+	bad = strings.Replace(bad, "FID", fid, 1)
 	_, err = libjson.LoadDurable(env, []byte(bad), reg)
 	require.Error(t, err)
 	require.Contains(t, err.Error(), "negative")
