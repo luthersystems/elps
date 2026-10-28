@@ -87,6 +87,13 @@ var recordBuiltins = []*libutil.Builtin{
 		`Returns a copy of a record object's fields as a sorted map.
 		Store this map, not the object, in a ledger or other plain
 		data; pass it back to the type to rebuild the object.`),
+	libutil.FunctionDoc("ref", lisp.Formals("type"), builtinRef,
+		`Returns a type that passes an object of the record type and
+		checks nothing else: no field check and no :check, so it is
+		cheap.  The type itself, used as a type, checks every field.
+		s:ref does not prove the fields are valid: a getter returns a
+		field's own value, and code that changes it in place (assoc!)
+		is not checked.  Use it for objects your own code made.`),
 	libutil.FunctionDoc("record?", lisp.Formals("value"), builtinIsRecord,
 		`Returns true if value is a record object.`),
 }

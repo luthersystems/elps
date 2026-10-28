@@ -323,6 +323,7 @@ A record type is a constructor for objects with typed fields and methods
 | `(s:fields OBJ)` | A copy of the object's fields as a sorted map. |
 | `(s:record? V)` | True when V is an object of a record type. |
 | `(s:make-interface NAME (METHOD (ARGS...))...)` | An interface: a set of methods a record object must have. A validator. |
+| `(s:ref TYPE)` | A type that passes an object of TYPE and checks nothing else. |
 
 Rules:
 
@@ -341,6 +342,12 @@ Rules:
   name must not be a field name.
 * A type is a validator: `(s:has-key "order" order)` accepts only objects
   of that type with valid fields.
+* `(s:ref order)` checks the type only: no field check, no `:check`, no
+  Lisp steps. It does not prove the fields are valid. A getter returns the
+  field's own value, so code that changes it in place (`assoc!`) is not
+  checked, and the rollback does not undo that. Use `s:ref` for objects
+  your own code made; check data from outside with the type itself. Go:
+  `(*RecordType).Ref(env)`; `(*RecordType).Is(v)` is the plain Go test.
 * Helper functions are ordinary `defun`s, or locals of a closure around
   the type: `(set 'order (labels (...) (s:make-record ...)))`.
 * Use `s:any` for a field that takes any value.

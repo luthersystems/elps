@@ -367,6 +367,20 @@ func TestTypedArgsGoRefuses(t *testing.T) {
 	}
 }
 
+// TestRefParity checks s:ref (#905): the type only, no field check.
+func TestRefParity(t *testing.T) {
+	runParity(t, []parityCase{
+		{`(s:validate (s:ref T) (T :n 1))`, "()"},
+		{`(s:validate (s:ref T) 5)`, "error:wrong-type"},
+		{`(s:validate (s:ref T) (sorted-map "n" 1))`, "error:wrong-type"},
+		{`(s:validate (s:of (s:ref T)) (list (T :n 1) (T :n 2)))`, "()"},
+		{`(s:validate (s:has-key "c" (s:ref T)) (sorted-map "c" 3))`, "error:wrong-type"},
+		{`(s:ref 5)`, "error:bad-arguments"},
+		{`(s:ref s:int)`, "error:bad-arguments"},
+		{`(get (s:describe (s:ref T)) "op")`, `"ref"`},
+	})
+}
+
 // TestRecordValueNamesItsType checks that the Lisp value of a Go type
 // accepts only that type's objects, and that each call returns a new
 // value, so no two VMs share one.
@@ -378,6 +392,9 @@ func TestRecordValueNamesItsType(t *testing.T) {
 	require.Equal(t, "()", parityOutcome(env, `(s:validate A (A :n 1))`))
 	require.Equal(t, "error:wrong-type", parityOutcome(env, `(s:validate A (B :n 1))`))
 	require.NotSame(t, a.Value(), a.Value())
+	env.PutGlobal(lisp.Symbol("RA"), a.Ref(env))
+	require.Equal(t, "()", parityOutcome(env, `(s:validate RA (A :n 1))`))
+	require.Equal(t, "error:wrong-type", parityOutcome(env, `(s:validate RA (B :n 1))`))
 	require.Equal(t, "error:bad-arguments", parityOutcome(env, `(s:defmethod A m (o) 1)`), "a Go type is sealed")
 }
 

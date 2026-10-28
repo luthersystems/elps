@@ -179,3 +179,30 @@ func validateGoValue(env *lisp.LEnv, t *RecordType, input *lisp.LVal) *lisp.LVal
 	}
 	return lisp.Nil()
 }
+
+// refValidator returns the validator of (s:ref T): it passes an object of
+// the type ref and checks nothing else.
+func refValidator(env *lisp.LEnv, ref recordRef) *lisp.LVal {
+	v := newValidator(env, lisp.Formals("input"), func(env *lisp.LEnv, input, _ *lisp.LVal) *lisp.LVal {
+		if got, ok := objectRef(input); ok && got == ref {
+			return lisp.Nil()
+		}
+		return env.ErrorConditionf(WrongType, "Input is not a %s record", ref.display())
+	})
+	return describeAs(v, &schemaDesc{op: "ref", name: ref.display(), rec: ref})
+}
+
+// builtinRef is s:ref.
+func builtinRef(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
+	ref, ok := typeRefOf(args.Cells[0])
+	if !ok {
+		return env.ErrorConditionf(BadArgs, "s:ref: argument is not a record type: %v", args.Cells[0])
+	}
+	return refValidator(env, ref)
+}
+
+// Ref returns the validator (s:ref T) for t: it passes an object of t and
+// checks nothing else.  It is a validator of env, so make one for each VM.
+func (t *RecordType) Ref(env *lisp.LEnv) *lisp.LVal {
+	return refValidator(env, recordRef{goT: t})
+}
