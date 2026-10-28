@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 
 	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/internal/templatepolicy"
@@ -528,13 +530,84 @@ func validateRecordValue(env *lisp.LEnv, desc *recordDesc, tcaps, input *lisp.LV
 	if !ok || o.desc != desc {
 		return env.ErrorConditionf(WrongType, "Input is not a %s record", desc.display)
 	}
-	if lerr := validateLispFields(env, desc, tcaps, o.fields); lerr != nil {
-		return lerr
-	}
-	if lerr := runRecordCheck(env, desc, tcaps, input); lerr != nil {
+	// Check against the validator's captures of the type, which desc
+	// matched.
+	o.caps = tcaps
+	if lerr := validateLispObject(env, o, input); lerr != nil {
 		return lerr
 	}
 	return lisp.Nil()
+}
+
+// validateLispObject checks the fields of the object obj and runs its
+// :check.  It returns nil when the object is valid.
+//
+// Inside ValidateLoaded it checks each object once.  The field validators
+// of a record type check a nested object in full, so without the set an
+// object N levels down is checked once by each of its N ancestors and once
+// more by the walk, and the :check runs O(N^2) times for a chain of N.
+// Only a check that passes is recorded: a failure runs again at each
+// encounter, as it did before, so the error does not change.
+func validateLispObject(env *lisp.LEnv, o lispObject, obj *lisp.LVal) *lisp.LVal {
+	set := validatedSetOf(env)
+	if _, done := set[o.objCaps]; done {
+		return nil
+	}
+	if lerr := validateLispFields(env, o.desc, o.caps, o.fields); lerr != nil {
+		return lerr
+	}
+	if lerr := runRecordCheck(env, o.desc, o.caps, obj); lerr != nil {
+		return lerr
+	}
+	if set != nil {
+		set[o.objCaps] = struct{}{}
+	}
+	return nil
+}
+
+// validatedSet holds the captures of each object that one ValidateLoaded
+// call has checked.  The key is the captures, not the value header: every
+// header of an object reads the same captures.
+type validatedSet map[*lisp.LVal]struct{}
+
+// validatedSets maps each runtime that is inside ValidateLoaded to the set
+// of its current call.  The field validators that check a nested object
+// get only the env, so the set reaches them through the env's runtime.  A
+// runtime runs on one goroutine at a time, so only that goroutine reads or
+// writes its set.
+var validatedSets sync.Map
+
+// validating counts the ValidateLoaded calls in progress in all runtimes.
+// While it is zero, a record validator does not look in validatedSets.
+var validating atomic.Int64
+
+// validatedSetOf returns the set of the ValidateLoaded call that env's
+// runtime is in, or nil.
+func validatedSetOf(env *lisp.LEnv) validatedSet {
+	if validating.Load() == 0 {
+		return nil
+	}
+	v, _ := validatedSets.Load(env.Runtime)
+	set, _ := v.(validatedSet)
+	return set
+}
+
+// beginValidated gives env's runtime a new set for one ValidateLoaded
+// call, and returns the function that ends the call.  A nested call, from
+// Go code that a :check calls, gets its own set and puts back the outer
+// one when it ends.
+func beginValidated(env *lisp.LEnv) func() {
+	rt := env.Runtime
+	prev, nested := validatedSets.Swap(rt, validatedSet{})
+	validating.Add(1)
+	return func() {
+		validating.Add(-1)
+		if nested {
+			validatedSets.Store(rt, prev)
+			return
+		}
+		validatedSets.Delete(rt)
+	}
 }
 
 // recordValidator wraps the record type t as a schema validator, so that a
@@ -597,8 +670,10 @@ func IsRecordType(v *lisp.LVal) bool {
 //
 // It walks lists, sorted maps, arrays, tagged values and the field maps of
 // record objects.  It does not enter a closure's environment or a native
-// payload.  It returns the first failure.
+// payload.  It returns the first failure.  Each object is checked once per
+// call, also when a field validator of another object checks it too.
 func ValidateLoaded(env *lisp.LEnv, vals ...*lisp.LVal) error {
+	defer beginValidated(env)()
 	seen := make(map[*lisp.LVal]bool)
 	stack := lisp.Cells(vals).Clone()
 	for len(stack) > 0 {
@@ -631,12 +706,12 @@ func ValidateLoaded(env *lisp.LEnv, vals ...*lisp.LVal) error {
 			if !ok {
 				continue
 			}
-			if lerr := validateLispFields(env, o.desc, o.caps, o.fields); lerr != nil {
+			if lerr := validateLispObject(env, o, v); lerr != nil {
 				return lisp.GoError(lerr)
 			}
-			if lerr := runRecordCheck(env, o.desc, o.caps, v); lerr != nil {
-				return lisp.GoError(lerr)
-			}
+			// The walk goes on into the fields of an object that a field
+			// validator has already checked: a field of type s:any can hold
+			// an object that no validator checks.
 			stack = append(stack, o.fields)
 		case lisp.ShapeLeaf, lisp.ShapeError, lisp.ShapeNative, lisp.ShapeMark, lisp.ShapeInvalid:
 		}

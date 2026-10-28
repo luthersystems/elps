@@ -532,7 +532,7 @@ of the global that holds it, and its methods are never saved. Add
 `libschema.RecordCodec` to the durable registry. A load runs no Lisp, so
 call `libschema.ValidateLoaded` on the loaded values before Lisp uses them.
 It checks each object against the type the loading program binds to the
-saved name.
+saved name, and runs each object's `:check` once per call.
 
 Go types. `libschema.NewRecordType` defines a record type in Go with Go
 methods and Go checks. Its objects work with `s:fields` and `s:record?`.
