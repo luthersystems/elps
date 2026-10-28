@@ -57,7 +57,9 @@ type argCheck struct {
 // formalSlots returns the argCheck of each formal in formals, a formal list
 // with no receiver, and npos, the number of positional formals.  The
 // keyword arguments of a call start at npos.
-func formalSlots(formals *lisp.LVal) (slots []argCheck, npos int) {
+func formalSlots(formals *lisp.LVal) ([]argCheck, int) {
+	var slots []argCheck
+	npos := 0
 	for _, p := range lisp.ParseFormals(formals) {
 		c := argCheck{name: p.Name, kind: p.Kind, pos: npos}
 		if p.Kind == lisp.ParamRequired || p.Kind == lisp.ParamOptional {

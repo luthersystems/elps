@@ -3,7 +3,6 @@
 package libschema_test
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 
@@ -70,5 +69,5 @@ func TestImplementsGo(t *testing.T) {
 	bad.Implements = []*libschema.Interface{nil}
 	_, err = libschema.NewRecordType(bad)
 	require.Error(t, err)
-	require.False(t, errors.Is(err, libschema.ErrFailedConstraint))
+	require.NotErrorIs(t, err, libschema.ErrFailedConstraint)
 }

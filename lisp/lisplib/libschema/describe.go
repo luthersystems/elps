@@ -15,13 +15,13 @@ import (
 // A schemaDesc is built once, when its validator is built, and never written
 // after, so it is shared by every VM a template forks (see validatorTag).
 type schemaDesc struct {
+	rec      recordRef     // record: the record type it checks
 	op       string        // "type", "in", "gt", "has-key", ...
 	name     string        // a type's name, as s:make-validator was given it
 	typ      string        // a type's base type: "string", "sorted-map", ...
 	key      string        // has-key, may-have-key, when: the key
 	values   []descValue   // literal arguments: s:in's values, s:gt's bound, s:regexp's pattern
 	children []*schemaDesc // the constraints or types it holds, in order
-	rec      recordRef     // record: the record type it checks
 }
 
 // descValue is one literal argument of a constraint, as immutable Go data.

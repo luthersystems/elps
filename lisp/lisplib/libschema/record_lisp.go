@@ -3,6 +3,8 @@
 package libschema
 
 import (
+	"fmt"
+
 	"github.com/luthersystems/elps/internal/funraw"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib/internal/libutil"
@@ -138,7 +140,7 @@ type methodForm struct {
 // when no formal has a type.  The first formal is the receiver: the object
 // the method is called on.  A formal after it is a name or [name type]
 // (#905); the lambda gets the plain names.
-func methodLambda(env *lisp.LEnv, who string, m methodForm) (fn, types *lisp.LVal) {
+func methodLambda(env *lisp.LEnv, who string, m methodForm) (*lisp.LVal, *lisp.LVal) {
 	name, formals, body := m.name, m.formals, m.body
 	if name.Type != lisp.LSymbol || name.Str == "" || name.Str[0] == ':' {
 		return env.ErrorConditionf(BadArgs, "%s: method name must be a symbol: %v", who, name), nil
@@ -176,6 +178,7 @@ func methodLambda(env *lisp.LEnv, who string, m methodForm) (fn, types *lisp.LVa
 	form := make([]*lisp.LVal, 0, len(body)+2)
 	form = append(form, lisp.Symbol("lisp:lambda"), lisp.SExpr(plain))
 	form = append(form, body...)
+	var types *lisp.LVal
 	if typeForms != nil {
 		types = listForm(typeForms)
 	}
@@ -193,23 +196,32 @@ func typeForm(name, typ *lisp.LVal) []*lisp.LVal {
 	return []*lisp.LVal{quoted(name), typ}
 }
 
+// methodOpts are the options at the start of a method body and the body
+// after them.
+type methodOpts struct {
+	replace, returns *lisp.LVal
+	body             []*lisp.LVal
+}
+
 // methodOptions reads the options at the start of a method body, in any
-// order: :replace v (s:defmethod only) and :returns T.  It returns the
-// body after them.
-func methodOptions(body []*lisp.LVal, allowReplace bool) (replace, returns *lisp.LVal, rest []*lisp.LVal) {
-	replace = lisp.Nil()
+// order: :replace v (s:defmethod only) and :returns T.  It returns them
+// with the body after them.
+func methodOptions(body []*lisp.LVal, allowReplace bool) methodOpts {
+	o := methodOpts{replace: lisp.Nil()}
 	for len(body) >= 2 {
 		switch {
 		case allowReplace && body[0].IsSymbol(":replace"):
-			replace = body[1]
-		case body[0].IsSymbol(":returns") && returns == nil:
-			returns = body[1]
+			o.replace = body[1]
+		case body[0].IsSymbol(":returns") && o.returns == nil:
+			o.returns = body[1]
 		default:
-			return replace, returns, body
+			o.body = body
+			return o
 		}
 		body = body[2:]
 	}
-	return replace, returns, body
+	o.body = body
+	return o
 }
 
 // quoted returns (lisp:quote v).
@@ -245,7 +257,8 @@ func macroMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			if len(form.Cells) < 3 {
 				return env.ErrorConditionf(BadArgs, "s:make-record: a method needs a name and formals: %v", form)
 			}
-			_, returns, body := methodOptions(form.Cells[3:], false)
+			opts := methodOptions(form.Cells[3:], false)
+			returns, body := opts.returns, opts.body
 			fn, types := methodLambda(env, "s:make-record", methodForm{name: form.Cells[1], formals: form.Cells[2], returns: returns, body: body})
 			if fn.IsError() {
 				return fn
@@ -288,7 +301,8 @@ func macroMethod(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
 //	(s:%add-method TYPE 'NAME (lisp:lambda (recv ...) ...) REPLACE [(lisp:list 'arg TYPE ...)])
 func macroDefMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	typeV, name, formals, body := args.Cells[0], args.Cells[1], args.Cells[2], args.Cells[3:]
-	replace, returns, body := methodOptions(body, true)
+	opts := methodOptions(body, true)
+	replace, returns, body := opts.replace, opts.returns, opts.body
 	fn, types := methodLambda(env, "s:defmethod", methodForm{name: name, formals: formals, returns: returns, body: body})
 	if fn.IsError() {
 		return fn
@@ -368,8 +382,8 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 		impls,
 		lisp.Bool(len(impls.Cells) == 0),
 	}.List()
-	if lerr := checkImplements(env, desc, impls, lispTypeArities(tcaps), false); lerr != nil {
-		return lerr
+	if err := checkImplements(desc, impls, lispTypeArities(tcaps), false); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
 	}
 	t := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
 		Package:  pkg,
@@ -384,7 +398,7 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	}
 	tcaps.Cells[typeSelf] = t //elps:mutates the type's own captures, built above and not yet returned
 	if len(args.Cells) > 5 {
-		if lerr := addSigs(env, desc, t, tcaps, args.Cells[5]); lerr != nil {
+		if lerr := addSigs(env, lispType{desc: desc, caps: tcaps}, t, args.Cells[5]); lerr != nil {
 			return lerr
 		}
 	}
@@ -393,7 +407,8 @@ func builtinMakeRecord(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 
 // addSigs stores the argument types of each typed method of a new type.
 // sigs is the list (name types name types ...) that s:make-record builds.
-func addSigs(env *lisp.LEnv, desc *recordDesc, t, tcaps, sigs *lisp.LVal) *lisp.LVal {
+func addSigs(env *lisp.LEnv, lt lispType, t, sigs *lisp.LVal) *lisp.LVal {
+	desc, tcaps := lt.desc, lt.caps
 	if len(sigs.Cells)%2 != 0 {
 		return env.ErrorConditionf(BadArgs, "%s: method types must be name and type-list pairs", desc.display)
 	}
@@ -466,8 +481,8 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	key := lisp.String(name.Str)
 	a := lispMethodArity(fn)
 	only := func(n string) (arity, bool) { return a, n == name.Str }
-	if lerr := checkImplements(env, desc, tcaps.Cells[typeImpls], only, false); lerr != nil {
-		return lerr
+	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
 	}
 	sigs := tcaps.Cells[typeSigs].Map()
 	if len(args.Cells) > 4 && !args.Cells[4].IsNil() {
@@ -502,11 +517,11 @@ func interfaceList(env *lisp.LEnv, desc *recordDesc, v *lisp.LVal) (*lisp.LVal, 
 
 // checkImplements checks the methods have looks up against each interface
 // in impls.  A missing method is an error only when all is true.
-func checkImplements(env *lisp.LEnv, desc *recordDesc, impls *lisp.LVal, have func(string) (arity, bool), all bool) *lisp.LVal {
+func checkImplements(desc *recordDesc, impls *lisp.LVal, have func(string) (arity, bool), all bool) error {
 	for _, v := range impls.Cells {
 		in := interfaceOf(v)
 		if err := matchMethods(in.name, in.methods, have, all); err != nil {
-			return env.ErrorConditionf(WrongType, "%s: :implements %s: %v", desc.display, in.name, err)
+			return fmt.Errorf("%s: :implements %s: %w", desc.display, in.name, err)
 		}
 	}
 	return nil
@@ -519,8 +534,8 @@ func checkImplementsAll(env *lisp.LEnv, desc *recordDesc, tcaps *lisp.LVal) *lis
 	if lisp.True(tcaps.Cells[typeImplOK]) {
 		return nil
 	}
-	if lerr := checkImplements(env, desc, tcaps.Cells[typeImpls], lispTypeArities(tcaps), true); lerr != nil {
-		return lerr
+	if err := checkImplements(desc, tcaps.Cells[typeImpls], lispTypeArities(tcaps), true); err != nil {
+		return env.ErrorConditionf(WrongType, "%v", err)
 	}
 	tcaps.Cells[typeImplOK] = lisp.Bool(true) //elps:mutates the type's own captures record the passed check
 	return nil

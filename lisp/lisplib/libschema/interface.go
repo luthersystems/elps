@@ -244,7 +244,7 @@ func (in *Interface) addEmbedded(m ifaceMethod, src string, from map[string]stri
 		from[m.name] = src
 		return nil
 	}
-	if !in.methods[i].arity.equal(m.arity) {
+	if !in.methods[i].equal(m.arity) {
 		return fmt.Errorf("libschema: interface %s: method %s takes %v in %s and %v in %s",
 			in.name, m.name, in.methods[i].arity, from[m.name], m.arity, src)
 	}

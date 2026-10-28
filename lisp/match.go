@@ -46,11 +46,11 @@ import (
 type MatchTypeFunc func(env *LEnv, v, typ *LVal) *LVal
 
 // MatchFieldFunc reads the field name of v, a value that passed a type
-// test.  ok is false when the pattern must not match, for a field the
-// library treats as absent; package s returns ok and () for a field that
-// is not set, as (v 'name) reads it.  err is an error when v has no field
-// name that a pattern may read; it stops the match.
-type MatchFieldFunc func(env *LEnv, v *LVal, name string) (field *LVal, ok bool, err *LVal)
+// test.  It returns the field; nil when the pattern must not match, for a
+// field the library treats as absent; or an error value when v has no
+// field name that a pattern may read, which stops the match.  Package s
+// returns () for a field that is not set, as (v 'name) reads it.
+type MatchFieldFunc func(env *LEnv, v *LVal, name string) *LVal
 
 // matchTypesSetting is the value setting (Runtime.SetSettingValue) that
 // holds the type library's functions, so each VM of a template has them.
@@ -310,7 +310,7 @@ func checkMatchPattern(env *LEnv, p *LVal, seen map[string]bool) *LVal {
 					if k.Type != LSymbol || k.quoted || !isKeyword(k.Str) || len(k.Str) < 2 {
 						return env.Errorf("match: a record pattern is (type :field pattern ...): %v", p)
 					}
-				} else if k.Type != LString && k.Type != LInt && !(k.Type == LSymbol && isKeyword(k.Str)) {
+				} else if k.Type != LString && k.Type != LInt && (k.Type != LSymbol || !isKeyword(k.Str)) {
 					return env.Errorf("match: a map key in a pattern is a string, an int or a keyword: %v", k)
 				}
 				stack = append(stack, item{parts[i+1]})
@@ -397,12 +397,12 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 		types, _ := matchTypesOf(env)
 		parts := p.Cells[1:]
 		for i := 0; i < len(parts); i += 2 {
-			f, ok, lerr := types.field(env, v, parts[i].Str[1:])
-			if lerr != nil {
-				return false, lerr
-			}
-			if !ok {
+			f := types.field(env, v, parts[i].Str[1:])
+			if f == nil {
 				return false, nil
+			}
+			if f.IsError() {
+				return false, f
 			}
 			if ok, lerr := m.match(parts[i+1], f); !ok || lerr != nil {
 				return false, lerr
