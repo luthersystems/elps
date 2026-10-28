@@ -77,12 +77,18 @@ func recordFindings(exprs []*lisp.LVal, semantics *analysis.Result) []recordFind
 	}
 	types := recordShapes(exprs, all, workspace)
 	for _, top := range exprs {
+		// scopes says where each s:defmethod in top runs.  It is one walk
+		// of top, made on the first s:defmethod.
+		var scopes map[*lisp.LVal]string
 		for _, site := range callSites(top, recordPackage+"make-record", recordPackage+"defmethod") {
 			shape := types.shapes[site.Form]
 			if astutil.HeadSymbol(site.Form) == recordPackage+"defmethod" && len(site.Form.Cells) > 1 {
 				shape = types.byName[site.Form.Cells[1].Str]
 				w.defmethodType(site.Form, types, semantics)
-				w.defmethodScope(top, site.Form)
+				if scopes == nil {
+					scopes = defmethodScopes(top)
+				}
+				w.defmethodScope(scopes, site.Form)
 			}
 			for _, m := range recordMethods(site.Form) {
 				w.methodBody(m.body, m.recv, shape)
@@ -563,93 +569,27 @@ func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics
 	}
 }
 
-// defmethodScope reports a s:defmethod that does not run at load: one
-// in a function body, a macro call or any other form that is not a
-// load-scope wrapper.  See AnalyzerRecordDefmethodNotToplevel for why.
-func (w *recordWalk) defmethodScope(top, call *lisp.LVal) {
-	path := pathTo(top, call, maxPlainSetWork)
-	if path == nil {
-		return
+// defmethodScopes maps each s:defmethod call in top to the form that keeps
+// it from running at load, or to "" when it runs at load.
+func defmethodScopes(top *lisp.LVal) map[*lisp.LVal]string {
+	scopes := make(map[*lisp.LVal]string)
+	for _, d := range analysis.RecordDefmethods(top) {
+		scopes[d.Call] = d.NotLoadScope
 	}
-	if where := notLoadScope(path); where != "" {
+	return scopes
+}
+
+// defmethodScope reports a s:defmethod that does not run at load.  See
+// AnalyzerRecordDefmethodNotToplevel for why.  A call the walk did not
+// reach is not reported.
+func (w *recordWalk) defmethodScope(scopes map[*lisp.LVal]string, call *lisp.LVal) {
+	if where := scopes[call]; where != "" {
 		w.out = append(w.out, recordFinding{
 			node: call, kind: recordDefmethodScope,
 			msg:  "s:defmethod inside " + where + " runs when that code runs, not at load; the method reaches only the VM that runs it",
-			note: "move the s:defmethod to the top level of the file, or into a top-level let, let*, flet, labels or progn around the type",
+			note: "move the s:defmethod to the top level of the file, or into a let, let*, progn, flet or labels body at the top level",
 		})
 	}
-}
-
-// notLoadScope returns "" when each form on path, from the top form to the
-// s:defmethod call, keeps it at load scope, or else the head of the first
-// form that does not.  The load-scope forms are progn, the body and the
-// binding values of let and let*, the body of flet and labels, and the
-// value of a top-level set or defconst.  A flet or labels binding is a
-// function body, so it is not load scope.
-func notLoadScope(path []*lisp.LVal) string {
-	for i := 0; i+1 < len(path); i++ {
-		parent, child := path[i], path[i+1]
-		idx := cellIndex(parent, child)
-		head := unqualifiedLispName(astutil.HeadSymbol(parent))
-		switch {
-		case head == "progn" && idx >= 1:
-		case (head == "let" || head == "let*") && idx >= 2:
-		case (head == "let" || head == "let*") && idx == 1:
-			// The binding list, then one binding, then its value.
-			if i+3 >= len(path) || cellIndex(child, path[i+2]) < 0 || cellIndex(path[i+2], path[i+3]) != 1 {
-				return head + " bindings"
-			}
-			i += 2
-		case (head == "flet" || head == "labels") && idx >= 2:
-		case i == 0 && (head == "set" || head == "defconst") && idx == 2:
-		default:
-			if head == "" {
-				return "a form"
-			}
-			return head
-		}
-	}
-	return ""
-}
-
-// cellIndex returns the index of child in the cells of parent, or -1.
-func cellIndex(parent, child *lisp.LVal) int {
-	for i, c := range parent.Cells {
-		if c == child {
-			return i
-		}
-	}
-	return -1
-}
-
-// pathTo returns the lists from top down to target, both included, or nil
-// when target is not found within budget lists.  target comes from a
-// call-site query, which returns only calls in code position, so the
-// search also enters quoted lists: a let binding [x v] reads as one.
-func pathTo(top, target *lisp.LVal, budget int) []*lisp.LVal {
-	var path []*lisp.LVal
-	var find func(v *lisp.LVal) bool
-	find = func(v *lisp.LVal) bool {
-		if budget <= 0 || v.Type != lisp.LSExpr {
-			return false
-		}
-		budget--
-		path = append(path, v)
-		if v == target {
-			return true
-		}
-		for _, c := range v.Cells {
-			if find(c) {
-				return true
-			}
-		}
-		path = path[:len(path)-1]
-		return false
-	}
-	if find(top) {
-		return path
-	}
-	return nil
 }
 
 // notATypeForm describes a form whose value is never a record type, or
@@ -943,7 +883,9 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"endpoint body, runs at call time and adds its method only in the VM that runs " +
 		"the call. The method is lost after the call, it is not in the type's saved " +
 		"form, and a later call in another VM does not see it. Write s:defmethod at the " +
-		"top level, or in a top-level let, let*, flet, labels or progn. A *_test.lisp " +
+		"top level, or in a form that runs its parts at load: let, let*, progn, if, when, " +
+		"the body of flet or labels, or the value of a set or defconst. A function body, " +
+		"or the arguments of a call or macro call, is reported. A *_test.lisp " +
 		"or *_testhelpers.lisp file is skipped: only test runners load it.",
 	Run: func(pass *Pass) error {
 		// A test may add a method at call time on purpose, to test

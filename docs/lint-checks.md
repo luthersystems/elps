@@ -741,11 +741,19 @@ load, so the method reaches only the VM that runs the call:
 A runtime refusal in template VMs only would make cold and template peers
 answer differently, so this check is the guard, the same in every mode.
 
-The load-scope forms are the top level of the file, `progn`, the body and
-binding values of `let` and `let*`, the body of `flet` and `labels`, and
-the value of a top-level `set` or `defconst`. Any other form around the
-`s:defmethod` is reported: a `defun`, a `lambda`, a `flet` or `labels`
-function, or a macro call such as an endpoint definition.
+An `s:defmethod` runs at load when nothing around it defers it:
+
+* A function body runs at call time: `defun`, `lambda`, and a `flet` or
+  `labels` function. It is reported.
+* The arguments of a function call or a macro call run when the callee
+  decides. They are reported. The check does not expand macros, so a
+  macro such as an endpoint definition counts as a call. The value of a
+  `set` or `defconst` runs at load, so those two calls are not reported.
+* The other special forms run their parts at load: `let` and `let*`
+  (bindings and body), `progn`, `if`, `when`, `unless`, `cond`, and the
+  body of `flet` and `labels`. They are not reported.
+
+The message names the outermost form to move, for example `defun`.
 
 ```lisp
 ;; WARNING: the method exists only during this call
@@ -756,9 +764,9 @@ function, or a macro call such as an endpoint definition.
 (let ([limit 10]) (s:defmethod order big (o) (> (o 'size) limit)))
 ```
 
-A top-level `if`, `when` or `cond` around an `s:defmethod` is reported
-too: a method that a type has only sometimes is hard to follow. Suppress
-it with `; nolint:record-defmethod-not-toplevel` when it is intended.
+A load-time call of your own macro around an `s:defmethod` is reported,
+because the check cannot see into the macro. Suppress that line with
+`; nolint:record-defmethod-not-toplevel`.
 
 The check skips `*_test.lisp` and `*_testhelpers.lisp` files. Only test
 runners load them, and a test may call `s:defmethod` at call time to test

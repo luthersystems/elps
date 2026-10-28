@@ -369,7 +369,17 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 (flet ([helper (x) x]) (s:defmethod order d (o) (helper 1)))
 (labels ([helper (x) x]) (progn (s:defmethod order e (o) (helper 1))))
 (set 'ledger (let ([seen 0]) (s:defmethod order f (o) seen) 1))
-'(defun quoted () (s:defmethod order g (o) 0))`))
+'(defun quoted () (s:defmethod order g (o) 0))
+(when (> 1 0) (s:defmethod order h (o) 0))
+(let ([k 1]) (set 'x (s:defmethod order i (o) k)))
+(progn (defconst y (s:defmethod order j (o) 0)))`))
+
+	// A set or defconst value is load scope only where its own place is.
+	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
+		`(defun f () (set 'x (s:defmethod order a (o) 0)))`), 6, "s:defmethod inside defun")
+	// A s:defmethod in another s:defmethod's body runs when that method runs.
+	assertDiagOnLine(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
+		`(s:defmethod order outer (o) (s:defmethod order inner (o) 0))`), 6, "s:defmethod inside s:defmethod")
 
 	assertNoDiags(t, lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
 		`(defun add-size () (s:defmethod order size (o) 0)) ; nolint:record-defmethod-not-toplevel`))
