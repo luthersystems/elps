@@ -60,11 +60,15 @@ var recordMacros = []*libutil.Builtin{
 		:replace true.  It raises record-error while a function defined
 		in Lisp runs, a test body included: write it at the top level
 		of a file, also in a let, progn or flet body, so it runs at
-		load.  The order of errors: the method name, the formals and
-		the receiver are checked when the call expands, and the type
-		expressions of [name type] formals are evaluated, before the
-		refusal; the check that each type value is a usable type comes
-		after it.`),
+		load.  These errors come before the refusal: the checks of the
+		method name, the formals and the receiver when the call
+		expands; the evaluation of the type expressions of [name type]
+		formals; and the checks of the type and the method (not a
+		record type, a sealed Go type, not a function, defined in
+		another package, the name of a field, a name the type has
+		without :replace, or an interface the type implements that the
+		method no longer satisfies).  The check that each type value is
+		a usable type comes after it.`),
 	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
 		`Defines an interface, a set of methods, and returns it:
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
@@ -90,8 +94,10 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
 		directly.  It raises record-error while a function defined in
-		Lisp runs, after it checks type and name and before it checks
-		the type values in sig.`),
+		Lisp runs: after it checks type, name and fn (a record type
+		of this package, not a field's name, not a duplicate without
+		replace) and the type's interfaces, and before it checks the
+		type values in sig.`),
 	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
@@ -528,8 +534,10 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // a Lisp function starts, (funcall (lambda () (load-file ...))), refuses
 // where a Go-loaded template accepts.  A top-level form, also in a let,
 // progn, when, flet body, call argument, load-file or load-string, runs
-// with no Lisp function on the stack.  The check runs after the type, name
-// and interface checks, so a bad type or name gets its own error first.
+// with no Lisp function on the stack.  The check runs after the type check, the
+// method checks of methodTarget.check (a function, of the type's package,
+// not a field's name, not a duplicate without :replace) and
+// checkImplements, so each of those gets its own error first.
 // The errors s:defmethod finds when it expands (methodLambda: the method
 // name, the formals, the receiver) and the evaluation of the type
 // expressions come before %add-method runs, so before the refusal too.

@@ -374,7 +374,8 @@ const maxRecordWalk = 1 << 16
 
 // RecordDefmethods returns the s:defmethod calls in top, each with whether
 // it runs at load.  isMacro reports whether a call head defers its
-// arguments: a macro or a test form (RecordMacroTest).
+// arguments: a macro or a test form (RecordMacroTest).  With isMacro nil,
+// a head defers its arguments only when it names a test form.
 //
 // A template publishes a record type with its methods as they stand at
 // publication, so only a s:defmethod that runs at load is part of the
@@ -444,8 +445,9 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 			// The test runner runs a test or benchmark body after the
 			// load, as a function body runs at call time.  The walker
 			// reads the head as the form only when no local binds it;
-			// isMacro says whether the file defines the name itself.
-			if testforms.Name(n.Op) != "" && isMacro != nil && isMacro(astutil.HeadSymbol(n.Node)) {
+			// isMacro says whether the program defines the name itself.
+			// With no isMacro, the name is the test form.
+			if testforms.Name(n.Op) != "" && (isMacro == nil || isMacro(astutil.HeadSymbol(n.Node))) {
 				frames = append(frames, frame{where: n.Op, depth: n.Depth})
 			}
 		case lisp.WalkForm:
@@ -458,7 +460,11 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 				seen[n.Node] = true
 				out = append(out, RecordDefmethod{Call: n.Node, NotLoadScope: where()})
 			}
-			if !loadScopeCall(head) && isMacro != nil && isMacro(head) {
+			defers := testforms.Name(head) != ""
+			if isMacro != nil {
+				defers = isMacro(head)
+			}
+			if defers && !loadScopeCall(head) {
 				call.head, call.depth, call.ok = head, n.Depth, true
 			}
 		case lisp.WalkRef:
@@ -508,44 +514,33 @@ var builtinMacros = sync.OnceValue(func() map[string]bool {
 // test-let, test-let*, benchmark, benchmark-simple, also lisp:- or
 // testing:-qualified).
 //
-// With a scope, a head is a macro when the scope resolves it to one.  A
-// head the scope does not know, or every head when scope is nil, as in the
-// workspace prescan, is a macro when it is a builtin macro, a libschema
-// macro, or a macro a top-level defmacro of exprs defines; exprs is read
-// for macros only when scope is nil, since a scope holds the file's own
-// macros.  A test form name is a test form unless exprs defines it (a
-// defun, defmacro, set or formal of that name), as the check
-// test-outside-test-file decides.  Any other head is taken for a function;
-// see RecordDefmethods for why that is the safe guess.
+// One rule decides: a name the program defines itself means what that
+// definition makes it, a macro or not; any other name means what the
+// builtin of that name is.  With a scope, the scope says whether the name
+// resolves to a user or imported definition.  Without one, as in the
+// workspace prescan, the definitions are the top-level defun, defmacro,
+// deftype and set forms of exprs, read once.  A local binding is not read
+// here: the walk sees that the head is lexically bound (RecordDefmethods).
+// A name with no definition and no builtin macro or test form is taken
+// for a function; see RecordDefmethods for why that is the safe guess.
 func RecordMacroTest(scope *Scope, exprs []*lisp.LVal) func(head string) bool {
-	var local map[string]bool
+	var defs map[string]SymbolKind
 	if scope == nil {
 		for _, def := range extractDefinitions(exprs) {
-			if def.Kind != SymMacro {
-				continue
+			if defs == nil {
+				defs = make(map[string]SymbolKind)
 			}
-			if local == nil {
-				local = make(map[string]bool)
-			}
-			local[def.Name] = true
+			defs[def.Name] = def.Kind
 			if def.Package != "" {
-				local[def.Package+":"+def.Name] = true
+				defs[def.Package+":"+def.Name] = def.Kind
 			}
 		}
 	}
-	// userDefs is read the first time a head names a test form.
-	var userDefs map[string]bool
 	return func(head string) bool {
 		if head == "" {
 			return false
 		}
-		if testforms.Name(head) != "" {
-			if userDefs == nil {
-				userDefs = astutil.UserDefined(exprs)
-			}
-			return !userDefs[head]
-		}
-		if recordSchemaMacros[head] || local[head] {
+		if recordSchemaMacros[head] {
 			return true
 		}
 		name := strings.TrimPrefix(head, lisp.DefaultLangPackage+":")
@@ -556,11 +551,13 @@ func RecordMacroTest(scope *Scope, exprs []*lisp.LVal) func(head string) bool {
 			} else {
 				sym = scope.Lookup(name)
 			}
-			if sym != nil {
+			if sym != nil && (sym.Source != nil || sym.External) {
 				return sym.Kind == SymMacro
 			}
+		} else if kind, ok := defs[head]; ok {
+			return kind == SymMacro
 		}
-		return builtinMacros()[name]
+		return testforms.Name(head) != "" || builtinMacros()[name]
 	}
 }
 

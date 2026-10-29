@@ -2145,12 +2145,8 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	// Read the function data once for the frame's FID, package and kind:
-	// FID, Package and Builtin would each assert it again.  funData panics
-	// unless Native holds a *funData, and every function constructor sets
-	// a non-nil one.
-	fd := fun.funData()
-	err := env.Runtime.Stack.pushFrame(env.loc, fd.fid, fd.pkg, env.GetFunName(fun), fd.builtin == nil)
+	ff := frameFunOf(fun)
+	err := env.Runtime.Stack.pushFrame(env.loc, ff.fid, ff.pkg, env.GetFunName(fun), ff.lispFun)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2434,18 +2430,14 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
 	// to provide predictable stepping and stack traces.
-	// Read the function data once for the frame's FID, package and kind:
-	// FID, Package and Builtin would each assert it again.  funData panics
-	// unless Native holds a *funData, and every function constructor sets
-	// a non-nil one.
-	fd := fun.funData()
+	ff := frameFunOf(fun)
 	npop := 0
 	if env.Runtime.Debugger == nil {
-		npop = env.Runtime.Stack.terminalCallFID(fd.fid, fd.builtin == nil)
+		npop = env.Runtime.Stack.terminalCallFID(ff.fid, ff.lispFun)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.pushFrame(env.loc, fd.fid, fd.pkg, env.GetFunName(fun), fd.builtin == nil)
+	err := env.Runtime.Stack.pushFrame(env.loc, ff.fid, ff.pkg, env.GetFunName(fun), ff.lispFun)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2488,6 +2480,23 @@ callf:
 		d.OnFunReturn(env, fun, r)
 	}
 	return r
+}
+
+// frameFun is what a call's frame records of the function it calls.
+type frameFun struct {
+	fid, pkg string
+	lispFun  bool
+}
+
+// frameFunOf reads fun's function data once for its frame: FID, Package and
+// Builtin would each assert it again.  A nil *funData gives what those
+// accessors give for one, an empty FID and package and no builtin, as
+// call does too.
+func frameFunOf(fun *LVal) frameFun {
+	if fd := fun.funData(); fd != nil {
+		return frameFun{fid: fd.fid, pkg: fd.pkg, lispFun: fd.builtin == nil}
+	}
+	return frameFun{lispFun: true}
 }
 
 func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {
