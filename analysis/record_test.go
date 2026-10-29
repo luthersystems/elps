@@ -129,14 +129,20 @@ func TestRecordDefmethodsScope(t *testing.T) {
 		{"(defmacro benchmark-simple (n &rest b) ())\n(benchmark-simple \"b\" (s:defmethod order m (o) 0))", "benchmark-simple"},
 		// A formal named test does not define the name for the file.
 		{"(defun keep-if (test xs) xs)\n(test \"t\" (s:defmethod order m (o) 0))", "test"},
+		// A definition in another package does not change the name in
+		// user, and one in the form's own package does.
+		{"(in-package 'other)\n(defun test (n x) x)\n(in-package 'user)\n(test \"t\" (s:defmethod order m (o) 0))", "test"},
+		{"(in-package 'other)\n(defun test (n x) x)\n(test \"t\" (s:defmethod order m (o) 0))", ""},
+		{"(in-package 'other)\n(defmacro ep (&rest b) ())\n(in-package 'user)\n(other:ep (s:defmethod order m (o) 0))", "other:ep"},
+		{"(in-package 'other)\n(defmacro ep (&rest b) ())\n(in-package 'user)\n(ep (s:defmethod order m (o) 0))", ""},
 		// A local function of the name is that function.
 		{`(flet ([test (n x) x]) (test "t" (s:defmethod order m (o) 0)))`, ""},
 	} {
 		exprs := parsePreamble(t, tc.src)
-		isMacro := RecordMacroTest(nil, exprs)
+		macros := RecordMacroTest(nil, exprs)
 		var got []RecordDefmethod
 		for _, top := range exprs {
-			got = append(got, RecordDefmethods(top, isMacro)...)
+			got = append(got, RecordDefmethods(top, macros(top))...)
 		}
 		require.NotEmpty(t, got, tc.src)
 		last := got[len(got)-1]
@@ -167,7 +173,7 @@ func TestRecordDefmethodsScope(t *testing.T) {
 // a macro when it knows the head.
 func TestRecordMacroTestScope(t *testing.T) {
 	res := parseAndAnalyzeWithConfig(t, "(defmacro ep (&rest body) body)\n(defun list2 (&rest x) x)", &Config{})
-	isMacro := RecordMacroTest(res.RootScope, nil)
+	isMacro := RecordMacroTest(res.RootScope, nil)(nil)
 	assert.True(t, isMacro("ep"))
 	assert.False(t, isMacro("list2"))
 	assert.False(t, isMacro("list"))

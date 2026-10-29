@@ -486,7 +486,7 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if !desc.hasField(name) {
 		return env.ErrorConditionf(BadArgs, "s:set-field!: %s has no field %s", desc.display, name)
 	}
-	if lerr := refuseWrite(env, desc, o.objCaps.Cells[objState]); lerr != nil {
+	if lerr := refuseWrite(env, desc, o.objCaps.Cells[objState], name); lerr != nil {
 		return lerr
 	}
 	key := lisp.String(name)
@@ -514,20 +514,20 @@ func builtinRecordSet(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return value
 }
 
-// refuseWrite returns the record-error of an s:set-field! on an object
-// whose call state is state, or nil when the write may go on
+// refuseWrite returns the record-error of an s:set-field! of field on an
+// object whose call state is state, or nil when the write may go on
 // (luthersystems/elps#908).  A write needs a method of the object's type
 // running on the object: a call (obj 'method ...) on any header of the
 // object that has not returned.  The test is dynamic, so code the method
 // calls, a lambda or a helper defun, may write.  A lambda that a method
 // returns, called after the method returned, may not.  A write while the
 // object's :check runs is refused, also from a method the check calls.
-func refuseWrite(env *lisp.LEnv, desc *recordDesc, state *lisp.LVal) *lisp.LVal {
+func refuseWrite(env *lisp.LEnv, desc *recordDesc, state *lisp.LVal, field string) *lisp.LVal {
 	switch {
 	case state.IsNil():
-		return env.ErrorConditionf(RecordError, "no method of %s runs on the object; change the field in a method of the type", desc.display)
+		return env.ErrorConditionf(RecordError, "s:set-field!: field %s of %s is written while no method of the type runs on the object; change the field in a method of the type", field, desc.display)
 	case state.Type == lisp.LSymbol && !lisp.True(state):
-		return env.ErrorConditionf(RecordError, "the :check of %s runs on the object; :check must only read the object", desc.display)
+		return env.ErrorConditionf(RecordError, "s:set-field!: field %s of %s is written while its :check runs on the object; :check must only read the object", field, desc.display)
 	}
 	return nil
 }
