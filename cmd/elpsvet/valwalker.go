@@ -85,6 +85,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/lisp.CodeWalker.sourceCalls":                            "syntax walker: source calls for the internal formals event, quote and quasiquote skipped",
 	"github.com/luthersystems/elps/lisp.Array":                                             "hot path: evaluates forms or constructs sequences with LVal slices",
 	"github.com/luthersystems/elps/internal/codewalk.patternCode":                          "syntax walker: finds the type expressions in a match pattern, which is source, not data",
+	"github.com/luthersystems/elps/lint.writePatternKey":                                   "syntax walker: writes a key for a match pattern, which is source, not data; MatchPatternNames checked its shape first",
 	"github.com/luthersystems/elps/lisp.classifyPattern":                                   "syntax walker: reads the shape of one match pattern, which is source, not data; it looks only at a typed pattern's name cell",
 	"github.com/luthersystems/elps/lisp.patternShape":                                      "syntax walker: checks the shape of a match pattern, which is source, not data",
 	"github.com/luthersystems/elps/lisp.matcher.match":                                     "syntax walker: walks a match pattern, whose shape patternShape checked, against a value; descends only where the pattern does",
