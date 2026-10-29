@@ -562,3 +562,30 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 		assertDiagOnLine(t, diags, 21, "s:defmethod inside test")
 	}
 }
+
+// TestRecordDefmethodTestNameNotTestForm checks that a call of a test form
+// name is not a test body when the file defines the name, or a local
+// function binds it: the call runs its arguments at once, at load.
+func TestRecordDefmethodTestNameNotTestForm(t *testing.T) {
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordDefmethodNotToplevel}}
+	for name, src := range map[string]string{
+		"global defun": recordOrder + `(defun test (name x) x)
+(test "a" (s:defmethod order size (o) 0))
+(defun benchmark-simple (name x) x)
+(benchmark-simple "b" (s:defmethod order count (o) 0))`,
+		"local flet": recordOrder + `(flet ([test (name x) x]) (test "a" (s:defmethod order size (o) 0)))
+(labels ([test-let (name x) x]) (test-let "b" (s:defmethod order count (o) 0)))
+(labels ([benchmark (name args x) x]) (benchmark "c" () (s:defmethod order total (o) 0)))`,
+	} {
+		for _, file := range []string{"order.lisp", "order_test.lisp"} {
+			diags, err := l.LintFile([]byte(src), file)
+			require.NoError(t, err)
+			assert.Empty(t, diags, "%s in %s: %v", name, file, diags)
+		}
+	}
+	// A local function of another name leaves the test form a test form.
+	diags := lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
+		`(flet ([helper (x) x]) (test "a" (s:defmethod order size (o) (helper 0))))`)
+	assert.Len(t, diags, 1, "%v", diags)
+	assertDiagOnLine(t, diags, 6, "s:defmethod inside test")
+}

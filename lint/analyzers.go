@@ -13,6 +13,7 @@ import (
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/codewalk"
 	"github.com/luthersystems/elps/internal/lambdalist"
+	"github.com/luthersystems/elps/internal/testforms"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -3011,7 +3012,7 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		userDefs := UserDefined(pass.Exprs)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
 			head := HeadSymbol(sexpr)
-			name := analysis.TestDefinitionName(head)
+			name := testforms.Name(head)
 			if name == "" || userDefs[head] {
 				return
 			}

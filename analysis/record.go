@@ -11,6 +11,7 @@ import (
 
 	"github.com/luthersystems/elps/astutil"
 	"github.com/luthersystems/elps/internal/codewalk"
+	"github.com/luthersystems/elps/internal/testforms"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/parser/rdparser"
 	"github.com/luthersystems/elps/parser/token"
@@ -372,8 +373,8 @@ type RecordDefmethod struct {
 const maxRecordWalk = 1 << 16
 
 // RecordDefmethods returns the s:defmethod calls in top, each with whether
-// it runs at load.  isMacro reports whether a call head names a macro
-// (RecordMacroTest).
+// it runs at load.  isMacro reports whether a call head defers its
+// arguments: a macro or a test form (RecordMacroTest).
 //
 // A template publishes a record type with its methods as they stand at
 // publication, so only a s:defmethod that runs at load is part of the
@@ -382,11 +383,13 @@ const maxRecordWalk = 1 << 16
 //   - A function body (defun, lambda, a flet or labels function) runs at
 //     call time.
 //   - A test body (test, test-let, test-let*, benchmark, benchmark-simple)
-//     runs when the test runner runs the test, after the load.
+//     runs when the test runner runs the test, after the load.  A name
+//     the file defines, or a local function binds, is not the test form.
 //   - The arguments of a macro call run when the macro decides, if ever.
 //     Macros are not expanded, so a macro such as an endpoint definition
 //     defers its body.  defconst is a macro whose value runs at load, so
-//     it is the exception.
+//     it is the exception, and a head a local function binds is that
+//     function.
 //   - The arguments of a function call run at once, before the call:
 //     (set 'x (list (s:defmethod ...))) runs the s:defmethod at load.
 //   - Every other form the CodeWalker knows (let, let*, progn, if, when,
@@ -420,65 +423,58 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 		}
 		return frames[len(frames)-1].where
 	}
+	// call is the call form whose head the walk reports next, as a WalkRef
+	// one deeper than the form.  Whether the head is a local function is
+	// known only then.
+	var call struct {
+		head  string
+		depth int
+		ok    bool
+	}
 	cw := &lisp.CodeWalker{KeepGoing: true, Visit: func(n *lisp.WalkNode) bool {
 		for len(frames) > 0 && frames[len(frames)-1].depth >= n.Depth {
 			frames = frames[:len(frames)-1]
 		}
 		switch n.Event {
 		case lisp.WalkEnter:
+			if n.Function {
+				frames = append(frames, frame{where: n.Op, depth: n.Depth})
+				break
+			}
 			// The test runner runs a test or benchmark body after the
-			// load, as a function body runs at call time.
-			if n.Function || TestDefinitionName(n.Op) != "" {
+			// load, as a function body runs at call time.  The walker
+			// reads the head as the form only when no local binds it;
+			// isMacro says whether the file defines the name itself.
+			if testforms.Name(n.Op) != "" && isMacro != nil && isMacro(astutil.HeadSymbol(n.Node)) {
 				frames = append(frames, frame{where: n.Op, depth: n.Depth})
 			}
 		case lisp.WalkForm:
+			call.ok = false
 			if n.Op != "" {
 				break
 			}
 			head := astutil.HeadSymbol(n.Node)
-			if name := TestDefinitionName(head); name != "" {
-				// A test form the walker reads as a call: test-let,
-				// test-let*, benchmark-simple, or a testing:-qualified
-				// form.
-				frames = append(frames, frame{where: name, depth: n.Depth})
-			}
 			if head == recordDefmethod && !seen[n.Node] {
 				seen[n.Node] = true
 				out = append(out, RecordDefmethod{Call: n.Node, NotLoadScope: where()})
 			}
 			if !loadScopeCall(head) && isMacro != nil && isMacro(head) {
-				frames = append(frames, frame{where: head, depth: n.Depth})
+				call.head, call.depth, call.ok = head, n.Depth, true
 			}
-		case lisp.WalkRef, lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave:
+		case lisp.WalkRef:
+			// A head a local function binds names that function, not the
+			// macro or test form, so its arguments run at once.
+			if call.ok && n.Head && n.Depth == call.depth+1 && !n.Bound {
+				frames = append(frames, frame{where: call.head, depth: call.depth})
+			}
+			call.ok = false
+		case lisp.WalkSet, lisp.WalkBind, lisp.WalkDefine, lisp.WalkLiteral, lisp.WalkData, lisp.WalkLeave:
+			call.ok = false
 		}
 		return true
 	}}
 	codewalk.Occurrences(cw, maxRecordWalk, top)
 	return out
-}
-
-// testDefinitionForms are the core forms that register a test or benchmark
-// (elps#736).  The test runner runs their bodies after the load.
-var testDefinitionForms = map[string]bool{
-	"test": true, "test-let": true, "test-let*": true, "benchmark": true, "benchmark-simple": true,
-}
-
-// TestDefinitionName returns the unqualified form name when head calls a
-// test definition form (test, test-let, test-let*, benchmark or
-// benchmark-simple), unqualified, lisp:-qualified or testing:-qualified, or
-// "" otherwise.
-func TestDefinitionName(head string) string {
-	name := head
-	if ns, local, qualified := strings.Cut(head, ":"); qualified {
-		if ns != lisp.DefaultLangPackage && ns != "testing" {
-			return ""
-		}
-		name = local
-	}
-	if testDefinitionForms[name] {
-		return name
-	}
-	return ""
 }
 
 // loadScopeCall reports whether head is a call whose value argument runs
@@ -508,12 +504,18 @@ var builtinMacros = sync.OnceValue(func() map[string]bool {
 })
 
 // RecordMacroTest returns the test RecordDefmethods uses for whether a call
-// head names a macro.  With a scope, a head is a macro when the scope
-// resolves it to one.  A head the scope does not know, or every head when
-// scope is nil, as in the workspace prescan, is a macro when it is a
-// builtin macro, a libschema macro, or a macro a top-level defmacro of
-// exprs defines; exprs is read only when scope is nil, since a scope
-// holds the file's own macros.  Any other head is taken for a function;
+// head defers its arguments: a macro, or a test definition form (test,
+// test-let, test-let*, benchmark, benchmark-simple, also lisp:- or
+// testing:-qualified).
+//
+// With a scope, a head is a macro when the scope resolves it to one.  A
+// head the scope does not know, or every head when scope is nil, as in the
+// workspace prescan, is a macro when it is a builtin macro, a libschema
+// macro, or a macro a top-level defmacro of exprs defines; exprs is read
+// for macros only when scope is nil, since a scope holds the file's own
+// macros.  A test form name is a test form unless exprs defines it (a
+// defun, defmacro, set or formal of that name), as the check
+// test-outside-test-file decides.  Any other head is taken for a function;
 // see RecordDefmethods for why that is the safe guess.
 func RecordMacroTest(scope *Scope, exprs []*lisp.LVal) func(head string) bool {
 	var local map[string]bool
@@ -531,9 +533,17 @@ func RecordMacroTest(scope *Scope, exprs []*lisp.LVal) func(head string) bool {
 			}
 		}
 	}
+	// userDefs is read the first time a head names a test form.
+	var userDefs map[string]bool
 	return func(head string) bool {
 		if head == "" {
 			return false
+		}
+		if testforms.Name(head) != "" {
+			if userDefs == nil {
+				userDefs = astutil.UserDefined(exprs)
+			}
+			return !userDefs[head]
 		}
 		if recordSchemaMacros[head] || local[head] {
 			return true

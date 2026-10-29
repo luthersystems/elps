@@ -2145,7 +2145,11 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	fd := frameData(fun)
+	// Read the function data once for the frame's FID, package and kind:
+	// FID, Package and Builtin would each assert it again.  funData panics
+	// unless Native holds a *funData, and every function constructor sets
+	// a non-nil one.
+	fd := fun.funData()
 	err := env.Runtime.Stack.pushFrame(env.loc, fd.fid, fd.pkg, env.GetFunName(fun), fd.builtin == nil)
 	if err != nil {
 		return env.Error(err)
@@ -2242,7 +2246,10 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal, owned bool)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
+	// A special operator is not a Lisp function, so its frame is marked
+	// so, and a tail call reuses it only for a function that is not one
+	// either (terminalCallFID).
+	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), false)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2280,11 +2287,6 @@ callf:
 			}
 			fun, args = extractMarkTailRec(r)
 			owned = false
-			// TerminalFID matched this frame by FID, and a Go function
-			// and a Lisp function can share one (see lambdaFIDPrefix), so
-			// the function that now runs in the frame may be of the other
-			// kind.
-			top.lispFun = fun.Builtin() == nil
 			goto callf
 		}
 		return r
@@ -2432,10 +2434,14 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
 	// to provide predictable stepping and stack traces.
-	fd := frameData(fun)
+	// Read the function data once for the frame's FID, package and kind:
+	// FID, Package and Builtin would each assert it again.  funData panics
+	// unless Native holds a *funData, and every function constructor sets
+	// a non-nil one.
+	fd := fun.funData()
 	npop := 0
 	if env.Runtime.Debugger == nil {
-		npop = env.Runtime.Stack.TerminalFID(fd.fid)
+		npop = env.Runtime.Stack.terminalCallFID(fd.fid, fd.builtin == nil)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
@@ -2474,11 +2480,6 @@ callf:
 			}
 			fun, args = extractMarkTailRec(r)
 			owned = false
-			// TerminalFID matched this frame by FID, and a Go function
-			// and a Lisp function can share one (see lambdaFIDPrefix), so
-			// the function that now runs in the frame may be of the other
-			// kind.
-			top.lispFun = fun.Builtin() == nil
 			goto callf
 		}
 	}
@@ -2487,20 +2488,6 @@ callf:
 		d.OnFunReturn(env, fun, r)
 	}
 	return r
-}
-
-// frameData returns the function data of fun for the frame a call pushes:
-// its FID, its package, and whether it is a Lisp function (builtin ==
-// nil).  The caller reads all three from it, so the call path asserts the
-// function data once, where the accessors FID, Package and Builtin each
-// assert it again.  A function value with no function data gets zero
-// data, which gives the "" FID and package and counts as a Lisp function,
-// as those accessors do.
-func frameData(fun *LVal) *funData {
-	if fd := fun.funData(); fd != nil {
-		return fd
-	}
-	return &funData{}
 }
 
 func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {

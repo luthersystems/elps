@@ -88,26 +88,29 @@ func TestCallFrameSize(t *testing.T) {
 // TestInLispFunctionSharedFIDTailCall pins the mark across tail calls
 // (luthersystems/elps#908).  TRO matches frames by FID, and a Go function
 // may take the FID of a lambda, so a lambda and a Go function with one FID
-// tail-call each other in a single frame.  Each must see the mark of its
-// own kind.
+// tail-call each other.  A tail call reuses only a frame of its own kind, so
+// each runs in a frame of its own kind, and the loop still runs in bounded
+// height: each call reuses the frame of the last call of the same kind.
 func TestInLispFunctionSharedFIDTailCall(t *testing.T) {
 	env := templateTestEnv(t)
 	require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
 	type step struct {
 		who    string
 		inLisp bool
-		depth  int
+		frame  int // the index of the caller's frame
+		height int
 	}
 	var log []step
 	record := func(env *lisp.LEnv, who string) {
 		stack := env.Runtime.Stack
 		// The caller's frame, under the frame of record-lambda or g.
-		caller := stack.Top()
+		i := len(stack.Frames) - 1
 		if who == "lambda" {
-			caller = &stack.Frames[len(stack.Frames)-2]
+			i--
 		}
+		caller := &stack.Frames[i]
 		assert.Equal(t, who == "lambda", caller.LispFunction(), "the frame of the %s", who)
-		log = append(log, step{who, stack.InLispFunction(), len(stack.Frames)})
+		log = append(log, step{who, stack.InLispFunction(), i, len(stack.Frames)})
 	}
 	env.AddBuiltins(false, elpsutil.Function("record-lambda", lisp.Formals(),
 		func(env *lisp.LEnv, _ *lisp.LVal) *lisp.LVal {
@@ -132,21 +135,25 @@ func TestInLispFunctionSharedFIDTailCall(t *testing.T) {
 	require.True(t, env.PutGlobal(lisp.Symbol("g"), g).IsNil())
 	require.True(t, env.PutGlobal(lisp.Symbol("f"), f).IsNil())
 
-	// Start once in the Go function and once in the lambda, so the frame
-	// changes kind in both directions.
+	// Start once in the Go function and once in the lambda.  The function
+	// that starts the loop keeps the bottom frame, and the other kind runs
+	// in a frame above it.
 	for _, start := range []string{"go", "lambda"} {
 		log, remaining = nil, 3
 		src := map[string]string{"go": "(g)", "lambda": "(f)"}[start]
 		require.Equal(t, "done", env.LoadString("case", src).String(), start)
 		require.Len(t, log, 7+map[string]int{"go": 0, "lambda": 1}[start], start)
 		for i, s := range log {
-			want := (i%2 == 1) == (start == "go")
-			assert.Equal(t, want, s.inLisp, "start %s, call %d (%s)", start, i, s.who)
-			assert.Equal(t, map[bool]string{false: "go", true: "lambda"}[want], s.who, "start %s, call %d", start, i)
+			lambda := (i%2 == 1) == (start == "go")
+			assert.Equal(t, map[bool]string{false: "go", true: "lambda"}[lambda], s.who, "start %s, call %d", start, i)
+			// From the lambda's frame on the stack, a Lisp function runs.
+			assert.Equal(t, lambda || start == "lambda", s.inLisp, "start %s, call %d (%s)", start, i, s.who)
+			// The starting kind runs in the bottom frame, the other above.
+			assert.Equal(t, map[bool]int{true: 0, false: 1}[s.who == start], s.frame, "start %s, call %d (%s)", start, i, s.who)
 		}
-		// The calls reuse one frame, so each kind runs at one depth.
+		// Each call reuses the frame of the last call of its kind.
 		for i := 2; i < len(log); i++ {
-			assert.Equal(t, log[i-2].depth, log[i].depth, "start %s: call %d did not reuse the frame", start, i)
+			assert.Equal(t, log[i-2].height, log[i].height, "start %s: call %d did not reuse the frame", start, i)
 		}
 	}
 }

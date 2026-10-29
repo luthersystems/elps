@@ -80,8 +80,8 @@ type CallFrame struct {
 
 	// lispFun is true when the frame calls a function defined in Lisp: a
 	// lambda, defun, defmacro, or flet or labels function.  The evaluator
-	// sets it from the function value, not from its FID, and again when a
-	// tail call reuses the frame for another function.  The byte fits in
+	// sets it from the function value, not from its FID, and a tail call
+	// reuses only a frame of the same kind (terminalCallFID).  The byte fits in
 	// the padding after TROBlock, so the struct stays 72 bytes.
 	// LispFunction reads it.
 	lispFun bool
@@ -316,7 +316,27 @@ func (s *CallStack) InLispFunction() bool {
 //
 // NOTE:  If tail-recursion optimization is working then the chain of calls
 // found by TerminalFID is unique.
+//
+// TerminalFID matches a frame by FID alone.  The evaluator also matches the
+// frame's kind, a Lisp function or not (see InLispFunction).
 func (s *CallStack) TerminalFID(fid string) int {
+	return s.terminalFID(fid, false, false)
+}
+
+// terminalCallFID is TerminalFID for the evaluator's call of a function of
+// the given kind: it skips a frame with the FID whose kind differs.  A Go
+// function may take the FID of a lambda (_fun<N>), so an FID alone does not
+// tell the kinds apart, and a frame must not run a function of the other
+// kind: its Lisp-function mark, name and package would describe the wrong
+// function.  The search goes on below a skipped frame, which is terminal,
+// so a loop of calls between the two kinds still runs in bounded height.
+func (s *CallStack) terminalCallFID(fid string, lispFun bool) int {
+	return s.terminalFID(fid, true, lispFun)
+}
+
+// terminalFID finds the chain for TerminalFID and terminalCallFID.  With
+// matchKind, a frame matches only when its kind is lispFun.
+func (s *CallStack) terminalFID(fid string, matchKind, lispFun bool) int {
 	top := s.Top()
 	if top == nil {
 		return 0
@@ -341,7 +361,7 @@ func (s *CallStack) TerminalFID(fid string) int {
 			log.Panicf("tail-recursion-optimization is blocked -- inconsistent stack")
 			return 0
 		}
-		if s.Frames[i].FID == fid {
+		if s.Frames[i].FID == fid && (!matchKind || s.Frames[i].lispFun == lispFun) {
 			// We found the chain.  We want the returned length to be 1 when i
 			// is on the first iteration.
 			return len(s.Frames) - i

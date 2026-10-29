@@ -52,3 +52,22 @@ func TestPushFIDWritesEveryField(t *testing.T) {
 	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2"}, s.Pop())
 	assert.Empty(t, s.Frames)
 }
+
+// TestTerminalCallFIDMatchesKind: the evaluator's search reuses only a
+// frame of the called function's kind (luthersystems/elps#908), and goes on
+// below a terminal frame of the other kind.  TerminalFID matches by FID
+// alone, as it did.
+func TestTerminalCallFIDMatchesKind(t *testing.T) {
+	var s CallStack
+	require.NoError(t, s.pushFrame(nil, "_fun7", "user", "lambda", true))
+	s.Top().Terminal = true
+	assert.Equal(t, 1, s.TerminalFID("_fun7"))
+	assert.Equal(t, 1, s.terminalCallFID("_fun7", true))
+	assert.Equal(t, 0, s.terminalCallFID("_fun7", false))
+
+	require.NoError(t, s.pushFrame(nil, "_fun7", "user", "go", false))
+	s.Top().Terminal = true
+	assert.Equal(t, 1, s.TerminalFID("_fun7"))
+	assert.Equal(t, 1, s.terminalCallFID("_fun7", false))
+	assert.Equal(t, 2, s.terminalCallFID("_fun7", true))
+}
