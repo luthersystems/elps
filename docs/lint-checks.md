@@ -802,11 +802,15 @@ before the code runs. The two tests differ:
 | `s:defmethod` in a function body | reported | refused |
 | `s:defmethod` in the arguments of a macro call that expands it at the top level | reported | allowed |
 | `s:defmethod` at the top level of a file that a function loads with `load-file` | not reported | refused |
+| `s:defmethod` in a `test`, `test-let`, `test-let*`, `benchmark` or `benchmark-simple` body | reported | refused |
 
 An `s:defmethod` runs at load when nothing around it defers it:
 
 * A function body runs at call time: `defun`, `lambda`, and a `flet` or
   `labels` function. It is reported.
+* A test body runs when the test runner runs the test, after the load:
+  `test`, `test-let`, `test-let*`, `benchmark` and `benchmark-simple`,
+  with or without a `lisp:` or `testing:` prefix. It is reported.
 * The arguments of a macro call run when the macro decides, if ever.
   They are reported. The check does not expand macros, so the body of a
   macro such as an endpoint definition is reported. The value of a
@@ -841,10 +845,10 @@ the macro runs its body at load, because the check cannot see into the
 macro. Suppress that line with
 `; nolint:record-defmethod-not-toplevel`.
 
-The check covers `*_test.lisp` and `*_testhelpers.lisp` files too: a
-`test` body is a function body, so the runtime refuses an `s:defmethod` in
-it. A test that checks the refusal on purpose suppresses the line with
-`; nolint:record-defmethod-not-toplevel`.
+The check covers `*_test.lisp` and `*_testhelpers.lisp` files too. The
+test runner calls a test body as a function, so the runtime refuses an
+`s:defmethod` in it. A test that checks the refusal on purpose suppresses
+the line with `; nolint:record-defmethod-not-toplevel`.
 
 ### `schema-type-union`
 

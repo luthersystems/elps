@@ -935,8 +935,9 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"form, and a later call in another VM does not see it. Write s:defmethod at the " +
 		"top level, or in a form that runs its parts at load: let, let*, progn, if, when, " +
 		"the body of flet or labels, the arguments of a function call, or the value of " +
-		"a defconst. A function body, or the arguments of a macro call, is reported. A " +
-		"head the analysis cannot resolve is taken for a function and not reported. " +
+		"a defconst. A function body, a test or benchmark body, or the arguments of a " +
+		"macro call, is reported. A head the analysis cannot resolve is taken for a " +
+		"function and not reported. " +
 		"Test files are checked too. The runtime also refuses s:defmethod with " +
 		"record-error while a function defined in Lisp runs, in every file.",
 	Run: recordAnalyzerRun(recordDefmethodScope),

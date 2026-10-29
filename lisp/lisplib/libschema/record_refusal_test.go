@@ -97,6 +97,9 @@ var refusalCases = []refusalCase{
 	{"defmethod in a handler", `(handler-bind ((x (lambda (&rest _)
 		(handler-bind ((record-error (lambda (c &rest _) c))) (s:defmethod counter z (o) 1)))))
 	  (error 'x "boom"))`, "'record-error"},
+	// The refusal comes before an error in the signature.
+	{"bad signature at top level", `(s:defmethod counter bad (o [x 5]) 1)`, "error:bad-arguments"},
+	{"bad signature in a lambda", `(funcall (lambda () (s:defmethod counter bad (o [x 5]) 1)))`, "error:record-error"},
 	{"refused defmethod adds nothing", `(progn (ignore-errors (late)) (ignore-errors (c 'late)))`, "()"},
 	{"defmethod at top level", `(progn (s:defmethod counter top (o) 7) (c 'top))`, "7"},
 	{"defmethod in let", `(let ([k 3]) (s:defmethod counter k3 (o) k) (c 'k3))`, "3"},

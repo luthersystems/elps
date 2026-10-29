@@ -528,11 +528,37 @@ func TestRecordDefmethodNotToplevel(t *testing.T) {
 		`(defun add-size () (s:defmethod order size (o) 0)) ; nolint:record-defmethod-not-toplevel`))
 
 	// A test file is checked too: the runtime refuses a call-time
-	// s:defmethod in a test as well (luthersystems/elps#908).
+	// s:defmethod in a test as well (luthersystems/elps#908).  The test
+	// runner runs a test body after the load, so a s:defmethod there is
+	// call time too.
+	testSrc := src + `
+(test "in-test" (s:defmethod order size (o) 0))
+(lisp:test "qualified" (s:defmethod order size (o) 0))
+(testing:test "testing" (s:defmethod order size (o) 0))
+(test-let "let" ([k 1]) (s:defmethod order size (o) k))
+(test-let* "let*" ([k 1]) (s:defmethod order size (o) k))
+(benchmark "bench" (n) (s:defmethod order size (o) n))
+(benchmark-simple "simple" (s:defmethod order size (o) 0))
+(test "nested" (let ([k 1]) (s:defmethod order size (o) k)))`
 	l := &Linter{Analyzers: []*Analyzer{AnalyzerRecordDefmethodNotToplevel}}
 	for _, name := range []string{"order_test.lisp", "order_testhelpers.lisp"} {
-		diags, err := l.LintFile([]byte(src), name)
+		diags, err := l.LintFile([]byte(testSrc), name)
 		require.NoError(t, err)
+		assert.Len(t, diags, 15, "%s: %v", name, diags)
 		assertDiagOnLine(t, diags, 6, "s:defmethod inside defun")
+		assertDiagOnLine(t, diags, 7, "s:defmethod inside lambda")
+		assertDiagOnLine(t, diags, 8, "s:defmethod inside defun")
+		assertDiagOnLine(t, diags, 9, "s:defmethod inside flet")
+		assertDiagOnLine(t, diags, 10, "s:defmethod inside defendpoint")
+		assertDiagOnLine(t, diags, 11, "s:defmethod inside defun")
+		assertDiagOnLine(t, diags, 12, "s:defmethod inside lambda")
+		assertDiagOnLine(t, diags, 14, "s:defmethod inside test")
+		assertDiagOnLine(t, diags, 15, "s:defmethod inside test")
+		assertDiagOnLine(t, diags, 16, "s:defmethod inside test")
+		assertDiagOnLine(t, diags, 17, "s:defmethod inside test-let")
+		assertDiagOnLine(t, diags, 18, "s:defmethod inside test-let*")
+		assertDiagOnLine(t, diags, 19, "s:defmethod inside benchmark")
+		assertDiagOnLine(t, diags, 20, "s:defmethod inside benchmark-simple")
+		assertDiagOnLine(t, diags, 21, "s:defmethod inside test")
 	}
 }

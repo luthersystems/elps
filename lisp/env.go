@@ -88,7 +88,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// nested callbacks merely to admit the core type system (#622).
 	ctor := newCapturedBuiltin(CapturedFun{
 		Package: env.Runtime.Package.Name,
-		FID:     fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
+		FID:     lambdaFIDPrefix + strconv.FormatUint(uint64(env.Runtime.GenEnvID()), 10),
 		Formals: Formals("name", "ctor"),
 		Eval: func(env *LEnv, args, _ *LVal) *LVal {
 			sym := args.Cells[0]
@@ -1070,6 +1070,12 @@ func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	return nil
 }
 
+// lambdaFIDPrefix starts the FID of each function value the runtime
+// numbers itself, a lambda or a typedef constructor: _fun<N>.  A Go
+// function may take an FID of the same form, so an FID does not tell a
+// Lisp function from a Go one.
+const lambdaFIDPrefix = "_fun"
+
 // newLambda builds a lambda over validated cells (formals, then body).
 func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
@@ -1077,8 +1083,8 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
 	var name [24]byte
-	copy(name[:], "_fun")
-	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
+	copy(name[:], lambdaFIDPrefix)
+	fid := strconv.AppendUint(name[:len(lambdaFIDPrefix)], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
@@ -2139,7 +2145,8 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), fun.Builtin() == nil)
+	fd := frameData(fun)
+	err := env.Runtime.Stack.pushFrame(env.loc, fd.fid, fd.pkg, env.GetFunName(fun), fd.builtin == nil)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2273,6 +2280,11 @@ callf:
 			}
 			fun, args = extractMarkTailRec(r)
 			owned = false
+			// TerminalFID matched this frame by FID, and a Go function
+			// and a Lisp function can share one (see lambdaFIDPrefix), so
+			// the function that now runs in the frame may be of the other
+			// kind.
+			top.lispFun = fun.Builtin() == nil
 			goto callf
 		}
 		return r
@@ -2420,13 +2432,14 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
 	// to provide predictable stepping and stack traces.
+	fd := frameData(fun)
 	npop := 0
 	if env.Runtime.Debugger == nil {
-		npop = env.Runtime.Stack.TerminalFID(fun.FID())
+		npop = env.Runtime.Stack.TerminalFID(fd.fid)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), fun.Builtin() == nil)
+	err := env.Runtime.Stack.pushFrame(env.loc, fd.fid, fd.pkg, env.GetFunName(fun), fd.builtin == nil)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2461,6 +2474,11 @@ callf:
 			}
 			fun, args = extractMarkTailRec(r)
 			owned = false
+			// TerminalFID matched this frame by FID, and a Go function
+			// and a Lisp function can share one (see lambdaFIDPrefix), so
+			// the function that now runs in the frame may be of the other
+			// kind.
+			top.lispFun = fun.Builtin() == nil
 			goto callf
 		}
 	}
@@ -2469,6 +2487,20 @@ callf:
 		d.OnFunReturn(env, fun, r)
 	}
 	return r
+}
+
+// frameData returns the function data of fun for the frame a call pushes:
+// its FID, its package, and whether it is a Lisp function (builtin ==
+// nil).  The caller reads all three from it, so the call path asserts the
+// function data once, where the accessors FID, Package and Builtin each
+// assert it again.  A function value with no function data gets zero
+// data, which gives the "" FID and package and counts as a Lisp function,
+// as those accessors do.
+func frameData(fun *LVal) *funData {
+	if fd := fun.funData(); fd != nil {
+		return fd
+	}
+	return &funData{}
 }
 
 func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {
