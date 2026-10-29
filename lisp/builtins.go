@@ -668,7 +668,7 @@ func builtinLoadString(env *LEnv, args *LVal) *LVal {
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
 	env.Runtime.Stack.Top().TROBlock = true
-	v := env.root().LoadString(_name, source.Str)
+	v := env.root().loadLisp(env.root().read(_name, strings.NewReader(source.Str)))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
 	}
@@ -691,7 +691,7 @@ func builtinLoadBytes(env *LEnv, args *LVal) *LVal {
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
 	env.Runtime.Stack.Top().TROBlock = true
-	v := env.root().Load(_name, bytes.NewReader(source.Bytes()))
+	v := env.root().loadLisp(env.root().read(_name, bytes.NewReader(source.Bytes())))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
 	}
@@ -709,7 +709,7 @@ func builtinLoadFile(env *LEnv, args *LVal) *LVal {
 	// stack but the stack frame TROBlock will prevent tail recursion
 	// optimization from unwinding the stack to/beyond this point.
 	env.Runtime.Stack.Top().TROBlock = true
-	v := env.root().LoadFile(loc.Str)
+	v := env.root().loadLisp(env.root().readFile(loc.Str))
 	if v.IsError() && v.CallStack() == nil {
 		v.SetCallStack(env.Runtime.Stack.Copy())
 	}

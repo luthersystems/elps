@@ -12,9 +12,9 @@ import (
 )
 
 // TestRuntimeLoading pins Runtime.Loading (luthersystems/elps#908): true
-// while a load runs, also in a function the load calls and in load-string
-// called after the load, and false after the load returns, also when it
-// fails or a builtin panics, and in a template VM.
+// while a Go Load* call runs, also in a function the load calls, and false
+// after the load returns, also when it fails or a builtin panics, in
+// load-string called after the load, and in a template VM.
 func TestRuntimeLoading(t *testing.T) {
 	env := templateTestEnv(t)
 	require.NoError(t, lisp.GoError(env.InPackage(lisp.String(lisp.DefaultUserPackage))))
@@ -30,17 +30,27 @@ func TestRuntimeLoading(t *testing.T) {
 	assert.Equal(t, "true", env.LoadString("t", `(progn (defun f () (loading?)) (f))`).String())
 	assert.False(t, env.Runtime.Loading())
 
-	// After the load: a call from Go is not in a load, and a load it
-	// starts is.
+	// After the load: a call from Go is not in a load, and neither is a
+	// load-string it runs, while load-string at load is.
 	assert.Equal(t, "false", env.FunCall(env.GetGlobal(lisp.Symbol("f")), lisp.SExpr(nil)).String())
 	assert.Equal(t, "false", env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("f")})).String())
-	assert.Equal(t, "true", env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("load-string"), lisp.String("(f)")})).String())
+	assert.Equal(t, "false", env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("load-string"), lisp.String("(f)")})).String())
+	assert.Equal(t, "true", env.LoadString("t", `(load-string "(f)")`).String())
 	assert.False(t, env.Runtime.Loading())
 
 	assert.True(t, env.LoadString("t", `(error 'x "y")`).IsError())
 	assert.False(t, env.Runtime.Loading())
 	assert.True(t, env.LoadString("t", `(boom)`).IsError())
 	assert.False(t, env.Runtime.Loading())
+
+	// BeginLoad makes forms a tool evaluates part of the load; ending it
+	// twice ends it once.
+	end := env.Runtime.BeginLoad()
+	assert.Equal(t, "true", env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("f")})).String())
+	end()
+	end()
+	assert.False(t, env.Runtime.Loading())
+	assert.Equal(t, "false", env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("f")})).String())
 
 	tmpl, err := lisp.NewTemplate(env, templateCorePolicy())
 	require.NoError(t, err)

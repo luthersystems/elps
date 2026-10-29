@@ -787,11 +787,16 @@ load, so the method reaches only the VM that runs the call:
 
 The runtime refuses `s:defmethod` after the load ends
 (luthersystems/elps#908): it raises `record-error` unless a load is in
-progress, that is unless the call runs inside `LEnv.Load`, `LoadFile`,
-`LoadString`, `LoadLocation` or `LoadProgram` (and their `Context` forms),
-or `load-file`, `load-string` or `load-bytes`. A transaction, or any call
-an embedder makes after the load, runs with no load in progress. A
-template VM starts with none, so every VM gives the same answer. The lint
+progress, that is unless the call runs inside one of the Go entry points
+`LEnv.Load`, `LoadFile`, `LoadString`, `LoadLocation` or `LoadProgram`
+(and their `Context` forms). A Go `Load*` call counts as the program's
+load, so an embedder runs each transaction with `Eval` or `FunCall`, not
+with `Load*`. The Lisp functions `load-file`, `load-string` and
+`load-bytes` start no load: the code they load runs in their caller's
+state, allowed at load and refused in a transaction. A template VM starts
+with no load in progress, so every VM gives the same answer. A harness
+that runs its transactions through `LoadString`, such as elpstest's fork
+check, therefore does not exercise the refusal. The lint
 finds the call before the code runs, by its place in the source. The two
 tests differ:
 

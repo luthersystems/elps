@@ -509,6 +509,11 @@ type TestSuite []struct {
 }
 
 // RunTestSuite runs each TestSequence in tests on isolated lisp.LEnvs.
+// Each expression runs with LEnv.Eval, after the environment's load, so a
+// top-level s:defmethod in one raises record-error
+// (luthersystems/elps#908), also inside load-string, which starts no
+// load.  Test a method added with s:defmethod in a test file that
+// Runner loads, whose top-level forms run as the load.
 func RunTestSuite(t *testing.T, tests TestSuite) {
 	// Snapshot the singleton LVals before running the suite; if any
 	// sequence mutates one (issue #274), report it before returning.

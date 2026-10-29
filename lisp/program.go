@@ -347,13 +347,13 @@ func firstUnsealed(v *LVal) *LVal {
 //
 // Deprecated: Use LoadProgramContext for cancellation and timeout support.
 func (env *LEnv) LoadProgram(p Program) *LVal {
-	return env.load(env.evalCtx, p.exprs)
+	return env.loadProgram(env.evalCtx, p.exprs)
 }
 
 // LoadProgramContext evaluates the program's expressions with the given
 // context.  See LoadProgram.
 func (env *LEnv) LoadProgramContext(ctx context.Context, p Program) *LVal {
-	return env.load(ctx, p.exprs)
+	return env.loadProgram(ctx, p.exprs)
 }
 
 func init() {
