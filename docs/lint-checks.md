@@ -878,8 +878,7 @@ not flagged.
 
 ### `match-unreachable`
 
-**Flags a `match` clause after a clause that matches every value.**
-(Severity: warning)
+**Flags a `match` clause that never runs.** (Severity: warning)
 
 `match` tries its clauses in order. A pattern of `_` or a bare name, with
 no `:when` guard, matches every value, so the clauses after it never run.
@@ -894,6 +893,37 @@ no `:when` guard, matches every value, so the clauses after it never run.
   (2 'two)
   (x 'any))
 ```
+
+A clause also never runs when an earlier clause with no `:when` guard has
+the same pattern. The earlier clause takes every value that the pattern
+matches. The check reports each repeat.
+
+```lisp
+;; WARNING: the second (list y 1) clause never runs
+(match v
+  ((list x 1) x)
+  ((list y 1) y))
+;; OK: the first clause has a guard, so a value can fall through
+(match v
+  ((list x 1) :when (> x 0) x)
+  ((list y 1) y))
+```
+
+The check compares patterns as text, with these rules:
+
+| Part of the pattern | Rule |
+|---------------------|------|
+| A name the pattern binds | Any name is the same placeholder, so `(list x 1)` and `(list y 1)` are the same pattern. |
+| `_` | Only `_` is the same as `_`. `(list _ 1)` and `(list x 1)` are different patterns. |
+| A type that is a symbol (`[x T]`, `(T :f p)`) | `T` is compared as text. `s:int` and `user:point` are symbols. |
+| A type that is any other expression | The pattern is not checked. `match` evaluates `T` each time it tries the pattern, so `[x (next-type!)]` can give a new type each time. |
+| A literal | The same printed value. `'a` and `(quote a)` are different patterns. |
+
+The check reports only exact repeats. It does not find a pattern that
+matches a subset of an earlier pattern, such as `(list 1 1)` after
+`(list x 1)`. A bad pattern and a pattern in a macro template are not
+checked. Both checks read a bracket clause, such as `[1 'a]`, as a
+clause, because `match` does.
 
 ### `use-package-hides-lisp`
 
