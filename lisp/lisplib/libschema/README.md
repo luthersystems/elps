@@ -422,13 +422,22 @@ step.
 |------|---------|---------|
 | `s:set-field!` needs a method of the object's type running on the object. | A write at the top level, in a `defun` no method calls, to another object than the method's receiver, or in a lambda a method returned, called after the call. | A write while a call `(obj 'method ...)` on the object has not returned: in the method body, in a lambda it calls, or in a helper `defun` it calls. |
 | `s:set-field!` refuses while the object's `:check` runs. | A write in `:check`, or in a method that `:check` calls on the object. | Reads in `:check`, and method calls that only read. |
-| `s:defmethod` runs only during a load. | A call after the load ends: in a transaction, in a function an embedder calls after the load with `Eval` or `FunCall`, or in a test body. | Any call while a load runs: a top-level form of a file loaded with `LEnv.Load`, `LoadFile`, `LoadString`, `LoadProgram` or `load-file`, `load-string`, also in a function the load calls. |
+| `s:defmethod` runs only during a load. | A call after the load ends: in a transaction, also in a `load-string` or `load-file` it runs, in a function an embedder calls after the load with `Eval` or `FunCall`, or in a test body. | Any call while a load runs: a top-level form of a program loaded with `LEnv.Load`, `LoadFile`, `LoadString`, `LoadProgram` or a `Context` form, also in a function the load calls or in a `load-file` or `load-string` the load runs. |
 
 A template publishes a type with the methods it has when the load ends,
 so a method added later reaches only the VM that adds it. The rule reads
-only whether a load is in progress (`Runtime.Loading`). A template VM
-starts with none, so a cold-loaded VM and every template VM give the same
-answer. Checks of the method's form and of the type come before the
+only whether a load is in progress (`Runtime.Loading`). A Go `Load*` call
+counts as the program's load, so an embedder runs each transaction with
+`Eval` or `FunCall`, not with `Load*`. The Lisp functions `load-file`,
+`load-string` and `load-bytes` start no load: the code they load runs in
+their caller's state, so a transaction cannot add a method through them.
+A harness that runs its transactions through `LoadString`, such as
+elpstest's fork check, therefore does not exercise the refusal. A tool
+that evaluates the program's forms one at a time, such as the REPL and the
+MCP eval and test tools, runs them as the load with `Runtime.BeginLoad`;
+`elpstest.RunTestSuite` runs its expressions after the load. A template
+VM starts with no load in progress, so a cold-loaded VM and every template
+VM give the same answer. Checks of the method's form and of the type come before the
 refusal. The lint checks `record-set-outside-method`,
 `record-check-writes` and `record-defmethod-not-toplevel` report the same
 code before it runs; the last also reports an `s:defmethod` in a function

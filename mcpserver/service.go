@@ -1939,6 +1939,10 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			Meta: makeMeta(root, time.Since(start), 1),
 		}, nil
 	}
+	// The file's top-level forms run as its load, as elpstest.Runner loads
+	// a test file; the test bodies run after it (luthersystems/elps#908).
+	endLoad := env.Runtime.BeginLoad()
+	defer endLoad()
 	for _, expr := range exprs {
 		// When the file switches packages, auto-import testing into the
 		// new package so test/assert macros are available immediately.
@@ -1958,6 +1962,7 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 		}
 	}
 
+	endLoad()
 	suite := libtesting.EnvTestSuite(env)
 	if suite == nil || suite.Len() == 0 {
 		return nil, TestResponse{
@@ -2147,6 +2152,10 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 	if parseErr != nil {
 		response.Error = output.errorRenderer().Text(parseErr.Error())
 	} else {
+		// The forms are the program's, so they run as its load, where
+		// s:defmethod works (luthersystems/elps#908).
+		endLoad := env.Runtime.BeginLoad()
+		defer endLoad()
 		var last *lisp.LVal
 		for _, expr := range exprs {
 			last = env.EvalContext(ctx, expr)

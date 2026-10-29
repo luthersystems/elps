@@ -88,7 +88,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// nested callbacks merely to admit the core type system (#622).
 	ctor := newCapturedBuiltin(CapturedFun{
 		Package: env.Runtime.Package.Name,
-		FID:     fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
+		FID:     lambdaFIDPrefix + strconv.FormatUint(uint64(env.Runtime.GenEnvID()), 10),
 		Formals: Formals("name", "ctor"),
 		Eval: func(env *LEnv, args, _ *LVal) *LVal {
 			sym := args.Cells[0]
@@ -359,16 +359,24 @@ func (env *LEnv) LoadString(name, exprs string) *LVal {
 //
 // Deprecated: Use LoadFileContext for cancellation and timeout support.
 func (env *LEnv) LoadFile(loc string) *LVal {
-	if env.Runtime.Library == nil {
-		return env.Errorf("no source library in environment runtime")
-	}
-	ctx := env.Runtime.sourceContext()
-	source, sourceErr := env.readLibrarySource(ctx, loc)
-	name, loc, src, lerr := source.name, source.path, source.src, sourceErr
+	exprs, lerr := env.readFile(loc)
 	if lerr != nil {
 		return lerr
 	}
-	return env.LoadLocation(name, loc, bytes.NewReader(src))
+	return env.loadProgram(env.evalCtx, exprs)
+}
+
+// readFile reads the source file loc from env.Runtime.Library, for LoadFile
+// and the Lisp function load-file.
+func (env *LEnv) readFile(loc string) ([]*LVal, *LVal) {
+	if env.Runtime.Library == nil {
+		return nil, env.Errorf("no source library in environment runtime")
+	}
+	source, lerr := env.readLibrarySource(env.Runtime.sourceContext(), loc)
+	if lerr != nil {
+		return nil, lerr
+	}
+	return env.readLocation(source.name, source.path, bytes.NewReader(source.src))
 }
 
 // Load reads LVals from r and evaluates them as if in a progn.  The value
@@ -379,19 +387,27 @@ func (env *LEnv) LoadFile(loc string) *LVal {
 //
 // Deprecated: Use LoadContext for cancellation and timeout support.
 func (env *LEnv) Load(name string, r io.Reader) *LVal {
-	if env.Runtime.Reader == nil {
-		return env.Errorf("no reader for environment runtime")
+	exprs, lerr := env.read(name, r)
+	if lerr != nil {
+		return lerr
 	}
+	return env.loadProgram(env.evalCtx, exprs)
+}
 
+// read reads the source named name from r, for Load, LoadContext and the
+// Lisp functions load-string and load-bytes.
+func (env *LEnv) read(name string, r io.Reader) ([]*LVal, *LVal) {
+	if env.Runtime.Reader == nil {
+		return nil, env.Errorf("no reader for environment runtime")
+	}
 	reader := env.Runtime.Reader
 	exprs, err := env.readCached(name, "", cachedRead{byLoc: false, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSource(reader, name, rd)
 	})
 	if err != nil {
-		return env.sourceReadError(err)
+		return nil, env.sourceReadError(err)
 	}
-
-	return env.load(env.evalCtx, exprs)
+	return exprs, nil
 }
 
 // LoadLocation attempts to use env.Runtime.Library to read a lisp source file,
@@ -407,21 +423,51 @@ func (env *LEnv) Load(name string, r io.Reader) *LVal {
 //
 // Deprecated: Use LoadLocationContext for cancellation and timeout support.
 func (env *LEnv) LoadLocation(name string, loc string, r io.Reader) *LVal {
-	if env.Runtime.Reader == nil {
-		return env.Errorf("no reader for environment runtime")
+	exprs, lerr := env.readLocation(name, loc, r)
+	if lerr != nil {
+		return lerr
 	}
+	return env.loadProgram(env.evalCtx, exprs)
+}
 
+// readLocation reads the source named name at loc from r, for LoadLocation
+// and its Context form.  A reader that is not a LocationReader reads it as
+// read does, under the name loc.
+func (env *LEnv) readLocation(name, loc string, r io.Reader) ([]*LVal, *LVal) {
+	if env.Runtime.Reader == nil {
+		return nil, env.Errorf("no reader for environment runtime")
+	}
 	reader, ok := env.Runtime.Reader.(LocationReader)
 	if !ok {
-		return env.Load(loc, r)
+		return env.read(loc, r)
 	}
 	exprs, err := env.readCached(name, loc, cachedRead{byLoc: true, r: r}, func(rd io.Reader) ([]*LVal, error) {
 		return env.readSourceLocation(reader, name, loc, rd)
 	})
 	if err != nil {
-		return env.sourceReadError(err)
+		return nil, env.sourceReadError(err)
 	}
+	return exprs, nil
+}
 
+// loadProgram evaluates exprs as the program's load, the funnel for every
+// exported Load* entry point: Runtime.Loading reports the load until it
+// returns, also on an error or a panic.  The Lisp functions load-file,
+// load-string and load-bytes call loadLisp instead, so the code they load
+// runs in their caller's state: at load, or after it.
+func (env *LEnv) loadProgram(ctx context.Context, exprs []*LVal) *LVal {
+	env.Runtime.loadDepth++
+	defer func() { env.Runtime.loadDepth-- }()
+	return env.load(ctx, exprs)
+}
+
+// loadLisp evaluates the exprs that load-file, load-string or load-bytes
+// read, or returns the error lerr of the read.  It leaves Runtime.Loading
+// as its caller has it.
+func (env *LEnv) loadLisp(exprs []*LVal, lerr *LVal) *LVal {
+	if lerr != nil {
+		return lerr
+	}
 	return env.load(env.evalCtx, exprs)
 }
 
@@ -429,14 +475,9 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	if len(exprs) == 0 {
 		return Nil()
 	}
-	// load is the funnel for every exported Load* entry point.  Treat the
-	// whole load as one top-level evaluation so the step budget covers all
-	// of its forms rather than refilling per form.
+	// Treat the whole load as one top-level evaluation so the step budget
+	// covers all of its forms rather than refilling per form.
 	defer env.Runtime.beginEval()()
-	// Runtime.Loading reports the load until it returns, also on an error
-	// or a panic.
-	env.Runtime.loadDepth++
-	defer func() { env.Runtime.loadDepth-- }()
 
 	// Remember the current package and restore it for the caller after
 	// evaluation completes.
@@ -1074,6 +1115,10 @@ func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	return nil
 }
 
+// lambdaFIDPrefix starts the FID of each function value the runtime
+// numbers itself, a lambda or a typedef constructor: _fun<N>.
+const lambdaFIDPrefix = "_fun"
+
 // newLambda builds a lambda over validated cells (formals, then body).
 func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
@@ -1081,8 +1126,8 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
 	var name [24]byte
-	copy(name[:], "_fun")
-	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
+	copy(name[:], lambdaFIDPrefix)
+	fid := strconv.AppendUint(name[:len(lambdaFIDPrefix)], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
@@ -2319,31 +2364,20 @@ func (env *LEnv) EvalContext(ctx context.Context, v *LVal) *LVal {
 
 // LoadContext reads LVals from r and evaluates them with the given context.
 func (env *LEnv) LoadContext(ctx context.Context, name string, r io.Reader) *LVal {
-	if env.Runtime.Reader == nil {
-		return env.Errorf("no reader for environment runtime")
+	exprs, lerr := env.read(name, r)
+	if lerr != nil {
+		return lerr
 	}
-	reader := env.Runtime.Reader
-	exprs, err := env.readCached(name, "", cachedRead{byLoc: false, r: r}, func(rd io.Reader) ([]*LVal, error) {
-		return env.readSource(reader, name, rd)
-	})
-	if err != nil {
-		return env.sourceReadError(err)
-	}
-	return env.load(ctx, exprs)
+	return env.loadProgram(ctx, exprs)
 }
 
 // LoadFileContext loads and evaluates a source file with the given context.
 func (env *LEnv) LoadFileContext(ctx context.Context, loc string) *LVal {
-	if env.Runtime.Library == nil {
-		return env.Errorf("no source library in environment runtime")
-	}
-	sctx := env.Runtime.sourceContext()
-	source, sourceErr := env.readLibrarySource(sctx, loc)
-	name, loc, src, lerr := source.name, source.path, source.src, sourceErr
+	exprs, lerr := env.readFile(loc)
 	if lerr != nil {
 		return lerr
 	}
-	return env.LoadLocationContext(ctx, name, loc, bytes.NewReader(src))
+	return env.loadProgram(ctx, exprs)
 }
 
 // LoadStringContext loads and evaluates a string with the given context.
@@ -2354,20 +2388,11 @@ func (env *LEnv) LoadStringContext(ctx context.Context, name, exprs string) *LVa
 // LoadLocationContext loads and evaluates a source stream at a given location
 // with the given context.
 func (env *LEnv) LoadLocationContext(ctx context.Context, name, loc string, r io.Reader) *LVal {
-	if env.Runtime.Reader == nil {
-		return env.Errorf("no reader for environment runtime")
+	exprs, lerr := env.readLocation(name, loc, r)
+	if lerr != nil {
+		return lerr
 	}
-	reader, ok := env.Runtime.Reader.(LocationReader)
-	if !ok {
-		return env.LoadContext(ctx, loc, r)
-	}
-	exprs, err := env.readCached(name, loc, cachedRead{byLoc: true, r: r}, func(rd io.Reader) ([]*LVal, error) {
-		return env.readSourceLocation(reader, name, loc, rd)
-	})
-	if err != nil {
-		return env.sourceReadError(err)
-	}
-	return env.load(ctx, exprs)
+	return env.loadProgram(ctx, exprs)
 }
 
 // FunCallContext invokes regular function fun with args under the given

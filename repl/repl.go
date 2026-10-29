@@ -279,6 +279,10 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		os.Exit(1)
 	}
 
+	// A person at the REPL is loading their program, so s:defmethod and
+	// the other load-time forms work here (luthersystems/elps#908).
+	defer env.Runtime.BeginLoad()()
+
 	p := rdparser.NewInteractive(nil)
 	p.SetPrompts(prompt, cont)
 
@@ -432,6 +436,9 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 // runEval evaluates a single expression and returns an exit code.
 // stdout receives the result; errw receives error messages.
 func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
+	// A person at the REPL is loading their program, so s:defmethod and
+	// the other load-time forms work here (luthersystems/elps#908).
+	defer env.Runtime.BeginLoad()()
 	ctx := cfg.bindContext(env)
 	if reportCancellation(ctx, cfg, stdout, errw) {
 		return 1
@@ -486,6 +493,9 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 // expressions using the interactive parser, and evaluates each one.
 // stdout receives results; errw receives error messages.
 func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
+	// A person at the REPL is loading their program, so s:defmethod and
+	// the other load-time forms work here (luthersystems/elps#908).
+	defer env.Runtime.BeginLoad()()
 	ctx := cfg.bindContext(env)
 	p := rdparser.NewInteractive(nil)
 

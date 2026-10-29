@@ -78,15 +78,35 @@ type Runtime struct {
 	conditionParentsShared bool          // conditionParents is a template's map: copy it before a write.
 }
 
-// Loading reports whether a load is in progress: whether code runs inside
-// one of the LEnv Load entry points (Load, LoadFile, LoadString,
-// LoadLocation, LoadProgram and their Context forms) or the Lisp functions
-// load-file, load-string and load-bytes, which call them.  A function called
-// during a load runs inside it; one called after the load returns, such as
-// a call through Eval, FunCall or a VM forked from a template, does not.  A
-// template VM starts with no load in progress.
+// Loading reports whether the program's load is in progress: whether code
+// runs inside one of the Go entry points Load, LoadFile, LoadString,
+// LoadLocation, LoadProgram or their Context forms.  A function called
+// during the load runs inside it; one called after the load returns, such
+// as a call through Eval or FunCall, does not.  The Lisp functions
+// load-file, load-string and load-bytes do not start a load: the code they
+// load runs in their caller's state.  So an embedder runs its program with
+// Load* and each later call, such as a transaction, with Eval or FunCall.
+// A template VM starts with no load in progress.
 func (r *Runtime) Loading() bool {
 	return r.loadDepth > 0
+}
+
+// BeginLoad starts the program's load for a tool that reads the program's
+// forms itself and evaluates them one at a time with Eval, such as a REPL:
+// Loading reports true until the tool calls the function BeginLoad returns.
+// Unlike a Load* call, it keeps each form's own step budget and the
+// package a form switches to.  An embedder must not call it around a
+// transaction (luthersystems/elps#908).  Calling the returned function
+// again does nothing.
+func (r *Runtime) BeginLoad() func() {
+	r.loadDepth++
+	ended := false
+	return func() {
+		if !ended {
+			ended = true
+			r.loadDepth--
+		}
+	}
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.

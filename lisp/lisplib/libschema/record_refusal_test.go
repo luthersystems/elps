@@ -111,9 +111,12 @@ var refusalCases = []refusalCase{
 	// its formal types after it.
 	{"bad formals after the load", `(s:defmethod counter bad ([o s:int]) 1)`, "error:bad-arguments"},
 	{"bad signature after the load", `(s:defmethod counter bad (o [x 5]) 1)`, "error:record-error"},
-	// A load the call starts is a load.
-	{"defmethod in load-string", `(progn (load-string "(s:defmethod counter ls (o) 8)") (c 'ls))`, "8"},
-	{"defmethod in a file a lambda loads", `(progn (funcall (lambda () (load-file "types.lisp"))) (c 'lf))`, "14"},
+	// load-string, load-bytes and load-file run in their caller's state,
+	// so a transaction cannot use them to add a method.
+	{"defmethod in load-string", `(load-string "(s:defmethod counter ls (o) 8)")`, "error:record-error"},
+	{"defmethod in load-bytes", `(load-bytes (to-bytes "(s:defmethod counter lb (o) 10)"))`, "error:record-error"},
+	{"defmethod in load-file", `(load-file "types.lisp")`, "error:record-error"},
+	{"load-string adds nothing", `(progn (ignore-errors (load-string "(s:defmethod counter ls (o) 8)")) (ignore-errors (c 'ls)))`, "()"},
 
 	// The condition is a child of error.
 	{"handler-bind on error", `(handler-bind ((error (lambda (c &rest _) c))) (s:set-field! c 'n 5))`, "'record-error"},
@@ -131,6 +134,7 @@ var refusalLoadCases = []refusalCase{
 	{"defmethod in a call argument", `(progn (list (s:defmethod counter arg (o) 5)) (c 'arg))`, "5"},
 	{"defmethod in flet body", `(flet ([f () 6]) (s:defmethod counter fb (o) (f)) (c 'fb))`, "6"},
 	{"defmethod in load-string", `(progn (load-string "(s:defmethod counter ls (o) 8)") (c 'ls))`, "8"},
+	{"defmethod in load-bytes", `(progn (load-bytes (to-bytes "(s:defmethod counter lb (o) 10)")) (c 'lb))`, "10"},
 	{"defmethod from a top-level macro call", `(progn
 	  (defmacro defm (n) (quasiquote (s:defmethod counter (unquote n) (o) 11)))
 	  (defm mm)
