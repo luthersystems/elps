@@ -381,6 +381,8 @@ const maxRecordWalk = 1 << 16
 //
 //   - A function body (defun, lambda, a flet or labels function) runs at
 //     call time.
+//   - A test body (test, test-let, test-let*, benchmark, benchmark-simple)
+//     runs when the test runner runs the test, after the load.
 //   - The arguments of a macro call run when the macro decides, if ever.
 //     Macros are not expanded, so a macro such as an endpoint definition
 //     defers its body.  defconst is a macro whose value runs at load, so
@@ -424,7 +426,9 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 		}
 		switch n.Event {
 		case lisp.WalkEnter:
-			if n.Function {
+			// The test runner runs a test or benchmark body after the
+			// load, as a function body runs at call time.
+			if n.Function || TestDefinitionName(n.Op) != "" {
 				frames = append(frames, frame{where: n.Op, depth: n.Depth})
 			}
 		case lisp.WalkForm:
@@ -432,6 +436,12 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 				break
 			}
 			head := astutil.HeadSymbol(n.Node)
+			if name := TestDefinitionName(head); name != "" {
+				// A test form the walker reads as a call: test-let,
+				// test-let*, benchmark-simple, or a testing:-qualified
+				// form.
+				frames = append(frames, frame{where: name, depth: n.Depth})
+			}
 			if head == recordDefmethod && !seen[n.Node] {
 				seen[n.Node] = true
 				out = append(out, RecordDefmethod{Call: n.Node, NotLoadScope: where()})
@@ -445,6 +455,30 @@ func RecordDefmethods(top *lisp.LVal, isMacro func(head string) bool) []RecordDe
 	}}
 	codewalk.Occurrences(cw, maxRecordWalk, top)
 	return out
+}
+
+// testDefinitionForms are the core forms that register a test or benchmark
+// (elps#736).  The test runner runs their bodies after the load.
+var testDefinitionForms = map[string]bool{
+	"test": true, "test-let": true, "test-let*": true, "benchmark": true, "benchmark-simple": true,
+}
+
+// TestDefinitionName returns the unqualified form name when head calls a
+// test definition form (test, test-let, test-let*, benchmark or
+// benchmark-simple), unqualified, lisp:-qualified or testing:-qualified, or
+// "" otherwise.
+func TestDefinitionName(head string) string {
+	name := head
+	if ns, local, qualified := strings.Cut(head, ":"); qualified {
+		if ns != lisp.DefaultLangPackage && ns != "testing" {
+			return ""
+		}
+		name = local
+	}
+	if testDefinitionForms[name] {
+		return name
+	}
+	return ""
 }
 
 // loadScopeCall reports whether head is a call whose value argument runs

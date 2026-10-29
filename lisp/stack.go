@@ -80,8 +80,10 @@ type CallFrame struct {
 
 	// lispFun is true when the frame calls a function defined in Lisp: a
 	// lambda, defun, defmacro, or flet or labels function.  The evaluator
-	// sets it from the function value, not from its FID.  The byte fits in
+	// sets it from the function value, not from its FID, and again when a
+	// tail call reuses the frame for another function.  The byte fits in
 	// the padding after TROBlock, so the struct stays 72 bytes.
+	// LispFunction reads it.
 	lispFun bool
 
 	// TailIterations counts tail-call iterations performed at this frame.
@@ -93,14 +95,21 @@ type CallFrame struct {
 	// an `int` declared above Terminal/TROBlock this field grew the struct
 	// from 72 to 80 bytes (+11.1%), which the benchmark gate caught as
 	// +8.44% B/op on EnvFunCallRecursion with allocs/op unchanged — same
-	// allocation count, larger allocations.  Two bools leave 6 bytes of
-	// tail padding that an 8-byte int cannot use but a 4-byte int32 can, so
-	// this placement is free: the struct stays 72 bytes.
+	// allocation count, larger allocations.  The three bools (Terminal,
+	// TROBlock, lispFun) take 3 bytes of the last 8-byte word, and the 5
+	// left over hold a 4-byte int32 but not an 8-byte int, so this
+	// placement is free: the struct stays 72 bytes.
 	//
 	// int32 caps at ~2.1e9 iterations against a default budget of 1e6.  If
 	// MaxTailIterations is ever raised near that ceiling, widen this field
 	// and accept the 8 bytes rather than letting the counter wrap.
 	TailIterations int32
+}
+
+// LispFunction reports whether the frame calls a function defined in Lisp
+// (see CallStack.InLispFunction).  It returns false for a nil frame.
+func (f *CallFrame) LispFunction() bool {
+	return f != nil && f.lispFun
 }
 
 // QualifiedFunName returns the qualified name for the function on the top of

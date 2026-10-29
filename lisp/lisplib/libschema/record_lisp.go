@@ -58,8 +58,10 @@ var recordMacros = []*libutil.Builtin{
 		[name type], as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
 		:replace true.  It raises record-error while a function defined
-		in Lisp runs: write it at the top level of a file, also in a
-		let, progn or flet body, so it runs at load.`),
+		in Lisp runs, a test body included: write it at the top level
+		of a file, also in a let, progn or flet body, so it runs at
+		load.  The refusal comes before an error in the [name type]
+		formals.`),
 	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
 		`Defines an interface, a set of methods, and returns it:
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
@@ -85,7 +87,7 @@ var recordBuiltins = []*libutil.Builtin{
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
 		directly.  It raises record-error while a function defined in
-		Lisp runs.`),
+		Lisp runs, before it checks sig.`),
 	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
@@ -488,6 +490,7 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
 		return env.ErrorConditionf(WrongType, "%v", err)
 	}
+	// The refusal comes before the signature error (see refuseLateMethod).
 	if lerr := refuseLateMethod(env, desc, name.Str); lerr != nil {
 		return lerr
 	}
@@ -521,8 +524,11 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 // where a Go-loaded template accepts.  A top-level form, also in a let,
 // progn, when, flet body, call argument, load-file or load-string, runs
 // with no Lisp function on the stack.  The check runs after the type, name
-// and interface checks, so a bad type or name gets its own error first, and
-// before the method's signature is built, so a refused call builds none.
+// and interface checks, so a bad type or name gets its own error first.  It
+// runs before the method's signature is built, on purpose: a call-time
+// s:defmethod with a bad signature, such as an unknown formal type, gets
+// the refusal, not the signature error, and a refused call builds no
+// signature.
 func refuseLateMethod(env *lisp.LEnv, desc *recordDesc, name string) *lisp.LVal {
 	if !env.Runtime.Stack.InLispFunction() {
 		return nil

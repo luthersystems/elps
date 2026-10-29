@@ -117,7 +117,12 @@
   (assert-equal 'bad-arguments (condition-of (lambda () (s:defmethod counter n (_o) 0)))) ; nolint:record-defmethod-not-toplevel
   ; A valid s:defmethod in a function call is refused (luthersystems/elps#908).
   (assert-equal 'record-error (condition-of (lambda () (s:defmethod counter late (_o) 0)))) ; nolint:record-defmethod-not-toplevel
-  (assert-equal 'unknown-operation (condition-of (lambda () ((counter :n 0) 'late)))))
+  (assert-equal 'unknown-operation (condition-of (lambda () ((counter :n 0) 'late))))
+  ; So is one in a test body, which the test runner runs after the load.
+  (assert-equal "refused"
+                (handler-bind (('record-error (lambda (&rest _e) "refused")))
+                  (s:defmethod counter in-test (_o) 0))) ; nolint:record-defmethod-not-toplevel
+  (assert-equal 'unknown-operation (condition-of (lambda () ((counter :n 0) 'in-test)))))
 
 (set 'tally
      (s:make-record "tally"

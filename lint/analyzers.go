@@ -2989,29 +2989,6 @@ func walkLambdaListCalls(exprs []*lisp.LVal, visit func(*lisp.LVal)) {
 	codewalk.Calls(exprs, visit, nil)
 }
 
-// testDefinitionForms are the core forms that register a test or benchmark
-// (elps#736), spelled as they may appear at a call head.
-var testDefinitionForms = map[string]bool{
-	"test": true, "test-let": true, "test-let*": true, "benchmark": true, "benchmark-simple": true,
-}
-
-// testDefinitionName returns the unqualified form name when head calls a test
-// definition form -- unqualified, lisp:-qualified or testing:-qualified -- or
-// "" otherwise.
-func testDefinitionName(head string) string {
-	name := head
-	if ns, local, qualified := strings.Cut(head, ":"); qualified {
-		if ns != lisp.DefaultLangPackage && ns != "testing" {
-			return ""
-		}
-		name = local
-	}
-	if testDefinitionForms[name] {
-		return name
-	}
-	return ""
-}
-
 // AnalyzerTestOutsideTestFile flags test registration in a file that is not a
 // test file.  Tests belong in *_test.lisp files, which only test runners load;
 // a production load has no test suite, so a test form there fails the load
@@ -3034,7 +3011,7 @@ var AnalyzerTestOutsideTestFile = &Analyzer{
 		userDefs := UserDefined(pass.Exprs)
 		WalkSExprs(pass.Exprs, func(sexpr *lisp.LVal, _ int) {
 			head := HeadSymbol(sexpr)
-			name := testDefinitionName(head)
+			name := analysis.TestDefinitionName(head)
 			if name == "" || userDefs[head] {
 				return
 			}
