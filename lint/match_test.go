@@ -55,12 +55,13 @@ func TestMatchBindings_UndefinedSymbol(t *testing.T) {
     ((list a b) (+ a b))
     ((sorted-map "k" x) :when (> x 1) x)
     ([s s:string] s)
+    ((vector p &rest q) (list p q))
     (_ (+ y 1))))
 (defun g () a)
 (defun h (v) (lisp:match v (z z)))`)
 	assert.Len(t, diags, 2, "%v", diags)
-	assertDiagOnLine(t, diags, 6, "undefined symbol: y")
-	assertDiagOnLine(t, diags, 7, "undefined symbol: a")
+	assertDiagOnLine(t, diags, 7, "undefined symbol: y")
+	assertDiagOnLine(t, diags, 8, "undefined symbol: a")
 }
 
 // The names of a let binding pattern are bound in the let's scope
@@ -68,8 +69,8 @@ func TestMatchBindings_UndefinedSymbol(t *testing.T) {
 // in order.
 func TestLetPatternScope(t *testing.T) {
 	src := `(defun f (v)
-  (let* ([(list a b) v] [(sorted-map "k" c) a] [[d s:int] c])
-    (list a b c d)))
+  (let* ([(list a b) v] [(sorted-map "k" c) a] [[d s:int] c] [(vector e &rest _) d])
+    (list a b c d e)))
 (defun g (v)
   (let ([(list x y) v] [z x])
     (list x y z)))

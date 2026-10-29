@@ -299,6 +299,7 @@ func TestLetBindings_Negative_Pattern(t *testing.T) {
 		`(let (((list a b) v)) a)`,
 		`(let* ([(sorted-map "k" k) m] [[s s:string] k] [(point :x x) p]) x)`,
 		`(let ([() v]) 1)`,
+		`(let* ([(vector a &rest r) v] [(lisp:vector (list b) _) r]) b)`,
 	} {
 		assert.Empty(t, lintCheck(t, AnalyzerLetBindings, src), src)
 	}
@@ -315,6 +316,9 @@ func TestLetBindings_Negative_Pattern(t *testing.T) {
 		{`(let (('(a b c) v)) a)`, "bad pattern"},
 		{`(let (((list a a) v)) a)`, "pattern binds a twice"},
 		{`(let (((list &rest) v)) 1)`, "&rest must come before"},
+		{`(let (((vector a a) v)) a)`, "pattern binds a twice"},
+		{`(let (((vector &rest) v)) 1)`, "&rest must come before the last pattern of a vector"},
+		{`(let (((vector &rest a b) v)) 1)`, "&rest must come before the last pattern of a vector"},
 	} {
 		diags := lintCheck(t, AnalyzerLetBindings, tc.src)
 		require.Len(t, diags, 1, tc.src)

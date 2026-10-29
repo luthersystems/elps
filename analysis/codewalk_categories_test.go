@@ -18,6 +18,7 @@ func TestCodeWalkScopeCategoriesGolden(t *testing.T) {
 		`(macrolet ((m () x)) (m x)) (test "name" (lambda () x)) (test-let "name" ((x outer)) x)`,
 		`(quote (lambda (x) x)) (quasiquote (lambda (x) (unquote (lambda (y) y)) (quasiquote (unquote x))))`,
 		`(let* (((list a [b (t a)]) v) ((sorted-map "k" c) a) ((R :f d) c)) (list a b c d)) (let (((list x) x) (y x)) (list x y))`,
+		`(let* (((vector a [b (t a)] &rest r) v) ((lisp:vector (list c) _) r)) (list a b c)) (match v ((vector x &rest _) x) ((vector [y (t x)]) y))`,
 	}
 	names := []string{"defun", "defmacro", "deftype", "test-let", "test-let*"}
 	for _, op := range lisp.DefaultSpecialOps() {

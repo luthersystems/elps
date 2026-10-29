@@ -29,6 +29,7 @@ func TestLambdaListOccurrencesGolden(t *testing.T) {
 		`(lisp:handler-bind (['condition (lambda (&rest) 1)]) (lambda (&key) 1))`,
 		`(cond [(lambda (&rest) 1) (lambda (&key) 1)] bad ())`,
 		`(let (((list f [g (lambda (x x) 1)]) v)) (lambda (&rest) 1)) (let* (((R :f h) (lambda (&key) 1))) h)`,
+		`(let (((vector f [g (lambda (x x) 1)] &rest r) v)) r) (match v ((vector (list h) &rest _) h))`,
 	}
 	names := []string{"defun", "defmacro", "deftype", "test-let", "test-let*"}
 	for _, op := range lisp.DefaultSpecialOps() {

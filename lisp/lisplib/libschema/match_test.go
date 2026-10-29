@@ -52,6 +52,26 @@ func TestMatchLisp(t *testing.T) {
 	require.Equal(t, "error:bad-arguments", parityOutcome(env, `(match 5 ((s:int :n x) x))`))
 }
 
+// An unqualified vector head is always the vector pattern, also in a
+// package that binds vector to a record type.  A qualified head matches
+// the record (luthersystems/elps#914).
+func TestMatchShadowedVector(t *testing.T) {
+	env := newSchemaForkEnv(t)
+	prelude := `(in-package 'shapes)
+(set 'vector (s:make-record "vector" (s:has-key "x" s:int)))
+(set 'p (vector :x 1))
+`
+	for _, tc := range []struct{ src, want string }{
+		{`(match p ((vector :x a) a) (_ 'no))`, "'no"},
+		{`(match (lisp:vector :x 2) ((vector :x a) a) (_ 'no))`, "2"},
+		{`(match p ((shapes:vector :x a) a) (_ 'no))`, "1"},
+		{`(match (lisp:vector :x 2) ((shapes:vector :x a) a) (_ 'no))`, "'no"},
+		{`(let ([(shapes:vector :x a) p]) a)`, "1"},
+	} {
+		require.Equal(t, tc.want, parityOutcome(env, prelude+tc.src), tc.src)
+	}
+}
+
 // A VM a template makes has match's type support.
 func TestMatchTemplate(t *testing.T) {
 	vm := mustForkEnv(t, newSchemaForkEnv(t))

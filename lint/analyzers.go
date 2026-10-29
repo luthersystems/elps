@@ -200,8 +200,8 @@ var AnalyzerLetBindings = &Analyzer{
 }
 
 // isBindingPattern reports whether v, the first cell of a let binding that
-// is not a symbol, is a list pattern: (list ...), (sorted-map ...), a
-// record pattern or [name T] (a quoted list).  It also accepts (unquote
+// is not a symbol, is a list pattern: (list ...), (vector ...),
+// (sorted-map ...), a record pattern or [name T] (a quoted list).  It also accepts (unquote
 // sym) and every other list: in a macro template a list can expand to a
 // symbol.  let also takes a literal pattern such as 42, but it binds no
 // name and only tests the value, so the check goes on reporting it:
