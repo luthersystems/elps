@@ -297,7 +297,10 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
         with:
-          fetch-depth: ${{ github.event_name == 'push' && 0 || 2 }}
+          # Quoted: a bare 0 is falsy in an expression, so `&& 0 || 2` always
+          # gave 2, and a push of more than one commit (a rebase merge) lost
+          # its base commit and failed the gate.
+          fetch-depth: ${{ github.event_name == 'push' && '0' || '2' }}
           persist-credentials: false
 
       - name: Set up Go
