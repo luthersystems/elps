@@ -57,18 +57,10 @@ var recordMacros = []*libutil.Builtin{
 		formal, recv, is the object, and a formal after it may be
 		[name type], as in s:method.  It refuses a name that is a field of the type,
 		and a name the type already has unless the body starts with
-		:replace true.  It raises record-error while a function defined
-		in Lisp runs, a test body included: write it at the top level
-		of a file, also in a let, progn or flet body, so it runs at
-		load.  These errors come before the refusal: the checks of the
-		method name, the formals and the receiver when the call
-		expands; the evaluation of the type expressions of [name type]
-		formals; and the checks of the type and the method (not a
-		record type, a sealed Go type, not a function, defined in
-		another package, the name of a field, a name the type has
-		without :replace, or an interface the type implements that the
-		method no longer satisfies).  The check that each type value is
-		a usable type comes after it.`),
+		:replace true.  It raises record-error after the load ends, as
+		in a transaction or a test body: write it at the top level of a
+		file, so it runs at load.  Checks of the method's form and of
+		the type come first.`),
 	libutil.FunctionDoc("make-interface", lisp.Formals("name", lisp.VarArgSymbol, "methods"), macroMakeInterface,
 		`Defines an interface, a set of methods, and returns it:
 		(s:make-interface "payable" (pay (amount)) (cancel ())).  Each
@@ -93,11 +85,7 @@ var recordBuiltins = []*libutil.Builtin{
 		directly.`),
 	libutil.FunctionDoc("%add-method", lisp.Formals("type", "name", "fn", "replace", "&optional", "sig"), builtinAddMethod,
 		`The function s:defmethod expands to.  Do not call it
-		directly.  It raises record-error while a function defined in
-		Lisp runs: after it checks type, name and fn (a record type
-		of this package, not a field's name, not a duplicate without
-		replace) and the type's interfaces, and before it checks the
-		type values in sig.`),
+		directly.  It raises record-error after the load ends.`),
 	libutil.FunctionDoc("%make-interface", lisp.Formals("name", "methods", "&optional", "embed"), builtinMakeInterface,
 		`The function s:make-interface expands to.  Do not call it
 		directly.`),
@@ -500,8 +488,6 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err := checkImplements(desc, tcaps.Cells[typeImpls], only, false); err != nil {
 		return env.ErrorConditionf(WrongType, "%v", err)
 	}
-	// The refusal comes before the check of the type values (see
-	// refuseLateMethod).
 	if lerr := refuseLateMethod(env, desc, name.Str); lerr != nil {
 		return lerr
 	}
@@ -520,36 +506,24 @@ func builtinAddMethod(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	return name
 }
 
-// refuseLateMethod returns the record-error of an s:defmethod that runs in
-// a function call, or nil when it runs at load (luthersystems/elps#908).
+// refuseLateMethod returns the record-error of an s:defmethod that runs
+// after the load ends, or nil when it runs during a load
+// (luthersystems/elps#908).
 //
-// A template publishes a type with the methods it has at publication, so a
-// method added in a function call reaches only the VM that runs the call.
-// The test is lisp.CallStack.InLispFunction: s:defmethod refuses while a
-// lambda, defun, defmacro, flet or labels function runs.  It reads only the
-// call stack.  A template VM starts with an empty stack, so the same code
-// gives the same answer in every VM of a template and in a cold-loaded VM
-// whose embedder loads the program with no Lisp function on the stack, as
-// Go's LEnv.LoadFile and LoadString at the top level do.  A cold load that
-// a Lisp function starts, (funcall (lambda () (load-file ...))), refuses
-// where a Go-loaded template accepts.  A top-level form, also in a let,
-// progn, when, flet body, call argument, load-file or load-string, runs
-// with no Lisp function on the stack.  The check runs after the type check, the
-// method checks of methodTarget.check (a function, of the type's package,
-// not a field's name, not a duplicate without :replace) and
-// checkImplements, so each of those gets its own error first.
-// The errors s:defmethod finds when it expands (methodLambda: the method
-// name, the formals, the receiver) and the evaluation of the type
-// expressions come before %add-method runs, so before the refusal too.
-// The refusal comes before the signature is built, on purpose: a call-time
-// s:defmethod whose type value is not usable, such as [x 5], gets the
-// refusal, not the signature error, and a refused call builds no
-// signature.
+// A template publishes a type with the methods it has when the load ends,
+// so a method added later, in a transaction or another call after the
+// load, reaches only the VM that runs it.  The test is
+// lisp.Runtime.Loading, so s:defmethod is allowed anywhere a load runs it,
+// also in a function the load calls, and refused anywhere else.  A template
+// VM starts with no load in progress, so the same code gives the same
+// answer in a cold-loaded VM and in every VM of a template.  Checks of the
+// method's form and of the type come first; the check of its formal types
+// comes after, so a refused call builds no signature.
 func refuseLateMethod(env *lisp.LEnv, desc *recordDesc, name string) *lisp.LVal {
-	if !env.Runtime.Stack.InLispFunction() {
+	if env.Runtime.Loading() {
 		return nil
 	}
-	return env.ErrorConditionf(RecordError, "s:defmethod: method %s of %s is added in a function call, not at load; write s:defmethod at the top level of a file", name, desc.display)
+	return env.ErrorConditionf(RecordError, "s:defmethod: method %s of %s is added after the load ends; write s:defmethod at the top level of a file, so it runs at load", name, desc.display)
 }
 
 // interfaceList checks the interfaces of :implements and returns them as a

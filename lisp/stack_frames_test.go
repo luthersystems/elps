@@ -23,20 +23,15 @@ func TestPushFIDWritesEveryField(t *testing.T) {
 	for f := range reflect.TypeFor[CallFrame]().Fields() {
 		fields = append(fields, f.Name)
 	}
-	require.Equal(t, []string{"Source", "FID", "Package", "Name", "HeightLogical", "Terminal", "TROBlock", "lispFun", "TailIterations"}, fields)
+	require.Equal(t, []string{"Source", "FID", "Package", "Name", "HeightLogical", "Terminal", "TROBlock", "TailIterations"}, fields)
 	var s CallStack
 	src := &token.Location{File: "frames.lisp", Line: 2}
 	require.NoError(t, s.PushFID(src, "fid1", "pkg1", "name1"))
 	top := s.Top()
-	top.Terminal, top.TROBlock, top.lispFun, top.TailIterations = true, true, true, 9
+	top.Terminal, top.TROBlock, top.TailIterations = true, true, 9
 	s.Frames = s.Frames[:0] // truncated without Pop
 	require.NoError(t, s.PushFID(nil, "fid2", "pkg2", "name2"))
 	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2"}, s.Frames[0])
-	s.Frames = s.Frames[:0]
-	require.NoError(t, s.pushFrame(nil, "fid2", "pkg2", "name2", true))
-	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2", lispFun: true}, s.Frames[0])
-	s.Frames = s.Frames[:0]
-	require.NoError(t, s.PushFID(nil, "fid2", "pkg2", "name2"))
 	require.NoError(t, s.PushFID(src, "fid3", "pkg3", "name3"))
 	want := CallFrame{Source: src, FID: "fid3", Package: "pkg3", Name: "name3", HeightLogical: 1}
 	assert.Equal(t, want, s.Frames[1])
@@ -51,23 +46,4 @@ func TestPushFIDWritesEveryField(t *testing.T) {
 	assert.Empty(t, freed.Name)
 	assert.Equal(t, CallFrame{FID: "fid2", Package: "pkg2", Name: "name2"}, s.Pop())
 	assert.Empty(t, s.Frames)
-}
-
-// TestTerminalCallFIDMatchesKind: the evaluator's search reuses only a
-// frame of the called function's kind (luthersystems/elps#908), and goes on
-// below a terminal frame of the other kind.  TerminalFID matches by FID
-// alone, as it did.
-func TestTerminalCallFIDMatchesKind(t *testing.T) {
-	var s CallStack
-	require.NoError(t, s.pushFrame(nil, "_fun7", "user", "lambda", true))
-	s.Top().Terminal = true
-	assert.Equal(t, 1, s.TerminalFID("_fun7"))
-	assert.Equal(t, 1, s.terminalCallFID("_fun7", true))
-	assert.Equal(t, 0, s.terminalCallFID("_fun7", false))
-
-	require.NoError(t, s.pushFrame(nil, "_fun7", "user", "go", false))
-	s.Top().Terminal = true
-	assert.Equal(t, 1, s.TerminalFID("_fun7"))
-	assert.Equal(t, 1, s.terminalCallFID("_fun7", false))
-	assert.Equal(t, 2, s.terminalCallFID("_fun7", true))
 }

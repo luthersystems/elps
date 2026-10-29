@@ -785,23 +785,21 @@ load, so the method reaches only the VM that runs the call:
 * It is not in the type's saved form.
 * A later call in another VM does not see it.
 
-The runtime refuses the same code (luthersystems/elps#908): `s:defmethod`
-raises `record-error` while a function defined in Lisp runs, that is when
-the call stack holds a frame of a `lambda`, `defun`, `defmacro`, `flet` or
-`labels` function. The test reads only the call stack. A template VM starts
-with an empty stack, so the test gives the same answer in every template VM
-and in a cold-loaded VM, on one condition: the embedder loads the program
-with no Lisp function on the stack, as Go's `LEnv.LoadFile` and
-`LoadString` at the top level do. A cold load that a Lisp function starts,
-such as `(funcall (lambda () (load-file "types.lisp")))`, refuses an
-`s:defmethod` that a Go-loaded template accepts. The lint finds the call
-before the code runs. The two tests differ:
+The runtime refuses `s:defmethod` after the load ends
+(luthersystems/elps#908): it raises `record-error` unless a load is in
+progress, that is unless the call runs inside `LEnv.Load`, `LoadFile`,
+`LoadString`, `LoadLocation` or `LoadProgram` (and their `Context` forms),
+or `load-file`, `load-string` or `load-bytes`. A transaction, or any call
+an embedder makes after the load, runs with no load in progress. A
+template VM starts with none, so every VM gives the same answer. The lint
+finds the call before the code runs, by its place in the source. The two
+tests differ:
 
 | Code | Lint | Runtime |
 |------|------|---------|
-| `s:defmethod` in a function body | reported | refused |
+| `s:defmethod` in a function the load calls | reported | allowed |
+| `s:defmethod` in a function called after the load, as in a transaction | reported | refused |
 | `s:defmethod` in the arguments of a macro call that expands it at the top level | reported | allowed |
-| `s:defmethod` at the top level of a file that a function loads with `load-file` | not reported | refused |
 | `s:defmethod` in a `test`, `test-let`, `test-let*`, `benchmark` or `benchmark-simple` body | reported | refused |
 
 An `s:defmethod` runs at load when nothing around it defers it:

@@ -78,14 +78,6 @@ type CallFrame struct {
 	Terminal bool
 	TROBlock bool // Stop tail-recursion optimization from collapsing this frame
 
-	// lispFun is true when the frame calls a function defined in Lisp: a
-	// lambda, defun, defmacro, or flet or labels function.  The evaluator
-	// sets it from the function value, not from its FID, and a tail call
-	// reuses only a frame of the same kind (terminalCallFID).  The byte fits in
-	// the padding after TROBlock, so the struct stays 72 bytes.
-	// LispFunction reads it.
-	lispFun bool
-
 	// TailIterations counts tail-call iterations performed at this frame.
 	// Each turn of a tail loop increments it by exactly one, regardless of
 	// how many frames that turn elided.
@@ -95,21 +87,14 @@ type CallFrame struct {
 	// an `int` declared above Terminal/TROBlock this field grew the struct
 	// from 72 to 80 bytes (+11.1%), which the benchmark gate caught as
 	// +8.44% B/op on EnvFunCallRecursion with allocs/op unchanged — same
-	// allocation count, larger allocations.  The three bools (Terminal,
-	// TROBlock, lispFun) take 3 bytes of the last 8-byte word, and the 5
-	// left over hold a 4-byte int32 but not an 8-byte int, so this
-	// placement is free: the struct stays 72 bytes.
+	// allocation count, larger allocations.  Two bools leave 6 bytes of
+	// tail padding that an 8-byte int cannot use but a 4-byte int32 can, so
+	// this placement is free: the struct stays 72 bytes.
 	//
 	// int32 caps at ~2.1e9 iterations against a default budget of 1e6.  If
 	// MaxTailIterations is ever raised near that ceiling, widen this field
 	// and accept the 8 bytes rather than letting the counter wrap.
 	TailIterations int32
-}
-
-// LispFunction reports whether the frame calls a function defined in Lisp
-// (see CallStack.InLispFunction).  It returns false for a nil frame.
-func (f *CallFrame) LispFunction() bool {
-	return f != nil && f.lispFun
 }
 
 // QualifiedFunName returns the qualified name for the function on the top of
@@ -280,32 +265,6 @@ func sourcePos(loc *token.Location) string {
 	return loc.String()
 }
 
-// InLispFunction reports whether a function defined in Lisp is running: a
-// frame of s is a call of a lambda, a defun, a defmacro expansion, or a flet
-// or labels function.  The evaluator marks such a frame when it calls a
-// function value that has no Go implementation.  A frame of a builtin, a
-// special operator, a macro defined in Go, or a frame pushed with PushFID
-// does not count.  So the top-level forms of a load, also of a load-file or
-// load-string, run with no Lisp function on the stack unless a Lisp
-// function started the load.
-//
-// The answer depends only on the frames.  A template VM starts with an
-// empty stack, as a quiescent source has, so the same evaluation from an
-// empty stack gives the same answer in a cold-loaded VM and in every VM of
-// a template.  A tail call keeps at least one frame of the function it
-// loops in.
-func (s *CallStack) InLispFunction() bool {
-	if s == nil {
-		return false
-	}
-	for i := len(s.Frames) - 1; i >= 0; i-- {
-		if s.Frames[i].lispFun {
-			return true
-		}
-	}
-	return false
-}
-
 // TerminalFID determines if a chain of terminal stack frames that ends with
 // fid (i.e. fid is a candidate for tail-recursion optimization) and returns
 // the number of frames in the shortest such chain.  If no such chain of
@@ -316,27 +275,7 @@ func (s *CallStack) InLispFunction() bool {
 //
 // NOTE:  If tail-recursion optimization is working then the chain of calls
 // found by TerminalFID is unique.
-//
-// TerminalFID matches a frame by FID alone.  The evaluator also matches the
-// frame's kind, a Lisp function or not (see InLispFunction).
 func (s *CallStack) TerminalFID(fid string) int {
-	return s.terminalFID(fid, false, false)
-}
-
-// terminalCallFID is TerminalFID for the evaluator's call of a function of
-// the given kind: it skips a frame with the FID whose kind differs.  A Go
-// function may take the FID of a lambda (_fun<N>), so an FID alone does not
-// tell the kinds apart, and a frame must not run a function of the other
-// kind: its Lisp-function mark, name and package would describe the wrong
-// function.  The search goes on below a skipped frame, which is terminal,
-// so a loop of calls between the two kinds still runs in bounded height.
-func (s *CallStack) terminalCallFID(fid string, lispFun bool) int {
-	return s.terminalFID(fid, true, lispFun)
-}
-
-// terminalFID finds the chain for TerminalFID and terminalCallFID.  With
-// matchKind, a frame matches only when its kind is lispFun.
-func (s *CallStack) terminalFID(fid string, matchKind, lispFun bool) int {
 	top := s.Top()
 	if top == nil {
 		return 0
@@ -361,7 +300,7 @@ func (s *CallStack) terminalFID(fid string, matchKind, lispFun bool) int {
 			log.Panicf("tail-recursion-optimization is blocked -- inconsistent stack")
 			return 0
 		}
-		if s.Frames[i].FID == fid && (!matchKind || s.Frames[i].lispFun == lispFun) {
+		if s.Frames[i].FID == fid {
 			// We found the chain.  We want the returned length to be 1 when i
 			// is on the first iteration.
 			return len(s.Frames) - i
@@ -370,17 +309,8 @@ func (s *CallStack) terminalFID(fid string, matchKind, lispFun bool) int {
 	return 0
 }
 
-// PushFID pushes a new stack frame with the given FID onto s.  The frame
-// does not count as a call of a function defined in Lisp (InLispFunction).
+// PushFID pushes a new stack frame with the given FID onto s.
 func (s *CallStack) PushFID(src *token.Location, fid string, pkg string, name string) error {
-	return s.pushFrame(src, fid, pkg, name, false)
-}
-
-// pushFrame is PushFID for the evaluator, which also marks a frame that
-// calls a function defined in Lisp.
-//
-//nolint:revive // PushFID's four arguments plus the mark
-func (s *CallStack) pushFrame(src *token.Location, fid string, pkg string, name string, lispFun bool) error {
 	heff := 0
 	if len(s.Frames) > 0 {
 		heff = s.Top().HeightLogical + 1
@@ -407,7 +337,6 @@ func (s *CallStack) pushFrame(src *token.Location, fid string, pkg string, name 
 	f.HeightLogical = heff
 	f.Terminal = false
 	f.TROBlock = false
-	f.lispFun = lispFun
 	f.TailIterations = 0
 	return nil
 }

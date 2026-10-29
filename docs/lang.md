@@ -2747,7 +2747,7 @@ gives three built-in conditions a parent, `error`, and all three render as
 - `record-error`: a libschema record type raises it when a program breaks
   a record rule: `s:set-field!` with no method of the object's type running
   on the object, `s:set-field!` while the object's `:check` runs, and
-  `s:defmethod` in a function call (see `lisp/lisplib/libschema/README.md`).
+  `s:defmethod` after the load ends (see `lisp/lisplib/libschema/README.md`).
 
 `define-condition` adds more:
 

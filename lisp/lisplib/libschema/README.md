@@ -422,19 +422,28 @@ step.
 |------|---------|---------|
 | `s:set-field!` needs a method of the object's type running on the object. | A write at the top level, in a `defun` no method calls, to another object than the method's receiver, or in a lambda a method returned, called after the call. | A write while a call `(obj 'method ...)` on the object has not returned: in the method body, in a lambda it calls, or in a helper `defun` it calls. |
 | `s:set-field!` refuses while the object's `:check` runs. | A write in `:check`, or in a method that `:check` calls on the object. | Reads in `:check`, and method calls that only read. |
-| `s:defmethod` runs only at load. | A call while a function defined in Lisp runs: in a `defun`, `lambda`, `defmacro` body, `flet` or `labels` function, a method or a handler. | A top-level form, also in `let`, `progn`, `when`, a `flet` body, a call argument, `load-file` or `load-string`, or the expansion of a top-level macro call. |
+| `s:defmethod` runs only during a load. | A call after the load ends: in a transaction, in a function an embedder calls after the load with `Eval` or `FunCall`, or in a test body. | Any call while a load runs: a top-level form of a file loaded with `LEnv.Load`, `LoadFile`, `LoadString`, `LoadProgram` or `load-file`, `load-string`, also in a function the load calls. |
 
-The `s:defmethod` test reads only the call stack. A template VM starts
-with an empty stack, as a cold-loaded VM does after its load, so each VM
-gives the same answer. Load a program with no Lisp function on the stack.
-The lint checks `record-set-outside-method`, `record-check-writes` and
-`record-defmethod-not-toplevel` report the same code before it runs.
+A template publishes a type with the methods it has when the load ends,
+so a method added later reaches only the VM that adds it. The rule reads
+only whether a load is in progress (`Runtime.Loading`). A template VM
+starts with none, so a cold-loaded VM and every template VM give the same
+answer. Checks of the method's form and of the type come before the
+refusal. The lint checks `record-set-outside-method`,
+`record-check-writes` and `record-defmethod-not-toplevel` report the same
+code before it runs; the last also reports an `s:defmethod` in a function
+body, which the runtime allows when the load calls it.
 
 Upgrading: record types are in no tagged release before this change. Code
 that wrote a field from outside a method, wrote in `:check`, or added a
-method in a function call now raises `record-error`. Move the write into a
+method after the load now raises `record-error`. Move the write into a
 method and call it, raise an error in `:check` instead of writing, and move
 the `s:defmethod` to the top level of a file.
+
+Upgrading: `match-error` and `record-error` are now built-in conditions,
+children of `error`. A program that defines either name with
+`define-condition` and another parent now fails to load; rename the
+program's condition.
 
 #### Typed arguments
 
