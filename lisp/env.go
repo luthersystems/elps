@@ -88,7 +88,7 @@ func InitializeTypedef(env *LEnv) *LVal {
 	// nested callbacks merely to admit the core type system (#622).
 	ctor := newCapturedBuiltin(CapturedFun{
 		Package: env.Runtime.Package.Name,
-		FID:     lambdaFIDPrefix + strconv.FormatUint(uint64(env.Runtime.GenEnvID()), 10),
+		FID:     fmt.Sprintf("_fun%d", env.Runtime.GenEnvID()),
 		Formals: Formals("name", "ctor"),
 		Eval: func(env *LEnv, args, _ *LVal) *LVal {
 			sym := args.Cells[0]
@@ -433,6 +433,10 @@ func (env *LEnv) load(ctx context.Context, exprs []*LVal) *LVal {
 	// whole load as one top-level evaluation so the step budget covers all
 	// of its forms rather than refilling per form.
 	defer env.Runtime.beginEval()()
+	// Runtime.Loading reports the load until it returns, also on an error
+	// or a panic.
+	env.Runtime.loadDepth++
+	defer func() { env.Runtime.loadDepth-- }()
 
 	// Remember the current package and restore it for the caller after
 	// evaluation completes.
@@ -1070,12 +1074,6 @@ func (env *LEnv) validateLambdaFormals(formals *LVal) *LVal {
 	return nil
 }
 
-// lambdaFIDPrefix starts the FID of each function value the runtime
-// numbers itself, a lambda or a typedef constructor: _fun<N>.  A Go
-// function may take an FID of the same form, so an FID does not tell a
-// Lisp function from a Go one.
-const lambdaFIDPrefix = "_fun"
-
 // newLambda builds a lambda over validated cells (formals, then body).
 func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal {
 	// Every function value that captures an environment is built here, so
@@ -1083,8 +1081,8 @@ func (env *LEnv) newLambda(pkg string, loc *token.Location, cells []*LVal) *LVal
 	// captured the let* scope (see closuresCreated).
 	env.Runtime.closures.Add(1)
 	var name [24]byte
-	copy(name[:], lambdaFIDPrefix)
-	fid := strconv.AppendUint(name[:len(lambdaFIDPrefix)], uint64(env.Runtime.GenEnvID()), 10)
+	copy(name[:], "_fun")
+	fid := strconv.AppendUint(name[:4], uint64(env.Runtime.GenEnvID()), 10)
 	fun := &LVal{
 		Type: LFun,
 		//elps:aliases deliberate in-runtime alias: a lambda's location is the defining form's parse location, already frozen before evaluation reaches this constructor, and the function value lives inside the same runtime as env.loc
@@ -2145,8 +2143,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 	callSite := env.loc.Copy()
 
 	// Push a frame onto the stack to represent the function's execution.
-	ff := frameFunOf(fun)
-	err := env.Runtime.Stack.pushFrame(env.loc, ff.fid, ff.pkg, env.GetFunName(fun), ff.lispFun)
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2242,10 +2239,7 @@ func (env *LEnv) specialOpCall(ctx context.Context, fun, args *LVal, owned bool)
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	// A special operator is not a Lisp function, so its frame is marked
-	// so, and a tail call reuses it only for a function that is not one
-	// either (terminalCallFID).
-	err := env.Runtime.Stack.pushFrame(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun), false)
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2430,14 +2424,13 @@ func (env *LEnv) funCallFrame(ctx context.Context, fun, args *LVal, owned bool) 
 	// checking.  But push FID onto the stack before popping to simplify
 	// book-keeping.  When a debugger is attached, TRO is disabled globally
 	// to provide predictable stepping and stack traces.
-	ff := frameFunOf(fun)
 	npop := 0
 	if env.Runtime.Debugger == nil {
-		npop = env.Runtime.Stack.terminalCallFID(ff.fid, ff.lispFun)
+		npop = env.Runtime.Stack.TerminalFID(fun.FID())
 	}
 
 	// Push a frame onto the stack to represent the function's execution.
-	err := env.Runtime.Stack.pushFrame(env.loc, ff.fid, ff.pkg, env.GetFunName(fun), ff.lispFun)
+	err := env.Runtime.Stack.PushFID(env.loc, fun.FID(), fun.Package(), env.GetFunName(fun))
 	if err != nil {
 		return env.Error(err)
 	}
@@ -2480,23 +2473,6 @@ callf:
 		d.OnFunReturn(env, fun, r)
 	}
 	return r
-}
-
-// frameFun is what a call's frame records of the function it calls.
-type frameFun struct {
-	fid, pkg string
-	lispFun  bool
-}
-
-// frameFunOf reads fun's function data once for its frame: FID, Package and
-// Builtin would each assert it again.  A nil *funData gives what those
-// accessors give for one, an empty FID and package and no builtin, as
-// call does too.
-func frameFunOf(fun *LVal) frameFun {
-	if fd := fun.funData(); fd != nil {
-		return frameFun{fid: fd.fid, pkg: fd.pkg, lispFun: fd.builtin == nil}
-	}
-	return frameFun{lispFun: true}
 }
 
 func extractMarkTailRec(mark *LVal) (*LVal, *LVal) {

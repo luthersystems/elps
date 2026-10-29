@@ -471,8 +471,8 @@ func (w *stateWalker) value(v *lisp.LVal) {
 				if name == frame.FID {
 					name = normalizeFunIDs(name)
 				}
-				fmt.Fprintf(w.sb, "frame[%#v/%q/%q/%q/%d/%t/%t/lisp%t/%d]", frame.Source, frame.Package, name,
-					normalizeFunIDs(frame.FID), frame.HeightLogical, frame.Terminal, frame.TROBlock, frame.LispFunction(), frame.TailIterations)
+				fmt.Fprintf(w.sb, "frame[%#v/%q/%q/%q/%d/%t/%t/%d]", frame.Source, frame.Package, name,
+					normalizeFunIDs(frame.FID), frame.HeightLogical, frame.Terminal, frame.TROBlock, frame.TailIterations)
 			}
 		}
 		w.cells(v.Cells)

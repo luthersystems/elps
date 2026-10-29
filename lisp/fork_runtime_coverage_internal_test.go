@@ -71,6 +71,7 @@ var forkRuntimeFieldPolicy = map[string]string{
 	"Debugger":        "not-carried",
 	"conditionStack":  "not-carried",
 	"evalDepth":       "not-carried",
+	"loadDepth":       "not-carried",
 	"loadCacheActive": "not-carried",
 	"evalNesting":     "not-carried",
 	"steps":           "not-carried",

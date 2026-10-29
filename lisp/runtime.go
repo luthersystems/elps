@@ -57,6 +57,7 @@ type Runtime struct {
 	MaxEvalNesting         int           // Evaluator recursion depth cap (0 = use default, negative = disabled).
 	MaxSleep               time.Duration // Hard ceiling on a single host sleep, libtime.BuiltinSleep (0 or negative = none). See MaxSleepCeiling.
 	evalDepth              int           // Re-entrancy depth of top-level evaluation entry points.
+	loadDepth              int           // Loads in progress (LEnv.load); see Loading.
 	evalNesting            int           // Current recursion depth of LEnv.eval (the Go-stack guard).
 	evalNestingSetting     int           // MaxEvalNesting used to derive evalNestingLimit.
 	evalNestingLimit       int           // Cached positive cap; zero means not yet resolved.
@@ -75,6 +76,17 @@ type Runtime struct {
 	stepBudgetOverflowed   bool          // stepBudgetUsed saturated; it exceeds any budget.
 	valuesShared           bool          // values is a template's map: copy it before a write.
 	conditionParentsShared bool          // conditionParents is a template's map: copy it before a write.
+}
+
+// Loading reports whether a load is in progress: whether code runs inside
+// one of the LEnv Load entry points (Load, LoadFile, LoadString,
+// LoadLocation, LoadProgram and their Context forms) or the Lisp functions
+// load-file, load-string and load-bytes, which call them.  A function called
+// during a load runs inside it; one called after the load returns, such as
+// a call through Eval, FunCall or a VM forked from a template, does not.  A
+// template VM starts with no load in progress.
+func (r *Runtime) Loading() bool {
+	return r.loadDepth > 0
 }
 
 // MaxAllocBytes returns the effective per-operation allocation size cap.

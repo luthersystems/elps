@@ -939,7 +939,7 @@ var AnalyzerRecordDefmethodNotToplevel = &Analyzer{
 		"macro call, is reported. A head the analysis cannot resolve is taken for a " +
 		"function and not reported. " +
 		"Test files are checked too. The runtime also refuses s:defmethod with " +
-		"record-error while a function defined in Lisp runs, in every file.",
+		"record-error after the load ends, in every file.",
 	Run: recordAnalyzerRun(recordDefmethodScope),
 }
 

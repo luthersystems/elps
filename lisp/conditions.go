@@ -116,8 +116,8 @@ const CondMatchError = "match-error"
 // CondRecordError reports that a program broke a rule of a libschema record
 // type that the runtime enforces (luthersystems/elps#908): an s:set-field!
 // while no method of the object's type runs on the object, an s:set-field!
-// while the object's :check runs, or an s:defmethod while a function
-// defined in Lisp runs.  Its message names the type and the rule.
+// while the object's :check runs, or an s:defmethod after the load ends.
+// Its message names the type and the rule.
 // record-error is a child of error, as argument-error is, so a
 // handler-bind on error catches it and it renders as error does.
 const CondRecordError = "record-error"

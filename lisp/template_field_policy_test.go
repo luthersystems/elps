@@ -96,7 +96,6 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"Package": "reset: no frames are published", "Name": "reset: no frames are published",
 			"HeightLogical": "reset: no frames are published", "Terminal": "reset: no frames are published",
 			"TROBlock": "reset: no frames are published", "TailIterations": "reset: no frames are published",
-			"lispFun": "reset: no frames are published",
 		}},
 	}
 	for _, tc := range types {
