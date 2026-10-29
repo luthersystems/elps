@@ -583,6 +583,18 @@ func TestRecordDefmethodTestNameNotTestForm(t *testing.T) {
 			assert.Empty(t, diags, "%s in %s: %v", name, file, diags)
 		}
 	}
+	// A test form name the file defines as a macro is a macro call, whose
+	// arguments the macro defers.
+	diags0, err := l.LintFile([]byte(recordOrder+`(defmacro test (name &rest body) (quasiquote (progn)))
+(test "a" (s:defmethod order size (o) 0))`), "order_test.lisp")
+	require.NoError(t, err)
+	assert.Len(t, diags0, 1, "%v", diags0)
+	assertDiagOnLine(t, diags0, 7, "s:defmethod inside test")
+	// A formal named test does not define the name for the file.
+	diags0 = lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+`(defun keep-if (test xs) xs)
+(test "a" (s:defmethod order size (o) 0))`)
+	assert.Len(t, diags0, 1, "%v", diags0)
+	assertDiagOnLine(t, diags0, 7, "s:defmethod inside test")
 	// A local function of another name leaves the test form a test form.
 	diags := lintCheck(t, AnalyzerRecordDefmethodNotToplevel, recordOrder+
 		`(flet ([helper (x) x]) (test "a" (s:defmethod order size (o) (helper 0))))`)

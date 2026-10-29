@@ -5,7 +5,6 @@ package testforms
 import (
 	"testing"
 
-	"github.com/luthersystems/elps/lisp"
 	"github.com/stretchr/testify/assert"
 )
 
@@ -17,6 +16,4 @@ func TestName(t *testing.T) {
 	} {
 		assert.Equal(t, want, Name(head), head)
 	}
-	// The lisp: prefix is the language package.
-	assert.Equal(t, "lisp", lisp.DefaultLangPackage)
 }

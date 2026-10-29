@@ -811,8 +811,11 @@ An `s:defmethod` runs at load when nothing around it defers it:
 * A test body runs when the test runner runs the test, after the load:
   `test`, `test-let`, `test-let*`, `benchmark` and `benchmark-simple`,
   with or without a `lisp:` or `testing:` prefix. It is reported. A name
-  the file defines, or a local `flet` or `labels` function binds, is not
-  the test form, and its call runs its arguments at once.
+  the program defines at the top level (`defun`, `defmacro`, `deftype`,
+  `set`) means what that definition makes it: a function call runs its
+  arguments at once, and a macro call is a macro call. A local `flet` or
+  `labels` function of the name is that function. A formal of the name
+  does not count.
 * The arguments of a macro call run when the macro decides, if ever.
   They are reported. The check does not expand macros, so the body of a
   macro such as an endpoint definition is reported. The value of a

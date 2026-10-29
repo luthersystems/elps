@@ -117,6 +117,20 @@ func TestRecordDefmethodsScope(t *testing.T) {
 		{"(get-default (lambda () (s:defmethod order m (o) 0)))", "lambda"},
 		{"(defun f () (get-default (s:defmethod order m (o) 0)))", "get-default"},
 		{"(s:defmethod order a (o) (s:defmethod order m (p) 0))", recordDefmethod},
+		// Test bodies run after the load.
+		{`(test "t" (s:defmethod order m (o) 0))`, "test"},
+		{`(testing:test "t" (s:defmethod order m (o) 0))`, "testing:test"},
+		{`(benchmark-simple "b" (s:defmethod order m (o) 0))`, "benchmark-simple"},
+		// A test form name the file defines as a function is a function;
+		// one it defines as a macro is a macro (luthersystems/elps#908).
+		{"(defun test (n x) x)\n(test \"t\" (s:defmethod order m (o) 0))", ""},
+		{"(set 'test-let (lambda (n b x) x))\n(test-let \"t\" () (s:defmethod order m (o) 0))", ""},
+		{"(defmacro test (n &rest body) (quasiquote (progn)))\n(test \"t\" (s:defmethod order m (o) 0))", "test"},
+		{"(defmacro benchmark-simple (n &rest b) ())\n(benchmark-simple \"b\" (s:defmethod order m (o) 0))", "benchmark-simple"},
+		// A formal named test does not define the name for the file.
+		{"(defun keep-if (test xs) xs)\n(test \"t\" (s:defmethod order m (o) 0))", "test"},
+		// A local function of the name is that function.
+		{`(flet ([test (n x) x]) (test "t" (s:defmethod order m (o) 0)))`, ""},
 	} {
 		exprs := parsePreamble(t, tc.src)
 		isMacro := RecordMacroTest(nil, exprs)
@@ -128,6 +142,20 @@ func TestRecordDefmethodsScope(t *testing.T) {
 		last := got[len(got)-1]
 		assert.Equal(t, "m", last.Call.Cells[2].Str, tc.src)
 		assert.Equal(t, tc.want, last.NotLoadScope, tc.src)
+	}
+	// With no isMacro, a test form name is the test form, and nothing else
+	// defers a call but a function body.
+	for _, tc := range []struct{ src, want string }{
+		{`(test "t" (s:defmethod order m (o) 0))`, "test"},
+		{`(lisp:test "t" (s:defmethod order m (o) 0))`, "test"},
+		{`(test-let "t" ([k 1]) (s:defmethod order m (o) k))`, "test-let"},
+		{`(benchmark "b" (n) (s:defmethod order m (o) n))`, "benchmark"},
+		{`(flet ([test (n x) x]) (test "t" (s:defmethod order m (o) 0)))`, ""},
+		{`(get-default (s:defmethod order m (o) 0))`, ""},
+	} {
+		got := RecordDefmethods(parsePreamble(t, tc.src)[0], nil)
+		require.Len(t, got, 1, tc.src)
+		assert.Equal(t, tc.want, got[0].NotLoadScope, tc.src)
 	}
 	// A function call's arguments run at load, so the prescan keeps the
 	// method.

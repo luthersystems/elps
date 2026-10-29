@@ -7,7 +7,11 @@
 // record-defmethod-not-toplevel) read the names here, so the two agree.
 package testforms
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/luthersystems/elps/lisp"
+)
 
 // forms are the test definition forms, unqualified.
 var forms = map[string]bool{
@@ -19,7 +23,7 @@ var forms = map[string]bool{
 func Name(head string) string {
 	name := head
 	if ns, local, qualified := strings.Cut(head, ":"); qualified {
-		if ns != "lisp" && ns != "testing" {
+		if ns != lisp.DefaultLangPackage && ns != "testing" {
 			return ""
 		}
 		name = local
