@@ -64,7 +64,7 @@ const (
 	WrongType        = "wrong-type"
 	// RecordError is the condition of a record rule the runtime enforces:
 	// s:set-field! outside a method of the object's type or in its :check,
-	// and s:defmethod in a function call.  It is a child of error.
+	// and s:defmethod after the load ends.  It is a child of error.
 	RecordError = lisp.CondRecordError
 )
 

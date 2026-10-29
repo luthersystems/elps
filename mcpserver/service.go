@@ -21,6 +21,7 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/analysis/perf"
 	"github.com/luthersystems/elps/formatter"
+	"github.com/luthersystems/elps/internal/progload"
 	"github.com/luthersystems/elps/internal/symtext"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
@@ -1939,30 +1940,15 @@ func (s *service) testTool(ctx context.Context, _ *mcp.CallToolRequest, in TestI
 			Meta: makeMeta(root, time.Since(start), 1),
 		}, nil
 	}
-	// The file's top-level forms run as its load, as elpstest.Runner loads
-	// a test file; the test bodies run after it (luthersystems/elps#908).
-	endLoad := env.Runtime.BeginLoad()
-	defer endLoad()
-	for _, expr := range exprs {
-		// When the file switches packages, auto-import testing into the
-		// new package so test/assert macros are available immediately.
-		if isInPackageExpr(expr) {
-			env.Eval(expr)
-			autoImportTesting(env)
-			continue
-		}
-		result := env.Eval(expr)
-		if result.IsError() {
-			return nil, TestResponse{
-				Path:  path,
-				Tests: []TestResult{{Name: "<load>", Passed: false, Error: lvalErrorString(result)}},
-				Total: 1, Failed: 1,
-				Meta: makeMeta(root, time.Since(start), 1),
-			}, nil
-		}
+	if result := loadTestForms(env, exprs); result != nil {
+		return nil, TestResponse{
+			Path:  path,
+			Tests: []TestResult{{Name: "<load>", Passed: false, Error: lvalErrorString(result)}},
+			Total: 1, Failed: 1,
+			Meta: makeMeta(root, time.Since(start), 1),
+		}, nil
 	}
 
-	endLoad()
 	suite := libtesting.EnvTestSuite(env)
 	if suite == nil || suite.Len() == 0 {
 		return nil, TestResponse{
@@ -2153,25 +2139,25 @@ func (s *service) evalSingle(ctx context.Context, env *lisp.LEnv, opts singleEva
 		response.Error = output.errorRenderer().Text(parseErr.Error())
 	} else {
 		// The forms are the program's, so they run as its load, where
-		// s:defmethod works (luthersystems/elps#908).
-		endLoad := env.Runtime.BeginLoad()
-		defer endLoad()
+		// s:defmethod works (progload).
 		var last *lisp.LVal
-		for _, expr := range exprs {
-			last = env.EvalContext(ctx, expr)
-			if last == nil || last.IsError() {
-				fail(last)
-				break
-			}
-			if allResults && !output.renderer.Exhausted() {
-				punctuation := output.text("    ")
-				if output.renderer.Exhausted() {
-					response.Results = append(response.Results, punctuation)
-					continue
+		progload.Run(env, func() {
+			for _, expr := range exprs {
+				last = env.EvalContext(ctx, expr)
+				if last == nil || last.IsError() {
+					fail(last)
+					break
 				}
-				response.Results = append(response.Results, output.renderer.Render(last))
+				if allResults && !output.renderer.Exhausted() {
+					punctuation := output.text("    ")
+					if output.renderer.Exhausted() {
+						response.Results = append(response.Results, punctuation)
+						continue
+					}
+					response.Results = append(response.Results, output.renderer.Render(last))
+				}
 			}
-		}
+		})
 		if response.Error == "" && last != nil {
 			if allResults && len(response.Results) > 0 {
 				// Reuse the representation, but charge the second field as well.
@@ -2595,6 +2581,30 @@ func isInPackageExpr(expr *lisp.LVal) bool {
 	}
 	head := expr.Cells[0]
 	return head.IsSymbol("in-package")
+}
+
+// loadTestForms evaluates a test file's top-level forms as its load
+// (progload), as elpstest.Runner loads a test file; the test bodies run
+// after it.  It returns the error of the first form that fails, or nil.
+func loadTestForms(env *lisp.LEnv, exprs []*lisp.LVal) *lisp.LVal {
+	var failed *lisp.LVal
+	progload.Run(env, func() {
+		for _, expr := range exprs {
+			// When the file switches packages, auto-import testing into
+			// the new package so test/assert macros are available
+			// immediately.
+			if isInPackageExpr(expr) {
+				env.Eval(expr)
+				autoImportTesting(env)
+				continue
+			}
+			if result := env.Eval(expr); result.IsError() {
+				failed = result
+				return
+			}
+		}
+	})
+	return failed
 }
 
 func autoImportTesting(env *lisp.LEnv) {

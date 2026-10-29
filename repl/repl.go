@@ -15,6 +15,7 @@ import (
 
 	"github.com/ergochat/readline"
 	"github.com/luthersystems/elps/internal/diagnosticsource"
+	"github.com/luthersystems/elps/internal/progload"
 	"github.com/luthersystems/elps/internal/rootlibrary"
 	"github.com/luthersystems/elps/lisp"
 	"github.com/luthersystems/elps/lisp/lisplib"
@@ -269,7 +270,11 @@ func RunRepl(prompt string, opts ...Option) {
 		return
 	}
 
-	RunEnv(env, prompt, strings.Repeat(" ", len(prompt)), opts...)
+	// A person at the REPL is loading their program, so s:defmethod and
+	// the other load-time forms work here.  RunEnv itself does not start
+	// a load: the debugger's REPL calls it while another goroutine loads
+	// the program.
+	progload.Run(env, func() { RunEnv(env, prompt, strings.Repeat(" ", len(prompt)), opts...) })
 }
 
 // RunEnv runs a simple repl with env as a root environment.
@@ -278,10 +283,6 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 		errlnf("REPL environment is not a root environment.")
 		os.Exit(1)
 	}
-
-	// A person at the REPL is loading their program, so s:defmethod and
-	// the other load-time forms work here (luthersystems/elps#908).
-	defer env.Runtime.BeginLoad()()
 
 	p := rdparser.NewInteractive(nil)
 	p.SetPrompts(prompt, cont)
@@ -434,11 +435,16 @@ func RunEnv(env *lisp.LEnv, prompt, cont string, opts ...Option) {
 }
 
 // runEval evaluates a single expression and returns an exit code.
-// stdout receives the result; errw receives error messages.
+// stdout receives the result; errw receives error messages.  The forms run
+// as the program's load (progload).
 func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
-	// A person at the REPL is loading their program, so s:defmethod and
-	// the other load-time forms work here (luthersystems/elps#908).
-	defer env.Runtime.BeginLoad()()
+	code := 0
+	progload.Run(env, func() { code = evalForms(env, cfg, stdout, errw) })
+	return code
+}
+
+// evalForms is runEval's evaluation.
+func evalForms(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 	ctx := cfg.bindContext(env)
 	if reportCancellation(ctx, cfg, stdout, errw) {
 		return 1
@@ -491,11 +497,14 @@ func runEval(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) int {
 
 // runBatch reads lines from stdin without readline, accumulates complete
 // expressions using the interactive parser, and evaluates each one.
-// stdout receives results; errw receives error messages.
+// stdout receives results; errw receives error messages.  The forms run
+// as the program's load (progload).
 func runBatch(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
-	// A person at the REPL is loading their program, so s:defmethod and
-	// the other load-time forms work here (luthersystems/elps#908).
-	defer env.Runtime.BeginLoad()()
+	progload.Run(env, func() { batchForms(env, cfg, stdout, errw) })
+}
+
+// batchForms is runBatch's evaluation.
+func batchForms(env *lisp.LEnv, cfg *config, stdout, errw io.Writer) {
 	ctx := cfg.bindContext(env)
 	p := rdparser.NewInteractive(nil)
 

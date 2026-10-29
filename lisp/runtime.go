@@ -96,8 +96,11 @@ func (r *Runtime) Loading() bool {
 // Loading reports true until the tool calls the function BeginLoad returns.
 // Unlike a Load* call, it keeps each form's own step budget and the
 // package a form switches to.  An embedder must not call it around a
-// transaction (luthersystems/elps#908).  Calling the returned function
-// again does nothing.
+// transaction (luthersystems/elps#908).  Like the rest of the runtime, the
+// load depth is not synchronized: call BeginLoad and the returned function
+// on the goroutine that evaluates the forms, while no other goroutine runs
+// a load on the runtime.  Calling the returned function again does
+// nothing.
 func (r *Runtime) BeginLoad() func() {
 	r.loadDepth++
 	ended := false

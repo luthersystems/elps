@@ -609,17 +609,18 @@ func (w *recordWalk) defmethodType(call *lisp.LVal, types recordTypes, semantics
 }
 
 // defmethodScopes maps each s:defmethod call in exprs to the form that
-// keeps it from running at load, or to "" when it runs at load.  isMacro
-// tells a macro call from a function call (analysis.RecordMacroTest).  A
+// keeps it from running at load, or to "" when it runs at load.  macros
+// tells a macro call from a function call in a top-level form
+// (analysis.RecordMacroTest).  A
 // call the walk does not reach is not in the map, so it counts as running
 // at load.
-func defmethodScopes(exprs []*lisp.LVal, isMacro func(string) bool) map[*lisp.LVal]string {
+func defmethodScopes(exprs []*lisp.LVal, macros func(*lisp.LVal) func(string) bool) map[*lisp.LVal]string {
 	scopes := make(map[*lisp.LVal]string)
 	for _, top := range exprs {
 		if !mentionsSymbol([]*lisp.LVal{top}, recordPackage+"defmethod") {
 			continue
 		}
-		for _, d := range analysis.RecordDefmethods(top, isMacro) {
+		for _, d := range analysis.RecordDefmethods(top, macros(top)) {
 			scopes[d.Call] = d.NotLoadScope
 		}
 	}

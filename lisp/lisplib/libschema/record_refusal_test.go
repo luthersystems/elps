@@ -264,8 +264,8 @@ func TestRecordDefmethodAfterLoadFromGo(t *testing.T) {
 // type and the rule.
 func TestRecordRefusalMessages(t *testing.T) {
 	cases := []struct{ src, want string }{
-		{`(s:set-field! c 'n 5)`, "no method of user:counter runs on the object; change the field in a method of the type"},
-		{`(check-writes :n 1)`, "the :check of user:check-writes runs on the object; :check must only read the object"},
+		{`(s:set-field! c 'n 5)`, "s:set-field!: field n of user:counter is written while no method of the type runs on the object; change the field in a method of the type"},
+		{`(check-writes :n 1)`, "s:set-field!: field n of user:check-writes is written while its :check runs on the object; :check must only read the object"},
 		{`(late)`, "s:defmethod: method late of user:counter is added after the load ends; write s:defmethod at the top level of a file, so it runs at load"},
 	}
 	for _, vm := range refusalVMs(t) {

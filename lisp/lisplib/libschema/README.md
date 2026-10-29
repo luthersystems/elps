@@ -434,7 +434,7 @@ their caller's state, so a transaction cannot add a method through them.
 A harness that runs its transactions through `LoadString`, such as
 elpstest's fork check, therefore does not exercise the refusal. A tool
 that evaluates the program's forms one at a time, such as the REPL and the
-MCP eval and test tools, runs them as the load with `Runtime.BeginLoad`;
+MCP eval and test tools, runs them as the load with `Runtime.BeginLoad`, from its outer entry point only;
 `elpstest.RunTestSuite` runs its expressions after the load. A template
 VM starts with no load in progress, so a cold-loaded VM and every template
 VM give the same answer. Checks of the method's form and of the type come before the
