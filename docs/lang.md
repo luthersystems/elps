@@ -668,6 +668,7 @@ returns `()`.
   (0 'zero)
   ((list x y) (+ x y))
   ((list x &rest more) :when (> x 9) more)
+  ((vector x y) (* x y))
   ((sorted-map "id" id) id)
   ([s s:string] (concat 'string "str:" s))
   ((point :x 0 :y y) y)
@@ -681,6 +682,7 @@ returns `()`.
 | `1`, `1.5`, `"s"`, `:kw`, `true`, `false`, `()` | A value `equal?` to it. |
 | `'sym`, `(quote datum)` | A value `equal?` to the symbol or datum. |
 | `(list p... [&rest r])` | A list of that length (at least that length with `&rest`). `r` gets the rest as a new list. |
+| `(vector p... [&rest r])` | A vector (a 1-D array) of that length (at least that length with `&rest`). `r` gets the rest as a new vector. |
 | `(sorted-map key p ...)` | A sorted map that has each key, with values that match. A key is a string, an int or a keyword. |
 | `[name T]` | A value of type `T`. Binds `name` (`_` binds nothing). |
 | `(T :field p ...)` | A record object of type `T` whose fields match. A field that is not set reads as `()`. `(T)` tests the type only. |
@@ -694,6 +696,14 @@ Rules:
 - The reader reads `[x T]` and `'(x T)` as the same value, so a quoted
   list in a pattern is always `[name T]`. Match a literal list with
   `(list 'a 'b)` or `(quote (a b))`.
+- `(list ...)` matches only a list, and `(vector ...)` matches only a
+  vector. Neither converts the value, so the pattern also tests the type.
+  An array of another rank (0-D, 2-D) is not a vector.
+- `&rest r` copies the remaining items, so a change to `r` does not change
+  the value. `&rest _` binds nothing and copies nothing.
+- An unqualified `list`, `vector` or `sorted-map` head is always that
+  pattern, whatever the symbol is bound to. To match a record type named
+  `vector`, qualify the head, for example `(user:vector :x a)`.
 - A pattern that binds the same name twice, or has a bad shape, is an
   error when its clause is reached.
 - A guard that is false goes on to the next clause. An error in a guard,
@@ -811,6 +821,15 @@ The value must match the pattern, and the pattern's names are bound.
        [(point :x x :y y) p]
        [[s s:string] name])
   (list a b total x y s))
+```
+
+A vector pattern takes a vector apart in the same way. Use it for a
+value that `vector` or a JSON array gives, because a list pattern does
+not match a vector.
+
+```lisp
+(let ([(vector first &rest others) (vector 1 2 3)])
+  (list first others))            ; evaluates to '(1 (vector 2 3))
 ```
 
 Rules:

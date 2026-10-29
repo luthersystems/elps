@@ -26,6 +26,7 @@ import (
 //	true, false, ()
 //	'sym, (quote datum)  a value equal? to the symbol or datum
 //	(list p... [&rest r]) a list of that length (at least, with &rest)
+//	(vector p... [&rest r]) a vector of that length (at least, with &rest)
 //	(sorted-map k p ...) a sorted map that has each key k
 //	[name T]             a value of type T; binds name (_ binds nothing)
 //	(T :field p ...)     a value of type T whose fields match
@@ -164,6 +165,7 @@ const (
 	matchQuote                    // (quote datum)
 	matchTyped                    // [name T]
 	matchList                     // (list p...)
+	matchVector                   // (vector p...)
 	matchMap                      // (sorted-map k p ...)
 	matchRecord                   // (T :field p ...)
 )
@@ -208,6 +210,8 @@ func classifyPattern(p *LVal) matchPatternKind {
 			return matchQuote
 		case "list", DefaultLangPackage + ":list":
 			return matchList
+		case "vector", DefaultLangPackage + ":vector":
+			return matchVector
 		case "sorted-map", DefaultLangPackage + ":sorted-map":
 			return matchMap
 		}
@@ -224,7 +228,7 @@ func matchPatternCode(p *LVal, fn func(code *LVal)) {
 	switch classifyPattern(p) {
 	case matchTyped:
 		fn(p.Cells[1])
-	case matchList:
+	case matchList, matchVector:
 		for _, q := range p.Cells[1:] {
 			matchPatternCode(q, fn)
 		}
@@ -239,8 +243,8 @@ func matchPatternCode(p *LVal, fn func(code *LVal)) {
 	}
 }
 
-// matchListParts splits the parts of a list pattern into the element
-// patterns and the &rest pattern, or nil.
+// matchListParts splits the parts of a list or vector pattern into the
+// element patterns and the &rest pattern, or nil.
 func matchListParts(parts []*LVal) ([]*LVal, *LVal) {
 	n := len(parts)
 	if n >= 2 && parts[n-2].IsSymbol(VarArgSymbol) {
@@ -268,7 +272,7 @@ func patternShape(p *LVal, names *[]*LVal) *patternIssue {
 	switch classifyPattern(p) {
 	case matchAny, matchLiteral:
 		return nil // the common leaf patterns need no walk
-	case matchBad, matchName, matchQuote, matchTyped, matchList, matchMap, matchRecord:
+	case matchBad, matchName, matchQuote, matchTyped, matchList, matchVector, matchMap, matchRecord:
 	}
 	var seen map[string]bool
 	bind := func(name *LVal) *patternIssue {
@@ -315,11 +319,11 @@ func patternShape(p *LVal, names *[]*LVal) *patternIssue {
 			if e := bind(p.Cells[0]); e != nil {
 				return e
 			}
-		case matchList:
+		case matchList, matchVector:
 			elems, rest := matchListParts(p.Cells[1:])
 			for _, q := range elems {
 				if q.IsSymbol(VarArgSymbol) {
-					return &patternIssue{"&rest must come before the last pattern of a list: %v", []any{p}}
+					return &patternIssue{"&rest must come before the last pattern of a %s: %v", []any{seqPatternNoun(p), p}}
 				}
 			}
 			if rest != nil {
@@ -415,20 +419,15 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 		if v.Type != LSExpr {
 			return false, nil
 		}
-		elems, rest := matchListParts(p.Cells[1:])
-		n := len(elems)
-		if len(v.Cells) < n || (rest == nil && len(v.Cells) != n) {
+		return m.matchSeq(p, v.Cells, QExpr)
+	case matchVector:
+		// Only a 1-D array is a vector.  A list is not, and there is no
+		// coercion, so (list ...) and (vector ...) each test the type.
+		if !v.IsVector() {
 			return false, nil
 		}
-		for i, q := range elems {
-			if ok, lerr := m.match(q, v.Cells[i]); !ok || lerr != nil {
-				return false, lerr
-			}
-		}
-		if rest != nil {
-			return m.match(rest, QExpr(Cells(v.Cells[n:]).Clone()))
-		}
-		return true, nil
+		cells, _ := v.SeqCells()
+		return m.matchSeq(p, cells, Vector)
 	case matchMap:
 		if v.Type != LSortMap {
 			return false, nil
@@ -467,6 +466,45 @@ func (m *matcher) match(p, v *LVal) (bool, *LVal) {
 	case matchBad:
 	}
 	return false, env.Errorf(m.prefix+"bad pattern: %v", p)
+}
+
+// seqPatternNoun returns "list" or "vector": the kind of sequence the
+// list or vector pattern p matches, for an error message.
+func seqPatternNoun(p *LVal) string {
+	if classifyPattern(p) == matchVector {
+		return "vector"
+	}
+	return "list"
+}
+
+// matchSeq matches the element patterns of the list or vector pattern p
+// against cells, the elements of a value of the right type.  With &rest,
+// the rest pattern is matched against a new sequence that wrap makes from
+// a copy of the remaining cells.  wrap is QExpr or Vector, so the rest has
+// the type of the value.
+func (m *matcher) matchSeq(p *LVal, cells []*LVal, wrap func([]*LVal) *LVal) (bool, *LVal) {
+	elems, rest := matchListParts(p.Cells[1:])
+	n := len(elems)
+	if len(cells) < n || (rest == nil && len(cells) != n) {
+		return false, nil
+	}
+	for i, q := range elems {
+		if ok, lerr := m.match(q, cells[i]); !ok || lerr != nil {
+			return false, lerr
+		}
+	}
+	if rest == nil {
+		return true, nil
+	}
+	if classifyPattern(rest) == matchAny {
+		// &rest _ binds nothing, so the rest is not copied.  The node
+		// costs its step, as match charges for _.
+		if lerr := m.env.step(); lerr.IsError() {
+			return false, lerr
+		}
+		return true, nil
+	}
+	return m.match(rest, wrap(Cells(cells[n:]).Clone()))
 }
 
 // matchBinding matches the pattern pat of a let or let* binding against

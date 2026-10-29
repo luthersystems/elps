@@ -173,6 +173,8 @@ var langSpecialOps = []*langBuiltin{
 		symbol matches anything and binds it; a number, string, keyword,
 		true, false, () or 'sym matches an equal? value; (quote datum)
 		matches an equal? datum; (list p... &rest r) matches a list;
+		(vector p... &rest r) matches a vector, a 1-D array; with &rest,
+		r gets a new list or vector of the remaining items;
 		(sorted-map key p ...) matches a map with those keys; [name T]
 		matches a value of type T; (T :field p ...) matches a value of
 		type T with those fields. T is evaluated each time it is tried.

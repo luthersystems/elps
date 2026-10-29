@@ -1029,7 +1029,7 @@ func (w *CodeWalker) matchPattern(p *LVal, depth int, names *[]*LVal) *LVal {
 		}
 		pb.set(1, w.form(p.Cells[1], depth+1))
 		return pb.done()
-	case matchList:
+	case matchList, matchVector:
 		pb := newRebuild(p)
 		w.data(p.Cells[0], depth+1)
 		for i := 1; i < len(p.Cells); i++ {

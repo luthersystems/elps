@@ -231,7 +231,7 @@ func patternCode(p *lisp.LVal, fn func(code *lisp.LVal)) {
 	}
 	switch strings.TrimPrefix(head.Str, "lisp:") {
 	case "quote":
-	case "list":
+	case "list", "vector":
 		for _, q := range p.Cells[1:] {
 			patternCode(q, fn)
 		}

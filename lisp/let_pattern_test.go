@@ -22,6 +22,9 @@ func TestLetPattern(t *testing.T) {
 		{`(let ([(list a &rest r) '(1 2 3)]) r)`, "'(2 3)"},
 		{`(let ([(list (list a b) c) '((1 2) 3)]) (+ a b c))`, "6"},
 		{`(let ([(sorted-map "total" t :n n) (sorted-map "total" 9 :n 1)]) (list t n))`, "'(9 1)"},
+		{`(let ([(vector a b) (vector 1 2)]) (+ a b))`, "3"},
+		{`(let* ([(vector a &rest r) (vector 1 2 3)] [(vector b c) r]) (list a b c))`, "'(1 2 3)"},
+		{`(let ([(list (vector a _) b) (list (vector 1 2) 3)]) (+ a b))`, "4"},
 		{`(let ([[s s:string] "hi"]) s)`, `"hi"`},
 		{`(let ([(list [a s:int] _) '(1 2)]) a)`, "1"},
 		{`(let ([1 1] ["s" "s"] [() ()] ['a 'a] [_ 7]) _)`, "7"},
@@ -46,6 +49,11 @@ func TestLetPattern(t *testing.T) {
 		{`(let* ([(list a b) 5]) a)`, "error: the value does not match the pattern (list a b): got int"},
 		{`(let ([[s s:string] 5]) s)`, "error: the value does not match the pattern '(s s:string): got int"},
 		{`(let ([1 2]) 1)`, "error: the value does not match the pattern 1: got int"},
+		{`(let ([(vector a b) '(1 2)]) a)`, "error: the value does not match the pattern (vector a b): got list"},
+		{`(let* ([(vector a b) (vector 1)]) a)`, "error: the value does not match the pattern (vector a b): got array"},
+		{`(handler-bind ((match-error (lambda (c &rest _) c))) (let ([(vector a) '(1)]) a))`, "'match-error"},
+		{`(let ([(vector a a) (vector 1 1)]) a)`, "error: pattern binds a twice"},
+		{`(let ([(vector a &rest) (vector 1)]) a)`, "error: &rest must come before the last pattern of a vector"},
 		{`(handler-bind ((match-error (lambda (c &rest _) c))) (let ([(list a) 5]) a))`, "'match-error"},
 		{`(handler-bind ((error (lambda (c &rest _) c))) (let* ([(list a) 5]) a))`, "'match-error"},
 		{`(ignore-errors (let ([(list a) 5]) a))`, "()"},
@@ -104,6 +112,8 @@ func TestLetPatternStepCount(t *testing.T) {
 		{`(let ([(list a b) '(1 2)]) b)`, 7},
 		{`(let* ([(list a b) '(1 2)] [c a]) c)`, 8},
 		{`(let ([(list a &rest r) '(1 2 3)]) r)`, 7},
+		{`(let ([(vector a b) (vector 1 2)]) b)`, 10},
+		{`(let* ([(vector a &rest r) (vector 1 2 3)] [c a]) c)`, 12},
 	} {
 		t.Run(tc.src, func(t *testing.T) {
 			assert.Equal(t, tc.steps, letSteps(t, tc.src))
@@ -115,6 +125,8 @@ func TestLetPatternStepCount(t *testing.T) {
 		{`(let ([(list a &rest r) '(1 2 3)]) r)`, `(match '(1 2 3) ((list a &rest r) r))`},
 		{`(let ([(sorted-map "k" v) (sorted-map "k" 1)]) v)`, `(match (sorted-map "k" 1) ((sorted-map "k" v) v))`},
 		{`(let ([[x s:int] 1]) x)`, `(match 1 ([x s:int] x))`},
+		{`(let ([(vector a b) (vector 1 2)]) b)`, `(match (vector 1 2) ((vector a b) b))`},
+		{`(let ([(vector a &rest r) (vector 1 2 3)]) r)`, `(match (vector 1 2 3) ((vector a &rest r) r))`},
 	} {
 		t.Run(tc.let, func(t *testing.T) {
 			assert.Equal(t, letSteps(t, tc.match), letSteps(t, tc.let))
@@ -133,14 +145,14 @@ func TestMatchPatternNames(t *testing.T) {
 		require.Len(t, vals, 1)
 		return vals[0]
 	}
-	names, err := lisp.MatchPatternNames(read(`(list a [b s:int] (sorted-map "k" c :j d) (R :f e) _ &rest r)`))
+	names, err := lisp.MatchPatternNames(read(`(list a [b s:int] (sorted-map "k" c :j d) (R :f e) (vector f _ &rest g) _ &rest r)`))
 	require.NoError(t, err)
 	var got []string
 	for _, n := range names {
 		got = append(got, n.Str)
 	}
-	assert.Equal(t, []string{"a", "b", "c", "d", "e", "r"}, got)
-	for _, src := range []string{`(f x)`, `(list a a)`, `'(a b c)`, `(list &rest)`, `(R x y)`} {
+	assert.Equal(t, []string{"a", "b", "c", "d", "e", "f", "g", "r"}, got)
+	for _, src := range []string{`(f x)`, `(list a a)`, `'(a b c)`, `(list &rest)`, `(R x y)`, `(vector a a)`, `(vector &rest)`} {
 		_, err := lisp.MatchPatternNames(read(src))
 		assert.Error(t, err, src)
 	}
