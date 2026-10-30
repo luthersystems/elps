@@ -393,7 +393,7 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 		if pkg.base.pending > 0 {
 			lazy = lazyPackage{inst: l, base: pkg.base, pending: pkg.base.pending}
 		}
-		rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
+		rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, seal: pkg.seal,
 			base: pkg.base, lazy: lazy, unfrozenBase: pkg.unfrozen}
 	}
 	if p.builtins != nil {

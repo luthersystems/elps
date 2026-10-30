@@ -263,9 +263,10 @@ type Package struct {
 	// although it was not named frozen: it behaves exactly as an unfrozen
 	// package (Frozen reports false) and thaws on its first write.
 	unfrozenBase bool
-	// bindingsSealed protects the core namespace at Lisp mutation boundaries.
-	// Go registration APIs remain available to the host after initialization.
-	bindingsSealed bool
+	// seal protects the package's bindings at Lisp mutation boundaries (see
+	// Package.Seal); nil when the package is not sealed.  Go registration
+	// APIs remain available to the host after the package is sealed.
+	seal *packageSeal
 }
 
 // packageBase holds a frozen package's read-only tables and binding descriptors.
@@ -544,10 +545,7 @@ func (env *LEnv) checkLispPackageBinding(name string) *LVal {
 	if pkg == nil {
 		return nil
 	}
-	if pkg.bindingsSealed {
-		return env.Errorf("cannot rebind lisp package binding: %s", name)
-	}
-	return nil
+	return env.checkSealedWrite(pkg, name, SealBind)
 }
 
 // NewPackage initializes and returns a package with the given name. Direct

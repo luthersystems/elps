@@ -276,6 +276,52 @@ a transparent optimization:
   so a streaming `Reader` that delivers a full program and then a non-EOF error
   succeeds cache-less but fails with a cache.
 
+### Sealing a host package
+
+A host that ports part of a package to Go reads that package's globals and
+calls its helpers in Go. A Lisp program that then rebinds one of those names,
+with `(set 'router:x ...)` or a `defun` inside `(in-package 'router)`, changes
+what later Lisp sees but not what the Go code does, so the package stops
+agreeing with itself. elps seals its own `lisp` package against such writes
+for the same reason; `Package.Seal` gives a host that seal for its packages:
+
+```go
+pkg := env.Runtime.Registry.Package("router")
+if err := pkg.Seal(nil); err != nil { // nil policy: refuse every Lisp write
+	return err
+}
+```
+
+After the call, `set`, `set!`, `defun` and `defmacro` of a `router:` name (or
+of an unqualified name while `router` is the current package), a new export
+from `router`, and a `use-package` into `router` all fail with
+`cannot rebind sealed package binding: router:name`. Go writes (`PutGlobal`,
+`Update`, `Package.Put`, `BindBuiltins` with `Shadow`) still succeed: the host
+owns the package. Lexical bindings that share a name, a user package's own
+copy of an imported name, and re-exporting an existing export are not writes
+to the package and are not affected. A package is sealed once:
+`Seal` returns `ErrPackageSealed` on a sealed package, the `lisp` package
+included, so no later caller can loosen a seal.
+
+A non-nil `SealPolicy` decides each write instead. elps calls it before the
+write with a `SealViolation` (package, unqualified name, and whether the write
+binds, exports or uses a package); an error result refuses the write and is
+returned to the Lisp caller, and any other result lets the write go ahead.
+A checker can so record every rebind of a program and still let it load:
+
+```go
+pkg.Seal(func(env *lisp.LEnv, v lisp.SealViolation) *lisp.LVal {
+	_, bound := env.Runtime.Registry.Package(v.Package).Symbol(v.Symbol)
+	report(v, !bound) // !bound: the write adds a name
+	return nil
+})
+```
+
+The seal is part of the package: a template keeps it, policy included, in
+every VM it makes, and so does package admission. One policy therefore serves
+VMs on several goroutines; it must keep any state per VM (`Runtime.SetVMValue`)
+or synchronize it. It charges no step.
+
 ## Writing Functions
 
 Programs embedding elps can write functions in Go which can be loaded into

@@ -130,11 +130,11 @@ func admitPackage(p *Package, limit int) *Package {
 		symbols, funNames, symbolDocs = p.symbolTable(), p.funNameTable(), p.symbolDocTable()
 	}
 	adm := &Package{
-		Name:           p.Name,
-		Doc:            p.Doc,
-		bindingsSealed: p.bindingsSealed,
-		symbols:        make(map[string]*LVal, len(symbols)),
-		funNames:       make(map[string]string, len(funNames)),
+		Name:     p.Name,
+		Doc:      p.Doc,
+		seal:     p.seal,
+		symbols:  make(map[string]*LVal, len(symbols)),
+		funNames: make(map[string]string, len(funNames)),
 	}
 	if p.NumExternals() > 0 {
 		adm.externals = p.Externals()

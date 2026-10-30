@@ -45,7 +45,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	// All default and host-registered core macros, operators, builtins, and
 	// the metatype are installed. Seal Lisp writes before running user code;
 	// Go registration APIs and other packages remain mutable.
-	env.Runtime.Package.bindingsSealed = true
+	env.Runtime.Package.seal = langSeal
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
 	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))

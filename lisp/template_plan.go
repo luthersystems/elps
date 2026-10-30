@@ -113,10 +113,10 @@ type templatePackage struct {
 	funNames, symbolDocs []templateStringPair
 	// fidNames is an eager unfrozen package's FID index, which each VM's
 	// index reads under its own overlay.
-	fidNames       packagetable.Lists
-	externals      []string
-	bindingsSealed bool
-	unfrozen       bool // a lazy plan's base for a package not named frozen
+	fidNames  packagetable.Lists
+	externals []string
+	seal      *packageSeal
+	unfrozen  bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {
 	hot               *templateHotSet // what the plan's lazy VMs read, for VMWithPrewarm; nil for an eager plan
@@ -237,9 +237,9 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 		return templatePackage{
 			name: pkg.Name, doc: pkg.Doc, bindings: c.bindings(symbols),
 			funNames: templateStringPairs(funNames), symbolDocs: templateStringPairs(symbolDocs),
-			fidNames:       fidNames,
-			externals:      pkg.Externals(),
-			bindingsSealed: pkg.bindingsSealed,
+			fidNames:  fidNames,
+			externals: pkg.Externals(),
+			seal:      pkg.seal,
 		}
 	}
 	bindings := c.bindings(symbols)
@@ -262,7 +262,7 @@ func (c *templateCompiler) packageDescriptor(pkg *Package, frozen bool) template
 		onThaw:     c.onThaw,
 	}
 	base.publish()
-	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, bindingsSealed: pkg.bindingsSealed, unfrozen: !frozen}
+	return templatePackage{base: base, name: pkg.Name, doc: pkg.Doc, seal: pkg.seal, unfrozen: !frozen}
 }
 
 func (c *templateCompiler) ref(v *LVal) templateRef {
@@ -651,12 +651,12 @@ func (p *templatePlan) instantiateEager(config vmConfig) *LEnv {
 			for slot, binding := range pkg.base.bindings {
 				values[slot] = instance.ref(binding.value)
 			}
-			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, bindingsSealed: pkg.bindingsSealed,
+			rt.Registry.packages[pkg.name] = &Package{Name: pkg.name, Doc: pkg.doc, seal: pkg.seal,
 				base: pkg.base, baseValues: values}
 			continue
 		}
 		out := &Package{Name: pkg.name, Doc: pkg.doc, symbols: make(map[string]*LVal, len(pkg.bindings)), funNames: make(map[string]string, len(pkg.funNames))}
-		out.bindingsSealed = pkg.bindingsSealed
+		out.seal = pkg.seal
 		for _, binding := range pkg.bindings {
 			out.symbols[binding.name] = instance.ref(binding.value)
 		}

@@ -759,11 +759,13 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 		if !validPackageName(pkg.Str) {
 			return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
 		}
-		if env.Runtime.Package.bindingsSealed {
+		if into := env.Runtime.Package; into.seal != nil {
 			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
 				for name := range source.externalNames() {
 					if name != TrueSymbol && name != FalseSymbol {
-						return env.Errorf("cannot rebind lisp package binding: %s", name)
+						if err := env.checkSealedWrite(into, name, SealUse); err != nil {
+							return err
+						}
 					}
 				}
 			}
@@ -791,18 +793,21 @@ func validateExportArgs(env *LEnv, args *LVal) *LVal {
 			if strings.Contains(arg.Str, ":") {
 				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
 			}
-			if env.Runtime.Package.bindingsSealed {
-				// Re-exporting an existing core name is a no-op. A new export
-				// could poison future imports even without assigning a value.
+			if pkg := env.Runtime.Package; pkg.seal != nil {
+				// Re-exporting an existing name of a sealed package is a
+				// no-op. A new export could poison future imports even
+				// without assigning a value.
 				found := false
-				for name := range env.Runtime.Package.externalNames() {
+				for name := range pkg.externalNames() {
 					if name == arg.Str {
 						found = true
 						break
 					}
 				}
 				if !found {
-					return env.Errorf("cannot rebind lisp package binding: %s", arg.Str)
+					if err := env.checkSealedWrite(pkg, arg.Str, SealExport); err != nil {
+						return err
+					}
 				}
 			}
 		case LSExpr:
