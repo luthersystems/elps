@@ -155,9 +155,12 @@ func (env *LEnv) CheckAlloc(n int) error {
 
 // CheckAllocs makes the CheckAlloc check of each size in sizes, in order, and
 // returns the first error, or nil.  A Go port of Lisp code that built several
-// lists calls it with their sizes in the order the Lisp built them, so the
-// port fails under an allocation cap with the error the Lisp raised first.
-// Like CheckAlloc, it makes no context check and charges no step.
+// lists, with no other check between them, calls it with their sizes in the
+// order the Lisp built them.  The port then fails under an allocation cap
+// with the error the Lisp raised first.  Where the Lisp charged a step or
+// made another check between two lists, the port checks each size at its
+// own place.  Like CheckAlloc, CheckAllocs makes no context check and
+// charges no step.
 func (env *LEnv) CheckAllocs(sizes ...int) error {
 	for _, n := range sizes {
 		if err := env.CheckAlloc(n); err != nil {

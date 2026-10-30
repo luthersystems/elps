@@ -121,6 +121,20 @@ func TestTestHelperFilesSkipsDirsAndEmptyPrefix(t *testing.T) {
 	assert.Equal(t, []string{filepath.Join(dir, "ok_testhelpers.lisp")}, files)
 }
 
+// LoadHelpersFn replaces the helper load: the Runner does not load the
+// helpers itself.  The broken directory's helper raises when it loads, so the
+// test file runs only when the Runner leaves the load to the hook.
+func TestTestHelpersLoadHelpersFnReplaces(t *testing.T) {
+	path := filepath.Join(helperData, "broken", "x_test.lisp")
+	calls := 0
+	r := &Runner{LoadHelpersFn: func(*lisp.LEnv, string) error {
+		calls++
+		return nil
+	}}
+	r.RunTestFile(t, path)
+	require.Equal(t, 2, calls, "the discovery pass and the one test")
+}
+
 // LoadHelpersFn replaces the helper load for every env the Runner builds:
 // the discovery pass and each test, each with the test file's path.
 func TestTestHelpersLoadHelpersFn(t *testing.T) {

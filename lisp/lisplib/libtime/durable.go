@@ -28,6 +28,8 @@ var DurableTimeCodec = NewDurableTimeCodec(DurableTimeName)
 // errors that name it.  An embedder that already saves time values under
 // its own name uses it in place of DurableTimeCodec.WithName, which keeps
 // the errors of DurableTimeName.  The saved payload does not depend on name.
+// Bind the result to a package-level var: the elpsdurablenative analyzer
+// counts a codec only in a package-level value.
 func NewDurableTimeCodec(name string) libjson.DurableCodec[ownedTime] {
 	return libjson.DurableCodec[ownedTime]{
 		Name:    name,
