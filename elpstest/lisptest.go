@@ -158,9 +158,12 @@ type Runner struct {
 	CloseFn func()
 }
 
-// loadHelpers loads the test helpers beside path into env: with
-// LoadHelpersFn when it is set, else with LoadTestHelpers.
-func (r *Runner) loadHelpers(env *lisp.LEnv, path string) error {
+// LoadHelpers loads the test helpers beside path into env as the Runner
+// loads them: with LoadHelpersFn when it is set, else with LoadTestHelpers.
+// Code that drives a Runner's steps itself (NewEnv, then the helpers, then
+// the test file) calls it in place of LoadTestHelpers, so it loads the
+// helpers the way RunTest does.
+func (r *Runner) LoadHelpers(env *lisp.LEnv, path string) error {
 	if r.LoadHelpersFn != nil {
 		return r.LoadHelpersFn(env, path)
 	}
@@ -271,7 +274,7 @@ func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *lib
 	}
 	defer stderrLogger(env).Flush()
 
-	if err = r.loadHelpers(env, path); err != nil {
+	if err = r.LoadHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		t.FailNow()
 	}
@@ -321,7 +324,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 
 	_ = r.Setup(env)
 
-	if err = r.loadHelpers(env, path); err != nil {
+	if err = r.LoadHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		return
 	}
@@ -416,7 +419,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	_ = r.Setup(env)
 
-	if err = r.loadHelpers(env, path); err != nil {
+	if err = r.LoadHelpers(env, path); err != nil {
 		r.helperError(b, err)
 		return
 	}
