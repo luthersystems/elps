@@ -9,11 +9,12 @@
 // helpers load once per environment: after NewEnv (LoaderFn or NewEnvFn) and
 // SetupFn when running a test or benchmark, and after NewEnv alone in the
 // discovery pass that lists tests, which does not run SetupFn.  The package in
-// effect before each helper is restored after it.  A file named exactly
-// _testhelpers.lisp, or a directory, is not a helper.  The names do not match
-// *_test.lisp, so production loads and test discovery
-// never pick them up.  Other runners can apply the same rule through
-// TestHelperFiles.
+// effect before each helper is restored after it.  Runner.LoadHelpersFn
+// replaces this load for a Runner whose environments already hold the
+// helpers.  A file named exactly _testhelpers.lisp, or a directory, is not a
+// helper.  The names do not match *_test.lisp, so production loads and test
+// discovery never pick them up.  Other runners can apply the same rule
+// through TestHelperFiles.
 package elpstest
 
 import (
@@ -131,6 +132,18 @@ type Runner struct {
 	// else with a named error rather than letting it panic later.
 	NewEnvFn func(t testing.TB) (*lisp.LEnv, error)
 
+	// LoadHelpersFn, when non-nil, replaces LoadTestHelpers for every
+	// environment the Runner builds.  The Runner calls it where it would
+	// call LoadTestHelpers(env, testPath): after NewEnv and SetupFn, just
+	// before it loads the test file.  It exists for an embedder whose
+	// NewEnvFn forks a template that already evaluated the helpers.  Loading
+	// them again in each fork would repeat their work, and a helper that is
+	// not idempotent would change the fork.  Such a function checks that
+	// the helpers beside testPath are the ones the template holds, loads
+	// any it does not hold, and returns an error when they differ.  A fork
+	// whose template holds no helpers calls LoadTestHelpers itself.
+	LoadHelpersFn func(env *lisp.LEnv, testPath string) error
+
 	// SetupFn runs code to setup a loaded environment after before the test
 	// is run.
 	SetupFn func(*lisp.LEnv) *lisp.LVal
@@ -142,6 +155,15 @@ type Runner struct {
 
 	// CloseFn cleans up any resources allocated by the runner.
 	CloseFn func()
+}
+
+// loadHelpers loads the test helpers beside path into env: with
+// LoadHelpersFn when it is set, else with LoadTestHelpers.
+func (r *Runner) loadHelpers(env *lisp.LEnv, path string) error {
+	if r.LoadHelpersFn != nil {
+		return r.LoadHelpersFn(env, path)
+	}
+	return LoadTestHelpers(env, path)
 }
 
 // Load safely callss LoadFn.
@@ -248,7 +270,7 @@ func (r *Runner) loadTestSuite(t testing.TB, path string, source io.Reader) *lib
 	}
 	defer stderrLogger(env).Flush()
 
-	if err = LoadTestHelpers(env, path); err != nil {
+	if err = r.loadHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		t.FailNow()
 	}
@@ -298,7 +320,7 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 
 	_ = r.Setup(env)
 
-	if err = LoadTestHelpers(env, path); err != nil {
+	if err = r.loadHelpers(env, path); err != nil {
 		r.helperError(t, err)
 		return
 	}
@@ -393,7 +415,7 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	_ = r.Setup(env)
 
-	if err = LoadTestHelpers(env, path); err != nil {
+	if err = r.loadHelpers(env, path); err != nil {
 		r.helperError(b, err)
 		return
 	}
