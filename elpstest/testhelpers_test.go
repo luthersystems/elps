@@ -135,6 +135,18 @@ func TestTestHelpersLoadHelpersFnReplaces(t *testing.T) {
 	require.Equal(t, 2, calls, "the discovery pass and the one test")
 }
 
+// LoadHelpers is the Runner's own helper load: LoadHelpersFn when it is set.
+func TestTestHelpersRunnerLoadHelpers(t *testing.T) {
+	path := filepath.Join(helperData, "broken", "x_test.lisp")
+	env, err := (&Runner{}).NewEnv(t)
+	require.NoError(t, err)
+	require.ErrorContains(t, (&Runner{}).LoadHelpers(env, path), "boom")
+	called := false
+	r := &Runner{LoadHelpersFn: func(*lisp.LEnv, string) error { called = true; return nil }}
+	require.NoError(t, r.LoadHelpers(env, path))
+	require.True(t, called)
+}
+
 // LoadHelpersFn replaces the helper load for every env the Runner builds:
 // the discovery pass and each test, each with the test file's path.
 func TestTestHelpersLoadHelpersFn(t *testing.T) {
