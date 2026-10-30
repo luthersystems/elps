@@ -267,3 +267,27 @@ func TestDurableFunCodecGlobalWithoutCodec(t *testing.T) {
 	require.NoError(t, err)
 	require.Contains(t, string(b), `"test:store"`)
 }
+
+// TestDurableRegistryFunCaptures checks that FunCaptures returns the
+// captures the dump saves, the object's own value, for an object a function
+// codec covers, and nothing for any other value.
+func TestDurableRegistryFunCaptures(t *testing.T) {
+	reg := storeRegistry(t)
+	state := lisp.SortedMap()
+	got, ok := reg.FunCaptures(newStoreObj(state))
+	require.True(t, ok)
+	require.Same(t, state, got, "the captures are the object's own, not a copy")
+
+	other := lisp.NewCapturedFun(lisp.CapturedFun{Package: lisp.DefaultUserPackage, FID: "other", Captures: state, Eval: storeObjEval})
+	for name, v := range map[string]*lisp.LVal{
+		"unregistered FID": other,
+		"int":              lisp.Int(1),
+		"nil value":        nil,
+	} {
+		_, found := reg.FunCaptures(v)
+		require.False(t, found, name)
+	}
+	var none *libjson.DurableRegistry
+	_, ok = none.FunCaptures(newStoreObj(state))
+	require.False(t, ok, "nil registry")
+}

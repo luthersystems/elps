@@ -398,6 +398,24 @@ func (r *DurableRegistry) entryNamed(name string) *nativeEntry {
 	return r.byName[name]
 }
 
+// FunCaptures returns the captures a durable dump saves for v: the
+// captures of a Go function object whose package and FID a DurableFunCodec
+// of r names.  ok is false for any other value, and for a nil r.
+//
+// An embedder that walks saved values (to find closures, to count the
+// native values a save holds, to check records after a load) must enter
+// the same state the dump saves.  Without this it has to list each
+// function codec's own accessor, and a codec added later is missed with no
+// error.  The captures are the object's own, not a copy: the dump saves
+// them by identity, so sharing between objects is kept.  The caller must
+// not change them.
+func (r *DurableRegistry) FunCaptures(v *lisp.LVal) (*lisp.LVal, bool) {
+	if v == nil || v.Type != lisp.LFun || r.entryForFun(v) == nil {
+		return nil, false
+	}
+	return funraw.Captures(v), true
+}
+
 // entryForFun returns the codec of v, a function value, or nil.  Only a
 // Go function object with captures has one: its package and FID name the
 // codec.  funCodec finds a codec whatever the value's captures.
