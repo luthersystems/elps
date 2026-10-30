@@ -42,8 +42,9 @@ func newParityEnv(t *testing.T) *lisp.LEnv {
 	return env
 }
 
-// TestSplitParity compares Split with the string:split builtin under several
-// allocation caps: the same pieces or error, and the same steps charged.
+// TestSplitParity compares Split and SplitCount with the string:split builtin
+// under several allocation caps: the same pieces (or their number) or error,
+// and the same steps charged.
 func TestSplitParity(t *testing.T) {
 	env := newParityEnv(t)
 	big := strings.Repeat("a:", 1500)
@@ -67,6 +68,15 @@ func TestSplitParity(t *testing.T) {
 			gotSteps := steps(env, func() { got, err = Split(env, tc.str, tc.sep) })
 			parityResult(t, want, lisp.StringList(got), err, "sep "+tc.sep)
 			assert.Equal(t, wantSteps, gotSteps, "steps, limit %d, sep %q", limit, tc.sep)
+			var n int
+			countSteps := steps(env, func() { n, err = SplitCount(env, tc.str, tc.sep) })
+			if want.Type == lisp.LError {
+				parityResult(t, want, nil, err, "count, sep "+tc.sep)
+			} else {
+				require.NoError(t, err)
+				assert.Equal(t, len(got), n, "count, sep %q", tc.sep)
+			}
+			assert.Equal(t, wantSteps, countSteps, "count steps, limit %d, sep %q", limit, tc.sep)
 		}
 	}
 }
@@ -103,7 +113,7 @@ func TestRepeatParity(t *testing.T) {
 	}
 }
 
-// TestSplitRepeatCheckContext pins that Split and Repeat check the context
+// TestSplitRepeatCheckContext pins that Split, SplitCount and Repeat check the context
 // first, as CallBuiltin does.
 func TestSplitRepeatCheckContext(t *testing.T) {
 	env := newParityEnv(t)

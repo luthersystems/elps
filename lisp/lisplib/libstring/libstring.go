@@ -145,7 +145,7 @@ func convertCase(env *lisp.LEnv, s string, mapping func(rune) rune) *lisp.LVal {
 var builtinSplit = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), split)
 
 func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
-	if lerr := checkSplit(env, str, sep); lerr != nil {
+	if _, lerr := checkSplit(env, str, sep); lerr != nil {
 		return lerr
 	}
 	return lisp.StringList(strings.Split(str, sep))
@@ -163,18 +163,33 @@ func Split(env *lisp.LEnv, str, sep string) ([]string, error) {
 	if err := env.CheckContext(); err != nil {
 		return nil, err
 	}
-	if lerr := checkSplit(env, str, sep); lerr != nil {
+	if _, lerr := checkSplit(env, str, sep); lerr != nil {
 		return nil, lisp.GoError(lerr)
 	}
 	return strings.Split(str, sep), nil
 }
 
-// checkSplit is the body of string:split and of Split before the split: the
-// step charge and the allocation check.  The checks and their errors exist
-// once.  It returns nil when there is no error.
-func checkSplit(env *lisp.LEnv, str, sep string) *lisp.LVal {
+// SplitCount returns the number of pieces Split returns, after the same
+// checks, with the same errors and steps, but builds no pieces.  A Go port
+// of Lisp code that only counted the pieces of string:split calls it.
+func SplitCount(env *lisp.LEnv, str, sep string) (int, error) {
+	if err := env.CheckContext(); err != nil {
+		return 0, err
+	}
+	n, lerr := checkSplit(env, str, sep)
+	if lerr != nil {
+		return 0, lisp.GoError(lerr)
+	}
+	return n, nil
+}
+
+// checkSplit is the body of string:split, Split and SplitCount before the
+// split: the step charge and the allocation check.  The checks and their
+// errors exist once.  It returns the number of pieces, and a nil error when
+// there is none.
+func checkSplit(env *lisp.LEnv, str, sep string) (int, *lisp.LVal) {
 	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
-		return lerr
+		return 0, lerr
 	}
 	var count int
 	if sep == "" {
@@ -184,14 +199,14 @@ func checkSplit(env *lisp.LEnv, str, sep string) *lisp.LVal {
 		// The extra final piece must fit before incrementing, including
 		// when the configured cap is the largest representable int.
 		if count >= env.Runtime.MaxAllocBytes() {
-			return env.Errorf("split would exceed maximum allocation size (%d elements)", env.Runtime.MaxAllocBytes())
+			return 0, env.Errorf("split would exceed maximum allocation size (%d elements)", env.Runtime.MaxAllocBytes())
 		}
 		count++
 	}
 	if err := env.CheckAlloc(count); err != nil {
-		return lisp.Error(err)
+		return 0, lisp.Error(err)
 	}
-	return nil
+	return count, nil
 }
 
 var builtinJoin = lisp.Func2(
