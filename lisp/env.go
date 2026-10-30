@@ -45,7 +45,7 @@ func InitializeUserEnv(env *LEnv, config ...Config) *LVal {
 	// All default and host-registered core macros, operators, builtins, and
 	// the metatype are installed. Seal Lisp writes before running user code;
 	// Go registration APIs and other packages remain mutable.
-	env.Runtime.Package.bindingsSealed = true
+	env.Runtime.Package.seal = langSeal
 	env.Runtime.Registry.DefinePackage(DefaultUserPackage)
 	env.Runtime.Registry.packages[DefaultUserPackage].Doc = "The default user package for application code."
 	rc = env.InPackage(Symbol(DefaultUserPackage))
@@ -772,7 +772,7 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 		}
 		if env.parent == nil {
 			if fromLisp {
-				if err := env.checkLispPackageBinding(k.Str); err != nil {
+				if err := env.checkLispPackageBinding(k.Str, true); err != nil {
 					return err
 				}
 			}
@@ -800,7 +800,7 @@ func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
 	checkOwnership(env.Runtime, v)
 	if fromLisp {
 		// Same check, in the same order, as PutGlobalFromLisp.
-		if err := env.checkLispPackageBinding(k.Str); err != nil {
+		if err := env.checkLispPackageBinding(k.Str, true); err != nil {
 			return err
 		}
 	}
@@ -875,7 +875,7 @@ func (env *LEnv) PutGlobalFromLisp(k, v *LVal) *LVal {
 	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
-	if err := env.checkLispPackageBinding(k.Str); err != nil {
+	if err := env.checkLispPackageBinding(k.Str, false); err != nil {
 		return err
 	}
 	return env.PutGlobal(k, v)

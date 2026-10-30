@@ -62,7 +62,9 @@ func (env *LEnv) BindBuiltins(opts BindOpts, defs ...LBuiltinDef) *LVal {
 			if !opts.Shadow {
 				return env.Errorf("symbol already defined: %s", name)
 			}
-			if pkg.bindingsSealed {
+			// Only the lisp package's seal refuses Go: a host that seals
+			// its own package (Package.Seal) still owns it.
+			if pkg.seal == langSeal {
 				return env.Errorf("cannot rebind lisp package binding: %s", name)
 			}
 		}

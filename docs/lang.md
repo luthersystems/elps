@@ -2138,8 +2138,11 @@ including in package `lisp` and including a name that shadows a core symbol, as
 such a write cannot reach the sealed namespace. This also rejects new names in
 `lisp`; exporting a name first does not bypass the seal. Lisp code cannot add new exports or import
 replacement bindings into `lisp`. Re-exporting an existing export is a no-op.
-Go registration APIs remain available to the host, and packages registered
-by embedders through `elpsutil` remain mutable.
+Go registration APIs remain available to the host. A package an embedder
+defines stays mutable unless the embedder seals it with `Package.Seal` (see
+`docs/embed.md`, "Sealing a host package"); a write to a sealed host package
+raises `cannot rebind sealed package binding: pkg:name`, or whatever error the
+host's policy chooses.
 Go builtins that accept binding names from Lisp must use
 `LEnv.PutGlobalFromLisp` or `LEnv.UpdateFromLisp`; `PutGlobal` and `Update`
 are trusted host APIs. `LEnv.Put` only writes lexical bindings.

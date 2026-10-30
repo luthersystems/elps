@@ -55,7 +55,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"fids":               "remapped: an eager VM starts with the plan's shared FID index under a fresh overlay; a lazy or frozen VM leaves it nil and reads base.fidNames until thaw; any other package builds it from its bindings on first lookup (TestFIDIndexMatchesScan)",
 			"slotFidNames":       "reset: a frozen VM's per-VM overlay on base FID name lists; a source package's index is folded into the base by fidNameLists at publication (TestFIDIndexMatchesScan)",
 			"slotFunNames":       "reset: a frozen VM's per-VM overlay on base function names; a source package's overlay is folded into the base by funNameTable at publication (TestFrozenPackagePerTransactionGlobalsDoNotThaw)",
-			"bindingsSealed":     "scalar: preserve core package Lisp binding protection",
+			"seal":               "shared-immutable: the package seal and its host policy, set once by Seal or InitializeUserEnv and never written after (TestPackageSealTemplateAndAdmission)",
 			"lazy":               "remapped: embedded per-VM link to this VM's lazy instance, built by NewVM and never published; cleared once every binding is materialized (TestTemplateLazyRetention)",
 			"unfrozenBase":       "scalar: a lazy plan's base for a package not named frozen; Frozen reports false",
 		}},
