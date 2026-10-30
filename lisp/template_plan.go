@@ -108,6 +108,7 @@ type templateStringPair struct{ key, value string }
 // slot values, resolved per VM into Package.baseValues on first fill or write.
 type templatePackage struct {
 	base                 *packageBase
+	seal                 *packageSeal
 	name, doc            string
 	bindings             []templateBinding
 	funNames, symbolDocs []templateStringPair
@@ -115,7 +116,6 @@ type templatePackage struct {
 	// index reads under its own overlay.
 	fidNames  packagetable.Lists
 	externals []string
-	seal      *packageSeal
 	unfrozen  bool // a lazy plan's base for a package not named frozen
 }
 type templatePlan struct {

@@ -752,22 +752,28 @@ func builtinInPackage(env *LEnv, args *LVal) *LVal {
 }
 
 func builtinUsePackage(env *LEnv, args *LVal) *LVal {
+	into := env.Runtime.Package
+	if into.seal != nil && into.seal != langSeal {
+		// A host seal's policy decides every name before any package is
+		// used, so a refusal leaves the sealed package as it was.
+		for i, pkg := range args.Cells {
+			if lerr := validateUsePackageArg(env, i, pkg); lerr != nil {
+				return lerr
+			}
+		}
+		for _, pkg := range args.Cells {
+			if err := env.checkSealedUse(into, pkg.Str); err != nil {
+				return err
+			}
+		}
+	}
 	for i, pkg := range args.Cells {
-		if pkg.Type != LSymbol && pkg.Type != LString {
-			return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
+		if lerr := validateUsePackageArg(env, i, pkg); lerr != nil {
+			return lerr
 		}
-		if !validPackageName(pkg.Str) {
-			return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
-		}
-		if into := env.Runtime.Package; into.seal != nil {
-			if source := env.Runtime.Registry.packages[pkg.Str]; source != nil {
-				for name := range source.externalNames() {
-					if name != TrueSymbol && name != FalseSymbol {
-						if err := env.checkSealedWrite(into, name, SealUse); err != nil {
-							return err
-						}
-					}
-				}
+		if into.seal == langSeal {
+			if err := env.checkSealedUse(into, pkg.Str); err != nil {
+				return err
 			}
 		}
 		lerr := env.UsePackage(pkg)
@@ -778,40 +784,85 @@ func builtinUsePackage(env *LEnv, args *LVal) *LVal {
 	return Nil()
 }
 
+func validateUsePackageArg(env *LEnv, i int, pkg *LVal) *LVal {
+	if pkg.Type != LSymbol && pkg.Type != LString {
+		return env.Errorf("argument %d is not a symbol or a string: %v", i+1, pkg.Type)
+	}
+	if !validPackageName(pkg.Str) {
+		return env.Errorf("invalid package name %q: expected a non-empty, unqualified symbol identifier", pkg.Str)
+	}
+	return nil
+}
+
+// checkSealedUse applies into's seal to a use-package of the package named
+// from.  The lisp package refuses any export of from.  A host seal is asked
+// only about the names whose binding the use would change: a use that binds
+// a name to the value it already has (a repeated use-package, or one of lisp
+// in a package in-package already made use lisp) changes nothing.
+func (env *LEnv) checkSealedUse(into *Package, from string) *LVal {
+	source := env.Runtime.Registry.packages[from]
+	if source == nil {
+		return nil
+	}
+	for name := range source.externalNames() {
+		if name == TrueSymbol || name == FalseSymbol {
+			continue
+		}
+		if into.seal != langSeal {
+			v, _ := source.Symbol(name)
+			if cur, ok := into.Symbol(name); ok && cur == v {
+				continue
+			}
+		}
+		if err := env.checkSealedWrite(into, name, SealUse); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func builtinExport(env *LEnv, args *LVal) *LVal {
-	if err := validateExportArgs(env, args); err.IsError() {
+	pkg := env.Runtime.Package
+	var fresh []string // names pkg does not export yet, for a host seal
+	if err := validateExportArgs(env, args, &fresh); err.IsError() {
 		return err
 	}
-	exportArgs(env.Runtime.Package, args)
+	if pkg.seal != nil && pkg.seal != langSeal {
+		// A host seal's policy sees a new export only once every argument
+		// is valid, so it never records an export that does not happen.
+		// Re-exporting an existing name is a no-op. A new export could
+		// poison future imports even without assigning a value.
+		for _, name := range fresh {
+			if err := env.checkSealedWrite(pkg, name, SealExport); err != nil {
+				return err
+			}
+		}
+	}
+	exportArgs(pkg, args)
 	return Nil()
 }
 
-func validateExportArgs(env *LEnv, args *LVal) *LVal {
+// validateExportArgs checks every argument of export.  It appends to fresh
+// each name a sealed current package does not export yet.
+func validateExportArgs(env *LEnv, args *LVal, fresh *[]string) *LVal {
 	for _, arg := range args.Cells {
 		switch arg.Type {
 		case LSymbol, LString:
 			if strings.Contains(arg.Str, ":") {
 				return env.Errorf("cannot export qualified name: %s (use an unqualified name in the exporting package)", arg.Str)
 			}
-			if pkg := env.Runtime.Package; pkg.seal != nil {
-				// Re-exporting an existing name of a sealed package is a
-				// no-op. A new export could poison future imports even
-				// without assigning a value.
-				found := false
-				for name := range pkg.externalNames() {
-					if name == arg.Str {
-						found = true
-						break
-					}
-				}
-				if !found {
+			// The lisp package refuses a new export as it meets it; a host
+			// seal is asked after validation (builtinExport).
+			if pkg := env.Runtime.Package; pkg.seal != nil && !pkg.exports(arg.Str) {
+				if pkg.seal == langSeal {
 					if err := env.checkSealedWrite(pkg, arg.Str, SealExport); err != nil {
 						return err
 					}
 				}
+				*fresh = append(*fresh, arg.Str)
 			}
 		case LSExpr:
-			if err := validateExportArgs(env, arg); err.IsError() {
+			if err := validateExportArgs(env, arg, fresh); err.IsError() {
 				return err
 			}
 		default:

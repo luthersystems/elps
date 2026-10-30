@@ -230,6 +230,10 @@ type Package struct {
 	// the package (see ensureWritable): it gets private tables and base
 	// becomes nil, for this VM only.
 	base *packageBase
+	// seal protects the package's bindings at Lisp mutation boundaries (see
+	// Package.Seal); nil when the package is not sealed.  Go registration
+	// APIs remain available to the host after the package is sealed.
+	seal *packageSeal
 	// slotFunNames is this VM's overlay on base.funNames while the package
 	// is frozen: the FID->name entries that slot writes of function values
 	// recorded (see putSlot).  It is nil until the first such write, is
@@ -263,10 +267,6 @@ type Package struct {
 	// although it was not named frozen: it behaves exactly as an unfrozen
 	// package (Frozen reports false) and thaws on its first write.
 	unfrozenBase bool
-	// seal protects the package's bindings at Lisp mutation boundaries (see
-	// Package.Seal); nil when the package is not sealed.  Go registration
-	// APIs remain available to the host after the package is sealed.
-	seal *packageSeal
 }
 
 // packageBase holds a frozen package's read-only tables and binding descriptors.
@@ -535,15 +535,28 @@ func (pkg *Package) appendExternal(name string) {
 // checkLispPackageBinding checks a Lisp assignment's destination without
 // allocating on the ordinary user-package path. A qualified name is checked
 // against the package it names; set (PutGlobalFromLisp) and qualified set!
-// (updateQualified) both call it before resolving that package.
-func (env *LEnv) checkLispPackageBinding(name string) *LVal {
+// (updateQualified) both call it before resolving that package.  update is
+// true for set!, which only rebinds a bound name.
+func (env *LEnv) checkLispPackageBinding(name string, update bool) *LVal {
 	pkg := env.Runtime.Package
 	if ns, local, qualified := strings.Cut(name, ":"); qualified {
 		pkg = env.Runtime.Registry.packages[ns]
 		name = local
 	}
-	if pkg == nil {
+	if pkg == nil || pkg.seal == nil {
 		return nil
+	}
+	if pkg.seal != langSeal {
+		// A host seal's policy may only record the write, so it must see
+		// only writes that would happen.  Leave a write the caller refuses
+		// anyway (a constant, a malformed name, set! of an unbound name)
+		// to the caller, which reports it as it does in an unsealed package.
+		if name == TrueSymbol || name == FalseSymbol || strings.Contains(name, ":") {
+			return nil
+		}
+		if _, bound := pkg.Symbol(name); update && !bound {
+			return nil
+		}
 	}
 	return env.checkSealedWrite(pkg, name, SealBind)
 }

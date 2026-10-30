@@ -129,10 +129,10 @@ func TestPackageSealOnce(t *testing.T) {
 	env := sealedHostEnv(t, nil)
 	assert.True(t, env.Runtime.Registry.Package("host").Sealed())
 	assert.False(t, env.Runtime.Registry.Package("other").Sealed())
-	assert.ErrorIs(t, env.Runtime.Registry.Package("host").Seal(nil), lisp.ErrPackageSealed)
+	require.ErrorIs(t, env.Runtime.Registry.Package("host").Seal(nil), lisp.ErrPackageSealed)
 	lispPkg := env.Runtime.Registry.Package(env.Runtime.Registry.Lang)
 	assert.True(t, lispPkg.Sealed())
-	assert.ErrorIs(t, lispPkg.Seal(func(*lisp.LEnv, lisp.SealViolation) *lisp.LVal { return nil }), lisp.ErrPackageSealed)
+	require.ErrorIs(t, lispPkg.Seal(func(*lisp.LEnv, lisp.SealViolation) *lisp.LVal { return nil }), lisp.ErrPackageSealed)
 	// The lisp package keeps its own error text.
 	got := env.LoadString("seal.lisp", `(set 'lisp:if 1)`)
 	assert.Contains(t, got.String(), "cannot rebind lisp package binding: if")
@@ -165,4 +165,71 @@ func TestPackageSealTemplateAndAdmission(t *testing.T) {
 		}
 		assert.Equal(t, []string{"host:config", "host:config"}, reports)
 	}
+}
+
+// A policy that only records must see only writes that happen.
+func TestPackageSealPolicySeesOnlyRealWrites(t *testing.T) {
+	for _, source := range []string{
+		`(set! 'host:missing 1)`,
+		`(in-package 'host) (set! missing 1)`,
+		`(in-package 'host) (set 'true 1)`,
+		`(set 'host:a:b 1)`,
+		`(in-package 'host) (export 'new 'x:y)`,
+		`(in-package 'host) (use-package 'other 'no-such-package 3)`,
+	} {
+		t.Run(source, func(t *testing.T) {
+			var got []lisp.SealViolation
+			env := sealedHostEnv(t, func(_ *lisp.LEnv, v lisp.SealViolation) *lisp.LVal {
+				got = append(got, v)
+				return nil
+			})
+			rc := env.LoadString("bad.lisp", source)
+			require.Equal(t, lisp.LError, rc.Type, "got %v", rc)
+			assert.Empty(t, got, "the policy saw a write that was refused anyway")
+		})
+	}
+}
+
+// A use-package that changes no binding is not a write: in-package already
+// made host use lisp.
+func TestPackageSealUseThatChangesNothing(t *testing.T) {
+	env := sealedHostEnv(t, nil)
+	assert.Equal(t, "5", env.LoadString("use.lisp", `(in-package 'host) (use-package 'lisp) 5`).String())
+}
+
+// A policy that refuses one name of a later package leaves the sealed
+// package without the names of the earlier ones.
+func TestPackageSealUseIsAllOrNothing(t *testing.T) {
+	env := sealedHostEnv(t, func(env *lisp.LEnv, v lisp.SealViolation) *lisp.LVal {
+		if v.Symbol == "extra" {
+			return env.Errorf("refused %s", v.Symbol)
+		}
+		return nil
+	})
+	require.Equal(t, lisp.LError, env.LoadString("pkgs.lisp",
+		`(in-package 'first) (set 'early 1) (export 'early) (in-package 'host) (use-package 'first 'other)`).Type)
+	_, ok := env.Runtime.Registry.Package("host").Symbol("early")
+	assert.False(t, ok, "host bound a name of a use-package that was refused")
+}
+
+// An error a policy builds without env gets the caller's stack.
+func TestPackageSealPolicyErrorHasStack(t *testing.T) {
+	env := sealedHostEnv(t, func(_ *lisp.LEnv, v lisp.SealViolation) *lisp.LVal {
+		return lisp.Errorf("refused %s", v.Symbol)
+	})
+	got := env.LoadString("seal.lisp", "\n(set 'host:config 2)")
+	require.Equal(t, lisp.LError, got.Type)
+	assert.NotNil(t, got.CallStack())
+	assert.Contains(t, got.String(), "seal.lisp:2")
+}
+
+// The seal covers the package's own Lisp functions, which run with it as
+// the current package (documented on Package.Seal).
+func TestPackageSealCoversOwnFunctions(t *testing.T) {
+	env := templateTestEnv(t)
+	require.NoError(t, lisp.GoError(env.LoadString("host.lisp",
+		`(in-package 'host) (set 'counter 0) (defun bump () (set 'counter (+ counter 1))) (export 'bump)`)))
+	require.NoError(t, env.Runtime.Registry.Package("host").Seal(nil))
+	got := env.LoadString("call.lisp", `(host:bump)`)
+	assert.Contains(t, got.String(), "cannot rebind sealed package binding: host:counter")
 }

@@ -91,7 +91,11 @@ var ErrPackageSealed = errors.New("package is already sealed")
 // before the call, and Go writes at any time, are not affected.
 //
 // A host seals its packages after it has defined them and before it loads
-// code it does not own.  The seal is part of the package: NewTemplate keeps
+// code it does not own.  The seal applies to every Lisp write, the package's
+// own Lisp functions included: a function defined in the package runs with
+// it as the current package, so its (set 'counter ...) is refused too.  A
+// host package that keeps state that way must move the state to Go, or keep
+// it in an unsealed package.  The seal is part of the package: NewTemplate keeps
 // it in every VM, and so does package admission.  Seal returns
 // ErrPackageSealed if pkg is already sealed, and so for the lisp package.
 func (pkg *Package) Seal(policy SealPolicy) error {
@@ -122,6 +126,11 @@ func (env *LEnv) checkSealedWrite(pkg *Package, name string, write SealWrite) *L
 		return env.Errorf("cannot rebind sealed package binding: %s:%s", pkg.Name, name)
 	}
 	if r := s.policy(env, SealViolation{Package: pkg.Name, Symbol: name, Write: write}); r.IsError() {
+		// A policy may build its error without env (lisp.Errorf): give it
+		// the caller's stack, as other errors from package writes get.
+		if err := env.ErrorAssociate(r); err != nil {
+			return err
+		}
 		return r
 	}
 	return nil

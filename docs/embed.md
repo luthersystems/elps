@@ -299,7 +299,10 @@ from `router`, and a `use-package` into `router` all fail with
 `Update`, `Package.Put`, `BindBuiltins` with `Shadow`) still succeed: the host
 owns the package. Lexical bindings that share a name, a user package's own
 copy of an imported name, and re-exporting an existing export are not writes
-to the package and are not affected. A package is sealed once:
+to the package and are not affected. The package's own Lisp functions are
+not exempt: a function runs with its package current, so a `defun` in
+`router` that does `(set 'counter ...)` fails once `router` is sealed; keep
+such state in Go or in an unsealed package. A package is sealed once:
 `Seal` returns `ErrPackageSealed` on a sealed package, the `lisp` package
 included, so no later caller can loosen a seal.
 
@@ -307,7 +310,12 @@ A non-nil `SealPolicy` decides each write instead. elps calls it before the
 write with a `SealViolation` (package, unqualified name, and whether the write
 binds, exports or uses a package); an error result refuses the write and is
 returned to the Lisp caller, and any other result lets the write go ahead.
-A checker can so record every rebind of a program and still let it load:
+elps asks the policy only about writes that would happen: a `set!` of an
+unbound name, a write to `true` or `false`, a malformed name, an `export` with
+an invalid argument, and a `use-package` that changes no binding never reach
+it, and a `use-package` of several packages asks about all of them before it
+uses any. A checker can so record every rebind of a program and still let it
+load:
 
 ```go
 pkg.Seal(func(env *lisp.LEnv, v lisp.SealViolation) *lisp.LVal {

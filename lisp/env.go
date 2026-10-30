@@ -772,7 +772,7 @@ func (env *LEnv) update(k, v *LVal, fromLisp bool) *LVal {
 		}
 		if env.parent == nil {
 			if fromLisp {
-				if err := env.checkLispPackageBinding(k.Str); err != nil {
+				if err := env.checkLispPackageBinding(k.Str, true); err != nil {
 					return err
 				}
 			}
@@ -800,7 +800,7 @@ func (env *LEnv) updateQualified(k, v *LVal, fromLisp bool) *LVal {
 	checkOwnership(env.Runtime, v)
 	if fromLisp {
 		// Same check, in the same order, as PutGlobalFromLisp.
-		if err := env.checkLispPackageBinding(k.Str); err != nil {
+		if err := env.checkLispPackageBinding(k.Str, true); err != nil {
 			return err
 		}
 	}
@@ -875,7 +875,7 @@ func (env *LEnv) PutGlobalFromLisp(k, v *LVal) *LVal {
 	if k.Type != LSymbol {
 		return env.Errorf("key is not a symbol: %v", k.Type)
 	}
-	if err := env.checkLispPackageBinding(k.Str); err != nil {
+	if err := env.checkLispPackageBinding(k.Str, false); err != nil {
 		return err
 	}
 	return env.PutGlobal(k, v)
