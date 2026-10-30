@@ -17,6 +17,21 @@ func (env *LEnv) recoverPanic(result **LVal) {
 	}
 }
 
+// PanicError returns the error the evaluator makes of a Go panic p that it
+// recovers.  The error has condition internal-panic, the message "internal
+// error (recovered panic): " followed by a description of p, and the Go stack
+// of the caller attached, so IsInternalPanic reports it.  An embedder calls it
+// from its own recover, in Go code that the evaluator does not run, so that
+// a host panic there fails exactly as a panic inside a builtin does.
+//
+// The description calls no method of p other than a runtime error's Error,
+// because p may refer to the object whose fault caused the panic.  In an
+// elpscheck build, PanicError panics again with an ownership or seal
+// violation: those must stop the test that made them.
+func (env *LEnv) PanicError(p any) *LVal {
+	return env.panicError(p)
+}
+
 func (env *LEnv) panicError(p any) *LVal {
 	rethrowOwnershipViolation(p)
 	// Recovery must not re-enter a debugger that may itself have panicked

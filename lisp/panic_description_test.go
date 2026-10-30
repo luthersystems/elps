@@ -97,3 +97,30 @@ func TestLoadContainsInputStreamPanic(t *testing.T) {
 		})
 	}
 }
+
+// TestPanicErrorMatchesEvaluator pins that PanicError, called from a host
+// recover, makes the error the evaluator makes of the same panic in a
+// builtin.  An embedder that calls into Go outside an evaluation relies on
+// this to fail the same way.
+func TestPanicErrorMatchesEvaluator(t *testing.T) {
+	for _, payload := range []any{"boom", 42, &panicFormattingPayload{}, nil} {
+		t.Run(fmt.Sprintf("%T", payload), func(t *testing.T) {
+			env := newLimitTestEnv(t)
+			fun := lisp.FunInPackage(lisp.DefaultUserPackage, "host-fault", lisp.Formals(), func(*lisp.LEnv, *lisp.LVal) *lisp.LVal {
+				panic(payload)
+			})
+			evaluated := env.Eval(lisp.SExpr([]*lisp.LVal{fun}))
+			require.True(t, lisp.IsInternalPanic(evaluated), "%v", evaluated)
+
+			var host *lisp.LVal
+			func() {
+				defer func() { host = env.PanicError(recover()) }()
+				panic(payload)
+			}()
+			require.True(t, lisp.IsInternalPanic(host), "%v", host)
+			require.Equal(t, evaluated.Str, host.Str)
+			require.Equal(t, lisp.GoError(evaluated).Error(), lisp.GoError(host).Error())
+			require.NotEmpty(t, host.CallStack().GoStack)
+		})
+	}
+}
