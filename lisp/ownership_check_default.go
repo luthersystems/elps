@@ -33,3 +33,8 @@ func checkDetachedNativeUnbound(_ any) {}
 // recover() so they stay hard panics instead of becoming catchable LError
 // values.  It sits on the panic path only — never the hot path.
 func rethrowOwnershipViolation(_ any) {}
+
+// ResetOwnershipTable drops the elpscheck build's ownership records.  It is a
+// no-op in production builds, which keep no records.  See the elpscheck
+// version for when a host calls it.
+func ResetOwnershipTable() {}
