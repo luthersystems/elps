@@ -120,3 +120,19 @@ func TestTestHelperFilesSkipsDirsAndEmptyPrefix(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, []string{filepath.Join(dir, "ok_testhelpers.lisp")}, files)
 }
+
+// LoadHelpersFn replaces the helper load for every env the Runner builds:
+// the discovery pass and each test, each with the test file's path.
+func TestTestHelpersLoadHelpersFn(t *testing.T) {
+	path := filepath.Join(helperData, "shared", "a_test.lisp")
+	var calls []string
+	r := &Runner{LoadHelpersFn: func(env *lisp.LEnv, testPath string) error {
+		calls = append(calls, testPath)
+		return LoadTestHelpers(env, testPath)
+	}}
+	r.RunTestFile(t, path)
+	require.GreaterOrEqual(t, len(calls), 2, "the discovery pass and at least one test")
+	for _, c := range calls {
+		assert.Equal(t, path, c)
+	}
+}
