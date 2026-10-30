@@ -32,3 +32,21 @@ func TestMapLoadCache(t *testing.T) {
 	loadFixture(t, env)
 	require.Equal(t, 1, reader.reads, "a load after Clear must parse again")
 }
+
+// TestMapLoadCacheZeroValue pins that the zero value is a working cache: a
+// Store into it must not panic, which the load path would swallow and turn
+// into a cache that never stores.
+func TestMapLoadCacheZeroValue(t *testing.T) {
+	t.Parallel()
+	files := cacheFixtureFS()
+	cache := &lisp.MapLoadCache{}
+	_, ok := cache.Load("missing")
+	require.False(t, ok)
+
+	env, _ := newCacheEnv(t, files, cache)
+	loadFixture(t, env)
+	require.Equal(t, 1, cache.Len())
+	env, reader := newCacheEnv(t, files, cache)
+	loadFixture(t, env)
+	require.Zero(t, reader.reads, "a hit must not parse")
+}

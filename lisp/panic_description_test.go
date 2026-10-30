@@ -114,7 +114,11 @@ func TestPanicErrorMatchesEvaluator(t *testing.T) {
 
 			var host *lisp.LVal
 			func() {
-				defer func() { host = env.PanicError(recover()) }()
+				defer func() {
+					if p := recover(); p != nil {
+						host = env.PanicError(p)
+					}
+				}()
 				panic(payload)
 			}()
 			require.True(t, lisp.IsInternalPanic(host), "%v", host)

@@ -18,7 +18,9 @@ func (env *LEnv) recoverPanic(result **LVal) {
 }
 
 // PanicError returns the error the evaluator makes of a Go panic p that it
-// recovers.  The error has condition internal-panic, the message "internal
+// recovers.  p must be a non-nil value from recover: recover returns nil
+// when nothing panicked, and PanicError would make an error of that nil.
+// Since Go 1.21, panic(nil) recovers as a non-nil *runtime.PanicNilError.  The error has condition internal-panic, the message "internal
 // error (recovered panic): " followed by a description of p, and the Go stack
 // of the caller attached, so IsInternalPanic reports it.  An embedder calls it
 // from its own recover, in Go code that the evaluator does not run, so that

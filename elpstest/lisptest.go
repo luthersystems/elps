@@ -134,8 +134,9 @@ type Runner struct {
 
 	// LoadHelpersFn, when non-nil, replaces LoadTestHelpers for every
 	// environment the Runner builds.  The Runner calls it where it would
-	// call LoadTestHelpers(env, testPath): after NewEnv and SetupFn, just
-	// before it loads the test file.  It exists for an embedder whose
+	// call LoadTestHelpers(env, testPath), just before it loads the test
+	// file: after NewEnv and SetupFn for a test or benchmark, and after
+	// NewEnv alone in the discovery pass, which does not run SetupFn.  It exists for an embedder whose
 	// NewEnvFn forks a template that already evaluated the helpers.  Loading
 	// them again in each fork would repeat their work, and a helper that is
 	// not idempotent would change the fork.  Such a function checks that

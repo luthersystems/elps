@@ -575,13 +575,14 @@ func rethrowOwnershipViolation(r any) {
 }
 
 // ResetOwnershipTable drops every recorded adoption, as the checker does
-// itself when the table reaches its size bound.  The table holds each
-// recorded value's Runtime, so every VM a checked process ran stays
-// reachable until a reset.  A long-running checked host, such as a test
-// harness that runs many VMs in turn, calls it when no VM it started earlier
-// is in use, to free them.  A reset opens a detection gap: a value shared
-// between a VM from before the reset and one from after it goes unreported.
-// It is a no-op in production builds.
+// itself when the table reaches ownershipTableMaxEntries adoptions.  The
+// table holds only weak pointers, but its entries and the sync.Map storage
+// they use stay until a reset (see the Memory section above).  A
+// long-running checked host, such as a test harness that runs many VMs in
+// turn, calls it when no VM it started earlier is in use, to bound that
+// memory well below the automatic reset.  A reset opens a detection gap: a
+// value shared between a VM from before the reset and one from after it goes
+// unreported.  It is a no-op in production builds.
 func ResetOwnershipTable() { resetOwnershipTable() }
 
 // resetOwnershipTable drops every recorded adoption and starts the table
