@@ -56,3 +56,38 @@ func TestDurableTimeCodecs(t *testing.T) {
 	require.True(t, ok)
 	require.Equal(t, 90*time.Second, gotDur)
 }
+
+// TestNewDurableTimeCodecNamesErrors pins that a codec from
+// NewDurableTimeCodec or NewDurableDurationCodec names its own name in its
+// errors, has the Fingerprint of the WithName copy, and saves the same
+// payload as the elps codec.
+func TestNewDurableTimeCodecNamesErrors(t *testing.T) {
+	t.Parallel()
+	env := timeTestEnv(t)
+	tc := libtime.NewDurableTimeCodec("embedder:time")
+	dc := libtime.NewDurableDurationCodec("embedder:duration")
+
+	_, err := tc.Save(env, lisp.Int(1))
+	require.EqualError(t, err, "embedder:time: not a time value")
+	_, err = tc.Load(env, 1, lisp.Int(1))
+	require.EqualError(t, err, "embedder:time: payload is not a string")
+	_, err = tc.Load(env, 1, lisp.String("x"))
+	require.ErrorContains(t, err, "embedder:time: ")
+	_, err = dc.Save(env, lisp.Int(1))
+	require.EqualError(t, err, "embedder:duration: not a duration")
+	_, err = dc.Load(env, 1, lisp.String("x"))
+	require.EqualError(t, err, "embedder:duration: payload is not an integer")
+
+	at := libtime.Time(time.Date(2026, 10, 8, 12, 30, 0, 1, time.FixedZone("X", 3600)))
+	want, err := libtime.DurableTimeCodec.Save(env, at)
+	require.NoError(t, err)
+	got, err := tc.Save(env, at)
+	require.NoError(t, err)
+	require.Equal(t, want.Str, got.Str)
+
+	a, err := libjson.NewFrozenDurableRegistry(libtime.DurableTimeCodec.WithName("embedder:time"), libtime.DurableDurationCodec.WithName("embedder:duration"))
+	require.NoError(t, err)
+	b, err := libjson.NewFrozenDurableRegistry(tc, dc)
+	require.NoError(t, err)
+	require.Equal(t, a.Fingerprint(), b.Fingerprint())
+}
