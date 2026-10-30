@@ -375,6 +375,18 @@ func TestCheckAllocParity(t *testing.T) {
 	})
 }
 
+// TestCheckAllocs pins that CheckAllocs returns the CheckAlloc error of the
+// first size over the cap, in order, and nil when every size fits.
+func TestCheckAllocs(t *testing.T) {
+	env := testEnv(t)
+	env.Runtime.MaxAlloc = 2
+	require.NoError(t, env.CheckAllocs())
+	require.NoError(t, env.CheckAllocs(0, 1, 2))
+	err := env.CheckAllocs(1, 3, 4)
+	require.Error(t, err)
+	assert.Equal(t, env.CheckAlloc(3).Error(), err.Error(), "the first size over the cap names the error")
+}
+
 // inCancelledBuiltin runs fn inside a builtin call under a context that is
 // cancelled when fn starts, so fn sees what a builtin sees after a cancel.
 func inCancelledBuiltin(t *testing.T, env *lisp.LEnv, fn func(env *lisp.LEnv)) {
