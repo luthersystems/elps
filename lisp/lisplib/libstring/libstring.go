@@ -145,6 +145,34 @@ func convertCase(env *lisp.LEnv, s string, mapping func(rune) rune) *lisp.LVal {
 var builtinSplit = lisp.Func2(lisp.StringArg("first argument"), lisp.StringArg("second argument"), split)
 
 func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
+	if lerr := checkSplit(env, str, sep); lerr != nil {
+		return lerr
+	}
+	return lisp.StringList(strings.Split(str, sep))
+}
+
+// Split returns the pieces string:split returns for the strings str and sep,
+// or the same error from the same check.  It checks the evaluation's context
+// first, as LEnv.CallBuiltin does.  Then it charges string:split's steps (one
+// per complete KiB of str) and makes its allocation check ("split would
+// exceed maximum allocation size (N elements)").  A Go port of Lisp code that
+// called string:split calls it, so the port fails where the Lisp failed and
+// charges the steps it charged.  The error is string:split's own
+// *lisp.ErrorVal, so a FuncE body that returns it raises the same condition.
+func Split(env *lisp.LEnv, str, sep string) ([]string, error) {
+	if err := env.CheckContext(); err != nil {
+		return nil, err
+	}
+	if lerr := checkSplit(env, str, sep); lerr != nil {
+		return nil, lisp.GoError(lerr)
+	}
+	return strings.Split(str, sep), nil
+}
+
+// checkSplit is the body of string:split and of Split before the split: the
+// step charge and the allocation check.  The checks and their errors exist
+// once.  It returns nil when there is no error.
+func checkSplit(env *lisp.LEnv, str, sep string) *lisp.LVal {
 	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
@@ -163,7 +191,7 @@ func split(env *lisp.LEnv, str, sep string) *lisp.LVal {
 	if err := env.CheckAlloc(count); err != nil {
 		return lisp.Error(err)
 	}
-	return lisp.StringList(strings.Split(str, sep))
+	return nil
 }
 
 var builtinJoin = lisp.Func2(
@@ -259,26 +287,56 @@ var builtinRepeat = lisp.Func2(
 	repeat)
 
 func repeat(env *lisp.LEnv, str string, n *lisp.LVal) *lisp.LVal {
-	if n.Int < 0 {
-		return env.Errorf("count is negative: %v", n.Int)
+	// Building a new string, not reusing the input LVal, drops its quoting
+	// state: repeat always produces an ordinary string value.
+	s, lerr := repeatString(env, str, n.Int)
+	if lerr != nil {
+		return lerr
 	}
-	if n.Int == 0 || str == "" {
-		return lisp.String("")
+	return lisp.String(s)
+}
+
+// Repeat returns the string string:repeat returns for the string str and the
+// count n, or the same error from the same check.  It checks the evaluation's
+// context first, as LEnv.CallBuiltin does.  Then it makes string:repeat's
+// checks ("count is negative: N", then "repeat would exceed maximum
+// allocation size (N bytes)") and charges its steps: one per complete KiB of
+// the result.  The caller has no argument type to check.  The error is
+// string:repeat's own *lisp.ErrorVal, so a FuncE body that returns it raises
+// the same condition.
+func Repeat(env *lisp.LEnv, str string, n int) (string, error) {
+	if err := env.CheckContext(); err != nil {
+		return "", err
 	}
-	if n.Int == 1 {
-		// Reuse the immutable Go string without retaining the input LVal's
-		// quoting state: repeat always produces an ordinary string value.
-		return lisp.String(str)
+	s, lerr := repeatString(env, str, n)
+	if lerr != nil {
+		return "", lisp.GoError(lerr)
+	}
+	return s, nil
+}
+
+// repeatString is the body of string:repeat and of Repeat after the argument
+// type checks.  The checks, the errors and the step charge exist once.  The
+// error is nil when there is none.
+func repeatString(env *lisp.LEnv, str string, n int) (string, *lisp.LVal) {
+	if n < 0 {
+		return "", env.Errorf("count is negative: %v", n)
+	}
+	if n == 0 || str == "" {
+		return "", nil
+	}
+	if n == 1 {
+		return str, nil
 	}
 	maxAlloc := env.Runtime.MaxAllocBytes()
 	// The source is nonempty; division checks the product without overflow.
-	if n.Int > maxAlloc/len(str) {
-		return env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
+	if n > maxAlloc/len(str) {
+		return "", env.Errorf("repeat would exceed maximum allocation size (%d bytes)", maxAlloc)
 	}
-	if lerr := libutil.ChargeKiB(env, n.Int*len(str)); lerr != nil {
-		return lerr
+	if lerr := libutil.ChargeKiB(env, n*len(str)); lerr != nil {
+		return "", lerr
 	}
-	return lisp.String(strings.Repeat(str, n.Int))
+	return strings.Repeat(str, n), nil
 }
 
 var builtinTrimSpace = lisp.Func1(lisp.StringArg("first argument"), func(env *lisp.LEnv, str string) *lisp.LVal {
