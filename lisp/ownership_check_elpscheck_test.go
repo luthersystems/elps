@@ -269,7 +269,7 @@ func TestOwnershipCheck_ResetForgets(t *testing.T) {
 		t.Fatalf("put in runtime A failed: %v", lerr)
 	}
 	record, _ := ownershipRuntimes.Load(weak.Make(envA.Runtime))
-	resetOwnershipTable()
+	ResetOwnershipTable() // the exported hook hosts call
 	// The backstop must discard the per-runtime lists as well as the table,
 	// while keeping the single cleanup registration for this live Runtime.
 	afterReset, ok := ownershipRuntimes.Load(weak.Make(envA.Runtime))
