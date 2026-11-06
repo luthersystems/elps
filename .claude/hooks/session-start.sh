@@ -78,14 +78,6 @@ if [ -z "$GO_TOOLCHAIN" ]; then
 elif GOTOOLCHAIN="$GO_TOOLCHAIN" go version >/dev/null 2>&1; then
 	printf 'export GOTOOLCHAIN=%s\n' "$GO_TOOLCHAIN" >>"$ENV_FILE"
 	echo "session-start: GOTOOLCHAIN pinned to ${GO_TOOLCHAIN}"
-	# libjson is built and tested on the JSON v1 engine; see "JSON ENGINE" at
-	# the top of the Makefile.  Only here, after the pin: a Go older than 1.25
-	# does not know the jsonv2 experiment and would refuse every command.
-	# Appended, so experiments the session already has are kept.
-	case ",${GOEXPERIMENT:-}," in
-	*,nojsonv2,*) ;;
-	*) printf 'export GOEXPERIMENT=%s\n' "${GOEXPERIMENT:+${GOEXPERIMENT},}nojsonv2" >>"$ENV_FILE" ;;
-	esac
 else
 	echo "session-start: WARNING could not fetch ${GO_TOOLCHAIN}; GOTOOLCHAIN left alone" >&2
 fi

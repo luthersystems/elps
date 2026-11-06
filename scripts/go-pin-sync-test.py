@@ -7,12 +7,12 @@ nothing else may restate the version: a literal `go-version:` (other than
 `stable`/`oldstable`) or `GO_VERSION:` in a workflow, or a hard-coded
 GO_TOOLCHAIN in the hook, fails this test even when it matches.
 
-Every job that sets up Go for the elps module runs with
-GOEXPERIMENT=nojsonv2, from the workflow's env or the job's, and nothing sets it
-to anything else: elps is built and tested on the JSON v1 engine (elps#928,
-"JSON ENGINE" in the Makefile). A job's env is allowed because vscode-publish.yml
-must have no workflow env (#638). tree-sitter.yml is exempt: tree-sitter-elps is
-its own module and does not import libjson.
+CI runs on Go's default JSON engine (v2 on Go 1.27), and elps.yml's json-v1 job
+runs `make JSON_ENGINE=v1 test` with env GOEXPERIMENT=nojsonv2, the v1 engine
+(luthersystems/elps#928, "JSON ENGINE" in the Makefile). That job is the only
+place a workflow may set GOEXPERIMENT: not the workflow env, another job, a
+step's env or a run script. So no job moves to another engine by accident, and
+the v1 job cannot disappear.
 
 The one allowed copy is scripts/cloud-web-setup.sh's GO_VERSION: that script
 runs before the repository is cloned, so it cannot read go.mod. It must equal
@@ -55,23 +55,37 @@ def check_workflow(name, source):
             raise ValueError(f"{name} go-version-file: {path} is not a go.mod")
 
 
-ENGINE_EXEMPT = {"tree-sitter.yml"}
+# The one job that sets GOEXPERIMENT: it runs the tests on the JSON v1 engine.
+V1_WORKFLOW, V1_JOB = "elps.yml", "json-v1"
+
+
+def sets_up_go(job):
+    return any(str(step.get("uses", "")).startswith("actions/setup-go") for step in job.get("steps") or [])
 
 
 def check_engine(name, source):
-    for value in re.findall(r"^\s*GOEXPERIMENT:\s*(\S*)", active(source), re.M):
-        if value.strip("\"'") != "nojsonv2":
-            raise ValueError(f"{name} sets GOEXPERIMENT: {value}; elps needs nojsonv2")
-    if name in ENGINE_EXEMPT:
-        return
     doc = yaml.safe_load(source) or {}
-    top = (doc.get("env") or {}).get("GOEXPERIMENT")
-    for job_name, job in (doc.get("jobs") or {}).items():
-        steps = job.get("steps") or []
-        if not any(str(step.get("uses", "")).startswith("actions/setup-go") for step in steps):
-            continue
-        if (job.get("env") or {}).get("GOEXPERIMENT", top) != "nojsonv2":
-            raise ValueError(f"{name} job {job_name} sets up Go without env GOEXPERIMENT: nojsonv2")
+    if "GOEXPERIMENT" in (doc.get("env") or {}):
+        raise ValueError(f"{name} sets GOEXPERIMENT for the whole workflow; jobs use Go's default engine")
+    jobs = doc.get("jobs") or {}
+    for job_name, job in jobs.items():
+        value = (job.get("env") or {}).get("GOEXPERIMENT")
+        if value is not None and (name, job_name, value) != (V1_WORKFLOW, V1_JOB, "nojsonv2"):
+            raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT: {value!r}")
+        for step in job.get("steps") or []:
+            if "GOEXPERIMENT" in (step.get("env") or {}):
+                raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT on a step")
+            if re.search(r"GOEXPERIMENT\s*=", str(step.get("run", ""))):
+                raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT in a run script")
+    if name != V1_WORKFLOW:
+        return
+    job = jobs.get(V1_JOB)
+    if job is None:
+        raise ValueError(f"{name} has no {V1_JOB} job; CI must test the JSON v1 engine")
+    if (job.get("env") or {}).get("GOEXPERIMENT") != "nojsonv2" or not sets_up_go(job):
+        raise ValueError(f"{name} job {V1_JOB} must set up Go with env GOEXPERIMENT: nojsonv2")
+    if not any("make JSON_ENGINE=v1 test" in str(step.get("run", "")) for step in job.get("steps") or []):
+        raise ValueError(f"{name} job {V1_JOB} must run `make JSON_ENGINE=v1 test`")
 
 
 def check_hook(source):
@@ -112,19 +126,32 @@ class GoPinSync(unittest.TestCase):
                 check_workflow("x.yml", source)
         check_workflow("ok.yml", "      - with:\n          go-version: \"stable\"\n")
         setup = "jobs:\n  a:\n    steps:\n      - uses: actions/setup-go@x\n"
+        v1_steps = "    steps:\n      - uses: actions/setup-go@x\n      - run: make JSON_ENGINE=v1 test\n"
+        v1_job = "  json-v1:\n    env:\n      GOEXPERIMENT: nojsonv2\n" + v1_steps
         bad_engine = {
-            "no engine env": setup,
-            "other engine": "env:\n  GOEXPERIMENT: jsonv2\n" + setup,
-            "job override": "env:\n  GOEXPERIMENT: nojsonv2\n" + setup + "        env:\n          GOEXPERIMENT: \"\"\n",
+            "workflow pin": "env:\n  GOEXPERIMENT: nojsonv2\n" + setup,
+            "workflow empty": "env:\n  GOEXPERIMENT: \"\"\n" + setup,
+            "job pin": "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps: []\n",
+            "step pin": setup + "        env:\n          GOEXPERIMENT: nojsonv2\n",
+            "run pin": setup + "      - run: GOEXPERIMENT=nojsonv2 go test ./...\n",
+            "v1 job name elsewhere": "jobs:\n" + v1_job,
         }
         for label, source in bad_engine.items():
             with self.subTest(fault=label), self.assertRaises(ValueError):
                 check_engine("x.yml", source)
-        check_engine("ok.yml", "env:\n  A: b\n  GOEXPERIMENT: nojsonv2\n" + setup)
-        check_engine("job.yml", "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps:\n      - uses: actions/setup-go@x\n")
-        with self.subTest(fault="other job without engine"), self.assertRaises(ValueError):
-            check_engine("x.yml", "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps: []\n"
-                         "  b:\n    steps:\n      - uses: actions/setup-go@x\n")
+        check_engine("ok.yml", "env:\n  A: b\n" + setup)
+        check_engine("elps.yml", setup + v1_job)
+        bad_v1 = {
+            "no v1 job": setup,
+            "v1 job without env": setup + "  json-v1:\n" + v1_steps,
+            "v1 job other engine": setup + v1_job.replace("nojsonv2", "jsonv2"),
+            "v1 job without Go": setup + v1_job.replace("actions/setup-go@x", "actions/checkout@x"),
+            "v1 job without tests": setup + v1_job.replace("make JSON_ENGINE=v1 test", "true"),
+            "second job pins": setup.replace("  a:\n", "  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n") + v1_job,
+        }
+        for label, source in bad_v1.items():
+            with self.subTest(fault=label), self.assertRaises(ValueError):
+                check_engine("elps.yml", source)
         with self.subTest(fault="hook literal"), self.assertRaises(ValueError):
             check_hook('GO_TOOLCHAIN="go1.26.8"\n')
         with self.subTest(fault="setup drifted"), self.assertRaises(ValueError):
