@@ -159,6 +159,17 @@ jobs:
       - name: Tests
         run: make test
 
+      # Go 1.27 runs encoding/json on the JSON v2 engine; GOEXPERIMENT=nojsonv2
+      # selects the old v1 engine.  substrate's chaincode builds elps with
+      # nojsonv2, because its endorsed bytes and phylum-visible errors must not
+      # change with the toolchain, and libjson keeps the same results on both
+      # engines.  This step runs the Go tests on the engine the chaincode
+      # uses, so a change that only works on v2 fails here.
+      - name: Tests on the JSON v1 engine (GOEXPERIMENT=nojsonv2)
+        env:
+          GOEXPERIMENT: nojsonv2
+        run: go test ./...
+
       - name: Race detection (full)
         run: make race
 
