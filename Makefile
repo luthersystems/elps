@@ -5,7 +5,12 @@
 # those bytes, so it builds elps on the v1 engine, and elps is built and tested
 # the same way. Remove this when libjson gives the same results on both
 # engines (elps#928).
-export GOEXPERIMENT ?= nojsonv2
+# Appended, not defaulted: `?=` would do nothing when GOEXPERIMENT is already
+# set (even to ""), and the build would quietly move to the v2 engine.
+comma := ,
+ifeq ($(filter nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT))),)
+export GOEXPERIMENT := $(if $(strip $(GOEXPERIMENT)),$(GOEXPERIMENT)$(comma))nojsonv2
+endif
 
 BIN=./elps
 GO_FILES=$(shell find . -name '*.go')

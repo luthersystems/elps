@@ -49,11 +49,12 @@ designed to be embedded within Go applications. Module:
 ### JSON engine (Go 1.27)
 
 elps is built and tested with `GOEXPERIMENT=nojsonv2`, the JSON v1 engine.
-The Makefile, the workflows and the session hook set it. A plain `go test` on
-Go 1.27 without it uses the v2 engine, and libjson tests fail there, starting
-with `TestJSONEngine`. The cause is that libjson's native encoding still
-depends on the engine, and substrate's chaincode needs the v1 bytes
-(elps#928).
+The Makefile, elps's own Go workflows and the session hook set it
+(`scripts/go-pin-sync-test.py` checks the workflows); the org's shared Quality
+and Security workflows do not. A plain `go test` on Go 1.27 without it uses the
+v2 engine, and libjson tests fail there; `TestJSONEngine` is the failure that
+names the cause. libjson's native encoding still depends on the engine, and
+substrate's chaincode needs the v1 bytes (elps#928).
 
 ### golangci-lint version skew
 

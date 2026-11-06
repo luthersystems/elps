@@ -7,6 +7,12 @@ nothing else may restate the version: a literal `go-version:` (other than
 `stable`/`oldstable`) or `GO_VERSION:` in a workflow, or a hard-coded
 GO_TOOLCHAIN in the hook, fails this test even when it matches.
 
+Every workflow that sets up Go for the elps module also sets
+GOEXPERIMENT=nojsonv2 at the top level, and nothing sets it to anything else:
+elps is built and tested on the JSON v1 engine (elps#928, "JSON ENGINE" in the
+Makefile). tree-sitter.yml is exempt: tree-sitter-elps is its own module and
+does not import libjson.
+
 The one allowed copy is scripts/cloud-web-setup.sh's GO_VERSION: that script
 runs before the repository is cloned, so it cannot read go.mod. It must equal
 go.mod's toolchain line.
@@ -46,6 +52,20 @@ def check_workflow(name, source):
             raise ValueError(f"{name} go-version-file: {path} is not a go.mod")
 
 
+ENGINE_EXEMPT = {"tree-sitter.yml"}
+
+
+def check_engine(name, source):
+    src = active(source)
+    for value in re.findall(r"^\s*GOEXPERIMENT:\s*(\S*)", src, re.M):
+        if value.strip("\"'") != "nojsonv2":
+            raise ValueError(f"{name} sets GOEXPERIMENT: {value}; elps needs nojsonv2")
+    if name in ENGINE_EXEMPT or "actions/setup-go" not in src:
+        return
+    if not re.search(r"^env:\n(?:[ \t]+.*\n|\n)*?  GOEXPERIMENT: nojsonv2$", src, re.M):
+        raise ValueError(f"{name} sets up Go without top-level env GOEXPERIMENT: nojsonv2")
+
+
 def check_hook(source):
     if re.search(r'^\s*GO_TOOLCHAIN="?go[0-9]', active(source), re.M):
         raise ValueError("session-start.sh hard-codes GO_TOOLCHAIN; read go.mod")
@@ -69,6 +89,7 @@ class GoPinSync(unittest.TestCase):
         for name, source in self.workflows.items():
             with self.subTest(workflow=name):
                 check_workflow(name, source)
+                check_engine(name, source)
         check_hook(self.hook)
         check_setup(self.setup, self.want)
 
@@ -82,6 +103,16 @@ class GoPinSync(unittest.TestCase):
             with self.subTest(fault=label), self.assertRaises(ValueError):
                 check_workflow("x.yml", source)
         check_workflow("ok.yml", "      - with:\n          go-version: \"stable\"\n")
+        setup = "jobs:\n  a:\n    steps:\n      - uses: actions/setup-go@x\n"
+        bad_engine = {
+            "no engine env": setup,
+            "other engine": "env:\n  GOEXPERIMENT: jsonv2\n" + setup,
+            "job override": "env:\n  GOEXPERIMENT: nojsonv2\n" + setup + "        env:\n          GOEXPERIMENT: \"\"\n",
+        }
+        for label, source in bad_engine.items():
+            with self.subTest(fault=label), self.assertRaises(ValueError):
+                check_engine("x.yml", source)
+        check_engine("ok.yml", "env:\n  A: b\n  GOEXPERIMENT: nojsonv2\n" + setup)
         with self.subTest(fault="hook literal"), self.assertRaises(ValueError):
             check_hook('GO_TOOLCHAIN="go1.26.8"\n')
         with self.subTest(fault="setup drifted"), self.assertRaises(ValueError):
