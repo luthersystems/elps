@@ -41,6 +41,27 @@ const jsonNestingLimit = 10_000
 // to record pointers, maps and slices once it is this many of them deep.
 const jsonCycleCheckAfter = 1000
 
+// nativeInvalidByteLen is how many bytes encoding/json writes for one
+// invalid UTF-8 byte in a native's string: 6 for the escape \ufffd on the
+// JSON v1 engine (GOEXPERIMENT=nojsonv2), 3 for a raw U+FFFD on the v2
+// engine, Go 1.27's default (luthersystems/elps#928).  It is measured once,
+// so the walk's estimate follows the engine this binary is built with and
+// stays a lower bound on both.  A build tag could name the wrong engine on a
+// later Go that drops the experiment.
+var nativeInvalidByteLen = func() int {
+	b, err := json.Marshal("\xff")
+	if err != nil || len(b) < 2 {
+		return len("\uFFFD") // the smaller form keeps est a lower bound
+	}
+	return min(len(b)-2, len(`\ufffd`))
+}()
+
+// nativeStringLen is the length of a native's string as encoding/json
+// writes it on this binary's engine, quotes included.
+func nativeStringLen(s string) int {
+	return escapedStringLen(s, nativeInvalidByteLen)
+}
+
 // nativeRefScan is how many open references the walk searches linearly for a
 // cycle before it indexes them in a map.
 const nativeRefScan = 32
@@ -317,7 +338,7 @@ func (w *nativeWalker) step() {
 		}
 		k := f.keys[f.i]
 		f.i++
-		w.add(jsonStringLen(k) + 1)
+		w.add(nativeStringLen(k) + 1)
 		w.anyElem(f.anyMap[k])
 	case frameMap:
 		if f.i == len(f.entries) {
@@ -326,7 +347,7 @@ func (w *nativeWalker) step() {
 		}
 		e := f.entries[f.i]
 		f.i++
-		w.add(jsonStringLen(e.name) + 1)
+		w.add(nativeStringLen(e.name) + 1)
 		if w.descend() {
 			w.value(e.val, false, 1, 0)
 		}
@@ -437,7 +458,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 	case nil:
 		w.add(4)
 	case string:
-		w.add(jsonStringLen(t))
+		w.add(nativeStringLen(t))
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
 			w.jsonError()
@@ -533,7 +554,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 		case reflect.String:
 			s := v.String()
 			if v.Type() != jsonNumberType {
-				w.add(jsonStringLen(s) + q)
+				w.add(nativeStringLen(s) + q)
 				break
 			}
 			if s == "" {
@@ -887,7 +908,7 @@ func (w *nativeWalker) callMarshaler(m reflect.Value, text bool) {
 			w.jsonError()
 			return
 		}
-		w.add(jsonStringLen(string(b)))
+		w.add(nativeStringLen(string(b)))
 		return
 	}
 	jm, ok := m.Interface().(json.Marshaler)
