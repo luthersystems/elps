@@ -59,7 +59,7 @@ in `elps.yml` runs `make test` plus libjson's race and elpscheck runs on v1
 |------|-----------------------|
 | Bytes libjson writes for lisp values (strings, keys, symbols): invalid UTF-8 is `\ufffd` | Yes (`TestStringEscapingIsEngineIndependent`) |
 | Typed, durable and canonical encodings, and values decoded by `json:load-*` | Yes |
-| A native Go value: encoding/json writes it. Invalid UTF-8 in its strings, `map[float64]T` and `map[bool]T` keys, cycles, nesting past 10000, marshaler errors | No |
+| A native Go value: encoding/json writes it. Invalid UTF-8 in its strings, `map[float64]T` keys, a nil `map[bool]T`, cycles, nesting past 10000, marshaler errors | No |
 | Error text of `json:load-*` for malformed JSON | No |
 
 A test that pins a per-engine result asks `libjson.JSONV2EngineForTest()`

@@ -310,7 +310,7 @@ func TestCanonizeNativeByteGuarantees(t *testing.T) {
 		native := lisp.Native(v) //elpsvet:allow-native test owns these unsupported nil maps
 		b, err := libjson.Dump(native, false)
 		if libjson.JSONV2EngineForTest() {
-			// The v2 engine marshals float and bool map keys
+			// The v2 engine writes a nil map of these key types as null
 			// (luthersystems/elps#928).  Canonize refuses them on both.
 			require.NoError(t, err)
 			require.Equal(t, "null", string(b))

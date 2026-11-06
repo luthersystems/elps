@@ -1652,7 +1652,8 @@ engine the program is built with:
 | Native | v1 engine | v2 engine |
 |--------|-----------|-----------|
 | Invalid UTF-8 in a string or map key | `\ufffd` | a raw U+FFFD |
-| A `map[float64]T` or `map[bool]T` | `json: unsupported type` | encoded |
+| A `map[float64]T` | `json: unsupported type` | encoded |
+| A nil `map[bool]T` | `json: unsupported type` | `null` (a non-nil one is refused, with v2 text) |
 | A cycle that nests past 10,000 levels before it repeats | `encountered a cycle` error | `exceeded max depth` |
 | An invalid `json.Number`, `RawMessage` or failing marshaler | v1 error text | v2 error text |
 

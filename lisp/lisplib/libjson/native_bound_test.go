@@ -74,14 +74,14 @@ func TestDumpRefusesDeepNativeWithoutCrashing(t *testing.T) {
 	}
 }
 
-// A native too deep to load reports the same error at every depth: through
-// encoding/json and checkLoadable below the walk's bound, and from the walk
-// above it.
+// On the JSON v1 engine a native too deep to load reports the same error at
+// every depth: through encoding/json and checkLoadable below the walk's
+// bound, and from the walk above it.
 //
 // On the JSON v2 engine encoding/json refuses the shallower two itself, with
 // its own text (luthersystems/elps#928).  The walk's refusal of the deeper two
 // keeps the v1 text on both engines.
-func TestDumpDeepNativeErrorIsTheSameAtEveryDepth(t *testing.T) {
+func TestDumpDeepNativeErrorByDepth(t *testing.T) {
 	const v1 = "unable to encode native value: invalid character '[' exceeded max depth"
 	const v2 = "exceeded max depth"
 	for _, tc := range []struct {

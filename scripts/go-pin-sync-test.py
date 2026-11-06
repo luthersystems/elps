@@ -11,7 +11,8 @@ CI runs on Go's default JSON engine (v2 on Go 1.27), and elps.yml's json-v1 job
 runs `make JSON_ENGINE=v1 test` with env GOEXPERIMENT=nojsonv2, the v1 engine
 (luthersystems/elps#928, "JSON ENGINE" in the Makefile). That job is the only
 place a workflow may set GOEXPERIMENT: not the workflow env, another job, a
-step's env or a run script. So no job moves to another engine by accident, and
+container, a step's env or a run script. No other job runs make with
+JSON_ENGINE=. So no job moves to another engine by accident, and
 the v1 job cannot disappear.
 
 The one allowed copy is scripts/cloud-web-setup.sh's GO_VERSION: that script
@@ -70,13 +71,20 @@ def check_engine(name, source):
     jobs = doc.get("jobs") or {}
     for job_name, job in jobs.items():
         value = (job.get("env") or {}).get("GOEXPERIMENT")
-        if value is not None and (name, job_name, value) != (V1_WORKFLOW, V1_JOB, "nojsonv2"):
+        v1_job = (name, job_name) == (V1_WORKFLOW, V1_JOB)
+        if value is not None and (not v1_job or value != "nojsonv2"):
             raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT: {value!r}")
+        container = job.get("container")
+        if isinstance(container, dict) and "GOEXPERIMENT" in (container.get("env") or {}):
+            raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT on its container")
         for step in job.get("steps") or []:
             if "GOEXPERIMENT" in (step.get("env") or {}):
                 raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT on a step")
-            if re.search(r"GOEXPERIMENT\s*=", str(step.get("run", ""))):
+            run = str(step.get("run", ""))
+            if re.search(r"GOEXPERIMENT\s*=", run):
                 raise ValueError(f"{name} job {job_name} sets GOEXPERIMENT in a run script")
+            if not v1_job and re.search(r"JSON_ENGINE\s*=", run):
+                raise ValueError(f"{name} job {job_name} picks a JSON engine with JSON_ENGINE")
     if name != V1_WORKFLOW:
         return
     job = jobs.get(V1_JOB)
@@ -134,6 +142,9 @@ class GoPinSync(unittest.TestCase):
             "job pin": "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps: []\n",
             "step pin": setup + "        env:\n          GOEXPERIMENT: nojsonv2\n",
             "run pin": setup + "      - run: GOEXPERIMENT=nojsonv2 go test ./...\n",
+            "make engine": setup + "      - run: make JSON_ENGINE=v1 fuzz\n",
+            "container pin": "jobs:\n  a:\n    container:\n      image: x\n      env:\n        GOEXPERIMENT: nojsonv2\n"
+                             "    steps:\n      - uses: actions/setup-go@x\n",
             "v1 job name elsewhere": "jobs:\n" + v1_job,
         }
         for label, source in bad_engine.items():

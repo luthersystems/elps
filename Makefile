@@ -10,10 +10,10 @@ comma := ,
 space := $(subst ,, )
 ifeq ($(JSON_ENGINE),v1)
 ifeq ($(filter nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT))),)
-export GOEXPERIMENT := $(if $(strip $(GOEXPERIMENT)),$(GOEXPERIMENT)$(comma))nojsonv2
+override export GOEXPERIMENT := $(if $(strip $(GOEXPERIMENT)),$(GOEXPERIMENT)$(comma))nojsonv2
 endif
 else ifeq ($(JSON_ENGINE),v2)
-export GOEXPERIMENT := $(subst $(space),$(comma),$(strip $(filter-out nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT)))))
+override export GOEXPERIMENT := $(subst $(space),$(comma),$(strip $(filter-out nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT)))))
 else ifneq ($(JSON_ENGINE),)
 $(error JSON_ENGINE must be v1, v2 or empty, not "$(JSON_ENGINE)")
 endif
