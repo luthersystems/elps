@@ -7,11 +7,12 @@ nothing else may restate the version: a literal `go-version:` (other than
 `stable`/`oldstable`) or `GO_VERSION:` in a workflow, or a hard-coded
 GO_TOOLCHAIN in the hook, fails this test even when it matches.
 
-Every workflow that sets up Go for the elps module also sets
-GOEXPERIMENT=nojsonv2 at the top level, and nothing sets it to anything else:
-elps is built and tested on the JSON v1 engine (elps#928, "JSON ENGINE" in the
-Makefile). tree-sitter.yml is exempt: tree-sitter-elps is its own module and
-does not import libjson.
+Every job that sets up Go for the elps module runs with
+GOEXPERIMENT=nojsonv2, from the workflow's env or the job's, and nothing sets it
+to anything else: elps is built and tested on the JSON v1 engine (elps#928,
+"JSON ENGINE" in the Makefile). A job's env is allowed because vscode-publish.yml
+must have no workflow env (#638). tree-sitter.yml is exempt: tree-sitter-elps is
+its own module and does not import libjson.
 
 The one allowed copy is scripts/cloud-web-setup.sh's GO_VERSION: that script
 runs before the repository is cloned, so it cannot read go.mod. It must equal
@@ -21,6 +22,8 @@ go.mod's toolchain line.
 import pathlib
 import re
 import unittest
+
+import yaml
 
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
@@ -56,14 +59,19 @@ ENGINE_EXEMPT = {"tree-sitter.yml"}
 
 
 def check_engine(name, source):
-    src = active(source)
-    for value in re.findall(r"^\s*GOEXPERIMENT:\s*(\S*)", src, re.M):
+    for value in re.findall(r"^\s*GOEXPERIMENT:\s*(\S*)", active(source), re.M):
         if value.strip("\"'") != "nojsonv2":
             raise ValueError(f"{name} sets GOEXPERIMENT: {value}; elps needs nojsonv2")
-    if name in ENGINE_EXEMPT or "actions/setup-go" not in src:
+    if name in ENGINE_EXEMPT:
         return
-    if not re.search(r"^env:\n(?:[ \t]+.*\n|\n)*?  GOEXPERIMENT: nojsonv2$", src, re.M):
-        raise ValueError(f"{name} sets up Go without top-level env GOEXPERIMENT: nojsonv2")
+    doc = yaml.safe_load(source) or {}
+    top = (doc.get("env") or {}).get("GOEXPERIMENT")
+    for job_name, job in (doc.get("jobs") or {}).items():
+        steps = job.get("steps") or []
+        if not any(str(step.get("uses", "")).startswith("actions/setup-go") for step in steps):
+            continue
+        if (job.get("env") or {}).get("GOEXPERIMENT", top) != "nojsonv2":
+            raise ValueError(f"{name} job {job_name} sets up Go without env GOEXPERIMENT: nojsonv2")
 
 
 def check_hook(source):
@@ -113,6 +121,10 @@ class GoPinSync(unittest.TestCase):
             with self.subTest(fault=label), self.assertRaises(ValueError):
                 check_engine("x.yml", source)
         check_engine("ok.yml", "env:\n  A: b\n  GOEXPERIMENT: nojsonv2\n" + setup)
+        check_engine("job.yml", "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps:\n      - uses: actions/setup-go@x\n")
+        with self.subTest(fault="other job without engine"), self.assertRaises(ValueError):
+            check_engine("x.yml", "jobs:\n  a:\n    env:\n      GOEXPERIMENT: nojsonv2\n    steps: []\n"
+                         "  b:\n    steps:\n      - uses: actions/setup-go@x\n")
         with self.subTest(fault="hook literal"), self.assertRaises(ValueError):
             check_hook('GO_TOOLCHAIN="go1.26.8"\n')
         with self.subTest(fault="setup drifted"), self.assertRaises(ValueError):
