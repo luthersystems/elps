@@ -4,6 +4,8 @@ package libjson
 
 import (
 	"encoding/json"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -15,11 +17,15 @@ import (
 // engine, Go 1.27's default.  GOEXPERIMENT=nojsonv2 selects the v1 engine.
 // Tests use it for the native cases whose bytes or errors come from
 // encoding/json and differ by engine (luthersystems/elps#928).  It looks at
-// the output, so it stays right on a Go that drops the experiment.
-func JSONV2EngineForTest() bool {
+// the output, so it stays right on a Go that drops the experiment.  It
+// probes encoding/json itself rather than read nativeInvalidByteLen, so a
+// wrong probe in the walk fails TestNativeInvalidByteLen.
+func JSONV2EngineForTest() bool { return jsonV2Engine() }
+
+var jsonV2Engine = sync.OnceValue(func() bool {
 	b, err := json.Marshal("\xff")
 	return err != nil || string(b) != `"\ufffd"`
-}
+})
 
 // TestStringEscapingIsEngineIndependent pins the bytes libjson writes for an
 // lisp string with invalid UTF-8 to `\ufffd`, on both JSON engines.  A
@@ -75,4 +81,31 @@ func TestNativeInvalidByteLen(t *testing.T) {
 	b, err := json.Marshal("a\xff")
 	require.NoError(t, err)
 	require.Equal(t, len(b), nativeStringLen("a\xff"))
+}
+
+// TestNativeFloatKeyMapIsBounded checks that the walk visits a map with
+// float keys on an engine that writes one, so the cap refuses it before
+// encoding/json writes its contents.  The v1 engine refuses the map's type.
+func TestNativeFloatKeyMapIsBounded(t *testing.T) {
+	require.Equal(t, JSONV2EngineForTest(), nativeFloatKeys)
+	big := map[float64]string{1.5: strings.Repeat("x", 1<<20), 2: "y"}
+	enc := getEncoder(false)
+	defer putEncoder(enc)
+	err := enc.boundNative(big, encodeBudget{maxBytes: 1 << 10})
+	if !nativeFloatKeys {
+		require.NoError(t, err, "encoding/json refuses the type itself")
+		return
+	}
+	var size encodeSizeError
+	require.ErrorAs(t, err, &size)
+
+	// Within the cap, the walk's estimate stays a lower bound on the bytes
+	// encoding/json writes, so Dump writes the map.
+	small := map[float64]string{1e-7: "a", 1e21: "b", 0.5: "c"}
+	want, err := json.Marshal(small) //nolint:errchkjson // runs only on v2, which writes float keys
+	require.NoError(t, err)
+	got, err := Dump(lisp.Native(small), false) //elpsvet:allow-native test owns this float-keyed map
+	require.NoError(t, err)
+	require.Equal(t, string(want), string(got))
+	require.NoError(t, enc.boundNative(small, encodeBudget{maxBytes: len(want)}))
 }
