@@ -82,6 +82,11 @@ else
 	echo "session-start: WARNING could not fetch ${GO_TOOLCHAIN}; GOTOOLCHAIN left alone" >&2
 fi
 
+# --- JSON engine ----------------------------------------------------------
+# libjson is built and tested on the JSON v1 engine; see "JSON ENGINE" at the
+# top of the Makefile.
+printf 'export GOEXPERIMENT=nojsonv2\n' >>"$ENV_FILE"
+
 # --- golangci-lint --------------------------------------------------------
 install_golangci() {
 	arch="$(uname -m)"

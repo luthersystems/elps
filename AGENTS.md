@@ -46,6 +46,15 @@ designed to be embedded within Go applications. Module:
 | `make release-notes` | Preview release notes (commits, PRs, CI status since last tag) |
 | `make release VERSION=v1.X.0` | Human fallback only; agents use the `release` skill |
 
+### JSON engine (Go 1.27)
+
+elps is built and tested with `GOEXPERIMENT=nojsonv2`, the JSON v1 engine.
+The Makefile, the workflows and the session hook set it. A plain `go test` on
+Go 1.27 without it uses the v2 engine, and libjson tests fail there, starting
+with `TestJSONEngine`. The cause is that libjson's native encoding still
+depends on the engine, and substrate's chaincode needs the v1 bytes
+(elps#928).
+
 ### golangci-lint version skew
 
 `make static-checks` runs whatever `golangci-lint` is on PATH; CI runs the
