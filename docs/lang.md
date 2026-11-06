@@ -1633,13 +1633,31 @@ dump walks the native and refuses it when:
   allocation error above. Nothing in the native is marshalled.
 - it nests more than 50,000 levels, counting each pointer, interface and
   container. A native nested past the JSON decoder's limit of 10,000 levels
-  reports the decoder's error at any depth: `unable to encode native value:
-  invalid character '[' exceeded max depth` (`'{'` for an object).
+  is refused with `unable to encode native value: invalid character '['
+  exceeded max depth` (`'{'` for an object). On Go's JSON v2 engine,
+  encoding/json refuses a native nested past 10,000 levels itself, with
+  `exceeded max depth`, until the walk's own limit is reached.
 
 Walking a native that is not refused calls no `MarshalJSON` or `MarshalText`
 method. A `math/big` number whose decimal form cannot fit is refused before it
 is converted. Each native is marshalled at most once per dump, however many
 times the value refers to it.
+
+Go 1.27 has two JSON engines: v2 by default, and v1 with
+`GOEXPERIMENT=nojsonv2`. The bytes libjson writes for lisp values are the same
+on both. A string with invalid UTF-8 writes each bad byte as the escape
+`\ufffd`. A native is written by encoding/json, so these results depend on the
+engine the program is built with:
+
+| Native | v1 engine | v2 engine |
+|--------|-----------|-----------|
+| Invalid UTF-8 in a string or map key | `\ufffd` | a raw U+FFFD |
+| A `map[float64]T` or `map[bool]T` | `json: unsupported type` | encoded |
+| A cycle that nests past 10,000 levels before it repeats | `encountered a cycle` error | `exceeded max depth` |
+| An invalid `json.Number`, `RawMessage` or failing marshaler | v1 error text | v2 error text |
+
+The error text of `json:load-string` and the other load functions for
+malformed JSON also depends on the engine. The values they decode do not.
 
 ### JSON object keys
 
