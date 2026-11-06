@@ -2,7 +2,7 @@ module github.com/luthersystems/elps
 
 go 1.26.0
 
-toolchain go1.26.10
+toolchain go1.27.3
 
 require (
 	github.com/ergochat/readline v0.1.3

@@ -80,6 +80,13 @@ jobs:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     name: Build elps (${{ matrix.target }})
     needs: tag-on-main
+    # JSON ENGINE. Go 1.27 runs encoding/json on the new JSON v2 engine unless
+    # GOEXPERIMENT=nojsonv2 is set. libjson's native encoding depends on the
+    # engine (elps#928), and elps ships what it tests: the v1 engine. It is set
+    # on this job and not on the workflow, because a workflow-level env would
+    # reach diagnose-marketplace, which must receive nothing (#638).
+    env:
+      GOEXPERIMENT: nojsonv2
     # ARM for the reason spelled out on elps.yml's lint-and-test job -- this
     # is the HOST the cross-compile runs on, and nothing else.
     #
