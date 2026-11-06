@@ -224,6 +224,15 @@ func TestDumpRefusesNativeTooDeepToLoad(t *testing.T) {
 			// perfectly happy with the value at every depth here, so nothing
 			// upstream of the check has refused it.
 			b, err := json.Marshal(v)
+			if err != nil && libjson.JSONV2EngineForTest() && depth > 10_000 {
+				// The v2 engine also limits nesting when it marshals
+				// (luthersystems/elps#928), so Dump fails with its error.
+				_, derr := libjson.Dump(lisp.Native(v), false)
+				if derr == nil || derr.Error() != err.Error() {
+					t.Fatalf("Dump of a %d-deep native: %v, want %v", depth, derr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("premise broken: the value does not marshal: %v", err)
 			}

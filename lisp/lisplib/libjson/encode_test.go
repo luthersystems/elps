@@ -211,10 +211,9 @@ func TestEncoded_stringCompat(t *testing.T) {
 	rand := mathrand.New(mathrand.NewSource(1234)) //#nosec G404
 	for range 100 {
 		s := string(randBytes(rand, 1024))
-		canonical, err := json.Marshal(s)
-		if !assert.NoError(t, err, "canonical encoding of %q", s) {
-			continue
-		}
+		// The v1 engine's bytes on both engines: random bytes are
+		// mostly invalid UTF-8, which the v2 engine writes raw.
+		canonical := marshalStringV1(t, s)
 		enc := getEncoder(true)
 		if assert.NoError(t, enc.encode(lisp.String(s)), "elps encoding of %q", s) {
 			assert.Equal(t, enc.bytes(), canonical)

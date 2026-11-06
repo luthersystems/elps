@@ -3,6 +3,7 @@
 package fuzzval_test
 
 import (
+	"encoding/json"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -251,7 +252,9 @@ func TestGeneratorProducesStdlibNativeTypes(t *testing.T) {
 		}
 	}
 	for _, want := range []string{
-		"time.Time", "time.Duration", "*regexp.Regexp", "json.RawMessage",
+		"time.Time", "time.Duration", "*regexp.Regexp",
+		// %T of json.RawMessage is jsontext.Value on the JSON v2 engine.
+		fmt.Sprintf("%T", json.RawMessage(nil)),
 		fmt.Sprintf("%T", compiled.Native),
 		fmt.Sprintf("%T", libtime.Time(time.Unix(1, 42).UTC()).Native),
 		"string", "int", "[]uint8", "map[string]int", "struct {}", "<nil>",
