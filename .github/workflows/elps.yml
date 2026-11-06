@@ -277,7 +277,7 @@ jobs:
         run: go test -count=1 -run 'Canonize|Typed|Canonical' ./lisp/lisplib/libjson/...
 
   # JSON V1 ENGINE (luthersystems/elps#928). Every other job runs on Go's
-  # default JSON engine, v2 on Go 1.27. substrate's chaincode is built with
+  # default JSON engine, v2 on Go 1.27. An embedder may still build with
   # GOEXPERIMENT=nojsonv2, the v1 engine, so this job runs the whole test
   # suite (Go tests and the lisp test files) on v1 too, plus libjson under the
   # race detector and the elpscheck tag. Tests whose native bytes or errors
@@ -292,6 +292,9 @@ jobs:
     timeout-minutes: 30
     needs: [changes]
     if: needs.changes.outputs.docs_only != 'true'
+    # Read only: the job checks out and runs tests.
+    permissions:
+      contents: read
     env:
       GOEXPERIMENT: nojsonv2
     steps:
