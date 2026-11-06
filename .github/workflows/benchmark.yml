@@ -18,14 +18,6 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  # JSON ENGINE. Go 1.27 runs encoding/json on the new JSON v2 engine unless
-  # GOEXPERIMENT=nojsonv2 is set. libjson's native encoding depends on the
-  # engine: invalid UTF-8, unsupported map keys, cycles and deep values give
-  # different bytes or errors on v2. substrate's chaincode hashes and endorses
-  # those bytes, so it builds elps on the v1 engine, and elps is built and tested
-  # the same way. Remove this when libjson gives the same results on both
-  # engines (elps#928).
-  GOEXPERIMENT: nojsonv2
   # 10, not benchstat's bare minimum of 6. Below 6 benchstat cannot compute a
   # confidence interval at all and prints "need >= 6 samples"; at 5 the
   # Mann-Whitney p-value floors at 0.008, which means only "every sample

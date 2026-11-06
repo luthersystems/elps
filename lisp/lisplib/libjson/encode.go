@@ -1243,7 +1243,8 @@ func (enc *encoder) encodeLString(v *lisp.LVal, g encodeGuard) error {
 }
 
 // encodeString writes s as a plain-mode JSON string, escaped exactly as
-// encoding/json escapes it (TestPlainStringBytesMatchEncodingJSON).
+// encoding/json's v1 engine escapes it, on both JSON engines
+// (TestPlainStringBytesMatchEncodingJSON).
 func (enc *encoder) encodeString(s string) error {
 	enc.buf.Grow(len(s) + 2)
 	enc.buf.Write(appendJSONString(enc.buf.AvailableBuffer(), s))
@@ -1255,7 +1256,10 @@ func (enc *encoder) encodeString(s string) error {
 //
 // Both modes escape what encoding/json escapes: control
 // characters, '"', '\\', the HTML characters <, > and &, U+2028 and U+2029,
-// and writes each invalid UTF-8 byte as U+FFFD.
+// and write each invalid UTF-8 byte as the escape \ufffd.  That is the
+// JSON v1 engine's output; the v2 engine writes a raw U+FFFD.  This writer
+// keeps the v1 bytes on both engines, because substrate hashes them
+// (luthersystems/elps#928, TestStringEscapingIsEngineIndependent).
 //
 // The five controls with short forms use \b \f \n \r \t, the rest use
 // lowercase six-character escapes. Typed callers reject invalid UTF-8 before

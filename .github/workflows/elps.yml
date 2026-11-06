@@ -25,15 +25,8 @@ on:
 # scheduled/dispatched runs always get docs_only=false, so they run everything.
 # What counts as docs-only is documented in that script.
 
-# JSON ENGINE. Go 1.27 runs encoding/json on the new JSON v2 engine unless
-# GOEXPERIMENT=nojsonv2 is set. libjson's native encoding depends on the
-# engine: invalid UTF-8, unsupported map keys, cycles and deep values give
-# different bytes or errors on v2. substrate's chaincode hashes and endorses
-# those bytes, so it builds elps on the v1 engine, and elps is built and tested
-# the same way. Remove this when libjson gives the same results on both
-# engines (elps#928).
-env:
-  GOEXPERIMENT: nojsonv2
+# JSON ENGINE. The jobs run on Go's default JSON engine (v2 on Go 1.27).
+# The json-v1 job runs the tests on the v1 engine (GOEXPERIMENT=nojsonv2).
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -283,6 +276,41 @@ jobs:
       - name: Canonical and typed tests and golden corpus
         run: go test -count=1 -run 'Canonize|Typed|Canonical' ./lisp/lisplib/libjson/...
 
+  # JSON V1 ENGINE (luthersystems/elps#928). Every other job runs on Go's
+  # default JSON engine, v2 on Go 1.27. An embedder may still build with
+  # GOEXPERIMENT=nojsonv2, the v1 engine, so this job runs the whole test
+  # suite (Go tests and the lisp test files) on v1 too, plus libjson under the
+  # race detector and the elpscheck tag. Tests whose native bytes or errors
+  # differ by engine ask libjson.JSONV2EngineForTest. This job is the only
+  # place a workflow may set GOEXPERIMENT (scripts/go-pin-sync-test.py).
+  json-v1:
+    name: Tests (JSON v1 engine)
+    # ARM: see lint-and-test.
+    runs-on: ubuntu-24.04-arm
+    # 30 minutes against `make test` (about 3 minutes) and two libjson runs.
+    # A liveness bound, not a performance budget.
+    timeout-minutes: 30
+    needs: [changes]
+    if: needs.changes.outputs.docs_only != 'true'
+    # Read only: the job checks out and runs tests.
+    permissions:
+      contents: read
+    env:
+      GOEXPERIMENT: nojsonv2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Set up Go
+        uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Tests
+        run: make JSON_ENGINE=v1 test
+      - name: libjson race detection
+        run: go test -race -count=1 ./lisp/lisplib/libjson/...
+      - name: libjson singleton integrity (elpscheck)
+        run: go test -tags elpscheck -count=1 ./lisp/lisplib/libjson/...
+
   # API BREAK GATE (#761). Fails when this PR removes or incompatibly changes
   # the Go API of a non-internal package (apidiff) or the Lisp public surface
   # (`elps doc --json -l`: packages, exports, kind, formals), or changes/removes
@@ -358,7 +386,7 @@ jobs:
     # 5 minutes against an observed 2s. This job's name is the one in
     # branch protection; wedged here means the PR is blocked with no red.
     timeout-minutes: 5
-    needs: [changes, confidentiality, lint-and-test, build-windows, json-386, api-break]
+    needs: [changes, confidentiality, lint-and-test, build-windows, json-386, json-v1, api-break]
     if: always()
     steps:
       # NOTE: this checkout is NEW, and is the one structural cost of moving

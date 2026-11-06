@@ -4950,7 +4950,7 @@ fi
 # Keep the byte freeze exercised on ARM64, Windows amd64 and Windows 386.
 GOLDEN_LINUX_JOB="$(sed -n '/^  lint-and-test:/,/^  build-windows:/p' "$ELPS_YML")"
 GOLDEN_WINDOWS_JOB="$(sed -n '/^  build-windows:/,/^  json-386:/p' "$ELPS_YML")"
-GOLDEN_386_JOB="$(sed -n '/^  json-386:/,/^  api-break:/p' "$ELPS_YML")"
+GOLDEN_386_JOB="$(sed -n '/^  json-386:/,/^  [a-z][a-z0-9-]*:$/p' "$ELPS_YML")"
 if grep -q 'runs-on: ubuntu-24.04-arm' <<<"$GOLDEN_LINUX_JOB" \
 	&& grep -q 'run: make test' <<<"$GOLDEN_LINUX_JOB" \
 	&& [ "$(grep -Fc 'go test -count=1 ./lisp/lisplib/libjson/typedgolden/' <<<"$GOLDEN_WINDOWS_JOB")" -eq 2 ] \

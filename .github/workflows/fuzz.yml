@@ -64,16 +64,6 @@ on:
 # scheduled/dispatched runs always get docs_only=false, so they run everything.
 # What counts as docs-only is documented in that script.
 
-# JSON ENGINE. Go 1.27 runs encoding/json on the new JSON v2 engine unless
-# GOEXPERIMENT=nojsonv2 is set. libjson's native encoding depends on the
-# engine: invalid UTF-8, unsupported map keys, cycles and deep values give
-# different bytes or errors on v2. substrate's chaincode hashes and endorses
-# those bytes, so it builds elps on the v1 engine, and elps is built and tested
-# the same way. Remove this when libjson gives the same results on both
-# engines (elps#928).
-env:
-  GOEXPERIMENT: nojsonv2
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

@@ -41,6 +41,36 @@ const jsonNestingLimit = 10_000
 // to record pointers, maps and slices once it is this many of them deep.
 const jsonCycleCheckAfter = 1000
 
+// nativeInvalidByteLen is how many bytes encoding/json writes for one
+// invalid UTF-8 byte in a native's string: 6 for the escape \ufffd on the
+// JSON v1 engine (GOEXPERIMENT=nojsonv2), 3 for a raw U+FFFD on the v2
+// engine, Go 1.27's default (luthersystems/elps#928).  It is measured once,
+// so the walk's estimate follows the engine this binary is built with and
+// stays a lower bound on both.  A build tag could name the wrong engine on a
+// later Go that drops the experiment.
+var nativeInvalidByteLen = func() int {
+	b, err := json.Marshal("\xff")
+	if err != nil || len(b) < 2 {
+		return len("\uFFFD") // the smaller form keeps est a lower bound
+	}
+	return min(len(b)-2, len(`\ufffd`))
+}()
+
+// nativeFloatKeys reports that encoding/json writes a map with float keys.
+// The JSON v2 engine does; the v1 engine refuses the map's type.  The walk
+// must visit such a map on v2, or encoding/json would write its contents
+// with no bound on their size (luthersystems/elps#928).
+var nativeFloatKeys = func() bool {
+	_, err := json.Marshal(map[float64]int{0: 0}) //nolint:errchkjson // the probe: v1 refuses float keys, v2 writes them
+	return err == nil
+}()
+
+// nativeStringLen is the length of a native's string as encoding/json
+// writes it on this binary's engine, quotes included.
+func nativeStringLen(s string) int {
+	return escapedStringLen(s, nativeInvalidByteLen)
+}
+
 // nativeRefScan is how many open references the walk searches linearly for a
 // cycle before it indexes them in a map.
 const nativeRefScan = 32
@@ -317,7 +347,7 @@ func (w *nativeWalker) step() {
 		}
 		k := f.keys[f.i]
 		f.i++
-		w.add(jsonStringLen(k) + 1)
+		w.add(nativeStringLen(k) + 1)
 		w.anyElem(f.anyMap[k])
 	case frameMap:
 		if f.i == len(f.entries) {
@@ -326,7 +356,7 @@ func (w *nativeWalker) step() {
 		}
 		e := f.entries[f.i]
 		f.i++
-		w.add(jsonStringLen(e.name) + 1)
+		w.add(nativeStringLen(e.name) + 1)
 		if w.descend() {
 			w.value(e.val, false, 1, 0)
 		}
@@ -437,7 +467,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 	case nil:
 		w.add(4)
 	case string:
-		w.add(jsonStringLen(t))
+		w.add(nativeStringLen(t))
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
 			w.jsonError()
@@ -533,7 +563,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 		case reflect.String:
 			s := v.String()
 			if v.Type() != jsonNumberType {
-				w.add(jsonStringLen(s) + q)
+				w.add(nativeStringLen(s) + q)
 				break
 			}
 			if s == "" {
@@ -666,6 +696,14 @@ func (w *nativeWalker) mapEntries(v reflect.Value) ([]nativeMapEntry, bool) {
 		entries[i].name = name
 	}
 	slices.SortStableFunc(entries, func(a, b nativeMapEntry) int { return strings.Compare(a.name, b.name) })
+	if k := v.Type().Key().Kind(); !textKeys && (k == reflect.Float32 || k == reflect.Float64) {
+		// Only the JSON v2 engine writes float keys (nativeFloatKeys), in
+		// its own number format, which the walk does not copy.  So each
+		// key counts as its shortest form, which keeps est a lower bound.
+		for i := range entries {
+			entries[i].name = "0"
+		}
+	}
 	return entries, true
 }
 
@@ -684,6 +722,9 @@ func resolveNativeKeyName(k reflect.Value) (string, error) {
 	switch k.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return strconv.FormatInt(k.Int(), 10), nil
+	case reflect.Float32, reflect.Float64:
+		// A sort key only: see the end of mapEntries.
+		return strconv.FormatFloat(k.Float(), 'g', -1, k.Type().Bits()), nil
 	default:
 		return strconv.FormatUint(k.Uint(), 10), nil
 	}
@@ -887,7 +928,7 @@ func (w *nativeWalker) callMarshaler(m reflect.Value, text bool) {
 			w.jsonError()
 			return
 		}
-		w.add(jsonStringLen(string(b)))
+		w.add(nativeStringLen(string(b)))
 		return
 	}
 	jm, ok := m.Interface().(json.Marshaler)
@@ -1073,6 +1114,8 @@ func nativeInfo(t reflect.Type) *nativeTypeInfo {
 			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			info.mapKeyOK = true
+		case reflect.Float32, reflect.Float64:
+			info.mapKeyOK = nativeFloatKeys || t.Key().Implements(textMarshalerType)
 		default:
 			info.mapKeyOK = t.Key().Implements(textMarshalerType)
 		}

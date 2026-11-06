@@ -319,9 +319,17 @@ func (e *typedEncoder) reserve(n int) error {
 }
 
 // jsonStringLen is the exact length of appendJSONString(nil, s), quotes
-// included, for valid UTF-8.  Invalid UTF-8 counts six bytes per bad byte,
-// as appendJSONString writes \ufffd for it.
+// included.  Invalid UTF-8 counts six bytes per bad byte, as
+// appendJSONString writes \ufffd for it on every JSON engine.
 func jsonStringLen[T string | []byte](s T) int {
+	return escapedStringLen(s, len(`\ufffd`))
+}
+
+// escapedStringLen is jsonStringLen with each invalid UTF-8 byte counted as
+// invalid bytes.  The native walk passes nativeInvalidByteLen, because
+// encoding/json writes a native's strings, and how it writes a bad byte
+// depends on the JSON engine.
+func escapedStringLen[T string | []byte](s T, invalid int) int {
 	n := 2
 	for i := 0; i < len(s); {
 		c := s[i]
@@ -340,7 +348,7 @@ func jsonStringLen[T string | []byte](s T) int {
 		r, size := utf8.DecodeRuneInString(string(s[i:min(i+utf8.UTFMax, len(s))]))
 		switch {
 		case r == utf8.RuneError && size == 1:
-			n += 6
+			n += invalid
 		case r == 0x2028 || r == 0x2029:
 			n += 6
 		default:

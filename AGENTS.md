@@ -48,13 +48,23 @@ designed to be embedded within Go applications. Module:
 
 ### JSON engine (Go 1.27)
 
-elps is built and tested with `GOEXPERIMENT=nojsonv2`, the JSON v1 engine.
-The Makefile, elps's own Go workflows and the session hook set it
-(`scripts/go-pin-sync-test.py` checks the workflows); the org's shared Quality
-and Security workflows do not. A plain `go test` on Go 1.27 without it uses the
-v2 engine, and libjson tests fail there; `TestJSONEngine` is the failure that
-names the cause. libjson's native encoding still depends on the engine, and
-substrate's chaincode needs the v1 bytes (elps#928).
+elps builds and passes its tests on both of Go 1.27's JSON engines: v2, the
+default, and v1, selected by `GOEXPERIMENT=nojsonv2`. A plain `go test` uses
+v2. `make JSON_ENGINE=v1 <target>` runs a target on v1, the engine substrate's
+chaincode is built with today. CI runs everything on v2, and the `json-v1` job
+in `elps.yml` runs `make test` plus libjson's race and elpscheck runs on v1
+(`scripts/go-pin-sync-test.py` keeps it the only job that sets GOEXPERIMENT).
+
+| What | Same on both engines? |
+|------|-----------------------|
+| Bytes libjson writes for lisp values (strings, keys, symbols): invalid UTF-8 is `\ufffd` | Yes (`TestStringEscapingIsEngineIndependent`) |
+| Typed, durable and canonical encodings, and values decoded by `json:load-*` | Yes |
+| A native Go value: encoding/json writes it. Invalid UTF-8 in its strings, `map[float64]T` keys, a nil `map[bool]T`, cycles, nesting past 10000, marshaler errors | No |
+| Error text of `json:load-*` for malformed JSON | No |
+
+A test that pins a per-engine result asks `libjson.JSONV2EngineForTest()`
+(`lisp/lisplib/libjson/jsonengine_test.go`). Do not hand-copy v1 error text
+into libjson to hide a difference. Details: luthersystems/elps#928.
 
 ### golangci-lint version skew
 

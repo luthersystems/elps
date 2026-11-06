@@ -74,18 +74,30 @@ func TestDumpRefusesDeepNativeWithoutCrashing(t *testing.T) {
 	}
 }
 
-// A native too deep to load reports the same error at every depth: through
-// encoding/json and checkLoadable below the walk's bound, and from the walk
-// above it.
-func TestDumpDeepNativeErrorIsTheSameAtEveryDepth(t *testing.T) {
-	const want = "unable to encode native value: invalid character '[' exceeded max depth"
-	for _, depth := range []int{10_001, 20_000, 30_000, 60_000} {
+// On the JSON v1 engine a native too deep to load reports the same error at
+// every depth: through encoding/json and checkLoadable below the walk's
+// bound, and from the walk above it.
+//
+// On the JSON v2 engine encoding/json refuses the shallower two itself, with
+// its own text (luthersystems/elps#928).  The walk's refusal of the deeper two
+// keeps the v1 text on both engines.
+func TestDumpDeepNativeErrorByDepth(t *testing.T) {
+	const v1 = "unable to encode native value: invalid character '[' exceeded max depth"
+	const v2 = "exceeded max depth"
+	for _, tc := range []struct {
+		depth  int
+		wantV2 string
+	}{{10_001, v2}, {20_000, v2}, {30_000, v1}, {60_000, v1}} {
 		var v any = 1
-		for range depth {
+		for range tc.depth {
 			v = []any{v}
 		}
+		want := v1
+		if libjson.JSONV2EngineForTest() {
+			want = tc.wantV2
+		}
 		_, err := libjson.Dump(lisp.Native(v), false)
-		assert.EqualError(t, err, want, "depth %d", depth)
+		assert.EqualError(t, err, want, "depth %d", tc.depth)
 	}
 }
 

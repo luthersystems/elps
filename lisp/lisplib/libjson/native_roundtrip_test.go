@@ -208,7 +208,9 @@ func deepNative(n int) any {
 // output. It applies no such limit when it SERIALIZES a plain Go value, which
 // it walks structurally and never parses. So a native that is an ordinary
 // nested slice marshals happily at any depth and produces a document Load then
-// refuses, exactly as `1E1000` does.
+// refuses, exactly as `1E1000` does.  That is the JSON v1 engine.  The v2
+// engine, Go 1.27's default, also limits nesting to 10000 when it
+// serializes, so on v2 the rows past the limit fail in json.Marshal itself.
 //
 // This is why the check cannot be narrowed to number literals: the depth rows
 // here and the range rows above are independent holes in the same invariant,
@@ -220,10 +222,22 @@ func TestDumpRefusesNativeTooDeepToLoad(t *testing.T) {
 		t.Run(strconv.Itoa(depth), func(t *testing.T) {
 			v := deepNative(depth)
 
-			// Establish the premise rather than assuming it: json.Marshal is
-			// perfectly happy with the value at every depth here, so nothing
-			// upstream of the check has refused it.
+			// Establish the premise rather than assuming it: on v1,
+			// json.Marshal is happy with the value at every depth here, so
+			// nothing upstream of the check has refused it.
 			b, err := json.Marshal(v)
+			if libjson.JSONV2EngineForTest() && depth > 10_000 {
+				// The v2 engine limits nesting when it marshals
+				// (luthersystems/elps#928), so Dump fails with its error.
+				if err == nil {
+					t.Fatalf("premise broken: the v2 engine marshalled a %d-deep value", depth)
+				}
+				_, derr := libjson.Dump(lisp.Native(v), false)
+				if derr == nil || derr.Error() != err.Error() {
+					t.Fatalf("Dump of a %d-deep native: %v, want %v", depth, derr, err)
+				}
+				return
+			}
 			if err != nil {
 				t.Fatalf("premise broken: the value does not marshal: %v", err)
 			}

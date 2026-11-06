@@ -1,15 +1,21 @@
-# JSON ENGINE. Go 1.27 runs encoding/json on the new JSON v2 engine unless
-# GOEXPERIMENT=nojsonv2 is set. libjson's native encoding depends on the
-# engine: invalid UTF-8, unsupported map keys, cycles and deep values give
-# different bytes or errors on v2. substrate's chaincode hashes and endorses
-# those bytes, so it builds elps on the v1 engine, and elps is built and tested
-# the same way. Remove this when libjson gives the same results on both
-# engines (elps#928).
-# Appended, not defaulted: `?=` would do nothing when GOEXPERIMENT is already
-# set (even to ""), and the build would quietly move to the v2 engine.
+# JSON ENGINE. Go 1.27 runs encoding/json on the JSON v2 engine by default,
+# and GOEXPERIMENT=nojsonv2 selects the v1 engine. elps builds and passes its
+# tests on both, and the targets follow the GOEXPERIMENT you give them.
+# `make JSON_ENGINE=v1 <target>` adds nojsonv2 (the engine substrate's
+# chaincode is built with today); `make JSON_ENGINE=v2 <target>` removes it.
+# CI tests both. Bytes that libjson writes itself are the same on both
+# engines; a native Go value is written by encoding/json, so some of its
+# bytes and errors follow the engine (AGENTS.md "JSON engine", elps#928).
 comma := ,
+space := $(subst ,, )
+ifeq ($(JSON_ENGINE),v1)
 ifeq ($(filter nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT))),)
-export GOEXPERIMENT := $(if $(strip $(GOEXPERIMENT)),$(GOEXPERIMENT)$(comma))nojsonv2
+override export GOEXPERIMENT := $(if $(strip $(GOEXPERIMENT)),$(GOEXPERIMENT)$(comma))nojsonv2
+endif
+else ifeq ($(JSON_ENGINE),v2)
+override export GOEXPERIMENT := $(subst $(space),$(comma),$(strip $(filter-out nojsonv2,$(subst $(comma), ,$(GOEXPERIMENT)))))
+else ifneq ($(JSON_ENGINE),)
+$(error JSON_ENGINE must be v1, v2 or empty, not "$(JSON_ENGINE)")
 endif
 
 BIN=./elps
