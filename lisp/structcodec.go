@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"sync"
 
@@ -569,7 +570,7 @@ func (d *decoder) naturalContainer(v *LVal, path string, depth int) (any, error)
 //	[]byte              bytes (copied); a byte array is a vector
 //	slice, array        a vector; a nil slice is ()
 //	map                 a sorted map; its keys must encode as strings,
-//	                    symbols or ints
+//	                    symbols or ints, and no two to one map key
 //	struct              a sorted map with string keys, by the rules of
 //	                    package elpstag (omitempty leaves a zero field out)
 //	pointer, interface  the value it holds; nil is ()
@@ -669,21 +670,49 @@ func encodeValue(rv reflect.Value, path string, depth int) (*LVal, error) {
 		if rv.IsNil() {
 			return Nil(), nil
 		}
-		m := SortedMap()
+		// Go walks a map in a random order.  Encode the keys, sort them,
+		// then encode the values in key order, so that neither the result
+		// nor the error depends on that order.
+		type entry struct {
+			key *LVal
+			val reflect.Value
+		}
+		entries := make([]entry, 0, rv.Len())
+		var keyErr error
 		it := rv.MapRange()
 		for it.Next() {
 			k, err := encodeValue(it.Key(), path+" key", depth+1)
+			if err == nil && !isMapKey(k) {
+				err = encodeErr(path, "cannot use "+k.Type.String()+" as a map key")
+			}
+			if err != nil {
+				// A bad key has no place in the key order.  Of several,
+				// report the one with the least message.
+				if keyErr == nil || err.Error() < keyErr.Error() {
+					keyErr = err
+				}
+				continue
+			}
+			entries = append(entries, entry{key: k, val: it.Value()})
+		}
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		slices.SortFunc(entries, func(a, b entry) int { return compareMapKeys(a.key, b.key) })
+		m := SortedMap()
+		var prev *LVal
+		for _, e := range entries {
+			// The map would keep one of the two values, and which one would
+			// depend on the walk.  Decode refuses the same collision.
+			if mapKeysCollide(prev, e.key) {
+				return nil, encodeErr(path, "two keys convert to the map key "+mapKeyDesc(e.key))
+			}
+			prev = e.key
+			ev, err := encodeValue(e.val, joinField(path, keyText(e.key)), depth+1)
 			if err != nil {
 				return nil, err
 			}
-			if k.Type != LString && k.Type != LSymbol && k.Type != LInt {
-				return nil, encodeErr(path, "cannot use "+k.Type.String()+" as a map key")
-			}
-			ev, err := encodeValue(it.Value(), joinField(path, keyText(k)), depth+1)
-			if err != nil {
-				return nil, err
-			}
-			if r := m.MapSetLVal(k, ev); r.IsError() {
+			if r := m.MapSetLVal(e.key, ev); r.IsError() {
 				return nil, encodeErr(path, "cannot set a map key")
 			}
 		}

@@ -364,7 +364,8 @@ func natural(v Value, path string, depth int) (any, error) {
 // Encode returns the Value of a Go value: the reverse of Decode. A struct
 // becomes a sorted map with string keys (its fields' elps tags or names; a
 // tag with ",omitempty" leaves out a zero field), a Go map a sorted map, a
-// slice a vector, a nil pointer, slice or map nil.
+// slice a vector, a nil pointer, slice or map nil. Two Go map keys that
+// become one map key are an error.
 func Encode(x any) (Value, error) {
 	switch v := x.(type) {
 	case Value:
@@ -433,21 +434,51 @@ func encode(rv reflect.Value, path string, depth int) (Value, error) {
 		if rv.IsNil() {
 			return Value{}, nil
 		}
-		var keys, vals []Value
+		// Go walks a map in a random order.  Encode the keys, sort them,
+		// then encode the values in key order, so that neither the result
+		// nor the error depends on that order.
+		type entry struct {
+			id  string
+			key Value
+			val reflect.Value
+		}
+		entries := make([]entry, 0, rv.Len())
+		var keyErr error
 		it := rv.MapRange()
 		for it.Next() {
 			k, err := encode(it.Key(), path+" key", depth+1)
+			id, ok := "", false
+			if err == nil {
+				if id, ok = keyID(k); !ok {
+					err = errors.New("lval: " + orValue(path) + ": cannot use " + k.kind.String() + " as a map key")
+				}
+			}
+			if err != nil {
+				// A bad key has no place in the key order.  Of several,
+				// report the one with the least message.
+				if keyErr == nil || err.Error() < keyErr.Error() {
+					keyErr = err
+				}
+				continue
+			}
+			entries = append(entries, entry{id: id, key: k, val: it.Value()})
+		}
+		if keyErr != nil {
+			return Value{}, keyErr
+		}
+		slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.id, b.id) })
+		keys, vals := make([]Value, len(entries)), make([]Value, len(entries))
+		for i, e := range entries {
+			// buildMap would keep one of the two values, and which one would
+			// depend on the walk.  DecodeInto refuses the same collision.
+			if i > 0 && entries[i-1].id == e.id {
+				return Value{}, errors.New("lval: " + orValue(path) + ": two keys convert to one map key")
+			}
+			ev, err := encode(e.val, joinPath(path, e.key.String()), depth+1)
 			if err != nil {
 				return Value{}, err
 			}
-			if _, ok := keyID(k); !ok {
-				return Value{}, errors.New("lval: " + orValue(path) + ": cannot use " + k.kind.String() + " as a map key")
-			}
-			ev, err := encode(it.Value(), joinPath(path, k.String()), depth+1)
-			if err != nil {
-				return Value{}, err
-			}
-			keys, vals = append(keys, k), append(vals, ev)
+			keys[i], vals[i] = e.key, ev
 		}
 		return buildMap(keys, vals), nil
 	case reflect.Struct:
