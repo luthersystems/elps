@@ -101,3 +101,50 @@ func TestReferencesIncludeTheExport(t *testing.T) {
 		}
 	}
 }
+
+// A rename can start with the cursor on the name in an export form
+// (luthersystems/elps#940).
+func TestRenameStartsFromTheExport(t *testing.T) {
+	s := testServer()
+	const src = "(in-package 'helpers)\n(export 'add-one)\n(defun add-one (x) (+ x 1))\n(add-one 1)\n"
+	doc := openDoc(s, "file:///helpers.lisp", src)
+	s.ensureAnalysis(doc)
+	edit, err := s.textDocumentRename(mockContext(), &protocol.RenameParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 1, Character: 10},
+		},
+		NewName: "inc",
+	})
+	require.NoError(t, err)
+	require.NotNil(t, edit)
+	assert.Equal(t, strings.ReplaceAll(src, "add-one", "inc"), applyTextEdits(t, s, src, edit.Changes[doc.URI]))
+}
+
+// Linked editing has the ranges of a rename in the file: the name without
+// its qualifier, and the name in the export form (luthersystems/elps#940).
+func TestLinkedEditingKeepsQualifierAndCoversExport(t *testing.T) {
+	const src = "(in-package 'helpers)\n(export 'add-one)\n(defun add-one (x) (+ x 1))\n(defun add-two (x) (helpers:add-one (add-one x)))\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "helpers.lisp")
+	require.NoError(t, os.WriteFile(path, []byte(src), 0600))
+	s := testServer()
+	s.rootPath = dir
+	s.buildWorkspaceIndex()
+	doc := openDoc(s, pathToURI(path), src)
+	result, err := s.textDocumentLinkedEditingRange(mockContext(), &protocol.LinkedEditingRangeParams{
+		TextDocumentPositionParams: protocol.TextDocumentPositionParams{
+			TextDocument: protocol.TextDocumentIdentifier{URI: doc.URI},
+			Position:     protocol.Position{Line: 2, Character: 7},
+		},
+	})
+	require.NoError(t, err)
+	require.NotNil(t, result)
+	lines := strings.Split(src, "\n")
+	var got []uint32
+	for _, rng := range result.Ranges {
+		got = append(got, rng.Start.Line)
+		assert.Equal(t, "add-one", lines[rng.Start.Line][rng.Start.Character:rng.End.Character])
+	}
+	assert.ElementsMatch(t, []uint32{1, 2, 3, 3}, got)
+}

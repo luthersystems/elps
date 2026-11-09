@@ -102,6 +102,17 @@ func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis
 		}
 	}
 
+	// Check the names in export forms.  They are not in References, but a
+	// rename or a reference search that starts on one must find its symbol.
+	for _, ref := range doc.analysis.ExportRefs {
+		if ref.Source == nil || ref.Source.Line == 0 {
+			continue
+		}
+		if ref.Source.Line == elpsLine && locContainsCol(ref.Source, ref.Symbol.Name, elpsCol) {
+			return ref.Symbol, ref
+		}
+	}
+
 	// Check definitions (symbols defined in this file).
 	for _, sym := range doc.analysis.Symbols {
 		if sym.Source == nil || sym.Source.Line == 0 {

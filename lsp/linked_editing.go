@@ -40,15 +40,25 @@ func (s *Server) textDocumentLinkedEditingRange(_ *glsp.Context, params *protoco
 	// Definition range — only if in the current file.
 	defFile := sym.Source.File
 	if defFile == "" || defFile == currentFile {
-		ranges = append(ranges, elpsToLSPRange(sym.Source, len(sym.Name)))
+		ranges = append(ranges, nameRange(sym.Source, sym.Name))
 	}
 
-	// Reference ranges — current file only.
+	// Reference ranges — current file only.  Each range is that of the name
+	// alone, as in a rename: a range that covered the qualifier of
+	// pkg:name would have the edit remove it.
 	for _, ref := range doc.analysis.References {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
 		}
-		ranges = append(ranges, elpsToLSPRange(ref.Source, len(sym.Name)))
+		ranges = append(ranges, nameRange(ref.Source, sym.Name))
+	}
+
+	// The names in export forms, so that the export follows the edit.
+	for _, ref := range doc.analysis.ExportRefs {
+		if ref.Symbol != sym || ref.Source == nil {
+			continue
+		}
+		ranges = append(ranges, nameRange(ref.Source, sym.Name))
 	}
 
 	if len(ranges) == 0 {
