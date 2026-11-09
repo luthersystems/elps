@@ -20,7 +20,22 @@ import "github.com/luthersystems/elps/lisp"
 // Macro bodies and quasiquote templates do not establish directly evaluated
 // exports, even when their argument syntax looks literal.
 func ExportNames(args []*lisp.LVal) []string {
-	var names []string
+	nodes := ExportNameNodes(args)
+	if len(nodes) == 0 {
+		return nil
+	}
+	names := make([]string, len(nodes))
+	for i, node := range nodes {
+		names[i] = node.Str
+	}
+	return names
+}
+
+// ExportNameNodes is ExportNames as the nodes that spell the names: each is
+// a string or a symbol, and its Str is the name.  A tool that edits an
+// export form, such as a rename, needs the node's source location.
+func ExportNameNodes(args []*lisp.LVal) []*lisp.LVal {
+	var names []*lisp.LVal
 	var collect func(*lisp.LVal, bool)
 	collect = func(node *lisp.LVal, literal bool) {
 		if node == nil {
@@ -29,10 +44,10 @@ func ExportNames(args []*lisp.LVal) []string {
 		literal = literal || node.IsQuoted()
 		switch node.Type {
 		case lisp.LString:
-			names = append(names, node.Str)
+			names = append(names, node)
 		case lisp.LSymbol:
 			if literal {
-				names = append(names, node.Str)
+				names = append(names, node)
 			}
 		case lisp.LSExpr:
 			if literal {

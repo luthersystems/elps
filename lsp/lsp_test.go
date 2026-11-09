@@ -3068,8 +3068,9 @@ func TestCrossFileReferences_QualifiedSymbol(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, locs)
 
-	// Should have exactly 2 locations: declaration from helpers.lisp + cross-file ref from consumer.lisp.
-	require.Len(t, locs, 2, "should have definition + 1 cross-file qualified ref")
+	// Should have exactly 3 locations: the declaration and the export from
+	// helpers.lisp + the cross-file ref from consumer.lisp.
+	require.Len(t, locs, 3, "should have definition + export + 1 cross-file qualified ref")
 
 	uris := make(map[string]bool)
 	for _, loc := range locs {
