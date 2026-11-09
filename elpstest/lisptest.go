@@ -145,8 +145,9 @@ type Runner struct {
 	// whose template holds no helpers calls LoadTestHelpers itself.
 	LoadHelpersFn func(env *lisp.LEnv, testPath string) error
 
-	// SetupFn runs code to setup a loaded environment after before the test
-	// is run.
+	// SetupFn runs code to setup a loaded environment before the test is
+	// run.  Any error returned by the setup function is reported as a test
+	// failure, and the test does not run.
 	SetupFn func(*lisp.LEnv) *lisp.LVal
 
 	// TeardownFn runs code to teardown an environment after each test declared
@@ -322,7 +323,12 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	}
 	defer stderrLogger(env).Flush()
 
-	_ = r.Setup(env)
+	// A test must not run in an environment that was not set up: its result
+	// would say nothing about the code under test.
+	if err = lisp.GoError(r.Setup(env)); err != nil {
+		r.LispError(t, err)
+		return
+	}
 
 	if err = r.LoadHelpers(env, path); err != nil {
 		r.helperError(t, err)
@@ -335,7 +341,9 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	}
 
 	defer func() {
-		_ = r.Teardown(env)
+		if err := lisp.GoError(r.Teardown(env)); err != nil {
+			r.LispError(t, err)
+		}
 	}()
 
 	suite := libtesting.EnvTestSuite(env)
@@ -417,7 +425,10 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// rather than restoring the timer to the state it found it in, so two
 	// Runners differing only in SetupFn reported numbers that were not
 	// comparable.
-	_ = r.Setup(env)
+	if err = lisp.GoError(r.Setup(env)); err != nil {
+		r.LispError(b, err)
+		return
+	}
 
 	if err = r.LoadHelpers(env, path); err != nil {
 		r.helperError(b, err)
@@ -439,7 +450,9 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// r.TeardownFn, matching RunTest and the SetupFn call above (#476).  The
 	// guard existed only to avoid the timer dance that is now gone.
 	defer func() {
-		_ = r.Teardown(env)
+		if err := lisp.GoError(r.Teardown(env)); err != nil {
+			r.LispError(b, err)
+		}
 	}()
 
 	suite := libtesting.EnvTestSuite(env)
