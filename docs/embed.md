@@ -2256,7 +2256,8 @@ The standard library charges this way for work proportional to value size.
 charge one step per complete KiB of the input they scan, or of the output
 they build (`join`, `repeat`, and the JSON encoders, which charge after
 encoding). Values under 1 KiB add nothing, so step counts change only for
-programs that handle larger values. The charge depends only on the values'
+programs that handle larger values. A match by a very large regexp program is
+the one exception; see below. The charge depends only on the values'
 sizes, so it is deterministic.
 
 Limits and choices worth knowing:
@@ -2271,11 +2272,20 @@ Limits and choices worth knowing:
   formatted by `strconv.AppendFloat` with shortest round-trip precision. The
   one exception is a sorted-map backed by an embedder's own `Map`
   implementation, which is emitted in the order that implementation returns.
-- **`regexp-match?` charges the input text only.** Go's RE2 engine matches in
-  time linear in the input for a compiled program. The pattern is charged
-  when it is compiled from a string, by `regexp-compile` or by a
-  string-pattern argument compiled on demand, and a precompiled regexp is not
-  charged again.
+- **A regexp match charges the input text times the program size.** Go's
+  RE2 engine matches in time linear in the input for one compiled program,
+  but that time grows with the size of the program. The charge is one step
+  per complete KiB of text x (1 + instructions / 256), where instructions is
+  the size of the compiled program. A program of fewer than 256 instructions
+  pays for the text only; a pattern written by hand is almost always that
+  small, and counted repetition (`x{1000}`) is what makes a program large.
+  The size is a function of the pattern text, so the charge is
+  deterministic. The pattern text is also charged when it is compiled from a
+  string, by `regexp-compile` or by a string-pattern argument compiled on
+  demand.
+- **`string:trim`, `trim-left` and `trim-right` charge the cutset too.** They
+  charge one step per complete KiB of the text and one per complete KiB of
+  the cutset.
 - **Rounding.** The stdlib charges complete KiB, floor(n/1024), because the
   call's own evaluation step covers the first KiB. An embedder's builtins may
   round differently. For example, luthersystems/substrate's storage builtins

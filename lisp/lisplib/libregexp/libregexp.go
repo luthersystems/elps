@@ -10,6 +10,7 @@ package libregexp
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"regexp/syntax"
 	"strings"
@@ -87,8 +88,15 @@ func programSize(pattern string) int {
 // worst case.  The charge is that of ChargeKiB for the text, times one plus
 // the program size in units of matchChargeInsts.  A program smaller than one
 // unit pays for the text only.
+//
+// The product saturates: where int has 32 bits, a product that wrapped
+// would make the largest matches free.
 func chargeMatch(env *lisp.LEnv, insts, n int) *lisp.LVal {
-	return libutil.ChargeKiB(env, n*(1+insts/matchChargeInsts))
+	units := 1 + insts/matchChargeInsts
+	if n > math.MaxInt/units {
+		return libutil.ChargeKiB(env, math.MaxInt)
+	}
+	return libutil.ChargeKiB(env, n*units)
 }
 
 var _ templatepolicy.Immutable = compiledRegexp{}
