@@ -447,8 +447,9 @@ func encode(rv reflect.Value, path string, depth int) (Value, error) {
 		it := rv.MapRange()
 		for it.Next() {
 			k, err := encode(it.Key(), path+" key", depth+1)
-			id, ok := "", false
+			var id string
 			if err == nil {
+				var ok bool
 				if id, ok = keyID(k); !ok {
 					err = errors.New("lval: " + orValue(path) + ": cannot use " + k.kind.String() + " as a map key")
 				}

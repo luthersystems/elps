@@ -5555,9 +5555,9 @@ func TestLintFiles_ParseErrorKeepsOtherDiagnostics(t *testing.T) {
 			l := &Linter{Analyzers: []*Analyzer{AnalyzerIfArity}}
 			diags, err := l.LintFiles(cfg, files)
 			require.Error(t, err)
-			assert.ErrorContains(t, err, "b.lisp")
-			assert.ErrorContains(t, err, "d.lisp")
-			assert.ErrorContains(t, err, "missing.lisp")
+			require.ErrorContains(t, err, "b.lisp")
+			require.ErrorContains(t, err, "d.lisp")
+			require.ErrorContains(t, err, "missing.lisp")
 			var got []string
 			for _, d := range diags {
 				got = append(got, filepath.Base(d.Pos.File))

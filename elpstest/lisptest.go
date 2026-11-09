@@ -346,8 +346,8 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	}
 
 	defer func() {
-		if err := lisp.GoError(r.Teardown(env)); err != nil {
-			r.LispError(t, err)
+		if terr := lisp.GoError(r.Teardown(env)); terr != nil {
+			r.LispError(t, terr)
 		}
 	}()
 
@@ -460,8 +460,8 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// r.TeardownFn, matching RunTest and the SetupFn call above (#476).  The
 	// guard existed only to avoid the timer dance that is now gone.
 	defer func() {
-		if err := lisp.GoError(r.Teardown(env)); err != nil {
-			r.LispError(b, err)
+		if terr := lisp.GoError(r.Teardown(env)); terr != nil {
+			r.LispError(b, terr)
 		}
 	}()
 

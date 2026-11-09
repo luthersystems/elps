@@ -1017,8 +1017,8 @@ func TestMinifySource_GeneratedNamesAvoidNamesThatStay(t *testing.T) {
 	require.NoError(t, err)
 	// x1 is the macro's global, x3 the unqualified part of a qualified
 	// name, and x4 a function the source does not define.
-	for min, orig := range symMap.MinifiedToOriginal {
-		assert.NotContains(t, []string{"x1", "x3", "x4"}, min, "generated for %s", orig)
+	for short, orig := range symMap.MinifiedToOriginal {
+		assert.NotContains(t, []string{"x1", "x3", "x4"}, short, "generated for %s", orig)
 	}
 	assert.Contains(t, string(out), "(+ x1 1)")
 	assert.NotContains(t, string(out), "(defun x1 ")
