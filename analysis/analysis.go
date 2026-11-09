@@ -114,6 +114,13 @@ type Result struct {
 	References []*Reference
 	Unresolved []*UnresolvedRef
 
+	// ExportRefs are the names in export forms that name a definition of
+	// this file: (export 'f) gives one for f.  They are apart from
+	// References because an export is not a use: a function that is only
+	// exported has no reference.  A tool that must find each place a name
+	// is written, such as a rename, reads both.
+	ExportRefs []*Reference
+
 	// ExtraGlobals are the external symbols that were provided via Config.
 	// Stored here so downstream consumers (e.g. lint analyzers) can check
 	// for cross-file duplicates without relying on scope lookups that may

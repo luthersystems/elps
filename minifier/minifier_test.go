@@ -1001,3 +1001,31 @@ func TestMinify_ComputedSetTargetExecutionEquivalence(t *testing.T) {
 		})
 	}
 }
+
+// A generated name must not equal a name that stays in the output
+// (luthersystems/elps#938).  The analysis does not see every binding: a
+// macro can define a global, and a host can bind one.  A symbol that the
+// minifier does not rewrite keeps its name, so that name is not free.
+func TestMinifySource_GeneratedNamesAvoidNamesThatStay(t *testing.T) {
+	src := []byte(`(defmacro defglobal (name val)
+  (quasiquote (set (quote (unquote name)) (unquote val))))
+(defglobal x1 10)
+(defun foo () (+ x1 1))
+(debug-print (foo) host:x3 (x4))
+`)
+	out, symMap, err := MinifySource(src, "test.lisp", nil)
+	require.NoError(t, err)
+	// x1 is the macro's global, x3 the unqualified part of a qualified
+	// name, and x4 a function the source does not define.
+	for short, orig := range symMap.MinifiedToOriginal {
+		assert.NotContains(t, []string{"x1", "x3", "x4"}, short, "generated for %s", orig)
+	}
+	assert.Contains(t, string(out), "(+ x1 1)")
+	assert.NotContains(t, string(out), "(defun x1 ")
+
+	// A name that the minifier does rewrite is free again: the output of a
+	// run is a fixed point of the next run.
+	again, _, err := MinifySource(out, "test.lisp", nil)
+	require.NoError(t, err)
+	assert.Equal(t, string(out), string(again))
+}

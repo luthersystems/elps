@@ -341,3 +341,30 @@ func TestDecodeSharedValueIsLinear(t *testing.T) {
 	_, err = lisp.Decode[map[string]any](m)
 	require.NoError(t, err)
 }
+
+// Encode walks a Go map in key order, so its result and its error do not
+// depend on Go's random map order (luthersystems/elps#934).  Two Go keys
+// that become one ELPS key are an error, as they are in Decode: before, the
+// value that stayed was the last one the random walk met.
+func TestEncodeMapIsDeterministic(t *testing.T) {
+	// Go picks a new map order on each range, so 200 runs meet both orders.
+	const runs = 200
+	for range runs {
+		_, err := lisp.Encode(map[any]string{int8(1): "from-int8", int16(1): "from-int16"})
+		require.ErrorContains(t, err, "two keys convert to the map key 1")
+
+		_, err = lisp.Encode(map[any]int{"a": 1, lisp.Symbol("a"): 2})
+		require.ErrorContains(t, err, `two keys convert to the map key "a"`)
+
+		// Every value fails to encode.  The error names the first key in
+		// key order.
+		_, err = lisp.Encode(map[string]any{"a": make(chan int), "b": func() {}, "c": complex(1, 2)})
+		var ce *lisp.CodecError
+		require.ErrorAs(t, err, &ce)
+		require.Equal(t, "a", ce.Path)
+	}
+
+	v, err := lisp.Encode(map[any]int{"b": 2, 1: 10, lisp.Symbol("a"): 1, int8(0): 0})
+	require.NoError(t, err)
+	assert.Equal(t, `(sorted-map 0 0 1 10 'a 1 "b" 2)`, v.String())
+}

@@ -56,7 +56,7 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 	// uses it as the oracle for the edit ranges below, so it has to move in
 	// the same unit as they do.
 	return &protocol.RangeWithPlaceholder{
-		Range:       s.wireRange(doc.Content, elpsToLSPRange(loc, len(sym.Name))),
+		Range:       s.wireRange(doc.Content, nameRange(loc, sym.Name)),
 		Placeholder: sym.Name,
 	}, nil
 }
@@ -105,8 +105,21 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	// and no diagnostic. See documentTexts.rangeFor for which failures are
 	// fatal and which are the status quo.
 	texts := s.newDocumentTexts()
+	// The export of a symbol is in the result of more than one lookup below
+	// when the rename starts in the file that has the definition.  Two edits
+	// of one range would write the new name two times.
+	type editKey struct {
+		uri       protocol.DocumentUri
+		line, col int
+	}
+	seen := make(map[editKey]bool)
 	addEdit := func(uri protocol.DocumentUri, loc *token.Location) error {
-		rng, err := texts.rangeFor(uri, elpsToLSPRange(loc, len(sym.Name)))
+		k := editKey{uri: uri, line: loc.Line, col: loc.Col}
+		if seen[k] {
+			return nil
+		}
+		seen[k] = true
+		rng, err := texts.rangeFor(uri, nameRange(loc, sym.Name))
 		if err != nil {
 			return err
 		}
@@ -142,5 +155,76 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 		}
 	}
 
+	// Rename in the export forms.  An export that kept the old name would
+	// export a name with no definition.
+	for _, loc := range s.exportLocations(doc, docURI, sym) {
+		if err := addEdit(s.resolveURI(docURI, loc.File), loc); err != nil {
+			return nil, err
+		}
+	}
+
 	return &protocol.WorkspaceEdit{Changes: edits}, nil
+}
+
+// nameRange is the byte-column range of the name of a symbol at loc, a
+// definition or a reference of the symbol name.
+//
+// The location of a reference written pkg:name covers the qualifier too.  A
+// rename replaces only the name: an edit of the whole token would remove the
+// qualifier, and the call would resolve in the package of the file.  The
+// name is the end of the token, so its range is measured back from the end.
+func nameRange(loc *token.Location, name string) protocol.Range {
+	rng := elpsToLSPRange(loc, len(name))
+	if rng.Start.Line == rng.End.Line && rng.End.Character-rng.Start.Character > safeUint(len(name)) {
+		rng.Start.Character = rng.End.Character - safeUint(len(name))
+	}
+	return rng
+}
+
+// exportLocations returns the location of each name in an export form that
+// names sym, in the current document doc and in the file that defines sym.
+// An export form is almost always in the file that has the definition; one
+// in a third file is not found.
+//
+// A definition file that is not open is read and analysed here.  One that
+// cannot be read, or is over the workspace size limit, gives no location:
+// the other edits of the rename are still correct, as they were before
+// exports got an edit at all.
+func (s *Server) exportLocations(doc *Document, docURI protocol.DocumentUri, sym *analysis.Symbol) []*token.Location {
+	key := symbolToKey(sym)
+	var locs []*token.Location
+	collect := func(result *analysis.Result) {
+		if result == nil {
+			return
+		}
+		for _, ref := range result.ExportRefs {
+			if ref.Source != nil && symbolToKey(ref.Symbol) == key {
+				locs = append(locs, ref.Source)
+			}
+		}
+	}
+	collect(doc.analysis)
+
+	if sym.Source == nil || sym.Source.File == "" {
+		return locs
+	}
+	defURI := s.resolveURI(docURI, sym.Source.File)
+	if defURI == docURI {
+		return locs
+	}
+	if defDoc := s.docs.Get(defURI); defDoc != nil {
+		s.ensureAnalysis(defDoc)
+		collect(defDoc.analysis)
+		return locs
+	}
+	path := uriToPath(defURI)
+	source, status := s.readWorkspaceFile(path)
+	if status != workspaceReadOK {
+		return locs
+	}
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	collect(analysis.AnalyzeFile(source, path, cfg))
+	return locs
 }

@@ -3,6 +3,8 @@
 package lsp
 
 import (
+	"strings"
+
 	"github.com/luthersystems/elps/formatter"
 	"github.com/tliron/glsp"
 	protocol "github.com/tliron/glsp/protocol_3_16"
@@ -59,26 +61,23 @@ func (s *Server) textDocumentFormatting(_ *glsp.Context, params *protocol.Docume
 		return nil, nil
 	}
 
-	// Return a single edit replacing the entire document.
-	lines := countLines(content)
+	// Return a single edit replacing the entire document.  The edit ends
+	// after the last character.  With no final newline that is inside the
+	// last line, and an edit that ended at the line's start would leave the
+	// old last line after the formatted text.
+	lastLine := strings.Count(content, "\n")
+	tail := content[strings.LastIndexByte(content, '\n')+1:]
+	endCol := len(tail)
+	if s.positionEncoding() != encodingUTF8 {
+		endCol = utf16LenOf(tail)
+	}
 	return []protocol.TextEdit{
 		{
 			Range: protocol.Range{
 				Start: protocol.Position{Line: 0, Character: 0},
-				End:   protocol.Position{Line: safeUint(lines), Character: 0},
+				End:   protocol.Position{Line: safeUint(lastLine), Character: safeUint(endCol)},
 			},
 			NewText: string(formatted),
 		},
 	}, nil
-}
-
-// countLines returns the number of lines in s (0-indexed end line for LSP).
-func countLines(s string) int {
-	n := 0
-	for _, c := range s {
-		if c == '\n' {
-			n++
-		}
-	}
-	return n
 }

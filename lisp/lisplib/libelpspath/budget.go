@@ -4,6 +4,7 @@ package libelpspath
 
 import (
 	"errors"
+	"slices"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -166,6 +167,25 @@ func (op *copyOp) chargeIter(n int) error {
 	return nil
 }
 
+// checkAlloc makes the runtime's allocation check (lisp.LEnv.CheckAlloc) on
+// a sequence of n cells that the operation is about to build.  A failure
+// stops the operation, like a spent step budget: an iterator must not treat
+// it as one element's failure and go on to build the next.  A nil op, the
+// exported Path API, has no runtime to ask and checks nothing.
+func (op *copyOp) checkAlloc(n int) error {
+	if op == nil || op.env == nil {
+		return nil
+	}
+	if op.stop != nil {
+		return errIterStopped
+	}
+	if err := op.env.CheckAlloc(n); err != nil {
+		op.stop = lisp.Error(err)
+		return errIterStopped
+	}
+	return nil
+}
+
 // opResult is what a builtin returns for the result of an operation run
 // under op: the stop condition itself whenever the operation was stopped --
 // even if the walk that noticed it went on to return a value -- an ordinary
@@ -211,6 +231,7 @@ func setMutatePath(p Path, in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.L
 		if err := op.chargeWidth(newIn); err != nil {
 			return nil, err
 		}
+		return p.setMutateOp(in, newIn, op)
 	}
 	return p.SetMutate(in, newIn)
 }
@@ -245,6 +266,23 @@ func nilMutatePath(p Path, in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 		}
 	}
 	return p.NilMutate(in)
+}
+
+// hasRangeStep reports whether the path p has a range step.  A range set
+// can make a sequence longer, so ?set! runs it under an operation state,
+// which holds the runtime that the allocation check needs.
+func hasRangeStep(p Path) bool {
+	switch p := p.(type) {
+	case *rootPath:
+		return hasRangeStep(p.path)
+	case *chainPath:
+		return slices.ContainsFunc(p.paths, hasRangeStep)
+	case *iterPath:
+		return hasRangeStep(p.path)
+	case *rangePath:
+		return true
+	}
+	return false
 }
 
 // hasIterStep reports whether a builtin's path steps include an iterator.

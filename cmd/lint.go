@@ -53,7 +53,8 @@ and recommends labels for recursive local functions.
 Exit codes:
   0  No problems found, or only diagnostics below the --fail-on threshold
   1  One or more diagnostics at or above the --fail-on threshold (default: error)
-  2  Bad invocation (invalid flags, unreadable files)
+  2  Bad invocation (invalid flags, unreadable files), or a file that does
+     not parse. The diagnostics of the files that do parse are still shown.
 
 To suppress a specific diagnostic, add a comment on the same line:
   (set x 42) ; nolint:set-usage
@@ -135,23 +136,24 @@ Examples:
 				os.Exit(2)
 			}
 
-			allDiags, err := l.LintFiles(lintCfg, expanded)
-			if err != nil {
-				fmt.Fprintf(os.Stderr, "elps lint: %v\n", err)
-				os.Exit(2)
-			}
+			// lintErr does not make the diagnostics invalid: a file that
+			// does not parse leaves those of the other files. Show them
+			// first, then fail on the error.
+			allDiags, lintErr := l.LintFiles(lintCfg, expanded)
 
-			if len(allDiags) == 0 {
-				return
-			}
-
-			if jsonOutput {
-				if err := lint.FormatJSON(os.Stdout, allDiags); err != nil {
-					fmt.Fprintln(os.Stderr, err)
-					os.Exit(2)
+			if len(allDiags) > 0 {
+				if jsonOutput {
+					if err := lint.FormatJSON(os.Stdout, allDiags); err != nil {
+						fmt.Fprintln(os.Stderr, err)
+						os.Exit(2)
+					}
+				} else {
+					renderLintDiagnostics(allDiags)
 				}
-			} else {
-				renderLintDiagnostics(allDiags)
+			}
+			if lintErr != nil {
+				fmt.Fprintf(os.Stderr, "elps lint: %v\n", lintErr)
+				os.Exit(2)
 			}
 			if lint.ShouldFail(allDiags, threshold) {
 				os.Exit(1)

@@ -508,6 +508,20 @@ func buildAssignments(files []parsedFile, cfg *Config, preserved *preservationSe
 		}
 	}
 
+	// Reserve also each name that stays in the output though no definition
+	// the analysis knows carries it: a global that a macro defines, a host
+	// binding, the unqualified part of a qualified name.  A generated name
+	// that equals one would give two bindings one name.
+	renamed := make(map[*analysis.Symbol]bool, len(records))
+	renamedKeys := make(map[string]bool, len(records))
+	for _, record := range records {
+		renamed[record.sym] = true
+		renamedKeys[symbolLookupKey(record.sym)] = true
+	}
+	for i := range files {
+		reserveNamesThatStay(&files[i], renamed, renamedKeys, reserved)
+	}
+
 	sort.Slice(records, func(i, j int) bool {
 		return compareSymbols(records[i].sym, records[j].sym) < 0
 	})
@@ -595,6 +609,63 @@ func packageBindingKey(sym *analysis.Symbol) string {
 		return ""
 	}
 	return sym.Package + ":" + sym.Name
+}
+
+// reserveNamesThatStay adds to reserved the name of each symbol node in file
+// that applyAssignments will not rewrite.  renamed and renamedKeys hold the
+// definitions that get a new name, by identity and by symbolLookupKey: the
+// two ways applyAssignments finds the new name of a reference.  A node that
+// is rewritten loses its name, so that name stays free, and the output of
+// one run is a fixed point of the next.
+func reserveNamesThatStay(file *parsedFile, renamed map[*analysis.Symbol]bool, renamedKeys map[string]bool, reserved map[string]bool) {
+	rewritten := make(map[*lisp.LVal]bool)
+	for _, sym := range file.analysis.Symbols {
+		if renamed[sym] && sym.Node != nil {
+			rewritten[sym.Node] = true
+		}
+	}
+	for _, ref := range file.analysis.References {
+		if ref.Node != nil && (renamed[ref.Symbol] || renamedKeys[symbolLookupKey(ref.Symbol)]) {
+			rewritten[ref.Node] = true
+		}
+	}
+	var walk func(nodes []*lisp.LVal)
+	walk = func(nodes []*lisp.LVal) {
+		for _, node := range nodes {
+			if node == nil {
+				continue
+			}
+			if node.Type == lisp.LSymbol && !rewritten[node] {
+				name := node.Str
+				// A rewritten qualified reference keeps its qualifier and
+				// an unrewritten one keeps both parts, so the part after
+				// the qualifier is the name to keep free.
+				if parts, ok := splitQualifiedSymbol(name); ok {
+					name = parts.name
+				}
+				if isGeneratedName(name) {
+					reserved[name] = true
+				}
+			}
+			walk(node.Cells)
+		}
+	}
+	walk(file.exprs)
+}
+
+// isGeneratedName reports whether name has the form of the names that
+// buildAssignments gives out: x and decimal digits.  No other name can equal
+// a generated one, so no other name needs a reservation.
+func isGeneratedName(name string) bool {
+	if len(name) < 2 || name[0] != 'x' {
+		return false
+	}
+	for i := 1; i < len(name); i++ {
+		if name[i] < '0' || name[i] > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 func applyAssignments(file *parsedFile, assignments map[*analysis.Symbol]string, assignmentKeys map[string]string) {

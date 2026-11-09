@@ -5532,3 +5532,37 @@ func TestRemovedBuiltin_Nolint(t *testing.T) {
 	assertNoDiags(t, lintCheck(t, AnalyzerRemovedBuiltin,
 		`(time:utc-now) ; nolint:removed-builtin`))
 }
+
+// A file that does not parse must not hide the diagnostics of the other
+// files (luthersystems/elps#942).  LintFiles stopped at the first such file
+// and returned no diagnostic at all.  It now returns the diagnostics of each
+// file that parses, with an error that names each file that does not.
+func TestLintFiles_ParseErrorKeepsOtherDiagnostics(t *testing.T) {
+	dir := t.TempDir()
+	before := writeTempLisp(t, dir, "a.lisp", "(if true 1)\n")
+	broken1 := writeTempLisp(t, dir, "b.lisp", "(defun f (x\n")
+	after := writeTempLisp(t, dir, "c.lisp", "(if false 2)\n")
+	broken2 := writeTempLisp(t, dir, "d.lisp", "(list 1 2))\n")
+	// A file that cannot be read is skipped in the same way.
+	missing := filepath.Join(dir, "missing.lisp")
+	files := []string{before, broken1, missing, after, broken2}
+
+	for name, cfg := range map[string]*LintConfig{
+		"no workspace": nil,
+		"workspace":    {Workspace: dir},
+	} {
+		t.Run(name, func(t *testing.T) {
+			l := &Linter{Analyzers: []*Analyzer{AnalyzerIfArity}}
+			diags, err := l.LintFiles(cfg, files)
+			require.Error(t, err)
+			require.ErrorContains(t, err, "b.lisp")
+			require.ErrorContains(t, err, "d.lisp")
+			require.ErrorContains(t, err, "missing.lisp")
+			var got []string
+			for _, d := range diags {
+				got = append(got, filepath.Base(d.Pos.File))
+			}
+			assert.Equal(t, []string{"a.lisp", "c.lisp"}, got)
+		})
+	}
+}

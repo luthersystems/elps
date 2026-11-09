@@ -195,9 +195,10 @@ func (a *analyzer) prescanSet(expr *lisp.LVal, scope *Scope, pkg string) {
 }
 
 func (a *analyzer) prescanExport(expr *lisp.LVal, scope *Scope, pkg string) {
-	for _, name := range astutil.ExportNames(expr.Cells[1:]) {
-		if sym := scope.LookupLocalInPackage(name, pkg); sym != nil {
+	for _, node := range astutil.ExportNameNodes(expr.Cells[1:]) {
+		if sym := scope.LookupLocalInPackage(node.Str, pkg); sym != nil {
 			sym.Exported = true
+			a.result.ExportRefs = append(a.result.ExportRefs, newReference(sym, node))
 		}
 	}
 }

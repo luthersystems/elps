@@ -293,7 +293,7 @@ func BuiltinQuerySetMutate(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return env.Error(err)
 	}
-	if !hasIterStep(steps) {
+	if !hasIterStep(steps) && !hasRangeStep(path) {
 		data, opErr := path.SetMutate(val, newVal)
 		if opErr != nil {
 			return env.Error(opErr)

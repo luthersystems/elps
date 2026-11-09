@@ -60,6 +60,16 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 		})
 	}
 
+	// The names in export forms.  They are not uses, so the analysis keeps
+	// them apart from its references, but each is a place the name is
+	// written.
+	for _, loc := range s.exportLocations(doc, params.TextDocument.URI, sym) {
+		locs = append(locs, protocol.Location{
+			URI:   s.resolveURI(params.TextDocument.URI, loc.File),
+			Range: elpsToLSPRange(loc, len(sym.Name)),
+		})
+	}
+
 	return locs, nil
 }
 

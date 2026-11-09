@@ -54,7 +54,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/analysis.walkLoadFile":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/astutil.ClassifyNodes":                                  "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/astutil.MentionsSymbol":                                 "syntax walker: visits every symbol of source forms, quoted or not, to prefilter them",
-	"github.com/luthersystems/elps/astutil.ExportNames":                                    "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/astutil.ExportNameNodes":                                "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/elpstest.RunBenchmark":                                  "oracle: constructs benchmark arguments and checks evaluator results",
 	"github.com/luthersystems/elps/elpstest.aliasWalker.value":                             "oracle: checks value storage independently of production traversal",
 	"github.com/luthersystems/elps/elpstest.stateWalker.value":                             "oracle: checks value storage independently of production traversal",
@@ -230,6 +230,7 @@ var valueWalkerFunctions = map[string]string{ //nolint:gosec // G101: function n
 	"github.com/luthersystems/elps/minifier.firstGlobalFallback":                           "syntax walker: raw forms keep macro templates and quoted data in the fallback scan",
 	"github.com/luthersystems/elps/minifier.literalExportArgument":                         "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/minifier.recordQualifiedReferences":                     "syntax walker: visits source forms with syntax and quote rules",
+	"github.com/luthersystems/elps/minifier.reserveNamesThatStay":                          "syntax walker: visits every symbol of source forms, quoted or not, to reserve names",
 	"github.com/luthersystems/elps/parser/rdparser.Parser.ParseConsExpression":             "syntax walker: visits source forms with syntax and quote rules",
 	"github.com/luthersystems/elps/parser/rdparser.Parser.ParseList":                       "syntax walker: visits source forms with syntax and quote rules",
 }

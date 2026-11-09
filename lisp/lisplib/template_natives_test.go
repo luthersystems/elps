@@ -91,7 +91,7 @@ func TestRuntimeLibraryRegexpOwnsPrivateImmutablePayload(t *testing.T) {
 	require.Equal(t, reflect.Struct, typ.Kind(), "compiled payload must not expose a writable pointer")
 	require.Equal(t, 1, typ.NumMethod(), "only the read-only text marshaler may be exported")
 	require.Equal(t, "MarshalText", typ.Method(0).Name)
-	require.Equal(t, 2, typ.NumField(), "new immutable payload state requires an ownership audit")
+	require.Equal(t, 3, typ.NumField(), "new immutable payload state requires an ownership audit")
 	marker := typ.Field(0)
 	require.True(t, marker.Anonymous)
 	require.Equal(t, "github.com/luthersystems/elps/internal/templatepolicy", marker.Type.PkgPath())
@@ -102,6 +102,12 @@ func TestRuntimeLibraryRegexpOwnsPrivateImmutablePayload(t *testing.T) {
 	require.Equal(t, reflect.TypeOf((*regexp.Regexp)(nil)), program.Type)
 	require.False(t, program.IsExported(), "compiled program must remain private")
 	require.False(t, program.Anonymous, "do not promote methods from the underlying regexp")
+	// The program size is a plain int, set at compilation: a copy of the
+	// payload shares no storage through it.
+	size := typ.Field(2)
+	require.Equal(t, "insts", size.Name)
+	require.Equal(t, reflect.Int, size.Type.Kind())
+	require.False(t, size.IsExported(), "program size must remain private")
 	marshaler, ok := payload.(encoding.TextMarshaler)
 	require.True(t, ok, "preserve Go and Lisp JSON regexp encoding")
 	text, err := marshaler.MarshalText()

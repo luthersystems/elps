@@ -46,6 +46,6 @@ var DurableRegexpCodec = libjson.DurableCodec[compiledRegexp]{
 		if err != nil {
 			return nil, fmt.Errorf("%s: invalid pattern: %w", DurableRegexpName, err)
 		}
-		return lisp.Native(compiledRegexp{re: re}), nil
+		return newCompiled(re, p.Str), nil
 	},
 }

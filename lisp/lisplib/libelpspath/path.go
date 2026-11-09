@@ -1595,16 +1595,21 @@ func (s *rangePath) Get(in *lisp.LVal) (*lisp.LVal, error) {
 }
 
 func (s *rangePath) SetMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
+	return s.setMutateOp(in, newIn, nil)
+}
+
+// setMutateOp is SetMutate as part of the operation op (see getPath).
+func (s *rangePath) setMutateOp(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	if err := errMutateList(in); err != nil {
 		return nil, err
 	}
-	return s.setMutate(in, newIn)
+	return s.setMutate(in, newIn, op)
 }
 
 // setMutate is SetMutate without the list guard. It is called directly by
 // the non-mutating Set and Nil, which operate on a private copy that may be
 // a list.
-func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, error) {
+func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 	cells, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -1645,7 +1650,16 @@ func (s *rangePath) setMutate(in *lisp.LVal, newIn *lisp.LVal) (*lisp.LVal, erro
 	// function does not own. The capacity below is exact, but correctness does
 	// not rest on it — every element is copied into a slice nothing else
 	// references, so a wrong capacity would cost an allocation, not an answer.
-	vals := make([]*lisp.LVal, 0, from+len(setCells)+(n-to))
+	//
+	// The replacement can be longer than the range, so the result can be
+	// longer than both inputs: a splice of a vector into itself doubles it.
+	// The length is the program's to choose, so it gets the allocation check
+	// that concat makes.
+	size := from + len(setCells) + (n - to)
+	if err := op.checkAlloc(size); err != nil {
+		return nil, err
+	}
+	vals := make([]*lisp.LVal, 0, size)
 	vals = append(vals, cells[:from]...)
 	vals = append(vals, setCells...)
 	vals = append(vals, cells[to:]...)
@@ -1678,7 +1692,7 @@ func (s *rangePath) setLimited(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 	if err := op.chargeWidth(newIn); err != nil {
 		return nil, err
 	}
-	return s.setMutate(cp, newIn)
+	return s.setMutate(cp, newIn, op)
 }
 
 func (s *rangePath) DeleteMutate(in *lisp.LVal) (*lisp.LVal, error) {
@@ -1777,7 +1791,8 @@ func (s *rangePath) nilMutate(in *lisp.LVal) (*lisp.LVal, error) {
 		newVal = toList(newCells)
 	}
 
-	return s.setMutate(in, newVal)
+	// The result has the source's length, so there is nothing to check.
+	return s.setMutate(in, newVal, nil)
 }
 
 func (s *rangePath) Nil(in *lisp.LVal) (*lisp.LVal, error) {
@@ -1940,6 +1955,11 @@ func (s *iterPath) get(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 				return nil, err
 			}
 			if err := op.charge(len(childIns)); err != nil {
+				return nil, err
+			}
+			// The flattened answer has one cell for each result of each
+			// nested iterator, which can be far more than the document has.
+			if err := op.checkAlloc(len(results) + len(childIns)); err != nil {
 				return nil, err
 			}
 			results = append(results, childIns...)

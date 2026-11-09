@@ -964,6 +964,40 @@ func TestFormatting(t *testing.T) {
 	assert.Contains(t, edits[0].NewText, "  (+", "formatted output should indent body")
 }
 
+// The whole-document edit must cover the whole document
+// (luthersystems/elps#939).  It ended at the start of the line after the
+// last newline.  With no final newline that is the start of the last line,
+// so the client kept the old last line after the formatted text.
+func TestFormattingEditCoversTheLastLine(t *testing.T) {
+	for _, tc := range []struct {
+		name, content string
+		enc           positionEncoding
+		wantLine      uint32
+		wantChar      uint32
+	}{
+		{"no final newline", "(defun add (x y)\n(+ x y))", encodingUTF16, 1, 8},
+		{"one line", "(+  1 2)", encodingUTF16, 0, 8},
+		{"final newline", "(defun add (x y)\n(+ x y))\n", encodingUTF16, 2, 0},
+		// The last line is ("😀"  1): the emoji is 2 UTF-16 units and 4 bytes.
+		{"utf-16 column", "(list\n(\"\U0001F600\"  1))", encodingUTF16, 1, 10},
+		{"utf-8 column", "(list\n(\"\U0001F600\"  1))", encodingUTF8, 1, 12},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := testServer()
+			s.posEncoding.Store(int32(tc.enc))
+			openDoc(s, "file:///test.lisp", tc.content)
+			edits, err := s.textDocumentFormatting(mockContext(), &protocol.DocumentFormattingParams{
+				TextDocument: protocol.TextDocumentIdentifier{URI: "file:///test.lisp"},
+				Options:      protocol.FormattingOptions{},
+			})
+			require.NoError(t, err)
+			require.Len(t, edits, 1)
+			assert.Equal(t, protocol.Position{Line: 0, Character: 0}, edits[0].Range.Start)
+			assert.Equal(t, protocol.Position{Line: tc.wantLine, Character: tc.wantChar}, edits[0].Range.End)
+		})
+	}
+}
+
 func TestFormattingAlreadyFormatted(t *testing.T) {
 	s := testServer()
 	// Already formatted (indented correctly with trailing newline).
@@ -3034,8 +3068,9 @@ func TestCrossFileReferences_QualifiedSymbol(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, locs)
 
-	// Should have exactly 2 locations: declaration from helpers.lisp + cross-file ref from consumer.lisp.
-	require.Len(t, locs, 2, "should have definition + 1 cross-file qualified ref")
+	// Should have exactly 3 locations: the declaration and the export from
+	// helpers.lisp + the cross-file ref from consumer.lisp.
+	require.Len(t, locs, 3, "should have definition + export + 1 cross-file qualified ref")
 
 	uris := make(map[string]bool)
 	for _, loc := range locs {
