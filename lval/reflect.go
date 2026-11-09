@@ -467,13 +467,18 @@ func encode(rv reflect.Value, path string, depth int) (Value, error) {
 			return Value{}, keyErr
 		}
 		slices.SortFunc(entries, func(a, b entry) int { return strings.Compare(a.id, b.id) })
-		keys, vals := make([]Value, len(entries)), make([]Value, len(entries))
-		for i, e := range entries {
-			// buildMap would keep one of the two values, and which one would
-			// depend on the walk.  DecodeInto refuses the same collision.
-			if i > 0 && entries[i-1].id == e.id {
+		// buildMap would keep one of the two values, and which one would
+		// depend on the walk.  DecodeInto refuses the same collision.  The
+		// check comes before any value is encoded: equal keys sort in walk
+		// order, so an error from one of their values would depend on the
+		// walk.
+		for i := 1; i < len(entries); i++ {
+			if entries[i-1].id == entries[i].id {
 				return Value{}, errors.New("lval: " + orValue(path) + ": two keys convert to one map key")
 			}
+		}
+		keys, vals := make([]Value, len(entries)), make([]Value, len(entries))
+		for i, e := range entries {
 			ev, err := encode(e.val, joinPath(path, e.key.String()), depth+1)
 			if err != nil {
 				return Value{}, err

@@ -28,6 +28,11 @@ func TestEncodeMapIsDeterministic(t *testing.T) {
 		// key order.
 		_, err = lval.Encode(map[string]any{"a": make(chan int), "b": func() {}, "c": complex(1, 2)})
 		require.ErrorContains(t, err, `lval: "a":`)
+
+		// A collision is found before a value that does not encode.
+		type S string
+		_, err = lval.Encode(map[any]any{"a": make(chan int), S("a"): 1})
+		require.ErrorContains(t, err, "two keys convert to one map key")
 	}
 
 	v, err := lval.Encode(map[any]int{"b": 2, 1: 10, "a": 1, int8(0): 0})

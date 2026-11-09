@@ -699,15 +699,17 @@ func encodeValue(rv reflect.Value, path string, depth int) (*LVal, error) {
 			return nil, keyErr
 		}
 		slices.SortFunc(entries, func(a, b entry) int { return compareMapKeys(a.key, b.key) })
-		m := SortedMap()
-		var prev *LVal
-		for _, e := range entries {
-			// The map would keep one of the two values, and which one would
-			// depend on the walk.  Decode refuses the same collision.
-			if mapKeysCollide(prev, e.key) {
-				return nil, encodeErr(path, "two keys convert to the map key "+mapKeyDesc(e.key))
+		// The map would keep one of the two values, and which one would
+		// depend on the walk.  Decode refuses the same collision.  The check
+		// comes before any value is encoded: equal keys sort in walk order,
+		// so an error from one of their values would depend on the walk.
+		for i := 1; i < len(entries); i++ {
+			if mapKeysCollide(entries[i-1].key, entries[i].key) {
+				return nil, encodeErr(path, "two keys convert to the map key "+mapKeyDesc(entries[i].key))
 			}
-			prev = e.key
+		}
+		m := SortedMap()
+		for _, e := range entries {
 			ev, err := encodeValue(e.val, joinField(path, keyText(e.key)), depth+1)
 			if err != nil {
 				return nil, err
