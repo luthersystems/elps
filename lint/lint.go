@@ -380,12 +380,11 @@ type LintConfig struct {
 // When cfg is nil, checks run without workspace context. The let-recursion
 // check still resolves local bindings within each file.
 //
-// A file that cannot be linted, such as one that does not parse, does not
-// stop the run. LintFiles returns the diagnostics of the other files
-// together with an error that joins the error of each such file, so the
-// diagnostics are valid when the error is not nil. A file that cannot be
-// read, or a workspace that cannot be scanned, stops the run with no
-// diagnostics.
+// A file that cannot be linted, because it cannot be read or does not
+// parse, does not stop the run. LintFiles returns the diagnostics of the
+// other files together with an error that joins the error of each such
+// file, so the diagnostics are valid when the error is not nil. A workspace
+// that cannot be scanned stops the run with no diagnostics.
 func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error) {
 	var analysisCfg *analysis.Config
 	if cfg != nil && cfg.Workspace != "" {
@@ -401,7 +400,8 @@ func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error
 	for _, path := range files {
 		src, err := os.ReadFile(path) //nolint:gosec // linter reads user-specified files
 		if err != nil {
-			return nil, fmt.Errorf("%s: %w", path, err)
+			fileErrs = append(fileErrs, fmt.Errorf("%s: %w", path, err))
+			continue
 		}
 		var diags []Diagnostic
 		if analysisCfg != nil {
@@ -410,8 +410,8 @@ func (l *Linter) LintFiles(cfg *LintConfig, files []string) ([]Diagnostic, error
 			diags, err = l.LintFile(src, path)
 		}
 		if err != nil {
-			// A file that cannot be linted, in practice one that does not
-			// parse, must not hide what the other files have.
+			// A file that does not parse must not hide what the other files
+			// have.
 			fileErrs = append(fileErrs, err)
 			continue
 		}

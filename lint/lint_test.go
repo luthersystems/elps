@@ -5543,7 +5543,9 @@ func TestLintFiles_ParseErrorKeepsOtherDiagnostics(t *testing.T) {
 	broken1 := writeTempLisp(t, dir, "b.lisp", "(defun f (x\n")
 	after := writeTempLisp(t, dir, "c.lisp", "(if false 2)\n")
 	broken2 := writeTempLisp(t, dir, "d.lisp", "(list 1 2))\n")
-	files := []string{before, broken1, after, broken2}
+	// A file that cannot be read is skipped in the same way.
+	missing := filepath.Join(dir, "missing.lisp")
+	files := []string{before, broken1, missing, after, broken2}
 
 	for name, cfg := range map[string]*LintConfig{
 		"no workspace": nil,
@@ -5555,6 +5557,7 @@ func TestLintFiles_ParseErrorKeepsOtherDiagnostics(t *testing.T) {
 			require.Error(t, err)
 			assert.ErrorContains(t, err, "b.lisp")
 			assert.ErrorContains(t, err, "d.lisp")
+			assert.ErrorContains(t, err, "missing.lisp")
 			var got []string
 			for _, d := range diags {
 				got = append(got, filepath.Base(d.Pos.File))
