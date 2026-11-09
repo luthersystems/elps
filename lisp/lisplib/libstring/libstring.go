@@ -362,19 +362,63 @@ var builtinTrimSpace = lisp.Func1(lisp.StringArg("first argument"), func(env *li
 })
 
 var (
-	builtinTrim      = stringPair(trimFunc(strings.Trim))
-	builtinTrimLeft  = stringPair(trimFunc(strings.TrimLeft))
-	builtinTrimRight = stringPair(trimFunc(strings.TrimRight))
+	builtinTrim      = stringPair(trimFunc(strings.Trim, true, true))
+	builtinTrimLeft  = stringPair(trimFunc(strings.TrimLeft, true, false))
+	builtinTrimRight = stringPair(trimFunc(strings.TrimRight, false, true))
 )
 
-// trimFunc is a trim builtin over a cutset, charged for the string's size.
-func trimFunc(trim func(s, cutset string) string) func(env *lisp.LEnv, str, cutset string) *lisp.LVal {
+// trimSetMinCutset is the cutset size in bytes from which a trim builtin
+// builds its own set of the cutset's runes.  It is the size from which the
+// cutset is charged, so the work to build the set is paid for.
+const trimSetMinCutset = 1024
+
+// trimFunc is a trim builtin over a cutset, charged for the sizes of the
+// string and the cutset.  trim is the Go function that defines the result,
+// and left and right say which ends it trims.
+//
+// Package strings scans the whole cutset for each rune of the string when
+// the cutset is not ASCII, so its work is the product of the two sizes.  For
+// a cutset of trimSetMinCutset bytes or more, the builtin makes a set of the
+// cutset's runes one time, and the work is the sum.  A smaller cutset bounds
+// the product, and goes to package strings as before.
+func trimFunc(trim func(s, cutset string) string, left, right bool) func(env *lisp.LEnv, str, cutset string) *lisp.LVal {
 	return func(env *lisp.LEnv, str, cutset string) *lisp.LVal {
 		if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 			return lerr
 		}
-		return lisp.String(trim(str, cutset))
+		if lerr := libutil.ChargeKiB(env, len(cutset)); lerr != nil {
+			return lerr
+		}
+		if len(cutset) < trimSetMinCutset || str == "" || isASCII(cutset) {
+			return lisp.String(trim(str, cutset))
+		}
+		// A range over a string gives utf8.RuneError for an invalid byte,
+		// and so do the decoders in TrimLeftFunc and TrimRightFunc.  An
+		// invalid byte in the string therefore matches an invalid byte or
+		// U+FFFD in the cutset, which is the rule of package strings.
+		set := make(map[rune]struct{})
+		for _, r := range cutset {
+			set[r] = struct{}{}
+		}
+		in := func(r rune) bool { _, ok := set[r]; return ok }
+		if left {
+			str = strings.TrimLeftFunc(str, in)
+		}
+		if right {
+			str = strings.TrimRightFunc(str, in)
+		}
+		return lisp.String(str)
 	}
+}
+
+// isASCII reports whether s has only ASCII bytes.
+func isASCII(s string) bool {
+	for i := 0; i < len(s); i++ {
+		if s[i] >= utf8.RuneSelf {
+			return false
+		}
+	}
+	return true
 }
 
 // stringPair is a (str, other) builtin taking two strings, reporting "first
