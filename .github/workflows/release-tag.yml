@@ -46,7 +46,7 @@ jobs:
       actions: read # read the CI Tests runs for the release commit
       contents: read # verify the release; the Claude App token creates it
       id-token: write # Bedrock role and the Claude App token
-    uses: luthersystems/.github/.github/workflows/release-tag.yml@2d05273e82bf1e135bfbf9a225d18b86e15979fa # v1.8.1
+    uses: luthersystems/.github/.github/workflows/release-tag.yml@444a3bb9b287c80a9fe2d93d0dc7abfb390330c2 # v1.8.2
     with:
       version: ${{ inputs.version }}
       dry_run: ${{ inputs.dry_run }}

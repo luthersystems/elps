@@ -25,7 +25,7 @@ jobs:
     permissions:
       contents: read
       issues: read # the work marker gate reads each named issue's state
-    uses: luthersystems/.github/.github/workflows/quality.yml@2d05273e82bf1e135bfbf9a225d18b86e15979fa # v1.8.1
+    uses: luthersystems/.github/.github/workflows/quality.yml@444a3bb9b287c80a9fe2d93d0dc7abfb390330c2 # v1.8.2
     with:
       # Lint only the root module: tree-sitter-elps has its own CI.
       go-directories: "."
