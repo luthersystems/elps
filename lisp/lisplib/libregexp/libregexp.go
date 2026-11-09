@@ -11,6 +11,8 @@ package libregexp
 import (
 	"errors"
 	"regexp"
+	"regexp/syntax"
+	"strings"
 
 	"github.com/luthersystems/elps/internal/templatepolicy"
 	"github.com/luthersystems/elps/lisp"
@@ -30,6 +32,63 @@ type compiledRegexp struct {
 	// method this package calls; the pointer is never returned to callers.
 	//elpsvet:allow-marker compiled program is read-only after compilation
 	re *regexp.Regexp
+	// insts is programSize of the pattern, kept so that a match does not
+	// compile the pattern again to charge for it.
+	insts int
+}
+
+// newCompiled returns the native value of a fresh compilation of pattern.
+func newCompiled(re *regexp.Regexp, pattern string) *lisp.LVal {
+	return lisp.Native(compiledRegexp{re: re, insts: programSize(pattern)})
+}
+
+// matchChargeInsts is the program size, in instructions, that one unit of
+// the match charge covers.  A program below it pays for the text only.
+// Patterns that people write by hand are far below it: an email, UUID or
+// timestamp pattern compiles to fewer than 100 instructions.  Counted
+// repetition is what makes a program large: x{n} compiles to n copies of x.
+const matchChargeInsts = 256
+
+// smallPatternBytes is a pattern length below which a pattern with no
+// counted repetition is sure to compile to fewer than matchChargeInsts
+// instructions: without a "{", each instruction comes from at least one
+// byte of the pattern, plus a small constant.  programSize uses it to avoid
+// a compilation for the patterns that need no extra charge.
+const smallPatternBytes = 128
+
+// programSize returns the number of instructions in the compiled program of
+// pattern, or 0 when the size cannot matter to the charge: the pattern is
+// small, or it does not compile.  It is a function of the pattern text
+// alone, so the charge made from it is deterministic.
+//
+// Package regexp does not report the size of its program, so programSize
+// compiles the pattern with package regexp/syntax, by the steps
+// regexp.Compile takes.
+func programSize(pattern string) int {
+	if len(pattern) < smallPatternBytes && !strings.Contains(pattern, "{") {
+		return 0
+	}
+	parsed, err := syntax.Parse(pattern, syntax.Perl)
+	if err != nil {
+		return 0
+	}
+	prog, err := syntax.Compile(parsed.Simplify())
+	if err != nil {
+		return 0
+	}
+	return len(prog.Inst)
+}
+
+// chargeMatch charges for a match of n bytes of text by a program of insts
+// instructions.
+//
+// The matcher keeps a set of program positions and advances it for each byte
+// of the text, so its work is the text length times the program size in the
+// worst case.  The charge is that of ChargeKiB for the text, times one plus
+// the program size in units of matchChargeInsts.  A program smaller than one
+// unit pays for the text only.
+func chargeMatch(env *lisp.LEnv, insts, n int) *lisp.LVal {
+	return libutil.ChargeKiB(env, n*(1+insts/matchChargeInsts))
 }
 
 var _ templatepolicy.Immutable = compiledRegexp{}
@@ -80,7 +139,9 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("regexp-match?", lisp.Formals("re", "text"), BuiltinIsMatch,
 		`Returns true if the regexp matches text. re may be a compiled
 		regexp or a pattern string (compiled on each call). text may be
-		a string or bytes value.`),
+		a string or bytes value. A match costs one step for each KiB of
+		text, times one plus the size of the compiled program in units
+		of 256 instructions.`),
 }
 
 func BuiltinIsRegexp(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -111,7 +172,7 @@ func BuiltinCompile(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if err != nil {
 		return invalidPatternError(env, err)
 	}
-	return lisp.Native(compiledRegexp{re: re})
+	return newCompiled(re, patt)
 }
 
 func BuiltinPattern(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
@@ -129,14 +190,15 @@ func BuiltinIsMatch(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr != nil {
 		return lerr
 	}
+	insts := regexpProgramSize(lre, re)
 	switch text.Type {
 	case lisp.LString:
-		if lerr := libutil.ChargeKiB(env, len(text.Str)); lerr != nil {
+		if lerr := chargeMatch(env, insts, len(text.Str)); lerr != nil {
 			return lerr
 		}
 		return lisp.Bool(re.MatchString(text.Str))
 	case lisp.LBytes:
-		if lerr := libutil.ChargeKiB(env, len(text.Bytes())); lerr != nil {
+		if lerr := chargeMatch(env, insts, len(text.Bytes())); lerr != nil {
 			return lerr
 		}
 		return lisp.Bool(re.Match(text.Bytes()))
@@ -173,6 +235,19 @@ func getRegexp(env *lisp.LEnv, v *lisp.LVal) (*regexp.Regexp, *lisp.LVal) {
 		return nil, env.Errorf("argument is not a regexp: %v", v)
 	}
 	return re, nil
+}
+
+// regexpProgramSize returns programSize for the regexp argument v, which
+// getRegexp resolved to re.  A value from regexp-compile carries its size.
+// For a pattern string or a host regexp it is computed from the pattern, so
+// the three forms of one pattern pay the same.
+func regexpProgramSize(v *lisp.LVal, re *regexp.Regexp) int {
+	if v.Type == lisp.LNative {
+		if c, ok := v.Native.(compiledRegexp); ok {
+			return c.insts
+		}
+	}
+	return programSize(re.String())
 }
 
 func invalidPatternError(env *lisp.LEnv, err error) *lisp.LVal {
