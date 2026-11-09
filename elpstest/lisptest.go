@@ -327,6 +327,11 @@ func (r *Runner) RunTest(t *testing.T, i int, path string, source io.Reader) {
 	// would say nothing about the code under test.
 	if err = lisp.GoError(r.Setup(env)); err != nil {
 		r.LispError(t, err)
+		// Teardown still runs, as it did when the Setup error was ignored:
+		// a Setup that fails part way can leave resources to release.
+		if err = lisp.GoError(r.Teardown(env)); err != nil {
+			r.LispError(t, err)
+		}
 		return
 	}
 
@@ -427,6 +432,11 @@ func (r *Runner) RunBenchmark(b *testing.B, i int, path string, source io.Reader
 	// comparable.
 	if err = lisp.GoError(r.Setup(env)); err != nil {
 		r.LispError(b, err)
+		// Teardown still runs, as it did when the Setup error was ignored:
+		// a Setup that fails part way can leave resources to release.
+		if err = lisp.GoError(r.Teardown(env)); err != nil {
+			r.LispError(b, err)
+		}
 		return
 	}
 

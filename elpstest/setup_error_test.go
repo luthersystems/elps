@@ -34,6 +34,9 @@ func TestRunnerReportsSetupAndTeardownErrors(t *testing.T) {
 		// The body does not run in an environment that was not set up.
 		"setup":    {&Runner{SetupFn: fail("setup went wrong")}, "setup went wrong", false},
 		"teardown": {&Runner{TeardownFn: fail("teardown went wrong")}, "teardown went wrong", true},
+		// Teardown still runs after a failed Setup, to release what Setup
+		// made before it failed.
+		"setup then teardown": {&Runner{SetupFn: fail("setup went wrong"), TeardownFn: fail("teardown ran")}, "teardown ran", false},
 	}
 	if name := os.Getenv(childFlag); name != "" {
 		cases[name].runner.RunTest(t, 0, "hook_test.lisp", strings.NewReader(source))
