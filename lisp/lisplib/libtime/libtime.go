@@ -166,13 +166,33 @@ func durationOf(a *lisp.ArgReader, v *lisp.LVal) time.Duration {
 	return d
 }
 
+// parseStamp is time.Parse with a result that does not depend on the host's
+// time zone.
+//
+// time.Parse gives the result the host's time.Local when the offset in the
+// text equals the host zone's offset at that instant.  That Location carries
+// the host's DST rules, so time-add on the value would follow them and one
+// program would give different text on hosts in different zones.  A fixed
+// zone keeps the offset the text states, which is all the text says.
+func parseStamp(layout, stamp string) (time.Time, error) {
+	t, err := time.Parse(layout, stamp)
+	if err != nil {
+		return t, err
+	}
+	if t.Location() == time.Local {
+		_, offset := t.Zone()
+		t = t.In(time.FixedZone("", offset))
+	}
+	return t, nil
+}
+
 func BuiltinParseRFC3339(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	a := lisp.ReadArgs(env, args)
 	stamp := a.String(0, "argument")
 	if lerr := a.Err(); lerr.IsError() {
 		return lerr
 	}
-	t, err := time.Parse(time.RFC3339, stamp)
+	t, err := parseStamp(time.RFC3339, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
@@ -185,7 +205,7 @@ func BuiltinParseRFC3339Nano(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr := a.Err(); lerr.IsError() {
 		return lerr
 	}
-	t, err := time.Parse(time.RFC3339Nano, stamp)
+	t, err := parseStamp(time.RFC3339Nano, stamp)
 	if err != nil {
 		return env.Error(err)
 	}
