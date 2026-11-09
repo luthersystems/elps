@@ -939,7 +939,10 @@ func (s *Serializer) MessageBytesBuiltin(env *lisp.LEnv, args *lisp.LVal) *lisp.
 	if lerr := libutil.ChargeKiB(env, len(msg)); lerr != nil {
 		return lerr
 	}
-	return lisp.Bytes([]byte(msg))
+	// A copy, not the message's own array: the array keeps the spare
+	// capacity of the encoder's buffer, so append-bytes! on the result would
+	// write into the message and into every other result taken from it.
+	return lisp.Bytes(append([]byte(nil), msg...))
 }
 
 // errNotAMessage reports a native that is not a json-message.
