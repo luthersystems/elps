@@ -240,9 +240,15 @@ func (d *directDecoder) number() *lisp.LVal {
 		}
 		break
 	}
-	text := string(d.b[start:d.i])
+	// Each branch below converts raw to a string of its own.  Only the
+	// string-numbers result keeps the string.  The parsers do not, so the
+	// compiler keeps their short argument on the stack.  One shared string
+	// escaped through the string-numbers branch and cost an allocation for
+	// every number in every mode.
+	raw := d.b[start:d.i]
 	if d.opts.Strict {
-		if _, ok := smallCanonicalInt(d.b[start:d.i]); !ok && !d.strictInt(text) {
+		text := string(raw)
+		if _, ok := smallCanonicalInt(raw); !ok && !d.strictInt(text) {
 			// The text is a float, or integer text too large for an int.
 			// The encoder writes such a value only through
 			// appendJSONFloat, so the text is canonical only when it is
@@ -257,17 +263,21 @@ func (d *directDecoder) number() *lisp.LVal {
 		}
 	}
 	if d.opts.StringNumbers {
-		return lisp.String(text)
+		return lisp.String(string(raw))
 	}
 	if d.opts.ExactIntegers {
-		v := loadNumber(text)
+		// A short canonical int is what loadNumber makes of the same text.
+		if n, ok := smallCanonicalInt(raw); ok {
+			return lisp.Int(n)
+		}
+		v := loadNumber(string(raw))
 		if v.IsError() {
 			d.reject(lisp.GoError(v))
 			return nil
 		}
 		return v
 	}
-	f, err := strconv.ParseFloat(text, 64)
+	f, err := strconv.ParseFloat(string(raw), 64)
 	if err != nil {
 		d.reject(err)
 		return nil
