@@ -5566,3 +5566,40 @@ func TestLintFiles_ParseErrorKeepsOtherDiagnostics(t *testing.T) {
 		})
 	}
 }
+
+// TestLintFiles_UnusedFunction_ExportInOtherFileIsNotAUse pins that an
+// export form in another file is not a use of a function.
+//
+// The workspace reference index (analysis.Config.WorkspaceRefs) holds the
+// names in export forms, for the rename and find-references of the
+// language server. unused-function reads the same index to find callers
+// in other files. An export is not a caller: the function below has none,
+// so the check reports it, as it did before the index held exports.
+func TestLintFiles_UnusedFunction_ExportInOtherFileIsNotAUse(t *testing.T) {
+	dir := t.TempDir()
+	defs := writeTempLisp(t, dir, "defs.lisp", "(in-package 'helpers)\n(defun do-work () 42)\n(defun used () 1)\n")
+	writeTempLisp(t, dir, "exports.lisp", "(in-package 'helpers)\n(export 'do-work)\n(export 'used)\n")
+	writeTempLisp(t, dir, "consumer.lisp", "(in-package 'consumer)\n(defun run () (helpers:used))\n")
+
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	diags, err := l.LintFiles(&LintConfig{Workspace: dir}, []string{defs})
+	require.NoError(t, err)
+	require.Len(t, diags, 1)
+	assert.Equal(t, "unused function: do-work", diags[0].Message)
+}
+
+// TestUnusedFunction_Positive_OnlyExportRef is the unit form of the test
+// above: an index entry marked Export from another file does not count.
+func TestUnusedFunction_Positive_OnlyExportRef(t *testing.T) {
+	source := `(defun helper () 42)`
+	l := &Linter{Analyzers: []*Analyzer{AnalyzerUnusedFunction}}
+	helperKey := analysis.SymbolKey{Package: "user", Name: "helper", Kind: analysis.SymFunction}.String()
+	cfg := &analysis.Config{
+		WorkspaceRefs: map[string][]analysis.FileReference{
+			helperKey: {{File: "/other/exports.lisp", Export: true}},
+		},
+	}
+	diags, err := l.LintFileWithAnalysis([]byte(source), "test.lisp", cfg)
+	require.NoError(t, err)
+	assert.Len(t, diags, 1, "an export in another file is not a use")
+}

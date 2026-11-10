@@ -29,11 +29,11 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 	var locs []protocol.Location
 
 	// Optionally include the declaration.
-	if params.Context.IncludeDeclaration && sym.Source != nil && sym.Source.Pos >= 0 {
-		defURI := s.resolveURI(params.TextDocument.URI, sym.Source.File)
+	if def := s.definitionSource(sym, params.TextDocument.URI); params.Context.IncludeDeclaration && def != nil && def.Pos >= 0 {
+		defURI := s.resolveURI(params.TextDocument.URI, def.File)
 		locs = append(locs, protocol.Location{
 			URI:   defURI,
-			Range: elpsToLSPRange(sym.Source, len(sym.Name)),
+			Range: elpsToLSPRange(def, len(sym.Name)),
 		})
 	}
 
@@ -49,10 +49,10 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 		})
 	}
 
-	// Cross-file references from workspace index.
-	key := symbolToKey(sym)
-	currentFile := uriToPath(params.TextDocument.URI)
-	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
+	// Cross-file references. They include the names in the export forms
+	// of the other files. An open document gives its own, at the positions
+	// of its text.
+	for _, wref := range s.crossFileRefs(sym, params.TextDocument.URI) {
 		refURI := s.resolveURI(params.TextDocument.URI, wref.File)
 		locs = append(locs, protocol.Location{
 			URI:   refURI,
@@ -60,10 +60,10 @@ func (s *Server) textDocumentReferences(_ *glsp.Context, params *protocol.Refere
 		})
 	}
 
-	// The names in export forms.  They are not uses, so the analysis keeps
-	// them apart from its references, but each is a place the name is
-	// written.
-	for _, loc := range s.exportLocations(view.analysis, params.TextDocument.URI, sym) {
+	// The names in the export forms of this document.  They are not uses, so
+	// the analysis keeps them apart from its references, but each is a place
+	// the name is written.
+	for _, loc := range exportLocations(view.analysis, sym) {
 		locs = append(locs, protocol.Location{
 			URI:   s.resolveURI(params.TextDocument.URI, loc.File),
 			Range: elpsToLSPRange(loc, len(sym.Name)),

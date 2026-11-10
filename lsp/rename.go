@@ -128,8 +128,8 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	}
 
 	// Rename at the definition site.
-	if sym.Source != nil && sym.Source.Pos >= 0 && sym.Source.Line > 0 {
-		if err := addEdit(s.resolveURI(docURI, sym.Source.File), sym.Source); err != nil {
+	if def := s.definitionSource(sym, docURI); def != nil && def.Pos >= 0 && def.Line > 0 {
+		if err := addEdit(s.resolveURI(docURI, def.File), def); err != nil {
 			return nil, err
 		}
 	}
@@ -146,18 +146,18 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 		}
 	}
 
-	// Cross-file rename edits from workspace index.
-	key := symbolToKey(sym)
-	currentFile := uriToPath(docURI)
-	for _, wref := range s.getWorkspaceRefs(key, currentFile) {
+	// Cross-file rename edits: the references and the names in the export
+	// forms of the other files. An open document gives its own, at the
+	// positions of its text.
+	for _, wref := range s.crossFileRefs(sym, docURI) {
 		if err := addEdit(s.resolveURI(docURI, wref.File), wref.Source); err != nil {
 			return nil, err
 		}
 	}
 
-	// Rename in the export forms.  An export that kept the old name would
-	// export a name with no definition.
-	for _, loc := range s.exportLocations(view.analysis, docURI, sym) {
+	// Rename in the export forms of this document.  An export that kept the
+	// old name would export a name with no definition.
+	for _, loc := range exportLocations(view.analysis, sym) {
 		if err := addEdit(s.resolveURI(docURI, loc.File), loc); err != nil {
 			return nil, err
 		}
@@ -181,50 +181,22 @@ func nameRange(loc *token.Location, name string) protocol.Range {
 	return rng
 }
 
-// exportLocations returns the location of each name in an export form that
-// names sym, in current (the analysis of the current document) and in the
-// file that defines sym.
-// An export form is almost always in the file that has the definition; one
-// in a third file is not found.
+// exportLocations returns the location of each name in an export form of
+// the current document that names sym. current is the analysis of that
+// document.
 //
-// A definition file that is not open is read and analysed here.  One that
-// cannot be read, or is over the workspace size limit, gives no location:
-// the other edits of the rename are still correct, as they were before
-// exports got an edit at all.
-func (s *Server) exportLocations(current *analysis.Result, docURI protocol.DocumentUri, sym *analysis.Symbol) []*token.Location {
+// The export forms of the other files come from crossFileRefs, with the
+// other references of those files.
+func exportLocations(current *analysis.Result, sym *analysis.Symbol) []*token.Location {
+	if current == nil {
+		return nil
+	}
 	key := symbolToKey(sym)
 	var locs []*token.Location
-	collect := func(result *analysis.Result) {
-		if result == nil {
-			return
-		}
-		for _, ref := range result.ExportRefs {
-			if ref.Source != nil && symbolToKey(ref.Symbol) == key {
-				locs = append(locs, ref.Source)
-			}
+	for _, ref := range current.ExportRefs {
+		if ref.Source != nil && symbolToKey(ref.Symbol) == key {
+			locs = append(locs, ref.Source)
 		}
 	}
-	collect(current)
-
-	if sym.Source == nil || sym.Source.File == "" {
-		return locs
-	}
-	defURI := s.resolveURI(docURI, sym.Source.File)
-	if defURI == docURI {
-		return locs
-	}
-	if defDoc := s.docs.Get(defURI); defDoc != nil {
-		collect(s.ensureAnalysis(defDoc).analysis)
-		return locs
-	}
-	path := uriToPath(defURI)
-	source, status := s.readWorkspaceFile(path)
-	if status != workspaceReadOK {
-		return locs
-	}
-	s.analysisCfgMu.RLock()
-	cfg := s.analysisCfg
-	s.analysisCfgMu.RUnlock()
-	collect(analysis.AnalyzeFile(source, path, cfg))
 	return locs
 }

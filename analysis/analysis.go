@@ -52,7 +52,8 @@ type Config struct {
 
 	// WorkspaceRefs maps SymbolKey.String() to cross-file references.
 	// When set, analyzers can check whether a symbol is referenced from
-	// other files in the workspace.
+	// other files in the workspace. An entry with FileReference.Export
+	// set is the name in an export form, which is not a use.
 	WorkspaceRefs map[string][]FileReference
 
 	// RecordMethodsByFile holds the methods that each workspace file's

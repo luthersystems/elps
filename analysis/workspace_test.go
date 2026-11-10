@@ -2139,3 +2139,57 @@ func TestScanWorkspace_StringAndNestedExports(t *testing.T) {
 	}
 	require.ElementsMatch(t, []string{"first", "second"}, names)
 }
+
+// TestScanWorkspaceRefs_ExportForms checks that the workspace reference
+// index holds the name in each export form, marked Export, and that the
+// mark keeps an export apart from a use (luthersystems/elps#943).
+//
+// The export form here is in a third file: not the file that defines the
+// function and not a file that calls it. A rename finds it only through
+// the index.
+func TestScanWorkspaceRefs_ExportForms(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"defs.lisp":     "(in-package 'helpers)\n(defun add-one (x) (+ x 1))\n(defun lonely () 0)\n",
+		"exports.lisp":  "(in-package 'helpers)\n(export 'add-one 'lonely)\n",
+		"consumer.lisp": "(in-package 'consumer)\n(defun do-work () (helpers:add-one 42))\n",
+	}
+	for name, src := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(dir, name), []byte(src), 0o600))
+	}
+	prescan, err := PrescanWorkspace(dir, nil)
+	require.NoError(t, err)
+	cfg := &Config{
+		ExtraGlobals:   prescan.AllDefs,
+		PackageExports: prescan.PkgExports,
+		PackageSymbols: prescan.PkgAllSymbols,
+	}
+	refs := ScanWorkspaceRefs(dir, cfg, nil)
+
+	type entry struct {
+		file   string
+		line   int
+		export bool
+	}
+	entries := func(name string) []entry {
+		key := SymbolKey{Package: "helpers", Name: name, Kind: SymFunction}.String()
+		var out []entry
+		for _, ref := range refs[key] {
+			require.NotNil(t, ref.Source)
+			assert.Equal(t, ref.File, ref.Source.File, "File and Source.File denote the same file")
+			if ref.Export {
+				assert.Empty(t, ref.Enclosing, "an export form has no enclosing function")
+				// The location is that of the name, without the quote.
+				assert.Equal(t, len(name), ref.Source.EndCol-ref.Source.Col)
+			}
+			out = append(out, entry{file: filepath.Base(ref.File), line: ref.Source.Line, export: ref.Export})
+		}
+		return out
+	}
+	assert.ElementsMatch(t, []entry{
+		{file: "exports.lisp", line: 2, export: true},
+		{file: "consumer.lisp", line: 2, export: false},
+	}, entries("add-one"))
+	// A function that is only exported has an export entry and no use.
+	assert.Equal(t, []entry{{file: "exports.lisp", line: 2, export: true}}, entries("lonely"))
+}

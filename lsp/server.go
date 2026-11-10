@@ -18,6 +18,7 @@ import (
 	"github.com/luthersystems/elps/analysis"
 	"github.com/luthersystems/elps/lint"
 	"github.com/luthersystems/elps/lisp"
+	"github.com/luthersystems/elps/parser/token"
 	"github.com/tliron/glsp"
 	glspserver "github.com/tliron/glsp/server"
 
@@ -50,8 +51,12 @@ type Server struct {
 	linter *lint.Linter
 
 	// Workspace reference index: maps SymbolKey.String() to cross-file references.
-	workspaceRefs   map[string][]analysis.FileReference
-	workspaceRefsMu sync.RWMutex
+	workspaceRefs map[string][]analysis.FileReference
+	// workspaceRefsBuilt reports that workspaceRefs holds the result of
+	// a scan of the whole workspace. A save alone adds the entries of
+	// one file.
+	workspaceRefsBuilt bool
+	workspaceRefsMu    sync.RWMutex
 
 	// Embedder-provided environment and registry.
 	registry *lisp.PackageRegistry
@@ -450,6 +455,7 @@ func (s *Server) buildWorkspaceIndex() {
 		cfg.WorkspaceRefs = wsRefs
 		s.workspaceRefsMu.Lock()
 		s.workspaceRefs = wsRefs
+		s.workspaceRefsBuilt = true
 		s.workspaceRefsMu.Unlock()
 	}
 
@@ -574,6 +580,119 @@ func (s *Server) getWorkspaceRefs(key string, excludeFile string) []analysis.Fil
 		}
 	}
 	return filtered
+}
+
+// crossFileRefs returns the places that name sym in the files other than
+// the document docURI: references and export forms.
+//
+// The entries of an open document come from the text the editor holds
+// for it, with the positions of that text. The workspace index follows
+// the files on disk, so its positions are wrong for a document with
+// changes that are not saved: a rename edit at one of them lands on other
+// text. The index gives the entries of the files that are not open.
+//
+// Without an index (no build yet, or a build that failed) the export
+// forms of the file that defines sym are read from that file, so a rename
+// does not leave an export of the old name.
+func (s *Server) crossFileRefs(sym *analysis.Symbol, docURI protocol.DocumentUri) []analysis.FileReference {
+	key := symbolToKey(sym)
+	currentFile := uriToPath(docURI)
+
+	open := make(map[string]*Document)
+	var openPaths []string
+	for _, doc := range s.docs.All() {
+		path := uriToPath(doc.URI)
+		if doc.URI == docURI || path == currentFile {
+			continue
+		}
+		open[path] = doc
+		openPaths = append(openPaths, path)
+	}
+	slices.Sort(openPaths)
+
+	s.workspaceRefsMu.RLock()
+	indexed := s.workspaceRefs[key]
+	built := s.workspaceRefsBuilt
+	s.workspaceRefsMu.RUnlock()
+
+	var refs []analysis.FileReference
+	fromBuffer := make(map[string]bool, len(open))
+	for _, path := range openPaths {
+		view := s.ensureAnalysis(open[path])
+		if view.analysis == nil {
+			// No analysis of the buffer (it is over the size limit).
+			// The index is all there is for this file.
+			continue
+		}
+		fromBuffer[path] = true
+		for _, ref := range analysis.ExtractFileRefs(view.analysis, path) {
+			if ref.SymbolKey.String() == key {
+				refs = append(refs, ref)
+			}
+		}
+	}
+	for i := range indexed {
+		if indexed[i].File != currentFile && !fromBuffer[indexed[i].File] {
+			refs = append(refs, indexed[i])
+		}
+	}
+	if built || sym.Source == nil || sym.Source.File == "" {
+		return refs
+	}
+
+	defPath := uriToPath(s.resolveURI(docURI, sym.Source.File))
+	if defPath == currentFile || fromBuffer[defPath] {
+		return refs
+	}
+	source, status := s.readWorkspaceFile(defPath)
+	if status != workspaceReadOK {
+		return refs
+	}
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	for _, ref := range analysis.ExtractFileRefs(analysis.AnalyzeFile(source, defPath, cfg), defPath) {
+		if ref.Export && ref.SymbolKey.String() == key {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+// definitionSource returns the location of the definition of sym for an
+// edit or a location list. For a symbol that another open document
+// defines, it is the location in the text of that document, which can
+// differ from the location in the file on disk that sym.Source holds.
+func (s *Server) definitionSource(sym *analysis.Symbol, docURI protocol.DocumentUri) *token.Location {
+	if !sym.External || sym.Source == nil || sym.Source.File == "" {
+		return sym.Source
+	}
+	defURI := s.resolveURI(docURI, sym.Source.File)
+	if defURI == docURI {
+		return sym.Source
+	}
+	doc := s.docs.Get(defURI)
+	if doc == nil {
+		return sym.Source
+	}
+	view := s.ensureAnalysis(doc)
+	if view.analysis == nil {
+		return sym.Source
+	}
+	key := analysis.SymbolToKey(sym)
+	for _, def := range view.analysis.Symbols {
+		if def == nil || def.External || def.Source == nil || def.Source.Pos < 0 {
+			continue
+		}
+		if analysis.SymbolToKey(def) == key {
+			loc := *def.Source
+			loc.File = uriToPath(defURI)
+			return &loc
+		}
+	}
+	// The buffer no longer defines the symbol. The definition is then
+	// in no text the editor holds.
+	return nil
 }
 
 // symbolToKey derives the workspace ref lookup key from an analysis symbol.
@@ -967,6 +1086,7 @@ func filterExtraGlobalsByFile(globals []analysis.ExternalSymbol, excludeFile str
 func (s *Server) setTestWorkspaceRefs(refs map[string][]analysis.FileReference) {
 	s.workspaceRefsMu.Lock()
 	s.workspaceRefs = refs
+	s.workspaceRefsBuilt = true
 	s.workspaceRefsMu.Unlock()
 }
 

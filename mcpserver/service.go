@@ -1171,13 +1171,15 @@ func getWorkspaceRefs(state *workspaceState, key string, excludeFile string) []a
 	if state == nil || state.refs == nil {
 		return nil
 	}
-	refs := state.refs[key]
-	if excludeFile == "" {
-		return refs
-	}
+	// The index also holds the names in export forms
+	// (analysis.FileReference.Export). The references tool lists uses, so
+	// they are left out here.
 	var filtered []analysis.FileReference
-	for _, ref := range refs {
-		if ref.File != excludeFile {
+	for _, ref := range state.refs[key] {
+		if ref.Export {
+			continue
+		}
+		if excludeFile == "" || ref.File != excludeFile {
 			filtered = append(filtered, ref)
 		}
 	}

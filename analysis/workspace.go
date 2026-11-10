@@ -106,6 +106,13 @@ type FileReference struct {
 	Enclosing       string          // name of enclosing function ("" if top-level)
 	EnclosingSource *token.Location // definition site of enclosing function
 	EnclosingKind   SymbolKind      // kind of enclosing function
+
+	// Export marks the name in an export form: (export 'f) gives one for
+	// f. It is a place the name is written, so a rename must edit it and
+	// a reference search lists it. It is not a use and not a call. A
+	// reader that counts uses (the unused-function lint check) or calls
+	// (the call hierarchy) must skip an entry with Export set.
+	Export bool
 }
 
 // ScanWorkspace walks a directory tree, parsing all .lisp files and
@@ -679,6 +686,12 @@ func AnalyzeFile(source []byte, filename string, cfg *Config) *Result {
 // The workspace index pairs the two when building document edits (lsp/rename.go
 // takes the URI from File and the range from Source), so a reference whose text
 // lives in a different file must not be recorded under filePath.
+//
+// The names in export forms (Result.ExportRefs) are returned too, each
+// with FileReference.Export set. An export form can be in any file of the
+// package, so only an index of every file finds them all: a rename that
+// missed one would leave the package exporting a name with no definition.
+// They are marked because an export is not a use (see FileReference.Export).
 func ExtractFileRefs(result *Result, filePath string) []FileReference {
 	if result == nil {
 		return nil
@@ -723,6 +736,26 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 		}
 
 		refs = append(refs, fref)
+	}
+	for _, ref := range result.ExportRefs {
+		if ref.Symbol == nil || ref.Source == nil || !isGlobalUserSymbol(ref.Symbol) {
+			continue
+		}
+		if !sameSourceFile(ref.Source.File, filePath) {
+			continue
+		}
+		// No enclosing function: an export form takes effect at the top
+		// level of a file.
+		refs = append(refs, FileReference{
+			SymbolKey: SymbolKey{
+				Package: ref.Symbol.Package,
+				Name:    ref.Symbol.Name,
+				Kind:    ref.Symbol.Kind,
+			},
+			Source: ref.Source,
+			File:   filePath,
+			Export: true,
+		})
 	}
 	return refs
 }
