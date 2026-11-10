@@ -615,8 +615,8 @@ func (pkg *Package) get(k *LVal) *LVal {
 	// Copied, not aliased: the error escapes to the evaluator (and possibly
 	// the embedder) while k remains live program state, so the two must not
 	// share a *token.Location (cold error path; the copy is free in
-	// practice).  copyLocation preserves nil.
-	lerr.source = copyLocation(k.source)
+	// practice).  Copy preserves nil.
+	lerr.source = k.loc().Copy()
 	return lerr
 }
 

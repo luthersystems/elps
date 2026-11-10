@@ -114,3 +114,8 @@
 # and construct-map waivers were deleted once main's baseline included the
 # definition records and the gate reported every row `waiver-unused` on every
 # run -- see elps#916's and elps#917's benchmark runs.)
+github.com/luthersystems/elps/analysis | Analyze | B/op | 9 | 2027-02-10 | elps#947 elps#944 | token.Location grew from 80 to 96 bytes to carry the tooling record so LVal could go from 112 to 96 bytes; the evaluator Corpus B/op fell 3 to 6% and analysis copies one location per reference, same allocation count
+github.com/luthersystems/elps/lint | LintAnalyzers/package-builtins | B/op | 9 | 2027-02-10 | elps#947 elps#944 | the analyzer parses on each run and every location is 16 bytes larger after LVal went from 112 to 96 bytes; same allocation count; elps#947 moves the record off token.Location
+github.com/luthersystems/elps/lint | LintAnalyzers/unused-variable | sec/op | 25 | 2027-02-10 | elps#947 elps#944 | larger token.Location copies and GC scan after LVal went from 112 to 96 bytes; removing the aux test in LVal.Source did not change the time, so the size is the cost; elps#947 restores the 80-byte location
+github.com/luthersystems/elps/lint | LintAnalyzers/unused-variable | B/s | 25 | 2027-02-10 | elps#947 elps#944 | the same cost as the sec/op row of this benchmark, seen as throughput: larger token.Location after LVal went from 112 to 96 bytes
+github.com/luthersystems/elps/lisp/lisplib/libjson | DurableFunctionName/cold | B/op | 8 | 2027-02-10 | elps#947 elps#944 | a cold durable name parses a few locations, each 16 bytes larger after LVal went from 112 to 96 bytes; same allocation count; elps#947 restores the 80-byte location

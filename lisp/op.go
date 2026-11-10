@@ -342,7 +342,7 @@ func opSetUpdate(env *LEnv, args *LVal) *LVal {
 	if val.IsError() {
 		return val
 	}
-	env.loc = key.source
+	env.loc = key.loc()
 	return env.UpdateFromLisp(key, val)
 }
 
@@ -719,7 +719,7 @@ func threadSpecialForm(fun, expr, val *LVal, last bool) *LVal {
 		cells = append(cells, datum)
 	}
 	form := SExpr(cells)
-	form.SetSource(copyLocation(expr.source))
+	form.SetSource(expr.loc().Copy())
 	return form
 }
 

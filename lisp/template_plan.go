@@ -331,7 +331,7 @@ func (c *templateCompiler) function(fd *funData) int {
 	function.header.env = nil
 	// Definition locations affect errors at function-body entry. Unlike the
 	// transient environment register, retain an owned immutable snapshot (#624).
-	function.header.loc = copyLocation(fd.loc)
+	function.header.loc = fd.loc.Copy()
 	function.header.captures = nil
 	if fd.captures != nil {
 		c.plan.numCaptures++
@@ -348,7 +348,7 @@ func (c *templateCompiler) value(v *LVal) (templateValue, error) {
 	header := &LVal{}
 	*header = *v
 	header.Native = nil
-	header.macroExpansion = nil
+	header.setMacroExp(nil)
 	out := templateValue{}
 	switch v.Type {
 	case LFun:

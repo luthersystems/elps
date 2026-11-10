@@ -2,7 +2,10 @@
 
 package token
 
-import "testing"
+import (
+	"fmt"
+	"testing"
+)
 
 // TestNativeLocationReturnsAValue pins the property that makes it safe to
 // call from anywhere: NativeLocation returns a Location, not a *Location, so
@@ -66,5 +69,21 @@ func TestLocationCopyPreservesNil(t *testing.T) {
 	var loc *Location
 	if got := loc.Copy(); got != nil {
 		t.Errorf("(*Location)(nil).Copy() = %+v, want nil", got)
+	}
+}
+
+// A Location value under %v and %+v shows the unexported aux slot, first.
+// The slot must be first (see Location), so this pins what a caller that
+// prints the struct, not String, now gets.
+func TestLocationFormat(t *testing.T) {
+	loc := Location{File: "f.lisp", Pos: 3, Line: 1, Col: 4}
+	if got, want := fmt.Sprintf("%v", loc), "{<nil> f.lisp  3 1 4 0 0 0}"; got != want {
+		t.Errorf("%%v = %q, want %q", got, want)
+	}
+	if got, want := fmt.Sprintf("%+v", loc), "{aux:<nil> File:f.lisp Path: Pos:3 Line:1 Col:4 EndPos:0 EndLine:0 EndCol:0}"; got != want {
+		t.Errorf("%%+v = %q, want %q", got, want)
+	}
+	if got, want := fmt.Sprintf("%v", &loc), "f.lisp:1:4"; got != want {
+		t.Errorf("%%v of a pointer = %q, want %q", got, want)
 	}
 }

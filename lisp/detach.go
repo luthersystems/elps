@@ -310,14 +310,21 @@ func (d *detacher) detachNode(v *LVal) (*LVal, error) {
 	}
 
 	// Under the unexported-source API (issue #362) a value constructed by Go
-	// code carries a nil location; copyLocation preserves nil, so a detached
+	// code carries a nil location; Copy preserves nil, so a detached
 	// native-constructed value stays nil-source rather than materializing a
 	// synthetic location.
-	cp.source = copyLocation(v.source)
-	cp.meta = detachMeta(v.meta)
-	// Debugger-only metadata; its context aliases unevaluated argument
-	// values inside the source runtime, so a detached value carries none.
-	cp.macroExpansion = nil
+	//
+	// The copied Location carries no tooling record (see nodeAux), so the
+	// flags the struct copy brought along are cleared with it.  That drops
+	// the debugger-only macro-expansion record, as intended: its context
+	// aliases unevaluated argument values inside the source runtime, so a
+	// detached value carries none.  The formatter metadata is put back as
+	// a private copy.
+	cp.source = v.loc().Copy()
+	cp.hasAux, cp.auxNoLoc = false, false
+	if m := v.fmtMeta(); m != nil {
+		cp.setFmtMeta(detachMeta(m), true)
+	}
 
 	// The struct copy above aliased v.Native.  Every payload a detachable
 	// type is documented to carry is replaced with a hermetic copy; anything
@@ -549,7 +556,7 @@ func detachCallStack(s *CallStack) *CallStack {
 		cp.GoStack = append([]byte(nil), s.GoStack...)
 	}
 	for i := range cp.Frames {
-		cp.Frames[i].Source = copyLocation(cp.Frames[i].Source)
+		cp.Frames[i].Source = cp.Frames[i].Source.Copy()
 	}
 	return cp
 }
@@ -583,15 +590,7 @@ func copyToken(t *token.Token) *token.Token {
 		return nil
 	}
 	cp := *t
-	cp.Source = copyLocation(t.Source)
-	return &cp
-}
-
-func copyLocation(loc *token.Location) *token.Location {
-	if loc == nil {
-		return nil
-	}
-	cp := *loc
+	cp.Source = t.Source.Copy()
 	return &cp
 }
 

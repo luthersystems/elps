@@ -459,9 +459,12 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	// #362), so the nil check below is also the fast path this used to buy --
 	// no allocation on the interpreter's hot path, where most values are ones
 	// Go built.
-	if v.source != nil {
-		cp.source = v.source.Copy()
-	}
+	//
+	// The struct assignment also brought v's tooling flags.  The copied
+	// Location carries no record (see nodeAux), so they are cleared here
+	// and the two records are dealt with below.
+	cp.source = v.loc().Copy()
+	cp.hasAux, cp.auxNoLoc = false, false
 	// meta rides along in the struct assignment above for the same reason
 	// source did (issue #466).  It is PER-NODE mutable state -- fmtmeta.Meta
 	// is what the parser writes and hoistOperandComments moves between
@@ -469,7 +472,9 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	// object, and reopens #446 one level down: the *token.Location on every
 	// comment token is reachable from both trees.  It is nil outside
 	// format-preserving parsing, so on the hot path this is a nil check.
-	cp.meta = detachMeta(v.meta)
+	if m := v.fmtMeta(); m != nil {
+		cp.setFmtMeta(detachMeta(m), true)
+	}
 	// macroExpansion is DROPPED, as the fork walker and detach
 	// (lisp/detach.go) drop it.  Its shared half, the per-expansion
 	// context, records the macro call's unevaluated arguments as pointers to
@@ -484,8 +489,8 @@ func (c *copier) copyNode(v *LVal) *LVal {
 	// tree BEFORE evaluating it, so nothing is lost there; a tree that was
 	// expanded, retained and then copied loses the debugger's macro
 	// attribution on the copy, as it already does on every fork.
-	// TestCopyDropsMacroExpansionMetadata is the control.
-	cp.macroExpansion = nil
+	// TestCopyDropsMacroExpansionMetadata is the control.  Clearing the
+	// flags above is what drops it.
 	// Seeded before anything below descends: a child that reaches v again
 	// gets cp, so a shared subtree is copied once and a cycle closes onto
 	// the copy.  A leaf is not seeded (see memoise above).

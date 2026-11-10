@@ -170,16 +170,16 @@ func oracleGraph(seed byte, native bool) *LVal {
 	root.quoted = seed&8 != 0
 	root.spliced = seed&16 != 0
 	root.source = &token.Location{File: "oracle-source.lisp", Pos: -1, Line: 7, Col: 2}
-	root.meta = &fmtmeta.Meta{OriginalText: "oracle", TrailingComment: &token.Token{
+	root.setFmtMeta(&fmtmeta.Meta{OriginalText: "oracle", TrailingComment: &token.Token{
 		Text: "; retained comment", Source: &token.Location{File: "comment.lisp", Line: 7, Col: 10},
-	}}
-	root.macroExpansion = &macroExpansionInfo{
+	}}, false)
+	root.setMacroExp(&macroExpansionInfo{
 		macroExpansionContext: &macroExpansionContext{
 			Name: "old", Args: []*LVal{leaf},
 			CallSite: &token.Location{File: "old-call.lisp", Pos: 1, EndCol: 3},
 			DefSite:  &token.Location{File: "old-def.lisp", Pos: 2, EndCol: 5},
 		}, ID: 91,
-	}
+	})
 	return root
 }
 
@@ -207,12 +207,12 @@ func oracleNodes(root *LVal) ([]oracleNode, error) {
 		}
 		// JSON walks token/location fields by value, not pointer address: an
 		// in-place metadata-only write must change the saved observation.
-		metadata, err := json.Marshal([]any{v.source, v.meta})
+		metadata, err := json.Marshal([]any{v.source, v.fmtMeta()})
 		if err != nil {
 			return err
 		}
 		state := fmt.Sprintf("%d/%d/%q/%d/%g/%t/%t/%t/%s", v.Type, v.FunType, v.Str, v.Int, v.Float, v.quoted, v.spliced, v.sealed, metadata)
-		if info := v.macroExpansion; info != nil {
+		if info := v.macroExp(); info != nil {
 			locations, err := json.Marshal([]any{info.CallSite, info.DefSite})
 			if err != nil {
 				return err
@@ -303,14 +303,14 @@ func oracleCompare(w oracleWalker, source, copyValue *LVal) error {
 		if a.Type != b.Type || a.FunType != b.FunType || a.Int != b.Int || a.Float != b.Float || a.Str != b.Str || a.quoted != b.quoted || a.spliced != b.spliced {
 			return fmt.Errorf("value/flags at %s", s.path)
 		}
-		if !w.stamps && b.macroExpansion != nil {
+		if !w.stamps && b.macroExp() != nil {
 			return fmt.Errorf("retained macro metadata at %s", s.path)
 		}
-		if !w.stamps && (!reflect.DeepEqual(a.source, b.source) || !reflect.DeepEqual(a.meta, b.meta)) {
+		if !w.stamps && (!reflect.DeepEqual(a.loc().Copy(), b.loc().Copy()) || !reflect.DeepEqual(a.fmtMeta(), b.fmtMeta())) {
 			return fmt.Errorf("source/format metadata at %s", s.path)
 		}
 		if w.stamps && a != b && needsStamp(a) {
-			info := b.macroExpansion
+			info := b.macroExp()
 			if info == nil || info.Name != "oracle-macro" || info.ID <= 0 || b.source == nil || b.source.File != "oracle-call.lisp" || b.source.Pos != 17 {
 				return fmt.Errorf("missing descendant debug stamp at %s", s.path)
 			}
@@ -367,17 +367,17 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 		}
 	}
 	if w.stamps {
-		if a == source || a.macroExpansion == nil || a.macroExpansion.Name != "oracle-macro" || a.macroExpansion.ID != 1 || a.source == nil || a.source.File != "oracle-call.lisp" {
+		if a == source || a.macroExp() == nil || a.macroExp().Name != "oracle-macro" || a.macroExp().ID != 1 || a.source == nil || a.source.File != "oracle-call.lisp" {
 			return errors.New("debug stamp path did not execute")
 		}
-		if a.macroExpansion == b.macroExpansion || a.source == b.source {
+		if a.macroExp() == b.macroExp() || a.source == b.source {
 			return errors.New("sibling expansions share writable metadata")
 		}
 		first, _ := oracleNodes(a) // Both traversals were validated above.
 		second, _ := oracleNodes(b)
 		original, _ := oracleNodes(source)
 		for i, n := range first {
-			if n.v != nil && n.v != original[i].v && n.v.macroExpansion != nil && n.v.macroExpansion == second[i].v.macroExpansion {
+			if n.v != nil && n.v != original[i].v && n.v.macroExp() != nil && n.v.macroExp() == second[i].v.macroExp() {
 				return fmt.Errorf("sibling expansions share descendant metadata at %s", n.path)
 			}
 		}
@@ -414,8 +414,8 @@ func oracleCheck(w oracleWalker, source *LVal) error {
 			if arm.source != nil {
 				arm.source.Line++
 			}
-			if arm.meta != nil && arm.meta.TrailingComment != nil {
-				arm.meta.TrailingComment.Source.Line++
+			if arm.fmtMeta() != nil && arm.fmtMeta().TrailingComment != nil {
+				arm.fmtMeta().TrailingComment.Source.Line++
 			}
 		} else {
 			// SetSource replaces a mutable header's location; it does not

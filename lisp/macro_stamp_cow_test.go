@@ -115,10 +115,10 @@ func TestMacroExpansionStampNeverWritesTheExpansion(t *testing.T) {
 		ctx := &macroExpansionContext{CallSite: callSite, Name: "m"}
 		v := SExpr([]*LVal{Symbol("+"), Int(1)})
 		got := stampMacroExpansion(v, callSite, ctx, env.Runtime)
-		if got.macroExpansion == nil || got.Cells[0].macroExpansion == nil {
+		if got.macroExp() == nil || got.Cells[0].macroExp() == nil {
 			t.Errorf("the copy did not get macro-expansion metadata")
 		}
-		if v.macroExpansion != nil || v.Cells[0].macroExpansion != nil {
+		if v.macroExp() != nil || v.Cells[0].macroExp() != nil {
 			t.Errorf("the input got macro-expansion metadata")
 		}
 	})
@@ -170,10 +170,10 @@ func TestMacroExpansionStampMintsExpansionIDsOnlyForTheKeptWalk(t *testing.T) {
 	if got == v || got.Cells[1] != got {
 		t.Fatalf("the copy does not contain itself where the expansion did")
 	}
-	if got.macroExpansion == nil || got.Cells[0].macroExpansion == nil {
+	if got.macroExp() == nil || got.Cells[0].macroExp() == nil {
 		t.Fatalf("the copy is missing expansion metadata")
 	}
-	root, child := got.macroExpansion.ID, got.Cells[0].macroExpansion.ID
+	root, child := got.macroExp().ID, got.Cells[0].macroExp().ID
 	if root != before+1 || child != before+2 {
 		t.Errorf("expansion IDs root=%d child=%d, want %d and %d (pre-order, contiguous)", root, child, before+1, before+2)
 	}

@@ -20,8 +20,13 @@ func init() {
 	// it produced during the current parse, and format trees are never
 	// sealed, evaluated, or shared (see parser/rdparser's seal tests), so
 	// these accessors need no seal guard.
-	fmtrawhook.Meta = func(v *LVal) *fmtmeta.Meta { return v.meta }
+	//
+	// The write is in place on the node's own Location (see nodeAux): the
+	// parser stamps a node right after it gives the node a Location no
+	// other node holds, and it keeps that pointer to write end positions
+	// through later, so the node must keep the same Location object.
+	fmtrawhook.Meta = func(v *LVal) *fmtmeta.Meta { return v.fmtMeta() }
 	fmtrawhook.SetMeta = func(v *LVal, m *fmtmeta.Meta) {
-		v.meta = m //elps:mutates format-preserving Meta stamp via internal/fmtraw; the parser owns the (unsealed, unshared) tree it stamps
+		v.setFmtMeta(m, true)
 	}
 }

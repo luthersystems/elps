@@ -245,8 +245,8 @@ The `Native` row is the only one where a previously *working* program
 changes, and it is confined to the two constructors that hand every
 environment the **same** tree.  `TextLoader` gives each load `expr.Copy()`, so
 nothing is newly shared there and the payload is tolerated: `Native` is the
-only exported per-node slot an embedder's `Reader` has (`source`, `meta` and
-`macroExpansion` are unexported), so a `Reader` that annotates nodes has
+only exported per-node slot an embedder's `Reader` has (`source` and the
+tooling record it carries are unexported), so a `Reader` that annotates nodes has
 nowhere else to go.  A `Program` cannot make the same allowance — the seal is
 the only thing standing between environments, and the seal cannot vouch for
 what is on the other end of an `interface{}`.

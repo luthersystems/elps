@@ -32,7 +32,7 @@ import (
 // sizeProgram pins the layout claim in lisp/seal.go: the sealed flag lives
 // in an existing padding byte and LVal does not grow.
 func TestLValSizeUnchanged(t *testing.T) {
-	const wantSize = 112 // bytes on 64-bit platforms, unchanged by `sealed`
+	const wantSize = 96 // bytes on 64-bit platforms, unchanged by `sealed`
 	if s := unsafe.Sizeof(lisp.LVal{}); s != wantSize {
 		t.Fatalf("LVal is %d bytes (want %d): the sealed flag must not grow the struct", s, wantSize)
 	}

@@ -151,7 +151,7 @@ func admitTextLoaderStream(exprs []*LVal) ([]int, error) {
 			// free in practice).  expr itself may be the nil the walk just
 			// refused, so the location is read only when there is one.
 			if expr != nil {
-				lerr.source = copyLocation(expr.source)
+				lerr.source = expr.loc().Copy()
 			}
 			return nil, GoError(lerr)
 		}
@@ -394,10 +394,10 @@ func newLoaderWalk(strict bool) *loaderWalk {
 // loads share a node; Copy shallow-copying Native was already true before
 // this hook, so nothing about the sharing is NEW.  Refusing there buys
 // nothing a documented caveat would not, and it costs something real: in the
-// LVal struct, source, meta and macroExpansion are all unexported, so Native
+// LVal struct, source and the tooling record on it are unexported, so Native
 // is the ONLY exported per-node slot an embedder's Reader has for
 // annotation.  elps's own parsers do not need it because they have the
-// unexported meta; an embedder Reader annotating its nodes has exactly one
+// unexported formatter metadata; an embedder Reader annotating its nodes has exactly one
 // place to go, and turning that into a hard error on a public constructor is
 // a migration break for no safety (issue #536 round-three review,
 // suspicious 3).

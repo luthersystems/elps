@@ -160,5 +160,5 @@ func blockCopyableFormals(v *LVal) bool {
 // produced does not, and falls back to LVal.Copy, which duplicates the
 // location.
 func nativeLeafLVal(v *LVal) bool {
-	return v.source == nil && v.meta == nil && v.macroExpansion == nil
+	return v.source == nil && !v.hasAux
 }

@@ -644,7 +644,7 @@ func (s *templateInventory) sharedNode(v *LVal) error {
 	// Debug metadata can reach unsealed macro arguments, including closures
 	// over the source VM. The shared header cannot drop that edge as a mutable
 	// descriptor does, so it must not be admitted as immutable syntax (#621).
-	if v.macroExpansion != nil {
+	if v.macroExp() != nil {
 		return errors.New("sealed graph contains macro expansion metadata")
 	}
 	s.sealed[v] = true
