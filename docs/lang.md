@@ -169,6 +169,21 @@ preserve the distinction between ints and floats. Use `to-float` to recover
 the float type explicitly, for example `(to-float "100")` or `(to-float 100)`;
 both produce a float, which still prints as `100`.
 
+`to-float` converts a string that holds a decimal number: an optional sign,
+digits with an optional point, and an optional exponent. `"-12.75"`, `".5"`,
+`"5."`, `"+1.5"` and `"1e5"` convert. Every other string is an error:
+
+| String | Result |
+|--------|--------|
+| `"nan"`, `"inf"`, `"infinity"` (any case, any sign) | error |
+| A hexadecimal float such as `"0x1p3"` | error |
+| Digits separated by `_`, such as `"1_000"` | error |
+| Text with a space, such as `" 1"` | error |
+| A number too large for a float, such as `"1e999"` | error |
+| A number too small for a float, such as `"1e-999"` | `0` |
+
+So `to-float` never returns NaN or an infinity for a string.
+
 `to-int` truncates a finite float toward zero, then checks whether that integer
 fits the platform's `int`. NaN, either infinity, and out-of-range results are
 ordinary errors. They never saturate to a boundary value or silently become
