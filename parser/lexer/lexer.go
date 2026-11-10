@@ -27,6 +27,11 @@ type Lexer struct {
 	precedingNewlines int
 	precedingSpaces   int
 	minusRun          int // consecutive NEGATIVE tokens, capped at two
+	// sign is '-' or '+' when the token just emitted is that lone sign and
+	// the next rune is '#'. radixSign carries it from the #x or #o dispatch
+	// to the digits. See refuseSignedRadix.
+	sign      byte
+	radixSign byte
 }
 
 // New creates a lexer, ignoring a single UTF-8 BOM only at source offset zero.
@@ -75,6 +80,8 @@ func (lex *Lexer) readToken() []*token.Token {
 	if lex.precedingNewlines > 0 || lex.precedingSpaces > 0 {
 		lex.minusRun = 0
 	}
+	sign := lex.sign
+	lex.sign = 0
 	if !lex.scanner.Accept(func(c rune) bool { return true }) {
 		if lex.scanner.EOF() {
 			return lex.emit(token.EOF, "")
@@ -144,10 +151,12 @@ func (lex *Lexer) readToken() []*token.Token {
 		case 'o', 'O':
 			tok := lex.emitText(token.INT_OCTAL_MACRO)
 			lex.lex = (*Lexer).readOctalLiteral
+			lex.radixSign = sign
 			return lex.emitMacroChar(tok)
 		case 'x', 'X':
 			tok := lex.emitText(token.INT_HEX_MACRO)
 			lex.lex = (*Lexer).readHexLiteral
+			lex.radixSign = sign
 			return lex.emitMacroChar(tok)
 		default:
 			return lex.errorf("invalid dispatch macro character %q (supported prefixes: #!, #', #^, #o, #O, #x, #X)", lex.scanner.Rune())
@@ -173,6 +182,8 @@ func (lex *Lexer) readToken() []*token.Token {
 			// ParseNegative merges it into "--:f"; longer runs must retain
 			// their separate minuses followed by "-:f".
 			return lex.readSymbol()
+		} else if c == '#' {
+			lex.sign = '-'
 		}
 		return lex.emitText(token.NEGATIVE)
 	case '"':
@@ -234,7 +245,11 @@ func (lex *Lexer) readToken() []*token.Token {
 			return lex.readNumber()
 		}
 		if isWordStart(lex.scanner.Rune()) {
-			return lex.readSymbol()
+			toks := lex.readSymbol()
+			if toks[0].Type == token.SYMBOL && toks[0].Text == "+" && lex.minusRun == 0 && lex.peekRune() == '#' {
+				lex.sign = '+'
+			}
+			return toks
 		}
 		err := fmt.Errorf("unexpected text starting with %q", lex.scanner.Rune())
 		return lex.emit(token.INVALID, err.Error())
@@ -366,26 +381,28 @@ func (lex *Lexer) readOctalLiteral() []*token.Token {
 	// The dispatch token has been emitted; retain its spelling for diagnostics.
 	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
+	defer func() { lex.radixSign = 0 }()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return '0' <= c && c <= '7'
 	})
 	if n == 0 {
 		return lex.errorf("invalid octal literal character: %q", lex.peekRune())
 	}
-	return lex.emitNumber(token.INT_OCTAL, prefix)
+	return lex.refuseSignedRadix(lex.emitNumber(token.INT_OCTAL, prefix), prefix)
 }
 
 func (lex *Lexer) readHexLiteral() []*token.Token {
 	// The dispatch token has been emitted; retain its spelling for diagnostics.
 	prefix := "#" + string(lex.scanner.Rune())
 	lex.resetState()
+	defer func() { lex.radixSign = 0 }()
 	n := lex.scanner.AcceptSeq(func(c rune) bool {
 		return isDigit(c) || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
 	})
 	if n == 0 {
 		return lex.errorf("invalid hexadecimal literal character: %q", lex.peekRune())
 	}
-	return lex.emitNumber(token.INT_HEX, prefix)
+	return lex.refuseSignedRadix(lex.emitNumber(token.INT_HEX, prefix), prefix)
 }
 
 func (lex *Lexer) readNumber() []*token.Token {
@@ -444,6 +461,29 @@ func (lex *Lexer) emitNumber(typ token.Type, prefix string) []*token.Token {
 		return lex.errorf("invalid numeric literal %q (separate values with whitespace)", literal)
 	}
 	return lex.emitText(typ)
+}
+
+// refuseSignedRadix turns a well-formed #x or #o literal into an error when a
+// lone sign is joined to its prefix, as in -#x10 or +#o17.
+//
+// Without this check the sign reads as the symbol - or + and the literal as a
+// separate positive integer: '(-#x10) is the list (- 16), with no diagnostic.
+// A writer who joins the sign means a signed number, as in -16, so the reader
+// refuses the form and names it. The sign inside the prefix (#x-10) is already
+// an error, so no radix literal carries a sign. Write (- #x10) for the
+// negative value. A sign that ends a longer symbol (a-#x10) is not a lone
+// sign and keeps its meaning. A literal that is already malformed keeps its
+// own diagnostic.
+func (lex *Lexer) refuseSignedRadix(toks []*token.Token, prefix string) []*token.Token {
+	if lex.radixSign == 0 || toks[0].Type == token.ERROR {
+		return toks
+	}
+	sign := string(lex.radixSign)
+	literal := prefix + toks[0].Text
+	toks[0].Type = token.ERROR
+	toks[0].Text = fmt.Sprintf("invalid numeric literal %q (a sign cannot be joined to a %s literal; write (%s %s))",
+		sign+literal, prefix, sign, literal)
+	return toks
 }
 
 // trailingBackslashes counts the backslashes at the end of s.

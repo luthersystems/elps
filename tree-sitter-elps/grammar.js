@@ -73,11 +73,16 @@ module.exports = grammar({
         ),
       ),
 
+    // A #o or #x literal has no sign. The reader refuses a lone - or +
+    // joined to the prefix (-#x10), so the sign is not part of the token:
+    // one integer node would show a form that does not parse as valid. The
+    // sign is a symbol node here, because a tree-sitter grammar cannot
+    // refuse a token sequence. See docs/lang.md and luthersystems/elps#943.
     octal_integer: _ =>
-      token(seq(optional("-"), /\#[oO]/, /[0-7]+/)),
+      token(seq(/\#[oO]/, /[0-7]+/)),
 
     hex_integer: _ =>
-      token(seq(optional("-"), /\#[xX]/, /[0-9a-fA-F]+/)),
+      token(seq(/\#[xX]/, /[0-9a-fA-F]+/)),
 
     // string and raw_string are both handled by the external scanner
     // (src/scanner.c) to disambiguate "" (empty string) vs """...""" (raw string).
