@@ -50,7 +50,10 @@ to inspect or change the tagged value, and write the short form otherwise.
 `:strict true` on a load function accepts only the plain encoder's spelling:
 no whitespace, members in UTF-8 byte order with no duplicates, the plain
 escape set and canonical number text. It checks spelling only; it does not
-untag.
+untag. Integer text that does not fit an int is canonical only when it is the
+encoder's text for the float it loads as: `100000000000000000000` (1e20) is
+accepted, and `100000000000000000000000` is refused because the encoder writes
+`1e+23`.
 
 <!-- typedjson:eval -->
 ```lisp

@@ -242,7 +242,13 @@ func (d *directDecoder) number() *lisp.LVal {
 	}
 	text := string(d.b[start:d.i])
 	if d.opts.Strict {
-		if _, ok := smallCanonicalInt(d.b[start:d.i]); !ok && !isJSONInteger(text) {
+		if _, ok := smallCanonicalInt(d.b[start:d.i]); !ok && !d.strictInt(text) {
+			// The text is a float, or integer text too large for an int.
+			// The encoder writes such a value only through
+			// appendJSONFloat, so the text is canonical only when it is
+			// that rendering.  Integer text past int64 needs the check
+			// too: the encoder writes 1e23 as "1e+23", never as 24
+			// digits (luthersystems/elps#943).
 			f, err := strconv.ParseFloat(text, 64)
 			if err != nil || math.IsInf(f, 0) || string(appendJSONFloat(nil, f)) != text {
 				d.reject(errors.New("json: non-canonical number"))
@@ -267,6 +273,24 @@ func (d *directDecoder) number() *lisp.LVal {
 		return nil
 	}
 	return lisp.Float(f)
+}
+
+// strictInt reports whether the strict number check takes text, a valid
+// JSON number, as an int with no float comparison.  The encoder writes every
+// int as integer text that fits a lisp int.
+//
+// Under ExactIntegers it leaves larger integer text to loadNumber, which
+// applies the same float comparison and raises json:integer-range-error.
+// The strict check must not replace that condition with its own.
+func (d *directDecoder) strictInt(text string) bool {
+	if !isJSONInteger(text) {
+		return false
+	}
+	if d.opts.ExactIntegers && !d.opts.StringNumbers {
+		return true
+	}
+	_, err := strconv.ParseInt(text, 10, strconv.IntSize)
+	return err == nil
 }
 
 // loadStrict decodes b with the Strict spelling checks of LoadOpts.
