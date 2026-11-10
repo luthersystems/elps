@@ -51,6 +51,7 @@ type Runtime struct {
 	vmValues               *vmValueTable             // Per-VM Lisp values; see SetVMValue.
 	conditionParents       map[string]conditionEntry // The hierarchy from DefineCondition; see conditionParentsShared.
 	conditionStack         []*LVal
+	callLists              callLists     // Free call lists of this VM; see lisp/calllist.go.
 	MaxValueDepth          int           // Optional limit for iterative value walks (zero uses MaxValueDepth).
 	MaxAlloc               int           // Per-operation allocation size cap (0 = use default). Not cumulative.
 	MaxMacroExpansionDepth int           // Maximum macro expansion iterations (0 = use default).

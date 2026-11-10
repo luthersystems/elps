@@ -102,9 +102,10 @@ func TestOwnershipAllowStopsAtWordBoundary(t *testing.T) {
 // lazy-read seventh, and own-package (elpsvet/ownpkg, importable) eighth.
 // Exhaustive switches and value walkers are ninth and tenth, marker fields
 // eleventh, durable natives (elpsvet/nativepayload, importable) twelfth, and
-// the elpsidiom fixes (elpsvet/idiom, importable) thirteenth.
+// the elpsidiom fixes (elpsvet/idiom, importable) thirteenth.  The call
+// list rule is fourteenth.
 func TestRegisteredAnalyzers(t *testing.T) {
-	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread", "elpsownpkg", "elpsltypeswitch", "elpsvalwalker", "elpsmarkerfields", "elpsdurablenative", "elpsidiom"}
+	want := []string{"elpsownership", "elpsfreshness", "elpsescape", "elpsnativepayload", "elpsbuiltinstate", "elpsfrozenpackage", "elpslazyread", "elpsownpkg", "elpsltypeswitch", "elpsvalwalker", "elpsmarkerfields", "elpsdurablenative", "elpsidiom", "elpscalllist"}
 	got := make([]string, 0, len(analyzers))
 	for _, a := range analyzers {
 		got = append(got, a.Name)

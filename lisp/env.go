@@ -1469,6 +1469,9 @@ func (env *LEnv) AddSpecialOps(external bool, ops ...LBuiltinDef) {
 		opFormals := op.Formals()
 		checkRegistrationFormals("special operator", name, opFormals)
 		fn := registrationFunValue(pkg.Name, name, registrationFunction{fid: "<special-op ``" + name + "''>", funType: LFunSpecialOp, formals: registrationFormals(&formals, opFormals), fn: op.Eval, doc: builtinDocstring(op)})
+		if dropsCallList(op) {
+			fn.funData().dropsList = true
+		}
 		pkg.putName(name, fn)
 		registry.register(fn, bound)
 		if external {
@@ -2119,7 +2122,7 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	if len(s.Cells) == 0 {
 		return Nil()
 	}
-	call := env.evalSExprCells(ctx, s)
+	call, back := env.evalSExprCells(ctx, s)
 	if call.IsError() {
 		if err := env.ErrorAssociate(call); err != nil {
 			return err
@@ -2128,13 +2131,25 @@ func (env *LEnv) evalSExpr(ctx context.Context, s *LVal) *LVal {
 	}
 	fun := call.Cells[0] // call is not an empty expression -- fun is known LFun
 	args := call
-	args.Cells = args.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
+	args.Cells = call.Cells[1:] //elps:mutates decap of the call value evalSExprCells constructed just above with fresh backing
 
 	switch fun.FunType {
 	case LFunNone:
-		return env.funCall(ctx, fun, args, true)
+		if back == nil {
+			return env.funCall(ctx, fun, args, true)
+		}
+		// The call binds its arguments and keeps no list, so the next
+		// call form can have this one (lisp/calllist.go).
+		r := env.funCall(ctx, fun, args, true)
+		env.returnCallList(r, args, back)
+		return r
 	case LFunSpecialOp:
-		return env.specialOpCall(ctx, fun, args, true)
+		if back == nil {
+			return env.specialOpCall(ctx, fun, args, true)
+		}
+		r := env.specialOpCall(ctx, fun, args, true)
+		env.returnCallList(r, args, back)
+		return r
 	case LFunMacro:
 		return env.macroCall(ctx, fun, args)
 	default:
@@ -2529,7 +2544,14 @@ func decrementMarkTailRec(mark *LVal) bool {
 	return mark.Cells[0].Int <= 0
 }
 
-func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
+// evalSExprCells evaluates the function and the arguments of the call form s
+// and returns the call's list.  The second result is nil unless the list
+// came from the VM's free call lists and may go back to them
+// (lisp/calllist.go): it is then the list's whole backing array, which the
+// list's own cells do not reach.  That is decided here, once, before the
+// arguments are evaluated: evalSExpr must return the list under the rule the
+// list was built under.
+func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) (*LVal, []*LVal) {
 	loc := env.loc
 	defer func() { env.loc = loc }()
 
@@ -2548,10 +2570,10 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 	f := env.evalOperand(ctx, cells[0])
 	cells = cells[1:]
 	if f.IsError() {
-		return f
+		return f, nil
 	}
 	if f.Type != LFun {
-		return env.Errorf("first element of expression is not a function: %v", f)
+		return env.Errorf("first element of expression is not a function: %v", f), nil
 	}
 	if f.Type == LMarkTailRec {
 		_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
@@ -2560,7 +2582,20 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 
 	// The call value is allocated only once the function position has
 	// evaluated to a function, so an error there allocates nothing for it.
-	call, newCells := newSExprCap(len(s.Cells))
+	var call *LVal
+	var newCells, back []*LVal
+	if reusesCallList(env.Runtime, f) {
+		// The cells are clipped to the call's length although the array
+		// is longer.  The function that is handed the list (bindOwned) may
+		// append to it and keep the result.  With spare capacity that
+		// append would write into the free list's own array, and the next
+		// call would overwrite it.  Clipped, it reallocates, as it does
+		// for a list newSExprCap built.
+		call, back = env.Runtime.callLists.get(len(s.Cells))
+		newCells = back[:0:len(s.Cells)]
+	} else {
+		call, newCells = newSExprCap(len(s.Cells))
+	}
 	newCells = append(newCells, f)
 	if f.IsSpecialFun() {
 		// Arguments to a macro are not evaluated but they aren't quoted
@@ -2576,7 +2611,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		// expression and produces '(1).
 		newCells = append(newCells, cells...)
 		call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
-		return call
+		return call, back
 	}
 	// Evaluate arguments before invoking f.
 	for i, expr := range cells {
@@ -2589,7 +2624,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		}
 		v := env.evalOperand(ctx, expr)
 		if v.IsError() {
-			return v
+			return v, nil
 		}
 		if v.Type == LMarkTailRec {
 			_, _ = env.Runtime.Stack.debugPrintContext(liveRenderContext(ctx), env.Runtime.getStderr(), diagnosticLimit(env.Runtime.MaxAllocBytes()))
@@ -2599,7 +2634,7 @@ func (env *LEnv) evalSExprCells(ctx context.Context, s *LVal) *LVal {
 		newCells = append(newCells, v)
 	}
 	call.Cells = newCells //elps:mutates header freshly allocated by newSExprCap above for this call form and not yet visible to anything else
-	return call
+	return call, back
 }
 
 // evalOperand evaluates x, an element of a call form, as eval does, except

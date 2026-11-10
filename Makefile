@@ -197,6 +197,8 @@ static-checks: check-golangci-version check-golangci-config
 # issue #680 -- a template shares the builtin's function value too). Package
 # table writes must go through the frozen-package gate (elpsfrozenpackage),
 # and lazily filled tables are read only through their accessors (elpslazyread).
+# A function whose argument list the evaluator reuses keeps neither the list
+# nor a slice of its cells (elpscalllist).
 # No library builtin depends on which package is current (elpsownpkg, #736).
 # Code in every package, package lisp included, uses the helper an elpsidiom
 # fix names: elpsvet sets -elpsidiom.fixonly, so the hints (ArgReader,

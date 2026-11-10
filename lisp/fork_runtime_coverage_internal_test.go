@@ -91,6 +91,9 @@ var forkRuntimeFieldPolicy = map[string]string{
 	// cache is valid for a fresh VM even when its configured cap is nonzero.
 	"evalNestingSetting": "not-carried",
 	"evalNestingLimit":   "not-carried",
+	// Free storage of one VM.  A new VM starts with none: two VMs that
+	// shared a free list would hand one list to two calls.
+	"callLists": "not-carried",
 }
 
 // TestForkRuntimeFieldCoverage fails when Runtime grows a field nobody has

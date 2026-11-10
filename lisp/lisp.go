@@ -223,6 +223,12 @@ type funData struct {
 	// before the value is published, never a call: a template shares one
 	// header with every VM.  Zero means not cached, and the call scans.
 	positional int32
+
+	// dropsList is true only for a kernel special operator that keeps
+	// neither its argument list nor a slice of the list's cells once it
+	// returns (dropsCallList, lisp/calllist.go).  The evaluator reuses the
+	// list of a direct call of such an operator.
+	dropsList bool
 }
 
 // macroExpansionContext is shared by all nodes in a single macro expansion.
