@@ -94,6 +94,9 @@ var builtinLower = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, s
 	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
+	if out, ok := convertCaseASCII(env, str, 'A', 'Z'); ok {
+		return out
+	}
 	return convertCase(env, str, unicode.ToLower)
 })
 
@@ -101,8 +104,57 @@ var builtinUpper = lisp.Func1(lisp.StringArg("argument"), func(env *lisp.LEnv, s
 	if lerr := libutil.ChargeKiB(env, len(str)); lerr != nil {
 		return lerr
 	}
+	if out, ok := convertCaseASCII(env, str, 'a', 'z'); ok {
+		return out
+	}
 	return convertCase(env, str, unicode.ToUpper)
 })
+
+// convertCaseASCII converts the case of s when every byte of s is ASCII.
+// lo and hi bound the letters to change: 'A' to 'Z' for lowercase, 'a' to
+// 'z' for uppercase.  ok is false when s holds a byte outside ASCII, and
+// convertCase then does the work.
+//
+// Most text a program folds is ASCII: keys, identifiers, codes.  For such
+// text convertCase decodes each rune two times and calls a Unicode mapping
+// for each.  Here one pass over the bytes finds the first letter to change,
+// and a second writes the result.
+//
+// The result is what convertCase returns for the same s.  Unicode maps an
+// ASCII letter to the ASCII letter 32 away and every other ASCII byte to
+// itself, so the output has the length of the input.  A string with no
+// letter to change comes back as it is, whatever its length.  A string that
+// changes and is longer than the allocation limit is the same error.
+// TestConvertCaseASCIIMatchesConvertCase compares the two.
+func convertCaseASCII(env *lisp.LEnv, s string, lo, hi byte) (*lisp.LVal, bool) {
+	first := -1
+	for i := range len(s) {
+		c := s[i]
+		if c >= utf8.RuneSelf {
+			return nil, false
+		}
+		if first < 0 && lo <= c && c <= hi {
+			first = i
+		}
+	}
+	if first < 0 {
+		return lisp.String(s), true
+	}
+	if limit := env.Runtime.MaxAllocBytes(); len(s) > limit {
+		return env.Errorf("case conversion would exceed maximum allocation size (%d bytes)", limit), true
+	}
+	var out strings.Builder
+	out.Grow(len(s))
+	out.WriteString(s[:first])
+	for i := first; i < len(s); i++ {
+		c := s[i]
+		if lo <= c && c <= hi {
+			c ^= 'a' - 'A' // the one bit that separates the two cases
+		}
+		out.WriteByte(c)
+	}
+	return lisp.String(out.String()), true
+}
 
 // convertCase measures Unicode's mapped byte length before allocating. Input
 // length is insufficient: mappings can grow or shrink, and invalid UTF-8 is
