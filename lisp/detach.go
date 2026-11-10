@@ -138,6 +138,14 @@ type detachFrame struct {
 
 func (f *detachFrame) len() int { return 2*len(f.entries) + len(f.cells) }
 
+// ownsKeys reports whether the frame's map keys are already the copy's own:
+// new scalars that the source map's Entries built for this walk, which the
+// walk stores as they are (see detachMapData).  The mark is a copied slice
+// without cells.  A sorted-map value that also has cells loses the mark when
+// detachCells sets copied, and its keys are then detached as a host map's
+// are, which gives the same map.
+func (f *detachFrame) ownsKeys() bool { return len(f.cells) == 0 && f.copied != nil }
+
 func (f *detachFrame) child() *LVal {
 	if f.index < 2*len(f.entries) {
 		return f.entries[f.index/2].Cells[f.index%2]
@@ -192,6 +200,12 @@ func (d *detacher) detach(v *LVal) (*LVal, error) {
 		if d.depth >= d.runtime.ValueDepthLimit() {
 			err = ValueDepthError(d.runtime.ValueDepthLimit())
 			break
+		}
+		if f.index <= 2*len(f.entries) && f.index%2 == 1 && f.ownsKeys() {
+			// A key the copy owns already.  The depth check above is
+			// the one detachNode would repeat.
+			f.key = v
+			continue
 		}
 		d.next = detachFrame{}
 		var child *LVal
@@ -491,10 +505,33 @@ func (d *detacher) detachMapData(md *MapData) (*MapData, error) {
 	// Unconditional, as the copier's generic arm is: the fast path the
 	// copier's other two arms take rests on keys that are unique Go strings
 	// by construction, and these keys arrive from the host as whole LVals.
-	sortMapEntriesByKey(entries.Cells)
-	m := &MapData{newmap()}
+	//
+	// The interpreter's own two maps need neither the sort nor a copy of
+	// each key (luthersystems/elps#944).  Their Entries sorts the pairs by
+	// key already, in the order sortMapEntriesByKey gives (their string and
+	// symbol keys have distinct Str, and the stock map puts int keys first,
+	// by value).  And it builds each key as a new scalar that nothing else
+	// holds, so the key is the copy's own already.  Sorting and detaching
+	// them again cost a 64-key copy 15 KB and 73 allocations of its 48 KB
+	// and 164.  A host's Map keeps the sort and the key copies: its keys are
+	// whatever values it hands out.  TestDetachMapEntriesArriveSorted pins
+	// the order, and TestDetachMapKeysAreFresh the keys.
+	var ownKeys []*LVal
+	switch md.mapBacking.(type) {
+	case sortedmap, jsonMap:
+		ownKeys = entries.Cells
+	default:
+		sortMapEntriesByKey(entries.Cells)
+	}
+	// Sized for the entries: the copy holds exactly as many keys, so the
+	// table need not grow while the walk fills it.
+	m := &MapData{newmapSized(len(entries.Cells))}
 	d.maps[md] = m
 	d.next.entries, d.next.mapping = entries.Cells, m
+	// A map's frame has no copied slice until detachCells gives it cells,
+	// so copied carries the mark here (see detachFrame.ownsKeys).  A new
+	// field would grow every frame of every walk.
+	d.next.copied = ownKeys
 
 	return m, nil
 }
