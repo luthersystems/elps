@@ -205,6 +205,143 @@ func TestBindLambdaUnaffected(t *testing.T) {
 	}
 }
 
+// TestPositionalShapeMatchesScan checks the shape a constructor caches in
+// funData.positional (luthersystems/elps#944) against the scan it replaces:
+// for every formal list and argument count, the cached answer is the answer
+// nativePositionalOK gives.  A wrong cache would bind a call the general
+// binder rejects, or reject one it binds.
+func TestPositionalShapeMatchesScan(t *testing.T) {
+	shapes := make([]*LVal, 0, len(bindNativeShapes)+3)
+	for _, shape := range bindNativeShapes {
+		shapes = append(shapes, rawFormals(shape.formals...))
+	}
+	// A nil formal: the scan declines the list at any argument count.
+	shapes = append(shapes,
+		QExpr([]*LVal{nil}),
+		QExpr([]*LVal{Symbol("a"), nil}),
+		QExpr([]*LVal{nil, Symbol(VarArgSymbol), Symbol("r")}),
+	)
+	for _, formals := range shapes {
+		shape := positionalShape(formals)
+		if shape == 0 {
+			t.Errorf("formals %v: no shape cached", formals)
+		}
+		fd := &funData{positional: shape}
+		for narg := range 7 {
+			want := nativePositionalOK(formals.Cells, narg)
+			if got := funPositionalOK(fd, formals.Cells, narg); got != want {
+				t.Errorf("formals %v, %d args: cached %v, scan %v (shape %d)", formals, narg, got, want, shape)
+			}
+			// Without a cached shape the call scans.
+			if got := funPositionalOK(&funData{}, formals.Cells, narg); got != want {
+				t.Errorf("formals %v, %d args: uncached %v, scan %v", formals, narg, got, want)
+			}
+			if got := funPositionalOK(nil, formals.Cells, narg); got != want {
+				t.Errorf("formals %v, %d args: nil function data %v, scan %v", formals, narg, got, want)
+			}
+		}
+	}
+	// Lists the scan cannot read without a panic stay uncached, so the call
+	// still fails where it did.
+	if shape := positionalShape(nil); shape != 0 {
+		t.Errorf("nil formals: shape %d, want 0", shape)
+	}
+	if shape := positionalShape(QExpr([]*LVal{Symbol(VarArgSymbol), nil})); shape != 0 {
+		t.Errorf("nil formal after &rest: shape %d, want 0", shape)
+	}
+	// The uncached call of such a list fails as it always did: the scan and
+	// the cache share scanPositionalShape, and the scan still reads the nil.
+	func() {
+		defer func() {
+			if recover() == nil {
+				t.Error("nil formal after &rest: the scan did not panic")
+			}
+		}()
+		nativePositionalOK([]*LVal{Symbol(VarArgSymbol), nil}, 1)
+	}()
+}
+
+// TestPositionalListIsSharedByBothPaths checks that bind's fast path and
+// bindNativePositional, which CallBuiltin uses, build the same list for
+// every formals shape of a registered builtin: same cells, length and
+// capacity, in a fresh backing array.
+func TestPositionalListIsSharedByBothPaths(t *testing.T) {
+	env := NewEnv(nil)
+	if rc := InitializeUserEnv(env); rc.Type == LError {
+		t.Fatal(rc)
+	}
+	seen := map[string]bool{}
+	for _, def := range DefaultBuiltins() {
+		formals := def.Formals()
+		key := formals.String()
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		fun := Fun("<test>", formals, func(*LEnv, *LVal) *LVal { return Nil() })
+		for narg := range len(formals.Cells) + 3 {
+			cells := make([]*LVal, narg)
+			for i := range cells {
+				cells[i] = FreshInt(i)
+			}
+			direct := bindNativePositional(formals.Cells, cells)
+			_, bound := env.bind(fun, QExpr(cells))
+			if direct == nil {
+				// Not a fast-path call: bind takes the general path.
+				continue
+			}
+			if bound.Type != LSExpr || len(bound.Cells) != len(direct.Cells) || cap(bound.Cells) != cap(direct.Cells) {
+				t.Fatalf("formals %v, %d args: bind built %s, bindNativePositional %s",
+					formals, narg, describeBind(bound), describeBind(direct))
+			}
+			for i := range bound.Cells {
+				if bound.Cells[i] != direct.Cells[i] {
+					t.Errorf("formals %v, %d args: cell %d differs", formals, narg, i)
+				}
+			}
+			if narg > 0 && (&bound.Cells[0] == &cells[0] || &direct.Cells[0] == &cells[0]) {
+				t.Errorf("formals %v, %d args: the list aliases the caller's cells", formals, narg)
+			}
+		}
+	}
+	if len(seen) < 5 {
+		t.Fatalf("only %d formals shapes among the default builtins", len(seen))
+	}
+}
+
+// TestPositionalShapeSetAtConstruction checks that every constructor of a
+// host function writes the shape before it returns the value.  A template
+// shares one function header with every VM, so a call must never be the
+// one to write it.
+func TestPositionalShapeSetAtConstruction(t *testing.T) {
+	builtin := func(*LEnv, *LVal) *LVal { return Nil() }
+	formals := Formals("a", VarArgSymbol, "r")
+	want := positionalShape(formals)
+	for name, fun := range map[string]*LVal{
+		"Fun":       Fun("f", formals, builtin),
+		"Macro":     Macro("f", formals, builtin),
+		"SpecialOp": SpecialOp("f", formals, builtin),
+		"captured": newCapturedBuiltin(CapturedFun{
+			FID: "f", Package: "p", Formals: formals,
+			Eval: func(*LEnv, *LVal, *LVal) *LVal { return Nil() },
+		}),
+	} {
+		if got := fun.funData().positional; got != want {
+			t.Errorf("%s: shape %d, want %d", name, got, want)
+		}
+	}
+	env := initSafetyTestEnv(t)
+	for _, sym := range []string{"lisp:car", "lisp:list", "lisp:if", "lisp:defun"} {
+		fun := env.Get(Symbol(sym))
+		if fun.Type != LFun {
+			t.Fatalf("%s: %v", sym, fun)
+		}
+		if got, want := fun.funData().positional, positionalShape(fun.Cells[0]); got != want || got == 0 {
+			t.Errorf("%s: shape %d, want %d", sym, got, want)
+		}
+	}
+}
+
 // TestBindNilFormalAfterRequiredFailsLikeGeneral pins that a nil formal
 // after a required name defers to the general binder, which reports the
 // arity error for too few arguments before it ever reads the nil formal.

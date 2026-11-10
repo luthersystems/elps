@@ -67,7 +67,7 @@ type freeKeywordsBuiltin interface {
 // freeKeysOf returns the funData.freeKeys value for def -- zero unless def
 // was wrapped with FreeKeywords -- or a message when def is wrapped but its
 // formals do not have the required shape.
-func freeKeysOf(def LBuiltinDef) (int, string) {
+func freeKeysOf(def LBuiltinDef) (int32, string) {
 	if _, ok := def.(freeKeywordsBuiltin); !ok {
 		return 0, ""
 	}
@@ -93,7 +93,10 @@ func freeKeysOf(def LBuiltinDef) (int, string) {
 	if nreq < 0 || nreq == len(formals.Cells)-1 {
 		return 0, "free-keyword builtin " + def.Name() + " must declare at least one &key formal"
 	}
-	return nreq + 1, ""
+	if nreq >= 1<<30 {
+		return 0, "free-keyword builtin " + def.Name() + " declares too many formals"
+	}
+	return int32(nreq + 1), ""
 }
 
 // freeKeywordLiteral reports whether argument i of a call form whose head
@@ -108,6 +111,6 @@ func freeKeywordLiteral(f, expr *LVal, i int) bool {
 	if fd == nil || fd.freeKeys == 0 {
 		return false
 	}
-	off := i - (fd.freeKeys - 1)
+	off := i - (int(fd.freeKeys) - 1)
 	return off >= 0 && off%2 == 0
 }
