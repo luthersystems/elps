@@ -72,12 +72,12 @@
 
     "hex-integer": {
       "name": "constant.numeric.hex.elps",
-      "match": "-?#[xX][0-9a-fA-F]+"
+      "match": "#[xX][0-9a-fA-F]+"
     },
 
     "octal-integer": {
       "name": "constant.numeric.octal.elps",
-      "match": "-?#[oO][0-7]+"
+      "match": "#[oO][0-7]+"
     },
 
     "float": {

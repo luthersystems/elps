@@ -98,8 +98,11 @@ not floating-point literals; write `0.5` for the number.
 
 Integer literals may use `#x` (hexadecimal) or `#o` (octal), with uppercase
 `#X` and `#O` also accepted: `#x10` is 16 and `#o17` is 15. Digits must
-immediately follow the prefix. Decimal, hexadecimal, and octal integer
-literals that overflow the platform's `int` produce
+immediately follow the prefix. A `#x` or `#o` literal has no sign. A lone `-`
+or `+` joined to the prefix (`-#x10`, `+#o17`) is an `invalid-hex-literal` or
+`invalid-octal-literal` error that names the joined text, and so is a sign
+after the prefix (`#x-10`). Write `(- #x10)` for the negative value. Decimal,
+hexadecimal, and octal integer literals that overflow the platform's `int` produce
 `integer-overflow-error`; they do not wrap silently like integer arithmetic.
 There is no `#b` binary prefix. An unsupported dispatch prefix reports the
 supported set: `#!`, `#'`, `#^`, `#o`, `#O`, `#x`, and `#X`.
