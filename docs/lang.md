@@ -1492,6 +1492,18 @@ literals; use the copying form or a vector. `?` reads without copying, so its
 results can share storage with the document. A range replacement for `?set`
 or `?set!` must be a list or vector; its elements are spliced into the range.
 
+A path that ends in `'*` writes each element of the sequence it reaches. `?set`
+and `?set!` store the replacement in each element. `?del`, `?nil` and their `!`
+forms store `()` in each element and keep the length. The `!` forms need a
+vector there: a list is refused, like any other in-place list edit.
+
+```lisp
+(set 'v (vector 1 2 3))
+(elpspath:?set v '* 0)                 ; evaluates to (vector 0 0 0)
+(elpspath:?nil! v '*)                  ; v is now (vector () () ())
+(elpspath:?set! (list 1 2 3) '* 0)     ; error: in-place path operations require an array or sorted-map; got list
+```
+
 An out-of-range **integer index** is a no-op for writes: copying forms return
 an unchanged copy and mutating forms leave the original unchanged (the list
 mutation restriction still applies). No enclosing container is removed.

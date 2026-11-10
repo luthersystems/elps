@@ -197,6 +197,10 @@ var builtins = []*libutil.Builtin{
 		(?set! obj "foo" "bar" "new")   => obj with foo.bar="new" (mutated)
 		(?set! obj "items" 0 "x")       => obj with items[0]="x" (mutated)
 		(?set! data '* "active" true)   => set active=true on all elements
+		(?set! scores '* 0)             => every element of scores is 0
+
+		A path that ends in '* stores the value in each element. The
+		sequence must be a vector.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?set", lisp.Formals("val", lisp.VarArgSymbol, "steps-and-value"), BuiltinQuerySet,
@@ -231,6 +235,10 @@ var builtins = []*libutil.Builtin{
 		(?del! obj "foo")              => obj with foo removed (mutated)
 		(?del! obj "items" 1)          => obj with items[1] removed (mutated)
 		(?del! records '* "cache")     => remove cache key from all elements
+		(?del! scores '*)              => every element of scores is nil
+
+		A path that ends in '* stores nil in each element and keeps the
+		length, as ?del does. The sequence must be a vector.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?del", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryDelete,
@@ -256,6 +264,10 @@ var builtins = []*libutil.Builtin{
 
 		(?nil! obj "foo")              => obj with foo=nil (mutated)
 		(?nil! rows '* "cached")       => nil out cached on all elements
+		(?nil! scores '*)              => every element of scores is nil
+
+		A path that ends in '* stores nil in each element. The sequence
+		must be a vector.
 
 		Accepts at most 1024 nested iterator steps; deeper traversal raises a depth error.`),
 	libutil.FunctionDoc("?nil", lisp.Formals("val", lisp.VarArgSymbol, "steps"), BuiltinQueryNil,
