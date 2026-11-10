@@ -515,11 +515,40 @@ func (s *Serializer) jsonDecode(b []byte, dst any, stringNums bool) error {
 // documents it then refuses to read, which is elps#410: `1E1000` is
 // syntactically valid JSON and encoding/json marshals it straight through a
 // json.RawMessage, but unmarshalling it into a float64 overflows.
+//
+// A number that does not fit a float64 comes back as a floatRangeError,
+// whose text does not depend on where the number sits in the document.
 func jsonDecode(b []byte, dst any, stringNums bool) error {
 	if !stringNums {
-		return json.Unmarshal(b, dst)
+		err := json.Unmarshal(b, dst)
+		if err == nil {
+			return nil
+		}
+		var rangeErr *json.UnmarshalTypeError
+		if errors.As(err, &rangeErr) {
+			if text, ok := strings.CutPrefix(rangeErr.Value, "number "); ok {
+				return floatRangeError(text)
+			}
+		}
+		return err
 	}
 	return decodeNumbers(b, dst)
+}
+
+// floatRangeError reports a JSON number, its literal text, that does not fit
+// a float64.
+//
+// encoding/json reports it as a *json.UnmarshalTypeError.  The v1 engine
+// words it the same way wherever the number is.  The v2 engine, Go 1.27's
+// default, adds the number's path when it is inside an array or an object
+// (luthersystems/elps#928).  Programs see this text from json:load-string
+// and from a dump that refuses a native, so this package writes it: the
+// words the v1 engine uses, which loadFloat already used for the
+// :exact-integers path.
+type floatRangeError string
+
+func (e floatRangeError) Error() string {
+	return "json: cannot unmarshal number " + string(e) + " into Go value of type float64"
 }
 
 // syntaxError is a malformed-document error raised by the decode paths that
@@ -607,11 +636,11 @@ func loadNumber(text string) *lisp.LVal {
 func loadFloat(text string) *lisp.LVal {
 	f, err := strconv.ParseFloat(text, 64)
 	if err != nil {
-		// Matches the message encoding/json produces for the same document on
-		// the default path, so turning the option on does not change what a
-		// caller reading the error text sees.
+		// The message of the default path for the same document, so turning
+		// the option on does not change what a caller reading the error
+		// text sees.
 		// The clone is for the reason given in loadNumber.
-		return lisp.Errorf("json: cannot unmarshal number %s into Go value of type float64", strings.Clone(text))
+		return lisp.Error(floatRangeError(strings.Clone(text)))
 	}
 	return lisp.Float(f)
 }

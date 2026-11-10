@@ -6,7 +6,6 @@ import (
 	"encoding"
 	"encoding/base64"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -15,6 +14,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/luthersystems/elps/lisp"
 )
@@ -37,10 +37,6 @@ const nativeNestLimit = 50_000
 // which makes it the deepest native checkLoadable accepts.
 const jsonNestingLimit = 10_000
 
-// jsonCycleCheckAfter is encoding/json's startDetectingCyclesAfter: it starts
-// to record pointers, maps and slices once it is this many of them deep.
-const jsonCycleCheckAfter = 1000
-
 // nativeInvalidByteLen is how many bytes encoding/json writes for one
 // invalid UTF-8 byte in a native's string: 6 for the escape \ufffd on the
 // JSON v1 engine (GOEXPERIMENT=nojsonv2), 3 for a raw U+FFFD on the v2
@@ -56,15 +52,6 @@ var nativeInvalidByteLen = func() int {
 	return min(len(b)-2, len(`\ufffd`))
 }()
 
-// nativeFloatKeys reports that encoding/json writes a map with float keys.
-// The JSON v2 engine does; the v1 engine refuses the map's type.  The walk
-// must visit such a map on v2, or encoding/json would write its contents
-// with no bound on their size (luthersystems/elps#928).
-var nativeFloatKeys = func() bool {
-	_, err := json.Marshal(map[float64]int{0: 0}) //nolint:errchkjson // the probe: v1 refuses float keys, v2 writes them
-	return err == nil
-}()
-
 // nativeStringLen is the length of a native's string as encoding/json
 // writes it on this binary's engine, quotes included.
 func nativeStringLen(s string) int {
@@ -74,25 +61,6 @@ func nativeStringLen(s string) int {
 // nativeRefScan is how many open references the walk searches linearly for a
 // cycle before it indexes them in a map.
 const nativeRefScan = 32
-
-// nativeWalkEvent is why a nativeWalker stopped or flagged a value.
-type nativeWalkEvent uint8
-
-const (
-	nativeWalkOK nativeWalkEvent = iota
-	// nativeWalkJSONError marks a value encoding/json refuses with an error
-	// of its own: an unsupported type, a NaN, an invalid json.Number, a map
-	// key it cannot name, a failing marshaler, or a cycle.
-	nativeWalkJSONError
-	// nativeWalkTooBig marks a native whose output would pass the
-	// allocation cap.
-	nativeWalkTooBig
-	// nativeWalkTooDeep marks a native that nests past nativeNestLimit.
-	nativeWalkTooDeep
-	// nativeWalkCycle marks a cycle encoding/json would only report after
-	// nesting past nativeNestLimit or writing past the cap.
-	nativeWalkCycle
-)
 
 // nativeWalkKey identifies a pointer, map or slice as encoding/json's cycle
 // check does: a pointer by its type and address, a map by its address, and a
@@ -105,10 +73,8 @@ type nativeWalkKey struct {
 
 // nativeWalkRef is one pointer, map or slice open on the walk's current path.
 type nativeWalkRef struct {
-	typ   reflect.Type
-	key   nativeWalkKey
-	depth int
-	est   int
+	typ reflect.Type
+	key nativeWalkKey
 }
 
 // nativeFrameKind is the kind of container a nativeFrame works through.
@@ -145,40 +111,54 @@ type nativeFrame struct {
 	wrote   bool // frameStruct: a member has been written
 }
 
-// nativeWalker bounds a native before encoding/json marshals it
-// (luthersystems/elps#802).
+// nativeWalker decides whether encoding/json may marshal a native
+// (luthersystems/elps#802, luthersystems/elps#928).
 //
-// It visits the values encoding/json would visit, by the same rules: the same
+// It visits the values the JSON v1 engine visits, by the same rules: the same
 // Marshaler and TextMarshaler dispatch (including addressability), the same
-// struct fields (nativeTypeFields), the same omitempty and omitzero tests and
-// the same cycle detection. It writes nothing, and it computes:
+// struct fields (nativeTypeFields) and the same omitempty and omitzero
+// tests.  It writes nothing, and it computes:
 //
 //   - est, a lower bound on the bytes encoding/json writes. A Marshaler's
 //     output is unknown until it runs, so it counts as its smallest possible
 //     form, except for the types whose size is known (see marshaler).
-//   - the nesting depth, against nativeNestLimit.
+//   - the nesting depth, against nativeNestLimit and jsonNestingLimit.
 //
-// So a native is refused BEFORE encoding/json allocates its output or recurses
-// into it, when its output cannot fit the cap or its nesting could exhaust the
-// stack. Other natives go to encoding/json, preserving its bytes and error
-// text. The walk reports key-name errors directly, in deterministic key order.
+// The walk refuses a native, with an error of this package, when:
+//
+//   - its output cannot fit the cap, or its nesting could exhaust the stack.
+//     So a native is refused BEFORE encoding/json allocates its output or
+//     recurses into it.
+//   - the v1 engine refuses it for a reason the value itself shows: a type
+//     with no JSON form, a map key type with no name, a NaN, an invalid
+//     json.Number, a time.Time with no RFC 3339 form, a failing key MarshalText, JSON nested
+//     past the decoder's limit, or a value that contains itself.
+//
+// The second group is why the walk decides and encoding/json does not
+// (luthersystems/elps#928).  The v2 engine, Go 1.27's default, writes some
+// of these values (a map with float keys, a nil map with bool keys) and
+// reports the others with different text.  substrate endorses the result
+// of a dump, so it must not move with the engine.  encoding/json therefore
+// only runs on a native the walk has passed, and the walk's errors are the
+// same on both engines.
+//
+// The walk stops at the first problem it meets.  It visits a map's entries
+// sorted by their JSON key names, so that problem is the same on every run
+// (luthersystems/elps#807).  Sorting can call a key's MarshalText.  The walk
+// calls no value marshaler: encoding/json calls each one once, after the
+// walk has passed the native, and encodeNative reports a failure there.  So
+// a problem the walk can see wins over a failing marshaler, wherever the two
+// are in the value.
 //
 // The walk does not recurse: it keeps the containers it is inside of on an
 // explicit stack, so its own stack does not grow with the native.  It charges
 // steps per KiB of est as it goes, and polls the context, so a step budget or
 // a cancellation stops it partway.
-//
-// There are two walks, and both stop at nativeNestLimit.  The bounding walk
-// (ordered false) runs on every native. Both walks sort maps by their JSON
-// key names, which can call a key's MarshalText. The bounding walk calls no
-// value marshaler. On a refusal or key-name error, the ordered walk calls
-// value marshalers too. It finds which problem comes first in document order.
 type nativeWalker struct {
-	enc      *encoder
-	err      error
-	cycleErr error
-	keyErr   error // an error resolving a map key
-	budget   encodeBudget
+	enc *encoder
+	// err is why the walk stopped: the refusal, or a step or context error.
+	err    error
+	budget encodeBudget
 
 	// The containers the walk is inside of: the first len(framesArr) in
 	// framesArr, the rest in framesMore.  Indexed rather than sliced, so the
@@ -204,31 +184,15 @@ type nativeWalker struct {
 	nodes int // values visited, to poll the context between bytes
 
 	depth     int
-	maxDepth  int
 	jsonDepth int
-
-	// deepBracket is the bracket that opens the first JSON container nested
-	// past jsonNestingLimit, in document order.  It names the character in
-	// the decoder's error, which checkLoadable would have reported.
-	deepBracket byte
-
-	event nativeWalkEvent
-
-	// ordered calls value marshalers and stops at the first event.
-	ordered bool
-
-	// mayFailFirst records that the bounding walk passed a value encoding/json
-	// refuses, or a marshaler that may fail, either of which may come before
-	// a later event in encoding/json's order.
-	mayFailFirst bool
 }
 
 // nativeWalkPollBytes is how many bytes of est the walk covers between
 // charges and context polls.
 const nativeWalkPollBytes = 1024
 
-func (w *nativeWalker) init(enc *encoder, b encodeBudget, ordered bool) {
-	w.enc, w.budget, w.ordered = enc, b, ordered
+func (w *nativeWalker) init(enc *encoder, b encodeBudget) {
+	w.enc, w.budget = enc, b
 	w.base = enc.buf.Len()
 	w.limit = math.MaxInt
 	if b.maxBytes > 0 {
@@ -238,24 +202,31 @@ func (w *nativeWalker) init(enc *encoder, b encodeBudget, ordered bool) {
 }
 
 // stop reports whether the walk must end now.
-func (w *nativeWalker) stop() bool {
-	return w.err != nil || (w.event != nativeWalkOK && (w.ordered || w.event != nativeWalkJSONError))
+func (w *nativeWalker) stop() bool { return w.err != nil }
+
+// fail stops the walk with err, unless it has stopped already: the first
+// problem in the walk's order is the one reported.
+func (w *nativeWalker) fail(err error) {
+	if w.err == nil {
+		w.err = err
+	}
 }
 
-// setEvent records e.  The ordered walk keeps its first event, which is the
-// first problem in encoding/json's order.  The bounding walk lets a reason to
-// refuse replace a JSON error, which may not come first.
-func (w *nativeWalker) setEvent(e nativeWalkEvent) {
-	if w.event == nativeWalkOK || (!w.ordered && w.event == nativeWalkJSONError) {
-		w.event = e
+// refuse stops the walk at a value this package does not encode.
+func (w *nativeWalker) refuse(format string, args ...any) {
+	if w.err == nil {
+		w.err = encodeUnloadableNativeError{err: fmt.Errorf(format, args...)}
 	}
 }
 
 // add counts n more output bytes.
 func (w *nativeWalker) add(n int) {
+	if w.err != nil {
+		return
+	}
 	w.est += n
 	if w.est > w.limit {
-		w.setEvent(nativeWalkTooBig)
+		w.err = encodeSizeError(w.budget.maxBytes)
 		return
 	}
 	if w.est >= w.poll {
@@ -272,28 +243,19 @@ func (w *nativeWalker) add(n int) {
 func (w *nativeWalker) pollContext() {
 	if w.budget.ctx != nil {
 		if err := w.budget.ctx.Err(); err != nil {
-			w.err = encodeCancelledError{err}
+			w.fail(encodeCancelledError{err})
 		}
 	}
 }
 
-// jsonError records a value encoding/json refuses.
-func (w *nativeWalker) jsonError() {
-	w.mayFailFirst = true
-	if w.event == nativeWalkOK {
-		w.event = nativeWalkJSONError
-	}
-}
-
-// descend enters one level deeper, or records that the native nests past
+// descend enters one level deeper, or refuses a native that nests past
 // nativeNestLimit.
 func (w *nativeWalker) descend() bool {
 	if w.depth >= nativeNestLimit {
-		w.setEvent(nativeWalkTooDeep)
+		w.fail(encodeUnloadableNativeError{err: errNativeTooDeep})
 		return false
 	}
 	w.depth++
-	w.maxDepth = max(w.maxDepth, w.depth)
 	if w.nodes++; w.nodes%encodeContextInterval == 0 {
 		w.pollContext()
 	}
@@ -403,12 +365,17 @@ func nativeFieldValue(v reflect.Value, f *nativeField) (reflect.Value, bool) {
 	return fv, true
 }
 
-// push enters container f.  It opens a JSON container, so its bracket and
-// its first byte of punctuation are counted here.
-func (w *nativeWalker) push(f nativeFrame, bracket byte) {
+// push enters container f.  It opens a JSON container, so its brackets are
+// counted here.
+//
+// A container past jsonNestingLimit is refused here.  The v1 engine writes
+// it, and this package then refuses bytes it cannot load back.  The v2
+// engine refuses to write it.  Refusing it in the walk gives one error on
+// both, before either recurses that deep (luthersystems/elps#928).
+func (w *nativeWalker) push(f nativeFrame) {
 	w.jsonDepth++
-	if w.jsonDepth == jsonNestingLimit+1 && w.deepBracket == 0 {
-		w.deepBracket = bracket
+	if w.jsonDepth > jsonNestingLimit {
+		w.fail(encodeUnloadableNativeError{err: errNativeJSONTooDeep})
 	}
 	w.add(2)
 	if w.nframes < len(w.framesArr) {
@@ -470,7 +437,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 		w.add(nativeStringLen(t))
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
-			w.jsonError()
+			w.refuseFloat(t)
 		} else {
 			w.add(nativeFloatLen(t, 64))
 		}
@@ -490,7 +457,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 		}
 		slices.Sort(keys)
 		w.add(max(0, len(t)-1))
-		w.push(nativeFrame{kind: frameAnyMap, anyMap: t, keys: keys, levels: levels, refs: refs + 1}, '{')
+		w.push(nativeFrame{kind: frameAnyMap, anyMap: t, keys: keys, levels: levels, refs: refs + 1})
 		return
 	case []any:
 		if t == nil {
@@ -501,7 +468,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 			break
 		}
 		w.add(max(0, len(t)-1))
-		w.push(nativeFrame{kind: frameAnySlice, anys: t, levels: levels, refs: refs + 1}, '[')
+		w.push(nativeFrame{kind: frameAnySlice, anys: t, levels: levels, refs: refs + 1})
 		return
 	default:
 		w.value(reflect.ValueOf(x), false, levels, refs)
@@ -556,7 +523,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 		case reflect.Float32, reflect.Float64:
 			f := v.Float()
 			if math.IsInf(f, 0) || math.IsNaN(f) {
-				w.jsonError()
+				w.refuseFloat(f)
 				break
 			}
 			w.add(nativeFloatLen(f, v.Type().Bits()) + q)
@@ -570,7 +537,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 				s = "0"
 			}
 			if !isValidJSONNumber(s) {
-				w.jsonError()
+				w.refuse("invalid json.Number %q", s)
 				break
 			}
 			w.add(len(s) + q)
@@ -605,13 +572,13 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 			v = v.Elem()
 			continue
 		case reflect.Struct:
-			w.push(nativeFrame{kind: frameStruct, v: v, fields: info.fields, levels: levels, refs: refs}, '{')
+			w.push(nativeFrame{kind: frameStruct, v: v, fields: info.fields, levels: levels, refs: refs})
 			return
 		case reflect.Map:
 			if !info.mapKeyOK {
-				// encoding/json refuses the map's type, even when the map is
-				// nil.
-				w.jsonError()
+				// The v1 engine refuses the map's type, even when the map is
+				// nil.  The v2 engine writes some of these maps.
+				w.refuseType(v.Type())
 				break
 			}
 			if v.IsNil() {
@@ -627,7 +594,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 				break
 			}
 			w.add(max(0, len(entries)-1))
-			w.push(nativeFrame{kind: frameMap, v: v, entries: entries, levels: levels, refs: refs + 1}, '{')
+			w.push(nativeFrame{kind: frameMap, v: v, entries: entries, levels: levels, refs: refs + 1})
 			return
 		case reflect.Slice:
 			if v.IsNil() {
@@ -642,19 +609,29 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 				break
 			}
 			w.add(max(0, v.Len()-1))
-			w.push(nativeFrame{kind: frameArray, v: v, levels: levels, refs: refs + 1}, '[')
+			w.push(nativeFrame{kind: frameArray, v: v, levels: levels, refs: refs + 1})
 			return
 		case reflect.Array:
 			w.add(max(0, v.Len()-1))
-			w.push(nativeFrame{kind: frameArray, v: v, levels: levels, refs: refs}, '[')
+			w.push(nativeFrame{kind: frameArray, v: v, levels: levels, refs: refs})
 			return
 		default:
 			// Complex numbers, channels, functions and unsafe pointers.
-			w.jsonError()
+			w.refuseType(v.Type())
 		}
 		break
 	}
 	w.release(levels, refs)
+}
+
+// refuseType refuses a value whose type has no JSON form.
+func (w *nativeWalker) refuseType(t reflect.Type) {
+	w.refuse("unsupported type %s", t)
+}
+
+// refuseFloat refuses a NaN or an infinity, which JSON cannot write.
+func (w *nativeWalker) refuseFloat(f float64) {
+	w.refuse("unsupported number %s", strconv.FormatFloat(f, 'g', -1, 64))
 }
 
 func boolLen(b bool) int {
@@ -664,9 +641,9 @@ func boolLen(b bool) int {
 	return 5
 }
 
-// mapEntries sorts entries by JSON key name in both walks.
+// mapEntries sorts v's entries by JSON key name.
 // TextMarshaler keys are resolved in key order, before visiting any value.
-// A key-name error therefore precedes every value error in that map.
+// A key-name error therefore precedes every problem in that map's values.
 func (w *nativeWalker) mapEntries(v reflect.Value) ([]nativeMapEntry, bool) {
 	entries := make([]nativeMapEntry, 0, v.Len())
 	it := v.MapRange()
@@ -678,7 +655,6 @@ func (w *nativeWalker) mapEntries(v reflect.Value) ([]nativeMapEntry, bool) {
 		// Sorting must not call user methods. Resolve each key only after
 		// this sort, so multiple failing key hooks choose the same error.
 		slices.SortFunc(entries, func(a, b nativeMapEntry) int { return compareNativeKeys(a.key, b.key) })
-		w.mayFailFirst = true
 	}
 	for i := range entries {
 		if i%encodeContextInterval == 0 {
@@ -689,21 +665,12 @@ func (w *nativeWalker) mapEntries(v reflect.Value) ([]nativeMapEntry, bool) {
 		}
 		name, err := resolveNativeKeyName(entries[i].key)
 		if err != nil {
-			w.keyErr = fmt.Errorf("json: encoding error for type %q: %q", v.Type().String(), err.Error())
-			w.jsonError()
+			w.refuse("map key MarshalText failed: %w", err)
 			return nil, false
 		}
 		entries[i].name = name
 	}
 	slices.SortStableFunc(entries, func(a, b nativeMapEntry) int { return strings.Compare(a.name, b.name) })
-	if k := v.Type().Key().Kind(); !textKeys && (k == reflect.Float32 || k == reflect.Float64) {
-		// Only the JSON v2 engine writes float keys (nativeFloatKeys), in
-		// its own number format, which the walk does not copy.  So each
-		// key counts as its shortest form, which keeps est a lower bound.
-		for i := range entries {
-			entries[i].name = "0"
-		}
-	}
 	return entries, true
 }
 
@@ -722,9 +689,6 @@ func resolveNativeKeyName(k reflect.Value) (string, error) {
 	switch k.Kind() {
 	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
 		return strconv.FormatInt(k.Int(), 10), nil
-	case reflect.Float32, reflect.Float64:
-		// A sort key only: see the end of mapEntries.
-		return strconv.FormatFloat(k.Float(), 'g', -1, k.Type().Bits()), nil
 	default:
 		return strconv.FormatUint(k.Uint(), 10), nil
 	}
@@ -735,10 +699,15 @@ func resolveNativeKeyName(k reflect.Value) (string, error) {
 // already open: it contains itself.  leaveRef closes the last one opened.
 func (w *nativeWalker) enterRef(typ reflect.Type, key nativeWalkKey) bool {
 	if i := w.findRef(key); i >= 0 {
-		w.cycle(i)
+		// The value contains itself.  The v1 engine goes around the cycle
+		// about 1000 times before it reports it.  The v2 engine stops at
+		// its nesting limit with another error.  The walk refuses the value
+		// at the first repeat, with one error for both
+		// (luthersystems/elps#928).
+		w.refuse("value of type %s contains itself", w.ref(i).typ)
 		return false
 	}
-	r := nativeWalkRef{typ: typ, key: key, depth: w.depth, est: w.est}
+	r := nativeWalkRef{typ: typ, key: key}
 	if w.nrefs < len(w.refsArr) {
 		w.refsArr[w.nrefs] = r
 	} else {
@@ -790,55 +759,17 @@ func (w *nativeWalker) findRef(key nativeWalkKey) int {
 	return -1
 }
 
-// cycle handles a value that contains itself: w.ref(i) is about to be
-// entered again.
-//
-// encoding/json does not see the cycle here.  It records references only
-// once more than jsonCycleCheckAfter are open, so it goes around the cycle
-// until then, writing every trip, and reports the cycle one trip after it
-// starts recording.  The walk stops at the first repeat instead, and works out
-// from the path how deep and how large encoding/json gets before it reports
-// the cycle, and through which value.  When both fit, encoding/json is left to
-// report it.  Otherwise the walk reports the same error without running it.
-func (w *nativeWalker) cycle(i int) {
-	n := w.nrefs
-	period := n - i // references per trip around the cycle
-	// The n-th reference encoding/json opens is the one about to repeat.
-	// It reports the cycle at the first reference it opens twice after it
-	// starts recording, at the jsonCycleCheckAfter-th.
-	at := max(jsonCycleCheckAfter, i) + period
-	trips := (at - i) / period
-	r := w.ref(i + (at-i)%period)
-	tripDepth := w.depth - w.ref(i).depth
-	tripEst := w.est - w.ref(i).est
-	depth := r.depth + trips*tripDepth + max(0, w.maxDepth-w.depth)
-	est := r.est + trips*tripEst
-	if est <= w.limit && depth <= nativeNestLimit {
-		w.jsonError()
-		return
-	}
-	w.mayFailFirst = true
-	if w.event == nativeWalkOK || (!w.ordered && w.event == nativeWalkJSONError) {
-		w.event = nativeWalkCycle
-		w.cycleErr = &json.UnsupportedValueError{Str: "encountered a cycle via " + r.typ.String()}
-	}
-}
-
 // marshaler counts a value encoding/json hands to MarshalJSON (text false)
 // or MarshalText (text true), with v.Addr() as the receiver when addr is set.
 //
-// The bounding walk does not call value marshalers. Most marshalers' output is
-// unknown until they run, so they count as their smallest output: one byte of
-// JSON, or an empty string.  The few whose size is known from the value --
-// this package's own messages, json.RawMessage and math/big's numbers --
-// count as that size.  math/big also does work out of proportion to its
-// output, a decimal conversion whose intermediate grows with the exponent,
-// and that is charged and capped here before it runs.
-//
-// The ordered walk runs only when the native is about to be refused, and must
-// know whether encoding/json would fail at a marshaler first.  So it calls
-// each marshaler it passes, as encoding/json would have, and counts the
-// output it returns.  math/big's never fail and are still not called.
+// The walk does not call value marshalers: encoding/json calls each one,
+// once.  Most marshalers' output is unknown until they run, so they count as
+// their smallest output: one byte of JSON, or an empty string.  The few whose
+// size is known from the value -- this package's own messages,
+// json.RawMessage and math/big's numbers -- count as that size.  math/big
+// also does work out of proportion to its output, a decimal conversion whose
+// intermediate grows with the exponent, and that is charged and capped here
+// before it runs.
 func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
 	m := v
 	if addr {
@@ -856,15 +787,21 @@ func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
 		minLen = 2
 	}
 	if !sizedMarshalerTypes[m.Type()] {
-		w.mayFailFirst = true
-		if w.ordered {
-			w.callMarshaler(m, text)
-			return
+		w.add(minLen)
+		return
+	}
+	if m.Type() == timeType {
+		// TypeAssert does not allocate a copy, as Interface would.
+		if t, ok := reflect.TypeAssert[time.Time](m); ok {
+			w.time(t)
 		}
 		w.add(minLen)
 		return
 	}
 	switch x := m.Interface().(type) {
+	case *time.Time:
+		w.time(*x)
+		w.add(minLen)
 	case *ownMessage:
 		w.add(max(len(x.msg), 1))
 	case *json.RawMessage:
@@ -893,6 +830,8 @@ func (w *nativeWalker) marshaler(v reflect.Value, addr, text bool) {
 // cost, marshaler reads from the value.  Other marshalers are not converted
 // to an interface, which would allocate a copy of a value receiver.
 var sizedMarshalerTypes = map[reflect.Type]bool{
+	timeType:                            true,
+	reflect.TypeFor[*time.Time]():       true,
 	reflect.TypeFor[*ownMessage]():      true,
 	reflect.TypeFor[*json.RawMessage](): true,
 	reflect.TypeFor[json.RawMessage]():  true,
@@ -901,54 +840,43 @@ var sizedMarshalerTypes = map[reflect.Type]bool{
 	reflect.TypeFor[*big.Rat]():         true,
 }
 
-// rawMessage counts a json.RawMessage, whose MarshalJSON returns it as is.
-// encoding/json fails on one that is not valid JSON, which the ordered walk
-// checks.
-func (w *nativeWalker) rawMessage(raw json.RawMessage) {
-	w.mayFailFirst = true
-	if w.ordered && raw != nil && !json.Valid(raw) {
-		w.jsonError()
+var timeType = reflect.TypeFor[time.Time]()
+
+// time refuses a time.Time that has no RFC 3339 form: a year outside of 0 to
+// 9999, or a zone 24 hours or more from UTC.  These are the times whose
+// MarshalJSON fails.  The walk checks them itself because the v2 engine
+// does not call that method: it formats a time.Time with its own code, and
+// reports the failure in other words (luthersystems/elps#928).
+func (w *nativeWalker) time(t time.Time) {
+	if y := t.Year(); y < 0 || y > 9999 {
+		w.refuse("time.Time has year %d, outside of 0 to 9999", y)
 		return
 	}
-	w.add(rawMessageLen(raw))
+	const day = 24 * 60 * 60
+	if _, offset := t.Zone(); offset <= -day || offset >= day {
+		w.refuse("time.Time has a zone %d seconds from UTC, which is 24 hours or more", offset)
+	}
 }
 
-// callMarshaler calls m's MarshalJSON or MarshalText.  It records a JSON
-// error where encoding/json would report one: an error from the method, or
-// MarshalJSON output that is not valid JSON.
-func (w *nativeWalker) callMarshaler(m reflect.Value, text bool) {
-	if text {
-		tm, ok := m.Interface().(encoding.TextMarshaler)
-		if !ok {
-			w.add(4) // encoding/json writes null
-			return
-		}
-		b, err := tm.MarshalText()
-		if err != nil {
-			w.jsonError()
-			return
-		}
-		w.add(nativeStringLen(string(b)))
-		return
-	}
-	jm, ok := m.Interface().(json.Marshaler)
-	if !ok {
-		w.add(4)
-		return
-	}
-	b, err := jm.MarshalJSON()
-	if err != nil || !json.Valid(b) {
-		w.jsonError()
-		return
-	}
-	w.add(rawMessageLen(b))
+// rawMessage counts a json.RawMessage, whose MarshalJSON returns it as is.
+//
+// The walk does not check that it is valid JSON.  encoding/json checks each
+// marshal method's output anyway, and nativeMarshalError gives its refusal
+// one text on both engines.  A json.Valid here would scan every RawMessage
+// one more time: 26% of the time of a dump of one 6 KiB RawMessage on the v1
+// engine.
+func (w *nativeWalker) rawMessage(raw json.RawMessage) {
+	w.add(rawMessageLen(raw))
 }
 
 // convert refuses, and charges for, a conversion that allocates n bytes of
 // intermediate work that are not output.
 func (w *nativeWalker) convert(n int) {
+	if w.err != nil {
+		return
+	}
 	if n > w.limit-w.est {
-		w.setEvent(nativeWalkTooBig)
+		w.err = encodeSizeError(w.budget.maxBytes)
 		return
 	}
 	if n >= 1024 && w.enc.env != nil {
@@ -1027,7 +955,7 @@ func nativeFloatLen(f float64, bits int) int {
 	return n
 }
 
-// isValidJSONNumber is encoding/json's isValidNumber: the JSON number grammar.
+// isValidJSONNumber reports whether s matches the JSON number grammar.
 func isValidJSONNumber(s string) bool {
 	if s == "" {
 		return false
@@ -1079,7 +1007,7 @@ type nativeTypeInfo struct {
 	textMarshaler    bool
 	ptrTextMarshaler bool
 	byteSlice        bool // a slice encoding/json writes as base64
-	mapKeyOK         bool // a map whose key type encoding/json accepts
+	mapKeyOK         bool // a map whose key type the v1 engine accepts
 }
 
 var nativeInfoCache sync.Map // reflect.Type -> *nativeTypeInfo
@@ -1114,9 +1042,11 @@ func nativeInfo(t reflect.Type) *nativeTypeInfo {
 			reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
 			reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
 			info.mapKeyOK = true
-		case reflect.Float32, reflect.Float64:
-			info.mapKeyOK = nativeFloatKeys || t.Key().Implements(textMarshalerType)
 		default:
+			// The v2 engine also writes float keys, and a nil map with
+			// any key type.  The walk refuses them, as the v1 engine
+			// does, so a dump does not depend on the engine
+			// (luthersystems/elps#928).
 			info.mapKeyOK = t.Key().Implements(textMarshalerType)
 		}
 	default:
@@ -1126,58 +1056,18 @@ func nativeInfo(t reflect.Type) *nativeTypeInfo {
 	return info
 }
 
-// errNativeTooDeep reports a native nested past nativeNestLimit whose JSON
-// nesting alone would still load.
+// errNativeTooDeep reports a native nested past nativeNestLimit.
 var errNativeTooDeep = fmt.Errorf("value nests more than %d levels deep", nativeNestLimit)
+
+// errNativeJSONTooDeep reports a native whose JSON nests past
+// jsonNestingLimit, which this package would not load back.
+var errNativeJSONTooDeep = fmt.Errorf("JSON nests more than %d levels deep", jsonNestingLimit)
 
 // boundNative walks native, the value of a native LVal, and returns the error
 // that refuses it, or nil when encoding/json may marshal it.
 func (enc *encoder) boundNative(native any, b encodeBudget) error {
 	var w nativeWalker
-	w.init(enc, b, false)
+	w.init(enc, b)
 	w.run(native)
-	if w.err != nil {
-		return w.err
-	}
-	switch w.event {
-	case nativeWalkTooBig:
-		if !w.mayFailFirst {
-			return encodeSizeError(b.maxBytes)
-		}
-	case nativeWalkTooDeep, nativeWalkCycle:
-	case nativeWalkJSONError:
-		if w.keyErr == nil {
-			return nil
-		}
-	default:
-		return nil
-	}
-	// Resolve a refusal or key-name error in document order.
-	// When encoding/json would have stopped at an error of its own
-	// first, that error is the result, so walk again in encoding/json's own
-	// order to learn what it meets first.  The second walk charges only
-	// what the first one did not reach.
-	var ordered nativeWalker
-	ordered.init(enc, b, true)
-	ordered.run(native)
-	switch {
-	case ordered.err != nil:
-		return ordered.err
-	case ordered.event == nativeWalkTooBig:
-		return encodeSizeError(b.maxBytes)
-	case ordered.event == nativeWalkCycle:
-		return ordered.cycleErr
-	case ordered.event == nativeWalkJSONError && ordered.keyErr != nil:
-		return ordered.keyErr
-	case ordered.event != nativeWalkTooDeep:
-		// encoding/json fails at an error of its own before it is too deep
-		// or too big, so it is safe to run, and it says how it fails.
-		return nil
-	case ordered.deepBracket != 0:
-		// The text checkLoadable reports for these bytes: the decoder's error
-		// at the first container past its nesting limit.
-		return encodeUnloadableNativeError{err: errors.New("invalid character '" + string(ordered.deepBracket) + "' exceeded max depth")}
-	default:
-		return encodeUnloadableNativeError{err: errNativeTooDeep}
-	}
+	return w.err
 }

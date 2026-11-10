@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -29,7 +28,12 @@ func (k orderedTextKey) MarshalText() ([]byte, error) {
 	return []byte("b"), nil
 }
 
-// TestDumpNativeMapErrorOrder pins luthersystems/elps#807 with fresh runtimes.
+// TestDumpNativeMapErrorOrder pins luthersystems/elps#807 with fresh runtimes:
+// a native map that fails in two ways reports the same one on every run.
+//
+// The walk sees that the map is over the cap.  It calls no value marshaler,
+// so the failing MarshalText never runs, and the cap's error is the result
+// on both JSON engines (luthersystems/elps#928).
 func TestDumpNativeMapErrorOrder(t *testing.T) {
 	large := make([]byte, 2048)
 	for _, tc := range []struct {
@@ -42,8 +46,7 @@ func TestDumpNativeMapErrorOrder(t *testing.T) {
 		{"text-map", map[orderedTextKey]any{2: failingText{}, 1: large}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			_, want := json.Marshal(tc.native)
-			require.ErrorContains(t, want, "boom")
+			const want = "allocation size exceeds maximum (1024)"
 			ctx := lisp.SortedMap()
 			require.NoError(t, lisp.GoError(ctx.MapSetString("z", lisp.Native(tc.native)))) //elpsvet:allow-native test owns the native map
 			results := make(map[string]bool)
@@ -56,7 +59,7 @@ func TestDumpNativeMapErrorOrder(t *testing.T) {
 			}
 			require.Len(t, results, 1)
 			for result := range results {
-				require.Contains(t, result, want.Error())
+				require.Contains(t, result, want)
 			}
 		})
 	}
@@ -78,14 +81,16 @@ func (stringTextKey) MarshalText() ([]byte, error) {
 
 func TestDumpNativeTextKeyErrorOrder(t *testing.T) {
 	native := map[failingTextKey]any{2: make([]byte, 2048), 1: nil}
-	keyError := fmt.Sprintf("json: encoding error for type %q: %q", reflect.TypeOf(native).String(), "key 1")
+	const keyError = "unable to encode native value: map key MarshalText failed: key 1"
 	for _, tc := range []struct {
 		name   string
 		native any
 		want   string
 	}{
 		{"keys-before-values", native, keyError},
-		{"earlier-value-error", []any{failingText{}, native}, "boom"},
+		// The walk calls no value marshaler, so the key error it can see
+		// wins over the failing MarshalText before it.
+		{"key-error-before-value-marshaler", []any{failingText{}, native}, keyError},
 		{"earlier-allocation-error", []any{make([]byte, 2048), native}, "allocation size exceeds maximum (1024)"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

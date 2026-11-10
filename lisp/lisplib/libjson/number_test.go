@@ -533,3 +533,21 @@ func TestLoadOptsZeroValueIsTodayExactly(t *testing.T) {
 		assert.Equal(t, want.String(), got.String(), "%q", text)
 	}
 }
+
+// TestLoadFloatOverflowTextIsEngineIndependent pins the error of a number
+// that overflows a float64, at the root and nested.  The v2 engine adds the
+// number's path to its own text when the number is nested, so this package
+// writes the text (luthersystems/elps#928).
+func TestLoadFloatOverflowTextIsEngineIndependent(t *testing.T) {
+	const want = "json: cannot unmarshal number 1e400 into Go value of type float64"
+	for _, text := range []string{`1e400`, `[1e400]`, `{"a":[0,{"b":1e400}]}`} {
+		for name, v := range map[string]*lisp.LVal{
+			"default": libjson.Load([]byte(text), false),
+			"exact":   libjson.LoadWith([]byte(text), exact()),
+		} {
+			require.Equal(t, lisp.LError, v.Type, "%s %s", name, text)
+			assert.Contains(t, v.String(), want, "%s %s", name, text)
+			assert.NotContains(t, v.String(), "into .", "%s %s", name, text)
+		}
+	}
+}

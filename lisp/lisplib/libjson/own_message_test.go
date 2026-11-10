@@ -120,9 +120,9 @@ func TestEmbedderCannotObtainTheExemption(t *testing.T) {
 	outOfRange := json.RawMessage("1E1000")
 
 	// The elps#410 error: the loadability check refused the bytes.
-	const byTheCheck = "unable to encode native value"
+	const byTheCheck = "unable to encode native value: json: cannot unmarshal number"
 	// encoding/json refused them first, so the check never ran.
-	const byEncodingJSON = "exceeded max depth"
+	const byEncodingJSON = "a marshal method returned JSON that is not valid or nests more than 10000 levels deep"
 
 	cases := []struct {
 		name    string
@@ -190,7 +190,7 @@ func TestDumpMessageOfAnUnvouchedDocumentIsStillRefused(t *testing.T) {
 		envelope.MapSetString("result", msg)
 		result := libjson.DefaultSerializer().DumpStringBuiltin(env, lisp.SExpr([]*lisp.LVal{envelope, lisp.Nil()}))
 		require.Equal(t, lisp.LError, result.Type)
-		assert.Contains(t, result.String(), "exceeded max depth")
+		assert.Contains(t, result.String(), "nests more than 10000 levels deep")
 
 	})
 

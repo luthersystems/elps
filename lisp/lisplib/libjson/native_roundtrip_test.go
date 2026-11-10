@@ -222,25 +222,10 @@ func TestDumpRefusesNativeTooDeepToLoad(t *testing.T) {
 		t.Run(strconv.Itoa(depth), func(t *testing.T) {
 			v := deepNative(depth)
 
-			// Establish the premise rather than assuming it: on v1,
-			// json.Marshal is happy with the value at every depth here, so
-			// nothing upstream of the check has refused it.
-			b, err := json.Marshal(v)
-			if libjson.JSONV2EngineForTest() && depth > 10_000 {
-				// The v2 engine limits nesting when it marshals
-				// (luthersystems/elps#928), so Dump fails with its error.
-				if err == nil {
-					t.Fatalf("premise broken: the v2 engine marshalled a %d-deep value", depth)
-				}
-				_, derr := libjson.Dump(lisp.Native(v), false)
-				if derr == nil || derr.Error() != err.Error() {
-					t.Fatalf("Dump of a %d-deep native: %v, want %v", depth, derr, err)
-				}
-				return
-			}
-			if err != nil {
-				t.Fatalf("premise broken: the value does not marshal: %v", err)
-			}
+			// The document the value would dump into, built by hand: the v2
+			// engine refuses to marshal it past 10000 levels, and the walk
+			// refuses it on both engines (luthersystems/elps#928).
+			b := []byte(strings.Repeat("[", depth) + "1" + strings.Repeat("]", depth))
 
 			// Whatever Load makes of those bytes is what Dump must agree with.
 			loadable := libjson.Load(b, false).Type != lisp.LError

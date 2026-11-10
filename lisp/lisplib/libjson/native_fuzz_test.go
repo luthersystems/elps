@@ -16,13 +16,15 @@ import (
 // FuzzNativeEncodeMatchesLegacy compares the native encoder with the one it
 // replaced (luthersystems/elps#802) on random lisp trees with native leaves.
 //
-// The bound walk refuses a native only when it is over the cap or nests past
-// nativeNestLimit, and the trees here are small, so the two must agree
-// exactly: the same bytes, the same loadable verdict, or the same error text.
-// The one exception is under a small cap: the old encoder marshalled a native
-// over the cap before it noticed, so where it failed anyway, the new one may
-// fail with the cap's error instead.  Where the old one succeeded, the new one
-// must succeed with the same bytes.  The leaves cover what the walk has to mirror from encoding/json:
+// The old encoder ran encoding/json on every native.  The walk now refuses,
+// with its own error, each native the v1 engine refuses for a reason the
+// value shows (luthersystems/elps#928).  So the two must agree on whether a
+// dump fails, and on the bytes and the loadable verdict when it succeeds.
+// The error text differs: the old encoder reports what a marshal method or
+// checkLoadable said, the walk what it met first.  Where the old one
+// succeeded, the new one must succeed with the same bytes.  The trees here
+// hold no map with float or bool keys, which the v2 engine writes and the
+// walk refuses.  The leaves cover what the walk has to mirror from encoding/json:
 // marshaler dispatch, struct tags and embedding, omitempty and omitzero, map
 // key kinds, NaN, invalid numbers, unsupported types and cycles.  A native
 // leaf can repeat, which exercises the memo.
@@ -49,12 +51,16 @@ func FuzzNativeEncodeMatchesLegacy(f *testing.F) {
 				wantB, wantLoadable, wantErr := dumped.bytes, dumped.loadable, dumpedErr
 				dumped2, dumpedErr2 := DefaultSerializer().dumpLimit(v, sn, dumpOptions{limit: lisp.MaxValueDepth, budget: b, meter: encodeMeter{}})
 				gotB, gotLoadable, gotErr := dumped2.bytes, dumped2.loadable, dumpedErr2
-				var size encodeSizeError
-				if wantErr != nil && gotErr != nil && errors.As(gotErr, &size) {
-					continue
-				}
-				if (wantErr == nil) != (gotErr == nil) || (wantErr != nil && wantErr.Error() != gotErr.Error()) {
+				if (wantErr == nil) != (gotErr == nil) {
 					t.Fatalf("sn=%v cap=%d: error %v, legacy %v", sn, b.maxBytes, gotErr, wantErr)
+				}
+				if gotErr != nil {
+					var size encodeSizeError
+					var refused encodeUnloadableNativeError
+					if !errors.As(gotErr, &size) && !errors.As(gotErr, &refused) && gotErr.Error() != wantErr.Error() {
+						t.Fatalf("sn=%v cap=%d: error %v is not this package's, legacy %v", sn, b.maxBytes, gotErr, wantErr)
+					}
+					continue
 				}
 				if string(wantB) != string(gotB) || wantLoadable != gotLoadable {
 					t.Fatalf("sn=%v cap=%d: bytes %q (loadable %v), legacy %q (loadable %v)",
