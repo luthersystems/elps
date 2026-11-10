@@ -4,10 +4,14 @@ package analysis
 
 import (
 	"bytes"
+	"cmp"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -503,6 +507,15 @@ func extractDefinitions(exprs []*lisp.LVal) []ExternalSymbol {
 	for _, sym := range defs {
 		result = append(result, *sym)
 	}
+	// Source order. The order of a map differs from run to run, and the
+	// tables built from the definitions keep the order they are given:
+	// two scans of one workspace must give the same tables.
+	slices.SortFunc(result, func(a, b ExternalSymbol) int {
+		if c := compareExternalSymbol(a, b); c != 0 {
+			return c
+		}
+		return cmp.Or(cmp.Compare(a.Package, b.Package), cmp.Compare(a.Name, b.Name))
+	})
 	return result
 }
 
@@ -1057,26 +1070,97 @@ type WorkspacePrescan struct {
 // The result provides everything needed to build a Config for per-file
 // analysis, including macro-derived definition forms.
 func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, error) {
+	scan, err := ScanWorkspaceFiles(root, scanCfg)
+	if err != nil {
+		return nil, err
+	}
+	return scan.Prescan(), nil
+}
+
+// scannedFile is what the scan of one workspace file gives to a
+// WorkspacePrescan.
+type scannedFile struct {
+	globals        []ExternalSymbol
+	pkgs           map[string][]ExternalSymbol
+	allDefs        []ExternalSymbol
+	pkgAll         map[string][]ExternalSymbol
+	defForms       []DefFormSpec
+	preamble       []*lisp.LVal
+	usePackages    map[string][]string
+	filePkg        string // "" for bare files
+	firstInPkgLine int    // 1-based line of first in-package, 0 if none
+	recordMethods  RecordMethods
+}
+
+// scanWorkspaceFile scans one file for a WorkspaceScan.
+func scanWorkspaceFile(source []byte, path string) scannedFile {
+	scanned := scanFileFull(source, path)
+	return scannedFile{
+		globals:        scanned.globals,
+		pkgs:           scanned.pkgs,
+		allDefs:        scanned.defs,
+		pkgAll:         scanned.pkgAll,
+		defForms:       extractDefFormSpecs(scanned.defs),
+		preamble:       scanned.preamble,
+		usePackages:    scanned.usePackages,
+		filePkg:        scanned.filePkg,
+		firstInPkgLine: scanned.firstInPkgLine,
+		recordMethods:  scanned.recordMethods,
+	}
+}
+
+// WorkspaceScan holds the scan of each file of a workspace.
+// ScanWorkspaceFiles builds it, and Prescan merges the files into the
+// tables of a WorkspacePrescan.
+//
+// An editor keeps the scan to follow a file that changes. WithFile and
+// WithoutFile replace the scan of one file, and Prescan then gives the
+// tables that a new scan of the whole workspace would give: the merge is
+// the same code over the same per-file results. Tables that are updated
+// entry by entry do not have that property. Their order follows the
+// history of the changes, and they cannot give back an entry that lost a
+// tie to an entry that is now gone.
+//
+// A WorkspaceScan is never written after it is built. WithFile and
+// WithoutFile return a new one, so it is safe for concurrent use.
+type WorkspaceScan struct {
+	root      string
+	truncated bool
+	// paths are the files in the order of the walk of the workspace,
+	// and results their scans.
+	paths   []string
+	results []scannedFile
+	// byPath maps a path, and its absolute form, to its index in paths.
+	byPath map[string]int
+	// norm maps NormalizePath of each path to its index. It is built on
+	// the first lookup that needs it: it costs file system calls for
+	// each file.
+	norm *normalizedPaths
+
+	// The load tree of main.lisp. See buildLoadTree.
+	mainPath   string
+	loadTree   map[string]string
+	loadOrder  []string
+	defaultPkg string
+}
+
+// normalizedPaths is the lazy map of a WorkspaceScan from normalized path
+// to file index.
+type normalizedPaths struct {
+	once  sync.Once
+	index map[string]int
+}
+
+// ScanWorkspaceFiles scans each lisp file under root. It is the first
+// half of PrescanWorkspace; WorkspaceScan.Prescan is the second.
+func ScanWorkspaceFiles(root string, scanCfg *ScanConfig) (*WorkspaceScan, error) {
 	files, filesErr := collectLispFilesWithConfig(root, scanCfg)
 	paths, truncated, err := files.paths, files.truncated, filesErr
 	if err != nil {
 		return nil, err
 	}
 
-	type fileResult struct {
-		globals        []ExternalSymbol
-		pkgs           map[string][]ExternalSymbol
-		allDefs        []ExternalSymbol
-		pkgAll         map[string][]ExternalSymbol
-		defForms       []DefFormSpec
-		preamble       []*lisp.LVal
-		usePackages    map[string][]string
-		filePkg        string // "" for bare files
-		firstInPkgLine int    // 1-based line of first in-package, 0 if none
-		recordMethods  RecordMethods
-	}
-
-	results := make([]fileResult, len(paths))
+	results := make([]scannedFile, len(paths))
 	numWorkers := runtime.NumCPU()
 	if numWorkers > len(paths) {
 		numWorkers = len(paths)
@@ -1101,36 +1185,228 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 				if readErr != nil {
 					continue
 				}
-				scanned := scanFileFull(fileSrc, paths[i])
-				g, p, d, pa, up, md, fp, fpl := scanned.globals, scanned.pkgs, scanned.defs, scanned.pkgAll, scanned.usePackages, scanned.preamble, scanned.filePkg, scanned.firstInPkgLine
-				df := extractDefFormSpecs(d)
-				results[i] = fileResult{globals: g, pkgs: p, allDefs: d, pkgAll: pa, defForms: df, preamble: md, usePackages: up, filePkg: fp, firstInPkgLine: fpl, recordMethods: scanned.recordMethods}
+				results[i] = scanWorkspaceFile(fileSrc, paths[i])
 			}
 		}()
 	}
 	wg.Wait()
 
-	// Build load tree from main.lisp to infer packages for bare files.
-	var mainPath string
-	loadTree := make(map[string]string)
-	var loadOrder []string
-	var defaultPkg string
-	for _, p := range paths {
+	scan := &WorkspaceScan{root: root, truncated: truncated, paths: paths, results: results}
+	scan.indexPaths()
+	scan.buildLoadTree()
+	return scan, nil
+}
+
+// NewWorkspaceScan returns the scan of a workspace with no files. root is
+// the directory a file added with WithFile is placed under; it can be
+// empty.
+func NewWorkspaceScan(root string) *WorkspaceScan {
+	scan := &WorkspaceScan{root: root}
+	scan.indexPaths()
+	scan.buildLoadTree()
+	return scan
+}
+
+// indexPaths builds the path lookup tables after paths changed.
+func (w *WorkspaceScan) indexPaths() {
+	w.byPath = make(map[string]int, 2*len(w.paths))
+	for i, p := range w.paths {
+		if abs, err := filepath.Abs(p); err == nil {
+			w.byPath[abs] = i
+		}
+		w.byPath[p] = i
+	}
+	w.norm = &normalizedPaths{}
+}
+
+// buildLoadTree reads the load tree of main.lisp from the files on disk.
+// It infers the package of the files that have no in-package form.
+func (w *WorkspaceScan) buildLoadTree() {
+	w.mainPath, w.defaultPkg, w.loadOrder = "", "", nil
+	w.loadTree = make(map[string]string)
+	for _, p := range w.paths {
 		if filepath.Base(p) == "main.lisp" {
-			mainPath = p
+			w.mainPath = p
 			break
 		}
 	}
-	if mainPath != "" {
-		loadTree, loadOrder = buildLoadTree(mainPath)
-		// Find main.lisp's package from its fileResult.
-		for i, r := range results {
-			if paths[i] == mainPath && r.filePkg != "" {
-				defaultPkg = r.filePkg
-				break
-			}
+	if w.mainPath == "" {
+		return
+	}
+	w.loadTree, w.loadOrder = buildLoadTree(w.mainPath)
+	// Find main.lisp's package from its scan.
+	for i, r := range w.results {
+		if w.paths[i] == w.mainPath && r.filePkg != "" {
+			w.defaultPkg = r.filePkg
+			break
 		}
 	}
+}
+
+// find returns the index of the file path names, or -1. It tries the
+// path as given and as an absolute path before it resolves symlinks.
+func (w *WorkspaceScan) find(path string) int {
+	if i, ok := w.byPath[path]; ok {
+		return i
+	}
+	if abs, err := filepath.Abs(path); err == nil {
+		if i, ok := w.byPath[abs]; ok {
+			return i
+		}
+	}
+	w.norm.once.Do(func() {
+		w.norm.index = make(map[string]int, len(w.paths))
+		for i, p := range w.paths {
+			w.norm.index[NormalizePath(p)] = i
+		}
+	})
+	if i, ok := w.norm.index[NormalizePath(path)]; ok {
+		return i
+	}
+	return -1
+}
+
+// Path returns the path under which the scan holds the file that path
+// names, and whether it holds the file. The scan names a file as the
+// walk of the workspace did, which can differ from the spelling of an
+// editor (a symlink, a relative root).
+func (w *WorkspaceScan) Path(path string) (string, bool) {
+	if i := w.find(path); i >= 0 {
+		return w.paths[i], true
+	}
+	return "", false
+}
+
+// inLoadTree reports whether the load tree of main.lisp reads the file,
+// or would if the file was main.lisp.
+func (w *WorkspaceScan) inLoadTree(path string) bool {
+	if filepath.Base(path) == "main.lisp" {
+		return true
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return true
+	}
+	if slices.Contains(w.loadOrder, abs) {
+		return true
+	}
+	_, ok := w.loadTree[abs]
+	return ok
+}
+
+// WithFile returns a scan in which the file at path has the given
+// source: a new file, or new text of a file the scan holds. It reports
+// whether what the file gives to the tables changed, the positions of
+// its definitions aside. The diagnostics of the other files depend on
+// that part only.
+//
+// The load tree is read again from the files on disk when the file is
+// part of it, or is new. So source must be the text of the file on disk.
+func (w *WorkspaceScan) WithFile(path string, source []byte) (*WorkspaceScan, bool) {
+	next := *w
+	i := w.find(path)
+	if i < 0 {
+		name := w.newFilePath(path)
+		i = w.insertIndex(name)
+		next.paths = slices.Insert(slices.Clone(w.paths), i, name)
+		next.results = slices.Insert(slices.Clone(w.results), i, scanWorkspaceFile(source, name))
+		next.indexPaths()
+		next.buildLoadTree()
+		return &next, true
+	}
+	scanned := scanWorkspaceFile(source, w.paths[i])
+	next.results = slices.Clone(w.results)
+	next.results[i] = scanned
+	changed := !sameTableEntries(&w.results[i], &scanned)
+	if w.inLoadTree(w.paths[i]) {
+		next.buildLoadTree()
+		changed = changed || next.defaultPkg != w.defaultPkg ||
+			!maps.Equal(next.loadTree, w.loadTree) || !slices.Equal(next.loadOrder, w.loadOrder)
+	}
+	return &next, changed
+}
+
+// WithoutFile returns a scan without the file at path, and whether the
+// scan held it.
+func (w *WorkspaceScan) WithoutFile(path string) (*WorkspaceScan, bool) {
+	i := w.find(path)
+	if i < 0 {
+		return w, false
+	}
+	next := *w
+	next.paths = slices.Delete(slices.Clone(w.paths), i, i+1)
+	next.results = slices.Delete(slices.Clone(w.results), i, i+1)
+	next.indexPaths()
+	next.buildLoadTree()
+	return &next, true
+}
+
+// newFilePath returns the name the walk of the workspace would give to a
+// new file: the root joined with the path below it.
+func (w *WorkspaceScan) newFilePath(path string) string {
+	if w.root == "" {
+		return path
+	}
+	for _, root := range []string{w.root, NormalizePath(w.root)} {
+		rel, err := filepath.Rel(root, path)
+		if err == nil && filepath.IsLocal(rel) {
+			return filepath.Join(w.root, rel)
+		}
+	}
+	return path
+}
+
+// insertIndex returns the place of a new file in paths, which are in the
+// order of filepath.Walk: the names of each directory in sorted order.
+// That is the order of the paths compared one element at a time. A file
+// that is not under the root goes last.
+func (w *WorkspaceScan) insertIndex(name string) int {
+	if w.root == "" {
+		return len(w.paths)
+	}
+	rel, err := filepath.Rel(w.root, name)
+	if err != nil || !filepath.IsLocal(rel) {
+		return len(w.paths)
+	}
+	elems := strings.Split(rel, string(filepath.Separator))
+	i, _ := slices.BinarySearchFunc(w.paths, elems, func(p string, elems []string) int {
+		other, relErr := filepath.Rel(w.root, p)
+		if relErr != nil || !filepath.IsLocal(other) {
+			return 1
+		}
+		return slices.Compare(strings.Split(other, string(filepath.Separator)), elems)
+	})
+	return i
+}
+
+// sameTableEntries reports whether two scans of one file give the same
+// entries to the workspace tables, the source positions aside.
+func sameTableEntries(a, b *scannedFile) bool {
+	sameSyms := func(x, y []ExternalSymbol) bool {
+		return slices.EqualFunc(x, y, func(p, q ExternalSymbol) bool {
+			p.Source, q.Source = nil, nil
+			return reflect.DeepEqual(p, q)
+		})
+	}
+	sameTable := func(x, y map[string][]ExternalSymbol) bool {
+		return maps.EqualFunc(x, y, sameSyms)
+	}
+	return a.filePkg == b.filePkg &&
+		(a.firstInPkgLine == 0) == (b.firstInPkgLine == 0) &&
+		sameSyms(a.allDefs, b.allDefs) &&
+		sameSyms(a.globals, b.globals) &&
+		sameTable(a.pkgs, b.pkgs) &&
+		sameTable(a.pkgAll, b.pkgAll) &&
+		reflect.DeepEqual(a.defForms, b.defForms) &&
+		reflect.DeepEqual(a.usePackages, b.usePackages) &&
+		reflect.DeepEqual(a.recordMethods, b.recordMethods)
+}
+
+// Prescan merges the scans of the files into the tables of a
+// WorkspacePrescan. It writes neither the scan nor a slice of it.
+func (w *WorkspaceScan) Prescan() *WorkspacePrescan {
+	paths, results, truncated := w.paths, w.results, w.truncated
+	loadTree, loadOrder, defaultPkg := w.loadTree, w.loadOrder, w.defaultPkg
 
 	prescan := &WorkspacePrescan{
 		Files:          paths,
@@ -1182,6 +1458,39 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 	for i := range results {
 		if !loadedFiles[i] {
 			appendFilePreamble(i)
+		}
+	}
+
+	// Make room for the merged tables one time. An editor merges them
+	// again on each save, and a slice that grows entry by entry is
+	// copied again and again.
+	var numGlobals, numDefs int
+	numExports := make(map[string]int)
+	numSymbols := make(map[string]int)
+	for i := range results {
+		numGlobals += len(results[i].globals)
+		numDefs += len(results[i].allDefs)
+		for pkg, syms := range results[i].pkgs {
+			numExports[pkg] += len(syms)
+		}
+		for pkg, syms := range results[i].pkgAll {
+			numSymbols[pkg] += len(syms)
+		}
+	}
+	if numGlobals > 0 {
+		prescan.ExportedGlobals = make([]ExternalSymbol, 0, numGlobals)
+	}
+	if numDefs > 0 {
+		prescan.AllDefs = make([]ExternalSymbol, 0, numDefs)
+	}
+	for pkg, n := range numExports {
+		if n > 0 {
+			prescan.PkgExports[pkg] = make([]ExternalSymbol, 0, n)
+		}
+	}
+	for pkg, n := range numSymbols {
+		if n > 0 {
+			prescan.PkgAllSymbols[pkg] = make([]ExternalSymbol, 0, n)
 		}
 	}
 
@@ -1297,7 +1606,7 @@ func PrescanWorkspace(root string, scanCfg *ScanConfig) (*WorkspacePrescan, erro
 		}
 	}
 
-	return prescan, nil
+	return prescan
 }
 
 // remapPackageMap moves symbols from srcPkg to their correct package based

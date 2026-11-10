@@ -38,6 +38,15 @@ type Server struct {
 	// Workspace analysis configuration built during initialization.
 	analysisCfg   *analysis.Config
 	analysisCfgMu sync.RWMutex
+	// wsScan is the scan of each workspace file that the tables of
+	// wsScanCfg were merged from, and stdlibExports the registry exports
+	// merged with them. A save replaces the scan of one file and merges
+	// again (see storeWorkspaceScan). All three are guarded by
+	// analysisCfgMu. wsScanCfg differs from analysisCfg when the config
+	// was set without a scan; the scan does not describe that config.
+	wsScan        *analysis.WorkspaceScan
+	wsScanCfg     *analysis.Config
+	stdlibExports map[string][]analysis.ExternalSymbol
 	indexOnce     sync.Once
 
 	// posEncoding holds the positionEncoding negotiated during initialize
@@ -360,78 +369,39 @@ func (s *Server) ensureWorkspaceIndex() {
 func (s *Server) buildWorkspaceIndex() {
 	defer func() { _ = recover() }() // don't crash the server on scan panic
 
-	var extraGlobals []analysis.ExternalSymbol
-	var pkgExports map[string][]analysis.ExternalSymbol
-	var pkgAllSymbols map[string][]analysis.ExternalSymbol
-	var defForms []analysis.DefFormSpec
-	var packageImports map[string][]string
-	var defaultPackage string
-	var filePackages map[string]string
-	var recordMethods *analysis.RecordMethodsByFile
-
 	scanCfg := s.scanConfig()
 
-	// Two-phase workspace scan: prescan extracts definitions AND
+	// Two-phase workspace scan: the scan extracts definitions AND
 	// macro-derived DefFormSpecs for cross-file def-like form recognition.
-	var preamble []*lisp.LVal
+	// The scan of each file is kept, so a save can replace one file and
+	// merge the tables again.
+	scan := analysis.NewWorkspaceScan(s.rootPath)
 	if s.rootPath != "" {
-		if prescan, err := analysis.PrescanWorkspace(s.rootPath, scanCfg); err == nil {
-			extraGlobals = prescan.AllDefs
-			pkgExports = prescan.PkgExports
-			pkgAllSymbols = prescan.PkgAllSymbols
-			defForms = prescan.DefForms
-			packageImports = prescan.PackageImports
-			defaultPackage = prescan.DefaultPackage
-			filePackages = prescan.FilePackages
-			recordMethods = prescan.RecordMethodsByFile
-			preamble = prescan.Preamble
-			if prescan.Truncated {
-				s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
-					Type:    protocol.MessageTypeWarning,
-					Message: "Workspace file limit reached; some files were not indexed for cross-file analysis.",
-				})
-			}
+		if scanned, err := analysis.ScanWorkspaceFiles(s.rootPath, scanCfg); err == nil {
+			scan = scanned
 		}
+	}
+	prescan := scan.Prescan()
+	preamble := prescan.Preamble
+	if prescan.Truncated {
+		s.sendNotification("window/showMessage", &protocol.ShowMessageParams{
+			Type:    protocol.MessageTypeWarning,
+			Message: "Workspace file limit reached; some files were not indexed for cross-file analysis.",
+		})
 	}
 
 	// Extract stdlib exports from the embedder's registry.
+	var stdlib map[string][]analysis.ExternalSymbol
 	reg := s.registry
 	if reg == nil && s.env != nil {
 		reg = s.env.Runtime.Registry
 	}
 	if reg != nil {
-		stdlib := analysis.ExtractPackageExports(reg)
-		if pkgExports == nil {
-			pkgExports = stdlib
-		} else {
-			for k, v := range stdlib {
-				pkgExports[k] = append(pkgExports[k], v...)
-			}
-		}
+		stdlib = analysis.ExtractPackageExports(reg)
 	}
 
-	// Deduplicate package exports by symbol name. Prefer registry entries
-	// (richer type info) over workspace entries when both exist.
-	// Sort after dedup for deterministic resolution order.
-	for pkg, syms := range pkgExports {
-		deduped := deduplicateExports(syms)
-		analysis.SortDefinitions(deduped)
-		pkgExports[pkg] = deduped
-	}
-
-	// Sort extraGlobals for deterministic duplicate resolution.
-	analysis.SortDefinitions(extraGlobals)
-
-	cfg := &analysis.Config{
-		ExtraGlobals:        extraGlobals,
-		PackageExports:      pkgExports,
-		PackageSymbols:      pkgAllSymbols,
-		DefForms:            defForms,
-		PackageImports:      packageImports,
-		DefaultPackage:      defaultPackage,
-		FilePackages:        filePackages,
-		RecordMethodsByFile: recordMethods,
-	}
+	cfg := &analysis.Config{}
+	setWorkspaceTables(cfg, prescan, stdlib)
 
 	// Enable macro expansion at analysis time if an environment is available.
 	// Load workspace-defined macros into the env so the expander can find them.
@@ -461,7 +431,68 @@ func (s *Server) buildWorkspaceIndex() {
 
 	s.analysisCfgMu.Lock()
 	s.analysisCfg = cfg
+	s.wsScan, s.wsScanCfg, s.stdlibExports = scan, cfg, stdlib
 	s.analysisCfgMu.Unlock()
+}
+
+// setWorkspaceTables sets the workspace tables of cfg from the merged
+// scan of the workspace files and the exports of the package registry.
+// The index build and each save use it, so the tables after a save are
+// those of a new build over the same files. It writes no slice of
+// stdlib, and the slices of prescan become those of cfg.
+func setWorkspaceTables(cfg *analysis.Config, prescan *analysis.WorkspacePrescan, stdlib map[string][]analysis.ExternalSymbol) {
+	pkgExports := prescan.PkgExports
+	if pkgExports == nil {
+		pkgExports = make(map[string][]analysis.ExternalSymbol, len(stdlib))
+	}
+	for k, v := range stdlib {
+		pkgExports[k] = append(pkgExports[k], v...)
+	}
+
+	// Deduplicate package exports by symbol name. Prefer registry entries
+	// (richer type info) over workspace entries when both exist.
+	// Sort after dedup for deterministic resolution order.
+	for pkg, syms := range pkgExports {
+		deduped := deduplicateExports(syms)
+		analysis.SortDefinitions(deduped)
+		pkgExports[pkg] = deduped
+	}
+
+	// Sort extraGlobals for deterministic duplicate resolution.
+	analysis.SortDefinitions(prescan.AllDefs)
+
+	cfg.ExtraGlobals = prescan.AllDefs
+	cfg.PackageExports = pkgExports
+	cfg.PackageSymbols = prescan.PkgAllSymbols
+	cfg.DefForms = prescan.DefForms
+	cfg.PackageImports = prescan.PackageImports
+	cfg.DefaultPackage = prescan.DefaultPackage
+	cfg.FilePackages = prescan.FilePackages
+	cfg.RecordMethodsByFile = prescan.RecordMethodsByFile
+}
+
+// storeWorkspaceScan replaces the workspace scan and stores a Config
+// with the tables merged from it. changed is the file whose scan
+// differs. It reports whether the record methods of that file changed.
+// The caller holds analysisCfgMu, and the server has a scan.
+//
+// It stores a new Config and new tables, and never writes the old ones.
+// A request reads the Config pointer under analysisCfgMu and then reads
+// its fields without the lock, and each analysis keeps the tables of the
+// Config it started with. A write in place would be a data race with
+// those readers.
+func (s *Server) storeWorkspaceScan(scan *analysis.WorkspaceScan, changed string) bool {
+	next := *s.analysisCfg
+	old := next.RecordMethodsByFile
+	setWorkspaceTables(&next, scan.Prescan(), s.stdlibExports)
+	s.analysisCfg, s.wsScan, s.wsScanCfg = &next, scan, &next
+	return !reflect.DeepEqual(old.File(changed), next.RecordMethodsByFile.File(changed))
+}
+
+// hasWorkspaceScan reports whether the tables of the analysis config
+// were merged from the workspace scan. The caller holds analysisCfgMu.
+func (s *Server) hasWorkspaceScan() bool {
+	return s.wsScan != nil && s.analysisCfg != nil && s.analysisCfg == s.wsScanCfg
 }
 
 // reanalyzeOpenDocuments invalidates cached analysis for all open documents
@@ -805,51 +836,96 @@ func (s *Server) updateFileRefs(uri string) {
 		newByKey[key] = append(newByKey[key], newRefs[i])
 	}
 
-	s.workspaceRefsMu.Lock()
-	defer s.workspaceRefsMu.Unlock()
-
-	if s.workspaceRefs == nil {
-		s.workspaceRefs = make(map[string][]analysis.FileReference)
-	}
-
-	s.dropFileRefsLocked(filePath)
-
-	// Insert new entries.
-	for key, refs := range newByKey {
-		s.workspaceRefs[key] = append(s.workspaceRefs[key], refs...)
-	}
+	s.replaceFileRefs(filePath, newByKey)
 }
 
-// dropFileRefsLocked removes old entries for a file from all keys. The caller
-// holds workspaceRefsMu.
-func (s *Server) dropFileRefsLocked(filePath string) {
-	for key, refs := range s.workspaceRefs {
-		var kept []analysis.FileReference
-		for _, ref := range refs {
+// replaceFileRefs replaces the entries of filePath in the workspace
+// reference index with added (by symbol key; nil removes the file).
+//
+// It stores a new map and never writes the old one. The analysis config
+// holds the index too (Config.WorkspaceRefs), and a lint pass of an open
+// document reads it with no lock while a save updates it on another
+// goroutine: a write in place is a data race with that pass. The Config
+// that held the old map is replaced with one that holds the new map.
+func (s *Server) replaceFileRefs(filePath string, added map[string][]analysis.FileReference) {
+	s.workspaceRefsMu.Lock()
+	old := s.workspaceRefs
+	next := make(map[string][]analysis.FileReference, len(old)+len(added))
+	for key, refs := range old {
+		first := slices.IndexFunc(refs, func(ref analysis.FileReference) bool { return ref.File == filePath })
+		if first < 0 {
+			next[key] = refs
+			continue
+		}
+		kept := slices.Clone(refs[:first])
+		for _, ref := range refs[first+1:] {
 			if ref.File != filePath {
 				kept = append(kept, ref)
 			}
 		}
-		if len(kept) == 0 {
-			delete(s.workspaceRefs, key)
-		} else {
-			s.workspaceRefs[key] = kept
+		if len(kept) > 0 {
+			next[key] = kept
 		}
 	}
+	for key, refs := range added {
+		have := next[key]
+		// The full slice expression gives append a new backing array,
+		// so a slice of the old map is not written.
+		next[key] = append(have[:len(have):len(have)], refs...)
+	}
+	s.workspaceRefs = next
+	s.workspaceRefsMu.Unlock()
+
+	s.analysisCfgMu.Lock()
+	defer s.analysisCfgMu.Unlock()
+	cfg := s.analysisCfg
+	if cfg == nil || old == nil || !sameMap(cfg.WorkspaceRefs, old) {
+		// The config does not share the index (a test set one of them).
+		return
+	}
+	withRefs := *cfg
+	withRefs.WorkspaceRefs = next
+	if s.wsScanCfg == cfg {
+		s.wsScanCfg = &withRefs
+	}
+	s.analysisCfg = &withRefs
+}
+
+// sameMap reports whether a and b are one map.
+func sameMap(a, b map[string][]analysis.FileReference) bool {
+	return reflect.ValueOf(a).Pointer() == reflect.ValueOf(b).Pointer()
 }
 
 // updateFileDefinitions scans a single file again and replaces what the
-// file adds to the workspace tables of the analysis config: ExtraGlobals,
-// PackageExports, PackageSymbols and the record methods. It also adds the
-// file's use-package imports to PackageImports. It reports whether the
-// record methods the file adds changed.
+// file adds to the workspace tables of the analysis config. It reports
+// whether the record methods the file adds changed.
+func (s *Server) updateFileDefinitions(uri string) bool {
+	recordsChanged, _ := s.updateFileIndex(uri)
+	return recordsChanged
+}
+
+// updateFileIndex scans a single file again and merges the workspace
+// tables of the analysis config again with the new scan of the file. It
+// reports whether the record methods the file adds changed, and whether
+// anything the file gives to the tables changed (the positions of its
+// definitions aside).
 //
 // All the tables follow the save, not only ExtraGlobals. The analysis of
 // another file resolves a use-package import through PackageExports, so
 // an export that a save adds or removes must reach that table, or the
 // diagnostics of the other files stay wrong until the server starts again
 // (luthersystems/elps#943).
-func (s *Server) updateFileDefinitions(uri string) bool {
+//
+// The tables after the save are those of a new index build: the server
+// keeps the scan of each file (analysis.WorkspaceScan) and merges them
+// with the code of the build. So the order of the entries does not
+// depend on the saves before, an import or a definition that the save
+// removes goes away, and an entry that lost a tie to an entry of the
+// saved file comes back when that entry goes.
+//
+// Not refreshed: the macros loaded in the environment of the macro
+// expander. They are loaded one time, at the index build.
+func (s *Server) updateFileIndex(uri string) (bool, bool) {
 	filePath := analysis.NormalizePath(uriToPath(uri))
 	source, status := s.readWorkspaceFile(filePath)
 	switch status {
@@ -857,20 +933,52 @@ func (s *Server) updateFileDefinitions(uri string) bool {
 	case workspaceReadOverLimit:
 		// As above: purge, do not keep stale definitions for a file the scan
 		// would now skip.
-		return s.removeFileDefinitions(filePath)
+		return s.removeFileIndex(filePath)
 	default:
-		return false
+		return false, false
 	}
 
-	s.analysisCfgMu.RLock()
-	cfg := s.analysisCfg
-	s.analysisCfgMu.RUnlock()
-	if cfg == nil {
-		return false
+	s.analysisCfgMu.Lock()
+	if s.analysisCfg == nil {
+		s.analysisCfgMu.Unlock()
+		return false, false
 	}
-	// DefaultPackage and FilePackages are set once, at the index build, so
-	// the scan can read them from a config that a later save replaces.
-	return s.replaceFileIndex(filePath, analysis.IndexFile(source, filePath, cfg))
+	if s.hasWorkspaceScan() {
+		defer s.analysisCfgMu.Unlock()
+		scan, changed := s.wsScan.WithFile(filePath, source)
+		name, _ := scan.Path(filePath)
+		return s.storeWorkspaceScan(scan, name), changed
+	}
+	cfg := s.analysisCfg
+	s.analysisCfgMu.Unlock()
+	// A config that was set without a scan (a test does it). Its tables
+	// are updated entry by entry, with the limits replacePackageSymbols
+	// and addPackageImports describe.
+	// DefaultPackage and FilePackages are set once, so the scan can read
+	// them from a config that a later save replaces.
+	return s.replaceFileIndex(filePath, analysis.IndexFile(source, filePath, cfg)), false
+}
+
+// removeFileIndex removes what the file at filePath adds to the workspace
+// tables of the analysis config. Its results are those of
+// updateFileIndex.
+func (s *Server) removeFileIndex(filePath string) (bool, bool) {
+	s.analysisCfgMu.Lock()
+	if s.analysisCfg == nil {
+		s.analysisCfgMu.Unlock()
+		return false, false
+	}
+	if s.hasWorkspaceScan() {
+		defer s.analysisCfgMu.Unlock()
+		name, held := s.wsScan.Path(filePath)
+		if !held {
+			return false, false
+		}
+		scan, _ := s.wsScan.WithoutFile(filePath)
+		return s.storeWorkspaceScan(scan, name), true
+	}
+	s.analysisCfgMu.Unlock()
+	return s.replaceFileIndex(analysis.NormalizePath(filePath), &analysis.FileIndex{}), false
 }
 
 // replaceFileIndex replaces the entries of filePath (a normalized path)
@@ -890,9 +998,11 @@ func (s *Server) replaceFileIndex(filePath string, idx *analysis.FileIndex) bool
 		return false
 	}
 	next := *s.analysisCfg
-	next.ExtraGlobals = append(filterExtraGlobalsByFile(next.ExtraGlobals, filePath), idx.Defs...)
-	next.PackageExports = replacePackageSymbols(next.PackageExports, filePath, idx.PkgExports, true)
-	next.PackageSymbols = replacePackageSymbols(next.PackageSymbols, filePath, idx.PkgAllSymbols, false)
+	// One matcher for the three tables: they name the same files.
+	from := newSourceFileMatcher(filePath)
+	next.ExtraGlobals = append(from.without(next.ExtraGlobals, len(idx.Defs)), idx.Defs...)
+	next.PackageExports = replacePackageSymbols(next.PackageExports, from, idx.PkgExports, true)
+	next.PackageSymbols = replacePackageSymbols(next.PackageSymbols, from, idx.PkgAllSymbols, false)
 	next.PackageImports = addPackageImports(next.PackageImports, idx.PackageImports)
 	recordsChanged := setFileRecordMethods(&next, filePath, idx.RecordMethods)
 	s.analysisCfg = &next
@@ -901,7 +1011,7 @@ func (s *Server) replaceFileIndex(filePath string, idx *analysis.FileIndex) bool
 
 // replacePackageSymbols returns a copy of a per-package table of the
 // analysis config (PackageExports or PackageSymbols) in which the entries
-// of filePath are replaced with added. The slices of the packages it
+// of the file of from are replaced with added. The slices of the packages it
 // changes are new; table and its slices are not written.
 //
 // exports selects the rules of PackageExports, which the index build
@@ -916,10 +1026,10 @@ func (s *Server) replaceFileIndex(filePath string, idx *analysis.FileIndex) bool
 // back when the winner goes away. A name that two files export in one
 // package is then missing after one of them stops exporting it, until the
 // next index build.
-func replacePackageSymbols(table map[string][]analysis.ExternalSymbol, filePath string, added map[string][]analysis.ExternalSymbol, exports bool) map[string][]analysis.ExternalSymbol {
+func replacePackageSymbols(table map[string][]analysis.ExternalSymbol, from *sourceFileMatcher, added map[string][]analysis.ExternalSymbol, exports bool) map[string][]analysis.ExternalSymbol {
 	next := make(map[string][]analysis.ExternalSymbol, len(table)+len(added))
 	for pkg, syms := range table {
-		kept := filterExtraGlobalsByFile(syms, filePath)
+		kept := from.without(syms, len(added[pkg]))
 		if len(kept) == len(syms) && len(added[pkg]) == 0 {
 			// Not changed: share the slice with the old table.
 			next[pkg] = syms
@@ -937,7 +1047,9 @@ func replacePackageSymbols(table map[string][]analysis.ExternalSymbol, filePath 
 			next[pkg] = append(next[pkg], syms...)
 			continue
 		}
-		merged := next[pkg]
+		// A copy: the slice may be the one of the old table, and the
+		// loop and the sort below write it.
+		merged := slices.Clone(next[pkg])
 		byName := make(map[string]int, len(merged)+len(syms))
 		for i := range merged {
 			byName[merged[i].Name] = i
@@ -1017,7 +1129,8 @@ func setFileRecordMethods(cfg *analysis.Config, filePath string, methods analysi
 // the workspace tables of the analysis config (see updateFileDefinitions).
 // It reports whether the file had record methods.
 func (s *Server) removeFileDefinitions(filePath string) bool {
-	return s.replaceFileIndex(analysis.NormalizePath(filePath), &analysis.FileIndex{})
+	recordsChanged, _ := s.removeFileIndex(filePath)
+	return recordsChanged
 }
 
 // recordReanalyzeDelay is how long a change of a file's record methods
@@ -1027,6 +1140,10 @@ var recordReanalyzeDelay = 500 * time.Millisecond
 
 // recordReanalyzeKey is the debounce key of that pass.
 const recordReanalyzeKey = "__record_methods__"
+
+// savedReanalyzeKey is the debounce key of the pass over every open
+// document after a save that changed the workspace tables.
+const savedReanalyzeKey = "__saved__"
 
 // reanalyzeRecordDocumentsLater schedules reanalyzeRecordDocuments, so
 // the record diagnostics of the other open documents follow a change of
@@ -1068,15 +1185,79 @@ func (s *Server) reanalyzeRecordDocuments(except string) {
 	}
 }
 
-// filterExtraGlobalsByFile returns a new slice with all entries whose
-// Source.File does not match excludeFile. Entries with nil Source are kept.
-func filterExtraGlobalsByFile(globals []analysis.ExternalSymbol, excludeFile string) []analysis.ExternalSymbol {
-	excludeFile = analysis.NormalizePath(excludeFile)
+// sourceFileMatcher reports which symbols of the workspace tables come
+// from one file.
+//
+// A symbol names its file as the scan read it, and the save names it as
+// the editor sent it. Two spellings of one file (a symlink, a relative
+// path) compare equal only as normalized paths, and
+// analysis.NormalizePath resolves symlinks with file system calls. A save
+// tests every symbol of the workspace. The symbols of one file share one
+// spelling, so the matcher normalizes each spelling one time and keeps
+// the answer. The cost of a save then follows the number of files, not
+// the number of symbols: at 8000 symbols the per-symbol calls were most
+// of the time of a save (luthersystems/elps#944).
+//
+// A matcher lives for one save. A cache kept between saves would also
+// keep a spelling whose symlink changed.
+type sourceFileMatcher struct {
+	file  string          // normalized
+	match map[string]bool // spelling of a file -> it is file
 
-	var kept []analysis.ExternalSymbol
-	for _, sym := range globals {
-		if sym.Source == nil || analysis.NormalizePath(sym.Source.File) != excludeFile {
-			kept = append(kept, sym)
+	// last and lastIs are the spelling and the answer of the last test.
+	// The tables hold the symbols of a file next to each other, so most
+	// tests repeat the last one and skip the map.
+	last   string
+	lastIs bool
+	primed bool
+}
+
+// newSourceFileMatcher returns a matcher for file, a normalized path.
+func newSourceFileMatcher(file string) *sourceFileMatcher {
+	return &sourceFileMatcher{file: file, match: make(map[string]bool)}
+}
+
+// matches reports whether sym comes from the file. A symbol without a
+// source (a registry entry) comes from no file.
+func (m *sourceFileMatcher) matches(sym *analysis.ExternalSymbol) bool {
+	if sym.Source == nil {
+		return false
+	}
+	spelling := sym.Source.File
+	if m.primed && spelling == m.last {
+		return m.lastIs
+	}
+	is, ok := m.match[spelling]
+	if !ok {
+		is = analysis.NormalizePath(spelling) == m.file
+		m.match[spelling] = is
+	}
+	m.last, m.lastIs, m.primed = spelling, is, true
+	return is
+}
+
+// without returns the entries of syms that do not come from the file. It
+// returns syms itself when all of them stay, so a table that the save
+// does not change costs no copy. It never writes syms, and an append to
+// the result does not write them either. room is the number of entries
+// the caller appends: a new slice has the capacity for them, so the
+// append does not copy the table a second time.
+func (m *sourceFileMatcher) without(syms []analysis.ExternalSymbol, room int) []analysis.ExternalSymbol {
+	first := -1
+	for i := range syms {
+		if m.matches(&syms[i]) {
+			first = i
+			break
+		}
+	}
+	if first < 0 {
+		return syms[:len(syms):len(syms)]
+	}
+	kept := make([]analysis.ExternalSymbol, first, len(syms)-1+room)
+	copy(kept, syms[:first])
+	for i := first + 1; i < len(syms); i++ {
+		if !m.matches(&syms[i]) {
+			kept = append(kept, syms[i])
 		}
 	}
 	return kept
