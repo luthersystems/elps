@@ -42,8 +42,8 @@ func dumpBytes(t *testing.T, env *lisp.LEnv, v *lisp.LVal) *lisp.LVal {
 }
 
 // A native nested 3,000,000 deep used to kill the process with a Go stack
-// overflow inside encoding/json.  It is now refused with the error
-// checkLoadable gives a native nested past the decoder's limit.
+// overflow inside encoding/json.  The walk now refuses it, as it refuses any
+// native whose JSON nests past the decoder's limit.
 func TestDumpRefusesDeepNativeWithoutCrashing(t *testing.T) {
 	const depth = 3_000_000
 	var chain *deepNode
@@ -55,15 +55,14 @@ func TestDumpRefusesDeepNativeWithoutCrashing(t *testing.T) {
 		nested = []any{nested}
 	}
 	for _, tc := range []struct {
-		name    string
-		native  any
-		bracket string
+		name   string
+		native any
 	}{
-		{"pointer-chain", chain, "{"},
-		{"nested-slices", nested, "["},
+		{"pointer-chain", chain},
+		{"nested-slices", nested},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			want := "unable to encode native value: invalid character '" + tc.bracket + "' exceeded max depth"
+			const want = "unable to encode native value: JSON nests more than 10000 levels deep"
 			_, err := libjson.Dump(lisp.Native(tc.native), false)
 			require.EqualError(t, err, want)
 
@@ -74,31 +73,27 @@ func TestDumpRefusesDeepNativeWithoutCrashing(t *testing.T) {
 	}
 }
 
-// On the JSON v1 engine a native too deep to load reports the same error at
-// every depth: through encoding/json and checkLoadable below the walk's
-// bound, and from the walk above it.
-//
-// On the JSON v2 engine encoding/json refuses the shallower two itself, with
-// its own text (luthersystems/elps#928).  The walk's refusal of the deeper two
-// keeps the v1 text on both engines.
+// A native too deep to load reports the same error at every depth, on both
+// JSON engines: the walk refuses it before encoding/json runs
+// (luthersystems/elps#928).  The v1 engine used to write the shallower two,
+// which checkLoadable then refused with the decoder's text, and the v2 engine
+// refused them with its own.
 func TestDumpDeepNativeErrorByDepth(t *testing.T) {
-	const v1 = "unable to encode native value: invalid character '[' exceeded max depth"
-	const v2 = "exceeded max depth"
-	for _, tc := range []struct {
-		depth  int
-		wantV2 string
-	}{{10_001, v2}, {20_000, v2}, {30_000, v1}, {60_000, v1}} {
+	const want = "unable to encode native value: JSON nests more than 10000 levels deep"
+	for _, depth := range []int{10_001, 20_000, 30_000, 60_000} {
 		var v any = 1
-		for range tc.depth {
+		for range depth {
 			v = []any{v}
 		}
-		want := v1
-		if libjson.JSONV2EngineForTest() {
-			want = tc.wantV2
-		}
 		_, err := libjson.Dump(lisp.Native(v), false)
-		assert.EqualError(t, err, want, "depth %d", tc.depth)
+		require.EqualError(t, err, want, "depth %d", depth)
 	}
+	var v any = 1
+	for range 10_000 {
+		v = []any{v}
+	}
+	_, err := libjson.Dump(lisp.Native(v), false)
+	assert.NoError(t, err, "depth 10000 loads back, so it is written")
 }
 
 // Pointers and interfaces nest on encoding/json's stack without nesting the
@@ -223,12 +218,12 @@ type ringNode struct {
 	N    int
 }
 
-// A native that contains itself reports encoding/json's own cycle error,
-// whether encoding/json reports it or, when its trips around the cycle would
-// pass the cap, the walk does.  A cycle so long that encoding/json would only
-// see it past nativeNestLimit is refused as too deep, like any native that
-// nests that far.
-func TestDumpNativeCycleErrorMatchesEncodingJSON(t *testing.T) {
+// The walk refuses a native that contains itself at the first repeat, with
+// its own error, so encoding/json never goes around the cycle
+// (luthersystems/elps#928).  A cycle longer than the JSON nesting limit is
+// refused as too deep, like any native that nests that far, before the walk
+// reaches the repeat.
+func TestDumpNativeCycleError(t *testing.T) {
 	ring := func(n int) *ringNode {
 		nodes := make([]ringNode, n)
 		for i := range nodes {
@@ -236,22 +231,23 @@ func TestDumpNativeCycleErrorMatchesEncodingJSON(t *testing.T) {
 		}
 		return &nodes[0]
 	}
-	for _, n := range []int{1, 7, 100, 20_000} {
-		_, want := json.Marshal(ring(n))
-		require.Error(t, want, "ring of %d", n)
+	const want = "unable to encode native value: value of type *libjson_test.ringNode contains itself"
+	for _, n := range []int{1, 7, 100, 10_000} {
 		_, err := libjson.Dump(lisp.Native(ring(n)), false)
-		require.EqualError(t, err, want.Error(), "ring of %d", n)
+		require.EqualError(t, err, want, "ring of %d", n)
 
-		// encoding/json writes about 1000 nodes before it reports even the
+		// The v1 engine writes about 1000 nodes before it reports even the
 		// shortest of these cycles, which passes a 4 KiB cap.  The walk sees
-		// the cycle first and reports it without running encoding/json.
-		if n <= 100 {
+		// the cycle first, so the cap does not change the error.
+		if n <= 7 {
 			got := dumpBytes(t, newTypedTestEnv(t, lisp.WithMaxAlloc(4096)), lisp.Native(ring(n)))
 			require.Equal(t, lisp.LError, got.Type, "ring of %d", n)
-			assert.Contains(t, got.String(), want.Error(), "ring of %d under a 4 KiB cap", n)
+			assert.Contains(t, got.String(), want, "ring of %d under a 4 KiB cap", n)
 		}
 	}
 
-	_, err := libjson.Dump(lisp.Native(ring(40_000)), false)
-	assert.EqualError(t, err, "unable to encode native value: invalid character '{' exceeded max depth")
+	for _, n := range []int{10_001, 40_000} {
+		_, err := libjson.Dump(lisp.Native(ring(n)), false)
+		assert.EqualError(t, err, "unable to encode native value: JSON nests more than 10000 levels deep", "ring of %d", n)
+	}
 }

@@ -953,7 +953,7 @@ func (enc *encoder) encodeNative(v any) error {
 		// Encode returns before writing anything when marshalling fails,
 		// but the document is abandoned on this path either way.
 		enc.buf.Truncate(mark)
-		return err
+		return nativeMarshalError(err)
 	}
 	enc.buf.Truncate(enc.buf.Len() - 1) // drop Encode's trailing newline
 	b := enc.buf.Bytes()[mark:]
@@ -980,6 +980,42 @@ func (enc *encoder) encodeNative(v any) error {
 	}
 	return nil
 }
+
+// nativeMarshalError turns an error of encoding/json into this package's
+// error for a native a marshal method refused.
+//
+// The walk has passed the native, so encoding/json can only fail in a
+// MarshalJSON or MarshalText method, or on what one returned.  Its own
+// message names the method and the type, and both differ between Go's JSON
+// engines: the v2 engine reports a pointer type, and jsontext.Value for a
+// json.RawMessage.  So the message here keeps only the method's own error
+// (luthersystems/elps#928).
+//
+// JSON that a MarshalJSON returned and encoding/json could not parse comes
+// back as a *json.SyntaxError, with the engine's text.  The v2 engine also
+// reports it when the JSON is valid but nests past its limit inside the
+// containers around it, where the v1 engine writes the bytes and
+// checkLoadable refuses them.  errNativeMarshalerJSON is the one error for
+// all of these.  A method that returns a *json.SyntaxError of its own gets
+// it too, which is the price of not parsing the message.
+func nativeMarshalError(err error) error {
+	var me *json.MarshalerError
+	if !errors.As(err, &me) {
+		// The tests and fuzz targets reach this for one kind of native
+		// only: a struct field whose tag has a `format` option, which
+		// the v2 engine refuses and the v1 engine ignores.  The engine's
+		// text is the only description there is.
+		return encodeUnloadableNativeError{err: fmt.Errorf("encoding/json refused it: %w", err)}
+	}
+	if _, ok := me.Err.(*json.SyntaxError); ok { //nolint:errorlint // the engine's own error, not one a method wrapped
+		return encodeUnloadableNativeError{err: errNativeMarshalerJSON}
+	}
+	return encodeUnloadableNativeError{err: fmt.Errorf("a marshal method failed: %w", me.Err)}
+}
+
+// errNativeMarshalerJSON reports JSON from a MarshalJSON method that this
+// package cannot write or would not load back.
+var errNativeMarshalerJSON = fmt.Errorf("a marshal method returned JSON that is not valid or nests more than %d levels deep", jsonNestingLimit)
 
 // encodeNativeLegacy is encodeNative as encodeLNative called it before
 // luthersystems/elps#802: no bound before marshalling and no memo.  It exists
@@ -1080,17 +1116,34 @@ func (enc *encoder) encodeNativeLegacy(v any) error {
 // library, and such a value can sit in a struct field, map value or slice
 // element at any depth behind an interface. The property is only decidable on
 // the bytes. TestDumpRefusesUnloadableNativeBeyondRawMessage holds that line.
+//
+// # The error it reports
+//
+// The decoder's message differs between Go's JSON engines, so it is not
+// passed on (luthersystems/elps#928).  The bytes are valid JSON, and the
+// walk has bounded the nesting of the native's own containers.  So the
+// decode can fail in two ways only.  A number that does not fit a float is a
+// floatRangeError, which names the literal and reads the same on both
+// engines.  Anything else is JSON from a marshal method that nests too deep
+// where it sits, which the v2 engine refuses to write:
+// errNativeMarshalerJSON on both.
 func (enc *encoder) checkLoadable(b []byte) error {
 	var x any
-	if err := jsonDecode(b, &x, enc.stringNums); err != nil {
-		return encodeUnloadableNativeError{err: err}
+	err := jsonDecode(b, &x, enc.stringNums)
+	if err == nil {
+		return nil
 	}
-	return nil
+	var rangeErr floatRangeError
+	if errors.As(err, &rangeErr) {
+		return encodeUnloadableNativeError{err: rangeErr}
+	}
+	return encodeUnloadableNativeError{err: errNativeMarshalerJSON}
 }
 
-// encodeUnloadableNativeError reports a native value whose JSON this package
-// would refuse to read back.  It wraps the decoder's own error, so the message
-// names the offending literal.
+// encodeUnloadableNativeError reports a native value this package refuses to
+// encode: one the native walk refuses, one a marshal method refuses, or one
+// whose JSON this package would refuse to read back.  Its text is this
+// package's own, so it is the same on both of Go's JSON engines.
 type encodeUnloadableNativeError struct{ err error }
 
 func (e encodeUnloadableNativeError) Error() string {

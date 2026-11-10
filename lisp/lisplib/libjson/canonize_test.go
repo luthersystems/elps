@@ -308,15 +308,10 @@ func TestCanonizeNativeByteGuarantees(t *testing.T) {
 	require.ErrorContains(t, err, "$[key 9]")
 	for _, v := range []any{map[float64]string(nil), map[bool]string(nil)} {
 		native := lisp.Native(v) //elpsvet:allow-native test owns these unsupported nil maps
-		b, err := libjson.Dump(native, false)
-		if libjson.JSONV2EngineForTest() {
-			// The v2 engine writes a nil map of these key types as null
-			// (luthersystems/elps#928).  Canonize refuses them on both.
-			require.NoError(t, err)
-			require.Equal(t, "null", string(b))
-		} else {
-			require.Error(t, err)
-		}
+		// The native walk refuses the map's type on both JSON engines
+		// (luthersystems/elps#928).
+		_, err := libjson.Dump(native, false)
+		require.ErrorContains(t, err, "unsupported type map[")
 		_, err = libjson.Canonize(native)
 		require.Error(t, err, "nil maps with unsupported key types must not bypass plain dump errors")
 	}

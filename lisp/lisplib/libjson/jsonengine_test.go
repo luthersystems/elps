@@ -4,7 +4,6 @@ package libjson
 
 import (
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 
@@ -81,31 +80,4 @@ func TestNativeInvalidByteLen(t *testing.T) {
 	b, err := json.Marshal("a\xff")
 	require.NoError(t, err)
 	require.Equal(t, len(b), nativeStringLen("a\xff"))
-}
-
-// TestNativeFloatKeyMapIsBounded checks that the walk visits a map with
-// float keys on an engine that writes one, so the cap refuses it before
-// encoding/json writes its contents.  The v1 engine refuses the map's type.
-func TestNativeFloatKeyMapIsBounded(t *testing.T) {
-	require.Equal(t, JSONV2EngineForTest(), nativeFloatKeys)
-	big := map[float64]string{1.5: strings.Repeat("x", 1<<20), 2: "y"}
-	enc := getEncoder(false)
-	defer putEncoder(enc)
-	err := enc.boundNative(big, encodeBudget{maxBytes: 1 << 10})
-	if !nativeFloatKeys {
-		require.NoError(t, err, "encoding/json refuses the type itself")
-		return
-	}
-	var size encodeSizeError
-	require.ErrorAs(t, err, &size)
-
-	// Within the cap, the walk's estimate stays a lower bound on the bytes
-	// encoding/json writes, so Dump writes the map.
-	small := map[float64]string{1e-7: "a", 1e21: "b", 0.5: "c"}
-	want, err := json.Marshal(small) //nolint:errchkjson // runs only on v2, which writes float keys
-	require.NoError(t, err)
-	got, err := Dump(lisp.Native(small), false) //elpsvet:allow-native test owns this float-keyed map
-	require.NoError(t, err)
-	require.Equal(t, string(want), string(got))
-	require.NoError(t, enc.boundNative(small, encodeBudget{maxBytes: len(want)}))
 }
