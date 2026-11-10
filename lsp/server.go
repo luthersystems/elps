@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -718,10 +719,17 @@ func (s *Server) dropFileRefsLocked(filePath string) {
 	}
 }
 
-// updateFileDefinitions re-extracts top-level definitions from a single file
-// and updates ExtraGlobals in the analysis config. Old entries for this file
-// are removed and replaced with the new definitions. It reports whether
-// the record methods the file adds changed.
+// updateFileDefinitions scans a single file again and replaces what the
+// file adds to the workspace tables of the analysis config: ExtraGlobals,
+// PackageExports, PackageSymbols and the record methods. It also adds the
+// file's use-package imports to PackageImports. It reports whether the
+// record methods the file adds changed.
+//
+// All the tables follow the save, not only ExtraGlobals. The analysis of
+// another file resolves a use-package import through PackageExports, so
+// an export that a save adds or removes must reach that table, or the
+// diagnostics of the other files stay wrong until the server starts again
+// (luthersystems/elps#943).
 func (s *Server) updateFileDefinitions(uri string) bool {
 	filePath := analysis.NormalizePath(uriToPath(uri))
 	source, status := s.readWorkspaceFile(filePath)
@@ -735,52 +743,162 @@ func (s *Server) updateFileDefinitions(uri string) bool {
 		return false
 	}
 
-	newDefs := analysis.ExtractFileDefinitions(source, filePath)
-	newMethods := analysis.ExtractFileRecordMethods(source, filePath)
+	s.analysisCfgMu.RLock()
+	cfg := s.analysisCfg
+	s.analysisCfgMu.RUnlock()
+	if cfg == nil {
+		return false
+	}
+	// DefaultPackage and FilePackages are set once, at the index build, so
+	// the scan can read them from a config that a later save replaces.
+	return s.replaceFileIndex(filePath, analysis.IndexFile(source, filePath, cfg))
+}
 
+// replaceFileIndex replaces the entries of filePath (a normalized path)
+// in the workspace tables of the analysis config with those of idx. It
+// reports whether the record methods the file adds changed.
+//
+// It stores a new Config and new tables, and never writes the old ones.
+// A request reads the Config pointer under analysisCfgMu and then reads
+// its fields without the lock, and each analysis keeps the tables of the
+// Config it started with. A write in place would be a data race with
+// those readers.
+func (s *Server) replaceFileIndex(filePath string, idx *analysis.FileIndex) bool {
 	s.analysisCfgMu.Lock()
 	defer s.analysisCfgMu.Unlock()
 
 	if s.analysisCfg == nil {
 		return false
 	}
-
-	s.analysisCfg.ExtraGlobals = append(filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath), newDefs...)
-	return s.setFileRecordMethodsLocked(filePath, newMethods)
+	next := *s.analysisCfg
+	next.ExtraGlobals = append(filterExtraGlobalsByFile(next.ExtraGlobals, filePath), idx.Defs...)
+	next.PackageExports = replacePackageSymbols(next.PackageExports, filePath, idx.PkgExports, true)
+	next.PackageSymbols = replacePackageSymbols(next.PackageSymbols, filePath, idx.PkgAllSymbols, false)
+	next.PackageImports = addPackageImports(next.PackageImports, idx.PackageImports)
+	recordsChanged := setFileRecordMethods(&next, filePath, idx.RecordMethods)
+	s.analysisCfg = &next
+	return recordsChanged
 }
 
-// setFileRecordMethodsLocked replaces the record methods of a file, so a
+// replacePackageSymbols returns a copy of a per-package table of the
+// analysis config (PackageExports or PackageSymbols) in which the entries
+// of filePath are replaced with added. The slices of the packages it
+// changes are new; table and its slices are not written.
+//
+// exports selects the rules of PackageExports, which the index build
+// keeps with one entry per name and sorted (see buildWorkspaceIndex):
+//
+//   - An entry from the package registry (it has no source) wins over a
+//     workspace entry of the same name.
+//   - Of two workspace entries of the same name, the one whose file
+//     sorts last wins. The index build keeps the last one in scan order.
+//
+// The index build drops the entry that loses, so the table cannot give it
+// back when the winner goes away. A name that two files export in one
+// package is then missing after one of them stops exporting it, until the
+// next index build.
+func replacePackageSymbols(table map[string][]analysis.ExternalSymbol, filePath string, added map[string][]analysis.ExternalSymbol, exports bool) map[string][]analysis.ExternalSymbol {
+	next := make(map[string][]analysis.ExternalSymbol, len(table)+len(added))
+	for pkg, syms := range table {
+		kept := filterExtraGlobalsByFile(syms, filePath)
+		if len(kept) == len(syms) && len(added[pkg]) == 0 {
+			// Not changed: share the slice with the old table.
+			next[pkg] = syms
+			continue
+		}
+		if len(kept) > 0 || len(added[pkg]) > 0 {
+			next[pkg] = kept
+		}
+	}
+	for pkg, syms := range added {
+		if len(syms) == 0 {
+			continue
+		}
+		if !exports {
+			next[pkg] = append(next[pkg], syms...)
+			continue
+		}
+		merged := next[pkg]
+		byName := make(map[string]int, len(merged)+len(syms))
+		for i := range merged {
+			byName[merged[i].Name] = i
+		}
+		for _, sym := range syms {
+			i, dup := byName[sym.Name]
+			switch {
+			case !dup:
+				byName[sym.Name] = len(merged)
+				merged = append(merged, sym)
+			case merged[i].Source == nil:
+				// The registry entry wins.
+			case sym.Source != nil && sym.Source.File >= merged[i].Source.File:
+				merged[i] = sym
+			}
+		}
+		analysis.SortDefinitions(merged)
+		next[pkg] = merged
+	}
+	return next
+}
+
+// addPackageImports returns imports with the use-package imports of one
+// file added. It returns imports itself when the file adds none, and a
+// copy otherwise.
+//
+// It only adds. PackageImports does not record which file an import came
+// from, so an import that a save removes stays until the next index
+// build. A stale import can hide an undefined symbol. A missing import
+// would report each name of the package as undefined in the other files.
+func addPackageImports(imports, added map[string][]string) map[string][]string {
+	var next map[string][]string
+	for pkg, names := range added {
+		for _, name := range names {
+			have := imports[pkg]
+			if next != nil {
+				have = next[pkg]
+			}
+			if slices.Contains(have, name) {
+				continue
+			}
+			if next == nil {
+				next = make(map[string][]string, len(imports)+1)
+				for k, v := range imports {
+					next[k] = v
+				}
+			}
+			// The full slice expression gives append a new backing array,
+			// so the slice of the old table is not written.
+			next[pkg] = append(have[:len(have):len(have)], name)
+		}
+	}
+	if next == nil {
+		return imports
+	}
+	return next
+}
+
+// setFileRecordMethods replaces the record methods of a file in cfg, so a
 // s:defmethod added, renamed or removed in it reaches the record lint
-// checks of the other files. With copies: a Config copied from this one
-// may be in use. It reports whether the methods changed. The caller holds
-// analysisCfgMu.
-func (s *Server) setFileRecordMethodsLocked(filePath string, methods analysis.RecordMethods) bool {
-	old := s.analysisCfg.RecordMethodsByFile
+// checks of the other files. RecordMethodsByFile.With returns a copy: a
+// Config copied from this one may be in use. It reports whether the
+// methods changed.
+func setFileRecordMethods(cfg *analysis.Config, filePath string, methods analysis.RecordMethods) bool {
+	old := cfg.RecordMethodsByFile
 	if len(methods) == 0 && len(old.File(filePath)) == 0 {
 		return false
 	}
 	if reflect.DeepEqual(old.File(filePath), methods) {
 		return false
 	}
-	s.analysisCfg.RecordMethodsByFile = old.With(filePath, methods)
+	cfg.RecordMethodsByFile = old.With(filePath, methods)
 	return true
 }
 
-// removeFileDefinitions removes all ExtraGlobals entries for the given file
-// path, and the record methods the file added. It reports whether the
-// file had record methods.
+// removeFileDefinitions removes the entries of the given file path from
+// the workspace tables of the analysis config (see updateFileDefinitions).
+// It reports whether the file had record methods.
 func (s *Server) removeFileDefinitions(filePath string) bool {
-	filePath = analysis.NormalizePath(filePath)
-
-	s.analysisCfgMu.Lock()
-	defer s.analysisCfgMu.Unlock()
-
-	if s.analysisCfg == nil {
-		return false
-	}
-
-	s.analysisCfg.ExtraGlobals = filterExtraGlobalsByFile(s.analysisCfg.ExtraGlobals, filePath)
-	return s.setFileRecordMethodsLocked(filePath, nil)
+	return s.replaceFileIndex(analysis.NormalizePath(filePath), &analysis.FileIndex{})
 }
 
 // recordReanalyzeDelay is how long a change of a file's record methods

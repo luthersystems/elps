@@ -1340,6 +1340,94 @@ func ExtractFileDefinitions(source []byte, filename string) []ExternalSymbol {
 	return extractDefinitions(exprs)
 }
 
+// FileIndex holds what one file adds to the workspace tables of a Config.
+// IndexFile builds it.
+type FileIndex struct {
+	// Defs are all top-level definitions of the file, for
+	// Config.ExtraGlobals.
+	Defs []ExternalSymbol
+	// PkgExports are the exported definitions by package, for
+	// Config.PackageExports.
+	PkgExports map[string][]ExternalSymbol
+	// PkgAllSymbols are all definitions by package, for
+	// Config.PackageSymbols.
+	PkgAllSymbols map[string][]ExternalSymbol
+	// PackageImports are the use-package imports by package, for
+	// Config.PackageImports.
+	PackageImports map[string][]string
+	// RecordMethods are the methods the load-time s:defmethod calls add,
+	// for Config.RecordMethodsByFile.
+	RecordMethods RecordMethods
+}
+
+// IndexFile scans one file and returns what it adds to the workspace
+// tables of a Config: the same entries PrescanWorkspace collects for the
+// file. An editor calls it when a file is saved, to replace the file's
+// entries without a scan of the whole workspace.
+//
+// cfg is the Config of the workspace the file is in. It gives the package
+// of a definition that runs before any in-package form: IndexFile applies
+// the rules of PrescanWorkspace with cfg.DefaultPackage and
+// cfg.FilePackages. Without them a definition of a file with no
+// in-package would move to the "user" package on each save, and the other
+// files of its real package would lose it.
+//
+// The load tree itself (FilePackages, DefaultPackage) is not built again:
+// a save that changes a load-file call or the package of main.lisp needs a
+// new PrescanWorkspace. A file that does not parse gives an empty index.
+func IndexFile(source []byte, filename string, cfg *Config) *FileIndex {
+	scanned := scanFileFull(source, filename)
+	idx := &FileIndex{
+		Defs:           scanned.defs,
+		PkgExports:     scanned.pkgs,
+		PkgAllSymbols:  scanned.pkgAll,
+		PackageImports: scanned.usePackages,
+		RecordMethods:  scanned.recordMethods,
+	}
+	if cfg == nil || cfg.DefaultPackage == "" {
+		return idx
+	}
+
+	abs := filename
+	if a, err := filepath.Abs(filename); err == nil {
+		abs = a
+	}
+	treePkg, inTree := cfg.FilePackages[abs]
+	bare := scanned.filePkg == ""
+	userPkg := lisp.DefaultUserPackage
+	// The three rules of PrescanWorkspace, for one file.
+	shouldRemap := func(sym *ExternalSymbol) (string, bool) {
+		if sym.Package != userPkg || sym.Source == nil {
+			return "", false
+		}
+		if bare {
+			if !inTree {
+				return cfg.DefaultPackage, true
+			}
+			return treePkg, true
+		}
+		if !inTree {
+			return "", false
+		}
+		if scanned.firstInPkgLine > 0 && sym.Source.Line < scanned.firstInPkgLine {
+			return treePkg, true
+		}
+		return "", false
+	}
+	for i := range idx.Defs {
+		if pkg, ok := shouldRemap(&idx.Defs[i]); ok {
+			idx.Defs[i].Package = pkg
+		}
+	}
+	remapPackageMap(idx.PkgExports, userPkg, shouldRemap)
+	remapPackageMap(idx.PkgAllSymbols, userPkg, shouldRemap)
+	if userImports, ok := idx.PackageImports[userPkg]; ok {
+		idx.PackageImports[cfg.DefaultPackage] = appendUnique(idx.PackageImports[cfg.DefaultPackage], userImports...)
+		delete(idx.PackageImports, userPkg)
+	}
+	return idx
+}
+
 // SymbolToKey derives a SymbolKey from an analysis Symbol.
 func SymbolToKey(sym *Symbol) SymbolKey {
 	kind := sym.Kind
