@@ -1457,7 +1457,10 @@ such as `(sorted-map 1 "int" "1" "str")`, cannot be dumped and signals an error
 rather than writing a duplicate member. JSON object keys are always strings, so
 `json:load` never produces an integer key. A map decoded by `json:load` keeps
 its string-only key policy for in-place `assoc!`; `copy` and `assoc` return an
-ordinary sorted map, which accepts integer keys.
+ordinary sorted map, which accepts integer keys. A read of a decoded map with
+an integer key (`get`, `key?`, `get-default`) reports the key absent, and
+`dissoc!` with an integer key does nothing, as on an ordinary sorted map that
+lacks the key.
 
 ```lisp
 (equal? (sorted-map 1 0) (sorted-map "1" 0))           ; evaluates to false

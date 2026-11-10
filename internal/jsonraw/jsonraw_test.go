@@ -43,19 +43,30 @@ func TestWrapPreservesBackingIdentityAndStringKeys(t *testing.T) {
 	if keys := first.Map().Keys(); keys.String() != `'("added" "key")` {
 		t.Fatalf("symbol write changed string-key presentation: %v", keys)
 	}
-	for _, key := range []*lisp.LVal{lisp.Int(1), lisp.Nil()} {
-		if got := first.Map().Set(key, lisp.Int(99)); got.Type != lisp.LError {
-			t.Fatalf("invalid key set accepted %v: %v", key, got)
-		}
-		if got := first.Map().Del(key); got.Type != lisp.LError {
-			t.Fatalf("invalid key delete accepted %v: %v", key, got)
-		}
-		if got, found := first.Map().Get(key); found || got.Type != lisp.LError {
-			t.Fatalf("invalid key get accepted %v: got %v, found %t", key, got, found)
-		}
-		if len(data) != 2 || data["key"] != replacement || data["added"] != added {
-			t.Fatal("rejected key operation changed backing storage")
-		}
+	// An int key is a valid sorted-map key that a JSON object cannot hold.
+	// A read or a delete answers "absent", as an equal stock sorted-map
+	// does; only a write is refused (luthersystems/elps#943).
+	if got := first.Map().Set(lisp.Int(1), lisp.Int(99)); got.Type != lisp.LError {
+		t.Fatalf("int key set accepted: %v", got)
+	}
+	if got := first.Map().Del(lisp.Int(1)); !got.IsNil() {
+		t.Fatalf("int key delete is not a no-op: %v", got)
+	}
+	if got, found := first.Map().Get(lisp.Int(1)); found || got.Type == lisp.LError {
+		t.Fatalf("int key get is not absent: got %v, found %t", got, found)
+	}
+	// A key of a type no sorted-map accepts is refused by every operation.
+	if got := first.Map().Set(lisp.Nil(), lisp.Int(99)); got.Type != lisp.LError {
+		t.Fatalf("invalid key set accepted: %v", got)
+	}
+	if got := first.Map().Del(lisp.Nil()); got.Type != lisp.LError {
+		t.Fatalf("invalid key delete accepted: %v", got)
+	}
+	if got, found := first.Map().Get(lisp.Nil()); found || got.Type != lisp.LError {
+		t.Fatalf("invalid key get accepted: got %v, found %t", got, found)
+	}
+	if len(data) != 2 || data["key"] != replacement || data["added"] != added {
+		t.Fatal("rejected key operation changed backing storage")
 	}
 	if got := second.Map().Del(lisp.Symbol("key")); !got.IsNil() {
 		t.Fatal(got)

@@ -55,16 +55,20 @@ func TestJSONTemplateMapPreservesBehaviorAndIdentity(t *testing.T) {
 		if got, found := m.Get(lisp.Symbol("value")); !found || got.Type != lisp.LInt || got.Int != i+2 {
 			t.Fatalf("VM %d symbol read failed: %v", i, got)
 		}
-		for name, got := range map[string]*lisp.LVal{
-			"integer set":    m.Set(lisp.Int(1), lisp.Int(99)),
-			"integer delete": m.Del(lisp.Int(1)),
-		} {
-			if got.Type != lisp.LError || got.Str != "error" {
-				t.Fatalf("VM %d %s lost JSON key policy: %v", i, name, got)
-			}
+		// A decoded map refuses an int write.  It reads an int key as absent
+		// and ignores an int delete, as the stock map does for an int it
+		// does not hold (luthersystems/elps#943).
+		if got := m.Set(lisp.Int(1), lisp.Int(99)); got.Type != lisp.LError || got.Str != "error" {
+			t.Fatalf("VM %d integer set lost JSON key policy: %v", i, got)
 		}
-		if got, found := m.Get(lisp.Int(1)); found || got.Type != lisp.LError {
-			t.Fatalf("VM %d integer read lost key policy: %v", i, got)
+		if got := m.Del(lisp.Int(1)); !got.IsNil() {
+			t.Fatalf("VM %d integer delete: %v", i, got)
+		}
+		if got, found := m.Get(lisp.Int(1)); found || !got.IsNil() {
+			t.Fatalf("VM %d integer read: %v", i, got)
+		}
+		if got, found := m.Get(lisp.Float(1)); found || got.Type != lisp.LError {
+			t.Fatalf("VM %d float read lost key policy: %v", i, got)
 		}
 		keys := m.Keys()
 		if len(keys.Cells) != 2 || keys.Cells[0].Type != lisp.LString || keys.Cells[0].Str != "source" || keys.Cells[1].Type != lisp.LString || keys.Cells[1].Str != "value" {

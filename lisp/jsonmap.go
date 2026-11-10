@@ -29,7 +29,15 @@ func (m jsonMap) Len() int {
 	return len(m)
 }
 
+// Get reports an int key absent, as the stock sortedmap does for an int it
+// does not hold.  An int is a valid sorted-map key that a decoded map cannot
+// contain.  The decoded map is equal? to the stock map with the same
+// entries, so a read must not raise on one of them only
+// (luthersystems/elps#943).  A type no sorted-map takes stays an error.
 func (m jsonMap) Get(k *LVal) (*LVal, bool) {
+	if k.Type == LInt {
+		return Nil(), false
+	}
 	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k)), false
 	}
@@ -40,7 +48,13 @@ func (m jsonMap) Get(k *LVal) (*LVal, bool) {
 	return jsonMapLVal(x), true
 }
 
+// Del does nothing for an int key, for the reason Get reports one absent:
+// the key cannot be present, and the stock sortedmap does nothing for an
+// absent int.
 func (m jsonMap) Del(k *LVal) *LVal {
+	if k.Type == LInt {
+		return Nil()
+	}
 	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k))
 	}
@@ -48,6 +62,9 @@ func (m jsonMap) Del(k *LVal) *LVal {
 	return Nil()
 }
 
+// Set refuses an int key.  A decoded map shares its storage with
+// encoding/json, which holds string keys only.  assoc copies the map into a
+// stock sortedmap first, so only an in-place write (assoc!) reaches this.
 func (m jsonMap) Set(k *LVal, v *LVal) *LVal {
 	if k.Type != LString && k.Type != LSymbol {
 		return Errorf("sorted-map decoded from json cannot hold key with type %s", GetType(k))
