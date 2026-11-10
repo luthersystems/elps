@@ -81,9 +81,7 @@ func (s *Server) workspaceDidChangeWatchedFiles(_ *glsp.Context, params *protoco
 // what an over-limit didSave uses to purge a file the scan would now skip
 // (see readWorkspaceFile).
 func (s *Server) removeFileRefs(filePath string) {
-	s.workspaceRefsMu.Lock()
-	defer s.workspaceRefsMu.Unlock()
-	s.dropFileRefsLocked(filePath)
+	s.replaceFileRefs(filePath, nil)
 }
 
 // debouncedReanalyze debounces a call to reanalyzeOpenDocuments using the
