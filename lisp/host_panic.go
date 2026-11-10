@@ -3,10 +3,12 @@
 package lisp
 
 import (
+	"bytes"
 	"io"
 	"reflect"
 	"runtime"
 	"strconv"
+	"strings"
 )
 
 // recoverPanic must be deferred directly, so recover observes the caller's
@@ -115,6 +117,16 @@ func (env *LEnv) readSourceLocation(reader LocationReader, name, loc string, r i
 }
 
 func (env *LEnv) readSourceBytes(r io.Reader) ([]byte, error) {
+	if n, ok := inMemoryLen(r); ok {
+		// The source is already in memory and its size is known.  One
+		// buffer of that size holds it.  io.ReadAll starts at 512 bytes
+		// and grows, which copies the source several times and leaves
+		// spare capacity behind.  These standard readers cannot fail or
+		// panic, and the read leaves them at their end, as ReadAll does.
+		src := make([]byte, n)
+		_, err := io.ReadFull(r, src)
+		return src, err
+	}
 	var src []byte
 	var err error
 	func() {
@@ -122,6 +134,22 @@ func (env *LEnv) readSourceBytes(r io.Reader) ([]byte, error) {
 		src, err = io.ReadAll(r)
 	}()
 	return src, err
+}
+
+// inMemoryLen returns the number of unread bytes of r when r is one of the
+// standard in-memory readers.  A load from a string or from bytes passes
+// one of them.  A host type with a Len method is not trusted to tell the
+// truth, so it takes the io.ReadAll path.
+func inMemoryLen(r io.Reader) (int, bool) {
+	switch r := r.(type) {
+	case *strings.Reader:
+		return r.Len(), true
+	case *bytes.Reader:
+		return r.Len(), true
+	case *bytes.Buffer:
+		return r.Len(), true
+	}
+	return 0, false
 }
 
 func (env *LEnv) sourceReadError(err error) *LVal {
