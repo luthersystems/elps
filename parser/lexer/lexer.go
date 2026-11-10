@@ -188,7 +188,21 @@ func (lex *Lexer) readToken() []*token.Token {
 		return lex.emitText(token.NEGATIVE)
 	case '"':
 		n := 0
-		for lex.scanner.AcceptSeq(func(c rune) bool { return c != '"' && c != '\n' }) != 0 {
+		// slashes counts the backslashes at the end of the run that the
+		// predicate accepts. The loop resets it before each run.
+		slashes := 0
+		body := func(c rune) bool {
+			if c == '"' || c == '\n' {
+				return false
+			}
+			if c == '\\' {
+				slashes++
+			} else {
+				slashes = 0
+			}
+			return true
+		}
+		for lex.scanner.AcceptSeq(body) != 0 {
 			n++
 			if lex.scanner.Accept(func(c rune) bool { return c == '\n' }) {
 				return lex.errorf("unterminated string literal")
@@ -205,12 +219,22 @@ func (lex *Lexer) readToken() []*token.Token {
 			// backslash -- consumed its own closing quote and then ran off the
 			// end of the input as an unterminated literal.  NO elps string
 			// could end in a backslash.  Found by FuzzGeneratedPipeline.
-			if trailingBackslashes(lex.scanner.Text())%2 == 1 {
+			//
+			// The count comes from the predicate and not from the token
+			// text.  Every backslash that can precede the quote is in the
+			// run just accepted: the run is not empty, and the rune before
+			// it is the opening quote or an escaped quote.  Reading
+			// scanner.Text() here copied the token scanned so far at each
+			// quote.  That made a string with n escaped quotes cost O(n^2),
+			// and it allocated every ordinary string a second time
+			// (luthersystems/elps#944).
+			if slashes%2 == 1 {
 				// Wait until parsing to check the escaped character
 				if !lex.scanner.Accept(func(c rune) bool { return true }) {
 					return lex.errorf("unterminated string literal %q", lex.peekRune())
 				}
 			}
+			slashes = 0
 		}
 		if !lex.scanner.AcceptRune('"') {
 			if lex.scanner.EOF() {
@@ -484,15 +508,6 @@ func (lex *Lexer) refuseSignedRadix(toks []*token.Token, prefix string) []*token
 	toks[0].Text = fmt.Sprintf("invalid numeric literal %q (a sign cannot be joined to a %s literal; write (%s %s))",
 		sign+literal, prefix, sign, literal)
 	return toks
-}
-
-// trailingBackslashes counts the backslashes at the end of s.
-func trailingBackslashes(s string) int {
-	n := 0
-	for i := len(s) - 1; i >= 0 && s[i] == '\\'; i-- {
-		n++
-	}
-	return n
 }
 
 func (lex *Lexer) skipWhitespace() {
