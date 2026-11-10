@@ -45,7 +45,7 @@ With files, prints formatted output to stdout unless -w is given.
 Modes:
   (default)   Print formatted code to stdout
   -w          Write result back to source file
-  -d          Display a diff of changes
+  -d          Display a unified diff of changes (the format of diff -u)
   -l          List files that would be changed
 
 Examples:
@@ -148,7 +148,9 @@ func fmtFile(path string, cfg *formatter.Config, opts fmtOptions) (bool, error) 
 
 	if diff {
 		if changed {
-			printUnifiedDiff(path, src, out)
+			if err = writeUnifiedDiff(os.Stdout, path, src, out); err != nil {
+				return changed, fmt.Errorf("%s: %w", path, err)
+			}
 		}
 		return changed, nil
 	}
@@ -167,45 +169,6 @@ func fmtFile(path string, cfg *formatter.Config, opts fmtOptions) (bool, error) 
 	// Default: print to stdout
 	_, err = os.Stdout.Write(out)
 	return changed, err
-}
-
-func printUnifiedDiff(path string, original, formatted []byte) {
-	// Simple line-by-line diff output
-	fmt.Printf("--- %s\n", path)
-	fmt.Printf("+++ %s\n", path)
-
-	origLines := splitLines(original)
-	fmtLines := splitLines(formatted)
-
-	i, j := 0, 0
-	for i < len(origLines) || j < len(fmtLines) {
-		if i < len(origLines) && j < len(fmtLines) && origLines[i] == fmtLines[j] {
-			fmt.Printf(" %s\n", origLines[i])
-			i++
-			j++
-		} else if i < len(origLines) {
-			fmt.Printf("-%s\n", origLines[i])
-			i++
-		} else {
-			fmt.Printf("+%s\n", fmtLines[j])
-			j++
-		}
-	}
-}
-
-func splitLines(data []byte) []string {
-	var lines []string
-	start := 0
-	for i, b := range data {
-		if b == '\n' {
-			lines = append(lines, string(data[start:i]))
-			start = i + 1
-		}
-	}
-	if start < len(data) {
-		lines = append(lines, string(data[start:]))
-	}
-	return lines
 }
 
 func init() {
