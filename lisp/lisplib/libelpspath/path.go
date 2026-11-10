@@ -1903,6 +1903,49 @@ func isChainToIter(path Path) bool {
 	}
 }
 
+// terminal reports whether the iterator is the last step of its path, so
+// that an operation on it writes the elements themselves.
+//
+// Every iterator this package builds holds a chain (Iter, normalizePaths),
+// and the chain is empty when no step follows the iterator.
+func (s *iterPath) terminal() bool {
+	chain, ok := s.path.(*chainPath)
+	return ok && len(chain.paths) == 0
+}
+
+// writeEach is the in-place operation of a terminal iterator: it stores
+// value() in each cell of in, and returns in.
+//
+// The general loop cannot do this. It hands each element to the rest of the
+// path, and an empty path has no container to write into: the element's
+// slot belongs to in. Before this function the in-place forms did nothing
+// for such a path and reported no error, while the copying forms wrote
+// every element (luthersystems/elps#943).
+//
+// It charges what the general loop charges, one unit per element, so a call
+// costs the steps it cost before it wrote anything. It builds no sequence,
+// so it has no allocation check to make.
+//
+// A list is refused, as the index and range steps refuse it (errMutateList):
+// its cells can be a program literal that every environment shares. Under
+// an outer iterator the refusal is that element's failure, like any other.
+func (s *iterPath) writeEach(in *lisp.LVal, op *copyOp, value func() *lisp.LVal) (*lisp.LVal, error) {
+	horizon, err := toCells(in)
+	if err != nil {
+		return nil, err
+	}
+	if err := errMutateList(in); err != nil {
+		return nil, err
+	}
+	for i := range horizon {
+		if err := op.charge(1); err != nil {
+			return nil, err
+		}
+		horizon[i] = value()
+	}
+	return in, nil
+}
+
 // Get is called to iterate on elements of an array and get a chain on
 // each element.
 func (s *iterPath) Get(in *lisp.LVal) (*lisp.LVal, error) {
@@ -1992,6 +2035,10 @@ func (s *iterPath) setMutateOp(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*li
 }
 
 func (s *iterPath) setMutate(in *lisp.LVal, newIn *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	if s.terminal() {
+		// Each element takes the new value by reference, as ?set stores it.
+		return s.writeEach(in, op, func() *lisp.LVal { return newIn })
+	}
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -2076,6 +2123,11 @@ func (s *iterPath) deleteMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error)
 }
 
 func (s *iterPath) deleteMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	if s.terminal() {
+		// Deleting an element through an iterator leaves nil in its place
+		// and keeps the length, as ?del does (deleteChain).
+		return s.writeEach(in, op, lisp.Nil)
+	}
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
@@ -2158,6 +2210,9 @@ func (s *iterPath) nilMutateOp(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
 }
 
 func (s *iterPath) nilMutate(in *lisp.LVal, op *copyOp) (*lisp.LVal, error) {
+	if s.terminal() {
+		return s.writeEach(in, op, lisp.Nil)
+	}
 	horizon, err := toCells(in)
 	if err != nil {
 		return nil, err
