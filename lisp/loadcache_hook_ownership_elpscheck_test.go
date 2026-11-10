@@ -13,7 +13,7 @@ type ownershipIdentityReader struct{ identity func() string }
 
 func (r ownershipIdentityReader) ReaderIdentity() string { return r.identity() }
 func (ownershipIdentityReader) Read(string, io.Reader) ([]*LVal, error) {
-	return []*LVal{Int(42)}, nil
+	return []*LVal{FreshInt(42)}, nil
 }
 
 type ownershipHookCache struct {
@@ -41,7 +41,7 @@ func TestLoadCacheHooksPreserveOwnershipFailure(t *testing.T) {
 		t.Run(hook, func(t *testing.T) {
 			owner := newOwnershipTestEnv()
 			env := newOwnershipTestEnv()
-			shared := Int(7)
+			shared := FreshInt(7)
 			if got := owner.Put(Symbol("owned"), shared); got.Type == LError {
 				t.Fatal(got)
 			}

@@ -14,3 +14,11 @@ package lisp
 // NOT catch" section on the elpscheck implementation in
 // singleton_check_elpscheck.go before relying on this guard.
 func checkSingleton(_ *LVal) {}
+
+// checkSmallInt is checkSingleton for an entry of the shared integer table.
+// It is a no-op outside elpscheck builds.
+func checkSmallInt(_ int) {}
+
+// checkNotSharedInt is the elpscheck guard on the kernel's own location
+// writers.  It is a no-op outside elpscheck builds.
+func checkNotSharedInt(_ *LVal) {}

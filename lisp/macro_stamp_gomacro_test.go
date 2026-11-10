@@ -58,10 +58,13 @@ func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
 		def := &goMacroDef{name: "m", formals: lisp.Formals("x"), fun: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			arg = args.Cells[0]
 			plus, times := lisp.Symbol("lisp:+"), lisp.Symbol("lisp:*")
-			two, three := lisp.Int(2), lisp.Int(3)
+			// two is the macro's own integer.  three is a shared small
+			// integer, which cannot be located in place: the locate
+			// puts a located integer in inner's cell instead.
+			two, three := lisp.FreshInt(2), lisp.Int(3)
 			inner := lisp.SExpr([]*lisp.LVal{times, two, three})
 			outer := lisp.SExpr([]*lisp.LVal{plus, arg, inner})
-			fresh = []*lisp.LVal{outer, plus, inner, times, two, three}
+			fresh = []*lisp.LVal{outer, plus, inner, times, two}
 			return outer
 		}}
 		env.AddMacros(true, def)
@@ -84,6 +87,15 @@ func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
 				t.Errorf("fresh node %d (%v) located at %s:%d:%d, want the macro call site go-macro.lisp:1:1", i, n, loc.File, loc.Line, loc.Col)
 			}
 		}
+		// The shared integer was replaced in the macro's own list, not
+		// copied by the stamp along with every list above it.
+		three := fresh[2].Cells[2]
+		if loc, ok := three.Source(); !ok || loc.File != "go-macro.lisp" || three.Int != 3 || three == lisp.Int(3) {
+			t.Errorf("the shared integer in the expansion was not replaced by a located one: %v", three)
+		}
+		if _, ok := lisp.Int(3).Source(); ok {
+			t.Errorf("the shared integer 3 was located")
+		}
 		// The argument is the reader's own node: sealed, located at its
 		// real position, and shared with the expansion as it is.
 		loc, ok := arg.Source()
@@ -103,7 +115,7 @@ func TestGoMacroExpansionIsLocatedInPlace(t *testing.T) {
 		var fresh []*lisp.LVal
 		def := &goMacroDef{name: "m", formals: lisp.Formals("x"), fun: func(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 			plus := lisp.Symbol("lisp:+")
-			outer := lisp.SExpr([]*lisp.LVal{plus, args.Cells[0], lisp.Int(1)})
+			outer := lisp.SExpr([]*lisp.LVal{plus, args.Cells[0], lisp.FreshInt(1)})
 			fresh = []*lisp.LVal{outer, plus, outer.Cells[2]}
 			return outer
 		}}

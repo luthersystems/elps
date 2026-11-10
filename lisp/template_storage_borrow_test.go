@@ -9,7 +9,7 @@ import "testing"
 // into indexed references, including cycles, before the source can change.
 func TestTemplateBorrowedCellScratchDoesNotEscapePublication(t *testing.T) {
 	source := templateOwnershipEnv()
-	leaf := Int(17)
+	leaf := FreshInt(17)
 	backing := make([]*LVal, 2)
 	subject := QExpr(backing[:0:2])
 	backing[0], backing[1] = subject, leaf

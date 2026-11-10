@@ -75,7 +75,7 @@ func TestTemplateSharedStorageAdmission(t *testing.T) {
 
 func TestTemplateRejectsMutableFunctionCodeVector(t *testing.T) {
 	env := templateOwnershipEnv()
-	formals, result := Formals(), Int(17)
+	formals, result := Formals(), FreshInt(17)
 	formals.sealAST()
 	result.sealAST()
 	fn := env.Lambda(formals, []*LVal{result})

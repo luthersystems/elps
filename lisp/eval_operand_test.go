@@ -47,7 +47,7 @@ func TestEvalOperandMatchesEval(t *testing.T) {
 		make func() *LVal
 		name string
 	}{
-		{func() *LVal { return Int(7) }, "int"},
+		{func() *LVal { return FreshInt(7) }, "int"},
 		{func() *LVal { return String("s") }, "string"},
 		{func() *LVal { return QExpr(nil) }, "nil"},
 		{func() *LVal { return SExpr(nil) }, "empty-call"},
@@ -274,7 +274,7 @@ func TestEvalOperandLeavesPanicsToTheCallForm(t *testing.T) {
 	}()
 
 	// (list 1): Err is called for the form, for list, for 1 and for the call.
-	form := SExpr([]*LVal{Symbol("list"), Int(1)})
+	form := SExpr([]*LVal{Symbol("list"), FreshInt(1)})
 	form.source = &token.Location{File: "panic.lisp", Line: 1, Col: 1}
 	form.Cells[0].source = &token.Location{File: "panic.lisp", Line: 1, Col: 2}
 	form.Cells[1].source = &token.Location{File: "panic.lisp", Line: 1, Col: 7}

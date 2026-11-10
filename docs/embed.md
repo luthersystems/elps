@@ -2063,6 +2063,14 @@ results, so where several peers must compute identical results from the same
 program (a replicated ledger, for example), a name that differs between
 machines makes their results differ.
 
+`lisp.Int(x)` returns a shared, immutable value when `x` is small (-16 to
+1023), as `lisp.Nil()` and `lisp.Bool()` do. Do not write the fields of a
+value `lisp.Int` returned, and do not rely on two calls returning different
+pointers. `SetSource` on it does nothing. When Go code needs an integer of
+its own, to write its `Int` field in place or to give it a source location,
+build it with `lisp.FreshInt(x)` or take a `Copy`. The `elpsfreshness`
+analyzer reports a field write on the result of `lisp.Int`.
+
 In `elpscheck` builds, detected ownership, sealed-program and singleton
 corruption deliberately remain hard Go panics so recovery cannot hide a
 failed invariant. These developer checks are distinct from language errors.

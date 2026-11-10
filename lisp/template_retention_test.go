@@ -33,14 +33,14 @@ func templateRetentionFixture(t *testing.T, shape string, sealed bool) (*Templat
 		storage := []*LVal{hidden, Int(7)}
 		root = QExpr(storage[1:2:2])
 	case "header-array":
-		storage := []LVal{*Int(7), *hidden}
+		storage := []LVal{*FreshInt(7), *hidden}
 		root = &storage[0]
 	case "location-owner":
 		owner := &struct {
 			location token.Location
 			source   *LEnv
 		}{location: token.Location{File: "retention.lisp", Line: 1}, source: source}
-		root = Int(7)
+		root = FreshInt(7)
 		root.SetSource(&owner.location)
 	case "function-vector":
 		root = source.Lambda(Formals(), []*LVal{Int(7)})

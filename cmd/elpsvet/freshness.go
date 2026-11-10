@@ -12,8 +12,8 @@
 //
 //   - the receiver chain roots at a value constructed in the same function:
 //     a &LVal{...} composite literal, new(LVal), a call to a known fresh
-//     constructor (lisp.Int, SExpr, Errorf, ... — NOT Nil() or Bool(), which
-//     return shared singletons), or a (*LVal).Copy/detach call; freshness is
+//     constructor (lisp.FreshInt, SExpr, Errorf, ... — NOT Nil(), Bool() or
+//     Int(), which return shared values), or a (*LVal).Copy/detach call; freshness is
 //     tracked through simple := and = assignments of tracked values;
 //
 //   - the receiver roots at a fresh pointer used for the Copy/detach struct
@@ -60,7 +60,10 @@ var freshnessAnalyzer = &analysis.Analyzer{
 // exists to catch.
 var freshConstructors = map[string]bool{
 	// Exported constructors (lisp/lisp.go).
-	"Int": true, "Float": true, "String": true, "Bytes": true,
+	// Int is deliberately ABSENT, like Bool and Nil: for a small value it
+	// returns an entry of a table every Runtime shares (lisp/smallint.go).
+	// FreshInt is the constructor of an integer the caller owns.
+	"FreshInt": true, "Float": true, "String": true, "Bytes": true,
 	"Symbol": true, "Native": true, "Value": true,
 	"SExpr": true, "QExpr": true, "Vector": true, "MakeVector": true,
 	"Array": true, "SortedMap": true, "SortedMapFromData": true,

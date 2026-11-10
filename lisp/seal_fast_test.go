@@ -38,7 +38,7 @@ func TestSealContinuationCycleAndSiblings(t *testing.T) {
 	for i := range 80 {
 		v = SExpr([]*LVal{Int(i), v})
 	}
-	hidden := Int(9)
+	hidden := FreshInt(9)
 	opaque := Vector([]*LVal{hidden})
 	root := SExpr([]*LVal{v, v, opaque, Nil()})
 	root.sealAST()

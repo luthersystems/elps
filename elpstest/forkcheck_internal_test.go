@@ -165,10 +165,10 @@ func capturedOracleEnv(t *testing.T, first, second *lisp.LVal) *lisp.LEnv {
 		fn := funraw.NewCapturedBuiltin(funraw.CapturedBuiltin{
 			Package: lisp.DefaultUserPackage, FID: binding.name, Formals: lisp.Formals(), Captures: binding.captures,
 			Eval: func(_ *lisp.LEnv, _ *lisp.LVal, captures *lisp.LVal) *lisp.LVal {
-				if rc := captures.MapSetString("n", lisp.Int(2)); rc.Type == lisp.LError {
+				if rc := captures.MapSetString("n", lisp.FreshInt(2)); rc.Type == lisp.LError {
 					return rc
 				}
-				return lisp.Int(0) // the result intentionally reveals no capture state
+				return lisp.FreshInt(0) // the result intentionally reveals no capture state
 			},
 		})
 		if rc := env.PutGlobal(lisp.Symbol(binding.name), fn); rc.Type == lisp.LError {
@@ -181,7 +181,7 @@ func capturedOracleEnv(t *testing.T, first, second *lisp.LVal) *lisp.LEnv {
 func capturedOracleMap(t *testing.T) *lisp.LVal {
 	t.Helper()
 	value := lisp.SortedMap()
-	if rc := value.MapSetString("n", lisp.Int(1)); rc.Type == lisp.LError {
+	if rc := value.MapSetString("n", lisp.FreshInt(1)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
 	if rc := value.MapSetString("self", value); rc.Type == lisp.LError {

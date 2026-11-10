@@ -15,7 +15,7 @@ func TestTemplateRejectsSealedMacroExpansionMetadata(t *testing.T) {
 	source := templateOwnershipEnv()
 	fn := source.Lambda(Formals(), []*LVal{Int(9)})
 	metadata := &macroExpansionInfo{macroExpansionContext: &macroExpansionContext{Args: []*LVal{fn}, Name: "fixture-macro"}, ID: 3}
-	node := Int(1)
+	node := FreshInt(1)
 	node.setMacroExp(metadata)
 	node.SealAST()
 	source.Runtime.Package.symbols["node"] = node
@@ -46,7 +46,7 @@ func TestTemplateRejectsSealedMacroExpansionMetadata(t *testing.T) {
 
 func TestTemplateDropsUnsealedMacroExpansionMetadata(t *testing.T) {
 	source := templateOwnershipEnv()
-	node := Int(1)
+	node := FreshInt(1)
 	node.setMacroExp(&macroExpansionInfo{macroExpansionContext: &macroExpansionContext{Args: []*LVal{Native(new(int))}}, ID: 3})
 	source.Runtime.Package.symbols["node"] = node
 	plan, err := NewTemplate(source)

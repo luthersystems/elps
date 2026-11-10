@@ -14,7 +14,7 @@ func TestTemplateCompilerRejectsMissingAdmittedIdentity(t *testing.T) {
 	for _, kind := range []string{"global", "native", "sealed", "capacity-tail", "capture", "stock-map", "json-map", "root-env", "closure-env"} {
 		t.Run(kind, func(t *testing.T) {
 			env := templateOwnershipEnv()
-			leaf := Int(17)
+			leaf := FreshInt(17)
 			subject := leaf
 			missingEnv := env
 			switch kind {
@@ -143,7 +143,7 @@ func TestTemplateCompilerRejectsMissingStorageIdentity(t *testing.T) {
 func TestTemplateAdmissionIndicesPreserveClosedCycles(t *testing.T) {
 	source := templateOwnershipEnv()
 	lexical := NewEnv(source)
-	leaf := Int(17)
+	leaf := FreshInt(17)
 	lexical.scope = scopeOf(map[string]*LVal{"leaf": leaf})
 	closure := lexical.Lambda(Formals(), []*LVal{Symbol("leaf")})
 	lexical.scope.put("self", closure, 0)

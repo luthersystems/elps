@@ -334,8 +334,8 @@ func buildTemplateParity(g templateParityCase) (*lisp.LEnv, templateParityTrust,
 	}
 	backing := slices.Clone(g.initial.hostBytes)
 	first, second := lisp.Bytes(backing[:3]), lisp.Bytes(backing[2:5])
-	header := lisp.Int(g.initial.raw)
-	for name, v := range map[string]*lisp.LVal{"host-a": first, "host-b": second, "raw-header": header, "raw-alias": header, "hidden-state": lisp.Int(19)} {
+	header := lisp.FreshInt(g.initial.raw)
+	for name, v := range map[string]*lisp.LVal{"host-a": first, "host-b": second, "raw-header": header, "raw-alias": header, "hidden-state": lisp.FreshInt(19)} {
 		if err := put(name, v); err != nil {
 			return nil, nil, err
 		}

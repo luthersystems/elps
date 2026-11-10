@@ -191,6 +191,10 @@ func sealChildren(cells []*LVal) {
 // program for every environment sharing the parse — and should either
 // return an error ("cannot modify a program literal") or work on a Copy
 // (whose fresh storage IsSealed reports false).
+//
+// A shared small integer (see Int) reports true for the same reason: it is
+// not a program literal, but a write to it reaches every environment in the
+// process.
 func (v *LVal) IsSealed() bool {
 	return v != nil && v.sealed
 }
