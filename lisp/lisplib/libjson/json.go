@@ -11,6 +11,7 @@ import (
 	"maps"
 	"slices"
 	"strconv"
+	"strings"
 
 	"github.com/luthersystems/elps/internal/jsonraw"
 	"github.com/luthersystems/elps/lisp"
@@ -596,7 +597,9 @@ func loadNumber(text string) *lisp.LVal {
 	if ferr == nil && string(appendJSONFloat(nil, f)) == text {
 		return lisp.Float(f)
 	}
-	lerr := lisp.Errorf("json integer does not fit in a lisp int: %s", text)
+	// The clone keeps text from escaping through the error, so a caller's
+	// string(bytes) argument stays on the stack when there is no error.
+	lerr := lisp.Errorf("json integer does not fit in a lisp int: %s", strings.Clone(text))
 	lerr.Str = "json:integer-range-error"
 	return lerr
 }
@@ -607,7 +610,8 @@ func loadFloat(text string) *lisp.LVal {
 		// Matches the message encoding/json produces for the same document on
 		// the default path, so turning the option on does not change what a
 		// caller reading the error text sees.
-		return lisp.Errorf("json: cannot unmarshal number %s into Go value of type float64", text)
+		// The clone is for the reason given in loadNumber.
+		return lisp.Errorf("json: cannot unmarshal number %s into Go value of type float64", strings.Clone(text))
 	}
 	return lisp.Float(f)
 }
