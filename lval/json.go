@@ -36,12 +36,7 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 	case Nil:
 		return append(b, "null"...), nil
 	case Int:
-		if v.i >= -maxExactInt && v.i <= maxExactInt {
-			return strconv.AppendInt(b, v.i, 10), nil
-		}
-		b = append(b, `"~n`...)
-		b = strconv.AppendInt(b, v.i, 10)
-		return append(b, '"'), nil
+		return appendInt(b, v.i), nil
 	case Float:
 		return appendFloat(b, v.f), nil
 	case String:
@@ -107,12 +102,27 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 		}
 		return appendTagged(b, v.str, v.items[0], depth)
 	case Array:
-		n := 1
+		// A zero dimension makes the array empty however large the others
+		// are, so the product is checked for overflow only when none is
+		// zero.  libjson's checkArrayShape has the same rule.  A product
+		// that wrapped could equal the cell count, and libjson refuses the
+		// bytes written for such an array.
+		n, zero := 1, false
 		for _, d := range v.dims {
 			if d < 0 {
 				return nil, errors.New("lval: an array dimension is negative")
 			}
-			n *= d
+			zero = zero || d == 0
+		}
+		if zero {
+			n = 0
+		} else {
+			for _, d := range v.dims {
+				if n > math.MaxInt/d {
+					return nil, errors.New("lval: an array's dimensions are too large")
+				}
+				n *= d
+			}
 		}
 		if n != len(v.items) || len(v.dims) == 1 {
 			return nil, errors.New("lval: an array's cells must match its dimensions, and a rank-1 array is a vector")
@@ -122,7 +132,9 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 			if i > 0 {
 				b = append(b, ',')
 			}
-			b = strconv.AppendInt(b, int64(d), 10)
+			// A dimension is an int value in typed JSON, so a large one
+			// needs the "~n" form.
+			b = appendInt(b, int64(d))
 		}
 		b = append(b, "],"...)
 		var err error
@@ -133,6 +145,18 @@ func appendValue(b []byte, v Value, depth int) ([]byte, error) {
 		return append(b, "]]"...), nil
 	}
 	return nil, errors.New("lval: unknown kind " + v.kind.String())
+}
+
+// appendInt writes i as typed JSON writes every int: a JSON number up to
+// 2^53 in size, where a float64 reader stays exact, and a "~n" string past
+// it.
+func appendInt(b []byte, i int64) []byte {
+	if i >= -maxExactInt && i <= maxExactInt {
+		return strconv.AppendInt(b, i, 10)
+	}
+	b = append(b, `"~n`...)
+	b = strconv.AppendInt(b, i, 10)
+	return append(b, '"')
 }
 
 func appendTagged(b []byte, typ string, data Value, depth int) ([]byte, error) {
@@ -488,18 +512,28 @@ func (d *decoder) array2(depth int) (Value, error) {
 	if len(dimv) == 1 {
 		return Value{}, d.errorf("a vector written as an array")
 	}
+	// The rule is libjson's: a zero dimension makes the array empty however
+	// large the others are.  Without one, a product larger than the cell
+	// count cannot match, which also keeps the product from overflowing.
 	dims := make([]int, 0, len(dimv))
-	cells := int64(1)
+	cells, zero := int64(1), false
 	for _, x := range dimv {
 		n, ok := x.Int()
 		if !ok || n < 0 || n > math.MaxInt {
 			return Value{}, d.errorf("bad array dimension")
 		}
-		if n > 0 && cells > int64(len(cellv))/n+1 {
-			return Value{}, d.errorf("array cells do not match its dimensions")
+		switch {
+		case n == 0:
+			zero = true
+		case cells > int64(len(cellv))/n:
+			cells = int64(len(cellv)) + 1 // more cells than the array has
+		default:
+			cells *= n
 		}
-		cells *= n
 		dims = append(dims, int(n))
+	}
+	if zero {
+		cells = 0
 	}
 	if cells != int64(len(cellv)) {
 		return Value{}, d.errorf("array cells do not match its dimensions")
