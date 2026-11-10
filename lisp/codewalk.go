@@ -977,7 +977,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 			if out := b.done(); out != v && len(cells) == 2 {
 				if formals := exprLambdaList(cells[1]); formals != nil {
 					lowered := Cells{Symbol(DefaultLangPackage + ":lambda"), formals, out.Cells[1]}.SExpr()
-					lowered.source = copyLocation(v.source)
+					lowered.source = v.loc().Copy()
 					return lowered
 				}
 			}
@@ -1516,7 +1516,7 @@ func rebuiltList(orig *LVal, cells []*LVal) *LVal {
 		Type:   orig.Type,
 		Cells:  cells,
 		quoted: orig.quoted,
-		source: copyLocation(orig.source),
+		source: orig.loc().Copy(),
 	}
 }
 

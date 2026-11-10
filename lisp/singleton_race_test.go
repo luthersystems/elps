@@ -63,16 +63,16 @@ func TestSingletonRaceRegression(t *testing.T) {
 		t.Errorf("Bool(true).source mutated by concurrent macro stamping: got %+v want %+v",
 			Bool(true).source, origTrueSource)
 	}
-	if Bool(true).macroExpansion != nil {
-		t.Errorf("Bool(true).macroExpansion mutated by concurrent macro stamping: got %+v",
-			Bool(true).macroExpansion)
+	if Bool(true).macroExp() != nil {
+		t.Errorf("Bool(true).macroExp() mutated by concurrent macro stamping: got %+v",
+			Bool(true).macroExp())
 	}
 	if Bool(false).source != origFalseSource {
 		t.Errorf("Bool(false).source mutated by concurrent macro stamping: got %+v want %+v",
 			Bool(false).source, origFalseSource)
 	}
-	if Bool(false).macroExpansion != nil {
-		t.Errorf("Bool(false).macroExpansion mutated by concurrent macro stamping: got %+v",
-			Bool(false).macroExpansion)
+	if Bool(false).macroExp() != nil {
+		t.Errorf("Bool(false).macroExp() mutated by concurrent macro stamping: got %+v",
+			Bool(false).macroExp())
 	}
 }

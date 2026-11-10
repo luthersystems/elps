@@ -46,7 +46,7 @@ func TestWalkerBehaviorOracleSelectionSurvivesReordering(t *testing.T) {
 					t.Fatal(err)
 				}
 				for _, result := range []*LVal{a, b} {
-					if result == nil || result.Type != LNative || result.Native != int64(7) || (result == v) != tc.shares || (result.macroExpansion != nil) != tc.stamps {
+					if result == nil || result.Type != LNative || result.Native != int64(7) || (result == v) != tc.shares || (result.macroExp() != nil) != tc.stamps {
 						t.Fatalf("%s selected the wrong behavior: %v", tc.name, result)
 					}
 				}
@@ -183,16 +183,16 @@ func checkOracleNegativeControls(t *testing.T, walkers []oracleWalker) {
 		{"sibling cell slot sharing", "isolation", func(_, a, b *LVal) { b.Cells[3].Cells = a.Cells[3].Cells }},
 		{"sibling array slot sharing", "isolation", func(_, a, b *LVal) { b.Cells[5].Cells[1].Cells = a.Cells[5].Cells[1].Cells }},
 		{"sibling source location sharing", "isolation", func(_, a, b *LVal) { b.source = a.source }},
-		{"sibling format metadata sharing", "isolation", func(_, a, b *LVal) { b.meta = a.meta }},
+		{"sibling format metadata sharing", "isolation", func(_, a, b *LVal) { b.setFmtMeta(a.fmtMeta(), false) }},
 		{"zeroed bytes", "contents", func(_, a, _ *LVal) { a.Cells[0].Cells[3].Bytes()[0] = 0 }},
 		{"lost quote", "flags", func(_, a, _ *LVal) { a.quoted = false }},
-		{"retained debugger metadata", "retained macro", func(source, a, _ *LVal) { a.macroExpansion = source.macroExpansion }},
-		{"metadata only input write", "source changed", func(source, _, _ *LVal) { source.macroExpansion.ID++ }},
-		{"macro argument slot input write", "source changed", func(source, _, _ *LVal) { source.macroExpansion.Args[0] = Int(99) }},
-		{"macro location hidden field input write", "source changed", func(source, _, _ *LVal) { source.macroExpansion.CallSite.EndCol++ }},
-		{"comment location input write", "source changed", func(source, _, _ *LVal) { source.meta.TrailingComment.Source.Line++ }},
-		{"lost source location", "source/format", func(_, a, _ *LVal) { a.source = nil }},
-		{"lost format metadata", "source/format", func(_, a, _ *LVal) { a.meta = nil }},
+		{"retained debugger metadata", "retained macro", func(source, a, _ *LVal) { a.setMacroExp(source.macroExp()) }},
+		{"metadata only input write", "source changed", func(source, _, _ *LVal) { source.macroExp().ID++ }},
+		{"macro argument slot input write", "source changed", func(source, _, _ *LVal) { source.macroExp().Args[0] = Int(99) }},
+		{"macro location hidden field input write", "source changed", func(source, _, _ *LVal) { source.macroExp().CallSite.EndCol++ }},
+		{"comment location input write", "source changed", func(source, _, _ *LVal) { source.fmtMeta().TrailingComment.Source.Line++ }},
+		{"lost source location", "source/format", func(_, a, _ *LVal) { a.setLoc(nil) }},
+		{"lost format metadata", "source/format", func(_, a, _ *LVal) { a.setFmtMeta(nil, false) }},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			w := mustOracleWalker(t, walkers, "LVal.Copy")
@@ -234,7 +234,7 @@ func checkOracleStampLiveControl(t *testing.T, walkers []oracleWalker) {
 	w.makeCopies = func(v *LVal) (*LVal, *LVal, error) {
 		a, b, err := clean(v)
 		if err == nil {
-			a.Cells[0].macroExpansion = nil
+			a.Cells[0].setMacroExp(nil)
 		}
 		return a, b, err
 	}

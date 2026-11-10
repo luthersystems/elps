@@ -221,7 +221,9 @@ through an exported `LVal` field — the #333/#334 singleton race wrote
 `Quoted`, #370's stamp wrote `MacroExpansion` and source metadata onto
 shared parser nodes, and the post-seal leak fixes were `Meta`-adjacent
 writes — so those fields are unexported (#362 for `source`, #382 for
-`quoted`, `spliced`, `meta`, `macroExpansion`):
+`quoted`, `spliced`, and the formatter metadata and macro-expansion
+record, which ride on the node's `source` Location since
+luthersystems/elps#944, see `nodeAux` in `lisp/nodeaux.go`):
 
 - **Reads are mediated**: `Source()` returns a location copy, `IsQuoted()`
   reads the quote flag, `MacroExpansion()` returns a `MacroExpansionMeta`

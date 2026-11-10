@@ -9,7 +9,6 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/luthersystems/elps/internal/fmtmeta"
 	"github.com/luthersystems/elps/parser/token"
 )
 
@@ -167,7 +166,7 @@ func (ft LFunType) String() string {
 // with plain reflection and rebind inside it through the public Put — the
 // exact channel this comment claims is closed.  Unexported fields make
 // reflect.Value.Interface panic instead, so every other privatized field
-// (LVal.source/meta/macroExpansion, LEnv.scope/parent/loc, MapData's
+// (LVal.source and its tooling record, LEnv.scope/parent/loc, MapData's
 // backing) was already unreachable; these are now too.
 type funData struct {
 	builtin  LBuiltin
@@ -296,22 +295,23 @@ type MacroExpansionMeta struct {
 //
 // MacroExpansion is nil-receiver safe: a nil LVal reports false.
 func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
-	if v == nil || v.macroExpansion == nil || v.macroExpansion.macroExpansionContext == nil {
+	if v == nil {
 		return MacroExpansionMeta{}, false
 	}
-	ctx := v.macroExpansion.macroExpansionContext
+	mexp := v.macroExp()
+	if mexp == nil || mexp.macroExpansionContext == nil {
+		return MacroExpansionMeta{}, false
+	}
+	ctx := mexp.macroExpansionContext
 	m := MacroExpansionMeta{
 		Name: ctx.Name,
-		ID:   v.macroExpansion.ID,
+		ID:   mexp.ID,
 	}
-	if ctx.CallSite != nil {
-		loc := *ctx.CallSite
-		m.CallSite = &loc
-	}
-	if ctx.DefSite != nil {
-		loc := *ctx.DefSite
-		m.DefSite = &loc
-	}
+	// Copy, not a struct copy: the definition site is the Location of the
+	// macro's own node, which can hold that node's tooling record, and the
+	// record must not leave the package on a position (see nodeAux).
+	m.CallSite = ctx.CallSite.Copy()
+	m.DefSite = ctx.DefSite.Copy()
 	if len(ctx.Args) > 0 {
 		m.Args = Cells(ctx.Args).Clone()
 	}
@@ -321,13 +321,17 @@ func (v *LVal) MacroExpansion() (MacroExpansionMeta, bool) {
 // LVal is a lisp value
 //
 // Field order is chosen so that every pointer-bearing word sits in the leading
-// 64 bytes: the GC only scans up to the last pointer word, so grouping the
+// 48 bytes: the GC only scans up to the last pointer word, so grouping the
 // pointers first and letting Str/Cells contribute their pointer word last
 // leaves their len/cap tails (and all the scalars) outside the scan range.
-// This cuts the GC scan extent from 112 bytes to 64 without changing the
-// struct's overall size. LVal is allocated for every value in the
-// interpreter, so keep the pointers first when adding fields — `govet`'s
-// fieldalignment check (see .golangci.yml) enforces this.
+// LVal is allocated for every value in the interpreter, so keep the pointers
+// first when adding fields — `govet`'s fieldalignment check (see
+// .golangci.yml) enforces this.
+//
+// The struct is 96 bytes, an allocator size class of its own, and one more
+// pointer field moves every value up to the 112-byte class
+// (TestLValSizeUnchanged pins the size; luthersystems/elps#944 measured the
+// difference).  That is why tooling data has no field here: see nodeAux.
 type LVal struct {
 	// Native is generic storage for data which cannot be represented as an
 	// LVal (and thus can't be stored in Cells).
@@ -338,23 +342,22 @@ type LVal struct {
 	// which is why the field is unexported: external packages read it
 	// through Source(), which returns a copy, and write it through
 	// SetSource().  See issue #362.
+	//
+	// Kernel code reads it through loc(), not directly: for a node that
+	// carries a tooling record and has no location, the pointer is the
+	// record's carrier and not a location (see nodeAux).
+	//
+	// The formatter's metadata and the debugger's macro-expansion record
+	// have no field of their own.  They ride on this Location and are
+	// reached through fmtMeta and macroExp (see nodeAux for the design).
+	// Formatting metadata exists only in format-preserving mode, and only
+	// this module's format tooling touches it, through internal/fmtraw
+	// (issue #382); format-preserving trees are never sealed, evaluated,
+	// or shared.  The macro-expansion record exists only while a debugger
+	// is attached; external packages read a snapshot through the
+	// MacroExpansion accessor, and the in-kernel stamp
+	// (stampMacroExpansion) is the only writer.
 	source *token.Location
-
-	// meta holds formatting metadata, only populated in format-preserving
-	// mode.  Unexported (issue #382), typed by an internal package: only
-	// this module's format tooling (parser/rdparser writes, formatter
-	// reads) can touch it, through internal/fmtraw.  Format-preserving
-	// trees are never sealed, evaluated, or shared, so nothing outside
-	// that tooling has ever had a legitimate use.
-	meta *fmtmeta.Meta
-
-	// macroExpansion holds debug metadata for nodes produced by macro
-	// expansion. Only populated when a debugger is attached — nil in
-	// production (zero overhead: 8-byte nil pointer).  Unexported (issue
-	// #382): external packages read a snapshot through the MacroExpansion
-	// accessor; the in-kernel stamp (stampMacroExpansion) is the only
-	// writer.
-	macroExpansion *macroExpansionInfo
 
 	// Str used by LSymbol and LString values
 	Str string
@@ -397,7 +400,7 @@ type LVal struct {
 	// modify-literal-error condition (empty inputs excepted); see
 	// lisp/seal.go for the design and the full list of guarded sites.
 	//
-	// The field occupies an existing padding byte: LVal is 112 bytes with
+	// The field occupies an existing padding byte: LVal is 96 bytes with
 	// or without it (TestLValSizeUnchanged pins this).
 	//
 	// The flag is monotone: it is set (only) by SealAST after parsing
@@ -408,6 +411,13 @@ type LVal struct {
 	// on fresh storage (Copy, detach).  It is never written after a tree
 	// becomes shared, so concurrent readers are race-free.
 	sealed bool
+
+	// hasAux reports that the tooling record on v's Location belongs to v.
+	// auxNoLoc reports that the Location exists only to carry that record,
+	// so v has no location.  Both are false in production and both occupy
+	// padding bytes.  See nodeAux.
+	hasAux   bool
+	auxNoLoc bool
 }
 
 // Source returns a copy of v's originating location in source code.  The
@@ -427,10 +437,20 @@ type LVal struct {
 // Pos -1) — the same location that values constructed by Go code have
 // always reported — so the result is printable either way.
 func (v *LVal) Source() (token.Location, bool) {
-	if v == nil || v.source == nil {
+	if v == nil {
 		return nativeLocation(), false
 	}
-	return *v.source, true
+	src := v.loc()
+	if src == nil {
+		return nativeLocation(), false
+	}
+	// Copy drops the tooling record, which is not part of a position and
+	// must not leave the package on one (see nodeAux).  The plain struct
+	// copy is the production path: no Location carries a record there.
+	if locAux(src) != nil {
+		return *src.Copy(), true
+	}
+	return *src, true
 }
 
 // SetSource sets v's originating location in source code.  A nil loc clears
@@ -449,7 +469,7 @@ func (v *LVal) SetSource(loc *token.Location) {
 	if v.sealed {
 		return
 	}
-	v.source = loc //elps:mutates the audited setter for source metadata; sealed (shared) nodes are skipped above
+	v.setLoc(loc)
 }
 
 // setSynthesizedSource gives every node in nodes that carries no location of
@@ -481,7 +501,7 @@ func (v *LVal) SetSource(loc *token.Location) {
 // above stampMacroExpansion exists to prevent.
 func setSynthesizedSource(loc *token.Location, nodes ...*LVal) {
 	for _, v := range nodes {
-		if v == nil || v.source != nil {
+		if v == nil || v.loc() != nil {
 			continue
 		}
 		v.SetSource(loc)
@@ -680,7 +700,7 @@ func SExpr(cells []*LVal) *LVal {
 // The header and the cells share one lifetime: anything that retains the
 // cells keeps the header's storage alive too.  The case that matters is a
 // lambda's &rest list, which aliases the call's cells: a program that stores
-// its &rest lists retains one LVal header (112 bytes) per stored list beyond
+// its &rest lists retains one LVal header (96 bytes) per stored list beyond
 // what it did with two allocations -- measured at 377 rather than 257 bytes
 // per retained two-element list.  That is accepted deliberately.  Copying the
 // cells when binding &rest would free it, but would add an allocation to every

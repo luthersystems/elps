@@ -2,7 +2,11 @@
 
 package token
 
-import "fmt"
+import (
+	"fmt"
+
+	"github.com/luthersystems/elps/internal/locaux"
+)
 
 // Source is an abstract stream of tokens which allows one token lookahead.
 type Source interface {
@@ -142,7 +146,23 @@ func (typ Type) String() string {
 // settles.  #464 is about which unit crosses the wire; the requirement here
 // is only that these four fields agree with EACH OTHER, which they must under
 // any choice #464 goes on to make.
+//
+// AUX.  The unexported aux field is not part of a position.  It lets package
+// lisp attach a node's tooling record (formatter metadata, the debugger's
+// macro-expansion record) to the node's Location, so that lisp.LVal needs
+// only one pointer for all three (luthersystems/elps#944).  It is nil in
+// production.  Only a node that package lisp marked as the owner reads it,
+// Copy drops it, and LVal.Source never returns it, so a Location that
+// leaves package lisp is a plain position.
+//
+// It sits first because both of its words are pointers: that keeps the
+// pointer words together at the front of the struct, which is as far as the
+// garbage collector scans (40 bytes; 96 with the slot last).  The
+// fieldalignment gate fails any other position.  The cost is in fmt: %v of
+// a Location value prints the slot first, as in {<nil> f.lisp  3 1 4 0 0 0},
+// and %+v names it.  Print a position with String.
 type Location struct {
+	aux     any    // tooling record, reached only through internal/locaux
 	File    string // a name representing the source stream
 	Path    string // a physical location which may differ from File
 	Pos     int    // BYTE offset of the first byte of the token/expr
@@ -193,9 +213,10 @@ func NativeLocation() Location {
 
 // Copy returns a pointer to an independent copy of loc, or nil if loc is nil.
 //
-// Location holds no reference-typed fields, so the shallow copy is fully
+// Every position field is a value, so the shallow copy is fully
 // independent: a later write through either pointer is invisible to the
-// other.  Nil is preserved rather than materialised into a zero Location
+// other.  The copy does not carry the tooling record (see Location): the
+// record belongs to the node that owns the original.  Nil is preserved rather than materialised into a zero Location
 // because a nil Source is meaningful throughout the tree ("no position
 // recorded") and distinct from a zero one ("position 0").
 //
@@ -207,7 +228,13 @@ func (loc *Location) Copy() *Location {
 		return nil
 	}
 	cp := *loc
+	cp.aux = nil
 	return &cp
+}
+
+func init() {
+	locaux.Get = func(loc *Location) any { return loc.aux }
+	locaux.Set = func(loc *Location, aux any) { loc.aux = aux }
 }
 
 // TokenEnd computes the end position of a token from its start position and

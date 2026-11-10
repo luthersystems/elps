@@ -167,10 +167,10 @@ func sealWatchRead(v *LVal, depth int, budget *int, acc uint64) uint64 {
 		acc ^= wdBits(src.Pos)<<1 ^ wdBits(src.Line)<<11 ^ wdBits(src.Col)<<21
 		acc ^= wdBits(src.EndPos)<<2 ^ wdBits(src.EndLine)<<12 ^ wdBits(src.EndCol)<<22
 	}
-	if v.meta != nil {
+	if v.fmtMeta() != nil {
 		acc ^= 1 << 19
 	}
-	if v.macroExpansion != nil {
+	if v.macroExp() != nil {
 		acc ^= 1 << 20
 	}
 	if v.Native != nil {

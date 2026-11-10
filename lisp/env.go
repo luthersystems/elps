@@ -212,7 +212,7 @@ func (env *LEnv) Source() *token.Location {
 	if env == nil {
 		return nil
 	}
-	return copyLocation(env.loc)
+	return env.loc.Copy()
 }
 
 // Context returns the context.Context currently associated with this
@@ -522,7 +522,7 @@ func (env *LEnv) Get(k *LVal) *LVal {
 		// name in error messages and stack traces through this stamp.
 		//
 		// When the binding already carries the exact spelling there is
-		// nothing to stamp, and the copy would be a 112-byte allocation
+		// nothing to stamp, and the copy would be a 96-byte allocation
 		// producing a byte-identical header.  Skipping it matters because
 		// this runs once per evaluated s-expression (the head symbol),
 		// which makes it one of the interpreter's highest-frequency
@@ -1714,10 +1714,14 @@ func (env *LEnv) Errorf(format string, v ...any) *LVal {
 // (when form has one) instead of the evaluator's current location (the macro call).
 func (env *LEnv) ErrorfAt(form *LVal, format string, v ...any) *LVal {
 	lerr := env.newErrorConditionf("error", format, v...)
-	if form != nil && form.source != nil && form.source.Pos >= 0 {
+	var src *token.Location
+	if form != nil {
+		src = form.loc()
+	}
+	if src != nil && src.Pos >= 0 {
 		// Copy the form's location for the escaping error, just as Errorf
 		// copies env.loc (issues #366 and #431).
-		lerr.source = form.source.Copy() //elps:mutates sets the location on the fresh error newErrorConditionf allocated above, before notifying any observer
+		lerr.source = src.Copy() //elps:mutates sets the location on the fresh error newErrorConditionf allocated above, before notifying any observer
 	}
 	return env.notifyError(lerr)
 }
@@ -1805,8 +1809,10 @@ func (env *LEnv) ErrorAssociate(lerr *LVal) *LVal {
 	// objects.)  Copy preserves nil, so a nil env.loc still yields a nil
 	// source and the `source == nil` convention on the line above is
 	// unchanged.
-	if lerr.source == nil || lerr.source.Pos < 0 {
-		lerr.source = env.loc.Copy() //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
+	if src := lerr.loc(); src == nil || src.Pos < 0 {
+		// setLoc and not a field write: an error value a macro expansion
+		// carried can hold a debugger record, which must move with it.
+		lerr.setLoc(env.loc.Copy()) //elps:mutates stamps a location onto an in-flight error that had none; the location itself is copied, not aliased
 	}
 	return nil
 }
@@ -2004,8 +2010,8 @@ eval:
 	if v.spliced {
 		return env.Errorf("spliced value used as expression")
 	}
-	env.loc = v.source
-	if v.source != nil {
+	env.loc = v.loc()
+	if env.loc != nil {
 		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() {
 			env.debugOnEval(ctx, d, v)
 		}
@@ -2022,7 +2028,7 @@ eval:
 		// frame has been popped and depth has decreased. If the debugger
 		// is stepping out, this is where we catch tail-position returns
 		// that would otherwise unwind without hitting OnEval.
-		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.source != nil {
+		if d := env.Runtime.Debugger; d != nil && d.IsEnabled() && v.loc() != nil {
 			if d.AfterFunCall(env) {
 				d.WaitIfPaused(env, v)
 			}
@@ -2242,7 +2248,7 @@ func (env *LEnv) macroCall(ctx context.Context, fun, args *LVal) *LVal {
 		mctx = &macroExpansionContext{
 			CallSite: callSite,
 			Name:     qualName,
-			DefSite:  fun.source,
+			DefSite:  fun.loc(),
 			Args:     args.Cells,
 		}
 	}
@@ -2621,7 +2627,7 @@ func (env *LEnv) evalOperand(ctx context.Context, x *LVal) *LVal {
 	if lerr := env.checkLimits(ctx); lerr != nil {
 		return lerr
 	}
-	env.loc = x.source
+	env.loc = x.loc()
 	if x.quoted || x.Type != LSymbol {
 		return x
 	}

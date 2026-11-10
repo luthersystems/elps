@@ -47,7 +47,7 @@ func TestMacroExpansionDoesNotStampFunctionValues(t *testing.T) {
 	if loc, ok := car.Source(); ok {
 		t.Errorf("lisp:car gained a source location from a macro expansion: %v", loc)
 	}
-	if car.macroExpansion != nil {
+	if car.macroExp() != nil {
 		t.Errorf("lisp:car gained macro-expansion metadata")
 	}
 	table := env.Runtime.Package.Get(Symbol("table"))
@@ -115,8 +115,8 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 			if got.source != callSite {
 				t.Errorf("the copy is not stamped: %v", got.source)
 			}
-			if v.source != nil || v.macroExpansion != nil {
-				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExpansion)
+			if v.source != nil || v.macroExp() != nil {
+				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExp())
 			}
 			if got.Type != v.Type || got.Native != v.Native || (len(v.Cells) > 0 && &got.Cells[0] != &v.Cells[0]) {
 				t.Errorf("the copy does not share the value's storage")
@@ -140,8 +140,8 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 			if got.Cells[1].source != callSite {
 				t.Errorf("the copy in the expansion is not stamped: %v", got.Cells[1].source)
 			}
-			if v.source != nil || v.macroExpansion != nil {
-				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExpansion)
+			if v.source != nil || v.macroExp() != nil {
+				t.Errorf("the value itself was written to: source %v, macroExpansion %v", v.source, v.macroExp())
 			}
 		})
 	}
@@ -150,10 +150,10 @@ func TestMacroExpansionStampsValuesOnPrivateHeaders(t *testing.T) {
 	ctx := &macroExpansionContext{CallSite: callSite, Name: "m"}
 	v := SortedMap()
 	got := stampMacroExpansion(v, callSite, ctx, env.Runtime)
-	if got.macroExpansion == nil {
+	if got.macroExp() == nil {
 		t.Errorf("the copy did not get macro-expansion metadata under a debugger context")
 	}
-	if v.macroExpansion != nil {
+	if v.macroExp() != nil {
 		t.Errorf("the value got macro-expansion metadata")
 	}
 }

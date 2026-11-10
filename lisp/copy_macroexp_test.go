@@ -26,7 +26,7 @@ import (
 // shared with the rest of the expansion.
 func newExpansionNode(id int64, ctx *macroExpansionContext) *LVal {
 	v := Symbol("expanded")
-	v.macroExpansion = &macroExpansionInfo{macroExpansionContext: ctx, ID: id}
+	v.setMacroExp(&macroExpansionInfo{macroExpansionContext: ctx, ID: id})
 	return v
 }
 
@@ -47,10 +47,10 @@ func TestCopyDoesNotAliasMacroExpansionInfo(t *testing.T) {
 	orig := newExpansionNode(7, ctx)
 
 	cp := orig.Copy()
-	assert.Nil(t, cp.macroExpansion,
+	assert.Nil(t, cp.macroExp(),
 		"a copy carries an expansion record; Copy drops it (lisp/copier.go), as Fork and detach do")
-	require.NotNil(t, orig.macroExpansion, "copying moved the original's expansion info")
-	assert.Equal(t, int64(7), orig.macroExpansion.ID, "copying changed the original's expansion ID")
+	require.NotNil(t, orig.macroExp(), "copying moved the original's expansion info")
+	assert.Equal(t, int64(7), orig.macroExp().ID, "copying changed the original's expansion ID")
 }
 
 // TestCopyKeepsSharingTheMacroExpansionContext pins that the shared half
@@ -68,14 +68,14 @@ func TestCopyKeepsSharingTheMacroExpansionContext(t *testing.T) {
 	loc := &token.Location{File: "m.lisp", Line: 3, Col: 5}
 	ctx := &macroExpansionContext{CallSite: loc, Name: "lisp:defun"}
 	a, b := newExpansionNode(1, ctx), newExpansionNode(2, ctx)
-	require.Same(t, a.macroExpansion.macroExpansionContext, b.macroExpansion.macroExpansionContext,
+	require.Same(t, a.macroExp().macroExpansionContext, b.macroExp().macroExpansionContext,
 		"premise: one expansion's nodes share one context")
 
 	cp := a.Copy()
-	assert.Nil(t, cp.macroExpansion, "a copy carries an expansion record; Copy drops it")
-	assert.Same(t, ctx, a.macroExpansion.macroExpansionContext,
+	assert.Nil(t, cp.macroExp(), "a copy carries an expansion record; Copy drops it")
+	assert.Same(t, ctx, a.macroExp().macroExpansionContext,
 		"copying replaced the original's MacroExpansionContext")
-	assert.Same(t, ctx, b.macroExpansion.macroExpansionContext,
+	assert.Same(t, ctx, b.macroExp().macroExpansionContext,
 		"copying one node moved the context its sibling shares")
 	assert.Same(t, loc, ctx.CallSite, "copying moved the call site; it belongs to the expansion (#456)")
 }
@@ -102,10 +102,10 @@ func TestCopyCarriesNoMacroExpansionID(t *testing.T) {
 	ctx := &macroExpansionContext{Name: "lisp:defun"}
 	orig := newExpansionNode(7, ctx)
 	cp := orig.Copy()
-	assert.Nil(t, cp.macroExpansion,
+	assert.Nil(t, cp.macroExp(),
 		"a copy carries an expansion record (and so an ID); Copy drops it (lisp/copier.go)."+
 			" If that is intended to change, MacroExpansionInfo.ID's comment and this decision go with it")
-	assert.Equal(t, int64(7), orig.macroExpansion.ID, "copying changed the original's expansion ID")
+	assert.Equal(t, int64(7), orig.macroExp().ID, "copying changed the original's expansion ID")
 }
 
 // TestCopyPreservesNilMacroExpansion pins the nil case, which is every node in
@@ -113,9 +113,9 @@ func TestCopyCarriesNoMacroExpansionID(t *testing.T) {
 // GUARD: passes before the fix.
 func TestCopyPreservesNilMacroExpansion(t *testing.T) {
 	v := SExpr([]*LVal{Symbol("a")})
-	require.Nil(t, v.macroExpansion)
+	require.Nil(t, v.macroExp())
 	cp := v.Copy()
-	assert.Nil(t, cp.macroExpansion)
+	assert.Nil(t, cp.macroExp())
 	require.Len(t, cp.Cells, 1)
-	assert.Nil(t, cp.Cells[0].macroExpansion)
+	assert.Nil(t, cp.Cells[0].macroExp())
 }

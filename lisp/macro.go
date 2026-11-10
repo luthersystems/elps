@@ -20,7 +20,7 @@ func init() {
 	// internal/ visibility limits it to this module.
 	macroexphook.Attach = func(v *LVal, name string, callSite, defSite *token.Location, args []*LVal, id int64) {
 		//elps:mutates test-only fabrication of debug metadata via internal/macroexp; unreachable outside this module
-		v.macroExpansion = &macroExpansionInfo{
+		v.setMacroExp(&macroExpansionInfo{
 			macroExpansionContext: &macroExpansionContext{
 				CallSite: callSite,
 				Name:     name,
@@ -28,7 +28,7 @@ func init() {
 				Args:     args,
 			},
 			ID: id,
-		}
+		})
 	}
 }
 
@@ -477,7 +477,7 @@ func locateGuarded(v *LVal, callSite *token.Location, boundary map[*LVal]struct{
 	}
 	if len(v.Cells) == 0 {
 		if needsStamp(v) {
-			v.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+			v.setLoc(callSite) //elps:mutates locates fresh Go macro syntax before publication
 		}
 		return
 	}
@@ -492,7 +492,7 @@ func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struc
 		if v != nil && !isSingleton(v) && !v.sealed && !isValueNode(v) {
 			if _, arg := boundary[v]; !arg {
 				if needsStamp(v) {
-					v.source = callSite //elps:mutates locates fresh Go macro syntax before publication
+					v.setLoc(callSite) //elps:mutates locates fresh Go macro syntax before publication
 				}
 				// Leaves cannot cycle or schedule work. Only containers need
 				// a memo and a by-value cursor for their remaining children.
@@ -526,7 +526,8 @@ func isValueNode(v *LVal) bool {
 
 // needsStamp reports whether v carries no real source location.
 func needsStamp(v *LVal) bool {
-	return v.source == nil || v.source.Pos < 0
+	src := v.loc()
+	return src == nil || src.Pos < 0
 }
 
 // macroStamper carries one stamp's parameters down the copy-on-write walk.
@@ -593,13 +594,26 @@ func (s *macroStamper) commitIDs() {
 // and, under a debugger, the expansion metadata.  v is never written to.
 func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 	cp := *v
+	// The formatter metadata v may carry stays with the copy, as it did
+	// when it was a field the struct copy brought along.  The record v
+	// may carry from an earlier expansion is replaced under a debugger
+	// and kept otherwise, for the same reason.
+	meta, mexp := v.fmtMeta(), v.macroExp()
+	cp.hasAux, cp.auxNoLoc = false, false
 	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
 	if s.ctx != nil {
 		s.nextID++
-		cp.macroExpansion = &macroExpansionInfo{
+		mexp = &macroExpansionInfo{
 			macroExpansionContext: s.ctx,
 			ID:                    s.nextID,
 		}
+	}
+	if meta != nil || mexp != nil {
+		// The record needs a Location of its own: every node of the
+		// expansion shares callSite, and each has its own ID (see
+		// nodeAux).  This runs only under a debugger or on a
+		// format-preserving tree, so production pays nothing for it.
+		cp.setNodeAux(meta, mexp, false)
 	}
 	return &cp
 }
@@ -1200,14 +1214,14 @@ func prepareUnquote(env *LEnv, v *LVal, opts unquoteContext, seen map[*LVal]stru
 
 	unquote, err := getUnquoteType(v)
 	if err != nil {
-		env.loc = v.source
+		env.loc = v.loc()
 		return unquotePreparation{result: env.Error(err), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 	}
 	if unquote == unquoteSpliced {
 		// v looks like ``(unquote-splicing expr)''
 		expr := v.Cells[1]
 		if depth == 0 || quoteLevel > 0 {
-			env.loc = v.source
+			env.loc = v.loc()
 			return unquotePreparation{result: env.Errorf("unquote-splicing used in an invalid context"), list: nil, quotes: 0, quoteEdges: 0, dup: 0, evaluated: false}
 		}
 		return unquotePreparation{result: doUnquoteSpliced(env, expr, opts.resolve), list: nil, quotes: 0, quoteEdges: quoteEdges, dup: dup, evaluated: true}
@@ -1276,7 +1290,7 @@ func finishUnquote(v *LVal, cells []*LVal, opts unquoteAssembly) *LVal {
 	}
 	expr := SExpr(cells)
 	//elps:aliases deliberate in-runtime alias on the quasiquote hot path: v is the (sealed) quasiquote template node whose location was frozen at parse time, and the fresh expansion header mirrors it as display metadata — copying here would cost an allocation per quasiquote evaluation
-	expr.source = v.source
+	expr.source = v.loc()
 	return requote(expr, quoteLevel)
 }
 
