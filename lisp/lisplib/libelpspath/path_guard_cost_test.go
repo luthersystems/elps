@@ -31,6 +31,13 @@ import (
 // benchmarking a stale copy.
 
 func okSimpleTypeUnguarded(in *lisp.LVal) error {
+	// The shipped gate's first pass, which is all it runs on a valid
+	// document of builtin maps (okSimpleType).
+	var pairs []lisp.MapKeyPair
+	return okSimpleTypeUnguardedWalk(in, &pairs)
+}
+
+func okSimpleTypeUnguardedWalk(in *lisp.LVal, pairs *[]lisp.MapKeyPair) error {
 	if in.IsNil() {
 		return nil
 	}
@@ -41,41 +48,50 @@ func okSimpleTypeUnguarded(in *lisp.LVal) error {
 		if in.Str == lisp.TrueSymbol || in.Str == lisp.FalseSymbol {
 			return nil
 		}
-		return okSimpleContainerTypeUnguarded(in)
+		return okSimpleContainerTypeUnguarded(in, pairs)
 	default:
-		return okSimpleContainerTypeUnguarded(in)
+		return okSimpleContainerTypeUnguarded(in, pairs)
 	}
 }
 
-func okSimpleContainerTypeUnguarded(in *lisp.LVal) error {
+func okSimpleContainerTypeUnguarded(in *lisp.LVal, pairs *[]lisp.MapKeyPair) error {
 	if in.IsNil() {
 		return errors.New("nil container type invalid")
 	}
 	switch in.Type {
 	case lisp.LSortMap:
-		entries := sortedMapEntries(in.Map())
-		if err := lisp.GoError(entries); err != nil {
-			return err
+		// The map read of okSimpleMapUnordered: the entries of the maps
+		// on the walk's path share one slice, made on first use.
+		if *pairs == nil {
+			*pairs = make([]lisp.MapKeyPair, 0, unorderedPairsCap)
 		}
-		for _, ent := range entries.Cells {
-			if err := okSimpleTypeUnguarded(ent.Cells[1]); err != nil {
-				return err
-			}
+		base := len(*pairs)
+		var ok bool
+		*pairs, ok = in.AppendMapKeyPairs(*pairs)
+		if !ok {
+			return errOrderedWalk
 		}
-		return nil
+		end := len(*pairs)
+		var err error
+		for i := base; i < end && err == nil; i++ {
+			err = okSimpleTypeUnguardedWalk((*pairs)[i].Val, pairs)
+		}
+		clear((*pairs)[base:end])
+		*pairs = (*pairs)[:base]
+		return err
 	case lisp.LArray:
 		if in.Cells[0].Len() > 1 {
 			return errors.New("cannot index multi-dimensional array")
 		}
 		for _, v := range in.Cells[1].Cells {
-			if err := okSimpleTypeUnguarded(v); err != nil {
+			if err := okSimpleTypeUnguardedWalk(v, pairs); err != nil {
 				return err
 			}
 		}
 		return nil
 	case lisp.LSExpr:
 		for _, v := range in.Cells {
-			if err := okSimpleTypeUnguarded(v); err != nil {
+			if err := okSimpleTypeUnguardedWalk(v, pairs); err != nil {
 				return err
 			}
 		}

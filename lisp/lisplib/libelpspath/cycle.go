@@ -118,6 +118,9 @@ type cycleState struct {
 	// never reaches a container twice, so for a tree this changes nothing
 	// but the memory the map takes.
 	valid map[*lisp.LVal]struct{}
+	// pairs is the stack of map entries an unordered validation walk is
+	// reading (okSimpleMapUnordered).  It stays nil for every other walk.
+	pairs []lisp.MapKeyPair
 	// op is the copy memo, shared by every copy walk of one operation (see
 	// copyOp); nil for a walk that does not copy.  ownOp is the memo of a
 	// copy walk that belongs to no operation, kept here rather than
@@ -135,6 +138,11 @@ type cycleState struct {
 	// which is the same answer Runtime.ValueDepthLimit gives for a nil
 	// runtime.
 	limit int
+
+	// unordered selects the first pass of okSimpleType: the validator
+	// reads a map's values in no particular order.  The zero value is the
+	// ordered walk, whose first error is the one a caller sees.
+	unordered bool
 }
 
 // sharedWalkBudget is lisp's budget of the same name (lisp/sharing.go): the

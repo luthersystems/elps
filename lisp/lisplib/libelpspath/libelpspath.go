@@ -334,7 +334,15 @@ func okSimpleContainerTypeGuarded(in *lisp.LVal, g cycleGuard) error {
 	if cyclic {
 		return errCyclicValue
 	}
-	err := okSimpleContainerContents(in, g)
+	var err error
+	if g.state.unordered && in.Type == lisp.LSortMap {
+		// In place of okSimpleContainerContents, not under it: the walk
+		// recurses once for each level of the document, and a frame added
+		// to a level lowers the depth the goroutine stack can hold.
+		err = okSimpleMapUnordered(in, g)
+	} else {
+		err = okSimpleContainerContents(in, g)
+	}
 	if g.tracking() {
 		g.ascend(in)
 	}
@@ -416,6 +424,56 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 	}
 }
 
+// unorderedPairsCap is the first capacity of an unordered validation walk's
+// stack of map entries.  The stack holds the entries of the maps on the
+// walk's current path, so 16 covers a few levels of small records in one
+// allocation.  An entry is 40 bytes.
+const unorderedPairsCap = 16
+
+// errOrderedWalk ends an unordered validation walk that met a map it cannot
+// read without the map's own Entries method.  It never leaves okSimpleType.
+var errOrderedWalk = errors.New("elpspath: map needs an ordered walk")
+
+// okSimpleMapUnordered checks the values of the map in, in no particular
+// order, for the first pass of okSimpleType.
+//
+// The ordered walk asks the map for its entries, which builds a pair, a key
+// and two slots for each entry and sorts them, only to read the values and
+// drop the rest.  On a document of many records that is almost all the time
+// and memory of a validation (luthersystems/elps#944).  AppendMapKeyPairs
+// hands out the same values with nothing built and nothing sorted.  The
+// pairs of every map on the walk's current path share one slice, used as a
+// stack, so the walk makes that slice, grows it a few times, and allocates
+// nothing else for a map.
+//
+// A backing other than the interpreter's own is not read here.  Its Entries
+// method is host code: it can fail, and it can change the document.  The
+// walk stops before it calls any method of such a map, so the ordered pass
+// is the only caller, once for each visit.
+func okSimpleMapUnordered(in *lisp.LVal, g cycleGuard) error {
+	st := g.state
+	if st.pairs == nil {
+		st.pairs = make([]lisp.MapKeyPair, 0, unorderedPairsCap)
+	}
+	base := len(st.pairs)
+	var ok bool
+	st.pairs, ok = in.AppendMapKeyPairs(st.pairs)
+	if !ok {
+		return errOrderedWalk
+	}
+	// A nested map appends to st.pairs and can move it, so each pair is
+	// read through the state by index.  Nothing below truncates past end.
+	end := len(st.pairs)
+	var err error
+	for i := base; i < end && err == nil; i++ {
+		err = okSimpleTypeGuarded(st.pairs[i].Val, g)
+	}
+	// Drop the values so the slice does not keep them reachable.
+	clear(st.pairs[base:end])
+	st.pairs = st.pairs[:base]
+	return err
+}
+
 // okSimpleType validates the container graph, accepting arbitrary opaque leaves.
 // It is linear in the DISTINCT containers of a value with nested sharing: past
 // sharedWalkBudget work it skips a container it has already validated (see
@@ -425,9 +483,48 @@ func okSimpleContainerContents(in *lisp.LVal, g cycleGuard) error {
 // one-dimensional arrays, and tagged/quote wrappers. These walks reject cycles.
 // Opaque leaf storage (bytes, native payloads, function bodies/environments)
 // is neither traversed nor copied by elpspath.
+//
+// It walks in two passes, because every call pays for the first and almost
+// none needs the second.
+//
+// The first pass reads each map's values in no particular order
+// (okSimpleMapUnordered).  It answers one question: is the document valid.
+// The order of a walk does not change that answer.  Either walk reaches the
+// same containers and makes the same check on each one, and a container on
+// a cycle fails in any order, because no walk into it can finish.
+//
+// The second pass runs only when the first found a fault, or a map it could
+// not read.  It is the walk in sorted key order, and its result is the
+// function's result.  So a document with more than one fault reports the
+// first one in key order, whatever order the first pass took, and a valid
+// document costs one cheap walk.  The error is consensus-visible to an
+// embedder such as substrate, which is why the ordered walk decides it.
+// TestValidatorMatchesOrderedWalk compares the two passes with the ordered
+// walk alone.
 func okSimpleType(in *lisp.LVal) error {
+	if okSimpleTypeUnordered(in) {
+		return nil
+	}
 	var st cycleState
 	return okSimpleTypeGuarded(in, newCycleGuard(&st))
+}
+
+// okSimpleTypeUnordered is the first pass of okSimpleType.  It reports
+// whether the unordered walk found in valid.
+//
+// A panic counts as a fault.  Only a value that host code built wrongly can
+// panic the walk, a Go nil cell for one.  The ordered walk can meet another
+// fault before that value and return an error, so the ordered pass decides:
+// it returns that error, or panics on the value itself.
+func okSimpleTypeUnordered(in *lisp.LVal) (valid bool) { //nolint:nonamedreturns // the deferred recover sets the result in this frame
+	defer func() {
+		if recover() != nil {
+			valid = false
+		}
+	}()
+	var st cycleState
+	st.unordered = true
+	return okSimpleTypeGuarded(in, newCycleGuard(&st)) == nil
 }
 
 // okSimpleTypeGuarded is okSimpleType continuing a walk already in progress.
