@@ -2141,6 +2141,11 @@ func checkMapInsertAlloc(env *LEnv, m *MapData, key *LVal) *LVal {
 	if v.IsError() {
 		return nil
 	}
+	if _, decoded := m.mapBacking.(jsonMap); decoded && key.Type == LInt {
+		// A decoded map reads an int key as absent and refuses to store
+		// one.  Leave the refusal to Set, as for a key Get rejects.
+		return nil
+	}
 	if !exists {
 		if lerr := env.checkAlloc(m.Len() + 1); lerr.IsError() {
 			return lerr
