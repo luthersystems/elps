@@ -711,6 +711,7 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 	}
 
 	var refs []FileReference
+	finder := enclosingFinder{root: result.RootScope}
 	for _, ref := range result.References {
 		if ref.Symbol == nil || ref.Source == nil {
 			continue
@@ -741,7 +742,7 @@ func ExtractFileRefs(result *Result, filePath string) []FileReference {
 		}
 
 		// Find enclosing function for call hierarchy support.
-		enclosing := FindEnclosingFunction(result.RootScope, ref.Source.Line, ref.Source.Col)
+		enclosing := finder.find(ref.Source.Line, ref.Source.Col)
 		if enclosing != nil {
 			fref.Enclosing = enclosing.Name
 			fref.EnclosingSource = enclosing.Source
@@ -833,18 +834,8 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 				// body is nested. Local labels/flet still live in the parent.
 				for bindingScope := scope.Parent; bindingScope != nil && found == nil; bindingScope = bindingScope.Parent {
 					bindingScope.forEachSymbol(func(sym *Symbol) bool {
-						if sym.Kind != SymFunction && sym.Kind != SymMacro {
-							return true
-						}
-						// Skip external (imported) symbols — they belong to
-						// other files and may coincidentally share a line number.
-						if sym.External {
-							return true
-						}
-						if sym.Source != nil && sym.Source.Line == nodeLoc.Line &&
-							sym.Source.File == nodeLoc.File &&
-							(astutil.HeadSymbol(scope.Node) != "defun" && astutil.HeadSymbol(scope.Node) != "defmacro" ||
-								len(scope.Node.Cells) > 1 && sym.Node == scope.Node.Cells[1]) {
+						if isEnclosingCandidate(sym) && sym.Source.Line == nodeLoc.Line &&
+							definesFunctionScope(sym, scope, nodeLoc.File) {
 							found = sym
 							return false
 						}
@@ -859,6 +850,125 @@ func FindEnclosingFunction(root *Scope, line, col int) *Symbol {
 		scope = scope.Parent
 	}
 	return nil
+}
+
+// isEnclosingCandidate reports whether sym can be the function that a
+// function scope belongs to: a function or macro of this file with a
+// source location. An external symbol belongs to another file and may
+// share a line number by chance.
+func isEnclosingCandidate(sym *Symbol) bool {
+	return (sym.Kind == SymFunction || sym.Kind == SymMacro) && !sym.External && sym.Source != nil
+}
+
+// definesFunctionScope reports whether the candidate sym, which starts on
+// the line of the node of the function scope, is the function of that
+// scope. nodeFile is the source file of the node.
+func definesFunctionScope(sym *Symbol, scope *Scope, nodeFile string) bool {
+	if sym.Source.File != nodeFile {
+		return false
+	}
+	head := astutil.HeadSymbol(scope.Node)
+	if head != "defun" && head != "defmacro" {
+		return true
+	}
+	return len(scope.Node.Cells) > 1 && sym.Node == scope.Node.Cells[1]
+}
+
+// enclosingFinder answers FindEnclosingFunction for many positions of one
+// analysis result.
+//
+// FindEnclosingFunction visits every symbol of each binding scope for
+// each position. The root scope holds every global of the workspace, so
+// one file's references cost (references x workspace symbols), and a
+// workspace scan grew with the square of the workspace
+// (luthersystems/elps#944). The finder visits the symbols of a binding
+// scope one time and keeps the candidates by line, and it keeps the
+// answer of each function scope.
+type enclosingFinder struct {
+	root *Scope
+	// candidates holds, for each binding scope, its candidate symbols by
+	// source line.
+	candidates map[*Scope]map[int][]*Symbol
+	// functions holds the answer of each function scope. A nil entry
+	// means the scope has no function symbol.
+	functions map[*Scope]*Symbol
+}
+
+// find returns what FindEnclosingFunction(f.root, line, col) returns.
+func (f *enclosingFinder) find(line, col int) *Symbol {
+	for scope := ScopeAtPosition(f.root, line, col); scope != nil; scope = scope.Parent {
+		if scope.Kind != ScopeFunction {
+			continue
+		}
+		sym, ok := f.functions[scope]
+		if !ok {
+			sym = f.functionOf(scope)
+			if f.functions == nil {
+				f.functions = make(map[*Scope]*Symbol)
+			}
+			f.functions[scope] = sym
+		}
+		if sym != nil {
+			return sym
+		}
+	}
+	return nil
+}
+
+// functionOf returns the function symbol of a function scope, or nil.
+func (f *enclosingFinder) functionOf(scope *Scope) *Symbol {
+	if scope.Node == nil || scope.Parent == nil {
+		return nil
+	}
+	nodeLoc, ok := scope.Node.Source()
+	if !ok {
+		return nil
+	}
+	// The order of the binding scopes is the order of
+	// FindEnclosingFunction: the parent first, the root last.
+	for binding := scope.Parent; binding != nil; binding = binding.Parent {
+		for _, sym := range f.candidatesOf(binding)[nodeLoc.Line] {
+			if definesFunctionScope(sym, scope, nodeLoc.File) {
+				return sym
+			}
+		}
+	}
+	return nil
+}
+
+// candidatesOf returns the candidate symbols of a binding scope by line.
+func (f *enclosingFinder) candidatesOf(binding *Scope) map[int][]*Symbol {
+	byLine, ok := f.candidates[binding]
+	if ok {
+		return byLine
+	}
+	// This is forEachSymbol with the candidate test first. The root
+	// scope holds every global of the workspace and few candidates, so
+	// only the candidates go in the set that removes a symbol held by
+	// both maps.
+	var seen map[*Symbol]bool
+	add := func(sym *Symbol) {
+		if sym == nil || !isEnclosingCandidate(sym) || seen[sym] {
+			return
+		}
+		if seen == nil {
+			seen = make(map[*Symbol]bool)
+			byLine = make(map[int][]*Symbol)
+		}
+		seen[sym] = true
+		byLine[sym.Source.Line] = append(byLine[sym.Source.Line], sym)
+	}
+	for _, sym := range binding.Symbols {
+		add(sym)
+	}
+	for _, sym := range binding.PackageSymbols {
+		add(sym)
+	}
+	if f.candidates == nil {
+		f.candidates = make(map[*Scope]map[int][]*Symbol)
+	}
+	f.candidates[binding] = byLine
+	return byLine
 }
 
 // forEachSymbol iterates over all unique symbols in this scope (both bare and
