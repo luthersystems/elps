@@ -3,6 +3,7 @@
 package lval_test
 
 import (
+	"math"
 	"testing"
 
 	"github.com/luthersystems/elps/elpstest/oracle"
@@ -440,4 +441,55 @@ func (g *gen) items(depth int) []lval.Value {
 		items[i] = g.value(depth + 1)
 	}
 	return items
+}
+
+// TestArrayDimensionsMatchLibjson pins the array dimensions Marshal writes
+// (luthersystems/elps#943).  An array with a zero dimension has no cells, so
+// its other dimensions can be any size.  Marshal writes a dimension past
+// 2^53 as a "~n" string, the rule for every int: libjson refuses such a
+// dimension written as a JSON number.  A product of dimensions that
+// overflows an int matches no cell count, so Marshal refuses it as libjson
+// does.
+func TestArrayDimensionsMatchLibjson(t *testing.T) {
+	for _, dims := range [][]int{
+		{0, 1 << 53},
+		{0, 1<<53 + 1},
+		{1<<53 + 1, 0},
+		{math.MaxInt64, 0, math.MaxInt64},
+		{1 << 62, 4, 0},
+		{0, 0},
+	} {
+		b, err := lval.Marshal(lval.MakeArray(dims))
+		if err != nil {
+			t.Errorf("Marshal(%v): %v", dims, err)
+			continue
+		}
+		lv, err := libjson.LoadTyped(b)
+		if err != nil {
+			t.Errorf("LoadTyped(%s): %v", b, err)
+			continue
+		}
+		back, err := libjson.DumpTyped(lv)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if string(back) != string(b) {
+			t.Errorf("Marshal wrote %s, DumpTyped writes %s", b, back)
+		}
+		v, err := lval.Unmarshal(back)
+		if err != nil {
+			t.Errorf("Unmarshal(%s): %v", back, err)
+			continue
+		}
+		again, err := lval.Marshal(v)
+		if err != nil || string(again) != string(b) {
+			t.Errorf("Marshal(Unmarshal(%s)) = %s, %v", b, again, err)
+		}
+	}
+	// Each product wraps to 0, the number of cells.
+	for _, dims := range [][]int{{1 << 62, 4}, {1 << 32, 1 << 32}, {1 << 62, 2, 2}} {
+		if b, err := lval.Marshal(lval.MakeArray(dims)); err == nil {
+			t.Errorf("Marshal(%v) wrote %s, want an error", dims, b)
+		}
+	}
 }
