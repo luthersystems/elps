@@ -224,10 +224,12 @@ type funData struct {
 	// header with every VM.  Zero means not cached, and the call scans.
 	positional int32
 
-	// dropsList is true only for a kernel special operator that keeps
-	// neither its argument list nor a slice of the list's cells once it
-	// returns (dropsCallList, lisp/calllist.go).  The evaluator reuses the
-	// list of a direct call of such an operator.
+	// dropsList is true only for a kernel special operator or builtin that
+	// keeps neither its argument list nor a slice of the list's cells once
+	// it returns: the functions of callListDroppers (lisp/calllist.go).
+	// AddSpecialOps and AddBuiltins set it at registration, from
+	// dropsCallList.  reusesCallList reads it, and the evaluator reuses the
+	// list of a direct call of such a function.
 	dropsList bool
 }
 

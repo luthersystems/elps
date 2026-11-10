@@ -34,7 +34,7 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"name":       "scalar: most recently bound display name memo",
 			"freeKeys":   "scalar: free-keyword key-section start, copied with the header (#745; TestFreeKeywordsTemplateParity)",
 			"positional": "scalar: cached positional shape of the formals, copied with the header (luthersystems/elps#944; TestPositionalShapeMatchesScan)",
-			"dropsList":  "scalar: the kernel operator drops its argument list, copied with the header; a copy that lost it would only allocate a list per call (lisp/calllist.go)",
+			"dropsList":  "scalar: the kernel operator or builtin drops its argument list, copied with the header; a copy that lost it would only allocate a list per call (lisp/calllist.go)",
 			"reg":        "shared-immutable: registration record, the header registration built; VMs read only its Str and package; shared so identity survives forks (#800; TestRegisteredBuiltinParity)",
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{

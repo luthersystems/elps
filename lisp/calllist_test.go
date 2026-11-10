@@ -72,6 +72,20 @@ func TestCallListReuseKeepsResults(t *testing.T) {
 			(while (< n 3) (set! n (+ n 1)))
 			(list x acc n (default () 4) (quote (1 2)) (funcall (function +) 1 2))`,
 			"'(6 '('when) 3 4 '(1 2) 3)"},
+		{"builtins that keep a cell, not the list", `
+			(set 'm (sorted-map :a 1))
+			(assoc! m :b (identity '(1 2)))
+			(set 'c (cons 0 (cdr '(9 8 7))))
+			(set 'f (compose (lambda (x) (+ x 1)) (lambda (x) (* x 2))))
+			(set 'v (concat 'vector '(1) '(2)))
+			(max 1 2) (min 1 2) (not true) (length v)
+			(list (get m :b) c (f 5) v (foldl + 0 '(1 2 3)) (apply + 1 '(2 3)))`,
+			"'('(1 2) '(0 8 7) 11 (vector 1 2) 6 6)"},
+		{"builtins that keep their list", `
+			(set 'a (list 1 2))
+			(set 'b (vector 3 4))
+			(list 5 6) (vector 7 8) (+ 1 2) (max 3 4)
+			(list a b)`, "'('(1 2) (vector 3 4))"},
 		{"an error in a call does not disturb the next call", `
 			(defun fail (x) (error 'boom x))
 			(defun id (x) x)

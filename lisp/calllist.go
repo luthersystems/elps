@@ -18,13 +18,14 @@ import "reflect"
 //   - A Lisp function (it has a captured environment and no Go
 //     implementation) with no &rest formal.  A &rest list aliases the call's
 //     cells, so that call keeps its list.
-//   - A kernel special operator in callListDroppers.  It receives the list
-//     itself (bindOwned), and it was read to confirm that it keeps neither
-//     the list nor a slice of its cells.  The elpscalllist analyzer
+//   - A kernel special operator or builtin in callListDroppers.  It
+//     receives the list itself (bindOwned), and it keeps neither the list
+//     nor a slice of its cells.  The elpscalllist analyzer
 //     (cmd/elpsvet/calllist.go) checks each entry on every build.
 //
 // Every other Go function keeps its list: a builtin may store the list it
-// is handed (list does), and nothing has checked that it does not.
+// is handed (list does), and nothing has checked that a library's or a
+// host's builtin does not.
 //
 // WHEN A LIST COMES BACK.  evalSExpr returns the list after the call
 // returns, and only when the result is not the tail-recursion mark that
@@ -41,12 +42,20 @@ import "reflect"
 // poisoned instead, so a reader that kept it sees an invalid value, and a
 // second return panics (calllist_elpscheck.go).
 
-// callListDroppers lists the kernel special operators whose lists are
-// reused.  Each evaluates or returns single cells of its list, and keeps
-// neither the list nor a slice of its cells.  make elpsvet fails when an
-// entry does not meet that rule (elpscalllist), so add a function here only
-// with the analyzer's agreement, never with a suppression.  An
-// operator that hands the rest of its list to something that may keep it is
+// callListDroppers lists the kernel special operators and builtins whose
+// lists are reused.  Each reads, evaluates or returns single cells of its
+// list, and keeps neither the list nor a slice of its cells.  make elpsvet
+// fails when an entry does not meet that rule (elpscalllist), so add a
+// function here only with the analyzer's agreement, never with a
+// suppression.
+//
+// The builtins are every builtin of package lisp that the analyzer accepts.
+// It refuses the rest, which keep or hand on their list or which read it in
+// a way the rule cannot follow: list, vector, append, append!, funcall, new,
+// set, in-package, load-string, load-bytes, rethrow, define-condition,
+// condition-is?, * and /.
+//
+// An operator that hands the rest of its list to something that may keep it is
 // not here: lambda, expr, flet, labels and macrolet keep a body, quasiquote
 // and the threading operators build a value from the list, and handler-bind,
 // ignore-errors, with-cleanup, assert, match, dotimes, test and benchmark
@@ -59,6 +68,31 @@ var callListDroppers = []LBuiltin{
 	opLet, opLetSeq, opProgn,
 	opCond, opIf, opWhen, opUnless, opDefault,
 	opWhile, opOr, opAnd,
+
+	// Builtins.
+	builtinLoadFile, builtinUsePackage, builtinExport, builtinGensym,
+	builtinIdentity, builtinMacroExpand, builtinMacroExpand1,
+	builtinMacroExpandAll, builtinRegisteredBuiltin,
+	builtinRegisteredBuiltinName, builtinApply, builtinToString, builtinToBytes,
+	builtinToInt, builtinToFloat, builtinEval, builtinError,
+	builtinErrorMessage, builtinErrorStack, builtinCAR, builtinCDR, builtinRest,
+	builtinFirst, builtinSecond, builtinNth, builtinFoldLeft, builtinFoldRight,
+	builtinCompose, builtinUnpack, builtinFlip, builtinAssoc,
+	builtinAssocMutate, builtinDissoc, builtinDissocMutate, builtinGet,
+	builtinKeys, builtinIsKey, builtinSortedMap, builtinConcat, builtinCopy,
+	builtinInsertIndex, builtinSortStable, builtinInsertSorted,
+	builtinSearchSorted, builtinSelect, builtinReject, builtinZip,
+	builtinMakeSequence, builtinFormatString, builtinReverse, builtinSlice,
+	builtinAppendBytesMutate, builtinAppendBytes, builtinARef, builtinLength,
+	builtinIsEmpty, builtinCons, builtinNot, builtinIsTrue, builtinType,
+	builtinIsType, builtinIsTaggedVal, builtinUserData, builtinIsNil,
+	builtinIsList, builtinIsSortedMap, builtinIsArray, builtinIsVector,
+	builtinIsBool, builtinIsNumber, builtinIsInt, builtinIsFloat,
+	builtinIsSymbol, builtinIsString, builtinIsBytes, builtinEqual, builtinAllP,
+	builtinAnyP, builtinMax, builtinMin, builtinStringGEq, builtinStringGT,
+	builtinStringLEq, builtinStringLT, builtinStringEq, builtinSymbolEq,
+	builtinGEq, builtinGT, builtinLEq, builtinLT, builtinEqNum, builtinPow,
+	builtinMod, builtinAdd, builtinSub, builtinDebugPrint, builtinDebugStack,
 }
 
 // callListDropperCode is callListDroppers by code pointer.  Each entry is a
@@ -71,8 +105,8 @@ var callListDropperCode = func() map[uintptr]bool {
 	return code
 }()
 
-// dropsCallList reports whether def is a kernel special operator whose
-// argument list is dead once it returns.  Registration calls it; no call
+// dropsCallList reports whether def is a kernel special operator or
+// builtin whose argument list is dead once it returns.  Registration calls it; no call
 // does.
 func dropsCallList(def LBuiltinDef) bool {
 	op, ok := def.(*langBuiltin)
@@ -121,10 +155,10 @@ func reusesCallList(r *Runtime, fun *LVal) bool {
 	if fd == nil {
 		return false
 	}
-	if fun.FunType == LFunSpecialOp {
-		return fd.dropsList
+	if fd.builtin != nil {
+		return fd.dropsList && fun.FunType != LFunMacro
 	}
-	if fun.FunType != LFunNone || fd.builtin != nil || fd.env == nil {
+	if fun.FunType != LFunNone || fd.env == nil {
 		return false
 	}
 	formals := fun.Cells[0].Cells

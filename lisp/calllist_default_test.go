@@ -26,7 +26,11 @@ func TestCallListIsReused(t *testing.T) {
 	require.Equal(t, "8", env.LoadString("t.lisp", `(id 8)`).String())
 	require.Equal(t, free+1, lisp.CallListsFree(env.Runtime), "the second call did not take the free list")
 
-	// A builtin may keep its list, and a &rest list is the call's cells.
+	// A builtin that keeps no list returns it too.
+	require.Equal(t, "3", env.LoadString("t.lisp", `(+ 1 2)`).String())
+	require.Equal(t, free+1, lisp.CallListsFree(env.Runtime), "the builtin's call did not reuse the free list")
+
+	// list keeps its list, and a &rest list is the call's cells.
 	free = lisp.CallListsFree(env.Runtime)
 	require.Equal(t, "'(1 2)", env.LoadString("t.lisp", `(list 1 2)`).String())
 	require.NotEqual(t, lisp.LError, env.LoadString("t.lisp", `(defun rest-of (&rest xs) xs)`).Type)
