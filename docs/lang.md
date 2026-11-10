@@ -2342,6 +2342,10 @@ builtin (for example a transaction timestamp) and Lisp code measures with
 `time:time-from`.  `libtime.BuiltinSleep` remains exported for hosts that
 register a sleep themselves.
 
+A duration counts nanoseconds in a 64-bit integer, so it holds at most about
+292 years in either direction.  `time:time-from` returns an error when the
+difference between its two times is larger.
+
 The `string` package follows the names of Go's `strings` package. Besides
 case conversion, `split`, `join`, `repeat` and the cutset trims (`trim`,
 `trim-left`, `trim-right`, `trim-space`), it tests and removes whole
