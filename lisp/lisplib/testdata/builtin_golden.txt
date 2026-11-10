@@ -284,7 +284,7 @@
 	=> (sorted-map "a" 1)
 	steps 3
 (json:load-string "[1")
-	=> error json:syntax-error in json:load-string: unexpected end of JSON input @golden
+	=> error json:syntax-error in json:load-string: json: invalid JSON at offset 2: unexpected end of input @golden
 	steps 3
 (load-bytes 1)
 	=> error argument-error in lisp:load-bytes: first argument is not bytes: int @golden

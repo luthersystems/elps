@@ -63,7 +63,7 @@ in `elps.yml` runs `make test` plus libjson's race and elpscheck runs on v1
 | A native Go value: invalid UTF-8 in its strings and keys (`\ufffd` on v1, a raw U+FFFD on v2), and the step charge of an oversized native that has some | No |
 | A native struct tag with a `format:` option (v2 refuses it), or a quoted or non-UTF-8 name (v1 ignores the name) | No |
 | Error text of `json:load-*` for a number that does not fit a float | Yes (`TestLoadFloatOverflowTextIsEngineIndependent`) |
-| Error text of `json:load-*` for malformed JSON | No |
+| Error text of `json:load-*` for malformed JSON: libjson finds the fault again and words it (`syntax_reason.go`) | Yes (`TestLoadSyntaxErrorTextIsEngineIndependent`, `FuzzSyntaxReasonMatchesEngine`) |
 
 The libjson native walk (`native_walk.go`) decides what a native dump does:
 it refuses, with libjson's own error, every native the two engines treat

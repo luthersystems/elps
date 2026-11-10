@@ -37,9 +37,9 @@ func TestHandlerConditionDataStrings(t *testing.T) {
 		expr    string
 		message string
 	}{
-		{"json-load-string", `(json:load-string "{")`, "unexpected end of JSON input"},
-		{"json-load-bytes", `(json:load-bytes (to-bytes "{"))`, "unexpected end of JSON input"},
-		{"json-load-message", `(json:load-message malformed-json)`, "unexpected end of JSON input"},
+		{"json-load-string", `(json:load-string "{")`, "json: invalid JSON at offset 1: unexpected end of input"},
+		{"json-load-bytes", `(json:load-bytes (to-bytes "{"))`, "json: invalid JSON at offset 1: unexpected end of input"},
+		{"json-load-message", `(json:load-message malformed-json)`, "json: invalid JSON at offset 1: unexpected end of input"},
 		{"json-dump-string-infinity", `(json:dump-string (/ 1 0))`, "+Inf"},
 		{"json-dump-bytes-infinity", `(json:dump-bytes (/ 1 0))`, "+Inf"},
 		{"json-dump-message-infinity", `(json:dump-message (/ 1 0))`, "+Inf"},
