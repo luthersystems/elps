@@ -36,6 +36,9 @@ func FmtCommand(opts ...Option) *cobra.Command {
 Normalizes whitespace and indentation, aligns forms according to Lisp
 conventions, and preserves comments. The formatter is idempotent.
 
+The output uses LF line endings. A file with CRLF line endings is rewritten
+with LF. The bytes inside a raw string stay as written.
+
 With no files, reads from stdin and writes to stdout.
 With files, prints formatted output to stdout unless -w is given.
 
