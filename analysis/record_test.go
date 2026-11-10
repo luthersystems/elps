@@ -113,9 +113,13 @@ func TestRecordDefmethodsScope(t *testing.T) {
 		{"(unknown-fn (s:defmethod order m (o) 0))", ""},
 		{"(defun f () (s:defmethod order m (o) 0))", "defun"},
 		{"(defmacro defep (&rest body) body)\n(defep (s:defmethod order m (o) 0))", "defep"},
-		{"(get-default (s:defmethod order m (o) 0))", "get-default"},
-		{"(get-default (lambda () (s:defmethod order m (o) 0)))", "lambda"},
-		{"(defun f () (get-default (s:defmethod order m (o) 0)))", "get-default"},
+		{"(trace (s:defmethod order m (o) 0))", "trace"},
+		{"(trace (lambda () (s:defmethod order m (o) 0)))", "lambda"},
+		{"(defun f () (trace (s:defmethod order m (o) 0)))", "trace"},
+		// get-default is a special operator (luthersystems/elps#944): its
+		// arguments are code that runs where the form does, as with if.
+		{"(get-default (s:defmethod order m (o) 0))", ""},
+		{"(defun f () (get-default (s:defmethod order m (o) 0)))", "defun"},
 		{"(s:defmethod order a (o) (s:defmethod order m (p) 0))", recordDefmethod},
 		// Test bodies run after the load.
 		{`(test "t" (s:defmethod order m (o) 0))`, "test"},

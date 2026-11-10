@@ -61,9 +61,12 @@ its `Symbol` calls determine the expansion. Earlier evaluations, template
 publication and VM forks do not affect those names. Tests compare rendered
 expansions, evaluation results, errors and step counts in two fresh
 environments with different histories and a template VM with yet another
-history. `get-default` now uses this generator. Its recorded results and
-step counts remain unchanged; its `macroexpand-1` golden changes only
-`gen00000001`/`gen00000002` to `map@1@1`/`key@1@2`.
+history. `get-default` was the first macro to use this generator. Its
+recorded results and step counts stayed the same, and its `macroexpand-1`
+golden changed only `gen00000001`/`gen00000002` to `map@1@1`/`key@1@2`.
+`get-default` has since become a special operator (luthersystems/elps#944),
+so it has no expansion and binds no temporary names. The examples below
+describe it as the macro it was.
 
 ## Capture argument and lazy expansion
 
@@ -89,7 +92,8 @@ both calls use level 1. Neither call's original argument forms contain a
 reserved gensym. On a miss, the inner call may bind the same temporary
 spellings as the outer call. Its arguments `m2`, `k2` and `d` reference none
 of those outer temporaries, so the shadowing is unobservable and evaluation
-is correct. The regression test checks both expansions and the result.
+is correct. The regression test checked both expansions and the result
+while `get-default` was a macro, and still checks the result.
 
 When a Go macro explicitly passes its own `tmp@1@1` reference into a nested
 Go macro, that reference is present in the nested macro's arguments. Its
@@ -125,6 +129,10 @@ expansion now returns a lower number than before: `(gensym)
 returns `gen00000002` (`TestGetDefaultLeavesGenSymCounter`). A program that
 prints or stores gensym names sees the difference, so peers that must agree
 on output take this change together. The change was chosen over fake counter
-calls that would keep the old numbers. Lisp macros, and Go macros still using that API,
+calls that would keep the old numbers. The environment ID counter is a different
+case: the operator still takes the one ID the `lisp:let` of the old expansion
+took, so lambda names (`_funN`) in error text and stack traces keep their
+numbers. That costs one counter increment and removes a second visible
+change. Lisp macros, and Go macros still using that API,
 can still collide with a user symbol of the same spelling. Porting other
 macros or changing the Lisp API is outside this change.

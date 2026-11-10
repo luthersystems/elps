@@ -78,20 +78,12 @@ func TestGetDefaultGenSymsOldUserName(t *testing.T) {
 	assert.Equal(t, "42", got.String())
 }
 
-func TestGetDefaultGenSymsNestedSameLevel(t *testing.T) {
+// TestGetDefaultNested checks a get-default whose default is another
+// get-default.  As a macro, both levels bound the same temporary names
+// (map@1@1, key@1@2), and the inner shadowed the outer.  The operator binds
+// no names, so the result must stay the same without them.
+func TestGetDefaultNested(t *testing.T) {
 	env := newGenSymsEnv(t)
-	outer := env.LoadString("nested.lisp", `(macroexpand-1 '(get-default m k (get-default m2 k2 d)))`)
-	require.NoError(t, lisp.GoError(outer))
-	innerCall := outer.Cells[2].Cells[3]
-	inner := env.Eval(lisp.SExpr([]*lisp.LVal{lisp.Symbol("macroexpand-1"), lisp.Quote(innerCall)}))
-	require.NoError(t, lisp.GoError(inner))
-	for _, expansion := range []*lisp.LVal{outer, inner} {
-		bindings := expansion.Cells[1].Cells
-		assert.Equal(t, "map@1@1", bindings[0].Cells[0].Str)
-		assert.Equal(t, "key@1@2", bindings[1].Cells[0].Str)
-	}
-	// The inner args mention none of the outer temporaries. Its shadowing
-	// therefore cannot affect the lookup of m2, k2 or d.
 	got := env.LoadString("nested.lisp", `
 		(let ((m (sorted-map)) (k "outer")
 		      (m2 (sorted-map "inner" 42)) (k2 "inner") (d -1))

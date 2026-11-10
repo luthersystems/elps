@@ -52,6 +52,7 @@ const (
 	kindWhen                     // when
 	kindUnless                   // unless
 	kindDefault                  // default
+	kindGetDefault               // get-default
 	kindWhile                    // while
 	kindOr                       // or
 	kindAnd                      // and
@@ -108,6 +109,7 @@ var formKinds = map[string]formSpec{
 	"when":             {kind: kindWhen},
 	"unless":           {kind: kindUnless},
 	"default":          {kind: kindDefault},
+	"get-default":      {kind: kindGetDefault},
 	"while":            {kind: kindWhile},
 	"or":               {kind: kindOr},
 	"and":              {kind: kindAnd},
@@ -140,7 +142,7 @@ func (k formKind) opensFunction() bool {
 	case kindNone, kindFunction, kindSetBang, kindAssert, kindQuote, kindQuasiquote,
 		kindThreadFirst, kindThreadLast, kindDotimes, kindLabels, kindMacrolet, kindFlet,
 		kindLetSeq, kindLet, kindProgn, kindHandlerBind, kindIgnoreErrors, kindWithCleanup,
-		kindCond, kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd,
+		kindCond, kindIf, kindWhen, kindUnless, kindDefault, kindGetDefault, kindWhile, kindOr, kindAnd,
 		kindHelp, kindTest, kindBenchmark, kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
 		return false
 	}
@@ -737,7 +739,7 @@ func (w *CodeWalker) special(v *LVal, op string, kind formKind, depth int) *LVal
 	}
 	switch kind {
 	case kindAssert, kindProgn, kindIgnoreErrors, kindIf, kindWhen, kindUnless,
-		kindDefault, kindWhile, kindOr, kindAnd:
+		kindDefault, kindGetDefault, kindWhile, kindOr, kindAnd:
 		w.forms(b, 1, depth)
 	case kindHelp, kindQualifiedSymbol:
 		if w.sourceAnalysis && kind == kindQualifiedSymbol {
@@ -1708,7 +1710,7 @@ func (k formKind) sourceModes() uint8 {
 	case kindExpr:
 		return 0b0011 // source only
 	case kindNone, kindAssert, kindThreadFirst, kindThreadLast, kindProgn, kindIgnoreErrors, kindWithCleanup,
-		kindIf, kindWhen, kindUnless, kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindBenchmark:
+		kindIf, kindWhen, kindUnless, kindDefault, kindGetDefault, kindWhile, kindOr, kindAnd, kindHelp, kindBenchmark:
 		return 0
 	}
 	return 0
@@ -1856,7 +1858,7 @@ func (w *CodeWalker) scanPackage(v *LVal, top bool, out *[]*LVal) {
 	case kindNone, kindFunction, kindSetBang, kindAssert, kindQuote, kindQuasiquote,
 		kindExpr, kindThreadFirst, kindThreadLast, kindDotimes, kindProgn,
 		kindIgnoreErrors, kindWithCleanup, kindCond, kindIf, kindWhen, kindUnless,
-		kindDefault, kindWhile, kindOr, kindAnd, kindHelp, kindTest, kindBenchmark,
+		kindDefault, kindGetDefault, kindWhile, kindOr, kindAnd, kindHelp, kindTest, kindBenchmark,
 		kindQualifiedSymbol, kindTestLet, kindTestLetSeq, kindMatch:
 	}
 	for i := start; i < len(v.Cells); i++ {

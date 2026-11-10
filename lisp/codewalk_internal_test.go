@@ -142,7 +142,6 @@ func TestEveryCoreMacroReviewedForWalking(t *testing.T) {
 		"defun":            kindDefun,
 		"deftype":          kindDeftype,
 		"curry-function":   kindNone,
-		"get-default":      kindNone,
 		"trace":            kindNone,
 		"defconst":         kindNone,
 		"test-let":         kindTestLet,

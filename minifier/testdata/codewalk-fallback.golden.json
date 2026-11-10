@@ -2746,6 +2746,186 @@
     }
   },
   {
+    "Source": "(get-default)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(get-default)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(get-default () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@17:1:18",
+      "-",
+      "export@17:1:18"
+    ],
+    "Output": "(get-default () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(get-default bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19",
+      "in-package@18:1:19"
+    ],
+    "Output": "(get-default bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(get-default ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43",
+      "export@42:1:43"
+    ],
+    "Output": "(get-default ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:get-default)",
+    "Fallbacks": [
+      "-",
+      "-",
+      "-",
+      "-"
+    ],
+    "Output": "(lisp:get-default)\n",
+    "Symbols": {
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:get-default () (export 'f))",
+    "Fallbacks": [
+      "-",
+      "export@22:1:23",
+      "-",
+      "export@22:1:23"
+    ],
+    "Output": "(lisp:get-default () (export 'f))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:get-default bad (in-package 'p))",
+    "Fallbacks": [
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24",
+      "in-package@23:1:24"
+    ],
+    "Output": "(lisp:get-default bad (in-package 'p))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "p",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
+    "Source": "(lisp:get-default ((m () (quasiquote (unquote (export 'f))))) (export 'g))",
+    "Fallbacks": [
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48",
+      "export@47:1:48"
+    ],
+    "Output": "(lisp:get-default ((m () (quasiquote (unquote (export 'f))))) (export 'g))\n",
+    "Symbols": {
+      "excluded": [
+        {
+          "original": "export",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "f",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "g",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "quasiquote",
+          "reason": "quoted-reference"
+        },
+        {
+          "original": "unquote",
+          "reason": "quoted-reference"
+        }
+      ],
+      "entries": [],
+      "minified_to_original": {}
+    }
+  },
+  {
     "Source": "(handler-bind)",
     "Fallbacks": [
       "-",

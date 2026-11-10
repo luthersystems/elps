@@ -63,14 +63,6 @@ var langMacros = []*langBuiltin{
 		`Returns a new function that calls fun with args prepended to any
 		additional arguments supplied at call time. Equivalent to
 		(lambda (&rest rest) (apply fun arg1 arg2 ... rest)).`},
-	// get-default is a macro because we only want to evaluate the expression
-	// bound to default if the key doesn't exist in the map.
-	{"get-default", Formals("map", "key", "default"), macroGetDefault,
-		`Looks up key in a sorted-map, returning the associated value if
-		found. If the key is not present or map is nil, evaluates and
-		returns default. String and symbol keys with the same name are
-		interchangeable, including in JSON-decoded maps. The default
-		expression is evaluated only when needed (lazy evaluation).`},
 	{"trace", Formals("expr", OptArgSymbol, "message"), macroTrace,
 		`Evaluates expr, prints the result to stderr prefixed by message
 		(default "TRACE") using debug-print, then returns the result.
@@ -209,45 +201,6 @@ func macroCurryFun(env *LEnv, args *LVal) *LVal {
 		}.SExpr(),
 		SExpr(callCells),
 	}.SExpr()
-}
-
-func macroGetDefault(env *LEnv, args *LVal) *LVal {
-	mapExpr, keyExpr, defExpr := args.Cells[0], args.Cells[1], args.Cells[2]
-	g := NewGenSyms(args)
-	mapSym, keySym := g.Symbol("map"), g.Symbol("key")
-	let := Cells{
-		Symbol("lisp:let"),
-		Cells{
-			Cells{
-				mapSym,
-				mapExpr,
-			}.SExpr(),
-			Cells{
-				keySym,
-				keyExpr,
-			}.SExpr(),
-		}.SExpr(),
-		Cells{
-			Symbol("lisp:if"),
-			Cells{
-				Symbol("lisp:if"),
-				Cells{Symbol("lisp:nil?"), mapSym}.SExpr(),
-				Symbol("lisp:false"),
-				Cells{
-					Symbol("lisp:key?"),
-					mapSym,
-					keySym,
-				}.SExpr(),
-			}.SExpr(),
-			Cells{
-				Symbol("lisp:get"),
-				mapSym,
-				keySym,
-			}.SExpr(),
-			defExpr,
-		}.SExpr(),
-	}.List()
-	return let
 }
 
 func macroDeftype(env *LEnv, args *LVal) *LVal {

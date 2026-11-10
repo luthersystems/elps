@@ -251,7 +251,7 @@ func callableOperator(name, op string) bool {
 	// registry do not contribute call edges either.
 	switch name {
 	case "set", "in-package", "use-package", "export", "defconst",
-		"curry-function", "get-default", "trace", "benchmark-simple":
+		"curry-function", "trace", "benchmark-simple":
 		return false
 	}
 	return true

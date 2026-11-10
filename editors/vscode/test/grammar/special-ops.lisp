@@ -81,3 +81,6 @@
 (benchmark "my benchmark" (n)
 ;^^^^^^^^^ keyword.control.elps
   (dotimes (i n) (+ 1 1)))
+
+(get-default m :key "fallback")
+;^^^^^^^^^^^ keyword.control.elps

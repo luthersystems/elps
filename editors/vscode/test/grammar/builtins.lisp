@@ -132,9 +132,6 @@
 (debug-print x)
 ;^^^^^^^^^^^ support.function.elps
 
-(get-default m :key "fallback")
-;^^^^^^^^^^^ support.function.elps
-
 (trace expr)
 ;^^^^^ support.function.elps
 

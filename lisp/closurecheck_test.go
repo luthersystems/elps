@@ -69,7 +69,12 @@ func TestCheckClosure(t *testing.T) {
 		{"dotimes", `(lambda () (dotimes (i 3) (two i i)))`, []string{}},
 		{"builtin macro expands", `(lambda (m) (get-default m "k" (absent)) (trace (two 1)))`,
 			[]string{"calls absent, which is not defined", "calls two with 1 argument(s); two takes 2"}},
-		{"builtin macro arity", `(lambda (m) (get-default m))`, []string{"calls get-default with 1 argument(s); get-default takes 3"}},
+		{"builtin macro arity", `(lambda (m) (curry-function))`, []string{"calls curry-function with 0 argument(s); curry-function takes at least 1"}},
+		// get-default is a special operator (luthersystems/elps#944): the
+		// check reads its three arguments as code and, as for if or
+		// default, leaves its arity to the evaluator.
+		{"get-default arguments are code", `(lambda (m) (get-default (gone m) (two 1) (absent)) (get-default m))`,
+			[]string{"calls absent, which is not defined", "calls gone, which is not defined", "calls two with 1 argument(s); two takes 2"}},
 		{"with-cleanup and while", `(lambda () (with-cleanup ((cleanup)) (while (cond1) (body))))`,
 			[]string{"calls body, which is not defined", "calls cleanup, which is not defined", "calls cond1, which is not defined"}},
 		{"quasiquote holes", "(lambda (x) (quasiquote (a (unquote (b x)) (unquote-splicing c))))",
@@ -145,7 +150,7 @@ func TestCheckClosureStepLimit(t *testing.T) {
 	t.Parallel()
 	env := newCowTestEnv(t)
 	require.NoError(t, lisp.GoError(lisp.WithMaxSteps(1000)(env)))
-	fn := env.LoadString("test", `(lambda (m) (get-default m 1 (list (list (list 1)))) (get-default m 2 (list (list (list 2)))) (list (list (list 3))))`)
+	fn := env.LoadString("test", `(lambda (m) (trace (list (list (list 1)))) (trace (list (list (list 2)))) (list (list (list 3))))`)
 	require.NoError(t, lisp.GoError(fn))
 	_, err := env.CheckClosure(fn)
 	require.NoError(t, err)

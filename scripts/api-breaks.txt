@@ -58,3 +58,4 @@
 # ---------------------------------------------------------------------------
 # surface | symbol | expires | issue | reason
 # ---------------------------------------------------------------------------
+lisp | lisp:get-default | 2027-02-10 | elps#944 | get-default is a special operator so it does not expand on each evaluation; calls keep their results and formals; substrate adopts it with the elps bump and an upgrade note for the lower step counts
