@@ -17,7 +17,7 @@ import (
 // because an address-only extraction helper discarded its census retainers.
 func scalarLifetimeCensus(t *testing.T) (oracleCensus, weak.Pointer[lisp.LVal]) {
 	t.Helper()
-	value := lisp.Int(42)
+	value := lisp.FreshInt(42)
 	return newOracleCensus(visibilityEnv(t, value)), weak.Make(value)
 }
 
@@ -27,7 +27,7 @@ func TestForkOracleCensusRetainsTemporaryEnvironment(t *testing.T) {
 	if value.Value() == nil {
 		t.Fatal("address census outlived its scalar owner; a new VM can reuse the recorded address")
 	}
-	second := newOracleCensus(visibilityEnv(t, lisp.Int(42)))
+	second := newOracleCensus(visibilityEnv(t, lisp.FreshInt(42)))
 	runtime.GC()
 	if shared := sharedOracleCensuses(first, second, nil); len(shared) != 0 {
 		t.Fatalf("independent VMs reported shared after collection: %v", shared)

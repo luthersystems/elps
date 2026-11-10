@@ -36,7 +36,7 @@ func TestCheckValueDepthLeafBoundary(t *testing.T) {
 		t.Fatalf("expected depth error at scalar boundary, got %v", err)
 	}
 	// Host-created scalar headers can carry cells; they still need traversal.
-	scalar := Int(7)
+	scalar := FreshInt(7)
 	scalar.Cells = []*LVal{v}
 	if err := checkValueDepth(scalar, 1024, nil); !errors.As(err, &depthErr) {
 		t.Fatalf("scalar header hid its cells: %v", err)

@@ -83,7 +83,7 @@ func TestEnvErrorfAt(t *testing.T) {
 						case "unlocated":
 							form = lisp.Int(0)
 						case "synthetic":
-							form = lisp.Int(0)
+							form = lisp.FreshInt(0)
 							form.SetSource(&token.Location{File: "synthetic", Pos: -1})
 						}
 						callSite := env.Source()

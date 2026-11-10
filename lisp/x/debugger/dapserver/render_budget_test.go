@@ -127,7 +127,7 @@ func TestPausedResponseCancellation(t *testing.T) {
 		require.Less(t, out.Len(), 1024)
 		require.Contains(t, out.String(), "truncated")
 	})
-	expr := lisp.Int(1)
+	expr := lisp.FreshInt(1)
 	expr.SetSource(&token.Location{File: "test.lisp", Line: 1, Col: 1})
 	env.EvalContext(ctx, expr)
 	require.True(t, called)

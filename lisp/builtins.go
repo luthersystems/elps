@@ -2970,7 +2970,7 @@ func builtinSelect(env *LEnv, args *LVal) *LVal {
 	case "list":
 		v.Cells = cells
 	case "vector":
-		v.Cells[0].Cells[0].Int = len(cells)
+		setArrayDim(v.Cells[0], 0, len(cells))
 		// Go's append chose the capacity past the start; a new vector's
 		// capacity is its length (see Array).
 		v.Cells[1].Cells = cells[:len(cells):len(cells)]
@@ -3027,7 +3027,7 @@ func builtinReject(env *LEnv, args *LVal) *LVal {
 	case "list":
 		v.Cells = cells
 	case "vector":
-		v.Cells[0].Cells[0].Int = len(cells)
+		setArrayDim(v.Cells[0], 0, len(cells))
 		// Go's append chose the capacity past the start; a new vector's
 		// capacity is its length (see Array).
 		v.Cells[1].Cells = cells[:len(cells):len(cells)]
@@ -3566,7 +3566,7 @@ func appendMutate(env *LEnv, vec *LVal, vals []*LVal) *LVal {
 		return lerr
 	}
 	dims := vec.Cells[0]
-	dims.Cells[0].Int += len(vals)                                                         //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
+	setArrayDim(dims, 0, dims.Cells[0].Int+len(vals))
 	vec.Cells[1].Cells = appendGrow(vec.Cells[1].Cells, vals, env.Runtime.MaxAllocBytes()) //elps:mutates append! is the documented mutating variant: it extends its vector argument in place
 	return vec
 }

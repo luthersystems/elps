@@ -442,6 +442,8 @@ func stampMacroExpansion(v *LVal, callSite *token.Location, ctx *macroExpansionC
 //     the stamp copies its header.
 //   - Sealed subtrees and singletons, for the reasons the stamp's own walk
 //     gives.  A node that already carries a real location keeps it.
+//   - A shared small integer.  The list that holds it takes a located
+//     integer in its place (locateSharedInts).
 //
 // The walk is bounded like the stamp's (lisp/cycle.go): a Go macro can
 // return a tree that contains itself.  A node is located BEFORE its cells
@@ -491,13 +493,17 @@ func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struc
 	for {
 		if v != nil && !isSingleton(v) && !v.sealed && !isValueNode(v) {
 			if _, arg := boundary[v]; !arg {
-				if needsStamp(v) {
+				fresh := needsStamp(v)
+				if fresh {
 					v.setLoc(callSite) //elps:mutates locates fresh Go macro syntax before publication
 				}
 				// Leaves cannot cycle or schedule work. Only containers need
 				// a memo and a by-value cursor for their remaining children.
 				if len(v.Cells) > 0 && !seen[v] {
 					seen[v] = true
+					if fresh {
+						locateSharedInts(v.Cells, callSite)
+					}
 					pending = append(pending, v.Cells)
 				}
 			}
@@ -515,6 +521,29 @@ func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struc
 	}
 }
 
+// locateSharedInts gives each shared small integer in cells, the cells of a
+// list the in-place locate has just located, a located integer of the
+// list's own.
+//
+// A Go macro writes a number into its expansion with Int, and for a small
+// number that is an entry of the shared table (lisp/smallint.go), which
+// cannot be located in place.  Left alone, the stamp would copy it, and
+// with it every list from there up to the root of the expansion: the cost
+// the in-place locate exists to avoid.  Replacing the cell costs the one
+// allocation Int itself made before the table existed.
+//
+// It runs only for a list this walk located, which is the macro's own
+// fresh node, never an argument and never a parsed list.
+func locateSharedInts(cells []*LVal, callSite *token.Location) {
+	for i, c := range cells {
+		if isSmallInt(c) {
+			n := FreshInt(c.Int)
+			n.setLoc(callSite)
+			cells[i] = n //elps:mutates the cells of fresh Go macro syntax, located before publication
+		}
+	}
+}
+
 // isValueNode reports whether v is a runtime VALUE rather than SYNTAX: a
 // node of a type the reader never produces (a function, a native handle, a
 // sorted map, a vector, bytes).  Such a node inside a macro expansion is a
@@ -522,6 +551,18 @@ func locateContainer(v *LVal, callSite *token.Location, boundary map[*LVal]struc
 // own output.  See the warning above stampMacroExpansion.
 func isValueNode(v *LVal) bool {
 	return !sealableNodeType(v.Type)
+}
+
+// sealedSyntax reports whether the stamp must leave v alone because it is a
+// sealed node: a node of a parsed program, located when it was read.
+//
+// A shared small integer (lisp/smallint.go) is sealed too, but it is not a
+// parsed node.  It is the integer a macro body COMPUTED, it has no
+// location, and before the table existed it was a fresh integer that the
+// stamp copied and located like any other unlocated leaf.  It still is: the
+// stamp never writes to a node, it copies, so the table entry is only read.
+func sealedSyntax(v *LVal) bool {
+	return v.sealed && !isSmallInt(v)
 }
 
 // needsStamp reports whether v carries no real source location.
@@ -600,6 +641,11 @@ func (s *macroStamper) stampedCopy(v *LVal) *LVal {
 	// and kept otherwise, for the same reason.
 	meta, mexp := v.fmtMeta(), v.macroExp()
 	cp.hasAux, cp.auxNoLoc = false, false
+	if isSmallInt(v) {
+		// The copy is an integer of the expansion's own, as it was
+		// when Int allocated: it does not inherit the table's seal.
+		cp.sealed = false
+	}
 	cp.source = s.callSite //elps:aliases by design: callSite is the expansion-owned copy macroCall took (env.loc.Copy(), issue #431), shared by every node of one expansion
 	if s.ctx != nil {
 		s.nextID++
@@ -668,7 +714,7 @@ func (s *macroStamper) value(v *LVal) *LVal {
 // as data, and sniffing the converted node's type for LError would truncate
 // such an expansion at that node.
 func (s *macroStamper) syntax(v *LVal, g cycleGuard) (*LVal, *LVal) {
-	if v == nil || isSingleton(v) || v.sealed {
+	if v == nil || isSingleton(v) || sealedSyntax(v) {
 		return v, nil
 	}
 	if isValueNode(v) || len(v.Cells) == 0 {
@@ -705,7 +751,7 @@ walk:
 		// into: a leaf, a value, a singleton, a sealed subtree.
 		height := -1
 		switch {
-		case v == nil || isSingleton(v) || v.sealed:
+		case v == nil || isSingleton(v) || sealedSyntax(v):
 			result = v
 		case isValueNode(v) || len(v.Cells) == 0:
 			result = s.value(v)

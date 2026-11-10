@@ -123,7 +123,22 @@ func TakeSingletonSnapshot() SingletonSnapshot {
 // #333. Do not read an empty return as "no code mutated a singleton".
 // See the "What this does NOT catch" section on checkSingleton in
 // singleton_check_elpscheck.go for what covers that case.
+//
+// Verify also checks every entry of the shared integer table
+// (lisp/smallint.go).  The table needs no snapshot: each entry's value is
+// its index.
 func (s SingletonSnapshot) Verify() string {
+	if drift := s.verifySingletons(); drift != "" {
+		return drift
+	}
+	return verifySmallInts(smallInts)
+}
+
+// verifySingletons is Verify without the integer table.  checkSingleton
+// runs on every Nil and Bool call of an elpscheck build, where a walk of
+// the whole table would dominate the run; the table has its own per-entry
+// check in Int (checkSmallInt).
+func (s SingletonSnapshot) verifySingletons() string {
 	if !singletonLValEqual(&s.nilV, singletonNil) {
 		return "Nil()"
 	}

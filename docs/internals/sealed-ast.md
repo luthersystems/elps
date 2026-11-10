@@ -87,6 +87,19 @@ eager-copy design, where copying atoms measured a +56% geomean regression,
 marking one costs a bit at parse time, and it makes `IsSealed` meaningful on
 every node a literal can produce.
 
+`lisp.Int` returns a **shared integer** for a small number (-16 to 1023):
+one value per number, built once, for every Runtime in the process
+(`lisp/smallint.go`, luthersystems/elps#944). A shared integer is born
+sealed for the same reason the singletons are, so `IsSealed()` reports the
+do-not-mutate contract on it and `SetSource` on it is a no-op. A template
+shares it with every VM by reference, as it shares a sealed literal, and
+`Copy` and detach return an unsealed integer. It is not a program literal,
+though, and it has no location. The macro stamp is the one walk that must
+tell the two apart: it gives the expansion a located copy of a shared
+integer, as it did when `Int` allocated (`sealedSyntax`, `lisp/macro.go`).
+Code that needs an integer to write to or to locate calls `lisp.FreshInt`;
+the parser does, and so does an array for its dimension.
+
 The flag is **monotone**: set once by `SealAST` before the tree can be
 shared, never cleared on the same storage, so concurrent readers of a shared
 parse are race-free.

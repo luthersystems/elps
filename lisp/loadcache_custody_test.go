@@ -280,7 +280,7 @@ type nativeLiteralReader struct {
 func (r *nativeLiteralReader) Read(_ string, in io.Reader) ([]*lisp.LVal, error) {
 	_, _ = io.ReadAll(in)
 	r.reads++
-	lit := lisp.Int(7)
+	lit := lisp.FreshInt(7)
 	lit.Native = r.box
 	lit.SealAST()
 	return []*lisp.LVal{lit}, nil

@@ -134,6 +134,7 @@ func (v *LVal) macroExp() *macroExpansionInfo {
 // writes end positions through it after the node exists.  It is honored
 // only when the Location carries no record yet.
 func (v *LVal) setNodeAux(meta *fmtmeta.Meta, mexp *macroExpansionInfo, inPlace bool) {
+	checkNotSharedInt(v)
 	loc := v.loc()
 	if meta == nil && mexp == nil {
 		// The Location may still hold the record for a sibling header,
@@ -186,6 +187,7 @@ func (v *LVal) setMacroExp(mexp *macroExpansionInfo) {
 // header the caller may write.  For a node without a record, which is every
 // node in production, it is the plain field write.
 func (v *LVal) setLoc(loc *token.Location) {
+	checkNotSharedInt(v)
 	if !v.hasAux {
 		v.source = loc //elps:mutates the audited location setter; callers pass a header they own
 		return
@@ -203,6 +205,7 @@ func (v *LVal) setLoc(loc *token.Location) {
 // may be shared with nodes other goroutines read, and a write to its slot
 // would race with them.
 func (v *LVal) moveNodeAux(loc *token.Location) {
+	checkNotSharedInt(v)
 	aux := v.nodeAuxRecord()
 	if aux == nil {
 		v.source = loc     //elps:mutates the audited location setter; callers pass a header they own

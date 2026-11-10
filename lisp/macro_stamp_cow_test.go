@@ -140,7 +140,7 @@ func TestMacroExpansionStampAllocatesNothingWhenNothingNeedsAStamp(t *testing.T)
 	v := locate(SExpr([]*LVal{
 		locate(Symbol("progn")),
 		locate(SExpr([]*LVal{locate(Symbol("f")), sealed, fn})),
-		locate(Int(3)),
+		locate(FreshInt(3)),
 	}))
 
 	if got := stampMacroExpansion(v, callSite, nil, env.Runtime); got != v {

@@ -24,7 +24,7 @@ func TestLValSizeClass(t *testing.T) {
 }
 
 func TestNodeAuxAbsentInProduction(t *testing.T) {
-	v := Int(1)
+	v := FreshInt(1)
 	assert.Nil(t, v.fmtMeta())
 	assert.Nil(t, v.macroExp())
 	loc := &token.Location{File: "a.lisp", Pos: 3}

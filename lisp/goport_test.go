@@ -783,7 +783,7 @@ func TestFunc2EAllocations(t *testing.T) {
 			t.Fatal(v)
 		}
 	})
-	assert.InDelta(t, 1, allocs, 0, "only the result value is allocated")
+	assert.InDelta(t, 0, allocs, 0, "the call allocates nothing: the result is a shared small integer")
 }
 
 var goportSortedMap = lisp.BuiltinFunc("sorted-map")

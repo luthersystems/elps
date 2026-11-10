@@ -582,7 +582,16 @@ func Bool(b bool) *LVal {
 }
 
 // Int returns an LVal representing the number x.
+//
+// For a small x the returned value is shared by every caller and every
+// Runtime (see lisp/smallint.go) — callers MUST NOT mutate it, and
+// SetSource on it is a no-op, as on Nil and Bool.  Use FreshInt for an
+// integer the caller will write to or give a source location.
 func Int(x int) *LVal {
+	if i := x - smallIntMin; uint(i) < uint(len(smallInts)) {
+		checkSmallInt(i)
+		return smallInts[i]
+	}
 	return &LVal{
 		Type: LInt,
 		Int:  x,
@@ -802,7 +811,7 @@ func Array(dims *LVal, cells []*LVal) *LVal {
 		// A self-built dims list is exactly [len(cells)], so its product
 		// needs no loop and cannot overflow.
 		totalSize = len(cells)
-		stored = Cells{Int(len(cells))}.List()
+		stored = Cells{FreshInt(len(cells))}.List()
 	} else if dims.Type != LSExpr {
 		return Errorf("array dimensions are not a list: %v", dims.Type)
 	} else {
@@ -1569,27 +1578,43 @@ func (v *LVal) setArrayDims(n int, dims []int) {
 	d := v.Cells[0]
 	if len(dims) == 0 {
 		if len(d.Cells) == 1 {
-			//elps:mutates an array owns its dimension list, which append! writes in place too
-			d.Cells[0].Int = n
+			setArrayDim(d, 0, n)
 			return
 		}
 		//elps:mutates the caller's array takes a new dimension list for the new rank
-		v.Cells[0] = Cells{Int(n)}.List()
+		v.Cells[0] = Cells{FreshInt(n)}.List()
 		return
 	}
 	if len(d.Cells) != len(dims) {
 		cells := make([]*LVal, len(dims))
 		for i, k := range dims {
-			cells[i] = Int(k)
+			cells[i] = FreshInt(k)
 		}
 		//elps:mutates the caller's array takes a new dimension list for the new rank
 		v.Cells[0] = QExpr(cells)
 		return
 	}
 	for i, k := range dims {
-		//elps:mutates an array owns its dimension list, which append! writes in place too
-		d.Cells[i].Int = k
+		setArrayDim(d, i, k)
 	}
+}
+
+// setArrayDim sets dimension i of the dimension list d to n.
+//
+// An array owns its dimension list and writes a dimension in place, which
+// append! does on every call.  A dimension can be an entry of the shared
+// integer table (a list an embedder built with Int, or one a decoder
+// built), and that entry belongs to every Runtime, so then the list takes
+// a new integer instead.  The list is the array's own either way, so a
+// reader of the list sees the same dimensions as before.
+func setArrayDim(d *LVal, i, n int) {
+	if isSmallInt(d.Cells[i]) {
+		//elps:mutates an array owns its dimension list; the shared integer in it is replaced, not written
+		d.Cells[i] = FreshInt(n)
+		return
+	}
+	//elps:mutates an array owns its dimension list, which append! writes in place too
+	d.Cells[i].Int = n
 }
 
 // ArrayIndex returns the value at the given index in an array.

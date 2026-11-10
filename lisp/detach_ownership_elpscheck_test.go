@@ -112,7 +112,7 @@ func TestOwnershipCheck_DetachedASTCrossesRuntimes(t *testing.T) {
 	envB := newDetachOwnershipEnv(t)
 
 	buildAST := func() *LVal {
-		ast := SExpr([]*LVal{Symbol("+"), Int(1), Int(2)})
+		ast := SExpr([]*LVal{Symbol("+"), FreshInt(1), FreshInt(2)})
 		for i, node := range append([]*LVal{ast}, ast.Cells...) {
 			node.SetSource(&token.Location{
 				File: "cached.lisp",

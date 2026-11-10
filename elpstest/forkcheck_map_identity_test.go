@@ -36,7 +36,7 @@ func TestForkOracleSeesSwappedNativeAndLispMapBacking(t *testing.T) {
 	if shared := sharedOracleCensuses(newOracleCensus(first), newOracleCensus(independent), nil); len(shared) != 0 {
 		t.Fatalf("independent maps incorrectly reported shared: %v", shared)
 	}
-	if rc := first.Get(lisp.Symbol("a")).MapSetString("witness", lisp.Int(17)); rc.Type == lisp.LError {
+	if rc := first.Get(lisp.Symbol("a")).MapSetString("witness", lisp.FreshInt(17)); rc.Type == lisp.LError {
 		t.Fatal(rc)
 	}
 	native, isMap := second.Get(lisp.Symbol("b")).Native.(map[string]any)
@@ -58,11 +58,11 @@ func TestForkOracleSeesSwappedDirectNativeStorage(t *testing.T) {
 			return value, value.Bytes()
 		}},
 		{"scalar-header", func() (*lisp.LVal, any) {
-			value := lisp.Int(17)
+			value := lisp.FreshInt(17)
 			return value, value
 		}},
 		{"cell-slots", func() (*lisp.LVal, any) {
-			value := lisp.QExpr([]*lisp.LVal{lisp.Int(17)})
+			value := lisp.QExpr([]*lisp.LVal{lisp.FreshInt(17)})
 			return value, value.Cells
 		}},
 		{"byte-header", func() (*lisp.LVal, any) {
@@ -75,7 +75,7 @@ func TestForkOracleSeesSwappedDirectNativeStorage(t *testing.T) {
 		}},
 		{"closure-environment", func() (*lisp.LVal, any) {
 			env := mustEnv(t, "")
-			value := env.Lambda(lisp.Formals(), []*lisp.LVal{lisp.Int(17)})
+			value := env.Lambda(lisp.Formals(), []*lisp.LVal{lisp.FreshInt(17)})
 			return value, env
 		}},
 	} {
@@ -231,7 +231,7 @@ func TestForkCheckPreservesNativeOnlyApproval(t *testing.T) {
 }
 
 func TestForkOracleCensusPreservesEarlierOwnedStorage(t *testing.T) {
-	value := lisp.Int(17)
+	value := lisp.FreshInt(17)
 	data := lisp.Bytes([]byte("ab"))
 	list := lisp.QExpr([]*lisp.LVal{value})
 	mapValue := oracleJSONValue(make(map[string]any))
