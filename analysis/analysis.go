@@ -153,11 +153,29 @@ func Analyze(exprs []*lisp.LVal, cfg *Config) *Result {
 	}
 
 	root := NewScope(ScopeGlobal, nil, nil)
+	// Every global of the workspace goes in the root scope of every
+	// file. Make room for them one time: a map that grows entry by entry
+	// is copied again and again, and that was most of the cost of a
+	// workspace lint (luthersystems/elps#944).
+	qualified := 0
+	for i := range cfg.ExtraGlobals {
+		if cfg.ExtraGlobals[i].Package != "" {
+			qualified++
+		}
+	}
+	if qualified > 0 {
+		root.PackageSymbols = make(map[string]*Symbol, qualified)
+		root.bareNameIndex = make(map[string]*Symbol, qualified)
+	}
 	populateBuiltins(root)
 
-	// Add external symbols from workspace
-	for _, ext := range cfg.ExtraGlobals {
-		sym := &Symbol{
+	// Add external symbols from workspace. One allocation holds them
+	// all; the root scope keeps each of them for the life of the result.
+	externals := make([]Symbol, len(cfg.ExtraGlobals))
+	for i := range cfg.ExtraGlobals {
+		ext := &cfg.ExtraGlobals[i]
+		sym := &externals[i]
+		*sym = Symbol{
 			Name:      ext.Name,
 			Package:   ext.Package,
 			Kind:      ext.Kind,

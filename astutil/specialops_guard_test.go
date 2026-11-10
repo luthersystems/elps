@@ -34,7 +34,7 @@ var specialOpAllowlist = map[string]string{
 	"analysis/generated.go:analyzer.expandPackageForms":         "excludes file-defined non-macros and advances package context while expanding selected package forms",
 	"analysis/generated.go:expansionPackageForms":               "flattens transparent top-level progns for package-aware expansion, delegating nested declarations to PackageForms",
 	"analysis/generated.go:isPackageFormHead":                   "keeps declarations and package control calls out of prescan macro expansion",
-	"analysis/workspace.go:FindEnclosingFunction":               "finds the definition enclosing a cursor position",
+	"analysis/workspace.go:definesFunctionScope":                "matches a function scope to the symbol of its definition form",
 	"analysis/workspace.go:SymbolKeyFromNameKind":               "translates declaration names to workspace symbol keys",
 	"analysis/workspace.go:extractDefinitions":                  "extracts workspace declaration metadata, not expression traversal",
 	"analysis/workspace.go:scanFileFull":                        "collects top-level workspace definitions",

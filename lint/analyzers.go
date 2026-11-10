@@ -1690,8 +1690,23 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			name string
 			pkg  string
 		}
-		extIndex := make(map[extKey]*analysis.ExternalSymbol)
+		// The index holds only the keys this file defines. An index of
+		// every global of the workspace, built for each file, made a
+		// workspace lint grow with the square of the workspace
+		// (luthersystems/elps#944).
+		wanted := make(map[extKey]bool, len(groups))
+		for key := range groups {
+			pkg := key.pkg
+			if pkg == "" {
+				pkg = "user"
+			}
+			wanted[extKey{name: key.name, pkg: pkg}] = true
+		}
+		extIndex := make(map[extKey]*analysis.ExternalSymbol, len(wanted))
 		for i := range pass.Semantics.ExtraGlobals {
+			if len(extIndex) == len(wanted) {
+				break
+			}
 			ext := &pass.Semantics.ExtraGlobals[i]
 			if !isDefKind(ext.Kind) || ext.Source == nil {
 				continue
@@ -1702,6 +1717,9 @@ var AnalyzerDuplicateDefinition = &Analyzer{
 			}
 			// Keep only the first external occurrence per key.
 			ek := extKey{name: ext.Name, pkg: pkg}
+			if !wanted[ek] {
+				continue
+			}
 			if _, exists := extIndex[ek]; !exists {
 				extIndex[ek] = ext
 			}
