@@ -707,11 +707,20 @@ func (p *Parser) ParseSymbol() *lisp.LVal {
 		return p.errorf("parse-error", "invalid symbol: %v", p.PeekType())
 	}
 	tok := p.src.Token
-	pieces := strings.Split(tok.Text, ":")
-	if len(pieces) > 2 {
+	// Most symbol tokens have no ':' and none of the checks below applies to
+	// them. Find the ':' in place: strings.Split allocated a slice for every
+	// symbol, 17% to 19% of all allocations of a parse
+	// (luthersystems/elps#944).
+	colon := strings.IndexByte(tok.Text, ':')
+	if colon < 0 {
+		return p.Symbol(tok.Text)
+	}
+	pieces := [2]string{tok.Text[:colon], tok.Text[colon+1:]}
+	if strings.IndexByte(pieces[1], ':') >= 0 {
+		// More than one ':'.
 		return p.errorf("invalid-symbol", "invalid symbol %q", tok.Text)
 	}
-	if len(pieces) == 2 && pieces[1] == "" {
+	if pieces[1] == "" {
 		return p.errorf("invalid-symbol", "invalid symbol %q", tok.Text)
 	}
 	// A package-qualified symbol NAMES A BINDING: "pkg:name" is the qualified
@@ -739,7 +748,7 @@ func (p *Parser) ParseSymbol() *lisp.LVal {
 	// keyword names no binding. It is a self-evaluating literal that PutGlobal
 	// explicitly refuses to bind, so the rule above has nothing to say about
 	// it. See docs/lang.md, "Keywords".
-	if len(pieces) == 2 && pieces[0] != "" {
+	if pieces[0] != "" {
 		for _, piece := range pieces {
 			if !p.readsBackAsSymbol(piece) {
 				return p.errorf("invalid-symbol",
