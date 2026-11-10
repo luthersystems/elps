@@ -62,6 +62,14 @@ func TestCallListOfAnOperatorHasNoSpareCapacity(t *testing.T) {
 	requireCallListIsClipped(t, env, "probe-op", length, capacity)
 }
 
+// A builtin whose list is reused gets one with no spare capacity too: its
+// args.Cells has cap == len.
+func TestCallListOfABuiltinHasNoSpareCapacity(t *testing.T) {
+	env := initSafetyTestEnv(t)
+	length, capacity := callListProbe(t, env, "probe-fn", false)
+	requireCallListIsClipped(t, env, "probe-fn", length, capacity)
+}
+
 // get returns the whole backing array, which put files the list by.  The
 // evaluator clips the list's cells out of it.
 func TestCallListGetReturnsTheBackingArray(t *testing.T) {

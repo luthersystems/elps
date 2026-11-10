@@ -1513,6 +1513,9 @@ func (env *LEnv) AddBuiltins(external bool, funs ...LBuiltinDef) {
 		if freeKeys != 0 {
 			v.funData().freeKeys = freeKeys
 		}
+		if dropsCallList(f) {
+			v.funData().dropsList = true
+		}
 		pkg.putName(name, v)
 		registry.register(v, bound)
 		if external {

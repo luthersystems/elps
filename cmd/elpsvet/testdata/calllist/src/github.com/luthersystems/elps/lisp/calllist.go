@@ -30,6 +30,8 @@ var callListDroppers = []LBuiltin{
 	badStoresList,
 	badClosure,
 	badMethod,
+	badMethodValue,
+	badFieldAddress,
 	badUnknownCallee,
 	badHelper,
 	badVariadic,
@@ -124,6 +126,20 @@ func badMethod(env *LEnv, args *LVal) *LVal {
 		return nil
 	}
 	return args.Cells[0]
+}
+
+var keepLen func() int
+
+var keepType *int
+
+func badMethodValue(env *LEnv, args *LVal) *LVal {
+	keepLen = args.Len // want "a method is called on the argument list, or bound to it"
+	return nil
+}
+
+func badFieldAddress(env *LEnv, args *LVal) *LVal {
+	keepType = &args.Type // want "the address of a field of the argument list is taken"
+	return nil
 }
 
 func badUnknownCallee(env *LEnv, args *LVal) *LVal {

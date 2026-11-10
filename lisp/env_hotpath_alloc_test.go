@@ -114,6 +114,11 @@ func TestEmptyScopeAllocations(t *testing.T) {
 // the native binder fast path removed one more).  The builtin takes that
 // call value as its argument list (bindOwned), so the call allocates
 // nothing else; it took two more, a copy of the list and its header, before.
+//
+// max keeps no list, so the evaluator reuses the list of a call of up to
+// eight cells (lisp/calllist.go) and a warm call allocates nothing.  The
+// elpscheck build never reuses a list, so it still counts the one
+// allocation.  A longer list is not kept for reuse.
 func TestCallFormAllocations(t *testing.T) {
 	env := initSafetyTestEnv(t)
 	x := Symbol("call-form-x")
@@ -132,8 +137,8 @@ func TestCallFormAllocations(t *testing.T) {
 		nargs int
 		want  float64
 	}{
-		{"2-cells", 1, 1},
-		{"8-cells", 7, 1},
+		{"2-cells", 1, 0},
+		{"8-cells", 7, 0},
 		{"9-cells-not-coallocated", 8, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -142,8 +147,12 @@ func TestCallFormAllocations(t *testing.T) {
 			if hotpathValue.Type != LInt || hotpathValue.Int != 1 {
 				t.Fatalf("unexpected result: %v", hotpathValue)
 			}
-			if got != tc.want {
-				t.Errorf("allocated %v times per call, want %v", got, tc.want)
+			want := tc.want
+			if tc.nargs < 8 && !callListsReused {
+				want++
+			}
+			if got != want {
+				t.Errorf("allocated %v times per call, want %v", got, want)
 			}
 		})
 	}

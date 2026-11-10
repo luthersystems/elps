@@ -29,10 +29,11 @@ import (
 //   - passed to a function of package lisp, whose parameter is then held
 //     to the same rule.
 //
-// A scalar field of the list (args.Type) may be read or written.  Anything
-// else is reported: returning the list, storing it or a slice of it,
-// capturing it in a function literal, calling a method on it, or passing it
-// to a function this analyzer cannot read.  The rule has no comment
+// A field of the list other than Cells (args.Type) may be read or written.
+// Anything else is reported: returning the list, storing it or a slice of
+// it, capturing it in a function literal, calling or binding a method on
+// it, taking the address of one of its fields, or passing it to a function
+// this analyzer cannot read.  The rule has no comment
 // suppression: a function that needs one keeps its list and leaves
 // callListDroppers.
 //
@@ -51,7 +52,7 @@ func runCallList(pass *analysis.Pass) (interface{}, error) {
 	if pass.Pkg.Path() != lispPkgPath {
 		return nil, nil
 	}
-	c := &callListChecker{pass: pass, decls: map[*types.Func]*ast.FuncDecl{}, seen: map[callListParam]bool{}}
+	c := &callListChecker{pass: pass, decls: map[*types.Func]*ast.FuncDecl{}}
 	var table *ast.CompositeLit
 	for _, file := range pass.Files {
 		for _, decl := range file.Decls {
@@ -99,7 +100,9 @@ func runCallList(pass *analysis.Pass) (interface{}, error) {
 		}
 		// An LBuiltin is func(env *LEnv, args *LVal) *LVal: the list is
 		// the second parameter.
-		c.root = fn.Name()
+		// Each entry is checked on its own, helpers included, so a helper
+		// that keeps the list is reported for every entry that reaches it.
+		c.root, c.seen = fn.Name(), map[callListParam]bool{}
 		c.param(fn, 1)
 	}
 	return nil, nil
@@ -124,7 +127,7 @@ func (c *callListChecker) reportf(pos token.Pos, format string, args ...interfac
 }
 
 // param checks every use of fn's parameter at index.  Each parameter is
-// checked once, which also ends a recursion.
+// checked once for each root, which also ends a recursion.
 func (c *callListChecker) param(fn *types.Func, index int) {
 	key := callListParam{fn, index}
 	if c.seen[key] {
@@ -208,9 +211,12 @@ func (c *callListChecker) use(id *ast.Ident, stack []ast.Node, tracked map[types
 				e, isList = parent, false
 				continue
 			}
+			if sel := c.pass.TypesInfo.Selections[parent]; sel == nil || sel.Kind() != types.FieldVal {
+				return "a method is called on the argument list, or bound to it, and the method may keep it"
+			}
 			if i > 0 {
-				if call, ok := stack[i-1].(*ast.CallExpr); ok && call.Fun == parent {
-					return "a method is called on the argument list, and the method may keep it"
+				if addr, ok := stack[i-1].(*ast.UnaryExpr); ok && addr.Op == token.AND {
+					return "the address of a field of the argument list is taken, and it outlives the call"
 				}
 			}
 			return ""
