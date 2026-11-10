@@ -185,3 +185,16 @@ func BuiltinGoHelperNames() []string {
 	}
 	return names
 }
+
+// CallListsFree returns the number of free call lists r holds
+// (lisp/calllist.go).
+func CallListsFree(r *Runtime) int {
+	n := 0
+	for _, free := range r.callLists.free {
+		n += len(free)
+	}
+	return n
+}
+
+// CallListKeep is the bound on each free list of call lists.
+const CallListKeep = callListKeep

@@ -95,6 +95,7 @@ var analyzers = []*analysis.Analyzer{
 	markerFieldsAnalyzer,
 	nativepayload.DurableAnalyzer,
 	idiom.Analyzer,
+	callListAnalyzer,
 }
 
 // init makes elpsidiom report only the idioms that carry a fix.  The hints

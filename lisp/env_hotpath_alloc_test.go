@@ -80,22 +80,28 @@ func TestEmptyScopeAllocations(t *testing.T) {
 	// empty let fell by one more when bind stopped wrapping a Go special
 	// operator's &rest arguments in a transient list (let's formals are
 	// (bindings &rest expr)), and by two more when the evaluator stopped
-	// copying the argument list of a Go call it builds itself (bindOwned).
+	// copying the argument list of a Go call it builds itself (bindOwned),
+	// and by one more when the evaluator began to reuse let's list
+	// (lisp/calllist.go).
 	for _, tc := range []struct {
 		name string
 		call func() *LVal
 		want float64
 	}{
 		{"ZeroArgumentLambda", func() *LVal { return env.FunCall(fun, args) }, 1},
-		{"EmptyLet", func() *LVal { return env.Eval(let) }, 3},
+		{"EmptyLet", func() *LVal { return env.Eval(let) }, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got := testing.AllocsPerRun(200, func() { hotpathValue = tc.call() })
 			if hotpathValue.Type != LInt || hotpathValue.Int != 42 {
 				t.Fatalf("unexpected result: %v", hotpathValue)
 			}
-			if got != tc.want {
-				t.Errorf("allocated %v times per call, want %v", got, tc.want)
+			want := tc.want
+			if tc.name == "EmptyLet" && !callListsReused {
+				want++
+			}
+			if got != want {
+				t.Errorf("allocated %v times per call, want %v", got, want)
 			}
 		})
 	}
