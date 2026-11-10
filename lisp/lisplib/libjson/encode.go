@@ -1001,9 +1001,9 @@ func (enc *encoder) encodeNative(v any) error {
 func nativeMarshalError(err error) error {
 	var me *json.MarshalerError
 	if !errors.As(err, &me) {
-		// The tests and fuzz targets reach this for one kind of native
-		// only: a struct field whose tag has a `format` option, which
-		// the v2 engine refuses and the v1 engine ignores.  The engine's
+		// No test or fuzz target reaches this.  The last native known to
+		// was a struct whose tag has a format option, which the v2
+		// engine refuses, and the walk refuses that now.  The engine's
 		// text is the only description there is.
 		return encodeUnloadableNativeError{err: fmt.Errorf("encoding/json refused it: %w", err)}
 	}
