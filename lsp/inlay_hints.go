@@ -43,13 +43,8 @@ func (s *Server) textDocumentInlayHint(params *InlayHintParams) ([]InlayHint, er
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	ast := doc.ast
-	docAnalysis := doc.analysis
-	content := doc.Content
-	doc.mu.Unlock()
+	view := s.ensureAnalysis(doc)
+	ast, docAnalysis, content := view.ast, view.analysis, view.content
 
 	if docAnalysis == nil || len(ast) == 0 {
 		return nil, nil

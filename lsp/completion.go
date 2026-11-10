@@ -23,13 +23,13 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 	if doc.OverLimit() {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	prefix := wordAtPosition(doc.Content, line, col)
+	prefix := wordAtPosition(view.content, line, col)
 
 	var items []protocol.CompletionItem
 
@@ -38,9 +38,9 @@ func (s *Server) textDocumentCompletion(_ *glsp.Context, params *protocol.Comple
 		parts, partsErr := splitPackageQualified(prefix)
 		pkgName, partial, ok := parts.pkg, parts.name, partsErr
 		if ok {
-			items = s.packageCompletions(doc, pkgName, partial)
+			items = s.packageCompletions(pkgName, partial)
 		} else {
-			items = s.scopeCompletions(doc, line, col, prefix)
+			items = s.scopeCompletions(view, line, col, prefix)
 		}
 	}
 
@@ -72,7 +72,7 @@ func splitPackageQualified(prefix string) (qualifiedParts, bool) {
 // packageCompletions returns completion items from a package's symbols.
 // Includes both exported and non-exported symbols since ELPS allows
 // qualified access (pkg:sym) to any symbol in a package.
-func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []protocol.CompletionItem {
+func (s *Server) packageCompletions(pkgName, partial string) []protocol.CompletionItem {
 	s.ensureWorkspaceIndex()
 
 	s.analysisCfgMu.RLock()
@@ -127,16 +127,16 @@ func (s *Server) packageCompletions(doc *Document, pkgName, partial string) []pr
 
 // scopeCompletions returns completion items from the scope chain at the
 // cursor position.
-func (s *Server) scopeCompletions(doc *Document, line, col int, prefix string) []protocol.CompletionItem {
-	if doc.analysis == nil {
+func (s *Server) scopeCompletions(view docView, line, col int, prefix string) []protocol.CompletionItem {
+	if view.analysis == nil {
 		return nil
 	}
 
 	// Find the innermost scope at cursor.
 	elpsLine := line + 1
 	elpsCol := col + 1
-	scope := scopeAtPosition(doc.analysis.RootScope, elpsLine, elpsCol)
-	currentPkg := packageAtLine(doc.ast, elpsLine)
+	scope := scopeAtPosition(view.analysis.RootScope, elpsLine, elpsCol)
+	currentPkg := packageAtLine(view.ast, elpsLine)
 
 	syms := collectVisibleSymbols(scope, currentPkg)
 

@@ -34,13 +34,8 @@ func (s *Server) textDocumentSignatureHelp(_ *glsp.Context, params *protocol.Sig
 	if doc.OverLimit() {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	ast := doc.ast
-	docAnalysis := doc.analysis
-	content := doc.Content
-	doc.mu.Unlock()
+	view := s.ensureAnalysis(doc)
+	ast, docAnalysis, content := view.ast, view.analysis, view.content
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.

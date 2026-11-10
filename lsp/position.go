@@ -77,15 +77,18 @@ func elpsToLSPRange(loc *token.Location, nameLen int) protocol.Range {
 }
 
 // symbolAtPosition finds the analysis symbol at the given 0-based LSP
-// position in the document's analysis result. It returns both the symbol
-// (definition) and the specific reference that was hit, if any.
+// position in an analysis result. It returns both the symbol (definition)
+// and the specific reference that was hit, if any.
+//
+// It takes the result, not the Document: the caller passes the analysis
+// of its docView, so that one request reads one result (see docView).
 //
 // UNITS: col is a 0-based BYTE column, which is what token.Location.Col and
 // EndCol are counted in. A column taken off the wire is in the negotiated
 // position encoding and must be converted first -- handlers do that with
 // Server.cursorAt, the single inbound boundary for elps#464.
-func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis.Reference) {
-	if doc == nil || doc.analysis == nil {
+func symbolAtPosition(res *analysis.Result, line, col int) (*analysis.Symbol, *analysis.Reference) {
+	if res == nil {
 		return nil, nil
 	}
 	// Convert LSP 0-based to ELPS 1-based.
@@ -93,7 +96,7 @@ func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis
 	elpsCol := col + 1
 
 	// Check references first — they point to specific usage sites.
-	for _, ref := range doc.analysis.References {
+	for _, ref := range res.References {
 		if ref.Source == nil || ref.Source.Line == 0 {
 			continue
 		}
@@ -104,7 +107,7 @@ func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis
 
 	// Check the names in export forms.  They are not in References, but a
 	// rename or a reference search that starts on one must find its symbol.
-	for _, ref := range doc.analysis.ExportRefs {
+	for _, ref := range res.ExportRefs {
 		if ref.Source == nil || ref.Source.Line == 0 {
 			continue
 		}
@@ -114,7 +117,7 @@ func symbolAtPosition(doc *Document, line, col int) (*analysis.Symbol, *analysis
 	}
 
 	// Check definitions (symbols defined in this file).
-	for _, sym := range doc.analysis.Symbols {
+	for _, sym := range res.Symbols {
 		if sym.Source == nil || sym.Source.Line == 0 {
 			continue
 		}

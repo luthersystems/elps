@@ -25,17 +25,17 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	if doc.OverLimit() {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, ref := symbolAtPosition(doc, line, col)
+	sym, ref := symbolAtPosition(view.analysis, line, col)
 	if sym != nil {
 		content := buildHoverContent(sym)
 		if content != "" {
-			if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+			if captures := lambdaCapturesHover(view, line, col); captures != "" {
 				content += "\n\n" + captures
 			}
 			return hoverWithContent(content, hoverRange(sym, ref)), nil
@@ -43,16 +43,16 @@ func (s *Server) textDocumentHover(_ *glsp.Context, params *protocol.HoverParams
 	}
 
 	// Fallback: check for qualified symbol (e.g. "string:join") in package exports.
-	word := wordAtPosition(doc.Content, line, col)
-	wordRange := wordRangeAtPosition(doc.Content, line, col)
+	word := wordAtPosition(view.content, line, col)
+	wordRange := wordRangeAtPosition(view.content, line, col)
 	if content := s.qualifiedSymbolHover(word); content != "" {
 		return hoverWithContent(content, wordRange), nil
 	}
 
 	// Fallback: check builtins, special ops, macros, and use-package imports
 	// in the registry's package exports.
-	if content := s.registryHover(word, doc.ast, line+1); content != "" {
-		if captures := lambdaCapturesHover(doc, line, col); captures != "" {
+	if content := s.registryHover(word, view.ast, line+1); content != "" {
+		if captures := lambdaCapturesHover(view, line, col); captures != "" {
 			content += "\n\n" + captures
 		}
 		return hoverWithContent(content, wordRange), nil
@@ -273,13 +273,11 @@ func symbolKindLabel(kind analysis.SymbolKind) string {
 // when configured): a reference inside the lambda whose symbol is bound by
 // a local scope enclosing the lambda is a capture.  It returns "" when the
 // cursor is not on a lambda head.  line and col are 0-based, col in bytes.
-func lambdaCapturesHover(doc *Document, line, col int) string {
-	if w := wordAtPosition(doc.Content, line, col); w != "lambda" && w != "lisp:lambda" {
+func lambdaCapturesHover(view docView, line, col int) string {
+	if w := wordAtPosition(view.content, line, col); w != "lambda" && w != "lisp:lambda" {
 		return ""
 	}
-	doc.mu.Lock()
-	ast, res := doc.ast, doc.analysis
-	doc.mu.Unlock()
+	ast, res := view.ast, view.analysis
 	if res == nil {
 		return ""
 	}

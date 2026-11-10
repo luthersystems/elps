@@ -71,13 +71,8 @@ func (s *Server) textDocumentSemanticTokensFull(_ *glsp.Context, params *protoco
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	ast := doc.ast
-	analysisResult := doc.analysis
-	content := doc.Content
-	doc.mu.Unlock()
+	view := s.ensureAnalysis(doc)
+	ast, analysisResult, content := view.ast, view.analysis, view.content
 
 	if ast == nil {
 		return nil, nil

@@ -18,14 +18,14 @@ func (s *Server) textDocumentLinkedEditingRange(_ *glsp.Context, params *protoco
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, _ := symbolAtPosition(doc, line, col)
-	if sym == nil || doc.analysis == nil {
+	sym, _ := symbolAtPosition(view.analysis, line, col)
+	if sym == nil || view.analysis == nil {
 		return nil, nil
 	}
 
@@ -46,7 +46,7 @@ func (s *Server) textDocumentLinkedEditingRange(_ *glsp.Context, params *protoco
 	// Reference ranges — current file only.  Each range is that of the name
 	// alone, as in a rename: a range that covered the qualifier of
 	// pkg:name would have the edit remove it.
-	for _, ref := range doc.analysis.References {
+	for _, ref := range view.analysis.References {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
 		}
@@ -54,7 +54,7 @@ func (s *Server) textDocumentLinkedEditingRange(_ *glsp.Context, params *protoco
 	}
 
 	// The names in export forms, so that the export follows the edit.
-	for _, ref := range doc.analysis.ExportRefs {
+	for _, ref := range view.analysis.ExportRefs {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
 		}

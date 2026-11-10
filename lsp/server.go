@@ -499,21 +499,42 @@ func (s *Server) getAnalysisConfig(uri string) *analysis.Config {
 	return analysis.ConfigForFile(base, uriToPath(uri))
 }
 
-// ensureAnalysis ensures the document has a current analysis result.
-// It lazily triggers the workspace index build if needed (fallback for
-// issue #173 where the initialized notification may fail).
-func (s *Server) ensureAnalysis(doc *Document) {
+// docView is the state of a document that one request works from: the
+// text, the AST of that text and the analysis of that AST.
+//
+// A handler reads these three from the view and not from the Document.
+// The timers (the didChange debounce, the record method pass) and the
+// didChange handler replace the fields of the Document under Document.mu
+// while a request runs. A read without the lock is a data race, and two
+// reads can return different values: a nil check followed by a nil
+// dereference (luthersystems/elps#943). The view is one consistent copy.
+// Its values are never written after they are stored, so the request can
+// read them without a lock.
+type docView struct {
+	content  string
+	ast      []*lisp.LVal
+	analysis *analysis.Result
+}
+
+// ensureAnalysis ensures the document has a current analysis result and
+// returns the view of the document that goes with it. It lazily triggers
+// the workspace index build if needed (fallback for issue #173 where the
+// initialized notification may fail).
+//
+// The analysis of the view is nil when the document has no AST (it is
+// over the size limit).
+func (s *Server) ensureAnalysis(doc *Document) docView {
 	// Build workspace index before locking doc — buildWorkspaceIndex may
 	// call reanalyzeOpenDocuments which also locks documents.
 	s.ensureWorkspaceIndex()
 
 	doc.mu.Lock()
 	defer doc.mu.Unlock()
-	if doc.analysis != nil {
-		return
+	if doc.analysis == nil {
+		cfg := s.getAnalysisConfig(doc.URI)
+		doc.analyze(cfg)
 	}
-	cfg := s.getAnalysisConfig(doc.URI)
-	doc.analyze(cfg)
+	return docView{content: doc.Content, ast: doc.ast, analysis: doc.analysis}
 }
 
 // captureNotify stores the notification function from the context for

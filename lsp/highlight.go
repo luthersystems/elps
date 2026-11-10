@@ -15,14 +15,14 @@ func (s *Server) textDocumentDocumentHighlight(_ *glsp.Context, params *protocol
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, _ := symbolAtPosition(doc, line, col)
-	if sym == nil || doc.analysis == nil {
+	sym, _ := symbolAtPosition(view.analysis, line, col)
+	if sym == nil || view.analysis == nil {
 		return nil, nil
 	}
 
@@ -44,7 +44,7 @@ func (s *Server) textDocumentDocumentHighlight(_ *glsp.Context, params *protocol
 
 	// Reference highlights (Read kind) — current file only.
 	readKind := protocol.DocumentHighlightKindRead
-	for _, ref := range doc.analysis.References {
+	for _, ref := range view.analysis.References {
 		if ref.Symbol != sym || ref.Source == nil {
 			continue
 		}
