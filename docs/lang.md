@@ -1714,12 +1714,31 @@ program is built with:
 | The step charge of a native refused for its size, when it has invalid UTF-8 | counts 6 bytes for each bad byte | counts 3 |
 | A struct field tag with a `format:` option | the option is ignored | refused: `encoding/json refused it: ` and the engine's text |
 | A struct field tag whose name is quoted or is not valid UTF-8 | the Go field name is used | the tag's name is used |
-| Malformed JSON given to `json:load-string` and the other load functions | v1 error text | v2 error text |
 
-The load functions report the same condition, `json:syntax-error`, on both
-engines, and the values they decode do not depend on the engine. A number
-that does not fit a float gives the same text on both, wherever it sits:
-`json: cannot unmarshal number 1e400 into Go value of type float64`.
+The load functions do not depend on the engine: not the values they decode,
+and not their errors. A number that does not fit a float gives
+`json: cannot unmarshal number 1e400 into Go value of type float64`, wherever
+it sits.
+
+A document that is not JSON raises `json:syntax-error`. Its message is
+`json: invalid JSON at offset N: ` and a reason, where N is the byte offset
+of the first fault. The message is the same with `:string-numbers` and
+`:exact-integers`.
+
+| Reason | Example, with the offset |
+|--------|--------------------------|
+| `unexpected end of input` | `{"a":[1,2` at 9, and an empty document at 0 |
+| `expected a value` | `[1,]` at 3 |
+| `invalid literal` | `trux` at 3 |
+| `invalid number` | `[1.x]` at 3 |
+| `control character in string` | a raw newline in a string |
+| `invalid escape in string` | `"\x"` at 2 |
+| `expected a string key` | `{"a":1,}` at 7 |
+| `expected ':' after the key` | `{"a" 1}` at 5 |
+| `expected ',' or '}' in object` | `{"a":1 "b":2}` at 7 |
+| `expected ',' or ']' in array` | `[1 2]` at 3 |
+| `unexpected data after the top-level value` | `1 2` at 2 |
+| `nests more than 10000 levels deep` | at the bracket that opens level 10,001 |
 
 ### JSON object keys
 
@@ -2778,7 +2797,7 @@ use `to-string` or string functions on it just like an interpreter error:
 (handler-bind ((condition (lambda (c &rest data)
                             (string:join (map 'list to-string data) " "))))
   (json:load-string "{"))
-; returns "unexpected end of JSON input"
+; returns "json: invalid JSON at offset 1: unexpected end of input"
 ```
 
 `rethrow` preserves such an error and its original stack. How these errors

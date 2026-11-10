@@ -484,7 +484,9 @@ func (s *Serializer) loadIndirect(b []byte, opts LoadOpts) *lisp.LVal {
 		var syntaxErr *json.SyntaxError
 		var exactErr syntaxError
 		if errors.As(err, &syntaxErr) || errors.As(err, &exactErr) {
-			lerr := lisp.Error(err)
+			// The engine's verdict, this package's words: see
+			// invalidJSONError.
+			lerr := lisp.Error(newInvalidJSONError(b))
 			lerr.Str = "json:syntax-error"
 			return lerr
 		}
@@ -563,6 +565,9 @@ func (e floatRangeError) Error() string {
 // (handler-bind ([json:syntax-error ...])) would quietly stop catching
 // malformed input the moment they turned the option on, which is precisely the
 // class of silent change this option exists to remove.
+//
+// Its text only marks the kind of fault for this package.  loadIndirect
+// replaces it, and the engine's own syntax text, with an invalidJSONError.
 type syntaxError string
 
 func (e syntaxError) Error() string { return string(e) }
