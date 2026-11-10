@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"strconv"
 	"strings"
 	"unicode/utf8"
 
@@ -21,6 +20,9 @@ func Untag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 }
 
 type untagWalker struct {
+	// scratch receives the JSON text of a string or float whose bytes the
+	// walker only counts.  One buffer serves the whole walk.
+	scratch       []byte
 	cfg           typedConfig
 	values        int
 	size, charged int
@@ -51,7 +53,24 @@ func (w *untagWalker) stringSize(s string) error {
 	if len(s)+2 > w.cfg.maxBytes-w.size {
 		return fmt.Errorf("%w: input exceeds %d bytes", ErrTypedLimit, w.cfg.maxBytes)
 	}
-	return w.add(len(appendJSONString(nil, s)))
+	w.scratch = appendJSONString(w.scratch[:0], s)
+	return w.add(len(w.scratch))
+}
+
+// isPlainText reports whether the tagged form of s is s itself: a string or
+// key with no leading "~".  typedDecoder.stringValue and key return such text
+// unchanged, as a new string made from a new byte slice.  Untag returns the
+// input's string, which is immutable, and saves both copies.
+func isPlainText(s string) bool {
+	return s == "" || s[0] != '~'
+}
+
+// key restores the map key written as s.
+func (w *untagWalker) key(d *typedDecoder, s string) (*lisp.LVal, error) {
+	if isPlainText(s) {
+		return lisp.String(s), nil
+	}
+	return d.key([]byte(s))
 }
 
 func (w *untagWalker) count() error {
@@ -77,13 +96,16 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err := w.stringSize(v.Str); err != nil {
 			return nil, err
 		}
+		if isPlainText(v.Str) {
+			return lisp.String(v.Str), nil
+		}
 		d := typedDecoder{}
 		return d.stringValue([]byte(v.Str))
 	case lisp.LInt:
 		if !exactInt(int64(v.Int)) {
 			return nil, errors.New("typed json: non-canonical int")
 		}
-		if err := w.add(len(strconv.Itoa(v.Int))); err != nil {
+		if err := w.add(decimalLen(v.Int)); err != nil {
 			return nil, err
 		}
 		return lisp.Int(v.Int), nil
@@ -91,7 +113,8 @@ func (w *untagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if math.IsNaN(v.Float) || math.IsInf(v.Float, 0) || math.Trunc(v.Float) == v.Float {
 			return nil, errors.New("typed json: whole float requires ~d")
 		}
-		if err := w.add(len(appendJSONFloat(nil, v.Float))); err != nil {
+		w.scratch = appendJSONFloat(w.scratch[:0], v.Float)
+		if err := w.add(len(w.scratch)); err != nil {
 			return nil, err
 		}
 		return lisp.Float(v.Float), nil
@@ -271,7 +294,7 @@ func (w *untagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err := w.add(1); err != nil {
 			return nil, err
 		}
-		k, err := d.key([]byte(p.Cells[0].Str))
+		k, err := w.key(&d, p.Cells[0].Str)
 		if err != nil {
 			return nil, err
 		}

@@ -28,7 +28,11 @@ func Tag(v *lisp.LVal, opts ...TypedOption) (*lisp.LVal, error) {
 }
 
 type tagWalker struct {
-	path                  []*lisp.LVal
+	path []*lisp.LVal
+	// scratch receives the JSON text of a string or float whose bytes the
+	// walker only counts.  One buffer serves the whole walk.  Appending to
+	// nil allocated a buffer for each float and each long string.
+	scratch               []byte
 	cfg                   typedConfig
 	values, size, charged int
 }
@@ -63,15 +67,24 @@ func (w *tagWalker) grow(n int) error {
 	return nil
 }
 
+// stringSize counts the bytes of s as a JSON string.  The walker measures a
+// map key and a tag name through it, with no LVal built for the count.
+func (w *tagWalker) stringSize(s string) error {
+	w.scratch = appendJSONString(w.scratch[:0], s)
+	return w.grow(len(w.scratch))
+}
+
 func (w *tagWalker) leaf(v *lisp.LVal) (*lisp.LVal, error) {
 	var n int
 	switch v.Type {
 	case lisp.LString:
-		n = len(appendJSONString(nil, v.Str))
+		w.scratch = appendJSONString(w.scratch[:0], v.Str)
+		n = len(w.scratch)
 	case lisp.LInt:
-		n = len(strconv.Itoa(v.Int))
+		n = decimalLen(v.Int)
 	case lisp.LFloat:
-		n = len(appendJSONFloat(nil, v.Float))
+		w.scratch = appendJSONFloat(w.scratch[:0], v.Float)
+		n = len(w.scratch)
 	case lisp.LSymbol:
 		n = len(v.Str)
 	default:
@@ -244,7 +257,7 @@ func (w *tagWalker) value(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err := w.write(`["~#tagged",[`); err != nil {
 			return nil, err
 		}
-		if _, err := w.leaf(lisp.String(v.Str)); err != nil {
+		if err := w.stringSize(v.Str); err != nil {
 			return nil, err
 		}
 		if err := w.write(","); err != nil {
@@ -384,7 +397,7 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err := w.count(); err != nil {
 			return nil, err
 		}
-		if _, err := w.leaf(lisp.String(p.Key)); err != nil {
+		if err := w.stringSize(p.Key); err != nil {
 			return nil, err
 		}
 		if err := w.write(":"); err != nil {
@@ -394,7 +407,9 @@ func (w *tagWalker) object(v *lisp.LVal, depth int) (*lisp.LVal, error) {
 		if err != nil {
 			return nil, err
 		}
-		out.MapSet(p.Key, c)
+		// MapSetString and not MapSet: MapSet takes the key as an
+		// interface value, which allocates for each string key.
+		out.MapSetString(p.Key, c)
 	}
 	if err := w.write("}"); err != nil {
 		return nil, err
