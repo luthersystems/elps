@@ -7,6 +7,7 @@ package libtime
 
 import (
 	"context"
+	"math"
 	"time"
 
 	"github.com/luthersystems/elps/lisp"
@@ -108,7 +109,9 @@ var builtins = []*libutil.Builtin{
 	libutil.FunctionDoc("time-from", lisp.Formals("start", "end"), BuiltinDurationBetween,
 		`Returns the duration between start and end as a native duration
 		value (end - start). Both arguments must be native time values.
-		The result can be negative if end is before start.`),
+		The result can be negative if end is before start. A duration
+		holds at most about 292 years in either direction. Returns an
+		error if the difference is larger.`),
 	libutil.FunctionDoc("parse-duration", lisp.Formals("duration-string"), BuiltinParseDuration,
 		`Parses a Go-style duration string and returns a native duration
 		value. Valid units are "ns", "us" (or "µs"), "ms", "s", "m", "h".
@@ -270,7 +273,17 @@ func BuiltinDurationBetween(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
 	if lerr.IsError() {
 		return lerr
 	}
-	return Duration(t[1].Sub(t[0]))
+	d := t[1].Sub(t[0])
+	// Time.Sub returns the largest or smallest duration, with no error, for
+	// a difference a duration cannot hold (about 292 years).  A caller
+	// could not tell that result from a true one.  The check is exact: an
+	// extreme duration is a true result only when it leads from start back
+	// to end.
+	if (d == math.MaxInt64 || d == math.MinInt64) && !t[0].Add(d).Equal(t[1]) {
+		return env.Errorf("the difference does not fit a duration: %s to %s",
+			t[0].Format(time.RFC3339Nano), t[1].Format(time.RFC3339Nano))
+	}
+	return Duration(d)
 }
 
 func BuiltinParseDuration(env *lisp.LEnv, args *lisp.LVal) *lisp.LVal {
