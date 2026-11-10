@@ -168,9 +168,29 @@ func (w *canonWalker) add(n int, path string) error {
 	return nil
 }
 
+// decimalLen returns len(strconv.Itoa(n)).  The size walkers count the bytes
+// of an int without writing them.  Itoa allocates its result for every int
+// outside 0 to 99, one allocation for each int in a document.
+func decimalLen(n int) int {
+	// The magnitude as a uint64, which also holds -MinInt64.
+	u, digits := uint64(n), 1 //nolint:gosec // G115: the bits of n; a negative n is negated below
+	if n < 0 {
+		u, digits = -u, 2 // the sign
+	}
+	for u >= 10 {
+		u /= 10
+		digits++
+	}
+	return digits
+}
+
+// text returns the canonical copy of the string or key s.  v is the value
+// an error names.  A nil v stands for lisp.String(s): a map key has no value
+// of its own, and building one for each key cost an allocation that only a
+// failure reads.
 func (w *canonWalker) text(s, path string, v *lisp.LVal) (*lisp.LVal, error) {
 	if needsTilde(s) {
-		return nil, w.fail(path, "leading-tilde", "leading ~ string or key", v)
+		return nil, w.fail(path, "leading-tilde", "leading ~ string or key", textValue(s, v))
 	}
 	if err := w.add(2, path); err != nil {
 		return nil, err
@@ -180,7 +200,7 @@ func (w *canonWalker) text(s, path string, v *lisp.LVal) (*lisp.LVal, error) {
 		// encodings. Validate during the metered scan, not before it.
 		if r == utf8.RuneError {
 			if _, n := utf8.DecodeRuneInString(s[i:]); n == 1 {
-				return nil, w.fail(path, "invalid-utf8", "invalid UTF-8 string or key", v)
+				return nil, w.fail(path, "invalid-utf8", "invalid UTF-8 string or key", textValue(s, v))
 			}
 		}
 		n := utf8.RuneLen(r)
@@ -201,6 +221,14 @@ func (w *canonWalker) text(s, path string, v *lisp.LVal) (*lisp.LVal, error) {
 	return lisp.String(strings.Clone(s)), nil
 }
 
+// textValue returns the value a text error names.  See text.
+func textValue(s string, v *lisp.LVal) *lisp.LVal {
+	if v == nil {
+		return lisp.String(s)
+	}
+	return v
+}
+
 func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, error) {
 	if err := w.count(path); err != nil {
 		return nil, err
@@ -216,7 +244,7 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 		if !exactInt(int64(v.Int)) {
 			return nil, w.fail(path, "int-range", "int magnitude exceeds 2^53", v)
 		}
-		if err := w.add(len(strconv.Itoa(v.Int)), path); err != nil {
+		if err := w.add(decimalLen(v.Int), path); err != nil {
 			return nil, err
 		}
 		return lisp.Int(v.Int), nil
@@ -235,7 +263,7 @@ func (w *canonWalker) value(v *lisp.LVal, depth int, path string) (*lisp.LVal, e
 			if strconv.IntSize == 32 && (x < math.MinInt32 || x > math.MaxInt32) {
 				return nil, w.fail(path, "float-range", "whole-number float does not fit platform int", v)
 			}
-			if err := w.add(len(strconv.Itoa(int(x))), path); err != nil {
+			if err := w.add(decimalLen(int(x)), path); err != nil {
 				return nil, err
 			}
 			return lisp.Int(int(x)), nil
@@ -360,7 +388,9 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 	if err := w.width(v.Len(), path); err != nil {
 		return nil, err
 	}
-	pairs, stock := v.AppendMapKeyPairs(nil)
+	// One buffer of the map's size.  Appending to nil grew the slice four
+	// times for a map of six keys.  width has checked the size.
+	pairs, stock := v.AppendMapKeyPairs(make([]lisp.MapKeyPair, 0, v.Len()))
 	if stock {
 		slices.SortFunc(pairs, func(a, b lisp.MapKeyPair) int {
 			if a.Kind == lisp.LInt || b.Kind == lisp.LInt { // All int keys are rejected below.
@@ -403,7 +433,6 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 	for i, p := range pairs {
 		w.edges[start].key = p.Key
 		kp := ""
-		k := lisp.String(p.Key)
 		switch p.Kind {
 		case lisp.LInt:
 			return nil, w.fail(w.renderPath(start)+"[key "+strconv.Itoa(p.Int)+"]", "key-type", "int map key", lisp.Int(p.Int))
@@ -412,15 +441,15 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 			return nil, w.fail(kp, "key-type", "unsupported map key", lisp.Symbol(p.Kind.String()+" "+p.Key))
 		}
 		if i > 0 && pairs[i-1].Key == p.Key {
-			return nil, w.fail(kp, "key-collision", "map key collision after string conversion", k)
+			return nil, w.fail(kp, "key-collision", "map key collision after string conversion", lisp.String(p.Key))
 		}
 		if i > 0 && pairs[i-1].Key > p.Key {
-			return nil, w.fail(kp, "key-order", "map key order would change dump bytes", k)
+			return nil, w.fail(kp, "key-order", "map key order would change dump bytes", lisp.String(p.Key))
 		}
 		if err := w.count(kp); err != nil {
 			return nil, err
 		}
-		key, err := w.text(p.Key, kp, k)
+		key, err := w.text(p.Key, kp, nil)
 		if err != nil {
 			return nil, err
 		}
@@ -429,7 +458,7 @@ func (w *canonWalker) sortedMap(v *lisp.LVal, depth int, path string) (*lisp.LVa
 			return nil, err
 		}
 		if out.MapSetLVal(key, c).IsError() {
-			return nil, w.fail(kp, "unsupported", "cannot construct map", k)
+			return nil, w.fail(kp, "unsupported", "cannot construct map", lisp.String(p.Key))
 		}
 	}
 	return out, nil
