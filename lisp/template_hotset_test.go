@@ -38,7 +38,7 @@ func libBuilt(t *testing.T, vm *LEnv, name string) bool {
 	if !ok {
 		t.Fatalf("lib:%s is not in the base", name)
 	}
-	return lazyInstanceOf(vm).values[lib.base.bindings[i].value.index-1] != nil
+	return lazyInstanceOf(vm).values.get(lib.base.bindings[i].value.index-1) != nil
 }
 
 // TestTemplatePrewarmBuildsWhatMostVMsRead: VMWithPrewarm builds a root that
@@ -170,7 +170,7 @@ func TestTemplatePrewarmKeepsMapEntriesPrewarmedVMsRead(t *testing.T) {
 	// Rebuilds before VMs 5, 9, 17 and 33 see m[k] read by every earlier VM.
 	for n := 5; n <= 40; n++ {
 		vm := hotSetVM(t, tmpl, VMWithPrewarm())
-		if lazyInstanceOf(vm).values[entry] == nil {
+		if lazyInstanceOf(vm).values.get(entry) == nil {
 			t.Fatalf("VM %d: prewarm did not build m[k], which every VM read", n)
 		}
 		read(vm)
@@ -338,7 +338,7 @@ func retainedMap(t *testing.T, tmpl *Template) (*LVal, weak.Pointer[[]byte]) {
 	vm := hotSetVM(t, tmpl, VMWithPrewarm())
 	user := vm.Runtime.Registry.Package("user")
 	i, _ := user.base.index.Lookup("bulk")
-	bulk := lazyInstanceOf(vm).values[user.base.bindings[i].value.index-1]
+	bulk := lazyInstanceOf(vm).values.get(user.base.bindings[i].value.index - 1)
 	if bulk == nil {
 		t.Fatal("prewarm did not build bulk")
 	}

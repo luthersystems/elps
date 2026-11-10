@@ -98,7 +98,7 @@ func (lazy *lazyPackage) peekFun(ref templateRef) functionIdentity {
 	if ref.index == 0 {
 		return funIdentity(ref.shared)
 	}
-	if mv := lazy.inst.values[ref.index-1]; mv != nil {
+	if mv := lazy.inst.values.get(ref.index - 1); mv != nil {
 		// Materialized through another path; outside ref the fill queue
 		// is drained, so the header is complete.
 		return funIdentity(mv)
@@ -586,12 +586,12 @@ func (lazy *lazyPackage) peekSameFun(ref templateRef, fd *funData) bool {
 	if ref.index == 0 {
 		return sameFun(ref.shared, fd)
 	}
-	if mv := lazy.inst.values[ref.index-1]; mv != nil {
+	if mv := lazy.inst.values.get(ref.index - 1); mv != nil {
 		return sameFun(mv, fd)
 	}
 	tv := &lazy.inst.p.values[ref.index-1]
 	if tv.header.Type != LFun || tv.kind != templateFunction {
 		return false
 	}
-	return lazy.inst.functions[tv.payload] == fd
+	return lazy.inst.functions.get(tv.payload) == fd
 }
