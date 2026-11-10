@@ -1660,38 +1660,58 @@ dump partway with `step-budget-exceeded`. The output also stops at
 `Runtime.MaxAlloc` with `allocation size exceeds maximum (N)`.
 
 A native Go value is written by Go's `encoding/json`. Before that runs, the
-dump walks the native and refuses it when:
+dump walks the native. The walk refuses a native it cannot write, with the
+error `unable to encode native value: ` and one of the reasons below. It
+stops at the first problem it meets, and nothing in the native is marshalled.
 
-- its output cannot fit in what `MaxAlloc` leaves. The error is the
-  allocation error above. Nothing in the native is marshalled.
-- it nests more than 50,000 levels, counting each pointer, interface and
-  container. A native nested past the JSON decoder's limit of 10,000 levels
-  is refused with `unable to encode native value: invalid character '['
-  exceeded max depth` (`'{'` for an object). On Go's JSON v2 engine,
-  encoding/json refuses a native nested past 10,000 levels itself, with
-  `exceeded max depth`, until the walk's own limit is reached.
+| Native | Reason |
+|--------|--------|
+| A channel, function or complex number, or a map whose keys are not strings, integers or `encoding.TextMarshaler` values. Float and bool keys are refused, in an empty or nil map too | `unsupported type T` |
+| A NaN or infinite float | `unsupported number NaN` |
+| A value that contains itself, through a pointer, map or slice | `value of type T contains itself` |
+| JSON output nested more than 10,000 levels, the limit of the load functions | `JSON nests more than 10000 levels deep` |
+| More than 50,000 levels, counting each pointer and interface | `value nests more than 50000 levels deep` |
+| A `json.Number` that is not a JSON number. An empty one writes `0` | `invalid json.Number "1x"` |
+| A `time.Time` with no RFC 3339 form | `time.Time has year 10000, outside of 0 to 9999`, or `time.Time has a zone 86400 seconds from UTC, which is 24 hours or more` |
+| A map key whose `MarshalText` fails | `map key MarshalText failed: ` and the method's error |
 
-Walking a native that is not refused calls no `MarshalJSON` or `MarshalText`
-method. A `math/big` number whose decimal form cannot fit is refused before it
-is converted. Each native is marshalled at most once per dump, however many
-times the value refers to it.
+The walk also refuses a native whose output cannot fit in what `MaxAlloc`
+leaves. That error is the allocation error above.
+
+The walk calls no `MarshalJSON` method and no `MarshalText` method of a value.
+A `math/big` number whose decimal form cannot fit is refused before it is
+converted. encoding/json then marshals the native, once per dump, however
+many times the value refers to it. Three errors come after the walk, with the
+same prefix:
+
+| Problem | Reason |
+|---------|--------|
+| A `MarshalJSON` or `MarshalText` method returns an error | `a marshal method failed: ` and the method's error |
+| A `MarshalJSON` method returns bytes that are not valid JSON, or JSON that nests past 10,000 levels where it sits. A `json.RawMessage` that is not valid JSON is this case | `a marshal method returned JSON that is not valid or nests more than 10000 levels deep` |
+| A number in the output does not fit a float, and `:string-numbers` is off | `json: cannot unmarshal number 1e400 into Go value of type float64` |
+
+When a native has both a problem the walk sees and a failing marshal method,
+the dump reports the walk's problem, wherever the two sit in the value.
 
 Go 1.27 has two JSON engines: v2 by default, and v1 with
 `GOEXPERIMENT=nojsonv2`. The bytes libjson writes for lisp values are the same
 on both. A string with invalid UTF-8 writes each bad byte as the escape
-`\ufffd`. A native is written by encoding/json, so these results depend on the
-engine the program is built with:
+`\ufffd`. The results in the tables above are the same on both engines too
+(luthersystems/elps#928). These results still depend on the engine the
+program is built with:
 
-| Native | v1 engine | v2 engine |
-|--------|-----------|-----------|
-| Invalid UTF-8 in a string or map key | `\ufffd` | a raw U+FFFD |
-| A `map[float64]T` | `json: unsupported type` | encoded |
-| A nil `map[bool]T` | `json: unsupported type` | `null` (a non-nil one is refused, with v2 text) |
-| A cycle that nests past 10,000 levels before it repeats | `encountered a cycle` error | `exceeded max depth` |
-| An invalid `json.Number`, `RawMessage` or failing marshaler | v1 error text | v2 error text |
+| Case | v1 engine | v2 engine |
+|------|-----------|-----------|
+| Invalid UTF-8 in a native's string, map key or `MarshalText` output | `\ufffd` | a raw U+FFFD |
+| The step charge of a native refused for its size, when it has invalid UTF-8 | counts 6 bytes for each bad byte | counts 3 |
+| A struct field tag with a `format:` option | the option is ignored | refused: `encoding/json refused it: ` and the engine's text |
+| A struct field tag whose name is quoted or is not valid UTF-8 | the Go field name is used | the tag's name is used |
+| Malformed JSON given to `json:load-string` and the other load functions | v1 error text | v2 error text |
 
-The error text of `json:load-string` and the other load functions for
-malformed JSON also depends on the engine. The values they decode do not.
+The load functions report the same condition, `json:syntax-error`, on both
+engines, and the values they decode do not depend on the engine. A number
+that does not fit a float gives the same text on both, wherever it sits:
+`json: cannot unmarshal number 1e400 into Go value of type float64`.
 
 ### JSON object keys
 
