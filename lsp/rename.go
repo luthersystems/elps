@@ -19,13 +19,13 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 	if doc == nil {
 		return nil, nil // no document — rename not applicable
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, ref := symbolAtPosition(doc, line, col)
+	sym, ref := symbolAtPosition(view.analysis, line, col)
 	if sym == nil {
 		return nil, nil // no symbol at position — rename not applicable
 	}
@@ -56,7 +56,7 @@ func (s *Server) textDocumentPrepareRename(_ *glsp.Context, params *protocol.Pre
 	// uses it as the oracle for the edit ranges below, so it has to move in
 	// the same unit as they do.
 	return &protocol.RangeWithPlaceholder{
-		Range:       s.wireRange(doc.Content, nameRange(loc, sym.Name)),
+		Range:       s.wireRange(view.content, nameRange(loc, sym.Name)),
 		Placeholder: sym.Name,
 	}, nil
 }
@@ -67,13 +67,13 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	if doc == nil {
 		return nil, errors.New("document not found")
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, _ := symbolAtPosition(doc, line, col)
+	sym, _ := symbolAtPosition(view.analysis, line, col)
 	if sym == nil {
 		return nil, errors.New("no symbol at position")
 	}
@@ -135,8 +135,8 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 	}
 
 	// Rename at all reference sites in the current file.
-	if doc.analysis != nil {
-		for _, ref := range doc.analysis.References {
+	if view.analysis != nil {
+		for _, ref := range view.analysis.References {
 			if ref.Symbol != sym || ref.Source == nil {
 				continue
 			}
@@ -157,7 +157,7 @@ func (s *Server) textDocumentRename(_ *glsp.Context, params *protocol.RenamePara
 
 	// Rename in the export forms.  An export that kept the old name would
 	// export a name with no definition.
-	for _, loc := range s.exportLocations(doc, docURI, sym) {
+	for _, loc := range s.exportLocations(view.analysis, docURI, sym) {
 		if err := addEdit(s.resolveURI(docURI, loc.File), loc); err != nil {
 			return nil, err
 		}
@@ -182,7 +182,8 @@ func nameRange(loc *token.Location, name string) protocol.Range {
 }
 
 // exportLocations returns the location of each name in an export form that
-// names sym, in the current document doc and in the file that defines sym.
+// names sym, in current (the analysis of the current document) and in the
+// file that defines sym.
 // An export form is almost always in the file that has the definition; one
 // in a third file is not found.
 //
@@ -190,7 +191,7 @@ func nameRange(loc *token.Location, name string) protocol.Range {
 // cannot be read, or is over the workspace size limit, gives no location:
 // the other edits of the rename are still correct, as they were before
 // exports got an edit at all.
-func (s *Server) exportLocations(doc *Document, docURI protocol.DocumentUri, sym *analysis.Symbol) []*token.Location {
+func (s *Server) exportLocations(current *analysis.Result, docURI protocol.DocumentUri, sym *analysis.Symbol) []*token.Location {
 	key := symbolToKey(sym)
 	var locs []*token.Location
 	collect := func(result *analysis.Result) {
@@ -203,7 +204,7 @@ func (s *Server) exportLocations(doc *Document, docURI protocol.DocumentUri, sym
 			}
 		}
 	}
-	collect(doc.analysis)
+	collect(current)
 
 	if sym.Source == nil || sym.Source.File == "" {
 		return locs
@@ -213,8 +214,7 @@ func (s *Server) exportLocations(doc *Document, docURI protocol.DocumentUri, sym
 		return locs
 	}
 	if defDoc := s.docs.Get(defURI); defDoc != nil {
-		s.ensureAnalysis(defDoc)
-		collect(defDoc.analysis)
+		collect(s.ensureAnalysis(defDoc).analysis)
 		return locs
 	}
 	path := uriToPath(defURI)

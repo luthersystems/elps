@@ -17,11 +17,7 @@ func (s *Server) textDocumentSelectionRange(_ *glsp.Context, params *protocol.Se
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	ast := doc.ast
-	doc.mu.Unlock()
+	ast := s.ensureAnalysis(doc).ast
 
 	if ast == nil {
 		return nil, nil

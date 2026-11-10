@@ -60,12 +60,12 @@ func (s *Server) workspaceSymbol(_ *glsp.Context, params *protocol.WorkspaceSymb
 		seen[r.Name+"|"+r.Location.URI] = true
 	}
 	for _, doc := range s.docs.All() {
-		s.ensureAnalysis(doc)
-		if doc.analysis == nil {
+		view := s.ensureAnalysis(doc)
+		if view.analysis == nil {
 			continue
 		}
 		docPath := uriToPath(doc.URI)
-		for _, sym := range doc.analysis.Symbols {
+		for _, sym := range view.analysis.Symbols {
 			if sym.External {
 				continue
 			}

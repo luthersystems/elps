@@ -22,14 +22,14 @@ func (s *Server) textDocumentDefinition(_ *glsp.Context, params *protocol.Defini
 	if doc.OverLimit() {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); everything below counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
 
-	sym, _ := symbolAtPosition(doc, line, col)
-	word := wordAtPosition(doc.Content, line, col)
+	sym, _ := symbolAtPosition(view.analysis, line, col)
+	word := wordAtPosition(view.content, line, col)
 
 	if sym == nil || sym.Source == nil {
 		if sym != nil && isBuiltin(sym) {

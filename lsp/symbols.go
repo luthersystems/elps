@@ -14,16 +14,16 @@ func (s *Server) textDocumentDocumentSymbol(_ *glsp.Context, params *protocol.Do
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
-	if doc.analysis == nil {
+	if view.analysis == nil {
 		return nil, nil
 	}
 
 	docPath := uriToPath(params.TextDocument.URI)
 	var symbols []protocol.DocumentSymbol
 
-	for _, sym := range doc.analysis.Symbols {
+	for _, sym := range view.analysis.Symbols {
 		// Skip external symbols (from workspace scan or imports).
 		if sym.External {
 			continue

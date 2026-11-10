@@ -24,12 +24,12 @@ func (s *Server) textDocumentPrepareCallHierarchy(_ *glsp.Context, params *proto
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
+	view := s.ensureAnalysis(doc)
 
 	// elps#464: the client counts Character in the negotiated encoding
 	// (UTF-16 unless it asked for utf-8); symbolAtPosition counts bytes.
 	line, col := s.cursorAt(doc, params.Position)
-	sym, _ := symbolAtPosition(doc, line, col)
+	sym, _ := symbolAtPosition(view.analysis, line, col)
 	if sym == nil {
 		return nil, nil
 	}
@@ -58,11 +58,7 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	res := doc.analysis
-	doc.mu.Unlock()
+	res := s.ensureAnalysis(doc).analysis
 	if res == nil {
 		return nil, nil
 	}
@@ -155,11 +151,7 @@ func (s *Server) callHierarchyOutgoingCalls(_ *glsp.Context, params *protocol.Ca
 	if doc == nil {
 		return nil, nil
 	}
-	s.ensureAnalysis(doc)
-
-	doc.mu.Lock()
-	res := doc.analysis
-	doc.mu.Unlock()
+	res := s.ensureAnalysis(doc).analysis
 	if res == nil {
 		return nil, nil
 	}
