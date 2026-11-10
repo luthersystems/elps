@@ -63,7 +63,7 @@ func (p *printer) writeTopLevel(exprs []*lisp.LVal, trailingComments []*token.To
 			}
 		}
 		p.writeIndent(0)
-		p.writeString(c.Text)
+		p.writeComment(c.Text)
 		p.newline()
 		p.first = false
 	}
@@ -141,7 +141,7 @@ func (p *printer) writeLeadingComments(v *lisp.LVal, indent int) {
 			}
 		}
 		p.writeIndent(commentIndent(c, indent))
-		p.writeString(c.Text)
+		p.writeComment(c.Text)
 		p.newline()
 		p.first = false
 	}
@@ -182,7 +182,7 @@ func (p *printer) writeTrailingComment(v *lisp.LVal) {
 			p.buf.WriteByte(' ')
 		}
 		p.col += spaces
-		p.writeString(m.TrailingComment.Text)
+		p.writeComment(m.TrailingComment.Text)
 	}
 }
 
@@ -208,7 +208,7 @@ func (p *printer) writeInnerTrailingComments(v *lisp.LVal, indent int) {
 			}
 		}
 		p.writeIndent(indent)
-		p.writeString(c.Text)
+		p.writeComment(c.Text)
 	}
 }
 
@@ -227,7 +227,7 @@ func (p *printer) writeTopLevelCompact(exprs []*lisp.LVal, trailingComments []*t
 	}
 	for _, c := range trailingComments {
 		p.writeIndent(0)
-		p.writeString(c.Text)
+		p.writeComment(c.Text)
 		p.newline()
 		p.first = false
 	}
@@ -716,6 +716,18 @@ func (p *printer) writeIndent(col int) {
 	}
 	p.col = col
 	p.atBOL = false
+}
+
+// writeComment writes one comment line without its trailing carriage returns.
+//
+// The formatter writes LF line endings. The lexer ends a comment token at the
+// line feed, so the comment of a CRLF file ends in a carriage return, while
+// the carriage return after code is whitespace and is dropped. Writing the
+// token as it is gave a CRLF file CRLF on its comment lines and LF on the
+// rest (luthersystems/elps#943). A carriage return inside the line stays: it
+// is comment text. A raw string keeps its bytes, because they are its value.
+func (p *printer) writeComment(text string) {
+	p.writeString(strings.TrimRight(text, "\r"))
 }
 
 // writeString writes a string, updating column tracking.

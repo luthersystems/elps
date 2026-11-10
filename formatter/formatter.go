@@ -16,6 +16,11 @@ import (
 
 // Format formats ELPS source code. If cfg is nil, DefaultConfig() is used.
 // A single leading UTF-8 BOM is accepted and omitted from the output.
+//
+// The output uses LF line endings, whatever the source uses. A CRLF source
+// formats to the bytes of its LF twin, so one rule covers every platform and
+// a formatted file is stable. The bytes inside a raw string stay as written,
+// because they are the value of the string.
 func Format(source []byte, cfg *Config) ([]byte, error) {
 	if cfg == nil {
 		cfg = DefaultConfig()
