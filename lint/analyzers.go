@@ -1336,6 +1336,12 @@ var AnalyzerUnusedFunction = &Analyzer{
 				if refs, ok := pass.Semantics.WorkspaceRefs[key]; ok {
 					hasExternal := false
 					for _, ref := range refs {
+						// The name in an export form is in the index for
+						// rename, and is not a use. A function that
+						// another file only exports has no caller.
+						if ref.Export {
+							continue
+						}
 						if ref.File != pass.Filename {
 							hasExternal = true
 							break

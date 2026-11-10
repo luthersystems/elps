@@ -102,6 +102,9 @@ func (s *Server) callHierarchyIncomingCalls(_ *glsp.Context, params *protocol.Ca
 	wsKey := symbolToKey(targetSym)
 	currentFile := uriToPath(data.URI)
 	for _, wref := range s.getWorkspaceRefs(wsKey, currentFile) {
+		if wref.Export {
+			continue // the name in an export form is not a call
+		}
 		if wref.Enclosing == "" {
 			continue // top-level reference, not inside a function
 		}
