@@ -49,6 +49,8 @@ func engineNest(v any, n int) any {
 func TestNativeResultsAreEngineIndependent(t *testing.T) {
 	const prefix = "unable to encode native value: "
 	const badMethodJSON = prefix + "a marshal method returned JSON that is not valid or nests more than 10000 levels deep"
+	const badString = prefix + "a string is not valid UTF-8"
+	const badKey = prefix + "a map key is not valid UTF-8"
 	nest := func(n int) string { return strings.Repeat("[", n) + strings.Repeat("]", n) }
 	ring := &engineRing{}
 	ring.Next = &engineRing{Next: ring}
@@ -102,6 +104,31 @@ func TestNativeResultsAreEngineIndependent(t *testing.T) {
 		{name: "time zone", native: &farEast, wantErr: prefix + "time.Time has a zone 86400 seconds from UTC, which is 24 hours or more"},
 		{name: "time zone at the limit", native: time.Date(2000, 1, 1, 0, 0, 0, 0, time.FixedZone("", -86399)), want: `"2000-01-01T00:00:00-23:59"`},
 
+		// Invalid UTF-8.  The v1 engine writes the escape \ufffd for a bad
+		// byte and the v2 engine a raw U+FFFD.
+		{name: "invalid UTF-8 string", native: "a\xff", wantErr: badString},
+		{name: "invalid UTF-8 string in a slice", native: []any{"ok", "\xed\xa0\x80"}, wantErr: badString},
+		{name: "invalid UTF-8 string, typed", native: []engineString{"a\xc3"}, wantErr: badString},
+		{name: "invalid UTF-8 string in a field", native: engineTagged{S: "\xfe"}, wantErr: badString},
+		{name: "invalid UTF-8 quoted string field", native: engineTagged{Q: "\xfe"}, wantErr: badString},
+		{name: "invalid UTF-8 key", native: map[string]any{"k\xff": 1}, wantErr: badKey},
+		{name: "invalid UTF-8 key, typed", native: map[engineString]int{"k\xff": 1}, wantErr: badKey},
+		{name: "invalid UTF-8 key from MarshalText", native: map[engineBadText]int{{}: 1}, wantErr: badKey},
+		{name: "replacement character", native: map[string]any{"k\ufffd": "v\ufffd"}, want: "{\"k\xef\xbf\xbd\":\"v\xef\xbf\xbd\"}"},
+		{name: "invalid UTF-8 in bytes", native: []byte{0xff}, want: `"/w=="`},
+		{name: "invalid UTF-8 in an omitted field", native: engineTagged{O: ""}, want: `{"s":"","Q":"\"\""}`},
+
+		// Struct tags the engines read differently.
+		{name: "tag with a format option", native: engineFormatTag{}, wantErr: prefix + "struct field libjson.engineFormatTag.T has a json tag with a format option"},
+		{name: "tag with a format option, in a pointer", native: []any{&engineFormatTag{}}, wantErr: prefix + "struct field libjson.engineFormatTag.T has a json tag with a format option"},
+		{name: "tag with a format option, embedded", native: engineEmbedsFormat{}, wantErr: prefix + "struct field libjson.engineFormatTag.T has a json tag with a format option"},
+		{name: "tag with a format option, nil pointer", native: struct{ P *engineFormatTag }{}, want: `{"P":null}`},
+		{name: "tag name with a quote", native: engineQuoteTag{}, wantErr: prefix + `struct field libjson.engineQuoteTag.A has the json tag name "a'b", which encoding/json does not accept`},
+		{name: "tag name with a backslash", native: engineBackslashTag{}, wantErr: prefix + `struct field libjson.engineBackslashTag.A has the json tag name "a\\b", which encoding/json does not accept`},
+		// reflect reads the bad byte of this tag as U+FFFD.
+		{name: "tag name with invalid UTF-8", native: engineUTF8Tag{}, wantErr: prefix + `struct field libjson.engineUTF8Tag.A has the json tag name "a�b", which encoding/json does not accept`},
+		{name: "tags both engines read alike", native: engineGoodTags{}, want: `{" a b":0,"é":0,"!#$%\u0026()*+-./:;\u003c=\u003e?@[]^_{|}~":0,"d":0,"e":0}`},
+
 		// Marshal methods.
 		{name: "failing MarshalJSON", native: engineFailJSON{}, wantErr: prefix + "a marshal method failed: boom"},
 		{name: "failing MarshalJSON in a slice", native: []engineFailJSON{{}}, wantErr: prefix + "a marshal method failed: boom"},
@@ -137,6 +164,47 @@ func TestNativeResultsAreEngineIndependent(t *testing.T) {
 			}
 		})
 	}
+}
+
+type engineString string
+
+type engineTagged struct {
+	S string `json:"s"`
+	Q string `json:",string"`
+	O string `json:",omitempty"`
+}
+
+type engineFormatTag struct {
+	A int
+	T time.Time `json:"t,format:RFC822"`
+}
+
+type engineEmbedsFormat struct {
+	engineFormatTag
+	B int
+}
+
+type engineQuoteTag struct {
+	A int `json:"a'b"` //nolint:staticcheck // the malformed tag is what the test is about
+}
+
+type engineBackslashTag struct {
+	A int `json:"a\\b"` //nolint:staticcheck // the malformed tag is what the test is about
+}
+
+type engineUTF8Tag struct {
+	A int "json:\"a\xffb\""
+}
+
+// engineGoodTags has the tags closest to the refused ones that both engines
+// read alike.
+type engineGoodTags struct {
+	A int `json:" a b"`
+	B int `json:"é"`
+	C int `json:"!#$%&()*+-./:;<=>?@[]^_{|}~"`
+	D int `json:"d,formatx"` //nolint:staticcheck // the malformed tag is what the test is about
+	E int `json:"e,format"`  //nolint:staticcheck // the malformed tag is what the test is about
+	F int `json:"-"`
 }
 
 // engineCountJSON counts its MarshalJSON calls.

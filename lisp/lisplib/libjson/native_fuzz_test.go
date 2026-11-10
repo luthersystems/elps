@@ -7,6 +7,7 @@ import (
 	"errors"
 	"math"
 	"math/big"
+	"strings"
 	"testing"
 
 	"github.com/luthersystems/elps/internal/fuzzseed"
@@ -22,7 +23,9 @@ import (
 // dump fails, and on the bytes and the loadable verdict when it succeeds.
 // The error text differs: the old encoder reports what a marshal method or
 // checkLoadable said, the walk what it met first.  Where the old one
-// succeeded, the new one must succeed with the same bytes.  The trees here
+// succeeded, the new one must succeed with the same bytes, with one
+// exception: the walk refuses a string or a map key that is not valid UTF-8,
+// which the old encoder wrote with a replacement character.  The trees here
 // hold no map with float or bool keys, which the v2 engine writes and the
 // walk refuses.  The leaves cover what the walk has to mirror from encoding/json:
 // marshaler dispatch, struct tags and embedding, omitempty and omitzero, map
@@ -51,6 +54,17 @@ func FuzzNativeEncodeMatchesLegacy(f *testing.F) {
 				wantB, wantLoadable, wantErr := dumped.bytes, dumped.loadable, dumpedErr
 				dumped2, dumpedErr2 := DefaultSerializer().dumpLimit(v, sn, dumpOptions{limit: lisp.MaxValueDepth, budget: b, meter: encodeMeter{}})
 				gotB, gotLoadable, gotErr := dumped2.bytes, dumped2.loadable, dumpedErr2
+				if errors.Is(gotErr, errNativeStringUTF8) || errors.Is(gotErr, errNativeKeyUTF8) {
+					// The walk refuses invalid UTF-8, which encoding/json
+					// writes as a replacement character.  The old encoder's
+					// output must show one, or have failed for another
+					// reason.
+					replaced := strings.Contains(string(wantB), `\ufffd`) || strings.Contains(string(wantB), "\xef\xbf\xbd")
+					if wantErr == nil && !replaced {
+						t.Fatalf("sn=%v cap=%d: error %v, but legacy wrote no replacement character: %q", sn, b.maxBytes, gotErr, wantB)
+					}
+					continue
+				}
 				if (wantErr == nil) != (gotErr == nil) {
 					t.Fatalf("sn=%v cap=%d: error %v, legacy %v", sn, b.maxBytes, gotErr, wantErr)
 				}

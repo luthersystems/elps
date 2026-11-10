@@ -1682,6 +1682,10 @@ stops at the first problem it meets, and nothing in the native is marshalled.
 | A `json.Number` that is not a JSON number. An empty one writes `0` | `invalid json.Number "1x"` |
 | A `time.Time` with no RFC 3339 form | `time.Time has year 10000, outside of 0 to 9999`, or `time.Time has a zone 86400 seconds from UTC, which is 24 hours or more` |
 | A map key whose `MarshalText` fails | `map key MarshalText failed: ` and the method's error |
+| A string that is not valid UTF-8, also in a struct field | `a string is not valid UTF-8` |
+| A map key that is not valid UTF-8, also one a key's `MarshalText` returns | `a map key is not valid UTF-8` |
+| A struct with a `json` tag that has a `format:` option. The struct types it embeds count too | `struct field T.F has a json tag with a format option` |
+| A struct with a `json` tag name that has a character other than a letter, a digit, a space or one of ``!#$%&()*+-./:;<=>?@[]^_{|}~`` | `struct field T.F has the json tag name "a'b", which encoding/json does not accept` |
 
 The walk also refuses a native whose output cannot fit in what `MaxAlloc`
 leaves. That error is the allocation error above.
@@ -1701,19 +1705,26 @@ same prefix:
 When a native has both a problem the walk sees and a failing marshal method,
 the dump reports the walk's problem, wherever the two sit in the value.
 
-Go 1.27 has two JSON engines: v2 by default, and v1 with
-`GOEXPERIMENT=nojsonv2`. The bytes libjson writes for lisp values are the same
-on both. A string with invalid UTF-8 writes each bad byte as the escape
-`\ufffd`. The results in the tables above are the same on both engines too
-(luthersystems/elps#928). These results still depend on the engine the
-program is built with:
+The walk refuses invalid UTF-8 and the two kinds of tag because Go 1.27's
+two JSON engines write them differently: v2, the default, and v1, with
+`GOEXPERIMENT=nojsonv2`. For a bad byte the v1 engine writes the escape
+`\ufffd` and the v2 engine a raw U+FFFD. The v1 engine ignores a `format:`
+option and uses the Go field name in place of a tag name it does not accept;
+the v2 engine refuses the first and uses the second. A `[]byte` is written
+as base64, so its bytes need not be UTF-8.
+
+The bytes libjson writes for lisp values are the same on both engines. A
+lisp string with invalid UTF-8 writes each bad byte as the escape `\ufffd`.
+The results in the tables above are the same on both engines too
+(luthersystems/elps#928). One result still depends on the engine the program
+is built with:
 
 | Case | v1 engine | v2 engine |
 |------|-----------|-----------|
-| Invalid UTF-8 in a native's string, map key or `MarshalText` output | `\ufffd` | a raw U+FFFD |
-| The step charge of a native refused for its size, when it has invalid UTF-8 | counts 6 bytes for each bad byte | counts 3 |
-| A struct field tag with a `format:` option | the option is ignored | refused: `encoding/json refused it: ` and the engine's text |
-| A struct field tag whose name is quoted or is not valid UTF-8 | the Go field name is used | the tag's name is used |
+| A `MarshalText` method of a value, not of a map key, returns invalid UTF-8 | `\ufffd` for each bad byte | a raw U+FFFD |
+
+The walk cannot see that text: it calls no marshal method of a value, so
+that each one runs once.
 
 The load functions do not depend on the engine: not the values they decode,
 and not their errors. A number that does not fit a float gives

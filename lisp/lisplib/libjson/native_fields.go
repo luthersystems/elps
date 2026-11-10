@@ -9,6 +9,7 @@ package libjson
 import (
 	"cmp"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -35,14 +36,23 @@ type nativeField struct {
 // only on the type, so a value computed by any goroutine is valid for all.
 var nativeFieldCache sync.Map
 
-func cachedNativeFields(t reflect.Type) []nativeField {
-	if f, ok := nativeFieldCache.Load(t); ok {
-		fields, _ := f.([]nativeField)
-		return fields
+// nativeStructInfo is a nativeFieldCache entry.
+type nativeStructInfo struct {
+	badTag string
+	fields []nativeField
+}
+
+// cachedNativeFields returns the fields encoding/json writes for struct type
+// t, and why the walk refuses the type when one of its json tags is one the
+// two JSON engines read differently.
+func cachedNativeFields(t reflect.Type) ([]nativeField, string) {
+	f, ok := nativeFieldCache.Load(t)
+	if !ok {
+		fields, badTag := nativeTypeFields(t)
+		f, _ = nativeFieldCache.LoadOrStore(t, &nativeStructInfo{fields: fields, badTag: badTag})
 	}
-	f, _ := nativeFieldCache.LoadOrStore(t, nativeTypeFields(t))
-	fields, _ := f.([]nativeField)
-	return fields
+	info, _ := f.(*nativeStructInfo)
+	return info.fields, info.badTag
 }
 
 type isZeroer interface{ IsZero() bool }
@@ -53,7 +63,23 @@ var isZeroerType = reflect.TypeFor[isZeroer]()
 // in the order it writes them. It is encoding/json's typeFields with the
 // decoding indexes and encoders left out, so a field this walk visits is a
 // field encoding/json writes, and no other.
-func nativeTypeFields(t reflect.Type) []nativeField {
+//
+// The second result is not empty when a json tag of t, or of a struct it
+// embeds, is one the two JSON engines of Go 1.27 read differently
+// (luthersystems/elps#928).  It names the first such field.
+//
+//   - A name the v1 engine does not accept, such as one with a quote, a
+//     backslash, a control character or invalid UTF-8.  The v1 engine uses
+//     the Go field name in its place.  The v2 engine uses the tag's name,
+//     or a part of it.
+//   - A format option.  The v1 engine ignores it and the v2 engine refuses
+//     the type.
+//
+// The test is wider than the difference: it reads the tag as the v1 engine
+// does, and does not follow the v2 engine's quoting.  A tag that only one
+// reading calls wrong is refused too, which keeps the two verdicts equal.
+func nativeTypeFields(t reflect.Type) ([]nativeField, string) {
+	var badTag string
 	current := []nativeField{}
 	next := []nativeField{{typ: t}}
 	var count, nextCount map[reflect.Type]int
@@ -88,7 +114,13 @@ func nativeTypeFields(t reflect.Type) []nativeField {
 				}
 				name, opts := parseNativeTag(tag)
 				if !isValidNativeTag(name) {
+					if name != "" && badTag == "" {
+						badTag = fmt.Sprintf("struct field %s.%s has the json tag name %q, which encoding/json does not accept", f.typ, sf.Name, name)
+					}
 					name = ""
+				}
+				if badTag == "" && nativeTagHasFormat(opts) {
+					badTag = fmt.Sprintf("struct field %s.%s has a json tag with a format option", f.typ, sf.Name)
 				}
 				index := make([]int, len(f.index)+1)
 				copy(index, f.index)
@@ -179,7 +211,7 @@ func nativeTypeFields(t reflect.Type) []nativeField {
 	slices.SortFunc(fields, func(a, b nativeField) int {
 		return slices.Compare(a.index, b.index)
 	})
-	return fields
+	return fields, badTag
 }
 
 // nativeIsZeroFunc is the IsZero test encoding/json uses for an omitzero
@@ -238,6 +270,19 @@ func nativeTagHas(opts, name string) bool {
 		var o string
 		o, opts, _ = strings.Cut(opts, ",")
 		if o == name {
+			return true
+		}
+	}
+	return false
+}
+
+// nativeTagHasFormat reports whether opts has a format option, as in
+// `json:",format:RFC3339"`.
+func nativeTagHasFormat(opts string) bool {
+	for opts != "" {
+		var o string
+		o, opts, _ = strings.Cut(opts, ",")
+		if strings.HasPrefix(o, "format:") {
 			return true
 		}
 	}

@@ -14,11 +14,10 @@ import (
 
 // JSONV2EngineForTest reports whether encoding/json runs on Go's JSON v2
 // engine, Go 1.27's default.  GOEXPERIMENT=nojsonv2 selects the v1 engine.
-// Tests use it for the native cases whose bytes or errors come from
-// encoding/json and differ by engine (luthersystems/elps#928).  It looks at
-// the output, so it stays right on a Go that drops the experiment.  It
-// probes encoding/json itself rather than read nativeInvalidByteLen, so a
-// wrong probe in the walk fails TestNativeInvalidByteLen.
+// One result of this package still differs by engine
+// (luthersystems/elps#928): TestNativeTextMarshalerInvalidUTF8 pins it.
+// The function looks at the output of encoding/json, so it stays right on a
+// Go that drops the experiment.
 func JSONV2EngineForTest() bool { return jsonV2Engine() }
 
 var jsonV2Engine = sync.OnceValue(func() bool {
@@ -31,8 +30,8 @@ var jsonV2Engine = sync.OnceValue(func() bool {
 // phylum can build such a string from bytes, and substrate hashes the
 // output, so these bytes must not move with the engine.
 //
-// A Go string inside a native is written by encoding/json, so its bytes
-// follow the engine.  The second half of the test records that difference.
+// A Go string with invalid UTF-8 inside a native is refused: encoding/json
+// would write it, and its bytes follow the engine.
 func TestStringEscapingIsEngineIndependent(t *testing.T) {
 	m := lisp.SortedMap()
 	m.MapSetLVal(lisp.String("k\xfe"), lisp.String("v\xff"))
@@ -59,25 +58,33 @@ func TestStringEscapingIsEngineIndependent(t *testing.T) {
 	require.NoError(t, err)
 	require.Equal(t, wantMap, got)
 
-	got, err = Dump(lisp.Native("n\xff"), false) //elpsvet:allow-native test owns this native string
-	require.NoError(t, err)
-	if JSONV2EngineForTest() {
-		require.Equal(t, "\"n\xef\xbf\xbd\"", string(got)) // U+FFFD
-	} else {
-		require.Equal(t, `"n\ufffd"`, string(got))
-	}
+	_, err = Dump(lisp.Native("n\xff"), false) //elpsvet:allow-native test owns this native string
+	require.EqualError(t, err, "unable to encode native value: a string is not valid UTF-8")
 }
 
-// TestNativeInvalidByteLen pins the native walk's count for one invalid
-// UTF-8 byte to what each engine writes.  On the v1 engine it must stay 6,
-// or the walk's step charges change.
-func TestNativeInvalidByteLen(t *testing.T) {
-	if JSONV2EngineForTest() {
-		require.Equal(t, 3, nativeInvalidByteLen)
-	} else {
-		require.Equal(t, 6, nativeInvalidByteLen)
-	}
-	b, err := json.Marshal("a\xff")
+// engineBadText is a value whose MarshalText returns invalid UTF-8.
+type engineBadText struct{}
+
+func (engineBadText) MarshalText() ([]byte, error) { return []byte("t\xff"), nil }
+
+// TestNativeTextMarshalerInvalidUTF8 pins the one native result that still
+// depends on the JSON engine (luthersystems/elps#928): a MarshalText method
+// of a value, not of a map key, that returns invalid UTF-8.
+//
+// The walk does not see the text.  It calls no marshal method of a value, so
+// that encoding/json runs each one exactly once.  And the output does not
+// show it on the v2 engine, where the bad byte becomes a U+FFFD that a valid
+// text can hold too.  When this test fails because the two branches agree,
+// delete JSONV2EngineForTest.
+func TestNativeTextMarshalerInvalidUTF8(t *testing.T) {
+	got, err := Dump(lisp.Native([]any{engineBadText{}}), false) //elpsvet:allow-native test owns this native
 	require.NoError(t, err)
-	require.Equal(t, len(b), nativeStringLen("a\xff"))
+	if JSONV2EngineForTest() {
+		require.Equal(t, "[\"t\xef\xbf\xbd\"]", string(got)) // U+FFFD
+	} else {
+		require.Equal(t, `["t\ufffd"]`, string(got))
+	}
+	// As a map key the walk has the text, and refuses it on both engines.
+	_, err = Dump(lisp.Native(map[engineBadText]int{{}: 1}), false) //elpsvet:allow-native test owns this native
+	require.EqualError(t, err, "unable to encode native value: a map key is not valid UTF-8")
 }

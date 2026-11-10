@@ -99,3 +99,27 @@ func BenchmarkEncodeNativeLarge(b *testing.B) {
 	sb.WriteString(`]}`)
 	benchNative(b, sb.String())
 }
+
+// BenchmarkEncodeNativeStrings dumps a native made of maps, slices and
+// strings, the tree encoding/json's own decoder builds.  The walk measures
+// each string and key, and checks that it is valid UTF-8 in the same pass
+// (luthersystems/elps#928), so this is the benchmark that check shows in.
+func BenchmarkEncodeNativeStrings(b *testing.B) {
+	rows := make([]any, 60)
+	for i := range rows {
+		rows[i] = map[string]any{
+			"id":    "user-0123456789",
+			"name":  "a name here, with an accent: é",
+			"tags":  []any{"x", "y", "a longer tag of forty bytes or thereabouts"},
+			"notes": strings.Repeat("plain ascii text. ", 12),
+		}
+	}
+	v := lisp.Native(map[string]any{"users": rows}) //elpsvet:allow-native benchmark owns this native
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		if _, err := libjson.Dump(v, false); err != nil {
+			b.Fatal(err)
+		}
+	}
+}

@@ -60,8 +60,8 @@ in `elps.yml` runs `make test` plus libjson's race and elpscheck runs on v1
 | Bytes libjson writes for lisp values (strings, keys, symbols): invalid UTF-8 is `\ufffd` | Yes (`TestStringEscapingIsEngineIndependent`) |
 | Typed, durable and canonical encodings, and values decoded by `json:load-*` | Yes |
 | A native Go value: which natives a dump refuses and the error text (key kinds, cycles, nesting past 10000, `json.Number`, `json.RawMessage`, `time.Time`, marshal method errors) | Yes (`TestNativeResultsAreEngineIndependent`) |
-| A native Go value: invalid UTF-8 in its strings and keys (`\ufffd` on v1, a raw U+FFFD on v2), and the step charge of an oversized native that has some | No |
-| A native struct tag with a `format:` option (v2 refuses it), or a quoted or non-UTF-8 name (v1 ignores the name) | No |
+| A native Go value with invalid UTF-8 in a string or a map key, or a struct tag with a `format:` option or a name the v1 engine does not accept: the walk refuses it | Yes (`TestNativeResultsAreEngineIndependent`) |
+| A native Go value whose `MarshalText` method, in value position, returns invalid UTF-8 (`\ufffd` on v1, a raw U+FFFD on v2). The walk calls no marshal method of a value | No (`TestNativeTextMarshalerInvalidUTF8`) |
 | Error text of `json:load-*` for a number that does not fit a float | Yes (`TestLoadFloatOverflowTextIsEngineIndependent`) |
 | Error text of `json:load-*` for malformed JSON: libjson finds the fault again and words it (`syntax_reason.go`) | Yes (`TestLoadSyntaxErrorTextIsEngineIndependent`, `FuzzSyntaxReasonMatchesEngine`) |
 

@@ -6,6 +6,7 @@ import (
 	"encoding"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"math/big"
@@ -37,26 +38,32 @@ const nativeNestLimit = 50_000
 // which makes it the deepest native checkLoadable accepts.
 const jsonNestingLimit = 10_000
 
-// nativeInvalidByteLen is how many bytes encoding/json writes for one
-// invalid UTF-8 byte in a native's string: 6 for the escape \ufffd on the
-// JSON v1 engine (GOEXPERIMENT=nojsonv2), 3 for a raw U+FFFD on the v2
-// engine, Go 1.27's default (luthersystems/elps#928).  It is measured once,
-// so the walk's estimate follows the engine this binary is built with and
-// stays a lower bound on both.  A build tag could name the wrong engine on a
-// later Go that drops the experiment.
-var nativeInvalidByteLen = func() int {
-	b, err := json.Marshal("\xff")
-	if err != nil || len(b) < 2 {
-		return len("\uFFFD") // the smaller form keeps est a lower bound
+// str counts a native's string, or a map key when key is set, as
+// encoding/json writes it, quotes included, plus extra bytes.
+//
+// It refuses a string that is not valid UTF-8.  The v1 engine writes each
+// bad byte as the escape \ufffd and the v2 engine, Go 1.27's default, as a
+// raw U+FFFD, so the bytes of the dump would depend on the engine
+// (luthersystems/elps#928).  Either form also changes the string, without
+// a word to the program.  The measuring pass finds the bad bytes, so the
+// check costs no pass of its own.
+func (w *nativeWalker) str(s string, extra int, key bool) {
+	n, invalid := escapedStringLen(s)
+	if invalid == 0 {
+		w.add(n + extra)
+		return
 	}
-	return min(len(b)-2, len(`\ufffd`))
-}()
-
-// nativeStringLen is the length of a native's string as encoding/json
-// writes it on this binary's engine, quotes included.
-func nativeStringLen(s string) int {
-	return escapedStringLen(s, nativeInvalidByteLen)
+	if key {
+		w.fail(encodeUnloadableNativeError{err: errNativeKeyUTF8})
+		return
+	}
+	w.fail(encodeUnloadableNativeError{err: errNativeStringUTF8})
 }
+
+var (
+	errNativeStringUTF8 = errors.New("a string is not valid UTF-8")
+	errNativeKeyUTF8    = errors.New("a map key is not valid UTF-8")
+)
 
 // nativeRefScan is how many open references the walk searches linearly for a
 // cycle before it indexes them in a map.
@@ -131,8 +138,12 @@ type nativeFrame struct {
 //     recurses into it.
 //   - the v1 engine refuses it for a reason the value itself shows: a type
 //     with no JSON form, a map key type with no name, a NaN, an invalid
-//     json.Number, a time.Time with no RFC 3339 form, a failing key MarshalText, JSON nested
-//     past the decoder's limit, or a value that contains itself.
+//     json.Number, a time.Time with no RFC 3339 form, a failing key
+//     MarshalText, JSON nested past the decoder's limit, or a value that
+//     contains itself.
+//   - the two engines write it differently: a string or a map key that is
+//     not valid UTF-8 (see str), or a struct with a json tag they read
+//     differently (see nativeTypeFields).
 //
 // The second group is why the walk decides and encoding/json does not
 // (luthersystems/elps#928).  The v2 engine, Go 1.27's default, writes some
@@ -309,7 +320,7 @@ func (w *nativeWalker) step() {
 		}
 		k := f.keys[f.i]
 		f.i++
-		w.add(nativeStringLen(k) + 1)
+		w.str(k, 1, true)
 		w.anyElem(f.anyMap[k])
 	case frameMap:
 		if f.i == len(f.entries) {
@@ -318,7 +329,7 @@ func (w *nativeWalker) step() {
 		}
 		e := f.entries[f.i]
 		f.i++
-		w.add(nativeStringLen(e.name) + 1)
+		w.str(e.name, 1, true)
 		if w.descend() {
 			w.value(e.val, false, 1, 0)
 		}
@@ -434,7 +445,7 @@ func (w *nativeWalker) anyValue(x any, levels, refs int) {
 	case nil:
 		w.add(4)
 	case string:
-		w.add(nativeStringLen(t))
+		w.str(t, 0, false)
 	case float64:
 		if math.IsInf(t, 0) || math.IsNaN(t) {
 			w.refuseFloat(t)
@@ -530,7 +541,7 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 		case reflect.String:
 			s := v.String()
 			if v.Type() != jsonNumberType {
-				w.add(nativeStringLen(s) + q)
+				w.str(s, q, false)
 				break
 			}
 			if s == "" {
@@ -572,6 +583,10 @@ func (w *nativeWalker) value(v reflect.Value, quoted bool, levels, refs int) {
 			v = v.Elem()
 			continue
 		case reflect.Struct:
+			if info.badTag != "" {
+				w.refuse("%s", info.badTag)
+				break
+			}
 			w.push(nativeFrame{kind: frameStruct, v: v, fields: info.fields, levels: levels, refs: refs})
 			return
 		case reflect.Map:
@@ -1001,6 +1016,9 @@ func isValidJSONNumber(s string) bool {
 // nativeTypeInfo is what the walk needs to know about a type, computed once
 // per type: encoding/json's encoder choice for it.
 type nativeTypeInfo struct {
+	// badTag is why the walk refuses a struct of this type: a json tag the
+	// two JSON engines read differently.  Empty for every other type.
+	badTag           string
 	fields           []nativeField
 	marshaler        bool // t implements json.Marshaler
 	ptrMarshaler     bool // t is not a pointer and *t implements json.Marshaler
@@ -1030,7 +1048,7 @@ func nativeInfo(t reflect.Type) *nativeTypeInfo {
 	}
 	switch t.Kind() {
 	case reflect.Struct:
-		info.fields = cachedNativeFields(t)
+		info.fields, info.badTag = cachedNativeFields(t)
 	case reflect.Slice:
 		if t.Elem().Kind() == reflect.Uint8 {
 			p := reflect.PointerTo(t.Elem())

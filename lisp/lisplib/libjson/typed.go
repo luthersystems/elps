@@ -322,15 +322,15 @@ func (e *typedEncoder) reserve(n int) error {
 // included.  Invalid UTF-8 counts six bytes per bad byte, as
 // appendJSONString writes \ufffd for it on every JSON engine.
 func jsonStringLen[T string | []byte](s T) int {
-	return escapedStringLen(s, len(`\ufffd`))
+	n, invalid := escapedStringLen(s)
+	return n + invalid*len(`\ufffd`)
 }
 
-// escapedStringLen is jsonStringLen with each invalid UTF-8 byte counted as
-// invalid bytes.  The native walk passes nativeInvalidByteLen, because
-// encoding/json writes a native's strings, and how it writes a bad byte
-// depends on the JSON engine.
-func escapedStringLen[T string | []byte](s T, invalid int) int {
-	n := 2
+// escapedStringLen is jsonStringLen without the invalid UTF-8 bytes of s,
+// which it counts apart.  The native walk refuses a string that has any, in
+// the pass that measures it.
+func escapedStringLen[T string | []byte](s T) (int, int) {
+	n, invalid := 2, 0
 	for i := 0; i < len(s); {
 		c := s[i]
 		if c < utf8.RuneSelf {
@@ -348,7 +348,7 @@ func escapedStringLen[T string | []byte](s T, invalid int) int {
 		r, size := utf8.DecodeRuneInString(string(s[i:min(i+utf8.UTFMax, len(s))]))
 		switch {
 		case r == utf8.RuneError && size == 1:
-			n += invalid
+			invalid++
 		case r == 0x2028 || r == 0x2029:
 			n += 6
 		default:
@@ -356,7 +356,7 @@ func escapedStringLen[T string | []byte](s T, invalid int) int {
 		}
 		i += size
 	}
-	return n
+	return n, invalid
 }
 
 // cells writes a JSON array of values.
