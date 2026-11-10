@@ -210,6 +210,17 @@ var langSpecialOps = []*langBuiltin{
 		only () counts as missing: false, 0 and "" are returned as-is. A
 		package may still define or import its own default, which shadows
 		this operator there.`},
+	// get-default is a special operator, not a function, because it evaluates
+	// the default expression only when the key is absent.  It was a macro
+	// until luthersystems/elps#944; see opGetDefault.
+	{"get-default", Formals("map", "key", "default"), opGetDefault,
+		`Looks up key in a sorted-map, returning the associated value if
+		found. If the key is not present or map is nil, evaluates and
+		returns default. String and symbol keys with the same name are
+		interchangeable, including in JSON-decoded maps. The default
+		expression is evaluated only when needed (lazy evaluation), in
+		tail position. The map and key expressions are evaluated once
+		each, in that order.`},
 	{"while", Formals("condition", VarArgSymbol, "body"), opWhile,
 		`Loop. Evaluates condition; while it is truthy, evaluates the body
 		forms in order and then re-evaluates condition. Always returns ().
@@ -1412,6 +1423,87 @@ func opDefault(env *LEnv, s *LVal) *LVal {
 		return v
 	}
 	return env.Terminal(s.Cells[1])
+}
+
+// (get-default map-form key-form default-form)
+//
+// opGetDefault does what the get-default macro did, without the expansion.
+// The macro expanded on each evaluation to
+//
+//	(lisp:let ((map map-form) (key key-form))
+//	  (lisp:if (lisp:if (lisp:nil? map) lisp:false (lisp:key? map key))
+//	    (lisp:get map key)
+//	    default-form))
+//
+// which built about twenty values and evaluated nine forms for one map
+// lookup (luthersystems/elps#944).  The operator evaluates map-form, then
+// key-form, makes one lookup, and leaves default-form in tail position.
+//
+// The result is the same for every input.  A call the macro failed, because
+// lisp:key? refused the map or the key, takes getDefaultRefused, so the
+// error is still the one lisp:key? raises.
+func opGetDefault(env *LEnv, s *LVal) *LVal {
+	loc := env.loc
+	// The expansion's lisp:let took one environment ID before it evaluated
+	// map-form.  Lambda names (_funN) come from the same counter and show in
+	// error text and stack traces, so take the ID here to keep every name a
+	// program prints after a get-default the same.
+	env.Runtime.GenEnvID()
+	m := env.Eval(s.Cells[0])
+	if m.IsError() {
+		return m
+	}
+	k := env.Eval(s.Cells[1])
+	if k.IsError() {
+		return k
+	}
+	if m.IsNil() {
+		return env.Terminal(s.Cells[2])
+	}
+	if m.Type != LSortMap {
+		env.loc = loc
+		return getDefaultRefused(env, s, m, k)
+	}
+	v, ok := m.Map().Get(k)
+	if v.IsError() {
+		// The map refused k, or holds an error value under it.  lisp:key?
+		// returns that error either way (see mapHasKey).
+		env.loc = loc
+		return getDefaultRefused(env, s, m, k)
+	}
+	if !ok {
+		return env.Terminal(s.Cells[2])
+	}
+	return v
+}
+
+// getDefaultRefused is the rare path of opGetDefault: lisp:key? does not
+// answer true or false for m and k.  It calls the lisp:key? function, as the
+// macro's expansion did, so that the error has the same condition, the same
+// message and the same function name in front of it ("lisp:key?: first
+// argument is not a map: int").  Should lisp:key? answer after all, it
+// finishes as the expansion did.
+//
+// The caller first puts env.loc back on the get-default form.  Evaluating
+// the arguments moved it to the last of them; the expansion's lisp:key? call
+// carried the form's location, so the error must report that one.
+func getDefaultRefused(env *LEnv, s, m, k *LVal) *LVal {
+	has := env.Get(Symbol(DefaultLangPackage + ":key?"))
+	if has.IsError() {
+		return has
+	}
+	r := env.FunCall(has, Cells{m, k}.List())
+	if r.IsError() {
+		return r
+	}
+	if Not(r) {
+		return env.Terminal(s.Cells[2])
+	}
+	get := env.Get(Symbol(DefaultLangPackage + ":get"))
+	if get.IsError() {
+		return get
+	}
+	return env.FunCall(get, Cells{m, k}.List())
 }
 
 // whileTurnLimit is the per-entry turn bound for opWhile: the limit that

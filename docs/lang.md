@@ -1430,6 +1430,14 @@ returns `42`. `get-default` evaluates its default expression only when the
 map is nil or the key is absent; a present key whose value is `()` still
 returns `()`.
 
+`get-default` is a special operator, not a function or a macro. It evaluates
+the map expression, then the key expression, once each. The default
+expression is in tail position. `macroexpand` leaves a `get-default` form
+unchanged, and passing `get-default` to `funcall` or `map` is an error, as it
+was when `get-default` was a macro. A lookup that `key?` refuses (a value
+that is not a map, or a key of a type a map cannot hold) raises the error of
+`key?`.
+
 A map remembers whether a key was written as a symbol or a string:
 **last write wins** for both the value and the spelling returned by `keys`
 and printing. This applies to repeated constructor keys and to `assoc` and
