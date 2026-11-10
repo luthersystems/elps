@@ -31,7 +31,26 @@ func TestTemplateBuiltinReadAllocs(t *testing.T) {
 			pkg.Get(sym)
 		}
 	})
-	if limit := float64(2*len(syms) + 1); allocs > limit {
+	// The VM's tables of built objects are paged (lazyTable), so the reads
+	// also allocate each page they are the first to store into.
+	inst := lazyInstanceOf(vms[0])
+	pages := lazyTablePages(&inst.values) + lazyTablePages(&inst.functions)
+	if most := (len(syms) + 1) / 2; pages > most {
+		t.Errorf("first reads of %d builtins stored into %d table pages, want at most %d", len(syms), pages, most)
+	}
+	if limit := float64(2*len(syms) + 1 + pages); allocs > limit {
 		t.Errorf("first reads of %d builtins allocated %v objects, want at most %v", len(syms), allocs, limit)
 	}
+}
+
+// lazyTablePages returns the number of pages a VM has allocated in one of
+// its tables of built objects.
+func lazyTablePages[T any](table *lazyTable[T]) int {
+	n := 0
+	for _, page := range table.pages {
+		if page != nil {
+			n++
+		}
+	}
+	return n
 }

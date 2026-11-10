@@ -73,26 +73,89 @@ const (
 )
 
 type lazyInstance struct {
-	p            *templatePlan
-	rt           *Runtime
-	values       []*LVal
-	envs         []*LEnv
-	functions    []*funData
-	maps         []*MapData
-	mapBackings  []Map
-	bytes        []*[]byte
-	cells        [][]*LVal
-	byteBackings [][]byte
-	queue        []lazyTask
-	mapsDone     []bool
+	p     *templatePlan
+	rt    *Runtime
+	queue []lazyTask
 	// seen is non-nil in a VM that counts its root reads for the template's
 	// hot set: one bit per plan value, set when the VM first reads the value
 	// as a root.
-	seen   []uint64
-	guard  lazyGuard
-	reader bool // the VM has counted a root read
-	count  int
+	seen         []uint64
+	values       lazyTable[*LVal]
+	envs         lazyTable[*LEnv]
+	functions    lazyTable[*funData]
+	maps         lazyTable[*MapData]
+	mapBackings  lazyTable[Map]
+	bytes        lazyTable[*[]byte]
+	cells        lazyTable[[]*LVal]
+	byteBackings lazyTable[[]byte]
+	mapsDone     lazyTable[bool]
+	guard        lazyGuard
+	reader       bool // the VM has counted a root read
+	count        int
 }
+
+// lazyTable is one of a VM's tables of materialized objects, indexed as the
+// plan's table of the same name is. It is cut into pages, and a page is
+// allocated when the VM first stores into it. A flat table cost every VM
+// one slot for each object of the plan, to allocate, to clear and to scan,
+// and a VM that serves one request reads a small part of a large plan
+// (luthersystems/elps#944). A slot the VM has not stored into reads as the
+// zero value, as it did in a flat table.
+type lazyTable[T any] struct {
+	pages [][]T
+	// one is the page list of a table of one page, so that a small plan
+	// allocates no list.
+	one  [1][]T
+	n    int
+	bits uint8
+}
+
+// The page sizes of the lazy tables, as shifts, by the size of a slot: one,
+// two and three words. Each page is 512 bytes or less. Go keeps the pointer
+// map of a larger object in a header that pushes a power-of-two page into
+// the next size class, about one eighth more memory. Larger pages also lose
+// more when a VM's reads are spread over the plan.
+const (
+	lazyPageBits1 = 6
+	lazyPageBits2 = 5
+	lazyPageBits3 = 4
+)
+
+// init sizes the table for n slots. It takes the table in place because
+// pages can point into the table itself.
+func (t *lazyTable[T]) init(n int, bits uint8) {
+	t.n, t.bits = n, bits
+	switch pages := (n + 1<<bits - 1) >> bits; pages {
+	case 0:
+	case 1:
+		t.pages = t.one[:]
+	default:
+		t.pages = make([][]T, pages)
+	}
+}
+
+func (t *lazyTable[T]) get(i int) T {
+	if page := t.pages[i>>t.bits]; page != nil {
+		return page[i&(1<<t.bits-1)]
+	}
+	var zero T
+	return zero
+}
+
+// slot returns the address of slot i for a caller that stores into it when
+// it is empty, so it allocates the page.
+func (t *lazyTable[T]) slot(i int) *T {
+	page := t.pages[i>>t.bits]
+	if page == nil {
+		// The last page holds only the slots the plan has, so a small plan
+		// pays for no more slots than a flat table had.
+		page = make([]T, min(1<<t.bits, t.n-i&^(1<<t.bits-1)))
+		t.pages[i>>t.bits] = page
+	}
+	return &page[i&(1<<t.bits-1)]
+}
+
+func (t *lazyTable[T]) set(i int, v T) { *t.slot(i) = v }
 
 // lazyPackage is embedded in its package shell. The base describes its slots
 // and resolves pending bindings by name after a thaw. All fields are cleared
@@ -150,7 +213,7 @@ func (l *lazyInstance) drain() {
 		case lazyFillValue:
 			l.fillValue(task.idx)
 		case lazyFillCells:
-			c := l.cells[task.idx]
+			c := l.cells.get(task.idx)
 			for k, r := range l.p.cells[task.idx] {
 				c[k] = l.allocRef(r)
 			}
@@ -158,7 +221,7 @@ func (l *lazyInstance) drain() {
 			l.fillEnv(task.idx)
 		case lazyFillFunction:
 			tf := &l.p.functions[task.idx]
-			data := l.functions[task.idx]
+			data := l.functions.get(task.idx)
 			data.env = l.env(tf.env)
 			if tf.captures != 0 {
 				data.captures.values = l.allocRef(tf.values)
@@ -170,11 +233,12 @@ func (l *lazyInstance) drain() {
 }
 
 func (l *lazyInstance) value(i int) *LVal {
-	if v := l.values[i]; v != nil {
-		return v
+	slot := l.values.slot(i)
+	if *slot != nil {
+		return *slot
 	}
 	out := new(LVal)
-	l.values[i] = out
+	*slot = out
 	l.count++
 	l.queue = append(l.queue, lazyTask{lazyFillValue, i})
 	return out
@@ -199,15 +263,16 @@ func (l *lazyInstance) fillValue(i int) {
 		//elpsvet:allow-native lazy instantiation replays a payload the PLAN already holds: templateInventory.native admitted it at publication and checkNativeAffinity re-checked it at NewVM, so this store opens no channel the audit did not take
 		header.Native = l.p.natives[tv.payload]
 	}
-	*l.values[i] = header //elps:mutates value allocated this private destination for this VM; only the fill queue has seen it before this store
+	*l.values.get(i) = header //elps:mutates value allocated this private destination for this VM; only the fill queue has seen it before this store
 }
 
 func (l *lazyInstance) cellGroup(g int) []*LVal {
-	if c := l.cells[g]; c != nil {
-		return c
+	slot := l.cells.slot(g)
+	if *slot != nil {
+		return *slot
 	}
 	c := make([]*LVal, len(l.p.cells[g]))
-	l.cells[g] = c
+	*slot = c
 	l.queue = append(l.queue, lazyTask{lazyFillCells, g})
 	return c
 }
@@ -216,19 +281,20 @@ func (l *lazyInstance) env(i int) *LEnv {
 	if i == 0 {
 		return nil
 	}
-	if e := l.envs[i-1]; e != nil {
-		return e
+	slot := l.envs.slot(i - 1)
+	if *slot != nil {
+		return *slot
 	}
 	te := &l.p.envs[i-1]
 	e := &LEnv{ID: te.id, Runtime: l.rt, scopeHint: te.scopeHint}
-	l.envs[i-1] = e
+	*slot = e
 	l.queue = append(l.queue, lazyTask{lazyFillEnv, i - 1})
 	return e
 }
 
 func (l *lazyInstance) fillEnv(i int) {
 	te := &l.p.envs[i]
-	e := l.envs[i]
+	e := l.envs.get(i)
 	e.parent = l.env(te.parent)
 	if len(te.bindings) > 0 {
 		e.scope = newScopeTable(len(te.bindings))
@@ -239,13 +305,14 @@ func (l *lazyInstance) fillEnv(i int) {
 }
 
 func (l *lazyInstance) function(i int) *funData {
-	if f := l.functions[i]; f != nil {
-		return f
+	slot := l.functions.slot(i)
+	if *slot != nil {
+		return *slot
 	}
 	tf := &l.p.functions[i]
 	data := new(funData)
 	*data = tf.header
-	l.functions[i] = data
+	*slot = data
 	if tf.captures != 0 {
 		captures := &builtinCaptures{code: tf.code, name: tf.name}
 		data.captures = captures
@@ -256,16 +323,16 @@ func (l *lazyInstance) function(i int) *funData {
 }
 
 func (l *lazyInstance) mapData(i int) *MapData {
-	if l.mapsDone[i] {
-		return l.maps[i]
+	if l.mapsDone.get(i) {
+		return l.maps.get(i)
 	}
-	l.mapsDone[i] = true
+	l.mapsDone.set(i, true)
 	m := l.p.maps[i]
 	if m.nilData {
 		return nil
 	}
 	out := new(MapData)
-	l.maps[i] = out
+	l.maps.set(i, out)
 	if m.backing != 0 {
 		out.mapBacking = l.mapBacking(m.backing - 1)
 	}
@@ -273,7 +340,7 @@ func (l *lazyInstance) mapData(i int) *MapData {
 }
 
 func (l *lazyInstance) mapBacking(i int) Map {
-	if b := l.mapBackings[i]; b != nil {
+	if b := l.mapBackings.get(i); b != nil {
 		return b
 	}
 	backing := &l.p.mapBackings[i]
@@ -287,7 +354,7 @@ func (l *lazyInstance) mapBacking(i int) Map {
 		}
 		m = sm
 	}
-	l.mapBackings[i] = m
+	l.mapBackings.set(i, m)
 	l.queue = append(l.queue, lazyTask{lazyFillBacking, i})
 	return m
 }
@@ -300,7 +367,7 @@ func (l *lazyInstance) mapBacking(i int) Map {
 func (l *lazyInstance) fillBacking(i int) {
 	backing := &l.p.mapBackings[i]
 	if backing.json {
-		m, ok := l.mapBackings[i].(jsonMap)
+		m, ok := l.mapBackings.get(i).(jsonMap)
 		if !ok {
 			panic("template: JSON map backing is not a jsonMap")
 		}
@@ -309,7 +376,7 @@ func (l *lazyInstance) fillBacking(i int) {
 		}
 		return
 	}
-	sm, ok := l.mapBackings[i].(sortedmap)
+	sm, ok := l.mapBackings.get(i).(sortedmap)
 	if !ok {
 		panic("template: sorted-map backing is not a sortedmap")
 	}
@@ -326,8 +393,8 @@ func (l *lazyInstance) fillBacking(i int) {
 		switch {
 		case entry.value.index == 0:
 			sm.m[entry.name] = entry.value.shared
-		case l.values[entry.value.index-1] != nil && l.seen == nil:
-			sm.m[entry.name] = l.values[entry.value.index-1]
+		case l.values.get(entry.value.index-1) != nil && l.seen == nil:
+			sm.m[entry.name] = l.values.get(entry.value.index - 1)
 		default:
 			sm.m[entry.name] = lazyPending
 			pending++
@@ -340,18 +407,18 @@ func (l *lazyInstance) fillBacking(i int) {
 }
 
 func (l *lazyInstance) byteData(i int) *[]byte {
-	if b := l.bytes[i]; b != nil {
+	if b := l.bytes.get(i); b != nil {
 		return b
 	}
 	b := new([]byte)
-	l.bytes[i] = b
+	l.bytes.set(i, b)
 	tb := l.p.bytes[i]
 	if tb.backed {
 		v := tb.view
-		if l.byteBackings[v.storage] == nil {
-			l.byteBackings[v.storage] = append([]byte(nil), l.p.byteBackings[v.storage]...)
+		if l.byteBackings.get(v.storage) == nil {
+			l.byteBackings.set(v.storage, append([]byte(nil), l.p.byteBackings[v.storage]...))
 		}
-		*b = l.byteBackings[v.storage][v.offset : v.offset+v.length : v.offset+v.capacity]
+		*b = l.byteBackings.get(v.storage)[v.offset : v.offset+v.length : v.offset+v.capacity]
 	} else if tb.nonnil {
 		*b = []byte{}
 	}
@@ -377,13 +444,16 @@ func (p *templatePlan) instantiateLazy(config vmConfig) *LEnv {
 	for _, payload := range p.natives {
 		checkNativeAffinity(rt, payload)
 	}
-	l := &lazyInstance{p: p, rt: rt,
-		values: make([]*LVal, len(p.values)), envs: make([]*LEnv, len(p.envs)),
-		functions: make([]*funData, len(p.functions)), maps: make([]*MapData, len(p.maps)),
-		mapsDone: make([]bool, len(p.maps)), mapBackings: make([]Map, len(p.mapBackings)),
-		bytes: make([]*[]byte, len(p.bytes)), cells: make([][]*LVal, len(p.cells)),
-		byteBackings: make([][]byte, len(p.byteBackings)),
-	}
+	l := &lazyInstance{p: p, rt: rt}
+	l.values.init(len(p.values), lazyPageBits1)
+	l.envs.init(len(p.envs), lazyPageBits1)
+	l.functions.init(len(p.functions), lazyPageBits1)
+	l.maps.init(len(p.maps), lazyPageBits1)
+	l.mapsDone.init(len(p.maps), lazyPageBits1)
+	l.mapBackings.init(len(p.mapBackings), lazyPageBits2)
+	l.bytes.init(len(p.bytes), lazyPageBits1)
+	l.cells.init(len(p.cells), lazyPageBits3)
+	l.byteBackings.init(len(p.byteBackings), lazyPageBits3)
 	if p.hot.counts() {
 		l.seen = make([]uint64, len(p.hot.bits))
 	}

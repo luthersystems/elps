@@ -212,12 +212,12 @@ func TestPackageGetNameFillsTemplateBinding(t *testing.T) {
 	lib := vm.Runtime.Registry.Package("lib")
 	i, ok := lib.base.index.Lookup("v5")
 	require.True(t, ok)
-	built := &lazyInstanceOf(vm).values[lib.base.bindings[i].value.index-1]
-	require.Nil(t, *built, "lib:v5 is built before it is read")
+	built := func() *LVal { return lazyInstanceOf(vm).values.get(lib.base.bindings[i].value.index - 1) }
+	require.Nil(t, built(), "lib:v5 is built before it is read")
 	got := vm.Eval(Symbol("lib:v5"))
 	require.Equal(t, LSExpr, got.Type, "%v", got)
 	assert.Equal(t, 5, got.Cells[0].Int)
-	assert.Same(t, got, *built)
+	assert.Same(t, got, built())
 	v, _ := lib.Symbol("v5")
 	assert.Same(t, got, v)
 }
