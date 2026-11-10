@@ -31,9 +31,10 @@ func TestTemplatePlanFieldPolicy(t *testing.T) {
 			"env":     "remapped: environment index", "captures": "remapped: values index and immutable code",
 			"loc": "shared-immutable: compiler-owned definition location snapshot (#624)",
 			"fid": "scalar: function identifier", "pkg": "scalar: package name",
-			"name":     "scalar: most recently bound display name memo",
-			"freeKeys": "scalar: free-keyword key-section start, copied with the header (#745; TestFreeKeywordsTemplateParity)",
-			"reg":      "shared-immutable: registration record, the header registration built; VMs read only its Str and package; shared so identity survives forks (#800; TestRegisteredBuiltinParity)",
+			"name":       "scalar: most recently bound display name memo",
+			"freeKeys":   "scalar: free-keyword key-section start, copied with the header (#745; TestFreeKeywordsTemplateParity)",
+			"positional": "scalar: cached positional shape of the formals, copied with the header (luthersystems/elps#944; TestPositionalShapeMatchesScan)",
+			"reg":        "shared-immutable: registration record, the header registration built; VMs read only its Str and package; shared so identity survives forks (#800; TestRegisteredBuiltinParity)",
 		}},
 		{reflect.TypeFor[builtinCaptures](), map[string]string{
 			"values": "remapped: explicit capture graph", "code": "shared-immutable: stateless callback contract",

@@ -1379,9 +1379,10 @@ func registrationFunValue(pkgName string, name string, opts registrationFunction
 		FunType: funType,
 		Str:     name,
 		Native: &funData{
-			fid:     fid,
-			builtin: fn,
-			pkg:     pkgName,
+			fid:        fid,
+			builtin:    fn,
+			pkg:        pkgName,
+			positional: positionalShape(formals),
 		},
 		Cells: Cells{formals, docCell},
 	}
@@ -2853,9 +2854,9 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 	// (no formals cell, or no function data) fails exactly as it does in
 	// bindGeneral, which reads them first.
 	formals := fun.Cells[0].Cells
-	if fun.funEnv() == nil {
-		if list := bindNativePositional(formals, args.Cells); list != nil {
-			return env, list
+	if fd := fun.funData(); fd == nil || fd.env == nil {
+		if funPositionalOK(fd, formals, len(args.Cells)) {
+			return env, positionalList(formals, args.Cells)
 		}
 	}
 	return env.bindGeneral(fun, args)
@@ -2888,7 +2889,7 @@ func (env *LEnv) bind(fun, args *LVal) (*LEnv, *LVal) {
 // arguments, it holds at most 16 bytes more.
 func (env *LEnv) bindOwned(fun, args *LVal) (*LEnv, *LVal) {
 	formals := fun.Cells[0].Cells
-	if fun.funEnv() == nil && nativePositionalOK(formals, len(args.Cells)) {
+	if fd := fun.funData(); (fd == nil || fd.env == nil) && funPositionalOK(fd, formals, len(args.Cells)) {
 		args.quoted = true //elps:mutates the call's own argument list, which evalSExprCells built with a fresh header and backing for this call alone
 		return env, args
 	}
@@ -3005,33 +3006,102 @@ func bindNativePositional(formals, args []*LVal) *LVal {
 	if !nativePositionalOK(formals, len(args)) {
 		return nil
 	}
+	return positionalList(formals, args)
+}
+
+// positionalList builds the argument list of the fast path, for a call that
+// nativePositionalOK or funPositionalOK accepted.  bind and
+// bindNativePositional share it, so the two cannot build different lists.
+func positionalList(formals, args []*LVal) *LVal {
 	cells := make([]*LVal, len(args), max(len(args), len(formals)))
 	copy(cells, args)
 	return QExpr(cells)
 }
 
 // nativePositionalOK reports whether bindNativePositional takes a call of
-// narg arguments against formals.
+// narg arguments against formals.  It scans the formals; funPositionalOK
+// answers from the cached shape when there is one.
 func nativePositionalOK(formals []*LVal, narg int) bool {
-	nreq := len(formals)
-	rest := false
-	for i, formal := range formals {
+	shape := scanPositionalShape(formals)
+	if shape == 0 {
+		// A nil formal after `&rest`.  This read is the nil dereference
+		// that such a list has always failed with on this path.
+		return strings.HasPrefix(formals[len(formals)-1].Str, MetaArgPrefix)
+	}
+	return positionalShapeTakes(shape, narg)
+}
+
+// scanPositionalShape is the one scan of a formals list that decides the
+// fast path.  It returns -1 for a list the fast path never takes and
+// otherwise 1 + 2*nreq + rest, where nreq counts the required formals and
+// rest is 1 when a `&rest` formal follows them.  It returns 0 for the one
+// list it cannot read: a nil formal after `&rest`.
+func scanPositionalShape(list []*LVal) int {
+	for i, formal := range list {
 		if formal == nil {
 			// A hand-built formals list with a nil entry: leave it to the
 			// general binder, which reads formals one at a time and may
 			// report an arity error before it reaches the nil.
-			return false
+			return -1
 		}
 		if !strings.HasPrefix(formal.Str, MetaArgPrefix) {
 			continue
 		}
-		if formal.Str != VarArgSymbol || i+2 != len(formals) || strings.HasPrefix(formals[i+1].Str, MetaArgPrefix) {
-			return false
+		if formal.Str != VarArgSymbol || i+2 != len(list) {
+			return -1
 		}
-		nreq, rest = i, true
-		break
+		if list[i+1] == nil {
+			return 0
+		}
+		if strings.HasPrefix(list[i+1].Str, MetaArgPrefix) {
+			return -1
+		}
+		return 2 + 2*i
 	}
-	return narg >= nreq && (rest || narg == nreq)
+	return 1 + 2*len(list)
+}
+
+// positionalShapeTakes reports whether a function whose formals have the
+// shape scanPositionalShape returned, other than 0, takes narg arguments on
+// the fast path.
+func positionalShapeTakes(shape, narg int) bool {
+	shape--
+	if shape < 0 {
+		return false
+	}
+	nreq := shape >> 1
+	return narg == nreq || (shape&1 != 0 && narg > nreq)
+}
+
+// positionalShape is the part of nativePositionalOK that does not depend on
+// the argument count, in the form funData.positional keeps: 0 for not
+// known, and otherwise what scanPositionalShape returns.
+//
+// It returns 0 for a list it cannot read without a panic (nil formals, or a
+// nil formal after `&rest`), so the call still scans and fails where it did.
+// A constructor calls it once.  The formals of a function value do not
+// change after construction: registration seals them, and bind already
+// relies on that for validation (luthersystems/elps#666).
+func positionalShape(formals *LVal) int32 {
+	if formals == nil {
+		return 0
+	}
+	shape := scanPositionalShape(formals.Cells)
+	if shape < -1 || shape > 1<<30 {
+		// Too long for the field: the call scans.
+		return 0
+	}
+	return int32(shape)
+}
+
+// funPositionalOK is nativePositionalOK for a call of the function that
+// holds fd and formals.  It answers from fd.positional when a constructor
+// cached the shape, and scans the formals otherwise.
+func funPositionalOK(fd *funData, formals []*LVal, narg int) bool {
+	if fd == nil || fd.positional == 0 {
+		return nativePositionalOK(formals, narg)
+	}
+	return positionalShapeTakes(int(fd.positional), narg)
 }
 
 type bindfunc func(k, v *LVal) *LVal

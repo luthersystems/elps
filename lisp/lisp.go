@@ -213,8 +213,17 @@ type funData struct {
 	// required formals, which is where its &key section starts.  In a direct
 	// call form, a keyword literal at a key-name position of that section is
 	// passed as itself instead of evaluated, and so charges no step.  Zero
-	// for every other function, so nothing else changes.
-	freeKeys int
+	// for every other function, so nothing else changes.  It is an int32 so
+	// that positional fits beside it without growing the struct.
+	freeKeys int32
+
+	// positional caches what nativePositionalOK learns from the formals,
+	// which is everything but the argument count (see positionalShape).  A
+	// builtin call read the formals with a string test on each formal to
+	// learn it again (luthersystems/elps#944).  The constructors write it
+	// before the value is published, never a call: a template shares one
+	// header with every VM.  Zero means not cached, and the call scans.
+	positional int32
 }
 
 // macroExpansionContext is shared by all nodes in a single macro expansion.
@@ -891,9 +900,10 @@ func FunInPackageDoc(pkg, fid string, formals *LVal, fn LBuiltin, doc string) *L
 	return &LVal{
 		Type: LFun,
 		Native: &funData{
-			fid:     fid,
-			builtin: fn,
-			pkg:     pkg,
+			fid:        fid,
+			builtin:    fn,
+			pkg:        pkg,
+			positional: positionalShape(formals),
 		},
 		Cells: Cells{formals, String(doc)},
 	}
@@ -913,6 +923,7 @@ func newCapturedBuiltin(spec CapturedFun) *LVal {
 	data.function = funData{
 		fid: spec.FID, pkg: spec.Package,
 		captures: &data.captures, builtin: data.captures.call,
+		positional: positionalShape(spec.Formals),
 	}
 	data.value = LVal{
 		Type:   LFun,
@@ -960,9 +971,10 @@ func MacroInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 		Type:    LFun,
 		FunType: LFunMacro,
 		Native: &funData{
-			fid:     fid,
-			builtin: fn,
-			pkg:     pkg,
+			fid:        fid,
+			builtin:    fn,
+			pkg:        pkg,
+			positional: positionalShape(formals),
 		},
 		Cells: Cells{formals, String("")},
 	}
@@ -987,9 +999,10 @@ func SpecialOpInPackage(pkg, fid string, formals *LVal, fn LBuiltin) *LVal {
 		Type:    LFun,
 		FunType: LFunSpecialOp,
 		Native: &funData{
-			fid:     fid,
-			builtin: fn,
-			pkg:     pkg,
+			fid:        fid,
+			builtin:    fn,
+			pkg:        pkg,
+			positional: positionalShape(formals),
 		},
 		Cells: Cells{formals, String("")},
 	}
