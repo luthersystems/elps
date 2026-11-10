@@ -183,8 +183,14 @@ var (
 			zero). Non-finite floats and truncated values outside the int
 			range return an error.`},
 		{"to-float", Formals("value"), builtinToFloat,
-			`Converts value to a float. Accepts strings (parsed), floats
-			(returned as-is), and integers (widened).`},
+			`Converts value to a float. Accepts floats (returned as-is),
+			integers (widened) and strings. A string must be a decimal
+			number: an optional sign, digits with an optional point, and
+			an optional exponent, as in "-12.75", ".5" or "1e5". The
+			strings "nan", "inf" and "infinity", hexadecimal floats and
+			digits separated by "_" are errors, as is text with spaces.
+			A number too large for a float is an error. A number too
+			small for one converts to zero.`},
 		{"eval", Formals("expr"), builtinEval,
 			`Evaluates expr in the current environment and returns the result.
 			Quoted values are unquoted one level before evaluation.`},
@@ -1392,6 +1398,11 @@ func builtinToFloat(env *LEnv, args *LVal) *LVal {
 	val := args.Cells[0]
 	switch val.Type {
 	case LString:
+		if !isDecimalFloatText(val.Str) {
+			// The error ParseFloat itself returns for text that is not a
+			// number, so every refused spelling reads the same.
+			return env.Error(&strconv.NumError{Func: "ParseFloat", Num: val.Str, Err: strconv.ErrSyntax})
+		}
 		x, err := strconv.ParseFloat(val.Str, 64)
 		if err != nil {
 			return env.Error(err)
@@ -1404,6 +1415,24 @@ func builtinToFloat(env *LEnv, args *LVal) *LVal {
 	default:
 		return env.Errorf("cannot convert type to float: %v", val.Type)
 	}
+}
+
+// isDecimalFloatText reports whether every byte of s can occur in a decimal
+// float: a digit, a sign, a point or an exponent mark.  to-float asks it
+// before strconv.ParseFloat, which also takes "nan", "inf", "infinity",
+// hexadecimal floats and underscores between digits.  Each of those needs a
+// byte outside this set.  The reader and to-int refuse them, and text from a
+// user must not become NaN or an infinity.  ParseFloat still judges the
+// grammar of what passes.
+func isDecimalFloatText(s string) bool {
+	for i := range len(s) {
+		switch c := s[i]; {
+		case c >= '0' && c <= '9', c == '+', c == '-', c == '.', c == 'e', c == 'E':
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func builtinEval(env *LEnv, args *LVal) *LVal {
